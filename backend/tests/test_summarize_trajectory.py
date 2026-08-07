@@ -417,11 +417,6 @@ async def test_get_or_generate_refresh_ignores_a_fresh_block():
             return_value=cached,
         ) as load,
         patch(
-            "api.services.summarize_trajectory._load_summary_prompt",
-            new_callable=AsyncMock,
-            return_value=("tmpl", 1, "p-1"),
-        ),
-        patch(
             "api.services.summarize_trajectory.read_trial_trajectory",
             new_callable=AsyncMock,
             return_value={"steps": [_make_step(1)]},
