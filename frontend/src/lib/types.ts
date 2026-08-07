@@ -113,11 +113,6 @@ interface TrialAnalysis {
   /** Per pre-trial finding assessments — the trial↔audit finding join. */
   exploitation?: TrialExploitation[];
   reward?: number | null;
-  prompt_kind?: string;
-  prompt_version?: number;
-  prompt_id?: string;
-  prompt_scope?: "global" | "org" | "user" | "experiment" | "task" | "trial";
-  prompt_scope_id?: string | null;
 }
 
 interface TrialQueueInfo {

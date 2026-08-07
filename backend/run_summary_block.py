@@ -41,9 +41,8 @@ from api.services.blocks.analyzer.trajectory.trajectory_component_block import (
 )
 from api.services.summarize_trajectory import (
     SCHEMA_VERSION,
-    SUMMARY_PROMPT_KEY,
-    _load_summary_prompt,
     build_task_context,
+    load_summary_prompt_template,
 )
 from oddish.config import settings, to_anthropic_api_model_id
 from oddish.core.trial_io import read_trial_trajectory
@@ -83,14 +82,8 @@ async def run() -> None:
         if trajectory is None:
             raise SystemExit(f"Trial {TRIAL_ID!r} has no fetchable trajectory.")
         task_context = await build_task_context(trial)
-        prompt_template, prompt_version, prompt_id = await _load_summary_prompt(
-            session,
-            org_id=trial.org_id,
-            user_id=trial.billed_user_id,
-            experiment_id=trial.experiment_id,
-            task_id=trial.task_id,
-            trial_id=trial.id,
-        )
+
+    prompt_template = load_summary_prompt_template()
 
     print(
         f"trial={TRIAL_ID}  task={task_context.task_name!r}  "
@@ -120,9 +113,6 @@ async def run() -> None:
         block_metadata={
             "schema_version": SCHEMA_VERSION,
             "model": model,
-            "prompt_key": SUMMARY_PROMPT_KEY,
-            "prompt_version": prompt_version,
-            "prompt_id": prompt_id,
         },
         output_transform=lambda raw: tb.to_summary(raw, model=model),
         model=model,

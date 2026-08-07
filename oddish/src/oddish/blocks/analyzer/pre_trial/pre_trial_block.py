@@ -62,7 +62,7 @@ class PreTrialBlock(Block):
         recovery reached only the other one, so the fix shipped and prod did
         not move (#959). One implementation, two callers.
 
-        The registry prompt asks for "the structured list of action items", so
+        The audit prompt asks for "the structured list of action items", so
         models sometimes return a bare array instead of the envelope; wrap it
         rather than failing a valid audit on shape alone. Items that fail
         validation are dropped individually: an audit costs minutes of agent
