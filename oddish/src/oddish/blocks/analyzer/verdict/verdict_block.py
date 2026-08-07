@@ -8,6 +8,7 @@ from oddish.analyze.models import (
     TaskVerdictModel,
     TrialClassification,
 )
+from oddish.analyze.verdict_rules import enforce_verdict_guardrails
 
 from oddish.blocks.analyzer.verdict import verdict_prompts as vp
 from oddish.blocks.block import Block
@@ -87,4 +88,16 @@ class VerdictBlock(Block):
 
     # ---- parsing (parse is inherited) ----
     def to_verdict(self, raw: str) -> dict:
-        return self.parse(raw).model_dump()
+        # The prompt's deterministic rules (leak findings, access-hole
+        # subtypes, baseline failures) are re-applied in code: the judge has
+        # shipped "task is good" over inputs those rules mark as decisive.
+        # Applied inside the output_transform so both the primary and the
+        # fallback-provider arm of synthesize_task_verdict get it, and the
+        # persisted block output already carries the enforced verdict.
+        verdict = enforce_verdict_guardrails(
+            self.parse(raw),
+            self.classifications,
+            baseline=self.baseline,
+            pre_trial_items=self.pre_trial_items,
+        )
+        return verdict.model_dump()

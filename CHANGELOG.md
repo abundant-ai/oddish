@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-08-07]
+
+### Fixed
+
+- Task verdicts can no longer contradict the QA pipeline's own decisive findings. The verdict prompt has always declared several rules as fact-based rather than judgment calls (a `must_fix` `info_leakage` finding forces `is_good=false`; so do access-hole subtypes and a failed baseline), but enforcement was left entirely to the judge model — which shipped "Task is good · low confidence" for a task whose static audit held a `must_fix` info-leak finding and whose one BAD_SUCCESS trial measured the untouched base model at 0.96 against a 0.25 pass threshold. `oddish.analyze.verdict_rules.enforce_verdict_guardrails` now re-applies every code-decidable rule to the parsed verdict inside `VerdictBlock.to_verdict` (covering the primary and fallback-provider synthesis arms): `must_fix`/`info_leakage` items (static audit or trial action items), access-hole subtypes (`hidden_file_leak`, `test_inspection`, `oracle_copying`, `unintended_access`), failed baseline validation, and a new cross-source rule — a BAD_SUCCESS `permissive_tests`/`task_pre_solved` trial corroborated by an independent `must_fix` `verifier` finding from the static audit. An override keeps the model's prose, floors confidence at the rule's level, fills `primary_issue`/`recommendations` from the firing rules where empty, and states the override in `reasoning` so the reader sees why the verdict disagrees with the model's trial-weighing.
+- `verdict_prompt.txt` now teaches the judge that a *measured* verifier defect is a fact, not noise: when one trial's evidence shows the pass gate accepts trivial or untouched work (e.g. the base model already scores above the pass threshold), the other trials' passes are not counter-evidence — they cleared the same weak gate. The "one isolated BAD classification is normal for a hard task" escape hatch is now explicitly scoped to classifications that prove no such fact.
+
+---
+
 ## [2026-08-05]
 
 ### Added

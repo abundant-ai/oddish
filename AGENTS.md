@@ -194,6 +194,19 @@ source audit, `classify_prompt.txt` drives the per-trial log classifier,
 summary template must retain the `{{taxonomy}}` placeholder rendered by the
 block. Editing a prompt is a code change that ships with a deploy.
 
+The verdict prompt's deterministic rules are additionally enforced in code:
+`oddish.analyze.verdict_rules.enforce_verdict_guardrails` runs inside
+`VerdictBlock.to_verdict` (so both the primary and the fallback-provider
+synthesis arm get it) and forces `is_good=false` when a rule the judge model
+cannot be trusted to apply fires — a `must_fix` `info_leakage` finding in the
+static audit or any trial's action items, an access-hole subtype
+(`hidden_file_leak` / `test_inspection` / `oracle_copying` /
+`unintended_access`), a failed baseline validation, or a BAD_SUCCESS
+weak-gate trial (`permissive_tests` / `task_pre_solved`) corroborated by an
+independent `must_fix` `verifier` finding in the static audit. If you add a
+decisive rule to `verdict_prompt.txt`, add its code enforcement there too;
+judgment-weighing rules stay prompt-only.
+
 ### Worker job kinds
 
 `WorkerJobKind` (in `oddish.db.models`):
