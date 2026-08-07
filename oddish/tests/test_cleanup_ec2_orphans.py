@@ -368,3 +368,79 @@ async def test_ec2_teardown_error_is_logged_without_aborting_other_targets(
         and "error_type=RuntimeError" in line
         for line in lines
     )
+
+
+@pytest.mark.asyncio
+async def test_stale_reap_discovers_one_ec2_teardown_target(monkeypatch) -> None:
+    handle = f"ec2://{ACCOUNT_ID}/us-east-1/i-stale"
+
+    class Result:
+        def __init__(self, *, rows=(), mapping=None):
+            self.rows = list(rows)
+            self.mapping = mapping
+
+        def all(self):
+            return self.rows
+
+        def mappings(self):
+            return self
+
+        def one_or_none(self):
+            return self.mapping
+
+    class Savepoint:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    class Session:
+        def begin_nested(self):
+            return Savepoint()
+
+        async def execute(self, statement, _params=None):
+            sql = str(statement)
+            if sql.lstrip().startswith("SELECT id FROM worker_jobs"):
+                return Result(rows=[("job-stale",)])
+            if "SET    status = CASE" in sql:
+                return Result(
+                    mapping={
+                        "id": "job-stale",
+                        "kind": "TRIAL",
+                        "new_status": "FAILED",
+                        "subject_table": "trials",
+                        "subject_id": "trial-stale",
+                        "attempts": 1,
+                        "max_attempts": 1,
+                        "error_message": "stale",
+                        "provider": "ec2",
+                        "external_id": handle,
+                    }
+                )
+            return Result()
+
+        async def flush(self):
+            return None
+
+    async def mirror(_session, _row):
+        return "trial-stale"
+
+    teardown_calls: list[tuple[str, str]] = []
+
+    async def terminate(provider: str, external_id: str) -> bool:
+        teardown_calls.append((provider, external_id))
+        return True
+
+    monkeypatch.setattr(cleanup, "_mirror_stale_job_to_domain_row", mirror)
+    monkeypatch.setattr(cleanup, "cancel_job_by_worker", terminate)
+
+    retried, failed, trial_ids, targets = await cleanup._reap_stale_worker_jobs(
+        Session(), stale_after_minutes=15
+    )
+    terminated = await cleanup._terminate_orphaned_sandboxes(targets)
+
+    assert (retried, failed, trial_ids) == (0, 1, ["trial-stale"])
+    assert targets == {("ec2", handle)}
+    assert terminated == 1
+    assert teardown_calls == [("ec2", handle)]

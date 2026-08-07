@@ -59,6 +59,6 @@
 ## Verification
 
 The combined provider, execution parity, routing, hosted policy, cancellation,
-retry, stale-worker, cleanup, and reconciliation suite completed with 341 passed
+retry, stale-worker, cleanup, and reconciliation suite completed with 342 passed
 and 4 skipped tests. A live AWS canary still requires operator-provided AMI,
 network, key-pair, and IAM credentials.

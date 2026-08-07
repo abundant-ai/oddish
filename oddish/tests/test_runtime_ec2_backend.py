@@ -1337,7 +1337,7 @@ def test_ec2_harbor_patch_requires_imdsv2_for_platform_instance_profile(
     assert FakeEc2Environment()._run_instances_kwargs()["MetadataOptions"] == {
         "HttpEndpoint": "enabled",
         "HttpTokens": "required",
-        "HttpPutResponseHopLimit": 1,
+        "HttpPutResponseHopLimit": 2,
     }
 
 

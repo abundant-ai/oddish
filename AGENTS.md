@@ -524,7 +524,8 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   neither EC2 control nor SSH secrets. An optional platform-owned
   `ODDISH_EC2_INSTANCE_PROFILE` may be attached; it is visible to tenant code,
   so keep it task-scoped and grant the control identity `iam:PassRole` only for
-  that role. Oddish requires IMDSv2 when configured and disables IMDS otherwise.
+  that role. Oddish requires IMDSv2 with a Docker-compatible response hop limit
+  of two when configured and disables IMDS otherwise.
 - Oddish does not create the VPC, subnet, security group, AMI, key pair, or IAM
   policy. Every instance and root volume must carry protected Oddish ownership,
   deployment, task/trial, worker-job, and Harbor-session tags. Normal teardown,

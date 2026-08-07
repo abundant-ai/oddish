@@ -251,6 +251,18 @@ class Ec2Backend:
                 "metric=ec2_teardown outcome=refused reason=empty_external_id"
             )
             return False
+        self.acquire_worker_credentials(include_ssh=False)
+        try:
+            return await self._teardown_with_credentials(external_id)
+        finally:
+            self.release_worker_credentials()
+
+    async def _teardown_with_credentials(self, external_id: str) -> bool:
+        if not external_id:
+            logger.warning(
+                "metric=ec2_teardown outcome=refused reason=empty_external_id"
+            )
+            return False
         match = _EC2_HANDLE_PATTERN.fullmatch(external_id)
         if match is None:
             logger.error(
