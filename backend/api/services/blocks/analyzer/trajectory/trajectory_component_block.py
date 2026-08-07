@@ -24,6 +24,8 @@ class ExploreTrajectoryBlockTaxonomy(str, enum.Enum):
 
 
 class ImplementTrajectoryBlockTaxonomy(str, enum.Enum):
+    # Ordered as the work happens: plan, build, correct, test, debug.
+    WRITING_PLAN = "writing_plan"
     IMPLEMENTING = "implementing"
     IMPLEMENTING_CORRECTION = "implementing_correction"
     WRITING_TESTS = "writing_tests"
