@@ -198,8 +198,8 @@ class AnalyzerBlock(Block):
         self.attribution_org_id = attribution_org_id
         # What this block is ABOUT, as opposed to ``analyzer_id``, which is an
         # overloaded association id. Set explicitly by callers that know their
-        # subject (see ``analyzer_block_handler``); cohort blocks leave it None
-        # because they span many trials and have no single subject to charge.
+        # subject; cohort blocks leave it None because they span many trials
+        # and have no single subject to charge.
         self.subject_type = subject_type
         self.subject_id = subject_id
         self._cli_config = cli_config

@@ -1698,9 +1698,6 @@ async def test_post_trial_hooks_skip_cancelled_trial(monkeypatch):
         calls.append(True)
 
     monkeypatch.setattr(trial_handler, "get_session", _fake_get_session)
-    monkeypatch.setattr(
-        "oddish.core.qa_assignments.enqueue_qa_assignment_runs_core", _called
-    )
     monkeypatch.setattr("oddish.queue.maybe_gate_llm_trials", _called)
     monkeypatch.setattr("oddish.queue.maybe_start_qa_stage", _called)
 
@@ -1719,7 +1716,6 @@ async def test_post_trial_hooks_run_for_completed_trial(monkeypatch):
         billed_user_id="user-1",
         status=trial_handler.TrialStatus.SUCCESS,
         harbor_stage="completed",
-        # An LLM agent: baselines take the skip path (test_qa_skips_baselines).
         agent="claude-code",
     )
     calls = []
@@ -1727,10 +1723,6 @@ async def test_post_trial_hooks_run_for_completed_trial(monkeypatch):
     class _Session:
         async def scalar(self, _stmt):
             return "task-1"
-
-        @asynccontextmanager
-        async def begin_nested(self):
-            yield
 
         async def get(self, model, obj_id, with_for_update=False):
             assert with_for_update is True
@@ -1745,9 +1737,6 @@ async def test_post_trial_hooks_run_for_completed_trial(monkeypatch):
     async def _fake_get_session():
         yield _Session()
 
-    async def _assignment(*_args, **_kwargs):
-        calls.append("assignment")
-
     async def _gate(*_args, **_kwargs):
         calls.append("gate")
 
@@ -1756,15 +1745,12 @@ async def test_post_trial_hooks_run_for_completed_trial(monkeypatch):
         return False
 
     monkeypatch.setattr(trial_handler, "get_session", _fake_get_session)
-    monkeypatch.setattr(
-        "oddish.core.qa_assignments.enqueue_qa_assignment_runs_core", _assignment
-    )
     monkeypatch.setattr("oddish.queue.maybe_gate_llm_trials", _gate)
     monkeypatch.setattr("oddish.queue.maybe_start_qa_stage", _qa)
 
     await trial_handler._run_post_trial_hooks("trial-1")
 
-    assert calls == ["assignment", "gate", "qa"]
+    assert calls == ["gate", "qa"]
 
 
 @pytest.mark.asyncio

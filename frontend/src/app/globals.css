@@ -1,6 +1,6 @@
 @import "tailwindcss";
 
-@plugin 'tailwindcss-animate';
+@plugin "tailwindcss-animate";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -207,22 +207,35 @@
 
     /*
      * Trajectory component taxonomy: cool hues = thinking/analysis, warm hues
-     * = building/testing. Both modes validated (lightness band, chroma, CVD
-     * separation) against the app card surfaces; consumed via phaseColorVars
-     * in trajectory-metrics.ts.
+     * = building/testing, so cool-vs-warm alone separates thinking from doing.
+     * Consumed via phaseColorVars in trajectory-metrics.ts.
+     *
+     * Editing the taxonomy: a kind keeps its family, and a retired kind hands
+     * its exact hue to whatever replaces it -- that is what keeps the balance
+     * stable across vocabulary changes, and what stops a rename from
+     * repainting every chart. Give the most frequent kinds the most legible
+     * hues: reading_files and debugging appear in nearly every trial.
+     *
+     * Twelve fixed hues is past what a categorical palette can fully separate
+     * (~8), and the warm half carries seven of them, so some warm pairs sit
+     * below the CVD floor -- implementing/orange vs debugging/amber worst of
+     * all. That is survivable ONLY because identity is never colour-alone
+     * here: every bar carries its label and every timeline cell its title.
+     * Do not add a kind that renders without one. Re-validate both modes
+     * against --card after any change.
      */
-    --tc-reading-files: #008300;
-    --tc-thinking-recall: #1baf7a;
-    --tc-thinking-understand: #2a78d6;
+    --tc-reading-files: #2a78d6;
+    --tc-thinking-recall: #0f8fa8;
+    --tc-thinking-understand: #1baf7a;
     --tc-thinking-hypothesize: #a184ea;
     --tc-thinking-correction: #4a3aa7;
-    --tc-implementing: #eb6834;
-    --tc-implementing-correction: #784000;
+    --tc-implementing: #b8860b;
+    --tc-implementing-correction: #c62828;
     --tc-writing-tests: #eda100;
     --tc-testing-public: #e87ba4;
     --tc-testing-custom: #c94592;
     --tc-testing-edge: #852c5e;
-    --tc-debugging: #a87400;
+    --tc-debugging: #eb6834;
   }
 
   .dark {
@@ -278,18 +291,18 @@
     --phase-8: #d95926;
     --phase-other: #8ea3c9;
 
-    --tc-reading-files: #008300;
-    --tc-thinking-recall: #199e70;
-    --tc-thinking-understand: #3987e5;
+    --tc-reading-files: #3987e5;
+    --tc-thinking-recall: #2aa5bd;
+    --tc-thinking-understand: #199e70;
     --tc-thinking-hypothesize: #9085e9;
     --tc-thinking-correction: #7a68d8;
-    --tc-implementing: #d95926;
-    --tc-implementing-correction: #b85850;
+    --tc-implementing: #b5860e;
+    --tc-implementing-correction: #e05252;
     --tc-writing-tests: #c98500;
     --tc-testing-public: #ce6b98;
     --tc-testing-custom: #d55181;
     --tc-testing-edge: #9d3973;
-    --tc-debugging: #b5820a;
+    --tc-debugging: #d95926;
   }
 
   /*
