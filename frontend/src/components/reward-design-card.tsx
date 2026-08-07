@@ -261,10 +261,18 @@ function DimensionDesignCard({
 }
 
 export interface RewardDesignCardProps {
-  taskId: string;
+  taskId?: string;
   taskVersion?: number;
   trials: Trial[];
   apiBaseUrl?: string;
+  /**
+   * Files endpoint override (e.g. the task files pane's `filesUrl`). Defaults
+   * to the task files API derived from `taskId`. Content responses may be
+   * either the task API's `{content}` JSON or raw text; both are handled.
+   */
+  filesUrl?: string;
+  /** Rendered when loading finished and no reward design was found. */
+  emptyState?: React.ReactNode;
 }
 
 /**
@@ -282,8 +290,11 @@ export function RewardDesignCard({
   taskVersion,
   trials,
   apiBaseUrl = "/api",
+  filesUrl,
+  emptyState = null,
 }: RewardDesignCardProps) {
   const [design, setDesign] = useState<RewardDesign | null>(null);
+  const [loaded, setLoaded] = useState(false);
   const [whatIf, setWhatIf] = useState(false);
   // criterion pass/fail per dimension for what-if, keyed by dimension name.
   const [states, setStates] = useState<Record<string, boolean[]>>({});
@@ -305,14 +316,24 @@ export function RewardDesignCard({
   useEffect(() => {
     const controller = new AbortController();
     setDesign(null);
+    setLoaded(false);
 
-    async function load() {
+    const filesBase =
+      filesUrl?.replace(/\/$/, "") ??
+      (taskId
+        ? `${apiBaseUrl.replace(/\/$/, "")}/tasks/${encodeURIComponent(taskId)}/files`
+        : null);
+    if (!filesBase) {
+      setLoaded(true);
+      return;
+    }
+
+    async function load(base: string) {
       try {
-        const filesBase = `${apiBaseUrl.replace(/\/$/, "")}/tasks/${encodeURIComponent(taskId)}/files`;
         const params = new URLSearchParams();
         params.set("recursive", "1");
         if (taskVersion != null) params.set("version", String(taskVersion));
-        const listingResponse = await fetch(`${filesBase}?${params}`, {
+        const listingResponse = await fetch(`${base}?${params}`, {
           signal: controller.signal,
         });
         if (!listingResponse.ok) return;
@@ -337,14 +358,24 @@ export function RewardDesignCard({
               contentParams.set("version", String(taskVersion));
             }
             const response = await fetch(
-              `${filesBase}/${encodeURIComponent(file.path)}${
+              `${base}/${encodeURIComponent(file.path)}${
                 contentParams.size > 0 ? `?${contentParams}` : ""
               }`,
               { signal: controller.signal }
             );
             if (!response.ok) return { path: file.path, content: "" };
-            const data = (await response.json()) as { content?: string };
-            return { path: file.path, content: data.content ?? "" };
+            // Task files endpoints answer `{content}` JSON; filesUrl-driven
+            // panes may answer raw text. Probe rather than assume.
+            const body = await response.text();
+            try {
+              const data = JSON.parse(body) as { content?: string };
+              if (data && typeof data.content === "string") {
+                return { path: file.path, content: data.content };
+              }
+            } catch {
+              // Raw text response.
+            }
+            return { path: file.path, content: body };
           })
         );
 
@@ -375,9 +406,11 @@ export function RewardDesignCard({
       }
     }
 
-    void load();
+    void load(filesBase).finally(() => {
+      if (!controller.signal.aborted) setLoaded(true);
+    });
     return () => controller.abort();
-  }, [apiBaseUrl, taskId, taskVersion, observedTrialId]);
+  }, [apiBaseUrl, filesUrl, taskId, taskVersion, observedTrialId]);
 
   const dimensionScores = useMemo(() => {
     const scores: Record<string, number> = {};
@@ -396,7 +429,7 @@ export function RewardDesignCard({
     return scores;
   }, [design, states]);
 
-  if (!design) return null;
+  if (!design) return loaded ? <>{emptyState}</> : null;
 
   const criteriaCount = design.dimensions.reduce(
     (sum, d) => sum + d.criteria.length,

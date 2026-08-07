@@ -33,6 +33,7 @@ import {
   ChevronLeft,
   ChevronRight,
   RotateCcw,
+  Award,
   Loader2,
   Radio,
   Microscope,
@@ -89,7 +90,8 @@ import { LiveTranscriptPanel } from "@/components/live-transcript-panel";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { StatusIcon } from "@/components/status-icon";
 import { useVerifierSummary } from "@/components/use-verifier-summary";
-import { TrialRewardsCard } from "@/components/trial-rewards-card";
+import { useRewardBreakdown } from "@/components/use-reward-breakdown";
+import { RewardBreakdownView } from "@/components/reward-breakdown-view";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
 import { useSWRConfig } from "swr";
 import { isAnalysisStatusActive, trialKey, useTrial } from "@/lib/use-trial";
@@ -808,9 +810,22 @@ export function TrialDetailPanel({
   paneAction,
 }: TrialDetailPanelProps) {
   const verifierSummary = useVerifierSummary(trial, apiBaseUrl, isOpen);
+  // RewardKit output; null for scalar-reward trials, which hides the tab.
+  const rewardBreakdown = useRewardBreakdown(trial, apiBaseUrl, isOpen);
+  const hasRewards = Boolean(
+    rewardBreakdown.rewards || rewardBreakdown.breakdown
+  );
 
   const validTabs = useMemo(
-    () => new Set(["summary", "live", "files", "trajectory", "artifacts"]),
+    () =>
+      new Set([
+        "summary",
+        "rewards",
+        "live",
+        "files",
+        "trajectory",
+        "artifacts",
+      ]),
     []
   );
 
@@ -1139,7 +1154,10 @@ export function TrialDetailPanel({
   const showLive =
     showAnalysis && (trial.status === "running" || trial.status === "retrying");
   const effectiveTab =
-    activeTab === "live" && !showLive ? "summary" : activeTab;
+    (activeTab === "live" && !showLive) ||
+    (activeTab === "rewards" && !hasRewards)
+      ? "summary"
+      : activeTab;
   const trialStatusConfig = STATUS_CONFIG[trialStatus];
   const TrialStatusIcon = trialStatusConfig.icon;
   // Sum the navigable trials for this view (version-scoped in both callers),
@@ -1498,6 +1516,15 @@ export function TrialDetailPanel({
               <FileText className="mr-1 h-3.5 w-3.5 sm:mr-2 sm:h-4 sm:w-4" />
               Summary
             </TabsTrigger>
+            {hasRewards && (
+              <TabsTrigger
+                value="rewards"
+                className="data-[state=active]:border-primary rounded-none px-3 text-xs data-[state=active]:border-b-2 data-[state=active]:bg-transparent sm:px-4 sm:text-sm"
+              >
+                <Award className="mr-1 h-3.5 w-3.5 sm:mr-2 sm:h-4 sm:w-4" />
+                Rewards
+              </TabsTrigger>
+            )}
             {showLive && (
               <TabsTrigger
                 value="live"
@@ -1572,14 +1599,6 @@ export function TrialDetailPanel({
                   tests passed
                 </div>
               )}
-              {/* RewardKit breakdown: named rewards + per-criterion results
-                  with judge reasoning. Renders nothing for scalar-reward
-                  tasks. */}
-              <TrialRewardsCard
-                trial={trial}
-                apiBaseUrl={apiBaseUrl}
-                enabled={isOpen}
-              />
               {/* Analysis card: self-updating; also hosts the run/re-run
                   button so analysis can be started even when it never ran. */}
               {showAnalysis && (
@@ -1703,6 +1722,23 @@ export function TrialDetailPanel({
               )}
             </div>
           </TabsContent>
+
+          {hasRewards && (
+            <TabsContent value="rewards" className="m-0 p-4 sm:p-6">
+              <div className="pb-4">
+                {rewardBreakdown.loadingDetails && (
+                  <div className="text-muted-foreground mb-2 flex items-center gap-1.5 text-[11px]">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    Loading full reward report…
+                  </div>
+                )}
+                <RewardBreakdownView
+                  breakdown={rewardBreakdown.breakdown}
+                  rewards={rewardBreakdown.rewards}
+                />
+              </div>
+            </TabsContent>
+          )}
 
           {showLive && (
             <TabsContent value="live" className="m-0 h-full p-0">

@@ -21,6 +21,7 @@ import {
   ChevronUp,
   RefreshCw,
   AlertCircle,
+  Award,
   ListChecks,
   Microscope,
   Loader2,
@@ -44,6 +45,7 @@ import type {
   Trial,
 } from "@/lib/types";
 import { TaskOverviewPanel } from "@/components/task-overview-panel";
+import { RewardDesignCard } from "@/components/reward-design-card";
 import {
   getCancelActionLabel,
   isActivePipelineStatus,
@@ -198,7 +200,7 @@ function getNodeName(path: string): string {
  *  versions[0]. */
 function pickChecksVersion(
   detail: TaskDetailResponse | undefined,
-  pinnedVersion?: number | null,
+  pinnedVersion?: number | null
 ): TaskVersionSummary | null {
   const versions = detail?.versions;
   if (!versions || versions.length === 0) return null;
@@ -399,20 +401,19 @@ export function TaskFilesPanel({
     error: checksLoadError,
     mutate: mutateChecks,
   } = useSWR<TaskDetailResponse>(checksKey, fetcher, {
-      // Poll while the checks run, and while task QA runs: the full QA job
-      // writes fresh findings when it lands, so the pane keeps tracking
-      // until both are terminal.
-      refreshInterval: (data) => {
-        const checksLive =
-          pickChecksVersion(data, taskVersion)?.pre_trial_status ===
-            "running" ||
-          pickChecksVersion(data, taskVersion)?.pre_trial_status === "queued";
-        const qaLive =
-          data?.task?.verdict_status === "queued" ||
-          data?.task?.verdict_status === "running";
-        return checksLive || qaLive ? 5000 : 0;
-      },
-    });
+    // Poll while the checks run, and while task QA runs: the full QA job
+    // writes fresh findings when it lands, so the pane keeps tracking
+    // until both are terminal.
+    refreshInterval: (data) => {
+      const checksLive =
+        pickChecksVersion(data, taskVersion)?.pre_trial_status === "running" ||
+        pickChecksVersion(data, taskVersion)?.pre_trial_status === "queued";
+      const qaLive =
+        data?.task?.verdict_status === "queued" ||
+        data?.task?.verdict_status === "running";
+      return checksLive || qaLive ? 5000 : 0;
+    },
+  });
   // Scoped panes (the experiment drawer) pin the version whose files are on
   // screen; the checks must describe that same source.
   const checksVersion = pickChecksVersion(checksDetail, taskVersion);
@@ -453,6 +454,22 @@ export function TaskFilesPanel({
   // the main pane must both use it: with the overview hidden (public share),
   // overviewSelected stays true but the pane shows a file.
   const overviewShowing = overviewSelected && overviewAvailable;
+  // RewardKit tasks get a "Reward" entry beside Overview showing the reward
+  // design. Gated on a RewardKit marker in the listing (a TOML under tests/)
+  // so ordinary tasks never grow the entry.
+  const [rewardSelected, setRewardSelected] = useState(false);
+  const rewardDesignAvailable = useMemo(() => {
+    const hasTestToml = (nodes: TreeNode[]): boolean =>
+      nodes.some(
+        (node) =>
+          (node.type === "file" &&
+            node.path.startsWith("tests/") &&
+            node.path.endsWith(".toml")) ||
+          (node.children ? hasTestToml(node.children) : false)
+      );
+    return hasTestToml(fileTree);
+  }, [fileTree]);
+  const rewardShowing = rewardSelected && rewardDesignAvailable;
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [fileContentLoading, setFileContentLoading] = useState(false);
   const [isTruncated, setIsTruncated] = useState(false);
@@ -709,12 +726,12 @@ export function TaskFilesPanel({
     try {
       const res = await fetch(
         `${baseUrl}/tasks/${effectiveChecksTaskId}/qa/pre-trial`,
-        { method: "POST" },
+        { method: "POST" }
       );
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(
-          data.detail || data.error || "Failed to queue static checks",
+          data.detail || data.error || "Failed to queue static checks"
         );
       }
       await mutateChecks();
@@ -740,6 +757,7 @@ export function TaskFilesPanel({
       setFileTree([]);
       setSelectedFile(null);
       setOverviewSelected(true);
+      setRewardSelected(false);
       setFileContent(null);
       setExpandedDirs(new Set());
 
@@ -838,7 +856,14 @@ export function TaskFilesPanel({
       cancelled = true;
       controller.abort();
     };
-  }, [isOpen, taskId, filesUrl, resolvedFilesUrl, buildListingUrl, overviewAvailable]);
+  }, [
+    isOpen,
+    taskId,
+    filesUrl,
+    resolvedFilesUrl,
+    buildListingUrl,
+    overviewAvailable,
+  ]);
 
   // Fetch file content when a file is selected
   useEffect(() => {
@@ -1091,6 +1116,7 @@ export function TaskFilesPanel({
 
     setSelectedFile(node);
     setOverviewSelected(false);
+    setRewardSelected(false);
   }, [initialFilePath, fileTree]);
 
   useEffect(() => {
@@ -1165,6 +1191,7 @@ export function TaskFilesPanel({
               } else {
                 setSelectedFile(node);
                 setOverviewSelected(false);
+                setRewardSelected(false);
               }
             }}
             className={`h-auto w-full justify-start gap-1.5 rounded px-2 py-1 text-left font-mono text-xs transition-colors ${
@@ -1412,33 +1439,59 @@ export function TaskFilesPanel({
         <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
           <div className="border-border bg-muted/30 max-h-[30vh] w-full overflow-auto border-b md:max-h-none md:w-56 md:border-r md:border-b-0 lg:w-64">
             <div className="p-2">
-              {overviewAvailable && (
+              {(overviewAvailable || rewardDesignAvailable) && (
                 <div className="border-border mb-2 border-b pb-2">
                   <div className="text-muted-foreground px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
                     Task overview
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setOverviewSelected(true)}
-                    className={`flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-sm ${
-                      overviewSelected
-                        ? "bg-primary/20 text-primary"
-                        : "hover:bg-muted/50 cursor-pointer"
-                    }`}
-                    title="View the task overview: task QA plus aggregated trial QA"
-                  >
-                    <ListChecks
-                      className="h-3.5 w-3.5 shrink-0"
-                      aria-hidden="true"
-                    />
-                    <span className="truncate">
-                      {checksLoading
-                        ? "Loading…"
-                        : checksLoadFailure
-                          ? "Unavailable"
-                          : "Overview"}
-                    </span>
-                  </button>
+                  {overviewAvailable && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOverviewSelected(true);
+                        setRewardSelected(false);
+                      }}
+                      className={`flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-sm ${
+                        overviewShowing
+                          ? "bg-primary/20 text-primary"
+                          : "hover:bg-muted/50 cursor-pointer"
+                      }`}
+                      title="View the task overview: task QA plus aggregated trial QA"
+                    >
+                      <ListChecks
+                        className="h-3.5 w-3.5 shrink-0"
+                        aria-hidden="true"
+                      />
+                      <span className="truncate">
+                        {checksLoading
+                          ? "Loading…"
+                          : checksLoadFailure
+                            ? "Unavailable"
+                            : "Overview"}
+                      </span>
+                    </button>
+                  )}
+                  {rewardDesignAvailable && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOverviewSelected(false);
+                        setRewardSelected(true);
+                      }}
+                      className={`flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-sm ${
+                        rewardShowing
+                          ? "bg-primary/20 text-primary"
+                          : "hover:bg-muted/50 cursor-pointer"
+                      }`}
+                      title="View the reward design: RewardKit dimensions, criteria, and aggregation"
+                    >
+                      <Award
+                        className="h-3.5 w-3.5 shrink-0"
+                        aria-hidden="true"
+                      />
+                      <span className="truncate">Reward</span>
+                    </button>
+                  )}
                 </div>
               )}
               <div className="text-muted-foreground px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
@@ -1458,7 +1511,7 @@ export function TaskFilesPanel({
             </div>
           </div>
           <div className="flex flex-1 flex-col overflow-hidden">
-            {!overviewShowing && selectedFile && (
+            {!overviewShowing && !rewardShowing && selectedFile && (
               <div className="border-border bg-muted/30 flex items-center justify-between gap-2 border-b px-3 py-2 sm:px-4">
                 <div className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[10px] sm:text-xs">
                   {selectedFile.path}
@@ -1549,6 +1602,25 @@ export function TaskFilesPanel({
                   qaActive={taskQaActive}
                   onOpenTrial={onOpenTrial}
                 />
+              ) : rewardShowing ? (
+                <div className="p-4 sm:p-6">
+                  <RewardDesignCard
+                    filesUrl={resolvedFilesUrl}
+                    taskVersion={
+                      shouldScopeFilesToVersion && currentVersion != null
+                        ? currentVersion
+                        : undefined
+                    }
+                    trials={task ? (task.trials ?? []) : []}
+                    apiBaseUrl={baseUrl}
+                    emptyState={
+                      <p className="text-muted-foreground text-sm">
+                        No RewardKit reward design found in this task&apos;s
+                        tests.
+                      </p>
+                    }
+                  />
+                </div>
               ) : (
                 renderFileContent()
               )}
