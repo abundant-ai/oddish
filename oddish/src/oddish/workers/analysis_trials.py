@@ -85,6 +85,38 @@ def _prompt(name: str) -> str:
     return resources.files("oddish.analyze").joinpath(name).read_text()
 
 
+async def resolve_analysis_experiment_id(session: AsyncSession, task_id: str) -> str:
+    """trials.experiment_id is NOT NULL, so an analysis trial borrows one from
+    its task: the first live experiment membership, else any live trial's."""
+    from sqlalchemy import text as sql_text
+
+    experiment_id = await session.scalar(
+        sql_text(
+            """
+            SELECT experiment_id FROM task_experiments
+            WHERE task_id = :task_id AND deleted_at IS NULL
+            ORDER BY created_at ASC LIMIT 1
+            """
+        ),
+        {"task_id": task_id},
+    )
+    if experiment_id is None:
+        experiment_id = await session.scalar(
+            select(TrialModel.experiment_id)
+            .where(
+                TrialModel.task_id == task_id,
+                TrialModel.experiment_id.is_not(None),
+            )
+            .order_by(TrialModel.created_at.asc())
+            .limit(1)
+        )
+    if experiment_id is None:
+        raise RuntimeError(
+            f"task {task_id} has no experiment to attach an analysis trial to"
+        )
+    return str(experiment_id)
+
+
 async def create_analysis_trial(
     session: AsyncSession,
     *,
@@ -93,9 +125,12 @@ async def create_analysis_trial(
     brief: str,
     task_version_id: str | None = None,
     payload: dict | None = None,
+    experiment_id: str | None = None,
 ) -> TrialModel:
     from oddish.queue import enqueue_trial_worker_job, reserve_next_trial_index
 
+    if experiment_id is None:
+        experiment_id = await resolve_analysis_experiment_id(session, task.id)
     next_index = await reserve_next_trial_index(session, task_id=task.id)
     trial_id = f"{task.id}-{next_index}"
     harbor_config: dict = {"mode": kind, "extra_instructions": brief}
@@ -106,7 +141,7 @@ async def create_analysis_trial(
         name=f"{task.name}-{kind}-{next_index}",
         task_id=task.id,
         task_version_id=task_version_id or task.current_version_id,
-        experiment_id=None,
+        experiment_id=experiment_id,
         org_id=task.org_id,
         billed_user_id=None,
         agent="claude-code",

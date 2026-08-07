@@ -106,7 +106,10 @@ def _host_task_tar() -> bytes:
 
 
 async def _create_report_host_task(analyzer: AnalyzerModel) -> str:
+    from sqlalchemy import text as sql_text
+
     from oddish.core.tasks import complete_task_upload
+    from oddish.db.models import ExperimentModel
 
     task_name = f"report-{analyzer.id}"
     task_id = f"{task_name}"
@@ -123,6 +126,23 @@ async def _create_report_host_task(analyzer: AnalyzerModel) -> str:
         org_id=analyzer.org_id,
         register=True,
     )
+    # trials.experiment_id is NOT NULL; the host task gets its own experiment
+    # so report trials never land in a user's experiment.
+    async with get_session() as session:
+        experiment = ExperimentModel(name=task_name, org_id=analyzer.org_id)
+        session.add(experiment)
+        await session.flush()
+        await session.execute(
+            sql_text(
+                """
+                INSERT INTO task_experiments (task_id, experiment_id, created_at)
+                VALUES (:task_id, :experiment_id, NOW())
+                ON CONFLICT DO NOTHING
+                """
+            ),
+            {"task_id": task_id, "experiment_id": experiment.id},
+        )
+        await session.commit()
     return task_id
 
 

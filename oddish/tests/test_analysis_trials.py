@@ -164,14 +164,16 @@ async def test_a_task_gets_exactly_one_qa_trial():
         get_session,
         init_db,
     )
-    from oddish.db.models import TaskModel
+    from oddish.db.models import ExperimentModel, TaskModel
     from oddish.queue import maybe_start_qa_stage
-    from sqlalchemy import select
+    from sqlalchemy import select, text
 
     await init_db()
     run = uuid.uuid4().hex[:8]
     task_id = f"qa-barrier-{run}"
     async with get_session() as session:
+        experiment = ExperimentModel(name=f"exp-{run}")
+        session.add(experiment)
         session.add(
             TaskModel(
                 id=task_id,
@@ -182,6 +184,14 @@ async def test_a_task_gets_exactly_one_qa_trial():
                 run_analysis=True,
             )
         )
+        await session.flush()
+        await session.execute(
+            text(
+                "INSERT INTO task_experiments (task_id, experiment_id, created_at) "
+                "VALUES (:t, :e, NOW())"
+            ),
+            {"t": task_id, "e": experiment.id},
+        )
         for i, status in enumerate(
             (TrialStatus.SUCCESS, TrialStatus.RUNNING), start=1
         ):
@@ -190,6 +200,7 @@ async def test_a_task_gets_exactly_one_qa_trial():
                     id=f"{task_id}-{i}",
                     name=f"{task_id}-{i}",
                     task_id=task_id,
+                    experiment_id=experiment.id,
                     agent="claude-code",
                     provider="local",
                     queue_key="q",
