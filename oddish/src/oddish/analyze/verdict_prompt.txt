@@ -18,7 +18,7 @@ Each analysis gives its trial one label. A label is a claim from that analysis, 
 
 * GOOD_SUCCESS — the agent solved the task fairly. The task is good.
 * GOOD_FAILURE — the agent failed a fair task. The task is good.
-* BAD_SUCCESS — the agent passed without solving the task. The task has a problem.
+* BAD_SUCCESS — the agent passed, but the pass does not count. The agent cheated, or it went against the intent of the task, or the tests were too weak to notice a bad solution. The task has a problem.
 * BAD_FAILURE — a task problem caused the failure, or the task leaked hidden files. The task has a problem.
 * HARNESS_ERROR — the infrastructure broke the run, so the run says nothing about the task. One exception: the subtype `hidden_file_leak` means the task exposed hidden files, and that is a task problem.
 
