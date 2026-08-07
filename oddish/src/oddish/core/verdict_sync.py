@@ -86,6 +86,9 @@ async def sync_verdict_to_task(
             task.verdict_status = VerdictStatus.SUCCESS
             task.verdict_error = None
         else:
+            # A payload only ever pairs with SUCCESS. A verdict kept through
+            # an append must not outlive the failed pass that replaced it.
+            task.verdict = None
             task.verdict_status = VerdictStatus.FAILED
             task.verdict_error = error or "Verdict synthesis failed with exception"
 
