@@ -636,16 +636,38 @@ export function enrichDesignWithObserved(
   design: RewardDesign,
   observed: RewardBreakdown
 ): RewardDesign {
-  const observedByName = new Map<string, RewardDimensionResult>();
-  for (const dimension of observed.dimensions) {
-    if (!observedByName.has(dimension.name)) {
-      observedByName.set(dimension.name, dimension);
-    }
-  }
+  // Mixed directories produce same-named observed entries (one per judge
+  // config plus one programmatic group), so pairing is by name AND kind —
+  // name-only matching would enrich the judge group with the programmatic
+  // group's criteria or vice versa.
+  const remaining = observed.dimensions.map((dimension) => ({
+    dimension,
+    used: false,
+  }));
+  const kindMatches = (
+    designDim: RewardDesignDimension,
+    seen: RewardDimensionResult
+  ): boolean => {
+    if (seen.kind === null) return true;
+    return designDim.kind === "programmatic"
+      ? seen.kind === "programmatic"
+      : seen.kind === "llm" || seen.kind === "agent";
+  };
+  const takeObserved = (
+    designDim: RewardDesignDimension
+  ): RewardDimensionResult | undefined => {
+    const candidate = remaining.find(
+      (entry) =>
+        !entry.used &&
+        entry.dimension.name === designDim.name &&
+        kindMatches(designDim, entry.dimension)
+    );
+    if (candidate) candidate.used = true;
+    return candidate?.dimension;
+  };
 
   const dimensions = design.dimensions.map((dimension) => {
-    const seen = observedByName.get(dimension.name);
-    observedByName.delete(dimension.name);
+    const seen = takeObserved(dimension);
     if (!seen || seen.criteria.length === 0) return dimension;
     const known = new Set(dimension.criteria.map((c) => c.name));
     const fromObserved = seen.criteria
@@ -670,9 +692,10 @@ export function enrichDesignWithObserved(
   });
 
   // Dimensions the static scan missed entirely but trials scored.
-  for (const [name, seen] of observedByName) {
+  for (const { dimension: seen, used } of remaining) {
+    if (used) continue;
     dimensions.push({
-      name,
+      name: seen.name,
       kind: seen.kind ?? "programmatic",
       aggregation: "weighted_mean",
       threshold: 0.5,

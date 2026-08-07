@@ -467,9 +467,26 @@ export function RewardDesignCard({
     0
   );
 
-  const dimensionEntries = design.dimensions.map((dimension, index) => ({
-    value: dimensionScores[String(index)] ?? 0,
-    weight: dimension.weight || 1,
+  // RewardKit first collapses same-named groups into one named score
+  // (weighted by reward_weight), then feeds the named scores into the
+  // reward.toml aggregation with each name's summed weight. Aggregating the
+  // groups directly would let one failing group zero an all_pass that the
+  // collapsed name would survive.
+  const collapsedByName = new Map<string, { sum: number; weight: number }>();
+  design.dimensions.forEach((dimension, index) => {
+    const score = dimensionScores[String(index)] ?? 0;
+    const weight = dimension.weight || 1;
+    const entry = collapsedByName.get(dimension.name) ?? {
+      sum: 0,
+      weight: 0,
+    };
+    entry.sum += score * weight;
+    entry.weight += weight;
+    collapsedByName.set(dimension.name, entry);
+  });
+  const dimensionEntries = [...collapsedByName.values()].map((entry) => ({
+    value: entry.weight === 0 ? 0 : entry.sum / entry.weight,
+    weight: entry.weight,
   }));
 
   return (
