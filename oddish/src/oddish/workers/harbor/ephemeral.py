@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import signal
 import site
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -14,6 +16,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from harbor.models.environment_type import EnvironmentType
+from harbor.models.trial.config import EnvironmentConfig
 from harbor.trial.hooks import TrialEvent
 
 from oddish.config import BEDROCK_ENV_VARS, settings
@@ -42,6 +45,7 @@ from .runner import (
 _ENTRY_PATH = str(Path(__file__).resolve().parent / "_entry.py")
 _CHILD_PYTHON = "3.13"
 _PARENT_SITE_PACKAGES_ENV = "ODDISH_PARENT_SITE_PACKAGES"
+logger = logging.getLogger(__name__)
 _ENVIRONMENT_HARBOR_EXTRAS: dict[EnvironmentType, str] = {
     EnvironmentType.DAYTONA: "daytona",
     EnvironmentType.MODAL: "modal",
@@ -53,6 +57,7 @@ _ENVIRONMENT_HARBOR_EXTRAS: dict[EnvironmentType, str] = {
     EnvironmentType.CWSANDBOX: "cwsandbox",
     EnvironmentType.WANDB: "wandb",
     EnvironmentType.ISLO: "islo",
+    EnvironmentType.EC2: "ec2",
 }
 
 
@@ -103,28 +108,20 @@ def _build_payload(
     outcome_path: Path,
     agent: str,
     model: str | None,
-    environment: EnvironmentType,
+    environment_config: EnvironmentConfig,
     raw_harbor_config: dict[str, Any],
     is_probe: bool,
     extra_agent_env: dict[str, str] | None = None,
     environment_build_timeout_multiplier: float | None = None,
 ) -> dict[str, Any]:
-    daytona_kwargs: dict[str, Any] = {}
-    if environment == EnvironmentType.DAYTONA:
-        environment_config = raw_harbor_config.get("environment") or {}
-        daytona_kwargs = DaytonaBackend().harbor_env_kwargs(
-            environment_config.get("kwargs") or {}
-        )
     return {
         "task_path": str(task_path),
         "jobs_dir": str(jobs_dir),
         "outcome_path": str(outcome_path),
         "agent": agent,
         "model": model,
-        "environment": environment.value,
-        "environment_config": raw_harbor_config.get("environment") or {},
+        "environment_config": environment_config.model_dump(mode="json"),
         "agent_config": raw_harbor_config.get("agent_config") or {},
-        "daytona_kwargs": daytona_kwargs,
         "verifier": raw_harbor_config.get("verifier") or {},
         "artifacts": raw_harbor_config.get("artifacts") or [],
         "timeout_multiplier": raw_harbor_config.get("timeout_multiplier"),
@@ -257,12 +254,11 @@ async def run_ephemeral_harbor_trial(
     task_path: Path,
     agent: str,
     jobs_dir: Path,
+    environment_config: EnvironmentConfig,
     model: str | None = None,
-    environment: EnvironmentType = EnvironmentType.DOCKER,
     hook_callback: HookCallback | None = None,
     trial_id: str | None = None,
     harbor_config: dict[str, Any] | None = None,
-    org_id: str | None = None,
     extra_agent_env: dict[str, str] | None = None,
     environment_build_timeout_multiplier: float | None = None,
 ) -> HarborOutcome:
@@ -276,6 +272,7 @@ async def run_ephemeral_harbor_trial(
     """
     raw = harbor_config or {}
     hc = HarborConfig.model_validate(raw)
+    environment = environment_config.type
     source = hc.source
     sha = hc.resolved_sha
     if not source or not sha:
@@ -332,26 +329,33 @@ async def run_ephemeral_harbor_trial(
         outcome_path=outcome_path,
         agent=agent,
         model=model,
-        environment=environment,
+        environment_config=environment_config,
         raw_harbor_config=raw,
         is_probe=is_probe,
         extra_agent_env=extra_agent_env,
         environment_build_timeout_multiplier=environment_build_timeout_multiplier,
     )
-    payload_path = unique_parent / "payload.json"
-    payload_path.write_text(json.dumps(payload))
-
     start = time.time()
     tail: list[str] = []
     process: asyncio.subprocess.Process | None = None
+    payload_path: Path | None = None
     try:
+        payload_path = _write_private_payload(payload)
+        child_env = _child_process_env()
+        for secret_name in (
+            "ODDISH_EC2_SSH_PRIVATE_KEY",
+            "ODDISH_EC2_AWS_ACCESS_KEY_ID",
+            "ODDISH_EC2_AWS_SECRET_ACCESS_KEY",
+            "ODDISH_EC2_AWS_SESSION_TOKEN",
+        ):
+            child_env.pop(secret_name, None)
         process = await asyncio.create_subprocess_exec(
             *_spawn_args(source, sha, environment=environment),
             str(payload_path),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=_child_process_env(),
             start_new_session=True,
+            env=child_env,
         )
         assert process.stdout is not None and process.stderr is not None
         stderr_chunks: list[bytes] = []
@@ -389,8 +393,41 @@ async def run_ephemeral_harbor_trial(
             _kill_process_group(process)
         raise
     finally:
+        if payload_path is not None:
+            try:
+                payload_path.unlink(missing_ok=True)
+            except OSError:
+                logger.exception(
+                    "Failed to remove ephemeral Harbor payload %s", payload_path
+                )
         if task_tmpdir is not None:
             task_tmpdir.cleanup()
+
+
+def _write_private_payload(payload: dict[str, Any]) -> Path:
+    """Write the child payload outside the uploadable job tree with mode 0600."""
+    file_descriptor, raw_path = tempfile.mkstemp(
+        prefix="oddish-harbor-payload-", suffix=".json"
+    )
+    payload_path = Path(raw_path)
+    try:
+        os.fchmod(file_descriptor, 0o600)
+        with os.fdopen(file_descriptor, "w") as payload_file:
+            json.dump(payload, payload_file)
+    except BaseException:
+        try:
+            os.close(file_descriptor)
+        except OSError:
+            pass
+        try:
+            payload_path.unlink(missing_ok=True)
+        except OSError:
+            logger.exception(
+                "Failed to remove incomplete ephemeral Harbor payload %s",
+                payload_path,
+            )
+        raise
+    return payload_path
 
 
 def _kill_process_group(process: asyncio.subprocess.Process) -> None:

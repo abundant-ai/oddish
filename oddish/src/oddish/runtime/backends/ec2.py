@@ -29,12 +29,17 @@ _EC2_HANDLE_PATTERN = re.compile(
     r"^ec2://(?P<account_id>[0-9]{12})/"
     r"(?P<region>[a-z0-9-]+)/(?P<instance_id>i-[A-Za-z0-9-]+)$"
 )
+_AWS_PROFILE_NAME = "oddish-ec2"
+_AWS_SHARED_CREDENTIALS_FILE = "AWS_SHARED_CREDENTIALS_FILE"
 
 class Ec2Backend:
     name = "ec2"
 
     def __init__(self) -> None:
         self._ssh_key_path: Path | None = None
+        self._aws_profile_path: Path | None = None
+        self._previous_aws_credentials_file: str | None = None
+        self._had_aws_credentials_file = False
         self._cleanup_registered = False
 
     def capabilities(self) -> Capabilities:
@@ -65,16 +70,78 @@ class Ec2Backend:
             path.unlink(missing_ok=True)
             raise
         self._ssh_key_path = path
-        if not self._cleanup_registered:
-            atexit.register(self.remove_materialized_ssh_private_key)
-            self._cleanup_registered = True
+        self._register_cleanup()
         return path
+
+    def materialize_aws_profile(self) -> Path:
+        if self._aws_profile_path is not None and self._aws_profile_path.exists():
+            return self._aws_profile_path
+        access_key = settings.ec2_aws_access_key_id
+        secret_key = settings.ec2_aws_secret_access_key
+        if access_key is None or not access_key.get_secret_value().strip():
+            raise RuntimeError("ODDISH_EC2_AWS_ACCESS_KEY_ID is required for EC2")
+        if secret_key is None or not secret_key.get_secret_value().strip():
+            raise RuntimeError("ODDISH_EC2_AWS_SECRET_ACCESS_KEY is required for EC2")
+        descriptor, raw_path = tempfile.mkstemp(prefix="oddish-ec2-aws-")
+        path = Path(raw_path)
+        session_token = settings.ec2_aws_session_token
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                os.fchmod(handle.fileno(), 0o600)
+                handle.write(f"[{_AWS_PROFILE_NAME}]\n")
+                handle.write(
+                    "aws_access_key_id = "
+                    + access_key.get_secret_value().strip()
+                    + "\n"
+                )
+                handle.write(
+                    "aws_secret_access_key = "
+                    + secret_key.get_secret_value().strip()
+                    + "\n"
+                )
+                if session_token is not None and session_token.get_secret_value().strip():
+                    handle.write(
+                        "aws_session_token = "
+                        + session_token.get_secret_value().strip()
+                        + "\n"
+                    )
+        except Exception:
+            path.unlink(missing_ok=True)
+            raise
+        self._had_aws_credentials_file = _AWS_SHARED_CREDENTIALS_FILE in os.environ
+        self._previous_aws_credentials_file = os.environ.get(
+            _AWS_SHARED_CREDENTIALS_FILE
+        )
+        os.environ[_AWS_SHARED_CREDENTIALS_FILE] = str(path)
+        self._aws_profile_path = path
+        self._register_cleanup()
+        return path
+
+    def _register_cleanup(self) -> None:
+        if not self._cleanup_registered:
+            atexit.register(self.remove_materialized_worker_credentials)
+            self._cleanup_registered = True
 
     def remove_materialized_ssh_private_key(self) -> None:
         if self._ssh_key_path is None:
             return
         self._ssh_key_path.unlink(missing_ok=True)
         self._ssh_key_path = None
+
+    def remove_materialized_worker_credentials(self) -> None:
+        self.remove_materialized_ssh_private_key()
+        if self._aws_profile_path is not None:
+            self._aws_profile_path.unlink(missing_ok=True)
+            self._aws_profile_path = None
+        if self._had_aws_credentials_file:
+            assert self._previous_aws_credentials_file is not None
+            os.environ[_AWS_SHARED_CREDENTIALS_FILE] = (
+                self._previous_aws_credentials_file
+            )
+        else:
+            os.environ.pop(_AWS_SHARED_CREDENTIALS_FILE, None)
+        self._previous_aws_credentials_file = None
+        self._had_aws_credentials_file = False
 
     def harbor_env_kwargs(self, base_kwargs: dict[str, Any]) -> dict[str, Any]:
         protected_overrides = sorted(PROTECTED_EC2_KWARGS.intersection(base_kwargs))
@@ -91,6 +158,7 @@ class Ec2Backend:
         passthrough = {
             key: value for key, value in base_kwargs.items() if key != "tags"
         }
+        self.materialize_aws_profile()
         tags = {
             **raw_tags,
             MANAGED_TAG_KEY: "true",
@@ -107,6 +175,7 @@ class Ec2Backend:
             "key_name": settings.ec2_key_name,
             "ssh_key_path": str(self.materialize_ssh_private_key()),
             "ssh_user": settings.ec2_ssh_user,
+            "aws_profile": _AWS_PROFILE_NAME,
             "launch_mode": "ephemeral",
             "use_public_ip": settings.ec2_use_public_ip,
             "root_volume_size_gb": settings.ec2_root_volume_size_gb,
@@ -140,7 +209,10 @@ class Ec2Backend:
                     current_account_id,
                 )
                 return False
-            client = boto3.client("ec2", region_name=region)
+            self.materialize_aws_profile()
+            client = boto3.Session(
+                profile_name=_AWS_PROFILE_NAME, region_name=region
+            ).client("ec2")
             response = await asyncio.to_thread(
                 client.describe_instances, InstanceIds=[instance_id]
             )
@@ -173,6 +245,14 @@ class Ec2Backend:
                     instance_id,
                 )
                 return False
+            state = str((instances[0].get("State") or {}).get("Name") or "")
+            if state in {"shutting-down", "terminated"}:
+                logger.info(
+                    "Ec2Backend.teardown: instance %s is already %s",
+                    instance_id,
+                    state,
+                )
+                return True
             await asyncio.to_thread(
                 client.terminate_instances, InstanceIds=[instance_id]
             )
@@ -186,9 +266,11 @@ class Ec2Backend:
         try:
             import boto3
 
-            response = boto3.client(
-                "sts", region_name=settings.ec2_region
-            ).get_caller_identity()
+            self.materialize_aws_profile()
+            response = boto3.Session(
+                profile_name=_AWS_PROFILE_NAME,
+                region_name=settings.ec2_region,
+            ).client("sts").get_caller_identity()
         except Exception as exc:
             raise RuntimeError(
                 "Unable to resolve the AWS account for the EC2 backend"

@@ -398,7 +398,7 @@ async def test_login_nonzero_log_redacts_token(creds, caplog):
 
 
 def test_apply_harbor_patches_is_idempotent(monkeypatch):
-    calls = {"daytona": 0, "modal": 0}
+    calls = {"daytona": 0, "modal": 0, "ec2": []}
     monkeypatch.setattr(harbor_patches, "_PATCHED", False)
     monkeypatch.setattr(
         harbor_patches,
@@ -410,11 +410,16 @@ def test_apply_harbor_patches_is_idempotent(monkeypatch):
         "_patch_modal_dind",
         lambda: calls.__setitem__("modal", calls["modal"] + 1),
     )
+    monkeypatch.setattr(
+        harbor_patches,
+        "_patch_ec2_lifecycle",
+        lambda *, require_ec2: calls["ec2"].append(require_ec2),
+    )
 
     harbor_patches.apply_harbor_patches()
-    harbor_patches.apply_harbor_patches()
+    harbor_patches.apply_harbor_patches(require_ec2=True)
 
-    assert calls == {"daytona": 1, "modal": 1}
+    assert calls == {"daytona": 1, "modal": 1, "ec2": [False, True]}
 
 
 def test_daytona_mirror_patch_targets_dind_only(monkeypatch):
@@ -791,23 +796,51 @@ def test_wrappers_set_marker_to_prevent_double_wrap(make_wrapped, attr):
 
 
 def test_entry_applies_sibling_harbor_patches(monkeypatch):
-    calls: list[str] = []
+    calls: list[bool] = []
 
     def _fake_import(name):
         assert name == "oddish.workers.harbor.patches"
-        return SimpleNamespace(apply_harbor_patches=lambda: calls.append("patched"))
+        return SimpleNamespace(
+            apply_harbor_patches=lambda *, require_ec2: calls.append(require_ec2)
+        )
 
     monkeypatch.setattr(harbor_entry.importlib, "import_module", _fake_import)
 
-    harbor_entry._apply_sibling_harbor_patches()
+    harbor_entry._apply_sibling_harbor_patches(require_ec2=True)
 
-    assert calls == ["patched"]
+    assert calls == [True]
+
+
+@pytest.mark.parametrize(
+    ("environment_type", "expected"),
+    [("ec2", True), ("docker", False)],
+)
+@pytest.mark.asyncio
+async def test_entry_requires_ec2_patch_only_for_ec2_payload(
+    monkeypatch, environment_type: str, expected: bool
+) -> None:
+    calls: list[bool] = []
+
+    def stop_after_patch(*, require_ec2: bool) -> None:
+        calls.append(require_ec2)
+        raise RuntimeError("stop after patch")
+
+    monkeypatch.setattr(harbor_entry, "_apply_sibling_harbor_patches", stop_after_patch)
+
+    with pytest.raises(RuntimeError, match="stop after patch"):
+        await harbor_entry._run(
+            {"environment_config": {"type": environment_type}}
+        )
+
+    assert calls == [expected]
 
 
 def test_standalone_entry_preserves_patch_package_context(monkeypatch):
     calls: list[str] = []
     monkeypatch.setattr(
-        harbor_patches, "apply_harbor_patches", lambda: calls.append("patched")
+        harbor_patches,
+        "apply_harbor_patches",
+        lambda *, require_ec2=False: calls.append("patched"),
     )
 
     namespace = runpy.run_path(
@@ -933,7 +966,7 @@ async def test_entry_run_applies_patches_before_job_create(monkeypatch, tmp_path
     monkeypatch.setattr(
         harbor_entry,
         "_apply_sibling_harbor_patches",
-        lambda: order.append("patch"),
+        lambda **_kwargs: order.append("patch"),
     )
 
     def _fake_build_job_config(_payload):

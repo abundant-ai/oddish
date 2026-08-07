@@ -49,16 +49,15 @@ rm -f "$staged"
 _LOGGED_IN_ATTR = "_oddish_registry_logged_in"
 
 
-def apply_harbor_patches() -> None:
+def apply_harbor_patches(*, require_ec2: bool = False) -> None:
     """Install Harbor patches once."""
     global _PATCHED
-    if _PATCHED:
-        return
-    _patch_restricted_network_runtime_fields()
-    _patch_daytona_dind()
-    _patch_modal_dind()
-    _patch_ec2_lifecycle()
-    _PATCHED = True
+    if not _PATCHED:
+        _patch_restricted_network_runtime_fields()
+        _patch_daytona_dind()
+        _patch_modal_dind()
+        _PATCHED = True
+    _patch_ec2_lifecycle(require_ec2=require_ec2)
 
 
 def _patch_restricted_network_runtime_fields() -> None:
@@ -465,21 +464,21 @@ def _patch_modal_dind() -> None:
     )
 
 
-def _patch_ec2_lifecycle() -> None:
+def _patch_ec2_lifecycle(*, require_ec2: bool = False) -> None:
     try:
         module = importlib.import_module("harbor.environments.ec2")
     except Exception as exc:
-        if _ec2_enabled():
+        if require_ec2:
             raise RuntimeError(
-                "EC2 is enabled but Harbor's EC2 environment is unavailable"
+                "EC2 trial requires Harbor's EC2 environment, but it is unavailable"
             ) from exc
         logger.debug("Harbor EC2 environment unavailable; skipping EC2 lifecycle patch")
         return
     cls = getattr(module, "EC2Environment", None)
     if cls is None:
-        if _ec2_enabled():
+        if require_ec2:
             raise RuntimeError(
-                "EC2 is enabled but Harbor does not expose EC2Environment"
+                "EC2 trial requires Harbor to expose EC2Environment"
             )
         logger.warning("Harbor EC2Environment not found; EC2 lifecycle patch skipped")
         return
@@ -487,9 +486,9 @@ def _patch_ec2_lifecycle() -> None:
         return
     original_run_instances_kwargs = getattr(cls, "_run_instances_kwargs", None)
     if original_run_instances_kwargs is None:
-        if _ec2_enabled():
+        if require_ec2:
             raise RuntimeError(
-                "EC2 is enabled but Harbor EC2Environment lacks "
+                "EC2 trial requires Harbor EC2Environment to expose "
                 "_run_instances_kwargs"
             )
         logger.warning(

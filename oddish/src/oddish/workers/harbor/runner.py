@@ -44,7 +44,11 @@ from oddish.costs.modal_cost import (
     normalize_gpu_type,
     provider_default_request,
 )
-from oddish.runtime.ec2_policy import validate_ec2_environment_config
+from oddish.runtime.ec2_policy import (
+    TRIAL_ID_TAG_KEY,
+    WORKER_JOB_ID_TAG_KEY,
+    validate_ec2_environment_config,
+)
 from oddish.runtime.registry import get_backend
 from oddish.schemas import HarborConfig
 from oddish.task_timeouts import validate_task_timeout_config
@@ -1214,6 +1218,42 @@ def _assert_tpu_backend(environment, backend, override_tpu) -> None:
     )
 
 
+def _resolve_provider_environment_config(
+    *,
+    hc: HarborConfig,
+    environment: EnvironmentType,
+    backend: Any,
+    is_probe: bool,
+    trial_id: str | None,
+    worker_job_id: str | None,
+) -> HarborEnvironmentConfig:
+    environment_config = hc.environment.model_copy(deep=True)
+    environment_config.type = environment
+    if backend is not None:
+        environment_config.kwargs = backend.harbor_env_kwargs(
+            dict(environment_config.kwargs)
+        )
+    probe_modal = _probe_modal_kwargs(is_probe, environment)
+    if probe_modal:
+        environment_config.kwargs = {
+            **probe_modal,
+            **environment_config.kwargs,
+        }
+    if environment == EnvironmentType.EC2:
+        tags = dict(environment_config.kwargs.get("tags") or {})
+        if trial_id:
+            tags[TRIAL_ID_TAG_KEY] = trial_id
+        if worker_job_id:
+            tags[WORKER_JOB_ID_TAG_KEY] = worker_job_id
+        environment_config.kwargs = {
+            **environment_config.kwargs,
+            "tags": tags,
+        }
+    return HarborEnvironmentConfig.model_validate(
+        environment_config.model_dump(mode="python")
+    )
+
+
 async def run_harbor_trial_async(
     task_path: Path,
     agent: str,
@@ -1222,6 +1262,7 @@ async def run_harbor_trial_async(
     environment: EnvironmentType = EnvironmentType.DOCKER,
     hook_callback: HookCallback | None = None,
     trial_id: str | None = None,
+    worker_job_id: str | None = None,
     harbor_config: dict[str, Any] | None = None,
     org_id: str | None = None,
     extra_agent_env: dict[str, str] | None = None,
@@ -1235,7 +1276,7 @@ async def run_harbor_trial_async(
     Returns a HarborOutcome with reward, error, tokens, cost, timing,
     trajectory presence, and artifact paths.
     """
-    apply_harbor_patches()
+    apply_harbor_patches(require_ec2=environment == EnvironmentType.EC2)
     raw = harbor_config or {}
     hc = HarborConfig.model_validate(raw)
     if environment == EnvironmentType.EC2:
@@ -1255,6 +1296,7 @@ async def run_harbor_trial_async(
             environment=environment,
             hook_callback=hook_callback,
             trial_id=trial_id,
+            worker_job_id=worker_job_id,
             harbor_config=harbor_config,
             org_id=org_id,
             extra_agent_env=extra_agent_env,
@@ -1264,11 +1306,11 @@ async def run_harbor_trial_async(
         )
     finally:
         if environment == EnvironmentType.EC2 and backend is not None:
-            remove_key = getattr(
-                backend, "remove_materialized_ssh_private_key", None
+            remove_credentials = getattr(
+                backend, "remove_materialized_worker_credentials", None
             )
-            if callable(remove_key):
-                remove_key()
+            if callable(remove_credentials):
+                remove_credentials()
 
 
 async def _run_harbor_trial_async_impl(
@@ -1279,6 +1321,7 @@ async def _run_harbor_trial_async_impl(
     environment: EnvironmentType,
     hook_callback: HookCallback | None,
     trial_id: str | None,
+    worker_job_id: str | None,
     harbor_config: dict[str, Any] | None,
     org_id: str | None,
     extra_agent_env: dict[str, str] | None,
@@ -1286,7 +1329,6 @@ async def _run_harbor_trial_async_impl(
     hc: HarborConfig,
     backend: Any,
 ) -> HarborOutcome:
-
     # Size the environment-build timeout multiplier BEFORE the dispatch fork so
     # EVERY path that runs a GKE environment carries it -- the in-process blessed
     # variant AND the out-of-process ephemeral child. pod_ready is read from the
@@ -1313,6 +1355,7 @@ async def _run_harbor_trial_async_impl(
         getattr(hc.environment, "override_tpu", None),
     )
 
+    is_probe = raw.get("mode") == "probe"
     dispatch_env_config = hc.environment.model_copy()
     dispatch_env_config.type = environment
     try:
@@ -1333,6 +1376,15 @@ async def _run_harbor_trial_async_impl(
             job_dir=None,
             exception_type="RestrictedNetworkProfileError",
         )
+
+    resolved_environment_config = _resolve_provider_environment_config(
+        hc=hc,
+        environment=environment,
+        backend=backend,
+        is_probe=is_probe,
+        trial_id=trial_id,
+        worker_job_id=worker_job_id,
+    )
 
     # An allowlisted override that is neither the locked default nor a blessed
     # image variant runs out-of-process against its own Harbor: a different
@@ -1360,11 +1412,10 @@ async def _run_harbor_trial_async_impl(
             agent=agent,
             jobs_dir=jobs_dir,
             model=model,
-            environment=environment,
             hook_callback=hook_callback,
             trial_id=trial_id,
+            environment_config=resolved_environment_config,
             harbor_config=harbor_config,
-            org_id=org_id,
             extra_agent_env=extra_agent_env,
             environment_build_timeout_multiplier=env_build_multiplier,
         )
@@ -1372,7 +1423,6 @@ async def _run_harbor_trial_async_impl(
     # Probes attach to an existing task and inherit its task.toml, which may
     # predate the timeout requirement. Rather than hard-fail, skip strict
     # validation and hand the probe a capped default agent timeout below.
-    is_probe = raw.get("mode") == "probe"
     if not is_probe:
         validate_task_timeout_config(task_path)
 
@@ -1422,14 +1472,7 @@ async def _run_harbor_trial_async_impl(
         # shape -- static (nop/oracle) trials must not widen egress either.
         if restricted_compose_kind in ("dynamic", "static"):
             reject_submitted_restricted_routes(raw)
-        env_config = hc.environment.model_copy()
-        env_config.type = environment
-
-        if backend is not None:
-            env_config.kwargs = backend.harbor_env_kwargs(env_config.kwargs)
-        probe_modal = _probe_modal_kwargs(is_probe, environment)
-        if probe_modal:
-            env_config.kwargs = {**probe_modal, **env_config.kwargs}
+        env_config = resolved_environment_config.model_copy(deep=True)
         uses_openai_provider = _trial_uses_openai_provider(
             agent=agent,
             model=model,

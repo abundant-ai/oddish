@@ -52,11 +52,12 @@ from oddish.preflight.runner import run_checks
 console = Console()
 
 # Environments the hosted (Modal-backed) API dispatches directly; any other
-# ``--env`` on that path is coerced to Modal. GKE joins Modal and Daytona so
-# TPU trials reach the GKE backend instead of being forced onto Modal.
+# ``--env`` on that path is coerced to Modal. EC2 and GKE join Modal and Daytona
+# so explicitly selected cloud backends reach the hosted API unchanged.
 _HOSTED_PASSTHROUGH_ENVIRONMENTS = {
     EnvironmentType.MODAL,
     EnvironmentType.DAYTONA,
+    EnvironmentType.EC2,
     EnvironmentType.GKE,
 }
 
@@ -323,7 +324,8 @@ def run(
             "--env",
             "-e",
             help=(
-                "Execution environment (docker, daytona, e2b, modal, runloop, gke). "
+                "Execution environment (docker, daytona, ec2, e2b, modal, runloop, "
+                "gke). "
                 "Defaults: daytona for CPU-only hosted tasks, modal for GPU hosted "
                 "tasks, docker otherwise."
             ),
@@ -885,8 +887,8 @@ def run(
         and environment not in _HOSTED_PASSTHROUGH_ENVIRONMENTS
     ):
         console.print(
-            "[yellow]Oddish Cloud supports --env modal, --env daytona, and "
-            "--env gke; forcing --env modal[/yellow]"
+            "[yellow]Oddish Cloud supports --env modal, --env daytona, --env ec2, "
+            "and --env gke; forcing --env modal[/yellow]"
         )
         environment = EnvironmentType.MODAL
 

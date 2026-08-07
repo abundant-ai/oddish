@@ -1235,6 +1235,9 @@ class Settings(BaseSettings):
     ec2_key_name: str | None = None
     ec2_ssh_user: str = "ubuntu"
     ec2_ssh_private_key: SecretStr | None = None
+    ec2_aws_access_key_id: SecretStr | None = None
+    ec2_aws_secret_access_key: SecretStr | None = None
+    ec2_aws_session_token: SecretStr | None = None
     ec2_root_volume_size_gb: int = 80
     ec2_use_public_ip: bool = True
     ec2_bootstrap_docker: bool = True

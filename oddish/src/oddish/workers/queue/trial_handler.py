@@ -1315,6 +1315,7 @@ async def _execute_trial(
                 cost_state=cost_state,
             ),
             trial_id=trial_id,
+            worker_job_id=worker_job_id,
             harbor_config=prepared_trial.trial_harbor_config,
             org_id=prepared_trial.org_id,
             extra_agent_env=extra_agent_env,
@@ -1360,9 +1361,10 @@ def _harbor_config_is_ephemeral(harbor_config: dict | None) -> bool:
 
     Mirrors the runner's own fork on ``variant_id``. BYOK is honored only
     in-process: the ephemeral child builds its agent from the raw trial model
-    without the direct/Bedrock normalization a user key needs, and it serializes
-    the agent env into a payload.json under the uploaded job dir. So a user key
-    must not be resolved for these trials -- they keep the platform credentials.
+    without the direct/Bedrock normalization a user key needs. Its agent env is
+    passed through a private temporary payload that is deleted as soon as the
+    child reads it, but BYOK still must not be resolved for these trials -- they
+    keep the platform credentials.
     """
     return (harbor_config or {}).get("variant_id") == "ephemeral"
 

@@ -55,6 +55,8 @@ from modal_app import (
     WORKER_SCALEDOWN_WINDOW_SECONDS,
     WORKER_TIMEOUT_SECONDS,
     app,
+    ec2_control_secrets,
+    ec2_worker_secrets,
     harbor_variant_images,
     image,
     runtime_secrets,
@@ -97,9 +99,36 @@ from oddish.workers.queue.worker_job_single_job import (
     drain_worker_jobs,
 )
 from oddish.core.harbor_source import harbor_variant_function_name
+from oddish.core.helpers import cancel_job_by_worker
 
 from .github import notify_github_analysis, notify_github_qa, notify_github_trial
 from .runtime import configure_storage_paths, console
+
+# Keep the broadly attached base list unchanged. EC2 control credentials are
+# scoped to consumers that call AWS; the SSH key is narrower still and reaches
+# only trial workers (default and every blessed Harbor variant).
+trial_worker_secrets = [*runtime_secrets, *ec2_worker_secrets]
+reconciler_secrets = [*runtime_secrets, *ec2_control_secrets]
+
+
+@app.function(
+    image=image,
+    volumes=worker_volumes,
+    secrets=reconciler_secrets,
+    timeout=300,
+    cpu=1.0,
+    memory=1024,
+)
+async def teardown_ec2_sandbox(external_id: str) -> bool:
+    try:
+        return await cancel_job_by_worker("ec2", external_id)
+    finally:
+        from oddish.runtime.registry import get_backend
+
+        backend = get_backend("ec2")
+        cleanup = getattr(backend, "remove_materialized_worker_credentials", None)
+        if callable(cleanup):
+            cleanup()
 
 # Register TRIAL / ANALYSIS / VERDICT handlers against the unified
 # registry as soon as this module loads in a worker container. The
@@ -302,7 +331,7 @@ async def _run_one_job(queue_key: str, harbor_variant_id: str = "default") -> No
 @app.function(
     image=image,
     volumes=worker_volumes,
-    secrets=runtime_secrets,
+    secrets=trial_worker_secrets,
     min_containers=WORKER_MIN_CONTAINERS,
     buffer_containers=WORKER_BUFFER_CONTAINERS,
     scaledown_window=WORKER_SCALEDOWN_WINDOW_SECONDS,
@@ -352,7 +381,7 @@ def build_harbor_variant_functions(modal_app) -> dict[str, object]:
         functions[variant_id] = modal_app.function(
             image=variant_image,
             volumes=worker_volumes,
-            secrets=runtime_secrets,
+            secrets=trial_worker_secrets,
             min_containers=0,
             buffer_containers=0,
             scaledown_window=WORKER_SCALEDOWN_WINDOW_SECONDS,
@@ -370,7 +399,7 @@ def build_harbor_variant_functions(modal_app) -> dict[str, object]:
 @app.function(
     image=image,
     volumes=worker_volumes,
-    secrets=runtime_secrets,
+    secrets=reconciler_secrets,
     timeout=CLEANUP_TIMEOUT_SECONDS,
     cpu=RECONCILER_CPU,
     memory=RECONCILER_MEMORY_MB,

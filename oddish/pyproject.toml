@@ -79,6 +79,11 @@ server = [
 ]
 worker = [
     "oddish[server]",
+    # Harbor's EC2 backend only needs the synchronous boto3 client. Its `ec2`
+    # extra currently requires boto3>=1.41.5, which conflicts with aioboto3
+    # 15.5.0's botocore range. Keep the storage stack resolvable and install the
+    # verified EC2 dependency directly at aioboto3's locked compatible version.
+    "boto3==1.40.61",
     # Needed when hosted workers run Harbor with EnvironmentType.DAYTONA.
     # Harbor's pinned Daytona implementation uses runtime network settings,
     # which require the SDK API shipped in 0.192.0 and newer.

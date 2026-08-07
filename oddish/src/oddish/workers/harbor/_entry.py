@@ -48,14 +48,25 @@ logger = logging.getLogger("oddish.harbor_entry")
 EVENT_SENTINEL = "_oddish_harbor_event"
 
 
+def _read_payload_and_unlink(payload_path: Path) -> dict[str, Any]:
+    """Read the private parent/child payload and remove it immediately."""
+    try:
+        return json.loads(payload_path.read_text())
+    finally:
+        try:
+            payload_path.unlink(missing_ok=True)
+        except OSError:
+            logger.exception("Failed to remove ephemeral Harbor payload %s", payload_path)
+
+
 def _event_name(event: Any) -> str:
     raw = getattr(event, "value", str(event))
     return raw.lower().replace("_", "-")
 
 
-def _apply_sibling_harbor_patches() -> None:
+def _apply_sibling_harbor_patches(*, require_ec2: bool = False) -> None:
     module = importlib.import_module("oddish.workers.harbor.patches")
-    module.apply_harbor_patches()
+    module.apply_harbor_patches(require_ec2=require_ec2)
 
 
 def _emit_event_line(payload: dict[str, Any]) -> None:
@@ -146,7 +157,6 @@ class _ProbeClaudeCode(ClaudeCode):  # type: ignore[misc, valid-type]
 
 
 def _build_job_config(payload: dict[str, Any]):
-    from harbor.models.environment_type import EnvironmentType
     from harbor.models.job.config import RetryConfig
     from harbor.models.trial.config import (
         AgentConfig,
@@ -160,7 +170,10 @@ def _build_job_config(payload: dict[str, Any]):
     env_config = EnvironmentConfig.model_validate(
         payload.get("environment_config") or {}
     )
-    env_config.type = EnvironmentType(payload["environment"])
+    # Accept the legacy parent payload while newer callers pass the complete,
+    # already-resolved provider config in environment_config.
+    if payload.get("environment"):
+        env_config.type = EnvironmentType(payload["environment"])
     if env_config.type == EnvironmentType.DAYTONA and payload.get("daytona_kwargs"):
         env_config.kwargs = payload["daytona_kwargs"]
 
@@ -211,7 +224,8 @@ def _build_job_config(payload: dict[str, Any]):
 
 
 async def _run(payload: dict[str, Any]) -> dict[str, Any]:
-    _apply_sibling_harbor_patches()
+    environment_type = (payload.get("environment_config") or {}).get("type")
+    _apply_sibling_harbor_patches(require_ec2=environment_type == "ec2")
     Job = getattr(importlib.import_module("harbor"), "Job")
     start = time.time()
     config = _build_job_config(payload)
@@ -245,7 +259,7 @@ def main(argv: list[str]) -> int:
     if len(argv) < 2:
         sys.stderr.write("usage: _entry.py <payload.json>\n")
         return 2
-    payload = json.loads(Path(argv[1]).read_text())
+    payload = _read_payload_and_unlink(Path(argv[1]))
 
     for key, value in (payload.get("runtime_env") or {}).items():
         os.environ[key] = value

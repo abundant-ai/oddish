@@ -42,7 +42,8 @@ Scheduled functions
        - Dispatches to the registered handler
        - Writes heartbeats, records outcome, exits
   ▼
-Modal sandboxes (Harbor execution, logs/artifacts to S3)
+Harbor execution on Modal, Daytona, or opt-in ephemeral EC2
+  - logs/artifacts persisted to S3
 ```
 
 ### Worker architecture
@@ -223,6 +224,32 @@ throughput (`ODDISH_MODAL_MAX_WORKERS_PER_POLL`, default `256`;
 
 Local `backend/.env` values are layered on top of the shared Modal secret for local deploys.
 
+### Ephemeral EC2 Harbor backend
+
+EC2 is an explicit CPU-only provider; Daytona remains the default. Set the
+non-secret `ODDISH_EC2_*` launch coordinates from `backend/.env.example` and
+name two dedicated Modal secrets:
+
+- The control secret contains `ODDISH_EC2_AWS_ACCESS_KEY_ID`,
+  `ODDISH_EC2_AWS_SECRET_ACCESS_KEY`, and optional
+  `ODDISH_EC2_AWS_SESSION_TOKEN`.
+- The worker-only SSH secret contains `ODDISH_EC2_SSH_PRIVATE_KEY`.
+
+Trial workers receive both secrets, while the reconciler and dedicated
+`teardown_ec2_sandbox` function receive only control credentials. API and
+dispatcher functions receive neither. API cancellation delegates one teardown
+call to that dedicated function. Workers materialize the AWS credentials and
+SSH key as mode-`0600` temporary files, pass only the named AWS profile and key
+path to Harbor, and remove the raw secret variables from the Harbor child.
+The control policy must include `sts:GetCallerIdentity` in addition to the EC2
+launch, describe, image lookup, tag, and terminate actions listed in
+`.env.example`.
+
+Standalone hosts installed with `oddish[worker]` must also provide the OpenSSH
+client (`openssh-client` on Debian/Ubuntu), because Harbor invokes `ssh` to reach
+the VM. The shared `backend/Dockerfile` already installs this package for the
+Railway/Docker deployment path, and the Modal worker image installs it as well.
+
 ### oddish runtime patching
 
 `endpoints.py`, `serve.py`, and `worker/runtime.py` patch oddish settings at startup:
@@ -248,7 +275,7 @@ All routes require auth unless marked public.
 | GET | `/tasks` | List tasks (org-scoped, paginated/filtered) |
 | GET | `/tasks/browse` | Browse latest task versions with pagination and search |
 | GET | `/tasks/{task_id}` | Task details |
-| POST | `/tasks/cancel` | Cancel in-flight trials and queue jobs for one or more tasks (org-scoped); Modal workers terminated when applicable |
+| POST | `/tasks/cancel` | Cancel in-flight trials and queue jobs for one or more tasks (org-scoped); Modal workers and supported remote sandboxes are terminated when applicable |
 | POST | `/tasks/{task_id}/qa/retry` | Re-run task QA: classify trials and synthesize the verdict |
 | POST | `/tasks/{task_id}/qa/cancel` | Cancel a task's in-flight QA job |
 | GET | `/tasks/{task_id}/trials` | Trials for task |

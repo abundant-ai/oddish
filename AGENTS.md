@@ -503,6 +503,31 @@ Settings are loaded from `oddish/.env`; see `oddish/env.example`,
 Keep these routing rules in sync with `oddish/src/oddish/config.py` and
 `oddish/src/oddish/workers/harbor/runner.py`:
 
+- EC2 is an explicit, opt-in Harbor backend: `ODDISH_EC2_ENABLED=true` registers
+  it and permits hosted `environment=ec2`, but capability ordering keeps Daytona
+  as the CPU default. V1 launches one ephemeral CPU instance per trial and uses
+  public-IP, key-only SSH. It does not support accelerators, attach/retain mode,
+  private networking, Spot, or AWS infrastructure provisioning.
+- An EC2 deployment must provide an existing Ubuntu-compatible AMI, subnet,
+  security group, EC2 key pair/private key, region, and instance type. The
+  security group must allow TCP/22 from the Modal worker network path. Keep
+  `ODDISH_EC2_SSH_PRIVATE_KEY` in the dedicated worker secret, materialize it
+  mode `0600`, and never bake it into an image or attach it to API, dispatcher,
+  or reconciler functions.
+- EC2 control credentials must be least privilege: workers need
+  `sts:GetCallerIdentity` plus launch, describe, image lookup, tagging, and
+  termination actions; reconciliation needs `sts:GetCallerIdentity`, describe,
+  and tag-scoped termination. Store them under the namespaced
+  `ODDISH_EC2_AWS_*` settings; workers materialize a mode-`0600` AWS profile and
+  scrub the raw values before starting Harbor. API cancellation delegates to a
+  dedicated Modal teardown function, so API and dispatcher containers receive
+  neither EC2 control nor SSH secrets. Never attach an instance profile to a
+  sandbox VM; tenant code runs there, and Oddish forces the metadata service off.
+- Oddish does not create the VPC, subnet, security group, AMI, key pair, or IAM
+  policy. Every instance and root volume must carry protected Oddish ownership,
+  deployment, task/trial, worker-job, and Harbor-session tags. Normal teardown,
+  cancellation, stale-heartbeat cleanup, and the orphan reconciler all terminate
+  through the registered EC2 backend after ownership verification.
 - Claude trials run through AWS Bedrock by default. `CLAUDE_CODE_USE_BEDROCK=1` is
   baked into the Modal image, and Claude model aliases must normalize to an
   invokable inference profile (`global.` / `us.` / ARN) via
@@ -556,6 +581,26 @@ Storage defaults:
 - uploaded task bundles: `tasks/<task_id>/.oddish-task.tar.gz`
 - Harbor job outputs: `/tmp/harbor-jobs`
 - Modal workers also check `/mnt/oddish-tasks` before falling back to the S3 download path
+
+EC2 canary procedure:
+
+1. In a non-production AWS account, create the Ubuntu-compatible AMI, subnet,
+   public-IP route, SSH security group, key pair, and least-privilege worker IAM
+   credentials. Enable the backend with the `ODDISH_EC2_*` settings documented
+   in `backend/.env.example`.
+2. Submit a small CPU-only task with `oddish run <task> --env ec2 --background`.
+   Confirm the trial records provider `ec2` and an external instance handle, and
+   confirm the instance and root volume have the protected Oddish tags.
+3. Verify SSH/bootstrap, Docker Compose execution, result/artifact collection,
+   and terminal instance state. Confirm the instance has no IAM profile and its
+   metadata endpoint is disabled.
+4. Start a longer canary, cancel it with `oddish cancel <trial-or-task-id>`, and
+   confirm the tagged instance terminates exactly once.
+5. In the non-production deployment only, deliberately interrupt a worker after
+   launch. Confirm stale-heartbeat/orphan reconciliation preserves it during the
+   grace window and terminates it afterward. Also verify the hard maximum-age
+   path. Review logs/metrics for the candidate, ownership decision, and terminate
+   result before enabling production traffic.
 
 ### Using as a Library
 

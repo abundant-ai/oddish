@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from oddish.config import Settings
 
 # API containers are warm and long-lived (min_containers >= 1).  Reuse pooled
@@ -50,6 +52,19 @@ from modal_app import (
     runtime_secrets,
 )
 from api.app import create_app
+from oddish.core.helpers import register_provider_teardown_delegate
+
+
+async def _teardown_ec2_sandbox(external_id: str) -> bool:
+    function = modal.Function.from_name(
+        os.environ.get("MODAL_APP_NAME", "oddish"),
+        "teardown_ec2_sandbox",
+        environment_name=os.environ.get("MODAL_ENVIRONMENT") or None,
+    )
+    return bool(await function.remote.aio(external_id))
+
+
+register_provider_teardown_delegate("ec2", _teardown_ec2_sandbox)
 
 api = create_app()
 

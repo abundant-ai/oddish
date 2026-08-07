@@ -49,6 +49,9 @@ def _complete_ec2_settings(**overrides):
         "ec2_key_name": "oddish-harbor",
         "ec2_ssh_user": "ubuntu",
         "ec2_ssh_private_key": "PRIVATE KEY CONTENT",
+        "ec2_aws_access_key_id": "EC2ACCESS",
+        "ec2_aws_secret_access_key": "EC2SECRET",
+        "ec2_aws_session_token": "EC2TOKEN",
         "ec2_root_volume_size_gb": 80,
         "ec2_use_public_ip": True,
         "ec2_bootstrap_docker": True,
@@ -85,6 +88,9 @@ def _registered_backend_names(*, enabled: bool) -> list[str]:
         "ODDISH_EC2_KEY_NAME",
         "ODDISH_EC2_SSH_USER",
         "ODDISH_EC2_SSH_PRIVATE_KEY",
+        "ODDISH_EC2_AWS_ACCESS_KEY_ID",
+        "ODDISH_EC2_AWS_SECRET_ACCESS_KEY",
+        "ODDISH_EC2_AWS_SESSION_TOKEN",
         "ODDISH_EC2_ROOT_VOLUME_SIZE_GB",
         "ODDISH_EC2_USE_PUBLIC_IP",
         "ODDISH_EC2_BOOTSTRAP_DOCKER",
@@ -101,6 +107,8 @@ def _registered_backend_names(*, enabled: bool) -> list[str]:
                 "ODDISH_EC2_SECURITY_GROUP_IDS": '["sg-123"]',
                 "ODDISH_EC2_KEY_NAME": "oddish-harbor",
                 "ODDISH_EC2_SSH_PRIVATE_KEY": "PRIVATE KEY CONTENT",
+                "ODDISH_EC2_AWS_ACCESS_KEY_ID": "EC2ACCESS",
+                "ODDISH_EC2_AWS_SECRET_ACCESS_KEY": "EC2SECRET",
             }
         )
     result = subprocess.run(
@@ -226,7 +234,7 @@ def test_ec2_backend_materializes_the_private_key_once_with_owner_only_permissio
 
     try:
         assert first_path == second_path
-        assert registrations == [backend.remove_materialized_ssh_private_key]
+        assert registrations == [backend.remove_materialized_worker_credentials]
         assert first_path.read_text() == "PRIVATE KEY CONTENT\n"
         assert stat.S_IMODE(first_path.stat().st_mode) == 0o600
     finally:
@@ -241,6 +249,46 @@ def test_ec2_backend_fails_loudly_when_a_worker_materializes_without_the_key(
 
     with pytest.raises(RuntimeError, match="ODDISH_EC2_SSH_PRIVATE_KEY"):
         Ec2Backend().materialize_ssh_private_key()
+
+
+def test_ec2_backend_materializes_namespaced_aws_credentials_as_a_0600_profile(
+    monkeypatch,
+) -> None:
+    _install_complete_ec2_settings(monkeypatch)
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", "/existing/credentials")
+    backend = Ec2Backend()
+
+    profile_path = backend.materialize_aws_profile()
+    try:
+        assert stat.S_IMODE(profile_path.stat().st_mode) == 0o600
+        assert profile_path.read_text() == (
+            "[oddish-ec2]\n"
+            "aws_access_key_id = EC2ACCESS\n"
+            "aws_secret_access_key = EC2SECRET\n"
+            "aws_session_token = EC2TOKEN\n"
+        )
+        assert os.environ["AWS_SHARED_CREDENTIALS_FILE"] == str(profile_path)
+    finally:
+        backend.remove_materialized_worker_credentials()
+
+    assert not profile_path.exists()
+    assert os.environ["AWS_SHARED_CREDENTIALS_FILE"] == "/existing/credentials"
+
+
+@pytest.mark.parametrize(
+    ("field", "message"),
+    [
+        ("ec2_aws_access_key_id", "ODDISH_EC2_AWS_ACCESS_KEY_ID"),
+        ("ec2_aws_secret_access_key", "ODDISH_EC2_AWS_SECRET_ACCESS_KEY"),
+    ],
+)
+def test_ec2_backend_fails_loudly_when_control_credentials_are_missing(
+    monkeypatch, field: str, message: str
+) -> None:
+    _install_complete_ec2_settings(monkeypatch, **{field: None})
+
+    with pytest.raises(RuntimeError, match=message):
+        Ec2Backend().materialize_aws_profile()
 
 
 def test_ec2_backend_supplies_fixed_platform_launch_settings_and_protected_tags(
@@ -262,6 +310,7 @@ def test_ec2_backend_supplies_fixed_platform_launch_settings_and_protected_tags(
             "key_name": configured.ec2_key_name,
             "ssh_key_path": str(backend.materialize_ssh_private_key()),
             "ssh_user": configured.ec2_ssh_user,
+            "aws_profile": "oddish-ec2",
             "launch_mode": "ephemeral",
             "use_public_ip": True,
             "root_volume_size_gb": configured.ec2_root_volume_size_gb,
@@ -274,9 +323,8 @@ def test_ec2_backend_supplies_fixed_platform_launch_settings_and_protected_tags(
             },
         }
         assert "iam_instance_profile" not in kwargs
-        assert "aws_profile" not in kwargs
     finally:
-        backend.remove_materialized_ssh_private_key()
+        backend.remove_materialized_worker_credentials()
 
 
 @pytest.mark.parametrize(
@@ -447,7 +495,12 @@ def test_ec2_runner_fails_before_either_engine_when_backend_is_unregistered(
 ) -> None:
     from oddish.workers.harbor import runner as harbor_runner
 
-    monkeypatch.setattr(harbor_runner, "apply_harbor_patches", lambda: None)
+    patch_requirements: list[bool] = []
+    monkeypatch.setattr(
+        harbor_runner,
+        "apply_harbor_patches",
+        lambda *, require_ec2: patch_requirements.append(require_ec2),
+    )
     monkeypatch.setattr(harbor_runner, "get_backend", lambda _name: None)
     harbor_config = {"variant_id": variant_id} if variant_id is not None else {}
 
@@ -461,6 +514,7 @@ def test_ec2_runner_fails_before_either_engine_when_backend_is_unregistered(
                 harbor_config=harbor_config,
             )
         )
+    assert patch_requirements == [True]
 
 
 @pytest.mark.parametrize("exit_mode", ["success", "error", "cancel"])
@@ -473,11 +527,16 @@ def test_ec2_runner_removes_materialized_key_for_every_ephemeral_exit(
         def __init__(self) -> None:
             self.cleanup_calls = 0
 
-        def remove_materialized_ssh_private_key(self) -> None:
+        def harbor_env_kwargs(self, base_kwargs: dict) -> dict:
+            return base_kwargs
+
+        def remove_materialized_worker_credentials(self) -> None:
             self.cleanup_calls += 1
 
     backend = FakeBackend()
-    monkeypatch.setattr(harbor_runner, "apply_harbor_patches", lambda: None)
+    monkeypatch.setattr(
+        harbor_runner, "apply_harbor_patches", lambda **_kwargs: None
+    )
     monkeypatch.setattr(harbor_runner, "get_backend", lambda _name: backend)
 
     async def fake_child(**_kwargs):
@@ -516,9 +575,11 @@ def test_ec2_runner_removes_materialized_key_for_every_ephemeral_exit(
 
 def _install_fake_boto3(monkeypatch, **clients: MagicMock) -> MagicMock:
     module = types.ModuleType("boto3")
-    module.client = MagicMock(side_effect=lambda service, **_kwargs: clients[service])
+    session = MagicMock()
+    session.client.side_effect = lambda service: clients[service]
+    module.Session = MagicMock(return_value=session)
     monkeypatch.setitem(sys.modules, "boto3", module)
-    return module.client
+    return module.Session
 
 
 def _ec2_handle(
@@ -531,7 +592,10 @@ def _ec2_handle(
 
 
 def _owned_instance_description(
-    *, deployment: str = "oddish", account_id: str = AWS_ACCOUNT_ID
+    *,
+    deployment: str = "oddish",
+    account_id: str = AWS_ACCOUNT_ID,
+    state: str = "running",
 ) -> dict:
     return {
         "Reservations": [
@@ -539,6 +603,7 @@ def _owned_instance_description(
                 "Instances": [
                     {
                         "InstanceId": "i-owned",
+                        "State": {"Name": state},
                         "Tags": [
                             {"Key": MANAGED_TAG_KEY, "Value": "true"},
                             {"Key": DEPLOYMENT_TAG_KEY, "Value": deployment},
@@ -563,8 +628,25 @@ def test_ec2_teardown_terminates_an_instance_only_after_both_ownership_tags_matc
     result = asyncio.run(Ec2Backend().teardown(_ec2_handle()))
 
     assert result is True
-    client_factory.assert_called_once_with("ec2", region_name="us-east-1")
+    client_factory.assert_called_once_with(
+        profile_name="oddish-ec2", region_name="us-east-1"
+    )
     client.terminate_instances.assert_called_once_with(InstanceIds=["i-owned"])
+
+
+@pytest.mark.parametrize("state", ["shutting-down", "terminated"])
+def test_ec2_teardown_treats_already_terminating_instance_as_success_without_second_call(
+    monkeypatch, state: str
+) -> None:
+    _install_complete_ec2_settings(monkeypatch)
+    client = MagicMock()
+    client.describe_instances.return_value = _owned_instance_description(state=state)
+    _install_fake_boto3(monkeypatch, ec2=client)
+
+    result = asyncio.run(Ec2Backend().teardown(_ec2_handle()))
+
+    assert result is True
+    client.terminate_instances.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -626,8 +708,8 @@ def test_ec2_backend_resolves_the_current_sts_account_on_every_check(
     assert backend._resolve_aws_account_id() == "999999999999"
 
     assert client_factory.call_args_list == [
-        (("sts",), {"region_name": "us-east-1"}),
-        (("sts",), {"region_name": "us-east-1"}),
+        ((), {"profile_name": "oddish-ec2", "region_name": "us-east-1"}),
+        ((), {"profile_name": "oddish-ec2", "region_name": "us-east-1"}),
     ]
     assert sts.get_caller_identity.call_count == 2
 
@@ -655,8 +737,8 @@ def test_ec2_teardown_rechecks_account_after_credentials_rotate(
     assert asyncio.run(backend.teardown(_ec2_handle())) is False
 
     assert client_factory.call_args_list == [
-        (("sts",), {"region_name": "us-east-1"}),
-        (("sts",), {"region_name": "us-east-1"}),
+        ((), {"profile_name": "oddish-ec2", "region_name": "us-east-1"}),
+        ((), {"profile_name": "oddish-ec2", "region_name": "us-east-1"}),
     ]
     ec2.describe_instances.assert_not_called()
     ec2.terminate_instances.assert_not_called()
@@ -691,7 +773,9 @@ def test_ec2_teardown_uses_region_persisted_in_handle(monkeypatch) -> None:
     )
 
     assert result is True
-    client_factory.assert_called_once_with("ec2", region_name="eu-west-1")
+    client_factory.assert_called_once_with(
+        profile_name="oddish-ec2", region_name="eu-west-1"
+    )
 
 
 def test_ec2_harbor_patch_exposes_provider_and_instance_id_and_forces_imds_off(
@@ -796,7 +880,7 @@ def test_ec2_harbor_patch_rejects_any_instance_profile_before_launch(
 
 
 @pytest.mark.parametrize("missing_surface", ["module", "class", "launch_method"])
-def test_enabled_ec2_fails_loudly_when_the_pinned_harbor_surface_is_missing(
+def test_required_ec2_trial_fails_loudly_when_the_pinned_harbor_surface_is_missing(
     monkeypatch, missing_surface: str
 ) -> None:
     import oddish.workers.harbor.patches as harbor_patches
@@ -813,5 +897,20 @@ def test_enabled_ec2_fails_loudly_when_the_pinned_harbor_surface_is_missing(
             return SimpleNamespace(EC2Environment=type("EC2Environment", (), {}))
     monkeypatch.setattr(harbor_patches.importlib, "import_module", import_module)
 
-    with pytest.raises(RuntimeError, match="EC2 is enabled"):
-        harbor_patches._patch_ec2_lifecycle()
+    with pytest.raises(RuntimeError, match="EC2 trial requires"):
+        harbor_patches._patch_ec2_lifecycle(require_ec2=True)
+
+
+def test_enabled_ec2_does_not_break_unrelated_harbor_trial_when_ec2_surface_missing(
+    monkeypatch,
+) -> None:
+    import oddish.workers.harbor.patches as harbor_patches
+
+    monkeypatch.setenv("ODDISH_EC2_ENABLED", "true")
+    monkeypatch.setattr(
+        harbor_patches.importlib,
+        "import_module",
+        lambda _name: (_ for _ in ()).throw(ImportError("missing")),
+    )
+
+    harbor_patches._patch_ec2_lifecycle(require_ec2=False)
