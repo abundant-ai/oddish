@@ -98,16 +98,14 @@ async def sync_verdict_to_task(
 
 
 def clear_inflight_verdict(task: Any) -> None:
-    """Keep a finished verdict; clear a queued or running one.
+    """Keep a successful verdict; clear everything else.
 
     Callers cancel the task's QA job right after this, so a queued or
-    running status would point at a job that no longer exists. A finished
-    verdict stays until the next QA pass writes over it.
+    running status would point at a job that no longer exists. A FAILED
+    status holds no verdict, only an old error, so it clears too. A
+    successful verdict stays until the next QA pass writes over it.
     """
-    if getattr(task, "verdict_status", None) in (
-        VerdictStatus.SUCCESS,
-        VerdictStatus.FAILED,
-    ):
+    if getattr(task, "verdict_status", None) == VerdictStatus.SUCCESS:
         return
     task.verdict_status = None
     task.verdict_error = None
