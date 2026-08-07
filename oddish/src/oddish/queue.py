@@ -31,7 +31,7 @@ from oddish.core.trial_facets import (
     facet_rows_for_trial_dicts,
     record_trial_facets,
 )
-from oddish.core.verdict_sync import clear_inflight_verdict
+from oddish.core.verdict_sync import cancel_verdict, clear_inflight_verdict
 from oddish.db import (
     AnalysisStatus,
     ExperimentModel,
@@ -283,9 +283,7 @@ async def cancel_tasks_runs(
             task.id in canceled_verdict_task_ids
             or task.verdict_status in ACTIVE_PIPELINE_STATUSES
         ):
-            task.verdict_status = VerdictStatus.FAILED
-            task.verdict_error = USER_CANCELLED_MESSAGE
-            task.verdict_finished_at = now
+            cancel_verdict(task, error=USER_CANCELLED_MESSAGE, now=now)
             task_updated = True
         if task_updated:
             tasks_cancelled += 1

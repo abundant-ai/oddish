@@ -115,6 +115,22 @@ def clear_inflight_verdict(task: Any) -> None:
     task.verdict_started_at = None
 
 
+def cancel_verdict(task: Any, *, error: str, now: Any) -> None:
+    """A cancelled QA run puts a kept verdict back; without one, it fails.
+
+    A payload on the task is a successful verdict that the cancelled run
+    never replaced. Its SUCCESS status returns and its timestamps stay.
+    """
+    if getattr(task, "verdict", None):
+        task.verdict_status = VerdictStatus.SUCCESS
+        task.verdict_error = None
+        task.verdict_started_at = None
+        return
+    task.verdict_status = VerdictStatus.FAILED
+    task.verdict_error = error
+    task.verdict_finished_at = now
+
+
 def build_pre_trial_payload(
     items: list, *, cost_usd: float | None = None, block_id: str | None = None
 ) -> dict:
