@@ -154,7 +154,9 @@ def test_reap_stale_daytona_sandboxes(monkeypatch) -> None:
     assert calls.deleted == ["error", "failed", "naive", "expired-started"]
     assert calls.closed is True
     assert calls.query.labels == labels
-    assert calls.terminal_query["include_errored_deleted"] is True
+    # Already-deleted errored sandboxes must not be requested: they 404 on
+    # every get and there is nothing left to reap.
+    assert "include_errored_deleted" not in calls.terminal_query
     assert calls.terminal_query["created_at_before"] < now
     assert len(calls.terminal_query["states"]) == 2
     assert calls.query.states is None

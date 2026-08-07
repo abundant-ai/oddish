@@ -32,10 +32,12 @@ async def reap_stale_daytona_sandboxes(stale_after_minutes: int = 15) -> int:
     labels = {"harbor.managed": "true", "oddish.managed": "true"}
     client = AsyncDaytona()
     try:
+        # No include_errored_deleted: that flag adds sandboxes whose desired
+        # state is already "destroyed". Those 404 on every get, forever, and
+        # there is nothing left to reap.
         terminal_page = await client._sandbox_api.list_sandboxes(
             limit=50,
             labels=json.dumps(labels),
-            include_errored_deleted=True,
             states=[api.SandboxState.ERROR, api.SandboxState.BUILD_FAILED],
             created_at_before=cutoff,
             sort=api.SandboxListSortField.CREATEDAT,
@@ -59,6 +61,13 @@ async def reap_stale_daytona_sandboxes(stale_after_minutes: int = 15) -> int:
 
         async def delete(sandbox) -> int:
             try:
+                # Screen on the listed row before any network call: a sandbox
+                # already destroyed (or on its way) has nothing left to reap.
+                desired = getattr(sandbox, "desired_state", None)
+                if sandbox.state in inactive or (
+                    getattr(desired, "value", desired) == "destroyed"
+                ):
+                    return 0
                 async with semaphore:
                     try:
                         sandbox = await client.get(sandbox.id, request_timeout=10)
