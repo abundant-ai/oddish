@@ -20,20 +20,18 @@ Trial classifications:
 * BAD_FAILURE — a task problem caused the failure, or the task leaked hidden files. The task has a problem.
 * HARNESS_ERROR — the infrastructure broke the run. The run gives no data about the task. Exception: the subtype `hidden_file_leak` means that the task exposed hidden files. That is a task problem.
 
-## DISQUALIFIERS
+## IMMEDIATE REJECTION
 
-Some evidence causes an immediate rejection of the task. This evidence is a disqualifier. First, examine the analyses for disqualifiers. If you find one disqualifier, you must reject the task immediately. The results of the other trials do not change this. A task with ten good trials and one disqualifier is a rejected task.
-
-These are the disqualifiers:
+Some evidence causes an immediate rejection of the task. Examine the analyses for this evidence first. If you find one item from the list below, you must reject the task immediately. The results of the other trials do not change this. A task with ten good trials and one item from this list is a rejected task.
 
 * A used leak. A trial read the hidden tests, the solution, or other closed files (subtype `hidden_file_leak`, `test_inspection`, `oracle_copying`, or `unintended_access`).
-* A found leak. A `must_fix` finding with the dimension `info_leakage`. The finding can come from the static quality check or from a trial. The leak is a disqualifier also when no trial used it.
+* A found leak. A `must_fix` finding with the dimension `info_leakage`. The finding can come from the static quality check or from a trial. The leak counts also when no trial used it.
 * Weak tests. A trial measured that the tests give a pass to work that does not solve the task. Example: the base model, with no changes, already has a score above the pass threshold. A pass from weak tests is not evidence of a solution. This includes the passes that have the GOOD_SUCCESS label.
 * A failed baseline. A nop baseline passed. A nop makes no changes, so the task is possibly already solved. Or an oracle baseline failed. The oracle applies the reference solution, so the reference solution does not pass its own tests.
 
 ## JUDGMENT
 
-If there is no disqualifier, use judgment. The other evidence is opinion. Examples of opinion: "the instruction is unclear", "the tests are too strict". One trial with an opinion can be wrong. Accept an opinion only when most trials agree about it.
+If you found no evidence for an immediate rejection, use judgment. The other evidence is opinion. Examples of opinion: "the instruction is unclear", "the tests are too strict". One trial with an opinion can be wrong. Accept an opinion only when most trials agree about it.
 
 Rules for judgment:
 
@@ -44,13 +42,13 @@ Rules for judgment:
 
 ## THE VERDICT
 
-Reject the task if you found a disqualifier. Reject the task if most trials show the same task problem, with clear evidence. Accept the task in all other conditions.
+Reject the task if you found evidence for an immediate rejection. Reject the task if most trials show the same task problem, with clear evidence. Accept the task in all other conditions.
 
-These results are normal for a difficult task: all trials fail, some trials fail and some pass, one BAD label that is not a disqualifier. Do not reject the task for these results.
+These results are normal for a difficult task: all trials fail, some trials fail and some pass, one BAD label without evidence for an immediate rejection. Do not reject the task for these results.
 
 Confidence:
 
-* You found a disqualifier: high. Exception: only one trial showed weak tests, and the static quality check has no `must_fix` `verifier` finding for the same problem. Then: medium.
+* An immediate rejection: high. Exception: only one trial showed weak tests, and the static quality check has no `must_fix` `verifier` finding for the same problem. Then: medium.
 * Most trials show the same problem: medium. All trials show it: high.
 * You accept: high when the trials agree. Low when the trials do not agree, or when all the trials are harness errors.
 
@@ -72,4 +70,4 @@ Rules for the fields:
 * Put backticks around each code name: files, tests, functions, variables, and configuration keys. The interface shows backticks as code. Use no other Markdown.
 * `primary_issue` — null when you accept the task. When you reject it, give the problem and the trial count: "3/4 trials fail on an error string that the instruction does not give". Start with "CRITICAL:" when a baseline failed.
 * `recommendations` — when you accept: at most two small suggestions. When you reject: 3-5 exact fixes. Put the most frequent problem first. When two trials need the same fix, write the fix one time. Write "Add the file path to instruction.md line 15". Do not write "improve the instructions".
-* `reasoning` — the reader did not see the analyses or this prompt. When a disqualifier causes the rejection, give its name. When your verdict does not agree with a trial's classification, give the trial's name and the reason. The reader sees your verdict and the trial analyses together.
+* `reasoning` — the reader did not see the analyses or this prompt. When you reject the task immediately, name the evidence that caused it. When your verdict does not agree with a trial's classification, give the trial's name and the reason. The reader sees your verdict and the trial analyses together.
