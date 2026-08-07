@@ -10,35 +10,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- Every analysis job now runs as a trial. QA (classification + trajectory
-  summaries + verdict) is one `kind='qa'` trial per task, created when the
-  task's agent trials settle; the pre-trial audit is a `kind='audit'` trial
-  created once per task version at sweep time; analyzer reports run as
-  `analyzer_map` / `analyzer_reduce` trials on a generated host task. Each
-  writes one JSON artifact that a settlement importer parses into the same
-  columns as before (`trials.analysis`, `trials.trajectory_summary`,
-  `tasks.verdict`, `task_versions.pre_trial`, the `analyzers` row), so the
-  dashboards, GitHub comments, and alerts read unchanged data.
-- Non-'agent' trial kinds are excluded from quotas, the leaderboard, Slack
-  expense alerts, browse facets, dashboard queue scans, and every public
-  share surface. Analysis spend still lands on trial rows and stays visible
-  in admin cost views.
+- Every analysis job now runs as a trial, distinguished by `trials.kind`:
+  one `qa` trial per task (classification + trajectory summaries + verdict),
+  one `audit` trial per task version at sweep time, and `analyzer_map` /
+  `analyzer_reduce` trials for reports. Settlement importers write the same
+  columns as before, so dashboards, GitHub comments, and alerts are unchanged.
+  Non-'agent' kinds are excluded from quotas, the leaderboard, alerts, facets,
+  queue scans, and public shares; their spend stays visible in admin views.
 
 ### Removed
 
-- The block framework (`oddish/blocks/`), the worker-local classifier and
-  verdict synthesis (with its provider-fallback machinery), the pre-trial
-  synth, the trajectory-summary generator, the Daytona sandbox runtime in
-  `backend/api/services/sandbox/`, and the QA/ANALYZER/ANALYSIS worker-job
-  handlers. Workers no longer execute LLM calls (the probe transcript
-  summarizer is the one remaining direct API call). The QA orphan-recovery
-  subsystem is replaced by trial retries plus the VERDICT_PENDING healer.
-  `GET /trials/{id}/trajectory/summary` now serves the stored summary only.
-- Settings `ODDISH_VERDICT_MODEL`, `ODDISH_VERDICT_FALLBACK_MODEL`,
+- The block framework, worker-local classifier/verdict/pre-trial/summary
+  execution, the Daytona sandbox runtime, the QA/ANALYZER/ANALYSIS handlers,
+  and the QA orphan-recovery subsystem. Workers no longer hold LLM keys.
+  Removed settings: `ODDISH_VERDICT_MODEL`, `ODDISH_VERDICT_FALLBACK_MODEL`,
   `ODDISH_PRE_TRIAL_MODEL`, `ODDISH_PRE_TRIAL_TIMEOUT`,
-  `ODDISH_AGENT_DAYTONA_SNAPSHOT`, `ODDISH_ANALYZER_SANDBOX_ENABLED`, and
-  `ODDISH_POST_TRIAL_SANDBOX_ENABLED`. The `analyzer_blocks` and
-  `analysis_costs` tables stop receiving writes and remain as history.
+  `ODDISH_AGENT_DAYTONA_SNAPSHOT`, `ODDISH_ANALYZER_SANDBOX_ENABLED`,
+  `ODDISH_POST_TRIAL_SANDBOX_ENABLED`. `analyzer_blocks` / `analysis_costs`
+  become read-only history. `GET /trials/{id}/trajectory/summary` serves the
+  stored summary only.
 
 ---
 
