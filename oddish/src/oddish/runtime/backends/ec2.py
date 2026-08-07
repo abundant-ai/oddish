@@ -251,7 +251,15 @@ class Ec2Backend:
                 "metric=ec2_teardown outcome=refused reason=empty_external_id"
             )
             return False
-        self.acquire_worker_credentials(include_ssh=False)
+        try:
+            self.acquire_worker_credentials(include_ssh=False)
+        except Exception:
+            logger.exception(
+                "metric=ec2_teardown outcome=error reason=credential_acquisition "
+                "external_id=%s",
+                external_id,
+            )
+            return False
         try:
             return await self._teardown_with_credentials(external_id)
         finally:

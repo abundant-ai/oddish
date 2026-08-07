@@ -820,6 +820,18 @@ def test_ec2_teardown_logs_and_returns_false_when_aws_raises(
     assert "metric=ec2_teardown outcome=error" in caplog.text
 
 
+def test_ec2_teardown_returns_false_when_credentials_cannot_materialize(
+    monkeypatch, caplog
+) -> None:
+    _install_complete_ec2_settings(monkeypatch, ec2_aws_access_key_id=None)
+
+    with caplog.at_level("ERROR"):
+        result = asyncio.run(Ec2Backend().teardown(_ec2_handle()))
+
+    assert result is False
+    assert "reason=credential_acquisition" in caplog.text
+
+
 class _FakeDescribeInstancesPaginator:
     def __init__(self, pages: list[dict] | None = None, error: Exception | None = None):
         self.pages = pages or []
