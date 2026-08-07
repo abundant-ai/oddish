@@ -3,6 +3,7 @@ schema_version = "1.4"
 [metadata]
 name = "rewardkit-render-demo"
 description = "Demo task that exercises oddish's RewardKit reward rendering: passing, failing, and partial-credit dimensions with reward.toml aggregates."
+open_internet_justification = "Agent setup installs the CLI agent from public package registries; the verifier itself is offline (rewardkit is baked into the image)."
 
 [agent]
 # Generous for real agents: sandbox agent setup plus a model run can
@@ -13,7 +14,7 @@ timeout_sec = 1200
 timeout_sec = 300
 
 [environment]
-network_mode = "no-network"
+network_mode = "public"
 build_timeout_sec = 600
 cpus = 2
 memory_mb = 2048
