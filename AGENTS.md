@@ -64,6 +64,7 @@ backend/                        # Hosted cloud layer (Modal deployment)
 ├── endpoints.py                # Modal ASGI app function with concurrency/volume wiring
 ├── serve.py                    # Railway/uvicorn entrypoint for non-Modal deployment
 ├── cloud_policy.py             # Hosted-only environment policy
+├── carl.py / carl_agent.py     # Existing Slack app mention dispatch + read-only agent
 ├── models.py                   # Cloud auth models (orgs/users/api keys)
 ├── dashboard_cache.py          # cached dashboard aggregation (+ attribution/backfill)
 ├── idempotency_store.py        # DB-backed idempotency for task submission

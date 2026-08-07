@@ -96,8 +96,10 @@ test.describe("tasks page network shape", () => {
     // Phase 1 — a hard navigation is a fresh JS heap, so this is the
     // session's cold load. Exactly one browse fetch serves the grid.
     await page.goto("/tasks");
+    // CardTitle renders a styled <div>, not an <h*>, so this is text — not a
+    // heading role.
     await expect(
-      page.getByRole("heading", { name: "Recent Tasks" })
+      page.getByText("Recent Tasks", { exact: true })
     ).toBeVisible();
     await expect(settled.first()).toBeVisible({ timeout: 30_000 });
     await expect
