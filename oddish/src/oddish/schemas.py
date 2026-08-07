@@ -1030,6 +1030,10 @@ class TrialResponse(BaseModel):
         None,
         description="Harbor git source this trial executed against (None for legacy rows).",
     )
+    kind: str = Field(
+        default="agent",
+        description="agent | qa | audit | analyzer_map | analyzer_reduce",
+    )
     is_probe: bool = Field(
         False,
         description=(

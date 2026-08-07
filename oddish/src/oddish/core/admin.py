@@ -2563,6 +2563,7 @@ async def get_cost_leaderboard_core(
         .join(TaskModel, TaskModel.id == TrialModel.task_id, isouter=True)
         .where(
             _real_spend_filter(),
+            TrialModel.kind == "agent",
             TrialModel.finished_at.isnot(None),
             TrialModel.org_id == org_id,
         )

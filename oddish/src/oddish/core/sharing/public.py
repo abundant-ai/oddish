@@ -246,6 +246,7 @@ async def list_public_experiment_tasks(
                 t
                 for t in task.trials
                 if not t.is_probe
+                and t.kind == "agent"
                 and (not exp_id or t.experiment_id == exp_id or t.id in gathered_ids)
             ]
             set_committed_value(task, "trials", filtered)

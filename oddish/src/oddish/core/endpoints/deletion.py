@@ -744,6 +744,7 @@ _COMBINE_TRIAL_RESULT_FIELDS = (
     "environment",
     "harbor_config",
     "is_probe",
+    "kind",
     "status",
     "origin",
     "attempts",

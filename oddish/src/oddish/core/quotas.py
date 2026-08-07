@@ -120,7 +120,12 @@ def _settled_cost_predicates(
         if inclusive_start
         else TrialModel.finished_at > period_start
     )
-    return [TrialModel.org_id == org_id, boundary, first_party_spend_filter()]
+    return [
+        TrialModel.org_id == org_id,
+        TrialModel.kind == "agent",
+        boundary,
+        first_party_spend_filter(),
+    ]
 
 
 async def _sum_settled_cost_usd(session: AsyncSession, predicates: list) -> Decimal:
@@ -468,6 +473,7 @@ def _inflight_predicates(org_id: str | None, billed_user_id: str) -> list:
     return [
         TrialModel.org_id == org_id,
         TrialModel.billed_user_id == billed_user_id,
+        TrialModel.kind == "agent",
         TrialModel.finished_at.is_(None),
         TrialModel.deleted_at.is_(None),
         TrialModel.superseded_by_trial_id.is_(None),
@@ -479,6 +485,7 @@ def _inflight_predicates(org_id: str | None, billed_user_id: str) -> list:
 def _org_inflight_predicates(org_id: str | None) -> list:
     return [
         TrialModel.org_id == org_id,
+        TrialModel.kind == "agent",
         TrialModel.finished_at.is_(None),
         TrialModel.deleted_at.is_(None),
         TrialModel.superseded_by_trial_id.is_(None),

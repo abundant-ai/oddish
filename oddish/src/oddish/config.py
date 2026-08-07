@@ -50,16 +50,9 @@ ANALYSIS_MODEL = "claude-sonnet-5"
 # Model for the probe transcript summarizer. Deliberately larger than
 # ANALYSIS_MODEL: it reads the agent's full transcript (including the final
 # synthesis / audit JSON) and must summarize it reliably. Kept separate from
-# ANALYSIS_MODEL so it does not change the analysis queue key or the
-# TrialClassifier model. Normalized to a direct-API id at call time.
+# ANALYSIS_MODEL so it does not change the analysis queue key. Normalized to
+# a direct-API id at call time.
 PROBE_ANALYZER_MODEL = "global.anthropic.claude-sonnet-4-6"
-VERDICT_MODEL = "gpt-5.4"
-# Used only when VERDICT_MODEL's provider returns a permanent error (see
-# provider_failures). Deliberately a different *provider*, not just a different
-# model: the failure mode this exists for is a whole OpenAI/Azure resource
-# going away, which a sibling OpenAI model would share.
-VERDICT_FALLBACK_MODEL = ANALYSIS_MODEL
-PRE_TRIAL_MODEL = ANALYSIS_MODEL
 
 PROBE_MODEL_ROTATION: list[str] = [
     "claude-haiku-4-5",
@@ -1226,50 +1219,11 @@ class Settings(BaseSettings):
     # still applies as the idle backstop.
     daytona_ephemeral: bool = True
 
-    # Name of a pre-baked Daytona snapshot for agent sandboxes (the analyzer),
-    # with claude-code + harbor already installed. When set, sandboxes are
-    # created from it and ClaudeCodeRuntime.install() skips the npm/pip installs
-    # (~a minute of per-sandbox provisioning). Unset -> default base image +
-    # install at provision time. See docs/agent-sandbox-snapshot.md to build it.
-    agent_daytona_snapshot: str = ""
-
-    @property
-    def analyzer_snapshot(self) -> str:
-        return self.agent_daytona_snapshot
-
-    # Kill switch for the hosted multi-block sandbox analyzer. Gates
-    # registration, so unsetting it reverts to the core API path.
-    analyzer_sandbox_enabled: bool = True
-
-    # Default for the org-scoped AnalyzerBlock pre-trial QA setting. An explicit
-    # organizations.settings.pre_trial_analysis_enabled value takes precedence.
-    # The hosted backend must register the synth via register_pre_trial_synth();
-    # standalone oddish remains a no-op even when this default is enabled.
+    # Default for the org-scoped pre-trial audit setting. An explicit
+    # organizations.settings.pre_trial_analysis_enabled value takes precedence
+    # (backend registers the check via register_audit_enabled_check).
     pre_trial_enabled: bool = False
 
-    # Single source of truth for the pre-trial-synthesis timeout. oddish/ can't
-    # import backend/, so this lives here rather than as a shared constant.
-    # 180s was sized for the old sandbox path and proved to be right at the
-    # edge for the worker-local CLI audit: prod audits that finished took
-    # 108-142s, and the ones that hit the cap died at exactly 180.02s losing
-    # the whole run (the CLI buffers its envelope, so a timeout saves 0 bytes).
-    # The claim lease is pre_trial_timeout + 900 + 60, so it still outlives this.
-    # 600s then reproduced the same shape one notch up, measured over the runs
-    # after #959 unblocked parsing: 46 audits finished (p50 309s, p90 480s, max
-    # 561s) while 13 more died at exactly 600.0s -- 18% of all runs, and 11 of
-    # those 13 tasks never got an audit at all. A cap only 1.25x p90 truncates
-    # the tail of a healthy distribution rather than catching runaways, and a
-    # timed-out audit is a total loss, so this is set clear of the observed max.
-    pre_trial_timeout: float = 1200.0
-
-    # Run post-trial QA classification inside a Daytona sandbox instead of a
-    # worker-local Claude Code subprocess. Off by default: the classifier is
-    # restricted to Read/Glob over two already-downloaded directories, so it
-    # gains no isolation from a sandbox while paying provisioning latency and
-    # compute for every classified trial -- the highest-volume analysis path
-    # there is. Enable only to give the classifier capabilities (shell, the
-    # verifier) that the local subprocess deliberately withholds.
-    post_trial_sandbox_enabled: bool = False
     # GKE execution backend (TPU trials). The cluster and Artifact Registry
     # coordinates are unset by default; configuring GKE (project id, or an
     # explicit cluster name) registers the backend and makes ``--env gke``
@@ -1339,9 +1293,6 @@ class Settings(BaseSettings):
     queue_key_buckets: dict[str, str] = Field(default_factory=dict)
     analysis_model: str = ANALYSIS_MODEL
     probe_analyzer_model: str = PROBE_ANALYZER_MODEL
-    verdict_model: str = VERDICT_MODEL
-    verdict_fallback_model: str = VERDICT_FALLBACK_MODEL
-    pre_trial_model: str = PRE_TRIAL_MODEL
 
     # Agent to provider mapping (computed from Harbor's AgentName enum)
     agent_to_provider: ClassVar[dict[str, str]] = _build_agent_provider_map()
@@ -1702,11 +1653,9 @@ class Settings(BaseSettings):
     def get_qa_queue_key(self) -> str:
         """Concurrency bucket for the task-level QA job.
 
-        Keyed off ``analysis_model``: the bulk of a QA job's LLM work is the
-        per-trial classification pass, which runs on the analysis model, so the
-        job leases slots from that model's concurrency bucket (and existing
-        per-model concurrency overrides keep applying). The single
-        verdict-synthesis call on ``verdict_model`` rides along.
+        Keyed off ``analysis_model``: QA, audit, and analyzer trials all run
+        the analysis model, so they lease slots from its concurrency bucket
+        (and existing per-model concurrency overrides keep applying).
         """
         return self.normalize_queue_key(self.analysis_model)
 

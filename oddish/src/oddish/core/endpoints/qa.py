@@ -493,13 +493,13 @@ async def rerun_pre_trial_audit_core(
     if version is None:
         raise HTTPException(status_code=400, detail="Task has no version to audit")
 
-    # Mirrors the worker's claim lease in workers/queue/qa_handler.py
-    # (pre_trial_timeout + PRE_TRIAL_LEASE_MARGIN_SECONDS +
-    # PRE_TRIAL_LEASE_JITTER_SECONDS). Copied, not imported: importing the
-    # worker module would pull the analyzer stack into the API process.
-    lease = timedelta(seconds=settings.pre_trial_timeout + 900 + 60)
+    # The audit trial's own timeout bounds a live run; block a re-request
+    # only while one is plausibly in flight.
+    from oddish.workers.analysis_trials import ANALYSIS_TRIAL_TIMEOUT_MINUTES
+
+    lease = timedelta(minutes=ANALYSIS_TRIAL_TIMEOUT_MINUTES * 2)
     if (
-        version.pre_trial_status == VerdictStatus.RUNNING
+        version.pre_trial_status in (VerdictStatus.QUEUED, VerdictStatus.RUNNING)
         and version.pre_trial_started_at is not None
         and utcnow() - version.pre_trial_started_at < lease
     ):

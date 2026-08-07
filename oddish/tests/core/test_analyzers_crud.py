@@ -15,16 +15,7 @@ from oddish.db.models import ExperimentModel, JobStatus
 
 
 @pytest.mark.asyncio
-async def test_create_and_get_analyzer(session, monkeypatch):
-    # Stub the enqueue so the test doesn't need a live dispatcher.
-    import oddish.core.analyzers as mod
-    calls = {}
-
-    async def _fake_enqueue(session, *, analyzer_id, org_id):
-        calls["analyzer_id"] = analyzer_id
-
-    monkeypatch.setattr(mod, "_enqueue_analyzer_worker_job", _fake_enqueue)
-
+async def test_create_and_get_analyzer(session):
     # analyzer_experiments.experiment_id FKs to experiments.id, so the rows
     # referenced by experiment_ids must exist first.
     e1 = ExperimentModel(name="exp-1", org_id="org_1")
@@ -39,7 +30,6 @@ async def test_create_and_get_analyzer(session, monkeypatch):
     )
 
     assert analyzer.status == JobStatus.PENDING
-    assert calls["analyzer_id"] == analyzer.id
 
     got = await get_analyzer_core(session, analyzer.id, org_id="org_1")
     assert got.name == "Q3"
@@ -64,13 +54,6 @@ async def test_create_and_get_analyzer(session, monkeypatch):
 async def test_delete_cancels_inflight_worker_job(session, monkeypatch):
     """Soft-deleting an analyzer must cancel its in-flight generation job so it
     stops running map/reduce LLM work (mirrors task/trial deletion)."""
-    import oddish.core.analyzers as mod
-
-    async def _fake_enqueue(session, *, analyzer_id, org_id):
-        pass
-
-    monkeypatch.setattr(mod, "_enqueue_analyzer_worker_job", _fake_enqueue)
-
     e1 = ExperimentModel(name="exp-1", org_id="org_1")
     session.add(e1)
     await session.flush()
@@ -114,20 +97,10 @@ async def test_get_analyzer_core_404_for_unknown_id(session):
 
 
 @pytest.mark.asyncio
-async def test_create_analyzer_rejects_unknown_or_foreign_org_experiment_id(
-    session, monkeypatch
-):
-    import oddish.core.analyzers as mod
+async def test_create_analyzer_rejects_unknown_or_foreign_org_experiment_id(session):
     from sqlalchemy import select
 
     from oddish.db.models import AnalyzerModel
-
-    calls = {"enqueued": False}
-
-    async def _fake_enqueue(session, *, analyzer_id, org_id):
-        calls["enqueued"] = True
-
-    monkeypatch.setattr(mod, "_enqueue_analyzer_worker_job", _fake_enqueue)
 
     e1 = ExperimentModel(name="exp-1", org_id="org_1")
     foreign = ExperimentModel(name="exp-foreign", org_id="org_2")
@@ -145,21 +118,13 @@ async def test_create_analyzer_rejects_unknown_or_foreign_org_experiment_id(
         )
     assert exc.value.status_code == 400
 
-    # No orphan analyzer row and no enqueue on the rejected path.
-    assert calls["enqueued"] is False
+    # No orphan analyzer row on the rejected path.
     rows = (await session.execute(select(AnalyzerModel))).scalars().all()
     assert rows == []
 
 
 @pytest.mark.asyncio
-async def test_create_analyzer_dedupes_experiment_ids(session, monkeypatch):
-    import oddish.core.analyzers as mod
-
-    async def _fake_enqueue(session, *, analyzer_id, org_id):
-        pass
-
-    monkeypatch.setattr(mod, "_enqueue_analyzer_worker_job", _fake_enqueue)
-
+async def test_create_analyzer_dedupes_experiment_ids(session):
     e1 = ExperimentModel(name="exp-1", org_id="org_1")
     session.add(e1)
     await session.flush()
@@ -175,18 +140,11 @@ async def test_create_analyzer_dedupes_experiment_ids(session, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_list_analyzers_core_does_not_load_findings(session, monkeypatch):
+async def test_list_analyzers_core_does_not_load_findings(session):
     """Regression gate for the load_only allowlist: if list_analyzers_core ever
     reverts to a bare ``select(AnalyzerModel)``, this catches it by asserting the
     ~500KB findings/models_by_task blobs stay unloaded off the list query, while
     a column the list view actually renders (name) stays loaded."""
-    import oddish.core.analyzers as mod
-
-    async def _fake_enqueue(session, *, analyzer_id, org_id):
-        pass
-
-    monkeypatch.setattr(mod, "_enqueue_analyzer_worker_job", _fake_enqueue)
-
     e1 = ExperimentModel(name="exp-1", org_id="org_1")
     session.add(e1)
     await session.flush()

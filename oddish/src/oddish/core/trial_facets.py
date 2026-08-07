@@ -69,6 +69,7 @@ def facet_rows_for_trial(
     environment: str | None = None,
     harbor_stage: str | None = None,
     is_probe: bool = False,
+    trial_kind: str = "agent",
 ) -> set[tuple[str, str, str, str]]:
     """Vocabulary rows one trial spec contributes, as (org, kind, value, value_2).
 
@@ -76,7 +77,7 @@ def facet_rows_for_trial(
     trials (the single-tenant standalone path, which has no facets endpoint)
     contribute nothing.
     """
-    if is_probe or org_id is None:
+    if is_probe or trial_kind != "agent" or org_id is None:
         return set()
     rows: set[tuple[str, str, str, str]] = set()
     if agent:
@@ -106,6 +107,7 @@ def facet_rows_for_trial_dicts(
             provider=t.get("provider"),
             environment=t.get("environment"),
             is_probe=bool(t.get("is_probe")),
+            trial_kind=t.get("kind", "agent"),
         )
     return rows
 
@@ -179,6 +181,7 @@ async def rebuild_trial_facets_core(
         .where(
             TrialModel.org_id.isnot(None),
             TrialModel.is_probe.isnot(True),
+            TrialModel.kind == "agent",
             TrialModel.superseded_by_trial_id.is_(None),
             TrialModel.task_version_id == TaskModel.current_version_id,
         )

@@ -22,12 +22,6 @@ from oddish.db.models import (
 from oddish.schemas import ExperimentOption, ReportCreate
 
 
-async def _enqueue_analyzer_worker_job(session, *, analyzer_id: str, org_id: str | None) -> None:
-    # Imported lazily to avoid a core<->queue import cycle at module load.
-    from oddish.queue import enqueue_analyzer_worker_job
-
-    await enqueue_analyzer_worker_job(session, analyzer_id=analyzer_id, org_id=org_id)
-
 
 def _slug(name: str) -> str:
     """Lowercase, collapse non-alphanumerics to underscores, for use in a name.

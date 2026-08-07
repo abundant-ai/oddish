@@ -523,9 +523,7 @@ async def test_retry_of_gated_llm_trial_reports_skipped(monkeypatch, cleanup_tas
 async def test_qa_classification_excludes_gate_skipped_and_cancelled(
     monkeypatch, cleanup_task_ids
 ):
-    from oddish.workers.queue.qa_handler import (
-        _load_live_trials_for_classification,
-    )
+    from oddish.queue import qa_eligible_trial_ids
 
     monkeypatch.setattr(settings, "gate_llm_on_baselines", True)
     task_id = f"qa-skip-{_RUN}"
@@ -549,7 +547,8 @@ async def test_qa_classification_excludes_gate_skipped_and_cancelled(
             )
         ).scalar_one()
 
-    live_ids = {tid for tid, _ in await _load_live_trials_for_classification(task_id)}
+    async with get_session() as session:
+        live_ids = set(await qa_eligible_trial_ids(session, task_id))
     # Neither the gate-skipped (never-run) kimi nor the cancelled baseline has
     # an outcome to classify. The remaining completed baseline is excluded too,
     # now that nop/oracle are never classified -- so this mixed task, whose only

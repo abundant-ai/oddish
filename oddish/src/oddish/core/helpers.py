@@ -454,6 +454,7 @@ def build_trial_response(
         harbor_sha=trial.harbor_sha,
         harbor_source=(trial.harbor_config or {}).get("source"),
         is_probe=trial.is_probe,
+        kind=trial.kind,
         input_tokens=trial.input_tokens,
         cache_tokens=trial.cache_tokens,
         output_tokens=trial.output_tokens,
@@ -534,6 +535,7 @@ def build_compact_trial_response(
         harbor_sha=trial.harbor_sha,
         harbor_source=(trial.harbor_config or {}).get("source"),
         is_probe=trial.is_probe,
+        kind=trial.kind,
         input_tokens=trial.input_tokens,
         cache_tokens=trial.cache_tokens,
         output_tokens=trial.output_tokens,
@@ -1112,6 +1114,7 @@ SLIM_TRIAL_RESPONSE_COLUMNS = (
     TrialModel.reward,
     TrialModel.error_message,
     TrialModel.is_probe,
+    TrialModel.kind,
     TrialModel.analysis,
     TrialModel.analysis_status,
     TrialModel.analysis_started_at,
@@ -1169,6 +1172,7 @@ def build_slim_trial_response(
         error_message=trial.error_message,
         result=None,
         is_probe=trial.is_probe,
+        kind=trial.kind,
         input_tokens=trial.input_tokens,
         output_tokens=trial.output_tokens,
         cost_usd=cost_usd,
@@ -1310,6 +1314,7 @@ async def build_task_status_responses_from_counts(
 
     stats_filters = [
         TrialModel.task_id.in_(task_ids),
+        TrialModel.kind == "agent",
         # Default trial listings collapse the rerun history: every
         # superseded attempt is hidden by the same filter applied in
         # ``get_task_status_trials``. Mirror it here so the counts row

@@ -203,6 +203,7 @@ async def list_tasks_core(
                 TrialModel.harbor_config,
                 TrialModel.harbor_sha,
                 TrialModel.is_probe,
+                TrialModel.kind,
                 TrialModel.has_trajectory,
                 TrialModel.phase_timing,
                 TrialModel.analysis_status,
@@ -1413,6 +1414,7 @@ async def browse_tasks_core(
             TrialModel.task_id == TaskModel.id,
             TrialModel.task_version_id == TaskModel.current_version_id,
             TrialModel.superseded_by_trial_id.is_(None),
+            TrialModel.kind == "agent",
         ]
         if not include_probes:
             conds.append(TrialModel.is_probe.isnot(True))

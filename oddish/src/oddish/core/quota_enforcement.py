@@ -103,6 +103,7 @@ def _active_trial_predicates(
 ) -> list:
     predicates = [
         TrialModel.org_id == org_id,
+        TrialModel.kind == "agent",
         TrialModel.finished_at.is_(None),
         TrialModel.deleted_at.is_(None),
         TrialModel.superseded_by_trial_id.is_(None),

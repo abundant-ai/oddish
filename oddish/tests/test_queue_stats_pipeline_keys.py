@@ -31,11 +31,7 @@ from oddish.queue import (  # noqa: E402
 )
 
 ANALYSIS_MODEL_KEY = settings.get_analysis_queue_key()
-VERDICT_MODEL_KEY = settings.normalize_queue_key(settings.verdict_model)
 # The QA job's concurrency bucket, reported by the reserved pipeline buckets.
-# QA leases from the analysis model's bucket, so this coincides with
-# ANALYSIS_MODEL_KEY -- keep VERDICT_MODEL_KEY above as the verdict model's own
-# key so trials running ON that model still exercise a distinct bucket.
 QA_JOB_KEY = settings.get_qa_queue_key()
 
 
@@ -53,13 +49,12 @@ class _FakeSession:
     async def execute(self, statement, params: dict[str, Any] | None = None):
         sql = str(statement)
         if "FROM trials" in sql and "COALESCE(queue_key, provider)" in sql:
-            # Trial rows, including trials running ON the analysis/verdict
-            # models themselves -- the collision the reserved keys prevent.
+            # Trial rows, including trials running ON the analysis
+            # model itself -- the collision the reserved keys prevent.
             return _Result(
                 [
                     (ANALYSIS_MODEL_KEY, "RUNNING", 7),
                     (ANALYSIS_MODEL_KEY, "QUEUED", 3),
-                    (VERDICT_MODEL_KEY, "RUNNING", 5),
                     ("openai/gpt-5.5", "SUCCESS", 11),
                 ]
             )
@@ -90,7 +85,7 @@ async def test_pipeline_counts_use_reserved_buckets() -> None:
     assert stats[VERDICT_PIPELINE_QUEUE_KEY]["queued"] == 138
     assert stats[VERDICT_PIPELINE_QUEUE_KEY]["running"] == 45
 
-    # ... and the models' own buckets carry ONLY their trial counts.
+    # ... and the model's own bucket carries ONLY its trial counts.
     assert stats[ANALYSIS_MODEL_KEY] == {
         "pending": 0,
         "queued": 3,
@@ -100,7 +95,6 @@ async def test_pipeline_counts_use_reserved_buckets() -> None:
         "retrying": 0,
         "skipped": 0,
     }
-    assert stats[VERDICT_MODEL_KEY]["running"] == 5
 
 
 @pytest.mark.asyncio
@@ -113,9 +107,9 @@ async def test_assemble_routes_model_trials_to_trial_pipeline(monkeypatch) -> No
     stats = await get_queue_stats(_FakeSession())
     queue_stats, pipeline = _assemble_queue_and_pipeline(stats)
 
-    # Trials running on the analysis/verdict models count as trials, not as
+    # Trials running on the analysis model count as trials, not as
     # pipeline work; the pipelines carry exactly the status-column counts.
-    assert pipeline["trials"]["running"] == 7 + 5
+    assert pipeline["trials"]["running"] == 7
     assert pipeline["trials"]["success"] == 11
     assert pipeline["analyses"]["running"] == 4099
     assert pipeline["verdicts"]["queued"] == 138
