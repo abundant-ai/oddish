@@ -11,6 +11,7 @@ wrote, so nothing downstream changes.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Awaitable, Callable
 from importlib import resources
 
@@ -40,6 +41,8 @@ from oddish.db import (
 )
 from oddish.db.storage import get_storage_client, resolve_trial_s3_prefix
 from oddish.workers.queue.shared import console
+
+logger = logging.getLogger(__name__)
 
 ANALYSIS_TRIAL_KINDS = ("qa", "audit", "analyzer_map", "analyzer_reduce")
 QA_RESULT_FILENAME = "qa_result.json"
@@ -77,8 +80,8 @@ async def _fire_qa_imported(task_id: str) -> None:
         return
     try:
         await _qa_imported_fn(task_id)
-    except Exception as exc:  # noqa: BLE001
-        console.print(f"[yellow]QA imported hook failed for {task_id}: {exc}[/yellow]")
+    except Exception:  # noqa: BLE001
+        logger.exception("qa imported hook failed for task %s", task_id)
 
 
 def _prompt(name: str) -> str:
@@ -114,7 +117,7 @@ async def resolve_analysis_experiment_id(session: AsyncSession, task_id: str) ->
             f"task {task_id} has no live experiment membership for an analysis trial"
         )
 
-    await session.execute(
+    inserted = await session.execute(
         sql_text(
             """
             INSERT INTO experiments
@@ -134,6 +137,10 @@ async def resolve_analysis_experiment_id(session: AsyncSession, task_id: str) ->
             "shadow_of": parent.id,
         },
     )
+    if getattr(inserted, "rowcount", 0):
+        logger.info(
+            "created qa report experiment for %s (%s)", parent.id, parent.name
+        )
     shadow_id = await session.scalar(
         sql_text(
             "SELECT id FROM experiments "
@@ -207,6 +214,15 @@ async def create_analysis_trial(
         queue_key=trial.queue_key,
         org_id=task.org_id,
         max_attempts=ANALYSIS_TRIAL_MAX_ATTEMPTS,
+    )
+    logger.info(
+        "created %s trial %s for task %s (model=%s queue=%s experiment=%s)",
+        kind,
+        trial_id,
+        task.id,
+        trial.model,
+        trial.queue_key,
+        experiment_id,
     )
     return trial
 
@@ -356,12 +372,17 @@ async def read_artifact_bytes(trial: TrialModel, filename: str) -> bytes | None:
 async def read_analysis_artifact(trial: TrialModel, filename: str) -> dict | None:
     data = await read_artifact_bytes(trial, filename)
     if data is None:
+        logger.warning("trial %s: no %s artifact in storage", trial.id, filename)
         return None
     try:
         parsed = json.loads(data)
     except Exception:  # noqa: BLE001
+        logger.warning("trial %s: %s is not valid JSON", trial.id, filename)
         return None
-    return parsed if isinstance(parsed, dict) else None
+    if not isinstance(parsed, dict):
+        logger.warning("trial %s: %s is not a JSON object", trial.id, filename)
+        return None
+    return parsed
 
 
 def _classification_from_analysis(analysis: dict) -> TrialClassification | None:
@@ -412,18 +433,17 @@ async def _import_qa_result(trial: TrialModel) -> None:
     if trial.status == TrialStatus.SUCCESS:
         artifact = await read_analysis_artifact(trial, QA_RESULT_FILENAME)
     if artifact is None or not isinstance(artifact.get("verdict"), dict):
+        error = f"QA trial {trial.id} " + (
+            "produced no valid qa_result.json"
+            if trial.status == TrialStatus.SUCCESS
+            else f"finished {trial.status.value}: {trial.error_message or 'no error recorded'}"
+        )
+        logger.warning("qa import for task %s failed: %s", task_id, error)
         await sync_verdict_to_task(
             task_id,
             payload=None,
             should_store=lambda s: _qa_import_still_current(s, task_id),
-            error=(
-                f"QA trial {trial.id} "
-                + (
-                    "produced no valid qa_result.json"
-                    if trial.status == TrialStatus.SUCCESS
-                    else f"finished {trial.status.value}: {trial.error_message or 'no error recorded'}"
-                )
-            ),
+            error=error,
         )
         return
 
@@ -443,9 +463,19 @@ async def _import_qa_result(trial: TrialModel) -> None:
                 continue
             parsed = _classification_from_analysis(analysis)
             if parsed is None:
+                logger.warning(
+                    "qa trial %s: malformed analysis for %s rejected",
+                    trial.id,
+                    trial_id,
+                )
                 continue
             row = await session.get(TrialModel, trial_id)
             if row is None or row.task_id != task_id:
+                logger.warning(
+                    "qa trial %s: analysis for unknown trial %s dropped",
+                    trial.id,
+                    trial_id,
+                )
                 continue
             row.analysis = {**analysis, "_graded_by": trial.id}
             row.analysis_status = AnalysisStatus.SUCCESS
@@ -458,10 +488,15 @@ async def _import_qa_result(trial: TrialModel) -> None:
 
     try:
         await aggregate_exploited_into_pre_trial(task_id)
-    except Exception as exc:  # noqa: BLE001
-        console.print(f"[red]Exploited-item aggregation failed for {task_id}: {exc}[/red]")
+    except Exception:  # noqa: BLE001
+        logger.exception("exploited-item aggregation failed for task %s", task_id)
 
     if not classifications:
+        logger.warning(
+            "qa trial %s: artifact for task %s had no valid classifications",
+            trial.id,
+            task_id,
+        )
         await sync_verdict_to_task(
             task_id,
             payload=None,
@@ -472,6 +507,12 @@ async def _import_qa_result(trial: TrialModel) -> None:
     try:
         verdict = TaskVerdictModel.model_validate(artifact["verdict"])
     except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "qa trial %s: verdict for task %s failed validation: %s",
+            trial.id,
+            task_id,
+            exc,
+        )
         await sync_verdict_to_task(
             task_id,
             payload=None,
@@ -487,6 +528,12 @@ async def _import_qa_result(trial: TrialModel) -> None:
         should_store=lambda s: _qa_import_still_current(s, task_id),
         error=None,
     )
+    logger.info(
+        "qa trial %s: stored %d classifications and verdict for task %s",
+        trial.id,
+        len(classifications),
+        task_id,
+    )
 
 
 async def _import_audit_result(trial: TrialModel) -> None:
@@ -497,17 +544,16 @@ async def _import_audit_result(trial: TrialModel) -> None:
     if trial.status == TrialStatus.SUCCESS:
         artifact = await read_analysis_artifact(trial, AUDIT_RESULT_FILENAME)
     if artifact is None or not isinstance(artifact.get("items"), list):
+        error = f"audit trial {trial.id} " + (
+            "produced no valid audit_result.json"
+            if trial.status == TrialStatus.SUCCESS
+            else f"finished {trial.status.value}"
+        )
+        logger.warning("audit import for version %s failed: %s", version_id, error)
         await sync_pre_trial_to_task_version(
             version_id,
             payload=None,
-            error=RuntimeError(
-                f"audit trial {trial.id} "
-                + (
-                    "produced no valid audit_result.json"
-                    if trial.status == TrialStatus.SUCCESS
-                    else f"finished {trial.status.value}"
-                )
-            ),
+            error=RuntimeError(error),
         )
         return
     items: list[ActionItem] = []
@@ -515,6 +561,9 @@ async def _import_audit_result(trial: TrialModel) -> None:
         try:
             items.append(ActionItem.model_validate(raw))
         except Exception:  # noqa: BLE001
+            logger.warning(
+                "audit trial %s: malformed finding rejected: %r", trial.id, raw
+            )
             continue
     await sync_pre_trial_to_task_version(
         version_id,
@@ -522,6 +571,12 @@ async def _import_audit_result(trial: TrialModel) -> None:
             items, cost_usd=trial.cost_usd, block_id=trial.id
         ),
         error=None,
+    )
+    logger.info(
+        "audit trial %s: stored %d findings for version %s",
+        trial.id,
+        len(items),
+        version_id,
     )
 
 
@@ -540,6 +595,8 @@ async def handle_analysis_trial_settled(trial_id: str) -> None:
         ):
             return
         kind = trial.kind
+        status = trial.status.value
+    logger.info("importing %s trial %s (status=%s)", kind, trial_id, status)
     if kind == "qa":
         await _import_qa_result(trial)
         await _fire_qa_imported(trial.task_id)

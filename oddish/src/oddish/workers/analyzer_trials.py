@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import tarfile
 
 from sqlalchemy import or_, select
@@ -54,6 +55,8 @@ from oddish.evals.analyzer.prompt_builder import (
 )
 from oddish.evals.analyzer.schemas import Finding
 from oddish.workers.queue.shared import console
+
+logger = logging.getLogger(__name__)
 
 MAP_BATCH_SIZE = 10
 FINDINGS_FILENAME = "findings.jsonl"
@@ -352,8 +355,20 @@ async def start_analyzer_pipeline(analyzer_id: str) -> None:
             analyzer.models_by_task = models_by_task_from_rows(rows)
             analyzer.status = JobStatus.SUCCESS
             analyzer.finished_at = utcnow()
+            logger.info(
+                "report %s: no failures in %d trials, completed empty",
+                analyzer_id,
+                counts["trials"],
+            )
             return
 
+    logger.info(
+        "report %s: %d trials gathered (%d bad, %d good), creating map trials",
+        analyzer_id,
+        counts["trials"],
+        counts["bad"],
+        counts["good"],
+    )
     host_task_id = await _create_report_host_task(analyzer)
     roster = build_roster(bad, good)
 
@@ -436,6 +451,7 @@ async def _fail_report(analyzer_id: str, error: str) -> None:
         analyzer.status = JobStatus.FAILED
         analyzer.error = error
         analyzer.finished_at = utcnow()
+    logger.error("report %s failed: %s", analyzer_id, error)
 
 
 async def advance_analyzer_pipeline(settled: TrialModel) -> None:
@@ -609,4 +625,4 @@ async def _import_report(analyzer_id: str, host_task_id: str) -> None:
         analyzer.error = None
         analyzer.status = JobStatus.SUCCESS
         analyzer.finished_at = utcnow()
-    console.print(f"[green]Report {analyzer_id} imported: {len(findings)} findings[/green]")
+    logger.info("report %s imported: %d findings", analyzer_id, len(findings))

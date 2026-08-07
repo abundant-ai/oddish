@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import partial
 import json
+import logging
 import os
 import shutil
 import tempfile
@@ -81,6 +82,8 @@ from oddish.workers.queue.trial_failures import (
 )
 from oddish.workers.queue import byok, job_tokens
 from oddish.workers.queue.worker_job_single_job import heartbeat_worker_job
+
+logger = logging.getLogger(__name__)
 
 TRIAL_HEARTBEAT_INTERVAL_SECONDS = 30
 
@@ -956,22 +959,16 @@ async def _run_post_trial_hooks(trial_id: str) -> None:
                     console.print(
                         f"[blue]Task {trial.task_id} transitioned to next stage[/blue]"
                     )
-    except Exception as exc:  # noqa: BLE001 — the trial is already terminal;
+    except Exception:  # noqa: BLE001 — the trial is already terminal;
         # a hook failure must not fail the settled job. The cleanup sweep
         # re-runs stage advancement.
-        console.print(
-            f"[red]Post-trial hooks failed for {trial_id}: "
-            f"{type(exc).__name__}: {exc}[/red]"
-        )
+        logger.exception("post-trial hooks failed for trial %s", trial_id)
 
     if trial_kind != "agent":
         try:
             await handle_analysis_trial_settled(trial_id)
-        except Exception as exc:  # noqa: BLE001 — the cleanup sweep re-runs importers
-            console.print(
-                f"[red]Analysis import failed for {trial_id}: "
-                f"{type(exc).__name__}: {exc}[/red]"
-            )
+        except Exception:  # noqa: BLE001 — the cleanup sweep re-runs importers
+            logger.exception("analysis import failed for trial %s", trial_id)
 
 
 async def _finish_trial_settlement(
@@ -1590,6 +1587,11 @@ async def run_trial_job(
         except ProbeCredsError as exc:
             # Record the failure on the trial row so the operator sees why the
             # probe failed; _execute_trial's handler never runs in this path.
+            logger.error(
+                "trial %s failed before sandbox start: ProbeCredsError: %s",
+                trial_id,
+                exc,
+            )
             _, run_post_trial_hooks = await asyncio.shield(
                 _store_trial_results(
                     trial_id=trial_id,

@@ -1227,7 +1227,7 @@ async def append_trials_to_task(
             ),
             {"task_id": task.id},
         )
-        await session.execute(
+        cancelled = await session.execute(
             text(
                 """
                 UPDATE trials
@@ -1242,6 +1242,12 @@ async def append_trials_to_task(
             ),
             {"task_id": task.id},
         )
+        if getattr(cancelled, "rowcount", 0):
+            logger.info(
+                "task %s: cancelled %d in-flight qa trial(s), superseded by append",
+                task.id,
+                cancelled.rowcount,
+            )
 
     # Gate the appended LLM trials on this scope's baselines (the just-added
     # ones and any that already exist), blocking/releasing/cancelling under the
@@ -1369,6 +1375,11 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
         task.status = TaskStatus.VERDICT_PENDING
         task.verdict_status = VerdictStatus.QUEUED
         await create_qa_trial(session, task=task, eligible_trial_ids=qa_eligible_ids)
+        logger.info(
+            "task %s: agent trials settled, qa covers %d trials",
+            task_id,
+            len(qa_eligible_ids),
+        )
     else:
         task.status = TaskStatus.COMPLETED
         task.finished_at = utcnow()

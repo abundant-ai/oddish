@@ -15,6 +15,7 @@ touches ``worker_jobs``.
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 import re
 import time
@@ -38,6 +39,8 @@ from oddish.workers.jobs.registry import (
     get_handler,
 )
 from oddish.workers.queue.shared import console
+
+logger = logging.getLogger(__name__)
 
 
 # Callback invoked after a claimed row completes successfully. Kept as a
@@ -603,7 +606,12 @@ async def run_single_worker_job(
         )
         raise
     except Exception as exc:  # handler-raised exceptions are retryable by default
-        console.print(f"[red]worker_job {job.id} handler error: {exc!r}[/red]")
+        logger.exception(
+            "worker_job %s (%s, subject=%s) handler error",
+            job.id,
+            job.kind.value,
+            job.subject_id,
+        )
         outcome = JobOutcome.fail(f"{type(exc).__name__}: {exc}", retryable=True)
 
     if (outcome.success is None) == (outcome.failure is None):
@@ -644,10 +652,11 @@ async def run_single_worker_job(
         if hook is not None:
             try:
                 await hook(job.subject_id)
-            except Exception as exc:
-                console.print(
-                    f"[yellow]post-success hook for kind={job.kind.value} "
-                    f"job={job.id} failed: {exc}[/yellow]"
+            except Exception:
+                logger.exception(
+                    "post-success hook for kind=%s job=%s failed",
+                    job.kind.value,
+                    job.id,
                 )
 
     return True

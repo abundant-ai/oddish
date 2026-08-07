@@ -20,6 +20,7 @@ flush failed at handler-commit time.
 """
 
 import asyncio
+import logging
 from datetime import timedelta
 from typing import cast
 
@@ -54,6 +55,8 @@ from oddish.workers.queue.worker_job_single_job import (
     classify_retry_reason,
 )
 from oddish.workers.queue.shared import console
+
+logger = logging.getLogger(__name__)
 
 # See historical context: we bumped this from 10 -> 15 after a
 # pooler-blip incident reaped 25-70 healthy trials in a single sweep.
@@ -1027,10 +1030,19 @@ async def _heal_stale_verdict_pending(session) -> int:
             {"task_id": task.id},
         )
         if settled_qa is not None:
+            logger.info(
+                "healer: task %s has settled qa trial %s with no verdict, re-importing",
+                task.id,
+                settled_qa,
+            )
             reimport_trial_ids.append(str(settled_qa))
             continue
         eligible = await qa_eligible_trial_ids(session, task.id)
         if eligible:
+            logger.info(
+                "healer: task %s wedged in VERDICT_PENDING with no qa trial, creating one",
+                task.id,
+            )
             task.verdict_status = VerdictStatus.QUEUED
             task.verdict_error = None
             task.verdict_started_at = None
@@ -1046,7 +1058,7 @@ async def _heal_stale_verdict_pending(session) -> int:
         try:
             await handle_analysis_trial_settled(trial_id)
         except Exception:  # noqa: BLE001 — next sweep retries
-            pass
+            logger.exception("healer: re-import of qa trial %s failed", trial_id)
     return verdict_pending_completed
 
 
