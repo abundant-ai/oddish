@@ -26,11 +26,16 @@ class BlockParseError(ValueError):
 
 
 class Block:
-    """Base for prompt-building blocks: turns a typed input into a prompt and a
-    raw model reply into a validated output, fault-tolerant throughout.
-    Subclasses supply sections(), output_schema, and (optionally) filter_output."""
+    """Turn typed input into a prompt and a raw reply into validated output.
+
+    Subclasses supply ``sections()``, ``output_schema``, and optionally
+    ``filter_output()``. A provider-constrained block sets
+    ``strict_json_output`` so transport violations surface instead of entering
+    the recovery path used by free-text and CLI backends.
+    """
 
     output_schema: type[BaseModel]
+    strict_json_output: bool = False
 
     # ---- prompt building ----
     def build_prompt(self) -> str:
@@ -293,6 +298,14 @@ class Block:
         return value
 
     def parse(self, raw: str) -> BaseModel:
+        if self.strict_json_output:
+            try:
+                parsed = self.output_schema.model_validate_json(raw)
+            except Exception as e:
+                logger.exception("block parse: structured output mismatch")
+                raise BlockParseError(f"structured output mismatch: {e}") from e
+            return self.filter_output(parsed)
+
         try:
             data = self.parse_json(raw, expect=dict)
         except Exception as e:
