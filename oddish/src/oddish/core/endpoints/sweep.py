@@ -417,9 +417,7 @@ async def create_task_sweep_core(
     of the *raw* client submission so an honest retry is not spuriously rejected;
     when omitted it is computed from ``submission`` as received here.
     """
-    from oddish.config import QuotaMode
     from oddish.core.quota_admission import admit_trials
-    from oddish.core.quotas import acquire_quota_locks
     from oddish.core.sweeps import (
         build_task_submission_from_sweep,
         build_trial_specs_from_sweep,
@@ -525,16 +523,14 @@ async def create_task_sweep_core(
             submission = submission.model_copy(update={"link": github_meta.pr_url})
 
     if submission.append_to_task:
-        # Lock order must stay ``quota advisory → task row`` to match
-        # ``cancel_trials_if_quota_reached`` (quota first, then task FOR UPDATE).
-        # Taking the task row before the quota lock inverted that order and
-        # deadlocked under concurrent over-quota cancellation.
-        #
         # Admit only against the locked plan: an unlocked estimate can still
         # ``QuotaExceeded`` (402) after a concurrent append already filled the
         # deficit, even when this request would insert fewer trials or none.
-        # Hold the quota advisory only across the short locked plan + admit +
-        # insert — not across the earlier experiment/setup work.
+        # Admission itself takes no quota advisory lock (see ``admit_trials``),
+        # so only the task row serializes appends — and only per task. That
+        # also removes the old quota→task lock-order constraint against
+        # ``cancel_trials_if_quota_reached``: a deadlock needs both sides to
+        # take both locks, and submission no longer takes the advisory at all.
         task = await get_task_for_org_core(
             session, task_id=submission.task_id, org_id=org_id
         )
@@ -586,10 +582,6 @@ async def create_task_sweep_core(
         target_experiment_id = new_experiment_id or (
             primary_experiment.id if primary_experiment else None
         )
-        # Quota advisory before task FOR UPDATE (ENFORCE only; SHADOW/OFF do
-        # not take these locks on admit or cancel either).
-        if settings.quota_mode == QuotaMode.ENFORCE and org_id is not None:
-            await acquire_quota_locks(session, org_id, billed_user_id)
         await session.refresh(task, with_for_update=True)
         # Allow flipping task.run_analysis from False to True on append.
         # ``run_analysis`` runs at trial-completion time, so updating the

@@ -73,9 +73,9 @@ async def _quota_scope_reached(
     billed_user_id: str | None,
 ) -> str | None:
     # Non-blocking: many workers call enforcement on cost checkpoints. If
-    # another transaction already holds the org/user quota lock (admission or
-    # an in-flight cancellation), raise instead of pile-waiting and starving
-    # /tasks/sweep — and instead of returning None, which means under-quota.
+    # another transaction already holds the org/user quota lock (an in-flight
+    # cancellation — admission takes no quota locks), raise instead of
+    # pile-waiting — and instead of returning None, which means under-quota.
     if not await try_acquire_quota_locks(session, org_id, billed_user_id):
         raise QuotaLockBusy(
             f"quota lock busy for org_id={org_id} billed_user_id={billed_user_id}"
