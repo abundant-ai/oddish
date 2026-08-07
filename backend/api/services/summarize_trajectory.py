@@ -271,6 +271,8 @@ def build_summary_block(
         output_transform=lambda raw: tb.to_summary(raw, model=model),
         model=model,
         max_tokens=SUMMARY_MAX_TOKENS,
+        response_format=tb.output_schema,
+        output_schema=tb.output_schema.model_json_schema(),
         triggered_by_user_id=triggered_by_user_id,
     )
 
