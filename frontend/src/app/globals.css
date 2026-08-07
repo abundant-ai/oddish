@@ -229,6 +229,7 @@
     --tc-thinking-understand: #1baf7a;
     --tc-thinking-hypothesize: #a184ea;
     --tc-thinking-correction: #4a3aa7;
+    --tc-writing-plan: #008300;
     --tc-implementing: #b8860b;
     --tc-implementing-correction: #c62828;
     --tc-writing-tests: #eda100;
@@ -296,6 +297,7 @@
     --tc-thinking-understand: #199e70;
     --tc-thinking-hypothesize: #9085e9;
     --tc-thinking-correction: #7a68d8;
+    --tc-writing-plan: #14923f;
     --tc-implementing: #b5860e;
     --tc-implementing-correction: #e05252;
     --tc-writing-tests: #c98500;

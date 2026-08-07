@@ -4,7 +4,6 @@ import { useEffect, useState, useTransition } from "react";
 import { useSearchParams } from "next/navigation";
 import { Clock, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { ChatButton } from "@/components/cc-chat/chat-button";
 import { ImportDialog } from "@/components/import-dialog";
 import { TASKS_PAGE_SIZE } from "@/lib/tasks-filters";
 import { useTaskBrowseRevalidate } from "@/lib/use-task-browse";
@@ -21,13 +20,10 @@ export function TasksPageNumber() {
   return <>Page {Math.floor(offset / TASKS_PAGE_SIZE) + 1}</>;
 }
 
-// Header actions for the tasks page: chat, a manual refresh of the task
-// grid, an opt-in auto-refresh toggle (off by default, persisted), and
-// import. Every refresh path revalidates the grid's client-side browse
-// fetch only — nothing the page server-renders depends on task data, so
-// there is no router.refresh(). Search and tag filtering live in the
-// sidebar.
-export function TasksToolbar({ orgId = null }: { orgId?: string | null }) {
+// Every refresh path revalidates the grid's client-side browse fetch only —
+// nothing the page server-renders depends on task data, so there is no
+// router.refresh().
+export function TasksToolbar() {
   const revalidateBrowse = useTaskBrowseRevalidate();
   const [isPending, startTransition] = useTransition();
   const [autoRefresh, setAutoRefresh] = useState(false);
@@ -63,7 +59,6 @@ export function TasksToolbar({ orgId = null }: { orgId?: string | null }) {
 
   return (
     <div className="flex items-center gap-2">
-      {orgId ? <ChatButton scopeKind="global" scopeId={orgId} /> : null}
       <Button
         type="button"
         variant="outline"
