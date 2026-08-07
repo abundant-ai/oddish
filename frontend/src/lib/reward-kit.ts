@@ -310,7 +310,12 @@ export interface RewardDesignDimension {
   kind: RewardKind;
   aggregation: RewardAggregation;
   threshold: number;
-  /** Dimension weight: judge weight, or the sum of its criteria weights. */
+  /**
+   * Dimension weight in reward.toml aggregates: the judge's `weight` for
+   * judge dimensions, 1.0 for programmatic ones (rewardkit's
+   * `Reward.reward_weight` default — criterion weights only matter inside
+   * their dimension).
+   */
   weight: number;
   judgeModel?: string;
   judgeFiles?: string[];
@@ -529,7 +534,7 @@ export function buildRewardDesign(
         kind: "programmatic",
         aggregation: "weighted_mean",
         threshold: 0.5,
-        weight: 0,
+        weight: 1,
         criteria: [],
         criteriaComplete: true,
         source,
@@ -565,11 +570,8 @@ export function buildRewardDesign(
       const dimension = ensureDimension(name, file.path);
       dimension.criteria.push(...parsed.criteria);
       if (!parsed.complete) dimension.criteriaComplete = false;
-      // Programmatic dimension weight = sum of its criteria weights.
-      dimension.weight = dimension.criteria.reduce(
-        (sum, c) => sum + c.weight,
-        0
-      );
+      // Programmatic dimensions keep reward_weight 1.0 (rewardkit default);
+      // criterion weights only matter inside the dimension.
     }
   }
 
@@ -635,10 +637,6 @@ export function enrichDesignWithObserved(
       ...dimension,
       criteria,
       criteriaComplete: true,
-      weight:
-        dimension.kind === "programmatic"
-          ? criteria.reduce((sum, c) => sum + c.weight, 0)
-          : dimension.weight,
     };
   });
 
@@ -649,7 +647,7 @@ export function enrichDesignWithObserved(
       kind: seen.kind ?? "programmatic",
       aggregation: "weighted_mean",
       threshold: 0.5,
-      weight: seen.criteria.reduce((sum, c) => sum + c.weight, 0) || 1,
+      weight: 1,
       judgeModel: seen.judge,
       judgeFiles: seen.judgeFiles,
       judgeTrajectory: seen.judgeTrajectory,
