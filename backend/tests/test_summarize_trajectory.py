@@ -982,3 +982,223 @@ async def test_scoped_prompt_block_attributes_usage_to_override_not_global(
                 )
             )
             await session.commit()
+
+
+# ---------------------------------------------------------------------------
+# context-overflow clipping + shrink-and-retry
+#
+# Prod (2026-08-05): 473 trajectory_summary blocks in 30d died on a 400
+# "prompt is too long", up to 11.2M tokens against a 1M cap. Characters do not
+# predict tokens closely enough to preflight a static budget -- a 588k-char
+# prompt overflowed while a 2.17M-char one fit -- so the API decides.
+# ---------------------------------------------------------------------------
+
+
+class _RecordingFakeLLM:
+    """Fake client that records the prompt and can fail the first N calls."""
+
+    def __init__(self, prompts: list[str], payload: str, failures: list):
+        self._prompts = prompts
+        self._payload = payload
+        self._failures = failures
+        self.last_system_prompt = None
+        self.last_usage = None
+
+    async def stream(self, prompt: str, *, system_prompt: str | None = None):
+        self._prompts.append(prompt)
+        if self._failures:
+            raise self._failures.pop(0)
+        yield self._payload
+
+    async def aclose(self) -> None:
+        return None
+
+
+def _install_recording_llm(monkeypatch, payload: str, failures: list) -> list[str]:
+    prompts: list[str] = []
+
+    async def create(*args, **kwargs):
+        return _RecordingFakeLLM(prompts, payload, failures)
+
+    monkeypatch.setattr(
+        "oddish.blocks.analyzer.analyzer_block.create_llm_client", create
+    )
+    return prompts
+
+
+_OVERFLOW = Exception(
+    "Error code: 400 - {'type': 'error', 'error': {'type': "
+    "'invalid_request_error', 'message': 'prompt is too long: "
+    "1744777 tokens > 1000000 maximum'}}"
+)
+
+
+def test_clip_trajectory_steps_keeps_head_and_tail():
+    from api.services.summarize_trajectory import clip_trajectory_steps
+
+    clipped = clip_trajectory_steps(_trajectory_with_steps(list(range(1, 21))), 6)
+    kept = [s["step_id"] for s in clipped["steps"] if s.get("step_id") is not None]
+    assert kept == [1, 2, 3, 18, 19, 20]
+
+
+def test_clip_trajectory_steps_marks_the_omission():
+    from api.services.summarize_trajectory import clip_trajectory_steps
+
+    clipped = clip_trajectory_steps(_trajectory_with_steps(list(range(1, 21))), 6)
+    markers = [s for s in clipped["steps"] if s.get("step_id") is None]
+    assert len(markers) == 1
+    assert "14 steps omitted" in markers[0]["message"]
+
+
+def test_clip_trajectory_steps_marker_carries_last_dropped_timestamp():
+    from api.services.summarize_trajectory import clip_trajectory_steps
+
+    steps = [
+        _make_step(i, timestamp=f"2026-04-30T12:{i:02d}:00Z") for i in range(1, 21)
+    ]
+    clipped = clip_trajectory_steps({"steps": steps}, 6)
+    marker = next(s for s in clipped["steps"] if s.get("step_id") is None)
+    # Tail is steps 18-20, so step 17 is the last one dropped.
+    assert marker["timestamp"] == "2026-04-30T12:17:00Z"
+
+
+def test_clipped_tail_duration_measures_against_the_dropped_predecessor():
+    """A clipped summary must not report the first tail step as taking 0ms."""
+    from pathlib import Path
+
+    from api.services.blocks.analyzer.trajectory.trajectory_component_block import (
+        TrajectoryBlock,
+        TrajectoryInput,
+    )
+    from api.services.summarize_trajectory import clip_trajectory_steps
+
+    template = (
+        Path(__file__).resolve().parents[2]
+        / "oddish" / "src" / "oddish" / "analyze" / "prompts" / "trajectory_summary.txt"
+    ).read_text()
+    steps = [
+        _make_step(i, timestamp=f"2026-04-30T12:{i:02d}:00Z") for i in range(1, 21)
+    ]
+    clipped = clip_trajectory_steps({"steps": steps}, 6)
+    raw = json.dumps({
+        "summary": "s",
+        "highlights": [],
+        "components": [
+            {"step_ids": [18], "trajectory_component": "debugging", "summary": "y"}
+        ],
+    })
+    block = TrajectoryBlock(
+        TrajectoryInput(
+            task_name="t",
+            instruction=None,
+            final_reward=None,
+            model_used=None,
+            verifier_output=None,
+            trajectory=clipped,
+        ),
+        instructions_template=template,
+    )
+    out = block.to_summary(raw, model="claude-x")
+    # Step 18 follows step 17 by one minute; the omission marker between them
+    # must not flatten that to 0.
+    assert out["components"][0]["duration_ms"] == 60_000
+
+
+def test_clip_trajectory_steps_is_a_noop_under_budget():
+    from api.services.summarize_trajectory import clip_trajectory_steps
+
+    trajectory = _trajectory_with_steps([1, 2, 3])
+    assert clip_trajectory_steps(trajectory, 10) == trajectory
+
+
+def test_clip_trajectory_steps_does_not_mutate_its_input():
+    from api.services.summarize_trajectory import clip_trajectory_steps
+
+    trajectory = _trajectory_with_steps(list(range(1, 21)))
+    clip_trajectory_steps(trajectory, 4)
+    assert len(trajectory["steps"]) == 20
+
+
+@pytest.mark.asyncio
+async def test_generate_retries_with_fewer_steps_on_context_overflow(monkeypatch):
+    from api.services.summarize_trajectory import generate
+
+    _patch_block_persistence(monkeypatch)
+    payload = json.dumps({"summary": "ok", "highlights": [], "components": []})
+    prompts = _install_recording_llm(monkeypatch, payload, [_OVERFLOW])
+
+    result = await generate(
+        _trajectory_with_steps(list(range(1, 41))),
+        _minimal_ctx(),
+        **_PROMPT_KWARGS,
+    )
+
+    assert result["summary"] == "ok"
+    assert len(prompts) == 2, "should retry exactly once after the overflow"
+    assert len(prompts[1]) < len(prompts[0]), "the retry must send a smaller prompt"
+    assert "steps omitted" in prompts[1]
+
+
+@pytest.mark.asyncio
+async def test_generate_halves_repeatedly_until_it_fits(monkeypatch):
+    from api.services.summarize_trajectory import generate
+
+    _patch_block_persistence(monkeypatch)
+    payload = json.dumps({"summary": "ok", "highlights": [], "components": []})
+    prompts = _install_recording_llm(
+        monkeypatch, payload, [_OVERFLOW, _OVERFLOW, _OVERFLOW]
+    )
+
+    result = await generate(
+        _trajectory_with_steps(list(range(1, 41))),
+        _minimal_ctx(),
+        **_PROMPT_KWARGS,
+    )
+
+    assert result["summary"] == "ok"
+    assert len(prompts) == 4
+    sizes = [len(p) for p in prompts]
+    assert sizes == sorted(sizes, reverse=True), f"each attempt must shrink: {sizes}"
+
+
+@pytest.mark.asyncio
+async def test_generate_does_not_retry_non_overflow_errors(monkeypatch):
+    from api.services.summarize_trajectory import SummaryGenerationError, generate
+
+    _patch_block_persistence(monkeypatch)
+    payload = json.dumps({"summary": "ok", "highlights": [], "components": []})
+    prompts = _install_recording_llm(
+        monkeypatch, payload, [Exception("Error code: 529 - overloaded_error")]
+    )
+
+    with pytest.raises(SummaryGenerationError):
+        await generate(
+            _trajectory_with_steps(list(range(1, 41))),
+            _minimal_ctx(),
+            **_PROMPT_KWARGS,
+        )
+    assert len(prompts) == 1, "a non-overflow failure must not be retried"
+
+
+@pytest.mark.asyncio
+async def test_generate_gives_up_after_the_attempt_ceiling(monkeypatch):
+    from api.services.summarize_trajectory import (
+        MAX_OVERFLOW_ATTEMPTS,
+        SummaryGenerationError,
+        generate,
+    )
+
+    _patch_block_persistence(monkeypatch)
+    payload = json.dumps({"summary": "ok", "highlights": [], "components": []})
+    prompts = _install_recording_llm(
+        monkeypatch, payload, [_OVERFLOW] * (MAX_OVERFLOW_ATTEMPTS + 3)
+    )
+
+    with pytest.raises(SummaryGenerationError) as excinfo:
+        await generate(
+            _trajectory_with_steps(list(range(1, 41))),
+            _minimal_ctx(),
+            **_PROMPT_KWARGS,
+        )
+    assert "prompt is too long" in str(excinfo.value)
+    assert len(prompts) <= MAX_OVERFLOW_ATTEMPTS

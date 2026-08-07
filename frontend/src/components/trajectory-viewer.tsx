@@ -36,10 +36,15 @@ import type {
   ObservationContent,
   ContentPart,
 } from "@/lib/types";
-import { phaseColorVars, stepDurationsMs } from "@/lib/trajectory-metrics";
+import {
+  isEmptyStep,
+  phaseColorVars,
+  stepDurationsMs,
+} from "@/lib/trajectory-metrics";
 import {
   groupStatsLabel,
   groupStepsBySegment,
+  renderableStepIds,
   toSegments,
   withOtherSegment,
 } from "@/lib/trajectory-segments";
@@ -282,6 +287,8 @@ function ContentRenderer({
 
 interface StepDurationInfo {
   stepId: number;
+  /** Index into the full step list, which is what onStepClick expects. */
+  index: number;
   durationMs: number;
   elapsedMs: number;
 }
@@ -295,26 +302,24 @@ function StepDurationBar({
 }) {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
 
-  if (steps.length === 0) return null;
-
-  const startTime = steps[0].timestamp
-    ? new Date(steps[0].timestamp).getTime()
-    : 0;
-
-  // Calculate durations: each step's duration is time since previous step
-  const stepDurations: StepDurationInfo[] = steps.map((step, idx) => {
-    const stepTime = step.timestamp ? new Date(step.timestamp).getTime() : 0;
-    const prevStep = idx > 0 ? steps[idx - 1] : null;
-    const prevTime = prevStep?.timestamp
-      ? new Date(prevStep.timestamp).getTime()
-      : stepTime;
-
-    return {
+  // Empty padding steps hold no time and no work; a run of them would otherwise
+  // render as hundreds of min-width slices that mean nothing. Time comes from
+  // the shared measure over the *full* list, so a slice, the group header above
+  // it and the Activity card all charge a padding run to the same step.
+  const durations = stepDurationsMs(steps);
+  const stepDurations: StepDurationInfo[] = [];
+  let elapsedMs = 0;
+  steps.forEach((step, index) => {
+    elapsedMs += durations[index];
+    if (isEmptyStep(step)) return;
+    stepDurations.push({
       stepId: step.step_id,
-      durationMs: Math.max(0, stepTime - prevTime),
-      elapsedMs: stepTime - startTime,
-    };
+      index,
+      durationMs: durations[index],
+      elapsedMs,
+    });
   });
+  if (stepDurations.length === 0) return null;
 
   const totalMs = stepDurations.reduce((sum, s) => sum + s.durationMs, 0);
 
@@ -363,7 +368,7 @@ function StepDurationBar({
                       }}
                       onMouseEnter={() => setHoveredIndex(idx)}
                       onMouseLeave={() => setHoveredIndex(null)}
-                      onClick={() => onStepClick(idx)}
+                      onClick={() => onStepClick(step.index)}
                     />
                   </TooltipTrigger>
                   <TooltipContent side="top">
@@ -545,14 +550,18 @@ function StepMetricsBar({ metrics }: { metrics: TrajectoryStep["metrics"] }) {
 
 function StepTrigger({
   step,
-  prevTimestamp,
+  durationMs,
   startTimestamp,
 }: {
   step: TrajectoryStep;
-  prevTimestamp: string | null;
+  /** From the shared measure, not a delta against the row above: padding is
+   *  charged to the next step that did work, so a neighbour delta here would
+   *  contradict the group header. Null when there is nothing to charge. */
+  durationMs: number | null;
   startTimestamp: string | null;
 }) {
-  const stepDuration = formatStepDuration(prevTimestamp, step.timestamp);
+  const stepDuration =
+    durationMs != null && step.timestamp ? formatMs(durationMs) : null;
   const sinceStart = formatStepDuration(startTimestamp, step.timestamp);
   const firstLine = getFirstLine(step.message)?.slice(0, 60) || null;
 
@@ -762,9 +771,20 @@ export function TrajectoryViewer({
     apiBaseUrl,
     shouldFetch
   );
+  // Derived from the whole trajectory, so attribution stays put while the user
+  // searches, and shared with the Activity card so both agree on every owner.
+  const renderableIds = useMemo(
+    () => renderableStepIds(trajectory?.steps ?? []),
+    [trajectory]
+  );
   const segments = useMemo(
-    () => withOtherSegment(toSegments(summary), trajectory?.steps ?? []),
-    [summary, trajectory]
+    () =>
+      withOtherSegment(
+        toSegments(summary),
+        trajectory?.steps ?? [],
+        renderableIds
+      ),
+    [summary, trajectory, renderableIds]
   );
   const colorFor = useMemo(
     () => phaseColorVars(segments.map((s) => s.key)),
@@ -773,8 +793,8 @@ export function TrajectoryViewer({
   // Grouping runs over the *filtered* list, so a group whose steps all filtered
   // out is simply never emitted.
   const groups = useMemo(
-    () => groupStepsBySegment(visibleSteps, segments),
-    [visibleSteps, segments]
+    () => groupStepsBySegment(visibleSteps, segments, renderableIds),
+    [visibleSteps, segments, renderableIds]
   );
   // Full-trajectory durations: group steps carry indexes into the full list.
   const stepDurations = useMemo(
@@ -873,6 +893,7 @@ export function TrajectoryViewer({
       <TrajectorySummary
         trialId={trialId}
         apiBaseUrl={apiBaseUrl}
+        renderableIds={renderableIds}
         stepIdToIndex={(stepId) =>
           // step_id is typed number but arrives as a string from some producers;
           // strict === would return -1 and the scroll would silently no-op.
@@ -1025,10 +1046,8 @@ export function TrajectoryViewer({
                       <AccordionTrigger className="py-3 hover:no-underline">
                         <StepTrigger
                           step={step}
-                          prevTimestamp={
-                            idx > 0
-                              ? (trajectory.steps[idx - 1]?.timestamp ?? null)
-                              : null
+                          durationMs={
+                            idx > 0 ? (stepDurations[idx] ?? null) : null
                           }
                           startTimestamp={
                             trajectory.steps[0]?.timestamp ?? null

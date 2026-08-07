@@ -211,7 +211,10 @@ async def list_experiment_trials_for_org(
 
 
 async def list_task_trials_for_task(
-    session: AsyncSession, task_id: str, *, probe: bool | None = None,
+    session: AsyncSession,
+    task_id: str,
+    *,
+    probe: bool | None = None,
     version: int | None = None,
 ) -> list[TrialResponse]:
     """List all trials for a task with their responses.
@@ -306,6 +309,7 @@ async def list_task_files_s3(
     cursor: str | None,
     presign: bool,
     version: int | None = None,
+    inline: bool = True,
 ) -> dict:
     """List files in a task's S3 directory."""
     storage = get_storage_client()
@@ -319,6 +323,7 @@ async def list_task_files_s3(
             cursor=cursor,
             presign=presign,
             version=version,
+            inline=inline,
         )
     except HTTPException:
         raise
@@ -401,6 +406,7 @@ async def get_task_file_content_s3(
     file_path: str,
     presign: bool,
     version: int | None = None,
+    max_bytes: int | None = None,
 ) -> dict:
     """Get content of a specific task file from S3."""
     storage = get_storage_client()
@@ -411,6 +417,7 @@ async def get_task_file_content_s3(
             file_path=file_path,
             presign=presign,
             version=version,
+            max_bytes=max_bytes,
         )
     except HTTPException:
         raise

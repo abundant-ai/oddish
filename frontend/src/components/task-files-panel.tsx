@@ -102,13 +102,6 @@ async function* iterateNdjsonLines(
   }
 }
 
-function collectFileNodes(nodes: TreeNode[], map: Map<string, TreeNode>): void {
-  for (const node of nodes) {
-    if (node.type === "file") map.set(node.path, node);
-    if (node.children) collectFileNodes(node.children, map);
-  }
-}
-
 interface TreeNode {
   name: string;
   path: string;
@@ -117,8 +110,11 @@ interface TreeNode {
   content?: string;
   url?: string; // Presigned S3 URL for direct access
   size?: number; // File size in bytes
-  isTruncated?: boolean; // True if content was truncated due to size
 }
+
+type FilePreview =
+  | { kind: "text"; content: string; isTruncated: boolean; size: number | null }
+  | { kind: "binary"; url: string; size: number | null };
 
 interface TaskFilesPanelProps {
   isOpen: boolean;
@@ -147,6 +143,8 @@ interface TaskFilesPanelProps {
    * This allows reusing the file tree viewer for trial files.
    */
   filesUrl?: string;
+  /** Load only file metadata up front, then fetch bodies or URLs on selection. */
+  loadFilesLazily?: boolean;
   /** Explicit task version for file URLs; null deliberately means unversioned. */
   taskVersion?: number | null;
   /**
@@ -161,6 +159,8 @@ interface TaskFilesPanelProps {
    * "Task definition" pane). Falls back to `taskId` when not set.
    */
   staticChecksTaskId?: string | null;
+  /** Detail already owned by the host page; avoids re-fetching the same key. */
+  taskDetail?: TaskDetailResponse | null;
   /**
    * Open a trial from the overview's aggregated QA in the caller's own
    * context (drawer / panel). Return false when the trial isn't addressable
@@ -213,6 +213,7 @@ function pickChecksVersion(
 
 // Truncate files larger than 100KB initially
 const TRUNCATE_THRESHOLD = 100 * 1024;
+const FILE_LOAD_ERROR = "Error loading file content";
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -284,6 +285,39 @@ function findNodeByPath(nodes: TreeNode[], path: string): TreeNode | null {
     }
   }
   return null;
+}
+
+function updateFileContent(
+  nodes: TreeNode[],
+  path: string,
+  content: string
+): TreeNode[] {
+  let changed = false;
+  const updated = nodes.map((node) => {
+    if (node.type === "file" && node.path === path) {
+      changed = true;
+      return { ...node, content };
+    }
+    if (node.children) {
+      const children = updateFileContent(node.children, path, content);
+      if (children !== node.children) {
+        changed = true;
+        return { ...node, children };
+      }
+    }
+    return node;
+  });
+  return changed ? updated : nodes;
+}
+
+function listedFilePreview(file: TreeNode): FilePreview | null {
+  const size = file.size ?? null;
+  if (isBinaryRendererFile(file.name)) {
+    return file.url ? { kind: "binary", url: file.url, size } : null;
+  }
+  return file.content === undefined
+    ? null
+    : { kind: "text", content: file.content, isTruncated: false, size };
 }
 
 /**
@@ -376,9 +410,11 @@ export function TaskFilesPanel({
   onRetryComplete,
   contentOnly = false,
   filesUrl,
+  loadFilesLazily = false,
   taskVersion,
   initialFilePath,
   staticChecksTaskId,
+  taskDetail,
   onOpenTrial,
   overviewTrialsLoading,
   selectedLines,
@@ -401,6 +437,8 @@ export function TaskFilesPanel({
     error: checksLoadError,
     mutate: mutateChecks,
   } = useSWR<TaskDetailResponse>(checksKey, fetcher, {
+    fallbackData: taskDetail ?? undefined,
+    revalidateOnMount: taskDetail == null,
     // Poll while the checks run, and while task QA runs: the full QA job
     // writes fresh findings when it lands, so the pane keeps tracking
     // until both are terminal.
@@ -447,7 +485,7 @@ export function TaskFilesPanel({
   const [qaActionError, setQAActionError] = useState<string | null>(null);
   const [fileTree, setFileTree] = useState<TreeNode[]>([]);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
-  const [selectedFile, setSelectedFile] = useState<TreeNode | null>(null);
+  const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   // The task overview is the default view; picking a file switches away.
   const [overviewSelected, setOverviewSelected] = useState(true);
   // The one gate for "the overview pane is on screen". The tree highlight and
@@ -470,10 +508,6 @@ export function TaskFilesPanel({
     return hasTestToml(fileTree);
   }, [fileTree]);
   const rewardShowing = rewardSelected && rewardDesignAvailable;
-  const [fileContent, setFileContent] = useState<string | null>(null);
-  const [fileContentLoading, setFileContentLoading] = useState(false);
-  const [isTruncated, setIsTruncated] = useState(false);
-  const [fullFileSize, setFullFileSize] = useState<number | null>(null);
   const [loadingFullFile, setLoadingFullFile] = useState(false);
   const [viewMode, setViewMode] = useState<"rendered" | "raw">("rendered");
   const [copiedTaskName, setCopiedTaskName] = useState(false);
@@ -487,12 +521,6 @@ export function TaskFilesPanel({
   useEffect(() => {
     initialFilePathRef.current = initialFilePath;
   }, [initialFilePath]);
-  // Mirrors selectedFile for the listing stream loop, so a content chunk
-  // for the file currently on screen can paint it immediately.
-  const selectedFileRef = useRef<TreeNode | null>(null);
-  useEffect(() => {
-    selectedFileRef.current = selectedFile;
-  }, [selectedFile]);
   const verdictTaskKey =
     isOpen && taskId ? `${baseUrl}/tasks/${taskId}?include_trials=false` : null;
   const { data: verdictTask } = useSWR<Task>(verdictTaskKey, fetcher, {
@@ -508,6 +536,115 @@ export function TaskFilesPanel({
       ? taskVersion
       : ((verdictTask ?? task)?.current_version ?? null);
   const shouldScopeFilesToVersion = taskVersion !== undefined || !filesUrl;
+  const selectedFile = selectedFilePath
+    ? findNodeByPath(fileTree, selectedFilePath)
+    : null;
+
+  const buildSelectedFileUrl = (presign = false, maxBytes?: number) => {
+    if (!selectedFile) return null;
+    const params = new URLSearchParams();
+    if (presign) params.set("presign", "1");
+    if (maxBytes) params.set("max_bytes", String(maxBytes));
+    if (shouldScopeFilesToVersion && currentVersion != null) {
+      params.set("version", String(currentVersion));
+    }
+    const query = params.toString();
+    return `${resolvedFilesUrl}/${encodeURIComponent(selectedFile.path)}${
+      query ? `?${query}` : ""
+    }`;
+  };
+
+  const listedPreview = selectedFile ? listedFilePreview(selectedFile) : null;
+  const directBinaryPreview =
+    selectedFile && isBinaryRendererFile(selectedFile.name) && !loadFilesLazily
+      ? {
+          kind: "binary" as const,
+          url: selectedFile.url ?? buildSelectedFileUrl()!,
+          size: selectedFile.size ?? null,
+        }
+      : null;
+  const immediatePreview = listedPreview ?? directBinaryPreview;
+  const previewRequestKey =
+    selectedFile && !immediatePreview
+      ? [
+          "task-file-preview",
+          resolvedFilesUrl,
+          selectedFile.path,
+          shouldScopeFilesToVersion ? currentVersion : null,
+          loadFilesLazily,
+          filesUrl ? "raw" : "json",
+          selectedFile.url ?? null,
+          selectedFile.size ?? null,
+        ]
+      : null;
+  const {
+    data: fetchedPreview,
+    error: previewError,
+    mutate: mutateFilePreview,
+  } = useSWR<FilePreview>(
+    previewRequestKey,
+    async () => {
+      if (!selectedFile) throw new Error("No file selected");
+      const size = selectedFile.size ?? null;
+
+      if (isBinaryRendererFile(selectedFile.name)) {
+        const url = buildSelectedFileUrl(true);
+        if (!url) throw new Error("File URL unavailable");
+        const res = await fetch(url);
+        if (!res.ok) throw new Error("Failed to fetch file URL");
+        const data = (await res.json()) as { url?: string };
+        if (!data.url) throw new Error("File URL unavailable");
+        return { kind: "binary", url: data.url, size };
+      }
+
+      const shouldTruncate =
+        selectedFile.size !== undefined &&
+        selectedFile.size > TRUNCATE_THRESHOLD;
+      let content: string | null = null;
+      let isTruncated = false;
+
+      if (selectedFile.url) {
+        try {
+          const headers: HeadersInit = shouldTruncate
+            ? { Range: `bytes=0-${TRUNCATE_THRESHOLD - 1}` }
+            : {};
+          const s3Res = await fetch(selectedFile.url, { headers });
+          if (s3Res.ok || s3Res.status === 206) {
+            content = await s3Res.text();
+            isTruncated =
+              s3Res.status === 206 ||
+              (shouldTruncate && content.length >= TRUNCATE_THRESHOLD);
+          }
+        } catch {
+          content = null;
+        }
+      }
+
+      if (content === null) {
+        const url = buildSelectedFileUrl(
+          false,
+          loadFilesLazily && shouldTruncate ? TRUNCATE_THRESHOLD : undefined
+        );
+        if (!url) throw new Error("File content unavailable");
+        const res = await fetch(url);
+        if (!res.ok) throw new Error("Failed to fetch file content");
+        if (filesUrl && !loadFilesLazily) {
+          content = await res.text();
+        } else {
+          const data = (await res.json()) as {
+            content?: string;
+            is_truncated?: boolean;
+          };
+          content = data.content ?? "";
+          isTruncated = data.is_truncated ?? isTruncated;
+        }
+      }
+
+      return { kind: "text", content, isTruncated, size };
+    },
+    { revalidateOnFocus: false, shouldRetryOnError: false }
+  );
+  const selectedPreview = immediatePreview ?? fetchedPreview ?? null;
 
   const verdictSource = verdictTask ?? task;
   // The whole tree comes back from one recursive request — task trees are
@@ -524,6 +661,10 @@ export function TaskFilesPanel({
   const buildListingUrl = useCallback(() => {
     const params = new URLSearchParams();
     params.set("recursive", "1");
+    if (loadFilesLazily) {
+      params.set("inline", "0");
+      params.set("presign", "0");
+    }
     if (!overviewAvailable) {
       params.set("stream", "1");
     }
@@ -536,6 +677,7 @@ export function TaskFilesPanel({
     shouldScopeFilesToVersion,
     currentVersion,
     overviewAvailable,
+    loadFilesLazily,
   ]);
 
   const orderedList = useMemo(() => orderedTasks ?? [], [orderedTasks]);
@@ -755,10 +897,9 @@ export function TaskFilesPanel({
       setLoading(true);
       setError(null);
       setFileTree([]);
-      setSelectedFile(null);
+      setSelectedFilePath(null);
       setOverviewSelected(true);
       setRewardSelected(false);
-      setFileContent(null);
       setExpandedDirs(new Set());
 
       // Once the tree is painted, later stream failures must not replace
@@ -785,7 +926,7 @@ export function TaskFilesPanel({
             tree.find((node) => node.type === "file") ??
             findFirstFile(tree);
           if (defaultFile) {
-            setSelectedFile(defaultFile);
+            setSelectedFilePath(defaultFile.path);
           }
         }
       };
@@ -805,30 +946,22 @@ export function TaskFilesPanel({
         if (contentType.includes("application/x-ndjson") && res.body) {
           // Streamed listing: the tree paints as soon as the first chunk
           // lands; file bodies keep trickling in behind it.
-          let nodeMap: Map<string, TreeNode> | null = null;
+          let receivedListing = false;
           for await (const raw of iterateNdjsonLines(res.body)) {
             if (cancelled) return;
             const chunk = raw as FilesStreamChunk;
-            if (chunk.type === "listing" && nodeMap === null) {
+            if (chunk.type === "listing" && !receivedListing) {
               const tree = buildTreeFromListing(chunk.files || []);
-              nodeMap = new Map();
-              collectFileNodes(tree, nodeMap);
+              receivedListing = true;
               applyListing(tree);
               setLoading(false);
-            } else if (chunk.type === "content" && nodeMap) {
-              const node = nodeMap.get(chunk.path);
-              if (node && node.content === undefined) {
-                node.content = chunk.content;
-                // Paint immediately if this file is on screen waiting.
-                if (selectedFileRef.current?.path === chunk.path) {
-                  setFileContent(chunk.content);
-                  setIsTruncated(false);
-                  setFileContentLoading(false);
-                }
-              }
+            } else if (chunk.type === "content" && receivedListing) {
+              setFileTree((tree) =>
+                updateFileContent(tree, chunk.path, chunk.content)
+              );
             }
           }
-          if (nodeMap === null) {
+          if (!receivedListing) {
             throw new Error("Failed to fetch files");
           }
         } else {
@@ -865,145 +998,8 @@ export function TaskFilesPanel({
     overviewAvailable,
   ]);
 
-  // Fetch file content when a file is selected
-  useEffect(() => {
-    if (
-      !selectedFile ||
-      selectedFile.type !== "file" ||
-      (!taskId && !filesUrl)
-    ) {
-      return;
-    }
-
-    // Binary renderer types (images, pdf, video, audio, xlsx, docx, archives)
-    // are rendered straight from the URL — don't fetch as text.
-    if (isBinaryRendererFile(selectedFile.name)) {
-      setFileContent("");
-      setIsTruncated(false);
-      setFullFileSize(selectedFile.size || null);
-      setFileContentLoading(false);
-      return;
-    }
-
-    // If we already have content cached in the node, use it. Clear the
-    // loading flag too: a cancelled in-flight fetch for the previously
-    // selected file skips its own reset, and inlined contents make this
-    // the common next branch.
-    if (selectedFile.content !== undefined) {
-      setFileContent(selectedFile.content);
-      setIsTruncated(selectedFile.isTruncated || false);
-      setFullFileSize(selectedFile.size || null);
-      setFileContentLoading(false);
-      return;
-    }
-
-    // Capture values for async function
-    const filePath = selectedFile.path;
-    const fileNode = selectedFile;
-    const presignedUrl = selectedFile.url;
-    const fileSize = selectedFile.size;
-    const shouldTruncate = fileSize && fileSize > TRUNCATE_THRESHOLD;
-    let cancelled = false;
-
-    async function fetchContent() {
-      setFileContentLoading(true);
-      setFullFileSize(fileSize || null);
-      // Deliberately keep the previously rendered ``fileContent`` and
-      // ``isTruncated`` visible while a new file loads so the preview
-      // doesn't blink between selections. They'll be replaced when the new
-      // content arrives.
-
-      try {
-        let content: string | null = null;
-        let truncated = false;
-
-        // Use presigned URL directly from listing if available (fast path)
-        if (presignedUrl) {
-          try {
-            // For large files, use Range header to fetch only first chunk
-            const headers: HeadersInit = shouldTruncate
-              ? { Range: `bytes=0-${TRUNCATE_THRESHOLD - 1}` }
-              : {};
-
-            const s3Res = await fetch(presignedUrl, { headers });
-
-            // 206 = Partial Content (Range request succeeded)
-            // 200 = Full content (Range not supported or file smaller than range)
-            if (s3Res.ok || s3Res.status === 206) {
-              content = await s3Res.text();
-              // Check if we got partial content
-              truncated =
-                s3Res.status === 206 ||
-                (!!shouldTruncate && content.length >= TRUNCATE_THRESHOLD);
-            }
-          } catch {
-            content = null;
-          }
-        }
-
-        // Fallback: fetch via backend proxy (slower, but works if presigned URL expired)
-        if (content === null) {
-          const encodedPath = encodeURIComponent(filePath);
-          const params = new URLSearchParams();
-          if (shouldScopeFilesToVersion && currentVersion != null) {
-            params.set("version", String(currentVersion));
-          }
-          const res = await fetch(
-            `${resolvedFilesUrl}/${encodedPath}${params.toString() ? `?${params.toString()}` : ""}`
-          );
-          if (!res.ok) {
-            throw new Error("Failed to fetch file content");
-          }
-          if (filesUrl) {
-            content = await res.text();
-          } else {
-            const data = await res.json();
-            content = data.content || "";
-          }
-        }
-
-        if (!cancelled) {
-          setFileContent(content || "");
-          setIsTruncated(truncated);
-          // Cache in the node
-          fileNode.content = content || "";
-          fileNode.isTruncated = truncated;
-        }
-      } catch {
-        if (!cancelled) {
-          // The listing stream may have delivered this file's body while
-          // the dedicated fetch was failing — never overwrite real
-          // content with an error message.
-          if (fileNode.content !== undefined) {
-            setFileContent(fileNode.content);
-            setIsTruncated(fileNode.isTruncated || false);
-          } else {
-            setFileContent("Error loading file content");
-          }
-        }
-      } finally {
-        if (!cancelled) {
-          setFileContentLoading(false);
-        }
-      }
-    }
-
-    fetchContent();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    selectedFile,
-    taskId,
-    filesUrl,
-    resolvedFilesUrl,
-    shouldScopeFilesToVersion,
-    currentVersion,
-  ]);
-
   // Load full file content (when user clicks "Load full file")
-  const loadFullFile = useCallback(async () => {
+  async function loadFullFile() {
     if (!selectedFile) return;
 
     setLoadingFullFile(true);
@@ -1012,53 +1008,54 @@ export function TaskFilesPanel({
         const s3Res = await fetch(selectedFile.url);
         if (s3Res.ok) {
           const content = await s3Res.text();
-          setFileContent(content);
-          setIsTruncated(false);
-          // Update cache
-          selectedFile.content = content;
-          selectedFile.isTruncated = false;
+          await mutateFilePreview(
+            {
+              kind: "text",
+              content,
+              isTruncated: false,
+              size: selectedFile.size ?? null,
+            },
+            { revalidate: false }
+          );
         }
         return;
       }
 
-      const encodedPath = encodeURIComponent(selectedFile.path);
-      const params = new URLSearchParams();
-      if (shouldScopeFilesToVersion && currentVersion != null) {
-        params.set("version", String(currentVersion));
-      }
-      const res = await fetch(
-        `${resolvedFilesUrl}/${encodedPath}${params.toString() ? `?${params.toString()}` : ""}`
-      );
+      const url = buildSelectedFileUrl();
+      if (!url) return;
+      const res = await fetch(url);
       if (!res.ok) {
         return;
       }
-      if (filesUrl) {
-        const content = await res.text();
-        setFileContent(content);
+      let content: string;
+      if (filesUrl && !loadFilesLazily) {
+        content = await res.text();
       } else {
-        const data = await res.json();
-        setFileContent(data.content || "");
+        const data = (await res.json()) as { content?: string };
+        content = data.content ?? "";
       }
-      setIsTruncated(false);
+      await mutateFilePreview(
+        {
+          kind: "text",
+          content,
+          isTruncated: false,
+          size: selectedFile.size ?? null,
+        },
+        { revalidate: false }
+      );
     } catch {
       // Keep truncated content on error
     } finally {
       setLoadingFullFile(false);
     }
-  }, [
-    selectedFile,
-    filesUrl,
-    resolvedFilesUrl,
-    shouldScopeFilesToVersion,
-    currentVersion,
-  ]);
+  }
 
   // Scroll to top when selected file changes
   useEffect(() => {
     if (contentRef.current) {
       contentRef.current.scrollTop = 0;
     }
-  }, [selectedFile]);
+  }, [selectedFilePath]);
 
   // Report file selection changes upward for URL sync. Null selections are
   // never reported: every null write is a transient reset (listing reload,
@@ -1069,7 +1066,6 @@ export function TaskFilesPanel({
   useEffect(() => {
     onSelectedFileChangeRef.current = onSelectedFileChange;
   });
-  const selectedFilePath = selectedFile?.path ?? null;
   useEffect(() => {
     if (selectedFilePath === null) return;
     onSelectedFileChangeRef.current?.(selectedFilePath);
@@ -1079,12 +1075,9 @@ export function TaskFilesPanel({
   useEffect(() => {
     if (!isOpen) {
       setFileTree([]);
-      setSelectedFile(null);
-      setFileContent(null);
+      setSelectedFilePath(null);
       setError(null);
       setExpandedDirs(new Set());
-      setIsTruncated(false);
-      setFullFileSize(null);
       setLoadingFullFile(false);
       setQAActionError(null);
       setIsRunningQA(false);
@@ -1114,7 +1107,7 @@ export function TaskFilesPanel({
     // doesn't exist in this listing.
     if (!node || node.type !== "file") return;
 
-    setSelectedFile(node);
+    setSelectedFilePath(node.path);
     setOverviewSelected(false);
     setRewardSelected(false);
   }, [initialFilePath, fileTree]);
@@ -1171,7 +1164,8 @@ export function TaskFilesPanel({
   const renderFileTree = (nodes: TreeNode[], depth = 0) => {
     return nodes.map((node) => {
       const isExpanded = expandedDirs.has(node.path);
-      const isSelected = !overviewShowing && selectedFile?.path === node.path;
+      const isSelected =
+        !overviewShowing && !rewardShowing && selectedFile?.path === node.path;
       const Icon =
         node.type === "dir"
           ? isExpanded
@@ -1189,7 +1183,7 @@ export function TaskFilesPanel({
               if (node.type === "dir") {
                 toggleDir(node.path);
               } else {
-                setSelectedFile(node);
+                setSelectedFilePath(node.path);
                 setOverviewSelected(false);
                 setRewardSelected(false);
               }
@@ -1237,9 +1231,7 @@ export function TaskFilesPanel({
       );
     }
 
-    // A null fileContent only means "not loaded yet" — the load effect
-    // hasn't run for this selection. Failed loads store an error string.
-    if (fileContentLoading || fileContent === null) {
+    if (!selectedPreview && !previewError) {
       return (
         <div className="space-y-2 p-4">
           <Skeleton className="h-4 w-full" />
@@ -1248,51 +1240,52 @@ export function TaskFilesPanel({
         </div>
       );
     }
+    if (previewError || !selectedPreview) {
+      return (
+        <div className="text-muted-foreground flex h-full items-center justify-center text-sm">
+          {FILE_LOAD_ERROR}
+        </div>
+      );
+    }
 
     const isBinary = isBinaryRendererFile(selectedFile.name);
-
-    let fileUrl = selectedFile.url ?? null;
-    if (!fileUrl && (taskId || filesUrl)) {
-      const encodedPath = encodeURIComponent(selectedFile.path);
-      const params = new URLSearchParams();
-      if (shouldScopeFilesToVersion && currentVersion != null) {
-        params.set("version", String(currentVersion));
-      }
-      fileUrl = `${resolvedFilesUrl}/${encodedPath}${
-        params.toString() ? `?${params.toString()}` : ""
-      }`;
-    }
 
     return (
       <div className="flex h-full flex-col">
         <div className="min-h-0 flex-1 overflow-auto">
           <FileRenderer
             fileName={selectedFile.name}
-            url={fileUrl}
-            content={isBinary ? null : fileContent}
-            fileSize={fullFileSize ?? selectedFile.size}
+            url={selectedPreview.kind === "binary" ? selectedPreview.url : null}
+            content={
+              selectedPreview.kind === "text" ? selectedPreview.content : null
+            }
+            fileSize={selectedPreview.size ?? selectedFile.size}
             viewMode={viewMode}
             selectedLines={selectedLines}
             onSelectLines={onSelectLinesChange}
           />
         </div>
-        {!isBinary && isTruncated && (
-          <div className="border-border bg-muted/50 flex items-center justify-between border-t px-4 py-3">
-            <span className="text-muted-foreground text-xs">
-              Showing first {formatFileSize(TRUNCATE_THRESHOLD)} of{" "}
-              {fullFileSize ? formatFileSize(fullFileSize) : "large file"}
-            </span>
-            <Button
-              type="button"
-              size="sm"
-              onClick={loadFullFile}
-              disabled={loadingFullFile}
-              className="h-auto px-3 py-1.5 text-xs"
-            >
-              {loadingFullFile ? "Loading..." : "Load full file"}
-            </Button>
-          </div>
-        )}
+        {!isBinary &&
+          selectedPreview.kind === "text" &&
+          selectedPreview.isTruncated && (
+            <div className="border-border bg-muted/50 flex items-center justify-between border-t px-4 py-3">
+              <span className="text-muted-foreground text-xs">
+                Showing first {formatFileSize(TRUNCATE_THRESHOLD)} of{" "}
+                {selectedPreview.size
+                  ? formatFileSize(selectedPreview.size)
+                  : "large file"}
+              </span>
+              <Button
+                type="button"
+                size="sm"
+                onClick={loadFullFile}
+                disabled={loadingFullFile}
+                className="h-auto px-3 py-1.5 text-xs"
+              >
+                {loadingFullFile ? "Loading..." : "Load full file"}
+              </Button>
+            </div>
+          )}
       </div>
     );
   };
@@ -1362,8 +1355,8 @@ export function TaskFilesPanel({
   };
 
   const handleCopyFileContent = async () => {
-    if (fileContent === null) return;
-    await navigator.clipboard.writeText(fileContent);
+    if (selectedPreview?.kind !== "text") return;
+    await navigator.clipboard.writeText(selectedPreview.content);
     setCopiedFileContent(true);
     if (copiedFileContentTimeoutRef.current !== null) {
       window.clearTimeout(copiedFileContentTimeoutRef.current);
@@ -1545,7 +1538,7 @@ export function TaskFilesPanel({
                       type="button"
                       variant="outline"
                       onClick={handleCopyFileContent}
-                      disabled={fileContent === null}
+                      disabled={selectedPreview?.kind !== "text"}
                       className="h-auto w-7 self-stretch p-0"
                       title="Copy raw content"
                       aria-label="Copy raw content"

@@ -1694,6 +1694,9 @@ async def list_task_files(
     presign: bool = Query(
         True, description="Include presigned URLs for direct S3 access"
     ),
+    inline: bool = Query(
+        True, description="Include eligible text file contents in the listing"
+    ),
     version: int | None = Query(None, description="Task version number"),
     stream: bool = Query(
         False,
@@ -1740,6 +1743,7 @@ async def list_task_files(
         cursor=cursor,
         presign=presign,
         version=version,
+        inline=inline,
     )
 
 
@@ -1752,6 +1756,7 @@ async def get_task_file_content(
     auth: Annotated[AuthContext, Depends(require_auth)],
     presign: bool = Query(False),
     version: int | None = Query(None, description="Task version number"),
+    max_bytes: int | None = Query(None, ge=1),
 ):
     """Get content of a specific task file from S3.
 
@@ -1777,6 +1782,7 @@ async def get_task_file_content(
         file_path=file_path,
         presign=presign,
         version=version,
+        max_bytes=max_bytes,
     )
 
     archive_etag = result.get("archive_etag")
