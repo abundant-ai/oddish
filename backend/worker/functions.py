@@ -120,15 +120,16 @@ reconciler_secrets = [*runtime_secrets, *ec2_control_secrets]
     memory=1024,
 )
 async def teardown_ec2_sandbox(external_id: str) -> bool:
+    from oddish.runtime.registry import get_backend
+
+    backend = get_backend("ec2")
+    if backend is None:
+        raise RuntimeError("EC2 backend is not registered")
+    backend.acquire_worker_credentials(include_ssh=False)
     try:
         return await cancel_job_by_worker("ec2", external_id)
     finally:
-        from oddish.runtime.registry import get_backend
-
-        backend = get_backend("ec2")
-        cleanup = getattr(backend, "remove_materialized_worker_credentials", None)
-        if callable(cleanup):
-            cleanup()
+        backend.release_worker_credentials()
 
 # Register TRIAL / ANALYSIS / VERDICT handlers against the unified
 # registry as soon as this module loads in a worker container. The

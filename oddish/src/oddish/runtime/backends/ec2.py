@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import tempfile
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator
@@ -55,6 +56,8 @@ class Ec2Backend:
         self._had_aws_credentials_file = False
         self._aws_profile_replacement_active = False
         self._cleanup_registered = False
+        self._credential_lock = threading.RLock()
+        self._credential_leases = 0
 
     def capabilities(self) -> Capabilities:
         return Capabilities(
@@ -69,72 +72,97 @@ class Ec2Backend:
         )
 
     def materialize_ssh_private_key(self) -> Path:
-        if self._ssh_key_path is not None and self._ssh_key_path.exists():
-            return self._ssh_key_path
-        secret = settings.ec2_ssh_private_key
-        if secret is None or not secret.get_secret_value().strip():
-            raise RuntimeError("ODDISH_EC2_SSH_PRIVATE_KEY is required for EC2")
-        descriptor, raw_path = tempfile.mkstemp(prefix="oddish-ec2-key-")
-        path = Path(raw_path)
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                os.fchmod(handle.fileno(), 0o600)
-                handle.write(secret.get_secret_value().rstrip("\n") + "\n")
-        except Exception:
-            path.unlink(missing_ok=True)
-            raise
-        self._ssh_key_path = path
-        self._register_cleanup()
-        return path
+        with self._credential_lock:
+            if self._ssh_key_path is not None and self._ssh_key_path.exists():
+                return self._ssh_key_path
+            secret = settings.ec2_ssh_private_key
+            if secret is None or not secret.get_secret_value().strip():
+                raise RuntimeError("ODDISH_EC2_SSH_PRIVATE_KEY is required for EC2")
+            descriptor, raw_path = tempfile.mkstemp(prefix="oddish-ec2-key-")
+            path = Path(raw_path)
+            try:
+                with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                    os.fchmod(handle.fileno(), 0o600)
+                    handle.write(secret.get_secret_value().rstrip("\n") + "\n")
+            except Exception:
+                path.unlink(missing_ok=True)
+                raise
+            self._ssh_key_path = path
+            self._register_cleanup()
+            return path
 
     def materialize_aws_profile(self) -> Path:
-        if self._aws_profile_path is not None and self._aws_profile_path.exists():
-            return self._aws_profile_path
-        access_key = settings.ec2_aws_access_key_id
-        secret_key = settings.ec2_aws_secret_access_key
-        if access_key is None or not access_key.get_secret_value().strip():
-            raise RuntimeError("ODDISH_EC2_AWS_ACCESS_KEY_ID is required for EC2")
-        if secret_key is None or not secret_key.get_secret_value().strip():
-            raise RuntimeError("ODDISH_EC2_AWS_SECRET_ACCESS_KEY is required for EC2")
-        descriptor, raw_path = tempfile.mkstemp(prefix="oddish-ec2-aws-")
-        path = Path(raw_path)
-        session_token = settings.ec2_aws_session_token
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                os.fchmod(handle.fileno(), 0o600)
-                handle.write(f"[{_AWS_PROFILE_NAME}]\n")
-                handle.write(
-                    "aws_access_key_id = "
-                    + access_key.get_secret_value().strip()
-                    + "\n"
-                )
-                handle.write(
-                    "aws_secret_access_key = "
-                    + secret_key.get_secret_value().strip()
-                    + "\n"
-                )
-                if session_token is not None and session_token.get_secret_value().strip():
+        with self._credential_lock:
+            if self._aws_profile_path is not None and self._aws_profile_path.exists():
+                return self._aws_profile_path
+            access_key = settings.ec2_aws_access_key_id
+            secret_key = settings.ec2_aws_secret_access_key
+            if access_key is None or not access_key.get_secret_value().strip():
+                raise RuntimeError("ODDISH_EC2_AWS_ACCESS_KEY_ID is required for EC2")
+            if secret_key is None or not secret_key.get_secret_value().strip():
+                raise RuntimeError("ODDISH_EC2_AWS_SECRET_ACCESS_KEY is required for EC2")
+            descriptor, raw_path = tempfile.mkstemp(prefix="oddish-ec2-aws-")
+            path = Path(raw_path)
+            session_token = settings.ec2_aws_session_token
+            try:
+                with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                    os.fchmod(handle.fileno(), 0o600)
+                    handle.write(f"[{_AWS_PROFILE_NAME}]\n")
                     handle.write(
-                        "aws_session_token = "
-                        + session_token.get_secret_value().strip()
+                        "aws_access_key_id = "
+                        + access_key.get_secret_value().strip()
                         + "\n"
                     )
-        except Exception:
-            path.unlink(missing_ok=True)
-            raise
-        self._had_aws_credentials_file = _AWS_SHARED_CREDENTIALS_FILE in os.environ
-        self._previous_aws_credentials_file = os.environ.get(
-            _AWS_SHARED_CREDENTIALS_FILE
-        )
-        os.environ[_AWS_SHARED_CREDENTIALS_FILE] = str(path)
-        self._aws_profile_path = path
-        self._aws_profile_replacement_active = True
-        self._register_cleanup()
-        return path
+                    handle.write(
+                        "aws_secret_access_key = "
+                        + secret_key.get_secret_value().strip()
+                        + "\n"
+                    )
+                    if (
+                        session_token is not None
+                        and session_token.get_secret_value().strip()
+                    ):
+                        handle.write(
+                            "aws_session_token = "
+                            + session_token.get_secret_value().strip()
+                            + "\n"
+                        )
+            except Exception:
+                path.unlink(missing_ok=True)
+                raise
+            self._had_aws_credentials_file = _AWS_SHARED_CREDENTIALS_FILE in os.environ
+            self._previous_aws_credentials_file = os.environ.get(
+                _AWS_SHARED_CREDENTIALS_FILE
+            )
+            os.environ[_AWS_SHARED_CREDENTIALS_FILE] = str(path)
+            self._aws_profile_path = path
+            self._aws_profile_replacement_active = True
+            self._register_cleanup()
+            return path
+
+    def acquire_worker_credentials(self, *, include_ssh: bool) -> None:
+        with self._credential_lock:
+            try:
+                self.materialize_aws_profile()
+                if include_ssh:
+                    self.materialize_ssh_private_key()
+            except Exception:
+                if self._credential_leases == 0:
+                    self._remove_materialized_worker_credentials_unlocked()
+                raise
+            self._credential_leases += 1
+
+    def release_worker_credentials(self) -> None:
+        with self._credential_lock:
+            if self._credential_leases <= 0:
+                raise RuntimeError("EC2 credential lease released without acquisition")
+            self._credential_leases -= 1
+            if self._credential_leases == 0:
+                self._remove_materialized_worker_credentials_unlocked()
 
     def _register_cleanup(self) -> None:
         if not self._cleanup_registered:
-            atexit.register(self.remove_materialized_worker_credentials)
+            atexit.register(self._force_remove_materialized_worker_credentials)
             self._cleanup_registered = True
 
     def remove_materialized_ssh_private_key(self) -> None:
@@ -144,6 +172,19 @@ class Ec2Backend:
         self._ssh_key_path = None
 
     def remove_materialized_worker_credentials(self) -> None:
+        with self._credential_lock:
+            if self._credential_leases:
+                raise RuntimeError(
+                    "Cannot remove EC2 worker credentials while leases are active"
+                )
+            self._remove_materialized_worker_credentials_unlocked()
+
+    def _force_remove_materialized_worker_credentials(self) -> None:
+        with self._credential_lock:
+            self._credential_leases = 0
+            self._remove_materialized_worker_credentials_unlocked()
+
+    def _remove_materialized_worker_credentials_unlocked(self) -> None:
         self.remove_materialized_ssh_private_key()
         if not self._aws_profile_replacement_active:
             return
@@ -199,6 +240,7 @@ class Ec2Backend:
             "launch_mode": "ephemeral",
             "use_public_ip": settings.ec2_use_public_ip,
             "root_volume_size_gb": settings.ec2_root_volume_size_gb,
+            "iam_instance_profile": settings.ec2_instance_profile,
             "bootstrap_docker": settings.ec2_bootstrap_docker,
             "tags": tags,
         }
@@ -223,7 +265,7 @@ class Ec2Backend:
         try:
             import boto3
 
-            current_account_id = self.resolve_aws_account_id()
+            current_account_id = await asyncio.to_thread(self.resolve_aws_account_id)
             if current_account_id != account_id:
                 logger.error(
                     "metric=ec2_teardown outcome=refused reason=account_mismatch "

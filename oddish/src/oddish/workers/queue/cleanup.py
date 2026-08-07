@@ -533,12 +533,15 @@ async def cleanup_orphaned_queue_state(
     ec2_backend: Any | None = None
     ec2_inventory: Ec2InventorySnapshot | None = None
     ec2_orphan_snapshot_errors = 0
+    ec2_credential_lease = False
 
     if settings.ec2_enabled:
         ec2_backend = get_backend("ec2")
         try:
             if ec2_backend is None:
                 raise RuntimeError("EC2 is enabled but its backend is not registered")
+            ec2_backend.acquire_worker_credentials(include_ssh=False)
+            ec2_credential_lease = True
             ec2_inventory = await ec2_backend.snapshot_managed_instances()
             console.print(
                 "metric=ec2_orphan_snapshot "
@@ -652,12 +655,8 @@ async def cleanup_orphaned_queue_state(
             "modal_cost_spans_reconciled": modal_cost_spans_reconciled,
         }
     finally:
-        if ec2_backend is not None:
-            cleanup_credentials = getattr(
-                ec2_backend, "remove_materialized_worker_credentials", None
-            )
-            if callable(cleanup_credentials):
-                cleanup_credentials()
+        if ec2_credential_lease:
+            ec2_backend.release_worker_credentials()
 
 
 @dataclass

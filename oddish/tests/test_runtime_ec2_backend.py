@@ -189,6 +189,11 @@ def test_enabling_ec2_with_a_nonpositive_root_volume_fails_loudly() -> None:
         _complete_ec2_settings(ec2_root_volume_size_gb=0)
 
 
+def test_enabling_ec2_rejects_a_blank_instance_profile() -> None:
+    with pytest.raises(ValidationError, match="ec2_instance_profile"):
+        _complete_ec2_settings(ec2_instance_profile="  ")
+
+
 def test_enabling_ec2_does_not_require_the_worker_only_ssh_secret() -> None:
     configured = _complete_ec2_settings(ec2_ssh_private_key=None)
 
@@ -236,7 +241,9 @@ def test_ec2_backend_materializes_the_private_key_once_with_owner_only_permissio
 
     try:
         assert first_path == second_path
-        assert registrations == [backend.remove_materialized_worker_credentials]
+        assert registrations == [
+            backend._force_remove_materialized_worker_credentials
+        ]
         assert first_path.read_text() == "PRIVATE KEY CONTENT\n"
         assert stat.S_IMODE(first_path.stat().st_mode) == 0o600
     finally:
@@ -333,6 +340,7 @@ def test_ec2_backend_supplies_fixed_platform_launch_settings_and_protected_tags(
             "launch_mode": "ephemeral",
             "use_public_ip": True,
             "root_volume_size_gb": configured.ec2_root_volume_size_gb,
+            "iam_instance_profile": None,
             "bootstrap_docker": configured.ec2_bootstrap_docker,
             "tags": {
                 "team": "evals",
@@ -341,9 +349,52 @@ def test_ec2_backend_supplies_fixed_platform_launch_settings_and_protected_tags(
                 AWS_ACCOUNT_ID_TAG_KEY: AWS_ACCOUNT_ID,
             },
         }
-        assert "iam_instance_profile" not in kwargs
     finally:
         backend.remove_materialized_worker_credentials()
+
+
+def test_ec2_backend_supplies_optional_platform_instance_profile(monkeypatch) -> None:
+    configured = _install_complete_ec2_settings(
+        monkeypatch,
+        ec2_instance_profile=(
+            "arn:aws:iam::123456789012:instance-profile/task"
+        ),
+    )
+    backend = Ec2Backend()
+
+    kwargs = backend.harbor_env_kwargs({})
+
+    try:
+        assert kwargs["iam_instance_profile"] == configured.ec2_instance_profile
+    finally:
+        backend.remove_materialized_worker_credentials()
+
+
+def test_ec2_credential_leases_preserve_shared_files_until_last_release(
+    monkeypatch,
+) -> None:
+    _install_complete_ec2_settings(monkeypatch)
+    backend = Ec2Backend()
+
+    backend.acquire_worker_credentials(include_ssh=True)
+    profile_path = Path(os.environ["AWS_SHARED_CREDENTIALS_FILE"])
+    key_path = backend.materialize_ssh_private_key()
+    backend.acquire_worker_credentials(include_ssh=True)
+
+    backend.release_worker_credentials()
+    assert profile_path.exists()
+    assert key_path.exists()
+
+    backend.release_worker_credentials()
+    assert not profile_path.exists()
+    assert not key_path.exists()
+
+
+def test_ec2_credential_lease_underflow_fails_loudly(monkeypatch) -> None:
+    _install_complete_ec2_settings(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="without acquisition"):
+        Ec2Backend().release_worker_credentials()
 
 
 @pytest.mark.parametrize(
@@ -537,20 +588,25 @@ def test_ec2_runner_fails_before_either_engine_when_backend_is_unregistered(
 
 
 @pytest.mark.parametrize("exit_mode", ["success", "error", "cancel"])
-def test_ec2_runner_removes_materialized_key_for_every_ephemeral_exit(
+def test_ec2_runner_releases_materialized_key_lease_for_every_ephemeral_exit(
     monkeypatch, tmp_path, exit_mode: str
 ) -> None:
     from oddish.workers.harbor import ephemeral, runner as harbor_runner
 
     class FakeBackend:
         def __init__(self) -> None:
-            self.cleanup_calls = 0
+            self.acquire_calls = 0
+            self.release_calls = 0
+
+        def acquire_worker_credentials(self, *, include_ssh: bool) -> None:
+            assert include_ssh is True
+            self.acquire_calls += 1
 
         def harbor_env_kwargs(self, base_kwargs: dict) -> dict:
             return base_kwargs
 
-        def remove_materialized_worker_credentials(self) -> None:
-            self.cleanup_calls += 1
+        def release_worker_credentials(self) -> None:
+            self.release_calls += 1
 
     backend = FakeBackend()
     monkeypatch.setattr(
@@ -589,7 +645,8 @@ def test_ec2_runner_removes_materialized_key_for_every_ephemeral_exit(
     else:
         asyncio.run(coroutine)
 
-    assert backend.cleanup_calls == 1
+    assert backend.acquire_calls == 1
+    assert backend.release_calls == 1
 
 
 def _install_fake_boto3(monkeypatch, **clients: MagicMock) -> MagicMock:
@@ -653,6 +710,56 @@ def test_ec2_teardown_terminates_an_instance_only_after_both_ownership_tags_matc
     )
     client.terminate_instances.assert_called_once_with(InstanceIds=["i-owned"])
     assert "metric=ec2_teardown outcome=terminated" in caplog.text
+
+
+def test_ec2_cancellation_path_dispatches_terminate_instances_once(
+    monkeypatch,
+) -> None:
+    from oddish.core.helpers import (
+        cancel_job_by_worker,
+        unregister_provider_teardown_delegate,
+    )
+    import oddish.runtime.registry as runtime_registry
+
+    _install_complete_ec2_settings(monkeypatch)
+    client = MagicMock()
+    client.describe_instances.return_value = _owned_instance_description()
+    _install_fake_boto3(monkeypatch, ec2=client)
+    backend = Ec2Backend()
+    monkeypatch.setattr(runtime_registry, "get_backend", lambda _name: backend)
+    unregister_provider_teardown_delegate("ec2")
+
+    try:
+        result = asyncio.run(cancel_job_by_worker("ec2", _ec2_handle()))
+    finally:
+        backend.remove_materialized_worker_credentials()
+
+    assert result is True
+    client.terminate_instances.assert_called_once_with(InstanceIds=["i-owned"])
+
+
+def test_ec2_stale_cleanup_path_dispatches_terminate_instances_once(
+    monkeypatch,
+) -> None:
+    import oddish.runtime.registry as runtime_registry
+    from oddish.workers.queue.cleanup import _terminate_orphaned_sandboxes
+
+    _install_complete_ec2_settings(monkeypatch)
+    client = MagicMock()
+    client.describe_instances.return_value = _owned_instance_description()
+    _install_fake_boto3(monkeypatch, ec2=client)
+    backend = Ec2Backend()
+    monkeypatch.setattr(runtime_registry, "get_backend", lambda _name: backend)
+
+    try:
+        terminated = asyncio.run(
+            _terminate_orphaned_sandboxes({("ec2", _ec2_handle())})
+        )
+    finally:
+        backend.remove_materialized_worker_credentials()
+
+    assert terminated == 1
+    client.terminate_instances.assert_called_once_with(InstanceIds=["i-owned"])
 
 
 @pytest.mark.parametrize("state", ["shutting-down", "terminated"])
@@ -1205,14 +1312,14 @@ def test_ec2_harbor_patch_preserves_raw_id_for_non_oddish_environments(
     assert FakeEc2Environment().get_sandbox_id() == "i-plain"
 
 
-def test_ec2_harbor_patch_rejects_any_instance_profile_before_launch(
+def test_ec2_harbor_patch_requires_imdsv2_for_platform_instance_profile(
     monkeypatch,
 ) -> None:
     import oddish.workers.harbor.patches as harbor_patches
 
     class FakeEc2Environment:
         def _run_instances_kwargs(self):
-            return {"IamInstanceProfile": {"Name": "forbidden"}}
+            return {"IamInstanceProfile": {"Name": "platform-role"}}
 
     module = SimpleNamespace(EC2Environment=FakeEc2Environment)
     monkeypatch.setattr(
@@ -1227,8 +1334,11 @@ def test_ec2_harbor_patch_rejects_any_instance_profile_before_launch(
 
     harbor_patches._patch_ec2_lifecycle()
 
-    with pytest.raises(RuntimeError, match="instance profiles"):
-        FakeEc2Environment()._run_instances_kwargs()
+    assert FakeEc2Environment()._run_instances_kwargs()["MetadataOptions"] == {
+        "HttpEndpoint": "enabled",
+        "HttpTokens": "required",
+        "HttpPutResponseHopLimit": 1,
+    }
 
 
 @pytest.mark.parametrize("missing_surface", ["module", "class", "launch_method"])

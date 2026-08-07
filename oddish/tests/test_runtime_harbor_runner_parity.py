@@ -228,6 +228,12 @@ class _FakeEc2Backend:
             },
         }
 
+    def acquire_worker_credentials(self, *, include_ssh: bool) -> None:
+        assert include_ssh is True
+
+    def release_worker_credentials(self) -> None:
+        self.key_path.unlink(missing_ok=True)
+
     def remove_materialized_worker_credentials(self) -> None:
         self.key_path.unlink(missing_ok=True)
 

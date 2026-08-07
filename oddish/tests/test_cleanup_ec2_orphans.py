@@ -263,11 +263,15 @@ async def test_ec2_snapshot_failure_does_not_block_database_cleanup(
     events: list[str] = []
 
     class Backend:
+        def acquire_worker_credentials(self, *, include_ssh: bool) -> None:
+            assert include_ssh is False
+            events.append("credentials_acquire")
+
         async def snapshot_managed_instances(self):
             events.append("snapshot")
             raise RuntimeError("AWS unavailable")
 
-        def remove_materialized_worker_credentials(self) -> None:
+        def release_worker_credentials(self) -> None:
             events.append("credentials_cleanup")
 
     lines: list[str] = []
@@ -298,6 +302,10 @@ async def test_ec2_orphan_target_is_terminated_only_after_commit_and_profile_cle
     expected = {("ec2", instance.external_id)}
 
     class Backend:
+        def acquire_worker_credentials(self, *, include_ssh: bool) -> None:
+            assert include_ssh is False
+            events.append("credentials_acquire")
+
         async def snapshot_managed_instances(self):
             events.append("snapshot")
             return Ec2InventorySnapshot(
@@ -312,7 +320,7 @@ async def test_ec2_orphan_target_is_terminated_only_after_commit_and_profile_cle
         def deployment_name(self) -> str:
             raise AssertionError("cleanup must reuse the inventory deployment")
 
-        def remove_materialized_worker_credentials(self) -> None:
+        def release_worker_credentials(self) -> None:
             events.append("credentials_cleanup")
 
     session = _LivenessSession([])

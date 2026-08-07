@@ -26,6 +26,7 @@ def test_ec2_image_env_allowlist_contains_only_non_secret_runtime_settings() -> 
         "ODDISH_EC2_SECURITY_GROUP_IDS",
         "ODDISH_EC2_KEY_NAME",
         "ODDISH_EC2_SSH_USER",
+        "ODDISH_EC2_INSTANCE_PROFILE",
         "ODDISH_EC2_ROOT_VOLUME_SIZE_GB",
         "ODDISH_EC2_USE_PUBLIC_IP",
         "ODDISH_EC2_BOOTSTRAP_DOCKER",

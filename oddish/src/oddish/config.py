@@ -1238,6 +1238,7 @@ class Settings(BaseSettings):
     ec2_aws_access_key_id: SecretStr | None = None
     ec2_aws_secret_access_key: SecretStr | None = None
     ec2_aws_session_token: SecretStr | None = None
+    ec2_instance_profile: str | None = None
     ec2_root_volume_size_gb: int = 80
     ec2_use_public_ip: bool = True
     ec2_bootstrap_docker: bool = True
@@ -1533,6 +1534,11 @@ class Settings(BaseSettings):
             )
         if not self.ec2_use_public_ip:
             raise ValueError("ec2_use_public_ip must be true for the EC2 v1 backend")
+        if (
+            self.ec2_instance_profile is not None
+            and not self.ec2_instance_profile.strip()
+        ):
+            raise ValueError("ec2_instance_profile cannot be blank when configured")
         if self.ec2_root_volume_size_gb <= 0:
             raise ValueError("ec2_root_volume_size_gb must be greater than zero")
         return self

@@ -1287,6 +1287,10 @@ async def run_harbor_trial_async(
             "EC2 environment requested but the EC2 backend is not enabled or "
             "registered; set ODDISH_EC2_ENABLED=true with complete EC2 settings"
         )
+    ec2_credential_lease = False
+    if environment == EnvironmentType.EC2:
+        backend.acquire_worker_credentials(include_ssh=True)
+        ec2_credential_lease = True
     try:
         return await _run_harbor_trial_async_impl(
             task_path=task_path,
@@ -1305,12 +1309,8 @@ async def run_harbor_trial_async(
             backend=backend,
         )
     finally:
-        if environment == EnvironmentType.EC2 and backend is not None:
-            remove_credentials = getattr(
-                backend, "remove_materialized_worker_credentials", None
-            )
-            if callable(remove_credentials):
-                remove_credentials()
+        if ec2_credential_lease:
+            backend.release_worker_credentials()
 
 
 async def _run_harbor_trial_async_impl(

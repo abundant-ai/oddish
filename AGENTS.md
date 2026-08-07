@@ -521,8 +521,10 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   `ODDISH_EC2_AWS_*` settings; workers materialize a mode-`0600` AWS profile and
   scrub the raw values before starting Harbor. API cancellation delegates to a
   dedicated Modal teardown function, so API and dispatcher containers receive
-  neither EC2 control nor SSH secrets. Never attach an instance profile to a
-  sandbox VM; tenant code runs there, and Oddish forces the metadata service off.
+  neither EC2 control nor SSH secrets. An optional platform-owned
+  `ODDISH_EC2_INSTANCE_PROFILE` may be attached; it is visible to tenant code,
+  so keep it task-scoped and grant the control identity `iam:PassRole` only for
+  that role. Oddish requires IMDSv2 when configured and disables IMDS otherwise.
 - Oddish does not create the VPC, subnet, security group, AMI, key pair, or IAM
   policy. Every instance and root volume must carry protected Oddish ownership,
   deployment, task/trial, worker-job, and Harbor-session tags. Normal teardown,
@@ -599,8 +601,9 @@ EC2 canary procedure:
    Confirm the trial records provider `ec2` and an external instance handle, and
    confirm the instance and root volume have the protected Oddish tags.
 3. Verify SSH/bootstrap, Docker Compose execution, result/artifact collection,
-   and terminal instance state. Confirm the instance has no IAM profile and its
-   metadata endpoint is disabled.
+   and terminal instance state. Confirm the instance has the configured IAM
+   profile (or none), and that metadata is IMDSv2-only when configured or
+   disabled otherwise.
 4. Start a longer canary, cancel it with `oddish cancel <trial-or-task-id>`, and
    confirm the tagged instance terminates exactly once.
 5. In the non-production deployment only, deliberately interrupt a worker after

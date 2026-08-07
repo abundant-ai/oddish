@@ -8,9 +8,9 @@ Add EC2 as an opt-in Harbor compute provider using one public-IP, key-only SSH i
 
 - Add opt-in EC2 settings, secure SSH-key materialization, an `Ec2Backend`, conditional registry wiring, CPU-only capability reporting, protected platform kwargs, ownership-tagged teardown, and Harbor lifecycle compatibility patching.
 - Expose `environment=ec2` without changing default CPU/GPU/TPU routing.
-- Reject attach mode, retained instances, accelerator requests, instance profiles, metadata-option overrides, and platform-owned EC2 kwarg overrides loudly.
-- Disable the instance metadata endpoint on every launch; EC2 control credentials remain only in Modal and are never attached to tenant instances.
-- Tests must cover disabled/enabled registration, unchanged defaults, config validation, key permissions, protected kwargs/tags, forced IMDS disablement, absence of instance profiles, lifecycle IDs, and tagged teardown.
+- Reject attach mode, retained instances, accelerator requests, metadata-option overrides, and platform-owned EC2 kwarg overrides loudly. Allow only the optional platform-owned instance profile.
+- Disable the instance metadata endpoint when no profile is configured. Require IMDSv2 tokens when the platform attaches a profile, and document that its permissions are exposed to sandbox code.
+- Tests must cover disabled/enabled registration, unchanged defaults, config validation, key permissions, protected kwargs/tags, conditional IMDS behavior, optional platform profiles, lifecycle IDs, and tagged teardown.
 
 ## S2 — Harbor execution and hosted packaging
 

@@ -546,6 +546,8 @@ _broad_runtime_secret_names = {
 }
 if SAURON_AWS_SECRET_NAME:
     _broad_runtime_secret_names.add(SAURON_AWS_SECRET_NAME)
+if SLACK_EXPENSE_SECRET_NAME:
+    _broad_runtime_secret_names.add(SLACK_EXPENSE_SECRET_NAME)
 if MODAL_APP_NAME.startswith("oddish-pr-"):
     _broad_runtime_secret_names.add(f"{MODAL_APP_NAME}-db")
 _validate_ec2_secret_isolation(
@@ -715,6 +717,7 @@ _EC2_PUBLIC_ENV_NAMES = {
     "ODDISH_EC2_SECURITY_GROUP_IDS",
     "ODDISH_EC2_KEY_NAME",
     "ODDISH_EC2_SSH_USER",
+    "ODDISH_EC2_INSTANCE_PROFILE",
     "ODDISH_EC2_ROOT_VOLUME_SIZE_GB",
     "ODDISH_EC2_USE_PUBLIC_IP",
     "ODDISH_EC2_BOOTSTRAP_DOCKER",

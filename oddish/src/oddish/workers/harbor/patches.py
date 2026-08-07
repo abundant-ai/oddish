@@ -518,8 +518,13 @@ def _patch_ec2_lifecycle(*, require_ec2: bool = False) -> None:
     def run_instances_kwargs(self: Any) -> dict[str, Any]:
         kwargs = original_run_instances_kwargs(self)
         if kwargs.get("IamInstanceProfile"):
-            raise RuntimeError("EC2 instance profiles are forbidden for Oddish sandboxes")
-        kwargs["MetadataOptions"] = {"HttpEndpoint": "disabled"}
+            kwargs["MetadataOptions"] = {
+                "HttpEndpoint": "enabled",
+                "HttpTokens": "required",
+                "HttpPutResponseHopLimit": 1,
+            }
+        else:
+            kwargs["MetadataOptions"] = {"HttpEndpoint": "disabled"}
         return kwargs
 
     cls.provider_name = "ec2"

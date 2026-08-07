@@ -17,7 +17,7 @@ reconciliation belong to S2/S3.
    before Modal. Therefore an explicit `environment=ec2` can resolve, while
    ordinary CPU work still chooses Daytona and GPU work still chooses Modal.
 3. Submission and worker validation reject `delete=false`, GPU/TPU requests,
-   attach mode, instance profiles, metadata overrides, SSH-control overrides,
+   attach mode, metadata overrides, SSH-control overrides,
    and every other platform-owned EC2 launch option. User tags are allowed only
    when they do not replace Oddish or Harbor ownership tags.
 4. For a normal in-process Harbor run, `Ec2Backend.harbor_env_kwargs()` resolves
@@ -28,8 +28,8 @@ reconciliation belong to S2/S3.
 5. The compatibility patch gives Harbor's `EC2Environment` the provider name
    `ec2`. For Oddish-managed instances, `get_sandbox_id()` returns
    `ec2://<account>/<region>/<instance-id>`; direct non-Oddish Harbor use keeps
-   the raw instance ID. The patch also removes EC2 instance-profile access and
-   forces IMDS off in every `RunInstances` request. Harbor applies its merged
+   the raw instance ID. The patch disables IMDS when no instance profile is
+   configured and requires IMDSv2 tokens for a platform-owned profile. Harbor applies its merged
    tags to both the instance and root volume.
 6. Harbor emits the provider and external handle through its lifecycle hooks.
    Existing Oddish worker code can persist those fields on `worker_jobs`, so
@@ -45,7 +45,7 @@ flowchart LR
   Submit["explicit environment=ec2"] --> Validate["schema + worker validation"]
   Validate --> Backend["Ec2Backend fixed kwargs + 0600 SSH key"]
   Backend --> Harbor["Harbor EC2Environment"]
-  Harbor --> Launch["RunInstances; instance + volume tags; IMDS off"]
+  Harbor --> Launch["RunInstances; instance + volume tags; IMDS off or v2-only"]
   Launch --> Hook["hook: provider=ec2 + account/region/instance handle"]
   Hook --> Persist["worker_jobs provider/external_id"]
   Persist --> Teardown["describe + ownership check + terminate"]
@@ -65,8 +65,10 @@ flowchart LR
   settings, so a submitted task cannot weaken host-key checking or redirect the
   worker's SSH behavior.
 - **Temporary key lifetime — verified safe for the S1 in-process path.** Key
-  creation is lazy, mode `0600`, never logged, and runner cleanup covers normal
-  return, ordinary exceptions, and `CancelledError`. The override-Harbor child
+  creation is lazy, mode `0600`, and never logged. Reference-counted leases keep
+  shared files alive while concurrent in-process trials still use them and
+  remove them after the final return, ordinary exception, or `CancelledError`.
+  The override-Harbor child
   does not yet receive resolved EC2 kwargs in S1; that is an explicit S2 slice
   boundary rather than a fallback.
 - **Validation before routing — verified safe.** The worker repeats EC2

@@ -9,7 +9,7 @@ import worker.functions as worker_functions
 @pytest.mark.asyncio
 async def test_control_function_runs_one_ec2_teardown(monkeypatch) -> None:
     calls: list[tuple[str, str]] = []
-    cleanup_calls: list[bool] = []
+    lease_calls: list[tuple[str, bool | None]] = []
     import oddish.runtime.registry as runtime_registry
     from oddish.core.helpers import (
         register_provider_teardown_delegate,
@@ -21,8 +21,11 @@ async def test_control_function_runs_one_ec2_teardown(monkeypatch) -> None:
             calls.append(("ec2", external_id))
             return True
 
-        def remove_materialized_worker_credentials(self) -> None:
-            cleanup_calls.append(True)
+        def acquire_worker_credentials(self, *, include_ssh: bool) -> None:
+            lease_calls.append(("acquire", include_ssh))
+
+        def release_worker_credentials(self) -> None:
+            lease_calls.append(("release", None))
 
     backend = Backend()
     monkeypatch.setattr(runtime_registry, "get_backend", lambda _provider: backend)
@@ -38,7 +41,7 @@ async def test_control_function_runs_one_ec2_teardown(monkeypatch) -> None:
 
     assert result is True
     assert calls == [("ec2", "ec2://account/region/instance")]
-    assert cleanup_calls == [True]
+    assert lease_calls == [("acquire", False), ("release", None)]
 
 
 @pytest.mark.asyncio

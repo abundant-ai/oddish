@@ -19,8 +19,8 @@
 6. Post-commit teardown calls the registered EC2 backend. It re-describes each
    instance, verifies the protected account, deployment, and managed tags, and
    only then calls `TerminateInstances`.
-7. Temporary AWS profile material is removed after all teardown attempts,
-   including error paths. Cleanup continues when inventory or an individual
+7. The reconciler holds a credential lease through inventory and all teardown
+   attempts, then releases it on every exit path. Cleanup continues when an individual
    teardown call fails, while emitting an explicit error metric and log.
 
 ## Decision policy
@@ -59,6 +59,6 @@
 ## Verification
 
 The combined provider, execution parity, routing, hosted policy, cancellation,
-retry, stale-worker, cleanup, and reconciliation suite completed with 335 passed
+retry, stale-worker, cleanup, and reconciliation suite completed with 341 passed
 and 4 skipped tests. A live AWS canary still requires operator-provided AMI,
 network, key-pair, and IAM credentials.
