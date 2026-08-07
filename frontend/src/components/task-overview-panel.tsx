@@ -330,13 +330,26 @@ export function TaskOverviewPanel({
     [foreignIds, versionTrials],
   );
 
-  const openTrial = (trial: Trial) => {
-    if (onOpenTrial?.(trial)) return;
-    if (!taskId) return;
+  const taskTrialHref = (trial: Trial): string | null => {
+    if (!taskId) return null;
     const params = new URLSearchParams();
     if (trial.task_version_id) params.set("version", trial.task_version_id);
     params.set("trial", trial.id);
-    router.push(`/tasks/${taskId}?${params.toString()}`);
+    return `/tasks/${taskId}?${params.toString()}`;
+  };
+
+  const openTrial = (trial: Trial) => {
+    // A trial from outside this context opens on its task page in a new
+    // tab: rendering it in the host drawer would swap the drawer's own
+    // context out from under the reader.
+    if (foreignIds?.has(trial.id)) {
+      const href = taskTrialHref(trial);
+      if (href) window.open(href, "_blank", "noopener,noreferrer");
+      return;
+    }
+    if (onOpenTrial?.(trial)) return;
+    const href = taskTrialHref(trial);
+    if (href) router.push(href);
   };
 
   const renderFindingSources = (item: PreTrialFinding) => {
@@ -370,7 +383,7 @@ export function TaskOverviewPanel({
               )}
               title={
                 foreign
-                  ? `Open trial ${trial.name} — ran outside this experiment`
+                  ? `Open trial ${trial.name} in a new tab — ran outside this experiment`
                   : `Open trial ${trial.name}`
               }
             >
@@ -734,7 +747,11 @@ function TrialQaRow({
           onOpen();
         }}
         className="border-border text-muted-foreground hover:text-foreground hover:border-foreground/40 inline-flex shrink-0 items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] transition-colors"
-        title={`Open trial ${trial.name}`}
+        title={
+          foreign
+            ? `Open trial ${trial.name} in a new tab`
+            : `Open trial ${trial.name}`
+        }
       >
         View trial
         <ArrowUpRight className="h-3 w-3" aria-hidden="true" />

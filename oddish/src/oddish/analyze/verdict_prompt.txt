@@ -18,39 +18,37 @@ Trial classifications:
 * GOOD_FAILURE — the agent failed, but the task was fair. The task works.
 * BAD_SUCCESS — the agent passed, but did not really solve the task. The task has a problem.
 * BAD_FAILURE — a task defect caused the failure, or the task leaked hidden files. The task has a problem.
-* HARNESS_ERROR — the infrastructure broke the run. The run tells you nothing about the task. There is one exception: the subtype `hidden_file_leak` means that the task exposed hidden files. That is a task problem.
+* HARNESS_ERROR — the infrastructure broke the run, so the run tells you nothing about the task. There is one exception: the subtype `hidden_file_leak` means that the task exposed hidden files. That is a task problem.
 
-## TWO KINDS OF EVIDENCE
+## DISQUALIFIERS — CHECK THESE FIRST
 
-The analyses contain opinions and facts. Do not give them the same weight.
+Not all evidence has the same weight. Some evidence disqualifies the task immediately. One disqualifier is final: reject the task, no matter how good the other trials look. Do not average a disqualifier against clean results. Do not treat it as one vote.
 
-An opinion is a judgment. "The instruction is unclear" is an opinion. "The tests are too strict" is an opinion. One trial with an opinion can be wrong. An opinion is strong evidence only when most trials agree on it.
+The disqualifiers are:
 
-A fact is a measurement or a proven event. One fact is sufficient evidence. Clean results from the other trials do not cancel a fact. These four findings are facts:
-
-* A used leak. A trial read the hidden tests, the solution, or other blocked files (subtype `hidden_file_leak`, `test_inspection`, `oracle_copying`, or `unintended_access`). This shows that the leak is real.
-* A found leak. A `must_fix` finding with the dimension `info_leakage`, from the static quality check or from a trial. The leak is real even when no trial used it.
-* Weak tests. A trial measured that the tests accept work that does not solve the task. Example: the base model, with no changes, already scores above the pass threshold. Then every pass is empty, including the passes with the GOOD_SUCCESS label. All of them passed the same weak tests.
+* A used leak. A trial read the hidden tests, the solution, or other blocked files (subtype `hidden_file_leak`, `test_inspection`, `oracle_copying`, or `unintended_access`).
+* A found leak. A `must_fix` finding with the dimension `info_leakage`, from the static quality check or from a trial. The leak disqualifies even when no trial used it.
+* Measured weak tests. A trial measured that the tests accept work that does not solve the task. Example: the base model, with no changes, already scores above the pass threshold. Every pass through weak tests is empty, including the passes with the GOOD_SUCCESS label.
 * A failed baseline. A nop baseline passed, so the task may already be solved. Or an oracle baseline failed, so the reference solution does not work.
 
-## RULES
+## JUDGMENT — ONLY WHEN THERE IS NO DISQUALIFIER
+
+The remaining evidence is opinion: "the instruction is unclear", "the tests are too strict". One trial with an opinion can be wrong. An opinion counts only when most trials agree on it. Weigh opinions with these rules:
 
 1. A difficult task is not a defective task. A pass rate of 10-40% is ideal for a benchmark. Do not reject a task only because agents fail it.
 2. One fair success shows that an agent can solve the task.
 3. Be careful with claims that the instruction is incomplete. Ask this question: could the agent find the missing detail in the codebase? If yes, the claim is not correct. Give it less weight.
+4. Most trials show the SAME task problem, with clear evidence — that is a real pattern, not noise.
 
 ## THE VERDICT
 
-Reject the task when one or more of these points is true:
+Reject the task when a disqualifier exists, or when most trials show the same task problem with clear evidence. Accept the task in all other cases. A run where all trials fail is normal for a difficult task. A mixed run is normal. One BAD label that is not a disqualifier is also normal.
 
-* A baseline failed. Set the confidence to high.
-* A trial used a leak, or an analysis found a leak. Set the confidence to high.
-* A trial measured that the tests are weak (subtype `permissive_tests` or `task_pre_solved`). Set the confidence to high when the static quality check found the same defect as a `must_fix` `verifier` finding. Set it to medium when only the trial shows the defect.
-* Most trials show the same task problem, with clear evidence. Set the confidence to medium, or to high when all trials agree.
+Confidence:
 
-Accept the task in all other cases. A run where all trials fail is normal for a difficult task. A mixed run is normal. One BAD label without a fact behind it is also normal.
-
-Confidence is high when the trials agree, or when a fact decides the verdict. Confidence is medium for a majority pattern. Confidence is low when the trials do not agree, or when there are only harness errors.
+* A disqualifier: high. One exception: measured weak tests shown by one trial only, with no matching `must_fix` `verifier` finding in the static quality check — medium.
+* A majority pattern: medium. High when all trials agree.
+* An accept: high when the trials agree. Low when the trials disagree, or when there are only harness errors.
 
 ## OUTPUT
 
@@ -70,4 +68,4 @@ How to write the fields:
 * Put backticks around each code name: files, tests, functions, variables, and config keys. The card shows backticks as code. Use no other Markdown.
 * `primary_issue` — null when you accept the task. When you reject it, name the pattern and give counts: "3/4 trials fail on an error string that the instruction does not state". Start with "CRITICAL:" for a baseline failure.
 * `recommendations` — when you accept, give at most two small suggestions. When you reject, give 3-5 concrete fixes. Put the most frequent problem first. Merge duplicates from different trials. Write "Add the file path to instruction.md line 15", not "improve the instructions".
-* `reasoning` — the reader did not see the analyses or this prompt. When you do not agree with a trial's classification, name that trial and tell why in plain words. When a fact decides the verdict, name the fact. Do not disagree silently. The reader sees your verdict and the trial analyses together.
+* `reasoning` — the reader did not see the analyses or this prompt. When a disqualifier decides the verdict, name it. When you do not agree with a trial's classification, name that trial and tell why in plain words. Do not disagree silently. The reader sees your verdict and the trial analyses together.
