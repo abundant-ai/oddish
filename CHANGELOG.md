@@ -30,7 +30,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- Trial heartbeats now cover the post-execution tail. The heartbeat task used to stop the moment Harbor execution returned, but the S3 results upload, sauron mirror, inline probe summary, and result store all run after that point — so a slow tail exceeded the 15-minute stale-heartbeat threshold, the reap sweep marked the job "Worker heartbeat stalled for over 15 minutes", and `_store_trial_results` then discarded the finished result on its ownership check. Completed (sometimes passing) trials were re-queued and re-run from scratch. The heartbeat now starts in `run_trial_job` and stops only after the result is stored and settled.
+- Worker heartbeats used to stop as soon as the agent finished, but the worker still had to upload and save the results. When that took over 15 minutes, the cleanup sweep marked the trial "Worker heartbeat stalled for over 15 minutes", threw away the finished result, and re-ran the whole trial. The heartbeat now runs until the results are saved and settled.
 
 ---
 

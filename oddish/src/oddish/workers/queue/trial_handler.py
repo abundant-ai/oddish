@@ -401,7 +401,10 @@ async def _heartbeat_trial_execution(
     The unified stale-reap in ``cleanup.py`` reads only ``worker_jobs``,
     so missing the worker_jobs write would cause long-running trials
     (Harbor can run for hours) to get falsely reaped after the 15-minute
-    threshold. Kept as two separate writes rather than a single txn
+    threshold. For the same reason the worker_jobs write runs on every
+    tick even once the trial row is finished: the worker is still
+    uploading and settling results, and ``heartbeat_worker_job`` itself
+    ignores rows this worker no longer holds. Kept as two separate writes rather than a single txn
     because a pooler blip on one shouldn't silence heartbeats on the
     other; the failure-folding behavior below applies uniformly.
 
@@ -436,10 +439,6 @@ async def _heartbeat_trial_execution(
                 pending_last_error=pending_last_error,
                 pending_last_error_at=pending_last_error_at,
             )
-            # Also written after the trial row is marked finished: settlement
-            # is still running under this job, and the cleanup sweep reads
-            # worker_jobs.heartbeat_at. heartbeat_worker_job only updates a
-            # RUNNING row that still belongs to this worker.
             if worker_job_id:
                 await heartbeat_worker_job(
                     worker_job_id,
@@ -1600,8 +1599,6 @@ async def run_trial_job(
 
     execution: TrialExecutionResult | None = None
     trial_terminal = False
-    # Keep heartbeating until the result is uploaded and saved, or the
-    # cleanup sweep decides the worker is dead and discards the finished run.
     heartbeat_stop = asyncio.Event()
     heartbeat_task = asyncio.create_task(
         _heartbeat_trial_execution(
