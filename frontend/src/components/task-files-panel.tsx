@@ -522,10 +522,11 @@ export function TaskFilesPanel({
     ? findNodeByPath(fileTree, selectedFilePath)
     : null;
 
-  const buildSelectedFileUrl = (presign = false) => {
+  const buildSelectedFileUrl = (presign = false, maxBytes?: number) => {
     if (!selectedFile) return null;
     const params = new URLSearchParams();
     if (presign) params.set("presign", "1");
+    if (maxBytes) params.set("max_bytes", String(maxBytes));
     if (shouldScopeFilesToVersion && currentVersion != null) {
       params.set("version", String(currentVersion));
     }
@@ -583,13 +584,31 @@ export function TaskFilesPanel({
         selectedFile.size > TRUNCATE_THRESHOLD;
       let content: string | null = null;
       let isTruncated = false;
+      let fileUrl = selectedFile.url;
 
-      if (selectedFile.url) {
+      if (loadFilesLazily && !fileUrl) {
+        const url = buildSelectedFileUrl(true, TRUNCATE_THRESHOLD);
+        if (!url) throw new Error("File content unavailable");
+        const res = await fetch(url);
+        if (!res.ok) throw new Error("Failed to fetch file content");
+        const data = (await res.json()) as {
+          content?: string;
+          url?: string;
+          is_truncated?: boolean;
+        };
+        fileUrl = data.url;
+        if (data.content !== undefined) {
+          content = data.content;
+          isTruncated = data.is_truncated ?? false;
+        }
+      }
+
+      if (fileUrl) {
         try {
           const headers: HeadersInit = shouldTruncate
             ? { Range: `bytes=0-${TRUNCATE_THRESHOLD - 1}` }
             : {};
-          const s3Res = await fetch(selectedFile.url, { headers });
+          const s3Res = await fetch(fileUrl, { headers });
           if (s3Res.ok || s3Res.status === 206) {
             content = await s3Res.text();
             isTruncated =
@@ -601,7 +620,7 @@ export function TaskFilesPanel({
         }
       }
 
-      if (content === null) {
+      if (content === null && !loadFilesLazily) {
         const url = buildSelectedFileUrl();
         if (!url) throw new Error("File content unavailable");
         const res = await fetch(url);
@@ -613,6 +632,8 @@ export function TaskFilesPanel({
           content = data.content ?? "";
         }
       }
+
+      if (content === null) throw new Error("File content unavailable");
 
       return { kind: "text", content, isTruncated, size };
     },

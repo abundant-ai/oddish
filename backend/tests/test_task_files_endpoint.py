@@ -68,3 +68,38 @@ def test_tree_only_listing_forwards_inline_and_presign_flags(client):
         version=3,
         inline=False,
     )
+
+
+def test_selected_file_forwards_preview_limit(client):
+    @asynccontextmanager
+    async def fake_get_session():
+        yield object()
+
+    get_task = AsyncMock(return_value=SimpleNamespace(current_version=None))
+    get_file = AsyncMock(
+        return_value={
+            "path": "large.txt",
+            "content": "preview",
+            "size": 2_000_000,
+            "is_truncated": True,
+        }
+    )
+
+    with (
+        patch("api.routers.tasks.get_session", new=fake_get_session),
+        patch("api.routers.tasks.get_task_for_org_core", new=get_task),
+        patch("api.routers.tasks.get_task_file_content_s3", new=get_file),
+    ):
+        response = client.get(
+            "/tasks/task-1/files/large.txt?version=3&presign=true&max_bytes=102400"
+        )
+
+    assert response.status_code == 200
+    assert response.json()["is_truncated"] is True
+    get_file.assert_awaited_once_with(
+        task_id="task-1",
+        file_path="large.txt",
+        presign=True,
+        version=3,
+        max_bytes=102400,
+    )

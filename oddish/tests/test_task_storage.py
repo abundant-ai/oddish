@@ -621,6 +621,33 @@ async def test_get_task_file_content_reads_archive_member(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_task_file_content_caps_archive_member(monkeypatch):
+    archive_bytes = _make_task_archive({"large.txt": "é" * 100})
+    storage = storage_mod.StorageClient()
+    storage._client = object()
+
+    async def fake_object_exists(s3_key: str) -> bool:
+        return s3_key == "tasks/task-123/.oddish-task.tar.gz"
+
+    async def fake_download_bytes(_s3_key: str) -> bytes:
+        return archive_bytes
+
+    monkeypatch.setattr(storage, "object_exists", fake_object_exists)
+    monkeypatch.setattr(storage, "download_bytes", fake_download_bytes)
+
+    payload = await storage.get_task_file_content(
+        task_id="task-123",
+        file_path="large.txt",
+        presign=True,
+        max_bytes=5,
+    )
+
+    assert payload["content"] == "éé"
+    assert payload["size"] == 200
+    assert payload["is_truncated"] is True
+
+
+@pytest.mark.asyncio
 async def test_delete_prefix_deletes_all_matching_s3_objects(monkeypatch):
     fake_client = _FakeS3Client(
         pages=[

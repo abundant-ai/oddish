@@ -406,6 +406,7 @@ async def get_task_file_content_s3(
     file_path: str,
     presign: bool,
     version: int | None = None,
+    max_bytes: int | None = None,
 ) -> dict:
     """Get content of a specific task file from S3."""
     storage = get_storage_client()
@@ -416,6 +417,7 @@ async def get_task_file_content_s3(
             file_path=file_path,
             presign=presign,
             version=version,
+            max_bytes=max_bytes,
         )
     except HTTPException:
         raise

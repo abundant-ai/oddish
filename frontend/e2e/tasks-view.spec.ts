@@ -35,7 +35,7 @@ test.describe("authenticated task view", () => {
       // CardTitle renders a styled <div>, not an <h*>, so this is text — not a
       // heading role.
       await expect(
-        page.getByText("Recent Tasks", { exact: true }),
+        page.getByText("Recent Tasks", { exact: true })
       ).toBeVisible();
       await page.locator('a[href^="/tasks/"]').first().click();
     }
@@ -110,9 +110,14 @@ test.describe("authenticated task view", () => {
         return;
       }
       if (url.pathname === `${filesPath}/readme.txt`) {
+        expect(url.searchParams.get("presign")).toBe("1");
+        expect(url.searchParams.get("max_bytes")).toBe("102400");
         await route.fulfill({
           contentType: "application/json",
-          body: JSON.stringify({ content: "text preview loaded" }),
+          body: JSON.stringify({
+            content: "text preview loaded",
+            is_truncated: false,
+          }),
         });
         return;
       }

@@ -1756,6 +1756,7 @@ async def get_task_file_content(
     auth: Annotated[AuthContext, Depends(require_auth)],
     presign: bool = Query(False),
     version: int | None = Query(None, description="Task version number"),
+    max_bytes: int | None = Query(None, ge=1),
 ):
     """Get content of a specific task file from S3.
 
@@ -1781,6 +1782,7 @@ async def get_task_file_content(
         file_path=file_path,
         presign=presign,
         version=version,
+        max_bytes=max_bytes,
     )
 
     archive_etag = result.get("archive_etag")

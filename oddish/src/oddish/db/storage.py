@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import logging
 from collections import OrderedDict
 from collections.abc import AsyncIterator
@@ -217,7 +218,11 @@ def _merge_inline_contents(
     ]
 
 
-def _read_task_archive_text(archive_bytes: bytes, file_path: str) -> str:
+def _read_task_archive_text(
+    archive_bytes: bytes,
+    file_path: str,
+    max_bytes: int | None = None,
+) -> tuple[str, int, bool]:
     normalized_path = normalize_s3_relative_path(file_path)
     if not normalized_path:
         raise HTTPException(status_code=400, detail="Invalid file path")
@@ -232,7 +237,11 @@ def _read_task_archive_text(archive_bytes: bytes, file_path: str) -> str:
             extracted = tar.extractfile(member)
             if extracted is None:
                 break
-            return extracted.read().decode("utf-8")
+            size = int(member.size)
+            truncated = max_bytes is not None and size > max_bytes
+            body = extracted.read(max_bytes if truncated else -1)
+            decoder = codecs.getincrementaldecoder("utf-8")()
+            return decoder.decode(body, final=not truncated), size, truncated
 
     raise HTTPException(
         status_code=404, detail=f"Task file not found: {normalized_path}"
@@ -1305,6 +1314,7 @@ class StorageClient:
         presign: bool,
         presign_expiration: int = 900,
         version: int | None = None,
+        max_bytes: int | None = None,
     ) -> dict:
         """Get content of a specific task file from S3.
 
@@ -1351,16 +1361,25 @@ class StorageClient:
 
         root_prefix, archive_key = await self._resolve_task_prefix(task_id, version)
         if await self.object_exists(archive_key):
-            archive_bytes, _members, texts = await self._load_task_archive(archive_key)
+            archive_bytes, members, texts = await self._load_task_archive(archive_key)
             # Small text members were extracted during the (cached) parse;
             # only oversize members pay a tar read here.
             content = texts.get(normalized_path)
-            if content is None:
-                content = _read_task_archive_text(archive_bytes, normalized_path)
+            member = next(
+                (item for item in members if item["path"] == normalized_path), None
+            )
+            size = int(member["size"]) if member else 0
+            is_truncated = max_bytes is not None and size > max_bytes
+            if content is None or is_truncated:
+                content, size, is_truncated = _read_task_archive_text(
+                    archive_bytes, normalized_path, max_bytes
+                )
             archive_etag = await self._head_archive_etag(archive_key)
             return {
                 "path": normalized_path,
                 "content": content,
+                "size": size,
+                "is_truncated": is_truncated,
                 "key": f"{archive_key}#{normalized_path}",
                 "archive_key": archive_key,
                 "archive_etag": archive_etag,
