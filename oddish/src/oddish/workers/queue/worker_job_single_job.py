@@ -34,6 +34,7 @@ from oddish.costs.recorder import (
 )
 from oddish.db import WorkerJobKind, WorkerJobStatus
 from oddish.workers.jobs.registry import (
+    HANDLERS,
     JobOutcome,
     NoHandlerRegisteredError,
     get_handler,
@@ -190,6 +191,10 @@ WHERE  id = (
     ) rpg ON rpg.fairness_key = COALESCE(tk.created_by_user_id, tk.user)
     WHERE  wj.queue_key = $1
       AND  ($5::text IS NULL OR wj.harbor_variant_id = $5)
+      -- Only claim kinds this worker can actually run. Rows of retired
+      -- kinds (or kinds added by a newer deploy) stay QUEUED instead of
+      -- failing with "no handler registered".
+      AND  wj.kind::text = ANY($6::text[])
       AND  wj.status::text IN ('QUEUED', 'RETRYING')
       AND  wj.available_after <= NOW()
       -- Defense in depth: ``delete_*_core`` already cancels matching
@@ -325,6 +330,7 @@ async def claim_single_worker_job(
             queue_slot,
             modal_function_call_id,
             harbor_variant_id,
+            sorted(kind.value for kind in HANDLERS),
         )
     finally:
         await connection.close()

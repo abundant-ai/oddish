@@ -452,33 +452,6 @@ async def enqueue_trial_worker_job(
 
 
 
-async def enqueue_trial_analysis_worker_job(
-    session: AsyncSession,
-    *,
-    trial_id: str,
-    org_id: str | None,
-) -> WorkerJobModel:
-    """Enqueue analysis for one trial.
-
-    The job classifies this trial only. It does not touch other trials,
-    the task verdict, or the pre-trial audit. It shares the QA queue key,
-    so QA workers pick it up.
-    """
-    return await enqueue_worker_job(
-        session,
-        EnqueueRequest(
-            kind=WorkerJobKind.ANALYSIS,
-            queue_key=settings.get_qa_queue_key(),
-            payload={"trial_id": trial_id},
-            subject_table="trials",
-            subject_id=trial_id,
-            org_id=org_id,
-        ),
-    )
-
-
-
-
 async def enqueue_task_expand_worker_job(
     session: AsyncSession,
     *,
