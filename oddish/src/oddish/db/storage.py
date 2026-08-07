@@ -1331,66 +1331,65 @@ class StorageClient:
         if not normalized_path:
             raise HTTPException(status_code=400, detail="Invalid file path")
 
+        s3_key: str | None = None
         if version is not None:
             expanded_prefix = f"tasks/{task_id}/v{version}-files/"
             manifest_key = f"{expanded_prefix}{self._EXPANDED_MANIFEST_OBJECT_NAME}"
             if await self.object_exists(manifest_key):
-                s3_key = f"{expanded_prefix}{normalized_path}"
+                expanded_key = f"{expanded_prefix}{normalized_path}"
                 # Some members may be absent from the expanded tree
                 # (oversize-member skips, mid-flight expansions, or
                 # ad-hoc object deletions). Check presence before
                 # handing out a URL / downloading, and fall through to
                 # the archive branch on miss so deep-links keep
                 # working.
-                if await self.object_exists(s3_key):
-                    if presign:
-                        url = await self.get_presigned_url(
-                            s3_key, expiration=presign_expiration
-                        )
-                        return {
-                            "path": normalized_path,
-                            "key": s3_key,
-                            "url": url,
-                        }
-                    content = await self.download_text(s3_key)
-                    return {
-                        "path": normalized_path,
-                        "content": content,
-                        "key": s3_key,
-                    }
+                if await self.object_exists(expanded_key):
+                    s3_key = expanded_key
 
-        root_prefix, archive_key = await self._resolve_task_prefix(task_id, version)
-        if await self.object_exists(archive_key):
-            archive_bytes, members, texts = await self._load_task_archive(archive_key)
-            # Small text members were extracted during the (cached) parse;
-            # only oversize members pay a tar read here.
-            content = texts.get(normalized_path)
-            member = next(
-                (item for item in members if item["path"] == normalized_path), None
-            )
-            size = int(member["size"]) if member else 0
-            is_truncated = max_bytes is not None and size > max_bytes
-            if content is None or is_truncated:
-                content, size, is_truncated = _read_task_archive_text(
-                    archive_bytes, normalized_path, max_bytes
+        if s3_key is None:
+            root_prefix, archive_key = await self._resolve_task_prefix(task_id, version)
+            if await self.object_exists(archive_key):
+                archive_bytes, members, texts = await self._load_task_archive(
+                    archive_key
                 )
-            archive_etag = await self._head_archive_etag(archive_key)
-            return {
-                "path": normalized_path,
-                "content": content,
-                "size": size,
-                "is_truncated": is_truncated,
-                "key": f"{archive_key}#{normalized_path}",
-                "archive_key": archive_key,
-                "archive_etag": archive_etag,
-            }
-        s3_key = f"{root_prefix}{normalized_path}"
+                # Small text members were extracted during the (cached) parse;
+                # only oversize members pay a tar read here.
+                content = texts.get(normalized_path)
+                member = next(
+                    (item for item in members if item["path"] == normalized_path), None
+                )
+                size = int(member["size"]) if member else 0
+                is_truncated = max_bytes is not None and size > max_bytes
+                if content is None or is_truncated:
+                    content, size, is_truncated = _read_task_archive_text(
+                        archive_bytes, normalized_path, max_bytes
+                    )
+                archive_etag = await self._head_archive_etag(archive_key)
+                return {
+                    "path": normalized_path,
+                    "content": content,
+                    "size": size,
+                    "is_truncated": is_truncated,
+                    "key": f"{archive_key}#{normalized_path}",
+                    "archive_key": archive_key,
+                    "archive_etag": archive_etag,
+                }
+            s3_key = f"{root_prefix}{normalized_path}"
 
         if presign:
             url = await self.get_presigned_url(s3_key, expiration=presign_expiration)
             return {"path": normalized_path, "key": s3_key, "url": url}
-        content = await self.download_text(s3_key)
-        return {"path": normalized_path, "content": content, "key": s3_key}
+        if max_bytes is None:
+            content = await self.download_text(s3_key)
+            is_truncated = False
+        else:
+            content, is_truncated = await self.download_text_prefix(s3_key, max_bytes)
+        return {
+            "path": normalized_path,
+            "content": content,
+            "is_truncated": is_truncated,
+            "key": s3_key,
+        }
 
     async def get_trial_result_json(self, s3_prefix: str) -> dict | None:
         """
@@ -1453,12 +1452,14 @@ class StorageClient:
             with open(local_path, "wb") as f:
                 f.write(content)
 
-    async def download_bytes(self, s3_key: str) -> bytes:
+    async def download_bytes(self, s3_key: str, max_bytes: int | None = None) -> bytes:
         """Download binary content from S3."""
         await self._ensure_client()
+        options = {"Range": f"bytes=0-{max_bytes - 1}"} if max_bytes else {}
         response = await self._s3.get_object(
             Bucket=settings.s3_bucket,
             Key=s3_key,
+            **options,
         )
         async with response["Body"] as stream:
             content: bytes = await stream.read()
@@ -1466,15 +1467,16 @@ class StorageClient:
 
     async def download_text(self, s3_key: str) -> str:
         """Download text content from S3."""
-        await self._ensure_client()
-        response = await self._s3.get_object(
-            Bucket=settings.s3_bucket,
-            Key=s3_key,
-        )
-        async with response["Body"] as stream:
-            content = await stream.read()
-            result: str = content.decode("utf-8")
-            return result
+        return (await self.download_bytes(s3_key)).decode("utf-8")
+
+    async def download_text_prefix(
+        self, s3_key: str, max_bytes: int
+    ) -> tuple[str, bool]:
+        """Download at most max_bytes of UTF-8 text using one ranged S3 read."""
+        body = await self.download_bytes(s3_key, max_bytes + 1)
+        is_truncated = len(body) > max_bytes
+        decoder = codecs.getincrementaldecoder("utf-8")()
+        return decoder.decode(body[:max_bytes], final=not is_truncated), is_truncated
 
     async def download_json(self, s3_key: str) -> dict:
         """Download and parse JSON from S3."""

@@ -949,8 +949,14 @@ async def test_get_task_file_content_uses_expanded_layout(monkeypatch):
         assert s3_key == f"{expanded_prefix}task.toml"
         return "https://example.com/expanded-task"
 
+    async def fake_download_text_prefix(s3_key: str, max_bytes: int):
+        assert s3_key == f"{expanded_prefix}task.toml"
+        assert max_bytes == 5
+        return "name ", True
+
     monkeypatch.setattr(storage, "object_exists", fake_object_exists)
     monkeypatch.setattr(storage, "download_text", fake_download_text)
+    monkeypatch.setattr(storage, "download_text_prefix", fake_download_text_prefix)
     monkeypatch.setattr(storage, "get_presigned_url", fake_get_presigned_url)
 
     payload = await storage.get_task_file_content(
@@ -970,6 +976,47 @@ async def test_get_task_file_content_uses_expanded_layout(monkeypatch):
     )
     assert presigned_payload["url"] == "https://example.com/expanded-task"
     assert "content" not in presigned_payload
+
+    preview_payload = await storage.get_task_file_content(
+        task_id="task-123",
+        file_path="task.toml",
+        presign=False,
+        version=3,
+        max_bytes=5,
+    )
+    assert preview_payload["content"] == "name "
+    assert preview_payload["is_truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_download_text_prefix_uses_range_and_reports_truncation():
+    class Body:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def read(self):
+            return "ééé".encode()
+
+    class Client:
+        def __init__(self):
+            self.request = None
+
+        async def get_object(self, **kwargs):
+            self.request = kwargs
+            return {"Body": Body()}
+
+    storage = storage_mod.StorageClient()
+    client = Client()
+    storage._client = client
+
+    content, is_truncated = await storage.download_text_prefix("large.txt", 5)
+
+    assert client.request["Range"] == "bytes=0-5"
+    assert content == "éé"
+    assert is_truncated is True
 
 
 @pytest.mark.asyncio

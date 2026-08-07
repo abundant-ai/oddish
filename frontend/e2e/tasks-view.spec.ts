@@ -102,7 +102,7 @@ test.describe("authenticated task view", () => {
           contentType: "application/json",
           body: JSON.stringify({
             files: [
-              { path: "readme.txt", key: "readme.txt", size: 19 },
+              { path: "readme.txt", key: "readme.txt", size: 200_000 },
               { path: "preview.png", key: "preview.png", size: 43 },
             ],
           }),
@@ -110,13 +110,13 @@ test.describe("authenticated task view", () => {
         return;
       }
       if (url.pathname === `${filesPath}/readme.txt`) {
-        expect(url.searchParams.get("presign")).toBe("1");
+        expect(url.searchParams.get("presign")).toBeNull();
         expect(url.searchParams.get("max_bytes")).toBe("102400");
         await route.fulfill({
           contentType: "application/json",
           body: JSON.stringify({
             content: "text preview loaded",
-            is_truncated: false,
+            is_truncated: true,
           }),
         });
         return;
@@ -143,6 +143,7 @@ test.describe("authenticated task view", () => {
     await page.goto(`/tasks/${TASK_ID}?drawer=task`);
     await page.getByRole("button", { name: "readme.txt" }).click();
     await expect(page.getByText("text preview loaded")).toBeVisible();
+    await expect(page.getByText(/Showing first 100\.0 KB/)).toBeVisible();
 
     await page.getByRole("button", { name: "preview.png" }).click();
     await binaryRequestStarted;

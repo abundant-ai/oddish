@@ -91,7 +91,7 @@ def test_selected_file_forwards_preview_limit(client):
         patch("api.routers.tasks.get_task_file_content_s3", new=get_file),
     ):
         response = client.get(
-            "/tasks/task-1/files/large.txt?version=3&presign=true&max_bytes=102400"
+            "/tasks/task-1/files/large.txt?version=3&max_bytes=102400"
         )
 
     assert response.status_code == 200
@@ -99,7 +99,7 @@ def test_selected_file_forwards_preview_limit(client):
     get_file.assert_awaited_once_with(
         task_id="task-1",
         file_path="large.txt",
-        presign=True,
+        presign=False,
         version=3,
         max_bytes=102400,
     )
