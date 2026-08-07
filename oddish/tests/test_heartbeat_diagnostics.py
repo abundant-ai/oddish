@@ -80,13 +80,12 @@ async def test_heartbeat_also_writes_worker_jobs_when_job_id_provided(monkeypatc
 
 @pytest.mark.asyncio
 async def test_heartbeat_writes_worker_jobs_after_trial_goes_terminal(monkeypatch):
-    """The job heartbeat must not stop when the trial row leaves RUNNING.
+    """The job heartbeat must keep writing after the trial row is finished.
 
-    ``_store_trial_results`` moves the trial off RUNNING while settlement
-    (quota enforcement, post-trial hooks) still runs under the RUNNING
-    worker_jobs row. Gating the worker_jobs write on trial ownership froze
-    ``worker_jobs.heartbeat_at`` for that window, so a slow settlement got
-    stale-reaped and the finished trial re-queued.
+    ``_store_trial_results`` marks the trial finished before settlement
+    (quota checks, post-trial hooks) completes. If the heartbeat loop stops
+    writing ``worker_jobs.heartbeat_at`` at that point, a slow settlement
+    looks like a dead worker and the finished trial is failed and re-queued.
     """
 
     async def fake_touch(**kwargs):

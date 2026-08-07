@@ -436,10 +436,10 @@ async def _heartbeat_trial_execution(
                 pending_last_error=pending_last_error,
                 pending_last_error_at=pending_last_error_at,
             )
-            # Not gated on trial ownership: the trial row goes terminal in
-            # _store_trial_results while settlement still runs under this
-            # RUNNING job; heartbeat_worker_job's own guards skip
-            # reaped/reassigned rows.
+            # Also written after the trial row is marked finished: settlement
+            # is still running under this job, and the cleanup sweep reads
+            # worker_jobs.heartbeat_at. heartbeat_worker_job only updates a
+            # RUNNING row that still belongs to this worker.
             if worker_job_id:
                 await heartbeat_worker_job(
                     worker_job_id,
@@ -1600,8 +1600,8 @@ async def run_trial_job(
 
     execution: TrialExecutionResult | None = None
     trial_terminal = False
-    # Must stay alive through the upload/settle tail below, or the stale-reap
-    # sweep kills the job mid-settle and the finished result is discarded.
+    # Keep heartbeating until the result is uploaded and saved, or the
+    # cleanup sweep decides the worker is dead and discards the finished run.
     heartbeat_stop = asyncio.Event()
     heartbeat_task = asyncio.create_task(
         _heartbeat_trial_execution(
