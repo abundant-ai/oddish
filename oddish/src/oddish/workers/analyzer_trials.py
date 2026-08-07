@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import io
 import json
-import logging
 import tarfile
 
 from sqlalchemy import or_, select
@@ -54,10 +53,7 @@ from oddish.evals.analyzer.prompt_builder import (
     task_roster_block,
 )
 from oddish.evals.analyzer.schemas import Finding
-from oddish.evals.primitives import SubAnalysis
 from oddish.workers.queue.shared import console
-
-logger = logging.getLogger(__name__)
 
 MAP_BATCH_SIZE = 10
 FINDINGS_FILENAME = "findings.jsonl"
@@ -156,7 +152,7 @@ async def _gather_rows(session: AsyncSession, analyzer_id: str, org_id: str | No
 
 
 def _gather(rows):
-    subs: list[SubAnalysis] = []
+    subs = []
     oracle_by_trial: dict[str, str] = {}
     host_by_trial: dict[str, dict] = {}
     for trial, task_path in rows:
@@ -409,10 +405,7 @@ async def advance_analyzer_pipeline(settled: TrialModel) -> None:
         return
     host_task_id = settled.task_id
 
-    from oddish.workers.analysis_trials import (
-        create_analysis_trial,
-        read_analysis_artifact,
-    )
+    from oddish.workers.analysis_trials import create_analysis_trial
 
     async with get_session() as session:
         analyzer = await session.get(AnalyzerModel, analyzer_id, with_for_update=True)
@@ -435,13 +428,9 @@ async def advance_analyzer_pipeline(settled: TrialModel) -> None:
             b = _payload(t).get("bucket")
             if b not in rows_findings or t.status != TrialStatus.SUCCESS:
                 continue
-            artifact = await read_analysis_artifact(t, FINDINGS_FILENAME)
-            if artifact is None:
-                raw = await _read_raw(t, FINDINGS_FILENAME)
-                if raw:
-                    rows_findings[b].append(raw)
-            else:
-                rows_findings[b].append(json.dumps(artifact))
+            raw = await _read_text(t, FINDINGS_FILENAME)
+            if raw:
+                rows_findings[b].append(raw)
         async with get_session() as session:
             analyzer = await session.get(AnalyzerModel, analyzer_id, with_for_update=True)
             task = await session.get(TaskModel, host_task_id)
@@ -485,17 +474,11 @@ async def advance_analyzer_pipeline(settled: TrialModel) -> None:
     await _import_report(analyzer_id, host_task_id)
 
 
-async def _read_raw(trial: TrialModel, filename: str) -> str | None:
-    from oddish.db.storage import resolve_trial_s3_prefix
+async def _read_text(trial: TrialModel, filename: str) -> str | None:
+    from oddish.workers.analysis_trials import read_artifact_bytes
 
-    prefix = resolve_trial_s3_prefix(trial.id, trial_s3_key=trial.trial_s3_key)
-    storage = get_storage_client()
-    for key in (f"{prefix}logs/{filename}", f"{prefix}{filename}"):
-        try:
-            return (await storage.download_bytes(key)).decode("utf-8", "replace")
-        except Exception:  # noqa: BLE001
-            continue
-    return None
+    data = await read_artifact_bytes(trial, filename)
+    return data.decode("utf-8", "replace") if data is not None else None
 
 
 async def _import_report(analyzer_id: str, host_task_id: str) -> None:
@@ -514,7 +497,7 @@ async def _import_report(analyzer_id: str, host_task_id: str) -> None:
     for t in maps:
         if t.status != TrialStatus.SUCCESS:
             continue
-        raw = await _read_raw(t, FINDINGS_FILENAME)
+        raw = await _read_text(t, FINDINGS_FILENAME)
         if not raw:
             continue
         bucket = _payload(t).get("bucket", "")
@@ -534,20 +517,20 @@ async def _import_report(analyzer_id: str, host_task_id: str) -> None:
     by_model_entries: list[dict] = []
     comparisons: list[tuple[str, str]] = []
     denominators = build_denominators(trial_model_rewards(rows), [])
-    reduce_errors: list[str] = []
     for t in reduces:
         bucket = _payload(t).get("bucket", "")
-        raw = await _read_raw(t, REDUCE_FILENAME) if t.status == TrialStatus.SUCCESS else None
-        if not raw:
-            reduce_errors.append(f"{bucket}: reduce trial {t.id} produced no {REDUCE_FILENAME}")
-            continue
+        raw = await _read_text(t, REDUCE_FILENAME) if t.status == TrialStatus.SUCCESS else None
         try:
-            parsed = parse_json(raw)
-        except ValueError as exc:
-            reduce_errors.append(f"{bucket}: unparseable reduce output ({exc})")
-            continue
-        keys = SECTION_KEYS_BY_BUCKET.get(bucket, [])
-        for key in keys:
+            parsed = parse_json(raw) if raw else None
+        except ValueError:
+            parsed = None
+        if parsed is None:
+            await _fail_report(
+                analyzer_id,
+                f"{bucket}: reduce trial {t.id} produced no usable {REDUCE_FILENAME}",
+            )
+            return
+        for key in SECTION_KEYS_BY_BUCKET.get(bucket, []):
             value = parsed.get(key, "")
             if isinstance(value, str) and key in _SECTION_COLUMN:
                 sections[_SECTION_COLUMN[key]] = value
@@ -557,10 +540,6 @@ async def _import_report(analyzer_id: str, host_task_id: str) -> None:
         comparison = str(parsed.get("cross_model_comparison") or "").strip()
         if comparison:
             comparisons.append((bucket, comparison))
-
-    if reduce_errors and not any(sections.values()):
-        await _fail_report(analyzer_id, "; ".join(reduce_errors))
-        return
 
     if len(comparisons) > 1:
         combined = "\n\n".join(
@@ -583,7 +562,7 @@ async def _import_report(analyzer_id: str, host_task_id: str) -> None:
         analyzer.findings = [f.__dict__ for f in findings]
         analyzer.models_by_task = models_by_task_from_rows(rows)
         analyzer.by_model = by_model
-        analyzer.error = "; ".join(reduce_errors) or None
+        analyzer.error = None
         analyzer.status = JobStatus.SUCCESS
         analyzer.finished_at = utcnow()
     console.print(f"[green]Report {analyzer_id} imported: {len(findings)} findings[/green]")

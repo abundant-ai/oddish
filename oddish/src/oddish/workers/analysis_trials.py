@@ -44,7 +44,6 @@ from oddish.workers.queue.shared import console
 ANALYSIS_TRIAL_KINDS = ("qa", "audit", "analyzer_map", "analyzer_reduce")
 QA_RESULT_FILENAME = "qa_result.json"
 AUDIT_RESULT_FILENAME = "audit_result.json"
-ANALYZER_RESULT_FILENAME = "analyzer_result.json"
 
 ANALYSIS_TRIAL_MAX_ATTEMPTS = 3
 ANALYSIS_TRIAL_TIMEOUT_MINUTES = 60
@@ -133,10 +132,6 @@ async def create_analysis_trial(
     return trial
 
 
-def _verdict_schema_text() -> str:
-    return json.dumps(TaskVerdictModel.model_json_schema(), indent=1)
-
-
 def build_qa_brief(
     *,
     task_name: str,
@@ -196,7 +191,7 @@ Write exactly one file: /logs/{QA_RESULT_FILENAME}
 }}
 
 Verdict JSON schema:
-{_verdict_schema_text()}
+{json.dumps(TaskVerdictModel.model_json_schema(), indent=1)}
 
 Every trial listed above must appear in "trials". The file must be valid JSON. Do not write anything else to /logs."""
 
@@ -241,20 +236,6 @@ async def maybe_enqueue_audit_trial(
     return True
 
 
-async def load_pre_trial_items_raw(task_id: str) -> list[dict] | None:
-    async with get_session() as session:
-        current_id = await session.scalar(
-            select(TaskModel.current_version_id).where(TaskModel.id == task_id)
-        )
-        version = (
-            await session.get(TaskVersionModel, current_id)
-            if current_id is not None
-            else None
-        )
-        if version is not None and version.pre_trial is not None:
-            return version.pre_trial.get("items", [])
-    return None
-
 
 async def create_qa_trial(
     session: AsyncSession, *, task: TaskModel, eligible_trial_ids: list[str]
@@ -278,26 +259,30 @@ async def create_qa_trial(
     )
 
 
-async def read_analysis_artifact(trial: TrialModel, filename: str) -> dict | None:
-    prefix = resolve_trial_s3_prefix(
-        trial.id,
-        trial_s3_key=trial.trial_s3_key,
-        trial_result_path=(trial.result or {}).get("result_path")
-        if isinstance(trial.result, dict)
-        else None,
-    )
+async def read_artifact_bytes(trial: TrialModel, filename: str) -> bytes | None:
+    prefix = resolve_trial_s3_prefix(trial.id, trial_s3_key=trial.trial_s3_key)
     storage = get_storage_client()
-    for key in (f"{prefix}logs/{filename}", f"{prefix}{filename}", f"{prefix}logs/agent/{filename}"):
+    for key in (
+        f"{prefix}logs/{filename}",
+        f"{prefix}{filename}",
+        f"{prefix}logs/agent/{filename}",
+    ):
         try:
-            data = await storage.download_bytes(key)
+            return await storage.download_bytes(key)
         except Exception:  # noqa: BLE001
             continue
-        try:
-            parsed = json.loads(data)
-        except Exception:  # noqa: BLE001
-            return None
-        return parsed if isinstance(parsed, dict) else None
     return None
+
+
+async def read_analysis_artifact(trial: TrialModel, filename: str) -> dict | None:
+    data = await read_artifact_bytes(trial, filename)
+    if data is None:
+        return None
+    try:
+        parsed = json.loads(data)
+    except Exception:  # noqa: BLE001
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _classification_from_analysis(analysis: dict) -> TrialClassification | None:
