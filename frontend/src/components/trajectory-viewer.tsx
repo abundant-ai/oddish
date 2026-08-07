@@ -303,33 +303,23 @@ function StepDurationBar({
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
 
   // Empty padding steps hold no time and no work; a run of them would otherwise
-  // render as hundreds of min-width slices that mean nothing.
-  const timed = steps
-    .map((step, index) => ({ step, index }))
-    .filter(({ step }) => !isEmptyStep(step));
-  if (timed.length === 0) return null;
-
-  const startTime = timed[0].step.timestamp
-    ? new Date(timed[0].step.timestamp).getTime()
-    : 0;
-
-  // Calculate durations: each step's duration is time since previous step
-  const stepDurations: StepDurationInfo[] = timed.map(
-    ({ step, index }, idx) => {
-      const stepTime = step.timestamp ? new Date(step.timestamp).getTime() : 0;
-      const prevStep = idx > 0 ? timed[idx - 1].step : null;
-      const prevTime = prevStep?.timestamp
-        ? new Date(prevStep.timestamp).getTime()
-        : stepTime;
-
-      return {
-        stepId: step.step_id,
-        index,
-        durationMs: Math.max(0, stepTime - prevTime),
-        elapsedMs: stepTime - startTime,
-      };
-    }
-  );
+  // render as hundreds of min-width slices that mean nothing. Time comes from
+  // the shared measure over the *full* list, so a slice, the group header above
+  // it and the Activity card all charge a padding run to the same step.
+  const durations = stepDurationsMs(steps);
+  const stepDurations: StepDurationInfo[] = [];
+  let elapsedMs = 0;
+  steps.forEach((step, index) => {
+    elapsedMs += durations[index];
+    if (isEmptyStep(step)) return;
+    stepDurations.push({
+      stepId: step.step_id,
+      index,
+      durationMs: durations[index],
+      elapsedMs,
+    });
+  });
+  if (stepDurations.length === 0) return null;
 
   const totalMs = stepDurations.reduce((sum, s) => sum + s.durationMs, 0);
 
@@ -560,14 +550,18 @@ function StepMetricsBar({ metrics }: { metrics: TrajectoryStep["metrics"] }) {
 
 function StepTrigger({
   step,
-  prevTimestamp,
+  durationMs,
   startTimestamp,
 }: {
   step: TrajectoryStep;
-  prevTimestamp: string | null;
+  /** From the shared measure, not a delta against the row above: padding is
+   *  charged to the next step that did work, so a neighbour delta here would
+   *  contradict the group header. Null when there is nothing to charge. */
+  durationMs: number | null;
   startTimestamp: string | null;
 }) {
-  const stepDuration = formatStepDuration(prevTimestamp, step.timestamp);
+  const stepDuration =
+    durationMs != null && step.timestamp ? formatMs(durationMs) : null;
   const sinceStart = formatStepDuration(startTimestamp, step.timestamp);
   const firstLine = getFirstLine(step.message)?.slice(0, 60) || null;
 
@@ -1052,10 +1046,8 @@ export function TrajectoryViewer({
                       <AccordionTrigger className="py-3 hover:no-underline">
                         <StepTrigger
                           step={step}
-                          prevTimestamp={
-                            idx > 0
-                              ? (trajectory.steps[idx - 1]?.timestamp ?? null)
-                              : null
+                          durationMs={
+                            idx > 0 ? (stepDurations[idx] ?? null) : null
                           }
                           startTimestamp={
                             trajectory.steps[0]?.timestamp ?? null

@@ -78,8 +78,13 @@ export function TrajectoryActivity({
   const { data } = useTrajectorySummary(trialId, apiBaseUrl);
 
   // Empty padding steps are dropped up front, so they cannot be counted in a
-  // bar, drawn as a cell, or measured as gap-fill distance further down.
-  const steps = allSteps.filter((step) => !isEmptyStep(step));
+  // bar, drawn as a cell, or measured as gap-fill distance further down. Their
+  // original indexes are kept: time has to be measured against the whole
+  // trajectory (see `stepDurationsMs`), and only then narrowed to what is drawn.
+  const kept = allSteps
+    .map((step, index) => ({ step, index }))
+    .filter(({ step }) => !isEmptyStep(step));
+  const steps = kept.map((k) => k.step);
   const emptyCount = allSteps.length - steps.length;
   const renderableIds = new Set(steps.map((s) => Number(s.step_id)));
 
@@ -93,7 +98,8 @@ export function TrajectoryActivity({
   const keyByStep = (stepId: number) => owner.get(Number(stepId))?.key;
   const highlightIds = new Set((data?.highlights ?? []).map((h) => h.step_id));
 
-  const durations = stepDurationsMs(steps);
+  const allDurations = stepDurationsMs(allSteps);
+  const durations = kept.map(({ index }) => allDurations[index]);
   const totalMs = durations.reduce((a, b) => a + b, 0);
   const tokens = steps.map(stepTokens);
   const maxTok = Math.max(0, ...tokens.map((t) => t ?? 0));
