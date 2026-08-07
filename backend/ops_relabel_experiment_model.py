@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -36,6 +37,24 @@ EXPECTED_TARGET_IDS = frozenset(
         "mixed-greedy-sampler-6448ef46-189",
     }
 )
+EXPECTED_SOURCE_IDS = frozenset(
+    {
+        "minisgl-cuda-graph-replay-0a08bed4-134",
+        "minisgl-cuda-graph-replay-0a08bed4-137",
+        "minisgl-cuda-graph-replay-0a08bed4-141",
+        "minisgl-radix-prefix-reuse-75f40470-73",
+        "minisgl-radix-prefix-reuse-75f40470-74",
+        "minisgl-radix-prefix-reuse-75f40470-75",
+        "mixed-greedy-sampler-6448ef46-172",
+        "mixed-greedy-sampler-6448ef46-173",
+        "mixed-greedy-sampler-6448ef46-176",
+    }
+)
+EXPECTED_TASK_COUNTS = {
+    "minisgl-cuda-graph-replay-0a08bed4": 11,
+    "minisgl-radix-prefix-reuse-75f40470": 11,
+    "mixed-greedy-sampler-6448ef46": 11,
+}
 
 
 def _require(condition: bool, message: str) -> None:
@@ -65,6 +84,10 @@ def _validate_target_rows(
     )
     rows_by_id = {str(row["id"]): row for row in rows}
     _require(len(rows_by_id) == len(rows), "duplicate trial ids returned")
+    _require(
+        dict(Counter(str(row["task_id"]) for row in rows)) == EXPECTED_TASK_COUNTS,
+        "target task distribution differs from the expected 11/11/11",
+    )
     target_ids = EXPECTED_TARGET_IDS.intersection(rows_by_id)
     _require(
         target_ids == EXPECTED_TARGET_IDS,
@@ -74,7 +97,11 @@ def _validate_target_rows(
 
     sensitive_models = {SOURCE_MODEL, PREVIOUS_MODEL, DISPLAY_MODEL}
     sensitive_ids = {
-        str(row["id"]) for row in rows if row["model"] in sensitive_models
+        str(row["id"])
+        for row in rows
+        if row["agent"] == EXPECTED_AGENT
+        or row["provider"] == EXPECTED_PROVIDER
+        or row["model"] in sensitive_models
     }
     _require(
         sensitive_ids == EXPECTED_TARGET_IDS,
@@ -98,6 +125,10 @@ def _validate_target_rows(
             )
         _require(row["deleted_at"] is None, f"{trial_id} is deleted")
         _require(
+            row["superseded_by_trial_id"] is None,
+            f"{trial_id} has been superseded",
+        )
+        _require(
             str(row["status"]).lower() == "success",
             f"{trial_id} status is {row['status']!r}, expected success",
         )
@@ -112,16 +143,37 @@ def _validate_source_rows(rows: Sequence[Mapping[str, Any]]) -> None:
         len(rows) == EXPECTED_TRIAL_COUNT,
         f"source experiment has {len(rows)} live trials, expected {EXPECTED_TRIAL_COUNT}",
     )
-    source_xai = [row for row in rows if row["model"] == SOURCE_MODEL]
     _require(
-        len(source_xai) == len(EXPECTED_TARGET_IDS),
-        f"source has {len(source_xai)} {SOURCE_MODEL!r} rows, expected 9",
+        dict(Counter(str(row["task_id"]) for row in rows)) == EXPECTED_TASK_COUNTS,
+        "source task distribution differs from the expected 11/11/11",
     )
-    source_models = {row["model"] for row in rows}
+    sensitive_models = {SOURCE_MODEL, PREVIOUS_MODEL, DISPLAY_MODEL}
+    source_xai = [
+        row
+        for row in rows
+        if row["agent"] == EXPECTED_AGENT
+        or row["provider"] == EXPECTED_PROVIDER
+        or row["model"] in sensitive_models
+    ]
     _require(
-        PREVIOUS_MODEL not in source_models and DISPLAY_MODEL not in source_models,
-        "source experiment already contains a copied/display relabel value",
+        {str(row["id"]) for row in source_xai} == EXPECTED_SOURCE_IDS,
+        "source xAI/Grok trial IDs do not exactly match the allowlist",
     )
+    for row in source_xai:
+        _require(row["agent"] == EXPECTED_AGENT, f"source {row['id']} agent drifted")
+        _require(
+            row["provider"] == EXPECTED_PROVIDER,
+            f"source {row['id']} provider drifted",
+        )
+        _require(
+            row["model"] == SOURCE_MODEL,
+            f"source {row['id']} model is {row['model']!r}, expected {SOURCE_MODEL!r}",
+        )
+        _require(
+            row["superseded_by_trial_id"] is None,
+            f"source {row['id']} has been superseded",
+        )
+        _require(row["deleted_at"] is None, f"source {row['id']} is deleted")
     _require(
         not EXPECTED_TARGET_IDS.intersection(str(row["id"]) for row in rows),
         "copy and source unexpectedly share trial ids",
@@ -146,7 +198,7 @@ async def _run(*, apply: bool, rollback: bool) -> None:
                 await session.execute(
                     text(
                         """
-                        SELECT id, name, deleted_at
+                        SELECT id, name, org_id, deleted_at
                         FROM experiments
                         WHERE id = :experiment_id AND deleted_at IS NULL
                         FOR UPDATE
@@ -165,10 +217,13 @@ async def _run(*, apply: bool, rollback: bool) -> None:
                 await session.execute(
                     text(
                         """
-                        SELECT id, experiment_id, agent, provider, queue_key,
-                               model, status, deleted_at
+                        SELECT id, task_id, experiment_id, agent, provider,
+                               queue_key, model, status, superseded_by_trial_id,
+                               deleted_at
                         FROM trials
-                        WHERE experiment_id = :experiment_id AND deleted_at IS NULL
+                        WHERE experiment_id = :experiment_id
+                          AND deleted_at IS NULL
+                          AND superseded_by_trial_id IS NULL
                         ORDER BY id
                         FOR UPDATE
                         """
@@ -186,7 +241,7 @@ async def _run(*, apply: bool, rollback: bool) -> None:
                 await session.execute(
                     text(
                         """
-                        SELECT id, name, deleted_at
+                        SELECT id, name, org_id, deleted_at
                         FROM experiments
                         WHERE id = :experiment_id AND deleted_at IS NULL
                         """
@@ -199,13 +254,21 @@ async def _run(*, apply: bool, rollback: bool) -> None:
                 expected_id=SOURCE_EXPERIMENT_ID,
                 expected_name=SOURCE_EXPERIMENT_NAME,
             )
+            assert target_experiment is not None and source_experiment is not None
+            _require(
+                target_experiment["org_id"] == source_experiment["org_id"],
+                "copy and source experiments belong to different organizations",
+            )
             source_rows = (
                 await session.execute(
                     text(
                         """
-                        SELECT id, model
+                        SELECT id, task_id, agent, provider, model,
+                               superseded_by_trial_id, deleted_at
                         FROM trials
-                        WHERE experiment_id = :experiment_id AND deleted_at IS NULL
+                        WHERE experiment_id = :experiment_id
+                          AND deleted_at IS NULL
+                          AND superseded_by_trial_id IS NULL
                         ORDER BY id
                         """
                     ),
@@ -234,6 +297,7 @@ async def _run(*, apply: bool, rollback: bool) -> None:
                         WHERE id = :trial_id
                           AND experiment_id = :experiment_id
                           AND deleted_at IS NULL
+                          AND superseded_by_trial_id IS NULL
                           AND model = :expected_model
                           AND agent = :agent
                           AND provider = :provider
@@ -261,10 +325,13 @@ async def _run(*, apply: bool, rollback: bool) -> None:
                 await session.execute(
                     text(
                         """
-                        SELECT id, experiment_id, agent, provider, queue_key,
-                               model, status, deleted_at
+                        SELECT id, task_id, experiment_id, agent, provider,
+                               queue_key, model, status, superseded_by_trial_id,
+                               deleted_at
                         FROM trials
-                        WHERE experiment_id = :experiment_id AND deleted_at IS NULL
+                        WHERE experiment_id = :experiment_id
+                          AND deleted_at IS NULL
+                          AND superseded_by_trial_id IS NULL
                         ORDER BY id
                         """
                     ),
