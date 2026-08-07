@@ -11,7 +11,7 @@ import uuid
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, cast
 from urllib.parse import urlparse
 
 from harbor import Job, JobConfig  # type: ignore[attr-defined]
@@ -1289,7 +1289,8 @@ async def run_harbor_trial_async(
         )
     ec2_credential_lease = False
     if environment == EnvironmentType.EC2:
-        backend.acquire_worker_credentials(include_ssh=True)
+        assert backend is not None
+        cast(Any, backend).acquire_worker_credentials(include_ssh=True)
         ec2_credential_lease = True
     try:
         return await _run_harbor_trial_async_impl(
@@ -1310,7 +1311,8 @@ async def run_harbor_trial_async(
         )
     finally:
         if ec2_credential_lease:
-            backend.release_worker_credentials()
+            assert backend is not None
+            cast(Any, backend).release_worker_credentials()
 
 
 async def _run_harbor_trial_async_impl(

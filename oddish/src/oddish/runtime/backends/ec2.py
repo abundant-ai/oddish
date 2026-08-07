@@ -283,7 +283,7 @@ class Ec2Backend:
         region = match.group("region")
         instance_id = match.group("instance_id")
         try:
-            import boto3
+            import boto3  # type: ignore[import-untyped]
 
             current_account_id = await asyncio.to_thread(self.resolve_aws_account_id)
             if current_account_id != account_id:
@@ -362,11 +362,13 @@ class Ec2Backend:
 
         deployment = self.deployment_name()
         region = settings.ec2_region
+        if not region:
+            raise RuntimeError("ODDISH_EC2_REGION is required for EC2 inventory")
         try:
             def _list_inventory() -> tuple[str, list[dict[str, Any]]]:
                 self.materialize_aws_profile()
                 account_id = self.resolve_aws_account_id()
-                import boto3
+                import boto3  # type: ignore[import-untyped]
 
                 client = boto3.Session(
                     profile_name=_AWS_PROFILE_NAME, region_name=region
@@ -506,7 +508,7 @@ class Ec2Backend:
 
     def _resolve_aws_account_id(self) -> str:
         try:
-            import boto3
+            import boto3  # type: ignore[import-untyped]
 
             self.materialize_aws_profile()
             response = boto3.Session(
@@ -544,7 +546,7 @@ def _normalize_launch_time(value: Any) -> datetime | None:
 
 
 def _aws_control_client_config() -> Any:
-    from botocore.config import Config
+    from botocore.config import Config  # type: ignore[import-untyped]
 
     return Config(
         connect_timeout=5,

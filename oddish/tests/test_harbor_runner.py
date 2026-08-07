@@ -903,7 +903,9 @@ def test_restricted_compose_runtime_route_is_private_and_artifacts_are_scrubbed(
             (self.job_dir / "result.json").write_text(leaked, encoding="utf-8")
             return object()
 
-    monkeypatch.setattr(harbor_runner, "apply_harbor_patches", lambda: None)
+    monkeypatch.setattr(
+        harbor_runner, "apply_harbor_patches", lambda **_kwargs: None
+    )
     monkeypatch.setattr(harbor_runner, "get_backend", lambda value: None)
     monkeypatch.setattr(
         harbor_runner, "validate_task_timeout_config", lambda path: None

@@ -51,7 +51,10 @@ EVENT_SENTINEL = "_oddish_harbor_event"
 def _read_payload_and_unlink(payload_path: Path) -> dict[str, Any]:
     """Read the private parent/child payload and remove it immediately."""
     try:
-        return json.loads(payload_path.read_text())
+        payload = json.loads(payload_path.read_text())
+        if not isinstance(payload, dict):
+            raise ValueError("Ephemeral Harbor payload must be a JSON object")
+        return payload
     finally:
         try:
             payload_path.unlink(missing_ok=True)
@@ -157,6 +160,7 @@ class _ProbeClaudeCode(ClaudeCode):  # type: ignore[misc, valid-type]
 
 
 def _build_job_config(payload: dict[str, Any]):
+    from harbor.models.environment_type import EnvironmentType
     from harbor.models.job.config import RetryConfig
     from harbor.models.trial.config import (
         AgentConfig,
@@ -174,7 +178,11 @@ def _build_job_config(payload: dict[str, Any]):
     # already-resolved provider config in environment_config.
     if payload.get("environment"):
         env_config.type = EnvironmentType(payload["environment"])
-    if env_config.type == EnvironmentType.DAYTONA and payload.get("daytona_kwargs"):
+    if (
+        not payload.get("environment_config")
+        and env_config.type == EnvironmentType.DAYTONA
+        and payload.get("daytona_kwargs")
+    ):
         env_config.kwargs = payload["daytona_kwargs"]
 
     agent_kwargs: dict[str, Any] = dict(payload.get("agent_config") or {})

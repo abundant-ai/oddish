@@ -11,6 +11,7 @@ from dotenv import dotenv_values
 from modal_runtime import (
     MODAL_APP_NAME,
     MODAL_SECRET_ENVIRONMENT,
+    RUNTIME_SECRET_NAME,
     runtime_secret,
 )
 from modal_runtime import app as app

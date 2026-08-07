@@ -538,7 +538,7 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   reaps missing, terminal, stale, and mismatched owners. The protected 14-hour
   hard maximum age overrides worker liveness. Inventory and termination failures
   must stay visible in logs/metrics while the rest of queue cleanup continues.
-- Claude trials run through AWS Bedrock only. `CLAUDE_CODE_USE_BEDROCK=1` is
+- Claude trials run through AWS Bedrock by default. `CLAUDE_CODE_USE_BEDROCK=1` is
   baked into the Modal image, and Claude model aliases must normalize to an
   invokable inference profile (`global.` / `us.` / ARN) via
   `to_bedrock_model_id`. Opt into the direct Anthropic API with a separate key

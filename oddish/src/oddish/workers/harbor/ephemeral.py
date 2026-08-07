@@ -108,12 +108,23 @@ def _build_payload(
     outcome_path: Path,
     agent: str,
     model: str | None,
-    environment_config: EnvironmentConfig,
+    environment_config: EnvironmentConfig | None = None,
+    environment: EnvironmentType | None = None,
     raw_harbor_config: dict[str, Any],
     is_probe: bool,
     extra_agent_env: dict[str, str] | None = None,
     environment_build_timeout_multiplier: float | None = None,
 ) -> dict[str, Any]:
+    if environment_config is None:
+        environment_config = EnvironmentConfig.model_validate(
+            raw_harbor_config.get("environment") or {}
+        )
+        if environment is not None:
+            environment_config.type = environment
+        if environment_config.type == EnvironmentType.DAYTONA:
+            environment_config.kwargs = DaytonaBackend().harbor_env_kwargs(
+                dict(environment_config.kwargs)
+            )
     return {
         "task_path": str(task_path),
         "jobs_dir": str(jobs_dir),
@@ -358,11 +369,12 @@ async def run_ephemeral_harbor_trial(
             env=child_env,
         )
         assert process.stdout is not None and process.stderr is not None
+        stderr_stream = process.stderr
         stderr_chunks: list[bytes] = []
 
         async def _drain_stderr() -> None:
             while True:
-                chunk = await process.stderr.readline()
+                chunk = await stderr_stream.readline()
                 if not chunk:
                     break
                 stderr_chunks.append(chunk)

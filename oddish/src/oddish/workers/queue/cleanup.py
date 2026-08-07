@@ -398,7 +398,7 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
                 "cancelled during orphaned queue cleanup."
             )
             trial.analysis_finished_at = utcnow()
-        return trial.id
+        return str(trial.id)
 
     if kind == "ANALYSIS":
         # Legacy per-trial classification rows, drained across a deploy.
@@ -536,7 +536,7 @@ async def cleanup_orphaned_queue_state(
     ec2_credential_lease = False
 
     if settings.ec2_enabled:
-        ec2_backend = get_backend("ec2")
+        ec2_backend = cast(Any, get_backend("ec2"))
         try:
             if ec2_backend is None:
                 raise RuntimeError("EC2 is enabled but its backend is not registered")
@@ -656,6 +656,7 @@ async def cleanup_orphaned_queue_state(
         }
     finally:
         if ec2_credential_lease:
+            assert ec2_backend is not None
             ec2_backend.release_worker_credentials()
 
 
