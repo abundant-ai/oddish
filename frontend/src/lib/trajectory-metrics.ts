@@ -36,12 +36,20 @@ export function isEmptyStep(step: TrajectoryStep): boolean {
  * so the timeline agrees with the existing duration bar. Steps with no usable
  * timestamps yield 0; a caller seeing an all-zero total should fall back to
  * equal widths.
+ *
+ * Empty padding is worth 0 and "previous" skips it, so the span it covers is
+ * charged to the next step that did work. That is what makes the measure
+ * caller-independent: the Activity card drops padding before measuring while
+ * the accordion headers measure against the full trajectory, and without this
+ * the two report different durations for the same component.
  */
 export function stepDurationsMs(steps: TrajectoryStep[]): number[] {
-  return steps.map((step, idx) => {
+  let prev: TrajectoryStep | null = null;
+  return steps.map((step) => {
+    if (isEmptyStep(step)) return 0;
     const t = step.timestamp ? new Date(step.timestamp).getTime() : 0;
-    const prev = idx > 0 ? steps[idx - 1] : null;
     const pt = prev?.timestamp ? new Date(prev.timestamp).getTime() : t;
+    prev = step;
     return Math.max(0, t - pt);
   });
 }

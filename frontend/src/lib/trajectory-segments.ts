@@ -158,6 +158,13 @@ export const OTHER_SEGMENT_KEY = "other";
  * component claims even after gap-fill, so coverage is complete by
  * construction for every stored summary (no regeneration). Returns the input
  * array untouched when coverage is already complete.
+ *
+ * Coverage is over `steps` — everything the caller renders — while
+ * `renderableIds` only sizes the gaps (see `segmentOwners`). Scoping it to the
+ * renderable ids instead would leave padding between two differently-keyed
+ * components unowned, and the accordion draws the full list, so that padding
+ * comes out as a headerless group wedged into a component's run. Callers that
+ * do not draw padding (the Activity card) simply pass a list without it.
  */
 export function withOtherSegment(
   segments: Segment[],
@@ -168,9 +175,13 @@ export function withOtherSegment(
   // or failed). Preserve that state instead of presenting every step as Other.
   if (segments.length === 0) return segments;
 
-  const ids = renderableIds ?? renderableStepIds(steps);
-  const owner = segmentOwners(segments, ids);
-  const unclaimed = [...ids]
+  const owner = segmentOwners(
+    segments,
+    renderableIds ?? renderableStepIds(steps)
+  );
+  // step_id is typed number but arrives as a string from some producers, and
+  // the backend does not guarantee it is unique.
+  const unclaimed = [...new Set(steps.map((s) => Number(s.step_id)))]
     .filter((id) => !owner.has(id))
     .sort((a, b) => a - b);
   if (unclaimed.length === 0) return segments;
