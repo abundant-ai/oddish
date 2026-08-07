@@ -1,11 +1,12 @@
 name: Promote on comment
 # Comment `/promote` on the staging -> main pull request.
 #
-# For a commenter with write access, the job always runs the promotion checks
-# and reports them back on the pull request; anyone else gets a failed run
-# and no reply. It performs the fast-forward push only when the repository holds a
-# PROMOTE_TOKEN secret: a fine-grained personal access token (Contents: Read
-# and write) belonging to a user who is a bypass actor on the main ruleset.
+# For an organization member with write access, the job always runs the
+# promotion checks and reports them back on the pull request; anyone else gets
+# a failed run and no reply. It performs the fast-forward push only when the
+# repository holds a PROMOTE_TOKEN secret: a fine-grained personal access
+# token (Contents: Read and write) belonging to a user who is a bypass actor
+# on the main ruleset.
 # The built-in GITHUB_TOKEN cannot do this — `github-actions[bot]` is not
 # selectable as a bypass actor — and deploy keys are disabled for this
 # organization, so a user token is the remaining option. Without the secret
@@ -43,14 +44,19 @@ jobs:
       # so the optional-token gate reads this value instead.
       HAS_PROMOTE_TOKEN: ${{ secrets.PROMOTE_TOKEN != '' }}
     steps:
-      - name: Check that the commenter can write to the repository
+      - name: Check that the commenter is an organization member with write access
         id: auth
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           ACTOR: ${{ github.event.comment.user.login }}
+          AUTHOR_ASSOCIATION: ${{ github.event.comment.author_association }}
         run: |
           set -euo pipefail
+          case "$AUTHOR_ASSOCIATION" in
+            OWNER|MEMBER) echo "$ACTOR is an organization member" ;;
+            *) echo "::error::$ACTOR is not an organization member"; exit 1 ;;
+          esac
           level=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$ACTOR/permission" --jq '.permission')
           case "$level" in
             admin|write|maintain) echo "$ACTOR has $level access" ;;
@@ -113,10 +119,10 @@ jobs:
           echo "origin/main == $SHA"
 
       - name: Report back on the pull request
-        # Only reply to a commenter who passed the write-access check. Anyone
-        # can comment on a public pull request, so an ungated reply lets a
-        # stranger post bot comments. The failed run stays visible to
-        # maintainers.
+        # Only reply to an organization member who passed the write-access
+        # check. Anyone can comment on a public pull request, so an ungated
+        # reply lets a stranger post bot comments. The failed run stays
+        # visible to maintainers.
         if: always() && steps.auth.outcome == 'success'
         shell: bash
         env:
