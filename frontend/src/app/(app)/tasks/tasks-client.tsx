@@ -20,11 +20,9 @@ export function TasksPageNumber() {
   return <>Page {Math.floor(offset / TASKS_PAGE_SIZE) + 1}</>;
 }
 
-// Header actions for the tasks page: a manual refresh of the task grid, an
-// opt-in auto-refresh toggle (off by default, persisted), and import. Every
-// refresh path revalidates the grid's client-side browse fetch only —
+// Every refresh path revalidates the grid's client-side browse fetch only —
 // nothing the page server-renders depends on task data, so there is no
-// router.refresh(). Search and tag filtering live in the sidebar.
+// router.refresh().
 export function TasksToolbar() {
   const revalidateBrowse = useTaskBrowseRevalidate();
   const [isPending, startTransition] = useTransition();

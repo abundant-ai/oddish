@@ -1,5 +1,3 @@
-"""The analyzer's pre-baked Daytona snapshot is the neutral agent setting."""
-
 from oddish.config import Settings
 
 

@@ -38,8 +38,7 @@ import {
 } from "@/lib/experiment-task-pages";
 import { ExperimentPageSkeleton } from "./experiment-skeleton";
 
-// Paper-styled header action button for the experiment header actions so
-// they render as the same element.
+// Shared by the experiment header action buttons so they render identically.
 const HEADER_ACTION_BUTTON_CLASS =
   "h-8 select-none gap-[7px] rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] leading-none text-[color:var(--paper-ink)] transition-colors hover:border-[color:var(--paper-ink-4)] hover:bg-[color:var(--paper-surface-2)]";
 
