@@ -16,6 +16,20 @@ type ExcludedExperiment = {
   created_at: string;
 };
 
+// The proxy wraps backend failures as { error, details } where details is the
+// raw FastAPI response text; unwrap its "detail" message for display.
+function backendDetail(body: unknown): string | null {
+  const details = (body as { details?: string } | null)?.details;
+  if (!details) return null;
+  try {
+    const parsed = JSON.parse(details);
+    if (typeof parsed?.detail === "string") return parsed.detail;
+  } catch {
+    // not JSON — fall through to the raw text
+  }
+  return details;
+}
+
 export function CostExcludedExperimentsCard() {
   const { data, error, isLoading, mutate } = useSWR<ExcludedExperiment[]>(
     "/api/admin/cost-excluded-experiments",
@@ -43,9 +57,7 @@ export function CostExcludedExperimentsCard() {
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         setFormError(
-          res.status === 409 && body?.details?.includes("already excluded")
-            ? "That experiment is already excluded."
-            : body?.details || body?.error || "Failed to add experiment."
+          backendDetail(body) || body?.error || "Failed to add experiment."
         );
         return;
       }
@@ -65,7 +77,7 @@ export function CostExcludedExperimentsCard() {
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       setFormError(
-        body?.details || body?.error || "Failed to remove experiment."
+        backendDetail(body) || body?.error || "Failed to remove experiment."
       );
     }
     await mutate();
