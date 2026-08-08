@@ -27,7 +27,6 @@ from oddish.db import (  # noqa: E402
     TaskModel,
     TrialModel,
     get_session,
-    task_experiments,
     utcnow,
 )
 
@@ -111,13 +110,6 @@ async def seeded_data():
             ]
         )
         await session.flush()
-        await session.execute(
-            task_experiments.insert(),
-            [
-                {"task_id": EXCLUDED_TASK, "experiment_id": EXCLUDED_EXP},
-                {"task_id": INCLUDED_TASK, "experiment_id": INCLUDED_EXP},
-            ],
-        )
 
     yield excluded.id
 
