@@ -38,6 +38,7 @@ import { UsagePanel } from "@/components/usage-panel";
 import { QueueHealthOverviewCard } from "@/components/queue-health-overview-card";
 import { CostBreakdownCard } from "@/components/cost-breakdown-card";
 import { CostExcludedKeysCard } from "@/components/cost-excluded-keys-card";
+import { CostExcludedExperimentsCard } from "@/components/cost-excluded-experiments-card";
 import { SlackAlertSettingsForm } from "@/components/slack-alert-settings-form";
 import { RefreshCw, Server, Clock, AlertCircle } from "lucide-react";
 
@@ -764,6 +765,7 @@ function AdminPageContent() {
                 </CardContent>
               </Card>
               <CostExcludedKeysCard />
+              <CostExcludedExperimentsCard />
             </>
           )}
         </TabsContent>

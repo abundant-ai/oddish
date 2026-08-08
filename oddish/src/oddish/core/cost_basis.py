@@ -27,7 +27,12 @@ from collections.abc import Iterable
 from sqlalchemy import and_, case, func, or_, select
 
 from oddish.config import settings
-from oddish.db import CostExcludedLlmKeyModel, TrialModel, TrialOrigin
+from oddish.db import (
+    CostExcludedExperimentModel,
+    CostExcludedLlmKeyModel,
+    TrialModel,
+    TrialOrigin,
+)
 from oddish.model_pricing import estimate_cost_usd
 
 # ``harbor_stage='cancelled'`` marks an abandoned trial. Three paths stamp it:
@@ -100,20 +105,52 @@ def not_excluded_llm_key_filter():
     return ~_cost_excluded_key_spend()
 
 
+def _cost_excluded_experiment_spend():
+    """Trials homed in an experiment that admins flagged cost-excluded.
+
+    A correlated EXISTS on the live ``cost_excluded_experiments`` rows,
+    matching ``trials.experiment_id`` (the home experiment), so collection
+    experiments that merely gather trials are unaffected. The ``deleted_at``
+    filter is explicit for the same reason as :func:`_cost_excluded_key_spend`:
+    cost surfaces run with ``include_deleted=True``, and removing an experiment
+    from the list must re-include its spend.
+    """
+    return (
+        select(CostExcludedExperimentModel.id)
+        .where(
+            CostExcludedExperimentModel.experiment_id == TrialModel.experiment_id,
+            CostExcludedExperimentModel.deleted_at.is_(None),
+        )
+        .correlate(TrialModel)
+        .exists()
+    )
+
+
+def not_excluded_experiment_filter():
+    """Drop trials homed in an experiment on the admin cost-exclusion list.
+
+    Shared by :func:`first_party_spend_filter` (settled spend) and the quota
+    inflight reservation, mirroring :func:`not_excluded_llm_key_filter`.
+    """
+    return ~_cost_excluded_experiment_spend()
+
+
 def first_party_spend_filter():
     """Select actual Oddish executions, excluding non-spend materializations.
 
     Imported trials were paid for outside Oddish. Experiment-combine rows copy
     an existing trial's result and cost, so counting them would charge the same
     execution twice. Spend stamped with an LLM key on the admin cost-exclusion
-    list (sponsored/free keys) is deliberately not counted. Keep this
-    eligibility rule shared by quota accounting and cost reporting so both
-    surfaces count the same execution population.
+    list (sponsored/free keys), or homed in an admin cost-excluded experiment,
+    is deliberately not counted. Keep this eligibility rule shared by quota
+    accounting and cost reporting so both surfaces count the same execution
+    population.
     """
     return and_(
         TrialModel.origin == TrialOrigin.ODDISH,
         not_combine_copy_filter(),
         not_excluded_llm_key_filter(),
+        not_excluded_experiment_filter(),
     )
 
 

@@ -285,7 +285,7 @@ handlers must pass `auth.org_id`; never accept an organization selector from
 the client. A user cost drilldown returns 404 when the requested user belongs
 to another org. Deployment-wide diagnostics or mutations (global queue
 status/health and slot topology, model concurrency, shared-channel Slack alert
-settings, and the global cost-excluded LLM-key list) additionally require the active org to match
+settings, and the global cost-excluded LLM-key and experiment lists) additionally require the active org to match
 `ODDISH_OPERATOR_ORG_ID`, which fails closed when unset; the frontend discovers
 that capability through `GET /admin/operator-access` and hides those controls
 for other orgs.

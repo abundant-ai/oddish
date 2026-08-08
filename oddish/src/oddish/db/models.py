@@ -2396,6 +2396,37 @@ class CostExcludedLlmKeyModel(TimestampedMixin, Base):
     created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
+class CostExcludedExperimentModel(TimestampedMixin, Base):
+    """An experiment whose trials' spend is excluded from cost accounting.
+
+    The experiment-level sibling of ``CostExcludedLlmKeyModel``. Exclusion is
+    equality matching against ``trials.experiment_id`` (the home experiment),
+    so collection experiments that merely gather trials are unaffected.
+    ``experiment_name`` is a display snapshot from registration time (no FK, so
+    the row outlives the experiment like excluded keys outlive their trials).
+    ``deleted_at`` (soft delete) is the live/removed state, and the partial
+    UNIQUE keeps one live row per experiment so a removed one can be re-added.
+    """
+
+    __tablename__ = "cost_excluded_experiments"
+    __table_args__ = (
+        Index(
+            "idx_cost_excluded_experiments_exp_live",
+            "experiment_id",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    experiment_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    experiment_name: Mapped[str] = mapped_column(
+        String(255), nullable=False, server_default=""
+    )
+    label: Mapped[str] = mapped_column(String(255), nullable=False, server_default="")
+    created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
 from oddish.db.soft_delete import register_soft_delete_models
 
 register_soft_delete_models(
@@ -2412,4 +2443,5 @@ register_soft_delete_models(
     SkillModel,
     DocumentModel,
     CostExcludedLlmKeyModel,
+    CostExcludedExperimentModel,
 )
