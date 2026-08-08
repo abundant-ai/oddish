@@ -388,9 +388,7 @@ async def create_task_sweep(
                 request_hash=request_hash,
             )
         except TimeoutError as exc:
-            # Quota advisory-lock waits (and other DB wait timeouts) surface as
-            # bare TimeoutError from asyncpg. Map to 503 so the CLI retries with
-            # a legible message instead of an opaque "Internal Server Error".
+            # asyncpg raises bare TimeoutError on DB wait timeouts.
             logger.error(
                 "create_task_sweep timed out for task_id=%s org_id=%s",
                 submission.task_id,
