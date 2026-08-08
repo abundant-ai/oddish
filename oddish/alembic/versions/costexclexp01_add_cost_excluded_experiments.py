@@ -1,7 +1,7 @@
 """add cost_excluded_experiments
 
 Revision ID: costexclexp01
-Revises: prod_schema_repair_001
+Revises: drop_prompt_registry_001
 Create Date: 2026-08-08 00:00:00.000000
 
 Admin-managed list of experiments whose trials' spend is excluded from cost
@@ -18,7 +18,7 @@ from typing import Sequence, Union
 from alembic import op
 
 revision: str = "costexclexp01"
-down_revision: Union[str, Sequence[str], None] = "prod_schema_repair_001"
+down_revision: Union[str, Sequence[str], None] = "drop_prompt_registry_001"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
