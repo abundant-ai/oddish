@@ -503,6 +503,8 @@ def _patch_ec2_lifecycle(*, require_ec2: bool = False) -> None:
             _EC2_MANAGED_TAG_KEY
         ) != "true":
             return instance_id
+        if instance_id is None:
+            return None
         account_id = user_tags.get(_EC2_AWS_ACCOUNT_ID_TAG_KEY)
         region = getattr(self, "region", None)
         if not all(

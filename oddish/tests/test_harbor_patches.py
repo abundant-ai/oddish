@@ -422,6 +422,26 @@ def test_apply_harbor_patches_is_idempotent(monkeypatch):
     assert calls == {"daytona": 1, "modal": 1, "ec2": [False, True]}
 
 
+def test_ec2_lifecycle_patch_allows_prelaunch_events_and_exposes_instance_handle():
+    ec2_module = importlib.import_module("harbor.environments.ec2")
+    harbor_patches._patch_ec2_lifecycle(require_ec2=True)
+    environment = SimpleNamespace(
+        instance_id=None,
+        region="us-west-2",
+        user_tags={
+            harbor_patches._EC2_MANAGED_TAG_KEY: "true",
+            harbor_patches._EC2_AWS_ACCOUNT_ID_TAG_KEY: "022499036267",
+        },
+    )
+
+    assert ec2_module.EC2Environment.get_sandbox_id(environment) is None
+
+    environment.instance_id = "i-0123456789abcdef0"
+    assert ec2_module.EC2Environment.get_sandbox_id(environment) == (
+        "ec2://022499036267/us-west-2/i-0123456789abcdef0"
+    )
+
+
 def test_daytona_mirror_patch_targets_dind_only(monkeypatch):
     calls: list[tuple[str, str, str]] = []
 
