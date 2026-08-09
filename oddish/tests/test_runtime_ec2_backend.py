@@ -1272,7 +1272,7 @@ def test_ec2_teardown_uses_region_persisted_in_handle(monkeypatch) -> None:
     )
 
 
-def test_ec2_harbor_patch_exposes_provider_and_instance_id_and_forces_imds_off(
+def test_ec2_harbor_patch_exposes_identity_and_keeps_host_only_imdsv2(
     monkeypatch,
 ) -> None:
     import oddish.workers.harbor.patches as harbor_patches
@@ -1314,7 +1314,9 @@ def test_ec2_harbor_patch_exposes_provider_and_instance_id_and_forces_imds_off(
         "ec2://123456789012/us-east-1/i-123"
     )
     assert environment._run_instances_kwargs()["MetadataOptions"] == {
-        "HttpEndpoint": "disabled"
+        "HttpEndpoint": "enabled",
+        "HttpTokens": "required",
+        "HttpPutResponseHopLimit": 1,
     }
 
     first_launch_method = FakeEc2Environment._run_instances_kwargs

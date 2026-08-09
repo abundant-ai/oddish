@@ -524,8 +524,9 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   neither EC2 control nor SSH secrets. An optional platform-owned
   `ODDISH_EC2_INSTANCE_PROFILE` may be attached; it is visible to tenant code,
   so keep it task-scoped and grant the control identity `iam:PassRole` only for
-  that role. Oddish requires IMDSv2 with a Docker-compatible response hop limit
-  of two when configured and disables IMDS otherwise.
+  that role. Oddish always requires IMDSv2 so cloud-init can retrieve the EC2
+  launch key: the response hop limit is one without an instance profile and two
+  when a profile is explicitly exposed to Docker containers.
 - Oddish does not create the VPC, subnet, security group, AMI, key pair, or IAM
   policy. Every instance and root volume must carry protected Oddish ownership,
   deployment, task/trial, worker-job, and Harbor-session tags. Normal teardown,
@@ -603,8 +604,8 @@ EC2 canary procedure:
    confirm the instance and root volume have the protected Oddish tags.
 3. Verify SSH/bootstrap, Docker Compose execution, result/artifact collection,
    and terminal instance state. Confirm the instance has the configured IAM
-   profile (or none), and that metadata is IMDSv2-only when configured or
-   disabled otherwise.
+   profile (or none), and that metadata is IMDSv2-only with response hop limit
+   one without a profile or two with a profile.
 4. Start a longer canary, cancel it with `oddish cancel <trial-or-task-id>`, and
    confirm the tagged instance terminates exactly once.
 5. In the non-production deployment only, deliberately interrupt a worker after

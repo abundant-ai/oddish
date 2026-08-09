@@ -548,7 +548,11 @@ def _patch_ec2_lifecycle(*, require_ec2: bool = False) -> None:
                 "HttpPutResponseHopLimit": 2,
             }
         else:
-            kwargs["MetadataOptions"] = {"HttpEndpoint": "disabled"}
+            kwargs["MetadataOptions"] = {
+                "HttpEndpoint": "enabled",
+                "HttpTokens": "required",
+                "HttpPutResponseHopLimit": 1,
+            }
         return kwargs
 
     async def launch_instance(self: Any) -> str:
