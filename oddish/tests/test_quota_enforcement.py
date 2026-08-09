@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -383,8 +384,46 @@ async def test_user_quota_cancels_payer_trials_and_advances_preserved_tasks(
     )
 
 
+def test_overshoot_metric_reports_statuses_ages_and_reserved(caplog, monkeypatch):
+    """One quota.overshoot_cancelled line: queued vs running, age spread, USD."""
+    monkeypatch.setattr(settings, "pending_trial_reservation_usd", Decimal("0.25"))
+    now = datetime.now(timezone.utc)
+    trials = []
+    for index, (status, age_s, cost_usd) in enumerate(
+        [
+            (TrialStatus.QUEUED, 5, None),
+            (TrialStatus.PENDING, 30, None),
+            (TrialStatus.RUNNING, 600, 1.75),
+        ]
+    ):
+        trial = _trial(
+            trial_id=f"task-om-{index}",
+            task_id="task-om",
+            experiment_id="exp-om",
+            org_id="org-om",
+            billed_user_id="user-om",
+            status=status,
+            cost_usd=cost_usd,
+        )
+        trial.created_at = now - timedelta(seconds=age_s)
+        trials.append(trial)
+
+    with caplog.at_level(logging.INFO, logger="oddish.core.quota_enforcement"):
+        quota_enforcement._log_overshoot_cancelled(
+            trials, scope="user", org_id="org-om", billed_user_id="user-om", now=now
+        )
+
+    assert (
+        "metric=quota.overshoot_cancelled scope=user org_id=org-om "
+        "billed_user_id=user-om trials=3 queued=2 running=1 "
+        "age_min_s=5.0 age_median_s=30.0 age_max_s=600.0 reserved_usd=2.25"
+    ) in caplog.text
+
+
 @pytest.mark.asyncio
-async def test_org_quota_cancels_every_users_active_trials(session, monkeypatch):
+async def test_org_quota_cancels_every_users_active_trials(
+    session, monkeypatch, caplog
+):
     suffix = uuid.uuid4().hex[:8]
     org_id = f"org-org-qc-{suffix}"
     experiment_id = f"exp-org-qc-{suffix}"
@@ -492,12 +531,17 @@ async def test_org_quota_cancels_every_users_active_trials(session, monkeypatch)
     session.add_all([preserved_job, cancelled_job])
     await session.flush()
 
-    result = await cancel_trials_if_quota_reached(
-        session, org_id=org_id, billed_user_id="user-a"
-    )
+    with caplog.at_level(logging.INFO, logger="oddish.core.quota_enforcement"):
+        result = await cancel_trials_if_quota_reached(
+            session, org_id=org_id, billed_user_id="user-a"
+        )
 
     assert result["scope"] == "org"
     assert result["trials_cancelled"] == 4
+    assert (
+        f"metric=quota.overshoot_cancelled scope=org org_id={org_id} "
+        "billed_user_id=user-a trials=4 queued=2 running=2 age_min_s="
+    ) in caplog.text
     assert (await session.get(TrialModel, f"{task_id}-1")).status == TrialStatus.FAILED
     assert (await session.get(TrialModel, f"{task_id}-2")).status == TrialStatus.FAILED
     assert (await session.get(TaskModel, task_id)).status == TaskStatus.FAILED

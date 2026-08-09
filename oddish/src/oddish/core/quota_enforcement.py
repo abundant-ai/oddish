@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+import statistics
+from collections.abc import Awaitable, Callable, Sequence
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select, text
@@ -112,6 +114,53 @@ def _active_trial_predicates(
     if scope == "user":
         predicates.append(TrialModel.billed_user_id == billed_user_id)
     return predicates
+
+
+def _log_overshoot_cancelled(
+    trials: Sequence[TrialModel],
+    *,
+    scope: str,
+    org_id: str,
+    billed_user_id: str | None,
+    now: datetime,
+) -> None:
+    """Quantify admission overshoot: one line per enforcement action.
+
+    Lock-free admission (#1118) lets concurrent submissions both observe
+    headroom, so the sweep is what claws the overage back. A cancelled trial
+    that is still PENDING/QUEUED seconds after ``created_at`` is the overshoot
+    signature; a long-RUNNING one just crossed the cap mid-flight. Everything
+    here comes from the rows the sweep already loaded — no extra queries.
+    ``reserved_usd`` mirrors the per-trial reservation basis in
+    ``_sum_inflight_reserved_usd``.
+    """
+    queued = sum(
+        1
+        for trial in trials
+        if trial.status in (TrialStatus.PENDING, TrialStatus.QUEUED)
+    )
+    ages = sorted(
+        max((now - trial.created_at).total_seconds(), 0.0) for trial in trials
+    )
+    reserved_usd = sum(
+        max(trial.cost_usd or 0.0, float(settings.pending_trial_reservation_usd))
+        for trial in trials
+    )
+    logger.info(
+        "metric=quota.overshoot_cancelled scope=%s org_id=%s billed_user_id=%s "
+        "trials=%s queued=%s running=%s age_min_s=%.1f age_median_s=%.1f "
+        "age_max_s=%.1f reserved_usd=%.2f",
+        scope,
+        org_id,
+        billed_user_id,
+        len(trials),
+        queued,
+        len(trials) - queued,
+        ages[0],
+        statistics.median(ages),
+        ages[-1],
+        reserved_usd,
+    )
 
 
 async def _cancel_worker_jobs(
@@ -252,6 +301,10 @@ async def cancel_trials_if_quota_reached(
     now = utcnow()
     trial_ids = [trial.id for trial in trials]
     affected_task_ids = sorted({trial.task_id for trial in trials})
+    # Before the mutation loop: it reads each trial's pre-cancellation status.
+    _log_overshoot_cancelled(
+        trials, scope=scope, org_id=org_id, billed_user_id=billed_user_id, now=now
+    )
     for trial in trials:
         trial.status = TrialStatus.FAILED
         trial.error_message = QUOTA_CANCELLED_MESSAGE
