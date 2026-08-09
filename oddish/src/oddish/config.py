@@ -151,9 +151,9 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 # trials run a heavier GKE-enabled Harbor on a dedicated blessed-variant image
 # (see HARBOR_VARIANTS in oddish.core.harbor_source), never this default.
 HARBOR_DEFAULT_SOURCE = "https://github.com/abundant-ai/harbor"
-# abundant-ai/harbor main, as resolved into both uv.lock files. Harbor PR #19
-# adds per-model Grok Build context-window overrides.
-HARBOR_DEFAULT_SHA = "4440acb85122d293629f083262c13700f965a867"
+# abundant-ai/harbor main, as resolved into both uv.lock files. Harbor PR #20
+# adds native k3s execution for Helm tasks on ephemeral EC2 instances.
+HARBOR_DEFAULT_SHA = "5f0b00c446b6081c657bc894b03533bfbd5afbc1"
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
