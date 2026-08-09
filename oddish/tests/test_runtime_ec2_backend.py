@@ -1299,6 +1299,89 @@ def test_ec2_harbor_patch_exposes_provider_and_instance_id_and_forces_imds_off(
     assert FakeEc2Environment._run_instances_kwargs is first_launch_method
 
 
+@pytest.mark.asyncio
+async def test_ec2_harbor_patch_reports_identity_immediately_after_launch(
+    monkeypatch,
+) -> None:
+    import oddish.workers.harbor.patches as harbor_patches
+
+    class FakeEc2Environment:
+        def __init__(self):
+            self.instance_id = None
+            self.region = "us-west-2"
+            self.user_tags = {
+                MANAGED_TAG_KEY: "true",
+                AWS_ACCOUNT_ID_TAG_KEY: "123456789012",
+            }
+
+        async def _launch_instance(self):
+            return "i-launched"
+
+        def _run_instances_kwargs(self):
+            return {}
+
+    module = SimpleNamespace(EC2Environment=FakeEc2Environment)
+    monkeypatch.setattr(
+        harbor_patches.importlib,
+        "import_module",
+        lambda _name: module,
+    )
+    harbor_patches._patch_ec2_lifecycle(require_ec2=True)
+    seen = []
+
+    async def launched(environment):
+        seen.append(environment.get_sandbox_id())
+
+    token = harbor_patches.set_ec2_instance_launched_callback(launched)
+    try:
+        environment = FakeEc2Environment()
+        instance_id = await environment._launch_instance()
+    finally:
+        harbor_patches.reset_ec2_instance_launched_callback(token)
+
+    assert instance_id == "i-launched"
+    assert environment.instance_id == "i-launched"
+    assert seen == ["ec2://123456789012/us-west-2/i-launched"]
+
+
+@pytest.mark.asyncio
+async def test_ec2_harbor_patch_retains_instance_id_when_launch_callback_fails(
+    monkeypatch,
+) -> None:
+    import oddish.workers.harbor.patches as harbor_patches
+
+    class FakeEc2Environment:
+        def __init__(self):
+            self.instance_id = None
+
+        async def _launch_instance(self):
+            return "i-launched"
+
+        def _run_instances_kwargs(self):
+            return {}
+
+    module = SimpleNamespace(EC2Environment=FakeEc2Environment)
+    monkeypatch.setattr(
+        harbor_patches.importlib,
+        "import_module",
+        lambda _name: module,
+    )
+    harbor_patches._patch_ec2_lifecycle(require_ec2=True)
+
+    async def fail_after_launch(_environment):
+        raise RuntimeError("identity persistence failed")
+
+    token = harbor_patches.set_ec2_instance_launched_callback(fail_after_launch)
+    environment = FakeEc2Environment()
+    try:
+        with pytest.raises(RuntimeError, match="identity persistence failed"):
+            await environment._launch_instance()
+    finally:
+        harbor_patches.reset_ec2_instance_launched_callback(token)
+
+    assert environment.instance_id == "i-launched"
+
+
 def test_ec2_harbor_patch_preserves_raw_id_for_non_oddish_environments(
     monkeypatch,
 ) -> None:

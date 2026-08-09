@@ -817,18 +817,20 @@ def test_wrappers_set_marker_to_prevent_double_wrap(make_wrapped, attr):
 
 def test_entry_applies_sibling_harbor_patches(monkeypatch):
     calls: list[bool] = []
+    patch_module = SimpleNamespace(
+        apply_harbor_patches=lambda *, require_ec2: calls.append(require_ec2)
+    )
 
     def _fake_import(name):
         assert name == "oddish.workers.harbor.patches"
-        return SimpleNamespace(
-            apply_harbor_patches=lambda *, require_ec2: calls.append(require_ec2)
-        )
+        return patch_module
 
     monkeypatch.setattr(harbor_entry.importlib, "import_module", _fake_import)
 
-    harbor_entry._apply_sibling_harbor_patches(require_ec2=True)
+    result = harbor_entry._apply_sibling_harbor_patches(require_ec2=True)
 
     assert calls == [True]
+    assert result is patch_module
 
 
 @pytest.mark.parametrize(
@@ -999,6 +1001,77 @@ async def test_entry_run_applies_patches_before_job_create(monkeypatch, tmp_path
 
     assert order == ["patch", "config", "create", "run"]
     assert outcome["error"] is None
+
+
+@pytest.mark.asyncio
+async def test_entry_run_emits_ec2_identity_immediately_after_launch(
+    monkeypatch, tmp_path
+):
+    emitted: list[dict] = []
+    registered_callback = None
+    reset_tokens: list[object] = []
+    harbor_module = ModuleType("harbor")
+
+    class FakeEnvironment:
+        provider_name = "ec2"
+        external_id = "ec2://123456789012/us-west-2/i-launched"
+
+    class FakeJob:
+        job_dir = str(tmp_path)
+
+        @classmethod
+        async def create(cls, _config):
+            return cls()
+
+        def __getattr__(self, name):
+            if name.startswith("on_"):
+                return lambda _hook: None
+            raise AttributeError(name)
+
+        async def run(self):
+            assert registered_callback is not None
+            await registered_callback(FakeEnvironment())
+
+    def set_callback(callback):
+        nonlocal registered_callback
+        registered_callback = callback
+        return "callback-token"
+
+    patch_module = SimpleNamespace(
+        set_ec2_instance_launched_callback=set_callback,
+        reset_ec2_instance_launched_callback=reset_tokens.append,
+    )
+    harbor_module.Job = FakeJob
+    monkeypatch.setitem(sys.modules, "harbor", harbor_module)
+    monkeypatch.setattr(
+        harbor_entry,
+        "_apply_sibling_harbor_patches",
+        lambda **_kwargs: patch_module,
+    )
+    monkeypatch.setattr(harbor_entry, "_build_job_config", lambda _payload: object())
+    monkeypatch.setattr(harbor_entry, "_emit_event_line", emitted.append)
+
+    outcome = await harbor_entry._run(
+        {
+            "jobs_dir": str(tmp_path),
+            "environment_config": {"type": "ec2"},
+        }
+    )
+
+    assert outcome["error"] is None
+    assert emitted == [
+        {
+            harbor_entry.EVENT_SENTINEL: True,
+            "event": "environment-start",
+            "trial_id": None,
+            "environment_provider": "ec2",
+            "environment_external_id": (
+                "ec2://123456789012/us-west-2/i-launched"
+            ),
+            "result": None,
+        }
+    ]
+    assert reset_tokens == ["callback-token"]
 
 
 def test_runtime_fields_patch_is_idempotent():

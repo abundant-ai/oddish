@@ -67,9 +67,10 @@ def _event_name(event: Any) -> str:
     return raw.lower().replace("_", "-")
 
 
-def _apply_sibling_harbor_patches(*, require_ec2: bool = False) -> None:
+def _apply_sibling_harbor_patches(*, require_ec2: bool = False) -> Any:
     module = importlib.import_module("oddish.workers.harbor.patches")
     module.apply_harbor_patches(require_ec2=require_ec2)
+    return module
 
 
 def _emit_event_line(payload: dict[str, Any]) -> None:
@@ -233,7 +234,7 @@ def _build_job_config(payload: dict[str, Any]):
 
 async def _run(payload: dict[str, Any]) -> dict[str, Any]:
     environment_type = (payload.get("environment_config") or {}).get("type")
-    _apply_sibling_harbor_patches(require_ec2=environment_type == "ec2")
+    patch_module = _apply_sibling_harbor_patches(require_ec2=environment_type == "ec2")
     Job = getattr(importlib.import_module("harbor"), "Job")
     start = time.time()
     config = _build_job_config(payload)
@@ -251,7 +252,33 @@ async def _run(payload: dict[str, Any]) -> dict[str, Any]:
     ):
         getattr(job, register)(hook)
 
-    await job.run()
+    ec2_launch_callback_token = None
+    if environment_type == "ec2":
+
+        async def on_ec2_instance_launched(environment: Any) -> None:
+            external_id = environment.external_id
+            provider = getattr(environment, "provider_name", None)
+            if not isinstance(external_id, str) or not external_id:
+                raise RuntimeError("EC2 instance launched without an external identity")
+            _emit_event_line(
+                {
+                    EVENT_SENTINEL: True,
+                    "event": "environment-start",
+                    "trial_id": None,
+                    "environment_provider": provider,
+                    "environment_external_id": external_id,
+                    "result": None,
+                }
+            )
+
+        ec2_launch_callback_token = patch_module.set_ec2_instance_launched_callback(
+            on_ec2_instance_launched
+        )
+    try:
+        await job.run()
+    finally:
+        if ec2_launch_callback_token is not None:
+            patch_module.reset_ec2_instance_launched_callback(ec2_launch_callback_token)
     duration = time.time() - start
     job_result_path = job_dir / "result.json"
     return {

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 import math
 import os
 import shutil
@@ -11,7 +11,8 @@ import uuid
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Awaitable, Callable, cast
+from types import SimpleNamespace
+from typing import Any, cast
 from urllib.parse import urlparse
 
 from harbor import Job, JobConfig  # type: ignore[attr-defined]
@@ -29,7 +30,7 @@ from harbor.models.trial.config import AgentConfig as HarborAgentConfig
 from harbor.models.trial.config import EnvironmentConfig as HarborEnvironmentConfig
 from harbor.models.trial.config import ResourceMode
 from harbor.models.trial.config import TaskConfig
-from harbor.trial.hooks import TrialHookEvent
+from harbor.trial.hooks import TrialEvent, TrialHookEvent
 from harbor.utils.env import resolve_env_vars
 
 from oddish.config import (
@@ -93,7 +94,11 @@ from .outcome import (
     HarborOutcome,
     _extract_outcome_from_job_result,
 )
-from .patches import apply_harbor_patches
+from .patches import (
+    apply_harbor_patches,
+    reset_ec2_instance_launched_callback,
+    set_ec2_instance_launched_callback,
+)
 from .storage import (
     _MIN_REQUIRED_FREE_GB,
     _MIN_REQUIRED_FREE_INODES,
@@ -1741,11 +1746,40 @@ async def _run_harbor_trial_async_impl(
                     job.on_trial_ended(safe_hook_callback)
                     job.on_trial_cancelled(safe_hook_callback)
 
-                with _capture_modal_output(
-                    actual_job_dir, environment
-                ) as captured_log_path:
-                    modal_debug_log_path = captured_log_path
-                    job_result = await job.run()
+                ec2_launch_callback_token = None
+                if environment == EnvironmentType.EC2 and hook_callback is not None:
+
+                    async def on_ec2_instance_launched(ec2_environment: Any) -> None:
+                        external_id = ec2_environment.external_id
+                        provider = getattr(ec2_environment, "provider_name", None)
+                        if not isinstance(external_id, str) or not external_id:
+                            raise RuntimeError(
+                                "EC2 instance launched without an external identity"
+                            )
+                        await hook_callback(
+                            SimpleNamespace(
+                                event=TrialEvent.ENVIRONMENT_START,
+                                environment=ec2_environment,
+                                environment_provider=provider,
+                                environment_external_id=external_id,
+                                result=None,
+                                timestamp=None,
+                            )
+                        )
+
+                    ec2_launch_callback_token = set_ec2_instance_launched_callback(
+                        on_ec2_instance_launched
+                    )
+
+                try:
+                    with _capture_modal_output(
+                        actual_job_dir, environment
+                    ) as captured_log_path:
+                        modal_debug_log_path = captured_log_path
+                        job_result = await job.run()
+                finally:
+                    if ec2_launch_callback_token is not None:
+                        reset_ec2_instance_launched_callback(ec2_launch_callback_token)
             finally:
                 if redaction_trial_id:
                     harbor_live_tail.clear_runtime_redactions(redaction_trial_id)
