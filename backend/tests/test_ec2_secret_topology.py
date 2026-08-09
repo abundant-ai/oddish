@@ -7,9 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 import modal_app
+import pytest
 import worker.functions as worker_functions
 
 CONTROL = "oddish-ec2-control"
@@ -270,3 +269,35 @@ def test_default_and_variant_workers_share_the_same_ec2_secret_topology() -> Non
         secret not in worker_functions.reconciler_secrets
         for secret in modal_app.ec2_ssh_secrets
     )
+
+
+@pytest.mark.parametrize("workflow_name", ["modal-deploy.yml", "staging-deploy.yml"])
+def test_hosted_deploys_enable_ec2_without_embedding_secret_values(
+    workflow_name: str,
+) -> None:
+    workflow = (
+        Path(modal_app.__file__).resolve().parent.parent
+        / ".github"
+        / "workflows"
+        / workflow_name
+    ).read_text()
+
+    for expected in (
+        'ODDISH_EC2_ENABLED: "true"',
+        "ODDISH_EC2_CONTROL_SECRET_NAME: oddish-ec2-control",
+        "ODDISH_EC2_SSH_SECRET_NAME: oddish-ec2-ssh",
+        "ODDISH_EC2_REGION: us-west-2",
+        "ODDISH_EC2_AMI_ID: ami-0ac74609c6396bed3",
+        "ODDISH_EC2_INSTANCE_TYPE: m7i-flex.2xlarge",
+        "ODDISH_EC2_SUBNET_ID: subnet-0da0349bc81aa34d8",
+        "ODDISH_EC2_KEY_NAME: oddish-harbor",
+    ):
+        assert expected in workflow
+
+    for forbidden in (
+        "ODDISH_EC2_AWS_ACCESS_KEY_ID:",
+        "ODDISH_EC2_AWS_SECRET_ACCESS_KEY:",
+        "ODDISH_EC2_AWS_SESSION_TOKEN:",
+        "ODDISH_EC2_SSH_PRIVATE_KEY:",
+    ):
+        assert forbidden not in workflow
