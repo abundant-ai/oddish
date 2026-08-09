@@ -69,7 +69,7 @@ jobs:
       ODDISH_EC2_SSH_SECRET_NAME: oddish-ec2-ssh
       ODDISH_EC2_REGION: us-west-2
       ODDISH_EC2_AMI_ID: ami-0ac74609c6396bed3
-      ODDISH_EC2_INSTANCE_TYPE: m7i-flex.large
+      ODDISH_EC2_INSTANCE_TYPE: m7i-flex.2xlarge
       ODDISH_EC2_SUBNET_ID: subnet-0da0349bc81aa34d8
       ODDISH_EC2_SECURITY_GROUP_IDS: '["sg-04d0011ae0f6b6c00"]'
       ODDISH_EC2_KEY_NAME: oddish-harbor
