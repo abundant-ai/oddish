@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Shared promotion preconditions for Promotion Preflight and /promote.
 #
-# Resolves TARGET_SHA (empty means the staging tip) and verifies the
+# Resolves the target — TARGET_SHA if set, else the sha pinned in PR_BODY's
+# `promotion-target` marker, else the staging tip — and verifies the
 # fast-forward invariants and the staging deploy, then emits `sha=<target>`
 # to GITHUB_OUTPUT. Read-only: the caller decides whether to push.
 set -euo pipefail
@@ -9,6 +10,20 @@ set -euo pipefail
 git fetch origin main staging
 
 raw="${TARGET_SHA:-}"
+if [ -z "$raw" ]; then
+  body="$(printf '%s' "${PR_BODY:-}" | tr -d '\r')"
+  if printf '%s' "$body" | grep -q '<!--[[:space:]]*promotion-target:'; then
+    # A pin that is present but not a sha must fail, never fall through to
+    # the tip — an unfilled template placeholder is not consent to ship more.
+    raw="$(printf '%s' "$body" \
+        | grep -m1 -oE '<!--[[:space:]]*promotion-target:[[:space:]]*[0-9a-fA-F]{7,40}[[:space:]]*-->' \
+        | grep -oE '[0-9a-fA-F]{7,40}' | head -n1)" \
+      || { echo "::error::the promotion-target pin in the PR body is not a commit sha; fix the pin or use an explicit target sha"; exit 1; }
+    echo "promoting the sha pinned in the PR body: $raw"
+  else
+    echo "::notice::no promotion-target pin in the PR body — promoting the staging tip"
+  fi
+fi
 target="${raw:-$(git rev-parse origin/staging)}"
 target="$(git rev-parse --verify --quiet "${target}^{commit}")" \
   || { echo "::error::'$raw' does not resolve to a commit"; exit 1; }

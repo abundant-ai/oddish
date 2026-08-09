@@ -1,6 +1,7 @@
 name: Promote on comment
-# Comment `/promote` on the staging -> main pull request to promote the
-# staging tip, or `/promote <sha>` to stop at an earlier staging commit
+# Comment `/promote` on the staging -> main pull request to promote the sha
+# pinned in its body's `promotion-target` marker (the staging tip when no pin
+# exists), or `/promote <sha>` to override the pin
 # (the same target rule as the Promotion Preflight `target_sha` input).
 #
 # For an organization member with write access, the job always runs the
@@ -90,9 +91,11 @@ jobs:
           [ "$cross" = "false" ] || { echo "::error::#$PR comes from a fork; promotion uses the repository's own staging branch"; exit 1; }
 
           # The word after `/promote` on the command line is the target;
-          # bare `/promote` promotes the staging tip.
+          # bare `/promote` promotes the sha pinned in the pull request body
+          # (the script falls back to the staging tip when there is no pin).
           TARGET_SHA=$(printf '%s' "$COMMENT" | head -n1 | tr -d '\r' | awk '{print $2}')
-          export TARGET_SHA
+          PR_BODY=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body -q .body)
+          export TARGET_SHA PR_BODY
           .github/scripts/promote/verify_promotion_target.sh
 
       - name: Fast-forward main
