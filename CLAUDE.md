@@ -26,7 +26,11 @@ deploy, and the fast-forward condition, then prints the push command) and
 executes that push themselves; never merge, squash, or push to `main` directly.
 An organization member with `write`, `maintain`, or `admin` access can instead
 comment `/promote` on the promotion pull request; the workflow runs the same
-checks and, when the promote token is set, does the push.
+checks and, when the promote token is set, does the push. Bare `/promote`
+promotes the sha pinned in the pull request body (the template's
+`promotion-target` marker), so commits that reach `staging` after the
+promotion pull request was written do not ride along; `/promote <sha>`
+overrides the pin, and a body without one promotes the staging tip.
 
 **Never complete a promotion pull request with the merge button.** The button
 squashes, which puts a new commit on `main` and breaks the fast-forward
@@ -72,7 +76,8 @@ Not every change has to be releasable to merge. Land unfinished work behind a
 flag that is off by default (as `ODDISH_GKE_ENABLED` and
 `ODDISH_PRE_TRIAL_ENABLED` do), or promote only part of `staging` by giving
 the promotion workflow the commit to stop at (the `target_sha` input on
-Promotion Preflight, or `/promote <sha>` on the promotion pull request).
+Promotion Preflight, `/promote <sha>` on the promotion pull request, or the
+`promotion-target` pin in its body).
 
 ## Useful pointers
 

@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       target_sha:
-        description: "Staging commit to promote (default: staging tip)"
+        description: "Staging commit to promote (default: the promotion PR's pinned target, else the staging tip)"
         required: false
 
 jobs:
@@ -32,6 +32,8 @@ jobs:
           set -euo pipefail
           pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --base main --head staging --state open --json number -q '.[0].number')
           [ -n "$pr" ] || { echo "::error::no open staging->main promotion PR"; exit 1; }
+          PR_BODY=$(gh pr view "$pr" --repo "$GITHUB_REPOSITORY" --json body -q .body)
+          export PR_BODY
           .github/scripts/promote/verify_promotion_target.sh
 
       - name: Print the push command
