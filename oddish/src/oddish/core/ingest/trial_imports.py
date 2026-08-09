@@ -350,6 +350,7 @@ async def initialize_trial_import(
         elif task.status in (
             TaskStatus.COMPLETED,
             TaskStatus.FAILED,
+            TaskStatus.CANCELLED,
             TaskStatus.ANALYZING,
             TaskStatus.VERDICT_PENDING,
         ):

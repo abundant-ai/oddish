@@ -331,7 +331,9 @@ async def test_user_quota_cancels_payer_trials_and_advances_preserved_tasks(
         AnalysisStatus.FAILED
     )
     assert (await session.get(TrialModel, mixed_other_id)).status == TrialStatus.SUCCESS
-    assert (await session.get(TaskModel, exhausted_task_id)).status == TaskStatus.FAILED
+    assert (await session.get(TaskModel, exhausted_task_id)).status == (
+        TaskStatus.CANCELLED
+    )
     mixed_task = await session.get(TaskModel, mixed_task_id)
     assert mixed_task.status == TaskStatus.VERDICT_PENDING
     assert mixed_task.verdict_status == VerdictStatus.RUNNING
@@ -500,7 +502,7 @@ async def test_org_quota_cancels_every_users_active_trials(session, monkeypatch)
     assert result["trials_cancelled"] == 4
     assert (await session.get(TrialModel, f"{task_id}-1")).status == TrialStatus.FAILED
     assert (await session.get(TrialModel, f"{task_id}-2")).status == TrialStatus.FAILED
-    assert (await session.get(TaskModel, task_id)).status == TaskStatus.FAILED
+    assert (await session.get(TaskModel, task_id)).status == TaskStatus.CANCELLED
     assert (
         await session.get(TrialModel, f"{preserved_task_id}-baseline")
     ).status == TrialStatus.FAILED

@@ -421,6 +421,38 @@ async def test_retry_moves_verdict_pending_task_back_to_running(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_retry_moves_cancelled_task_back_to_running(monkeypatch):
+    """Retrying a trial of a CANCELLED task resurrects it, mirroring FAILED."""
+    events = []
+    trial = _RecordingTrial(events, status=TrialStatus.FAILED)
+    task = SimpleNamespace(
+        id="task-1",
+        name="task-1",
+        status=TaskStatus.CANCELLED,
+        finished_at=object(),
+    )
+    session = _RecordingSession(trial=trial, task=task, events=events)
+
+    async def fake_reserve_next_trial_index(_session, *, task_id):
+        return 1
+
+    async def fake_enqueue_trial_worker_job(_session, **_):
+        return None
+
+    monkeypatch.setattr(
+        queue_mod, "reserve_next_trial_index", fake_reserve_next_trial_index
+    )
+    monkeypatch.setattr(
+        queue_mod, "enqueue_trial_worker_job", fake_enqueue_trial_worker_job
+    )
+
+    await endpoints.retry_trial_core(session, trial_id=trial.id, org_id="org-1")
+
+    assert task.status == TaskStatus.RUNNING
+    assert task.finished_at is None
+
+
+@pytest.mark.asyncio
 async def test_retry_uses_fresh_registry_auth_when_supplied(monkeypatch):
     events = []
     trial = _RecordingTrial(events, status=TrialStatus.FAILED)

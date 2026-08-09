@@ -91,6 +91,7 @@ class TaskStatus(str, Enum):
     VERDICT_PENDING = "verdict_pending"  # All analyses done, verdict running
     COMPLETED = "completed"  # All stages complete
     FAILED = "failed"  # Terminal failure
+    CANCELLED = "cancelled"  # Terminal: stopped by a person or quota, not broken
 
 
 class JobStatus(str, Enum):

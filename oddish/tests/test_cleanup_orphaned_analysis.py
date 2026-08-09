@@ -98,7 +98,7 @@ async def test_orphan_sweep_runs_both_arms_and_returns_counts() -> None:
     assert "superseded_by_trial_id IS NOT NULL" in fail_sql
     assert "tr.status = 'SKIPPED'" in fail_sql
     assert "imported_at IS NOT NULL" in fail_sql
-    assert "t.status IN ('COMPLETED', 'FAILED')" in fail_sql
+    assert "t.status IN ('COMPLETED', 'FAILED', 'CANCELLED')" in fail_sql
     assert "'QUEUED', 'RETRYING'" in fail_sql  # active-QA-job guard
     assert fail_params["stale_minutes"] == cleanup.ORPHANED_ANALYSIS_MINUTES
     assert fail_params["batch_limit"] == cleanup.ORPHANED_ANALYSIS_BATCH_LIMIT
@@ -114,7 +114,7 @@ async def test_orphan_sweep_runs_both_arms_and_returns_counts() -> None:
     assert "tr.analysis_status = 'RUNNING'" in requeue_sql
     assert "superseded_by_trial_id IS NULL" in requeue_sql
     assert "NOT LIKE :gate_skip_pattern" in requeue_sql
-    assert "t.status NOT IN ('COMPLETED', 'FAILED')" in requeue_sql
+    assert "t.status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')" in requeue_sql
     assert "wj.status::text = 'RUNNING'" in requeue_sql
     assert requeue_params["stale_minutes"] == cleanup.ORPHANED_ANALYSIS_MINUTES
 

@@ -342,7 +342,9 @@ async def _reconcile_cancelled_tasks(
         if task.id not in exhausted:
             continue
         if task.status in _ACTIVE_TASK_STATUSES:
-            task.status = TaskStatus.FAILED
+            # Quota stopped the run — it didn't break. The verdict columns
+            # below still record the cancelled judgment independently.
+            task.status = TaskStatus.CANCELLED
             task.finished_at = now
             tasks_cancelled += 1
         if task.verdict_status in (

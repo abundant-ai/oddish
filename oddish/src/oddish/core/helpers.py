@@ -569,7 +569,12 @@ def resolve_task_status(
     non-pass). SKIPPED is terminal — the trial never ran — so it counts toward
     "done" alongside completed/failed; otherwise a task with gate-skipped trials
     would never resolve to COMPLETED.
+
+    CANCELLED is sticky: a cancelled run's trials are all terminal (the cancel
+    finalized them), which must not read as "all trials finished" = COMPLETED.
     """
+    if task.status is TaskStatus.CANCELLED:
+        return task.status
     if total > 0 and completed + failed + skipped >= total:
         return TaskStatus.COMPLETED
     return task.status

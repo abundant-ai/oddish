@@ -593,6 +593,7 @@ async def retry_trial_core(
         TaskStatus.VERDICT_PENDING,
         TaskStatus.COMPLETED,
         TaskStatus.FAILED,
+        TaskStatus.CANCELLED,
     ):
         task.status = TaskStatus.RUNNING
         task.finished_at = None

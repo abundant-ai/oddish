@@ -121,6 +121,7 @@ const STATUS_OPTIONS: Option[] = [
   { value: "ANALYZING", label: "Analyzing" },
   { value: "VERDICT_PENDING", label: "Verdict pending" },
   { value: "FAILED", label: "Failed" },
+  { value: "CANCELLED", label: "Cancelled" },
 ];
 
 const PRIORITY_OPTIONS: Option[] = [

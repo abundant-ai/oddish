@@ -1237,7 +1237,7 @@ async def _reset_orphaned_trial_analysis(session) -> tuple[int, int]:
                                      LIKE :gate_skip_pattern
                               OR t.deleted_at IS NOT NULL
                               OR (
-                                  t.status IN ('COMPLETED', 'FAILED')
+                                  t.status IN ('COMPLETED', 'FAILED', 'CANCELLED')
                                   AND NOT EXISTS (
                                       SELECT 1
                                       FROM   worker_jobs wj
@@ -1289,7 +1289,7 @@ async def _reset_orphaned_trial_analysis(session) -> tuple[int, int]:
                           AND  COALESCE(tr.analysis_started_at, tr.updated_at)
                                    < NOW() - make_interval(mins => :stale_minutes)
                           AND  t.deleted_at IS NULL
-                          AND  t.status NOT IN ('COMPLETED', 'FAILED')
+                          AND  t.status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')
                           AND  NOT EXISTS (
                               SELECT 1
                               FROM   worker_jobs wj
