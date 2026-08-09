@@ -6,6 +6,8 @@ import contextlib
 import logging
 import os
 import re
+import shutil
+import subprocess
 import tempfile
 import threading
 from datetime import datetime, timezone
@@ -84,12 +86,39 @@ class Ec2Backend:
                 with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
                     os.fchmod(handle.fileno(), 0o600)
                     handle.write(secret.get_secret_value().rstrip("\n") + "\n")
+                self._validate_ssh_private_key(path)
             except Exception:
                 path.unlink(missing_ok=True)
                 raise
             self._ssh_key_path = path
             self._register_cleanup()
             return path
+
+    def _validate_ssh_private_key(self, path: Path) -> None:
+        ssh_keygen = shutil.which("ssh-keygen")
+        if ssh_keygen is None:
+            raise RuntimeError(
+                "EC2 requires ssh-keygen from openssh-client to validate "
+                "ODDISH_EC2_SSH_PRIVATE_KEY"
+            )
+        try:
+            result = subprocess.run(
+                [ssh_keygen, "-y", "-f", str(path)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=15,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise RuntimeError(
+                "Unable to validate ODDISH_EC2_SSH_PRIVATE_KEY with ssh-keygen"
+            ) from exc
+        if result.returncode != 0:
+            raise RuntimeError(
+                "ODDISH_EC2_SSH_PRIVATE_KEY is not a valid private key; "
+                "preserve its original multiline formatting in the Modal secret"
+            )
 
     def materialize_aws_profile(self) -> Path:
         with self._credential_lock:

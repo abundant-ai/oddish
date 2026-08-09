@@ -38,6 +38,7 @@ from oddish.schemas import TaskSweepSubmission
 
 AWS_ACCOUNT_ID = "123456789012"
 _ORIGINAL_RESOLVE_AWS_ACCOUNT_ID = Ec2Backend._resolve_aws_account_id
+_ORIGINAL_VALIDATE_SSH_PRIVATE_KEY = Ec2Backend._validate_ssh_private_key
 
 
 def _complete_ec2_settings(**overrides):
@@ -71,6 +72,11 @@ def _install_complete_ec2_settings(monkeypatch, **overrides):
         Ec2Backend,
         "_resolve_aws_account_id",
         lambda self: AWS_ACCOUNT_ID,
+    )
+    monkeypatch.setattr(
+        Ec2Backend,
+        "_validate_ssh_private_key",
+        lambda self, path: None,
     )
     return configured
 
@@ -258,6 +264,23 @@ def test_ec2_backend_fails_loudly_when_a_worker_materializes_without_the_key(
 
     with pytest.raises(RuntimeError, match="ODDISH_EC2_SSH_PRIVATE_KEY"):
         Ec2Backend().materialize_ssh_private_key()
+
+
+def test_ec2_backend_rejects_a_malformed_private_key_before_launch(
+    monkeypatch,
+) -> None:
+    _install_complete_ec2_settings(monkeypatch)
+    monkeypatch.setattr(
+        Ec2Backend,
+        "_validate_ssh_private_key",
+        _ORIGINAL_VALIDATE_SSH_PRIVATE_KEY,
+    )
+    backend = Ec2Backend()
+
+    with pytest.raises(RuntimeError, match="multiline formatting"):
+        backend.materialize_ssh_private_key()
+
+    assert backend._ssh_key_path is None
 
 
 def test_ec2_backend_materializes_namespaced_aws_credentials_as_a_0600_profile(
