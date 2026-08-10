@@ -38,7 +38,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- Quota cancellation no longer turns a preserved accepted verdict into a failed verdict, or leaves a failed task paired with that accepted payload. Cancelling a replacement QA pass restores the previous successful verdict; a genuine terminal QA failure clears the superseded payload.
+- Quota cancellation, retry, and append reconciliation no longer hide a preserved accepted verdict by leaving its payload paired with a missing status. Verdict lifecycle changes now use one state-transition module: replacement QA retains the published payload while queued/running, cancellation or a no-op restores it to `SUCCESS`, and only terminal QA failure discards it. A database constraint repairs and prevents invalid payload/status pairs.
 - Worker heartbeats used to stop as soon as the agent finished, but the worker still had to upload and save the results. When that took over 15 minutes, the cleanup sweep marked the trial "Worker heartbeat stalled for over 15 minutes", threw away the finished result, and re-ran the whole trial. The heartbeat now runs until the results are saved and settled.
 
 ---

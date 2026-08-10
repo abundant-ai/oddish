@@ -20,6 +20,10 @@ from oddish.core.verdict_sync import (
     sync_pre_trial_to_task_version,
     sync_verdict_to_task,
 )
+from oddish.core.verdict_state import (
+    complete_verdict_without_result,
+    start_verdict,
+)
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
@@ -515,9 +519,7 @@ async def _finalize_pre_trial_request(
             VerdictStatus.QUEUED,
         ):
             version.pre_trial_status = VerdictStatus.FAILED
-            version.pre_trial_error = (
-                "The audit did not record a result. Run it again."
-            )
+            version.pre_trial_error = "The audit did not record a result. Run it again."
             version.pre_trial_finished_at = utcnow()
 
 
@@ -778,8 +780,7 @@ async def run_task_qa_job(
             )
             return
 
-        task.verdict_status = VerdictStatus.RUNNING
-        task.verdict_started_at = utcnow()
+        start_verdict(task, now=utcnow())
 
     verdict_result = None
     verdict_error = None
@@ -826,10 +827,7 @@ async def run_task_qa_job(
             async with get_session() as session:
                 task = await session.get(TaskModel, task_id, with_for_update=True)
                 if task and await _worker_job_is_running(session, worker_job_id):
-                    task.verdict = None
-                    task.verdict_status = VerdictStatus.SUCCESS
-                    task.verdict_error = None
-                    task.verdict_finished_at = utcnow()
+                    complete_verdict_without_result(task, now=utcnow())
                     task.status = TaskStatus.COMPLETED
                     task.finished_at = utcnow()
             console.print(
