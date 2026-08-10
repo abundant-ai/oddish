@@ -48,6 +48,7 @@ import {
   type ExperimentAgentSummary,
 } from "@/lib/experiment-agent-grouping";
 import { resolveExperimentTaskVersion } from "@/lib/experiment-task-version";
+import { taskHasActiveVerdict } from "@/lib/job-status";
 import { useTrial } from "@/lib/use-trial";
 import {
   formatLineRange,
@@ -583,6 +584,7 @@ function ExperimentSummaryBar({
   // probes that the table below filters out. Drives the tooltip's disclosure.
   costIsSpend,
   costPending,
+  qa,
 }: {
   taskCount: number;
   summary: ExperimentSummary;
@@ -591,6 +593,12 @@ function ExperimentSummaryBar({
   showNewSpend: boolean;
   costIsSpend: boolean;
   costPending: boolean;
+  qa: {
+    accepted: number;
+    rejected: number;
+    running: number;
+    failed: number;
+  } | null;
 }) {
   if (isInitialLoading) {
     return (
@@ -634,9 +642,13 @@ function ExperimentSummaryBar({
   return (
     <div
       className={`grid grid-cols-2 overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] ${
-        showNewSpend
-          ? "md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_0.9fr_1.4fr]"
-          : "md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_1.4fr]"
+        qa
+          ? showNewSpend
+            ? "md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_0.9fr_0.9fr_1.4fr]"
+            : "md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_0.9fr_1.4fr]"
+          : showNewSpend
+            ? "md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_0.9fr_1.4fr]"
+            : "md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_1.4fr]"
       }`}
     >
       <KpiTile
@@ -685,6 +697,43 @@ function ExperimentSummaryBar({
           </span>
         </span>
       </KpiTile>
+      {qa && (
+        <KpiTile
+          label="QA verdicts"
+          labelInfo="Task-level QA outcome for every task in this experiment that ran QA. Each task's row carries the same chip."
+        >
+          <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
+            {qa.accepted}
+            <span className="font-mono text-xs font-normal text-[color:var(--paper-ink-3)]">
+              accepted
+            </span>
+          </span>
+          <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
+            {qa.rejected > 0 && (
+              <span className="text-[color:var(--paper-fail)]">
+                {qa.rejected} rejected
+              </span>
+            )}
+            {qa.running > 0 && (
+              <span className={qa.rejected > 0 ? "ml-1.5" : ""}>
+                {qa.rejected > 0 && "· "}
+                {qa.running} running
+              </span>
+            )}
+            {qa.failed > 0 && (
+              <span
+                className={qa.rejected > 0 || qa.running > 0 ? "ml-1.5" : ""}
+              >
+                {(qa.rejected > 0 || qa.running > 0) && "· "}
+                {qa.failed} failed
+              </span>
+            )}
+            {qa.rejected === 0 && qa.running === 0 && qa.failed === 0 && (
+              <span>all accepted</span>
+            )}
+          </span>
+        </KpiTile>
+      )}
       <KpiTile
         label="Cost"
         labelInfo="Total cost of all trials shown in this experiment, including trials gathered from other experiments."
@@ -1513,6 +1562,31 @@ export function ExperimentDetailView({
     };
   }, [deferredTasksForDerivedData, costTotals]);
 
+  // Task-level QA rollup for the summary bar. Null when no task in the
+  // grid ever ran QA, so non-QA experiments keep their five tiles.
+  const qaRollup = useMemo(() => {
+    let accepted = 0;
+    let rejected = 0;
+    let running = 0;
+    let failed = 0;
+    for (const task of deferredTasksForDerivedData) {
+      if (taskHasActiveVerdict(task)) {
+        running += 1;
+        continue;
+      }
+      const v = task.verdict;
+      if (v) {
+        const label = v.verdict ?? (v.is_good ? "accept" : "reject");
+        if (label === "accept") accepted += 1;
+        else rejected += 1;
+      } else if (task.verdict_status === "failed") {
+        failed += 1;
+      }
+    }
+    if (accepted + rejected + running + failed === 0) return null;
+    return { accepted, rejected, running, failed };
+  }, [deferredTasksForDerivedData]);
+
   const closeDrawer = () => {
     cancelPendingDeepLink();
     setDrawerState(null);
@@ -1652,6 +1726,7 @@ export function ExperimentDetailView({
             showNewSpend={!readOnly}
             costIsSpend={costTotals != null}
             costPending={costTotalsPending}
+            qa={showAnalysis ? qaRollup : null}
           />
 
           {hasError ? (

@@ -346,6 +346,69 @@ const ANALYSIS_LEGEND_ITEMS: Array<{
   },
 ];
 
+// The experiment grid is the primary surface, so each task row answers the
+// QA question directly: Accepted / Rejected verdict, QA in flight, or QA
+// failed. Tasks that never opted into QA render nothing.
+function TaskVerdictChip({ task }: { task: Task }) {
+  const running = taskHasActiveVerdict(task);
+  // Rows stored before the accept/reject label existed only carry is_good.
+  const verdict = task.verdict
+    ? (task.verdict.verdict ?? (task.verdict.is_good ? "accept" : "reject"))
+    : null;
+  const failed =
+    !running && verdict == null && task.verdict_status === "failed";
+  if (!running && verdict == null && !failed) return null;
+
+  let chipClass: string;
+  let label: React.ReactNode;
+  let tip: string;
+  if (running) {
+    chipClass =
+      "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300";
+    label = (
+      <>
+        <Loader2 className="h-2.5 w-2.5 animate-spin" />
+        QA
+      </>
+    );
+    tip = "QA is running";
+  } else if (verdict === "accept") {
+    chipClass =
+      "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300";
+    label = "Accepted";
+    tip = task.verdict?.confidence
+      ? `QA accepted this task (${task.verdict.confidence} confidence)`
+      : "QA accepted this task";
+  } else if (verdict === "reject") {
+    chipClass =
+      "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300";
+    label = "Rejected";
+    tip = task.verdict?.confidence
+      ? `QA rejected this task (${task.verdict.confidence} confidence)`
+      : "QA rejected this task";
+  } else {
+    chipClass =
+      "bg-[color:var(--paper-bg-2)] text-[color:var(--paper-ink-3)]";
+    label = "QA failed";
+    tip = task.verdict_error
+      ? `QA failed: ${task.verdict_error}`
+      : "QA failed to produce a verdict";
+  }
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          className={`inline-flex shrink-0 items-center gap-1 rounded-[3px] px-1 py-px font-mono text-[9.5px] leading-[14px] font-medium whitespace-nowrap ${chipClass}`}
+        >
+          {label}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent>{tip}</TooltipContent>
+    </Tooltip>
+  );
+}
+
 type AnalysisLegendKey = "analyzing" | "good" | "bad" | "analysis-failed";
 
 function getAnalysisLegendKey(trial: Trial): AnalysisLegendKey | null {
@@ -2300,6 +2363,7 @@ export function ExperimentTrialsTable({
                                 </TooltipContent>
                               </Tooltip>
                             </div>
+                            {showAnalysis && <TaskVerdictChip task={task} />}
                             {(() => {
                               const showVersion =
                                 showAnalysis && task.current_version != null;
