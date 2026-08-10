@@ -20,7 +20,6 @@ flush failed at handler-commit time.
 """
 
 import asyncio
-from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, cast
 
@@ -530,18 +529,14 @@ async def cleanup_orphaned_queue_state(
     else -- stage transitions, terminal-runtime-ref cleanup -- is
     either handled by the handler commit or kept as a safety net here.
     """
-    ec2_backend: Any | None = None
     ec2_inventory: Ec2InventorySnapshot | None = None
     ec2_orphan_snapshot_errors = 0
-    ec2_credential_lease = False
 
     if settings.ec2_enabled:
         ec2_backend = cast(Any, get_backend("ec2"))
         try:
             if ec2_backend is None:
                 raise RuntimeError("EC2 is enabled but its backend is not registered")
-            ec2_backend.acquire_worker_credentials(include_ssh=False)
-            ec2_credential_lease = True
             ec2_inventory = await ec2_backend.snapshot_managed_instances()
             console.print(
                 "metric=ec2_orphan_snapshot "
@@ -555,115 +550,98 @@ async def cleanup_orphaned_queue_state(
                 f"error_type={type(exc).__name__} error={exc}"
             )
 
-    try:
-        zombie_txn_reaped = await reap_idle_in_transaction_zombies()
-        ec2_orphan_counts = _Ec2OrphanCounts()
-        ec2_orphan_terminate_candidates = 0
+    zombie_txn_reaped = await reap_idle_in_transaction_zombies()
+    ec2_orphan_keep_verdicts = 0
+    ec2_orphan_terminate_candidates = 0
 
-        async with get_session() as session:
-            (
-                worker_jobs_retried,
-                worker_jobs_failed,
-                reaped_trial_ids,
-                worker_targets,
-            ) = await _reap_stale_worker_jobs(
-                session, stale_after_minutes=stale_after_minutes
-            )
-            if ec2_inventory is not None and ec2_inventory.instances:
-                ec2_targets, ec2_orphan_counts = (
-                    await _decide_ec2_orphan_targets(
-                        session,
-                        ec2_inventory.instances,
-                        expected_deployment=ec2_inventory.expected_deployment,
-                        expected_account_id=ec2_inventory.expected_account_id,
-                        now=utcnow(),
-                        stale_after_minutes=stale_after_minutes,
-                    )
-                )
-                worker_targets.update(ec2_targets)
-                ec2_orphan_terminate_candidates = len(ec2_targets)
-
-            tasks_progressed_to_analysis = await _advance_running_tasks_to_analysis(
-                session, reaped_trial_ids
-            )
-
-            tasks_progressed_to_verdict = await _advance_legacy_analyzing_tasks(session)
-
-            verdict_pending_completed = await _heal_stale_verdict_pending(session)
-
-            (
-                stuck_analyzing_advanced,
-                stuck_analyzing_finalized,
-                stuck_analysis_nulls_failed,
-            ) = await _unwedge_stuck_analyzing(session)
-
-            (
-                orphaned_analysis_failed,
-                orphaned_analysis_requeued,
-            ) = await _reset_orphaned_trial_analysis(session)
-
-            orphaned_active_slots_cleared = await _release_orphaned_slots(session)
-
-            experiments_last_activity_reconciled = (
-                await _reconcile_experiment_last_activity(session)
-            )
-
-            tag_projections_reconciled = await _maybe_reconcile_tag_projections(session)
-            tag_owners_reassigned = await sweep_orphaned_tag_owners(session)
-
-        # These run AFTER the outer commit so a rolled-back sweep never tears down
-        # remote handles / claim metadata the DB still points at. Best-effort; the
-        # provider TTL and the next sweep are the backstops.
-        worker_sandboxes_terminated = await _terminate_orphaned_sandboxes(
-            worker_targets
+    async with get_session() as session:
+        (
+            worker_jobs_retried,
+            worker_jobs_failed,
+            reaped_trial_ids,
+            worker_targets,
+        ) = await _reap_stale_worker_jobs(
+            session, stale_after_minutes=stale_after_minutes
         )
-        try:
-            modal_cost_spans_reconciled = await reconcile_compute_cost_spans()
-        except Exception as exc:
-            console.print(f"[yellow]Modal cost reconciliation failed: {exc}[/yellow]")
-            modal_cost_spans_reconciled = 0
-        terminal_trial_runtime_refs_cleared = await clear_terminal_trial_runtime_refs()
-        stale_trial_events_purged = await purge_stale_trial_events()
+        if ec2_inventory is not None and ec2_inventory.instances:
+            ec2_targets, ec2_orphan_keep_verdicts = await _decide_ec2_orphan_targets(
+                session,
+                ec2_inventory.instances,
+                expected_deployment=ec2_inventory.expected_deployment,
+                expected_account_id=ec2_inventory.expected_account_id,
+                now=utcnow(),
+                stale_after_minutes=stale_after_minutes,
+            )
+            worker_targets.update(ec2_targets)
+            ec2_orphan_terminate_candidates = len(ec2_targets)
 
-        return {
-            "worker_jobs_retried": worker_jobs_retried,
-            "worker_jobs_failed": worker_jobs_failed,
-            "worker_sandboxes_terminated": worker_sandboxes_terminated,
-            "ec2_orphan_instances_seen": (
-                len(ec2_inventory.instances) if ec2_inventory is not None else 0
-            ),
-            "ec2_orphan_terminate_candidates": ec2_orphan_terminate_candidates,
-            "ec2_orphan_snapshot_errors": ec2_orphan_snapshot_errors,
-            "ec2_orphan_keep_verdicts": ec2_orphan_counts.kept,
-            "tasks_progressed_to_analysis": tasks_progressed_to_analysis,
-            "tasks_progressed_to_verdict": tasks_progressed_to_verdict,
-            "verdict_pending_completed": verdict_pending_completed,
-            "stuck_analyzing_advanced": stuck_analyzing_advanced,
-            "stuck_analyzing_finalized": stuck_analyzing_finalized,
-            "stuck_analysis_nulls_failed": stuck_analysis_nulls_failed,
-            "orphaned_analysis_failed": orphaned_analysis_failed,
-            "orphaned_analysis_requeued": orphaned_analysis_requeued,
-            "terminal_trial_runtime_refs_cleared": terminal_trial_runtime_refs_cleared,
-            "stale_trial_events_purged": stale_trial_events_purged,
-            "orphaned_active_slots_cleared": orphaned_active_slots_cleared,
-            "zombie_txn_reaped": zombie_txn_reaped,
-            "experiments_last_activity_reconciled": (
-                experiments_last_activity_reconciled
-            ),
-            "tag_projections_reconciled": tag_projections_reconciled,
-            "tag_owners_reassigned": tag_owners_reassigned,
-            "modal_cost_spans_reconciled": modal_cost_spans_reconciled,
-        }
-    finally:
-        if ec2_credential_lease:
-            assert ec2_backend is not None
-            ec2_backend.release_worker_credentials()
+        tasks_progressed_to_analysis = await _advance_running_tasks_to_analysis(
+            session, reaped_trial_ids
+        )
 
+        tasks_progressed_to_verdict = await _advance_legacy_analyzing_tasks(session)
 
-@dataclass
-class _Ec2OrphanCounts:
-    by_reason: dict[str, int] = field(default_factory=dict)
-    kept: int = 0
+        verdict_pending_completed = await _heal_stale_verdict_pending(session)
+
+        (
+            stuck_analyzing_advanced,
+            stuck_analyzing_finalized,
+            stuck_analysis_nulls_failed,
+        ) = await _unwedge_stuck_analyzing(session)
+
+        (
+            orphaned_analysis_failed,
+            orphaned_analysis_requeued,
+        ) = await _reset_orphaned_trial_analysis(session)
+
+        orphaned_active_slots_cleared = await _release_orphaned_slots(session)
+
+        experiments_last_activity_reconciled = (
+            await _reconcile_experiment_last_activity(session)
+        )
+
+        tag_projections_reconciled = await _maybe_reconcile_tag_projections(session)
+        tag_owners_reassigned = await sweep_orphaned_tag_owners(session)
+
+    # These run AFTER the outer commit so a rolled-back sweep never tears down
+    # remote handles / claim metadata the DB still points at. Best-effort; the
+    # provider TTL and the next sweep are the backstops.
+    worker_sandboxes_terminated = await _terminate_orphaned_sandboxes(worker_targets)
+    try:
+        modal_cost_spans_reconciled = await reconcile_compute_cost_spans()
+    except Exception as exc:
+        console.print(f"[yellow]Modal cost reconciliation failed: {exc}[/yellow]")
+        modal_cost_spans_reconciled = 0
+    terminal_trial_runtime_refs_cleared = await clear_terminal_trial_runtime_refs()
+    stale_trial_events_purged = await purge_stale_trial_events()
+
+    return {
+        "worker_jobs_retried": worker_jobs_retried,
+        "worker_jobs_failed": worker_jobs_failed,
+        "worker_sandboxes_terminated": worker_sandboxes_terminated,
+        "ec2_orphan_instances_seen": (
+            len(ec2_inventory.instances) if ec2_inventory is not None else 0
+        ),
+        "ec2_orphan_terminate_candidates": ec2_orphan_terminate_candidates,
+        "ec2_orphan_snapshot_errors": ec2_orphan_snapshot_errors,
+        "ec2_orphan_keep_verdicts": ec2_orphan_keep_verdicts,
+        "tasks_progressed_to_analysis": tasks_progressed_to_analysis,
+        "tasks_progressed_to_verdict": tasks_progressed_to_verdict,
+        "verdict_pending_completed": verdict_pending_completed,
+        "stuck_analyzing_advanced": stuck_analyzing_advanced,
+        "stuck_analyzing_finalized": stuck_analyzing_finalized,
+        "stuck_analysis_nulls_failed": stuck_analysis_nulls_failed,
+        "orphaned_analysis_failed": orphaned_analysis_failed,
+        "orphaned_analysis_requeued": orphaned_analysis_requeued,
+        "terminal_trial_runtime_refs_cleared": terminal_trial_runtime_refs_cleared,
+        "stale_trial_events_purged": stale_trial_events_purged,
+        "orphaned_active_slots_cleared": orphaned_active_slots_cleared,
+        "zombie_txn_reaped": zombie_txn_reaped,
+        "experiments_last_activity_reconciled": experiments_last_activity_reconciled,
+        "tag_projections_reconciled": tag_projections_reconciled,
+        "tag_owners_reassigned": tag_owners_reassigned,
+        "modal_cost_spans_reconciled": modal_cost_spans_reconciled,
+    }
 
 
 async def _decide_ec2_orphan_targets(
@@ -674,7 +652,7 @@ async def _decide_ec2_orphan_targets(
     expected_account_id: str,
     now: datetime,
     stale_after_minutes: int,
-) -> tuple[set[tuple[str, str]], _Ec2OrphanCounts]:
+) -> tuple[set[tuple[str, str]], int]:
     """Load relevant worker ownership once and decide every EC2 snapshot."""
 
     worker_job_ids = sorted(
@@ -688,11 +666,7 @@ async def _decide_ec2_orphan_targets(
         {snapshot.trial_id_tag for snapshot in snapshots if snapshot.trial_id_tag}
     )
     external_ids = sorted(
-        {
-            snapshot.external_id
-            for snapshot in snapshots
-            if snapshot.account_id_tag
-        }
+        {snapshot.external_id for snapshot in snapshots if snapshot.account_id_tag}
     )
     rows = (
         (
@@ -741,16 +715,14 @@ async def _decide_ec2_orphan_targets(
             trial_id=str(row["subject_id"]) if row["subject_id"] else None,
             status=str(row["status"]),
             provider=str(row["provider"]) if row["provider"] else None,
-            external_id=(
-                str(row["external_id"]) if row["external_id"] else None
-            ),
+            external_id=(str(row["external_id"]) if row["external_id"] else None),
             heartbeat_fresh=bool(row["heartbeat_fresh"]),
         )
         for row in rows
     )
 
     targets: set[tuple[str, str]] = set()
-    counts = _Ec2OrphanCounts()
+    kept = 0
     inventory_handles = frozenset(snapshot.external_id for snapshot in snapshots)
     for snapshot in snapshots:
         decision = decide_ec2_orphan(
@@ -761,11 +733,8 @@ async def _decide_ec2_orphan_targets(
             now=now,
             inventory_handles=inventory_handles,
         )
-        counts.by_reason[decision.reason.value] = (
-            counts.by_reason.get(decision.reason.value, 0) + 1
-        )
         if decision.verdict is Ec2OrphanVerdict.KEEP:
-            counts.kept += 1
+            kept += 1
         console.print(
             "metric=ec2_orphan_verdict "
             f"instance_id={snapshot.instance_id} "
@@ -773,7 +742,7 @@ async def _decide_ec2_orphan_targets(
         )
         if decision.should_terminate:
             targets.add(("ec2", snapshot.external_id))
-    return targets, counts
+    return targets, kept
 
 
 # Advisory-lock key so only one container reconciles tag projections per
@@ -1617,9 +1586,7 @@ async def _terminate_orphaned_sandboxes(worker_targets: set[tuple[str, str]]) ->
         return_exceptions=True,
     )
     terminated = 0
-    for (provider, external_id), result in zip(
-        ordered_targets, results, strict=True
-    ):
+    for (provider, external_id), result in zip(ordered_targets, results, strict=True):
         if isinstance(result, BaseException):
             console.print(
                 "metric=orphaned_sandbox_termination outcome=error "

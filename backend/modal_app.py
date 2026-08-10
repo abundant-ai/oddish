@@ -55,9 +55,7 @@ ENABLE_BACKGROUND_WORKERS = _env_flag("ODDISH_ENABLE_MODAL_WORKERS", True)
 ENABLE_SLACK_EXPENSE_NOTIFICATIONS = _env_flag(
     "ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS", MODAL_APP_NAME == "oddish"
 )
-ENABLE_CARL_AGENT = _env_flag(
-    "ODDISH_ENABLE_CARL_AGENT", MODAL_APP_NAME == "oddish"
-)
+ENABLE_CARL_AGENT = _env_flag("ODDISH_ENABLE_CARL_AGENT", MODAL_APP_NAME == "oddish")
 API_MIN_CONTAINERS = _env_int("ODDISH_MODAL_API_MIN_CONTAINERS", 1)
 API_BUFFER_CONTAINERS = _env_int("ODDISH_MODAL_API_BUFFER_CONTAINERS", 16)
 # Per-container request concurrency bounds the OOM *blast radius* -- it is
@@ -422,7 +420,9 @@ def _decode_ec2_secret_plan(raw: str) -> Ec2SecretPlan:
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise RuntimeError("Invalid baked EC2 secret plan") from exc
     names = (control_name, ssh_name)
-    if not all(name is None or (isinstance(name, str) and name.strip()) for name in names):
+    if not all(
+        name is None or (isinstance(name, str) and name.strip()) for name in names
+    ):
         raise RuntimeError("Invalid baked EC2 secret plan names")
     if (control_name is None) != (ssh_name is None):
         raise RuntimeError("Baked EC2 secret plan must contain both secret names")
@@ -487,8 +487,7 @@ def _validate_ec2_dotenv_secret_isolation(
         raise RuntimeError(
             "backend/.env must not contain raw EC2 secret values because its "
             "contents are attached to broad API and dispatcher functions; move "
-            "these values to the dedicated Modal secrets: "
-            + ", ".join(leaked_names)
+            "these values to the dedicated Modal secrets: " + ", ".join(leaked_names)
         )
 
 
@@ -499,8 +498,7 @@ def _validate_ec2_secret_isolation(
     if collisions:
         raise RuntimeError(
             "EC2 secrets must be dedicated and cannot alias a broad runtime "
-            "secret: "
-            + ", ".join(collisions)
+            "secret: " + ", ".join(collisions)
         )
 
 
@@ -555,22 +553,26 @@ _validate_ec2_secret_isolation(
     EC2_SECRET_PLAN,
     _broad_runtime_secret_names,
 )
-ec2_control_secrets = [
-    modal.Secret.from_name(
-        EC2_SECRET_PLAN.control_name,
-        environment_name=MODAL_SECRET_ENVIRONMENT,
-    )
-    for _ in range(1)
+ec2_control_secrets = (
+    [
+        modal.Secret.from_name(
+            EC2_SECRET_PLAN.control_name,
+            environment_name=MODAL_SECRET_ENVIRONMENT,
+        )
+    ]
     if EC2_SECRET_PLAN.control_name
-]
-ec2_ssh_secrets = [
-    modal.Secret.from_name(
-        EC2_SECRET_PLAN.ssh_name,
-        environment_name=MODAL_SECRET_ENVIRONMENT,
-    )
-    for _ in range(1)
+    else []
+)
+ec2_ssh_secrets = (
+    [
+        modal.Secret.from_name(
+            EC2_SECRET_PLAN.ssh_name,
+            environment_name=MODAL_SECRET_ENVIRONMENT,
+        )
+    ]
     if EC2_SECRET_PLAN.ssh_name
-]
+    else []
+)
 ec2_worker_secrets = [*ec2_control_secrets, *ec2_ssh_secrets]
 
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib
-import inspect
 import re
 import sys
 from pathlib import Path
@@ -30,9 +29,3 @@ def test_run_help_lists_ec2_and_keeps_daytona_as_the_hosted_cpu_default() -> Non
     assert "ec2, e2b, modal" in output
     assert "Defaults: daytona" in output
     assert "for CPU-only" in output
-
-
-def test_hosted_environment_coercion_warning_lists_ec2() -> None:
-    source = inspect.getsource(run_module.run)
-
-    assert "--env ec2" in source

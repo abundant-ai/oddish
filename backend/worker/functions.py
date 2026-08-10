@@ -99,7 +99,7 @@ from oddish.workers.queue.worker_job_single_job import (
     drain_worker_jobs,
 )
 from oddish.core.harbor_source import harbor_variant_function_name
-from oddish.core.helpers import cancel_job_by_worker
+from oddish.runtime.registry import get_backend
 
 from .github import notify_github_analysis, notify_github_qa, notify_github_trial
 from .runtime import configure_storage_paths, console
@@ -120,16 +120,11 @@ reconciler_secrets = [*runtime_secrets, *ec2_control_secrets]
     memory=1024,
 )
 async def teardown_ec2_sandbox(external_id: str) -> bool:
-    from oddish.runtime.registry import get_backend
-
     backend = get_backend("ec2")
     if backend is None:
-        raise RuntimeError("EC2 backend is not registered")
-    backend.acquire_worker_credentials(include_ssh=False)
-    try:
-        return await cancel_job_by_worker("ec2", external_id)
-    finally:
-        backend.release_worker_credentials()
+        raise RuntimeError("EC2 backend is not registered in the teardown worker")
+    return await backend.teardown(external_id)
+
 
 # Register TRIAL / ANALYSIS / VERDICT handlers against the unified
 # registry as soon as this module loads in a worker container. The

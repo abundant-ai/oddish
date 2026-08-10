@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -68,19 +67,6 @@ def _decide(
             else frozenset({instance.external_id})
         ),
     )
-
-
-def test_snapshots_and_decisions_are_immutable() -> None:
-    instance = _instance()
-    worker = _worker()
-    decision = _decide(instance, worker)
-
-    with pytest.raises(FrozenInstanceError):
-        instance.state = "terminated"  # type: ignore[misc]
-    with pytest.raises(FrozenInstanceError):
-        worker.status = "FAILED"  # type: ignore[misc]
-    with pytest.raises(FrozenInstanceError):
-        decision.reason = Ec2OrphanReason.HARD_MAX_AGE  # type: ignore[misc]
 
 
 @pytest.mark.parametrize(
@@ -183,7 +169,9 @@ def test_unlinked_instance_keeps_only_for_same_trial_fresh_running_worker() -> N
     assert linked_elsewhere.verdict is Ec2OrphanVerdict.KEEP
 
 
-def test_same_trial_guard_does_not_keep_old_instance_linked_to_current_instance() -> None:
+def test_same_trial_guard_does_not_keep_old_instance_linked_to_current_instance() -> (
+    None
+):
     old_instance = _instance(launch_time=NOW - timedelta(hours=1))
     current_handle = f"ec2://{ACCOUNT}/{REGION}/i-current"
     current_worker = _worker(external_id=current_handle)

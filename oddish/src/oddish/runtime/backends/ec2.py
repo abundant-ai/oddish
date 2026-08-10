@@ -129,7 +129,9 @@ class Ec2Backend:
             if access_key is None or not access_key.get_secret_value().strip():
                 raise RuntimeError("ODDISH_EC2_AWS_ACCESS_KEY_ID is required for EC2")
             if secret_key is None or not secret_key.get_secret_value().strip():
-                raise RuntimeError("ODDISH_EC2_AWS_SECRET_ACCESS_KEY is required for EC2")
+                raise RuntimeError(
+                    "ODDISH_EC2_AWS_SECRET_ACCESS_KEY is required for EC2"
+                )
             descriptor, raw_path = tempfile.mkstemp(prefix="oddish-ec2-aws-")
             path = Path(raw_path)
             session_token = settings.ec2_aws_session_token
@@ -189,6 +191,14 @@ class Ec2Backend:
             if self._credential_leases == 0:
                 self._remove_materialized_worker_credentials_unlocked()
 
+    @contextlib.contextmanager
+    def worker_credentials(self, *, include_ssh: bool) -> Iterator[None]:
+        self.acquire_worker_credentials(include_ssh=include_ssh)
+        try:
+            yield
+        finally:
+            self.release_worker_credentials()
+
     def _register_cleanup(self) -> None:
         if not self._cleanup_registered:
             atexit.register(self._force_remove_materialized_worker_credentials)
@@ -241,9 +251,7 @@ class Ec2Backend:
                 + ", ".join(protected_overrides)
             )
         raw_tags = (
-            validate_ec2_user_tags(base_kwargs["tags"])
-            if "tags" in base_kwargs
-            else {}
+            validate_ec2_user_tags(base_kwargs["tags"]) if "tags" in base_kwargs else {}
         )
         passthrough = {
             key: value for key, value in base_kwargs.items() if key != "tags"
@@ -280,26 +288,6 @@ class Ec2Backend:
                 "metric=ec2_teardown outcome=refused reason=empty_external_id"
             )
             return False
-        try:
-            self.acquire_worker_credentials(include_ssh=False)
-        except Exception:
-            logger.exception(
-                "metric=ec2_teardown outcome=error reason=credential_acquisition "
-                "external_id=%s",
-                external_id,
-            )
-            return False
-        try:
-            return await self._teardown_with_credentials(external_id)
-        finally:
-            self.release_worker_credentials()
-
-    async def _teardown_with_credentials(self, external_id: str) -> bool:
-        if not external_id:
-            logger.warning(
-                "metric=ec2_teardown outcome=refused reason=empty_external_id"
-            )
-            return False
         match = _EC2_HANDLE_PATTERN.fullmatch(external_id)
         if match is None:
             logger.error(
@@ -312,66 +300,64 @@ class Ec2Backend:
         region = match.group("region")
         instance_id = match.group("instance_id")
         try:
-            import boto3  # type: ignore[import-untyped]
+            with self.worker_credentials(include_ssh=False):
+                import boto3  # type: ignore[import-untyped]
 
-            current_account_id = await asyncio.to_thread(self.resolve_aws_account_id)
-            if current_account_id != account_id:
-                logger.error(
-                    "metric=ec2_teardown outcome=refused reason=account_mismatch "
-                    "handle_account_id=%s current_account_id=%s",
-                    account_id,
-                    current_account_id,
+                current_account_id = await asyncio.to_thread(
+                    self.resolve_aws_account_id
                 )
-                return False
-            self.materialize_aws_profile()
-            client = boto3.Session(
-                profile_name=_AWS_PROFILE_NAME, region_name=region
-            ).client("ec2", config=_aws_control_client_config())
-            response = await asyncio.to_thread(
-                client.describe_instances, InstanceIds=[instance_id]
-            )
-            instances = [
-                instance
-                for reservation in response.get("Reservations", [])
-                for instance in reservation.get("Instances", [])
-                if instance.get("InstanceId") == instance_id
-            ]
-            if len(instances) != 1:
-                logger.warning(
-                    "metric=ec2_teardown outcome=refused "
-                    "reason=missing_or_ambiguous instance_id=%s",
-                    instance_id,
+                if current_account_id != account_id:
+                    logger.error(
+                        "metric=ec2_teardown outcome=refused reason=account_mismatch "
+                        "handle_account_id=%s current_account_id=%s",
+                        account_id,
+                        current_account_id,
+                    )
+                    return False
+                client = boto3.Session(
+                    profile_name=_AWS_PROFILE_NAME, region_name=region
+                ).client("ec2", config=_aws_control_client_config())
+                response = await asyncio.to_thread(
+                    client.describe_instances, InstanceIds=[instance_id]
                 )
-                return False
-            tags = {
-                tag.get("Key"): tag.get("Value")
-                for tag in instances[0].get("Tags", [])
-                if tag.get("Key")
-            }
-            expected = {
-                MANAGED_TAG_KEY: "true",
-                DEPLOYMENT_TAG_KEY: self.deployment_name(),
-                AWS_ACCOUNT_ID_TAG_KEY: account_id,
-            }
-            if any(tags.get(key) != value for key, value in expected.items()):
-                logger.warning(
-                    "metric=ec2_teardown outcome=refused "
-                    "reason=ownership_tags instance_id=%s",
-                    instance_id,
+                instances = [
+                    instance
+                    for reservation in response.get("Reservations", [])
+                    for instance in reservation.get("Instances", [])
+                    if instance.get("InstanceId") == instance_id
+                ]
+                if len(instances) != 1:
+                    logger.warning(
+                        "metric=ec2_teardown outcome=refused "
+                        "reason=missing_or_ambiguous instance_id=%s",
+                        instance_id,
+                    )
+                    return False
+                tags = _instance_tags(instances[0])
+                expected = {
+                    MANAGED_TAG_KEY: "true",
+                    DEPLOYMENT_TAG_KEY: self.deployment_name(),
+                    AWS_ACCOUNT_ID_TAG_KEY: account_id,
+                }
+                if any(tags.get(key) != value for key, value in expected.items()):
+                    logger.warning(
+                        "metric=ec2_teardown outcome=refused "
+                        "reason=ownership_tags instance_id=%s",
+                        instance_id,
+                    )
+                    return False
+                state = str((instances[0].get("State") or {}).get("Name") or "")
+                if state in {"shutting-down", "terminated"}:
+                    logger.info(
+                        "metric=ec2_teardown outcome=already_terminal "
+                        "instance_id=%s state=%s",
+                        instance_id,
+                        state,
+                    )
+                    return True
+                await asyncio.to_thread(
+                    client.terminate_instances, InstanceIds=[instance_id]
                 )
-                return False
-            state = str((instances[0].get("State") or {}).get("Name") or "")
-            if state in {"shutting-down", "terminated"}:
-                logger.info(
-                    "metric=ec2_teardown outcome=already_terminal "
-                    "instance_id=%s state=%s",
-                    instance_id,
-                    state,
-                )
-                return True
-            await asyncio.to_thread(
-                client.terminate_instances, InstanceIds=[instance_id]
-            )
         except Exception:
             logger.exception(
                 "metric=ec2_teardown outcome=error external_id=%s", external_id
@@ -384,6 +370,12 @@ class Ec2Backend:
 
     async def snapshot_managed_instances(self) -> Ec2InventorySnapshot:
         """List active instances owned by this Oddish deployment."""
+        with self.worker_credentials(include_ssh=False):
+            return await self._snapshot_managed_instances_with_credentials()
+
+    async def _snapshot_managed_instances_with_credentials(
+        self,
+    ) -> Ec2InventorySnapshot:
         from oddish.runtime.ec2_orphans import (
             Ec2InstanceSnapshot,
             Ec2InventorySnapshot,
@@ -394,6 +386,7 @@ class Ec2Backend:
         if not region:
             raise RuntimeError("ODDISH_EC2_REGION is required for EC2 inventory")
         try:
+
             def _list_inventory() -> tuple[str, list[dict[str, Any]]]:
                 self.materialize_aws_profile()
                 account_id = self.resolve_aws_account_id()
@@ -447,14 +440,9 @@ class Ec2Backend:
             for reservation in page.get("Reservations", []):
                 for instance in reservation.get("Instances", []):
                     instance_id = str(instance.get("InstanceId") or "").strip()
-                    tags = {
-                        str(tag.get("Key")): str(tag.get("Value"))
-                        for tag in instance.get("Tags", [])
-                        if tag.get("Key") is not None and tag.get("Value") is not None
-                    }
+                    tags = _instance_tags(instance)
                     if any(
-                        tags.get(key) != value
-                        for key, value in expected_tags.items()
+                        tags.get(key) != value for key, value in expected_tags.items()
                     ):
                         logger.warning(
                             "metric=ec2_inventory_ownership_refusal "
@@ -493,11 +481,7 @@ class Ec2Backend:
                             "metric=ec2_inventory_launch_time_refusal "
                             "instance_id=%s reason=%s",
                             instance_id,
-                            (
-                                "missing"
-                                if raw_launch_time is None
-                                else "invalid_type"
-                            ),
+                            ("missing" if raw_launch_time is None else "invalid_type"),
                         )
                         continue
                     snapshots.append(
@@ -529,23 +513,18 @@ class Ec2Backend:
 
     def resolve_aws_account_id(self) -> str:
         """Resolve the account used by the namespaced EC2 control profile."""
-        return self._resolve_aws_account_id()
-
-    def deployment_name(self) -> str:
-        """Return the deployment ownership namespace used in protected tags."""
-        return self._deployment_name()
-
-    def _resolve_aws_account_id(self) -> str:
         try:
             import boto3  # type: ignore[import-untyped]
 
             self.materialize_aws_profile()
-            response = boto3.Session(
-                profile_name=_AWS_PROFILE_NAME,
-                region_name=settings.ec2_region,
-            ).client(
-                "sts", config=_aws_control_client_config()
-            ).get_caller_identity()
+            response = (
+                boto3.Session(
+                    profile_name=_AWS_PROFILE_NAME,
+                    region_name=settings.ec2_region,
+                )
+                .client("sts", config=_aws_control_client_config())
+                .get_caller_identity()
+            )
         except Exception as exc:
             raise RuntimeError(
                 "Unable to resolve the AWS account for the EC2 backend"
@@ -557,13 +536,22 @@ class Ec2Backend:
             )
         return account_id
 
+    @staticmethod
+    def deployment_name() -> str:
+        """Return the deployment ownership namespace used in protected tags."""
+        return os.environ.get("MODAL_APP_NAME", "oddish")
+
     @contextlib.contextmanager
     def capture_diagnostics(self, job_dir: Path) -> Iterator[Path | None]:
         yield None
 
-    @staticmethod
-    def _deployment_name() -> str:
-        return os.environ.get("MODAL_APP_NAME", "oddish")
+
+def _instance_tags(instance: dict[str, Any]) -> dict[str, str]:
+    return {
+        str(tag["Key"]): str(tag["Value"])
+        for tag in instance.get("Tags", [])
+        if tag.get("Key") is not None and tag.get("Value") is not None
+    }
 
 
 def _normalize_launch_time(value: Any) -> datetime | None:

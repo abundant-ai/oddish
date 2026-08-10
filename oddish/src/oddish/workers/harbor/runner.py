@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Awaitable, Callable, Mapping
 import math
 import os
@@ -733,9 +734,7 @@ def capture_live_sandbox_resources(
             spec_source=(
                 "override"
                 if has_override
-                else "pinned"
-                if pinned
-                else "provider_default"
+                else "pinned" if pinned else "provider_default"
             ),
             cpu_enforcement_mode=cpu_mode.value,
             mem_enforcement_mode=mem_mode.value,
@@ -1292,12 +1291,12 @@ async def run_harbor_trial_async(
             "EC2 environment requested but the EC2 backend is not enabled or "
             "registered; set ODDISH_EC2_ENABLED=true with complete EC2 settings"
         )
-    ec2_credential_lease = False
-    if environment == EnvironmentType.EC2:
-        assert backend is not None
-        cast(Any, backend).acquire_worker_credentials(include_ssh=True)
-        ec2_credential_lease = True
-    try:
+    credential_scope = (
+        cast(Any, backend).worker_credentials(include_ssh=True)
+        if environment == EnvironmentType.EC2
+        else contextlib.nullcontext()
+    )
+    with credential_scope:
         return await _run_harbor_trial_async_impl(
             task_path=task_path,
             agent=agent,
@@ -1314,10 +1313,6 @@ async def run_harbor_trial_async(
             hc=hc,
             backend=backend,
         )
-    finally:
-        if ec2_credential_lease:
-            assert backend is not None
-            cast(Any, backend).release_worker_credentials()
 
 
 async def _run_harbor_trial_async_impl(

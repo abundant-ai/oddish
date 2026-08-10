@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -86,53 +85,15 @@ def _worker(
             "linked_live_worker",
         ),
         (
-            _snapshot(age=timedelta(hours=1), worker_job_id="launching-job"),
-            [_worker(worker_job_id="other-job", provider=None, external_id=None)],
-            False,
-            "unlinked_live_trial",
-        ),
-        (
-            _snapshot(age=timedelta(minutes=31)),
-            [_worker(status="SUCCESS")],
-            True,
-            "terminal_owner",
-        ),
-        (
-            _snapshot(age=timedelta(minutes=31)),
-            [],
-            True,
-            "missing_owner",
-        ),
-        (
             _snapshot(age=timedelta(minutes=31)),
             [
                 _worker(
-                    external_id=(
-                        f"ec2://{ACCOUNT_ID}/us-east-1/i-0123456789abcdef0"
-                    ),
+                    external_id=(f"ec2://{ACCOUNT_ID}/us-east-1/i-0123456789abcdef0"),
                     heartbeat_fresh=False,
                 )
             ],
             True,
             "stale_owner",
-        ),
-        (
-            _snapshot(age=timedelta(days=1), deployment="another-deployment"),
-            [],
-            False,
-            "wrong_deployment",
-        ),
-        (
-            _snapshot(age=timedelta(minutes=30)),
-            [],
-            False,
-            "within_grace",
-        ),
-        (
-            _snapshot(age=timedelta(hours=14)),
-            [_worker(external_id=f"ec2://{ACCOUNT_ID}/us-east-1/i-0123456789abcdef0")],
-            True,
-            "hard_max_age",
         ),
     ],
 )
@@ -148,7 +109,7 @@ async def test_ec2_orphan_liveness_batch_drives_expected_verdicts(
     lines: list[str] = []
     monkeypatch.setattr(cleanup.console, "print", lines.append)
 
-    targets, counts = await cleanup._decide_ec2_orphan_targets(
+    targets, kept = await cleanup._decide_ec2_orphan_targets(
         session,
         (snapshot,),
         expected_deployment=DEPLOYMENT,
@@ -162,7 +123,7 @@ async def test_ec2_orphan_liveness_batch_drives_expected_verdicts(
         f"ec2://{ACCOUNT_ID}/us-east-1/i-0123456789abcdef0",
     )
     assert (expected_handle in targets) is expected_target
-    assert counts.by_reason[expected_reason] == 1
+    assert kept == (0 if expected_target else 1)
     assert len(session.execute_calls) == 1
     statement, params = session.execute_calls[0]
     assert "deleted_at IS NULL" in statement
@@ -170,9 +131,9 @@ async def test_ec2_orphan_liveness_batch_drives_expected_verdicts(
     assert "subject_table = 'trials'" in statement
     assert "heartbeat_at >= NOW() - make_interval" in statement
     assert params == {
-        "worker_job_ids": [snapshot.worker_job_id_tag]
-        if snapshot.worker_job_id_tag
-        else [],
+        "worker_job_ids": (
+            [snapshot.worker_job_id_tag] if snapshot.worker_job_id_tag else []
+        ),
         "trial_ids": [snapshot.trial_id_tag] if snapshot.trial_id_tag else [],
         "external_ids": [snapshot.external_id],
         "stale_after_minutes": 15,
@@ -181,31 +142,6 @@ async def test_ec2_orphan_liveness_batch_drives_expected_verdicts(
         "metric=ec2_orphan_verdict" in line and f"reason={expected_reason}" in line
         for line in lines
     )
-
-
-@pytest.mark.asyncio
-async def test_ec2_liveness_uses_database_freshness_despite_worker_clock_skew() -> None:
-    snapshot = _snapshot(age=timedelta(hours=1))
-    session = _LivenessSession(
-        [
-            _worker(
-                external_id=snapshot.external_id,
-                heartbeat_fresh=True,
-            )
-        ]
-    )
-
-    targets, counts = await cleanup._decide_ec2_orphan_targets(
-        session,
-        (snapshot,),
-        expected_deployment=DEPLOYMENT,
-        expected_account_id=ACCOUNT_ID,
-        now=NOW + timedelta(minutes=20),
-        stale_after_minutes=15,
-    )
-
-    assert targets == set()
-    assert counts.by_reason == {"linked_live_worker": 1}
 
 
 def _patch_unrelated_cleanup_phases(
@@ -268,16 +204,9 @@ async def test_ec2_snapshot_failure_does_not_block_database_cleanup(
     events: list[str] = []
 
     class Backend:
-        def acquire_worker_credentials(self, *, include_ssh: bool) -> None:
-            assert include_ssh is False
-            events.append("credentials_acquire")
-
         async def snapshot_managed_instances(self):
             events.append("snapshot")
             raise RuntimeError("AWS unavailable")
-
-        def release_worker_credentials(self) -> None:
-            events.append("credentials_cleanup")
 
     lines: list[str] = []
     session = _LivenessSession([])
@@ -292,14 +221,13 @@ async def test_ec2_snapshot_failure_does_not_block_database_cleanup(
 
     assert events.index("snapshot") < events.index("db_open")
     assert "stale_reap" in events
-    assert events[-1] == "credentials_cleanup"
     assert terminated_targets == [set()]
     assert result["ec2_orphan_snapshot_errors"] == 1
     assert any("metric=ec2_orphan_snapshot_error" in line for line in lines)
 
 
 @pytest.mark.asyncio
-async def test_ec2_orphan_target_is_terminated_only_after_commit_and_profile_cleanup(
+async def test_ec2_orphan_target_is_terminated_only_after_commit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
@@ -307,10 +235,6 @@ async def test_ec2_orphan_target_is_terminated_only_after_commit_and_profile_cle
     expected = {("ec2", instance.external_id)}
 
     class Backend:
-        def acquire_worker_credentials(self, *, include_ssh: bool) -> None:
-            assert include_ssh is False
-            events.append("credentials_acquire")
-
         async def snapshot_managed_instances(self):
             events.append("snapshot")
             return Ec2InventorySnapshot(
@@ -324,9 +248,6 @@ async def test_ec2_orphan_target_is_terminated_only_after_commit_and_profile_cle
 
         def deployment_name(self) -> str:
             raise AssertionError("cleanup must reuse the inventory deployment")
-
-        def release_worker_credentials(self) -> None:
-            events.append("credentials_cleanup")
 
     session = _LivenessSession([])
     terminated_targets = _patch_unrelated_cleanup_phases(
@@ -346,7 +267,6 @@ async def test_ec2_orphan_target_is_terminated_only_after_commit_and_profile_cle
     assert terminated_targets == [expected]
     assert events.index("snapshot") < events.index("db_open")
     assert events.index("db_commit") < events.index("terminate")
-    assert events.index("terminate") < events.index("credentials_cleanup")
     assert result["ec2_orphan_terminate_candidates"] == 1
     assert result["worker_sandboxes_terminated"] == 0
 

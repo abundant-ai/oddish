@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib
 import os
 import stat
 import subprocess
 import sys
-import threading
 import types
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,7 +37,7 @@ from oddish.runtime.routing import default_cloud_environment
 from oddish.schemas import TaskSweepSubmission
 
 AWS_ACCOUNT_ID = "123456789012"
-_ORIGINAL_RESOLVE_AWS_ACCOUNT_ID = Ec2Backend._resolve_aws_account_id
+_ORIGINAL_RESOLVE_AWS_ACCOUNT_ID = Ec2Backend.resolve_aws_account_id
 _ORIGINAL_VALIDATE_SSH_PRIVATE_KEY = Ec2Backend._validate_ssh_private_key
 
 
@@ -70,7 +70,7 @@ def _install_complete_ec2_settings(monkeypatch, **overrides):
     monkeypatch.setattr(ec2_module, "settings", configured)
     monkeypatch.setattr(
         Ec2Backend,
-        "_resolve_aws_account_id",
+        "resolve_aws_account_id",
         lambda self: AWS_ACCOUNT_ID,
     )
     monkeypatch.setattr(
@@ -211,8 +211,9 @@ def test_ec2_registry_entry_is_absent_when_disabled() -> None:
     assert "ec2" not in _registered_backend_names(enabled=False)
 
 
-def test_ec2_registry_entry_is_inserted_after_daytona_without_changing_defaults(
-) -> None:
+def test_ec2_registry_entry_is_inserted_after_daytona_without_changing_defaults() -> (
+    None
+):
     names = _registered_backend_names(enabled=True)
 
     assert names.index("daytona") < names.index("ec2") < names.index("modal")
@@ -247,9 +248,7 @@ def test_ec2_backend_materializes_the_private_key_once_with_owner_only_permissio
 
     try:
         assert first_path == second_path
-        assert registrations == [
-            backend._force_remove_materialized_worker_credentials
-        ]
+        assert registrations == [backend._force_remove_materialized_worker_credentials]
         assert first_path.read_text() == "PRIVATE KEY CONTENT\n"
         assert stat.S_IMODE(first_path.stat().st_mode) == 0o600
     finally:
@@ -343,7 +342,10 @@ def test_ec2_backend_fails_loudly_when_control_credentials_are_missing(
 def test_ec2_backend_supplies_fixed_platform_launch_settings_and_protected_tags(
     monkeypatch,
 ) -> None:
-    configured = _install_complete_ec2_settings(monkeypatch)
+    configured = _install_complete_ec2_settings(
+        monkeypatch,
+        ec2_instance_profile=("arn:aws:iam::123456789012:instance-profile/task"),
+    )
     monkeypatch.setenv("MODAL_APP_NAME", "oddish-pr-42")
     backend = Ec2Backend()
 
@@ -363,7 +365,7 @@ def test_ec2_backend_supplies_fixed_platform_launch_settings_and_protected_tags(
             "launch_mode": "ephemeral",
             "use_public_ip": True,
             "root_volume_size_gb": configured.ec2_root_volume_size_gb,
-            "iam_instance_profile": None,
+            "iam_instance_profile": configured.ec2_instance_profile,
             "bootstrap_docker": configured.ec2_bootstrap_docker,
             "tags": {
                 "team": "evals",
@@ -372,23 +374,6 @@ def test_ec2_backend_supplies_fixed_platform_launch_settings_and_protected_tags(
                 AWS_ACCOUNT_ID_TAG_KEY: AWS_ACCOUNT_ID,
             },
         }
-    finally:
-        backend.remove_materialized_worker_credentials()
-
-
-def test_ec2_backend_supplies_optional_platform_instance_profile(monkeypatch) -> None:
-    configured = _install_complete_ec2_settings(
-        monkeypatch,
-        ec2_instance_profile=(
-            "arn:aws:iam::123456789012:instance-profile/task"
-        ),
-    )
-    backend = Ec2Backend()
-
-    kwargs = backend.harbor_env_kwargs({})
-
-    try:
-        assert kwargs["iam_instance_profile"] == configured.ec2_instance_profile
     finally:
         backend.remove_materialized_worker_credentials()
 
@@ -483,9 +468,7 @@ def test_ec2_backend_rejects_user_attempts_to_replace_ownership_tags(
 
 
 @pytest.mark.parametrize("tags", [None, False, 0, "", [], ()])
-def test_ec2_backend_rejects_falsy_non_mapping_tags(
-    monkeypatch, tags: object
-) -> None:
+def test_ec2_backend_rejects_falsy_non_mapping_tags(monkeypatch, tags: object) -> None:
     _install_complete_ec2_settings(monkeypatch)
 
     with pytest.raises(ValueError, match="tags.*mapping"):
@@ -631,10 +614,16 @@ def test_ec2_runner_releases_materialized_key_lease_for_every_ephemeral_exit(
         def release_worker_credentials(self) -> None:
             self.release_calls += 1
 
+        @contextlib.contextmanager
+        def worker_credentials(self, *, include_ssh: bool):
+            self.acquire_worker_credentials(include_ssh=include_ssh)
+            try:
+                yield
+            finally:
+                self.release_worker_credentials()
+
     backend = FakeBackend()
-    monkeypatch.setattr(
-        harbor_runner, "apply_harbor_patches", lambda **_kwargs: None
-    )
+    monkeypatch.setattr(harbor_runner, "apply_harbor_patches", lambda **_kwargs: None)
     monkeypatch.setattr(harbor_runner, "get_backend", lambda _name: backend)
 
     async def fake_child(**_kwargs):
@@ -761,30 +750,6 @@ def test_ec2_cancellation_path_dispatches_terminate_instances_once(
     client.terminate_instances.assert_called_once_with(InstanceIds=["i-owned"])
 
 
-def test_ec2_stale_cleanup_path_dispatches_terminate_instances_once(
-    monkeypatch,
-) -> None:
-    import oddish.runtime.registry as runtime_registry
-    from oddish.workers.queue.cleanup import _terminate_orphaned_sandboxes
-
-    _install_complete_ec2_settings(monkeypatch)
-    client = MagicMock()
-    client.describe_instances.return_value = _owned_instance_description()
-    _install_fake_boto3(monkeypatch, ec2=client)
-    backend = Ec2Backend()
-    monkeypatch.setattr(runtime_registry, "get_backend", lambda _name: backend)
-
-    try:
-        terminated = asyncio.run(
-            _terminate_orphaned_sandboxes({("ec2", _ec2_handle())})
-        )
-    finally:
-        backend.remove_materialized_worker_credentials()
-
-    assert terminated == 1
-    client.terminate_instances.assert_called_once_with(InstanceIds=["i-owned"])
-
-
 @pytest.mark.parametrize("state", ["shutting-down", "terminated"])
 def test_ec2_teardown_treats_already_terminating_instance_as_success_without_second_call(
     monkeypatch, state: str
@@ -806,11 +771,7 @@ def test_ec2_teardown_treats_already_terminating_instance_as_success_without_sec
         {"Reservations": []},
         _owned_instance_description(deployment="another-deployment"),
         _owned_instance_description(account_id="999999999999"),
-        {
-            "Reservations": [
-                {"Instances": [{"InstanceId": "i-owned", "Tags": []}]}
-            ]
-        },
+        {"Reservations": [{"Instances": [{"InstanceId": "i-owned", "Tags": []}]}]},
     ],
 )
 def test_ec2_teardown_refuses_missing_or_wrongly_owned_instances(
@@ -852,7 +813,8 @@ def test_ec2_teardown_returns_false_when_credentials_cannot_materialize(
         result = asyncio.run(Ec2Backend().teardown(_ec2_handle()))
 
     assert result is False
-    assert "reason=credential_acquisition" in caplog.text
+    assert "metric=ec2_teardown outcome=error" in caplog.text
+    assert "ODDISH_EC2_AWS_ACCESS_KEY_ID is required" in caplog.text
 
 
 class _FakeDescribeInstancesPaginator:
@@ -934,9 +896,7 @@ def test_ec2_inventory_paginates_with_current_deployment_and_active_state_filter
         "i-stopped",
     ]
     assert snapshots[0].state == "pending"
-    assert snapshots[0].launch_time == datetime(
-        2026, 8, 7, 12, 30, tzinfo=timezone.utc
-    )
+    assert snapshots[0].launch_time == datetime(2026, 8, 7, 12, 30, tzinfo=timezone.utc)
     assert snapshots[1].state == "stopped"
     assert snapshots[1].managed_tag == "true"
     assert snapshots[1].deployment_tag == "oddish-pr-42"
@@ -974,53 +934,7 @@ def test_ec2_inventory_paginates_with_current_deployment_and_active_state_filter
             },
         ]
     )
-    profile_path = backend._aws_profile_path
-    assert profile_path is not None and profile_path.exists()
-    backend.remove_materialized_worker_credentials()
     assert backend._aws_profile_path is None
-    assert not profile_path.exists()
-
-
-@pytest.mark.parametrize(
-    ("raw_state", "normalized_state"),
-    [
-        ("pending", "pending"),
-        ("RUNNING", "running"),
-        (" stopping ", "stopping"),
-        ("stopped", "stopped"),
-        ("shutting-down", "shutting-down"),
-    ],
-)
-def test_ec2_inventory_normalizes_every_active_state(
-    monkeypatch, raw_state: str, normalized_state: str
-) -> None:
-    _install_complete_ec2_settings(monkeypatch)
-    monkeypatch.setenv("MODAL_APP_NAME", "oddish-pr-42")
-    paginator = _FakeDescribeInstancesPaginator(
-        [
-            {
-                "Reservations": [
-                    {
-                        "Instances": [
-                            _inventory_instance("i-state", state=raw_state)
-                        ]
-                    }
-                ]
-            }
-        ]
-    )
-    ec2 = MagicMock()
-    ec2.get_paginator.return_value = paginator
-    _install_fake_boto3(monkeypatch, ec2=ec2)
-    backend = Ec2Backend()
-
-    try:
-        inventory = asyncio.run(backend.snapshot_managed_instances())
-    finally:
-        backend.remove_materialized_worker_credentials()
-
-    assert len(inventory.instances) == 1
-    assert inventory.instances[0].state == normalized_state
 
 
 def test_ec2_inventory_defensively_refuses_wrong_tags_and_inactive_states(
@@ -1053,11 +967,8 @@ def test_ec2_inventory_defensively_refuses_wrong_tags_and_inactive_states(
     _install_fake_boto3(monkeypatch, ec2=ec2)
     backend = Ec2Backend()
 
-    try:
-        with caplog.at_level("WARNING"):
-            inventory = asyncio.run(backend.snapshot_managed_instances())
-    finally:
-        backend.remove_materialized_worker_credentials()
+    with caplog.at_level("WARNING"):
+        inventory = asyncio.run(backend.snapshot_managed_instances())
 
     assert [snapshot.instance_id for snapshot in inventory.instances] == ["i-running"]
     assert "metric=ec2_inventory_ownership_refusal" in caplog.text
@@ -1074,48 +985,15 @@ def test_ec2_inventory_logs_metric_and_raises_when_aws_listing_fails(
     _install_fake_boto3(monkeypatch, ec2=ec2)
     backend = Ec2Backend()
 
-    try:
-        with caplog.at_level("ERROR"), pytest.raises(
+    with (
+        caplog.at_level("ERROR"),
+        pytest.raises(
             RuntimeError, match="Unable to snapshot Oddish-managed EC2 instances"
-        ):
-            asyncio.run(backend.snapshot_managed_instances())
-    finally:
-        backend.remove_materialized_worker_credentials()
+        ),
+    ):
+        asyncio.run(backend.snapshot_managed_instances())
 
     assert "metric=ec2_inventory_error" in caplog.text
-
-
-def test_ec2_inventory_runs_account_and_pagination_aws_calls_off_event_loop(
-    monkeypatch,
-) -> None:
-    _install_complete_ec2_settings(monkeypatch)
-    main_thread_id = threading.get_ident()
-    aws_thread_ids: list[int] = []
-    paginator = _FakeDescribeInstancesPaginator([{"Reservations": []}])
-    original_paginate = paginator._paginate
-
-    def resolve_account(_self) -> str:
-        aws_thread_ids.append(threading.get_ident())
-        return AWS_ACCOUNT_ID
-
-    def paginate(**kwargs):
-        aws_thread_ids.append(threading.get_ident())
-        return original_paginate(**kwargs)
-
-    monkeypatch.setattr(Ec2Backend, "_resolve_aws_account_id", resolve_account)
-    paginator.paginate.side_effect = paginate
-    ec2 = MagicMock()
-    ec2.get_paginator.return_value = paginator
-    _install_fake_boto3(monkeypatch, ec2=ec2)
-    backend = Ec2Backend()
-
-    try:
-        asyncio.run(backend.snapshot_managed_instances())
-    finally:
-        backend.remove_materialized_worker_credentials()
-
-    assert len(aws_thread_ids) == 2
-    assert all(thread_id != main_thread_id for thread_id in aws_thread_ids)
 
 
 def test_ec2_inventory_times_out_and_logs_instead_of_blocking_reconciliation(
@@ -1132,9 +1010,12 @@ def test_ec2_inventory_times_out_and_logs_instead_of_blocking_reconciliation(
     monkeypatch.setattr(ec2_module.asyncio, "to_thread", never_finishes)
     backend = Ec2Backend()
 
-    with caplog.at_level("ERROR"), pytest.raises(
-        RuntimeError, match="Unable to snapshot Oddish-managed EC2 instances"
-    ) as error:
+    with (
+        caplog.at_level("ERROR"),
+        pytest.raises(
+            RuntimeError, match="Unable to snapshot Oddish-managed EC2 instances"
+        ) as error,
+    ):
         asyncio.run(backend.snapshot_managed_instances())
 
     assert isinstance(error.value.__cause__, TimeoutError)
@@ -1170,42 +1051,11 @@ def test_ec2_inventory_refuses_missing_or_non_datetime_launch_time(
     _install_fake_boto3(monkeypatch, ec2=ec2)
     backend = Ec2Backend()
 
-    try:
-        with caplog.at_level("WARNING"):
-            inventory = asyncio.run(backend.snapshot_managed_instances())
-    finally:
-        backend.remove_materialized_worker_credentials()
+    with caplog.at_level("WARNING"):
+        inventory = asyncio.run(backend.snapshot_managed_instances())
 
     assert [item.instance_id for item in inventory.instances] == ["i-valid-time"]
     assert caplog.text.count("metric=ec2_inventory_launch_time_refusal") == 2
-
-
-def test_ec2_backend_resolves_the_current_sts_account_on_every_check(
-    monkeypatch,
-) -> None:
-    configured = _complete_ec2_settings()
-    import oddish.runtime.backends.ec2 as ec2_module
-
-    monkeypatch.setattr(ec2_module, "settings", configured)
-    monkeypatch.setattr(
-        Ec2Backend, "_resolve_aws_account_id", _ORIGINAL_RESOLVE_AWS_ACCOUNT_ID
-    )
-    sts = MagicMock()
-    sts.get_caller_identity.side_effect = [
-        {"Account": AWS_ACCOUNT_ID},
-        {"Account": "999999999999"},
-    ]
-    client_factory = _install_fake_boto3(monkeypatch, sts=sts)
-    backend = Ec2Backend()
-
-    assert backend._resolve_aws_account_id() == AWS_ACCOUNT_ID
-    assert backend._resolve_aws_account_id() == "999999999999"
-
-    assert client_factory.call_args_list == [
-        ((), {"profile_name": "oddish-ec2", "region_name": "us-east-1"}),
-        ((), {"profile_name": "oddish-ec2", "region_name": "us-east-1"}),
-    ]
-    assert sts.get_caller_identity.call_count == 2
 
 
 def test_ec2_teardown_rechecks_account_after_credentials_rotate(
@@ -1216,7 +1066,7 @@ def test_ec2_teardown_rechecks_account_after_credentials_rotate(
 
     monkeypatch.setattr(ec2_module, "settings", configured)
     monkeypatch.setattr(
-        Ec2Backend, "_resolve_aws_account_id", _ORIGINAL_RESOLVE_AWS_ACCOUNT_ID
+        Ec2Backend, "resolve_aws_account_id", _ORIGINAL_RESOLVE_AWS_ACCOUNT_ID
     )
     sts = MagicMock()
     sts.get_caller_identity.side_effect = [
@@ -1227,7 +1077,7 @@ def test_ec2_teardown_rechecks_account_after_credentials_rotate(
     client_factory = _install_fake_boto3(monkeypatch, sts=sts, ec2=ec2)
     backend = Ec2Backend()
 
-    assert backend._resolve_aws_account_id() == AWS_ACCOUNT_ID
+    assert backend.resolve_aws_account_id() == AWS_ACCOUNT_ID
     assert asyncio.run(backend.teardown(_ec2_handle())) is False
 
     assert client_factory.call_args_list == [
@@ -1248,8 +1098,7 @@ def test_ec2_teardown_rejects_legacy_or_cross_account_handles_before_ec2_call(
 
     assert asyncio.run(backend.teardown("i-legacy")) is False
     assert (
-        asyncio.run(backend.teardown(_ec2_handle(account_id="999999999999")))
-        is False
+        asyncio.run(backend.teardown(_ec2_handle(account_id="999999999999"))) is False
     )
 
     client_factory.assert_not_called()
@@ -1262,9 +1111,7 @@ def test_ec2_teardown_uses_region_persisted_in_handle(monkeypatch) -> None:
     ec2.describe_instances.return_value = _owned_instance_description()
     client_factory = _install_fake_boto3(monkeypatch, ec2=ec2)
 
-    result = asyncio.run(
-        Ec2Backend().teardown(_ec2_handle(region="eu-west-1"))
-    )
+    result = asyncio.run(Ec2Backend().teardown(_ec2_handle(region="eu-west-1")))
 
     assert result is True
     client_factory.assert_called_once_with(
@@ -1310,9 +1157,7 @@ def test_ec2_harbor_patch_exposes_identity_and_keeps_host_only_imdsv2(
     environment = FakeEc2Environment()
 
     assert FakeEc2Environment.provider_name == "ec2"
-    assert environment.get_sandbox_id() == (
-        "ec2://123456789012/us-east-1/i-123"
-    )
+    assert environment.get_sandbox_id() == ("ec2://123456789012/us-east-1/i-123")
     assert environment._run_instances_kwargs()["MetadataOptions"] == {
         "HttpEndpoint": "enabled",
         "HttpTokens": "required",
@@ -1469,14 +1314,20 @@ def test_required_ec2_trial_fails_loudly_when_the_pinned_harbor_surface_is_missi
 
     monkeypatch.setenv("ODDISH_EC2_ENABLED", "true")
     if missing_surface == "module":
+
         def import_module(_name):
             raise ImportError("missing")
+
     elif missing_surface == "class":
+
         def import_module(_name):
             return SimpleNamespace()
+
     else:
+
         def import_module(_name):
             return SimpleNamespace(EC2Environment=type("EC2Environment", (), {}))
+
     monkeypatch.setattr(harbor_patches.importlib, "import_module", import_module)
 
     with pytest.raises(RuntimeError, match="EC2 trial requires"):

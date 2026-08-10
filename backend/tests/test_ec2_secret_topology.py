@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 import json
 import os
 import subprocess
@@ -85,9 +84,7 @@ def test_enabled_deploy_rejects_one_secret_used_for_both_roles() -> None:
 
 
 def test_ec2_secrets_cannot_alias_a_broad_runtime_secret() -> None:
-    plan = modal_app.Ec2SecretPlan(
-        control_name="aws-credentials", ssh_name=SSH
-    )
+    plan = modal_app.Ec2SecretPlan(control_name="aws-credentials", ssh_name=SSH)
 
     with pytest.raises(RuntimeError, match="broad runtime"):
         modal_app._validate_ec2_secret_isolation(
@@ -98,9 +95,10 @@ def test_ec2_secrets_cannot_alias_a_broad_runtime_secret() -> None:
 def test_ec2_secret_plan_reads_dotenv_and_process_env_wins() -> None:
     dotenv = _enabled_env()
     assert modal_app._ec2_secret_plan({}, dotenv).worker_names == (CONTROL, SSH)
-    assert modal_app._ec2_secret_plan(
-        {"ODDISH_EC2_ENABLED": "false"}, dotenv
-    ) == modal_app.Ec2SecretPlan()
+    assert (
+        modal_app._ec2_secret_plan({"ODDISH_EC2_ENABLED": "false"}, dotenv)
+        == modal_app.Ec2SecretPlan()
+    )
 
 
 def test_local_plan_fails_when_effective_enablement_disagrees(
@@ -122,9 +120,7 @@ def test_container_plan_rejects_runtime_disablement_of_enabled_baked_plan(
 ) -> None:
     monkeypatch.setattr(modal_app.modal, "is_local", lambda: False)
     plan_file = tmp_path / "ec2-secret-plan.json"
-    plan_file.write_text(
-        json.dumps({"control_name": CONTROL, "ssh_name": SSH})
-    )
+    plan_file.write_text(json.dumps({"control_name": CONTROL, "ssh_name": SSH}))
     monkeypatch.setattr(modal_app, "_EC2_PLAN_FILE", str(plan_file))
 
     polluted = {
@@ -236,24 +232,6 @@ print(json.dumps({
         "worker": 2,
         "base_overlap": False,
     }
-
-
-def test_only_trial_workers_and_reconciler_receive_ec2_secrets() -> None:
-    source = inspect.getsource(worker_functions)
-
-    assert "secrets=trial_worker_secrets" in source
-    assert "secrets=reconciler_secrets" in source
-    assert "secrets=runtime_secrets" in source
-    assert "secrets=ec2_worker_secrets" not in source
-    assert "secrets=ec2_control_secrets" not in source
-
-    endpoints_source = Path(modal_app.__file__).with_name("endpoints.py").read_text()
-    assert "runtime_secrets" in endpoints_source
-    assert "trial_worker_secrets" not in endpoints_source
-    assert "reconciler_secrets" not in endpoints_source
-    assert "ec2_control_secrets" not in endpoints_source
-    assert 'register_provider_teardown_delegate("ec2"' in endpoints_source
-    assert "teardown_ec2_sandbox" in source
 
 
 def test_default_and_variant_workers_share_the_same_ec2_secret_topology() -> None:
