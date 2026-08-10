@@ -288,8 +288,15 @@ class TrajectoryBlock(Block):
                     ),
                 }
             )
+        # Imported here, not at module scope: summarize_trajectory imports this
+        # module (lazily, inside its functions) to build the block.
+        from api.services.summarize_trajectory import SCHEMA_VERSION
+
         return {
-            "schema_version": "5",
+            # Must be the same constant the freshness query compares against.
+            # A literal here would mean bumping SCHEMA_VERSION makes every read
+            # miss, regenerate, write the old version, and miss again forever.
+            "schema_version": SCHEMA_VERSION,
             "model": model,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "summary": out.summary,
