@@ -25,7 +25,11 @@ from oddish.core.quotas import (
     sum_org_cost_usd,
     try_acquire_quota_locks,
 )
-from oddish.core.verdict_sync import cancel_verdict
+from oddish.core.verdict_state import (
+    cancel_verdict,
+    has_active_verdict,
+    has_published_verdict,
+)
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
@@ -342,11 +346,7 @@ async def _reconcile_cancelled_tasks(
     for task in tasks:
         if task.id not in exhausted:
             continue
-        if task.verdict or task.verdict_status in (
-            VerdictStatus.PENDING,
-            VerdictStatus.QUEUED,
-            VerdictStatus.RUNNING,
-        ):
+        if has_published_verdict(task) or has_active_verdict(task):
             cancel_verdict(task, error=QUOTA_CANCELLED_MESSAGE, now=now)
         if task.status in _ACTIVE_TASK_STATUSES:
             restored = task.verdict_status == VerdictStatus.SUCCESS

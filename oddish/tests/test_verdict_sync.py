@@ -1,11 +1,8 @@
 from types import SimpleNamespace
 
 from oddish.analyze import Classification, TrialClassification
-from oddish.core.verdict_sync import (
-    build_verdict_payload,
-    cancel_verdict,
-    fail_verdict,
-)
+from oddish.core.verdict_state import cancel_verdict, fail_verdict
+from oddish.core.verdict_sync import build_verdict_payload
 from oddish.db import VerdictStatus
 
 

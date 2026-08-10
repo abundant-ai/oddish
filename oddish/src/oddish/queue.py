@@ -31,7 +31,11 @@ from oddish.core.trial_facets import (
     facet_rows_for_trial_dicts,
     record_trial_facets,
 )
-from oddish.core.verdict_sync import cancel_verdict, clear_inflight_verdict
+from oddish.core.verdict_state import (
+    abandon_verdict,
+    cancel_verdict,
+    queue_verdict,
+)
 from oddish.db import (
     AnalysisStatus,
     ExperimentModel,
@@ -1319,7 +1323,7 @@ async def append_trials_to_task(
         task.finished_at = None
 
     if new_trials and task.run_analysis:
-        clear_inflight_verdict(task)
+        abandon_verdict(task)
         # Cancel any in-flight QA worker_job for this task so a worker
         # that's already claimed (or about to claim) the old row doesn't
         # overwrite the new verdict with stale data. The dispatcher
@@ -1464,7 +1468,7 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
 
     if task.run_analysis and qa_eligible:
         task.status = TaskStatus.VERDICT_PENDING
-        task.verdict_status = VerdictStatus.QUEUED
+        queue_verdict(task)
         await enqueue_qa_worker_job(session, task_id=task_id, org_id=task.org_id)
     else:
         task.status = TaskStatus.COMPLETED
@@ -1472,7 +1476,7 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
         # No QA job will run, so clear queued or running verdict bookkeeping
         # -- otherwise the task ends COMPLETED while verdict_status still
         # reads QUEUED. A finished verdict stays, together with its payload.
-        clear_inflight_verdict(task)
+        abandon_verdict(task)
 
     await session.flush()
     return True
@@ -1880,7 +1884,7 @@ async def maybe_advance_legacy_analyzing_task(
         return False
 
     task.status = TaskStatus.VERDICT_PENDING
-    task.verdict_status = VerdictStatus.QUEUED
+    queue_verdict(task)
     await enqueue_qa_worker_job(session, task_id=task_id, org_id=task.org_id)
     await session.flush()
 
