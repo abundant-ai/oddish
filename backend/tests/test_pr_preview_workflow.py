@@ -480,6 +480,83 @@ def test_metrics_step_runs_after_deployment_publish():
     )
 
 
+def _condition(job_key):
+    return str(_wf()["jobs"][job_key].get("if", ""))
+
+
+def test_expensive_jobs_skip_when_cancelled():
+    # always() jobs still launch while a superseded run unwinds; the expensive
+    # open-PR jobs must be cancellation-aware instead.
+    for job_key in (
+        "prepare-preview-database",
+        "deploy-preview-backend",
+        "update-vercel-preview",
+        "post-preview-links",
+    ):
+        condition = _condition(job_key)
+        assert "!cancelled()" in condition, job_key
+        assert "always()" not in condition, job_key
+
+
+def _step(job, name):
+    return next(s for s in job["steps"] if s.get("name") == name)
+
+
+def test_mutating_steps_are_generation_fenced():
+    guarded_steps = {
+        "prepare-preview-database": ["Sync backend dependencies", "Prepare preview database"],
+        "deploy-preview-backend": ["Sync backend dependencies", "Deploy preview backend"],
+        "update-vercel-preview": ["Update Vercel preview"],
+        "post-preview-links": ["Post preview links"],
+    }
+    for job_key, step_names in guarded_steps.items():
+        job = _wf()["jobs"][job_key]
+        guard = _step(job, "Check preview generation")
+        assert "assert_current_generation.py" in guard["run"]
+        guard_env = guard["env"]
+        assert "HEAD_REF" in guard_env and "HEAD_SHA" in guard_env
+        names = [s.get("name") for s in job["steps"]]
+        for step_name in step_names:
+            step = _step(job, step_name)
+            assert step.get("if") == "steps.guard.outputs.current == 'true'", (
+                f"{job_key}/{step_name}"
+            )
+            assert names.index("Check preview generation") < names.index(step_name)
+
+
+def test_gate_fences_publish_and_stamps_generation():
+    gate = _wf()["jobs"]["require-working-preview"]
+    # The gate is cancellation-aware at the job level (skips during unwind);
+    # the in-job generation fence covers the window where the gate started
+    # before the superseding push landed.
+    assert "!cancelled()" in str(gate.get("if", ""))
+
+    guard = _step(gate, "Check preview generation")
+    # Forks skip the guard (their branch is not on the base repo) and reach
+    # verify for its clearer same-repository failure.
+    assert "head.repo.full_name" in guard["if"]
+
+    create = _step(gate, "Create the Preview deployment record")
+    assert "steps.guard.outputs.current == 'true'" in create["if"]
+    assert "$GENERATION" in create["run"]
+
+    verify = _step(gate, "Verify preview deployment")
+    assert verify["if"] == "steps.guard.outputs.current != 'false'"
+
+    recheck = _step(gate, "Re-check preview generation")
+    publish = _step(gate, "Publish the deployment result")
+    assert "steps.guard_publish.outputs.current == 'true'" in publish["if"]
+    names = [s.get("name") for s in gate["steps"]]
+    assert names.index("Verify preview deployment") < names.index(
+        "Re-check preview generation"
+    ) < names.index("Publish the deployment result")
+
+
+def test_vercel_alias_is_fenced_after_build_wait():
+    script = (PREVIEW / "update_vercel_preview.sh").read_text()
+    assert script.index("assert_current_generation.py") < script.index("vercel alias set")
+
+
 def _reset_wf():
     return yaml.safe_load(RESET_WORKFLOW.read_text())
 

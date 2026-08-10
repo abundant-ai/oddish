@@ -94,8 +94,10 @@ jobs:
       - detect-changes
     # Backend-scoped PRs keep their Supabase preview branch smoke-tested on
     # later frontend-only pushes, so the required preview stays end-to-end.
+    # !cancelled(): a superseded run must not start new expensive work while
+    # it unwinds (always() jobs still launch during cancellation).
     if: |
-      always() &&
+      !cancelled() &&
       needs.detect-changes.result == 'success' &&
       (
         needs.detect-changes.outputs.preview_backend_live == 'true' ||
@@ -139,10 +141,21 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
+      - name: Check preview generation
+        id: guard
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER_REPO: ${{ github.repository }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python "$GITHUB_WORKSPACE/.github/scripts/preview/assert_current_generation.py"
+
       - name: Sync backend dependencies
+        if: steps.guard.outputs.current == 'true'
         run: uv sync --frozen
 
       - name: Prepare preview database
+        if: steps.guard.outputs.current == 'true'
         id: prepare
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -167,7 +180,7 @@ jobs:
       - detect-changes
       - prepare-preview-database
     if: |
-      always() &&
+      !cancelled() &&
       needs.prepare-preview-database.result == 'success' &&
       (
         needs.detect-changes.outputs.deploy_backend == 'true' ||
@@ -206,10 +219,21 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
+      - name: Check preview generation
+        id: guard
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER_REPO: ${{ github.repository }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python "$GITHUB_WORKSPACE/.github/scripts/preview/assert_current_generation.py"
+
       - name: Sync backend dependencies
+        if: steps.guard.outputs.current == 'true'
         run: uv sync --frozen
 
       - name: Deploy preview backend
+        if: steps.guard.outputs.current == 'true'
         id: deploy
         run: "$GITHUB_WORKSPACE/.github/scripts/preview/deploy_preview_backend.sh"
 
@@ -233,7 +257,7 @@ jobs:
     # Run for every open same-repository PR, not only frontend changes: the
     # branch ruleset requires a working Preview deployment before merge.
     if: |
-      always() &&
+      !cancelled() &&
       needs.detect-changes.result == 'success' &&
       (
         needs.prepare-preview-database.result == 'success' ||
@@ -284,8 +308,21 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
+      - name: Check preview generation
+        id: guard
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER_REPO: ${{ github.repository }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python "$GITHUB_WORKSPACE/.github/scripts/preview/assert_current_generation.py"
+
       - name: Update Vercel preview
+        if: steps.guard.outputs.current == 'true'
         id: vercel
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER_REPO: ${{ github.repository }}
         run: "$GITHUB_WORKSPACE/.github/scripts/preview/update_vercel_preview.sh"
 
       - name: Record preview identity
@@ -351,22 +388,43 @@ jobs:
           DEPLOY_FRONTEND: ${{ needs.detect-changes.outputs.deploy_frontend }}
         run: python "$GITHUB_WORKSPACE/.github/scripts/preview/record_preview_metrics.py" identity
 
+      # Ownership fence: a superseded run must not create, verify, or publish
+      # deployment state. Same-repo only — fork branches don't exist on the
+      # base repository, and forks must reach the verify step below for its
+      # clearer same-repository failure message.
+      - name: Check preview generation
+        id: guard
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER_REPO: ${{ github.repository }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python "$GITHUB_WORKSPACE/.github/scripts/preview/assert_current_generation.py"
+
+      - name: Note superseded run
+        if: steps.guard.outputs.current == 'false'
+        run: echo "- Superseded by a newer push; this run published nothing." >> "$GITHUB_STEP_SUMMARY"
+
       - name: Create the Preview deployment record
         id: deployment
         # Fork PRs get a read-only token; skip so the verify step below can
         # fail with its clearer same-repository message.
-        if: github.event.pull_request.head.repo.full_name == github.repository
+        if: github.event.pull_request.head.repo.full_name == github.repository && steps.guard.outputs.current == 'true'
         env:
           # The head commit, not GITHUB_SHA: on pull_request events GITHUB_SHA
           # is the temporary merge commit, and the required-deployments rule
           # and the pull request page key on the head commit.
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GENERATION: ${{ needs.detect-changes.outputs.preview_generation }}
         run: |
           set -euo pipefail
-          deployment_id=$(jq -n --arg ref "$HEAD_SHA" \
+          description="PR preview gate"
+          if [ -n "$GENERATION" ]; then description="PR preview gate ($GENERATION)"; fi
+          deployment_id=$(jq -n --arg ref "$HEAD_SHA" --arg description "$description" \
             '{ref: $ref, environment: "Preview", auto_merge: false,
               required_contexts: [], transient_environment: true,
-              description: "PR preview gate"}' \
+              description: $description}' \
             | gh api "repos/$GITHUB_REPOSITORY/deployments" --input - --jq '.id')
           gh api "repos/$GITHUB_REPOSITORY/deployments/$deployment_id/statuses" \
             -f state=in_progress >/dev/null
@@ -374,6 +432,9 @@ jobs:
 
       - name: Verify preview deployment
         id: verify
+        # 'false' means proven stale — skip. Empty (forks, where the guard is
+        # skipped) still runs so fork PRs get the same-repository failure.
+        if: steps.guard.outputs.current != 'false'
         env:
           SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
           DETECT_RESULT: ${{ needs.detect-changes.result }}
@@ -503,8 +564,20 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Publish the deployment result
+      # Verify can poll for minutes; re-check ownership immediately before
+      # publishing so a run superseded mid-verify cannot commit stale state.
+      - name: Re-check preview generation
+        id: guard_publish
         if: always() && steps.deployment.outputs.id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER_REPO: ${{ github.repository }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python "$GITHUB_WORKSPACE/.github/scripts/preview/assert_current_generation.py"
+
+      - name: Publish the deployment result
+        if: always() && steps.deployment.outputs.id != '' && steps.guard_publish.outputs.current == 'true'
         env:
           DEPLOYMENT_ID: ${{ steps.deployment.outputs.id }}
           VERIFY_OUTCOME: ${{ steps.verify.outcome }}
@@ -567,7 +640,7 @@ jobs:
       - deploy-preview-backend
       - update-vercel-preview
     if: |
-      always() &&
+      !cancelled() &&
       needs.detect-changes.result == 'success' &&
       needs.detect-changes.outputs.any_change == 'true'
     runs-on: ubuntu-latest
@@ -592,7 +665,17 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
+      - name: Check preview generation
+        id: guard
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER_REPO: ${{ github.repository }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python "$GITHUB_WORKSPACE/.github/scripts/preview/assert_current_generation.py"
+
       - name: Post preview links
+        if: steps.guard.outputs.current == 'true'
         run: python "$GITHUB_WORKSPACE/.github/scripts/preview/post_preview_links.py"
 
       - name: Record preview identity
