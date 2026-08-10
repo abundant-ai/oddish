@@ -67,8 +67,6 @@ async def sync_verdict_to_task(
 ) -> str | None:
     """Write verdict state and complete the task. The only writer of a
     *synthesized* verdict, so the legacy and block paths cannot diverge.
-    Cleanup and gate-failure paths elsewhere still set ``verdict_status``
-    directly; they never produce a payload.
 
     Returns the terminal ``VerdictStatus`` value written, or ``None`` when the
     write was skipped (task gone, or the job was cancelled).
@@ -85,16 +83,11 @@ async def sync_verdict_to_task(
             task.verdict = payload
             task.verdict_status = VerdictStatus.SUCCESS
             task.verdict_error = None
+            task.verdict_finished_at = utcnow()
         else:
-            # A payload only ever pairs with SUCCESS. A verdict kept through
-            # an append must not outlive the failed pass that replaced it.
-            task.verdict = None
-            task.verdict_status = VerdictStatus.FAILED
-            task.verdict_error = error or "Verdict synthesis failed with exception"
+            failure = error or "Verdict synthesis failed with exception"
+            fail_verdict(task, error=failure, now=utcnow())
 
-        task.verdict_finished_at = utcnow()
-        # The task completes either way: a failed verdict must not leave the
-        # task hanging in a non-terminal state.
         task.status = TaskStatus.COMPLETED
         task.finished_at = utcnow()
         return task.verdict_status.value
@@ -115,6 +108,14 @@ def clear_inflight_verdict(task: Any) -> None:
     task.verdict_started_at = None
 
 
+def fail_verdict(task: Any, *, error: str, now: Any) -> None:
+    """Fail a replacement verdict and discard any payload it superseded."""
+    task.verdict = None
+    task.verdict_status = VerdictStatus.FAILED
+    task.verdict_error = error
+    task.verdict_finished_at = now
+
+
 def cancel_verdict(task: Any, *, error: str, now: Any) -> None:
     """A cancelled QA run puts a kept verdict back; without one, it fails.
 
@@ -126,9 +127,7 @@ def cancel_verdict(task: Any, *, error: str, now: Any) -> None:
         task.verdict_error = None
         task.verdict_started_at = None
         return
-    task.verdict_status = VerdictStatus.FAILED
-    task.verdict_error = error
-    task.verdict_finished_at = now
+    fail_verdict(task, error=error, now=now)
 
 
 def build_pre_trial_payload(

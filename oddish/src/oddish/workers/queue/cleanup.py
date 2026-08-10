@@ -35,6 +35,7 @@ from oddish.config import (
 from oddish.core.baseline_gate import GATE_SKIP_PREFIX
 from oddish.core.helpers import cancel_job_by_worker
 from oddish.core.tags.ownership_transfer import sweep_orphaned_tag_owners
+from oddish.core.verdict_sync import fail_verdict
 from oddish.costs.recorder import reconcile_compute_cost_spans
 from oddish.db import (
     AnalysisStatus,
@@ -439,9 +440,7 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
         if task is None:
             return None
         if row["new_status"] == "FAILED":
-            task.verdict_status = VerdictStatus.FAILED
-            task.verdict_error = row["error_message"]
-            task.verdict_finished_at = utcnow()
+            fail_verdict(task, error=row["error_message"], now=utcnow())
             # No further QA attempt will run for this task, so any trial the
             # dead job left mid-classification would stay non-terminal forever
             # (and count as a phantom "running" analysis in the dashboard

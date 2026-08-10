@@ -1,5 +1,12 @@
+from types import SimpleNamespace
+
 from oddish.analyze import Classification, TrialClassification
-from oddish.core.verdict_sync import build_verdict_payload
+from oddish.core.verdict_sync import (
+    build_verdict_payload,
+    cancel_verdict,
+    fail_verdict,
+)
+from oddish.db import VerdictStatus
 
 
 class _Verdict:
@@ -64,3 +71,40 @@ def test_counts_ignore_model_supplied_values():
 
     payload = build_verdict_payload(_Lying(), [_c(Classification.GOOD_SUCCESS)])
     assert payload["task_problem_count"] == 0
+
+
+def test_cancel_verdict_restores_the_preserved_success() -> None:
+    payload = {"verdict": "accept", "is_good": True}
+    finished_at = object()
+    task = SimpleNamespace(
+        verdict=payload,
+        verdict_status=VerdictStatus.RUNNING,
+        verdict_error="replacement error",
+        verdict_started_at=object(),
+        verdict_finished_at=finished_at,
+    )
+
+    cancel_verdict(task, error="cancelled", now=object())
+
+    assert task.verdict is payload
+    assert task.verdict_status == VerdictStatus.SUCCESS
+    assert task.verdict_error is None
+    assert task.verdict_started_at is None
+    assert task.verdict_finished_at is finished_at
+
+
+def test_fail_verdict_discards_the_preserved_success() -> None:
+    task = SimpleNamespace(
+        verdict={"verdict": "accept", "is_good": True},
+        verdict_status=VerdictStatus.RUNNING,
+        verdict_error=None,
+        verdict_finished_at=None,
+    )
+    failed_at = object()
+
+    fail_verdict(task, error="replacement failed", now=failed_at)
+
+    assert task.verdict is None
+    assert task.verdict_status == VerdictStatus.FAILED
+    assert task.verdict_error == "replacement failed"
+    assert task.verdict_finished_at is failed_at
