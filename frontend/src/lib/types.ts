@@ -4,7 +4,8 @@ type TaskStatus =
   | "analyzing"
   | "verdict_pending"
   | "completed"
-  | "failed";
+  | "failed"
+  | "cancelled";
 
 type TrialStatus =
   | "pending"

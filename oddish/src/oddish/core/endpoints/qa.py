@@ -188,13 +188,10 @@ async def cancel_task_qa_core(
                 trial.analysis_error = USER_CANCELLED_MESSAGE
                 trial.analysis_finished_at = now_value
         if task.status == TaskStatus.VERDICT_PENDING:
-            # A restored verdict means the task is judged; only a task with
-            # no verdict fails on cancel.
-            task.status = (
-                TaskStatus.COMPLETED
-                if task.verdict_status == VerdictStatus.SUCCESS
-                else TaskStatus.FAILED
-            )
+            # VERDICT_PENDING means every trial already finished — cancelling
+            # QA stops only the judgment, so the run itself completed. The
+            # verdict columns carry the cancelled (or kept) judgment.
+            task.status = TaskStatus.COMPLETED
             task.finished_at = now_value
     # The pre-trial audit runs inside a QA job (full or audit-only). A request
     # left QUEUED (or a claim left RUNNING) with no job behind it would keep

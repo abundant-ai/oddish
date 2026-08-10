@@ -2002,6 +2002,7 @@ def format_task_status(status: str) -> str:
         "verdict_pending": ("magenta", "verdict"),
         "completed": ("green", "completed"),
         "failed": ("red", "failed"),
+        "cancelled": ("yellow", "cancelled"),
     }
     style, label = style_map.get(status.lower(), ("white", status))
     return f"[{style}]{label}[/{style}]"
@@ -2082,7 +2083,9 @@ def format_verdict_status(verdict_status: str) -> str:
 
 def _summarize_experiment_tasks(tasks: list[dict]) -> dict:
     total_tasks = len(tasks)
-    task_completed = sum(1 for t in tasks if t.get("status") in ("completed", "failed"))
+    task_completed = sum(
+        1 for t in tasks if t.get("status") in ("completed", "failed", "cancelled")
+    )
     task_running = sum(1 for t in tasks if t.get("status") == "running")
     task_pending = total_tasks - task_completed - task_running
 
@@ -2418,7 +2421,10 @@ def watch_experiment(api_url: str, experiment_id: str) -> None:
 
                 live.update(_build_experiment_table(experiment_id, tasks))
 
-                if all(t.get("status") in ("completed", "failed") for t in tasks):
+                if all(
+                    t.get("status") in ("completed", "failed", "cancelled")
+                    for t in tasks
+                ):
                     break
 
                 time.sleep(2)
@@ -2617,7 +2623,12 @@ def watch_task(
                 table.add_row("", ", ".join(summary_parts), "", "", "", "")
 
                 # Show verdict status if in later pipeline stages
-                if task_status in ("analyzing", "verdict_pending", "completed"):
+                if task_status in (
+                    "analyzing",
+                    "verdict_pending",
+                    "completed",
+                    "cancelled",
+                ):
                     verdict_status = result.get("verdict_status")
                     if verdict_status:
                         verdict_display = {
@@ -2638,7 +2649,7 @@ def watch_task(
                         t.get("status") in terminal for t in all_trials
                     ):
                         break
-                elif task_status in ("completed", "failed"):
+                elif task_status in ("completed", "failed", "cancelled"):
                     break
 
                 time.sleep(2)

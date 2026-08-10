@@ -92,7 +92,7 @@ def _status_json(
             entry["tasks"] += 1
             if task.get("status") == "running":
                 entry["running"] += 1
-            if task.get("status") in ("completed", "failed"):
+            if task.get("status") in ("completed", "failed", "cancelled"):
                 entry["done"] += 1
             entry["total_trials"] += task.get("total", 0) or 0
             entry["completed_trials"] += task.get("completed", 0) or 0

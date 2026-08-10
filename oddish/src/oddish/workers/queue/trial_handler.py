@@ -942,7 +942,7 @@ async def _run_post_trial_hooks(trial_id: str) -> None:
             or trial.harbor_stage == "cancelled"
         ):
             return
-        if task is None or task.status == TaskStatus.FAILED:
+        if task is None or task.status in (TaskStatus.FAILED, TaskStatus.CANCELLED):
             return
 
         await maybe_gate_llm_trials(session, trial_id)

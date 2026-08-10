@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-08-08]
+
+### Added
+
+- Tasks now have a first-class terminal `cancelled` status. Cancelling an
+  active run (`oddish cancel`, or a quota cap being reached) marks the task
+  `cancelled` instead of `failed` — status reflects the execution outcome
+  (stopped, not broken), while the verdict columns independently keep the
+  judgment, so a kept accept verdict stays valid on a cancelled task. Failure
+  metrics and automation keying on `failed` no longer count cancellations.
+  Cancelling a task whose trials all finished (QA cancel, or `oddish cancel`
+  during `verdict_pending`) marks it `completed` — only the judgment was
+  stopped, and the verdict columns record that. Retrying a trial of a
+  cancelled task resurrects it, exactly like a failed one. The task browse
+  sidebar gains a "Cancelled" status filter. Core migration
+  `cancel01_add_cancelled` adds the enum value; pre-existing cancelled rows
+  keep their old status. ⚠️ Older installed CLIs treat only
+  `completed`/`failed` as terminal, so `oddish run`/`status --watch`/`pull
+  --wait` loops keep polling on a task another client cancelled until
+  interrupted; they render the new status as plain text and do not crash.
+
 ## [2026-08-07]
 
 ### Changed

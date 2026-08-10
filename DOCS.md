@@ -351,6 +351,11 @@ Use `oddish cancel` to stop queued or running work without deleting the task
 itself. Completed trials are preserved. By default it cancels all active task
 runs; use `--qa` to cancel only the task-level QA job.
 
+A task cancelled mid-run lands in the terminal `cancelled` status (stopped,
+not broken — `failed` still means the pipeline broke). A task whose trials
+had all finished lands `completed` instead: only the judgment was stopped,
+which the verdict shows. A verdict the task already held is kept either way.
+
 ```bash
 # Cancel all active runs for a task
 oddish cancel <task_id>

@@ -581,14 +581,14 @@ def _is_task_terminal(client: httpx.Client, task_id: str) -> bool:
     task = _get_task_status(client, task_id)
     if not task:
         return False
-    return task.get("status") in ("completed", "failed")
+    return task.get("status") in ("completed", "failed", "cancelled")
 
 
 def _is_experiment_terminal(client: httpx.Client, experiment_id: str) -> bool:
     tasks = _list_tasks_for_experiment(client, experiment_id)
     if not tasks:
         return True
-    return all(t.get("status") in ("completed", "failed") for t in tasks)
+    return all(t.get("status") in ("completed", "failed", "cancelled") for t in tasks)
 
 
 def _pull_once(
