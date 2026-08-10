@@ -278,10 +278,12 @@ interface TaskBrowseTrial {
 
 interface TaskBrowseTrialGroup {
   agent: string;
-  model: string | null;
+  model_key: string;
+  model_label: string | null;
   trial_count: number;
   reward_sum: number;
   reward_total: number;
+  latest_trials: TaskBrowseTrial[];
 }
 
 export interface TaskBrowseItem {
@@ -308,7 +310,6 @@ export interface TaskBrowseItem {
   billed_has_estimated: boolean;
   billed_has_native: boolean;
   qa_cost_usd?: number;
-  latest_trials: TaskBrowseTrial[];
   trial_status_counts: Record<string, number>;
   trial_groups: TaskBrowseTrialGroup[];
   experiments: TaskBrowseExperiment[];

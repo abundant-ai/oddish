@@ -110,7 +110,7 @@ function PassRateCell({ task }: { task: TaskBrowseItem }) {
             : "No completed trials"}
         </div>
       </div>
-      {task.latest_trials.length > 0 ? (
+      {task.total_trials > 0 ? (
         <div className="text-muted-foreground flex flex-wrap gap-x-2.5 gap-y-0.5 text-[10px] leading-none">
           {summaryItems
             .filter((item) => item.key !== "skipped" || item.count > 0)
@@ -141,7 +141,8 @@ function PassRateCell({ task }: { task: TaskBrowseItem }) {
   );
 }
 
-type LatestTrial = TaskBrowseItem["latest_trials"][number];
+type TrialGroup = TaskBrowseItem["trial_groups"][number];
+type LatestTrial = TrialGroup["latest_trials"][number];
 
 function TrialIcon({ trial }: { trial: LatestTrial }) {
   const status = getMatrixStatus(
@@ -180,74 +181,23 @@ function TrialIcon({ trial }: { trial: LatestTrial }) {
   );
 }
 
-function trialModelKey(model: string | null): string {
-  return model?.trim() || "default";
+function groupScorePct(group: TrialGroup): number | null {
+  if (group.reward_total === 0) return null;
+  return (group.reward_sum / group.reward_total) * 100;
 }
 
-type TrialGroup = {
-  key: string;
-  agent: string;
-  modelLabel: string | null;
-  trialCount: number;
-  rewardSum: number;
-  rewardTotal: number;
-  trials: LatestTrial[];
-};
-
-// Mirrors the interior task view's agent grouping. Counts and scores come from
-// the exact rollup; only the individual glyph previews are bounded.
-function groupLatestTrials(task: TaskBrowseItem): TrialGroup[] {
-  const modelsByAgent = new Map<string, Set<string>>();
-  for (const summary of task.trial_groups) {
-    const models = modelsByAgent.get(summary.agent) ?? new Set<string>();
-    models.add(trialModelKey(summary.model));
-    modelsByAgent.set(summary.agent, models);
-  }
-  const modelScoped = new Set(
-    Array.from(modelsByAgent.entries())
-      .filter(([, models]) => models.size > 1)
-      .map(([agent]) => agent)
-  );
-  const groups = new Map<string, TrialGroup>();
-  for (const summary of task.trial_groups) {
-    const scoped = modelScoped.has(summary.agent);
-    const key = scoped
-      ? `${summary.agent}/${trialModelKey(summary.model)}`
-      : summary.agent;
-    groups.set(key, {
-      key,
-      agent: summary.agent,
-      modelLabel: scoped
-        ? trialModelKey(summary.model)
-        : summary.model?.trim() || null,
-      trialCount: summary.trial_count,
-      rewardSum: summary.reward_sum,
-      rewardTotal: summary.reward_total,
-      trials: [],
-    });
-  }
-  for (const trial of task.latest_trials) {
-    const key = modelScoped.has(trial.agent)
-      ? `${trial.agent}/${trialModelKey(trial.model)}`
-      : trial.agent;
-    groups.get(key)?.trials.push(trial);
-  }
-  return Array.from(groups.values()).sort((a, b) => {
+function orderedTrialGroups(task: TaskBrowseItem): TrialGroup[] {
+  return [...task.trial_groups].sort((a, b) => {
     const baselineDelta =
       Number(isBaselineAgentName(a.agent)) -
       Number(isBaselineAgentName(b.agent));
     if (baselineDelta !== 0) return baselineDelta;
-    return b.trialCount - a.trialCount;
+    return b.trial_count - a.trial_count;
   });
 }
 
-function groupScorePct(group: TrialGroup): number | null {
-  if (group.rewardTotal === 0) return null;
-  return (group.rewardSum / group.rewardTotal) * 100;
-}
-
 function TrialGraphics({ task }: { task: TaskBrowseItem }) {
-  if (task.latest_trials.length === 0) {
+  if (task.trial_groups.length === 0) {
     return (
       <div className="border-border/70 text-muted-foreground rounded-md border border-dashed px-3 py-3 text-center text-xs">
         No latest-version trials yet.
@@ -255,32 +205,35 @@ function TrialGraphics({ task }: { task: TaskBrowseItem }) {
     );
   }
 
-  const groups = groupLatestTrials(task);
+  const groups = orderedTrialGroups(task);
 
   return (
     <div className="space-y-2">
       {groups.map((group) => {
         const scorePct = groupScorePct(group);
         return (
-          <div key={group.key} className="space-y-1">
+          <div
+            key={JSON.stringify([group.agent, group.model_key])}
+            className="space-y-1"
+          >
             <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5">
               <div className="flex min-w-0 flex-wrap items-center gap-1.5">
                 <span className="text-foreground font-mono text-[11px] font-medium">
                   {group.agent}
                 </span>
-                {group.modelLabel ? (
+                {group.model_label ? (
                   <Badge
                     variant="outline"
                     className="w-fit font-mono text-[10px]"
                   >
-                    {group.modelLabel}
+                    {group.model_label}
                   </Badge>
                 ) : null}
               </div>
               <div className="text-muted-foreground flex items-center gap-2 font-mono text-[10px] leading-none">
                 <span>
-                  {group.trialCount} trial
-                  {group.trialCount === 1 ? "" : "s"}
+                  {group.trial_count} trial
+                  {group.trial_count === 1 ? "" : "s"}
                 </span>
                 <span className="text-foreground">
                   {scorePct == null ? "—" : `${scorePct.toFixed(0)}%`}
@@ -288,12 +241,12 @@ function TrialGraphics({ task }: { task: TaskBrowseItem }) {
               </div>
             </div>
             <div className="flex flex-wrap gap-1">
-              {group.trials.map((trial) => (
+              {group.latest_trials.map((trial) => (
                 <TrialIcon key={trial.id} trial={trial} />
               ))}
-              {group.trialCount > group.trials.length ? (
+              {group.trial_count > group.latest_trials.length ? (
                 <span className="text-muted-foreground font-mono text-[10px]">
-                  +{group.trialCount - group.trials.length} more
+                  +{group.trial_count - group.latest_trials.length} more
                 </span>
               ) : null}
             </div>

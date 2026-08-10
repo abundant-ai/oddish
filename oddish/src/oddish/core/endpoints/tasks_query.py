@@ -69,7 +69,6 @@ from oddish.schemas import (
     TaskBrowseFacets,
     TaskBrowseItem,
     TaskBrowseResponse,
-    TaskBrowseTrial,
     TaskBrowseTrialGroup,
     TaskStatusResponse,
     UserTagRef,
@@ -80,7 +79,10 @@ from oddish.core.task_browse_cost import (
     resolve_browse_trial_cost as _resolve_browse_trial_cost,
 )
 from oddish.core.task_browse_projection import merge_task_version_browse_summaries
-from oddish.core.task_browse_summary import build_task_version_browse_summary
+from oddish.core.task_browse_summary import (
+    build_task_browse_trial_groups,
+    build_task_version_browse_summary,
+)
 from oddish.filters.trial_metrics import TrialMetricFilter
 from oddish.filters.trial_predicates import (
     EligibleTrialScope,
@@ -2070,17 +2072,10 @@ async def browse_tasks_core(
             rollups_by_task[task_id] = merge_task_version_browse_summaries(
                 rollups_by_task.get(task_id, {}), live_summary
             )
-    latest_trials_by_task = {
-        task_id: [
-            TaskBrowseTrial.model_validate(trial)
-            for trial in rollup.get("latest_trials", [])
-        ]
-        for task_id, rollup in rollups_by_task.items()
-    }
     trial_groups_by_task = {
         task_id: [
             TaskBrowseTrialGroup.model_validate(group)
-            for group in rollup.get("trial_groups", [])
+            for group in build_task_browse_trial_groups(rollup)
         ]
         for task_id, rollup in rollups_by_task.items()
     }
@@ -2289,7 +2284,6 @@ async def browse_tasks_core(
                     if str(row["task_id"]) in qa_by_task
                     else 0.0
                 ),
-                latest_trials=latest_trials_by_task.get(str(row["task_id"]), []),
                 trial_status_counts={
                     str(key): int(value)
                     for key, value in rollups_by_task.get(str(row["task_id"]), {})

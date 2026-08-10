@@ -21,6 +21,8 @@ import models  # noqa: F401  registers cloud tables on the shared Base
 from oddish.core.endpoints import browse_tasks_core, set_task_default_version_core
 from oddish.core.task_browse_rollup import refresh_task_browse_rollups_for_tasks
 from oddish.db.models import Base
+from oddish.schemas import TaskBrowseItem, TaskBrowseTrial
+
 
 URL = os.environ.get("ODDISH_DATABASE_URL")
 pytestmark = [
@@ -29,6 +31,10 @@ pytestmark = [
 ]
 
 ORG = "org1"
+
+
+def _preview_trials(item: TaskBrowseItem) -> list[TaskBrowseTrial]:
+    return [trial for group in item.trial_groups for trial in group.latest_trials]
 
 
 async def _setup(engine):
@@ -85,7 +91,7 @@ async def test_probe_runs_do_not_pollute_browse():
         # ... must not surface as a latest-trial chip. Experiment chips now come
         # from task_experiments membership (all-time, matching the task-detail
         # page), not from trials; the probe-only task has no membership row.
-        assert old.latest_trials == []
+        assert _preview_trials(old) == []
         assert old.experiments == []
 
         # ... and must not drive ordering: t-old's only activity is the probe
@@ -97,6 +103,48 @@ async def test_probe_runs_do_not_pollute_browse():
         assert new.total_trials == 1  # the real trial still counts
         # surfaced via its task_experiments membership row
         assert [e.name for e in new.experiments] == ["Real Exp"]
+    finally:
+        await engine.dispose()
+
+
+async def test_browse_returns_one_canonical_default_model_group():
+    engine = create_async_engine(URL)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        await _setup(engine)
+        async with maker() as session:
+            await session.execute(
+                text(
+                    """
+                    insert into trials
+                        (id,name,task_id,task_version_id,experiment_id,org_id,
+                         agent,provider,queue_key,model,timeout_minutes,environment,
+                         harbor_config,status,origin,is_probe,reward,finished_at,
+                         attempts,max_attempts,heartbeat_failure_count,
+                         has_trajectory,created_at,updated_at)
+                    values
+                        ('tr-default','tr-default','t-new','v-new','exp-real','org1',
+                         'claude','anthropic','q',' default ',30,'modal','{}'::jsonb,
+                         'SUCCESS','oddish',false,0.5,now(),1,6,0,false,now(),now())
+                    """
+                )
+            )
+            await refresh_task_browse_rollups_for_tasks(session, ["t-new"])
+            await session.commit()
+        async with maker() as session:
+            response = await browse_tasks_core(session, org_id=ORG, limit=10, offset=0)
+
+        item = next(item for item in response.items if item.id == "t-new")
+        assert len(item.trial_groups) == 1
+        group = item.trial_groups[0]
+        assert group.model_key == "default"
+        assert group.model_label is None
+        assert group.trial_count == 2
+        assert group.reward_sum == 1.5
+        assert {trial.id for trial in group.latest_trials} == {
+            "tr-real",
+            "tr-default",
+        }
     finally:
         await engine.dispose()
 
@@ -181,7 +229,7 @@ async def test_default_browse_overlays_live_trial_state_and_cost():
         assert item.completed_trials == 1
         assert item.trial_status_counts["running"] == 1
         assert item.cost_usd == 0.75
-        assert {trial.id for trial in item.latest_trials} == {
+        assert {trial.id for trial in _preview_trials(item)} == {
             "tr-real",
             "tr-live",
         }
@@ -235,7 +283,7 @@ async def test_default_version_switch_refreshes_selected_card_projection():
         assert item.current_version == 2
         assert item.current_version_id == "v-new-2"
         assert item.total_trials == 1
-        assert [trial.id for trial in item.latest_trials] == ["tr-v2"]
+        assert [trial.id for trial in _preview_trials(item)] == ["tr-v2"]
     finally:
         await engine.dispose()
 
@@ -404,9 +452,10 @@ async def test_combine_copies_excluded_from_browse():
         # must not double the trial count, the reward rollup, or the icon list.
         assert item.total_trials == 1
         assert item.reward_success == 1
-        assert [t.id for t in item.latest_trials] == ["tr-src"]
-        assert item.latest_trials[0].agent == "claude"
-        assert item.latest_trials[0].model == "sonnet"
+        previews = _preview_trials(item)
+        assert [trial.id for trial in previews] == ["tr-src"]
+        assert previews[0].agent == "claude"
+        assert previews[0].model == "sonnet"
     finally:
         await engine.dispose()
 

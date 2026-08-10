@@ -352,6 +352,10 @@ settlement/retry, supersede, import, deletion, and default-version changes
 rebuild the affected version in the same transaction, serialized by a version
 row lock. The rollup keeps exact stable counts, reward/cost totals, status
 buckets, agent/model groups, and at most 100 recent trial glyph records.
+Agent/model cohort identity is part of that read-model contract: the backend
+trims model labels, canonicalizes null/blank/`default` to one `default` key,
+and nests each bounded preview under its canonical group. Frontends render
+those groups directly; they must not regroup or merge rollup totals.
 `RUNNING` / `RETRYING` rows are overlaid from a query restricted to the visible
 page's `(task_id, task_version_id)` pairs so live cost checkpoints remain
 current without loading queued or historical trials. The default request must

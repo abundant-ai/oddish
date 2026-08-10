@@ -8,6 +8,7 @@ from oddish.core.task_browse_projection import (
 )
 from oddish.core.task_browse_summary import (
     BROWSE_TRIAL_PREVIEW_LIMIT,
+    build_task_browse_trial_groups,
     build_task_version_browse_summary,
 )
 
@@ -51,7 +52,8 @@ def test_summary_keeps_exact_totals_with_bounded_trial_previews() -> None:
     assert summary["trial_groups"] == [
         {
             "agent": "codex",
-            "model": "unknown-unpriced-model",
+            "model_key": "unknown-unpriced-model",
+            "model_label": "unknown-unpriced-model",
             "trial_count": total,
             "reward_sum": float(total),
             "reward_total": total,
@@ -61,6 +63,30 @@ def test_summary_keeps_exact_totals_with_bounded_trial_previews() -> None:
     assert summary["latest_trials"][0]["id"] == "trial-5"
     assert summary["latest_trials"][-1]["id"] == f"trial-{total - 1}"
     assert last_run_at == rows[-1]["finished_at"]
+
+
+def test_default_model_variants_form_one_lossless_backend_group() -> None:
+    rows = [
+        _row(0, model=None),
+        _row(1, model=" "),
+        _row(2, model="default"),
+        _row(3, model=" default "),
+    ]
+
+    _, summary = build_task_version_browse_summary(rows)
+    groups = build_task_browse_trial_groups(summary)
+
+    assert len(groups) == 1
+    assert groups[0]["model_key"] == "default"
+    assert groups[0]["model_label"] is None
+    assert groups[0]["trial_count"] == 4
+    assert groups[0]["reward_sum"] == 4.0
+    assert [trial["id"] for trial in groups[0]["latest_trials"]] == [
+        "trial-0",
+        "trial-1",
+        "trial-2",
+        "trial-3",
+    ]
 
 
 def test_summary_matches_card_status_buckets() -> None:

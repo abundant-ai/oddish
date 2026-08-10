@@ -7,6 +7,7 @@ from typing import Any
 from oddish.core.task_browse_status import status_value
 from oddish.core.task_browse_summary import (
     BROWSE_TRIAL_PREVIEW_LIMIT,
+    DEFAULT_BROWSE_MODEL_KEY,
     build_task_version_browse_summary,
 )
 
@@ -58,15 +59,18 @@ def merge_task_version_browse_summaries(
         + int(live.get("trial_status_counts", {}).get(key, 0))
         for key in merged["trial_status_counts"]
     }
-    groups: dict[tuple[str, str | None], dict[str, Any]] = {}
+    groups: dict[tuple[str, str], dict[str, Any]] = {}
+    model_counts: dict[str, int] = {}
     for source in (persisted, live):
         for group in source.get("trial_groups", []):
-            key = (str(group["agent"]), group.get("model"))
+            agent = str(group["agent"])
+            model_key = str(group["model_key"])
+            key = (agent, model_key)
             target = groups.setdefault(
                 key,
                 {
-                    "agent": key[0],
-                    "model": key[1],
+                    "agent": agent,
+                    "model_key": model_key,
                     "trial_count": 0,
                     "reward_sum": 0.0,
                     "reward_total": 0,
@@ -74,6 +78,14 @@ def merge_task_version_browse_summaries(
             )
             for field in ("trial_count", "reward_sum", "reward_total"):
                 target[field] += group.get(field, 0)
+    for agent, _ in groups:
+        model_counts[agent] = model_counts.get(agent, 0) + 1
+    for (agent, model_key), group in groups.items():
+        group["model_label"] = (
+            model_key
+            if model_key != DEFAULT_BROWSE_MODEL_KEY or model_counts[agent] > 1
+            else None
+        )
     merged["trial_groups"] = list(groups.values())
     previews = [
         dict(preview)
