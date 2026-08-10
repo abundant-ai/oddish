@@ -10,6 +10,8 @@ import {
 } from "lucide-react";
 import type { CSSProperties } from "react";
 
+import type { AnalysisClassification, Trial } from "@/lib/types";
+
 /**
  * Trial status types that map to visual states in the UI.
  * These are derived from trial.status and trial.reward values.
@@ -24,6 +26,75 @@ export type MatrixStatus =
   | "pending"
   | "queued"
   | "running";
+
+/**
+ * QA judgment tone for a classified trial. The glyph semiotics are:
+ * shape = execution outcome (✓ pass / ✗ fail), fill color = QA verdict
+ * (green = good, red = bad). This makes an expected "good failure" render
+ * as a green ✗ instead of a red ✗ with a nearly-invisible green dot, and
+ * a "bad success" as a red ✓ instead of an unqualified green ✓.
+ */
+export type QaTone = "good" | "bad";
+
+/**
+ * Matrix glyph fill for a QA tone. Reuses the pass/fail paper tokens so a
+ * recolored cell is indistinguishable in hue from an unclassified one —
+ * only the shape-vs-color meaning changes.
+ */
+export const QA_TONE_MATRIX_CLASS: Record<QaTone, string> = {
+  good: "bg-paper-pass text-white border-paper-pass hover:opacity-90",
+  bad: "bg-paper-fail text-white border-paper-fail hover:opacity-90",
+};
+
+/** Human label per QA classification, shared by every trial-glyph surface. */
+export const ANALYSIS_CLASSIFICATION_LABELS: Record<
+  AnalysisClassification,
+  string
+> = {
+  GOOD_SUCCESS: "Good success",
+  GOOD_FAILURE: "Good failure",
+  BAD_SUCCESS: "Bad success",
+  BAD_FAILURE: "Bad failure",
+  HARNESS_ERROR: "Harness error",
+};
+
+/**
+ * The classification a view is allowed to show, or null. This is the ONLY
+ * place the QA-visibility gate lives: public share surfaces pass
+ * `showAnalysis: false` to hide QA entirely, and a classification counts
+ * only once the trial's analysis succeeded. Every glyph fill, label,
+ * aria-label, and dot consumer must derive from this function so the gate
+ * cannot drift between surfaces.
+ */
+export function getVisibleAnalysisClassification(
+  showAnalysis: boolean,
+  trial: Pick<Trial, "analysis_status" | "analysis">,
+): AnalysisClassification | null {
+  if (!showAnalysis || trial.analysis_status !== "success") return null;
+  return trial.analysis?.classification ?? null;
+}
+
+/**
+ * Glyph fill override for a classified trial, or null when the outcome
+ * glyph keeps its default color. Only binary outcomes (pass/fail) take the
+ * QA tone; partials keep their warm ramp and non-terminal or non-scored
+ * states keep their neutral styling, with the QA tone still surfaced
+ * through the corner dot. GOOD_SUCCESS pass and BAD_FAILURE fail resolve
+ * to the same color they already had — the rule stays uniform.
+ */
+export function getQaGlyphMatrixClass(
+  status: MatrixStatus,
+  classification: AnalysisClassification | null | undefined
+): string | null {
+  if (status !== "pass" && status !== "fail") return null;
+  if (classification === "GOOD_SUCCESS" || classification === "GOOD_FAILURE") {
+    return QA_TONE_MATRIX_CLASS.good;
+  }
+  if (classification === "BAD_SUCCESS" || classification === "BAD_FAILURE") {
+    return QA_TONE_MATRIX_CLASS.bad;
+  }
+  return null;
+}
 
 /**
  * Status configuration for consistent styling across the UI.

@@ -378,6 +378,6 @@ async def maybe_publish_experiment(
         return
 
     require_experiment_publish_scope(auth)
-    experiments = list(task.experiments or [])
+    experiments = list(await task.awaitable_attrs.experiments or [])
     for experiment in experiments:
         await ensure_experiment_public(session, experiment)

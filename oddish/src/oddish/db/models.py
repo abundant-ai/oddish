@@ -194,8 +194,8 @@ class WorkerJobKind(str, Enum):
     # findings and reduces them into four narrative sections. Runs on the QA
     # queue; handled by AnalyzerJobHandler.
     ANALYZER = "ANALYZER"
-    # Execute one declaratively persisted AnalyzerRunModel. The handler
-    # reconstructs an AnalyzerBlock; the block owns its LLM/sandbox lifecycle.
+    # Legacy: executed one row of the dropped ``analyzer_runs`` table.
+    # Enum value only, no handler; nothing enqueues it anymore.
     ANALYZER_BLOCK = "ANALYZER_BLOCK"
 
 
@@ -640,10 +640,10 @@ class AnalyzerBlockModel(TimestampedMixin, Base):
     llm_client_type: Mapped[str] = mapped_column(String(64), nullable=False)
 
     prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Unwritten since the DB prompt registry was dropped; historical rows
+    # keep their stamps.
     prompt_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     prompt_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # Which prompts row produced this block. prompt_key/prompt_version alone
-    # cannot attribute usage once the same kind exists at several scopes.
     prompt_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     # input/output are arbitrary JSON (the block's I/O are typed ``any``).
     input: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
@@ -671,54 +671,18 @@ class AnalyzerBlockModel(TimestampedMixin, Base):
     )
 
 
-class AnalyzerRunModel(TimestampedMixin, Base):
-    """Lineage for one execution of one analyzer prompt version."""
-
-    __tablename__ = "analyzer_runs"
-    __table_args__ = (
-        Index(
-            "uq_analyzer_runs_assignment_event",
-            "qa_assignment_id",
-            "stage_event_key",
-            unique=True,
-            postgresql_where=text("qa_assignment_id IS NOT NULL"),
-        ),
-    )
-    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
-    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
-    prompt_version_id: Mapped[str] = mapped_column(
-        ForeignKey("prompt_versions.id"), nullable=False, index=True
-    )
-    analyzer_block_id: Mapped[str | None] = mapped_column(
-        String(64), nullable=True, index=True
-    )
-    triggered_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    scope_type: Mapped[str] = mapped_column(String(32), nullable=False)
-    scope_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    model: Mapped[str] = mapped_column(String(255), nullable=False)
-    reasoning_effort: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    llm_client_type: Mapped[str] = mapped_column(String(32), nullable=False)
-    status: Mapped[JobStatus] = mapped_column(
-        PGEnum(JobStatus, name="jobstatus", create_type=False), nullable=False
-    )
-    output: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
-    error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    run_config: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
-    # NULL for ad-hoc `oddish qa` runs, set for assignment-driven ones. The
-    # partial UNIQUE on (qa_assignment_id, stage_event_key) then makes "run this
-    # assignment at most once per event" a database invariant, while leaving
-    # ad-hoc runs exempt.
-    qa_assignment_id: Mapped[str | None] = mapped_column(
-        String(64), ForeignKey("qa_assignments.id", ondelete="SET NULL"), nullable=True
-    )
-    stage_event_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
-
-
 class TaskModel(TimestampedMixin, Base):
     """Task database model (one Harbor task submission)."""
 
     __tablename__ = "tasks"
     __table_args__ = (
+        # JSONB serializes Python None as JSON null on normal ORM inserts, so
+        # both SQL NULL and JSON null mean "no published verdict" here.
+        CheckConstraint(
+            "verdict IS NULL OR verdict = 'null'::jsonb OR "
+            "(verdict_status IS NOT NULL AND verdict_status <> 'FAILED')",
+            name="ck_tasks_published_verdict_status",
+        ),
         Index("idx_tasks_org_created_at", "org_id", "created_at"),
         # Partial mirror of ``idx_tasks_org_created_at`` that matches
         # the ``deleted_at IS NULL`` predicate the soft-delete listener
@@ -861,6 +825,11 @@ class TaskModel(TimestampedMixin, Base):
     )
 
     # Relationships
+    # ``lazy="select"`` (the default): a mapper-level selectin here made
+    # every ``select(TaskModel)`` fan out into the join table on paths
+    # that never read the relationship (org checks, file serving).
+    # Callers that need it add ``selectinload(TaskModel.experiments)``
+    # or go through ``awaitable_attrs``.
     experiments: Mapped[list["ExperimentModel"]] = relationship(  # type: ignore[assignment]
         "ExperimentModel",
         secondary=task_experiments,
@@ -870,12 +839,16 @@ class TaskModel(TimestampedMixin, Base):
         ),
         secondaryjoin=lambda: ExperimentModel.id == task_experiments.c.experiment_id,
         back_populates="tasks",
-        lazy="selectin",
     )
+    # ``lazy="select"``: this collection is unbounded (hundreds of trials
+    # per task) and each row carries wide JSONB columns, so an implicit
+    # selectin charged every TaskModel load -- including the 404/org
+    # checks that load a task only to inspect ``org_id`` -- for the full
+    # trial set. Callers that actually render trials already add
+    # ``selectinload(TaskModel.trials)`` (often filtered) themselves.
     trials: Mapped[list["TrialModel"]] = relationship(  # type: ignore[assignment]
         "TrialModel",
         back_populates="task",
-        lazy="selectin",
         passive_deletes=True,
     )
     # ``lazy="select"``: only the explicit ``list_task_versions_core``
@@ -963,11 +936,13 @@ class TaskVersionModel(TimestampedMixin, Base):
     )
 
     # Relationships
+    # ``lazy="select"``: no read path consumes ``task_version.task``, so
+    # the previous selectin bought an extra round trip per version load
+    # for nothing.
     task: Mapped["TaskModel"] = relationship(  # type: ignore[assignment]
         "TaskModel",
         back_populates="versions",
         foreign_keys=[task_id],
-        lazy="selectin",
     )
 
 
@@ -1185,8 +1160,13 @@ class TrialModel(TimestampedMixin, Base):
     orig_s3_src: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Relationships
+    # ``lazy="select"``: a mapper-level selectin here cascaded -- loading
+    # one trial pulled its task, whose own eager relationships then
+    # pulled every sibling trial at full width. Callers that read
+    # ``trial.task`` add ``selectinload(TrialModel.task)`` or use
+    # ``awaitable_attrs`` (see ``build_task_context``).
     task: Mapped["TaskModel"] = relationship(  # type: ignore[assignment]
-        "TaskModel", back_populates="trials", lazy="selectin"
+        "TaskModel", back_populates="trials"
     )
 
     __table_args__ = (
@@ -2395,25 +2375,6 @@ class TagProjectionSweepStateModel(Base):
     )
 
 
-class PromptKind(str, Enum):
-    """The slot a prompt fills. Exactly one ``prompts`` row exists per kind;
-    stored as a plain string column so the vocabulary can grow without a
-    Postgres enum migration. Enforced at the API boundary, not the DB."""
-
-    QA_PRE_TRIAL = "QA_PRE_TRIAL"
-    QA_POST_TRIAL = "QA_POST_TRIAL"
-    TRAJECTORY_SUMMARY = "TRAJECTORY_SUMMARY"
-
-
-class QAStage(str, Enum):
-    """The QA lifecycle point an assignment fires at. Values match the
-    corresponding ``AnalyzerType`` so a stage and the block it runs read the
-    same in logs. Stored as a plain string column, like ``PromptKind``."""
-
-    PRE_TRIAL = "pre_trial"
-    POST_TRIAL = "post_trial"
-
-
 class CostExcludedLlmKeyModel(TimestampedMixin, Base):
     """An LLM provider API key whose spend is excluded from cost accounting.
 
@@ -2442,118 +2403,12 @@ class CostExcludedLlmKeyModel(TimestampedMixin, Base):
     created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
-class PromptModel(TimestampedMixin, Base):
-    """A versioned analyzer prompt, one row per kind and optional scope. The highest
-    ``prompt_versions.version`` is always the one that runs; editing appends
-    a new version (no activation pointer)."""
-
-    __tablename__ = "prompts"
-    __table_args__ = (
-        Index(
-            "idx_prompts_unique_kind_scope",
-            "kind",
-            text("COALESCE(org_id, '')"),
-            text("COALESCE(scope_type, '')"),
-            text("COALESCE(scope_id, '')"),
-            unique=True,
-            postgresql_where=text("deleted_at IS NULL"),
-        ),
-        Index("ix_prompts_org_id", "org_id"),
-    )
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
-    kind: Mapped[str] = mapped_column(String(128), nullable=False)
-    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    # NULL/NULL is the installation-wide default. Hosted callers may create
-    # org, user, experiment, task, or trial overrides. IDs intentionally have
-    # no hosted-auth FKs so the core package remains self-hostable.
-    scope_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    scope_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
-    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-
-    versions: Mapped[list["PromptVersionModel"]] = relationship(  # type: ignore[assignment]
-        "PromptVersionModel",
-        back_populates="prompt",
-        cascade="all, delete-orphan",
-        order_by="PromptVersionModel.version",
-        lazy="selectin",
-    )
-
-
-class PromptVersionModel(Base):
-    """One immutable revision of a prompt's content."""
-
-    __tablename__ = "prompt_versions"
-    __table_args__ = (
-        UniqueConstraint(
-            "prompt_id", "version", name="uq_prompt_versions_prompt_version"
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
-    prompt_id: Mapped[str] = mapped_column(
-        String(64),
-        ForeignKey("prompts.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    version: Mapped[int] = mapped_column(Integer, nullable=False)
-    content: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, nullable=False
-    )
-    created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
-
-    prompt: Mapped["PromptModel"] = relationship(  # type: ignore[assignment]
-        "PromptModel", back_populates="versions"
-    )
-
-
-class QAAssignmentModel(TimestampedMixin, Base):
-    """A reusable prompt job attached to a QA lifecycle scope."""
-
-    __tablename__ = "qa_assignments"
-    __table_args__ = (
-        Index("ix_qa_assignments_org_scope", "org_id", "scope_type", "scope_id"),
-    )
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
-    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
-    # A direct FK to one prompt row -- including that row's own scope -- rather
-    # than a kind string, so execution never re-runs kind resolution.
-    prompt_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("prompts.id", ondelete="CASCADE"), nullable=False
-    )
-    # NULL inherits the registry's latest-wins; set to pin one version.
-    prompt_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    stage: Mapped[str] = mapped_column(String(32), nullable=False)
-    # Unlike ``prompts``, both columns are NOT NULL, so installation-wide rows
-    # are spelled ("global", "") rather than (NULL, NULL). See GLOBAL_SCOPE_ID
-    # in oddish.core.qa_assignments -- writes normalize through it.
-    scope_type: Mapped[str] = mapped_column(String(32), nullable=False)
-    scope_id: Mapped[str] = mapped_column(String(160), nullable=False)
-    model: Mapped[str] = mapped_column(String(255), nullable=False)
-    reasoning_effort: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    llm_client_type: Mapped[str] = mapped_column(String(32), nullable=False)
-    allow_oddish_cli: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default=text("false")
-    )
-    created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    # false at a narrow scope suppresses a broader row for the same
-    # (stage, prompt kind) instead of adding a job.
-    enabled: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default=text("true")
-    )
-
-
 from oddish.db.soft_delete import register_soft_delete_models
 
 register_soft_delete_models(
     ExperimentModel,
     AnalyzerModel,
     AnalyzerBlockModel,
-    PromptModel,
-    AnalyzerRunModel,
     TaskModel,
     TrialModel,
     TagModel,
@@ -2564,6 +2419,4 @@ register_soft_delete_models(
     SkillModel,
     DocumentModel,
     CostExcludedLlmKeyModel,
-    PromptModel,
-    QAAssignmentModel,
 )

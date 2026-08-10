@@ -468,10 +468,10 @@ async def _run_harbor_trial(trial_id: str) -> None:
     )
 
     # ---------------------------------------------------------------
-    # Load trial + task. ``selectin`` would normally hydrate
-    # ``trial.task`` eagerly, but we hit it via ``session.get(TaskModel, ...)``
-    # explicitly to mirror the canonical pattern used by the Modal trial
-    # handler (oddish/workers/queue/trial_handler.py).
+    # Load trial + task via ``session.get(TaskModel, ...)`` explicitly,
+    # mirroring the canonical pattern used by the Modal trial handler
+    # (oddish/workers/queue/trial_handler.py). ``trial.task`` is lazy,
+    # so this is also the only way the task gets loaded here.
     # ---------------------------------------------------------------
     async with get_session() as session:
         trial = await session.get(TrialModel, trial_id)
