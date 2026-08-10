@@ -157,7 +157,10 @@ High-level flow:
    nonterminal trial in the org. Final result settlement performs the same
    check for agents without live usage. Cancellation retires queued, running,
    blocked, and retrying worker jobs in the database before terminating remote
-   handles; a task is failed only when no other live trial remains.
+   handles; a task is failed only when no other live trial remains. If quota
+   cancellation interrupts a replacement QA pass, the last successful verdict
+   is restored through `cancel_verdict`; a terminal QA failure instead clears
+   that preserved payload through `fail_verdict`.
 6. Trial completion persists queryable execution metrics on the trial row:
    input/cache/output tokens, total trajectory steps, native runtime cost when
    reported, phase timing, trajectory availability, arbitrary verifier

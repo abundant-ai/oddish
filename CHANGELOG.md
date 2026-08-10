@@ -38,6 +38,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Quota cancellation no longer turns a preserved accepted verdict into a failed verdict, or leaves a failed task paired with that accepted payload. Cancelling a replacement QA pass restores the previous successful verdict; a genuine terminal QA failure clears the superseded payload.
 - Worker heartbeats used to stop as soon as the agent finished, but the worker still had to upload and save the results. When that took over 15 minutes, the cleanup sweep marked the trial "Worker heartbeat stalled for over 15 minutes", threw away the finished result, and re-ran the whole trial. The heartbeat now runs until the results are saved and settled.
 
 ---
