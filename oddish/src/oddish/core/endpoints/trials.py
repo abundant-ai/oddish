@@ -9,7 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oddish.core.endpoints._common import (
     get_trial_for_org_core,
 )
-from oddish.core.verdict_sync import clear_inflight_verdict
 from oddish.core.endpoints.qa_cost import get_trial_qa_costs
 from oddish.core.helpers import (
     build_trial_response,
@@ -22,6 +21,7 @@ from oddish.core.trial_io import (
     read_trial_result,
     read_trial_trajectory,
 )
+from oddish.core.verdict_state import abandon_verdict
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
@@ -133,9 +133,7 @@ async def rerun_trial_analysis_core(
         raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
     trial = (
         await session.execute(
-            select(TrialModel)
-            .where(TrialModel.id == trial_id)
-            .with_for_update()
+            select(TrialModel).where(TrialModel.id == trial_id).with_for_update()
         )
     ).scalar_one_or_none()
     if trial is None:
@@ -166,7 +164,8 @@ async def rerun_trial_analysis_core(
     # A failed analysis can leave its job in RETRYING. Enqueuing another job
     # then would run the analysis twice. The existing job serves the re-run.
     active_job = await session.scalar(
-        select(WorkerJobModel.id).where(
+        select(WorkerJobModel.id)
+        .where(
             WorkerJobModel.kind == WorkerJobKind.ANALYSIS,
             WorkerJobModel.subject_table == "trials",
             WorkerJobModel.subject_id == trial_id,
@@ -191,13 +190,13 @@ async def rerun_trial_analysis_core(
     # A QUEUED full QA job is fine: it classifies this trial itself when it
     # starts, and the per-trial claim keeps the two jobs from colliding.
     running_task_qa = await session.scalar(
-        select(WorkerJobModel.id).where(
+        select(WorkerJobModel.id)
+        .where(
             WorkerJobModel.kind == WorkerJobKind.QA,
             WorkerJobModel.subject_table == "tasks",
             WorkerJobModel.subject_id == trial.task_id,
             WorkerJobModel.status == WorkerJobStatus.RUNNING,
-            func.coalesce(WorkerJobModel.payload["mode"].astext, "full")
-            != "pre_trial",
+            func.coalesce(WorkerJobModel.payload["mode"].astext, "full") != "pre_trial",
         )
         .limit(1)
     )
@@ -275,9 +274,7 @@ async def _qa_queue_position(
                     WorkerJobModel.queue_key,
                     WorkerJobModel.priority,
                     WorkerJobModel.created_at,
-                    (WorkerJobModel.available_after > func.now()).label(
-                        "in_backoff"
-                    ),
+                    (WorkerJobModel.available_after > func.now()).label("in_backoff"),
                 )
                 .where(
                     WorkerJobModel.kind == kind,
@@ -596,7 +593,7 @@ async def retry_trial_core(
     ):
         task.status = TaskStatus.RUNNING
         task.finished_at = None
-    clear_inflight_verdict(task)
+    abandon_verdict(task)
     await session.execute(
         text(
             """

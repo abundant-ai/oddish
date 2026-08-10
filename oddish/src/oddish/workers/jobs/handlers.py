@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
+from oddish.core.verdict_state import queue_verdict
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
@@ -234,9 +235,7 @@ class QaJobHandler:
             if task is None:
                 return _fail_permanent(f"Task {task_id} vanished before QA")
             if task.verdict_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
-                task.verdict_status = VerdictStatus.QUEUED
-                task.verdict_error = None
-                task.verdict_finished_at = None
+                queue_verdict(task)
 
         await run_task_qa_job(
             task_id,

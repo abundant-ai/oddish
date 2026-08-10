@@ -6,6 +6,7 @@ from typing import Any, Awaitable, Callable
 from sqlalchemy import select
 
 from oddish.analyze import Classification, TrialClassification
+from oddish.core.verdict_state import complete_verdict, fail_verdict
 from oddish.db import (
     TaskModel,
     TaskStatus,
@@ -67,8 +68,6 @@ async def sync_verdict_to_task(
 ) -> str | None:
     """Write verdict state and complete the task. The only writer of a
     *synthesized* verdict, so the legacy and block paths cannot diverge.
-    Cleanup and gate-failure paths elsewhere still set ``verdict_status``
-    directly; they never produce a payload.
 
     Returns the terminal ``VerdictStatus`` value written, or ``None`` when the
     write was skipped (task gone, or the job was cancelled).
@@ -82,53 +81,16 @@ async def sync_verdict_to_task(
             return None
 
         if payload:
-            task.verdict = payload
-            task.verdict_status = VerdictStatus.SUCCESS
-            task.verdict_error = None
+            complete_verdict(task, payload=payload, now=utcnow())
+            terminal_status = VerdictStatus.SUCCESS
         else:
-            # A payload only ever pairs with SUCCESS. A verdict kept through
-            # an append must not outlive the failed pass that replaced it.
-            task.verdict = None
-            task.verdict_status = VerdictStatus.FAILED
-            task.verdict_error = error or "Verdict synthesis failed with exception"
+            failure = error or "Verdict synthesis failed with exception"
+            fail_verdict(task, error=failure, now=utcnow())
+            terminal_status = VerdictStatus.FAILED
 
-        task.verdict_finished_at = utcnow()
-        # The task completes either way: a failed verdict must not leave the
-        # task hanging in a non-terminal state.
         task.status = TaskStatus.COMPLETED
         task.finished_at = utcnow()
-        return task.verdict_status.value
-
-
-def clear_inflight_verdict(task: Any) -> None:
-    """Keep a successful verdict; clear everything else.
-
-    Callers cancel the task's QA job right after this, so a queued or
-    running status would point at a job that no longer exists. A FAILED
-    status holds no verdict, only an old error, so it clears too. A
-    successful verdict stays until the next QA pass writes over it.
-    """
-    if getattr(task, "verdict_status", None) == VerdictStatus.SUCCESS:
-        return
-    task.verdict_status = None
-    task.verdict_error = None
-    task.verdict_started_at = None
-
-
-def cancel_verdict(task: Any, *, error: str, now: Any) -> None:
-    """A cancelled QA run puts a kept verdict back; without one, it fails.
-
-    A payload on the task is a successful verdict that the cancelled run
-    never replaced. Its SUCCESS status returns and its timestamps stay.
-    """
-    if getattr(task, "verdict", None):
-        task.verdict_status = VerdictStatus.SUCCESS
-        task.verdict_error = None
-        task.verdict_started_at = None
-        return
-    task.verdict_status = VerdictStatus.FAILED
-    task.verdict_error = error
-    task.verdict_finished_at = now
+        return terminal_status.value
 
 
 def build_pre_trial_payload(
@@ -229,8 +191,14 @@ async def aggregate_exploited_into_pre_trial(task_id: str) -> None:
         # exploited the weakness is still valid evidence the task-source flaw is
         # exploitable. This is a task-level audit, not the current-trial verdict.
         trials = (
-            await session.execute(select(TrialModel).where(TrialModel.task_id == task_id))
-        ).scalars().all()
+            (
+                await session.execute(
+                    select(TrialModel).where(TrialModel.task_id == task_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
 
         exploited: dict[str, str] = {}
         for trial in trials:
