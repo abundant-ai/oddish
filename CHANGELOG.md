@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-08-10]
+
+### Changed
+
+- The experiment page now answers the QA question directly: each task row
+  carries an Accepted / Rejected / QA-running chip, and the summary bar adds
+  a "QA verdicts" tile when any task in the experiment ran QA. The task
+  page's non-agent trial section is titled "QA" and labels its chips in
+  words ("QA run", "Pre-trial audit") instead of raw kind strings.
+
+### Fixed
+
+- A frontend-only push to a backend PR took the preview API down: preparing
+  the preview database rotates the branch DB password on every run, but the
+  Modal secret only got republished when a backend deploy followed. The
+  secret now republishes on every prepare run.
+- The per-experiment "(qa report)" shadow experiment could become a task's
+  primary experiment in API responses and the CLI submit summary, because
+  the eager pre-trial audit linked it first. Shadow experiments are now
+  excluded from primary-experiment picks and task-row experiment chips.
+
+### Removed
+
+- The `oddish report` CLI command. The reports feature it drove was removed
+  with the analyzer tables; the command only hit the deleted `POST /reports`
+  endpoint.
+
 ## [2026-08-07]
 
 ### Changed

@@ -15,7 +15,6 @@ from oddish.cli.publish import publish, unpublish
 from oddish.cli.probe import probe_app
 from oddish.cli.pull import pull
 from oddish.cli.preflight import preflight
-from oddish.cli.report import report_app
 from oddish.cli.run import run
 from oddish.cli.status import status
 from oddish.cli.upload import upload
@@ -40,7 +39,6 @@ app.command()(collect)
 app.command()(delete)
 app.add_typer(experiment_app, name="experiment")
 app.add_typer(link_app, name="link")
-app.add_typer(report_app, name="report")
 app.command()(pull)
 app.command()(publish)
 app.command()(unpublish)

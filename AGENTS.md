@@ -100,7 +100,7 @@ FastAPI server — oddish standalone (python -m oddish.server)
         |
         v
 Postgres
-  - worker_jobs       # unified queue (TRIAL / QA / TASK_EXPAND / TAG_PROJECT / …)
+  - worker_jobs       # unified queue (TRIAL / TASK_EXPAND / TAG_PROJECT / …)
   - trials / tasks    # domain state + live UI columns
   - trial_events      # short-lived live transcript pages for running trials
   - queue_slots       # per-queue-key concurrency leases
@@ -135,8 +135,7 @@ High-level flow:
    importer writes `trials.analysis`, `trials.trajectory_summary`, and
    `tasks.verdict`. A sweep of `T` tasks × `N` trials therefore creates `T`
    QA trials, not `T × (N + 1)`. The pre-trial audit is an `audit`-kind trial
-   created once per task version at sweep time (org opt-in); analyzer reports
-   run as `analyzer_map` / `analyzer_reduce` trials on a generated host task.
+   created once per task version at sweep time (org opt-in).
    Non-'agent' kinds are excluded from cost, quota, leaderboard, facet, and
    public surfaces (see `oddish.filters.EligibleTrialScope`).
 5. While a trial runs, a worker-side tailer (`oddish.workers.harbor.live_tail`,
@@ -205,15 +204,15 @@ a code change that ships with a deploy.
 
 `WorkerJobKind` (in `oddish.db.models`):
 
-- **Active**: `TRIAL` (Harbor trial execution), `QA` (task-level classify-all-trials +
-  verdict), `ANALYZER` (cross-experiment report orchestration),
-  `TASK_EXPAND` (sweep expansion), `TAG_PROJECT` (tag recompute).
-- **Legacy, drain-only**: `ANALYSIS` (per-trial classification; `AnalysisJobHandler`
-  is kept only so in-flight rows survive a deploy), `VERDICT` (enum value only,
-  no handler), and `ANALYZER_BLOCK` (executed rows of the removed
-  `analyzer_runs` table; enum value only, no handler). Nothing enqueues any
-  of them anymore.
-- **Reserved**: `QA_REVIEW` (enum value, no handler yet).
+- **Active**: `TRIAL` (Harbor trial execution — including `qa` and `audit`
+  kind trials), `TASK_EXPAND` (sweep expansion), `TAG_PROJECT` (tag
+  recompute).
+- **Legacy, enum-only**: `QA`, `VERDICT`, `ANALYSIS`, `QA_REVIEW`,
+  `ANALYZER`, `ANALYZER_BLOCK`. QA/audit/analyzer work runs as trials now;
+  nothing enqueues or handles these kinds, and `drop_legacy_jobs_001`
+  cancelled any still-queued rows. The members stay so the native
+  `worker_job_kind` Postgres type keeps the values historical rows
+  reference.
 
 ## Package Boundaries
 
@@ -242,15 +241,10 @@ a code change that ships with a deploy.
 - soft-delete semantics on domain rows via the `deleted_at` column and
   a session-level filter (`oddish.db.soft_delete`)
 
-Hosted failure analysis (the Reports page) runs as trials. Report creation
-gathers the linked experiments' analyzed trials, buckets the failures, mints a
-tiny generated host task, and creates one `analyzer_map` trial per batch
-(`oddish.workers.analyzer_trials`). When a bucket's maps settle, the pipeline
-creates that bucket's `analyzer_reduce` trial with the collected findings
-inlined; when the reduces settle, a host-side import fills the `analyzers`
-columns the rollup and report UI read. Host-owned facts on findings
-(trajectory links, classifier columns) are stamped at import so agent output
-cannot forge them.
+Cross-experiment failure reports (the old Reports page, `POST /reports`, and
+the analyzer map/reduce pipeline) were removed entirely; `drop_analyzers_001`
+drops their tables. Trial-level trajectory analysis and the task verdict are
+the QA trial's job (above) — there is no separate report machinery.
 
 `oddish` must not import from `backend/`, `backend.auth`, `backend.models`,
 `cloud_policy`, `idempotency_store`, Clerk, or Modal app/deployment modules.

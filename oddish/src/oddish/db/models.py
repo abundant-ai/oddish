@@ -166,16 +166,14 @@ class WorkerJobKind(str, Enum):
     """
 
     TRIAL = "TRIAL"
-    # The single task-level trajectory-analysis (QA) job: it classifies every
-    # trial's trajectory and then synthesizes the task verdict in one job.
+    # Legacy kinds. Trajectory analysis ran as a per-trial ``ANALYSIS`` job
+    # plus a per-task ``VERDICT`` job, later collapsed into one ``QA`` job;
+    # QA runs as a ``qa``-kind TRIAL now. Nothing enqueues or handles any of
+    # these, and ``drop_legacy_jobs_001`` cancelled still-queued rows. They
+    # are kept as enum members so the native ``worker_job_kind`` Postgres
+    # type (created from this enum) still carries the values that historical
+    # migrations / rows reference.
     QA = "QA"
-    # Legacy kinds. Trajectory analysis used to be a per-trial ``ANALYSIS`` job
-    # plus a separate per-task ``VERDICT`` job; both collapsed into ``QA``.
-    # Nothing enqueues these anymore. They are kept as enum members so the
-    # native ``worker_job_kind`` Postgres type (created from this enum) still
-    # carries the values that historical migrations / rows reference, and so
-    # any row in flight across the deploy can drain. ``qa02`` repoints existing
-    # ``VERDICT`` rows to ``QA``.
     VERDICT = "VERDICT"
     ANALYSIS = "ANALYSIS"
     QA_REVIEW = "QA_REVIEW"
@@ -840,8 +838,8 @@ class TrialModel(TimestampedMixin, Base):
         Boolean, nullable=False, server_default=text("false"), index=True
     )
 
-    # 'agent' | 'qa' | 'audit' | 'analyzer_map' | 'analyzer_reduce'. Non-agent
-    # kinds must stay out of cost/quota/leaderboard/facet/public surfaces.
+    # 'agent' | 'qa' | 'audit'. Non-agent kinds must stay out of
+    # cost/quota/leaderboard/facet/public surfaces.
     kind: Mapped[str] = mapped_column(
         String(32), nullable=False, default="agent", server_default=text("'agent'")
     )
