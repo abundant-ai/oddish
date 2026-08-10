@@ -796,9 +796,13 @@ def _primary_experiment_for_task(
     - If ``preferred_experiment_id`` is in the task's set, use it (lets
       experiment-scoped list endpoints return the experiment the caller
       is actually looking at).
-    - Otherwise fall back to the first linked experiment (stable ordering
-      comes from SQLAlchemy's relationship load, which in turn respects
-      the association table's ``created_at`` insertion order).
+    - Otherwise the first non-shadow experiment (stable ordering comes
+      from SQLAlchemy's relationship load, which in turn respects the
+      association table's ``created_at`` insertion order). Shadow (qa
+      report) experiments only win when they are all the task has: the
+      eager pre-trial audit can link the shadow before the agent trials
+      link the real experiment, and the shadow must not become the
+      task's face.
     """
     experiments = list(task.experiments or [])
     if not experiments:
@@ -807,7 +811,10 @@ def _primary_experiment_for_task(
         for exp in experiments:
             if exp.id == preferred_experiment_id:
                 return exp
-    return experiments[0]
+    non_shadow = [
+        exp for exp in experiments if getattr(exp, "shadow_of", None) is None
+    ]
+    return (non_shadow or experiments)[0]
 
 
 TASK_STATUS_RESPONSE_COLUMNS = (
@@ -899,10 +906,18 @@ def _build_task_status_response(
         experiment_link=experiment_link,
         # Sorted (name, id) to match the browse chips and because the ORM
         # relationship has no order_by -- DB return order is not stable.
+        # Shadow (qa report) experiments stay out of the chips, like every
+        # other experiment list; the detail page reaches them through the
+        # experiment's shadow_of linkage instead.
         experiments=[
             TaskBrowseExperiment(id=exp.id, name=exp.name)
             for exp in sorted(
-                task.experiments or [], key=lambda exp: (exp.name, exp.id)
+                (
+                    e
+                    for e in task.experiments or []
+                    if getattr(e, "shadow_of", None) is None
+                ),
+                key=lambda exp: (exp.name, exp.id),
             )
         ],
         current_version=current_version,

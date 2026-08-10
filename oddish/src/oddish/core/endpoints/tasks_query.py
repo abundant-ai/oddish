@@ -2144,6 +2144,8 @@ async def browse_tasks_core(
         exp_where = [
             task_experiments.c.task_id.in_(task_ids),
             task_experiments.c.deleted_at.is_(None),
+            # Shadow (qa report) experiments stay out of browse chips.
+            ExperimentModel.shadow_of.is_(None),
         ]
         if org_id is not None:
             exp_where.append(ExperimentModel.org_id == org_id)
