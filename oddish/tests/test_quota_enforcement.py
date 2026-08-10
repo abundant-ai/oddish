@@ -140,9 +140,7 @@ async def test_user_quota_cancels_payer_trials_and_advances_preserved_tasks(
                     else TaskStatus.RUNNING
                 ),
                 verdict_status=(
-                    VerdictStatus.RUNNING
-                    if task_id in (exhausted_task_id, mixed_task_id)
-                    else None
+                    VerdictStatus.RUNNING if task_id == mixed_task_id else None
                 ),
                 verdict=(
                     preserved_verdict if task_id == exhausted_task_id else None

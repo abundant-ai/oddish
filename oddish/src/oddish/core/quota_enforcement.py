@@ -342,7 +342,7 @@ async def _reconcile_cancelled_tasks(
     for task in tasks:
         if task.id not in exhausted:
             continue
-        if task.verdict_status in (
+        if task.verdict or task.verdict_status in (
             VerdictStatus.PENDING,
             VerdictStatus.QUEUED,
             VerdictStatus.RUNNING,
