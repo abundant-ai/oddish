@@ -32,7 +32,13 @@ def _trial(trial_id, *, analysis_status=AnalysisStatus.SUCCESS):
     )
 
 
-def _task(trials, *, run_analysis=False, verdict_status=VerdictStatus.SUCCESS):
+def _task(
+    trials,
+    *,
+    run_analysis=False,
+    verdict=None,
+    verdict_status=VerdictStatus.SUCCESS,
+):
     return SimpleNamespace(
         id="tsk",
         org_id="org-1",
@@ -40,7 +46,7 @@ def _task(trials, *, run_analysis=False, verdict_status=VerdictStatus.SUCCESS):
         run_analysis=run_analysis,
         status=TaskStatus.COMPLETED,
         finished_at="ts",
-        verdict=None,
+        verdict=verdict,
         verdict_status=verdict_status,
         verdict_error=None,
         verdict_started_at=None,
@@ -85,10 +91,13 @@ def _stub_enqueue(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_only_missing_resets_no_trials_but_resets_verdict(_stub_enqueue):
+async def test_only_missing_preserves_verdict_while_replacement_is_queued(
+    _stub_enqueue,
+):
     done = _trial("tsk-0", analysis_status=AnalysisStatus.SUCCESS)
     missing = _trial("tsk-1", analysis_status=None)
-    task = _task([done, missing], verdict_status=VerdictStatus.SUCCESS)
+    payload = {"verdict": "accept", "is_good": True}
+    task = _task([done, missing], verdict=payload, verdict_status=VerdictStatus.SUCCESS)
     session = _FakeSession(task)
 
     result = await endpoints.backfill_task_analysis_core(
@@ -102,7 +111,8 @@ async def test_only_missing_resets_no_trials_but_resets_verdict(_stub_enqueue):
         "reset_count": 0,
     }
     assert done.analysis_status == AnalysisStatus.SUCCESS  # untouched
-    assert task.verdict_status == VerdictStatus.QUEUED  # reset+requeued
+    assert task.verdict is payload
+    assert task.verdict_status == VerdictStatus.QUEUED
     assert task.run_analysis is False  # flag untouched
     assert _stub_enqueue == [("tsk", "org-1")]
 

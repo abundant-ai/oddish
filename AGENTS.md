@@ -160,7 +160,12 @@ High-level flow:
    handles; a task is failed only when no other live trial remains. If quota
    cancellation interrupts a replacement QA pass, the last successful verdict
    is restored through `cancel_verdict`; a terminal QA failure instead clears
-   that preserved payload through `fail_verdict`.
+   that preserved payload through `fail_verdict`. All task verdict-column
+   mutations go through `oddish.core.verdict_state`: a published payload may
+   coexist with QUEUED/RUNNING while its replacement is active, but it must
+   return to SUCCESS if that pass is abandoned. The
+   `ck_tasks_published_verdict_status` database constraint rejects a published
+   payload with a missing or FAILED status.
 6. Trial completion persists queryable execution metrics on the trial row:
    input/cache/output tokens, total trajectory steps, native runtime cost when
    reported, phase timing, trajectory availability, arbitrary verifier
@@ -221,6 +226,9 @@ block. Editing a prompt is a code change that ships with a deploy.
   `TagProjectJobHandler`, plus the legacy `AnalysisJobHandler`)
 - the task-level QA job (`run_task_qa_job`): classify every live trial via
   the shared `classify_trial_and_store`, then synthesize the task verdict
+- the verdict state machine (`oddish.core.verdict_state`), which is the only
+  writer for `tasks.verdict*` lifecycle columns and preserves the last
+  published result until a replacement succeeds or terminally fails
 - post-trial classification runs through `AnalyzerBlock`. It reads two
   already-downloaded directories and executes nothing, so `resolve_substrate`
   keeps it on the worker-local Claude Code client (`CLAUDE_CLI`) everywhere;
