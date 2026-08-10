@@ -5,6 +5,12 @@ from pathlib import Path
 import modal
 from dotenv import dotenv_values
 
+from modal_runtime import (
+    MODAL_APP_NAME,
+    MODAL_SECRET_ENVIRONMENT,
+    runtime_secret,
+)
+from modal_runtime import app as app
 from oddish.core.harbor_source import (
     HARBOR_VARIANTS,
     HarborVariant,
@@ -33,13 +39,10 @@ def _env_float(name: str, default: float) -> float:
     return float(value)
 
 
-MODAL_APP_NAME = os.environ.get("MODAL_APP_NAME", "oddish")
-MODAL_SECRET_ENVIRONMENT = os.environ.get("MODAL_SECRET_ENVIRONMENT", "main")
 SLACK_EXPENSE_SECRET_NAME = os.environ.get("ODDISH_SLACK_EXPENSE_SECRET_NAME", "")
 SLACK_EXPENSE_SECRET_ENVIRONMENT = os.environ.get(
     "ODDISH_SLACK_EXPENSE_SECRET_ENVIRONMENT", MODAL_SECRET_ENVIRONMENT
 )
-RUNTIME_SECRET_NAME = "oddish-prod"
 # Per-app webhook label so PR previews don't collide on the shared
 # `{workspace}-{environment}--{label}.modal.run` subdomain. Production keeps
 # the historical "api" label; previews derive a unique one from the app name.
@@ -47,6 +50,9 @@ API_WEBHOOK_LABEL = "api" if MODAL_APP_NAME == "oddish" else f"{MODAL_APP_NAME}-
 ENABLE_BACKGROUND_WORKERS = _env_flag("ODDISH_ENABLE_MODAL_WORKERS", True)
 ENABLE_SLACK_EXPENSE_NOTIFICATIONS = _env_flag(
     "ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS", MODAL_APP_NAME == "oddish"
+)
+ENABLE_CARL_AGENT = _env_flag(
+    "ODDISH_ENABLE_CARL_AGENT", MODAL_APP_NAME == "oddish"
 )
 API_MIN_CONTAINERS = _env_int("ODDISH_MODAL_API_MIN_CONTAINERS", 1)
 API_BUFFER_CONTAINERS = _env_int("ODDISH_MODAL_API_BUFFER_CONTAINERS", 16)
@@ -87,8 +93,6 @@ LOCAL_DOTENV_VARS = {
     if value is not None
 }
 
-app = modal.App(MODAL_APP_NAME)
-
 # No shared Modal Volume: each container uses its own ephemeral ``/tmp`` for
 # Harbor scratch (see ``oddish.config.Settings.harbor_jobs_dir`` default of
 # ``/tmp/harbor-jobs``). Sharing a Modal Volume between workers previously
@@ -125,6 +129,17 @@ DASHBOARD_PRECOMPUTE_INTERVAL_SECONDS = _env_int(
 )
 DASHBOARD_PRECOMPUTE_TIMEOUT_SECONDS = _env_int(
     "ODDISH_MODAL_DASHBOARD_PRECOMPUTE_TIMEOUT_SECONDS", 120
+)
+# Facet-vocabulary rebuild (``worker.refresh_trial_facets``): one grouped scan
+# over live trials per interval keeps the task-browser dropdowns exact
+# (removals and stage/classification additions converge here; spec additions
+# are instant via write-through). The timeout bounds one scan; with
+# max_containers=1 it also guards against overlapping runs.
+TRIAL_FACETS_REFRESH_INTERVAL_SECONDS = _env_int(
+    "ODDISH_MODAL_TRIAL_FACETS_REFRESH_INTERVAL_SECONDS", 600
+)
+TRIAL_FACETS_REFRESH_TIMEOUT_SECONDS = _env_int(
+    "ODDISH_MODAL_TRIAL_FACETS_REFRESH_TIMEOUT_SECONDS", 300
 )
 # Allow ~12 hour trials.
 WORKER_TIMEOUT_SECONDS = _env_int("ODDISH_MODAL_WORKER_TIMEOUT_SECONDS", 43200)
@@ -323,9 +338,6 @@ def _resolve_gke_secret_plan(
     return [name for name in baked.split(",") if name]
 
 
-runtime_secret = modal.Secret.from_name(
-    RUNTIME_SECRET_NAME, environment_name=MODAL_SECRET_ENVIRONMENT
-)
 runtime_secrets = [runtime_secret]
 
 # AWS credentials for the sauron S3 mirror. Kept in a separate Modal
@@ -506,6 +518,7 @@ ENV_VARS = {
     "MODAL_ENVIRONMENT": os.environ.get("MODAL_ENVIRONMENT", "main"),
     "ODDISH_SLACK_EXPENSE_SECRET_NAME": SLACK_EXPENSE_SECRET_NAME,
     "ODDISH_SLACK_EXPENSE_SECRET_ENVIRONMENT": SLACK_EXPENSE_SECRET_ENVIRONMENT,
+    "ODDISH_ENABLE_CARL_AGENT": str(ENABLE_CARL_AGENT).lower(),
     # Oddish cloud settings — configures pydantic-settings fields in
     # oddish.config.Settings via ODDISH_* env vars.  Per-function DB pool
     # sizes are set in the entry modules (endpoints.py, worker/functions.py).
@@ -708,6 +721,7 @@ def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal
             "api",
             "auth",
             "backfill_github_id",
+            "carl",
             "cloud_policy",
             "crypto",
             "dashboard_attribution",
@@ -716,6 +730,7 @@ def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal
             "endpoints",
             "idempotency_store",
             "modal_app",
+            "modal_runtime",
             "models",
             "observability",
             "pg_errors",

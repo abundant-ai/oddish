@@ -1,21 +1,30 @@
 "use client";
 
 import { useEffect, useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { Clock, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { ChatButton } from "@/components/cc-chat/chat-button";
 import { ImportDialog } from "@/components/import-dialog";
+import { TASKS_PAGE_SIZE } from "@/lib/tasks-filters";
+import { useTaskBrowseRevalidate } from "@/lib/use-task-browse";
 import { cn } from "@/lib/utils";
 
 const AUTO_REFRESH_KEY = "oddish.tasks.autoRefresh";
 const REFRESH_MS = 60000;
 
-// Header actions for the tasks page: chat, a manual refresh of the
-// server-rendered results, an opt-in auto-refresh toggle (off by default,
-// persisted), and import. Search and tag filtering live in the sidebar.
-export function TasksToolbar({ orgId = null }: { orgId?: string | null }) {
-  const router = useRouter();
+// The page number derives from the URL on the client, so filter and pager
+// changes update it without a server round trip.
+export function TasksPageNumber() {
+  const searchParams = useSearchParams();
+  const offset = Math.max(Number(searchParams.get("offset") ?? "0") || 0, 0);
+  return <>Page {Math.floor(offset / TASKS_PAGE_SIZE) + 1}</>;
+}
+
+// Every refresh path revalidates the grid's client-side browse fetch only —
+// nothing the page server-renders depends on task data, so there is no
+// router.refresh().
+export function TasksToolbar() {
+  const revalidateBrowse = useTaskBrowseRevalidate();
   const [isPending, startTransition] = useTransition();
   const [autoRefresh, setAutoRefresh] = useState(false);
 
@@ -35,15 +44,21 @@ export function TasksToolbar({ orgId = null }: { orgId?: string | null }) {
   // Silent background refresh only while auto-refresh is on.
   useEffect(() => {
     if (!autoRefresh) return;
-    const id = window.setInterval(() => router.refresh(), REFRESH_MS);
+    const id = window.setInterval(() => {
+      void revalidateBrowse();
+    }, REFRESH_MS);
     return () => window.clearInterval(id);
-  }, [autoRefresh, router]);
+  }, [autoRefresh, revalidateBrowse]);
 
-  const manualRefresh = () => startTransition(() => router.refresh());
+  // The async transition keeps the spinner honest: isPending tracks the
+  // browse fetch itself. Failures surface in the grid's error banner.
+  const manualRefresh = () =>
+    startTransition(async () => {
+      await revalidateBrowse();
+    });
 
   return (
     <div className="flex items-center gap-2">
-      {orgId ? <ChatButton scopeKind="global" scopeId={orgId} /> : null}
       <Button
         type="button"
         variant="outline"
@@ -62,7 +77,7 @@ export function TasksToolbar({ orgId = null }: { orgId?: string | null }) {
         size="sm"
         className={cn(
           "h-8 gap-1.5 text-xs",
-          !autoRefresh && "border-[#6f88b4]/20",
+          !autoRefresh && "border-[#6f88b4]/20"
         )}
         onClick={toggleAuto}
         aria-pressed={autoRefresh}
@@ -75,7 +90,7 @@ export function TasksToolbar({ orgId = null }: { orgId?: string | null }) {
         <Clock className="h-3.5 w-3.5" />
         Auto
       </Button>
-      <ImportDialog onImported={() => router.refresh()} />
+      <ImportDialog onImported={() => void revalidateBrowse()} />
     </div>
   );
 }

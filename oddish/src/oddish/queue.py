@@ -27,6 +27,11 @@ from oddish.core.baseline_gate import (
 from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
 from oddish.core.tags.enqueue import enqueue_tag_project_worker_job
 from oddish.core.tags.projection import recompute_task_browse_projection
+from oddish.core.trial_facets import (
+    facet_rows_for_trial_dicts,
+    record_trial_facets,
+)
+from oddish.core.verdict_sync import cancel_verdict, clear_inflight_verdict
 from oddish.db import (
     AnalysisStatus,
     ExperimentModel,
@@ -270,18 +275,23 @@ async def cancel_tasks_runs(
     tasks_cancelled = 0
     for task in tasks:
         task_updated = False
+        failed_by_this_cancel = False
         if task.status in ACTIVE_TASK_STATUSES:
             task.status = TaskStatus.FAILED
             task.finished_at = now
             task_updated = True
+            failed_by_this_cancel = True
         if (
             task.id in canceled_verdict_task_ids
             or task.verdict_status in ACTIVE_PIPELINE_STATUSES
         ):
-            task.verdict_status = VerdictStatus.FAILED
-            task.verdict_error = USER_CANCELLED_MESSAGE
-            task.verdict_finished_at = now
+            cancel_verdict(task, error=USER_CANCELLED_MESSAGE, now=now)
             task_updated = True
+        # A task that still holds a successful verdict is judged. Cancelling
+        # its extra trials completes it; it must not read as a failed task
+        # with an accepted verdict (same rule as the QA cancel endpoint).
+        if failed_by_this_cancel and task.verdict_status == VerdictStatus.SUCCESS:
+            task.status = TaskStatus.COMPLETED
         if task_updated:
             tasks_cancelled += 1
 
@@ -798,6 +808,9 @@ async def _bulk_insert_trials(
         "billed_user_id": [t.get("billed_user_id") for t in trials],
     }
     await session.execute(_TRIAL_BULK_INSERT_SQL, params)
+    # Write-through vocabulary: the batch's facet values become filterable in
+    # the task browser the moment the trials exist (probes contribute nothing).
+    await record_trial_facets(session, facet_rows_for_trial_dicts(trials))
 
 
 def _submission_gates_llm_trials(submission: TaskSubmission) -> bool:
@@ -823,54 +836,6 @@ def _initial_trial_job_status(agent: str, *, gating: bool) -> WorkerJobStatus:
     if gating and not is_nop_oracle_agent(agent):
         return WorkerJobStatus.BLOCKED
     return WorkerJobStatus.QUEUED
-
-
-async def _enqueue_pre_trial_assignment_runs(
-    session: AsyncSession,
-    *,
-    submission: TaskSubmission,
-    task_id: str,
-    task_version_id: str,
-    experiment_id: str | None,
-    org_id: str | None,
-    user_id: str | None,
-) -> None:
-    """Best-effort additive pre-trial analyzers for one task version.
-
-    Skipped for a baseline-only submission: nop and oracle exercise the task's
-    own scaffolding, so a run that adds nothing else has no agent behavior for
-    the audit to inform. Appending baselines to an already-audited task would
-    otherwise pay for a fresh audit of a version whose source never changed.
-    """
-    from oddish.core.qa_assignments import enqueue_qa_assignment_runs_core
-
-    if all(is_nop_oracle_agent(spec.agent) for spec in submission.trials):
-        return
-
-    try:
-        async with session.begin_nested():
-            await enqueue_qa_assignment_runs_core(
-                session,
-                stage="pre_trial",
-                stage_event_key=f"task_version:{task_version_id}",
-                org_id=org_id,
-                user_id=user_id,
-                experiment_id=experiment_id,
-                task_id=task_id,
-                trial_id=None,
-                task_version_id=task_version_id,
-                run_scope_type="task",
-                run_scope_id=task_id,
-            )
-    except Exception:  # noqa: BLE001
-        # These analyzers are observability/QA sidecars. A bad assignment must
-        # not reject the sweep or roll back its trial jobs.
-        logger.warning(
-            "pre-trial assignment enqueue failed for task=%s version=%s",
-            task_id,
-            task_version_id,
-            exc_info=True,
-        )
 
 
 def _ensure_not_collection_target(experiment: "ExperimentModel | None") -> None:
@@ -1055,16 +1020,6 @@ async def create_task(
     await session.flush()
     await _bulk_insert_trials(session, trial_rows)
     await bulk_enqueue_worker_jobs(session, worker_job_requests)
-
-    await _enqueue_pre_trial_assignment_runs(
-        session,
-        submission=submission,
-        task_id=task_id,
-        task_version_id=version_id,
-        experiment_id=experiment.id,
-        org_id=org_id,
-        user_id=billed_user_id,
-    )
 
     await session.refresh(task, attribute_names=["trials"])
     await bump_experiment_last_activity(session, experiment_ids=experiment.id)
@@ -1256,7 +1211,7 @@ async def append_trials_to_task(
     # Pick the target experiment: explicit argument wins, otherwise fall back
     # to the first linked experiment (the task's "primary" association).
     if experiment_id is None:
-        primary = list(task.experiments or [])
+        primary = list(await task.awaitable_attrs.experiments or [])
         if not primary:
             raise ValueError(
                 f"Task {task.id} has no linked experiments; cannot append trials"
@@ -1325,16 +1280,6 @@ async def append_trials_to_task(
     await _bulk_insert_trials(session, new_trial_rows)
     await bulk_enqueue_worker_jobs(session, worker_job_requests)
 
-    await _enqueue_pre_trial_assignment_runs(
-        session,
-        submission=submission,
-        task_id=task.id,
-        task_version_id=current_version_id,
-        experiment_id=trial_experiment_id,
-        org_id=task.org_id,
-        user_id=billed_user_id,
-    )
-
     # The replacement rows must exist before the self-referential FK can point
     # old attempts at them. Only live FAILED rows are eligible: if another
     # retry won a race, fail the transaction instead of overwriting its chain.
@@ -1374,11 +1319,7 @@ async def append_trials_to_task(
         task.finished_at = None
 
     if new_trials and task.run_analysis:
-        task.verdict = None
-        task.verdict_status = None
-        task.verdict_error = None
-        task.verdict_started_at = None
-        task.verdict_finished_at = None
+        clear_inflight_verdict(task)
         # Cancel any in-flight QA worker_job for this task so a worker
         # that's already claimed (or about to claim) the old row doesn't
         # overwrite the new verdict with stale data. The dispatcher
@@ -1528,13 +1469,10 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
     else:
         task.status = TaskStatus.COMPLETED
         task.finished_at = utcnow()
-        # No QA job runs for this task (analysis off, or nothing QA-eligible),
-        # so clear any verdict bookkeeping left over from an earlier
-        # VERDICT_PENDING pass -- otherwise the task can end COMPLETED while
-        # verdict_status still reads QUEUED (e.g. a task bounced back to RUNNING
-        # by a late-arriving trial, then completed here with no eligible trials).
-        task.verdict_status = None
-        task.verdict_error = None
+        # No QA job will run, so clear queued or running verdict bookkeeping
+        # -- otherwise the task ends COMPLETED while verdict_status still
+        # reads QUEUED. A finished verdict stays, together with its payload.
+        clear_inflight_verdict(task)
 
     await session.flush()
     return True

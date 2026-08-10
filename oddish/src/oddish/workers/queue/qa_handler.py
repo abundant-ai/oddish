@@ -942,7 +942,7 @@ async def run_task_qa_job(
         verdict_result = build_verdict_payload(verdict, classifications)
 
         console.print(
-            f"[green]Verdict computed:[/green] {'GOOD' if verdict.is_good else 'NEEDS REVIEW'} "
+            f"[green]Verdict computed:[/green] {verdict.verdict.upper()} "
             f"(confidence: {verdict.confidence})"
         )
 

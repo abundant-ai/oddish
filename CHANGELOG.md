@@ -6,6 +6,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-08-07]
+
+### Changed
+
+- The verdict now says `accept` or `reject` instead of `is_good: true/false`. Stored payloads keep `is_good` too, so old rows, the dashboard queries, and the Slack alert still work. The badge shows "Accepted" or "Rejected".
+- The verdict judge used to bury its hard rules inside exceptions, and it accepted a task whose own audit had found a `must_fix` leak — on tests the untouched base model already passed (0.96 against a 0.25 threshold). The prompt (`verdict_prompt.txt`) is rewritten as two steps: first look for evidence that rejects the task by itself (a leak, weak tests, a failed baseline), and only then weigh the trials' opinions, which need agreement.
+- The task overview panel used to list only the current experiment's trials, but the verdict is computed over every trial of the task — so the panel could show a verdict whose deciding trial it refused to list. It now shows every trial of the version. Trials from other experiments carry a dashed "elsewhere" chip and open in a new tab. Long subtypes also stopped pushing the "View trial" button out of its row.
+- The verdict badge used to hide its rerun button once a verdict existed, and the button that did exist re-classified every trial from scratch. Tasks with a verdict now show "Rerun verdict" (`qa/backfill` with `force: false`), which keeps the stored trial analyses and redoes only the verdict. The full re-classify stays on `qa/retry`.
+- Submitting new trials used to delete the task's verdict immediately, and the task had no verdict until QA finished the new trials. The old verdict now stays until the new QA run replaces it.
+
+### Removed
+
+- The cc_chat dashboard chat feature is gone end to end: the `/chat-sessions`
+  backend router and orchestrator, the chat drawer/button UI and its
+  `/api/chat-sessions` proxies in the frontend, the `ChatSession` /
+  `ChatSessionEvent` / `ChatTurn` models, and the chat tables themselves
+  (dropped by backend migration `dropchat001`; `api_keys.is_internal` stays —
+  internal key minting also serves probe credentials and the sandbox
+  analyzer). The chat-only settings `ODDISH_CC_CHAT_DAYTONA_SNAPSHOT` and
+  `ODDISH_PUBLIC_API_BASE_URL` are removed with it. ⚠️ Deployments that set
+  only `ODDISH_CC_CHAT_DAYTONA_SNAPSHOT` must now set
+  `ODDISH_AGENT_DAYTONA_SNAPSHOT` (same snapshot name) or analyzer sandboxes
+  fall back to installing claude-code + harbor at provision time.
+- The shared sandbox infrastructure the chat feature grew — Daytona client,
+  provisioner, Claude Code runtime, stream renderer — survives because the
+  hosted analyzer runs on it; it moved from `backend/api/services/cc_chat/`
+  to `backend/api/services/sandbox/`, and the analyzer cohort modules
+  (`analyzer_block_runner`, `analyzer_parse`, `analyzer_prompt`) moved to
+  `backend/api/services/blocks/analyzer/`.
+
+### Fixed
+
+- Quota cancellation no longer turns a preserved accepted verdict into a failed verdict, or leaves a failed task paired with that accepted payload. Cancelling a replacement QA pass restores the previous successful verdict; a genuine terminal QA failure clears the superseded payload.
+- Worker heartbeats used to stop as soon as the agent finished, but the worker still had to upload and save the results. When that took over 15 minutes, the cleanup sweep marked the trial "Worker heartbeat stalled for over 15 minutes", threw away the finished result, and re-ran the whole trial. The heartbeat now runs until the results are saved and settled.
+
+---
+
 ## [2026-08-05]
 
 ### Added

@@ -8,8 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.core.endpoints._common import (
     get_trial_for_org_core,
-    _reset_task_verdict,
 )
+from oddish.core.verdict_sync import clear_inflight_verdict
 from oddish.core.endpoints.qa_cost import get_trial_qa_costs
 from oddish.core.helpers import (
     build_trial_response,
@@ -412,6 +412,13 @@ async def retry_trial_core(
             ),
         )
 
+    # The task row lock serializes ``{task_id}-{N}`` allocation with sweep
+    # appends and other retries of the same task (Task → Trial → WorkerJob
+    # lock order). Column-only select: locking via ``session.get`` would
+    # refresh-and-expire the identity-map instance.
+    await session.execute(
+        select(TaskModel.id).where(TaskModel.id == old_trial.task_id).with_for_update()
+    )
     task = await session.get(TaskModel, old_trial.task_id)
     if not task:
         raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
@@ -589,7 +596,7 @@ async def retry_trial_core(
     ):
         task.status = TaskStatus.RUNNING
         task.finished_at = None
-    _reset_task_verdict(task)
+    clear_inflight_verdict(task)
     await session.execute(
         text(
             """

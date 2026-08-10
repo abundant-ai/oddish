@@ -28,6 +28,10 @@ class _Demo(Block):
         ]
 
 
+class _StrictDemo(_Demo):
+    strict_json_output = True
+
+
 def test_build_prompt_renders_sections():
     assert _Demo().build_prompt() == "<greeting>hi world</greeting>"
 
@@ -64,6 +68,12 @@ def test_parse_valid_returns_output_schema():
 def test_parse_strips_code_fences():
     out = _Demo().parse('```json\n{"value": "fenced"}\n```')
     assert out.value == "fenced"
+
+
+def test_strict_json_output_uses_the_schema_decoder_without_recovery():
+    assert _StrictDemo().parse('{"value": "ok", "items": []}').value == "ok"
+    with pytest.raises(BlockParseError, match="structured output mismatch"):
+        _StrictDemo().parse('```json\n{"value": "fenced"}\n```')
 
 
 def test_parse_raises_blockparseerror_on_bad_json():

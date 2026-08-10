@@ -113,11 +113,6 @@ interface TrialAnalysis {
   /** Per pre-trial finding assessments — the trial↔audit finding join. */
   exploitation?: TrialExploitation[];
   reward?: number | null;
-  prompt_kind?: string;
-  prompt_version?: number;
-  prompt_id?: string;
-  prompt_scope?: "global" | "org" | "user" | "experiment" | "task" | "trial";
-  prompt_scope_id?: string | null;
 }
 
 interface TrialQueueInfo {
@@ -210,6 +205,8 @@ export interface Trial {
 }
 
 interface TaskVerdict {
+  /** Absent on rows stored before the accept/reject label existed. */
+  verdict?: "accept" | "reject";
   is_good: boolean;
   confidence: "high" | "medium" | "low";
   primary_issue?: string | null;
@@ -315,6 +312,9 @@ export interface TaskBrowseResponse {
   has_more: boolean;
 }
 
+// The backend response also carries a deprecated `experiments` field that is
+// always [] (options come from /api/tasks/browse/experiment-options instead);
+// it is deliberately absent here so nothing new codes against it.
 export interface TaskBrowseFacets {
   agents: string[];
   models: string[];
@@ -323,7 +323,17 @@ export interface TaskBrowseFacets {
   environments: string[];
   harbor_stages: string[];
   analysis_classifications: string[];
-  experiments: { id: string; name: string }[];
+}
+
+// GET /api/tasks/browse/experiment-options — async options for the sidebar
+// experiment filter (query= substring search, ids= chip hydration).
+export interface ExperimentOption {
+  id: string;
+  name: string;
+}
+
+export interface ExperimentOptionsResponse {
+  items: ExperimentOption[];
 }
 
 export interface TaskVersionSummary {
@@ -694,6 +704,7 @@ export type TrajectoryComponentKind =
   | "thinking_understand"
   | "thinking_hypothesize"
   | "thinking_correction"
+  | "writing_plan"
   | "implementing"
   | "implementing_correction"
   | "writing_tests"
@@ -1158,9 +1169,4 @@ export interface Report {
   experiment_ids: string[];
   created_at?: string | null;
   finished_at?: string | null;
-}
-
-export interface ExperimentOption {
-  id: string;
-  name: string;
 }
