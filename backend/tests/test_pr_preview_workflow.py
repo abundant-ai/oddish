@@ -218,7 +218,9 @@ def test_stop_fold_skipped_on_migrations_only():
     assert order[0] == "supabase"
     assert "migrate" in order
     assert "seed" in order
-    assert "publish" not in order
+    # The supabase step rotates the branch DB password on every run, so the
+    # rotated value must reach the Modal secret even without a backend deploy.
+    assert order[-1] == "publish"
 
 
 @needs_bash
@@ -232,8 +234,11 @@ def test_created_branch_seeds_and_publishes_without_flags():
 
 @needs_bash
 def test_no_work_when_all_flags_false():
+    # Even a no-op prepare rotates the branch DB password in the supabase
+    # step, so the secret publish must still follow -- skipping it left the
+    # running backend with a dead connection string on frontend-only pushes.
     order = _run_prepare({"DEPLOY_BACKEND": "false", "RUN_MIGRATIONS": "false"})
-    assert order == ["supabase"]
+    assert order == ["supabase", "publish"]
 
 
 @needs_bash
