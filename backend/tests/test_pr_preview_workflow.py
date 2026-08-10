@@ -408,8 +408,19 @@ def test_every_job_records_preview_identity():
             and " identity" in s.get("run", "")
         ]
         assert steps, f"{job_key} has no Record preview identity step"
+        # Telemetry is advisory everywhere: an identity-step failure must not
+        # flip its job, or the gate rejects an otherwise working preview.
+        assert steps[0].get("continue-on-error") is True, job_key
         env = steps[0].get("env", {})
         assert "PR_NUMBER" in env and "HEAD_SHA" in env and "EVENT_ACTION" in env
+
+
+def test_gate_checkout_is_advisory():
+    # The gate's checkout only feeds the telemetry steps; the verify/publish
+    # logic does not use the working tree, so it must not be a hard dependency.
+    gate = _wf()["jobs"]["require-working-preview"]
+    checkout = next(s for s in gate["steps"] if "actions/checkout" in s.get("uses", ""))
+    assert checkout.get("continue-on-error") is True
 
 
 def test_vercel_job_exposes_telemetry_outputs():

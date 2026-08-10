@@ -78,6 +78,7 @@ jobs:
         run: bash "$GITHUB_WORKSPACE/.github/scripts/preview/compute_deployment_plan.sh"
 
       - name: Record preview identity
+        continue-on-error: true
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -150,6 +151,7 @@ jobs:
         run: "$GITHUB_WORKSPACE/.github/scripts/preview/prepare_preview_database.sh"
 
       - name: Record preview identity
+        continue-on-error: true
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -212,6 +214,7 @@ jobs:
         run: "$GITHUB_WORKSPACE/.github/scripts/preview/deploy_preview_backend.sh"
 
       - name: Record preview identity
+        continue-on-error: true
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -286,6 +289,7 @@ jobs:
         run: "$GITHUB_WORKSPACE/.github/scripts/preview/update_vercel_preview.sh"
 
       - name: Record preview identity
+        continue-on-error: true
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -328,10 +332,16 @@ jobs:
       PROMOTION_PR: ${{ github.event.pull_request.head.ref == 'staging' && github.event.pull_request.head.repo.full_name == github.repository }}
       DEPLOY_URL: ${{ (github.event.pull_request.head.ref == 'staging' && github.event.pull_request.head.repo.full_name == github.repository) && 'https://staging.oddish.app' || needs.update-vercel-preview.outputs.preview_alias_url || needs.update-vercel-preview.outputs.preview_url }}
     steps:
+      # Advisory: checkout only feeds the telemetry steps below it, each of
+      # which is itself continue-on-error — so a checkout failure degrades
+      # metrics instead of failing the required gate. The gate's verify and
+      # publish steps do not use the working tree.
       - name: Checkout repository
+        continue-on-error: true
         uses: actions/checkout@v5
 
       - name: Record preview identity
+        continue-on-error: true
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -586,6 +596,7 @@ jobs:
         run: python "$GITHUB_WORKSPACE/.github/scripts/preview/post_preview_links.py"
 
       - name: Record preview identity
+        continue-on-error: true
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -633,6 +644,7 @@ jobs:
       # No plan env here: detect-changes is skipped on closed events, and the
       # identity renderer tolerates the missing flags.
       - name: Record preview identity
+        continue-on-error: true
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
