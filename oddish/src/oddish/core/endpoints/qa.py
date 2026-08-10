@@ -12,6 +12,7 @@ from oddish.core.endpoints._common import (
     _ACTIVE_WORKER_JOB_STATUSES_SQL,
     _reset_task_verdict,
 )
+from oddish.core.verdict_sync import cancel_verdict
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
@@ -178,9 +179,7 @@ async def cancel_task_qa_core(
         or _has_active_verdict(task)
         or task.status == TaskStatus.VERDICT_PENDING
     ):
-        task.verdict_status = VerdictStatus.FAILED
-        task.verdict_error = USER_CANCELLED_MESSAGE
-        task.verdict_finished_at = now_value
+        cancel_verdict(task, error=USER_CANCELLED_MESSAGE, now=now_value)
         # Finalize trials whose classification the QA job had in flight so
         # they don't linger in a RUNNING analysis state.
         for trial in task.trials or []:
@@ -189,7 +188,13 @@ async def cancel_task_qa_core(
                 trial.analysis_error = USER_CANCELLED_MESSAGE
                 trial.analysis_finished_at = now_value
         if task.status == TaskStatus.VERDICT_PENDING:
-            task.status = TaskStatus.FAILED
+            # A restored verdict means the task is judged; only a task with
+            # no verdict fails on cancel.
+            task.status = (
+                TaskStatus.COMPLETED
+                if task.verdict_status == VerdictStatus.SUCCESS
+                else TaskStatus.FAILED
+            )
             task.finished_at = now_value
     # The pre-trial audit runs inside a QA job (full or audit-only). A request
     # left QUEUED (or a claim left RUNNING) with no job behind it would keep
