@@ -531,6 +531,17 @@ export function TaskOverviewPanel({
       );
     }
     if (qaTrials.length === 0) {
+      // The verdict badge above already says "Running QA..." in this state;
+      // telling the user to run QA at the same time reads as broken.
+      if (qaActive) {
+        return (
+          <p className="text-muted-foreground flex items-center gap-1.5 text-sm leading-relaxed">
+            <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+            QA is running. Classifications and the verdict appear here when it
+            finishes.
+          </p>
+        );
+      }
       return (
         <p className="text-muted-foreground text-sm leading-relaxed">
           Trial QA has not run yet. Run QA to classify this task&apos;s
@@ -541,6 +552,13 @@ export function TaskOverviewPanel({
 
     return (
       <>
+        {qaActive ? (
+          <p className="text-muted-foreground flex items-center gap-1.5 font-mono text-[11px]">
+            <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+            A new QA run is in progress. The results below are from the last
+            run.
+          </p>
+        ) : null}
         <div className="flex flex-wrap items-center gap-1.5">
           {CLASSIFICATION_ORDER.map((classification) => {
             const count = classificationCounts.get(classification);

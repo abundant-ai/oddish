@@ -49,6 +49,7 @@ import {
   isActivePipelineStatus,
   taskHasActiveAnalysis,
   taskHasActiveTrials,
+  taskHasLiveAnalysisTrial,
   taskHasActiveVerdict,
   taskHasCancellableWork,
 } from "@/lib/job-status";
@@ -446,7 +447,8 @@ export function TaskFilesPanel({
         pickChecksVersion(data, taskVersion)?.pre_trial_status === "queued";
       const qaLive =
         data?.task?.verdict_status === "queued" ||
-        data?.task?.verdict_status === "running";
+        data?.task?.verdict_status === "running" ||
+        taskHasLiveAnalysisTrial(data?.task);
       return checksLive || qaLive ? 5000 : 0;
     },
   });
@@ -469,7 +471,8 @@ export function TaskFilesPanel({
   const checksFindings = checksVersion?.pre_trial_findings ?? [];
   const taskQaActive =
     checksDetail?.task?.verdict_status === "queued" ||
-    checksDetail?.task?.verdict_status === "running";
+    checksDetail?.task?.verdict_status === "running" ||
+    taskHasLiveAnalysisTrial(checksDetail?.task);
   const resolvedFilesUrl = filesUrl ?? `${baseUrl}/tasks/${taskId}/files`;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

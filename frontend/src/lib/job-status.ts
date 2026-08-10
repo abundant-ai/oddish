@@ -1,4 +1,5 @@
 import type { JobStatus, Task, Trial, VisibleWorkerJob } from "@/lib/types";
+import { isAgentTrial } from "@/lib/types";
 
 const ACTIVE_TRIAL_STATUSES = [
   "running",
@@ -50,11 +51,15 @@ function trialHasActiveAnalysis(trial: Trial | null | undefined): boolean {
 }
 
 export function taskHasActiveTrials(task: Task | null | undefined): boolean {
+  // Agent trials only. A live qa/audit trial counts as active QA (see
+  // taskHasLiveQaTrial), so the cancel path picks the QA cancel endpoint
+  // instead of the whole-task one.
   return (
     task?.trials?.some(
       (trial) =>
-        isActiveTrialStatus(trial.status) ||
-        trial.jobs?.some((job) => isActiveVisibleJobKind(job, "trial")),
+        isAgentTrial(trial) &&
+        (isActiveTrialStatus(trial.status) ||
+          trial.jobs?.some((job) => isActiveVisibleJobKind(job, "trial"))),
     ) === true
   );
 }
@@ -67,11 +72,28 @@ export function taskHasActiveAnalysis(task: Task | null | undefined): boolean {
   );
 }
 
+// QA and the source audit run as qa/audit-kind trials now. A live one means
+// analysis is in progress no matter what the status flags say -- after a
+// crash the flags can be stale. The qa/cancel endpoint cancels both kinds.
+export function taskHasLiveAnalysisTrial(
+  task: Task | null | undefined,
+): boolean {
+  return (
+    task?.trials?.some(
+      (trial) =>
+        !isAgentTrial(trial) &&
+        !trial.superseded_by_trial_id &&
+        isActiveTrialStatus(trial.status),
+    ) === true
+  );
+}
+
 export function taskHasActiveVerdict(task: Task | null | undefined): boolean {
   if (!task) return false;
   return (
     task.status === "verdict_pending" ||
     isActivePipelineStatus(task.verdict_status) ||
+    taskHasLiveAnalysisTrial(task) ||
     task.jobs?.some((job) => isActiveVisibleJobKind(job, "qa")) === true
   );
 }
@@ -87,8 +109,10 @@ export function taskHasCancellableWork(task: Task | null | undefined): boolean {
 }
 
 function getActiveTrialCount(task: Task | null | undefined): number {
-  return (task?.trials ?? []).filter((trial) =>
-    isActiveTrialStatus(trial.status),
+  // Agent trials only: a running qa/audit trial should read as "Cancel QA",
+  // not as a mystery "Cancel (1)".
+  return (task?.trials ?? []).filter(
+    (trial) => isAgentTrial(trial) && isActiveTrialStatus(trial.status),
   ).length;
 }
 
