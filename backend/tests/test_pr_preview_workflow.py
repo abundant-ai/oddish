@@ -337,6 +337,8 @@ def _run_compute_plan(extra_env):
         "GITHUB_STEP_SUMMARY": str(tmp / "summary"),
         "GITHUB_OUTPUT": str(tmp / "out"),
         "EVENT_ACTION": "synchronize",
+        "PR_NUMBER": "0",
+        "HEAD_SHA": "0123456789abcdef0123456789abcdef01234567",
         "BACKEND_BASE": "abc123",
         "MIGRATIONS_BASE": "abc123",
         "BACKEND_CHANGED": "false",
@@ -380,6 +382,91 @@ def test_no_migrations_no_backend_implication():
     assert outputs["run_migrations"] == "false"
     assert outputs["deploy_frontend"] == "false"
     assert outputs["any_change"] == "false"
+
+
+@needs_bash
+def test_compute_plan_emits_preview_generation():
+    # The generation is the ownership token consumed by later fencing PRs; the
+    # format itself is pinned in test_preview_metrics.py.
+    outputs = _run_compute_plan({})
+    assert outputs["preview_generation"] == "pr0-0123456789ab"
+
+
+def test_detect_changes_exports_preview_generation():
+    outputs = _wf()["jobs"]["detect-changes"]["outputs"]
+    assert outputs["preview_generation"] == (
+        "${{ steps.compute.outputs.preview_generation }}"
+    )
+
+
+def test_every_job_records_preview_identity():
+    for job_key, job in _wf()["jobs"].items():
+        steps = [
+            s
+            for s in job.get("steps", [])
+            if "record_preview_metrics.py" in s.get("run", "")
+            and " identity" in s.get("run", "")
+        ]
+        assert steps, f"{job_key} has no Record preview identity step"
+        env = steps[0].get("env", {})
+        assert "PR_NUMBER" in env and "HEAD_SHA" in env and "EVENT_ACTION" in env
+
+
+def test_vercel_job_exposes_telemetry_outputs():
+    outputs = _wf()["jobs"]["update-vercel-preview"]["outputs"]
+    assert outputs["vercel_deployment_id"] == (
+        "${{ steps.vercel.outputs.vercel_deployment_id }}"
+    )
+    assert outputs["timings"] == "${{ steps.vercel.outputs.timings }}"
+
+
+def test_gate_metrics_are_soft_and_retained():
+    gate = _wf()["jobs"]["require-working-preview"]
+    assert gate["permissions"]["actions"] == "read"
+    assert gate["permissions"]["contents"] == "read"
+    assert gate["permissions"]["deployments"] == "write"
+
+    record = next(
+        s for s in gate["steps"] if s.get("name") == "Record preview metrics"
+    )
+    assert record["continue-on-error"] is True
+    assert "always()" in record["if"]
+    env = record["env"]
+    # Secrets must never be recorded: GH_TOKEN is the Jobs API credential (the
+    # recorder allowlists which env vars enter the artifact), and nothing else
+    # may reference the secrets context.
+    assert set(env) - {"GH_TOKEN"} == {
+        "PR_NUMBER",
+        "HEAD_SHA",
+        "EVENT_ACTION",
+        "DEPLOY_BACKEND",
+        "RUN_MIGRATIONS",
+        "DEPLOY_FRONTEND",
+        "SUPABASE_BRANCH_ID",
+        "SUPABASE_BRANCH_REF",
+        "MODAL_APP_NAME",
+        "MODAL_API_URL",
+        "VERCEL_DEPLOYMENT_ID",
+        "VERCEL_PREVIEW_URL",
+        "VERCEL_ALIAS_URL",
+        "VERCEL_TIMINGS",
+        "GITHUB_DEPLOYMENT_ID",
+    }
+    assert not any("secrets." in str(value) for value in env.values())
+
+    upload = next(
+        s for s in gate["steps"] if s.get("uses", "").startswith("actions/upload-artifact")
+    )
+    assert upload["continue-on-error"] is True
+    assert upload["with"]["retention-days"] == 14
+    assert upload["with"]["if-no-files-found"] == "ignore"
+
+
+def test_metrics_step_runs_after_deployment_publish():
+    steps = [s.get("name", "") for s in _wf()["jobs"]["require-working-preview"]["steps"]]
+    assert steps.index("Record preview metrics") > steps.index(
+        "Publish the deployment result"
+    )
 
 
 def _reset_wf():

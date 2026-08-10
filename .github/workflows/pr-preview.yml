@@ -32,6 +32,7 @@ jobs:
       deploy_frontend: ${{ steps.compute.outputs.deploy_frontend }}
       any_change: ${{ steps.compute.outputs.any_change }}
       preview_backend_live: ${{ steps.compute.outputs.preview_backend_live }}
+      preview_generation: ${{ steps.compute.outputs.preview_generation }}
       preview_api_url: ${{ format('https://abundant-ai-preview--oddish-pr-{0}-api.modal.run', github.event.pull_request.number) }}
     steps:
       - name: Checkout repository
@@ -64,6 +65,8 @@ jobs:
         id: compute
         env:
           EVENT_ACTION: ${{ github.event.action }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BACKEND_BASE: ${{ steps.last_deployed.outputs.backend_base }}
           MIGRATIONS_BASE: ${{ steps.last_deployed.outputs.migrations_base }}
           BACKEND_CHANGED: ${{ steps.last_deployed.outputs.backend_changed }}
@@ -73,6 +76,16 @@ jobs:
           PR_FRONTEND_CHANGED: ${{ steps.last_deployed.outputs.pr_frontend }}
           WORKFLOW_CHANGED: ${{ steps.last_deployed.outputs.workflow_changed }}
         run: bash "$GITHUB_WORKSPACE/.github/scripts/preview/compute_deployment_plan.sh"
+
+      - name: Record preview identity
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_ACTION: ${{ github.event.action }}
+          DEPLOY_BACKEND: ${{ steps.compute.outputs.deploy_backend }}
+          RUN_MIGRATIONS: ${{ steps.compute.outputs.run_migrations }}
+          DEPLOY_FRONTEND: ${{ steps.compute.outputs.deploy_frontend }}
+        run: python "$GITHUB_WORKSPACE/.github/scripts/preview/record_preview_metrics.py" identity
 
   prepare-preview-database:
     name: Prepare preview database
@@ -136,6 +149,16 @@ jobs:
           RUN_MIGRATIONS: ${{ needs.detect-changes.outputs.run_migrations }}
         run: "$GITHUB_WORKSPACE/.github/scripts/preview/prepare_preview_database.sh"
 
+      - name: Record preview identity
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_ACTION: ${{ github.event.action }}
+          DEPLOY_BACKEND: ${{ needs.detect-changes.outputs.deploy_backend }}
+          RUN_MIGRATIONS: ${{ needs.detect-changes.outputs.run_migrations }}
+          DEPLOY_FRONTEND: ${{ needs.detect-changes.outputs.deploy_frontend }}
+        run: python "$GITHUB_WORKSPACE/.github/scripts/preview/record_preview_metrics.py" identity
+
   deploy-preview-backend:
     name: Deploy preview backend
     needs:
@@ -187,6 +210,16 @@ jobs:
       - name: Deploy preview backend
         id: deploy
         run: "$GITHUB_WORKSPACE/.github/scripts/preview/deploy_preview_backend.sh"
+
+      - name: Record preview identity
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_ACTION: ${{ github.event.action }}
+          DEPLOY_BACKEND: ${{ needs.detect-changes.outputs.deploy_backend }}
+          RUN_MIGRATIONS: ${{ needs.detect-changes.outputs.run_migrations }}
+          DEPLOY_FRONTEND: ${{ needs.detect-changes.outputs.deploy_frontend }}
+        run: python "$GITHUB_WORKSPACE/.github/scripts/preview/record_preview_metrics.py" identity
 
   update-vercel-preview:
     name: Update Vercel preview
@@ -242,6 +275,8 @@ jobs:
       backend_api_url: ${{ steps.vercel.outputs.backend_api_url }}
       backend_label: ${{ steps.vercel.outputs.backend_label }}
       database_label: ${{ steps.vercel.outputs.database_label }}
+      vercel_deployment_id: ${{ steps.vercel.outputs.vercel_deployment_id }}
+      timings: ${{ steps.vercel.outputs.timings }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -249,6 +284,16 @@ jobs:
       - name: Update Vercel preview
         id: vercel
         run: "$GITHUB_WORKSPACE/.github/scripts/preview/update_vercel_preview.sh"
+
+      - name: Record preview identity
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_ACTION: ${{ github.event.action }}
+          DEPLOY_BACKEND: ${{ needs.detect-changes.outputs.deploy_backend }}
+          RUN_MIGRATIONS: ${{ needs.detect-changes.outputs.run_migrations }}
+          DEPLOY_FRONTEND: ${{ needs.detect-changes.outputs.deploy_frontend }}
+        run: python "$GITHUB_WORKSPACE/.github/scripts/preview/record_preview_metrics.py" identity
 
   require-working-preview:
     name: Require working preview
@@ -270,8 +315,12 @@ jobs:
     # through the API with the workflow token, so the deployer is
     # github-actions. The record still satisfies the staging ruleset's
     # required-deployments rule (same environment, same commit).
+    # actions: read lets the telemetry step query the Jobs API for phase
+    # timing; contents: read is for the checkout that provides the script.
     permissions:
       deployments: write
+      actions: read
+      contents: read
     env:
       GH_TOKEN: ${{ github.token }}
       # Same-repository condition included: a fork branch named `staging`
@@ -279,6 +328,19 @@ jobs:
       PROMOTION_PR: ${{ github.event.pull_request.head.ref == 'staging' && github.event.pull_request.head.repo.full_name == github.repository }}
       DEPLOY_URL: ${{ (github.event.pull_request.head.ref == 'staging' && github.event.pull_request.head.repo.full_name == github.repository) && 'https://staging.oddish.app' || needs.update-vercel-preview.outputs.preview_alias_url || needs.update-vercel-preview.outputs.preview_url }}
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Record preview identity
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_ACTION: ${{ github.event.action }}
+          DEPLOY_BACKEND: ${{ needs.detect-changes.outputs.deploy_backend }}
+          RUN_MIGRATIONS: ${{ needs.detect-changes.outputs.run_migrations }}
+          DEPLOY_FRONTEND: ${{ needs.detect-changes.outputs.deploy_frontend }}
+        run: python "$GITHUB_WORKSPACE/.github/scripts/preview/record_preview_metrics.py" identity
+
       - name: Create the Preview deployment record
         id: deployment
         # Fork PRs get a read-only token; skip so the verify step below can
@@ -447,6 +509,46 @@ jobs:
               --input - >/dev/null
           echo "deployment $DEPLOYMENT_ID marked $state"
 
+      # Telemetry is deliberately soft: continue-on-error and always() so a
+      # metrics failure can never fail or skip the required gate, and failed
+      # previews still produce timing data.
+      - name: Record preview metrics
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_ACTION: ${{ github.event.action }}
+          DEPLOY_BACKEND: ${{ needs.detect-changes.outputs.deploy_backend }}
+          RUN_MIGRATIONS: ${{ needs.detect-changes.outputs.run_migrations }}
+          DEPLOY_FRONTEND: ${{ needs.detect-changes.outputs.deploy_frontend }}
+          SUPABASE_BRANCH_ID: ${{ needs.prepare-preview-database.outputs.branch_id }}
+          SUPABASE_BRANCH_REF: ${{ needs.prepare-preview-database.outputs.branch_ref }}
+          MODAL_APP_NAME: oddish-pr-${{ github.event.pull_request.number }}
+          # The live preview backend URL: this run's deploy, else the prior
+          # run's deterministic URL when one is still live. Never the
+          # staging/prod fallback the Vercel job may target.
+          MODAL_API_URL: ${{ needs.deploy-preview-backend.outputs.modal_api_url || (needs.detect-changes.outputs.preview_backend_live == 'true' && needs.detect-changes.outputs.preview_api_url || '') }}
+          VERCEL_DEPLOYMENT_ID: ${{ needs.update-vercel-preview.outputs.vercel_deployment_id }}
+          VERCEL_PREVIEW_URL: ${{ needs.update-vercel-preview.outputs.preview_url }}
+          VERCEL_ALIAS_URL: ${{ needs.update-vercel-preview.outputs.preview_alias_url }}
+          VERCEL_TIMINGS: ${{ needs.update-vercel-preview.outputs.timings }}
+          GITHUB_DEPLOYMENT_ID: ${{ steps.deployment.outputs.id }}
+        run: |
+          mkdir -p preview-metrics
+          python "$GITHUB_WORKSPACE/.github/scripts/preview/record_preview_metrics.py" record preview-metrics/preview-timing.json
+
+      - name: Upload preview timing artifact
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-timing-${{ needs.detect-changes.outputs.preview_generation || github.run_id }}
+          path: preview-metrics/preview-timing.json
+          if-no-files-found: ignore
+          retention-days: 14
+
   post-preview-links:
     name: Post preview links
     needs:
@@ -483,6 +585,16 @@ jobs:
       - name: Post preview links
         run: python "$GITHUB_WORKSPACE/.github/scripts/preview/post_preview_links.py"
 
+      - name: Record preview identity
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_ACTION: ${{ github.event.action }}
+          DEPLOY_BACKEND: ${{ needs.detect-changes.outputs.deploy_backend }}
+          RUN_MIGRATIONS: ${{ needs.detect-changes.outputs.run_migrations }}
+          DEPLOY_FRONTEND: ${{ needs.detect-changes.outputs.deploy_frontend }}
+        run: python "$GITHUB_WORKSPACE/.github/scripts/preview/record_preview_metrics.py" identity
+
   stop-preview:
     name: Stop preview
     if: >-
@@ -517,3 +629,12 @@ jobs:
 
       - name: Stop preview
         run: "$GITHUB_WORKSPACE/.github/scripts/preview/stop_preview.sh"
+
+      # No plan env here: detect-changes is skipped on closed events, and the
+      # identity renderer tolerates the missing flags.
+      - name: Record preview identity
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_ACTION: ${{ github.event.action }}
+        run: python "$GITHUB_WORKSPACE/.github/scripts/preview/record_preview_metrics.py" identity

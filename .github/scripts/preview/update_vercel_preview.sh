@@ -113,6 +113,10 @@ if ! is_configured_vercel; then
   exit 0
 fi
 
+# Phase timings feed the `timings` job output consumed by
+# record_preview_metrics.py: configure (env mutation), build wait (redeploy +
+# inspect), alias (stable alias + readiness).
+configure_start=$SECONDS
 (
   cd "$GITHUB_WORKSPACE/frontend"
   vercel pull --yes --environment=preview --git-branch="$VERCEL_GIT_BRANCH" --token="$VERCEL_TOKEN"
@@ -130,17 +134,25 @@ fi
   set_vercel_env NEXT_PUBLIC_ODDISH_PREVIEW_PR_TITLE "${PR_TITLE:-}"
 )
 
+configure_seconds=$((SECONDS - configure_start))
+build_start=$SECONDS
+build_seconds=0
+alias_seconds=0
 vercel_output="$(mktemp)"
 GITHUB_OUTPUT="$vercel_output" python "$script_dir/redeploy_vercel.py"
 [ -z "$github_output" ] || cat "$vercel_output" >> "$github_output"
 preview_url="$(read_output_value "$vercel_output" preview_url)"
 if [ -n "${PREVIEW_ALIAS_HOSTNAME:-}" ] && [ -n "$preview_url" ]; then
   vercel inspect "$preview_url" --wait --timeout=10m --scope "$VERCEL_ORG_ID" --token="$VERCEL_TOKEN" >/dev/null
+  build_seconds=$((SECONDS - build_start))
+  alias_start=$SECONDS
   vercel alias set "$preview_url" "$PREVIEW_ALIAS_HOSTNAME" --scope "$VERCEL_ORG_ID" --token="$VERCEL_TOKEN"
   preview_alias_url="https://$PREVIEW_ALIAS_HOSTNAME"
   wait_for_url_ready "$preview_alias_url"
+  alias_seconds=$((SECONDS - alias_start))
 elif [ -n "$preview_url" ]; then
   wait_for_url_ready "$preview_url"
+  build_seconds=$((SECONDS - build_start))
 fi
 if [ -n "$github_output" ]; then
   {
@@ -148,5 +160,7 @@ if [ -n "$github_output" ]; then
     echo "backend_api_url=$backend_api_url"
     echo "backend_label=$backend_label"
     echo "database_label=$database_label"
+    printf 'timings={"vercel_configure_seconds":%d,"vercel_build_wait_seconds":%d,"vercel_alias_seconds":%d}\n' \
+      "$configure_seconds" "$build_seconds" "$alias_seconds"
   } >> "$github_output"
 fi
