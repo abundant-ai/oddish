@@ -10,9 +10,9 @@ import json
 
 import pytest
 
-from api.services.cc_chat.analyzer_block_runner import run_analyzer_blocks
-from api.services.cc_chat.analyzer_prompt import REDUCE_PATH, findings_path
-from api.services.cc_chat.daytona_client import FakeDaytonaClient
+from api.services.blocks.analyzer.analyzer_block_runner import run_analyzer_blocks
+from api.services.blocks.analyzer.analyzer_prompt import REDUCE_PATH, findings_path
+from api.services.sandbox.daytona_client import FakeDaytonaClient
 from api.services.blocks.analyzer.sandbox_llm_client import SandboxAnalyzerLLMClient
 from oddish.blocks.analyzer.analyzer_llm_client import register_sandbox_client_factory
 from oddish.evals.primitives import SubAnalysis

@@ -113,11 +113,6 @@ interface TrialAnalysis {
   /** Per pre-trial finding assessments — the trial↔audit finding join. */
   exploitation?: TrialExploitation[];
   reward?: number | null;
-  prompt_kind?: string;
-  prompt_version?: number;
-  prompt_id?: string;
-  prompt_scope?: "global" | "org" | "user" | "experiment" | "task" | "trial";
-  prompt_scope_id?: string | null;
 }
 
 interface TrialQueueInfo {
@@ -210,6 +205,8 @@ export interface Trial {
 }
 
 interface TaskVerdict {
+  /** Absent on rows stored before the accept/reject label existed. */
+  verdict?: "accept" | "reject";
   is_good: boolean;
   confidence: "high" | "medium" | "low";
   primary_issue?: string | null;
@@ -707,6 +704,7 @@ export type TrajectoryComponentKind =
   | "thinking_understand"
   | "thinking_hypothesize"
   | "thinking_correction"
+  | "writing_plan"
   | "implementing"
   | "implementing_correction"
   | "writing_tests"

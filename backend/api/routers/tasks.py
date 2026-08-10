@@ -388,9 +388,7 @@ async def create_task_sweep(
                 request_hash=request_hash,
             )
         except TimeoutError as exc:
-            # Quota advisory-lock waits (and other DB wait timeouts) surface as
-            # bare TimeoutError from asyncpg. Map to 503 so the CLI retries with
-            # a legible message instead of an opaque "Internal Server Error".
+            # asyncpg raises bare TimeoutError on DB wait timeouts.
             logger.error(
                 "create_task_sweep timed out for task_id=%s org_id=%s",
                 submission.task_id,
@@ -1694,6 +1692,9 @@ async def list_task_files(
     presign: bool = Query(
         True, description="Include presigned URLs for direct S3 access"
     ),
+    inline: bool = Query(
+        True, description="Include eligible text file contents in the listing"
+    ),
     version: int | None = Query(None, description="Task version number"),
     stream: bool = Query(
         False,
@@ -1740,6 +1741,7 @@ async def list_task_files(
         cursor=cursor,
         presign=presign,
         version=version,
+        inline=inline,
     )
 
 
@@ -1752,6 +1754,7 @@ async def get_task_file_content(
     auth: Annotated[AuthContext, Depends(require_auth)],
     presign: bool = Query(False),
     version: int | None = Query(None, description="Task version number"),
+    max_bytes: int | None = Query(None, ge=1),
 ):
     """Get content of a specific task file from S3.
 
@@ -1777,6 +1780,7 @@ async def get_task_file_content(
         file_path=file_path,
         presign=presign,
         version=version,
+        max_bytes=max_bytes,
     )
 
     archive_etag = result.get("archive_etag")

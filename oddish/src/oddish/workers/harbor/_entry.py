@@ -162,7 +162,7 @@ def _build_job_config(payload: dict[str, Any]):
     )
     env_config.type = EnvironmentType(payload["environment"])
     if env_config.type == EnvironmentType.DAYTONA and payload.get("daytona_kwargs"):
-        env_config.kwargs = {**payload["daytona_kwargs"], **(env_config.kwargs or {})}
+        env_config.kwargs = payload["daytona_kwargs"]
 
     agent_kwargs: dict[str, Any] = dict(payload.get("agent_config") or {})
     if agent_kwargs.get("import_path") is None:
