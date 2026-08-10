@@ -921,6 +921,19 @@ class TaskVersionModel(TimestampedMixin, Base):
         server_default=text("'{}'::text[]"),
     )
 
+    # Task-browser read projection. Trial lifecycle writes rebuild this bounded
+    # per-version summary so the default browse page never scans trial history.
+    browse_last_run_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    browse_rollup: Mapped[dict] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+        deferred=True,
+    )
+
     # Pre-trial QA analysis (task-source audit; runs once per version since
     # each version is a distinct source snapshot to audit)
     pre_trial: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

@@ -5,7 +5,6 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
-logger = logging.getLogger(__name__)
 
 from fastapi import HTTPException
 from sqlalchemy import (
@@ -71,51 +70,26 @@ from oddish.schemas import (
     TaskBrowseItem,
     TaskBrowseResponse,
     TaskBrowseTrial,
+    TaskBrowseTrialGroup,
     TaskStatusResponse,
     UserTagRef,
 )
 from oddish.core.cost_basis import not_combine_copy_filter
 from oddish.core.endpoints.qa_cost import get_task_qa_costs, get_trial_qa_costs
+from oddish.core.task_browse_cost import (
+    resolve_browse_trial_cost as _resolve_browse_trial_cost,
+)
+from oddish.core.task_browse_projection import merge_task_version_browse_summaries
+from oddish.core.task_browse_summary import build_task_version_browse_summary
 from oddish.filters.trial_metrics import TrialMetricFilter
 from oddish.filters.trial_predicates import (
     EligibleTrialScope,
     build_trial_metric_predicate,
 )
-from oddish.model_pricing import estimate_cost_usd, get_model_pricing
+from oddish.model_pricing import get_model_pricing
 from oddish.timing import TimingRecorder, elapsed_ms, now
 
-
-def _resolve_browse_trial_cost(row: Mapping[str, Any]) -> tuple[float | None, bool]:
-    """Resolve a single browse trial's cost. Mirrors ``_resolve_trial_cost``:
-    prefer the agent's native ``cost_usd``; otherwise token-estimate (CLI
-    agents like cursor-cli / gemini-cli report tokens but no native cost).
-
-    Returns ``(cost_usd, is_estimated)``; ``(None, False)`` when unpriceable.
-    """
-    cost = row["cost_usd"]
-    if cost is not None:
-        return float(cost), False
-    if (
-        row["input_tokens"] is None
-        and row["output_tokens"] is None
-        and not row.get("cache_write_tokens")
-    ):
-        return None, False
-    from oddish.config import settings
-
-    model_name = settings.normalize_trial_model(
-        row["agent"], row["model"], strict=False
-    )
-    estimated = estimate_cost_usd(
-        model_name or row["model"],
-        row["input_tokens"],
-        row["output_tokens"],
-        row["cache_tokens"],
-        row.get("cache_write_tokens"),
-    )
-    if estimated is None:
-        return None, False
-    return estimated, True
+logger = logging.getLogger(__name__)
 
 
 async def list_tasks_core(
@@ -1291,9 +1265,9 @@ async def browse_tasks_core(
       ``*_trials_min``, ``pass/partial/fail/harness_count_min``, ``runtime_*``,
       ``sort``) are computed on the fly by ``_task_metrics_subquery`` — a single
       GROUP BY over the same scoped trial set — and applied as HAVING-equivalent
-      predicates before pagination. There is NO supporting index or roll-up; this
-      is the deliberately-slow path that full Phase 1.2 will denormalize. Cost sort
-      uses persisted costs plus the same token estimates shown on task cards.
+      predicates before pagination. These opt-in dimensions are not represented
+      by the card rollup and deliberately retain their historical GROUP BY path.
+      Cost sort uses persisted costs plus the same token estimates shown on cards.
     """
 
     current_version = aliased(TaskVersionModel)
@@ -1308,6 +1282,8 @@ async def browse_tasks_core(
             TaskModel.created_at.label("created_at"),
             TaskModel.link.label("link"),
             TaskModel.tags.label("tags"),
+            current_version.browse_last_run_at.label("browse_last_run_at"),
+            current_version.browse_rollup.label("browse_rollup"),
             func.row_number()
             .over(
                 partition_by=TaskModel.name,
@@ -1441,9 +1417,7 @@ async def browse_tasks_core(
     # when it's active so every constraint is checked against the same trial.
     metric_filter_active = not metric_filter.is_empty
     if trial_finished_after is not None:
-        trial_finished_predicates.append(
-            TrialModel.finished_at >= trial_finished_after
-        )
+        trial_finished_predicates.append(TrialModel.finished_at >= trial_finished_after)
     if trial_finished_before is not None:
         trial_finished_predicates.append(
             TrialModel.finished_at <= trial_finished_before
@@ -1578,10 +1552,10 @@ async def browse_tasks_core(
     # in SQL BEFORE pagination. We build one GROUP BY subquery and LEFT JOIN it
     # on the task's current version, then apply the range predicates as WHERE on
     # the aggregated columns (HAVING semantics) so tasks are filtered out of the
-    # ranked set before ``name_rank`` / LIMIT. The join + columns are added ONLY
-    # when an aggregate filter or aggregate sort is requested, so the default
-    # browse query is byte-for-byte unchanged. Each aggregate is an on-the-fly
-    # computation to be denormalized in full Phase 1.2 (see module note above).
+    # ranked set before ``name_rank`` / LIMIT. The join + columns are added
+    # only when an aggregate filter or aggregate sort is requested. The default
+    # browse reads the per-version projection instead and never builds this
+    # historical trial GROUP BY.
     aggregate_sort_active = sort in _AGGREGATE_SORTS
     aggregate_filter_active = any(
         value is not None
@@ -1970,46 +1944,6 @@ async def browse_tasks_core(
 
     ranked_tasks_subquery = ranked_tasks.subquery()
 
-    version_counts = (
-        select(
-            TaskVersionModel.task_id.label("task_id"),
-            func.count(TaskVersionModel.id).label("version_count"),
-        )
-        .group_by(TaskVersionModel.task_id)
-        .subquery()
-    )
-
-    trial_activity_at = func.greatest(
-        func.coalesce(TrialModel.finished_at, TrialModel.created_at),
-        func.coalesce(TrialModel.started_at, TrialModel.created_at),
-        TrialModel.created_at,
-    )
-    # The page ORDERING needs only max(activity) per (task, version); the
-    # heavy per-task counters are fetched afterwards for just the visible
-    # page. Folding them into this org-wide aggregate made every browse page
-    # compute eight aggregates over every trial in the org (~65% of page
-    # latency at prod volume) to display 25 rows.
-    trial_agg_query = select(
-        TrialModel.task_id.label("task_id"),
-        TrialModel.task_version_id.label("task_version_id"),
-        func.max(trial_activity_at).label("last_run_at"),
-    ).where(
-        TrialModel.superseded_by_trial_id.is_(None),
-        # Probes have their own tab; keep them out of the browser's counts
-        # and out of last_run_at, which drives the page ordering.
-        TrialModel.is_probe.isnot(True),
-        # A combine copy's created_at is its materialization time, so counting it
-        # here would freshen last_run_at and jump an old task up the page even
-        # though the card's counters/cost/icons exclude it. The source trial
-        # still supplies the real activity time.
-        not_combine_copy_filter(),
-    )
-    if org_id is not None:
-        trial_agg_query = trial_agg_query.where(TrialModel.org_id == org_id)
-    trial_aggregates = trial_agg_query.group_by(
-        TrialModel.task_id, TrialModel.task_version_id
-    ).subquery()
-
     paged_rows = (
         select(
             ranked_tasks_subquery.c.task_id,
@@ -2018,21 +1952,10 @@ async def browse_tasks_core(
             ranked_tasks_subquery.c.current_version_id,
             ranked_tasks_subquery.c.link,
             ranked_tasks_subquery.c.tags,
-            func.coalesce(version_counts.c.version_count, 0).label("version_count"),
-            trial_aggregates.c.last_run_at.label("last_run_at"),
+            ranked_tasks_subquery.c.browse_last_run_at.label("last_run_at"),
+            ranked_tasks_subquery.c.browse_rollup,
         )
         .select_from(ranked_tasks_subquery)
-        .outerjoin(
-            version_counts, version_counts.c.task_id == ranked_tasks_subquery.c.task_id
-        )
-        .outerjoin(
-            trial_aggregates,
-            and_(
-                trial_aggregates.c.task_id == ranked_tasks_subquery.c.task_id,
-                trial_aggregates.c.task_version_id
-                == ranked_tasks_subquery.c.current_version_id,
-            ),
-        )
         .where(ranked_tasks_subquery.c.name_rank == 1)
     )
 
@@ -2057,7 +1980,7 @@ async def browse_tasks_core(
             # real experiment. Fall back to the task's created_at when
             # no trials have finished yet.
             func.coalesce(
-                trial_aggregates.c.last_run_at,
+                ranked_tasks_subquery.c.browse_last_run_at,
                 ranked_tasks_subquery.c.created_at,
             ).desc(),
             nulls_last(ranked_tasks_subquery.c.current_version.desc()),
@@ -2078,67 +2001,97 @@ async def browse_tasks_core(
     raw_rows = result.mappings().all()
     has_more = len(raw_rows) > limit
     visible_rows = raw_rows[:limit]
-
-    experiments_by_task: dict[str, list[TaskBrowseExperiment]] = {}
-    latest_trials_by_task: dict[str, list[TaskBrowseTrial]] = {}
-    counters_by_task: dict[str, dict] = {}
-    # Per-task cost rollup (token-estimated for CLI agents that report tokens
-    # but no native cost_usd). Folded into the trials loop below to avoid an
-    # extra query. Mirrors the task-detail TaskCostTotals fields.
-    cost_by_task: dict[str, dict[str, Any]] = {}
-    cost_scope_active = sort == "cost_desc"
     task_version_pairs = [
         (str(row["task_id"]), str(row["current_version_id"]))
         for row in visible_rows
         if row["current_version_id"] is not None
     ]
     task_ids = [str(row["task_id"]) for row in visible_rows]
-
-    if task_version_pairs:
-        counters_query = (
+    version_counts_by_task: dict[str, int] = {}
+    if task_ids:
+        version_count_rows = await session.execute(
             select(
-                TrialModel.task_id.label("task_id"),
-                func.count(TrialModel.id).label("total_trials"),
-                func.count(case((TrialModel.status == TrialStatus.SUCCESS, 1))).label(
-                    "completed_trials"
-                ),
-                func.count(case((TrialModel.status == TrialStatus.FAILED, 1))).label(
-                    "failed_trials"
-                ),
-                func.count(case((TrialModel.reward == 1, 1))).label("reward_success"),
-                func.sum(TrialModel.reward).label("reward_sum"),
-                func.count(case((TrialModel.reward.isnot(None), 1))).label(
-                    "reward_total"
-                ),
+                TaskVersionModel.task_id,
+                func.count(TaskVersionModel.id).label("version_count"),
             )
-            .where(
-                TrialModel.superseded_by_trial_id.is_(None),
-                TrialModel.is_probe.isnot(True),
-                # Combine copies double-count an execution already counted under
-                # its source experiment; drop them so the card's trial counts and
-                # cost match the task-detail view (which excludes them too).
-                not_combine_copy_filter(),
-                tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(
-                    task_version_pairs
-                ),
-            )
-            .group_by(TrialModel.task_id)
+            .where(TaskVersionModel.task_id.in_(task_ids))
+            .group_by(TaskVersionModel.task_id)
         )
-        if org_id is not None:
-            counters_query = counters_query.where(TrialModel.org_id == org_id)
-        counters_started_at = now()
-        counter_rows = await session.execute(counters_query)
-        if record_timing is not None:
-            record_timing(
-                "browse_counters",
-                elapsed_ms(counters_started_at),
-                "Browse page trial counters",
-            )
-        counters_by_task = {
-            str(row["task_id"]): dict(row) for row in counter_rows.mappings()
+        version_counts_by_task = {
+            str(row["task_id"]): int(row["version_count"])
+            for row in version_count_rows.mappings()
         }
-        # All-time experiment membership via ``task_experiments``, matching the
-        # task-detail page (and user tags) rather than the current-version trials.
+
+    rollups_by_task = {
+        str(row["task_id"]): dict(row["browse_rollup"] or {}) for row in visible_rows
+    }
+    if task_version_pairs:
+        live_where = [
+            tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(
+                task_version_pairs
+            ),
+            TrialModel.status.in_((TrialStatus.RUNNING, TrialStatus.RETRYING)),
+            TrialModel.superseded_by_trial_id.is_(None),
+            TrialModel.is_probe.isnot(True),
+            not_combine_copy_filter(),
+        ]
+        if org_id is not None:
+            live_where.append(TrialModel.org_id == org_id)
+        live_rows = (
+            await session.execute(
+                select(
+                    TrialModel.task_id,
+                    TrialModel.id,
+                    TrialModel.name,
+                    TrialModel.status,
+                    TrialModel.reward,
+                    TrialModel.error_message,
+                    TrialModel.agent,
+                    TrialModel.model,
+                    TrialModel.cost_usd,
+                    TrialModel.input_tokens,
+                    TrialModel.output_tokens,
+                    TrialModel.cache_tokens,
+                    TrialModel.cache_write_tokens,
+                    TrialModel.billed_user_id,
+                    TrialModel.started_at,
+                    TrialModel.finished_at,
+                    TrialModel.created_at,
+                )
+                .where(*live_where)
+                .order_by(TrialModel.task_id, TrialModel.created_at, TrialModel.id)
+            )
+        ).mappings()
+        live_by_task: dict[str, list[Mapping[str, Any]]] = {}
+        for live_row in live_rows:
+            live_by_task.setdefault(str(live_row["task_id"]), []).append(live_row)
+        for task_id, rows in live_by_task.items():
+            _, live_summary = build_task_version_browse_summary(rows)
+            rollups_by_task[task_id] = merge_task_version_browse_summaries(
+                rollups_by_task.get(task_id, {}), live_summary
+            )
+    latest_trials_by_task = {
+        task_id: [
+            TaskBrowseTrial.model_validate(trial)
+            for trial in rollup.get("latest_trials", [])
+        ]
+        for task_id, rollup in rollups_by_task.items()
+    }
+    trial_groups_by_task = {
+        task_id: [
+            TaskBrowseTrialGroup.model_validate(group)
+            for group in rollup.get("trial_groups", [])
+        ]
+        for task_id, rollup in rollups_by_task.items()
+    }
+    cost_scope_active = sort == "cost_desc"
+    cost_by_task: dict[str, dict[str, Any]] = (
+        {} if cost_scope_active else rollups_by_task
+    )
+    experiments_by_task: dict[str, list[TaskBrowseExperiment]] = {}
+
+    if task_ids:
+        # Membership is independent of a task's selected version.
         exp_where = [
             task_experiments.c.task_id.in_(task_ids),
             task_experiments.c.deleted_at.is_(None),
@@ -2180,104 +2133,59 @@ async def browse_tasks_core(
                 )
             )
 
-        trial_query = (
-            select(
-                TrialModel.task_id.label("task_id"),
-                TrialModel.id.label("trial_id"),
-                TrialModel.name.label("trial_name"),
-                TrialModel.status.label("trial_status"),
-                TrialModel.reward.label("reward"),
-                TrialModel.error_message.label("error_message"),
-                TrialModel.agent.label("agent"),
-                TrialModel.model.label("model"),
-                TrialModel.cost_usd.label("cost_usd"),
-                TrialModel.input_tokens.label("input_tokens"),
-                TrialModel.output_tokens.label("output_tokens"),
-                TrialModel.cache_tokens.label("cache_tokens"),
-                TrialModel.cache_write_tokens.label("cache_write_tokens"),
-                TrialModel.billed_user_id.label("billed_user_id"),
-                TrialModel.finished_at.label("finished_at"),
-            )
-            .where(
-                TrialModel.superseded_by_trial_id.is_(None),
-                TrialModel.is_probe.isnot(True),
-                # Combine copies re-materialize the same execution under other
-                # experiments; keeping them rendered as duplicate result icons on
-                # the card. Exclude so each execution shows once.
-                not_combine_copy_filter(),
-                tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(
-                    task_version_pairs
-                ),
-            )
-            .order_by(
-                TrialModel.task_id.asc(),
-                TrialModel.created_at.asc(),
-                TrialModel.id.asc(),
-            )
+    # Cost sorting may carry model/time bounds. Preserve that explicit slow
+    # path's scoped card values, but never run it for the default browse.
+    if cost_scope_active and task_version_pairs:
+        cost_query = select(
+            TrialModel.task_id.label("task_id"),
+            TrialModel.agent,
+            TrialModel.model,
+            TrialModel.cost_usd,
+            TrialModel.input_tokens,
+            TrialModel.output_tokens,
+            TrialModel.cache_tokens,
+            TrialModel.cache_write_tokens,
+            TrialModel.billed_user_id,
+            TrialModel.finished_at,
+        ).where(
+            TrialModel.superseded_by_trial_id.is_(None),
+            TrialModel.is_probe.isnot(True),
+            not_combine_copy_filter(),
+            tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(
+                task_version_pairs
+            ),
         )
         if org_id is not None:
-            trial_query = trial_query.where(TrialModel.org_id == org_id)
-        trials_started_at = now()
-        latest_trial_rows = await session.execute(trial_query)
-        if record_timing is not None:
-            record_timing(
-                "browse_trials",
-                elapsed_ms(trials_started_at),
-                "Browse trials query",
-            )
-        for trial_row in latest_trial_rows.mappings():
-            task_key = str(trial_row["task_id"])
-            latest_trials_by_task.setdefault(task_key, []).append(
-                TaskBrowseTrial(
-                    id=str(trial_row["trial_id"]),
-                    name=str(trial_row["trial_name"]),
-                    status=trial_row["trial_status"],
-                    reward=trial_row["reward"],
-                    error_message=trial_row["error_message"],
-                    agent=str(trial_row["agent"]),
-                    model=trial_row["model"],
+            cost_query = cost_query.where(TrialModel.org_id == org_id)
+        for trial_row in (await session.execute(cost_query)).mappings():
+            if models and trial_row["model"] not in models:
+                continue
+            finished_at = trial_row["finished_at"]
+            if trial_finished_after is not None and (
+                finished_at is None or finished_at < trial_finished_after
+            ):
+                continue
+            if trial_finished_before is not None and (
+                finished_at is None or finished_at > trial_finished_before
+            ):
+                continue
+            resolved_cost, estimated = _resolve_browse_trial_cost(trial_row)
+            if resolved_cost is None:
+                continue
+            aggregate = cost_by_task.setdefault(str(trial_row["task_id"]), {})
+            aggregate["cost_usd"] = aggregate.get("cost_usd", 0.0) + resolved_cost
+            aggregate["cost_trial_count"] = aggregate.get("cost_trial_count", 0) + 1
+            aggregate["cost_has_estimated" if estimated else "cost_has_native"] = True
+            if trial_row["billed_user_id"] is not None:
+                aggregate["billed_cost_usd"] = (
+                    aggregate.get("billed_cost_usd", 0.0) + resolved_cost
                 )
-            )
-            if cost_scope_active:
-                if models and trial_row["model"] not in models:
-                    continue
-                finished_at = trial_row["finished_at"]
-                if trial_finished_after is not None and (
-                    finished_at is None or finished_at < trial_finished_after
-                ):
-                    continue
-                if trial_finished_before is not None and (
-                    finished_at is None or finished_at > trial_finished_before
-                ):
-                    continue
-            resolved_cost, cost_estimated = _resolve_browse_trial_cost(trial_row)
-            if resolved_cost is not None:
-                cost_agg: dict[str, Any] = cost_by_task.setdefault(
-                    task_key,
-                    {
-                        "cost_usd": 0.0,
-                        "cost_trial_count": 0,
-                        "cost_has_estimated": False,
-                        "cost_has_native": False,
-                        "billed_cost_usd": 0.0,
-                        "billed_trial_count": 0,
-                        "billed_has_estimated": False,
-                        "billed_has_native": False,
-                    },
+                aggregate["billed_trial_count"] = (
+                    aggregate.get("billed_trial_count", 0) + 1
                 )
-                cost_agg["cost_usd"] += resolved_cost
-                cost_agg["cost_trial_count"] += 1
-                if cost_estimated:
-                    cost_agg["cost_has_estimated"] = True
-                else:
-                    cost_agg["cost_has_native"] = True
-                if trial_row["billed_user_id"] is not None:
-                    cost_agg["billed_cost_usd"] += resolved_cost
-                    cost_agg["billed_trial_count"] += 1
-                    if cost_estimated:
-                        cost_agg["billed_has_estimated"] = True
-                    else:
-                        cost_agg["billed_has_native"] = True
+                aggregate[
+                    "billed_has_estimated" if estimated else "billed_has_native"
+                ] = True
 
     # Hydrate effective user tags for each visible task, batched in a
     # single round trip. Used to populate ``TaskBrowseItem.user_tags`` so
@@ -2319,31 +2227,29 @@ async def browse_tasks_core(
                     if row["current_version_id"] is not None
                     else None
                 ),
-                version_count=int(row["version_count"] or 0),
+                version_count=version_counts_by_task.get(str(row["task_id"]), 0),
                 total_trials=int(
-                    counters_by_task.get(str(row["task_id"]), {}).get("total_trials")
+                    rollups_by_task.get(str(row["task_id"]), {}).get("total_trials")
                     or 0
                 ),
                 completed_trials=int(
-                    counters_by_task.get(str(row["task_id"]), {}).get(
-                        "completed_trials"
-                    )
+                    rollups_by_task.get(str(row["task_id"]), {}).get("completed_trials")
                     or 0
                 ),
                 failed_trials=int(
-                    counters_by_task.get(str(row["task_id"]), {}).get("failed_trials")
+                    rollups_by_task.get(str(row["task_id"]), {}).get("failed_trials")
                     or 0
                 ),
                 reward_success=int(
-                    counters_by_task.get(str(row["task_id"]), {}).get("reward_success")
+                    rollups_by_task.get(str(row["task_id"]), {}).get("reward_success")
                     or 0
                 ),
                 reward_sum=float(
-                    counters_by_task.get(str(row["task_id"]), {}).get("reward_sum")
+                    rollups_by_task.get(str(row["task_id"]), {}).get("reward_sum")
                     or 0.0
                 ),
                 reward_total=int(
-                    counters_by_task.get(str(row["task_id"]), {}).get("reward_total")
+                    rollups_by_task.get(str(row["task_id"]), {}).get("reward_total")
                     or 0
                 ),
                 last_run_at=row["last_run_at"],
@@ -2384,6 +2290,13 @@ async def browse_tasks_core(
                     else 0.0
                 ),
                 latest_trials=latest_trials_by_task.get(str(row["task_id"]), []),
+                trial_status_counts={
+                    str(key): int(value)
+                    for key, value in rollups_by_task.get(str(row["task_id"]), {})
+                    .get("trial_status_counts", {})
+                    .items()
+                },
+                trial_groups=trial_groups_by_task.get(str(row["task_id"]), []),
                 experiments=experiments_by_task.get(str(row["task_id"]), []),
                 user_tags=[
                     UserTagRef(
@@ -2451,9 +2364,7 @@ async def browse_task_facets_core(
     try:
         stmt = select(
             TrialFacetModel.kind, TrialFacetModel.value, TrialFacetModel.value_2
-        ).order_by(
-            TrialFacetModel.kind, TrialFacetModel.value, TrialFacetModel.value_2
-        )
+        ).order_by(TrialFacetModel.kind, TrialFacetModel.value, TrialFacetModel.value_2)
         if org_id is not None:
             stmt = stmt.where(TrialFacetModel.org_id == org_id)
         prev: tuple[str, str, str] | None = None
@@ -2462,9 +2373,7 @@ async def browse_task_facets_core(
                 continue  # an unscoped read spans orgs; collapse their overlap
             prev = (kind, value, value_2)
             if kind == "agent_model":
-                agent_models.append(
-                    AgentModelFacet(agent=value, model=value_2 or None)
-                )
+                agent_models.append(AgentModelFacet(agent=value, model=value_2 or None))
             elif kind in lists:
                 lists[kind].append(value)
     except Exception:  # noqa: BLE001 - facets are best-effort
@@ -2529,10 +2438,7 @@ async def browse_experiment_options_core(
     limit = max(1, min(limit, EXPERIMENT_OPTIONS_MAX_LIMIT))
     if query and query.strip():
         escaped = (
-            query.strip()
-            .replace("\\", "\\\\")
-            .replace("%", "\\%")
-            .replace("_", "\\_")
+            query.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         )
         base = base.where(ExperimentModel.name.ilike(f"%{escaped}%", escape="\\"))
     stmt = base.order_by(ExperimentModel.name, ExperimentModel.id).limit(limit)

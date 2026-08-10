@@ -6,6 +6,7 @@ from collections import Counter
 
 from sqlalchemy import text
 
+from oddish.core.task_browse_rollup import refresh_task_browse_rollups_for_trials
 from oddish.db import get_session
 from oddish.model_pricing import settle_cost_usd
 
@@ -105,8 +106,10 @@ async def run_backfill(*, apply: bool) -> None:
 
             if updates:
                 for start in range(0, len(updates), _UPDATE_CHUNK_SIZE):
-                    await session.execute(
-                        _UPDATE_COST, updates[start : start + _UPDATE_CHUNK_SIZE]
+                    chunk = updates[start : start + _UPDATE_CHUNK_SIZE]
+                    await session.execute(_UPDATE_COST, chunk)
+                    await refresh_task_browse_rollups_for_trials(
+                        session, [str(update["id"]) for update in chunk]
                     )
 
     if not total_rows:

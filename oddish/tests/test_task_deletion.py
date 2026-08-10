@@ -91,13 +91,10 @@ async def test_delete_task_core_soft_deletes_task_and_trials():
 
     # statements[0] task lookup, statements[1] trial lookup.
     write_statements = session.statements[2:]
-    # Soft delete emits in order:
-    #   1. UPDATE worker_jobs ... WHERE subject_table='trials'  (text())
-    #   2. UPDATE worker_jobs ... WHERE subject_table='tasks'   (text())
-    #   3. UPDATE trials SET deleted_at = ...                   (ORM update)
-    #   4. UPDATE tasks  SET deleted_at = ...                   (ORM update)
-    assert len(write_statements) == 4
-    domain_writes = write_statements[2:]
+    # Soft delete emits worker-job cancellation, the two tombstone UPDATEs,
+    # then reads the task's version ids for browse-rollup refresh.
+    assert len(write_statements) == 5
+    domain_writes = write_statements[2:4]
     table_names = [
         stmt.table.name  # ORM ``update(Model)`` exposes ``.table``
         for stmt in domain_writes

@@ -8,6 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
+from oddish.core.task_browse_rollup import refresh_task_version_browse_rollups
 from oddish.db import get_session
 
 
@@ -181,9 +182,11 @@ async def _count_nop_oracle_default_model_updates(session: AsyncSession) -> int:
     return int(row.scalar_one())
 
 
-async def _apply_nop_oracle_default_model_updates(session: AsyncSession) -> int:
+async def _apply_nop_oracle_default_model_updates(
+    session: AsyncSession,
+) -> tuple[int, list[str]]:
     if not await _table_exists(session, "trials"):
-        return 0
+        return 0, []
     result = await session.execute(
         text(
             """
@@ -195,11 +198,13 @@ async def _apply_nop_oracle_default_model_updates(session: AsyncSession) -> int:
                 model IS NULL
                 OR LOWER(BTRIM(model)) = ANY(:aliases)
               )
+            RETURNING task_version_id
             """
         ),
         {"aliases": list(_MODEL_ABSENT_ALIASES)},
     )
-    return int(result.rowcount or 0)  # type: ignore[attr-defined]
+    version_ids = [str(row[0]) for row in result if row[0] is not None]
+    return len(version_ids), version_ids
 
 
 async def run_backfill(*, apply: bool) -> None:
@@ -254,7 +259,10 @@ async def run_backfill(*, apply: bool) -> None:
             if mapping
             else {"queue_slots_inserted": 0, "queue_slots_deleted": 0}
         )
-        model_rows = await _apply_nop_oracle_default_model_updates(session)
+        model_rows, model_version_ids = await _apply_nop_oracle_default_model_updates(
+            session
+        )
+        await refresh_task_version_browse_rollups(session, model_version_ids)
 
         print("\nBackfill applied:")
         if simple:

@@ -346,6 +346,18 @@ otherwise it falls back to the highest version represented by such trials. The
 so progressive loading cannot change the files/counts pivot or mix one
 version's trials with another's artifacts.
 
+The default `/tasks/browse` read orders and enriches cards from the selected
+`task_versions.browse_last_run_at` / `browse_rollup` projection. Trial creation,
+settlement/retry, supersede, import, deletion, and default-version changes
+rebuild the affected version in the same transaction, serialized by a version
+row lock. The rollup keeps exact stable counts, reward/cost totals, status
+buckets, agent/model groups, and at most 100 recent trial glyph records.
+`RUNNING` / `RETRYING` rows are overlaid from a query restricted to the visible
+page's `(task_id, task_version_id)` pairs so live cost checkpoints remain
+current without loading queued or historical trials. The default request must
+not fall back to an org-wide `trials` aggregate; explicit aggregate/comparison
+filters retain their intentionally slower historical queries.
+
 `GET /experiments/{experiment_id}/cost-totals` reports both cost and token
 usage across every trial owned by the experiment, including older versions,
 superseded retries, probes, and soft-deleted trials. Its `billed_*` cost and

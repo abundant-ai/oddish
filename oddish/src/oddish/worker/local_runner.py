@@ -44,6 +44,7 @@ from oddish.db import (
 )
 from oddish.core.harbor_artifacts import cache_write_tokens_from_trajectory
 from oddish.core.llm_key_fingerprint import platform_key_hash_for_provider
+from oddish.core.task_browse_rollup import refresh_task_version_browse_rollups
 from oddish.db.models import WorkerJobKind, WorkerJobModel, WorkerJobStatus
 from oddish.db.storage import resolve_task_directory
 from oddish.model_pricing import is_native_cost_trusted, settle_cost_usd
@@ -328,27 +329,39 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
     # this claim is the single choke point that prevents double-dispatch.
     async with get_session() as session:
         claimed = (
-            await session.execute(
-                update(TrialModel)
-                .where(
-                    TrialModel.id == trial_id,
-                    TrialModel.status == TrialStatus.QUEUED,
-                    ~exists().where(
-                        and_(
-                            WorkerJobModel.kind == WorkerJobKind.TRIAL,
-                            WorkerJobModel.subject_table == "trials",
-                            WorkerJobModel.subject_id == TrialModel.id,
-                            WorkerJobModel.status == WorkerJobStatus.BLOCKED,
-                        )
-                    ),
+            (
+                await session.execute(
+                    update(TrialModel)
+                    .where(
+                        TrialModel.id == trial_id,
+                        TrialModel.status == TrialStatus.QUEUED,
+                        ~exists().where(
+                            and_(
+                                WorkerJobModel.kind == WorkerJobKind.TRIAL,
+                                WorkerJobModel.subject_table == "trials",
+                                WorkerJobModel.subject_id == TrialModel.id,
+                                WorkerJobModel.status == WorkerJobStatus.BLOCKED,
+                            )
+                        ),
+                    )
+                    .values(
+                        status=TrialStatus.RUNNING,
+                        started_at=datetime.now(timezone.utc),
+                    )
+                    .returning(
+                        TrialModel.org_id.label("claim_org_id"),
+                        TrialModel.billed_user_id.label("claim_billed_user_id"),
+                        TrialModel.task_version_id.label("claim_task_version_id"),
+                    )
                 )
-                .values(
-                    status=TrialStatus.RUNNING,
-                    started_at=datetime.now(timezone.utc),
-                )
-                .returning(TrialModel.org_id, TrialModel.billed_user_id)
             )
-        ).one_or_none()
+            .mappings()
+            .one_or_none()
+        )
+        if claimed is not None:
+            await refresh_task_version_browse_rollups(
+                session, [claimed["claim_task_version_id"]]
+            )
     if claimed is None:
         logger.info(
             "local_runner: trial %s not claimable (already dispatched, gated, "
@@ -356,7 +369,8 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
             trial_id,
         )
         return
-    org_id, billed_user_id = claimed
+    org_id = claimed["claim_org_id"]
+    billed_user_id = claimed["claim_billed_user_id"]
     logger.info("local_runner: trial %s -> RUNNING", trial_id)
 
     failure: Exception | None = None
@@ -384,6 +398,7 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
                 logger.info("local_runner: trial %s -> SUCCESS", trial_id)
             trial.finished_at = datetime.now(timezone.utc)
             completed = True
+            await refresh_task_version_browse_rollups(session, [trial.task_version_id])
         else:
             logger.info(
                 "local_runner: trial %s completion ignored; status is %s",

@@ -276,6 +276,14 @@ interface TaskBrowseTrial {
   model: string | null;
 }
 
+interface TaskBrowseTrialGroup {
+  agent: string;
+  model: string | null;
+  trial_count: number;
+  reward_sum: number;
+  reward_total: number;
+}
+
 export interface TaskBrowseItem {
   id: string;
   name: string;
@@ -301,6 +309,8 @@ export interface TaskBrowseItem {
   billed_has_native: boolean;
   qa_cost_usd?: number;
   latest_trials: TaskBrowseTrial[];
+  trial_status_counts: Record<string, number>;
+  trial_groups: TaskBrowseTrialGroup[];
   experiments: TaskBrowseExperiment[];
   user_tags: UserTagRef[];
 }
