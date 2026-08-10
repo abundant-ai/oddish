@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import type { CSSProperties } from "react";
 
-import type { AnalysisClassification } from "@/lib/types";
+import type { AnalysisClassification, Trial } from "@/lib/types";
 
 /**
  * Trial status types that map to visual states in the UI.
@@ -57,6 +57,22 @@ export const ANALYSIS_CLASSIFICATION_LABELS: Record<
   BAD_FAILURE: "Bad failure",
   HARNESS_ERROR: "Harness error",
 };
+
+/**
+ * The classification a view is allowed to show, or null. This is the ONLY
+ * place the QA-visibility gate lives: public share surfaces pass
+ * `showAnalysis: false` to hide QA entirely, and a classification counts
+ * only once the trial's analysis succeeded. Every glyph fill, label,
+ * aria-label, and dot consumer must derive from this function so the gate
+ * cannot drift between surfaces.
+ */
+export function getVisibleAnalysisClassification(
+  showAnalysis: boolean,
+  trial: Pick<Trial, "analysis_status" | "analysis">,
+): AnalysisClassification | null {
+  if (!showAnalysis || trial.analysis_status !== "success") return null;
+  return trial.analysis?.classification ?? null;
+}
 
 /**
  * Glyph fill override for a classified trial, or null when the outcome

@@ -81,6 +81,7 @@ import {
   getMatrixStatus,
   getQaGlyphMatrixClass,
   getRewardStyle,
+  getVisibleAnalysisClassification,
   STATUS_CONFIG,
   STATUS_GLYPH_BOX,
   type MatrixStatus,
@@ -1260,10 +1261,11 @@ export function TrialDetailPanel({
                   // Same cell semiotics as the experiment matrix: a
                   // classified binary outcome takes its QA tone as the
                   // glyph fill (good failure = green ✗, bad success = red ✓).
-                  const groupClassification =
-                    groupTrial.analysis_status === "success"
-                      ? (groupTrial.analysis?.classification ?? null)
-                      : null;
+                  // The shared gate keeps QA hidden on public share views.
+                  const groupClassification = getVisibleAnalysisClassification(
+                    showAnalysis,
+                    groupTrial,
+                  );
                   const groupQaGlyphClass = getQaGlyphMatrixClass(
                     groupStatus,
                     groupClassification,

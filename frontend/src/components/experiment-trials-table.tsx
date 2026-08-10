@@ -83,6 +83,7 @@ import {
   getMatrixStatus,
   getQaGlyphMatrixClass,
   getRewardStyle,
+  getVisibleAnalysisClassification,
   QA_TONE_MATRIX_CLASS,
   STATUS_CONFIG,
   STATUS_GLYPH_BOX,
@@ -2476,17 +2477,18 @@ export function ExperimentTrialsTable({
                                   // A classified binary outcome takes its QA
                                   // tone as the glyph fill: shape = outcome,
                                   // color = QA verdict. A good failure is a
-                                  // green ✗, a bad success a red ✓.
+                                  // green ✗, a bad success a red ✓. The
+                                  // classification (and with it the fill and
+                                  // label) is null when QA is hidden.
                                   const classification =
-                                    trial.analysis_status === "success"
-                                      ? (trial.analysis?.classification ?? null)
-                                      : null;
-                                  const qaGlyphClass = showAnalysis
-                                    ? getQaGlyphMatrixClass(
-                                        status,
-                                        classification
-                                      )
-                                    : null;
+                                    getVisibleAnalysisClassification(
+                                      showAnalysis,
+                                      trial
+                                    );
+                                  const qaGlyphClass = getQaGlyphMatrixClass(
+                                    status,
+                                    classification
+                                  );
                                   const cellLabel = classification
                                     ? ANALYSIS_CLASSIFICATION_LABELS[
                                         classification
