@@ -23,9 +23,17 @@ def test_daytona_backend_name_matches_environment_value() -> None:
     assert DaytonaBackend().name == "daytona"
 
 
-def test_daytona_capabilities_are_cpu_only_no_private_registry() -> None:
+def test_daytona_capabilities_include_gpu_no_private_registry() -> None:
     caps = DaytonaBackend().capabilities()
-    assert caps.gpu is None
+    assert caps.gpu is not None
+    assert caps.gpu.accelerators == (
+        "H200",
+        "H100",
+        "RTX_PRO_6000",
+        "RTX_5090",
+        "RTX_4090",
+    )
+    assert caps.gpu.max_count == 1
     assert caps.private_registry_pull is False
     assert caps.cold_start == "seconds"
 

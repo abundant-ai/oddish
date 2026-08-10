@@ -27,7 +27,7 @@ def test_override_tpu_defaults_to_gke() -> None:
 
 def test_override_gpus_does_not_default_to_gke() -> None:
     submission = _submission(override_gpus=1)
-    assert get_default_cloud_environment(submission) != EnvironmentType.GKE
+    assert get_default_cloud_environment(submission) == EnvironmentType.DAYTONA
 
 
 def test_plain_submission_does_not_default_to_gke() -> None:

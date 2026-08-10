@@ -379,8 +379,13 @@ async def test_login_nonzero_log_redacts_token(creds, caplog):
 
 
 def test_apply_harbor_patches_is_idempotent(monkeypatch):
-    calls = {"daytona": 0, "modal": 0}
+    calls = {"gpu": 0, "daytona": 0, "modal": 0}
     monkeypatch.setattr(harbor_patches, "_PATCHED", False)
+    monkeypatch.setattr(
+        harbor_patches,
+        "_patch_daytona_gpu_types",
+        lambda: calls.__setitem__("gpu", calls["gpu"] + 1),
+    )
     monkeypatch.setattr(
         harbor_patches,
         "_patch_daytona_dind",
@@ -395,7 +400,25 @@ def test_apply_harbor_patches_is_idempotent(monkeypatch):
     harbor_patches.apply_harbor_patches()
     harbor_patches.apply_harbor_patches()
 
-    assert calls == {"daytona": 1, "modal": 1}
+    assert calls == {"gpu": 1, "daytona": 1, "modal": 1}
+
+
+def test_daytona_gpu_type_patch_adds_current_aliases():
+    module = importlib.import_module("harbor.environments.daytona.environment")
+    original = dict(module.DAYTONA_GPU_TYPE_MAP)
+    try:
+        module.DAYTONA_GPU_TYPE_MAP.clear()
+        module.DAYTONA_GPU_TYPE_MAP.update({"h100": "H100"})
+
+        harbor_patches._patch_daytona_gpu_types()
+
+        assert module.DAYTONA_GPU_TYPE_MAP["h200"] == "H200"
+        assert module.DAYTONA_GPU_TYPE_MAP["nvidia-h200-141gb"] == "H200"
+        assert module.DAYTONA_GPU_TYPE_MAP["rtx-4090"] == "RTX-4090"
+        assert module.DAYTONA_GPU_TYPE_MAP["rtx_5090"] == "RTX-5090"
+    finally:
+        module.DAYTONA_GPU_TYPE_MAP.clear()
+        module.DAYTONA_GPU_TYPE_MAP.update(original)
 
 
 def test_daytona_mirror_patch_targets_dind_only(monkeypatch):

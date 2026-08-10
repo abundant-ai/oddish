@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from oddish.config import settings
-from oddish.runtime.ports import Capabilities, ExecutionBackend
+from oddish.runtime.ports import Capabilities, ExecutionBackend, GpuSupport
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +101,10 @@ class DaytonaBackend:
 
     def capabilities(self) -> Capabilities:
         return Capabilities(
-            gpu=None,
+            gpu=GpuSupport(
+                accelerators=("H200", "H100", "RTX_PRO_6000", "RTX_5090", "RTX_4090"),
+                max_count=1,
+            ),
             private_registry_pull=False,
             network_egress="allow",
             persistent_volumes=False,

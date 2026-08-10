@@ -1,10 +1,9 @@
 """Capability negotiation + the cloud-environment default.
 
-The negotiation reproduces today's outcome (GPU/private-registry → Modal,
-plain CPU → Daytona) by iterating ``ordered_backends()`` (cheap-first) and
-returning the first backend whose capabilities satisfy the requirements.
-``default_cloud_environment`` is the behavior-preserving facade the CLI and
-the backend cloud policy call."""
+The negotiation chooses the cheapest registered backend whose capabilities
+satisfy the requirements. Daytona is first in the order, so CPU and GPU default
+there; private-registry pulls still require Modal. ``default_cloud_environment``
+is the facade the CLI and backend cloud policy call."""
 
 from __future__ import annotations
 
@@ -47,7 +46,7 @@ def select_backend(
 def default_cloud_environment(
     *, requires_gpu: bool = False, requires_tpu: bool = False
 ) -> EnvironmentType:
-    """The cloud default via capability negotiation: TPU → GKE, GPU → Modal,
+    """The cloud default via capability negotiation: TPU → GKE, GPU → Daytona,
     else Daytona."""
     return EnvironmentType(
         select_backend(requires_gpu=requires_gpu, requires_tpu=requires_tpu).name

@@ -44,16 +44,16 @@ def test_allowed_cloud_environments_is_modal_and_daytona() -> None:
     )
 
 
-def test_default_cloud_environment_gpu_routes_to_modal() -> None:
-    assert default_cloud_environment(requires_gpu=True) == EnvironmentType.MODAL
+def test_default_cloud_environment_gpu_routes_to_daytona() -> None:
+    assert default_cloud_environment(requires_gpu=True) == EnvironmentType.DAYTONA
 
 
 def test_default_cloud_environment_cpu_routes_to_daytona() -> None:
     assert default_cloud_environment(requires_gpu=False) == EnvironmentType.DAYTONA
 
 
-def test_select_backend_gpu_skips_daytona_picks_modal() -> None:
-    assert select_backend(requires_gpu=True).name == "modal"
+def test_select_backend_gpu_picks_daytona() -> None:
+    assert select_backend(requires_gpu=True).name == "daytona"
 
 
 def test_select_backend_private_registry_picks_modal() -> None:
@@ -147,4 +147,4 @@ def test_requires_tpu_does_not_disturb_cpu_and_gpu_defaults(monkeypatch) -> None
         lambda: [DaytonaBackend(), ModalBackend(), _StubTpuBackend()],
     )
     assert routing.select_backend().name == "daytona"
-    assert routing.select_backend(requires_gpu=True).name == "modal"
+    assert routing.select_backend(requires_gpu=True).name == "daytona"
