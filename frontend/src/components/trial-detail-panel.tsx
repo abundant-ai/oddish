@@ -74,10 +74,12 @@ import {
   sumTaskTrialCost,
 } from "@/lib/format";
 import {
+  ANALYSIS_CLASSIFICATION_LABELS,
   formatPartialRewardBadgeValue,
   formatRewardPercent,
   formatRewardValue,
   getMatrixStatus,
+  getQaGlyphMatrixClass,
   getRewardStyle,
   STATUS_CONFIG,
   STATUS_GLYPH_BOX,
@@ -1255,6 +1257,20 @@ export function TrialDetailPanel({
                     groupTrial.error_message,
                   );
                   const groupConfig = STATUS_CONFIG[groupStatus];
+                  // Same cell semiotics as the experiment matrix: a
+                  // classified binary outcome takes its QA tone as the
+                  // glyph fill (good failure = green ✗, bad success = red ✓).
+                  const groupClassification =
+                    groupTrial.analysis_status === "success"
+                      ? (groupTrial.analysis?.classification ?? null)
+                      : null;
+                  const groupQaGlyphClass = getQaGlyphMatrixClass(
+                    groupStatus,
+                    groupClassification,
+                  );
+                  const groupLabel = groupClassification
+                    ? ANALYSIS_CLASSIFICATION_LABELS[groupClassification]
+                    : groupConfig.shortLabel;
                   const isPartial = groupStatus === "partial";
                   const partialLabel = isPartial
                     ? formatPartialRewardBadgeValue(groupTrial.reward)
@@ -1270,7 +1286,7 @@ export function TrialDetailPanel({
                       className={cn(
                         "flex items-center justify-center p-0 leading-none transition hover:opacity-90",
                         STATUS_GLYPH_BOX,
-                        groupConfig.matrixClass,
+                        groupQaGlyphClass ?? groupConfig.matrixClass,
                         isPartial
                           ? "font-mono text-[9.5px] font-semibold tracking-[-0.02em] tabular-nums"
                           : "",
@@ -1279,8 +1295,8 @@ export function TrialDetailPanel({
                           : "",
                       )}
                       style={getRewardStyle(groupTrial.reward)}
-                      aria-label={`Trial ${index + 1} ${groupConfig.shortLabel}`}
-                      title={`${groupConfig.shortLabel} • Trial ${index + 1}`}
+                      aria-label={`Trial ${index + 1} ${groupLabel}`}
+                      title={`${groupLabel} • Trial ${index + 1}`}
                     >
                       {isPartial ? (
                         partialLabel
