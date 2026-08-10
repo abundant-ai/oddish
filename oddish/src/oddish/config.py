@@ -153,7 +153,7 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 HARBOR_DEFAULT_SOURCE = "https://github.com/abundant-ai/harbor"
 # Exact abundant-ai/harbor revision resolved into both uv.lock files. Harbor
 # PRs #20 and #21 add EC2 Helm/k3s support and lifecycle subphase timings.
-HARBOR_DEFAULT_SHA = "93601d17445e69e2762139c56c568e51e87058ca"
+HARBOR_DEFAULT_SHA = "790e0506dac1046c1adc95765d214d601feabffd"
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 

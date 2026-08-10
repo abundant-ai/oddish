@@ -63,7 +63,7 @@ dev = [
 oddish = { path = "../oddish", editable = true }
 # Mirror Oddish's Harbor source. The backend builds the worker image, so it
 # cannot inherit this source from the transitive Oddish dependency.
-harbor = { git = "https://github.com/abundant-ai/harbor", rev = "93601d17445e69e2762139c56c568e51e87058ca" }
+harbor = { git = "https://github.com/abundant-ai/harbor", rev = "790e0506dac1046c1adc95765d214d601feabffd" }
 
 [tool.uv]
 override-dependencies = ["harbor==0.16.1"]
