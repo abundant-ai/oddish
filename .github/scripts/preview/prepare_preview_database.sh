@@ -86,7 +86,10 @@ if [ "$schema_rebuilt" != "true" ] && { [ "$RUN_MIGRATIONS" = "true" ] || [ "$br
   ( cd "$GITHUB_WORKSPACE/backend" && uv run python "$script_dir/seed_preview_db.py" )
 fi
 
-if [ "$DEPLOY_BACKEND" = "true" ] || [ "$branch_was_created" = "true" ]; then
-  "$script_dir/publish_modal_db_secret.sh"
-  published_modal_secret=true
-fi
+# Always. wait_for_supabase_branch.sh rotated the branch DB password to a
+# fresh random value above, so the Modal secret must carry the new value
+# even when no backend deploy follows. A frontend-only push on a backend
+# PR otherwise leaves the running backend with a dead connection string,
+# and every API request fails until the next backend deploy.
+"$script_dir/publish_modal_db_secret.sh"
+published_modal_secret=true
