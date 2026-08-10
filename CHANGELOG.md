@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [2026-08-07]
 
+### Changed
+
+- The verdict now says `accept` or `reject` instead of `is_good: true/false`. Stored payloads keep `is_good` too, so old rows, the dashboard queries, and the Slack alert still work. The badge shows "Accepted" or "Rejected".
+- The verdict judge used to bury its hard rules inside exceptions, and it accepted a task whose own audit had found a `must_fix` leak — on tests the untouched base model already passed (0.96 against a 0.25 threshold). The prompt (`verdict_prompt.txt`) is rewritten as two steps: first look for evidence that rejects the task by itself (a leak, weak tests, a failed baseline), and only then weigh the trials' opinions, which need agreement.
+- The task overview panel used to list only the current experiment's trials, but the verdict is computed over every trial of the task — so the panel could show a verdict whose deciding trial it refused to list. It now shows every trial of the version. Trials from other experiments carry a dashed "elsewhere" chip and open in a new tab. Long subtypes also stopped pushing the "View trial" button out of its row.
+- The verdict badge used to hide its rerun button once a verdict existed, and the button that did exist re-classified every trial from scratch. Tasks with a verdict now show "Rerun verdict" (`qa/backfill` with `force: false`), which keeps the stored trial analyses and redoes only the verdict. The full re-classify stays on `qa/retry`.
+- Submitting new trials used to delete the task's verdict immediately, and the task had no verdict until QA finished the new trials. The old verdict now stays until the new QA run replaces it.
+
 ### Removed
 
 - The cc_chat dashboard chat feature is gone end to end: the `/chat-sessions`

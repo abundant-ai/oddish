@@ -478,6 +478,7 @@ or globally via the env default. Under `enforce`, an over-cap submission gets
 HTTP **402** (`"Your organization is over its monthly budget …"`); under
 `shadow` it emits `metric=quota.would_block reason=org_over_budget`. Admins see
 month-to-date org usage on `GET /quotas`; any member can read the org budget
-snapshot + adaptive daily goal on `GET /quotas/org`. Advisory-lock order is
-org → payer → row locks (ENFORCE-only on admission; the org lock is always
-taken first, even when no org cap is configured).
+snapshot + adaptive daily goal on `GET /quotas/org`. Admission takes no
+locks; concurrent submissions can briefly overshoot a cap and the
+enforcement sweep cancels the overage. Only the sweep takes the quota
+advisory locks (org → payer, non-blocking).

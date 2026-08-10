@@ -34,6 +34,7 @@ def test_payload_shape_and_counts():
     payload = build_verdict_payload(_Verdict(), classifications)
 
     assert payload == {
+        "verdict": "reject",
         "is_good": False,
         "confidence": "high",
         "primary_issue": "reward hacking",

@@ -1,5 +1,7 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Route } from "@playwright/test";
 import { clerk, setupClerkTestingToken } from "@clerk/testing/playwright";
+
+import { countSince, holdCountedResponses, recordRequests } from "./network-log";
 
 /**
  * Each test here checks the number and kind of network requests the tasks
@@ -24,6 +26,11 @@ import { clerk, setupClerkTestingToken } from "@clerk/testing/playwright";
  * credentials, and it skips when they are missing. It needs no particular
  * seed: an org with zero tasks settles on the empty state, and the request
  * counts assert the same way.
+ *
+ * Counting is race-hardened by the rules in network-log.ts: only finished
+ * requests issued after recording started count, requests are attributed
+ * to their issue time, and every counted endpoint's response is held
+ * briefly so StrictMode's aborted duplicate can never finish first.
  */
 
 const CLERK_EMAIL = process.env.E2E_CLERK_EMAIL;
@@ -39,29 +46,6 @@ const BROWSE_RE = /\/api\/tasks\/browse\?/;
 const FACETS_RE = /\/api\/tasks\/browse\/facets/;
 const TAGS_RE = /\/api\/tags(\?|$)/;
 const LEADERBOARD_RE = /\/api\/leaderboard\?/;
-
-type LoggedRequest = { url: string; method: string };
-
-function recordRequests(page: Page): LoggedRequest[] {
-  const log: LoggedRequest[] = [];
-  // Only finished requests are counted. In development, React StrictMode
-  // runs every effect twice and the first run's fetch gets aborted. Those
-  // aborted requests are not real duplicates, so they must not count.
-  page.on("requestfinished", (request) =>
-    log.push({ url: request.url(), method: request.method() })
-  );
-  return log;
-}
-
-function countSince(
-  log: LoggedRequest[],
-  from: number,
-  re: RegExp,
-  method = "GET"
-): number {
-  return log.slice(from).filter((r) => r.method === method && re.test(r.url))
-    .length;
-}
 
 test.describe("tasks page network shape", () => {
   test.skip(
@@ -84,6 +68,12 @@ test.describe("tasks page network shape", () => {
       .waitForLoadState("networkidle", { timeout: 10_000 })
       .catch(() => {});
 
+    await holdCountedResponses(page, [
+      BROWSE_RE,
+      FACETS_RE,
+      TAGS_RE,
+      LEADERBOARD_RE,
+    ]);
     const log = recordRequests(page);
 
     // The grid settles on either real rows or the empty state; both come
@@ -115,15 +105,18 @@ test.describe("tasks page network shape", () => {
     // back. The grid must paint from the cache: the browse revalidation is
     // held open until after the rows are checked, so they cannot have come
     // from the network.
-    const returnMark = log.length;
+    const returnMark = Date.now();
     let releaseHeld: (() => void) | undefined;
     const held = new Promise<void>((resolve) => {
       releaseHeld = resolve;
     });
-    await page.route(BROWSE_RE, async (route) => {
+    // Named so the unroute below removes only this handler and leaves the
+    // holdCountedResponses route for BROWSE_RE in place.
+    const holdBrowseOpen = async (route: Route) => {
       await held;
       await route.fallback();
-    });
+    };
+    await page.route(BROWSE_RE, holdBrowseOpen);
     await page.getByRole("link", { name: "Dashboard" }).first().click();
     await expect(page).toHaveURL(/\/dashboard/);
     await page.getByRole("link", { name: "Tasks" }).first().click();
@@ -134,7 +127,7 @@ test.describe("tasks page network shape", () => {
     expect(countSince(log, returnMark, FACETS_RE)).toBe(0);
     expect(countSince(log, returnMark, TAGS_RE)).toBe(0);
     releaseHeld?.();
-    await page.unroute(BROWSE_RE);
+    await page.unroute(BROWSE_RE, holdBrowseOpen);
     // The return triggers at most one background revalidation — none at
     // all when it lands inside the dedup window.
     await page.waitForTimeout(1_500);
@@ -143,7 +136,7 @@ test.describe("tasks page network shape", () => {
     // Phase 3 — a filter change is one more browse fetch (after the 300ms
     // search debounce), and only that: rows are re-asked, vocabularies are
     // not.
-    const filterMark = log.length;
+    const filterMark = Date.now();
     await page
       .getByPlaceholder("Search anything...")
       .fill("zzz-network-shape-probe");
