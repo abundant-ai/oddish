@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from starlette.types import ASGIApp
 
 from observability import (
     instrument_fastapi,
@@ -234,9 +235,6 @@ def create_app() -> FastAPI:
     )
 
     api.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=1)
-    from api.request_metrics import BackendPhaseMetricsMiddleware
-
-    api.add_middleware(BackendPhaseMetricsMiddleware)
 
     from api.capacity_headers import capacity_header_middleware
 
@@ -291,3 +289,10 @@ def create_app() -> FastAPI:
     api.include_router(reports.router)
 
     return api
+
+
+def create_asgi_app() -> ASGIApp:
+    """Wrap the complete FastAPI stack, including its error middleware."""
+    from api.request_metrics import BackendPhaseMetricsMiddleware
+
+    return BackendPhaseMetricsMiddleware(create_app())

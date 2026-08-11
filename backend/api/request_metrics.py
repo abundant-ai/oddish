@@ -31,9 +31,41 @@ class BackendPhaseMetricsMiddleware:
         state = scope.setdefault("state", {})
         state["server_timing_metrics"] = []
         response_started = False
+        observation_emitted = False
+
+        def emit_observation(
+            *, backend_complete_ms: float, response_complete: bool
+        ) -> None:
+            nonlocal observation_emitted
+            if observation_emitted:
+                return
+            observation_emitted = True
+
+            if not response_started:
+                finish_handler_timing(timing)
+                timing.record("backend_total", backend_complete_ms)
+            attributes: dict[str, Any] = {
+                f"{name}.duration_ms": duration
+                for name, duration, _ in request_phase_metrics(timing)
+            }
+            attributes.update(
+                {
+                    "backend_complete.duration_ms": backend_complete_ms,
+                    "db.query_count": timing.query_count,
+                    "handler.db.query_count": timing.handler_query_count,
+                    "http.response.body.size": timing.response_bytes,
+                    "http.response.complete": response_complete,
+                    "http.response.status_code": timing.status_code or 500,
+                }
+            )
+            if timing.cache_hit is not None:
+                attributes["auth.cache.hit"] = timing.cache_hit
+            with span("backend.request.phases", **attributes):
+                pass
 
         async def send_with_metrics(message: Message) -> None:
             nonlocal response_started
+            response_complete = False
             if message["type"] == "http.response.start":
                 response_started = True
                 timing.status_code = message["status"]
@@ -50,30 +82,24 @@ class BackendPhaseMetricsMiddleware:
                     headers["Server-Timing"] = combined
             elif message["type"] == "http.response.body":
                 timing.response_bytes += len(message.get("body", b""))
+                response_complete = not message.get("more_body", False)
+            elif message["type"] == "http.response.pathsend":
+                response_complete = True
+            backend_complete_ms = (
+                elapsed_ms(timing.started_at) if response_complete else None
+            )
             await send(message)
+            if backend_complete_ms is not None:
+                emit_observation(
+                    backend_complete_ms=backend_complete_ms,
+                    response_complete=True,
+                )
 
         try:
             await self.app(scope, receive, send_with_metrics)
         finally:
-            backend_complete_ms = elapsed_ms(timing.started_at)
-            if not response_started:
-                finish_handler_timing(timing)
-                timing.record("backend_total", backend_complete_ms)
-            attributes: dict[str, Any] = {
-                f"{name}.duration_ms": duration
-                for name, duration, _ in request_phase_metrics(timing)
-            }
-            attributes.update(
-                {
-                    "backend_complete.duration_ms": backend_complete_ms,
-                    "db.query_count": timing.query_count,
-                    "handler.db.query_count": timing.handler_query_count,
-                    "http.response.body.size": timing.response_bytes,
-                    "http.response.status_code": timing.status_code or 500,
-                }
+            emit_observation(
+                backend_complete_ms=elapsed_ms(timing.started_at),
+                response_complete=False,
             )
-            if timing.cache_hit is not None:
-                attributes["auth.cache.hit"] = timing.cache_hit
-            with span("backend.request.phases", **attributes):
-                pass
             reset_request_timing((timing_token, stage_token))

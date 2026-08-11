@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any, Callable
 
+import httpx
+
 TimingMetric = tuple[str, float, str | None]
 TimingRecorder = Callable[[str, float, str | None], None]
 
@@ -36,7 +38,9 @@ class RequestTiming:
     cache_hit: bool | None = None
     handler_started_at: float | None = None
 
-    def record(self, name: str, duration_ms: float, *, stage: str | None = None) -> None:
+    def record(
+        self, name: str, duration_ms: float, *, stage: str | None = None
+    ) -> None:
         duration_ms = max(duration_ms, 0.0)
         self.durations_ms[name] = self.durations_ms.get(name, 0.0) + duration_ms
         if name in _DB_PHASES:
@@ -130,6 +134,22 @@ def now() -> float:
 
 def elapsed_ms(started_at: float) -> float:
     return max((perf_counter() - started_at) * 1000.0, 0.0)
+
+
+class RequestTimedAsyncClient(httpx.AsyncClient):
+    """Record outbound HTTP time when a client runs inside an API request."""
+
+    async def send(self, request: httpx.Request, **kwargs: Any) -> httpx.Response:
+        timing = current_request_timing()
+        if timing is None:
+            return await super().send(request, **kwargs)
+
+        started_at = now()
+        stage = current_request_stage()
+        try:
+            return await super().send(request, **kwargs)
+        finally:
+            timing.record("external_http", elapsed_ms(started_at), stage=stage)
 
 
 def _sanitize_metric_name(name: str) -> str:

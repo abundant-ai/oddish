@@ -11,7 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import OrganizationModel, UserModel, UserRole, generate_id
-from oddish.timing import timed_phase
+from oddish.timing import RequestTimedAsyncClient
 
 logger = logging.getLogger(__name__)
 
@@ -77,9 +77,8 @@ async def _fetch_clerk_user_payload(clerk_user_id: str) -> dict | None:
     headers = {"Authorization": f"Bearer {CLERK_SECRET_KEY}"}
 
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            with timed_phase("external_http", service="clerk", operation="user"):
-                response = await client.get(url, headers=headers)
+        async with RequestTimedAsyncClient(timeout=10) as client:
+            response = await client.get(url, headers=headers)
             response.raise_for_status()
             return response.json()
     except httpx.HTTPError as exc:
@@ -318,11 +317,8 @@ async def fetch_clerk_org_ids_for_user(clerk_user_id: str) -> list[str]:
     headers = {"Authorization": f"Bearer {CLERK_SECRET_KEY}"}
 
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            with timed_phase(
-                "external_http", service="clerk", operation="memberships"
-            ):
-                response = await client.get(url, headers=headers)
+        async with RequestTimedAsyncClient(timeout=10) as client:
+            response = await client.get(url, headers=headers)
             response.raise_for_status()
             data = response.json()
     except httpx.HTTPError as exc:

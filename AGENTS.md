@@ -952,8 +952,12 @@ phase, so cold, warm, and concurrent traces are comparable. The
 response-body bytes. `backend_total` and `handler_total` stop at response start
 because they ship in the response headers; the trace-only
 `backend_complete.duration_ms` observation ends after the final ASGI body chunk
-and includes streaming time. Never attach response bodies, request payloads,
-credentials, or SQL parameter values.
+and includes streaming time, but not response background tasks. Production
+entrypoints must use `create_asgi_app()` so timing wraps FastAPI's complete
+middleware stack, including unhandled-error and capacity responses. Hosted and
+core code must use `RequestTimedAsyncClient` for outbound HTTPX calls so the
+request-wide `external_http` phase cannot depend on route-local wrappers. Never
+attach response bodies, request payloads, credentials, or SQL parameter values.
 
 ---
 
