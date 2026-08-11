@@ -6,6 +6,7 @@ from typing import Any, Awaitable, Callable
 from sqlalchemy import select
 
 from oddish.analyze import Classification, TrialClassification
+from oddish.core.verdict_state import complete_verdict, fail_verdict
 from oddish.db import (
     TaskModel,
     TaskStatus,
@@ -31,6 +32,8 @@ def build_verdict_payload(
     is what lets the legacy and AnalyzerBlock paths share one writer.
     """
     return {
+        "verdict": "accept" if verdict.is_good else "reject",
+        # Old rows and the SQL readers use is_good; keep it next to the label.
         "is_good": verdict.is_good,
         "confidence": verdict.confidence,
         "primary_issue": verdict.primary_issue,
@@ -65,8 +68,6 @@ async def sync_verdict_to_task(
 ) -> str | None:
     """Write verdict state and complete the task. The only writer of a
     *synthesized* verdict, so the legacy and block paths cannot diverge.
-    Cleanup and gate-failure paths elsewhere still set ``verdict_status``
-    directly; they never produce a payload.
 
     Returns the terminal ``VerdictStatus`` value written, or ``None`` when the
     write was skipped (task gone, or the job was cancelled).
@@ -80,19 +81,16 @@ async def sync_verdict_to_task(
             return None
 
         if payload:
-            task.verdict = payload
-            task.verdict_status = VerdictStatus.SUCCESS
-            task.verdict_error = None
+            complete_verdict(task, payload=payload, now=utcnow())
+            terminal_status = VerdictStatus.SUCCESS
         else:
-            task.verdict_status = VerdictStatus.FAILED
-            task.verdict_error = error or "Verdict synthesis failed with exception"
+            failure = error or "Verdict synthesis failed with exception"
+            fail_verdict(task, error=failure, now=utcnow())
+            terminal_status = VerdictStatus.FAILED
 
-        task.verdict_finished_at = utcnow()
-        # The task completes either way: a failed verdict must not leave the
-        # task hanging in a non-terminal state.
         task.status = TaskStatus.COMPLETED
         task.finished_at = utcnow()
-        return task.verdict_status.value
+        return terminal_status.value
 
 
 def build_pre_trial_payload(
@@ -193,8 +191,14 @@ async def aggregate_exploited_into_pre_trial(task_id: str) -> None:
         # exploited the weakness is still valid evidence the task-source flaw is
         # exploitable. This is a task-level audit, not the current-trial verdict.
         trials = (
-            await session.execute(select(TrialModel).where(TrialModel.task_id == task_id))
-        ).scalars().all()
+            (
+                await session.execute(
+                    select(TrialModel).where(TrialModel.task_id == task_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
 
         exploited: dict[str, str] = {}
         for trial in trials:

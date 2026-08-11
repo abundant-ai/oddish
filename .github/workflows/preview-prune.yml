@@ -1,0 +1,48 @@
+name: Preview Prune
+
+# Sweeps Supabase preview branches older than a week so the 50-active-branch
+# ceiling never blocks a new PR's "Prepare preview database" job. Runs on its
+# own schedule rather than at the point of failure, so a PR that hits the
+# ceiling is a bug in this sweep, not something to recover from inline.
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      max_age_days:
+        description: "Delete preview branches created more than this many days ago"
+        default: "7"
+      dry_run:
+        description: "Log what would be deleted without deleting it"
+        type: boolean
+        default: false
+
+concurrency:
+  group: preview-prune
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    name: Prune stale preview branches
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/abundant-ai/oddish-ci-base:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+      MAX_AGE_DAYS: ${{ inputs.max_age_days || '7' }}
+      DRY_RUN: ${{ inputs.dry_run || false }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Prune stale Supabase preview branches
+        run: "$GITHUB_WORKSPACE/.github/scripts/preview/prune_stale_supabase_branches.sh"

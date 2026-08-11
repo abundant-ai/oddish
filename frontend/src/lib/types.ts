@@ -113,11 +113,6 @@ interface TrialAnalysis {
   /** Per pre-trial finding assessments — the trial↔audit finding join. */
   exploitation?: TrialExploitation[];
   reward?: number | null;
-  prompt_kind?: string;
-  prompt_version?: number;
-  prompt_id?: string;
-  prompt_scope?: "global" | "org" | "user" | "experiment" | "task" | "trial";
-  prompt_scope_id?: string | null;
 }
 
 interface TrialQueueInfo {
@@ -210,6 +205,8 @@ export interface Trial {
 }
 
 interface TaskVerdict {
+  /** Absent on rows stored before the accept/reject label existed. */
+  verdict?: "accept" | "reject";
   is_good: boolean;
   confidence: "high" | "medium" | "low";
   primary_issue?: string | null;
@@ -706,7 +703,8 @@ export type TrajectoryComponentKind =
   | "thinking_recall"
   | "thinking_understand"
   | "thinking_hypothesize"
-  | "thinking_correction"
+  | "writing_plan"
+  | "plan_correction"
   | "implementing"
   | "implementing_correction"
   | "writing_tests"
@@ -715,6 +713,7 @@ export type TrajectoryComponentKind =
   | "testing_edge_cases"
   | "debugging"
   // Retired from the backend enum, but stored summaries still carry them.
+  | "thinking_correction"
   | "thinking_diagnose"
   | "testing_custom_edge_cases";
 

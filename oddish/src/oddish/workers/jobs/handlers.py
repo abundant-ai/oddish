@@ -14,9 +14,9 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
+from oddish.core.verdict_state import queue_verdict
 from oddish.db import (
     AnalysisStatus,
-    AnalyzerRunModel,
     TaskModel,
     TrialModel,
     TrialStatus,
@@ -34,10 +34,6 @@ from oddish.registry_auth import (
 )
 from oddish.workers.jobs.registry import JobOutcome
 from oddish.workers.queue.analysis_handler import run_analysis_job
-from oddish.workers.queue.analyzer_block_handler import (
-    MissingPromptVersionError,
-    run_analyzer_block_job,
-)
 from oddish.workers.queue.provider_failures import is_permanent_provider_failure
 from oddish.workers.queue.qa_handler import run_task_qa_job
 from oddish.workers.queue.analyzer_handler import (
@@ -239,9 +235,7 @@ class QaJobHandler:
             if task is None:
                 return _fail_permanent(f"Task {task_id} vanished before QA")
             if task.verdict_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
-                task.verdict_status = VerdictStatus.QUEUED
-                task.verdict_error = None
-                task.verdict_finished_at = None
+                queue_verdict(task)
 
         await run_task_qa_job(
             task_id,
@@ -394,65 +388,10 @@ class AnalyzerJobHandler:
             )
 
 
-class AnalyzerBlockJobHandler:
-    """Execute one AnalyzerRunModel through its reconstructed AnalyzerBlock."""
-
-    kind = WorkerJobKind.ANALYZER_BLOCK
-
-    def default_queue_key(self, job) -> str:
-        return job.queue_key or "qa"
-
-    def validate_payload(self, payload: dict) -> dict:
-        payload = dict(payload or {})
-        if not payload.get("analyzer_run_id"):
-            raise ValueError("ANALYZER_BLOCK payload missing analyzer_run_id")
-        return payload
-
-    async def run(self, job) -> JobOutcome:
-        run_id = job.subject_id or (job.payload or {}).get("analyzer_run_id")
-        if not run_id:
-            raise ValueError(
-                "ANALYZER_BLOCK worker_job missing subject_id / payload.analyzer_run_id"
-            )
-
-        async with get_session() as session:
-            run = await session.get(AnalyzerRunModel, run_id, with_for_update=True)
-            if run is None:
-                return _fail_permanent(
-                    f"Analyzer run {run_id} vanished before execution"
-                )
-            if run.status == JobStatus.SUCCESS:
-                return JobOutcome.ok({"analyzer_block_id": run.analyzer_block_id})
-            if run.status == JobStatus.FAILED:
-                run.status = JobStatus.QUEUED
-                run.error = None
-                run.output = None
-
-        try:
-            await run_analyzer_block_job(run_id, worker_job_id=job.id)
-        except MissingPromptVersionError as exc:
-            return _fail_permanent(str(exc))
-        except Exception:
-            pass
-
-        async with get_session() as session:
-            run = await session.get(AnalyzerRunModel, run_id)
-            if run is None:
-                return _fail_permanent(
-                    f"Analyzer run {run_id} vanished during execution"
-                )
-            if run.status == JobStatus.SUCCESS:
-                return JobOutcome.ok({"analyzer_block_id": run.analyzer_block_id})
-            return _fail_retryable(
-                run.error or f"Analyzer run {run_id} left in status {run.status.value}"
-            )
-
-
 __all__ = [
     "AnalysisJobHandler",
     "QaJobHandler",
     "AnalyzerJobHandler",
-    "AnalyzerBlockJobHandler",
     "TagProjectJobHandler",
     "TaskExpandJobHandler",
     "TrialJobHandler",

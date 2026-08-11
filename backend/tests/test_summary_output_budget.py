@@ -134,19 +134,15 @@ def test_generate_requests_enough_output_budget():
     assert summarize_trajectory.SUMMARY_MAX_TOKENS >= MIN_SUMMARY_MAX_TOKENS
 
 
-def test_summary_dump_requests_enough_output_budget():
-    """summary_dump.summarize_trial copied generate()'s cap; it must track the fix."""
+def test_all_summary_harnesses_use_the_shared_block_builder():
+    """Harnesses must inherit the production budget and output contract."""
+    import run_summary_block
     from api.services import summary_dump
     from api.services.summarize_trajectory import SUMMARY_MAX_TOKENS
 
-    src = open(summary_dump.__file__).read()
-    assert "max_tokens=2048" not in src, (
-        "summarize_trial still pins max_tokens=2048"
-    )
-    # It must USE the shared constant, not redefine its own copy -- the drift
-    # between these two call sites is what the bug was.
-    assert "SUMMARY_MAX_TOKENS" in src
-    assert "SUMMARY_MAX_TOKENS = " not in src, (
-        "summary_dump redefines the cap instead of importing it"
-    )
+    for module in (summary_dump, run_summary_block):
+        src = open(module.__file__).read()
+        assert "build_summary_block" in src
+        assert "AnalyzerBlock(" not in src
+        assert "max_tokens=2048" not in src
     assert SUMMARY_MAX_TOKENS >= MIN_SUMMARY_MAX_TOKENS

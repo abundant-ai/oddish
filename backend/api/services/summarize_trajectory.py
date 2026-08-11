@@ -13,30 +13,41 @@ Responsibilities:
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import defaultdict
 from copy import deepcopy
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, MutableMapping
 
-from fastapi import HTTPException
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from oddish.core.prompt_seeds import seed_prompts
-from oddish.core.prompts import resolve_prompt_core
+import oddish.analyze as _analyze
 from oddish.core.trial_io import (
     read_trial_instruction,
     read_trial_trajectory,
     read_trial_verifier_output,
 )
-from oddish.db.models import PromptKind, TrialModel
+from oddish.db.models import TrialModel
+
+logger = logging.getLogger(__name__)
 
 MAX_TEXT_CHARS = 2000
 TRUNCATE_HEAD = 800
 TRUNCATE_TAIL = 400
 TRUNCATION_MARKER = "\n[...truncated {n} chars...]\n"
 SCHEMA_VERSION = "5"
-SUMMARY_PROMPT_KEY = PromptKind.TRAJECTORY_SUMMARY.value
+
+# Must retain the ``{{taxonomy}}`` placeholder rendered by ``TrajectoryBlock``.
+_SUMMARY_PROMPT_PATH = (
+    Path(_analyze.__file__).resolve().parent / "prompts" / "trajectory_summary.txt"
+)
+
+
+def load_summary_prompt_template() -> str:
+    """Read the packaged trajectory-summary prompt template."""
+    return _SUMMARY_PROMPT_PATH.read_text()
 
 # Output cap for the summary call. The Anthropic API requires max_tokens, so
 # some value must be set; this one is a ceiling, not a target -- billing is on
@@ -47,6 +58,65 @@ SUMMARY_PROMPT_KEY = PromptKind.TRAJECTORY_SUMMARY.value
 # Well under the model's own limit, so the binding constraint is the prompt's
 # schema, not this number.
 SUMMARY_MAX_TOKENS = 16384
+
+# ``preprocess`` bounds each text field but nothing bounds the step *count*, so
+# a long agent run still serializes past the model's input limit -- prod has
+# seen 11.2M tokens against a 1M cap. Character count is not a usable preflight
+# (a 588k-char prompt overflowed while a 2.17M-char one fit), so the API is the
+# oracle: send it, and halve the step budget on each "prompt is too long" 400.
+# A rejected request bills no tokens and returns in well under a second, so the
+# ~96% of summaries that already fit pay nothing for this.
+MAX_OVERFLOW_ATTEMPTS = 5
+STEP_OMISSION_MARKER = "[{n} steps omitted to fit the context window]"
+_CONTEXT_OVERFLOW_MARKERS = (
+    "prompt is too long",
+    "context length",
+    "context_length_exceeded",
+)
+
+
+def _is_context_overflow(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return any(marker in text for marker in _CONTEXT_OVERFLOW_MARKERS)
+
+
+def clip_trajectory_steps(trajectory: dict, max_steps: int) -> dict:
+    """Keep the first and last ``max_steps`` steps, dropping the middle.
+
+    Head and tail carry the setup and the outcome -- the two things a summary
+    has to get right. The dropped span is replaced by a single marker step with
+    no ``step_id``, so it renders in the prompt but cannot be cited: the model
+    can only reference steps that survive into ``_valid_step_ids``.
+
+    The marker inherits the timestamp of the last dropped step. ``to_summary``
+    derives each step's ``duration_ms`` from its predecessor in the list it is
+    given, so without this the first retained tail step measures against a
+    timestampless marker and contributes 0 to its component -- silently
+    undercounting a duration the callers are told is safe to aggregate.
+    """
+    steps = trajectory.get("steps") or []
+    if len(steps) <= max_steps:
+        return trajectory
+    head = max_steps // 2
+    tail = max_steps - head
+    omitted = len(steps) - max_steps
+    last_dropped = steps[len(steps) - tail - 1]
+    out = dict(trajectory)
+    out["steps"] = [
+        *steps[:head],
+        {
+            "step_id": None,
+            "source": "system",
+            "message": STEP_OMISSION_MARKER.format(n=omitted),
+            "timestamp": (
+                last_dropped.get("timestamp")
+                if isinstance(last_dropped, dict)
+                else None
+            ),
+        },
+        *steps[len(steps) - tail :],
+    ]
+    return out
 
 
 def _truncate(text: str) -> str:
@@ -148,56 +218,6 @@ def resolve_summary_model() -> str:
     return to_anthropic_api_model_id(settings.analysis_model) or settings.analysis_model
 
 
-async def _load_summary_prompt(
-    session: AsyncSession,
-    *,
-    org_id: str | None = None,
-    user_id: str | None = None,
-    experiment_id: str | None = None,
-    task_id: str | None = None,
-    trial_id: str | None = None,
-) -> tuple[str, int, str]:
-    """Load the latest trajectory-summary prompt, seeding built-ins on a miss.
-
-    Resolves the narrowest scoped override for the given context, falling
-    back to the global prompt when none exists. Returns ``(content, version,
-    prompt_id)`` -- the id is required by callers so the block they build can
-    stamp ``prompt_id`` and be attributed to the resolved row, not the global
-    NULL-prompt_id fallback.
-    """
-    scope = dict(
-        org_id=org_id,
-        user_id=user_id,
-        experiment_id=experiment_id,
-        task_id=task_id,
-        trial_id=trial_id,
-    )
-    try:
-        prompt, version = await resolve_prompt_core(session, SUMMARY_PROMPT_KEY, **scope)
-    except HTTPException:
-        try:
-            # Keep a lost concurrent-seed race inside a savepoint. Rolling back
-            # the outer transaction would expire the caller's TrialModel.
-            async with session.begin_nested():
-                await seed_prompts(session)
-            await session.commit()
-            prompt, version = await resolve_prompt_core(session, SUMMARY_PROMPT_KEY, **scope)
-        except Exception as exc:
-            # An immediate unique constraint is raised inside the savepoint.
-            # Its rollback leaves the outer transaction and loaded ORM state
-            # intact, so the winner's row can be read without a full rollback.
-            try:
-                prompt, version = await resolve_prompt_core(
-                    session, SUMMARY_PROMPT_KEY, **scope
-                )
-            except Exception:
-                raise SummaryGenerationError(
-                    f"prompt '{SUMMARY_PROMPT_KEY}' is not registered and "
-                    f"seeding failed: {exc}"
-                ) from exc
-    return version.content, version.version, prompt.id
-
-
 def build_summary_block(
     trajectory: dict,
     task_context: "TaskContext",
@@ -205,16 +225,14 @@ def build_summary_block(
     analyzer_id: str | None,
     model: str,
     triggered_by_user_id: str | None = None,
-    prompt_template: str,
-    prompt_version: int,
-    prompt_id: str,
+    prompt_template: str | None = None,
 ):
     """Build the trajectory-summary ``AnalyzerBlock``.
 
     Single construction site shared by ``generate()`` (the production path)
     and the offline dump harness, so the two cannot drift in prompt, parser,
-    or block metadata. The registry template and version are required so no
-    production or offline caller can silently fall back to baked-in text.
+    or block metadata. ``prompt_template`` defaults to the packaged template;
+    the dump harness may pass an experimental one.
     """
     from oddish.blocks.analyzer.analyzer_block import (
         AnalyzerBlock,
@@ -236,7 +254,7 @@ def build_summary_block(
             verifier_output=task_context.verifier_output,
             trajectory=trajectory,
         ),
-        instructions_template=prompt_template,
+        instructions_template=prompt_template or load_summary_prompt_template(),
     )
     return AnalyzerBlock(
         analyzer_type=AnalyzerType.TRAJECTORY_SUMMARY,
@@ -249,13 +267,12 @@ def build_summary_block(
         block_metadata={
             "schema_version": SCHEMA_VERSION,
             "model": model,
-            "prompt_key": SUMMARY_PROMPT_KEY,
-            "prompt_version": prompt_version,
-            "prompt_id": prompt_id,
         },
         output_transform=lambda raw: tb.to_summary(raw, model=model),
         model=model,
         max_tokens=SUMMARY_MAX_TOKENS,
+        response_format=tb.output_schema,
+        output_schema=tb.output_schema.model_json_schema(),
         triggered_by_user_id=triggered_by_user_id,
     )
 
@@ -266,9 +283,7 @@ async def generate(
     *,
     analyzer_id: str | None = None,
     triggered_by_user_id: str | None = None,
-    prompt_template: str,
-    prompt_version: int,
-    prompt_id: str,
+    prompt_template: str | None = None,
 ) -> dict:
     """Run the trajectory summary as an ``AnalyzerBlock`` and return the dict.
 
@@ -276,23 +291,58 @@ async def generate(
     harness), streams it -- the block self-persists to ``analyzer_blocks`` +
     S3 -- and returns the parsed ``schema_version=5`` summary. Raises
     ``SummaryGenerationError`` on any generation/parse failure.
+
+    A trajectory that overflows the model's input limit is retried with half
+    the steps, up to ``MAX_OVERFLOW_ATTEMPTS`` times. Every attempt persists its
+    own ``analyzer_blocks`` row, so the shrink sequence stays auditable.
     """
     model = resolve_summary_model()
-    block = build_summary_block(
-        trajectory,
-        task_context,
-        analyzer_id=analyzer_id,
-        model=model,
-        triggered_by_user_id=triggered_by_user_id,
-        prompt_template=prompt_template,
-        prompt_version=prompt_version,
-        prompt_id=prompt_id,
-    )
-    try:
-        out = await block.run()
-    except Exception as e:
-        raise SummaryGenerationError(f"summary block failed: {e}") from e
-    return out.output
+    if prompt_template is None:
+        # Read here rather than inside build_summary_block: callers of
+        # generate() only handle SummaryGenerationError, so a missing or
+        # unreadable packaged file must not escape as a raw OSError.
+        try:
+            prompt_template = load_summary_prompt_template()
+        except OSError as e:
+            raise SummaryGenerationError(f"summary template unavailable: {e}") from e
+    total_steps = len(trajectory.get("steps") or [])
+    budget: int | None = None
+
+    for attempt in range(MAX_OVERFLOW_ATTEMPTS):
+        payload = (
+            trajectory if budget is None else clip_trajectory_steps(trajectory, budget)
+        )
+        block = build_summary_block(
+            payload,
+            task_context,
+            analyzer_id=analyzer_id,
+            model=model,
+            triggered_by_user_id=triggered_by_user_id,
+            prompt_template=prompt_template,
+        )
+        try:
+            out = await block.run()
+        except Exception as e:
+            next_budget = max(1, (total_steps if budget is None else budget) // 2)
+            # budget == 1 and still overflowing means the steps are not what is
+            # oversized (a huge instruction or verifier log), so halving again
+            # only burns attempts.
+            exhausted = attempt == MAX_OVERFLOW_ATTEMPTS - 1 or budget == 1
+            if not _is_context_overflow(e) or exhausted:
+                raise SummaryGenerationError(f"summary block failed: {e}") from e
+            logger.warning(
+                "trajectory summary overflowed for analyzer_id=%s; retrying with "
+                "%d of %d steps (attempt %d)",
+                analyzer_id,
+                next_budget,
+                total_steps,
+                attempt + 2,
+            )
+            budget = next_budget
+            continue
+        return out.output
+
+    raise AssertionError("unreachable: the loop returns or raises")  # pragma: no cover
 
 
 # ---------------------------------------------------------------------------
@@ -332,7 +382,11 @@ async def build_task_context(trial) -> TaskContext:
         if isinstance(agent_cfg, dict):
             model_used = agent_cfg.get("model")
 
-    task_name = trial.task.name if trial.task is not None else ""
+    # ``awaitable_attrs``: callers reach here with trials loaded via bare
+    # ``session.get`` (trajectory-summary endpoint, post-trial QA worker
+    # hook), so the task relationship may not be eagerly loaded.
+    task = await trial.awaitable_attrs.task
+    task_name = task.name if task is not None else ""
 
     return TaskContext(
         task_name=task_name,
@@ -381,7 +435,11 @@ async def _load_fresh_summary_block(
 
 
 async def get_or_generate_summary(
-    session: AsyncSession, trial: TrialModel, triggered_by_user_id: str | None = None
+    session: AsyncSession,
+    trial: TrialModel,
+    triggered_by_user_id: str | None = None,
+    *,
+    refresh: bool = False,
 ) -> dict | None:
     """Return the trajectory summary, generating on miss.
 
@@ -390,8 +448,12 @@ async def get_or_generate_summary(
     ``trials.trajectory_summary`` for the graph builder + analyzer-input readers.
     Returns ``None`` when the trial has no trajectory; raises
     ``SummaryGenerationError`` if generation fails.
+
+    ``refresh`` skips the cache and always generates. The new block is written
+    alongside the old one and wins on ``created_at``, so nothing is deleted and
+    a failed regeneration leaves the previous summary serving.
     """
-    fresh = await _load_fresh_summary_block(session, trial.id)
+    fresh = None if refresh else await _load_fresh_summary_block(session, trial.id)
     if fresh is not None:
         return fresh
 
@@ -406,18 +468,13 @@ async def get_or_generate_summary(
 
     async with _GEN_LOCKS[trial.id]:
         # Re-check inside the lock — another coroutine may have generated one.
-        fresh = await _load_fresh_summary_block(session, trial.id)
+        # A refresh deliberately ignores that: it was asked for a new summary,
+        # and the one waiting in front of it may be the stale block it wants
+        # replaced. Two concurrent refreshes therefore generate twice; that is
+        # an explicit, scoped operation, not something a page view can trigger.
+        fresh = None if refresh else await _load_fresh_summary_block(session, trial.id)
         if fresh is not None:
             return fresh
-
-        prompt_template, prompt_version, prompt_id = await _load_summary_prompt(
-            session,
-            org_id=trial.org_id,
-            user_id=trial.billed_user_id,
-            experiment_id=trial.experiment_id,
-            task_id=trial.task_id,
-            trial_id=trial.id,
-        )
 
         trajectory, task_context = await asyncio.gather(
             read_trial_trajectory(trial),
@@ -431,9 +488,6 @@ async def get_or_generate_summary(
             task_context,
             analyzer_id=trial.id,
             triggered_by_user_id=triggered_by_user_id,
-            prompt_template=prompt_template,
-            prompt_version=prompt_version,
-            prompt_id=prompt_id,
         )
 
         # Mirror into the trials column for the graph builder + analyzer-input

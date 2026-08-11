@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -22,8 +23,6 @@ from api.services.summarize_trajectory import (
 
 _PROMPT_KWARGS = {
     "prompt_template": "INSTRUCTIONS {{taxonomy}}",
-    "prompt_version": 1,
-    "prompt_id": "prompt-test-id",
 }
 
 
@@ -242,18 +241,18 @@ async def test_generate_drops_highlights_with_unknown_step_ids(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_generate_strips_code_fences_around_json(monkeypatch):
-    from api.services.summarize_trajectory import generate
+async def test_generate_rejects_code_fences_outside_structured_output(monkeypatch):
+    from api.services.summarize_trajectory import SummaryGenerationError, generate
 
     _patch_block_persistence(monkeypatch)
     body = json.dumps({"summary": "ok", "highlights": [], "components": []})
     _install_fake_llm(monkeypatch, _fake_llm(f"```json\n{body}\n```"))
-    result = await generate(
-        _trajectory_with_steps([1]),
-        _minimal_ctx(),
-        **_PROMPT_KWARGS,
-    )
-    assert result["summary"] == "ok"
+    with pytest.raises(SummaryGenerationError):
+        await generate(
+            _trajectory_with_steps([1]),
+            _minimal_ctx(),
+            **_PROMPT_KWARGS,
+        )
 
 
 @pytest.mark.asyncio
@@ -286,6 +285,22 @@ async def test_generate_wraps_client_errors(monkeypatch):
     _install_fake_llm(monkeypatch, client)
     with pytest.raises(SummaryGenerationError):
         await generate(_trajectory_with_steps([1]), _minimal_ctx(), **_PROMPT_KWARGS)
+
+
+@pytest.mark.asyncio
+async def test_generate_wraps_template_read_errors(monkeypatch, tmp_path):
+    """Block construction reads the packaged template from disk; a missing or
+    unreadable file must surface as SummaryGenerationError, not raw OSError —
+    callers (the trials summary route) only handle the former."""
+    from api.services import summarize_trajectory
+    from api.services.summarize_trajectory import SummaryGenerationError, generate
+
+    _patch_block_persistence(monkeypatch)
+    monkeypatch.setattr(
+        summarize_trajectory, "_SUMMARY_PROMPT_PATH", tmp_path / "missing.txt"
+    )
+    with pytest.raises(SummaryGenerationError):
+        await generate(_trajectory_with_steps([1]), _minimal_ctx())
 
 
 @pytest.mark.asyncio
@@ -378,6 +393,74 @@ async def test_get_or_generate_returns_block_when_fresh():
 
 
 @pytest.mark.asyncio
+async def test_get_or_generate_refresh_ignores_a_fresh_block():
+    """refresh=True must regenerate even when a fresh block exists.
+
+    Freshness is keyed on schema_version alone, so a stored summary can be
+    "fresh" and still carry a retired taxonomy. Without this escape hatch
+    those summaries are unreachable -- an analysis rerun goes through this
+    same function and would hand back the stale block.
+    """
+    cached = {
+        "schema_version": "5",
+        "summary": "stale vocabulary",
+        "highlights": [],
+        "components": [],
+    }
+    regenerated = {**cached, "summary": "current vocabulary"}
+    trial = _fake_trial(has_trajectory=True)
+    session = _fake_session()
+    with (
+        patch(
+            "api.services.summarize_trajectory._load_fresh_summary_block",
+            new_callable=AsyncMock,
+            return_value=cached,
+        ) as load,
+        patch(
+            "api.services.summarize_trajectory.read_trial_trajectory",
+            new_callable=AsyncMock,
+            return_value={"steps": [_make_step(1)]},
+        ),
+        patch(
+            "api.services.summarize_trajectory.build_task_context",
+            new_callable=AsyncMock,
+            return_value=SimpleNamespace(
+                task_name="t", instruction="i", final_reward="1",
+                model_used="m", verifier_output="v",
+            ),
+        ),
+        patch(
+            "api.services.summarize_trajectory.generate",
+            new_callable=AsyncMock,
+            return_value=regenerated,
+        ) as gen,
+    ):
+        result = await get_or_generate_summary(session, trial, refresh=True)
+
+    assert result == regenerated
+    gen.assert_awaited_once()
+    # The cache is never consulted, before or inside the generation lock.
+    load.assert_not_awaited()
+    # The new summary is still mirrored into the trials column.
+    session.commit.assert_awaited()
+
+
+def test_summary_stamps_the_shared_schema_version():
+    """to_summary must stamp the constant the freshness query compares to.
+
+    A literal here would make a SCHEMA_VERSION bump unusable: every read would
+    miss, regenerate, write the old version, and miss again forever.
+    """
+    from api.services.blocks.analyzer.trajectory import trajectory_component_block
+    from api.services.summarize_trajectory import SCHEMA_VERSION
+
+    source = Path(trajectory_component_block.__file__).read_text()
+    assert '"schema_version": SCHEMA_VERSION' in source
+    assert '"schema_version": "5"' not in source
+    assert SCHEMA_VERSION == "5"
+
+
+@pytest.mark.asyncio
 async def test_get_or_generate_returns_none_when_no_trajectory():
     trial = _fake_trial(has_trajectory=False)
     session = _fake_session()
@@ -415,11 +498,6 @@ async def test_get_or_generate_persists_on_miss():
             return_value=None,
         ),
         patch(
-            "api.services.summarize_trajectory._load_summary_prompt",
-            new_callable=AsyncMock,
-            return_value=("INSTRUCTIONS {{taxonomy}}", 1, "prompt-test-id"),
-        ),
-        patch(
             "api.services.summarize_trajectory.read_trial_trajectory",
             new=fake_traj,
         ),
@@ -431,13 +509,12 @@ async def test_get_or_generate_persists_on_miss():
             "api.services.summarize_trajectory.generate",
             new_callable=AsyncMock,
             return_value=fresh,
-        ) as gen,
+        ),
     ):
         result = await get_or_generate_summary(session, trial)
     assert result == fresh
     session.execute.assert_awaited_once()  # the mirror UPDATE
     session.commit.assert_awaited_once()
-    assert gen.await_args.kwargs["prompt_id"] == "prompt-test-id"
 
 
 @pytest.mark.asyncio
@@ -470,11 +547,6 @@ async def test_get_or_generate_fetches_trajectory_and_context_in_parallel():
             return_value=None,
         ),
         patch(
-            "api.services.summarize_trajectory._load_summary_prompt",
-            new_callable=AsyncMock,
-            return_value=("INSTRUCTIONS {{taxonomy}}", 1, "prompt-test-id"),
-        ),
-        patch(
             "api.services.summarize_trajectory.read_trial_trajectory",
             new=slow_trajectory,
         ),
@@ -499,8 +571,23 @@ async def test_get_or_generate_fetches_trajectory_and_context_in_parallel():
 # ---------------------------------------------------------------------------
 
 
+class _FakeAwaitableAttrs:
+    """Mirror of SQLAlchemy's ``awaitable_attrs``: each attribute awaits to
+    the underlying object's attribute (``build_task_context`` loads
+    ``trial.task`` through it)."""
+
+    def __init__(self, obj):
+        self._obj = obj
+
+    def __getattr__(self, name):
+        async def _get():
+            return getattr(self._obj, name)
+
+        return _get()
+
+
 def _trial_with_task(*, task_name, reward, model, harbor_config=None):
-    return SimpleNamespace(
+    trial = SimpleNamespace(
         id="t-1",
         name="trial-0",
         trial_s3_key="trials/t-1/",
@@ -509,6 +596,8 @@ def _trial_with_task(*, task_name, reward, model, harbor_config=None):
         harbor_config=harbor_config,
         task=SimpleNamespace(name=task_name),
     )
+    trial.awaitable_attrs = _FakeAwaitableAttrs(trial)
+    return trial
 
 
 @pytest.mark.asyncio
@@ -680,305 +769,273 @@ async def test_generate_and_build_summary_block_agree(monkeypatch):
     assert captured["kwargs"]["analyzer_id"] == "tr_x"
     assert captured["block"].block_metadata["schema_version"] == SCHEMA_VERSION
     assert captured["block"].block_metadata["model"] == resolve_summary_model()
-    assert captured["block"].block_metadata["prompt_key"] == "TRAJECTORY_SUMMARY"
-    assert captured["block"].block_metadata["prompt_version"] == 1
-    assert captured["block"].block_metadata["prompt_id"] == "prompt-test-id"
 
 
-@pytest.mark.asyncio
-async def test_load_summary_prompt_recovers_from_lost_seed_race(monkeypatch):
-    """A losing first-seed request must keep the caller's ORM state usable."""
-    from sqlalchemy import select
-    from sqlalchemy.exc import IntegrityError
+def test_packaged_summary_prompt_template_has_taxonomy_placeholder():
+    """The packaged template is the only prompt source now; it must ship with
+    oddish and retain the ``{{taxonomy}}`` placeholder TrajectoryBlock renders."""
+    from api.services.summarize_trajectory import load_summary_prompt_template
 
-    from api.services.summarize_trajectory import (
-        SUMMARY_PROMPT_KEY,
-        _load_summary_prompt,
-    )
-    from oddish.core.prompt_seeds import seed_prompts as real_seed_prompts
-    from oddish.db import PromptKind, PromptModel, get_session
-
-    async with get_session() as session:
-        await session.execute(
-            PromptModel.__table__.delete().where(PromptModel.kind == SUMMARY_PROMPT_KEY)
-        )
-        await session.commit()
-
-    async def fake_seed(_session):
-        async with get_session() as winner:
-            await real_seed_prompts(winner)
-        raise IntegrityError(
-            "insert", {}, Exception("duplicate key value violates unique constraint")
-        )
-
-    monkeypatch.setattr("api.services.summarize_trajectory.seed_prompts", fake_seed)
-
-    async with get_session() as session:
-        sentinel = (
-            await session.execute(
-                select(PromptModel).where(
-                    PromptModel.kind == PromptKind.QA_PRE_TRIAL.value
-                )
-            )
-        ).scalar_one()
-        content, version, _prompt_id = await _load_summary_prompt(session)
-        assert sentinel.kind == PromptKind.QA_PRE_TRIAL.value
-
-    assert version == 1
+    content = load_summary_prompt_template()
     assert "{{taxonomy}}" in content
 
 
-# ---------------------------------------------------------------------------
-# _load_summary_prompt / get_or_generate_summary scope resolution
-# ---------------------------------------------------------------------------
+def test_build_summary_block_wires_structured_output_for_both_provider_paths():
+    from api.services.blocks.analyzer.trajectory.trajectory_component_block import (
+        TrajectoryBlock,
+        TrajectoryOutput,
+    )
+    from api.services.summarize_trajectory import build_summary_block
+
+    block = build_summary_block(
+        _trajectory_with_steps([1]),
+        _minimal_ctx(),
+        analyzer_id="tr_structured",
+        model="claude-sonnet-4-6",
+    )
+
+    assert TrajectoryBlock.output_schema is TrajectoryOutput
+    assert block._response_format is TrajectoryBlock.output_schema
+    assert block._output_schema == TrajectoryBlock.output_schema.model_json_schema()
 
 
 @pytest.mark.asyncio
-async def test_load_summary_prompt_prefers_task_scoped_override():
-    """Guard: a task-scoped TRAJECTORY_SUMMARY row must beat the global
-    prompt when the caller's scope matches it. Exercises resolve_prompt_core
-    for real against the DB."""
-    import uuid
-
+async def test_build_summary_block_defaults_to_packaged_template(monkeypatch):
+    """With no explicit template, the block's prompt is built from the
+    packaged trajectory-summary file."""
     from api.services.summarize_trajectory import (
-        SUMMARY_PROMPT_KEY,
-        _load_summary_prompt,
-    )
-    from oddish.core.prompts import set_prompt_core
-    from oddish.db import PromptModel, get_session
-
-    task_id = f"test_summary_scope_{uuid.uuid4().hex[:8]}"
-    org_id = "org_summary_scope_test"
-
-    async with get_session() as session:
-        scoped_version = await set_prompt_core(
-            session,
-            kind=SUMMARY_PROMPT_KEY,
-            content="SCOPED TASK PROMPT {{taxonomy}}",
-            scope_type="task",
-            scope_id=task_id,
-            org_id=org_id,
-        )
-        await session.commit()
-        scoped_prompt_id = scoped_version.prompt_id
-
-    try:
-        async with get_session() as session:
-            content, _version, prompt_id = await _load_summary_prompt(
-                session,
-                org_id=org_id,
-                user_id=None,
-                experiment_id=None,
-                task_id=task_id,
-                trial_id=None,
-            )
-        assert content == "SCOPED TASK PROMPT {{taxonomy}}"
-        assert prompt_id == scoped_prompt_id
-    finally:
-        async with get_session() as session:
-            await session.execute(
-                PromptModel.__table__.delete().where(
-                    PromptModel.kind == SUMMARY_PROMPT_KEY,
-                    PromptModel.scope_type == "task",
-                    PromptModel.scope_id == task_id,
-                )
-            )
-            await session.commit()
-
-
-@pytest.mark.asyncio
-async def test_load_summary_prompt_falls_back_to_global_with_no_scoped_rows():
-    """Behavior preservation: with no scoped rows for this context, the
-    global prompt is still resolved -- the property that must not regress."""
-    from api.services.summarize_trajectory import (
-        SUMMARY_PROMPT_KEY,
-        _load_summary_prompt,
-    )
-    from oddish.core.prompt_seeds import seed_prompts
-    from oddish.core.prompts import get_prompt_core
-    from oddish.db import get_session
-
-    # Guarantee the global row exists regardless of what other tests in the
-    # suite have deleted or re-seeded before this one runs.
-    async with get_session() as session:
-        await seed_prompts(session)
-        await session.commit()
-
-    async with get_session() as session:
-        global_prompt, global_version = await get_prompt_core(
-            session, SUMMARY_PROMPT_KEY
-        )
-        content, version, prompt_id = await _load_summary_prompt(
-            session,
-            org_id="org_with_no_overrides",
-            user_id="user_with_no_overrides",
-            experiment_id="exp_with_no_overrides",
-            task_id="task_with_no_overrides",
-            trial_id="trial_with_no_overrides",
-        )
-
-    assert content == global_version.content
-    assert version == global_version.version
-    assert prompt_id == global_prompt.id
-
-
-@pytest.mark.asyncio
-async def test_get_or_generate_summary_passes_trial_scope_to_prompt_loader():
-    """get_or_generate_summary must thread the trial's own org/user/
-    experiment/task/trial ids into the prompt lookup, not resolve globally."""
-    trial = SimpleNamespace(
-        id="t-scope-1",
-        name="trial-0",
-        trial_s3_key="trials/t-scope-1/",
-        has_trajectory=True,
-        agent="claude-code",
-        finished_at=None,
-        org_id="org-1",
-        billed_user_id="user-1",
-        experiment_id="exp-1",
-        task_id="task-1",
-    )
-    session = _fake_session()
-    fresh = {"schema_version": "5", "summary": "ok", "highlights": [], "components": []}
-
-    async def fake_traj(_t):
-        return {"steps": [{"step_id": 1}]}
-
-    async def fake_ctx(_t):
-        return _minimal_ctx()
-
-    load_prompt = AsyncMock(
-        return_value=("INSTRUCTIONS {{taxonomy}}", 1, "prompt-test-id")
+        build_summary_block,
+        load_summary_prompt_template,
     )
 
-    with (
-        patch(
-            "api.services.summarize_trajectory._load_fresh_summary_block",
-            new_callable=AsyncMock,
-            return_value=None,
-        ),
-        patch(
-            "api.services.summarize_trajectory._load_summary_prompt",
-            new=load_prompt,
-        ),
-        patch(
-            "api.services.summarize_trajectory.read_trial_trajectory",
-            new=fake_traj,
-        ),
-        patch(
-            "api.services.summarize_trajectory.build_task_context",
-            new=fake_ctx,
-        ),
-        patch(
-            "api.services.summarize_trajectory.generate",
-            new_callable=AsyncMock,
-            return_value=fresh,
-        ),
-    ):
-        await get_or_generate_summary(session, trial)
-
-    load_prompt.assert_awaited_once_with(
-        session,
-        org_id="org-1",
-        user_id="user-1",
-        experiment_id="exp-1",
-        task_id="task-1",
-        trial_id="t-scope-1",
+    _patch_block_persistence(monkeypatch)
+    block = build_summary_block(
+        _trajectory_with_steps([1]),
+        _minimal_ctx(),
+        analyzer_id="tr_default",
+        model="claude-sonnet-4-6",
     )
+    # The packaged template's opening line survives into the built prompt
+    # (the {{taxonomy}} placeholder itself is rendered away).
+    first_line = load_summary_prompt_template().strip().splitlines()[0]
+    assert first_line.split("{{")[0].strip() in block.prompt
 
 
 # ---------------------------------------------------------------------------
-# Guard: a scoped override's block run must attribute to itself, never to the
-# global row's NULL-prompt_id fallback (finding 2 -- permanent counter
-# pollution if this regresses).
+# context-overflow clipping + shrink-and-retry
+#
+# Prod (2026-08-05): 473 trajectory_summary blocks in 30d died on a 400
+# "prompt is too long", up to 11.2M tokens against a 1M cap. Characters do not
+# predict tokens closely enough to preflight a static budget -- a 588k-char
+# prompt overflowed while a 2.17M-char one fit -- so the API decides.
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_scoped_prompt_block_attributes_usage_to_override_not_global(
-    monkeypatch,
-):
-    """End-to-end through generate()/build_summary_block() with a real DB: a
-    task-scoped TRAJECTORY_SUMMARY override must produce an analyzer_blocks
-    row stamped with the override's prompt_id, counted in the override's
-    usage and NOT in the global row's usage."""
-    import uuid
+class _RecordingFakeLLM:
+    """Fake client that records the prompt and can fail the first N calls."""
 
-    from sqlalchemy import select
+    def __init__(self, prompts: list[str], payload: str, failures: list):
+        self._prompts = prompts
+        self._payload = payload
+        self._failures = failures
+        self.last_system_prompt = None
+        self.last_usage = None
 
-    from api.services.summarize_trajectory import SUMMARY_PROMPT_KEY, generate
-    from oddish.blocks.analyzer.analyzer_block import AnalyzerBlock
-    from oddish.core.prompts import (
-        get_prompt_core,
-        get_prompt_usage_core,
-        set_prompt_core,
+    async def stream(self, prompt: str, *, system_prompt: str | None = None):
+        self._prompts.append(prompt)
+        if self._failures:
+            raise self._failures.pop(0)
+        yield self._payload
+
+    async def aclose(self) -> None:
+        return None
+
+
+def _install_recording_llm(monkeypatch, payload: str, failures: list) -> list[str]:
+    prompts: list[str] = []
+
+    async def create(*args, **kwargs):
+        return _RecordingFakeLLM(prompts, payload, failures)
+
+    monkeypatch.setattr(
+        "oddish.blocks.analyzer.analyzer_block.create_llm_client", create
     )
-    from oddish.db import PromptModel, get_session
-    from oddish.db.models import AnalyzerBlockModel
+    return prompts
 
-    task_id = f"test_summary_usage_{uuid.uuid4().hex[:8]}"
-    org_id = "org_summary_usage_test"
-    analyzer_id = f"tr_usage_guard_{uuid.uuid4().hex[:8]}"
 
-    async with get_session() as session:
-        scoped_version = await set_prompt_core(
-            session,
-            kind=SUMMARY_PROMPT_KEY,
-            content="SCOPED USAGE {{taxonomy}}",
-            scope_type="task",
-            scope_id=task_id,
-            org_id=org_id,
-        )
-        await session.commit()
-        scoped_prompt_id = scoped_version.prompt_id
+_OVERFLOW = Exception(
+    "Error code: 400 - {'type': 'error', 'error': {'type': "
+    "'invalid_request_error', 'message': 'prompt is too long: "
+    "1744777 tokens > 1000000 maximum'}}"
+)
 
-    async with get_session() as session:
-        global_prompt, _ = await get_prompt_core(session, SUMMARY_PROMPT_KEY)
-        global_usage_before = await get_prompt_usage_core(session, global_prompt.id)
 
-    monkeypatch.setattr(AnalyzerBlock, "save_to_s3", AsyncMock())
-    payload = json.dumps({"summary": "s", "highlights": [], "components": []})
-    _install_fake_llm(monkeypatch, _fake_llm(payload))
+def test_clip_trajectory_steps_keeps_head_and_tail():
+    from api.services.summarize_trajectory import clip_trajectory_steps
 
-    try:
+    clipped = clip_trajectory_steps(_trajectory_with_steps(list(range(1, 21))), 6)
+    kept = [s["step_id"] for s in clipped["steps"] if s.get("step_id") is not None]
+    assert kept == [1, 2, 3, 18, 19, 20]
+
+
+def test_clip_trajectory_steps_marks_the_omission():
+    from api.services.summarize_trajectory import clip_trajectory_steps
+
+    clipped = clip_trajectory_steps(_trajectory_with_steps(list(range(1, 21))), 6)
+    markers = [s for s in clipped["steps"] if s.get("step_id") is None]
+    assert len(markers) == 1
+    assert "14 steps omitted" in markers[0]["message"]
+
+
+def test_clip_trajectory_steps_marker_carries_last_dropped_timestamp():
+    from api.services.summarize_trajectory import clip_trajectory_steps
+
+    steps = [
+        _make_step(i, timestamp=f"2026-04-30T12:{i:02d}:00Z") for i in range(1, 21)
+    ]
+    clipped = clip_trajectory_steps({"steps": steps}, 6)
+    marker = next(s for s in clipped["steps"] if s.get("step_id") is None)
+    # Tail is steps 18-20, so step 17 is the last one dropped.
+    assert marker["timestamp"] == "2026-04-30T12:17:00Z"
+
+
+def test_clipped_tail_duration_measures_against_the_dropped_predecessor():
+    """A clipped summary must not report the first tail step as taking 0ms."""
+    from pathlib import Path
+
+    from api.services.blocks.analyzer.trajectory.trajectory_component_block import (
+        TrajectoryBlock,
+        TrajectoryInput,
+    )
+    from api.services.summarize_trajectory import clip_trajectory_steps
+
+    template = (
+        Path(__file__).resolve().parents[2]
+        / "oddish" / "src" / "oddish" / "analyze" / "prompts" / "trajectory_summary.txt"
+    ).read_text()
+    steps = [
+        _make_step(i, timestamp=f"2026-04-30T12:{i:02d}:00Z") for i in range(1, 21)
+    ]
+    clipped = clip_trajectory_steps({"steps": steps}, 6)
+    raw = json.dumps({
+        "summary": "s",
+        "highlights": [],
+        "components": [
+            {"step_ids": [18], "trajectory_component": "debugging", "summary": "y"}
+        ],
+    })
+    block = TrajectoryBlock(
+        TrajectoryInput(
+            task_name="t",
+            instruction=None,
+            final_reward=None,
+            model_used=None,
+            verifier_output=None,
+            trajectory=clipped,
+        ),
+        instructions_template=template,
+    )
+    out = block.to_summary(raw, model="claude-x")
+    # Step 18 follows step 17 by one minute; the omission marker between them
+    # must not flatten that to 0.
+    assert out["components"][0]["duration_ms"] == 60_000
+
+
+def test_clip_trajectory_steps_is_a_noop_under_budget():
+    from api.services.summarize_trajectory import clip_trajectory_steps
+
+    trajectory = _trajectory_with_steps([1, 2, 3])
+    assert clip_trajectory_steps(trajectory, 10) == trajectory
+
+
+def test_clip_trajectory_steps_does_not_mutate_its_input():
+    from api.services.summarize_trajectory import clip_trajectory_steps
+
+    trajectory = _trajectory_with_steps(list(range(1, 21)))
+    clip_trajectory_steps(trajectory, 4)
+    assert len(trajectory["steps"]) == 20
+
+
+@pytest.mark.asyncio
+async def test_generate_retries_with_fewer_steps_on_context_overflow(monkeypatch):
+    from api.services.summarize_trajectory import generate
+
+    _patch_block_persistence(monkeypatch)
+    payload = json.dumps({"summary": "ok", "highlights": [], "components": []})
+    prompts = _install_recording_llm(monkeypatch, payload, [_OVERFLOW])
+
+    result = await generate(
+        _trajectory_with_steps(list(range(1, 41))),
+        _minimal_ctx(),
+        **_PROMPT_KWARGS,
+    )
+
+    assert result["summary"] == "ok"
+    assert len(prompts) == 2, "should retry exactly once after the overflow"
+    assert len(prompts[1]) < len(prompts[0]), "the retry must send a smaller prompt"
+    assert "steps omitted" in prompts[1]
+
+
+@pytest.mark.asyncio
+async def test_generate_halves_repeatedly_until_it_fits(monkeypatch):
+    from api.services.summarize_trajectory import generate
+
+    _patch_block_persistence(monkeypatch)
+    payload = json.dumps({"summary": "ok", "highlights": [], "components": []})
+    prompts = _install_recording_llm(
+        monkeypatch, payload, [_OVERFLOW, _OVERFLOW, _OVERFLOW]
+    )
+
+    result = await generate(
+        _trajectory_with_steps(list(range(1, 41))),
+        _minimal_ctx(),
+        **_PROMPT_KWARGS,
+    )
+
+    assert result["summary"] == "ok"
+    assert len(prompts) == 4
+    sizes = [len(p) for p in prompts]
+    assert sizes == sorted(sizes, reverse=True), f"each attempt must shrink: {sizes}"
+
+
+@pytest.mark.asyncio
+async def test_generate_does_not_retry_non_overflow_errors(monkeypatch):
+    from api.services.summarize_trajectory import SummaryGenerationError, generate
+
+    _patch_block_persistence(monkeypatch)
+    payload = json.dumps({"summary": "ok", "highlights": [], "components": []})
+    prompts = _install_recording_llm(
+        monkeypatch, payload, [Exception("Error code: 529 - overloaded_error")]
+    )
+
+    with pytest.raises(SummaryGenerationError):
         await generate(
-            _trajectory_with_steps([1]),
+            _trajectory_with_steps(list(range(1, 41))),
             _minimal_ctx(),
-            analyzer_id=analyzer_id,
-            prompt_template="SCOPED USAGE {{taxonomy}}",
-            prompt_version=scoped_version.version,
-            prompt_id=scoped_prompt_id,
+            **_PROMPT_KWARGS,
         )
+    assert len(prompts) == 1, "a non-overflow failure must not be retried"
 
-        async with get_session() as session:
-            row = (
-                await session.execute(
-                    select(AnalyzerBlockModel).where(
-                        AnalyzerBlockModel.analyzer_id == analyzer_id
-                    )
-                )
-            ).scalar_one()
-            assert row.prompt_id == scoped_prompt_id
 
-            scoped_usage = await get_prompt_usage_core(session, scoped_prompt_id)
-            assert scoped_usage["total"] == 1
+@pytest.mark.asyncio
+async def test_generate_gives_up_after_the_attempt_ceiling(monkeypatch):
+    from api.services.summarize_trajectory import (
+        MAX_OVERFLOW_ATTEMPTS,
+        SummaryGenerationError,
+        generate,
+    )
 
-            global_usage_after = await get_prompt_usage_core(
-                session, global_prompt.id
-            )
-            assert global_usage_after["total"] == global_usage_before["total"]
-    finally:
-        async with get_session() as session:
-            await session.execute(
-                AnalyzerBlockModel.__table__.delete().where(
-                    AnalyzerBlockModel.analyzer_id == analyzer_id
-                )
-            )
-            await session.execute(
-                PromptModel.__table__.delete().where(
-                    PromptModel.kind == SUMMARY_PROMPT_KEY,
-                    PromptModel.scope_type == "task",
-                    PromptModel.scope_id == task_id,
-                )
-            )
-            await session.commit()
+    _patch_block_persistence(monkeypatch)
+    payload = json.dumps({"summary": "ok", "highlights": [], "components": []})
+    prompts = _install_recording_llm(
+        monkeypatch, payload, [_OVERFLOW] * (MAX_OVERFLOW_ATTEMPTS + 3)
+    )
+
+    with pytest.raises(SummaryGenerationError) as excinfo:
+        await generate(
+            _trajectory_with_steps(list(range(1, 41))),
+            _minimal_ctx(),
+            **_PROMPT_KWARGS,
+        )
+    assert "prompt is too long" in str(excinfo.value)
+    assert len(prompts) <= MAX_OVERFLOW_ATTEMPTS

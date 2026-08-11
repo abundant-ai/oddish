@@ -25,6 +25,11 @@ from oddish.core.quotas import (
     sum_org_cost_usd,
     try_acquire_quota_locks,
 )
+from oddish.core.verdict_state import (
+    cancel_verdict,
+    has_active_verdict,
+    has_published_verdict,
+)
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
@@ -73,9 +78,9 @@ async def _quota_scope_reached(
     billed_user_id: str | None,
 ) -> str | None:
     # Non-blocking: many workers call enforcement on cost checkpoints. If
-    # another transaction already holds the org/user quota lock (admission or
-    # an in-flight cancellation), raise instead of pile-waiting and starving
-    # /tasks/sweep — and instead of returning None, which means under-quota.
+    # another transaction already holds the org/user quota lock (an in-flight
+    # cancellation), raise instead of pile-waiting — and instead of returning
+    # None, which means under-quota.
     if not await try_acquire_quota_locks(session, org_id, billed_user_id):
         raise QuotaLockBusy(
             f"quota lock busy for org_id={org_id} billed_user_id={billed_user_id}"
@@ -341,18 +346,13 @@ async def _reconcile_cancelled_tasks(
     for task in tasks:
         if task.id not in exhausted:
             continue
+        if has_published_verdict(task) or has_active_verdict(task):
+            cancel_verdict(task, error=QUOTA_CANCELLED_MESSAGE, now=now)
         if task.status in _ACTIVE_TASK_STATUSES:
-            task.status = TaskStatus.FAILED
+            restored = task.verdict_status == VerdictStatus.SUCCESS
+            task.status = TaskStatus.COMPLETED if restored else TaskStatus.FAILED
             task.finished_at = now
             tasks_cancelled += 1
-        if task.verdict_status in (
-            VerdictStatus.PENDING,
-            VerdictStatus.QUEUED,
-            VerdictStatus.RUNNING,
-        ):
-            task.verdict_status = VerdictStatus.FAILED
-            task.verdict_error = QUOTA_CANCELLED_MESSAGE
-            task.verdict_finished_at = now
 
     released_trial_ids: list[str] = []
     cancelled_trial_ids = set(result["cancelled_trial_ids"])

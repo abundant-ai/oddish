@@ -10,8 +10,8 @@ from sqlalchemy.orm import selectinload
 from oddish.core.endpoints._common import (
     USER_CANCELLED_MESSAGE,
     _ACTIVE_WORKER_JOB_STATUSES_SQL,
-    _reset_task_verdict,
 )
+from oddish.core.verdict_state import cancel_verdict, queue_verdict
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
@@ -147,9 +147,7 @@ async def cancel_task_qa_core(
     # these). Left alive, one would flip the cancelled analysis back to
     # QUEUED on claim and overwrite the cancelled state.
     live_trial_ids = [
-        trial.id
-        for trial in task.trials or []
-        if trial.superseded_by_trial_id is None
+        trial.id for trial in task.trials or [] if trial.superseded_by_trial_id is None
     ]
     analysis_rows = await _cancel_worker_jobs_for_kind(
         session,
@@ -178,9 +176,7 @@ async def cancel_task_qa_core(
         or _has_active_verdict(task)
         or task.status == TaskStatus.VERDICT_PENDING
     ):
-        task.verdict_status = VerdictStatus.FAILED
-        task.verdict_error = USER_CANCELLED_MESSAGE
-        task.verdict_finished_at = now_value
+        cancel_verdict(task, error=USER_CANCELLED_MESSAGE, now=now_value)
         # Finalize trials whose classification the QA job had in flight so
         # they don't linger in a RUNNING analysis state.
         for trial in task.trials or []:
@@ -189,7 +185,13 @@ async def cancel_task_qa_core(
                 trial.analysis_error = USER_CANCELLED_MESSAGE
                 trial.analysis_finished_at = now_value
         if task.status == TaskStatus.VERDICT_PENDING:
-            task.status = TaskStatus.FAILED
+            # A restored verdict means the task is judged; only a task with
+            # no verdict fails on cancel.
+            task.status = (
+                TaskStatus.COMPLETED
+                if task.verdict_status == VerdictStatus.SUCCESS
+                else TaskStatus.FAILED
+            )
             task.finished_at = now_value
     # The pre-trial audit runs inside a QA job (full or audit-only). A request
     # left QUEUED (or a claim left RUNNING) with no job behind it would keep
@@ -204,9 +206,7 @@ async def cancel_task_qa_core(
         if pinned:
             version_ids.add(str(pinned))
     for version_id in version_ids:
-        version = await session.get(
-            TaskVersionModel, version_id, with_for_update=True
-        )
+        version = await session.get(TaskVersionModel, version_id, with_for_update=True)
         if version is not None and version.pre_trial_status in (
             VerdictStatus.PENDING,
             VerdictStatus.QUEUED,
@@ -263,9 +263,9 @@ async def rerun_task_qa_core(
 ) -> dict[str, str | int]:
     """(Re)run the single task-level QA job for a finished task.
 
-    Resets every live trial's classification and the task verdict, then
-    enqueues one QA job that re-classifies all live trials and synthesizes a
-    fresh verdict.
+    Resets every live trial's classification, then enqueues one QA job that
+    re-classifies all live trials and synthesizes a fresh verdict. The current
+    published verdict remains visible until that job replaces it.
     """
     return await backfill_task_analysis_core(
         session,
@@ -288,9 +288,8 @@ async def backfill_task_analysis_core(
 ) -> dict[str, str | int]:
     """(Re)run task-level QA to backfill trial analysis.
 
-    Resets the task verdict (so the QA job runs instead of short-circuiting
-    on a terminal verdict) and enqueues one QA job. The QA job is idempotent
-    at trial granularity, so:
+    Queues a replacement verdict without withdrawing the published result.
+    The QA job is idempotent at trial granularity, so:
 
     * ``force=False`` resets no trial analyses -> only genuinely-missing
       trials are (re)classified;
@@ -434,12 +433,11 @@ async def backfill_task_analysis_core(
             _reset_trial_analysis(trial)
             reset_count += 1
 
-    _reset_task_verdict(task)
     if enable_analysis:
         task.run_analysis = True
     task.status = TaskStatus.VERDICT_PENDING
     task.finished_at = None
-    task.verdict_status = VerdictStatus.QUEUED
+    queue_verdict(task)
 
     from oddish.queue import enqueue_qa_worker_job
 
