@@ -64,31 +64,14 @@ def _mixed_submission(name: str) -> TaskSubmission:
 async def cleanup_task_ids():
     ids: list[str] = []
     yield ids
-    # Gate resolution dispatches local sibling trials in background tasks.
-    # Let those transactions finish before hard-deleting their parent task;
-    # otherwise the teardown's FK cascades can deadlock with trial settlement.
-    for _ in range(10):
-        current = asyncio.current_task()
-        runners = [
-            task
-            for task in asyncio.all_tasks()
-            if task is not current
-            and not task.done()
-            and getattr(task.get_coro(), "__qualname__", "").endswith(
-                "run_trial_locally"
-            )
-        ]
-        if not runners:
-            break
-        await asyncio.gather(*runners)
     async with get_session() as s:
-        trial_ids = select(TrialModel.id).where(TrialModel.task_id.in_(ids))
-        await s.execute(
-            WorkerJobModel.__table__.delete().where(
-                WorkerJobModel.subject_id.in_(trial_ids)
+        for tid in ids:
+            await s.execute(
+                WorkerJobModel.__table__.delete().where(
+                    WorkerJobModel.subject_id == tid
+                )
             )
-        )
-        await s.execute(TaskModel.__table__.delete().where(TaskModel.id.in_(ids)))
+            await s.execute(TaskModel.__table__.delete().where(TaskModel.id == tid))
 
 
 async def _trial_id(task_id: str, agent: str) -> str:

@@ -290,11 +290,6 @@ async def cancel_trials_if_quota_reached(
             "worker_targets": worker_targets,
         }
     )
-    from oddish.core.task_browse_summary import refresh_task_browse_summaries
-
-    await refresh_task_browse_summaries(
-        session, (trial.task_version_id for trial in trials)
-    )
     await _reconcile_cancelled_tasks(session, result)
     return result
 

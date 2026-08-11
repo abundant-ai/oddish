@@ -288,12 +288,6 @@ export interface TaskBrowseItem {
   reward_success: number;
   reward_sum: number;
   reward_total: number;
-  pass_count: number;
-  partial_count: number;
-  fail_count: number;
-  harness_count: number;
-  skipped_count: number;
-  pending_count: number;
   last_run_at?: string | null;
   link?: string | null;
   github_meta?: Record<string, string> | null;
@@ -307,7 +301,6 @@ export interface TaskBrowseItem {
   billed_has_native: boolean;
   qa_cost_usd?: number;
   latest_trials: TaskBrowseTrial[];
-  latest_trials_truncated: boolean;
   experiments: TaskBrowseExperiment[];
   user_tags: UserTagRef[];
 }
