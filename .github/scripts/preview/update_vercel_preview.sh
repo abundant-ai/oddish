@@ -145,11 +145,19 @@ preview_url="$(read_output_value "$vercel_output" preview_url)"
 if [ -n "${PREVIEW_ALIAS_HOSTNAME:-}" ] && [ -n "$preview_url" ]; then
   vercel inspect "$preview_url" --wait --timeout=10m --scope "$VERCEL_ORG_ID" --token="$VERCEL_TOKEN" >/dev/null
   build_seconds=$((SECONDS - build_start))
-  alias_start=$SECONDS
-  vercel alias set "$preview_url" "$PREVIEW_ALIAS_HOSTNAME" --scope "$VERCEL_ORG_ID" --token="$VERCEL_TOKEN"
-  preview_alias_url="https://$PREVIEW_ALIAS_HOSTNAME"
-  wait_for_url_ready "$preview_alias_url"
-  alias_seconds=$((SECONDS - alias_start))
+  # The build wait takes minutes: re-verify this run still owns the preview
+  # generation before moving the stable alias (fails closed on API errors).
+  generation_check="$(OWNER_REPO="$OWNER_REPO" HEAD_REF="$VERCEL_GIT_BRANCH" HEAD_SHA="$VERCEL_GIT_COMMIT_SHA" \
+    python "$script_dir/assert_current_generation.py")"
+  if [ "$generation_check" = "current=true" ]; then
+    alias_start=$SECONDS
+    vercel alias set "$preview_url" "$PREVIEW_ALIAS_HOSTNAME" --scope "$VERCEL_ORG_ID" --token="$VERCEL_TOKEN"
+    preview_alias_url="https://$PREVIEW_ALIAS_HOSTNAME"
+    wait_for_url_ready "$preview_alias_url"
+    alias_seconds=$((SECONDS - alias_start))
+  else
+    echo "- Stable alias: skipped -- a newer push owns this preview generation" >> "$GITHUB_STEP_SUMMARY"
+  fi
 elif [ -n "$preview_url" ]; then
   wait_for_url_ready "$preview_url"
   build_seconds=$((SECONDS - build_start))
