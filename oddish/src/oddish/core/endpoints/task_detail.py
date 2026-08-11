@@ -14,6 +14,7 @@ from oddish.core.helpers import (
     fetch_trial_queue_info,
     fetch_visible_worker_jobs,
 )
+from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.core.tags.projection import (
     list_direct_version_tags,
     list_effective_user_tags_for_task_versions,
@@ -110,6 +111,7 @@ async def set_task_default_version_core(
     # raw SQL in the same transaction.
     await session.flush()
     await recompute_task_browse_projection(session, task_id=task.id)
+    await refresh_task_browse_summaries(session, [version_row.id])
     return TaskVersionResponse.model_validate(version_row)
 
 
@@ -182,9 +184,7 @@ async def get_task_detail_core(
         version_rows=version_rows,
         current_version_id=task_status.current_version_id,
         billed_trial_ids=billed_trial_ids,
-        qa_cost_usd=(
-            qa_by_task[task_id].qa_cost_usd if task_id in qa_by_task else 0.0
-        ),
+        qa_cost_usd=(qa_by_task[task_id].qa_cost_usd if task_id in qa_by_task else 0.0),
     )
 
     # Version-scoped experiments: which experiments ran non-probe trials
