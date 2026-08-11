@@ -839,18 +839,16 @@ export function TrialDetailPanel({
   contentOnly = false,
   paneAction,
 }: TrialDetailPanelProps) {
-  const {
-    data: refreshedTrial,
-    error: trialError,
-    isLoading: trialLoading,
-  } = useTrial(isOpen && revalidateTrial ? selectedTrial?.id : null, {
-    apiBaseUrl,
-    fallbackData: selectedTrial ?? undefined,
-  });
-  const actionsReady =
-    !revalidateTrial || (!trialLoading && trialError === undefined);
-  const trial =
-    refreshedTrial?.id === selectedTrial?.id ? refreshedTrial : selectedTrial;
+  const { data: refreshedTrial } = useTrial(
+    isOpen && revalidateTrial ? selectedTrial?.id : null,
+    {
+      apiBaseUrl,
+    },
+  );
+  const canonicalTrial =
+    refreshedTrial?.id === selectedTrial?.id ? refreshedTrial : null;
+  const actionsReady = !revalidateTrial || canonicalTrial !== null;
+  const trial = canonicalTrial ?? selectedTrial;
   const verifierSummary = embeddedCtrfSummary(trial?.result);
 
   const validTabs = useMemo(

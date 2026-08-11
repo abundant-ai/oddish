@@ -55,22 +55,19 @@ export function trialKey(apiBaseUrl: string, trialId: string): string {
  * request and a single copy of the data, instead of each component
  * fetching the trial on its own. While the trial's analysis is queued or
  * running, the hook refetches every 5 seconds so the result appears on
- * its own; the refetching stops once the analysis finishes. Passing null
- * as the id fetches nothing.
+ * its own; the refetching stops once the analysis finishes. Returned data
+ * always came from this endpoint; callers render lightweight rows separately.
+ * Passing null as the id fetches nothing.
  */
 export function useTrial(
   trialId: string | null | undefined,
-  {
-    apiBaseUrl = "/api",
-    fallbackData,
-  }: { apiBaseUrl?: string; fallbackData?: Trial } = {},
+  { apiBaseUrl = "/api" }: { apiBaseUrl?: string } = {},
 ): SWRResponse<Trial, Error> {
   return useSWR<Trial>(
     trialId ? trialKey(apiBaseUrl, trialId) : null,
     trialFetcher,
     {
       revalidateOnFocus: false,
-      fallbackData,
       refreshInterval: (data) =>
         isAnalysisStatusActive(data?.analysis_status) ? 5000 : 0,
     },

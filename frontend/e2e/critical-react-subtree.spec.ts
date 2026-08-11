@@ -221,6 +221,7 @@ test.describe("critical task and trial subtree", () => {
 
     const taskDetailGate = deferred();
     const trialDetailGate = deferred();
+    let failTrialRevalidation = false;
     const requests: string[] = [];
     page.on("request", (request) => requests.push(request.url()));
 
@@ -286,6 +287,12 @@ test.describe("critical task and trial subtree", () => {
       }
     );
     await page.route(
+      new RegExp(`/api/trials/${TRIAL_ID}/analysis/rerun(?:\\?|$)`),
+      async (route) => {
+        await route.fulfill({ status: 202, json: {} });
+      }
+    );
+    await page.route(
       new RegExp(`/api/trials/${TRIAL_ID}/files(?:/|\\?|$)`),
       async (route) => {
         await route.fulfill({ json: { files: [] } });
@@ -307,6 +314,13 @@ test.describe("critical task and trial subtree", () => {
       new RegExp(`/api/trials/${TRIAL_ID}(?:\\?|$)`),
       async (route) => {
         await trialDetailGate.pending;
+        if (failTrialRevalidation) {
+          await route.fulfill({
+            status: 503,
+            json: { error: "trial detail temporarily unavailable" },
+          });
+          return;
+        }
         await route.fulfill({ json: trial });
       }
     );
@@ -402,6 +416,19 @@ test.describe("critical task and trial subtree", () => {
     expect(requestCount(requests, trajectoryPattern)).toBeGreaterThan(0);
 
     await page.getByRole("tab", { name: "Summary" }).click();
+    // The analysis mutation revalidates the canonical trial. A transient
+    // failure keeps that canonical row and must not relock other mutations.
+    failTrialRevalidation = true;
+    const failedTrialRevalidation = page.waitForResponse(
+      (response) =>
+        trialDetailPattern.test(response.url()) && response.status() === 503
+    );
+    await page.getByRole("button", { name: "Re-run analysis" }).click();
+    await failedTrialRevalidation;
+    await expect(
+      page.getByRole("button", { name: "Retry Trial" })
+    ).toBeEnabled();
+
     const probeDetailPattern = new RegExp(
       `/api/trials/${PROBE_TRIAL_ID}(?:\\?|$)`
     );
