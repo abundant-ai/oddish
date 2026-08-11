@@ -470,3 +470,40 @@
 .dark .cl-formFieldHintText {
   color: hsl(var(--muted-foreground));
 }
+
+/*
+ * Cycling "." -> ".." -> "..." for copy that sits beside in-flight work.
+ * Only opacity moves: the dots keep their slots in the line, so the sentence
+ * ahead of them holds still instead of jittering once per step. The first dot
+ * is always on, so the cycle reads as one/two/three rather than blinking
+ * through an empty frame.
+ */
+.ellipsis-dot-2 {
+  animation: ellipsis-dot-2 1.2s infinite;
+}
+
+.ellipsis-dot-3 {
+  animation: ellipsis-dot-3 1.2s infinite;
+}
+
+@keyframes ellipsis-dot-2 {
+  0%,
+  33% {
+    opacity: 0;
+  }
+  34%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes ellipsis-dot-3 {
+  0%,
+  66% {
+    opacity: 0;
+  }
+  67%,
+  100% {
+    opacity: 1;
+  }
+}

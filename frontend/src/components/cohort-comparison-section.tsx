@@ -41,6 +41,19 @@ function stepRange(stepIds: number[]): string {
   return lo === hi ? `[${lo}]` : `[${lo}-${hi}]`;
 }
 
+/** A "." → ".." → "..." cycle for the generating copy. All three dots occupy
+ *  their slot from the start and only their opacity cycles, so the sentence
+ *  ahead of them never reflows. Hidden from assistive tech: the sentence
+ *  already says the work is in flight. */
+function EllipsisDots() {
+  return (
+    <span aria-hidden="true">
+      .<span className="ellipsis-dot-2">.</span>
+      <span className="ellipsis-dot-3">.</span>
+    </span>
+  );
+}
+
 function ObservationList({
   items,
   taskId,
@@ -62,9 +75,12 @@ function ObservationList({
             <a
               key={j}
               href={evidenceHref(taskId, ev.trial_id, taskVersionId)}
-              className="text-xs text-muted-foreground hover:underline"
+              className="text-xs text-muted-foreground underline-offset-4 hover:underline"
             >
-              <span className="font-mono">
+              {/* Only the component + step range carries the link colour. The
+                  quote is the agent's own words, and colouring it too turns a
+                  paragraph of body text blue. */}
+              <span className="font-mono text-blue-600 dark:text-blue-400">
                 {componentLabel(ev.trajectory_component)} {stepRange(ev.step_ids)}
               </span>{" "}
               — {ev.quote}
@@ -110,8 +126,8 @@ export function CohortComparisonSection({
       <section className="border-border flex flex-col gap-2 border-b p-4">
         <h3 className="text-sm font-semibold">Successful vs failing agents</h3>
         <p className="text-muted-foreground animate-pulse text-xs">
-          Comparing successful and failing runs. The first view generates this,
-          which takes a moment.
+          Analyzing agent behavior across successful and failing runs
+          <EllipsisDots />
         </p>
       </section>
     );
@@ -138,7 +154,7 @@ export function CohortComparisonSection({
         <p className="text-muted-foreground text-xs">
           No differences held up against the stored trajectories for these{" "}
           {data.cohort_success.length} successful and {data.cohort_failure.length}{" "}
-          failing runs.
+          failed runs.
         </p>
       </section>
     );
@@ -149,7 +165,7 @@ export function CohortComparisonSection({
       <div className="flex items-baseline gap-3">
         <h3 className="text-sm font-semibold">Successful vs failing agents</h3>
         <span className="text-xs text-muted-foreground">
-          {data.cohort_success.length} successful, {data.cohort_failure.length} failing
+          {data.cohort_success.length} successful, {data.cohort_failure.length} failed
         </span>
       </div>
       {data.thin_coverage?.length ? (
@@ -160,14 +176,17 @@ export function CohortComparisonSection({
         </p>
       ) : null}
       {data.categories.map((cat, i) => (
-        <div key={i} className="flex flex-col gap-2 border-t pt-3">
+        <div
+          key={i}
+          className="border-border bg-background/40 flex flex-col gap-2 rounded-lg border p-3"
+        >
           <h4 className="text-sm font-medium">
             {CATEGORY_LABELS[cat.category] ?? cat.category}
             {cat.label ? `: ${cat.label}` : ""}
           </h4>
           <div className="grid gap-6 md:grid-cols-2">
             <div className="flex flex-col gap-2">
-              <span className="text-xs uppercase tracking-wide text-muted-foreground">
+              <span className="text-xs uppercase tracking-wide text-emerald-600 dark:text-emerald-400">
                 Successful
               </span>
               <ObservationList
@@ -177,8 +196,8 @@ export function CohortComparisonSection({
               />
             </div>
             <div className="flex flex-col gap-2">
-              <span className="text-xs uppercase tracking-wide text-muted-foreground">
-                Failing
+              <span className="text-xs uppercase tracking-wide text-red-600 dark:text-red-400">
+                Failed
               </span>
               <ObservationList
                 items={cat.failing}
