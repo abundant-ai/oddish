@@ -26,6 +26,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+# The frontend job's timeout-minutes in modal-deploy.yml must stay comfortably
+# above READY_TIMEOUT_S + ALIAS_TIMEOUT_S plus per-request overhead, so a slow
+# build fails here with a diagnostic instead of as an opaque runner kill.
 READY_TIMEOUT_S = 25 * 60
 ALIAS_TIMEOUT_S = 3 * 60
 POLL_INTERVAL_S = 15
@@ -94,24 +97,40 @@ def main():
             query={"forceNew": "1"} if force_new else None,
         )
 
+    def unusable(deployment):
+        """A deduplicated deployment this run must not adopt.
+
+        Covers every state the polls below would reject, so a retry never
+        replays a foregone failure: a non-production deployment (every
+        promoted sha was once the staging tip, so a preview build of it
+        usually exists, and a preview must not stand in for the production
+        deploy), a build that already failed, a broken alias, and READY
+        without the alias attached — a deployment this run just created is
+        never READY yet, so that combination always means a stale prior
+        build whose alias never landed.
+        """
+        return (
+            deployment.get("target") != "production"
+            or deployment.get("readyState") in FAILURE_STATES
+            or bool(deployment.get("aliasError"))
+            or (
+                deployment.get("readyState") == "READY"
+                and not deployment.get("aliasAssigned")
+            )
+        )
+
     # Without forceNew, Vercel deduplicates on the deployed sha and may hand
     # back an existing deployment instead of building. Usually that is right:
     # re-invoking for a sha whose production build exists returns it instead
-    # of building twice. Two dedup results are unusable and get one forced
-    # fresh build instead: a non-production deployment (every promoted sha
-    # was once the staging tip, so a preview build of it usually exists, and
-    # a preview must not stand in for the production deploy), and a
-    # deployment that already failed (replaying an earlier run's ERROR would
-    # make every retry fail on arrival).
+    # of building twice. An unusable dedup result gets one forced fresh build.
     deployment = create(force_new=False)
-    if (
-        deployment.get("target") != "production"
-        or deployment.get("readyState") in FAILURE_STATES
-    ):
+    if unusable(deployment):
         print(
             "Deduplicated deployment is unusable "
             f"(target={deployment.get('target')!r}, "
-            f"readyState={deployment.get('readyState')!r}); "
+            f"readyState={deployment.get('readyState')!r}, "
+            f"aliasAssigned={deployment.get('aliasAssigned')!r}, "
+            f"aliasError={deployment.get('aliasError')!r}); "
             "forcing a fresh production build"
         )
         deployment = create(force_new=True)

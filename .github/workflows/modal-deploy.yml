@@ -151,7 +151,10 @@ jobs:
     # backend. Skipped automatically when `deploy` fails or is skipped.
     needs: deploy
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Must dominate deploy_vercel.py's internal budget (25min READY + 3min
+    # alias, plus per-request overhead), so a slow build fails inside the
+    # script with its diagnostic instead of as an opaque runner kill.
+    timeout-minutes: 40
     permissions:
       contents: read
     env:
