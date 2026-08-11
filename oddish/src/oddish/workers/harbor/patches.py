@@ -499,8 +499,6 @@ def _patch_ec2_lifecycle(*, require_ec2: bool = False) -> None:
             )
         logger.warning("Harbor EC2Environment not found; EC2 lifecycle patch skipped")
         return
-    if cls in _EC2_PATCHED_CLASSES:
-        return
     original_run_instances_kwargs = getattr(cls, "_run_instances_kwargs", None)
     if original_run_instances_kwargs is None:
         if require_ec2:
@@ -517,6 +515,8 @@ def _patch_ec2_lifecycle(*, require_ec2: bool = False) -> None:
         raise RuntimeError(
             "EC2 trial requires Harbor EC2Environment to expose _launch_instance"
         )
+    if cls in _EC2_PATCHED_CLASSES:
+        return
 
     def get_sandbox_id(self: Any) -> str | None:
         instance_id = getattr(self, "instance_id", None)

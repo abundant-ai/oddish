@@ -1347,3 +1347,28 @@ def test_enabled_ec2_does_not_break_unrelated_harbor_trial_when_ec2_surface_miss
     )
 
     harbor_patches._patch_ec2_lifecycle(require_ec2=False)
+
+
+def test_required_ec2_trial_revalidates_partially_patched_harbor_surface(
+    monkeypatch,
+) -> None:
+    import oddish.workers.harbor.patches as harbor_patches
+
+    class FakeEc2Environment:
+        def _run_instances_kwargs(self):
+            return {}
+
+    module = SimpleNamespace(EC2Environment=FakeEc2Environment)
+    monkeypatch.setattr(
+        harbor_patches.importlib,
+        "import_module",
+        lambda _name: module,
+    )
+
+    harbor_patches._patch_ec2_lifecycle(require_ec2=False)
+
+    with pytest.raises(
+        RuntimeError,
+        match="EC2 trial requires Harbor EC2Environment to expose _launch_instance",
+    ):
+        harbor_patches._patch_ec2_lifecycle(require_ec2=True)
