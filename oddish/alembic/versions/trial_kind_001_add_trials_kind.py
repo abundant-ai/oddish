@@ -1,7 +1,7 @@
 """add trials.kind
 
 Revision ID: trial_kind_001
-Revises: verdict_state_001
+Revises: task_browse_summary_001
 Create Date: 2026-08-07 00:00:00.000000
 
 'agent' is a normal evaluation run. 'qa', 'audit', 'analyzer_map', and
@@ -18,7 +18,7 @@ from typing import Sequence, Union
 from alembic import op
 
 revision: str = "trial_kind_001"
-down_revision: Union[str, Sequence[str], None] = "verdict_state_001"
+down_revision: Union[str, Sequence[str], None] = "task_browse_summary_001"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
