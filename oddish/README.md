@@ -19,6 +19,9 @@ export ODDISH_API_KEY="ok_..."
 # Submit a run
 oddish run -d swebench@1.0 -a codex -m openai/gpt-5.2 --n-trials 3
 
+# Explicitly use an operator-enabled ephemeral EC2 backend
+# oddish run ./my-task --env ec2 -a codex -m openai/gpt-5.2
+
 # List and watch progress
 oddish ls
 oddish status
@@ -57,7 +60,7 @@ Need package internals, architecture, or development notes? See [`AGENTS.md`](..
 Run `oddish --help` or see [`../DOCS.md`](../DOCS.md) for the full CLI
 reference. The main commands are:
 
-- `oddish run` — submit local tasks, registry datasets, sweeps, retries, and task-level QA retries.
+- `oddish run` — submit local tasks, registry datasets, sweeps, retries, and task-level QA retries; `--env ec2` selects an operator-enabled ephemeral CPU VM while Daytona remains the hosted CPU default.
 - `oddish upload` — register task bundles or import off-oddish Harbor trial results.
 - `oddish ls` / `oddish status` — browse tasks (including model and trajectory-metric filters) and inspect progress. `oddish status <trial_id>` shows single-trial detail; `--detail`/`--versions` show a task's version history and cost rollups; `--queue` shows queue & worker scheduler diagnostics.
 - `oddish logs` — stream a running trial's live transcript and cost estimate (`--follow` to poll until it ends); finished trials are served by `oddish pull` instead.

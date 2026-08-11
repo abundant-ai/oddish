@@ -48,14 +48,31 @@ logger = logging.getLogger("oddish.harbor_entry")
 EVENT_SENTINEL = "_oddish_harbor_event"
 
 
+def _read_payload_and_unlink(payload_path: Path) -> dict[str, Any]:
+    """Read the private parent/child payload and remove it immediately."""
+    try:
+        payload = json.loads(payload_path.read_text())
+        if not isinstance(payload, dict):
+            raise ValueError("Ephemeral Harbor payload must be a JSON object")
+        return payload
+    finally:
+        try:
+            payload_path.unlink(missing_ok=True)
+        except OSError:
+            logger.exception(
+                "Failed to remove ephemeral Harbor payload %s", payload_path
+            )
+
+
 def _event_name(event: Any) -> str:
     raw = getattr(event, "value", str(event))
     return raw.lower().replace("_", "-")
 
 
-def _apply_sibling_harbor_patches() -> None:
+def _apply_sibling_harbor_patches(*, require_ec2: bool = False) -> Any:
     module = importlib.import_module("oddish.workers.harbor.patches")
-    module.apply_harbor_patches()
+    module.apply_harbor_patches(require_ec2=require_ec2)
+    return module
 
 
 def _emit_event_line(payload: dict[str, Any]) -> None:
@@ -103,7 +120,8 @@ def _make_hook(probe_task_dir: str | None, probe_harness_dir: str | None):
                 }
             )
         except Exception:
-            pass
+            if event_name == "environment-provisioned":
+                raise
 
         environment = getattr(event, "environment", None)
         if (
@@ -160,8 +178,15 @@ def _build_job_config(payload: dict[str, Any]):
     env_config = EnvironmentConfig.model_validate(
         payload.get("environment_config") or {}
     )
-    env_config.type = EnvironmentType(payload["environment"])
-    if env_config.type == EnvironmentType.DAYTONA and payload.get("daytona_kwargs"):
+    # Accept the legacy parent payload while newer callers pass the complete,
+    # already-resolved provider config in environment_config.
+    if payload.get("environment"):
+        env_config.type = EnvironmentType(payload["environment"])
+    if (
+        not payload.get("environment_config")
+        and env_config.type == EnvironmentType.DAYTONA
+        and payload.get("daytona_kwargs")
+    ):
         env_config.kwargs = payload["daytona_kwargs"]
 
     agent_kwargs: dict[str, Any] = dict(payload.get("agent_config") or {})
@@ -211,7 +236,8 @@ def _build_job_config(payload: dict[str, Any]):
 
 
 async def _run(payload: dict[str, Any]) -> dict[str, Any]:
-    _apply_sibling_harbor_patches()
+    environment_type = (payload.get("environment_config") or {}).get("type")
+    _apply_sibling_harbor_patches(require_ec2=environment_type == "ec2")
     Job = getattr(importlib.import_module("harbor"), "Job")
     start = time.time()
     config = _build_job_config(payload)
@@ -219,14 +245,23 @@ async def _run(payload: dict[str, Any]) -> dict[str, Any]:
     job_dir = Path(job.job_dir)
 
     hook = _make_hook(payload.get("probe_task_dir"), payload.get("probe_harness_dir"))
-    for register in (
+    registers = [
         "on_trial_started",
         "on_environment_started",
         "on_agent_started",
         "on_verification_started",
         "on_trial_ended",
         "on_trial_cancelled",
-    ):
+    ]
+    provisioned_register = getattr(job, "on_environment_provisioned", None)
+    if environment_type == "ec2" and provisioned_register is None:
+        raise RuntimeError(
+            "Pinned Harbor override lacks the required "
+            "environment-provisioned lifecycle hook"
+        )
+    if provisioned_register is not None:
+        provisioned_register(hook)
+    for register in registers:
         getattr(job, register)(hook)
 
     await job.run()
@@ -245,7 +280,7 @@ def main(argv: list[str]) -> int:
     if len(argv) < 2:
         sys.stderr.write("usage: _entry.py <payload.json>\n")
         return 2
-    payload = json.loads(Path(argv[1]).read_text())
+    payload = _read_payload_and_unlink(Path(argv[1]))
 
     for key, value in (payload.get("runtime_env") or {}).items():
         os.environ[key] = value

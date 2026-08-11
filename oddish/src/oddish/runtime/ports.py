@@ -60,8 +60,11 @@ class ExecutionBackend(Protocol):
     def capabilities(self) -> Capabilities: ...
 
     def harbor_env_kwargs(self, base_kwargs: dict[str, Any]) -> dict[str, Any]:
-        """Return the Harbor ``environment.kwargs`` for this backend, merging
-        provider defaults under the caller's kwargs (caller wins)."""
+        """Return validated Harbor ``environment.kwargs`` for this backend.
+
+        Backends may merge user-owned options over defaults or reject overrides
+        of platform-owned settings.
+        """
         ...
 
     async def teardown(self, external_id: str) -> bool:

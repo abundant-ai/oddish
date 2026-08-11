@@ -347,6 +347,7 @@ def test_mini_swe_provider_credentials_enter_redaction_map(monkeypatch):
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "cc-oauth-secret")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "aws-secret")
     monkeypatch.setenv("XAI_API_KEY", "xai-secret")
+    monkeypatch.setenv("FIREWORKS_API_KEY", "fireworks-secret")
 
     def redactions(model):
         env = harbor_runner._resolved_runtime_transport_env(
@@ -366,6 +367,9 @@ def test_mini_swe_provider_credentials_enter_redaction_map(monkeypatch):
 
     env, reps = redactions("xai/grok-4")
     assert reps.get("xai-secret") == "[REDACTED]"
+
+    env, reps = redactions("fireworks/glm-5p2")
+    assert reps.get("fireworks-secret") == "[REDACTED]"
 
 
 def test_cursor_ambient_api_key_enters_redaction_map(monkeypatch):
@@ -903,7 +907,9 @@ def test_restricted_compose_runtime_route_is_private_and_artifacts_are_scrubbed(
             (self.job_dir / "result.json").write_text(leaked, encoding="utf-8")
             return object()
 
-    monkeypatch.setattr(harbor_runner, "apply_harbor_patches", lambda: None)
+    monkeypatch.setattr(
+        harbor_runner, "apply_harbor_patches", lambda **_kwargs: None
+    )
     monkeypatch.setattr(harbor_runner, "get_backend", lambda value: None)
     monkeypatch.setattr(
         harbor_runner, "validate_task_timeout_config", lambda path: None
@@ -2054,6 +2060,31 @@ def test_build_agent_config_mini_swe_anthropic_uses_oddish_wrapper(monkeypatch):
         agent_config.import_path
         == "oddish.workers.agents.mini_swe_agent:OddishMiniSweAgent"
     )
+
+
+def test_build_agent_config_mini_swe_fireworks_uses_litellm_runtime_model(
+    monkeypatch,
+):
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.setenv("FIREWORKS_API_KEY", "fireworks-secret")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="mini-swe-agent",
+        model="fireworks/glm-5.2",
+        raw_harbor_config={},
+    )
+
+    assert agent_config.model_name == "fireworks/glm-5p2"
+    assert getattr(agent_config, RUNTIME_MODEL_NAME_ATTR) == (
+        "fireworks_ai/accounts/fireworks/models/glm-5p2"
+    )
+    assert (agent_config.env or {})["FIREWORKS_AI_API_KEY"] == (
+        "${FIREWORKS_API_KEY}"
+    )
+    assert harbor_runner.resolve_env_vars(agent_config.env)[
+        "FIREWORKS_AI_API_KEY"
+    ] == "fireworks-secret"
+    assert RUNTIME_MODEL_NAME_ATTR not in agent_config.model_dump()
 
 
 def test_build_agent_config_mini_swe_meta_uses_meta_wrapper(monkeypatch):

@@ -80,6 +80,27 @@ def test_spawn_runs_one_detached_container_per_queue_key() -> None:
     assert any("claude" in part for part in run_cmds[1])
 
 
+def test_spawn_units_passes_exact_variant_and_ec2_lane() -> None:
+    dispatcher, cli = _dispatcher()
+
+    async def _go():
+        return list(
+            await dispatcher.spawn_units(
+                spawn_units=[("zai/glm-5.2", "harbor-next", "ec2_trial")]
+            )
+        )
+
+    (handle,) = asyncio.run(_go())
+    command = next(c for c in cli.commands if c[0] == "run")
+    assert "ODDISH_WORKER_QUEUE_KEY=zai/glm-5.2" in command
+    assert "ODDISH_WORKER_HARBOR_VARIANT_ID=harbor-next" in command
+    assert "ODDISH_WORKER_EXECUTION_LANE=ec2_trial" in command
+    assert handle.metadata == {
+        "harbor_variant_id": "harbor-next",
+        "execution_lane": "ec2_trial",
+    }
+
+
 class FailSecondRunDockerCLI(FakeDockerCLI):
     """Docker CLI fake that raises on the *second* ``run`` (mid-loop failure)."""
 
