@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 
 from api.services.blocks.analyzer import sandbox_llm_client as mod
@@ -5,7 +7,7 @@ from oddish.blocks.analyzer.analyzer_llm_client import SandboxConfig
 
 
 class _FakeRuntime:
-    installed = []
+    installed: list[object] = []
 
     async def install(self, client, sandbox):
         type(self).installed.append("base")
@@ -16,13 +18,15 @@ class _FakeRuntime:
 
 class _FakeProvisioner:
     last_env = None
+    last_create = None
 
     def __init__(self, *args, **kwargs):
         pass
 
     async def create(self, **kwargs):
+        type(self).last_create = kwargs
         type(self).last_env = kwargs["env_vars"]
-        return object()
+        return SimpleNamespace(id="sandbox-test")
 
 
 class _SessionContext:
@@ -64,6 +68,26 @@ async def test_factory_mints_key_and_installs_oddish(monkeypatch):
     assert _FakeProvisioner.last_env["ODDISH_API_BASE_URL"] == "https://api.test"
     assert ("oddish", "ok_secret", "https://api.test") in _FakeRuntime.installed
     assert client._internal_api_key_id == "key_id"
+
+
+@pytest.mark.asyncio
+async def test_factory_uses_analyzer_auto_stop_default(monkeypatch):
+    _wire(monkeypatch)
+
+    await mod.create_sandbox_llm_client(sandbox_config=SandboxConfig())
+
+    assert _FakeProvisioner.last_create["auto_stop_minutes"] == 15
+
+
+@pytest.mark.asyncio
+async def test_factory_respects_analyzer_auto_stop_override(monkeypatch):
+    _wire(monkeypatch)
+
+    await mod.create_sandbox_llm_client(
+        sandbox_config=SandboxConfig(auto_stop_minutes=7)
+    )
+
+    assert _FakeProvisioner.last_create["auto_stop_minutes"] == 7
 
 
 @pytest.mark.asyncio

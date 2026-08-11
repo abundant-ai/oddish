@@ -151,7 +151,6 @@ async def run_analyzer_blocks(
                 **(files_to_upload or {}),
             },
             setup_commands=(f"mkdir -p {OUT_DIR}",),
-            auto_stop_minutes=settings.daytona_auto_stop_interval_mins,
             auto_delete_minutes=settings.daytona_auto_delete_interval_mins,
             snapshot=settings.analyzer_snapshot or None,
         )

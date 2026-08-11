@@ -24,6 +24,7 @@ from oddish.blocks.analyzer.analyzer_llm_client import (
     resolve_analyzer_api_key,
 )
 from oddish.core.api_keys import mint_internal_api_key
+from oddish.config import settings
 from oddish.db import generate_id, get_session
 from oddish.db.models import APIKeyModel, APIKeyScope
 
@@ -36,7 +37,6 @@ from api.services.sandbox.daytona_client import (
 from api.services.sandbox.provisioner import Provisioner, delete_sandbox_quietly
 
 _DAYTONA_SESSION_ID = "analyzer"
-_AUTO_STOP_MINUTES = 15
 _AUTO_DELETE_MINUTES = 30
 _ODDISH_KEY_TTL_MINUTES = 45
 
@@ -93,18 +93,28 @@ class SandboxAnalyzerLLMClient:
     async def stream(
         self, prompt: str, *, system_prompt: str | None = None
     ) -> AsyncIterator[str]:
-        stream_kwargs = {
-            "content": prompt,
-            "claude_session_id": None,
-            "daytona_session_id": self._session_id,
-            "system_prompt": system_prompt,
-            "json_schema": self._json_schema,
-        }
         if self._add_dirs:
-            stream_kwargs["add_dirs"] = self._add_dirs
-        async for event in self._runtime.stream_chat(
-            self._client, self._sandbox, **stream_kwargs
-        ):
+            events = self._runtime.stream_chat(
+                self._client,
+                self._sandbox,
+                content=prompt,
+                claude_session_id=None,
+                daytona_session_id=self._session_id,
+                system_prompt=system_prompt,
+                json_schema=self._json_schema,
+                add_dirs=self._add_dirs,
+            )
+        else:
+            events = self._runtime.stream_chat(
+                self._client,
+                self._sandbox,
+                content=prompt,
+                claude_session_id=None,
+                daytona_session_id=self._session_id,
+                system_prompt=system_prompt,
+                json_schema=self._json_schema,
+            )
+        async for event in events:
             if event.get("type") == "result":
                 self.last_usage = parse_cli_usage(
                     event,
@@ -181,7 +191,11 @@ async def create_sandbox_llm_client(
     try:
         sandbox = await Provisioner(client=daytona_client).create(
             env_vars=env_vars,
-            auto_stop_minutes=(sandbox_config.auto_stop_minutes or _AUTO_STOP_MINUTES),
+            auto_stop_minutes=(
+                sandbox_config.auto_stop_minutes
+                if sandbox_config.auto_stop_minutes is not None
+                else settings.analyzer_daytona_auto_stop_interval_mins
+            ),
             auto_delete_minutes=(
                 sandbox_config.auto_delete_minutes or _AUTO_DELETE_MINUTES
             ),
