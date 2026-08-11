@@ -12,18 +12,22 @@ from oddish.blocks.block import Block
 
 
 class ExploreTrajectoryBlockTaxonomy(str, enum.Enum):
+    # These two groups are no longer only documentary: the prompt renders them
+    # as its own headings, so membership here is what the model is told the
+    # label means. Planning lives on this side because it is thinking about the
+    # work, not doing it -- PLAN_CORRECTION sits beside WRITING_PLAN so the two
+    # read as a pair.
     READING_FILES = "reading_files"
     THINKING_RECALL = "thinking_recall"
     THINKING_UNDERSTAND = "thinking_understand"
     THINKING_HYPOTHESIZE = "thinking_hypothesize"
+    WRITING_PLAN = "writing_plan"
+    PLAN_CORRECTION = "plan_correction"
 
 
 class ImplementTrajectoryBlockTaxonomy(str, enum.Enum):
-    # Ordered as the work happens: plan, replan, build, correct, test, debug.
-    # PLAN_CORRECTION sits beside WRITING_PLAN so the model reads the two as a
-    # pair; the flat vocabulary below preserves this order in the prompt.
-    WRITING_PLAN = "writing_plan"
-    PLAN_CORRECTION = "plan_correction"
+    # Ordered as the work happens: build, correct, test, debug, report.
+    # WRITING_REPORT is last because it is what a run ends with.
     IMPLEMENTING = "implementing"
     IMPLEMENTING_CORRECTION = "implementing_correction"
     WRITING_TESTS = "writing_tests"
@@ -31,6 +35,7 @@ class ImplementTrajectoryBlockTaxonomy(str, enum.Enum):
     TESTING_CUSTOM = "testing_custom"
     TESTING_EDGE_CASES = "testing_edge_cases"
     DEBUGGING = "debugging"
+    WRITING_REPORT = "writing_report"
 
 
 # One flat vocabulary built from the two sub-enums, so a component carries a
@@ -149,7 +154,11 @@ class TrajectoryBlock(Block):
     # ---- prompt sections (build_prompt is inherited) ----
     def sections(self) -> list[dict]:
         ti = self.trajectory_input
-        taxonomy_values = [m.value for m in TrajectoryBlockTaxonomy]
+        # Rendered per sub-enum, not from the flat vocabulary: the prompt shows
+        # the two groups, and both lists stay derived from the members so a new
+        # label cannot go missing from the prompt.
+        explore_values = [m.value for m in ExploreTrajectoryBlockTaxonomy]
+        implement_values = [m.value for m in ImplementTrajectoryBlockTaxonomy]
         return [
             {
                 "name": "preamble",
@@ -178,7 +187,7 @@ class TrajectoryBlock(Block):
                 "raw_input": {},
                 "schema": _InstructionsIn,
                 "formatter": lambda _d: tp.instructions_section(
-                    self._instructions_template, taxonomy_values
+                    self._instructions_template, explore_values, implement_values
                 ),
             },
             {
@@ -209,9 +218,13 @@ class TrajectoryBlock(Block):
 
     @staticmethod
     def _fmt_trajectory(d: _TrajectoryIn) -> str:
-        from api.services.summarize_trajectory import preprocess
+        from api.services.summarize_trajectory import drop_inert_steps, preprocess
 
-        return tp.trajectory_section(json.dumps(preprocess(d.trajectory)))
+        # Drop first: contentless steps are most of a trajectory, and there is
+        # no point truncating text on a step the model will never read.
+        return tp.trajectory_section(
+            json.dumps(preprocess(drop_inert_steps(d.trajectory)))
+        )
 
     # ---- parsing (parse is inherited; this filters elements) ----
     def _valid_step_ids(self) -> set[int]:
