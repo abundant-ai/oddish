@@ -108,6 +108,8 @@ def test_invalid_reliability_kwargs_rejected(tmp_path, bad):
         OddishGrokBuild(logs_dir=tmp_path, max_retries=bad)
     with pytest.raises(ValueError, match="inference_idle_timeout_secs"):
         OddishGrokBuild(logs_dir=tmp_path, inference_idle_timeout_secs=bad)
+    with pytest.raises(ValueError, match="background_wait_sec"):
+        OddishGrokBuild(logs_dir=tmp_path, background_wait_sec=bad)
 
 
 # Comfortably larger than ARG_MAX and than a single realistic instruction; the
@@ -190,6 +192,34 @@ async def test_run_uploads_prompt_and_keeps_exec_command_small(tmp_path, monkeyp
     # continuation, never the staged instruction.
     assert command.count(">>/logs/agent/grok-build.json") == 6
     assert "Continue the original task" in command
+
+
+@pytest.mark.asyncio
+async def test_run_applies_background_wait_to_initial_and_resume_arms(
+    tmp_path, monkeypatch
+):
+    agent = OddishGrokBuild(logs_dir=tmp_path, background_wait_sec="21600")
+    agent_commands: list[str] = []
+
+    class _FakeEnv:
+        async def upload_file(self, source_path, target_path):
+            return None
+
+    async def _noop(self, environment, **kwargs):
+        return None
+
+    async def _record(self, environment, *, command, **kwargs):
+        agent_commands.append(command)
+
+    monkeypatch.setattr(OddishGrokBuild, "_write_config", _noop)
+    monkeypatch.setattr(OddishGrokBuild, "exec_as_root", _record)
+    monkeypatch.setattr(OddishGrokBuild, "exec_as_agent", _record)
+
+    await agent.run(instruction="task", environment=_FakeEnv(), context=object())
+
+    command = next(c for c in agent_commands if "grok -p" in c)
+    # Six initial/fallback arms and their six matching resume arms.
+    assert command.count("--background-wait-timeout 21600") == 12
 
 
 async def _generated_command(tmp_path, monkeypatch) -> str:

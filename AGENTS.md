@@ -53,9 +53,9 @@ backend/                        # Hosted cloud layer (Modal deployment)
 ├── api/
 │   ├── app.py                  # FastAPI app factory and lifespan wiring
 │   ├── schemas.py              # Pydantic models for org/auth/share responses
-│   ├── services/               # hosted services, including cc_chat
+│   ├── services/               # hosted services (sandbox runtime, analyzer blocks, …)
 │   └── routers/                # tasks, trials, dashboard, documents, tags, skills,
-│                               # admin, orgs, api_keys, imports, load, cc_chat, webhooks
+│                               # admin, orgs, api_keys, imports, load, webhooks
 ├── auth/                       # header parsing (auth/__init__.py), API key + Clerk JWT
 │                               # verification (auth/verification.py), provisioning, types
 ├── worker/                     # Modal dispatcher and single-job worker orchestration
@@ -128,21 +128,12 @@ High-level flow:
    failed attempts in normal UI/API trial sets.
 3. Workers claim one `worker_jobs` row at a time, dispatch to the registered
    handler for its kind, write heartbeats, and exit.
-4. Scoped QA assignments enqueue independent `ANALYZER_BLOCK` jobs through
-   `oddish.core.qa_assignments.enqueue_qa_assignment_runs_core`. `pre_trial`
-   fires once per assignment and task version during sweep submission;
-   `post_trial` fires once per assignment and final terminal trial. The
-   `(qa_assignment_id, stage_event_key)` partial unique index makes lifecycle
-   retries idempotent. These jobs are additive and non-blocking: their failure
-   does not change trial state or the built-in task verdict pipeline. API
-   assignments are prompt-only; sandbox assignments may request an
-   authenticated short-lived Oddish CLI.
-5. Trajectory analysis is **task-scoped**: when every trial of a
+4. Trajectory analysis is **task-scoped**: when every trial of a
    `run_analysis` task is terminal, a single `QA` job is enqueued. That one
    job classifies every live trial's trajectory (written to `trials.analysis`)
    and then synthesizes the task verdict (`tasks.verdict`). A sweep of `T`
    tasks × `N` trials therefore enqueues `T` QA jobs, not `T × (N + 1)`.
-6. While a trial runs, a worker-side tailer (`oddish.workers.harbor.live_tail`,
+5. While a trial runs, a worker-side tailer (`oddish.workers.harbor.live_tail`,
    on by default via `live_tail_enabled` / `live_tail_interval_sec`) polls the
    agent's log file inside the sandbox for supported agents (claude-code,
    codex, cursor-cli, mini-swe-agent), folds token usage, checkpoints live
@@ -166,8 +157,16 @@ High-level flow:
    nonterminal trial in the org. Final result settlement performs the same
    check for agents without live usage. Cancellation retires queued, running,
    blocked, and retrying worker jobs in the database before terminating remote
-   handles; a task is failed only when no other live trial remains.
-7. Trial completion persists queryable execution metrics on the trial row:
+   handles; a task is failed only when no other live trial remains. If quota
+   cancellation interrupts a replacement QA pass, the last successful verdict
+   is restored through `cancel_verdict`; a terminal QA failure instead clears
+   that preserved payload through `fail_verdict`. All task verdict-column
+   mutations go through `oddish.core.verdict_state`: a published payload may
+   coexist with QUEUED/RUNNING while its replacement is active, but it must
+   return to SUCCESS if that pass is abandoned. The
+   `ck_tasks_published_verdict_status` database constraint rejects a published
+   payload with a missing or FAILED status.
+6. Trial completion persists queryable execution metrics on the trial row:
    input/cache/output tokens, total trajectory steps, native runtime cost when
    reported, phase timing, trajectory availability, arbitrary verifier
    `metrics.json`, and a compact `_verifier` summary when the verifier emits a
@@ -195,22 +194,13 @@ the sum of each included step's elapsed time since the preceding trajectory
 step; the first step and steps without two usable timestamps contribute zero.
 The frontend derives the same values for older summaries that lack the fields.
 
-QA analyzer prompts are stored in the versioned `prompts` / `prompt_versions`
-registry. `PromptKind.QA_PRE_TRIAL` drives the source audit,
-`PromptKind.QA_POST_TRIAL` drives the existing per-trial log classifier, and
-`PromptKind.TRAJECTORY_SUMMARY` drives schema-v5 trajectory summaries; its
-template must retain the `{{taxonomy}}` placeholder rendered by the block.
-Prompt updates append immutable versions and the highest version always runs. Workers
-seed missing built-in kinds at startup without overwriting operator edits. A
-trial classification records the post-trial prompt kind and version in
-`trials.analysis`; local/library classification without a registry row falls
-back to the packaged `analyze/classify_prompt.txt`.
-
-Hosted prompt overrides may be scoped to an org, user, experiment, task, or
-trial. Resolution is trial → task → experiment → user → org → global, and every
-domain-scoped read must first verify that the target belongs to the active org.
-Scoped prompt identity includes `org_id`; in particular, the same user may have
-independent overrides for the same kind in multiple organizations.
+QA analyzer prompts are **not** stored in the database. They ship as packaged
+files under `oddish/src/oddish/analyze/`: `prompts/pre_trial_qa.txt` drives the
+source audit, `classify_prompt.txt` drives the per-trial log classifier,
+`verdict_prompt.txt` drives verdict synthesis, and
+`prompts/trajectory_summary.txt` drives schema-v5 trajectory summaries; the
+summary template must retain the `{{taxonomy}}` placeholder rendered by the
+block. Editing a prompt is a code change that ships with a deploy.
 
 ### Worker job kinds
 
@@ -218,34 +208,13 @@ independent overrides for the same kind in multiple organizations.
 
 - **Active**: `TRIAL` (Harbor trial execution), `QA` (task-level classify-all-trials +
   verdict), `ANALYZER` (cross-experiment report orchestration),
-  `ANALYZER_BLOCK` (one declarative `analyzer_runs` execution),
   `TASK_EXPAND` (sweep expansion), `TAG_PROJECT` (tag recompute).
 - **Legacy, drain-only**: `ANALYSIS` (per-trial classification; `AnalysisJobHandler`
-  is kept only so in-flight rows survive a deploy) and `VERDICT` (enum value only,
-  no handler). Nothing enqueues either anymore.
+  is kept only so in-flight rows survive a deploy), `VERDICT` (enum value only,
+  no handler), and `ANALYZER_BLOCK` (executed rows of the removed
+  `analyzer_runs` table; enum value only, no handler). Nothing enqueues any
+  of them anymore.
 - **Reserved**: `QA_REVIEW` (enum value, no handler yet).
-
-### Custom QA runs
-
-`POST /qa/runs` (hosted backend) creates one `analyzer_runs` row and one
-`ANALYZER_BLOCK` worker job per registered prompt variant, then returns the
-queued runs. `GET /qa/runs/{id}` and the `/prompts` endpoints expose durable
-lineage. The shared `prompts` registry is kind-addressed — built-in UPPERCASE
-kinds (`QA_PRE_TRIAL`, `QA_POST_TRIAL`) plus lowercase-slug custom kinds for
-saved QA variants — `prompt_versions` stores immutable numbered content, and
-`analyzer_runs` records the exact version, scope (`experiment` / `task` /
-`trial`), model, reasoning effort, backend, resolved config/command,
-`analyzer_blocks` ID, status, and output. Every prompt edit appends an
-immutable version and the highest version is always the one that runs (no
-activation pointer).
-
-`oddish prompt` manages registry versions. `oddish qa ... --variant KIND` uses
-the latest version and `--variant KIND@N` pins a historical version. Variants in
-one request run concurrently for A/B comparison. The hosted `sandbox` backend
-installs the Oddish CLI only with explicit `--allow-oddish-cli`. At worker
-execution time its client factory mints a short-lived internal TASKS-scoped
-key and revokes it during cleanup; the caller's credential is never forwarded
-or persisted. The `api` backend is prompt-only and rejects CLI access.
 
 ## Package Boundaries
 
@@ -257,6 +226,9 @@ or persisted. The `api` backend is prompt-only and rejects CLI access.
   `TagProjectJobHandler`, plus the legacy `AnalysisJobHandler`)
 - the task-level QA job (`run_task_qa_job`): classify every live trial via
   the shared `classify_trial_and_store`, then synthesize the task verdict
+- the verdict state machine (`oddish.core.verdict_state`), which is the only
+  writer for `tasks.verdict*` lifecycle columns and preserves the last
+  published result until a replacement succeeds or terminally fails
 - post-trial classification runs through `AnalyzerBlock`. It reads two
   already-downloaded directories and executes nothing, so `resolve_substrate`
   keeps it on the worker-local Claude Code client (`CLAUDE_CLI`) everywhere;
@@ -283,7 +255,9 @@ or persisted. The `api` backend is prompt-only and rejects CLI access.
 `oddish/src/oddish/blocks/` holds the analyzer-block primitive (prompt
 building, streaming, `analyzer_blocks` + S3 persistence) and its API/OpenAI
 backends, so verdict synthesis runs in a backend-free worker. The Daytona
-sandbox backend needs cc_chat and stays in
+sandbox backend needs the hosted sandbox runtime
+(`backend/api/services/sandbox/` — Daytona client, provisioner, Claude Code
+runtime) and stays in
 `backend/api/services/blocks/analyzer/sandbox_llm_client.py`, which registers
 itself into core's client factory on import. `AnalyzerBlock` owns a
 self-provisioned client's complete lifecycle, including sandbox file downloads
@@ -293,7 +267,7 @@ key minting, and key/sandbox cleanup. Callers must not provision and inject a
 one-off sandbox client for those capabilities.
 
 Hosted failure analysis uses
-`backend/api/services/cc_chat/analyzer_block_runner.py`: it partitions a bucket
+`backend/api/services/blocks/analyzer/analyzer_block_runner.py`: it partitions a bucket
 into map batches, runs independent sandbox-backed `AnalyzerBlock`s concurrently
 up to `AnalyzerEvalConfig.map_concurrency`, collects their findings artifacts
 host-side, and supplies those artifacts declaratively to a separate reduce
@@ -516,7 +490,7 @@ extensions) — see `backend/README.md`.
 | Task QA | `POST /tasks/{task_id}/qa/retry`, `POST /tasks/{task_id}/qa/cancel`, `POST /tasks/{task_id}/qa/backfill` |
 | Experiments | `POST /experiments/combine`, `PATCH /experiments/{experiment_id}` |
 | Trials | `GET /tasks/{task_id}/trials/{index}`, `POST /trials/{trial_id}/retry` (optional `registry_auth` body), `GET /trials/{trial_id}/live` ((attempt, seq)-cursor live transcript), `GET /trials/{trial_id}/logs[/structured]`, `GET /trials/{trial_id}/trajectory`, `GET /trials/{trial_id}/result` |
-| Files | `GET /tasks/{task_id}/files[/{path}]`, `GET /trials/{trial_id}/files[/{path}]`, `GET /trials/{trial_id}/debug-files` |
+| Files | `GET /tasks/{task_id}/files[/{path}]` (`inline=false` omits listing bodies; `presign=false` omits URLs; `max_bytes=N` caps archive-backed file reads), `GET /trials/{trial_id}/files[/{path}]`, `GET /trials/{trial_id}/debug-files` |
 | Admin diagnostics | `GET /admin/slots`, `GET /admin/queue-status`, `GET /admin/orphaned-state`, `GET /admin/queue-health` |
 | Public sharing | `/public/experiments...` router from `oddish.core.sharing.public` |
 
@@ -527,7 +501,7 @@ call the shared `oddish.core.endpoints.deletion` helpers.
 
 Public share links use 256-bit `public_token` values and are access-by-link, not
 enumerable. The unauthenticated `/public/experiments` list intentionally returns
-no share tokens. Public task/trial/file routes must stay scoped under
+no share tokens. Public task/trial/live/file routes must stay scoped under
 `/public/experiments/{public_token}/...` and verify membership in that shared
 experiment; do not reintroduce `/public/tasks/{task_id}` or
 `/public/trials/{trial_id}` ID-only access. Unpublishing an experiment clears

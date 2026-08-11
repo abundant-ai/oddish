@@ -302,6 +302,7 @@ All routes require auth unless marked public.
 | GET | `/public/experiments/{public_token}/tasks` | Public tasks and trials for a shared experiment |
 | GET | `/public/experiments/{public_token}/tasks/{task_id}` | Public task status within a shared experiment |
 | GET | `/public/experiments/{public_token}/tasks/{task_id}/trials` | Public trial list within a shared experiment |
+| GET | `/public/experiments/{public_token}/trials/{trial_id}/live` | Public live transcript and running usage |
 | GET | `/public/experiments/{public_token}/trials/{trial_id}/logs` | Public trial logs |
 | GET | `/public/experiments/{public_token}/trials/{trial_id}/logs/structured` | Public structured logs |
 | GET | `/public/experiments/{public_token}/trials/{trial_id}/trajectory` | Public trajectory |
@@ -451,6 +452,7 @@ or globally via the env default. Under `enforce`, an over-cap submission gets
 HTTP **402** (`"Your organization is over its monthly budget …"`); under
 `shadow` it emits `metric=quota.would_block reason=org_over_budget`. Admins see
 month-to-date org usage on `GET /quotas`; any member can read the org budget
-snapshot + adaptive daily goal on `GET /quotas/org`. Advisory-lock order is
-org → payer → row locks (ENFORCE-only on admission; the org lock is always
-taken first, even when no org cap is configured).
+snapshot + adaptive daily goal on `GET /quotas/org`. Admission takes no
+locks; concurrent submissions can briefly overshoot a cap and the
+enforcement sweep cancels the overage. Only the sweep takes the quota
+advisory locks (org → payer, non-blocking).
