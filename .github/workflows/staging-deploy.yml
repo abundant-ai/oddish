@@ -28,7 +28,9 @@ jobs:
     environment:
       name: staging
       url: https://abundant-ai-staging--oddish-staging-api.modal.run
-    timeout-minutes: 45
+    # The one-time verifier migration owns a 60-minute Modal timeout. Leave
+    # enough room for a successful scan to be followed by the actual deploy.
+    timeout-minutes: 90
     permissions:
       contents: read
       packages: read

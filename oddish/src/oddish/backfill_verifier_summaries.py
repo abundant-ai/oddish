@@ -18,6 +18,18 @@ from oddish.db.storage import StorageClient, resolve_trial_s3_prefix
 
 _BACKFILL_COMPONENT = "backfill.verifier_summaries.v1"
 _PAGE_SIZE = 100
+_LIST_PAGE_SIZE = 1000
+_READ_CONCURRENCY = 16
+_CANDIDATE_TIMEOUT_SECONDS = 30
+_STAT_KEYS = ("scanned", "found", "missing", "oversized", "unreadable", "updated")
+_UPSERT_STATUS_SQL = text(
+    """
+    INSERT INTO queue_runtime_status (component, updated_at, payload)
+    VALUES (:component, NOW(), CAST(:payload AS jsonb))
+    ON CONFLICT (component) DO UPDATE
+    SET updated_at = NOW(), payload = EXCLUDED.payload
+    """
+)
 _TERMINAL_STATUSES = (
     TrialStatus.SUCCESS,
     TrialStatus.FAILED,
@@ -85,46 +97,82 @@ async def _read_summary(
         trial_s3_key=candidate.trial_s3_key,
         trial_result_path=candidate.harbor_result_path,
     )
+    continuation_token: str | None = None
+    saw_oversized = False
+    saw_unreadable = False
     try:
-        objects = await storage.list_objects_all(prefix)
+        while True:
+            listing = await storage.list_objects(
+                prefix,
+                max_keys=_LIST_PAGE_SIZE,
+                continuation_token=continuation_token,
+            )
+            for report in listing["objects"]:
+                key = report.get("key")
+                if not isinstance(key, str) or not key.endswith("/verifier/ctrf.json"):
+                    continue
+                size = report.get("size")
+                if isinstance(size, int) and size > VERIFIER_CTRF_MAX_BYTES:
+                    saw_oversized = True
+                    continue
+                try:
+                    document = await storage.download_bytes(
+                        key, VERIFIER_CTRF_MAX_BYTES + 1
+                    )
+                except Exception:
+                    saw_unreadable = True
+                    continue
+                if len(document) > VERIFIER_CTRF_MAX_BYTES:
+                    saw_oversized = True
+                    continue
+                summary = parse_ctrf_summary(document, report_path=key[len(prefix) :])
+                if summary is not None:
+                    return "found", summary
+                saw_unreadable = True
+
+            if not listing["is_truncated"]:
+                break
+            continuation_token = listing.get("next_token")
+            if not isinstance(continuation_token, str) or not continuation_token:
+                return "unreadable", None
     except Exception:
         return "unreadable", None
 
-    reports = sorted(
-        (
-            obj
-            for obj in objects
-            if isinstance(obj.get("key"), str)
-            and str(obj["key"]).endswith("/verifier/ctrf.json")
-        ),
-        key=lambda obj: str(obj["key"]),
-    )
-    if not reports:
-        return "missing", None
+    if saw_unreadable:
+        return "unreadable", None
+    if saw_oversized:
+        return "oversized", None
+    return "missing", None
 
-    saw_unreadable = False
-    for report in reports:
-        size = report.get("size")
-        if isinstance(size, int) and size > VERIFIER_CTRF_MAX_BYTES:
-            continue
-        key = str(report["key"])
+
+async def _read_candidate(
+    storage: StorageClient,
+    semaphore: asyncio.Semaphore,
+    candidate: _Candidate,
+) -> tuple[
+    Literal["found", "missing", "oversized", "unreadable"],
+    dict[str, Any] | None,
+]:
+    async with semaphore:
         try:
-            document = await storage.download_bytes(key, VERIFIER_CTRF_MAX_BYTES + 1)
-        except Exception:
-            saw_unreadable = True
-            continue
-        if len(document) > VERIFIER_CTRF_MAX_BYTES:
-            continue
-        summary = parse_ctrf_summary(document, report_path=key[len(prefix) :])
-        if summary is not None:
-            return "found", summary
-        saw_unreadable = True
-    return ("unreadable" if saw_unreadable else "oversized"), None
+            async with asyncio.timeout(_CANDIDATE_TIMEOUT_SECONDS):
+                return await _read_summary(storage, candidate)
+        except TimeoutError:
+            print(
+                f"Verifier summary backfill timed out reading trial {candidate.id}",
+                flush=True,
+            )
+            return "unreadable", None
 
 
-async def _write_summaries(updates: list[tuple[str, dict[str, Any]]]) -> int:
-    written = 0
+async def _commit_page(
+    updates: list[tuple[str, dict[str, Any]]],
+    *,
+    after: str,
+    stats: Counter[str],
+) -> None:
     async with get_session() as session:
+        written = 0
         for trial_id, summary in updates:
             result = await session.execute(
                 text(
@@ -145,23 +193,28 @@ async def _write_summaries(updates: list[tuple[str, dict[str, Any]]]) -> int:
                 {"trial_id": trial_id, "summary": json.dumps(summary)},
             )
             written += result.rowcount or 0
-    return written
+        stats["updated"] += written
+        await session.execute(
+            _UPSERT_STATUS_SQL,
+            {
+                "component": _BACKFILL_COMPONENT,
+                "payload": json.dumps(
+                    {"status": "running", "after": after, **dict(stats)}
+                ),
+            },
+        )
 
 
 async def _record_status(
-    status: Literal["complete", "failed"], stats: Counter[str]
+    status: Literal["complete", "failed"],
+    stats: Counter[str],
+    *,
+    after: str,
 ) -> None:
-    payload = {"status": status, **dict(stats)}
+    payload = {"status": status, "after": after, **dict(stats)}
     async with get_session() as session:
         await session.execute(
-            text(
-                """
-                INSERT INTO queue_runtime_status (component, updated_at, payload)
-                VALUES (:component, NOW(), CAST(:payload AS jsonb))
-                ON CONFLICT (component) DO UPDATE
-                SET updated_at = NOW(), payload = EXCLUDED.payload
-                """
-            ),
+            _UPSERT_STATUS_SQL,
             {
                 "component": _BACKFILL_COMPONENT,
                 "payload": json.dumps(payload),
@@ -170,30 +223,46 @@ async def _record_status(
 
 
 async def run_backfill(*, apply: bool) -> dict[str, int]:
-    completed = await _completion_payload()
-    if completed and completed.get("status") == "complete":
-        print(f"Verifier summary backfill already complete: {completed}")
+    checkpoint = await _completion_payload()
+    if checkpoint and checkpoint.get("status") == "complete":
+        print(f"Verifier summary backfill already complete: {checkpoint}")
         return {
             key: value
-            for key, value in completed.items()
+            for key, value in checkpoint.items()
             if key != "status" and isinstance(value, int)
         }
 
+    resume = bool(apply and checkpoint and checkpoint.get("status") == "running")
     stats: Counter[str] = Counter(
-        scanned=0,
-        found=0,
-        missing=0,
-        oversized=0,
-        unreadable=0,
-        updated=0,
+        {
+            key: (
+                int(checkpoint.get(key, 0))
+                if resume and isinstance(checkpoint.get(key), int)
+                else 0
+            )
+            for key in _STAT_KEYS
+        }
     )
+    after = (
+        str(checkpoint["after"])
+        if resume and isinstance(checkpoint.get("after"), str)
+        else ""
+    )
+    if after:
+        print(
+            f"Resuming verifier summary backfill after {after}: {dict(stats)}",
+            flush=True,
+        )
+
     storage = get_storage_client()
-    after = ""
+    semaphore = asyncio.Semaphore(_READ_CONCURRENCY)
     try:
         while candidates := await _candidate_page(after):
-            after = candidates[-1].id
             results = await asyncio.gather(
-                *(_read_summary(storage, candidate) for candidate in candidates)
+                *(
+                    _read_candidate(storage, semaphore, candidate)
+                    for candidate in candidates
+                )
             )
             updates: list[tuple[str, dict[str, Any]]] = []
             for candidate, (status, summary) in zip(candidates, results, strict=True):
@@ -201,21 +270,26 @@ async def run_backfill(*, apply: bool) -> dict[str, int]:
                 stats[status] += 1
                 if summary is not None:
                     updates.append((candidate.id, summary))
-            if apply and updates:
-                stats["updated"] += await _write_summaries(updates)
+            after = candidates[-1].id
+            if apply:
+                await _commit_page(updates, after=after, stats=stats)
+            print(
+                f"Verifier summary backfill progress after {after}: {dict(stats)}",
+                flush=True,
+            )
     finally:
         await storage.close()
 
-    print(f"Verifier summary backfill: {dict(stats)}")
+    print(f"Verifier summary backfill: {dict(stats)}", flush=True)
     if stats["unreadable"]:
         if apply:
-            await _record_status("failed", stats)
+            await _record_status("failed", stats, after=after)
         raise RuntimeError(
             f"Verifier summary backfill left {stats['unreadable']} unreadable "
             "trial report(s); deployment must not continue."
         )
     if apply:
-        await _record_status("complete", stats)
+        await _record_status("complete", stats, after=after)
     else:
         print("Dry run complete; re-run with --apply to persist summaries.")
     return dict(stats)
