@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -389,6 +390,74 @@ async def test_get_or_generate_returns_block_when_fresh():
     assert result == cached
     gen.assert_not_awaited()
     session.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_or_generate_refresh_ignores_a_fresh_block():
+    """refresh=True must regenerate even when a fresh block exists.
+
+    Freshness is keyed on schema_version alone, so a stored summary can be
+    "fresh" and still carry a retired taxonomy. Without this escape hatch
+    those summaries are unreachable -- an analysis rerun goes through this
+    same function and would hand back the stale block.
+    """
+    cached = {
+        "schema_version": "5",
+        "summary": "stale vocabulary",
+        "highlights": [],
+        "components": [],
+    }
+    regenerated = {**cached, "summary": "current vocabulary"}
+    trial = _fake_trial(has_trajectory=True)
+    session = _fake_session()
+    with (
+        patch(
+            "api.services.summarize_trajectory._load_fresh_summary_block",
+            new_callable=AsyncMock,
+            return_value=cached,
+        ) as load,
+        patch(
+            "api.services.summarize_trajectory.read_trial_trajectory",
+            new_callable=AsyncMock,
+            return_value={"steps": [_make_step(1)]},
+        ),
+        patch(
+            "api.services.summarize_trajectory.build_task_context",
+            new_callable=AsyncMock,
+            return_value=SimpleNamespace(
+                task_name="t", instruction="i", final_reward="1",
+                model_used="m", verifier_output="v",
+            ),
+        ),
+        patch(
+            "api.services.summarize_trajectory.generate",
+            new_callable=AsyncMock,
+            return_value=regenerated,
+        ) as gen,
+    ):
+        result = await get_or_generate_summary(session, trial, refresh=True)
+
+    assert result == regenerated
+    gen.assert_awaited_once()
+    # The cache is never consulted, before or inside the generation lock.
+    load.assert_not_awaited()
+    # The new summary is still mirrored into the trials column.
+    session.commit.assert_awaited()
+
+
+def test_summary_stamps_the_shared_schema_version():
+    """to_summary must stamp the constant the freshness query compares to.
+
+    A literal here would make a SCHEMA_VERSION bump unusable: every read would
+    miss, regenerate, write the old version, and miss again forever.
+    """
+    from api.services.blocks.analyzer.trajectory import trajectory_component_block
+    from api.services.summarize_trajectory import SCHEMA_VERSION
+
+    source = Path(trajectory_component_block.__file__).read_text()
+    assert '"schema_version": SCHEMA_VERSION' in source
+    assert '"schema_version": "5"' not in source
+    assert SCHEMA_VERSION == "5"
 
 
 @pytest.mark.asyncio

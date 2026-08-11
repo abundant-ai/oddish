@@ -10,8 +10,8 @@ const COMPONENT_LABELS: Record<TrajectoryComponentKind, string> = {
   thinking_recall: "Recalling",
   thinking_understand: "Understanding",
   thinking_hypothesize: "Hypothesizing",
-  thinking_correction: "Correcting course",
   writing_plan: "Planning",
+  plan_correction: "Correcting the plan",
   implementing: "Implementing",
   implementing_correction: "Correcting implementation",
   writing_tests: "Writing tests",
@@ -19,6 +19,8 @@ const COMPONENT_LABELS: Record<TrajectoryComponentKind, string> = {
   testing_custom: "Running custom tests",
   testing_edge_cases: "Testing edge cases",
   debugging: "Debugging",
+  // Retired kinds, kept so stored summaries still render a real label.
+  thinking_correction: "Correcting course",
   thinking_diagnose: "Diagnosing",
   testing_custom_edge_cases: "Testing edge cases",
 };

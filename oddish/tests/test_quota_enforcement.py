@@ -110,6 +110,7 @@ async def test_user_quota_cancels_payer_trials_and_advances_preserved_tasks(
     advance_task_id = f"task-advance-qc-{suffix}"
     gate_task_id = f"task-gate-qc-{suffix}"
     now = datetime.now(timezone.utc)
+    preserved_verdict = {"verdict": "accept", "is_good": True}
 
     async def no_org_limit(*_args):
         return None
@@ -140,8 +141,13 @@ async def test_user_quota_cancels_payer_trials_and_advances_preserved_tasks(
                     else TaskStatus.RUNNING
                 ),
                 verdict_status=(
-                    VerdictStatus.RUNNING if task_id == mixed_task_id else None
+                    VerdictStatus.RUNNING
+                    if task_id in (exhausted_task_id, mixed_task_id)
+                    else None
                 ),
+                verdict=(preserved_verdict if task_id == exhausted_task_id else None),
+                verdict_started_at=(now if task_id == exhausted_task_id else None),
+                verdict_finished_at=(now if task_id == exhausted_task_id else None),
                 run_analysis=task_id == advance_task_id,
             )
         )
@@ -332,7 +338,13 @@ async def test_user_quota_cancels_payer_trials_and_advances_preserved_tasks(
         AnalysisStatus.FAILED
     )
     assert (await session.get(TrialModel, mixed_other_id)).status == TrialStatus.SUCCESS
-    assert (await session.get(TaskModel, exhausted_task_id)).status == TaskStatus.FAILED
+    exhausted_task = await session.get(TaskModel, exhausted_task_id)
+    assert exhausted_task.status == TaskStatus.COMPLETED
+    assert exhausted_task.verdict == preserved_verdict
+    assert exhausted_task.verdict_status == VerdictStatus.SUCCESS
+    assert exhausted_task.verdict_error is None
+    assert exhausted_task.verdict_started_at is None
+    assert exhausted_task.verdict_finished_at == now
     mixed_task = await session.get(TaskModel, mixed_task_id)
     assert mixed_task.status == TaskStatus.VERDICT_PENDING
     assert mixed_task.verdict_status == VerdictStatus.RUNNING
