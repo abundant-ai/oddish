@@ -755,14 +755,25 @@ export function TrajectoryViewer({
     }
   }, [trialId]);
 
-  // Filter steps by keyword, keeping each step's original index so timing,
-  // refs, and duration-bar clicks stay consistent with the full trajectory.
+  // Steps keep their original index so timing, refs, and duration-bar clicks
+  // stay consistent with the full trajectory.
   const lowerQuery = query.trim().toLowerCase();
+  // Padding steps hold nothing to read — gemini-cli exports are mostly these —
+  // so the list drops them the way the duration bar, segments and Activity card
+  // already do.
+  const renderedSteps = useMemo(
+    () =>
+      (trajectory?.steps ?? [])
+        .map((step, idx) => ({ step, idx }))
+        .filter(({ step }) => !isEmptyStep(step)),
+    [trajectory]
+  );
   const visibleSteps = useMemo(() => {
-    const all = (trajectory?.steps ?? []).map((step, idx) => ({ step, idx }));
-    if (!lowerQuery) return all;
-    return all.filter(({ step }) => stepMatchesQuery(step, lowerQuery));
-  }, [trajectory, lowerQuery]);
+    if (!lowerQuery) return renderedSteps;
+    return renderedSteps.filter(({ step }) =>
+      stepMatchesQuery(step, lowerQuery)
+    );
+  }, [renderedSteps, lowerQuery]);
 
   // A summary request can trigger paid on-demand generation server-side, so it
   // must not fire for a trial we already know (via shouldFetch) has no trajectory.
@@ -777,14 +788,17 @@ export function TrajectoryViewer({
     () => renderableStepIds(trajectory?.steps ?? []),
     [trajectory]
   );
+  // Coverage runs over what the list actually draws. Passing the full
+  // trajectory here would hand every padding step to Other -- the summariser
+  // stopped claiming them in #1155, so unclaimed is exactly the padding.
   const segments = useMemo(
     () =>
       withOtherSegment(
         toSegments(summary),
-        trajectory?.steps ?? [],
+        renderedSteps.map(({ step }) => step),
         renderableIds
       ),
-    [summary, trajectory, renderableIds]
+    [summary, renderedSteps, renderableIds]
   );
   const colorFor = useMemo(
     () => phaseColorVars(segments.map((s) => s.key)),
@@ -837,11 +851,14 @@ export function TrajectoryViewer({
       if (!m) return;
       appliedHash.current = hash;
       const idx = steps.findIndex((s) => Number(s.step_id) === Number(m[1]));
-      if (idx >= 0) {
+      if (idx < 0) {
+        setDeepLinkError(`Step ${m[1]} is not in this trajectory.`);
+      } else if (isEmptyStep(steps[idx])) {
+        // The list never renders it, so expanding would scroll to nothing.
+        setDeepLinkError(`Step ${m[1]} is empty and is not shown.`);
+      } else {
         setDeepLinkError(null);
         handleStepClick(idx);
-      } else {
-        setDeepLinkError(`Step ${m[1]} is not in this trajectory.`);
       }
     };
 
@@ -926,8 +943,8 @@ export function TrajectoryViewer({
             <span className="flex items-center gap-2">
               <span className="text-muted-foreground text-xs font-normal">
                 {lowerQuery
-                  ? `${visibleSteps.length} of ${trajectory.steps.length} steps`
-                  : `${trajectory.steps.length} steps`}
+                  ? `${visibleSteps.length} of ${renderedSteps.length} steps`
+                  : `${renderedSteps.length} steps`}
                 {trajectory.final_metrics?.total_cost_usd && (
                   <> · ${trajectory.final_metrics.total_cost_usd.toFixed(4)}</>
                 )}
@@ -987,10 +1004,16 @@ export function TrajectoryViewer({
           {/* Steps Accordion */}
           {visibleSteps.length === 0 ? (
             <div className="text-muted-foreground py-8 text-center text-sm">
-              No steps match{" "}
-              <span className="text-foreground font-medium">
-                &ldquo;{query.trim()}&rdquo;
-              </span>
+              {lowerQuery ? (
+                <>
+                  No steps match{" "}
+                  <span className="text-foreground font-medium">
+                    &ldquo;{query.trim()}&rdquo;
+                  </span>
+                </>
+              ) : (
+                "This trajectory has no steps with content."
+              )}
             </div>
           ) : (
             <Accordion
