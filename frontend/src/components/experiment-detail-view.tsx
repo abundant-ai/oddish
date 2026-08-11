@@ -54,6 +54,7 @@ import {
   type LineRange,
 } from "@/lib/line-range";
 import { sameFilePath } from "@/lib/file-path";
+import { expandTrialParam, shortTrialParam } from "@/lib/trial-url";
 
 type DrawerMode = "task" | "trial";
 
@@ -1152,7 +1153,10 @@ export function ExperimentDetailView({
     if (drawerState?.isOpen) {
       next.set("task", drawerState.task.id);
       if (drawerState.mode === "trial" && drawerState.trial) {
-        next.set("trial", drawerState.trial.id);
+        next.set(
+          "trial",
+          shortTrialParam(drawerState.trial.id, drawerState.trial.task_id),
+        );
       } else if (pendingUrlTrialId == null) {
         // While a deep-linked trial is still resolving, the drawer is in task
         // mode but the ?trial= param must survive for the promotion to keep
@@ -1197,8 +1201,8 @@ export function ExperimentDetailView({
     hydratedFromUrl.current = true;
 
     const urlTaskId = searchParams.get("task");
-    const urlTrialId = searchParams.get("trial");
-    if (!urlTaskId && !urlTrialId) return;
+    const trialParam = searchParams.get("trial");
+    if (!urlTaskId && !trialParam) return;
 
     // Fall back to task name so hand-written links like ?task=<name> work;
     // the URL-sync effect rewrites the param to the canonical id on open.
@@ -1206,6 +1210,10 @@ export function ExperimentDetailView({
       ? (tasksForExperiment.find((t) => t.id === urlTaskId) ??
         tasksForExperiment.find((t) => t.name === urlTaskId))
       : null;
+
+    // ?trial= is an index against the task in the address; older links spell
+    // the whole id out and pass through untouched.
+    const urlTrialId = expandTrialParam(trialParam, task?.id ?? urlTaskId);
 
     if (urlTrialId) {
       // The trial id is the source of truth for its host task, so scan every
