@@ -11,6 +11,7 @@ from sqlalchemy.orm import selectinload
 from oddish.core.experiment_membership import gathered_trial_ids_select
 from oddish.core.helpers import build_task_status_response, fetch_trial_queue_info
 from oddish.core.tags.projection import list_effective_user_tags_for_task_versions
+from oddish.core.trial_live import read_trial_live
 from oddish.core.trial_io import (
     read_trial_agent_file,
     read_trial_logs,
@@ -338,6 +339,22 @@ async def get_public_trial_logs(public_token: str, trial_id: str) -> dict:
     """Get logs for a public trial."""
     trial = await _get_detached_public_trial(public_token, trial_id)
     return await read_trial_logs(trial)
+
+
+@router.get("/public/experiments/{public_token}/trials/{trial_id}/live")
+async def get_public_trial_live(
+    public_token: str,
+    trial_id: str,
+    attempt: int | None = Query(None),
+    after_seq: int = Query(0),
+) -> dict:
+    async with get_session() as session:
+        trial = await get_public_trial_for_experiment(session, public_token, trial_id)
+        if not trial:
+            raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
+        return await read_trial_live(
+            session, trial, attempt=attempt, after_seq=after_seq
+        )
 
 
 @router.get("/public/experiments/{public_token}/trials/{trial_id}/logs/structured")

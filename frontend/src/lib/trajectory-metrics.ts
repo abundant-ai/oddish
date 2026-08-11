@@ -96,8 +96,8 @@ const COMPONENT_COLOR_VARS: Record<string, string> = {
   thinking_recall: "var(--tc-thinking-recall)",
   thinking_understand: "var(--tc-thinking-understand)",
   thinking_hypothesize: "var(--tc-thinking-hypothesize)",
-  thinking_correction: "var(--tc-thinking-correction)",
   writing_plan: "var(--tc-writing-plan)",
+  plan_correction: "var(--tc-plan-correction)",
   implementing: "var(--tc-implementing)",
   implementing_correction: "var(--tc-implementing-correction)",
   writing_tests: "var(--tc-writing-tests)",
@@ -108,7 +108,8 @@ const COMPONENT_COLOR_VARS: Record<string, string> = {
   // Retired kinds, kept so stored summaries keep their fixed color rather than
   // falling through to appearance-order phase slots. Each shares the slot its
   // replacement took over; the two vocabularies never co-occur in one summary.
-  thinking_diagnose: "var(--tc-thinking-correction)",
+  thinking_correction: "var(--tc-plan-correction)",
+  thinking_diagnose: "var(--tc-plan-correction)",
   testing_custom_edge_cases: "var(--tc-testing-edge)",
   // Synthetic bucket for steps no component claims — always neutral gray.
   other: "var(--phase-other)",
