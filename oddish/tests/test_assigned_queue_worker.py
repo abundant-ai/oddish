@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.workers.queue import queue_manager
@@ -157,6 +159,49 @@ def test_assigned_ec2_worker_claims_exact_lane_and_releases_capacity(
         "queue-release",
         "capacity-release",
     ]
+
+
+def test_assigned_ec2_worker_cancellation_preserves_capacity(monkeypatch) -> None:
+    events: list[str] = []
+
+    async def _acquire_capacity(**kwargs):
+        return 4
+
+    async def _release_capacity(**kwargs):
+        events.append("capacity-release")
+
+    async def _acquire_slot(**kwargs):
+        return 2
+
+    async def _release_slot(**kwargs):
+        events.append("queue-release")
+
+    async def _drain(*args, **kwargs):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(
+        queue_manager, "acquire_sandbox_capacity_lease", _acquire_capacity
+    )
+    monkeypatch.setattr(
+        queue_manager, "release_sandbox_capacity_lease", _release_capacity
+    )
+    monkeypatch.setattr(queue_manager, "acquire_queue_slot", _acquire_slot)
+    monkeypatch.setattr(queue_manager, "release_queue_slot", _release_slot)
+    monkeypatch.setattr(queue_manager, "drain_worker_jobs", _drain)
+    monkeypatch.setattr(
+        queue_manager, "load_effective_model_concurrency_limit", _limit(3)
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            queue_manager.run_assigned_queue_worker(
+                "fireworks/glm-5p2",
+                worker_id="worker-1",
+                execution_lane="ec2_trial",
+            )
+        )
+
+    assert events == ["queue-release"]
 
 
 def test_worker_entrypoint_forwards_assigned_variant_and_lane(monkeypatch) -> None:

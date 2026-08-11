@@ -44,6 +44,17 @@ async def acquire_sandbox_capacity_lease(
                                     AND wj.status::text = 'RUNNING'
                                     AND wj.current_worker_id = sandbox_capacity_leases.locked_by
                               )
+                              AND NOT EXISTS (
+                                  SELECT 1
+                                  FROM sandbox_runs AS run
+                                  WHERE run.worker_job_id = sandbox_capacity_leases.worker_job_id
+                                    AND run.deleted_at IS NULL
+                                    AND run.terminated_at IS NULL
+                                    AND (
+                                        run.state <> 'FAILED'
+                                        OR run.external_id IS NOT NULL
+                                    )
+                              )
                           )
                       )
                     ORDER BY slot
@@ -74,14 +85,25 @@ async def release_sandbox_capacity_lease(
     pool = await get_pool()
     command = await pool.execute(
         """
-        UPDATE sandbox_capacity_leases
+        UPDATE sandbox_capacity_leases AS lease
         SET locked_by = NULL,
             worker_job_id = NULL,
             locked_at = NULL,
             locked_until = NULL
-        WHERE provider = $1
-          AND slot = $2
-          AND locked_by = $3
+        WHERE lease.provider = $1
+          AND lease.slot = $2
+          AND lease.locked_by = $3
+          AND NOT EXISTS (
+              SELECT 1
+              FROM sandbox_runs AS run
+              WHERE run.worker_job_id = lease.worker_job_id
+                AND run.deleted_at IS NULL
+                AND run.terminated_at IS NULL
+                AND (
+                    run.state <> 'FAILED'
+                    OR run.external_id IS NOT NULL
+                )
+          )
         """,
         provider,
         slot,
@@ -108,6 +130,17 @@ async def count_held_sandbox_capacity_leases(*, provider: str) -> int:
                     AND wj.status::text = 'RUNNING'
                     AND wj.current_worker_id = sandbox_capacity_leases.locked_by
               )
+              OR EXISTS (
+                  SELECT 1
+                  FROM sandbox_runs AS run
+                  WHERE run.worker_job_id = sandbox_capacity_leases.worker_job_id
+                    AND run.deleted_at IS NULL
+                    AND run.terminated_at IS NULL
+                    AND (
+                        run.state <> 'FAILED'
+                        OR run.external_id IS NOT NULL
+                    )
+              )
           )
         """,
         provider,
@@ -132,6 +165,17 @@ async def cleanup_sandbox_capacity_leases(*, grace_seconds: int = 120) -> int:
               WHERE wj.id = lease.worker_job_id
                 AND wj.status::text = 'RUNNING'
                 AND wj.current_worker_id = lease.locked_by
+          )
+          AND NOT EXISTS (
+              SELECT 1
+              FROM sandbox_runs AS run
+              WHERE run.worker_job_id = lease.worker_job_id
+                AND run.deleted_at IS NULL
+                AND run.terminated_at IS NULL
+                AND (
+                    run.state <> 'FAILED'
+                    OR run.external_id IS NOT NULL
+                )
           )
           AND (
               lease.locked_until <= NOW()

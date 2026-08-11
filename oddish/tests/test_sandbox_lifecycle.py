@@ -356,6 +356,35 @@ async def test_expired_capacity_lease_is_not_stolen_from_running_job(
     assert "NOT EXISTS" in connection.available_statement
     assert "wj.status::text = 'RUNNING'" in connection.available_statement
     assert "wj.current_worker_id" in connection.available_statement
+    assert "FROM sandbox_runs AS run" in connection.available_statement
+    assert "run.terminated_at IS NULL" in connection.available_statement
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command", "expected"), [("UPDATE 0", False), ("UPDATE 1", True)]
+)
+async def test_capacity_release_refuses_live_sandbox_runs(
+    monkeypatch: pytest.MonkeyPatch, command: str, expected: bool
+) -> None:
+    class Pool:
+        def __init__(self) -> None:
+            self.statement = ""
+
+        async def execute(self, statement: str, *_args):
+            self.statement = statement
+            return command
+
+    pool = Pool()
+    monkeypatch.setattr(sandbox_capacity, "get_pool", lambda: _return(pool))
+
+    released = await sandbox_capacity.release_sandbox_capacity_lease(
+        provider="ec2", slot=1, worker_id="worker-1"
+    )
+
+    assert released is expected
+    assert "FROM sandbox_runs AS run" in pool.statement
+    assert "run.terminated_at IS NULL" in pool.statement
 
 
 @pytest.mark.asyncio
@@ -382,6 +411,8 @@ async def test_capacity_reconciliation_releases_expired_or_orphaned_leases(
     assert "AND NOT EXISTS" in pool.statement
     assert "wj.status::text = 'RUNNING'" in pool.statement
     assert "wj.current_worker_id = lease.locked_by" in pool.statement
+    assert "FROM sandbox_runs AS run" in pool.statement
+    assert "run.terminated_at IS NULL" in pool.statement
     assert pool.args == (90,)
 
 
@@ -409,4 +440,6 @@ async def test_count_held_capacity_counts_every_live_provider_lease(
     assert "locked_until > NOW()" in pool.statement
     assert "OR EXISTS" in pool.statement
     assert "wj.status::text = 'RUNNING'" in pool.statement
+    assert "FROM sandbox_runs AS run" in pool.statement
+    assert "run.terminated_at IS NULL" in pool.statement
     assert pool.args == ("ec2",)

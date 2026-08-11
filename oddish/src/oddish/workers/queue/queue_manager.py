@@ -88,6 +88,7 @@ async def run_assigned_queue_worker(
         return 0
 
     capacity_slot: int | None = None
+    release_capacity_lease = True
     try:
         if execution_lane == "ec2_trial":
             capacity_slot = await acquire_sandbox_capacity_lease(
@@ -113,7 +114,9 @@ async def run_assigned_queue_worker(
             return 0
 
         try:
-            return await drain_worker_jobs(
+            if capacity_slot is not None:
+                release_capacity_lease = False
+            jobs_processed = await drain_worker_jobs(
                 queue_key,
                 worker_id=worker_id,
                 queue_slot=slot,
@@ -123,6 +126,8 @@ async def run_assigned_queue_worker(
                 capacity_provider="ec2" if capacity_slot is not None else None,
                 capacity_slot=capacity_slot,
             )
+            release_capacity_lease = True
+            return jobs_processed
         finally:
             await release_queue_slot(
                 queue_key=queue_key,
@@ -130,7 +135,7 @@ async def run_assigned_queue_worker(
                 worker_id=worker_id,
             )
     finally:
-        if capacity_slot is not None:
+        if capacity_slot is not None and release_capacity_lease:
             await release_sandbox_capacity_lease(
                 provider="ec2", slot=capacity_slot, worker_id=worker_id
             )

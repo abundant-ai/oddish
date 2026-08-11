@@ -126,6 +126,7 @@ class InProcessDispatcher:
         )
 
         capacity_slot: int | None = None
+        release_capacity_lease = True
         try:
             if execution_lane == "ec2_trial":
                 capacity_slot = await acquire_sandbox_capacity_lease(
@@ -166,7 +167,9 @@ class InProcessDispatcher:
                         capacity_provider="ec2",
                         capacity_slot=capacity_slot,
                     )
+                    release_capacity_lease = False
                 await self._run_job(queue_key, **run_kwargs)
+                release_capacity_lease = True
             finally:
                 await self._release_slot(
                     queue_key=queue_key, slot=slot, worker_id=worker_id
@@ -176,7 +179,7 @@ class InProcessDispatcher:
         except Exception as exc:  # noqa: BLE001 - worker errors must not crash the loop
             logger.warning("in-process worker %s failed: %r", worker_id, exc)
         finally:
-            if capacity_slot is not None:
+            if capacity_slot is not None and release_capacity_lease:
                 await release_sandbox_capacity_lease(
                     provider="ec2", slot=capacity_slot, worker_id=worker_id
                 )
