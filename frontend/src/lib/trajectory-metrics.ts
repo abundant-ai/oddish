@@ -105,6 +105,7 @@ const COMPONENT_COLOR_VARS: Record<string, string> = {
   testing_custom: "var(--tc-testing-custom)",
   testing_edge_cases: "var(--tc-testing-edge)",
   debugging: "var(--tc-debugging)",
+  writing_report: "var(--tc-writing-report)",
   // Retired kinds, kept so stored summaries keep their fixed color rather than
   // falling through to appearance-order phase slots. Each shares the slot its
   // replacement took over; the two vocabularies never co-occur in one summary.
