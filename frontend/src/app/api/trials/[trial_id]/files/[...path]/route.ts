@@ -5,9 +5,13 @@ import {
   getBackendUrl,
   getClerkToken,
 } from "@/lib/backend-config";
+import {
+  attachUpstreamServerTiming,
+  backendFetchHeaders,
+} from "@/lib/proxy-headers";
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ trial_id: string; path: string[] }> },
 ) {
   try {
@@ -19,7 +23,7 @@ export async function GET(
     const url = getBackendUrl("trials", `/${trial_id}/files/${filePath}`);
 
     const res = await fetch(url, {
-      headers: getAuthHeaders(token),
+      headers: backendFetchHeaders(request, getAuthHeaders(token)),
       cache: "no-store",
     });
 
@@ -33,18 +37,24 @@ export async function GET(
           payload = { detail: text };
         }
       }
-      return NextResponse.json(payload, { status: res.status });
+      return attachUpstreamServerTiming(
+        NextResponse.json(payload, { status: res.status }),
+        res,
+      );
     }
 
     const contentType =
       res.headers.get("content-type") || "application/octet-stream";
-    return new Response(res.body, {
-      status: 200,
-      headers: {
-        "Content-Type": contentType,
-        "Cache-Control": "private, max-age=300, stale-while-revalidate=60",
-      },
-    });
+    return attachUpstreamServerTiming(
+      new Response(res.body, {
+        status: 200,
+        headers: {
+          "Content-Type": contentType,
+          "Cache-Control": "private, max-age=300, stale-while-revalidate=60",
+        },
+      }),
+      res,
+    );
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
