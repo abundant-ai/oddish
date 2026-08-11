@@ -131,8 +131,8 @@ async def stamp_dispatch_stage(
         )
 
 
-async def discover_active_worker_job_queue_keys() -> tuple[tuple[str, str], ...]:
-    """``(queue_key, harbor_variant_id)`` pairs with pending / running rows.
+async def discover_active_worker_job_queue_keys() -> tuple[tuple[str, str, str], ...]:
+    """``(queue_key, harbor_variant_id, execution_lane)`` active units.
 
     The Harbor variant is part of the effective dispatch key, so discovery
     surfaces it alongside the queue_key: the dispatcher spawns a worker per
@@ -145,38 +145,43 @@ async def discover_active_worker_job_queue_keys() -> tuple[tuple[str, str], ...]
     pool = await get_pool()
     rows = await pool.fetch(
         """
-        SELECT DISTINCT queue_key, harbor_variant_id
+        SELECT DISTINCT queue_key, harbor_variant_id, execution_lane
         FROM   worker_jobs
         WHERE  status::text IN ('QUEUED', 'RETRYING', 'RUNNING')
           AND  available_after <= NOW()
         """
     )
 
-    discovered: set[tuple[str, str]] = set()
+    discovered: set[tuple[str, str, str]] = set()
     for row in rows:
         raw_key = str(row["queue_key"]).strip().lower().replace(" ", "_")
         if not raw_key:
             continue
         variant = str(row["harbor_variant_id"] or "default")
-        discovered.add((raw_key, variant))
-        discovered.add((settings.normalize_queue_key(raw_key), variant))
+        lane = str(row["execution_lane"] or "default")
+        discovered.add((raw_key, variant, lane))
+        discovered.add((settings.normalize_queue_key(raw_key), variant, lane))
 
     return tuple(sorted(discovered))
 
 
 async def get_worker_job_org_queue_counts(
     queue_keys: tuple[str, ...],
-) -> tuple[dict[tuple[str | None, str, str], int], dict[tuple[str, str], int]]:
-    """Queued + RUNNING counts, both broken out by Harbor variant.
+) -> tuple[
+    dict[tuple[str | None, str, str, str], int],
+    dict[tuple[str, str, str], int],
+]:
+    """Queued + RUNNING counts by Harbor variant and execution lane.
 
-    Returns ``(queued_by_(org, queue_key, variant), running_by_(queue_key,
-    variant))``. The variant is part of the effective dispatch key:
+    Returns ``(queued_by_(org, queue_key, variant, lane),
+    running_by_(queue_key, variant, lane))``. Variant and lane are both part of
+    the effective dispatch key:
 
     * Queued work is scheduled **per org per queue_key per variant** so the
-      planner can round-robin fairly across orgs and route each variant to its
-      own worker Function.
-    * RUNNING is counted **per (queue_key, variant)** so telemetry/routing see
-      each lane, while the planner sums them per queue_key for the shared
+      planner can round-robin fairly across orgs and route each credential class
+      to the correct worker Function.
+    * RUNNING is counted **per (queue_key, variant, lane)** while the planner
+      sums them per queue_key for the shared
       ``queue_slots`` capacity check (decision: variants share one queue_key
       concurrency pool for v1).
 
@@ -187,17 +192,18 @@ async def get_worker_job_org_queue_counts(
         return {}, {}
 
     pool = await get_pool()
-    queued_by_org_queue: dict[tuple[str | None, str, str], int] = {}
-    running_by_queue: dict[tuple[str, str], int] = {}
+    queued_by_org_queue: dict[tuple[str | None, str, str, str], int] = {}
+    running_by_queue: dict[tuple[str, str, str], int] = {}
 
     queued_rows = await pool.fetch(
         """
-        SELECT org_id, queue_key, harbor_variant_id, COUNT(*) AS queued
+        SELECT org_id, queue_key, harbor_variant_id, execution_lane,
+               COUNT(*) AS queued
         FROM   worker_jobs
         WHERE  queue_key = ANY($1)
           AND  status::text IN ('QUEUED', 'RETRYING')
           AND  available_after <= NOW()
-        GROUP BY org_id, queue_key, harbor_variant_id
+        GROUP BY org_id, queue_key, harbor_variant_id, execution_lane
         """,
         list(queue_keys),
     )
@@ -206,43 +212,52 @@ async def get_worker_job_org_queue_counts(
         if count <= 0:
             continue
         variant = str(row["harbor_variant_id"] or "default")
-        queued_by_org_queue[(row["org_id"], row["queue_key"], variant)] = count
+        lane = str(row["execution_lane"] or "default")
+        queued_by_org_queue[(row["org_id"], row["queue_key"], variant, lane)] = count
 
     running_rows = await pool.fetch(
         """
-        SELECT queue_key, harbor_variant_id, COUNT(*) AS running
+        SELECT queue_key, harbor_variant_id, execution_lane, COUNT(*) AS running
         FROM   worker_jobs
         WHERE  queue_key = ANY($1)
           AND  status::text = 'RUNNING'
-        GROUP BY queue_key, harbor_variant_id
+        GROUP BY queue_key, harbor_variant_id, execution_lane
         """,
         list(queue_keys),
     )
     for row in running_rows:
         variant = str(row["harbor_variant_id"] or "default")
-        running_by_queue[(row["queue_key"], variant)] = int(row["running"] or 0)
+        lane = str(row["execution_lane"] or "default")
+        running_by_queue[(row["queue_key"], variant, lane)] = int(row["running"] or 0)
 
     return queued_by_org_queue, running_by_queue
 
 
 def select_job_function(
-    unit: tuple[str, str],
+    unit: tuple[str, str, str],
     *,
     default_fn: Any,
     variant_fns: dict[str, Any],
+    ec2_fn: Any | None = None,
+    ec2_variant_fns: dict[str, Any] | None = None,
 ) -> tuple[Any, dict[str, str]]:
-    """Pick the worker Function + spawn kwargs for one ``(queue_key, variant)``.
+    """Pick the worker Function for one ``(queue_key, variant, lane)``.
 
-    ``default`` and ``ephemeral`` run on the base ``process_single_job`` (the
-    default image; ``ephemeral`` spawns an out-of-process child from there). A
-    blessed ``<id>`` runs on its own image-bound Function from *variant_fns*. An
-    id with no built image yet (registry/image drift) falls back to the base
-    Function rather than being dropped. Every Function is passed
-    ``harbor_variant_id`` so its claim is scoped to the right lane.
+    The execution lane chooses the credential topology first; Harbor variant
+    then chooses the image within that topology.
     """
-    queue_key, variant = unit
-    fn = variant_fns.get(variant, default_fn)
-    return fn, {"queue_key": queue_key, "harbor_variant_id": variant}
+    queue_key, variant, lane = unit
+    if lane == "ec2_trial":
+        if ec2_fn is None:
+            raise RuntimeError("EC2 dispatch unit has no EC2 worker Function")
+        fn = (ec2_variant_fns or {}).get(variant, ec2_fn)
+    else:
+        fn = variant_fns.get(variant, default_fn)
+    return fn, {
+        "queue_key": queue_key,
+        "harbor_variant_id": variant,
+        "execution_lane": lane,
+    }
 
 
 def _org_sort_key(org_id: str | None) -> tuple[int, str]:
@@ -251,13 +266,15 @@ def _org_sort_key(org_id: str | None) -> tuple[int, str]:
 
 
 def build_spawn_plan(
-    queued_by_org_queue: dict[tuple[str | None, str, str], int],
-    running_by_queue: dict[tuple[str, str], int],
+    queued_by_org_queue: dict[tuple[str | None, str, str, str], int],
+    running_by_queue: dict[tuple[str, str, str], int],
     concurrency_limits: dict[str, int],
     max_workers: int,
     held_by_queue_key: dict[str, int] | None = None,
-) -> list[tuple[str, str]]:
-    """Decide which ``(queue_key, harbor_variant_id)`` workers to spawn.
+    capacity_limits_by_lane: dict[str, int] | None = None,
+    held_by_lane: dict[str, int] | None = None,
+) -> list[tuple[str, str, str]]:
+    """Decide which ``(queue_key, harbor_variant_id, lane)`` workers to spawn.
 
     Two-level round-robin:
 
@@ -282,23 +299,27 @@ def build_spawn_plan(
     limit. Omitted (Modal ``poll_queue``) -> RUNNING-only, unchanged. Capacity is
     decremented across orgs and across variants of the same queue_key, so the
     global cap continues to dominate.
+
+    Optional lane limits apply the same rule across queue keys. This lets a
+    provider-wide sandbox cap suppress only that execution lane without using
+    up the per-poll budget that other lanes can consume.
     """
     if max_workers <= 0 or not queued_by_org_queue:
         return []
 
-    # Bucket queued work by org -> {(queue_key, variant): queued}.
-    org_to_unit_queued: dict[str | None, dict[tuple[str, str], int]] = {}
-    for (org_id, queue_key, variant), queued in queued_by_org_queue.items():
+    # Bucket queued work by org -> {(queue_key, variant, lane): queued}.
+    org_to_unit_queued: dict[str | None, dict[tuple[str, str, str], int]] = {}
+    for (org_id, queue_key, variant, lane), queued in queued_by_org_queue.items():
         if queued <= 0:
             continue
-        org_to_unit_queued.setdefault(org_id, {})[(queue_key, variant)] = queued
+        org_to_unit_queued.setdefault(org_id, {})[(queue_key, variant, lane)] = queued
 
     if not org_to_unit_queued:
         return []
 
     # Running counts SUM across variants for the shared per-queue_key cap.
     running_by_queue_key: dict[str, int] = {}
-    for (queue_key, _variant), running in running_by_queue.items():
+    for (queue_key, _variant, _lane), running in running_by_queue.items():
         running_by_queue_key[queue_key] = running_by_queue_key.get(queue_key, 0) + (
             running or 0
         )
@@ -311,20 +332,28 @@ def build_spawn_plan(
 
     global_capacity: dict[str, int] = {}
     all_queue_keys = set(concurrency_limits.keys()) | {
-        qk for bucket in org_to_unit_queued.values() for (qk, _v) in bucket
+        qk for bucket in org_to_unit_queued.values() for (qk, _v, _lane) in bucket
     }
     for queue_key in all_queue_keys:
         limit = concurrency_limits.get(queue_key, 0)
         in_flight = max(running_by_queue_key.get(queue_key, 0), held.get(queue_key, 0))
         global_capacity[queue_key] = max(limit - in_flight, 0)
 
+    running_by_lane: dict[str, int] = {}
+    for (_queue_key, _variant, lane), running in running_by_queue.items():
+        running_by_lane[lane] = running_by_lane.get(lane, 0) + (running or 0)
+    lane_capacity: dict[str, int] = {}
+    for lane, limit in (capacity_limits_by_lane or {}).items():
+        in_flight = max(running_by_lane.get(lane, 0), (held_by_lane or {}).get(lane, 0))
+        lane_capacity[lane] = max(limit - in_flight, 0)
+
     ordered_orgs = sorted(org_to_unit_queued.keys(), key=_org_sort_key)
-    per_org_units: dict[str | None, list[tuple[str, str]]] = {
+    per_org_units: dict[str | None, list[tuple[str, str, str]]] = {
         org_id: sorted(org_to_unit_queued[org_id].keys()) for org_id in ordered_orgs
     }
     per_org_cursor: dict[str | None, int] = {org_id: 0 for org_id in ordered_orgs}
 
-    spawn_plan: list[tuple[str, str]] = []
+    spawn_plan: list[tuple[str, str, str]] = []
     while len(spawn_plan) < max_workers:
         progressed = False
         for org_id in ordered_orgs:
@@ -339,7 +368,7 @@ def build_spawn_plan(
             # global (shared per-queue_key) capacity remaining. Stopping after
             # one cycle avoids a spin when none of this org's units are
             # spawnable right now (the outer while-loop breaks on no-progress).
-            picked: tuple[str, str] | None = None
+            picked: tuple[str, str, str] | None = None
             for _ in range(len(units)):
                 idx = per_org_cursor[org_id] % len(units)
                 candidate = units[idx]
@@ -347,6 +376,10 @@ def build_spawn_plan(
                 if (
                     org_to_unit_queued[org_id].get(candidate, 0) > 0
                     and global_capacity.get(candidate[0], 0) > 0
+                    and (
+                        candidate[2] not in lane_capacity
+                        or lane_capacity[candidate[2]] > 0
+                    )
                 ):
                     picked = candidate
                     break
@@ -355,6 +388,8 @@ def build_spawn_plan(
                 spawn_plan.append(picked)
                 org_to_unit_queued[org_id][picked] -= 1
                 global_capacity[picked[0]] -= 1
+                if picked[2] in lane_capacity:
+                    lane_capacity[picked[2]] -= 1
                 progressed = True
 
         if not progressed:

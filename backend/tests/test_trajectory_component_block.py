@@ -178,9 +178,34 @@ def test_instructions_template_renders_taxonomy():
     template = (
         REPO_ROOT / "oddish" / "src" / "oddish" / "analyze" / "prompts" / "trajectory_summary.txt"
     ).read_text()
-    labels = ["reading_files", "debugging"]
-    rendered = tp.instructions_section(template, labels)
-    assert "reading_files, debugging" in rendered
+    rendered = tp.instructions_section(template, ["reading_files"], ["debugging"])
     assert "{{taxonomy}}" not in rendered
     assert rendered.startswith("Write a summary of 2-3 sentences")
     assert rendered.rstrip().endswith("Order the highlights by `step_id`, lowest first.")
+    # Every label reaches the model with its definition, under its group.
+    assert "THINKING / EXPLORING" in rendered
+    assert "IMPLEMENTING / TESTING" in rendered
+    assert "- `reading_files`: opens, lists, or searches files" in rendered
+    assert "- `debugging`: investigates a failure that already occurred" in rendered
+
+
+def test_every_taxonomy_label_has_a_description():
+    """A label the enum offers but the prompt never defines must not ship."""
+    from api.services.blocks.analyzer.trajectory import trajectory_prompts as tp
+    from api.services.blocks.analyzer.trajectory.trajectory_component_block import (
+        TrajectoryBlockTaxonomy,
+    )
+
+    missing = [
+        m.value
+        for m in TrajectoryBlockTaxonomy
+        if m.value not in tp.TAXONOMY_DESCRIPTIONS
+    ]
+    assert missing == []
+
+
+def test_render_taxonomy_rejects_an_undescribed_label():
+    from api.services.blocks.analyzer.trajectory import trajectory_prompts as tp
+
+    with pytest.raises(ValueError, match="without a description"):
+        tp.render_taxonomy(["reading_files"], ["a_label_nobody_defined"])

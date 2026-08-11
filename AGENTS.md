@@ -486,7 +486,7 @@ extensions) — see `backend/README.md`.
 | Task upload | `POST /tasks/upload/init` (returns presigned PUT URL), `POST /tasks/upload/complete` |
 | Trial import | `POST /trials/import/init`, `POST /trials/import/complete` |
 | Sweeps | `POST /tasks/sweep`, `POST /tasks/sweep/batch` |
-| Tasks | `GET /tasks`, `GET /tasks/browse`, `GET /tasks/browse/experiment-options` (typeahead for the experiment filter; `facets.experiments` is deprecated/always empty; the other facet lists are served from the `trial_facets` vocabulary — write-through on trial creation plus a periodic rebuild sweep, see `oddish/src/oddish/core/trial_facets.py`), `GET /tasks/{task_id}`, `GET /tasks/{task_id}/detail`, `GET /tasks/{task_id}/versions[/{version}]`, `PUT /tasks/{task_id}/versions/{version}/default`, `POST /tasks/cancel` |
+| Tasks | `GET /tasks`, `GET /tasks/browse`, `GET /tasks/browse/experiment-options` (typeahead for the experiment filter; `facets.experiments` is deprecated/always empty; the other facet lists are served from the `trial_facets` vocabulary — write-through on trial creation plus a periodic rebuild sweep, see `oddish/src/oddish/core/trial_facets.py`), `GET /tasks/{task_id}`, `GET /tasks/{task_id}/detail`, `GET /tasks/{task_id}/versions[/{version}]`, `PUT /tasks/{task_id}/versions/{version}/default`, `POST /tasks/cancel` (optional `experiment_id` scopes the cancel to that experiment's trials so shared tasks keep running elsewhere) |
 | Task QA | `POST /tasks/{task_id}/qa/retry`, `POST /tasks/{task_id}/qa/cancel`, `POST /tasks/{task_id}/qa/backfill` |
 | Experiments | `POST /experiments/combine`, `PATCH /experiments/{experiment_id}` |
 | Trials | `GET /tasks/{task_id}/trials/{index}`, `POST /trials/{trial_id}/retry` (optional `registry_auth` body), `GET /trials/{trial_id}/live` ((attempt, seq)-cursor live transcript), `GET /trials/{trial_id}/logs[/structured]`, `GET /trials/{trial_id}/trajectory`, `GET /trials/{trial_id}/result` |
@@ -514,6 +514,51 @@ Settings are loaded from `oddish/.env`; see `oddish/env.example`,
 Keep these routing rules in sync with `oddish/src/oddish/config.py` and
 `oddish/src/oddish/workers/harbor/runner.py`:
 
+- EC2 is an explicit, opt-in Harbor backend: `ODDISH_EC2_ENABLED=true` registers
+  it and permits hosted `environment=ec2`, but capability ordering keeps Daytona
+  as the CPU default. V1 launches one ephemeral CPU instance per trial and uses
+  public-IP, key-only SSH. It does not support accelerators, attach/retain mode,
+  private networking, Spot, or AWS infrastructure provisioning.
+- An EC2 deployment must provide an existing Ubuntu-compatible AMI, subnet,
+  security group, EC2 key pair/private key, region, and instance type. The
+  security group must allow TCP/22 from the Modal worker network path. Keep
+  `ODDISH_EC2_SSH_PRIVATE_KEY` in the dedicated worker secret, materialize it
+  mode `0600`, and never bake it into an image or attach it to API, dispatcher,
+  or reconciler functions.
+- EC2 control credentials must be least privilege: workers need
+  `sts:GetCallerIdentity` plus launch, describe, image lookup, tagging, and
+  termination actions; reconciliation needs `sts:GetCallerIdentity`, describe,
+  and tag-scoped termination. Store them under the namespaced
+  `ODDISH_EC2_AWS_*` settings; workers materialize a mode-`0600` AWS profile and
+  scrub the raw values before starting Harbor. API cancellation delegates to a
+  dedicated Modal teardown function, so API and dispatcher containers receive
+  neither EC2 control nor SSH secrets. An optional platform-owned
+  `ODDISH_EC2_INSTANCE_PROFILE` may be attached; it is visible to tenant code,
+  so keep it task-scoped and grant the control identity `iam:PassRole` only for
+  that role. Oddish always requires IMDSv2 so cloud-init can retrieve the EC2
+  launch key: the response hop limit is one without an instance profile and two
+  when a profile is explicitly exposed to Docker containers.
+- Oddish does not create the VPC, subnet, security group, AMI, key pair, or IAM
+  policy. Every instance and root volume must carry protected Oddish ownership,
+  deployment, task/trial, worker-job, worker-attempt, sandbox-run, unguessable
+  launch-token, and Harbor-session tags. A durable `sandbox_runs` row is created
+  before launch; Harbor's `environment-provisioned` event binds the structured
+  handle before SSH/bootstrap. Normal teardown, cancellation, stale-heartbeat
+  cleanup, and reconciliation terminate only after the full ledger/tag tuple
+  agrees.
+- EC2 orphan reconciliation snapshots deployment-tagged instances before the
+  shared cleanup transaction, evaluates worker liveness using the database clock,
+  and terminates only after the transaction commits. It preserves live linked
+  jobs and conservatively preserves unlinked trial startup for 30 minutes, then
+  reaps terminal and stale owners with an exact ledger match; missing or
+  mismatched ledgers are ownership refusals, never destructive guesses. The
+  protected 14-hour hard maximum age overrides worker liveness only for exactly
+  owned instances. `ODDISH_EC2_MAX_CONCURRENT_INSTANCES` is enforced globally
+  with heartbeat-renewed `sandbox_capacity_leases`, independent of model/variant
+  queue slots. The dispatcher budgets against live EC2 leases before spawning,
+  while each worker still acquires the lease atomically before claiming a job.
+  Inventory and termination failures stay visible in logs/metrics while the rest
+  of queue cleanup continues.
 - Claude trials run through AWS Bedrock by default. `CLAUDE_CODE_USE_BEDROCK=1` is
   baked into the Modal image, and Claude model aliases must normalize to an
   invokable inference profile (`global.` / `us.` / ARN) via
@@ -567,6 +612,27 @@ Storage defaults:
 - uploaded task bundles: `tasks/<task_id>/.oddish-task.tar.gz`
 - Harbor job outputs: `/tmp/harbor-jobs`
 - Modal workers also check `/mnt/oddish-tasks` before falling back to the S3 download path
+
+EC2 canary procedure:
+
+1. In a non-production AWS account, create the Ubuntu-compatible AMI, subnet,
+   public-IP route, SSH security group, key pair, and least-privilege worker IAM
+   credentials. Enable the backend with the `ODDISH_EC2_*` settings documented
+   in `backend/.env.example`.
+2. Submit a small CPU-only task with `oddish run <task> --env ec2 --background`.
+   Confirm the trial records provider `ec2` and an external instance handle, and
+   confirm the instance and root volume have the protected Oddish tags.
+3. Verify SSH/bootstrap, Docker Compose execution, result/artifact collection,
+   and terminal instance state. Confirm the instance has the configured IAM
+   profile (or none), and that metadata is IMDSv2-only with response hop limit
+   one without a profile or two with a profile.
+4. Start a longer canary, cancel it with `oddish cancel <trial-or-task-id>`, and
+   confirm the tagged instance terminates exactly once.
+5. In the non-production deployment only, deliberately interrupt a worker after
+   launch. Confirm stale-heartbeat/orphan reconciliation preserves it during the
+   grace window and terminates it afterward. Also verify the hard maximum-age
+   path. Review logs/metrics for the candidate, ownership decision, and terminate
+   result before enabling production traffic.
 
 ### Using as a Library
 
@@ -920,6 +986,12 @@ uv run alembic upgrade head
 uv run alembic upgrade head
 ```
 
+In hosted environments both stacks run in that order *before* the code deploy,
+because the backend can hard-require new schema on its hot paths.
+`.github/workflows/staging-deploy.yml` sequences migrations then the Modal
+deploy; `modal-deploy.yml` (production) additionally orders the Vercel frontend
+after the backend, so a new frontend never reaches an old backend.
+
 ### Key Files
 
 | Path | Purpose |
@@ -943,6 +1015,22 @@ uv run alembic upgrade head
 | `worker/runtime.py` | Modal runtime patching and storage setup |
 | `worker/github.py` | GitHub notification hooks used as post-success actions |
 
+Every hosted HTTP response carries a fixed backend `Server-Timing` phase set:
+`auth_verify`, `auth_cache`, `auth_total`, `db_checkout`, `db_sql`,
+`external_http`, `db_commit`, `handler_db`, `handler_total`, and
+`backend_total`. Missing work is represented as zero rather than omitting the
+phase, so cold, warm, and concurrent traces are comparable. The
+`backend.request.phases` span records per-request SQL counts and transmitted
+response-body bytes. `backend_total` and `handler_total` stop at response start
+because they ship in the response headers; the trace-only
+`backend_complete.duration_ms` observation ends after the final ASGI body chunk
+and includes streaming time, but not response background tasks. Production
+entrypoints must use `create_asgi_app()` so timing wraps FastAPI's complete
+middleware stack, including unhandled-error and capacity responses. Hosted and
+core code must use `RequestTimedAsyncClient` for outbound HTTPX calls so the
+request-wide `external_http` phase cannot depend on route-local wrappers. Never
+attach response bodies, request payloads, credentials, or SQL parameter values.
+
 ---
 
 ## `frontend/` — Next.js Dashboard
@@ -951,6 +1039,13 @@ The frontend is a Next.js 16 / React 19 App Router app. Browser code calls
 `src/app/api/*` route handlers, which forward to the backend from
 `NEXT_PUBLIC_API_URL` and preserve auth. Public routes are `/`, `/share/*`,
 `/datasets/*`, and `/api/public/*`; everything else is Clerk-protected.
+
+Authenticated proxy routes forward incoming `traceparent`, `tracestate`, and
+`baggage` headers to the backend and join the backend's `Server-Timing` value
+onto the Next response on success, upstream error, and streamed passthrough
+responses. Keep this behavior in `frontend/src/lib/proxy-headers.ts`; the
+generic JSON proxy requires its incoming request, and bespoke hot routes must
+use the same helpers instead of replacing an existing timing value.
 
 The trial drawer surfaces verifier test counts only as a small passed/total
 row in the Summary tab (shown on public share views too); trials without test

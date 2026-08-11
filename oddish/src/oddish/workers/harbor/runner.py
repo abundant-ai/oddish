@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+import contextlib
+from collections.abc import Awaitable, Callable, Mapping
 import math
 import os
 import shutil
@@ -11,7 +12,7 @@ import uuid
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, cast
 from urllib.parse import urlparse
 
 from harbor import Job, JobConfig  # type: ignore[attr-defined]
@@ -44,6 +45,15 @@ from oddish.costs.modal_cost import (
     normalize_gpu_type,
     provider_default_request,
 )
+from oddish.runtime.ec2_policy import (
+    LAUNCH_TOKEN_TAG_KEY,
+    SANDBOX_RUN_ID_TAG_KEY,
+    TRIAL_ID_TAG_KEY,
+    WORKER_ATTEMPT_TAG_KEY,
+    WORKER_JOB_ID_TAG_KEY,
+    validate_ec2_environment_config,
+)
+from oddish.runtime.sandbox_lifecycle import SandboxLaunchContext
 from oddish.runtime.registry import get_backend
 from oddish.schemas import HarborConfig
 from oddish.task_timeouts import validate_task_timeout_config
@@ -711,6 +721,12 @@ def capture_live_sandbox_resources(
             )
         )
         pinned = any(value is not None for value in (env.cpus, env.memory_mb, env.gpus))
+        if has_override:
+            spec_source = "override"
+        elif pinned:
+            spec_source = "pinned"
+        else:
+            spec_source = "provider_default"
         return SpanResources(
             cpu_request=cpu_request,
             cpu_limit=cpu_limit,
@@ -720,13 +736,7 @@ def capture_live_sandbox_resources(
             gpu_count=env.gpus or 0,
             price_multiplier=Decimal(1),
             container_class="sandbox",
-            spec_source=(
-                "override"
-                if has_override
-                else "pinned"
-                if pinned
-                else "provider_default"
-            ),
+            spec_source=spec_source,
             cpu_enforcement_mode=cpu_mode.value,
             mem_enforcement_mode=mem_mode.value,
         )
@@ -1213,6 +1223,59 @@ def _assert_tpu_backend(environment, backend, override_tpu) -> None:
     )
 
 
+def _resolve_provider_environment_config(
+    *,
+    hc: HarborConfig,
+    environment: EnvironmentType,
+    backend: Any,
+    is_probe: bool,
+    trial_id: str | None,
+    worker_job_id: str | None,
+    sandbox_launch: SandboxLaunchContext | None,
+) -> HarborEnvironmentConfig:
+    environment_config = hc.environment.model_copy(deep=True)
+    environment_config.type = environment
+    if backend is not None:
+        environment_config.kwargs = backend.harbor_env_kwargs(
+            dict(environment_config.kwargs)
+        )
+    probe_modal = _probe_modal_kwargs(is_probe, environment)
+    if probe_modal:
+        environment_config.kwargs = {
+            **probe_modal,
+            **environment_config.kwargs,
+        }
+    if environment == EnvironmentType.EC2:
+        if sandbox_launch is None:
+            raise RuntimeError("EC2 trial is missing its durable sandbox run")
+        missing_identity = [
+            name
+            for name, value in (
+                ("trial_id", trial_id),
+                ("worker_job_id", worker_job_id),
+            )
+            if not value
+        ]
+        if missing_identity:
+            raise RuntimeError(
+                "EC2 trial is missing required ownership identity: "
+                + ", ".join(missing_identity)
+            )
+        tags = dict(environment_config.kwargs.get("tags") or {})
+        tags[TRIAL_ID_TAG_KEY] = trial_id
+        tags[WORKER_JOB_ID_TAG_KEY] = worker_job_id
+        tags[SANDBOX_RUN_ID_TAG_KEY] = sandbox_launch.sandbox_run_id
+        tags[WORKER_ATTEMPT_TAG_KEY] = str(sandbox_launch.worker_job_attempt)
+        tags[LAUNCH_TOKEN_TAG_KEY] = sandbox_launch.launch_token
+        environment_config.kwargs = {
+            **environment_config.kwargs,
+            "tags": tags,
+        }
+    return HarborEnvironmentConfig.model_validate(
+        environment_config.model_dump(mode="python")
+    )
+
+
 async def run_harbor_trial_async(
     task_path: Path,
     agent: str,
@@ -1221,9 +1284,11 @@ async def run_harbor_trial_async(
     environment: EnvironmentType = EnvironmentType.DOCKER,
     hook_callback: HookCallback | None = None,
     trial_id: str | None = None,
+    worker_job_id: str | None = None,
     harbor_config: dict[str, Any] | None = None,
     org_id: str | None = None,
     extra_agent_env: dict[str, str] | None = None,
+    sandbox_launch: SandboxLaunchContext | None = None,
 ) -> HarborOutcome:
     """
     Execute a Harbor trial using Harbor's Python API with lifecycle hooks.
@@ -1234,11 +1299,59 @@ async def run_harbor_trial_async(
     Returns a HarborOutcome with reward, error, tokens, cost, timing,
     trajectory presence, and artifact paths.
     """
-    apply_harbor_patches()
-
+    apply_harbor_patches(require_ec2=environment == EnvironmentType.EC2)
     raw = harbor_config or {}
     hc = HarborConfig.model_validate(raw)
+    if environment == EnvironmentType.EC2:
+        validate_ec2_environment_config(hc.environment)
+    backend = get_backend(environment.value)
+    if environment == EnvironmentType.EC2 and backend is None:
+        raise RuntimeError(
+            "EC2 environment requested but the EC2 backend is not enabled or "
+            "registered; set ODDISH_EC2_ENABLED=true with complete EC2 settings"
+        )
+    credential_scope = (
+        cast(Any, backend).worker_credentials(include_ssh=True)
+        if environment == EnvironmentType.EC2
+        else contextlib.nullcontext()
+    )
+    with credential_scope:
+        return await _run_harbor_trial_async_impl(
+            task_path=task_path,
+            agent=agent,
+            jobs_dir=jobs_dir,
+            model=model,
+            environment=environment,
+            hook_callback=hook_callback,
+            trial_id=trial_id,
+            worker_job_id=worker_job_id,
+            harbor_config=harbor_config,
+            org_id=org_id,
+            extra_agent_env=extra_agent_env,
+            sandbox_launch=sandbox_launch,
+            raw=raw,
+            hc=hc,
+            backend=backend,
+        )
 
+
+async def _run_harbor_trial_async_impl(
+    task_path: Path,
+    agent: str,
+    jobs_dir: Path,
+    model: str | None,
+    environment: EnvironmentType,
+    hook_callback: HookCallback | None,
+    trial_id: str | None,
+    worker_job_id: str | None,
+    harbor_config: dict[str, Any] | None,
+    org_id: str | None,
+    extra_agent_env: dict[str, str] | None,
+    raw: dict[str, Any],
+    hc: HarborConfig,
+    backend: Any,
+    sandbox_launch: SandboxLaunchContext | None,
+) -> HarborOutcome:
     # Size the environment-build timeout multiplier BEFORE the dispatch fork so
     # EVERY path that runs a GKE environment carries it -- the in-process blessed
     # variant AND the out-of-process ephemeral child. pod_ready is read from the
@@ -1261,10 +1374,11 @@ async def run_harbor_trial_async(
     # backend would otherwise skip it entirely.
     _assert_tpu_backend(
         environment,
-        get_backend(environment.value),
+        backend,
         getattr(hc.environment, "override_tpu", None),
     )
 
+    is_probe = raw.get("mode") == "probe"
     dispatch_env_config = hc.environment.model_copy()
     dispatch_env_config.type = environment
     try:
@@ -1285,6 +1399,16 @@ async def run_harbor_trial_async(
             job_dir=None,
             exception_type="RestrictedNetworkProfileError",
         )
+
+    resolved_environment_config = _resolve_provider_environment_config(
+        hc=hc,
+        environment=environment,
+        backend=backend,
+        is_probe=is_probe,
+        trial_id=trial_id,
+        worker_job_id=worker_job_id,
+        sandbox_launch=sandbox_launch,
+    )
 
     # An allowlisted override that is neither the locked default nor a blessed
     # image variant runs out-of-process against its own Harbor: a different
@@ -1312,11 +1436,10 @@ async def run_harbor_trial_async(
             agent=agent,
             jobs_dir=jobs_dir,
             model=model,
-            environment=environment,
             hook_callback=hook_callback,
             trial_id=trial_id,
+            environment_config=resolved_environment_config,
             harbor_config=harbor_config,
-            org_id=org_id,
             extra_agent_env=extra_agent_env,
             environment_build_timeout_multiplier=env_build_multiplier,
         )
@@ -1324,7 +1447,6 @@ async def run_harbor_trial_async(
     # Probes attach to an existing task and inherit its task.toml, which may
     # predate the timeout requirement. Rather than hard-fail, skip strict
     # validation and hand the probe a capped default agent timeout below.
-    is_probe = raw.get("mode") == "probe"
     if not is_probe:
         validate_task_timeout_config(task_path)
 
@@ -1374,15 +1496,7 @@ async def run_harbor_trial_async(
         # shape -- static (nop/oracle) trials must not widen egress either.
         if restricted_compose_kind in ("dynamic", "static"):
             reject_submitted_restricted_routes(raw)
-        env_config = hc.environment.model_copy()
-        env_config.type = environment
-
-        backend = get_backend(environment.value)
-        if backend is not None:
-            env_config.kwargs = backend.harbor_env_kwargs(env_config.kwargs)
-        probe_modal = _probe_modal_kwargs(is_probe, environment)
-        if probe_modal:
-            env_config.kwargs = {**probe_modal, **env_config.kwargs}
+        env_config = resolved_environment_config.model_copy(deep=True)
         uses_openai_provider = _trial_uses_openai_provider(
             agent=agent,
             model=model,
@@ -1640,8 +1754,16 @@ async def run_harbor_trial_async(
                     redaction_trial_id, runtime_transport_replacements
                 )
             try:
+                provisioned_hook = getattr(job, "on_environment_provisioned", None)
+                if environment == EnvironmentType.EC2 and provisioned_hook is None:
+                    raise RuntimeError(
+                        "Pinned Harbor lacks the required "
+                        "environment-provisioned lifecycle hook"
+                    )
                 if safe_hook_callback:
                     job.on_trial_started(safe_hook_callback)
+                    if provisioned_hook is not None:
+                        provisioned_hook(safe_hook_callback)
                     job.on_environment_started(safe_hook_callback)
                     job.on_agent_started(safe_hook_callback)
                     job.on_agent_ended(safe_hook_callback)

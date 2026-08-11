@@ -84,9 +84,8 @@ def test_signal_dispatch_wakes_the_module_singleton() -> None:
 # Host-agnostic dispatch cycle
 # --------------------------------------------------------------------------
 def _fake_discover(keys):
-    # Discovery returns ``(queue_key, harbor_variant_id)`` units (the variant is
-    # part of the effective dispatch key); the cycle collapses them to queue_keys
-    # for the image-agnostic off-Modal backends.
+    # Discovery returns exact ``(queue_key, harbor_variant_id, execution_lane)``
+    # units; the cycle collapses them to queue_keys only for admission reporting.
     async def _discover():
         return tuple(keys)
 
@@ -117,9 +116,10 @@ def test_run_dispatch_cycle_spawns_admitted_plan() -> None:
             dispatcher,
             max_workers=10,
             concurrency_limits_for=_fake_limits(5),
-            _discover=_fake_discover([("gpt-4o", "default")]),
+            _discover=_fake_discover([("gpt-4o", "default", "default")]),
             _counts=_fake_counts(
-                {(None, "gpt-4o", "default"): 3}, {("gpt-4o", "default"): 0}
+                {(None, "gpt-4o", "default", "default"): 3},
+                {("gpt-4o", "default", "default"): 0},
             ),
             _held=_fake_held({}),
         )
@@ -136,13 +136,18 @@ def test_build_dispatch_plan_preserves_variant_units_and_counts_held_slots() -> 
         return await build_dispatch_plan(
             max_workers=10,
             concurrency_limits_for=_fake_limits(4),
-            _discover=_fake_discover([("gpt-4o", "default"), ("gpt-4o", "blessed")]),
+            _discover=_fake_discover(
+                [("gpt-4o", "default", "default"), ("gpt-4o", "blessed", "default")]
+            ),
             _counts=_fake_counts(
                 {
-                    ("org-a", "gpt-4o", "default"): 3,
-                    ("org-a", "gpt-4o", "blessed"): 3,
+                    ("org-a", "gpt-4o", "default", "default"): 3,
+                    ("org-a", "gpt-4o", "blessed", "default"): 3,
                 },
-                {("gpt-4o", "default"): 0, ("gpt-4o", "blessed"): 0},
+                {
+                    ("gpt-4o", "default", "default"): 0,
+                    ("gpt-4o", "blessed", "default"): 0,
+                },
             ),
             _held=_fake_held({"gpt-4o": 2}),
         )
@@ -153,7 +158,113 @@ def test_build_dispatch_plan_preserves_variant_units_and_counts_held_slots() -> 
     assert plan.running_by_queue_key == {"gpt-4o": 0}
     assert plan.held_by_queue_key == {"gpt-4o": 2}
     assert len(plan.unit_plan) == 2
-    assert set(plan.unit_plan).issubset({("gpt-4o", "default"), ("gpt-4o", "blessed")})
+    assert set(plan.unit_plan).issubset(
+        {("gpt-4o", "default", "default"), ("gpt-4o", "blessed", "default")}
+    )
+
+
+def test_build_dispatch_plan_applies_lane_capacity() -> None:
+    async def _go():
+        return await build_dispatch_plan(
+            max_workers=4,
+            concurrency_limits_for=_fake_limits(4),
+            capacity_limits_by_lane={"ec2_trial": 1},
+            held_by_lane={"ec2_trial": 1},
+            _discover=_fake_discover(
+                [
+                    ("ec2-model", "default", "ec2_trial"),
+                    ("cpu-model", "default", "default"),
+                ]
+            ),
+            _counts=_fake_counts(
+                {
+                    ("org-a", "ec2-model", "default", "ec2_trial"): 4,
+                    ("org-a", "cpu-model", "default", "default"): 4,
+                },
+                {},
+            ),
+            _held=_fake_held({}),
+        )
+
+    plan = asyncio.run(_go())
+    assert plan.unit_plan == [("cpu-model", "default", "default")] * 4
+
+
+def test_run_dispatch_cycle_applies_lane_capacity_before_spawning() -> None:
+    dispatcher = FakeDispatcher()
+
+    async def _capacity_by_lane():
+        return ({"ec2_trial": 1}, {"ec2_trial": 1})
+
+    async def _go():
+        return await run_dispatch_cycle(
+            dispatcher,
+            max_workers=4,
+            concurrency_limits_for=_fake_limits(4),
+            capacity_by_lane=_capacity_by_lane,
+            _discover=_fake_discover(
+                [
+                    ("ec2-model", "default", "ec2_trial"),
+                    ("cpu-model", "default", "default"),
+                ]
+            ),
+            _counts=_fake_counts(
+                {
+                    ("org-a", "ec2-model", "default", "ec2_trial"): 4,
+                    ("org-a", "cpu-model", "default", "default"): 4,
+                },
+                {},
+            ),
+            _held=_fake_held({}),
+        )
+
+    result = asyncio.run(_go())
+    assert result.spawn_plan == ["cpu-model"] * 4
+    assert [handle.queue_key for handle in result.handles] == ["cpu-model"] * 4
+
+
+def test_sandbox_lane_capacity_is_zero_when_ec2_is_disabled(monkeypatch) -> None:
+    from oddish.config import settings
+    from oddish.dispatch import cycle
+    from oddish.workers.queue import sandbox_capacity
+
+    async def _unexpected_count(*, provider: str) -> int:
+        raise AssertionError(f"counted disabled provider {provider}")
+
+    monkeypatch.setattr(settings, "ec2_enabled", False)
+    monkeypatch.setattr(
+        sandbox_capacity,
+        "count_held_sandbox_capacity_leases",
+        _unexpected_count,
+    )
+
+    limits, held = asyncio.run(cycle.load_sandbox_capacity_by_lane())
+
+    assert limits == {"ec2_trial": 0}
+    assert held == {"ec2_trial": 0}
+
+
+def test_sandbox_lane_capacity_counts_live_ec2_leases(monkeypatch) -> None:
+    from oddish.config import settings
+    from oddish.dispatch import cycle
+    from oddish.workers.queue import sandbox_capacity
+
+    async def _count(*, provider: str) -> int:
+        assert provider == "ec2"
+        return 2
+
+    monkeypatch.setattr(settings, "ec2_enabled", True)
+    monkeypatch.setattr(settings, "ec2_max_concurrent_instances", 3)
+    monkeypatch.setattr(
+        sandbox_capacity,
+        "count_held_sandbox_capacity_leases",
+        _count,
+    )
+
+    limits, held = asyncio.run(cycle.load_sandbox_capacity_by_lane())
+
+    assert limits == {"ec2_trial": 3}
+    assert held == {"ec2_trial": 2}
 
 
 def test_run_dispatch_cycle_records_why_waiting_for_over_cap_queue() -> None:
@@ -165,9 +276,10 @@ def test_run_dispatch_cycle_records_why_waiting_for_over_cap_queue() -> None:
             dispatcher,
             max_workers=10,
             concurrency_limits_for=_fake_limits(2),
-            _discover=_fake_discover([("busy", "default")]),
+            _discover=_fake_discover([("busy", "default", "default")]),
             _counts=_fake_counts(
-                {(None, "busy", "default"): 4}, {("busy", "default"): 2}
+                {(None, "busy", "default", "default"): 4},
+                {("busy", "default", "default"): 2},
             ),
             _held=_fake_held({}),
         )
@@ -191,9 +303,10 @@ def test_run_dispatch_cycle_records_admission_rejection_reason() -> None:
             max_workers=10,
             concurrency_limits_for=_fake_limits(5),
             admit=admit,
-            _discover=_fake_discover([("gpu-task", "default")]),
+            _discover=_fake_discover([("gpu-task", "default", "default")]),
             _counts=_fake_counts(
-                {(None, "gpu-task", "default"): 1}, {("gpu-task", "default"): 0}
+                {(None, "gpu-task", "default", "default"): 1},
+                {("gpu-task", "default", "default"): 0},
             ),
             _held=_fake_held({}),
         )
@@ -216,9 +329,10 @@ def test_run_dispatch_cycle_held_slots_reduce_available_spawn() -> None:
             dispatcher,
             max_workers=10,
             concurrency_limits_for=_fake_limits(5),
-            _discover=_fake_discover([("gpt-4o", "default")]),
+            _discover=_fake_discover([("gpt-4o", "default", "default")]),
             _counts=_fake_counts(
-                {(None, "gpt-4o", "default"): 10}, {("gpt-4o", "default"): 0}
+                {(None, "gpt-4o", "default", "default"): 10},
+                {("gpt-4o", "default", "default"): 0},
             ),
             _held=_fake_held({"gpt-4o": 3}),
         )
@@ -239,9 +353,10 @@ def test_run_dispatch_cycle_held_slots_at_limit_spawns_nothing() -> None:
             dispatcher,
             max_workers=10,
             concurrency_limits_for=_fake_limits(2),
-            _discover=_fake_discover([("busy", "default")]),
+            _discover=_fake_discover([("busy", "default", "default")]),
             _counts=_fake_counts(
-                {(None, "busy", "default"): 4}, {("busy", "default"): 0}
+                {(None, "busy", "default", "default"): 4},
+                {("busy", "default", "default"): 0},
             ),
             _held=_fake_held({"busy": 2}),
         )
@@ -266,9 +381,10 @@ def test_run_dispatch_cycle_same_cycle_spawns_read_as_waiting_for_slot() -> None
             dispatcher,
             max_workers=10,
             concurrency_limits_for=_fake_limits(2),
-            _discover=_fake_discover([("solo", "default")]),
+            _discover=_fake_discover([("solo", "default", "default")]),
             _counts=_fake_counts(
-                {(None, "solo", "default"): 5}, {("solo", "default"): 0}
+                {(None, "solo", "default", "default"): 5},
+                {("solo", "default", "default"): 0},
             ),
             _held=_fake_held({}),
         )

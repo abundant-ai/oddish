@@ -79,6 +79,11 @@ server = [
 ]
 worker = [
     "oddish[server]",
+    # Harbor's EC2 backend only needs the synchronous boto3 client. Its `ec2`
+    # extra currently requires boto3>=1.41.5, which conflicts with aioboto3
+    # 15.5.0's botocore range. Keep the storage stack resolvable and install the
+    # verified EC2 dependency directly at aioboto3's locked compatible version.
+    "boto3==1.40.61",
     # Needed when hosted workers run Harbor with EnvironmentType.DAYTONA.
     # Harbor's pinned Daytona implementation uses runtime network settings,
     # which require the SDK API shipped in 0.192.0 and newer.
@@ -111,8 +116,8 @@ oddish = "oddish.cli:app"
 oddish-docstore-mcp = "oddish.mcp.docstore_server:main"
 
 [tool.uv.sources]
-# abundant-ai/harbor main. uv.lock records the exact commit used by the worker image.
-harbor = { git = "https://github.com/abundant-ai/harbor", branch = "main" }
+# Keep the worker image on the exact Harbor revision used by Oddish's runtime gate.
+harbor = { git = "https://github.com/abundant-ai/harbor", rev = "a7caa586de620f8a7103018f99ce9e1603f90eb4" }
 
 [tool.uv]
 override-dependencies = ["harbor==0.16.1"]

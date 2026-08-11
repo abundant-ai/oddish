@@ -10,6 +10,7 @@ from oddish.db.models import (
     VerdictStatus,
     WorkerJobKind,
     WorkerJobStatus,
+    SandboxRunState,
     TagState,
     TagVisibility,
     TagAssignmentScope,
@@ -48,6 +49,8 @@ from oddish.db.models import (
     TrialFacetModel,
     TrialModel,
     WorkerJobModel,
+    SandboxRunModel,
+    SandboxCapacityLeaseModel,
     experiment_trials,
     task_experiments,
     # Helpers
@@ -96,6 +99,7 @@ __all__ = [
     "Priority",
     "WorkerJobKind",
     "WorkerJobStatus",
+    "SandboxRunState",
     "TagState",
     "TagVisibility",
     "TagAssignmentScope",
@@ -135,6 +139,8 @@ __all__ = [
     "TrialFacetModel",
     "TrialModel",
     "WorkerJobModel",
+    "SandboxRunModel",
+    "SandboxCapacityLeaseModel",
     "experiment_trials",
     "task_experiments",
     # Helpers

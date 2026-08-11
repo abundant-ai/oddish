@@ -216,6 +216,16 @@ class WorkerJobStatus(str, Enum):
     BLOCKED = "BLOCKED"
 
 
+class SandboxRunState(str, Enum):
+    """Durable lifecycle state for one remote sandbox launch attempt."""
+
+    PROVISIONING = "PROVISIONING"
+    RUNNING = "RUNNING"
+    TERMINATING = "TERMINATING"
+    TERMINATED = "TERMINATED"
+    FAILED = "FAILED"
+
+
 class TagState(str, Enum):
     """Lifecycle state for a tag definition."""
 
@@ -1534,7 +1544,7 @@ class QueueSlotModel(Base):
     )
     # When the current lease was taken. Lets the reconciler reclaim a leaked
     # lease per-slot (keyed on the owning worker's liveness) while still
-    # honoring a short grace window for the brief acquire->claim gap.
+    # honoring a short grace window for the brief acquire-to-claim gap.
     locked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -1544,6 +1554,46 @@ class QueueSlotModel(Base):
             "idx_queue_slots_queue_key_locked_until",
             "queue_key",
             "locked_until",
+        ),
+    )
+
+
+class SandboxCapacityLeaseModel(Base):
+    """Provider-wide capacity lease acquired before a worker claims a job."""
+
+    __tablename__ = "sandbox_capacity_leases"
+
+    provider: Mapped[str] = mapped_column(Text, primary_key=True)
+    slot: Mapped[int] = mapped_column(Integer, primary_key=True)
+    locked_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    worker_job_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("worker_jobs.id", ondelete="SET NULL"), nullable=True
+    )
+    locked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    locked_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint("slot >= 0", name="ck_sandbox_capacity_slot_nonnegative"),
+        CheckConstraint(
+            "(locked_by IS NULL AND worker_job_id IS NULL "
+            "AND locked_at IS NULL AND locked_until IS NULL) OR "
+            "(locked_by IS NOT NULL AND locked_at IS NOT NULL "
+            "AND locked_until IS NOT NULL)",
+            name="ck_sandbox_capacity_lock_shape",
+        ),
+        Index(
+            "idx_sandbox_capacity_provider_locked_until",
+            "provider",
+            "locked_until",
+        ),
+        Index(
+            "idx_sandbox_capacity_worker_job",
+            "worker_job_id",
+            postgresql_where=text("worker_job_id IS NOT NULL"),
         ),
     )
 
@@ -1595,6 +1645,12 @@ class WorkerJobModel(TimestampedMixin, Base):
     # is scoped to it.
     harbor_variant_id: Mapped[str] = mapped_column(
         String(64), nullable=False, server_default=text("'default'")
+    )
+
+    # Credential/capacity routing lane. Only ``ec2_trial`` workers receive EC2
+    # control + SSH material; every other job remains on the secret-free lane.
+    execution_lane: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default=text("'default'")
     )
 
     queue_key: Mapped[str] = mapped_column(Text, nullable=False)
@@ -1674,10 +1730,15 @@ class WorkerJobModel(TimestampedMixin, Base):
     org_id: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
+        CheckConstraint(
+            "execution_lane IN ('default', 'ec2_trial')",
+            name="ck_worker_jobs_execution_lane",
+        ),
         Index(
             "idx_worker_jobs_claim",
             "queue_key",
             "harbor_variant_id",
+            "execution_lane",
             "priority",
             "available_after",
             "created_at",
@@ -1757,6 +1818,61 @@ class WorkerJobModel(TimestampedMixin, Base):
     )
     job_token_revoked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+
+
+class SandboxRunModel(TimestampedMixin, Base):
+    """Attempt-scoped ownership ledger for an ephemeral provider sandbox."""
+
+    __tablename__ = "sandbox_runs"
+
+    worker_job_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("worker_jobs.id", ondelete="RESTRICT"), nullable=False
+    )
+    worker_job_attempt: Mapped[int] = mapped_column(Integer, nullable=False)
+    trial_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
+    deployment: Mapped[str] = mapped_column(Text, nullable=False)
+    aws_account_id: Mapped[str] = mapped_column(String(12), nullable=False)
+    region: Mapped[str] = mapped_column(String(32), nullable=False)
+    launch_token: Mapped[str] = mapped_column(String(64), nullable=False)
+    external_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provisioned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    termination_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    terminated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "worker_job_id",
+            "worker_job_attempt",
+            name="uq_sandbox_runs_worker_attempt",
+        ),
+        UniqueConstraint("launch_token", name="uq_sandbox_runs_launch_token"),
+        Index(
+            "uq_sandbox_runs_provider_external_id",
+            "provider",
+            "external_id",
+            unique=True,
+            postgresql_where=text("external_id IS NOT NULL"),
+        ),
+        Index("idx_sandbox_runs_state_updated", "state", "updated_at"),
+        CheckConstraint(
+            "state IN ('PROVISIONING', 'RUNNING', 'TERMINATING', "
+            "'TERMINATED', 'FAILED')",
+            name="ck_sandbox_runs_state",
+        ),
+        CheckConstraint(
+            "worker_job_attempt > 0",
+            name="ck_sandbox_runs_attempt_positive",
+        ),
     )
 
 

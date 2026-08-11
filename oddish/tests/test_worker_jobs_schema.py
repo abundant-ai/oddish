@@ -19,6 +19,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.db import (  # noqa: E402
+    SandboxCapacityLeaseModel,
+    SandboxRunModel,
+    SandboxRunState,
     WorkerJobKind,
     WorkerJobModel,
     WorkerJobStatus,
@@ -42,6 +45,7 @@ def test_worker_job_kind_members():
         "TASK_EXPAND",
         "TAG_PROJECT",
         "ANALYZER",
+        "ANALYZER_BLOCK",
     }
 
 
@@ -85,6 +89,7 @@ def test_worker_jobs_has_scheduling_columns():
         "kind",
         "status",
         "queue_key",
+        "execution_lane",
         "priority",
         "subject_table",
         "subject_id",
@@ -122,6 +127,7 @@ def test_worker_jobs_nullability_matches_plan():
         "kind",
         "status",
         "queue_key",
+        "execution_lane",
         "priority",
         "payload",
         "attempts",
@@ -189,10 +195,33 @@ def test_worker_jobs_partial_claim_index_is_scoped():
     # Partial index predicate lives in dialect_options['postgresql']['where'].
     where_clause = str(claim_idx.dialect_options["postgresql"]["where"])
     assert "QUEUED" in where_clause and "RETRYING" in where_clause
-    # The claim predicate now filters on (queue_key, harbor_variant_id), so both
-    # must lead the index or the hot claim path loses coverage and table-scans.
+    # The claim predicate is credential-scoped by this full tuple.
     cols = [c.name for c in claim_idx.columns]
-    assert cols[:2] == ["queue_key", "harbor_variant_id"], cols
+    assert cols[:3] == ["queue_key", "harbor_variant_id", "execution_lane"], cols
+
+
+def test_sandbox_lifecycle_metadata_has_attempt_identity_and_capacity_tables():
+    assert {state.value for state in SandboxRunState} == {
+        "PROVISIONING",
+        "RUNNING",
+        "TERMINATING",
+        "TERMINATED",
+        "FAILED",
+    }
+    run_columns = {column.name for column in SandboxRunModel.__table__.columns}
+    assert {
+        "worker_job_id",
+        "worker_job_attempt",
+        "trial_id",
+        "provider",
+        "state",
+        "deployment",
+        "aws_account_id",
+        "region",
+        "launch_token",
+        "external_id",
+    }.issubset(run_columns)
+    assert SandboxCapacityLeaseModel.__tablename__ == "sandbox_capacity_leases"
 
 
 def test_worker_jobs_tag_project_coalescing_index_matches_enqueue_sql():

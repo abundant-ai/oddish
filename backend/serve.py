@@ -8,9 +8,9 @@ Settings.db_use_null_pool = False
 Settings.db_pool_size = 2
 Settings.db_pool_max_overflow = 0
 
-from api.app import create_app  # noqa: E402
+from api.app import create_asgi_app  # noqa: E402
 
-api = create_app()
+api = create_asgi_app()
 
 if __name__ == "__main__":
     import os

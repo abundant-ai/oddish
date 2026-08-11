@@ -17,6 +17,7 @@ from api.services.summarize_trajectory import (
     TRUNCATE_HEAD,
     TRUNCATE_TAIL,
     build_task_context,
+    drop_inert_steps,
     get_or_generate_summary,
     preprocess,
 )
@@ -43,6 +44,86 @@ def _make_step(step_id: int, **overrides) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# drop_inert_steps
+
+
+def test_drop_inert_steps_removes_contentless_steps_and_keeps_step_ids():
+    """The real shape: empty user turns between real agent steps."""
+    trajectory = {
+        "steps": [
+            {"step_id": 1, "source": "agent", "message": "looking at the pom"},
+            {"step_id": 2, "source": "user", "message": ""},
+            {"step_id": 3, "source": "user", "message": "   "},
+            {"step_id": 4, "source": "agent", "message": "", "tool_calls": [{"a": 1}]},
+            {"step_id": 5, "source": "user", "message": ""},
+        ]
+    }
+    out = drop_inert_steps(trajectory)
+    # Survivors keep their original ids -- nothing is renumbered, so a cited
+    # step_id still resolves against the unfiltered trajectory.
+    assert [s["step_id"] for s in out["steps"]] == [1, 4]
+    assert trajectory["steps"][1]["step_id"] == 2, "input must not be mutated"
+
+
+def test_drop_inert_steps_keeps_observation_only_and_reasoning_only_steps():
+    trajectory = {
+        "steps": [
+            {
+                "step_id": 1,
+                "message": "",
+                "observation": {"results": [{"content": "BUILD FAILURE"}]},
+            },
+            {"step_id": 2, "message": "", "reasoning_content": "the pom is wrong"},
+            {"step_id": 3, "message": "", "observation": {"results": [{"content": ""}]}},
+        ]
+    }
+    assert [s["step_id"] for s in drop_inert_steps(trajectory)["steps"]] == [1, 2]
+
+
+def test_drop_inert_steps_keeps_the_clip_omission_marker():
+    """clip_trajectory_steps' marker has no step_id; it must still survive."""
+    from api.services.summarize_trajectory import STEP_OMISSION_MARKER
+
+    trajectory = {
+        "steps": [
+            {"step_id": None, "source": "system", "message": STEP_OMISSION_MARKER.format(n=9)},
+            {"step_id": 7, "source": "user", "message": ""},
+        ]
+    }
+    out = drop_inert_steps(trajectory)
+    assert len(out["steps"]) == 1
+    assert "9" in out["steps"][0]["message"]
+
+
+def test_drop_inert_steps_returns_input_when_nothing_is_inert():
+    trajectory = {"steps": [{"step_id": 1, "message": "hi"}]}
+    assert drop_inert_steps(trajectory) is trajectory
+
+
+def test_drop_inert_steps_keeps_content_part_lists():
+    """``message``/``content`` are ``str | list[ContentPart]``.
+
+    Matches the frontend's ``hasContent``: a text part counts when non-blank,
+    and an image part counts on its own.
+    """
+    trajectory = {
+        "steps": [
+            {"step_id": 1, "message": [{"type": "text", "text": "looking at the pom"}]},
+            {"step_id": 2, "message": [{"type": "image", "source": {"data": "..."}}]},
+            {
+                "step_id": 3,
+                "message": [],
+                "observation": {
+                    "results": [{"content": [{"type": "text", "text": "BUILD FAILURE"}]}]
+                },
+            },
+            {"step_id": 4, "message": [{"type": "text", "text": "  "}]},
+            {"step_id": 5, "message": [], "observation": {"results": [{"content": []}]}},
+        ]
+    }
+    assert [s["step_id"] for s in drop_inert_steps(trajectory)["steps"]] == [1, 2, 3]
+
+
 # preprocess
 # ---------------------------------------------------------------------------
 
