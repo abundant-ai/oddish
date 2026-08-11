@@ -1,17 +1,45 @@
-name: Modal Deploy
+name: Production Deploy
 
+# One pipeline, strictly ordered: database migrations, then the Modal backend,
+# then the Vercel frontend. These used to be three independent triggers on the
+# same push (this file, supabase-db-migrations.yml, and Vercel's git
+# integration), which raced: a backend requiring a new column could go live
+# while the migration adding it was still running (a real production migration
+# took ~21 minutes; the Modal deploy takes ~3), and a new frontend could reach
+# the old backend with requests it misreads (an experiment-scoped cancel hits
+# a backend that ignores the scope and cancels the whole task). Schema first,
+# then the code that needs it, then the UI that talks to it.
+#
+# Vercel's git deploys for main are disabled in frontend/vercel.json; the
+# frontend job below creates the production deployment through the Vercel API
+# instead, pinned to this exact commit, once the backend is live.
+#
+# The filename stays modal-deploy.yml even though the workflow outgrew the
+# name: backend/tests/test_ec2_secret_topology.py reads this file by name.
 on:
   push:
     branches:
       - main
+  workflow_dispatch: {}
 
+# cancel-in-progress: false, unlike the old modal-deploy-main group: a
+# superseding push must never cancel a half-applied migration. GitHub keeps
+# one run pending per group, so the newest push still supersedes anything
+# queued behind the running one.
 concurrency:
-  group: modal-deploy-main
-  cancel-in-progress: true
+  group: production-environment
+  cancel-in-progress: false
 
 jobs:
   deploy:
+    name: Migrate database, deploy backend
+    # workflow_dispatch can be pointed at any ref; only main may reach
+    # production. Skipping here also skips the frontend job via needs.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    # Covers a long migration (the ~21-minute precedent) plus the deploy;
+    # the old migration workflow's 20-minute timeout sat under that precedent.
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: read
@@ -70,19 +98,71 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Sync backend dependencies
-        run: uv sync --frozen
+      - name: Validate production Supabase URL is configured
+        env:
+          ODDISH_DATABASE_URL: ${{ secrets.ODDISH_DATABASE_URL }}
+        run: |
+          if [ -z "${ODDISH_DATABASE_URL}" ]; then
+            echo "Missing GitHub secret: ODDISH_DATABASE_URL" >&2
+            exit 1
+          fi
+
+      # ODDISH_DATABASE_URL stays step-scoped, never job-level:
+      # backend/modal_app.py bakes selected deploy-time env vars into the
+      # image (fixed keys, the ODDISH_GKE_ prefix, an EC2 allowlist), so a
+      # job-level database credential would sit one filter widening away
+      # from shipping inside the image. Mirrors staging-deploy.yml.
+      - name: Core migrations
+        working-directory: oddish
+        env:
+          UV_PROJECT_ENVIRONMENT: /opt/venvs/oddish
+          ODDISH_DATABASE_URL: ${{ secrets.ODDISH_DATABASE_URL }}
+        run: |
+          uv sync --frozen --extra server
+          uv run alembic upgrade head
+
+      - name: Backend migrations
+        env:
+          ODDISH_DATABASE_URL: ${{ secrets.ODDISH_DATABASE_URL }}
+        run: |
+          uv sync --frozen
+          uv run alembic upgrade head
 
       - name: Deploy Modal backend
-        run: uv run modal deploy deploy.py
+        run: |
+          uv sync --frozen
+          uv run modal deploy deploy.py
 
       - name: Summarize deployment
+        if: ${{ always() }}
         run: |
           {
-            echo "## Modal deployment"
+            echo "## Production deployment"
             echo
-            echo "- Backend entrypoint: \`backend/deploy.py\`"
-            echo "- Modal environment: \`main\`"
-            echo "- Trigger: push to \`main\`"
+            echo "- Core migrations: \`oddish/alembic\` · Cloud: \`backend/alembic\`"
+            echo "- Backend entrypoint: \`backend/deploy.py\` (Modal environment \`main\`)"
+            echo "- Frontend: Vercel production deploy runs as the next job"
             echo "- Commit: \`${{ github.sha }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  frontend:
+    name: Deploy frontend
+    # Ordered after the backend so a new frontend never talks to the old
+    # backend. Skipped automatically when `deploy` fails or is skipped.
+    needs: deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      VERCEL_GIT_BRANCH: main
+      VERCEL_GIT_COMMIT_SHA: ${{ github.sha }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Deploy frontend to Vercel
+        run: python3 "$GITHUB_WORKSPACE/.github/scripts/production/deploy_vercel.py"

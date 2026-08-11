@@ -986,6 +986,12 @@ uv run alembic upgrade head
 uv run alembic upgrade head
 ```
 
+In hosted environments both stacks run in that order *before* the code deploy,
+because the backend can hard-require new schema on its hot paths.
+`.github/workflows/staging-deploy.yml` sequences migrations then the Modal
+deploy; `modal-deploy.yml` (production) additionally orders the Vercel frontend
+after the backend, so a new frontend never reaches an old backend.
+
 ### Key Files
 
 | Path | Purpose |
