@@ -10,6 +10,7 @@ fails the job loudly rather than deploying an empty preview. With the
 variable unset (local runs) the seed is a no-op beyond legacy cleanup.
 """
 import asyncio
+import json
 import os
 import sys
 import time
@@ -72,13 +73,20 @@ async def _main() -> None:
     engine = _engine(branch_url)
     t0 = time.monotonic()
     try:
-        await seed(engine, sampled=sampled)
+        report = await seed(engine, sampled=sampled)
     finally:
         await engine.dispose()
+    elapsed = time.monotonic() - t0
     print(
-        f"seed_preview_db: seeded branch in {time.monotonic() - t0:.1f}s",
+        f"seed_preview_db: seeded branch in {elapsed:.1f}s"
+        f" ({report['batches_attempted']} batches,"
+        f" {report['batches_split']} split,"
+        f" {report['rows_skipped']} rows skipped)",
         file=sys.stderr,
     )
+    if stats_file := os.environ.get("PREVIEW_SEED_STATS_FILE"):
+        report["seed_seconds"] = round(elapsed, 1)
+        Path(stats_file).write_text(json.dumps(report, sort_keys=True))
 
 
 if __name__ == "__main__":

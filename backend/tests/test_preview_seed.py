@@ -41,6 +41,17 @@ async def _reset_target(engine):
         await conn.run_sync(Base.metadata.create_all)
 
 
+def _rows(*rows: dict) -> list[dict]:
+    """Union the keys of a fixture row group, filling absent keys with None.
+
+    SQLAlchemy's executemany requires uniform keys across parameter groups;
+    sparse fixture rows must say NULL explicitly where a model column is
+    legitimately absent (e.g. tag_assignments.task_id on EXPERIMENT scope).
+    """
+    keys = {key for row in rows for key in row}
+    return [{key: row.get(key) for key in keys} for row in rows]
+
+
 def _src_url() -> str:
     base, _, _db = URL.rpartition("/")
     return f"{base}/seed_sample_src"
@@ -63,7 +74,7 @@ async def _make_source_db():
         await c.run_sync(Base.metadata.create_all)
         await c.execute(
             t["organizations"].insert(),
-            [
+            _rows(
                 {
                     "id": "org-a",
                     "name": "Real A",
@@ -76,11 +87,11 @@ async def _make_source_db():
                     "slug": "real-b",
                     "clerk_org_id": "org_real_b",
                 },
-            ],
+            ),
         )
         await c.execute(
             t["users"].insert(),
-            [
+            _rows(
                 {
                     "id": "u-a1",
                     "org_id": "org-a",
@@ -108,11 +119,11 @@ async def _make_source_db():
                     "github_username": None,
                     "clerk_user_id": "user_b1",
                 },
-            ],
+            ),
         )
         await c.execute(
             t["experiments"].insert(),
-            [
+            _rows(
                 {
                     "id": "exp-a",
                     "name": "Exp A",
@@ -149,11 +160,11 @@ async def _make_source_db():
                     "public_token": None,
                     "deleted_at": preview_seed.SEED_EPOCH,
                 },
-            ],
+            ),
         )
         await c.execute(
             t["tasks"].insert(),
-            [
+            _rows(
                 {
                     "id": "task-solo",
                     "name": "solo-task",
@@ -194,11 +205,11 @@ async def _make_source_db():
                     "task_path": "p/run",
                     "tags": {},
                 },
-            ],
+            ),
         )
         await c.execute(
             t["task_versions"].insert(),
-            [
+            _rows(
                 {
                     "id": "ver-solo-1",
                     "task_id": "task-solo",
@@ -223,7 +234,7 @@ async def _make_source_db():
                     "version": 1,
                     "task_path": "p/dup-b",
                 },
-            ],
+            ),
         )
         await c.execute(
             t["tasks"]
@@ -233,16 +244,16 @@ async def _make_source_db():
         )
         await c.execute(
             t["task_experiments"].insert(),
-            [
+            _rows(
                 {"task_id": "task-solo", "experiment_id": "exp-a"},
                 {"task_id": "task-dup-a", "experiment_id": "exp-a"},
                 {"task_id": "task-dup-b", "experiment_id": "exp-b"},
                 {"task_id": "task-run", "experiment_id": "exp-a"},
-            ],
+            ),
         )
         await c.execute(
             t["trials"].insert(),
-            [
+            _rows(
                 {
                     "id": "tr-ok",
                     "name": "tr-ok",
@@ -297,11 +308,11 @@ async def _make_source_db():
                     "result": None,
                     "superseded_by_trial_id": "tr-running",
                 },
-            ],
+            ),
         )
         await c.execute(
             t["worker_jobs"].insert(),
-            [
+            _rows(
                 {
                     "id": "wj-done",
                     "kind": "TRIAL",
@@ -332,11 +343,11 @@ async def _make_source_db():
                     "org_id": "org-a",
                     "parent_job_id": "wj-live",
                 },
-            ],
+            ),
         )
         await c.execute(
             t["skills"].insert(),
-            [
+            _rows(
                 {
                     "id": "sk-a",
                     "org_id": "org-a",
@@ -344,22 +355,22 @@ async def _make_source_db():
                     "name": "skill-a",
                     "description": "a",
                 },
-            ],
+            ),
         )
         await c.execute(
             t["skill_files"].insert(),
-            [
+            _rows(
                 {
                     "id": "skf-a1",
                     "skill_id": "sk-a",
                     "relative_path": "SKILL.md",
                     "content": "# a",
                 },
-            ],
+            ),
         )
         await c.execute(
             t["documents"].insert(),
-            [
+            _rows(
                 {
                     "id": "doc-1",
                     "org_id": "org-a",
@@ -367,11 +378,11 @@ async def _make_source_db():
                     "title": "Doc One",
                     "source_type": "text",
                 },
-            ],
+            ),
         )
         await c.execute(
             t["tags"].insert(),
-            [
+            _rows(
                 {
                     "id": "t-smoke",
                     "org_id": "org-a",
@@ -397,6 +408,7 @@ async def _make_source_db():
                     "normalized_key": "bonly",
                     "state": "ACTIVE",
                     "owner_user_id": "u-b1",
+                    "created_by_user_id": "u-b1",
                 },
                 # MERGED tags ARE drawn (the page does its own state filtering);
                 # the merged_into_id self-FK points at a sampled tag.
@@ -408,6 +420,7 @@ async def _make_source_db():
                     "state": "MERGED",
                     "merged_into_id": "t-smoke",
                     "owner_user_id": "u-a1",
+                    "created_by_user_id": "u-a1",
                 },
                 # Soft-deleted tags are excluded (deleted_at IS NOT NULL).
                 {
@@ -417,13 +430,14 @@ async def _make_source_db():
                     "normalized_key": "gone",
                     "state": "ACTIVE",
                     "owner_user_id": "u-a1",
+                    "created_by_user_id": "u-a1",
                     "deleted_at": preview_seed.SEED_EPOCH,
                 },
-            ],
+            ),
         )
         await c.execute(
             t["tag_assignments"].insert(),
-            [
+            _rows(
                 # DIRECT/ACTIVE onto sampled targets -> kept (one per scope).
                 {
                     "id": "ta-task",
@@ -500,7 +514,7 @@ async def _make_source_db():
                     "source": "DIRECT",
                     "state": "ACTIVE",
                 },
-            ],
+            ),
         )
     return src
 
@@ -583,8 +597,9 @@ async def test_sample_is_deterministic_and_prod_faithful():
 
 async def test_bulk_batches_load_and_fallback_yields_single_rows():
     """>_UPSERT_BATCH rows exercise the multi-row path end to end, and a
-    batch tripping a secondary unique falls back row-by-row so only the
-    colliding row yields to the pre-existing one."""
+    batch tripping a secondary unique bisects down to the colliding row so
+    only it yields to the pre-existing one -- with the skip and the split
+    counted in the run report."""
     src = await _make_source_db()
     # widen the source: 1,200 extra terminal trials on exp-a
     t = Base.metadata.tables
@@ -646,7 +661,21 @@ async def test_bulk_batches_load_and_fallback_yields_single_rows():
                     " false, false, now(), now())"
                 )
             )
-        await ps.seed(engine, sampled=sampled)
+        report = await ps.seed(engine, sampled=sampled)
+
+        # the run report isolates the colliding row and its FK-cascaded
+        # children, table-qualified and keyed by constraint identity
+        assert report["rows_skipped"] == 3
+        assert report["batches_split"] >= 3
+        assert report["skips"] == {
+            "UniqueViolationError (SQLSTATE 23505, constraint"
+            " idx_tasks_unique_org_name)": ["tasks.task-dup-a"],
+            "ForeignKeyViolationError (SQLSTATE 23503, constraint"
+            " task_experiments_task_id_fkey)": ["task_experiments.task-dup-a:exp-a"],
+            "ForeignKeyViolationError (SQLSTATE 23503, constraint"
+            " task_versions_task_id_fkey)": ["task_versions.ver-dup-a"],
+        }
+        assert report["tables"]["trials"][1] >= 1200
 
         # all bulk rows landed
         assert (

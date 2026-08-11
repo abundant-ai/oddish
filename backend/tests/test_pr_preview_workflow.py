@@ -455,6 +455,7 @@ def test_gate_metrics_are_soft_and_retained():
         "DEPLOY_FRONTEND",
         "SUPABASE_BRANCH_ID",
         "SUPABASE_BRANCH_REF",
+        "SEED_STATS",
         "MODAL_APP_NAME",
         "MODAL_API_URL",
         "VERCEL_DEPLOYMENT_ID",
@@ -612,3 +613,14 @@ def test_reset_reuses_preview_scripts():
     )
     assert prepare_step["env"]["DEPLOY_BACKEND"] == "true"
     assert prepare_step["env"]["RUN_MIGRATIONS"] == "true"
+
+
+def test_seed_stats_flows_from_prepare_to_the_metrics_artifact():
+    jobs = _wf()["jobs"]
+    prepare_outputs = jobs["prepare-preview-database"].get("outputs", {})
+    assert prepare_outputs.get("seed_stats") == "${{ steps.prepare.outputs.seed_stats }}"
+    gate_steps = jobs["require-working-preview"]["steps"]
+    record = next(s for s in gate_steps if s.get("name") == "Record preview metrics")
+    assert record.get("env", {}).get("SEED_STATS") == (
+        "${{ needs.prepare-preview-database.outputs.seed_stats }}"
+    )

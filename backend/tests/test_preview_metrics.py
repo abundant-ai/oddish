@@ -67,10 +67,27 @@ def test_identifiers_are_allowlisted_and_sanitized():
     }
 
 
-def test_parse_timings_tolerates_garbage():
-    assert metrics.parse_timings("") == {}
-    assert metrics.parse_timings("not json") == {}
-    assert metrics.parse_timings('["a list"]') == {}
+def test_parse_seed_stats_tolerates_garbage():
+    assert metrics.parse_seed_stats("") == {}
+    assert metrics.parse_seed_stats("not json") == {}
+    assert metrics.parse_seed_stats('["a list"]') == {}
+
+
+def test_parse_seed_stats_round_trips_the_run_report():
+    raw = json.dumps(
+        {
+            "batches_attempted": 12,
+            "batches_split": 2,
+            "rows_skipped": 5,
+            "skips": {"UniqueViolationError (SQLSTATE 23505)": ["tasks.a"]},
+            "tables": {"tasks": [1000, 1005]},
+            "seed_seconds": 3.1,
+        }
+    )
+    report = metrics.parse_seed_stats(raw)
+    assert report["rows_skipped"] == 5
+    assert report["tables"] == {"tasks": [1000, 1005]}
+    assert report["skips"]["UniqueViolationError (SQLSTATE 23505)"] == ["tasks.a"]
     assert metrics.parse_timings('{"vercel_alias_seconds": "nope"}') == {}
     assert metrics.parse_timings(
         '{"vercel_alias_seconds": 4, "unrelated": 1, "vercel_build_wait_seconds": 62.5}'
@@ -226,6 +243,17 @@ def test_build_report_tolerates_missing_gate_and_phases():
     assert report["phases"]["queue_delay_seconds"] == 3.0
     assert "database_seconds" not in report["phases"]
     assert "gate_verify_seconds" not in report["phases"]
+
+
+def test_build_report_folds_seed_stats_into_the_artifact():
+    env = _env(SEED_STATS='{"batches_attempted": 4, "rows_skipped": 1}')
+    report = metrics.build_report(RUN, [FULL_JOBS[0]], env, now=NOW)
+    assert report["seed"]["rows_skipped"] == 1
+
+
+def test_build_report_seed_section_is_empty_without_the_output():
+    report = metrics.build_report(RUN, [FULL_JOBS[0]], _env(), now=NOW)
+    assert report["seed"] == {}
 
 
 def test_render_markdown_tolerates_missing_fields():

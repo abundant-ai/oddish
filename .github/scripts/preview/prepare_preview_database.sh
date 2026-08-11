@@ -15,6 +15,7 @@ published_modal_secret=false
 schema_upgraded=false
 schema_rebuilt=false
 schema_healed=false
+seed_stats_file=""
 
 read_output_value() {
   local file="$1"
@@ -32,6 +33,20 @@ load_env_file() {
   done < "$file"
 }
 
+summarize_seed_line() {
+  if [ -z "$seed_stats_file" ] || [ ! -s "$seed_stats_file" ]; then
+    echo "- Seed stats: unavailable (seed did not run)"
+    return
+  fi
+  python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+print("- Seed: `{batches_attempted}` batches attempted, `{batches_split}` split,"
+      " `{rows_skipped}` rows skipped in `{seed_seconds}s`".format(
+          **{**d, "seed_seconds": d.get("seed_seconds", "?")}))
+' "$seed_stats_file" 2>/dev/null || echo "- Seed stats: unparseable"
+}
+
 summarize_database_phase() {
   {
     echo "## Preview database"
@@ -44,6 +59,7 @@ summarize_database_phase() {
     echo "- Schema upgraded to head: \`$schema_upgraded\`"
     echo "- Schema rebuilt from prod snapshot: \`$schema_rebuilt\`"
     echo "- Auto-healed after a failed incremental upgrade: \`$schema_healed\`"
+    summarize_seed_line
     echo "- Modal DB secret published: \`$published_modal_secret\`"
   } >> "$GITHUB_STEP_SUMMARY"
 }
@@ -66,6 +82,8 @@ branch_was_created="$(read_output_value "$supabase_output" branch_was_created)"
 
 schema_rebuilt_file="$(mktemp)"
 export SCHEMA_REBUILT_FILE="$schema_rebuilt_file"
+seed_stats_file="$(mktemp)"
+export PREVIEW_SEED_STATS_FILE="$seed_stats_file"
 
 # Migrate on any backend deploy, not just migration-file changes, so a reused
 # branch can't run new code against a stale schema.
@@ -89,4 +107,11 @@ fi
 if [ "$DEPLOY_BACKEND" = "true" ] || [ "$branch_was_created" = "true" ]; then
   "$script_dir/publish_modal_db_secret.sh"
   published_modal_secret=true
+fi
+
+# Hand the run-level seed report to the gate's timing artifact. Single-line
+# JSON written by seed_preview_db.py (both the rebuild-internal and the
+# converge seed paths); whichever ran last is the run's authoritative draw.
+if [ -s "$seed_stats_file" ] && [ -n "$github_output" ]; then
+  echo "seed_stats=$(cat "$seed_stats_file")" >> "$github_output"
 fi

@@ -115,6 +115,7 @@ jobs:
       branch_ref: ${{ steps.prepare.outputs.branch_ref }}
       branch_id: ${{ steps.prepare.outputs.branch_id }}
       branch_was_created: ${{ steps.prepare.outputs.branch_was_created }}
+      seed_stats: ${{ steps.prepare.outputs.seed_stats }}
     container:
       image: ghcr.io/abundant-ai/oddish-ci-base:latest
       credentials:
@@ -608,6 +609,7 @@ jobs:
           DEPLOY_FRONTEND: ${{ needs.detect-changes.outputs.deploy_frontend }}
           SUPABASE_BRANCH_ID: ${{ needs.prepare-preview-database.outputs.branch_id }}
           SUPABASE_BRANCH_REF: ${{ needs.prepare-preview-database.outputs.branch_ref }}
+          SEED_STATS: ${{ needs.prepare-preview-database.outputs.seed_stats }}
           MODAL_APP_NAME: oddish-pr-${{ github.event.pull_request.number }}
           # The live preview backend URL: this run's deploy, else the prior
           # run's deterministic URL when one is still live. Never the

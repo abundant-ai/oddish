@@ -408,8 +408,10 @@ def _prepare_row(table, row: dict) -> dict:
     return values
 
 
-async def seed(engine: AsyncEngine, *, sampled: dict | None = None) -> None:
+async def seed(engine: AsyncEngine, *, sampled: dict | None = None) -> dict:
     sample_rows = (sampled or {}).get("rows", {})
+    stats = {"batches_attempted": 0, "batches_split": 0, "rows_skipped": 0}
+    skips: dict[str, list[str]] = {}
     md = MetaData()
     async with engine.begin() as conn:
         await conn.run_sync(md.reflect)
@@ -424,14 +426,18 @@ async def seed(engine: AsyncEngine, *, sampled: dict | None = None) -> None:
         )
         await _cleanup_legacy_fixture_rows(md, conn, ordered)
         if sampled is None:
-            return
+            return _seed_report(stats, skips, {})
         await _reconcile_previous_draw(md, conn, sample_rows)
 
+    drawn = [t.name for t in ordered if sample_rows.get(t.name)]
+    before = await _table_counts(engine, drawn)
     for table in ordered:
         rows = sample_rows.get(table.name, [])
         if not rows:
             continue
-        await _load_table(engine, table, rows)
+        await _load_table(engine, table, rows, stats, skips)
+    after = await _table_counts(engine, drawn)
+    counts = {name: [before[name], after[name]] for name in drawn}
 
     async with engine.begin() as conn:
         for table_name, row_id, column, value in (sampled or {}).get("linkage", []):
@@ -458,9 +464,35 @@ async def seed(engine: AsyncEngine, *, sampled: dict | None = None) -> None:
                     ),
                     {"t": name, "rids": rids[start : start + 10000]},
                 )
+    return _seed_report(stats, skips, counts)
 
 
-async def _load_table(engine: AsyncEngine, table, rows: list[dict]) -> None:
+def _seed_report(stats: dict, skips: dict[str, list[str]], counts: dict) -> dict:
+    """Deterministic run summary: counters, sorted skip causes, row counts."""
+    return {
+        **stats,
+        "skips": {cause: sorted(keys)[:100] for cause, keys in sorted(skips.items())},
+        "tables": counts,
+    }
+
+
+async def _table_counts(engine: AsyncEngine, names: list[str]) -> dict[str, int]:
+    """Row counts for the drawn tables in one round trip (NullPool makes each
+    fresh connection a full pooler handshake, so per-table COUNTs would add
+    seconds to every seed)."""
+    if not names:
+        return {}
+    union = " UNION ALL ".join(
+        f"SELECT '{name}', count(*) FROM \"{name}\"" for name in names  # noqa: S608
+    )
+    async with engine.connect() as conn:
+        rows = await conn.execute(text(union))
+        return {name: int(count) for name, count in rows}
+
+
+async def _load_table(
+    engine: AsyncEngine, table, rows: list[dict], stats: dict, skips: dict
+) -> None:
     prepared = [_prepare_row(table, row) for row in rows]
     try:
         await _load_table_copy_merge(engine, table, prepared)
@@ -470,7 +502,12 @@ async def _load_table(engine: AsyncEngine, table, rows: list[dict]) -> None:
             f"copy fast-path failed for {table.name} "
             f"({_error_cause(exc)}); falling back to batched upserts"
         )
-    await _load_table_batches(engine, table, prepared)
+    table_skips: dict[str, list[str]] = {}
+    await _load_table_batches(engine, table, prepared, stats, table_skips)
+    for cause in sorted(table_skips):
+        skips.setdefault(cause, []).extend(
+            f"{table.name}.{key}" for key in sorted(table_skips[cause])
+        )
 
 
 async def _load_table_copy_merge(
@@ -518,7 +555,9 @@ async def _load_table_copy_merge(
             )
 
 
-async def _load_table_batches(engine: AsyncEngine, table, prepared: list[dict]) -> None:
+async def _load_table_batches(
+    engine: AsyncEngine, table, prepared: list[dict], stats: dict, skips: dict
+) -> None:
     pk_cols = [c.name for c in table.primary_key.columns]
     batch_size = max(1, _MAX_BIND_PARAMS // max(1, len(table.columns)))
     batches = [
@@ -529,8 +568,6 @@ async def _load_table_batches(engine: AsyncEngine, table, prepared: list[dict]) 
     for batch in batches:
         queue.put_nowait(batch)
 
-    skips: dict[str, list[str]] = {}
-
     async def worker() -> None:
         async with engine.connect() as conn:
             while True:
@@ -539,18 +576,45 @@ async def _load_table_batches(engine: AsyncEngine, table, prepared: list[dict]) 
                 except asyncio.QueueEmpty:
                     return
                 async with conn.begin():
-                    await _upsert_batch(conn, table, pk_cols, chunk, skips)
+                    await _upsert_batch(conn, table, pk_cols, chunk, stats, skips)
 
     workers = min(_LOAD_STREAMS, len(batches))
     await asyncio.gather(*[worker() for _ in range(workers)])
 
-    for cause, row_keys in skips.items():
-        sample = ", ".join(row_keys[:3])
-        more = f" (+{len(row_keys) - 3} more)" if len(row_keys) > 3 else ""
+    # Deterministic report: sort causes and keys so concurrent streams can
+    # never reorder the output between runs.
+    for cause in sorted(skips):
+        keys = sorted(skips[cause])
+        sample = ", ".join(keys[:3])
+        more = f" (+{len(keys) - 3} more)" if len(keys) > 3 else ""
         _warn(
-            f"skipped {len(row_keys)} {table.name} row(s) on {cause}; "
+            f"skipped {len(keys)} {table.name} row(s) on {cause}; "
             f"existing rows kept -- e.g. {sample}{more}"
         )
+
+
+async def _isolate_bad_rows(execute, rows: list[dict], report_row, stats: dict) -> None:
+    """Upsert ``rows``, bisecting on constraint failures to isolate bad rows.
+
+    A failed batch is rolled back at its savepoint, split in half, and each
+    half retried, recursing only into failing halves until the invalid rows
+    stand alone: k bad rows in an n-row batch cost O(k log n) round trips
+    instead of O(n) row-by-row probes. Only IntegrityError (SQLSTATE class
+    23) is splittable -- network, timeout, and serialization errors are
+    transient infrastructure failures, not bad data, and abort the load.
+    """
+    stats["batches_attempted"] += 1
+    try:
+        await execute(rows)
+    except IntegrityError as exc:
+        if len(rows) == 1:
+            stats["rows_skipped"] += 1
+            report_row(rows[0], exc)
+            return
+        stats["batches_split"] += 1
+        mid = len(rows) // 2
+        await _isolate_bad_rows(execute, rows[:mid], report_row, stats)
+        await _isolate_bad_rows(execute, rows[mid:], report_row, stats)
 
 
 def _changed(table, stmt, keys: list[str]):
@@ -560,39 +624,26 @@ def _changed(table, stmt, keys: list[str]):
 
 
 async def _upsert_batch(
-    conn, table, pk_cols: list[str], chunk: list[dict], skips: dict[str, list[str]]
+    conn, table, pk_cols: list[str], chunk: list[dict], stats: dict, skips: dict
 ) -> None:
     deferred = _LINKAGE_COLUMNS.get(table.name, set())
-    non_pk = [k for k in chunk[0] if k not in pk_cols and k not in deferred]
-    stmt = pg_insert(table).values(chunk)
-    set_ = {k: stmt.excluded[k] for k in non_pk}
-    try:
+
+    async def execute(rows: list[dict]) -> None:
+        non_pk = [k for k in rows[0] if k not in pk_cols and k not in deferred]
+        stmt = pg_insert(table).values(rows)
         async with conn.begin_nested():
             await conn.execute(
                 stmt.on_conflict_do_update(
                     index_elements=pk_cols,
-                    set_=set_,
+                    set_={k: stmt.excluded[k] for k in non_pk},
                     where=_changed(table, stmt, non_pk),
                 )
             )
-        return
-    except (IntegrityError, DBAPIError):
-        pass
-    for values in chunk:
-        non_pk = [k for k in values if k not in pk_cols and k not in deferred]
-        stmt = pg_insert(table).values(**values)
-        set_ = {k: stmt.excluded[k] for k in non_pk}
-        try:
-            async with conn.begin_nested():
-                await conn.execute(
-                    stmt.on_conflict_do_update(
-                        index_elements=pk_cols,
-                        set_=set_,
-                        where=_changed(table, stmt, non_pk),
-                    )
-                )
-        except (IntegrityError, DBAPIError) as exc:
-            skips.setdefault(_error_cause(exc), []).append(_row_key(table, values))
+
+    def report_row(row: dict, exc: IntegrityError) -> None:
+        skips.setdefault(_error_cause(exc), []).append(_row_key(table, row))
+
+    await _isolate_bad_rows(execute, chunk, report_row, stats)
 
 
 async def _reconcile_previous_draw(md: MetaData, conn, sample_rows: dict) -> None:
