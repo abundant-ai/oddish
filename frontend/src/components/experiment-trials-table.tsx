@@ -125,6 +125,8 @@ type ExperimentTrialsTableProps = {
   isLoading: boolean;
   isLoadingTrials?: boolean;
   showPassAtK?: boolean;
+  /** Scope bulk cancel to this experiment so shared tasks stay intact elsewhere. */
+  experimentId?: string;
   onTaskUnlink?: (task: Task) => Promise<void>;
   onRerun?: (taskIds?: string[]) => void;
   allowRerun?: boolean;
@@ -466,6 +468,7 @@ export function ExperimentTrialsTable({
   isLoading,
   isLoadingTrials = false,
   showPassAtK = false,
+  experimentId,
   onTaskUnlink,
   onRerun,
   allowRerun = true,
@@ -1185,10 +1188,20 @@ export function ExperimentTrialsTable({
 
     try {
       const taskIds = selectedCancellableTasks.map((task) => task.id);
+      const scopedExperimentId =
+        experimentId ||
+        selectedCancellableTasks.find((task) => task.experiment_id)
+          ?.experiment_id ||
+        undefined;
       const res = await fetch(`/api/tasks/cancel`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ task_ids: taskIds }),
+        body: JSON.stringify({
+          task_ids: taskIds,
+          ...(scopedExperimentId
+            ? { experiment_id: scopedExperimentId }
+            : {}),
+        }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
