@@ -252,6 +252,7 @@ def create_app() -> FastAPI:
         github_webhooks,
         imports,
         load,
+        model_display_names,
         notifications,
         orgs,
         reports,
@@ -285,6 +286,7 @@ def create_app() -> FastAPI:
     api.include_router(slack.router)
     api.include_router(admin.router)
     api.include_router(cost_excluded_keys.router)
+    api.include_router(model_display_names.router)
     api.include_router(tags.router)
     api.include_router(reports.router)
 
