@@ -48,24 +48,35 @@ class _Storage:
 
 
 @pytest.mark.asyncio
-async def test_backfill_persists_valid_reports_and_marks_missing_ones_complete(
+async def test_backfill_persists_valid_reports_and_records_nonfatal_skips(
     monkeypatch,
 ):
     candidates = [
         backfill._Candidate("task-1", None, None),
         backfill._Candidate("task-2", None, None),
+        backfill._Candidate("task-3", None, None),
     ]
     report_prefix = resolve_trial_s3_prefix(
         "task-1", trial_s3_key=None, trial_result_path=None
     )
     bad_key = f"{report_prefix}a/verifier/ctrf.json"
     good_key = f"{report_prefix}z/verifier/ctrf.json"
+    oversized_prefix = resolve_trial_s3_prefix(
+        "task-3", trial_s3_key=None, trial_result_path=None
+    )
+    oversized_key = f"{oversized_prefix}verifier/ctrf.json"
     storage = _Storage(
         {
             report_prefix: [
                 {"key": good_key, "size": 200},
                 {"key": bad_key, "size": 2},
-            ]
+            ],
+            oversized_prefix: [
+                {
+                    "key": oversized_key,
+                    "size": backfill.VERIFIER_CTRF_MAX_BYTES + 1,
+                }
+            ],
         },
         {bad_key: b"{}", good_key: _ctrf(passed=3, failed=1)},
     )
@@ -94,9 +105,10 @@ async def test_backfill_persists_valid_reports_and_marks_missing_ones_complete(
     stats = await backfill.run_backfill(apply=True)
 
     assert stats == {
-        "scanned": 2,
+        "scanned": 3,
         "found": 1,
         "missing": 1,
+        "oversized": 1,
         "unreadable": 0,
         "updated": 1,
     }
@@ -157,6 +169,7 @@ async def test_backfill_refuses_completion_when_a_report_is_unreadable(monkeypat
                 "scanned": 1,
                 "found": 0,
                 "missing": 0,
+                "oversized": 0,
                 "unreadable": 1,
                 "updated": 0,
             },

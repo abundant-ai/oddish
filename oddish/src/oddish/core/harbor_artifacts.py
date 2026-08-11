@@ -151,8 +151,10 @@ def extract_ctrf_summary(path: Path) -> dict[str, Any] | None:
         return None
     for report_path in sorted(path.rglob("verifier/ctrf.json")):
         try:
+            with report_path.open("rb") as report:
+                document = report.read(VERIFIER_CTRF_MAX_BYTES + 1)
             summary = parse_ctrf_summary(
-                report_path.read_bytes(),
+                document,
                 report_path=report_path.relative_to(path).as_posix(),
             )
         except OSError:

@@ -76,7 +76,10 @@ async def _candidate_page(after: str) -> list[_Candidate]:
 
 async def _read_summary(
     storage: StorageClient, candidate: _Candidate
-) -> tuple[Literal["found", "missing", "unreadable"], dict[str, Any] | None]:
+) -> tuple[
+    Literal["found", "missing", "oversized", "unreadable"],
+    dict[str, Any] | None,
+]:
     prefix = resolve_trial_s3_prefix(
         candidate.id,
         trial_s3_key=candidate.trial_s3_key,
@@ -99,6 +102,7 @@ async def _read_summary(
     if not reports:
         return "missing", None
 
+    saw_unreadable = False
     for report in reports:
         size = report.get("size")
         if isinstance(size, int) and size > VERIFIER_CTRF_MAX_BYTES:
@@ -107,11 +111,15 @@ async def _read_summary(
         try:
             document = await storage.download_bytes(key, VERIFIER_CTRF_MAX_BYTES + 1)
         except Exception:
+            saw_unreadable = True
+            continue
+        if len(document) > VERIFIER_CTRF_MAX_BYTES:
             continue
         summary = parse_ctrf_summary(document, report_path=key[len(prefix) :])
         if summary is not None:
             return "found", summary
-    return "unreadable", None
+        saw_unreadable = True
+    return ("unreadable" if saw_unreadable else "oversized"), None
 
 
 async def _write_summaries(updates: list[tuple[str, dict[str, Any]]]) -> int:
@@ -175,6 +183,7 @@ async def run_backfill(*, apply: bool) -> dict[str, int]:
         scanned=0,
         found=0,
         missing=0,
+        oversized=0,
         unreadable=0,
         updated=0,
     )
