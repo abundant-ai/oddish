@@ -55,15 +55,17 @@ class BackendPhaseMetricsMiddleware:
         try:
             await self.app(scope, receive, send_with_metrics)
         finally:
+            backend_complete_ms = elapsed_ms(timing.started_at)
             if not response_started:
                 finish_handler_timing(timing)
-                timing.record("backend_total", elapsed_ms(timing.started_at))
+                timing.record("backend_total", backend_complete_ms)
             attributes: dict[str, Any] = {
                 f"{name}.duration_ms": duration
                 for name, duration, _ in request_phase_metrics(timing)
             }
             attributes.update(
                 {
+                    "backend_complete.duration_ms": backend_complete_ms,
                     "db.query_count": timing.query_count,
                     "handler.db.query_count": timing.handler_query_count,
                     "http.response.body.size": timing.response_bytes,

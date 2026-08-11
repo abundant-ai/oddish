@@ -949,7 +949,10 @@ Every hosted HTTP response carries a fixed backend `Server-Timing` phase set:
 `backend_total`. Missing work is represented as zero rather than omitting the
 phase, so cold, warm, and concurrent traces are comparable. The
 `backend.request.phases` span records per-request SQL counts and transmitted
-response-body bytes; it must never attach response bodies, request payloads,
+response-body bytes. `backend_total` and `handler_total` stop at response start
+because they ship in the response headers; the trace-only
+`backend_complete.duration_ms` observation ends after the final ASGI body chunk
+and includes streaming time. Never attach response bodies, request payloads,
 credentials, or SQL parameter values.
 
 ---

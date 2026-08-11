@@ -128,6 +128,53 @@ async def test_twenty_way_observations_keep_query_counts_and_bytes_isolated(
     assert all(body not in item.values() for item in observations for body in bodies)
 
 
+@pytest.mark.asyncio
+async def test_stream_trace_records_completion_after_final_body(monkeypatch):
+    observations = []
+    sent = []
+
+    @contextmanager
+    def capture_span(name, **attributes):
+        if name == "backend.request.phases":
+            observations.append(attributes)
+        yield
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await asyncio.sleep(0.02)
+        await send(
+            {
+                "type": "http.response.body",
+                "body": b"streamed",
+                "more_body": False,
+            }
+        )
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    monkeypatch.setattr(request_metrics, "span", capture_span)
+    await request_metrics.BackendPhaseMetricsMiddleware(app)(
+        {"type": "http", "method": "GET", "path": "/stream", "headers": []},
+        receive,
+        send,
+    )
+
+    assert len(observations) == 1
+    observation = observations[0]
+    assert observation["backend_complete.duration_ms"] >= 15
+    assert observation["backend_complete.duration_ms"] > observation[
+        "backend_total.duration_ms"
+    ]
+    assert observation["http.response.body.size"] == len(b"streamed")
+    server_timing = dict(sent[0]["headers"])[b"server-timing"].decode()
+    assert "backend_total;dur=" in server_timing
+    assert "backend_complete" not in server_timing
+
+
 def test_sql_listener_counts_successful_and_failed_statements():
     from oddish.db.connection import _install_request_query_timing
 

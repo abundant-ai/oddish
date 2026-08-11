@@ -18,8 +18,8 @@ _PHASE_DESCRIPTIONS = {
     "external_http": "External HTTP",
     "db_commit": "Database commit",
     "handler_db": "Handler database total",
-    "handler_total": "Handler total",
-    "backend_total": "Backend request total",
+    "handler_total": "Handler time to response start",
+    "backend_total": "Backend time to response start",
 }
 REQUEST_PHASES = tuple(_PHASE_DESCRIPTIONS)
 _DB_PHASES = frozenset({"db_checkout", "db_sql", "db_commit"})
