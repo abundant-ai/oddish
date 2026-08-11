@@ -34,6 +34,7 @@ from oddish.config import (
 )
 from oddish.core.baseline_gate import GATE_SKIP_PREFIX
 from oddish.core.helpers import cancel_job_by_worker
+from oddish.core.task_browse_rollup import project_task_browse_trials
 from oddish.core.tags.ownership_transfer import sweep_orphaned_tag_owners
 from oddish.core.verdict_state import fail_verdict, queue_verdict
 from oddish.costs.recorder import reconcile_compute_cost_spans
@@ -390,6 +391,7 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
                 "cancelled during orphaned queue cleanup."
             )
             trial.analysis_finished_at = utcnow()
+        await project_task_browse_trials(session, [trial.id])
         return trial.id
 
     if kind == "ANALYSIS":

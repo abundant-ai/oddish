@@ -15,6 +15,7 @@ from oddish.core.helpers import (
     fetch_trial_queue_info,
     fetch_visible_worker_jobs,
 )
+from oddish.core.task_browse_rollup import project_task_browse_trials
 from oddish.core.trial_io import (
     read_trial_logs,
     read_trial_logs_structured,
@@ -667,6 +668,7 @@ async def retry_trial_core(
             WorkerJobStatus.CANCELLED: "skipped",
         }.get(final_status, "queued")
 
+    await project_task_browse_trials(session, [trial_id, new_trial_id])
     await session.commit()
     return {
         "status": status_label,

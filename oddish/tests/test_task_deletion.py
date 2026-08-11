@@ -66,7 +66,7 @@ class _FakeDeleteTaskSession:
 
 
 @pytest.mark.asyncio
-async def test_delete_task_core_soft_deletes_task_and_trials():
+async def test_delete_task_core_soft_deletes_task_and_trials(monkeypatch):
     """Unscoped delete tombstones both trials and the task in-place.
 
     Soft delete keeps S3 artifacts (the response carries an empty
@@ -75,6 +75,13 @@ async def test_delete_task_core_soft_deletes_task_and_trials():
     ``trials`` and ``tasks``. The session-level filter then hides those
     rows from normal reads.
     """
+    async def _noop_projection(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "oddish.core.endpoints.deletion.project_task_browse_trials",
+        _noop_projection,
+    )
     task_rows = [("task-123", "tasks/task-123/", "s3://tasks/task-123/")]
     trial_rows = [("task-123-0",), ("task-123-1",)]
     session = _FakeDeleteTaskSession(task_rows, trial_rows)
@@ -89,13 +96,9 @@ async def test_delete_task_core_soft_deletes_task_and_trials():
     }
     assert session.delete_called is False
 
-    # statements[0] task lookup, statements[1] trial lookup.
+    # statements[0] task lookup, statements[1] trial lookup, then worker-job
+    # cancellation by trial and task before the two tombstone updates.
     write_statements = session.statements[2:]
-    # Soft delete emits in order:
-    #   1. UPDATE worker_jobs ... WHERE subject_table='trials'  (text())
-    #   2. UPDATE worker_jobs ... WHERE subject_table='tasks'   (text())
-    #   3. UPDATE trials SET deleted_at = ...                   (ORM update)
-    #   4. UPDATE tasks  SET deleted_at = ...                   (ORM update)
     assert len(write_statements) == 4
     domain_writes = write_statements[2:]
     table_names = [

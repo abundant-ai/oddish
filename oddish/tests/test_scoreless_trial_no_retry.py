@@ -77,6 +77,11 @@ def _patch_session(monkeypatch, trial):
 
     monkeypatch.setattr(th, "_trial_session", _fake_trial_session)
 
+    async def _noop_projection(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(th, "project_task_browse_trials", _noop_projection)
+
     async def _fake_qa(session, trial_id):
         return False
 

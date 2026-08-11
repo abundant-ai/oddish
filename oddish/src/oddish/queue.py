@@ -25,6 +25,7 @@ from oddish.core.baseline_gate import (
     evaluate_baseline_gate,
 )
 from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
+from oddish.core.task_browse_rollup import project_task_browse_trials
 from oddish.core.tags.enqueue import enqueue_tag_project_worker_job
 from oddish.core.tags.projection import recompute_task_browse_projection
 from oddish.core.trial_facets import (
@@ -306,6 +307,7 @@ async def cancel_tasks_runs(
             tasks_cancelled += 1
 
     await session.flush()
+    await project_task_browse_trials(session, (trial.id for trial in trials))
 
     return {
         "task_ids": found_task_ids,
@@ -1030,6 +1032,9 @@ async def create_task(
     await session.flush()
     await _bulk_insert_trials(session, trial_rows)
     await bulk_enqueue_worker_jobs(session, worker_job_requests)
+    await project_task_browse_trials(
+        session, (str(row["id"]) for row in trial_rows)
+    )
 
     await session.refresh(task, attribute_names=["trials"])
     await bump_experiment_last_activity(session, experiment_ids=experiment.id)
@@ -1380,6 +1385,9 @@ async def append_trials_to_task(
         )
 
     await session.flush()
+    await project_task_browse_trials(
+        session, [*new_trial_ids, *(old_id for old_id, _ in supersede_pairs)]
+    )
     await session.refresh(task, attribute_names=["trials"])
     bump_ids = {trial_experiment_id}
     bump_ids.update(t.experiment_id for t in new_trials if t.experiment_id)
@@ -1738,6 +1746,7 @@ async def _cancel_gated_llm_trials(
             current_queue_slot=None,
         )
     )
+    await project_task_browse_trials(session, trial_ids)
     await session.execute(
         text(
             """

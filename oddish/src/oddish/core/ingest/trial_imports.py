@@ -44,6 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import normalize_model_id, settings
 from oddish.core.harbor_artifacts import build_trial_result
+from oddish.core.task_browse_rollup import project_task_browse_trials
 from oddish.core.trial_facets import facet_rows_for_trial, record_trial_facets
 from oddish.db import (
     ExperimentModel,
@@ -357,6 +358,7 @@ async def initialize_trial_import(
             task.finished_at = None
 
         await session.flush()
+        await project_task_browse_trials(session, [trial_id])
 
         # Trajectory analysis is task-scoped: once every trial is
         # terminal, ``maybe_start_qa_stage`` enqueues a single task-level

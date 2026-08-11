@@ -40,6 +40,7 @@ from oddish.db import (
     utcnow,
 )
 from oddish.core.llm_key_fingerprint import trial_llm_key_hash
+from oddish.core.task_browse_rollup import project_task_browse_trials
 from oddish.db.storage import get_storage_client, resolve_task_directory
 from oddish.model_pricing import is_native_cost_trusted, settle_cost_usd
 from oddish.observability import (
@@ -556,6 +557,7 @@ async def _prepare_trial_run(
         # ``modal_function_call_id`` now lives exclusively on
         # ``worker_jobs``. The claim SQL stamped it; the cancel path
         # harvests it from ``worker_jobs.RETURNING``.
+        await project_task_browse_trials(session, [trial.id])
 
         return PreparedTrialRun(
             task_path=task_path,
@@ -782,6 +784,7 @@ async def _store_trial_results(
             console.print(
                 f"[dim]Trial {trial_id} was cancelled; stored metering only[/dim]"
             )
+            await project_task_browse_trials(session, [trial.id])
             # Report terminal so the caller purges live events immediately.
             return trial.finished_at is not None, False
 
@@ -920,6 +923,7 @@ async def _store_trial_results(
             trial.analysis_started_at = probe_analysis["analysis_started_at"]
             trial.analysis_finished_at = probe_analysis["analysis_finished_at"]
 
+        await project_task_browse_trials(session, [trial.id])
         terminal = trial.status in (TrialStatus.SUCCESS, TrialStatus.FAILED)
         return terminal, terminal
 
@@ -1225,6 +1229,11 @@ async def _handle_harbor_event(
                 )
                 trial.finished_at = utcnow()
                 console.print(f"[yellow]Trial {trial_id} cancelled[/yellow]")
+            if event in (TrialEvent.END, TrialEvent.CANCEL) and trial.status in (
+                TrialStatus.SUCCESS,
+                TrialStatus.FAILED,
+            ):
+                await project_task_browse_trials(_session, [trial.id])
 
         if (
             sandbox_transition is not None

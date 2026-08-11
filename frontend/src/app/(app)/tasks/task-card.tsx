@@ -22,6 +22,7 @@ import {
   getMatrixStatus,
   getRewardStyle,
   STATUS_CONFIG,
+  type MatrixStatus,
 } from "@/lib/status-config";
 import type { TaskBrowseItem } from "@/lib/types";
 import {
@@ -50,31 +51,17 @@ function ExperimentsCell({ task }: { task: TaskBrowseItem }) {
 }
 
 function getLatestTrialStatusCounts(task: TaskBrowseItem) {
-  return task.latest_trials.reduce(
-    (counts, trial) => {
-      const status = getMatrixStatus(
-        trial.status,
-        trial.reward,
-        trial.error_message
-      );
-      counts[status] += 1;
-      return counts;
-    },
-    // `satisfies` (not `as`) so a missing MatrixStatus key is a compile error:
-    // omitting one made `counts[status]++` do `undefined + 1 = NaN` and dropped
-    // those trials (e.g. skipped/scoreless) from the breakdown silently.
-    {
-      pass: 0,
-      partial: 0,
-      fail: 0,
-      "harness-error": 0,
-      scoreless: 0,
-      skipped: 0,
-      pending: 0,
-      queued: 0,
-      running: 0,
-    } satisfies Record<ReturnType<typeof getMatrixStatus>, number>
-  );
+  return {
+    pass: task.trial_status_counts.pass ?? 0,
+    partial: task.trial_status_counts.partial ?? 0,
+    fail: task.trial_status_counts.fail ?? 0,
+    "harness-error": task.trial_status_counts["harness-error"] ?? 0,
+    scoreless: task.trial_status_counts.scoreless ?? 0,
+    skipped: task.trial_status_counts.skipped ?? 0,
+    pending: task.trial_status_counts.pending ?? 0,
+    queued: task.trial_status_counts.queued ?? 0,
+    running: task.trial_status_counts.running ?? 0,
+  } satisfies Record<MatrixStatus, number>;
 }
 
 function PassRateCell({ task }: { task: TaskBrowseItem }) {
@@ -123,7 +110,7 @@ function PassRateCell({ task }: { task: TaskBrowseItem }) {
             : "No completed trials"}
         </div>
       </div>
-      {task.latest_trials.length > 0 ? (
+      {task.total_trials > 0 ? (
         <div className="text-muted-foreground flex flex-wrap gap-x-2.5 gap-y-0.5 text-[10px] leading-none">
           {summaryItems
             .filter((item) => item.key !== "skipped" || item.count > 0)
@@ -154,7 +141,8 @@ function PassRateCell({ task }: { task: TaskBrowseItem }) {
   );
 }
 
-type LatestTrial = TaskBrowseItem["latest_trials"][number];
+type TrialGroup = TaskBrowseItem["trial_groups"][number];
+type LatestTrial = TrialGroup["latest_trials"][number];
 
 function TrialIcon({ trial }: { trial: LatestTrial }) {
   const status = getMatrixStatus(
@@ -193,73 +181,23 @@ function TrialIcon({ trial }: { trial: LatestTrial }) {
   );
 }
 
-function trialModelKey(model: string | null): string {
-  return model?.trim() || "default";
+function groupScorePct(group: TrialGroup): number | null {
+  if (group.reward_total === 0) return null;
+  return (group.reward_sum / group.reward_total) * 100;
 }
 
-type TrialGroup = {
-  key: string;
-  agent: string;
-  // Badge text: the distinguishing model for a model-scoped agent ("default"
-  // for a null/blank model), the single real model otherwise, else null.
-  modelLabel: string | null;
-  trials: LatestTrial[];
-};
-
-// Mirrors the interior task view's agent grouping (experiment-agent-grouping):
-// one section per agent, split by model only when an agent ran more than one.
-function groupLatestTrials(trials: LatestTrial[]): TrialGroup[] {
-  const modelsByAgent = new Map<string, Set<string>>();
-  for (const trial of trials) {
-    const models = modelsByAgent.get(trial.agent) ?? new Set<string>();
-    models.add(trialModelKey(trial.model));
-    modelsByAgent.set(trial.agent, models);
-  }
-  const modelScoped = new Set(
-    Array.from(modelsByAgent.entries())
-      .filter(([, models]) => models.size > 1)
-      .map(([agent]) => agent)
-  );
-
-  const groups = new Map<string, TrialGroup>();
-  for (const trial of trials) {
-    const scoped = modelScoped.has(trial.agent);
-    const key = scoped
-      ? `${trial.agent}/${trialModelKey(trial.model)}`
-      : trial.agent;
-    const group = groups.get(key);
-    if (group) {
-      group.trials.push(trial);
-    } else {
-      groups.set(key, {
-        key,
-        agent: trial.agent,
-        modelLabel: scoped
-          ? trialModelKey(trial.model)
-          : trial.model?.trim() || null,
-        trials: [trial],
-      });
-    }
-  }
-
-  // Real agents before baselines (nop/oracle), then most-run first.
-  return Array.from(groups.values()).sort((a, b) => {
+function orderedTrialGroups(task: TaskBrowseItem): TrialGroup[] {
+  return [...task.trial_groups].sort((a, b) => {
     const baselineDelta =
       Number(isBaselineAgentName(a.agent)) -
       Number(isBaselineAgentName(b.agent));
     if (baselineDelta !== 0) return baselineDelta;
-    return b.trials.length - a.trials.length;
+    return b.trial_count - a.trial_count;
   });
 }
 
-function groupScorePct(trials: LatestTrial[]): number | null {
-  const rewards = trials.flatMap((t) => (t.reward === null ? [] : [t.reward]));
-  if (rewards.length === 0) return null;
-  return (rewards.reduce((sum, r) => sum + r, 0) / rewards.length) * 100;
-}
-
 function TrialGraphics({ task }: { task: TaskBrowseItem }) {
-  if (task.latest_trials.length === 0) {
+  if (task.trial_groups.length === 0) {
     return (
       <div className="border-border/70 text-muted-foreground rounded-md border border-dashed px-3 py-3 text-center text-xs">
         No latest-version trials yet.
@@ -267,32 +205,35 @@ function TrialGraphics({ task }: { task: TaskBrowseItem }) {
     );
   }
 
-  const groups = groupLatestTrials(task.latest_trials);
+  const groups = orderedTrialGroups(task);
 
   return (
     <div className="space-y-2">
       {groups.map((group) => {
-        const scorePct = groupScorePct(group.trials);
+        const scorePct = groupScorePct(group);
         return (
-          <div key={group.key} className="space-y-1">
+          <div
+            key={JSON.stringify([group.agent, group.model_key])}
+            className="space-y-1"
+          >
             <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5">
               <div className="flex min-w-0 flex-wrap items-center gap-1.5">
                 <span className="text-foreground font-mono text-[11px] font-medium">
                   {group.agent}
                 </span>
-                {group.modelLabel ? (
+                {group.model_label ? (
                   <Badge
                     variant="outline"
                     className="w-fit font-mono text-[10px]"
                   >
-                    {group.modelLabel}
+                    {group.model_label}
                   </Badge>
                 ) : null}
               </div>
               <div className="text-muted-foreground flex items-center gap-2 font-mono text-[10px] leading-none">
                 <span>
-                  {group.trials.length} trial
-                  {group.trials.length === 1 ? "" : "s"}
+                  {group.trial_count} trial
+                  {group.trial_count === 1 ? "" : "s"}
                 </span>
                 <span className="text-foreground">
                   {scorePct == null ? "—" : `${scorePct.toFixed(0)}%`}
@@ -300,9 +241,14 @@ function TrialGraphics({ task }: { task: TaskBrowseItem }) {
               </div>
             </div>
             <div className="flex flex-wrap gap-1">
-              {group.trials.map((trial) => (
+              {group.latest_trials.map((trial) => (
                 <TrialIcon key={trial.id} trial={trial} />
               ))}
+              {group.trial_count > group.latest_trials.length ? (
+                <span className="text-muted-foreground font-mono text-[10px]">
+                  +{group.trial_count - group.latest_trials.length} more
+                </span>
+              ) : null}
             </div>
           </div>
         );

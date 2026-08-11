@@ -20,6 +20,14 @@ from oddish.schemas import RegistryAuth
 from oddish.workers.harbor.outcome import HarborOutcome
 
 
+@pytest.fixture(autouse=True)
+def _stub_browse_projection(monkeypatch):
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(trials_endpoint_mod, "project_task_browse_trials", _noop)
+
+
 class _Result:
     def __init__(self, scalar=None, rowcount=0, rows=()):
         self._scalar = scalar

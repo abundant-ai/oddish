@@ -13,6 +13,7 @@ from oddish.core.endpoints._common import (
     get_trial_for_org_core,
     _reset_task_verdict,
 )
+from oddish.core.task_browse_rollup import project_task_browse_trials
 from oddish.db import (
     AnalysisStatus,
     ExperimentModel,
@@ -154,6 +155,7 @@ async def delete_task_core(
             .values(deleted_at=utcnow())
             .execution_options(synchronize_session=False)
         )
+        await project_task_browse_trials(session, scoped_trial_ids)
 
         return {
             # Soft-delete preserves S3 artifacts for potential restore.
@@ -264,6 +266,7 @@ async def delete_task_core(
         if task is not None:
             _reset_task_verdict(task)
 
+    await project_task_browse_trials(session, scoped_trial_ids)
     return {
         "s3_prefixes": [],
         "deleted": {
@@ -434,6 +437,7 @@ async def unlink_task_from_experiment_core(
         experiment_id=experiment_id,
         org_id=task_org_id,
     )
+    await project_task_browse_trials(session, scoped_trial_ids)
 
     return {
         "s3_prefixes": [],
@@ -720,6 +724,7 @@ async def delete_experiment_core(
                 _reset_task_verdict(task)
                 _clear_stale_task_pipeline_status(task)
 
+    await project_task_browse_trials(session, scoped_trial_ids)
     return {
         "s3_prefixes": [],
         "deleted": {
@@ -1066,6 +1071,7 @@ async def delete_trial_core(
         if task is not None:
             _reset_task_verdict(task)
 
+    await project_task_browse_trials(session, [trial_id])
     return {
         "s3_prefixes": [],
         "deleted": {"trial_id": trial_id, "task_id": task_id},

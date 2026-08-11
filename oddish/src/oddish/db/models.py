@@ -1266,6 +1266,222 @@ class TrialModel(TimestampedMixin, Base):
     )
 
 
+class TaskBrowseTrialProjectionModel(Base):
+    """Narrow per-trial contribution to the task-browser read model."""
+
+    __tablename__ = "task_browse_trial_projection"
+    __table_args__ = (
+        Index(
+            "idx_task_browse_projection_version_preview",
+            "task_version_id",
+            "is_mutable",
+            text("trial_created_at DESC"),
+            text("trial_id DESC"),
+        ),
+        Index(
+            "idx_task_browse_projection_version_activity",
+            "task_version_id",
+            text("activity_at DESC"),
+        ),
+        Index(
+            "idx_task_browse_projection_org_agent_version",
+            "org_id",
+            "agent",
+            "task_version_id",
+            postgresql_where=text("NOT is_mutable"),
+        ),
+        Index(
+            "idx_task_browse_projection_org_model_version",
+            "org_id",
+            "model_key",
+            "task_version_id",
+            postgresql_where=text("NOT is_mutable"),
+        ),
+    )
+
+    trial_id: Mapped[str] = mapped_column(
+        String(160),
+        ForeignKey("trials.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    task_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    task_version_id: Mapped[str] = mapped_column(
+        String(160),
+        ForeignKey("task_versions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    agent: Mapped[str] = mapped_column(String(64), nullable=False)
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    model_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    status_bucket: Mapped[str] = mapped_column(String(32), nullable=False)
+    reward: Mapped[float | None] = mapped_column(Float, nullable=True)
+    total_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    tokens_known: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    runtime_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    total_steps: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resolved_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cost_estimated: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    billed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    is_mutable: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    activity_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    trial_created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    projected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class TaskVersionBrowseRollupModel(Base):
+    """Typed, incrementally maintained task-version card totals."""
+
+    __tablename__ = "task_version_browse_rollups"
+    __table_args__ = (
+        Index(
+            "idx_task_version_browse_rollups_last_run",
+            text("last_run_at DESC"),
+        ),
+    )
+
+    task_version_id: Mapped[str] = mapped_column(
+        String(160),
+        ForeignKey("task_versions.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    last_run_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    total_trials: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    completed_trials: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failed_trials: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    reward_success: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    reward_sum: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    reward_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    runtime_total: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    runtime_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    cost_trial_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cost_estimated_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    cost_native_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    billed_cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    billed_trial_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    billed_estimated_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    billed_native_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pass_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    partial_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    fail_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    harness_error_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    scoreless_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    skipped_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pending_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    queued_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    running_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class TaskVersionBrowseAgentRollupModel(Base):
+    """Per-canonical-agent/model totals for one task version."""
+
+    __tablename__ = "task_version_browse_agent_rollups"
+
+    task_version_id: Mapped[str] = mapped_column(
+        String(160),
+        ForeignKey("task_versions.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    agent: Mapped[str] = mapped_column(String(64), primary_key=True)
+    model_key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    trial_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    reward_sum: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    reward_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pass_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    token_sum: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    token_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    runtime_sum: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    runtime_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    steps_sum: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    steps_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class TaskVersionBrowseMetricValueModel(Base):
+    """Exact metric multisets backing best-value and median comparisons."""
+
+    __tablename__ = "task_version_browse_metric_values"
+    __table_args__ = (
+        Index(
+            "idx_task_browse_metric_agent",
+            "task_version_id",
+            "agent",
+            "metric",
+            "value",
+        ),
+        Index(
+            "idx_task_browse_metric_model",
+            "task_version_id",
+            "model_key",
+            "metric",
+            "value",
+        ),
+    )
+
+    task_version_id: Mapped[str] = mapped_column(
+        String(160),
+        ForeignKey("task_versions.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    agent: Mapped[str] = mapped_column(String(64), primary_key=True)
+    model_key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    metric: Mapped[str] = mapped_column(String(16), primary_key=True)
+    value: Mapped[float] = mapped_column(Float, primary_key=True)
+    trial_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class TaskVersionBrowseCostRollupModel(Base):
+    """Settled cost totals by version, model, and exact finish timestamp."""
+
+    __tablename__ = "task_version_browse_cost_rollups"
+    __table_args__ = (
+        Index(
+            "idx_task_browse_cost_scope",
+            "task_version_id",
+            "finished_at",
+            "model_key",
+        ),
+    )
+
+    task_version_id: Mapped[str] = mapped_column(
+        String(160),
+        ForeignKey("task_versions.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    model_key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    finished_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), primary_key=True
+    )
+    cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    trial_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
 class TrialFacetModel(Base):
     """Per-org vocabulary of trial facet values for the task browser.
 

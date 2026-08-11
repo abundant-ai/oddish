@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -1356,6 +1356,16 @@ class TaskBrowseTrial(BaseModel):
     model: str | None = None
 
 
+class TaskBrowseTrialGroup(BaseModel):
+    agent: str
+    model_key: str
+    model_label: str | None = None
+    trial_count: int
+    reward_sum: float
+    reward_total: int
+    latest_trials: list[TaskBrowseTrial] = Field(default_factory=list)
+
+
 class TaskBrowseItem(BaseModel):
     id: str
     name: str
@@ -1382,7 +1392,9 @@ class TaskBrowseItem(BaseModel):
     # QA/analysis spend for this task's trials, joined through ``trials``
     # because ``analysis_costs.task_id`` is NULL on trial-scoped QA rows.
     qa_cost_usd: float = 0.0
-    latest_trials: list[TaskBrowseTrial] = Field(default_factory=list)
+    # Trial previews are nested under the backend-owned canonical cohort.
+    trial_status_counts: dict[str, int] = Field(default_factory=dict)
+    trial_groups: list[TaskBrowseTrialGroup] = Field(default_factory=list)
     experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
     user_tags: list[UserTagRef] = Field(default_factory=list)
 
@@ -2065,5 +2077,3 @@ class DocumentResponse(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
-
-

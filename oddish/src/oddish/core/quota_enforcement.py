@@ -25,6 +25,7 @@ from oddish.core.quotas import (
     sum_org_cost_usd,
     try_acquire_quota_locks,
 )
+from oddish.core.task_browse_rollup import project_task_browse_trials
 from oddish.core.verdict_state import (
     cancel_verdict,
     has_active_verdict,
@@ -291,6 +292,7 @@ async def cancel_trials_if_quota_reached(
         }
     )
     await _reconcile_cancelled_tasks(session, result)
+    await project_task_browse_trials(session, trial_ids)
     return result
 
 

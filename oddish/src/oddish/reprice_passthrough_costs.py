@@ -10,6 +10,7 @@ from typing import Literal
 from sqlalchemy import DateTime, Integer, String, bindparam, text
 
 from oddish.config import settings
+from oddish.core.task_browse_rollup import project_task_browse_trials
 from oddish.db import get_session
 from oddish.model_pricing import (
     is_native_cost_trusted,
@@ -237,8 +238,10 @@ async def run_reprice(
             attempted_updates += len(updates)
             if apply:
                 for start in range(0, len(updates), _UPDATE_CHUNK_SIZE):
-                    result = await session.execute(
-                        _UPDATE_COST, updates[start : start + _UPDATE_CHUNK_SIZE]
+                    chunk = updates[start : start + _UPDATE_CHUNK_SIZE]
+                    result = await session.execute(_UPDATE_COST, chunk)
+                    await project_task_browse_trials(
+                        session, [str(update["id"]) for update in chunk]
                     )
                     rowcount = getattr(result, "rowcount", None)
                     if rowcount is None or rowcount < 0:

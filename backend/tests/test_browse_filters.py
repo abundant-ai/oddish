@@ -34,6 +34,7 @@ from oddish.core.endpoints import (
     browse_task_facets_core,
     browse_tasks_core,
 )
+from oddish.core.task_browse_rollup import project_task_browse_trials
 from oddish.core.trial_facets import rebuild_trial_facets_core
 from oddish.db.models import Base
 
@@ -44,6 +45,14 @@ pytestmark = [
 ]
 
 ORG = "org1"
+
+
+async def _project_tasks(session, task_ids):
+    rows = await session.execute(
+        text("select id from trials where task_id = any(:task_ids)"),
+        {"task_ids": list(task_ids)},
+    )
+    await project_task_browse_trials(session, [str(row[0]) for row in rows])
 
 
 async def _setup(engine):
@@ -81,6 +90,10 @@ async def _setup(engine):
         for stmt in stmts.split(";"):
             if stmt.strip():
                 await c.execute(text(stmt))
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with maker() as session:
+        await _project_tasks(session, ["t-a", "t-b", "t-c"])
+        await session.commit()
 
 
 async def _names(session, **filters):
@@ -216,9 +229,7 @@ async def test_experiment_options():
 
             # ids= hydration returns named rows and wins over query.
             resp = await opts(session, org_id=ORG, ids=["exp-real"], query="probe")
-            assert [(o.id, o.name) for o in resp.items] == [
-                ("exp-real", "Real Exp")
-            ]
+            assert [(o.id, o.name) for o in resp.items] == [("exp-real", "Real Exp")]
 
             # Hydration is a keyed lookup, not a paged search: every id
             # resolves even past the default search page size (a restored
@@ -311,6 +322,10 @@ async def _insert_aggregate_tasks(engine):
         for stmt in stmts.split(";"):
             if stmt.strip():
                 await c.execute(text(stmt))
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with maker() as session:
+        await _project_tasks(session, ["t-e", "t-z", "t-h"])
+        await session.commit()
 
 
 async def test_browse_aggregate_filters():
@@ -445,6 +460,13 @@ async def _insert_compare_tasks(engine):
         for stmt in stmts.split(";"):
             if stmt.strip():
                 await c.execute(text(stmt))
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with maker() as session:
+        await _project_tasks(
+            session,
+            ["t-cr", "t-cru", "t-ca", "t-cm", "t-cavg", "t-cmodel"],
+        )
+        await session.commit()
 
 
 async def _cmp(session, by, a, b, metric, agg, margin=None, unit=None):
@@ -603,6 +625,10 @@ async def _insert_median_task(engine):
         for stmt in stmts.split(";"):
             if stmt.strip():
                 await c.execute(text(stmt))
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with maker() as session:
+        await _project_tasks(session, ["t-cmed"])
+        await session.commit()
 
 
 async def test_browse_comparison_extras():

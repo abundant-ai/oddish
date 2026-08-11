@@ -45,6 +45,7 @@ from oddish.db import (
 from oddish.core.harbor_artifacts import cache_write_tokens_from_trajectory
 from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
 from oddish.core.llm_key_fingerprint import platform_key_hash_for_provider
+from oddish.core.task_browse_rollup import project_task_browse_trials
 from oddish.db.models import WorkerJobKind, WorkerJobModel, WorkerJobStatus
 from oddish.db.storage import resolve_task_directory
 from oddish.model_pricing import is_native_cost_trusted, settle_cost_usd
@@ -381,6 +382,7 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
                     heartbeat_at=claimed_at,
                 )
             )
+            await project_task_browse_trials(session, [trial_id])
     if claimed_trial_id is None:
         logger.info(
             "local_runner: trial %s not claimable (already dispatched, gated, "
@@ -388,6 +390,7 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
             trial_id,
         )
         return
+
     logger.info("local_runner: trial %s -> RUNNING", trial_id)
 
     failure: Exception | None = None
@@ -416,6 +419,7 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
                 logger.info("local_runner: trial %s -> SUCCESS", trial_id)
             trial.finished_at = finished_at
             completed = True
+            await project_task_browse_trials(session, [trial_id])
         else:
             logger.info(
                 "local_runner: trial %s completion ignored; status is %s",

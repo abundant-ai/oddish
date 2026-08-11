@@ -346,6 +346,35 @@ otherwise it falls back to the highest version represented by such trials. The
 so progressive loading cannot change the files/counts pivot or mix one
 version's trials with another's artifacts.
 
+The default `/tasks/browse` read orders and enriches cards from normalized,
+incrementally maintained projections:
+
+- `task_version_browse_rollups` stores typed task-version scalar totals and
+  recency.
+- `task_version_browse_agent_rollups` stores canonical agent/model cohort
+  totals.
+- `task_version_browse_metric_values` stores counted metric multisets for
+  exact best/median comparisons.
+- `task_version_browse_cost_rollups` stores settled cost by model and finish
+  timestamp for scoped cost filters.
+- `task_browse_trial_projection` stores the narrow per-trial contribution used
+  to reverse old values and apply new deltas, plus bounded recent-card
+  references.
+
+Trial creation, settlement/retry, supersede, import, deletion, repricing, and
+backfill mutations apply old-to-new deltas in the same transaction, serialized
+by the affected version-rollup row locks. Agent/model identity is canonical:
+the backend trims model labels and maps null/blank/`default` to one `default`
+key. The frontend renders the returned groups directly and must not regroup or
+merge their totals.
+
+Browse aggregate filters, cost filters, sorting, and agent/model comparisons
+read the typed rollups rather than aggregating historical `trials`.
+`RUNNING`/`RETRYING` rows are the only mutable overlay: page selection scans
+that indexed active set, while card enrichment restricts it to the visible
+page's `(task_id, task_version_id)` pairs. Recent previews use a per-version
+lateral `LIMIT`, so no browse path loads a version's complete trial history.
+
 `GET /experiments/{experiment_id}/cost-totals` reports both cost and token
 usage across every trial owned by the experiment, including older versions,
 superseded retries, probes, and soft-deleted trials. Its `billed_*` cost and
