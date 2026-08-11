@@ -23,6 +23,8 @@ export interface RewardBreakdownState {
   breakdown: RewardBreakdown | null;
   /** True while the full details document is being fetched. */
   loadingDetails: boolean;
+  /** True after an enabled artifact fallback completed for this trial. */
+  artifactsChecked: boolean;
 }
 
 /**
@@ -55,7 +57,14 @@ export function useRewardBreakdown(
     rewards: RewardsMap | null;
     breakdown: RewardBreakdown | null;
     loading: boolean;
-  }>({ key: artifactKey, rewards: null, breakdown: null, loading: false });
+    checked: boolean;
+  }>({
+    key: artifactKey,
+    rewards: null,
+    breakdown: null,
+    loading: false,
+    checked: false,
+  });
 
   useEffect(() => {
     setArtifact({
@@ -63,6 +72,7 @@ export function useRewardBreakdown(
       rewards: null,
       breakdown: null,
       loading: shouldLoad,
+      checked: false,
     });
     if (!shouldLoad || trialId === null) return;
 
@@ -123,7 +133,13 @@ export function useRewardBreakdown(
         // Forgiving by design: a missing/broken artifact renders nothing.
       } finally {
         if (!controller.signal.aborted) {
-          setArtifact({ key: artifactKey, rewards, breakdown, loading: false });
+          setArtifact({
+            key: artifactKey,
+            rewards,
+            breakdown,
+            loading: false,
+            checked: true,
+          });
         }
       }
     }
@@ -138,5 +154,6 @@ export function useRewardBreakdown(
     // A freshly fetched full document beats a truncated embedded summary.
     breakdown: current?.breakdown ?? embedded ?? null,
     loadingDetails: current?.loading ?? false,
+    artifactsChecked: current?.checked ?? false,
   };
 }

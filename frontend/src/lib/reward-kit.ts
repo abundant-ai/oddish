@@ -673,6 +673,9 @@ export function enrichDesignWithObserved(
   const dimensions = design.dimensions.map((dimension) => {
     const seen = takeObserved(dimension);
     if (!seen || seen.criteria.length === 0) return dimension;
+    const observedComplete =
+      !observed.truncated &&
+      (seen.criteriaTotal ?? seen.criteria.length) <= seen.criteria.length;
     const known = new Set(dimension.criteria.map((c) => c.name));
     const fromObserved = seen.criteria
       .filter((c) => !known.has(c.name))
@@ -691,7 +694,7 @@ export function enrichDesignWithObserved(
     return {
       ...dimension,
       criteria,
-      criteriaComplete: true,
+      criteriaComplete: dimension.criteriaComplete || observedComplete,
     };
   });
 
@@ -715,7 +718,9 @@ export function enrichDesignWithObserved(
         optional: c.optional === true,
         source: "observed in trial results",
       })),
-      criteriaComplete: true,
+      criteriaComplete:
+        !observed.truncated &&
+        (seen.criteriaTotal ?? seen.criteria.length) <= seen.criteria.length,
       source: "observed in trial results",
     });
   }

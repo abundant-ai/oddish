@@ -330,6 +330,7 @@ export function RewardDesignCard({
     const controller = new AbortController();
     setDesign(null);
     setLoaded(false);
+    setStates({});
 
     const filesBase =
       filesUrl?.replace(/\/$/, "") ??
@@ -487,7 +488,7 @@ export function RewardDesignCard({
   const collapsedByName = new Map<string, { sum: number; weight: number }>();
   design.dimensions.forEach((dimension, index) => {
     const score = dimensionScores[String(index)] ?? 0;
-    const weight = dimension.weight || 1;
+    const weight = dimension.weight ?? 1;
     const entry = collapsedByName.get(dimension.name) ?? {
       sum: 0,
       weight: 0,

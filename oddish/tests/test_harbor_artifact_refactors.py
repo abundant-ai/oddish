@@ -134,6 +134,18 @@ def test_trial_import_spec_reuses_shared_extraction(tmp_path):
         ),
         encoding="utf-8",
     )
+    (verifier_dir / "reward-details.json").write_text(
+        json.dumps(
+            {
+                "quality": {
+                    "score": 0.75,
+                    "kind": "programmatic",
+                    "criteria": [{"name": "result_shape", "value": 1.0}],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
     trial_result = SimpleNamespace(
         id="trial-id",
         agent_info=SimpleNamespace(
@@ -143,7 +155,9 @@ def test_trial_import_spec_reuses_shared_extraction(tmp_path):
         config=SimpleNamespace(
             agent=SimpleNamespace(model_name="anthropic/claude-sonnet")
         ),
-        verifier_result=SimpleNamespace(rewards={"reward": 1.0}),
+        verifier_result=SimpleNamespace(
+            rewards={"reward": 1.0, "quality": 0.75}
+        ),
         exception_info=None,
         agent_result=SimpleNamespace(
             is_empty=lambda: False,
@@ -185,6 +199,19 @@ def test_trial_import_spec_reuses_shared_extraction(tmp_path):
             "other": 0,
             "report_path": "verifier/ctrf.json",
             "tool": "pytest",
+        },
+        "_rewards": {"reward": 1.0, "quality": 0.75},
+        "_reward_details": {
+            "format": "rewardkit",
+            "details_path": "verifier/reward-details.json",
+            "dimensions": [
+                {
+                    "name": "quality",
+                    "score": 0.75,
+                    "kind": "programmatic",
+                    "criteria": [{"name": "result_shape", "value": 1.0}],
+                }
+            ],
         },
     }
 

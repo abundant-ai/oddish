@@ -1060,7 +1060,9 @@ trial files API for `verifier/reward.json` / `verifier/reward-details.json`
 when the embedded copies are missing (imports) or truncated. That fallback is
 a tab resource: opening a trial on Summary must not list artifacts, and the
 files request starts only after the Rewards tab is selected or directly
-addressed with `?tab=rewards`. The task page's Reward design section
+addressed with `?tab=rewards`. Imported rows expose that lazy discovery tab
+even when they predate embedded summaries; an empty lookup hides it again.
+The task page's Reward design section
 (`reward-design-card.tsx`) reconstructs the reward program client-side from
 the task's `tests/` TOMLs plus a best-effort static scan of Python criteria,
 enriched with criteria observed in a completed trial's breakdown — it executes

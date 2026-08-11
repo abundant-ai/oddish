@@ -61,6 +61,7 @@ from oddish.core.harbor_artifacts import (
     build_trial_result,
     detect_trajectory,
     extract_ctrf_summary,
+    extract_reward_details_summary,
     extract_trial_result_fields,
     extract_trajectory_metrics,
     extract_verifier_metrics,
@@ -1639,6 +1640,8 @@ def trial_result_to_import_spec(
             extract_ctrf_summary(artifact_dir),
             fields.error,
             fields.exception_type,
+            rewards=fields.rewards,
+            reward_details=extract_reward_details_summary(artifact_dir),
         )
 
     # SUCCESS iff the verifier produced a reward (partial counts as

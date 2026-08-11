@@ -135,6 +135,7 @@ export interface Trial {
   model: string | null;
   environment?: string | null;
   status: TrialStatus;
+  origin?: "oddish" | "imported";
   attempts: number;
   max_attempts: number;
   harbor_stage: string | null;

@@ -925,6 +925,13 @@ export function TrialDetailPanel({
   const hasRewards = Boolean(
     rewardBreakdown.rewards || rewardBreakdown.breakdown
   );
+  // Imported rows may predate embedded RewardKit summaries. Give those rows a
+  // lazy discovery affordance; a direct ?tab=rewards address does the same for
+  // historical Oddish rows. Hide the candidate again after an empty lookup.
+  const showRewardsTab =
+    hasRewards ||
+    ((trial?.origin === "imported" || activeTab === "rewards") &&
+      !rewardBreakdown.artifactsChecked);
   const [showFullError, setShowFullError] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
@@ -1265,7 +1272,7 @@ export function TrialDetailPanel({
   const showLive = trial.status === "running" || trial.status === "retrying";
   const effectiveTab =
     (activeTab === "live" && !showLive) ||
-    (activeTab === "rewards" && !hasRewards)
+    (activeTab === "rewards" && !showRewardsTab)
       ? "summary"
       : activeTab;
   const trialStatusConfig = STATUS_CONFIG[trialStatus];
@@ -1642,7 +1649,7 @@ export function TrialDetailPanel({
               <FileText className="mr-1 h-3.5 w-3.5 sm:mr-2 sm:h-4 sm:w-4" />
               Summary
             </TabsTrigger>
-            {hasRewards && (
+            {showRewardsTab && (
               <TabsTrigger
                 value="rewards"
                 className="data-[state=active]:border-primary rounded-none px-3 text-xs data-[state=active]:border-b-2 data-[state=active]:bg-transparent sm:px-4 sm:text-sm"
@@ -1855,7 +1862,7 @@ export function TrialDetailPanel({
           </ActiveTabContent>
 
           <ActiveTabContent
-            active={effectiveTab === "rewards" && hasRewards}
+            active={effectiveTab === "rewards" && showRewardsTab}
             value="rewards"
             className="m-0 p-4 sm:p-6"
           >
