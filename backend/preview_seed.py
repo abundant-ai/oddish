@@ -213,9 +213,15 @@ async def sample_prod_subset(source: AsyncEngine, *, sample_key: str) -> dict:
         # Blocks for sampled subjects: `analyzer_id` carries the trial id on
         # trial blocks (report blocks point it at `analyzers`, which we don't
         # sample, so those would dangle), `task_id` the task-level QA ones.
-        # Newest per subject and type -- the trajectory-summary read path takes
-        # the latest SUCCESS row by created_at, so without these every trial
-        # opened in a preview regenerates its summary against the real API.
+        # The `task_id` arm is restricted to rows with no `analyzer_id`: a
+        # post-trial block sets BOTH, for its own trial and that trial's task,
+        # so matching on `task_id` alone would draw a block for every trial a
+        # sampled task ever ran -- overwhelmingly trials outside the draw, and
+        # partitioned by trial, so the cap below wouldn't bound them either.
+        # SUCCESS first, then newest: the trajectory-summary read path serves
+        # the latest SUCCESS row, and a couple of newer failed attempts must
+        # not push it out of the draw. Without one, every trial opened in a
+        # preview regenerates its summary against the real API.
         # `prompt` is left out of the projection rather than fetched and
         # discarded: it embeds the whole trajectory, and nothing reads it back.
         block_columns = await rows_of(
@@ -232,12 +238,14 @@ async def sample_prod_subset(source: AsyncEngine, *, sample_key: str) -> dict:
                 f"SELECT {projection} FROM ("
                 "  SELECT b.*, row_number() OVER ("
                 "    PARTITION BY coalesce(b.analyzer_id, b.task_id), b.type"
-                "    ORDER BY b.created_at DESC"
+                "    ORDER BY (b.status::text = 'SUCCESS') DESC,"
+                "             b.created_at DESC"
                 "  ) AS _rn FROM analyzer_blocks b"
                 "  WHERE b.deleted_at IS NULL"
                 "    AND b.status::text = ANY(:statuses)"
                 "    AND (b.analyzer_id = ANY(:trial_ids)"
-                "         OR b.task_id = ANY(:task_ids))"
+                "         OR (b.analyzer_id IS NULL"
+                "             AND b.task_id = ANY(:task_ids)))"
                 ") b WHERE b._rn <= :cap",
                 statuses=list(_TERMINAL_JOB_STATUSES),
                 trial_ids=sorted(trial_ids) or [""],
