@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import type { ImperativePanelGroupHandle } from "react-resizable-panels";
 import { PanelRightClose, PanelRightOpen } from "lucide-react";
 import { ResizableDrawer } from "@/components/ui/resizable-drawer";
 import {
@@ -11,6 +12,9 @@ import {
 import { Button } from "@/components/ui/button";
 
 type DrawerMode = "task" | "trial";
+
+const TASK_PANE_SIZE = 42;
+const TRIAL_PANE_SIZE = 58;
 
 interface UnifiedDrawerWrapperProps {
   open: boolean;
@@ -134,11 +138,27 @@ export function UnifiedDrawerWrapper({
   const showLeftPane = mode === "trial" && hasLeft && showTask;
   const showTrialPane = mode === "trial" && !taskOnlyActive;
 
+  // `autoSaveId` persists a pane collapsed to 0 and restores it on the next
+  // mount, which would leave that pane invisible while showTask/showTrial still
+  // say it is shown — and its 0-width handle sits under the drawer's own resize
+  // handle, so dragging it back out is unreliable. Collapsing is a live drag
+  // state, not a saved one: a restored collapse falls back to the even split.
+  const panelGroupRef = useRef<ImperativePanelGroupHandle>(null);
+  const bothPanesShown = showLeftPane && showTrialPane;
+  useEffect(() => {
+    if (!open || !bothPanesShown) return;
+    const layout = panelGroupRef.current?.getLayout();
+    if (layout?.some((size) => size === 0)) {
+      panelGroupRef.current?.setLayout([TASK_PANE_SIZE, TRIAL_PANE_SIZE]);
+    }
+  }, [open, bothPanesShown]);
+
   const body =
     mode === "task" ? (
       <div className="flex h-full flex-col overflow-hidden">{taskContent}</div>
     ) : (
       <ResizablePanelGroup
+        ref={panelGroupRef}
         direction="horizontal"
         autoSaveId="trial-detail-side-by-side"
         className="h-full"
@@ -148,7 +168,7 @@ export function UnifiedDrawerWrapper({
             key="task-pane"
             id="task-pane"
             order={1}
-            defaultSize={42}
+            defaultSize={TASK_PANE_SIZE}
             // Collapsible so the divider drags all the way over and one pane
             // takes the whole drawer. Recoverable by dragging the handle back
             // out, or via the Hide/Show toggle in the *other* pane's header.
@@ -167,7 +187,7 @@ export function UnifiedDrawerWrapper({
             key="trial-pane"
             id="trial-pane"
             order={2}
-            defaultSize={58}
+            defaultSize={TRIAL_PANE_SIZE}
             minSize={15}
             collapsible
             collapsedSize={0}

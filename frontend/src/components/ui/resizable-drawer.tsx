@@ -76,6 +76,16 @@ export function ResizableDrawer({
     ? widthCeiling
     : Math.max(Math.min(width, widthCeiling), Math.min(minWidth, widthCeiling));
 
+  // Maximizing by drag writes the ceiling into `width`, so the width to come
+  // back to has to be held separately or Restore has nothing to restore to.
+  const restoreWidthRef = React.useRef(defaultWidth);
+  const rememberRestoreWidth = React.useCallback(
+    (candidate: number) => {
+      if (candidate < widthCeiling) restoreWidthRef.current = candidate;
+    },
+    [widthCeiling],
+  );
+
   // Handle resize via mouse drag
   const handleMouseDown = React.useCallback(
     (e: React.MouseEvent) => {
@@ -84,6 +94,7 @@ export function ResizableDrawer({
 
       const startX = e.clientX;
       const startWidth = displayWidth;
+      const startMaximized = maximized;
 
       const handleMouseMove = (moveEvent: MouseEvent) => {
         const deltaX = startX - moveEvent.clientX;
@@ -91,7 +102,11 @@ export function ResizableDrawer({
           widthCeiling,
           Math.max(minWidth, startWidth + deltaX),
         );
-        setMaximized(newWidth >= widthCeiling);
+        const nextMaximized = newWidth >= widthCeiling;
+        if (nextMaximized && !startMaximized) {
+          rememberRestoreWidth(startWidth);
+        }
+        setMaximized(nextMaximized);
         setWidth(newWidth);
       };
 
@@ -104,10 +119,25 @@ export function ResizableDrawer({
       document.addEventListener("mousemove", handleMouseMove);
       document.addEventListener("mouseup", handleMouseUp);
     },
-    [displayWidth, minWidth, widthCeiling, setWidth],
+    [
+      displayWidth,
+      maximized,
+      minWidth,
+      widthCeiling,
+      rememberRestoreWidth,
+      setWidth,
+    ],
   );
 
-  const toggleMaximized = React.useCallback(() => setMaximized((m) => !m), []);
+  const toggleMaximized = React.useCallback(() => {
+    if (maximized) {
+      setMaximized(false);
+      setWidth(restoreWidthRef.current);
+    } else {
+      rememberRestoreWidth(displayWidth);
+      setMaximized(true);
+    }
+  }, [maximized, displayWidth, rememberRestoreWidth, setWidth]);
 
   // Handle escape key to close
   React.useEffect(() => {
