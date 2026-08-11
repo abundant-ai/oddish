@@ -16,7 +16,7 @@ script is load-bearing, not ceremony.
 Inputs (env vars):
   VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID,
   VERCEL_GIT_BRANCH, VERCEL_GIT_COMMIT_SHA,
-  GITHUB_RUN_ATTEMPT, GITHUB_STEP_SUMMARY (optional)
+  GITHUB_STEP_SUMMARY (optional)
 """
 
 import json
@@ -77,37 +77,50 @@ def main():
             "production deployment cannot be created from a commit."
         )
 
-    # First attempt: no forceNew, so re-invoking for a sha Vercel already
-    # built returns that deployment instead of building twice (unlike
-    # preview/redeploy_vercel.py, which forces a rebuild on purpose). A
-    # workflow RE-RUN forces a fresh build — otherwise deduplication would
-    # keep handing back the failed deployment and no re-run could ever pass.
-    rerun = os.environ.get("GITHUB_RUN_ATTEMPT", "1") != "1"
-    deployment = api(
-        "POST",
-        "/v13/deployments",
-        body={
-            "name": project["name"],
-            "target": "production",
-            "gitSource": {
-                "type": "github",
-                "repoId": link["repoId"],
-                "ref": branch,
-                "sha": commit_sha,
+    def create(force_new):
+        return api(
+            "POST",
+            "/v13/deployments",
+            body={
+                "name": project["name"],
+                "target": "production",
+                "gitSource": {
+                    "type": "github",
+                    "repoId": link["repoId"],
+                    "ref": branch,
+                    "sha": commit_sha,
+                },
             },
-        },
-        query={"forceNew": "1"} if rerun else None,
-    )
-    # Deduplication may return an existing deployment. Only a production one
-    # proves anything: a preview build of this same sha (every promoted sha
-    # was the staging tip once) is READY with its branch alias assigned and
-    # would false-green both polls below.
-    if deployment.get("target") != "production":
-        raise SystemExit(
-            f"Vercel returned a non-production deployment "
-            f"(target={deployment.get('target')!r}) for {commit_sha}; "
-            "refusing to treat it as the production deploy."
+            query={"forceNew": "1"} if force_new else None,
         )
+
+    # Without forceNew, Vercel deduplicates on the deployed sha and may hand
+    # back an existing deployment instead of building. Usually that is right:
+    # re-invoking for a sha whose production build exists returns it instead
+    # of building twice. Two dedup results are unusable and get one forced
+    # fresh build instead: a non-production deployment (every promoted sha
+    # was once the staging tip, so a preview build of it usually exists, and
+    # a preview must not stand in for the production deploy), and a
+    # deployment that already failed (replaying an earlier run's ERROR would
+    # make every retry fail on arrival).
+    deployment = create(force_new=False)
+    if (
+        deployment.get("target") != "production"
+        or deployment.get("readyState") in FAILURE_STATES
+    ):
+        print(
+            "Deduplicated deployment is unusable "
+            f"(target={deployment.get('target')!r}, "
+            f"readyState={deployment.get('readyState')!r}); "
+            "forcing a fresh production build"
+        )
+        deployment = create(force_new=True)
+        if deployment.get("target") != "production":
+            raise SystemExit(
+                f"Vercel returned a non-production deployment "
+                f"(target={deployment.get('target')!r}) for {commit_sha} even "
+                "with forceNew; refusing to treat it as the production deploy."
+            )
     deployment_id = deployment["id"]
     url = "https://" + deployment["url"]
     print(f"Production deployment {deployment_id} for {commit_sha}: {url}")
