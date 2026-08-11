@@ -44,7 +44,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import normalize_model_id, settings
 from oddish.core.harbor_artifacts import build_trial_result
-from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.core.trial_facets import facet_rows_for_trial, record_trial_facets
 from oddish.db import (
     ExperimentModel,
@@ -373,7 +372,6 @@ async def initialize_trial_import(
         from oddish.queue import maybe_start_qa_stage
 
         await maybe_start_qa_stage(session, trial_id)
-        await refresh_task_browse_summaries(session, [task_version_id])
 
         await session.commit()
 

@@ -50,14 +50,31 @@ function ExperimentsCell({ task }: { task: TaskBrowseItem }) {
 }
 
 function getLatestTrialStatusCounts(task: TaskBrowseItem) {
-  return {
-    pass: task.pass_count,
-    partial: task.partial_count,
-    fail: task.fail_count,
-    "harness-error": task.harness_count,
-    skipped: task.skipped_count,
-    pending: task.pending_count,
-  };
+  return task.latest_trials.reduce(
+    (counts, trial) => {
+      const status = getMatrixStatus(
+        trial.status,
+        trial.reward,
+        trial.error_message
+      );
+      counts[status] += 1;
+      return counts;
+    },
+    // `satisfies` (not `as`) so a missing MatrixStatus key is a compile error:
+    // omitting one made `counts[status]++` do `undefined + 1 = NaN` and dropped
+    // those trials (e.g. skipped/scoreless) from the breakdown silently.
+    {
+      pass: 0,
+      partial: 0,
+      fail: 0,
+      "harness-error": 0,
+      scoreless: 0,
+      skipped: 0,
+      pending: 0,
+      queued: 0,
+      running: 0,
+    } satisfies Record<ReturnType<typeof getMatrixStatus>, number>
+  );
 }
 
 function PassRateCell({ task }: { task: TaskBrowseItem }) {
@@ -90,7 +107,7 @@ function PassRateCell({ task }: { task: TaskBrowseItem }) {
     {
       key: "pending",
       label: "Pending",
-      count: statusCounts.pending,
+      count: statusCounts.pending + statusCounts.queued + statusCounts.running,
     },
   ] as const;
 
@@ -290,12 +307,6 @@ function TrialGraphics({ task }: { task: TaskBrowseItem }) {
           </div>
         );
       })}
-      {task.latest_trials_truncated ? (
-        <div className="text-muted-foreground text-[10px]">
-          Showing the {task.latest_trials.length} most recent of{" "}
-          {task.total_trials} trials.
-        </div>
-      ) : null}
     </div>
   );
 }
