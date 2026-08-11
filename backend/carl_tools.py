@@ -7,6 +7,7 @@ from urllib.parse import quote
 import asyncpg
 import httpx
 from claude_agent_sdk import create_sdk_mcp_server, tool
+from oddish.timing import RequestTimedAsyncClient
 from pglast.parser import ParseError as _ParseError
 from pglast.parser import parse_sql_json
 
@@ -166,7 +167,7 @@ def _format_user_costs(data: dict, user_id: str) -> dict:
 
 async def _get(path: str, params: dict | None = None) -> dict:
     url, headers = _cfg()
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with RequestTimedAsyncClient(timeout=60) as client:
         r = await client.get(f"{url}{path}", headers=headers, params=params)
         r.raise_for_status()
         return r.json()

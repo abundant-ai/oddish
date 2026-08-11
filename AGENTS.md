@@ -922,6 +922,22 @@ uv run alembic upgrade head
 | `worker/runtime.py` | Modal runtime patching and storage setup |
 | `worker/github.py` | GitHub notification hooks used as post-success actions |
 
+Every hosted HTTP response carries a fixed backend `Server-Timing` phase set:
+`auth_verify`, `auth_cache`, `auth_total`, `db_checkout`, `db_sql`,
+`external_http`, `db_commit`, `handler_db`, `handler_total`, and
+`backend_total`. Missing work is represented as zero rather than omitting the
+phase, so cold, warm, and concurrent traces are comparable. The
+`backend.request.phases` span records per-request SQL counts and transmitted
+response-body bytes. `backend_total` and `handler_total` stop at response start
+because they ship in the response headers; the trace-only
+`backend_complete.duration_ms` observation ends after the final ASGI body chunk
+and includes streaming time, but not response background tasks. Production
+entrypoints must use `create_asgi_app()` so timing wraps FastAPI's complete
+middleware stack, including unhandled-error and capacity responses. Hosted and
+core code must use `RequestTimedAsyncClient` for outbound HTTPX calls so the
+request-wide `external_http` phase cannot depend on route-local wrappers. Never
+attach response bodies, request payloads, credentials, or SQL parameter values.
+
 ---
 
 ## `frontend/` — Next.js Dashboard
@@ -930,6 +946,13 @@ The frontend is a Next.js 16 / React 19 App Router app. Browser code calls
 `src/app/api/*` route handlers, which forward to the backend from
 `NEXT_PUBLIC_API_URL` and preserve auth. Public routes are `/`, `/share/*`,
 `/datasets/*`, and `/api/public/*`; everything else is Clerk-protected.
+
+Authenticated proxy routes forward incoming `traceparent`, `tracestate`, and
+`baggage` headers to the backend and join the backend's `Server-Timing` value
+onto the Next response on success, upstream error, and streamed passthrough
+responses. Keep this behavior in `frontend/src/lib/proxy-headers.ts`; the
+generic JSON proxy requires its incoming request, and bespoke hot routes must
+use the same helpers instead of replacing an existing timing value.
 
 The trial drawer surfaces verifier test counts only as a small passed/total
 row in the Summary tab (shown on public share views too); trials without test

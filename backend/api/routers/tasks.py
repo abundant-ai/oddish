@@ -107,7 +107,7 @@ from oddish.db import (
     get_session,
     utcnow,
 )
-from oddish.timing import TimingRecorder, add_server_timing_metric, elapsed_ms, now
+from oddish.timing import TimingRecorder, add_server_timing_metric
 from oddish.queue import (
     cancel_tasks_runs,
 )
@@ -592,14 +592,6 @@ async def list_tasks(
     auth.require_scope(APIKeyScope.READ)
 
     async with get_session() as session:
-        connect_started_at = now()
-        await session.connection()
-        add_server_timing_metric(
-            request,
-            "db_connect",
-            elapsed_ms(connect_started_at),
-            "Tasks DB connect",
-        )
         tasks = await list_tasks_core(
             session,
             status=status,
@@ -640,14 +632,6 @@ async def list_experiment_task_shells(
     auth.require_scope(APIKeyScope.READ)
 
     async with get_session() as session:
-        connect_started_at = now()
-        await session.connection()
-        add_server_timing_metric(
-            request,
-            "db_connect",
-            elapsed_ms(connect_started_at),
-            "Task shells DB connect",
-        )
         return await list_experiment_task_shells_core(
             session,
             experiment_id=experiment_id,
@@ -707,14 +691,6 @@ async def list_experiment_slim_tasks_route(
     auth.require_scope(APIKeyScope.READ)
 
     async with get_session() as session:
-        connect_started_at = now()
-        await session.connection()
-        add_server_timing_metric(
-            request,
-            "db_connect",
-            elapsed_ms(connect_started_at),
-            "Slim tasks DB connect",
-        )
         return await list_experiment_slim_tasks(
             session,
             experiment_id=experiment_id,
@@ -878,14 +854,6 @@ async def browse_tasks(
     auth.require_scope(APIKeyScope.READ)
 
     async with get_session() as session:
-        connect_started_at = now()
-        await session.connection()
-        add_server_timing_metric(
-            request,
-            "db_connect",
-            elapsed_ms(connect_started_at),
-            "Browse DB connect",
-        )
         author_tokens = [
             token.strip() for token in (author or "").split(",") if token.strip()
         ]

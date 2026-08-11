@@ -7,13 +7,20 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import asyncpg
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.ext.asyncio import async_sessionmaker  # type: ignore[attr-defined]
 from oddish.config import settings
 from oddish.db.models import Base
 from oddish.db.soft_delete import install_soft_delete_filter
+from oddish.timing import (
+    current_request_stage,
+    current_request_timing,
+    elapsed_ms,
+    now,
+    timed_phase,
+)
 
 # Install the soft-delete auto-filter exactly once at module load. The
 # listener is keyed on the SQLAlchemy ``Session`` class, so every session
@@ -72,14 +79,53 @@ def _create_engine() -> AsyncEngine:
     )
 
 
+class _TimedAsyncSession(AsyncSession):
+    async def commit(self) -> None:
+        if current_request_timing() is None:
+            await super().commit()
+            return
+        await self.flush()
+        with timed_phase("db_commit"):
+            await super().commit()
+
+
 def _create_session_maker(
     db_engine: AsyncEngine,
 ) -> async_sessionmaker[AsyncSession]:
-    return async_sessionmaker(db_engine, expire_on_commit=False)
+    return async_sessionmaker(
+        db_engine, expire_on_commit=False, class_=_TimedAsyncSession
+    )
 
 
 engine = _create_engine()
 async_session_maker = _create_session_maker(engine)
+
+
+def _install_request_query_timing(db_engine: AsyncEngine) -> None:
+    def before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+        context._oddish_timing = (now(), current_request_stage())
+
+    def record_cursor_timing(context) -> None:
+        started = getattr(context, "_oddish_timing", None)
+        timing = current_request_timing()
+        if started is not None and timing is not None:
+            started_at, stage = started
+            timing.record("db_sql", elapsed_ms(started_at), stage=stage)
+            context._oddish_timing = None
+
+    def after_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+        record_cursor_timing(context)
+
+    def handle_error(exception_context):
+        if exception_context.execution_context is not None:
+            record_cursor_timing(exception_context.execution_context)
+
+    event.listen(db_engine.sync_engine, "before_cursor_execute", before_cursor_execute)
+    event.listen(db_engine.sync_engine, "after_cursor_execute", after_cursor_execute)
+    event.listen(db_engine.sync_engine, "handle_error", handle_error)
+
+
+_install_request_query_timing(engine)
 
 # Global connection pool for asyncpg (used by queue workers)
 _pool: asyncpg.Pool | None = None
@@ -132,6 +178,7 @@ async def reconfigure_database_connections() -> None:
     global engine, async_session_maker
     await close_database_connections()
     engine = _create_engine()
+    _install_request_query_timing(engine)
     async_session_maker = _create_session_maker(engine)
 
 
@@ -147,6 +194,9 @@ async def get_session() -> AsyncIterator[AsyncSession]:
     """
     async with async_session_maker() as session:
         try:
+            if current_request_timing() is not None:
+                with timed_phase("db_checkout"):
+                    await session.connection()
             yield session
             await session.commit()
         except BaseException:
