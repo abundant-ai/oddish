@@ -40,3 +40,10 @@ def test_cohort_section_renders_components_with_step_ranges():
 
 def test_template_loads_and_carries_the_placeholder():
     assert "{{taxonomy}}" in cp.load_cohort_prompt_template()
+
+
+def test_template_asks_for_the_step_form_validation_accepts():
+    # cohort_section prints a compact [first-last] range (a component can span
+    # hundreds of steps), and validate_evidence matches on that span. The
+    # prompt has to ask for exactly those two numbers, or every citation drops.
+    assert "[first-last]" in cp.load_cohort_prompt_template()

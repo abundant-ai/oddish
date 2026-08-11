@@ -739,7 +739,10 @@ export type BehaviorCategory =
 
 export interface BehaviorEvidence {
   trial_id: string;
-  trajectory_component: TrajectoryComponentKind;
+  /** A stored component's label, not a live-enum value: the backend accepts
+   *  any string here and verifies it against the trial's stored components,
+   *  so retired vocabulary arrives intact. */
+  trajectory_component: string;
   step_ids: number[];
   quote: string;
 }

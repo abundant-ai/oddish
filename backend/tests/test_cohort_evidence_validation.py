@@ -73,6 +73,47 @@ def test_wrong_step_ids_are_dropped():
     assert filtered["categories"] == []
 
 
+def test_step_ids_are_matched_on_their_span():
+    # The prompt shows each component as a compact [min-max] range, so the
+    # model cannot reconstruct the full id list for a component covering more
+    # than two steps. Both sides therefore compare (first, last): an interior
+    # id the model never saw must not cost it the citation.
+    wide = [
+        {
+            "trial_id": "t3",
+            "components": [
+                {
+                    "trajectory_component": "debugging",
+                    "step_ids": [10, 11, 12, 13, 14],
+                    "summary": "Bisected the failing assertion.",
+                }
+            ],
+        }
+    ]
+    cited = {
+        "trial_id": "t3",
+        "trajectory_component": "debugging",
+        "step_ids": [10, 14],
+        "quote": "Bisected the failing assertion.",
+    }
+    filtered, drops = validate_evidence(_out([cited]), wide, FAILING)
+    assert drops["evidence"] == 0
+    assert len(filtered["categories"]) == 1
+
+    # A span that does not line up is still a drop.
+    off = {**cited, "step_ids": [10, 15]}
+    filtered, drops = validate_evidence(_out([off]), wide, FAILING)
+    assert filtered["categories"] == []
+    assert drops["evidence"] == 1
+
+
+def test_evidence_without_step_ids_is_dropped():
+    bad = {**_good(), "step_ids": []}
+    filtered, drops = validate_evidence(_out([bad]), SUCCESS, FAILING)
+    assert filtered["categories"] == []
+    assert drops["evidence"] == 1
+
+
 def test_altered_quote_is_dropped():
     bad = {**_good(), "quote": "Ran the tests and everything was fine."}
     filtered, drops = validate_evidence(_out([bad]), SUCCESS, FAILING)

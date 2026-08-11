@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from typing import Annotated
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, model_validator
@@ -9,11 +8,12 @@ from oddish.blocks.block import Block
 
 from api.services.blocks.analyzer.cohort import cohort_prompts as cp
 from api.services.blocks.analyzer.cohort.cohort_taxonomy import BehaviorCategory
-from api.services.blocks.analyzer.trajectory.trajectory_component_block import (
-    TrajectoryBlockTaxonomy,
-)
 
 SCHEMA_VERSION = 1
+
+# A trial whose summary covers less than this share of its own step span is
+# reported to the reader rather than averaged over silently.
+MIN_COVERAGE = 0.5
 
 
 def _non_empty_text(value: str) -> str:
@@ -29,14 +29,23 @@ NonEmptyText = Annotated[str, AfterValidator(_non_empty_text)]
 class BehaviorEvidence(BaseModel):
     """One citation: a component that exists in a cohort trial's summary.
 
-    Reusing TrajectoryBlockTaxonomy means the model never authors a link --
-    trial_id plus step_ids is enough for the frontend to build the target.
+    The model never authors a link -- trial_id plus step_ids is enough for the
+    frontend to build the target.
+
+    ``trajectory_component`` is deliberately a plain string, NOT the live
+    ``TrajectoryBlockTaxonomy`` enum. Do not "tighten" it back: stored
+    summaries still carry retired labels (``thinking_correction``,
+    ``thinking_diagnose``, ``testing_custom_edge_cases``), the prompt shows
+    those verbatim and tells the model to copy them exactly, so an enum here
+    rejects citations that are perfectly correct. The enum was never the
+    safety property anyway -- ``validate_evidence`` requires the label to match
+    a component actually stored on that trial, which is strictly stronger.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     trial_id: NonEmptyText
-    trajectory_component: TrajectoryBlockTaxonomy
+    trajectory_component: NonEmptyText
     step_ids: list[int]
     quote: NonEmptyText
 
@@ -154,12 +163,32 @@ class CohortComparisonBlock(Block):
         ]
 
     def to_output(self, raw: str) -> dict:
-        """Parse and validate. Raises ValueError on malformed output."""
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"model output was not JSON: {exc}") from exc
-        parsed = CohortComparisonOutput(**data)
+        """Parse, then drop every citation that does not resolve.
+
+        Validation lives here, in the ``output_transform``, so the shape the
+        AnalyzerBlock persists is already validated -- filtering after
+        ``block.run()`` returns would validate only for the first caller and
+        serve raw, unverified citations on every cache hit afterwards.
+
+        Raises ``BlockParseError`` (a ValueError) on malformed output.
+        """
+        # Imported here: the service module is the caller of this block, and a
+        # module-level import would make the pair mutually dependent.
+        from api.services.cohort_comparison import validate_evidence
+
+        parsed = self.parse(raw)
         # The block owns schema_version, not the model.
         parsed.schema_version = SCHEMA_VERSION
-        return parsed.model_dump(mode="json")
+        ci = self.cohort_input
+        out, dropped = validate_evidence(
+            parsed.model_dump(mode="json"), ci.successful, ci.failing
+        )
+        out["dropped"] = dropped
+        # Surfaced in the UI so a reader can see when the comparison rests on
+        # thin evidence, rather than the feature averaging over it silently.
+        out["thin_coverage"] = [
+            t["trial_id"]
+            for t in (ci.successful + ci.failing)
+            if t.get("coverage", 0.0) < MIN_COVERAGE
+        ]
+        return out

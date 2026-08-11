@@ -15,9 +15,12 @@ const CATEGORY_LABELS: Record<string, string> = {
   environment_tooling: "Environment and tooling",
 };
 
-/** Step deep links landed in #724: the trial view resolves #step-<step_id>. */
-function evidenceHref(trialId: string, stepIds: number[]): string {
-  return `/trials/${encodeURIComponent(trialId)}#step-${stepIds[0]}`;
+/** A trial opens in the task page's drawer via ?trial=<id> — there is no
+ *  /trials/<id> route, and the drawer resolves no step anchor, so none is
+ *  emitted rather than linking somewhere that does not exist. */
+function evidenceHref(taskId: string, trialId: string): string {
+  const params = new URLSearchParams({ trial: trialId });
+  return `/tasks/${encodeURIComponent(taskId)}?${params.toString()}`;
 }
 
 function stepRange(stepIds: number[]): string {
@@ -26,7 +29,13 @@ function stepRange(stepIds: number[]): string {
   return lo === hi ? `[${lo}]` : `[${lo}-${hi}]`;
 }
 
-function ObservationList({ items }: { items: BehaviorObservation[] }) {
+function ObservationList({
+  items,
+  taskId,
+}: {
+  items: BehaviorObservation[];
+  taskId: string;
+}) {
   if (!items.length) {
     return <p className="text-sm text-muted-foreground">No difference found.</p>;
   }
@@ -38,7 +47,7 @@ function ObservationList({ items }: { items: BehaviorObservation[] }) {
           {obs.evidence.map((ev, j) => (
             <a
               key={j}
-              href={evidenceHref(ev.trial_id, ev.step_ids)}
+              href={evidenceHref(taskId, ev.trial_id)}
               className="text-xs text-muted-foreground hover:underline"
             >
               <span className="font-mono">
@@ -96,13 +105,13 @@ export function CohortComparisonSection({
               <span className="text-xs uppercase tracking-wide text-muted-foreground">
                 Successful
               </span>
-              <ObservationList items={cat.successful} />
+              <ObservationList items={cat.successful} taskId={taskId} />
             </div>
             <div className="flex flex-col gap-2">
               <span className="text-xs uppercase tracking-wide text-muted-foreground">
                 Failing
               </span>
-              <ObservationList items={cat.failing} />
+              <ObservationList items={cat.failing} taskId={taskId} />
             </div>
           </div>
         </div>

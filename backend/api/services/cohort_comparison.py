@@ -101,16 +101,30 @@ async def resolve_cohorts(
     return out[SUCCESS_CLASS], out[FAILURE_CLASS]
 
 
+def _span(step_ids) -> tuple[int, int] | None:
+    """(first, last) of a component's steps -- what the prompt actually shows.
+
+    The prompt renders each component as a compact ``[min-max]`` range, since a
+    component can span hundreds of steps and printing them all would bloat the
+    prompt past the point where it fits. Matching on the exact list would
+    therefore reject every citation the model could possibly write, so both
+    sides compare the span instead.
+    """
+    ids = [i for i in (step_ids or []) if isinstance(i, int)]
+    if not ids:
+        return None
+    return (min(ids), max(ids))
+
+
 def _index(trials: list[dict]) -> dict[tuple, str]:
-    """(trial_id, component, step_ids) -> the component's stored summary."""
+    """(trial_id, component, step span) -> the component's stored summary."""
     out: dict[tuple, str] = {}
     for t in trials:
         for c in t.get("components") or []:
-            key = (
-                t["trial_id"],
-                c.get("trajectory_component"),
-                tuple(sorted(c.get("step_ids") or [])),
-            )
+            span = _span(c.get("step_ids"))
+            if span is None:
+                continue
+            key = (t["trial_id"], c.get("trajectory_component"), span)
             out[key] = (c.get("summary") or "").strip()
     return out
 
@@ -122,8 +136,12 @@ def validate_evidence(
 
     This repo has had an analyzer fabricate trial ids at scale, so citations
     are verified rather than trusted. Evidence must name a component that
-    exists, on the side of the comparison it was cited under, with the stored
-    summary text unaltered.
+    exists, on the side of the comparison it was cited under, covering the
+    same step span, with the stored summary text unaltered.
+
+    Called from ``CohortComparisonBlock.to_output`` so the validated shape is
+    what gets persisted -- validating after ``block.run()`` returns would leave
+    every later cache hit serving the raw, unvalidated model output.
     """
     index = {"successful": _index(successful), "failing": _index(failing)}
     drops = {"evidence": 0, "observations": 0, "categories": 0}
@@ -136,12 +154,13 @@ def validate_evidence(
             for obs in cat.get(side) or []:
                 kept_ev = []
                 for ev in obs.get("evidence") or []:
+                    span = _span(ev.get("step_ids"))
                     key = (
                         ev.get("trial_id"),
                         ev.get("trajectory_component"),
-                        tuple(sorted(ev.get("step_ids") or [])),
+                        span,
                     )
-                    stored = index[side].get(key)
+                    stored = None if span is None else index[side].get(key)
                     if stored is not None and stored == (ev.get("quote") or "").strip():
                         kept_ev.append(ev)
                     else:
@@ -255,7 +274,10 @@ async def get_or_generate_comparison(
         CohortComparisonOutput,
         CohortInput,
     )
-    from api.services.summarize_trajectory import resolve_summary_model
+    from api.services.summarize_trajectory import (
+        SUMMARY_MAX_TOKENS,
+        resolve_summary_model,
+    )
 
     successful, failing = await resolve_cohorts(session, task_version_id)
     if len(successful) < MIN_COHORT or len(failing) < MIN_COHORT:
@@ -310,16 +332,17 @@ async def get_or_generate_comparison(
             },
             output_transform=cb.to_output,
             model=model,
+            # Same cap as the trajectory summary, for the same reason: the
+            # default 4096 truncates the model mid-JSON, and a seven-category
+            # two-sided comparison quoting stored summaries verbatim is well
+            # past that. A ceiling, not a target -- billing is on tokens
+            # actually generated.
+            max_tokens=SUMMARY_MAX_TOKENS,
             response_format=CohortComparisonOutput,
             output_schema=CohortComparisonOutput.model_json_schema(),
             triggered_by_user_id=triggered_by_user_id,
         )
+        # Citation validation and the thin-coverage list are applied inside
+        # cb.to_output, so what run() returns is what was persisted.
         result = await block.run()
-        filtered, drops = validate_evidence(result.output, successful, failing)
-        filtered["dropped"] = drops
-        # Surfaced in the UI so a reader can see when the comparison rests on
-        # thin evidence, rather than the feature averaging over it silently.
-        filtered["thin_coverage"] = [
-            t["trial_id"] for t in (successful + failing) if t["coverage"] < 0.5
-        ]
-        return filtered
+        return result.output

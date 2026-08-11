@@ -117,11 +117,6 @@ async def test_concurrent_misses_generate_only_once(monkeypatch):
     )
     monkeypatch.setattr(cc, "_load_fresh_comparison", fake_load_fresh)
     monkeypatch.setattr(AnalyzerBlock, "run", fake_run)
-    monkeypatch.setattr(
-        cc,
-        "validate_evidence",
-        lambda output, s, f: (output, {"evidence": 0, "observations": 0, "categories": 0}),
-    )
 
     session = MagicMock()
 
@@ -163,11 +158,6 @@ async def test_refresh_ignores_a_fresh_block_inside_the_lock(monkeypatch):
     )
     monkeypatch.setattr(cc, "_load_fresh_comparison", load_fresh)
     monkeypatch.setattr(AnalyzerBlock, "run", run)
-    monkeypatch.setattr(
-        cc,
-        "validate_evidence",
-        lambda output, s, f: (output, {"evidence": 0, "observations": 0, "categories": 0}),
-    )
 
     session = MagicMock()
     result = await cc.get_or_generate_comparison(

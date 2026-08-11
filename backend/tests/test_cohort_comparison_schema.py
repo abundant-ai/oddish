@@ -18,9 +18,21 @@ def _evidence(trial="t1", steps=(4, 5)):
     }
 
 
-def test_evidence_rejects_unknown_component():
+def test_evidence_accepts_a_retired_taxonomy_value():
+    # Stored summaries still carry labels retired from TrajectoryBlockTaxonomy,
+    # the prompt shows them verbatim, and the model is told to copy them
+    # exactly -- so the schema must not reject them. Whether the label is real
+    # is settled by validate_evidence against the stored components, not here
+    # (see test_cohort_evidence_validation.py).
+    ev = BehaviorEvidence(
+        **{**_evidence(), "trajectory_component": "thinking_diagnose"}
+    )
+    assert ev.trajectory_component == "thinking_diagnose"
+
+
+def test_evidence_rejects_an_empty_component():
     with pytest.raises(ValidationError):
-        BehaviorEvidence(**{**_evidence(), "trajectory_component": "vibing"})
+        BehaviorEvidence(**{**_evidence(), "trajectory_component": "  "})
 
 
 def test_evidence_requires_step_ids():
