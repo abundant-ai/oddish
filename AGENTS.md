@@ -943,6 +943,15 @@ uv run alembic upgrade head
 | `worker/runtime.py` | Modal runtime patching and storage setup |
 | `worker/github.py` | GitHub notification hooks used as post-success actions |
 
+Every hosted HTTP response carries a fixed backend `Server-Timing` phase set:
+`auth_verify`, `auth_cache`, `auth_total`, `db_checkout`, `db_sql`,
+`external_http`, `db_commit`, `handler_db`, `handler_total`, and
+`backend_total`. Missing work is represented as zero rather than omitting the
+phase, so cold, warm, and concurrent traces are comparable. The
+`backend.request.phases` span records per-request SQL counts and transmitted
+response-body bytes; it must never attach response bodies, request payloads,
+credentials, or SQL parameter values.
+
 ---
 
 ## `frontend/` — Next.js Dashboard

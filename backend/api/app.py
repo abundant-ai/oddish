@@ -6,7 +6,7 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
@@ -16,13 +16,6 @@ from observability import (
 )
 from oddish.config import settings
 from oddish.db import close_database_connections
-from oddish.timing import (
-    add_server_timing_metric,
-    elapsed_ms,
-    format_server_timing,
-    join_server_timing_headers,
-    now,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -241,25 +234,9 @@ def create_app() -> FastAPI:
     )
 
     api.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=1)
+    from api.request_metrics import BackendPhaseMetricsMiddleware
 
-    @api.middleware("http")
-    async def add_server_timing_header(request: Request, call_next):
-        request.state.server_timing_metrics = []
-        started_at = now()
-        response = await call_next(request)
-        add_server_timing_metric(
-            request,
-            "backend_total",
-            elapsed_ms(started_at),
-            "Backend request total",
-        )
-        header = format_server_timing(request.state.server_timing_metrics)
-        combined = join_server_timing_headers(
-            response.headers.get("Server-Timing"), header
-        )
-        if combined:
-            response.headers["Server-Timing"] = combined
-        return response
+    api.add_middleware(BackendPhaseMetricsMiddleware)
 
     from api.capacity_headers import capacity_header_middleware
 
