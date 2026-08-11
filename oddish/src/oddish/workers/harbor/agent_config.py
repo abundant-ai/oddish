@@ -447,6 +447,10 @@ def _apply_mini_swe_agent(agent_config: AgentConfig) -> None:
             fireworks_bare_model_id(agent_config.model_name or "")
         )
         set_runtime_model_name(agent_config, f"fireworks_ai/{api_model}")
+        agent_config.env = dict(agent_config.env or {})
+        agent_config.env.setdefault(
+            "FIREWORKS_AI_API_KEY", "${FIREWORKS_API_KEY}"
+        )
     agent_config.name = None
     agent_config.import_path = _ODDISH_MINI_SWE_IMPORT_PATH
 

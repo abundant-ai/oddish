@@ -2066,6 +2066,7 @@ def test_build_agent_config_mini_swe_fireworks_uses_litellm_runtime_model(
     monkeypatch,
 ):
     monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.setenv("FIREWORKS_API_KEY", "fireworks-secret")
 
     agent_config = harbor_runner._build_agent_config(
         agent="mini-swe-agent",
@@ -2077,6 +2078,12 @@ def test_build_agent_config_mini_swe_fireworks_uses_litellm_runtime_model(
     assert getattr(agent_config, RUNTIME_MODEL_NAME_ATTR) == (
         "fireworks_ai/accounts/fireworks/models/glm-5p2"
     )
+    assert (agent_config.env or {})["FIREWORKS_AI_API_KEY"] == (
+        "${FIREWORKS_API_KEY}"
+    )
+    assert harbor_runner.resolve_env_vars(agent_config.env)[
+        "FIREWORKS_AI_API_KEY"
+    ] == "fireworks-secret"
     assert RUNTIME_MODEL_NAME_ATTR not in agent_config.model_dump()
 
 
