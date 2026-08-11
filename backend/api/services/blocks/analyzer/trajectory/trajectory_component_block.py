@@ -19,9 +19,10 @@ class ExploreTrajectoryBlockTaxonomy(str, enum.Enum):
 
 
 class ImplementTrajectoryBlockTaxonomy(str, enum.Enum):
-    # Ordered as the work happens: plan, replan, build, correct, test, debug.
-    # PLAN_CORRECTION sits beside WRITING_PLAN so the model reads the two as a
-    # pair; the flat vocabulary below preserves this order in the prompt.
+    # Ordered as the work happens: plan, replan, build, correct, test, debug,
+    # report. PLAN_CORRECTION sits beside WRITING_PLAN so the model reads the
+    # two as a pair; the flat vocabulary below preserves this order in the
+    # prompt. WRITING_REPORT is last because it is what a run ends with.
     WRITING_PLAN = "writing_plan"
     PLAN_CORRECTION = "plan_correction"
     IMPLEMENTING = "implementing"
@@ -31,6 +32,7 @@ class ImplementTrajectoryBlockTaxonomy(str, enum.Enum):
     TESTING_CUSTOM = "testing_custom"
     TESTING_EDGE_CASES = "testing_edge_cases"
     DEBUGGING = "debugging"
+    WRITING_REPORT = "writing_report"
 
 
 # One flat vocabulary built from the two sub-enums, so a component carries a
