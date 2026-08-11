@@ -96,3 +96,61 @@ async def resolve_cohorts(
                 }
             )
     return out[SUCCESS_CLASS], out[FAILURE_CLASS]
+
+
+def _index(trials: list[dict]) -> dict[tuple, str]:
+    """(trial_id, component, step_ids) -> the component's stored summary."""
+    out: dict[tuple, str] = {}
+    for t in trials:
+        for c in t.get("components") or []:
+            key = (
+                t["trial_id"],
+                c.get("trajectory_component"),
+                tuple(sorted(c.get("step_ids") or [])),
+            )
+            out[key] = (c.get("summary") or "").strip()
+    return out
+
+
+def validate_evidence(
+    output: dict, successful: list[dict], failing: list[dict]
+) -> tuple[dict, dict]:
+    """Drop citations that do not resolve against the stored summaries.
+
+    This repo has had an analyzer fabricate trial ids at scale, so citations
+    are verified rather than trusted. Evidence must name a component that
+    exists, on the side of the comparison it was cited under, with the stored
+    summary text unaltered.
+    """
+    index = {"successful": _index(successful), "failing": _index(failing)}
+    drops = {"evidence": 0, "observations": 0, "categories": 0}
+
+    kept_categories = []
+    for cat in output.get("categories") or []:
+        kept_sides: dict[str, list] = {}
+        for side in ("successful", "failing"):
+            kept_obs = []
+            for obs in cat.get(side) or []:
+                kept_ev = []
+                for ev in obs.get("evidence") or []:
+                    key = (
+                        ev.get("trial_id"),
+                        ev.get("trajectory_component"),
+                        tuple(sorted(ev.get("step_ids") or [])),
+                    )
+                    stored = index[side].get(key)
+                    if stored is not None and stored == (ev.get("quote") or "").strip():
+                        kept_ev.append(ev)
+                    else:
+                        drops["evidence"] += 1
+                if kept_ev:
+                    kept_obs.append({**obs, "evidence": kept_ev})
+                else:
+                    drops["observations"] += 1
+            kept_sides[side] = kept_obs
+        if kept_sides["successful"] or kept_sides["failing"]:
+            kept_categories.append({**cat, **kept_sides})
+        else:
+            drops["categories"] += 1
+
+    return {**output, "categories": kept_categories}, drops
