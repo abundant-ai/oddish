@@ -281,6 +281,32 @@ async def _load_fresh_comparison(
     return None
 
 
+async def _end_read_transaction(session: AsyncSession) -> None:
+    """Close the read transaction before anything slow.
+
+    This generates on the read path, and a generation runs for minutes. Two
+    things make holding the request's transaction across one a real fault
+    rather than untidiness:
+
+    * The connecting role carries ``idle_in_transaction_session_timeout`` of
+      five minutes (``oddish.db.connection.apply_role_defaults``, pinned onto
+      the role because Supavisor drops client-supplied server_settings), so a
+      transaction left open across a long generation is terminated by Postgres
+      and the request fails at commit -- even though ``AnalyzerBlock``
+      persisted its SUCCESS row through a session of its own.
+    * An API container's pool is two connections plus one overflow
+      (``backend/endpoints.py``), and ``AnalyzerBlock`` needs one of them to
+      write. Parking a third for the length of an LLM call is a large share of
+      a small pool.
+
+    Nothing is written through this session, so the commit only ends the
+    transaction and returns the connection to the pool; the next statement
+    checks one out again. ``expire_on_commit=False``, so already-loaded rows
+    survive it.
+    """
+    await session.commit()
+
+
 async def get_or_generate_comparison(
     session: AsyncSession,
     task_version_id: str,
@@ -332,6 +358,12 @@ async def get_or_generate_comparison(
         if fresh is not None:
             return fresh
 
+    # Before the lock, not just before the model call: waiting behind another
+    # coroutine's generation is the same minutes-long wait, and a request that
+    # queues there would otherwise hold its transaction open for the whole of
+    # someone else's generation as well as its own.
+    await _end_read_transaction(session)
+
     async with _GEN_LOCKS[(task_id, task_version_id)]:
         # Re-check inside the lock -- another coroutine may have generated
         # one while this one waited. A refresh deliberately skips this: it
@@ -347,6 +379,8 @@ async def get_or_generate_comparison(
             )
             if fresh is not None:
                 return fresh
+            # The re-check opened a transaction of its own.
+            await _end_read_transaction(session)
 
         model = resolve_summary_model()
         cb = CohortComparisonBlock(

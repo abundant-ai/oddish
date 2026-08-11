@@ -56,6 +56,14 @@ def test_missing_metadata_is_stale():
 # ---------------------------------------------------------------------------
 
 
+def _session_with_commit_spy():
+    """A stub request session. ``commit`` is awaitable because the service
+    ends its read transaction before anything slow."""
+    session = MagicMock()
+    session.commit = AsyncMock()
+    return session
+
+
 def _fake_trials(prefix: str) -> list[dict]:
     return [
         {
@@ -118,7 +126,7 @@ async def test_concurrent_misses_generate_only_once(monkeypatch):
     monkeypatch.setattr(cc, "_load_fresh_comparison", fake_load_fresh)
     monkeypatch.setattr(AnalyzerBlock, "run", fake_run)
 
-    session = MagicMock()
+    session = _session_with_commit_spy()
 
     results = await asyncio.gather(
         cc.get_or_generate_comparison(
@@ -159,7 +167,7 @@ async def test_refresh_ignores_a_fresh_block_inside_the_lock(monkeypatch):
     monkeypatch.setattr(cc, "_load_fresh_comparison", load_fresh)
     monkeypatch.setattr(AnalyzerBlock, "run", run)
 
-    session = MagicMock()
+    session = _session_with_commit_spy()
     result = await cc.get_or_generate_comparison(
         session, "v1", task_id="t1", task_name="task", refresh=True
     )
@@ -311,3 +319,77 @@ def test_response_names_the_requested_version_not_the_current_one(client):
     assert resp.status_code == 200
     assert resp.json()["task_version_id"] == "tv-3"
     assert generate.await_args.args[1] == "tv-3"
+
+
+# ---------------------------------------------------------------------------
+# The read transaction does not stay open across a generation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_read_transaction_ends_before_the_generation(monkeypatch):
+    """A generation runs for minutes. The connecting role carries a five-minute
+    idle_in_transaction_session_timeout, so a request that holds its read
+    transaction across one is terminated by Postgres and fails at commit --
+    after the block already persisted its row through a session of its own."""
+    from oddish.blocks.analyzer.analyzer_block import AnalyzerBlock, AnalyzerOutput
+
+    session = _session_with_commit_spy()
+    committed_before_run = {}
+
+    async def fake_run(self):
+        committed_before_run["yes"] = session.commit.await_count > 0
+        return AnalyzerOutput(output=dict(COMPARISON))
+
+    monkeypatch.setattr(
+        cc,
+        "resolve_cohorts",
+        AsyncMock(return_value=(_fake_trials("s"), _fake_trials("f"))),
+    )
+    monkeypatch.setattr(cc, "_load_fresh_comparison", AsyncMock(return_value=None))
+    monkeypatch.setattr(AnalyzerBlock, "run", fake_run)
+
+    await cc.get_or_generate_comparison(
+        session, "v-gen", task_id="t-gen", task_name="task"
+    )
+
+    assert committed_before_run["yes"] is True
+
+
+@pytest.mark.asyncio
+async def test_read_transaction_ends_before_waiting_on_the_lock(monkeypatch):
+    """Queueing behind another coroutine's generation is the same minutes-long
+    wait, so the transaction has to be released before the lock, not merely
+    before the model call."""
+    from oddish.blocks.analyzer.analyzer_block import AnalyzerBlock, AnalyzerOutput
+
+    session = _session_with_commit_spy()
+    key = ("t-lock", "v-lock")
+
+    monkeypatch.setattr(
+        cc,
+        "resolve_cohorts",
+        AsyncMock(return_value=(_fake_trials("s"), _fake_trials("f"))),
+    )
+    monkeypatch.setattr(cc, "_load_fresh_comparison", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        AnalyzerBlock, "run", AsyncMock(return_value=AnalyzerOutput(output=dict(COMPARISON)))
+    )
+
+    # Stand in for a generation already in flight for this (task, version).
+    held = cc._GEN_LOCKS[key]
+    await held.acquire()
+    try:
+        pending = asyncio.create_task(
+            cc.get_or_generate_comparison(
+                session, key[1], task_id=key[0], task_name="task"
+            )
+        )
+        # Let it run up to the lock and park there.
+        for _ in range(10):
+            await asyncio.sleep(0)
+        assert not pending.done(), "expected the call to be blocked on the lock"
+        assert session.commit.await_count > 0
+    finally:
+        held.release()
+    await pending
