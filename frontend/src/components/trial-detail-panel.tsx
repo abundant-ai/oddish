@@ -896,11 +896,6 @@ export function TrialDetailPanel({
   const actionsReady = !revalidateTrial || canonicalTrial !== null;
   const trial = canonicalTrial ?? selectedTrial;
   const verifierSummary = embeddedCtrfSummary(trial?.result);
-  // RewardKit output; null for scalar-reward trials, which hides the tab.
-  const rewardBreakdown = useRewardBreakdown(trial, apiBaseUrl, isOpen);
-  const hasRewards = Boolean(
-    rewardBreakdown.rewards || rewardBreakdown.breakdown
-  );
 
   const validTabs = useMemo(
     () =>
@@ -919,6 +914,17 @@ export function TrialDetailPanel({
     const urlTab = getLiveParam("tab");
     return urlTab && validTabs.has(urlTab) ? urlTab : "summary";
   });
+  // Embedded RewardKit output makes the tab visible immediately. Artifact
+  // fallback is a tab resource, so only start it after explicit tab intent;
+  // this also lets a ?tab=rewards deep link recover historical/imported data.
+  const rewardBreakdown = useRewardBreakdown(
+    trial,
+    apiBaseUrl,
+    isOpen && activeTab === "rewards"
+  );
+  const hasRewards = Boolean(
+    rewardBreakdown.rewards || rewardBreakdown.breakdown
+  );
   const [showFullError, setShowFullError] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
