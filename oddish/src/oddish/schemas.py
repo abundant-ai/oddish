@@ -1184,6 +1184,13 @@ class TaskBatchCancelRequest(BaseModel):
         default_factory=list,
         description="Task IDs to cancel in one request",
     )
+    experiment_id: str | None = Field(
+        default=None,
+        description=(
+            "When set, only cancel trials that belong to this experiment. "
+            "Omitting it cancels every in-flight trial for the listed tasks."
+        ),
+    )
 
 
 class BackfillQARequest(BaseModel):

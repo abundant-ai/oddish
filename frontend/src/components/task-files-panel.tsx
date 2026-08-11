@@ -130,6 +130,12 @@ interface TaskFilesPanelProps {
   onNavigate?: (task: Task, taskIndex: number) => void;
   onNavigateToFirstTrial?: () => void;
   apiBaseUrl?: string;
+  /**
+   * When set, Cancel only stops trials belonging to this experiment. Used by
+   * the experiment drawer so shared tasks keep running elsewhere. Omit on the
+   * task page to cancel every in-flight trial for the task.
+   */
+  cancelExperimentId?: string;
   allowRetry?: boolean;
   /**
    * When false, analysis/verdict UI (the verdict badge and the run
@@ -409,6 +415,7 @@ export function TaskFilesPanel({
   onNavigate,
   onNavigateToFirstTrial,
   apiBaseUrl,
+  cancelExperimentId,
   allowRetry = true,
   showAnalysis = true,
   onRetryComplete,
@@ -774,10 +781,16 @@ export function TaskFilesPanel({
       let path = `${baseUrl}/tasks/cancel`;
       let body: string | undefined = JSON.stringify({
         task_ids: id ? [id] : [],
+        ...(cancelExperimentId
+          ? { experiment_id: cancelExperimentId }
+          : {}),
       });
       // No active trials but QA in flight -> cancel just the task QA job.
+      // Experiment-scoped cancel leaves shared QA alone unless the caller is
+      // on the dedicated cancel-QA path.
       if (
         id &&
+        !cancelExperimentId &&
         !taskHasActiveTrials(task) &&
         (taskHasActiveVerdict(task) || taskHasActiveAnalysis(task))
       ) {
