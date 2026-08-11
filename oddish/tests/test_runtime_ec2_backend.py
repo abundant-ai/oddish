@@ -38,7 +38,7 @@ from oddish.runtime.ec2_policy import (
     Ec2SandboxOwnership,
 )
 from oddish.runtime.routing import default_cloud_environment
-from oddish.schemas import TaskSweepSubmission
+from oddish.schemas import HarborConfig, TaskSweepSubmission
 
 AWS_ACCOUNT_ID = "123456789012"
 _ORIGINAL_RESOLVE_AWS_ACCOUNT_ID = Ec2Backend.resolve_aws_account_id
@@ -597,6 +597,44 @@ def test_ec2_runner_fails_before_either_engine_when_backend_is_unregistered(
     assert patch_requirements == [True]
 
 
+@pytest.mark.parametrize(
+    ("trial_id", "worker_job_id", "missing_name"),
+    [
+        (None, "worker-job-1", "trial_id"),
+        ("trial-1", None, "worker_job_id"),
+    ],
+)
+def test_ec2_runner_requires_complete_ownership_identity(
+    trial_id: str | None,
+    worker_job_id: str | None,
+    missing_name: str,
+) -> None:
+    from oddish.runtime.sandbox_lifecycle import SandboxLaunchContext
+    from oddish.workers.harbor import runner as harbor_runner
+
+    sandbox_launch = SandboxLaunchContext(
+        sandbox_run_id="sandbox-run-1",
+        worker_job_id="worker-job-1",
+        worker_job_attempt=1,
+        trial_id="trial-1",
+        launch_token="launch-token-1",
+        deployment="oddish-test",
+        aws_account_id="123456789012",
+        region="us-east-1",
+    )
+
+    with pytest.raises(RuntimeError, match=missing_name):
+        harbor_runner._resolve_provider_environment_config(
+            hc=HarborConfig(),
+            environment=EnvironmentType.EC2,
+            backend=None,
+            is_probe=False,
+            trial_id=trial_id,
+            worker_job_id=worker_job_id,
+            sandbox_launch=sandbox_launch,
+        )
+
+
 @pytest.mark.parametrize("exit_mode", ["success", "error", "cancel"])
 def test_ec2_runner_releases_materialized_key_lease_for_every_ephemeral_exit(
     monkeypatch, tmp_path, exit_mode: str
@@ -662,6 +700,8 @@ def test_ec2_runner_releases_materialized_key_lease_for_every_ephemeral_exit(
         agent="nop",
         jobs_dir=tmp_path / "jobs",
         environment=EnvironmentType.EC2,
+        trial_id="trial-1",
+        worker_job_id="worker-job-1",
         harbor_config={"variant_id": "ephemeral"},
         sandbox_launch=sandbox_launch,
     )

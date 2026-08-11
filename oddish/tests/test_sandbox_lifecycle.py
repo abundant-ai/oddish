@@ -317,6 +317,48 @@ async def _return(value):
 
 
 @pytest.mark.asyncio
+async def test_expired_capacity_lease_is_not_stolen_from_running_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Connection:
+        def __init__(self) -> None:
+            self.available_statement = ""
+
+        @asynccontextmanager
+        async def transaction(self):
+            yield
+
+        async def execute(self, _statement: str, *_args):
+            return "INSERT 0 1"
+
+        async def fetchrow(self, statement: str, *_args):
+            self.available_statement = statement
+            return None
+
+    connection = Connection()
+
+    class Pool:
+        @asynccontextmanager
+        async def acquire(self):
+            yield connection
+
+    monkeypatch.setattr(sandbox_capacity, "get_pool", lambda: _return(Pool()))
+
+    acquired = await sandbox_capacity.acquire_sandbox_capacity_lease(
+        provider="ec2",
+        limit=2,
+        worker_id="worker-2",
+        lease_seconds=120,
+    )
+
+    assert acquired is None
+    assert "locked_until <= NOW()" in connection.available_statement
+    assert "NOT EXISTS" in connection.available_statement
+    assert "wj.status::text = 'RUNNING'" in connection.available_statement
+    assert "wj.current_worker_id" in connection.available_statement
+
+
+@pytest.mark.asyncio
 async def test_capacity_reconciliation_releases_expired_or_orphaned_leases(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -337,6 +379,7 @@ async def test_capacity_reconciliation_releases_expired_or_orphaned_leases(
 
     assert cleared == 2
     assert "lease.locked_until <= NOW()" in pool.statement
+    assert "AND NOT EXISTS" in pool.statement
     assert "wj.status::text = 'RUNNING'" in pool.statement
     assert "wj.current_worker_id = lease.locked_by" in pool.statement
     assert pool.args == (90,)
@@ -364,4 +407,6 @@ async def test_count_held_capacity_counts_every_live_provider_lease(
     assert held == 2
     assert "locked_by IS NOT NULL" in pool.statement
     assert "locked_until > NOW()" in pool.statement
+    assert "OR EXISTS" in pool.statement
+    assert "wj.status::text = 'RUNNING'" in pool.statement
     assert pool.args == ("ec2",)

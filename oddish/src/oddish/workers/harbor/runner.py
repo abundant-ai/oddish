@@ -1248,11 +1248,22 @@ def _resolve_provider_environment_config(
     if environment == EnvironmentType.EC2:
         if sandbox_launch is None:
             raise RuntimeError("EC2 trial is missing its durable sandbox run")
+        missing_identity = [
+            name
+            for name, value in (
+                ("trial_id", trial_id),
+                ("worker_job_id", worker_job_id),
+            )
+            if not value
+        ]
+        if missing_identity:
+            raise RuntimeError(
+                "EC2 trial is missing required ownership identity: "
+                + ", ".join(missing_identity)
+            )
         tags = dict(environment_config.kwargs.get("tags") or {})
-        if trial_id:
-            tags[TRIAL_ID_TAG_KEY] = trial_id
-        if worker_job_id:
-            tags[WORKER_JOB_ID_TAG_KEY] = worker_job_id
+        tags[TRIAL_ID_TAG_KEY] = trial_id
+        tags[WORKER_JOB_ID_TAG_KEY] = worker_job_id
         tags[SANDBOX_RUN_ID_TAG_KEY] = sandbox_launch.sandbox_run_id
         tags[WORKER_ATTEMPT_TAG_KEY] = str(sandbox_launch.worker_job_attempt)
         tags[LAUNCH_TOKEN_TAG_KEY] = sandbox_launch.launch_token

@@ -35,7 +35,16 @@ async def acquire_sandbox_capacity_lease(
                       AND (
                           locked_by IS NULL
                           OR locked_until IS NULL
-                          OR locked_until <= NOW()
+                          OR (
+                              locked_until <= NOW()
+                              AND NOT EXISTS (
+                                  SELECT 1
+                                  FROM worker_jobs AS wj
+                                  WHERE wj.id = sandbox_capacity_leases.worker_job_id
+                                    AND wj.status::text = 'RUNNING'
+                                    AND wj.current_worker_id = sandbox_capacity_leases.locked_by
+                              )
+                          )
                       )
                     ORDER BY slot
                     LIMIT 1
@@ -90,7 +99,16 @@ async def count_held_sandbox_capacity_leases(*, provider: str) -> int:
         FROM sandbox_capacity_leases
         WHERE provider = $1
           AND locked_by IS NOT NULL
-          AND locked_until > NOW()
+          AND (
+              locked_until > NOW()
+              OR EXISTS (
+                  SELECT 1
+                  FROM worker_jobs AS wj
+                  WHERE wj.id = sandbox_capacity_leases.worker_job_id
+                    AND wj.status::text = 'RUNNING'
+                    AND wj.current_worker_id = sandbox_capacity_leases.locked_by
+              )
+          )
         """,
         provider,
     )
@@ -108,18 +126,16 @@ async def cleanup_sandbox_capacity_leases(*, grace_seconds: int = 120) -> int:
             locked_at = NULL,
             locked_until = NULL
         WHERE lease.locked_by IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1
+              FROM worker_jobs AS wj
+              WHERE wj.id = lease.worker_job_id
+                AND wj.status::text = 'RUNNING'
+                AND wj.current_worker_id = lease.locked_by
+          )
           AND (
               lease.locked_until <= NOW()
-              OR (
-                  lease.locked_at <= NOW() - make_interval(secs => $1)
-                  AND NOT EXISTS (
-                      SELECT 1
-                      FROM worker_jobs AS wj
-                      WHERE wj.id = lease.worker_job_id
-                        AND wj.status::text = 'RUNNING'
-                        AND wj.current_worker_id = lease.locked_by
-                  )
-              )
+              OR lease.locked_at <= NOW() - make_interval(secs => $1)
           )
         """,
         grace_seconds,

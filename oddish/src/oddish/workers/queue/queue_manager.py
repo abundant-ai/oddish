@@ -45,13 +45,17 @@ async def run_polling_worker(
     # Lazy imports avoid a cycle during ``oddish.dispatch.cycle`` import:
     # cycle -> slots -> workers package -> queue_manager.
     from oddish.dispatch.backends.inprocess import InProcessDispatcher
-    from oddish.dispatch.cycle import run_dispatch_loop
+    from oddish.dispatch.cycle import (
+        load_sandbox_capacity_by_lane,
+        run_dispatch_loop,
+    )
 
     await run_dispatch_loop(
         InProcessDispatcher(worker_id_prefix="oss"),
         max_workers=max_workers,
         concurrency_limits_for=load_effective_model_concurrency_limits,
         on_stage=stamp_dispatch_stage,
+        capacity_by_lane=load_sandbox_capacity_by_lane,
         fallback_interval=poll_interval,
     )
 

@@ -124,7 +124,6 @@ reconciler_secrets = [*runtime_secrets, *ec2_control_secrets]
 
 @app.function(
     image=image,
-    volumes=worker_volumes,
     secrets=reconciler_secrets,
     timeout=300,
     cpu=1.0,

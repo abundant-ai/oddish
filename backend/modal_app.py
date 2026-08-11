@@ -982,6 +982,10 @@ def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal
 
 
 image = _build_worker_image()
+_HARBOR_VARIANT_IMAGES = {
+    variant.variant_id: _build_worker_image(variant)
+    for variant in HARBOR_VARIANTS.values()
+}
 
 
 def harbor_variant_images() -> dict[str, modal.Image]:
@@ -991,4 +995,4 @@ def harbor_variant_images() -> dict[str, modal.Image]:
     pin classified to ``<id>`` onto the matching ``process_single_job__<id>``
     Function bound to this image.
     """
-    return {v.variant_id: _build_worker_image(v) for v in HARBOR_VARIANTS.values()}
+    return dict(_HARBOR_VARIANT_IMAGES)

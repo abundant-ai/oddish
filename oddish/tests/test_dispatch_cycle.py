@@ -190,6 +190,83 @@ def test_build_dispatch_plan_applies_lane_capacity() -> None:
     assert plan.unit_plan == [("cpu-model", "default", "default")] * 4
 
 
+def test_run_dispatch_cycle_applies_lane_capacity_before_spawning() -> None:
+    dispatcher = FakeDispatcher()
+
+    async def _capacity_by_lane():
+        return ({"ec2_trial": 1}, {"ec2_trial": 1})
+
+    async def _go():
+        return await run_dispatch_cycle(
+            dispatcher,
+            max_workers=4,
+            concurrency_limits_for=_fake_limits(4),
+            capacity_by_lane=_capacity_by_lane,
+            _discover=_fake_discover(
+                [
+                    ("ec2-model", "default", "ec2_trial"),
+                    ("cpu-model", "default", "default"),
+                ]
+            ),
+            _counts=_fake_counts(
+                {
+                    ("org-a", "ec2-model", "default", "ec2_trial"): 4,
+                    ("org-a", "cpu-model", "default", "default"): 4,
+                },
+                {},
+            ),
+            _held=_fake_held({}),
+        )
+
+    result = asyncio.run(_go())
+    assert result.spawn_plan == ["cpu-model"] * 4
+    assert [handle.queue_key for handle in result.handles] == ["cpu-model"] * 4
+
+
+def test_sandbox_lane_capacity_is_zero_when_ec2_is_disabled(monkeypatch) -> None:
+    from oddish.config import settings
+    from oddish.dispatch import cycle
+    from oddish.workers.queue import sandbox_capacity
+
+    async def _unexpected_count(*, provider: str) -> int:
+        raise AssertionError(f"counted disabled provider {provider}")
+
+    monkeypatch.setattr(settings, "ec2_enabled", False)
+    monkeypatch.setattr(
+        sandbox_capacity,
+        "count_held_sandbox_capacity_leases",
+        _unexpected_count,
+    )
+
+    limits, held = asyncio.run(cycle.load_sandbox_capacity_by_lane())
+
+    assert limits == {"ec2_trial": 0}
+    assert held == {"ec2_trial": 0}
+
+
+def test_sandbox_lane_capacity_counts_live_ec2_leases(monkeypatch) -> None:
+    from oddish.config import settings
+    from oddish.dispatch import cycle
+    from oddish.workers.queue import sandbox_capacity
+
+    async def _count(*, provider: str) -> int:
+        assert provider == "ec2"
+        return 2
+
+    monkeypatch.setattr(settings, "ec2_enabled", True)
+    monkeypatch.setattr(settings, "ec2_max_concurrent_instances", 3)
+    monkeypatch.setattr(
+        sandbox_capacity,
+        "count_held_sandbox_capacity_leases",
+        _count,
+    )
+
+    limits, held = asyncio.run(cycle.load_sandbox_capacity_by_lane())
+
+    assert limits == {"ec2_trial": 3}
+    assert held == {"ec2_trial": 2}
+
+
 def test_run_dispatch_cycle_records_why_waiting_for_over_cap_queue() -> None:
     dispatcher = FakeDispatcher()
 

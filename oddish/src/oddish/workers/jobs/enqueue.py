@@ -41,9 +41,9 @@ class EnqueueRequest:
     # Set to BLOCKED to enqueue work that a later transition must release
     # (e.g. LLM trials gated on baseline outcomes).
     status: WorkerJobStatus = WorkerJobStatus.QUEUED
-    # Harbor execution variant ('default' | '<registry-id>' | 'ephemeral'). Part
-    # of the effective dispatch key: the dispatcher counts/spawns per
-    # (queue_key, harbor_variant_id) and the claim is scoped to it.
+    # Harbor execution variant ('default' | '<registry-id>' | 'ephemeral'). The
+    # dispatcher and claim path scope work by the full effective dispatch key:
+    # (queue_key, harbor_variant_id, execution_lane).
     harbor_variant_id: str = "default"
     execution_lane: str = "default"
 

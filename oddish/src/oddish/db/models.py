@@ -1543,7 +1543,8 @@ class QueueSlotModel(Base):
         DateTime(timezone=True), nullable=True
     )
     # When the current lease was taken. Lets the reconciler reclaim a leaked
-    # lease per-slot while honoring the short acquire-to-claim grace window.
+    # lease per-slot (keyed on the owning worker's liveness) while still
+    # honoring a short grace window for the brief acquire-to-claim gap.
     locked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

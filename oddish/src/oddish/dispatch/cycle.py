@@ -159,6 +159,23 @@ CountsFn = Callable[
 # concurrency, ahead of the worker showing RUNNING). Injectable like ``_counts``.
 HeldFn = Callable[[Sequence[str]], Awaitable[dict[str, int]]]
 ConcurrencyLimitsFn = Callable[[tuple[str, ...]], Awaitable[dict[str, int]]]
+LaneCapacityFn = Callable[[], Awaitable[tuple[dict[str, int], dict[str, int]]]]
+
+
+async def load_sandbox_capacity_by_lane() -> tuple[dict[str, int], dict[str, int]]:
+    """Load provider-wide capacity for host-agnostic dispatchers."""
+    from oddish.config import settings
+    from oddish.runtime.sandbox_lifecycle import EC2_TRIAL_EXECUTION_LANE
+    from oddish.workers.queue.sandbox_capacity import (
+        count_held_sandbox_capacity_leases,
+    )
+
+    limit = settings.ec2_max_concurrent_instances if settings.ec2_enabled else 0
+    held = await count_held_sandbox_capacity_leases(provider="ec2") if limit > 0 else 0
+    return (
+        {EC2_TRIAL_EXECUTION_LANE: limit},
+        {EC2_TRIAL_EXECUTION_LANE: held},
+    )
 
 
 async def build_dispatch_plan(
@@ -259,6 +276,7 @@ async def run_dispatch_cycle(
     _discover: DiscoverFn = discover_active_worker_job_queue_keys,
     _counts: CountsFn = get_worker_job_org_queue_counts,
     _held: HeldFn = count_held_queue_slots,
+    capacity_by_lane: LaneCapacityFn | None = None,
 ) -> DispatchCycleResult:
     """Run one dispatch tick: discover → plan → admit → spawn.
 
@@ -282,6 +300,7 @@ async def run_dispatch_cycle(
             _discover=_discover,
             _counts=_counts,
             _held=_held,
+            capacity_by_lane=capacity_by_lane,
         )
 
 
@@ -295,16 +314,23 @@ async def _run_dispatch_cycle(
     _discover: DiscoverFn = discover_active_worker_job_queue_keys,
     _counts: CountsFn = get_worker_job_org_queue_counts,
     _held: HeldFn = count_held_queue_slots,
+    capacity_by_lane: LaneCapacityFn | None = None,
 ) -> DispatchCycleResult:
+    capacity_limits_by_lane: dict[str, int] | None = None
+    held_by_lane: dict[str, int] | None = None
+    if capacity_by_lane is not None:
+        capacity_limits_by_lane, held_by_lane = await capacity_by_lane()
     plan = await build_dispatch_plan(
         max_workers=max_workers,
         concurrency_limits_for=concurrency_limits_for,
         _discover=_discover,
         _counts=_counts,
         _held=_held,
+        capacity_limits_by_lane=capacity_limits_by_lane,
+        held_by_lane=held_by_lane,
     )
-    # Off-Modal backends are image-agnostic (no per-variant images), so collapse
-    # variant units to queue_keys before admitting / fanning out.
+    # Admission remains queue-key based; dispatchers with ``spawn_units`` retain
+    # the exact variant and execution lane when they fan out workers.
     spawn_plan = [unit[0] for unit in plan.unit_plan]
 
     admitted, rejected = admit_spawn_plan(spawn_plan, admit)
@@ -461,6 +487,7 @@ async def run_dispatch_loop(
     concurrency_limits_for: ConcurrencyLimitsFn,
     admit: AdmissionCheck = admit_all,
     on_stage: Callable[[list[str], dict[str, str]], Awaitable[None]] | None = None,
+    capacity_by_lane: LaneCapacityFn | None = None,
     fallback_interval: float = 20.0,
     _stop: Callable[[], bool] = lambda: False,
 ) -> None:
@@ -492,6 +519,7 @@ async def run_dispatch_loop(
                 concurrency_limits_for=concurrency_limits_for,
                 admit=admit,
                 on_stage=on_stage,
+                capacity_by_lane=capacity_by_lane,
             )
         except asyncio.CancelledError:
             raise

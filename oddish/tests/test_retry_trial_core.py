@@ -174,6 +174,7 @@ async def test_retry_trial_flushes_new_trial_before_setting_superseded_fk(
         max_attempts,
         parent_job_id=None,
         harbor_variant_id="default",
+        execution_lane="default",
         registry_auth_enc=None,
     ):
         events.append(("enqueue", trial_id, queue_key, org_id, max_attempts))
