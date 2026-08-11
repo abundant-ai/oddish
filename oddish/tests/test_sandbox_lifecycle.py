@@ -340,3 +340,28 @@ async def test_capacity_reconciliation_releases_expired_or_orphaned_leases(
     assert "wj.status::text = 'RUNNING'" in pool.statement
     assert "wj.current_worker_id = lease.locked_by" in pool.statement
     assert pool.args == (90,)
+
+
+@pytest.mark.asyncio
+async def test_count_held_capacity_counts_every_live_provider_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Pool:
+        def __init__(self) -> None:
+            self.statement = ""
+            self.args = ()
+
+        async def fetchval(self, statement: str, *args):
+            self.statement = statement
+            self.args = args
+            return 2
+
+    pool = Pool()
+    monkeypatch.setattr(sandbox_capacity, "get_pool", lambda: _return(pool))
+
+    held = await sandbox_capacity.count_held_sandbox_capacity_leases(provider="ec2")
+
+    assert held == 2
+    assert "locked_by IS NOT NULL" in pool.statement
+    assert "locked_until > NOW()" in pool.statement
+    assert pool.args == ("ec2",)

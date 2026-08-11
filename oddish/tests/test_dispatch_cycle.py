@@ -163,6 +163,33 @@ def test_build_dispatch_plan_preserves_variant_units_and_counts_held_slots() -> 
     )
 
 
+def test_build_dispatch_plan_applies_lane_capacity() -> None:
+    async def _go():
+        return await build_dispatch_plan(
+            max_workers=4,
+            concurrency_limits_for=_fake_limits(4),
+            capacity_limits_by_lane={"ec2_trial": 1},
+            held_by_lane={"ec2_trial": 1},
+            _discover=_fake_discover(
+                [
+                    ("ec2-model", "default", "ec2_trial"),
+                    ("cpu-model", "default", "default"),
+                ]
+            ),
+            _counts=_fake_counts(
+                {
+                    ("org-a", "ec2-model", "default", "ec2_trial"): 4,
+                    ("org-a", "cpu-model", "default", "default"): 4,
+                },
+                {},
+            ),
+            _held=_fake_held({}),
+        )
+
+    plan = asyncio.run(_go())
+    assert plan.unit_plan == [("cpu-model", "default", "default")] * 4
+
+
 def test_run_dispatch_cycle_records_why_waiting_for_over_cap_queue() -> None:
     dispatcher = FakeDispatcher()
 

@@ -168,6 +168,8 @@ async def build_dispatch_plan(
     _discover: DiscoverFn = discover_active_worker_job_queue_keys,
     _counts: CountsFn = get_worker_job_org_queue_counts,
     _held: HeldFn = count_held_queue_slots,
+    capacity_limits_by_lane: dict[str, int] | None = None,
+    held_by_lane: dict[str, int] | None = None,
 ) -> DispatchPlan:
     """Discover queue work and compute the variant-preserving spawn plan.
 
@@ -190,6 +192,8 @@ async def build_dispatch_plan(
         concurrency_limits=concurrency_limits,
         max_workers=max_workers,
         held_by_queue_key=held_by_queue_key,
+        capacity_limits_by_lane=capacity_limits_by_lane,
+        held_by_lane=held_by_lane,
     )
 
     queued_by_queue: dict[str, int] = {}

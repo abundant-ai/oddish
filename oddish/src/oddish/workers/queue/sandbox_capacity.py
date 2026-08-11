@@ -81,6 +81,22 @@ async def release_sandbox_capacity_lease(
     return bool(command.endswith(" 1"))
 
 
+async def count_held_sandbox_capacity_leases(*, provider: str) -> int:
+    """Count every live capacity lease for a provider."""
+    pool = await get_pool()
+    count = await pool.fetchval(
+        """
+        SELECT COUNT(*)
+        FROM sandbox_capacity_leases
+        WHERE provider = $1
+          AND locked_by IS NOT NULL
+          AND locked_until > NOW()
+        """,
+        provider,
+    )
+    return int(count or 0)
+
+
 async def cleanup_sandbox_capacity_leases(*, grace_seconds: int = 120) -> int:
     """Release expired leases and vanished-worker leases after a short grace."""
     pool = await get_pool()
@@ -115,5 +131,6 @@ __all__ = [
     "SANDBOX_CAPACITY_LEASE_SECONDS",
     "acquire_sandbox_capacity_lease",
     "cleanup_sandbox_capacity_leases",
+    "count_held_sandbox_capacity_leases",
     "release_sandbox_capacity_lease",
 ]

@@ -185,6 +185,41 @@ def test_plan_never_exceeds_max_workers():
     assert len(plan) == 24
 
 
+def test_lane_capacity_preserves_spawn_budget_for_other_lanes():
+    queued_by_org_queue = {
+        ("org-a", "ec2-model", _D, "ec2_trial"): 100,
+        ("org-a", "default-model", _D, "default"): 100,
+    }
+    plan = build_spawn_plan(
+        queued_by_org_queue=queued_by_org_queue,
+        running_by_queue={},
+        concurrency_limits=_limits_for(queued_by_org_queue),
+        max_workers=4,
+        capacity_limits_by_lane={"ec2_trial": 2},
+        held_by_lane={"ec2_trial": 2},
+    )
+
+    assert plan == [("default-model", _D, "default")] * 4
+
+
+def test_lane_capacity_is_shared_across_queues_and_orgs():
+    queued_by_org_queue = {
+        ("org-a", "m1", _D, "ec2_trial"): 100,
+        ("org-b", "m2", _D, "ec2_trial"): 100,
+    }
+    plan = build_spawn_plan(
+        queued_by_org_queue=queued_by_org_queue,
+        running_by_queue={("m1", _D, "ec2_trial"): 1},
+        concurrency_limits=_limits_for(queued_by_org_queue),
+        max_workers=24,
+        capacity_limits_by_lane={"ec2_trial": 3},
+        held_by_lane={"ec2_trial": 2},
+    )
+
+    assert len(plan) == 1
+    assert plan[0][2] == "ec2_trial"
+
+
 def test_plan_never_exceeds_total_demand():
     queued_by_org_queue = {
         ("org-a", "m1", _D, "default"): 3,

@@ -555,8 +555,10 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   protected 14-hour hard maximum age overrides worker liveness only for exactly
   owned instances. `ODDISH_EC2_MAX_CONCURRENT_INSTANCES` is enforced globally
   with heartbeat-renewed `sandbox_capacity_leases`, independent of model/variant
-  queue slots. Inventory and termination failures stay visible in logs/metrics
-  while the rest of queue cleanup continues.
+  queue slots. The dispatcher budgets against live EC2 leases before spawning,
+  while each worker still acquires the lease atomically before claiming a job.
+  Inventory and termination failures stay visible in logs/metrics while the rest
+  of queue cleanup continues.
 - Claude trials run through AWS Bedrock by default. `CLAUDE_CODE_USE_BEDROCK=1` is
   baked into the Modal image, and Claude model aliases must normalize to an
   invokable inference profile (`global.` / `us.` / ARN) via

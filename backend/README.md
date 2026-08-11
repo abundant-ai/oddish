@@ -243,7 +243,9 @@ function. EC2 workers materialize the AWS credentials and SSH key as mode-`0600`
 temporary files, pass only the named AWS profile and key path to Harbor, and
 remove the raw secret variables from the Harbor child. Set
 `ODDISH_EC2_MAX_CONCURRENT_INSTANCES` to the provider-wide instance cap; this is
-enforced across every model and Harbor variant.
+enforced across every model and Harbor variant. The dispatcher subtracts live
+EC2 leases before spending its per-poll spawn budget, and workers retain the
+atomic lease-acquisition check before claiming a trial.
 The control policy must include `sts:GetCallerIdentity` in addition to the EC2
 launch, describe, image lookup, tag, and terminate actions listed in
 `.env.example`.

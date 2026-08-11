@@ -271,6 +271,8 @@ def build_spawn_plan(
     concurrency_limits: dict[str, int],
     max_workers: int,
     held_by_queue_key: dict[str, int] | None = None,
+    capacity_limits_by_lane: dict[str, int] | None = None,
+    held_by_lane: dict[str, int] | None = None,
 ) -> list[tuple[str, str, str]]:
     """Decide which ``(queue_key, harbor_variant_id, lane)`` workers to spawn.
 
@@ -297,6 +299,10 @@ def build_spawn_plan(
     limit. Omitted (Modal ``poll_queue``) -> RUNNING-only, unchanged. Capacity is
     decremented across orgs and across variants of the same queue_key, so the
     global cap continues to dominate.
+
+    Optional lane limits apply the same rule across queue keys. This lets a
+    provider-wide sandbox cap suppress only that execution lane without using
+    up the per-poll budget that other lanes can consume.
     """
     if max_workers <= 0 or not queued_by_org_queue:
         return []
@@ -333,6 +339,14 @@ def build_spawn_plan(
         in_flight = max(running_by_queue_key.get(queue_key, 0), held.get(queue_key, 0))
         global_capacity[queue_key] = max(limit - in_flight, 0)
 
+    running_by_lane: dict[str, int] = {}
+    for (_queue_key, _variant, lane), running in running_by_queue.items():
+        running_by_lane[lane] = running_by_lane.get(lane, 0) + (running or 0)
+    lane_capacity: dict[str, int] = {}
+    for lane, limit in (capacity_limits_by_lane or {}).items():
+        in_flight = max(running_by_lane.get(lane, 0), (held_by_lane or {}).get(lane, 0))
+        lane_capacity[lane] = max(limit - in_flight, 0)
+
     ordered_orgs = sorted(org_to_unit_queued.keys(), key=_org_sort_key)
     per_org_units: dict[str | None, list[tuple[str, str, str]]] = {
         org_id: sorted(org_to_unit_queued[org_id].keys()) for org_id in ordered_orgs
@@ -362,6 +376,10 @@ def build_spawn_plan(
                 if (
                     org_to_unit_queued[org_id].get(candidate, 0) > 0
                     and global_capacity.get(candidate[0], 0) > 0
+                    and (
+                        candidate[2] not in lane_capacity
+                        or lane_capacity[candidate[2]] > 0
+                    )
                 ):
                     picked = candidate
                     break
@@ -370,6 +388,8 @@ def build_spawn_plan(
                 spawn_plan.append(picked)
                 org_to_unit_queued[org_id][picked] -= 1
                 global_capacity[picked[0]] -= 1
+                if picked[2] in lane_capacity:
+                    lane_capacity[picked[2]] -= 1
                 progressed = True
 
         if not progressed:

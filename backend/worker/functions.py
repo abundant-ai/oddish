@@ -84,6 +84,7 @@ from oddish.workers.queue.slots import (
 from oddish.workers.queue.sandbox_capacity import (
     SANDBOX_CAPACITY_LEASE_SECONDS,
     acquire_sandbox_capacity_lease,
+    count_held_sandbox_capacity_leases,
     release_sandbox_capacity_lease,
 )
 from oddish.workers.queue.runtime_status import (
@@ -879,9 +880,21 @@ async def poll_queue():
         console.print("[cyan]Queue dispatcher starting...[/cyan]")
         await configure_storage_paths()
 
+        ec2_capacity_limit = (
+            settings.ec2_max_concurrent_instances if settings.ec2_enabled else 0
+        )
+        held_ec2_capacity = (
+            await count_held_sandbox_capacity_leases(provider="ec2")
+            if ec2_capacity_limit > 0
+            else 0
+        )
         plan = await build_dispatch_plan(
             max_workers=MAX_WORKERS_PER_POLL,
             concurrency_limits_for=_effective_model_concurrency_limits,
+            capacity_limits_by_lane={
+                EC2_TRIAL_EXECUTION_LANE: ec2_capacity_limit,
+            },
+            held_by_lane={EC2_TRIAL_EXECUTION_LANE: held_ec2_capacity},
         )
 
         for queue_key in plan.queue_keys:
@@ -929,6 +942,11 @@ async def poll_queue():
             console.print(f"[dim]queued_by_org: {summary}[/dim]")
 
         console.print(f"[dim]Spawn cap per poll: {MAX_WORKERS_PER_POLL}[/dim]")
+        console.print(
+            "[dim]EC2 capacity: "
+            f"held={held_ec2_capacity} "
+            f"limit={ec2_capacity_limit}[/dim]"
+        )
 
         spawn_plan = plan.unit_plan
 
