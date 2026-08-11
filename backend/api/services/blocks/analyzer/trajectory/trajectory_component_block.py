@@ -211,9 +211,13 @@ class TrajectoryBlock(Block):
 
     @staticmethod
     def _fmt_trajectory(d: _TrajectoryIn) -> str:
-        from api.services.summarize_trajectory import preprocess
+        from api.services.summarize_trajectory import drop_inert_steps, preprocess
 
-        return tp.trajectory_section(json.dumps(preprocess(d.trajectory)))
+        # Drop first: contentless steps are most of a trajectory, and there is
+        # no point truncating text on a step the model will never read.
+        return tp.trajectory_section(
+            json.dumps(preprocess(drop_inert_steps(d.trajectory)))
+        )
 
     # ---- parsing (parse is inherited; this filters elements) ----
     def _valid_step_ids(self) -> set[int]:
