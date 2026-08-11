@@ -151,9 +151,9 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 # trials run a heavier GKE-enabled Harbor on a dedicated blessed-variant image
 # (see HARBOR_VARIANTS in oddish.core.harbor_source), never this default.
 HARBOR_DEFAULT_SOURCE = "https://github.com/abundant-ai/harbor"
-# abundant-ai/harbor main, as resolved into both uv.lock files. Harbor PR #15
-# (the tbh agent's real CLI integration) merged as this commit.
-HARBOR_DEFAULT_SHA = "f6b86c4edb57d2993510aae0d10832790ee6ba0a"
+# abundant-ai/harbor main, as resolved into both uv.lock files. Harbor PR #19
+# adds per-model Grok Build context-window overrides.
+HARBOR_DEFAULT_SHA = "4440acb85122d293629f083262c13700f965a867"
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
@@ -1217,6 +1217,7 @@ class Settings(BaseSettings):
     # ``e127df61`` died that way on 2026-07-24.
     daytona_auto_stop_interval_mins: int = 120
     daytona_auto_delete_interval_mins: int = 60
+    daytona_sandbox_expiry_minutes: int = 780
 
     # Our Daytona region only permits ephemeral sandboxes -- ``daytona.create``
     # rejects persistent ones with "Only ephemeral sandboxes are permitted in
@@ -1225,22 +1226,16 @@ class Settings(BaseSettings):
     # still applies as the idle backstop.
     daytona_ephemeral: bool = True
 
-    # Name of a pre-baked Daytona snapshot for cc_chat sandboxes, with
-    # claude-code + harbor already installed. When set, sandboxes are created
-    # from it and ClaudeCodeRuntime.install() skips the npm/pip installs (~a
-    # minute of per-chat provisioning). Unset -> default base image + install
-    # at provision time. See docs/cc-chat-snapshot.md to build it.
-    cc_chat_daytona_snapshot: str = ""
-
-    # Snapshot for non-chat agent sandboxes (the analyzer). Falls back to the
-    # cc_chat snapshot above, which is the same image: ClaudeCodeRuntime.install
-    # checks claude-code and harbor independently, so a leaner analyzer-only
-    # image would still pay harbor's pip install on every sandbox.
+    # Name of a pre-baked Daytona snapshot for agent sandboxes (the analyzer),
+    # with claude-code + harbor already installed. When set, sandboxes are
+    # created from it and ClaudeCodeRuntime.install() skips the npm/pip installs
+    # (~a minute of per-sandbox provisioning). Unset -> default base image +
+    # install at provision time. See docs/agent-sandbox-snapshot.md to build it.
     agent_daytona_snapshot: str = ""
 
     @property
     def analyzer_snapshot(self) -> str:
-        return self.agent_daytona_snapshot or self.cc_chat_daytona_snapshot
+        return self.agent_daytona_snapshot
 
     # Kill switch for the hosted multi-block sandbox analyzer. Gates
     # registration, so unsetting it reverts to the core API path.
@@ -1308,13 +1303,6 @@ class Settings(BaseSettings):
     # API server
     api_host: str = "0.0.0.0"
     api_port: int = 8000
-
-    # Externally reachable base URL of the oddish backend API. Injected into
-    # global-scope cc_chat sandboxes (as ODDISH_API_BASE_URL) so the uploaded
-    # oddish-query CLI can call back into the backend. Optional override — when
-    # unset, the orchestrator derives it from MODAL_APP_NAME via
-    # api_base_url_for_modal_app(), so prod and PR previews work automatically.
-    public_api_base_url: str = ""
 
     # Database connection pools (constants — override on Settings class
     # in entry modules for different deployment targets)

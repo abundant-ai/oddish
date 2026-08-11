@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { fetcher } from "@/lib/api";
+import type { LineRange } from "@/lib/line-range";
 import {
   FileRenderer,
   isBinaryRendererFile,
@@ -42,11 +43,7 @@ import type {
   TaskVersionSummary,
   Trial,
 } from "@/lib/types";
-import {
-  StaticChecksPanel,
-  staticCheckState,
-  staticCheckSummary,
-} from "@/components/static-checks-panel";
+import { TaskOverviewPanel } from "@/components/task-overview-panel";
 import {
   getCancelActionLabel,
   isActivePipelineStatus,
@@ -103,13 +100,6 @@ async function* iterateNdjsonLines(
   }
 }
 
-function collectFileNodes(nodes: TreeNode[], map: Map<string, TreeNode>): void {
-  for (const node of nodes) {
-    if (node.type === "file") map.set(node.path, node);
-    if (node.children) collectFileNodes(node.children, map);
-  }
-}
-
 interface TreeNode {
   name: string;
   path: string;
@@ -118,8 +108,11 @@ interface TreeNode {
   content?: string;
   url?: string; // Presigned S3 URL for direct access
   size?: number; // File size in bytes
-  isTruncated?: boolean; // True if content was truncated due to size
 }
+
+type FilePreview =
+  | { kind: "text"; content: string; isTruncated: boolean; size: number | null }
+  | { kind: "binary"; url: string; size: number | null };
 
 interface TaskFilesPanelProps {
   isOpen: boolean;
@@ -148,6 +141,8 @@ interface TaskFilesPanelProps {
    * This allows reusing the file tree viewer for trial files.
    */
   filesUrl?: string;
+  /** Load only file metadata up front, then fetch bodies or URLs on selection. */
+  loadFilesLazily?: boolean;
   /** Explicit task version for file URLs; null deliberately means unversioned. */
   taskVersion?: number | null;
   /**
@@ -157,11 +152,39 @@ interface TaskFilesPanelProps {
    */
   initialFilePath?: string | null;
   /**
-   * Task id to source the STATIC CHECKS entry from, for panes that drive file
+   * Task id to source the TASK OVERVIEW entry from, for panes that drive file
    * listing via `filesUrl` and pass `taskId={null}` (e.g. the side-by-side
    * "Task definition" pane). Falls back to `taskId` when not set.
    */
   staticChecksTaskId?: string | null;
+  /** Detail already owned by the host page; avoids re-fetching the same key. */
+  taskDetail?: TaskDetailResponse | null;
+  /**
+   * Open a trial from the overview's aggregated QA in the caller's own
+   * context (drawer / panel). Return false when the trial isn't addressable
+   * there; the overview then falls back to the task page deep link.
+   */
+  onOpenTrial?: (trial: Trial) => boolean;
+  /**
+   * The host is still streaming `task.trials` (progressive experiment
+   * loading) — the overview renders an empty scope as loading, not as
+   * "no trials".
+   */
+  overviewTrialsLoading?: boolean;
+  /**
+   * Line range to highlight in the selected file — the ``?lines=L12-L20``
+   * deep-link anchor. Honored by line-oriented renderers only.
+   */
+  selectedLines?: LineRange | null;
+  /** Line selection changes from the file viewer, for URL sync. */
+  onSelectLinesChange?: (range: LineRange | null) => void;
+  /**
+   * Reports the selected file's path whenever a file is selected (tree
+   * clicks and auto-selection alike), so callers can keep ``?file=`` live
+   * and drop a stale ``?lines=`` when the file changes. Never called with
+   * null — transient resets (listing reloads, close) are not reported.
+   */
+  onSelectedFileChange?: (path: string) => void;
 }
 
 function getNodeName(path: string): string {
@@ -175,7 +198,7 @@ function getNodeName(path: string): string {
  *  versions[0]. */
 function pickChecksVersion(
   detail: TaskDetailResponse | undefined,
-  pinnedVersion?: number | null,
+  pinnedVersion?: number | null
 ): TaskVersionSummary | null {
   const versions = detail?.versions;
   if (!versions || versions.length === 0) return null;
@@ -188,6 +211,7 @@ function pickChecksVersion(
 
 // Truncate files larger than 100KB initially
 const TRUNCATE_THRESHOLD = 100 * 1024;
+const FILE_LOAD_ERROR = "Error loading file content";
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -259,6 +283,39 @@ function findNodeByPath(nodes: TreeNode[], path: string): TreeNode | null {
     }
   }
   return null;
+}
+
+function updateFileContent(
+  nodes: TreeNode[],
+  path: string,
+  content: string
+): TreeNode[] {
+  let changed = false;
+  const updated = nodes.map((node) => {
+    if (node.type === "file" && node.path === path) {
+      changed = true;
+      return { ...node, content };
+    }
+    if (node.children) {
+      const children = updateFileContent(node.children, path, content);
+      if (children !== node.children) {
+        changed = true;
+        return { ...node, children };
+      }
+    }
+    return node;
+  });
+  return changed ? updated : nodes;
+}
+
+function listedFilePreview(file: TreeNode): FilePreview | null {
+  const size = file.size ?? null;
+  if (isBinaryRendererFile(file.name)) {
+    return file.url ? { kind: "binary", url: file.url, size } : null;
+  }
+  return file.content === undefined
+    ? null
+    : { kind: "text", content: file.content, isTruncated: false, size };
 }
 
 /**
@@ -351,12 +408,19 @@ export function TaskFilesPanel({
   onRetryComplete,
   contentOnly = false,
   filesUrl,
+  loadFilesLazily = false,
   taskVersion,
   initialFilePath,
   staticChecksTaskId,
+  taskDetail,
+  onOpenTrial,
+  overviewTrialsLoading,
+  selectedLines,
+  onSelectLinesChange,
+  onSelectedFileChange,
 }: TaskFilesPanelProps) {
   const baseUrl = apiBaseUrl ?? "/api";
-  // The STATIC CHECKS entry is keyed off the task even in filesUrl-driven
+  // The TASK OVERVIEW entry is keyed off the task even in filesUrl-driven
   // panes (which pass taskId={null}); staticChecksTaskId supplies the id there.
   const effectiveChecksTaskId = taskId ?? staticChecksTaskId ?? null;
   // The pre_trial_* fields live on the version summaries of /detail, not on
@@ -371,28 +435,30 @@ export function TaskFilesPanel({
     error: checksLoadError,
     mutate: mutateChecks,
   } = useSWR<TaskDetailResponse>(checksKey, fetcher, {
-      // Poll while the checks run, and while task QA runs: the full QA job
-      // writes fresh findings when it lands, so the pane keeps tracking
-      // until both are terminal.
-      refreshInterval: (data) => {
-        const checksLive =
-          pickChecksVersion(data, taskVersion)?.pre_trial_status ===
-            "running" ||
-          pickChecksVersion(data, taskVersion)?.pre_trial_status === "queued";
-        const qaLive =
-          data?.task?.verdict_status === "queued" ||
-          data?.task?.verdict_status === "running";
-        return checksLive || qaLive ? 5000 : 0;
-      },
-    });
+    fallbackData: taskDetail ?? undefined,
+    revalidateOnMount: taskDetail == null,
+    // Poll while the checks run, and while task QA runs: the full QA job
+    // writes fresh findings when it lands, so the pane keeps tracking
+    // until both are terminal.
+    refreshInterval: (data) => {
+      const checksLive =
+        pickChecksVersion(data, taskVersion)?.pre_trial_status === "running" ||
+        pickChecksVersion(data, taskVersion)?.pre_trial_status === "queued";
+      const qaLive =
+        data?.task?.verdict_status === "queued" ||
+        data?.task?.verdict_status === "running";
+      return checksLive || qaLive ? 5000 : 0;
+    },
+  });
   // Scoped panes (the experiment drawer) pin the version whose files are on
   // screen; the checks must describe that same source.
   const checksVersion = pickChecksVersion(checksDetail, taskVersion);
-  const checksAvailable = showAnalysis !== false && effectiveChecksTaskId !== null;
+  const overviewAvailable =
+    showAnalysis !== false && effectiveChecksTaskId !== null;
   // Until /detail answers, the checks state is unknown, not "unaudited":
   // an enabled Run button on the misread queues an audit that wipes findings.
   const checksLoading =
-    checksAvailable && checksDetail === undefined && !checksLoadError;
+    overviewAvailable && checksDetail === undefined && !checksLoadError;
   // A failed revalidation with data already in hand is not "unavailable":
   // SWR keeps the stale data, and hiding live findings behind an error flash
   // on one bad poll is worse than showing them.
@@ -401,10 +467,9 @@ export function TaskFilesPanel({
       ? "Unable to load the static checks state."
       : null;
   const checksFindings = checksVersion?.pre_trial_findings ?? [];
-  const checksState = staticCheckState(
-    checksVersion?.pre_trial_status,
-    checksFindings.length,
-  );
+  const taskQaActive =
+    checksDetail?.task?.verdict_status === "queued" ||
+    checksDetail?.task?.verdict_status === "running";
   const resolvedFilesUrl = filesUrl ?? `${baseUrl}/tasks/${taskId}/files`;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -418,17 +483,13 @@ export function TaskFilesPanel({
   const [qaActionError, setQAActionError] = useState<string | null>(null);
   const [fileTree, setFileTree] = useState<TreeNode[]>([]);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
-  const [selectedFile, setSelectedFile] = useState<TreeNode | null>(null);
-  // Static checks are the default view; picking a file switches away.
-  const [checksSelected, setChecksSelected] = useState(true);
-  // The one gate for "the checks pane is on screen". The tree highlight and
-  // the main pane must both use it: with checks hidden (public share),
-  // checksSelected stays true but the pane shows a file.
-  const checksShowing = checksSelected && checksAvailable;
-  const [fileContent, setFileContent] = useState<string | null>(null);
-  const [fileContentLoading, setFileContentLoading] = useState(false);
-  const [isTruncated, setIsTruncated] = useState(false);
-  const [fullFileSize, setFullFileSize] = useState<number | null>(null);
+  const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
+  // The task overview is the default view; picking a file switches away.
+  const [overviewSelected, setOverviewSelected] = useState(true);
+  // The one gate for "the overview pane is on screen". The tree highlight and
+  // the main pane must both use it: with the overview hidden (public share),
+  // overviewSelected stays true but the pane shows a file.
+  const overviewShowing = overviewSelected && overviewAvailable;
   const [loadingFullFile, setLoadingFullFile] = useState(false);
   const [viewMode, setViewMode] = useState<"rendered" | "raw">("rendered");
   const [copiedTaskName, setCopiedTaskName] = useState(false);
@@ -436,12 +497,12 @@ export function TaskFilesPanel({
   const contentRef = useRef<HTMLDivElement>(null);
   const copiedTaskNameTimeoutRef = useRef<number | null>(null);
   const copiedFileContentTimeoutRef = useRef<number | null>(null);
-  // Mirrors selectedFile for the listing stream loop, so a content chunk
-  // for the file currently on screen can paint it immediately.
-  const selectedFileRef = useRef<TreeNode | null>(null);
+  // Mirrors initialFilePath for the async listing loader: applyListing
+  // runs in a fetch closure that would otherwise capture a stale value.
+  const initialFilePathRef = useRef(initialFilePath);
   useEffect(() => {
-    selectedFileRef.current = selectedFile;
-  }, [selectedFile]);
+    initialFilePathRef.current = initialFilePath;
+  }, [initialFilePath]);
   const verdictTaskKey =
     isOpen && taskId ? `${baseUrl}/tasks/${taskId}?include_trials=false` : null;
   const { data: verdictTask } = useSWR<Task>(verdictTaskKey, fetcher, {
@@ -457,21 +518,149 @@ export function TaskFilesPanel({
       ? taskVersion
       : ((verdictTask ?? task)?.current_version ?? null);
   const shouldScopeFilesToVersion = taskVersion !== undefined || !filesUrl;
+  const selectedFile = selectedFilePath
+    ? findNodeByPath(fileTree, selectedFilePath)
+    : null;
+
+  const buildSelectedFileUrl = (presign = false, maxBytes?: number) => {
+    if (!selectedFile) return null;
+    const params = new URLSearchParams();
+    if (presign) params.set("presign", "1");
+    if (maxBytes) params.set("max_bytes", String(maxBytes));
+    if (shouldScopeFilesToVersion && currentVersion != null) {
+      params.set("version", String(currentVersion));
+    }
+    const query = params.toString();
+    return `${resolvedFilesUrl}/${encodeURIComponent(selectedFile.path)}${
+      query ? `?${query}` : ""
+    }`;
+  };
+
+  const listedPreview = selectedFile ? listedFilePreview(selectedFile) : null;
+  const directBinaryPreview =
+    selectedFile && isBinaryRendererFile(selectedFile.name) && !loadFilesLazily
+      ? {
+          kind: "binary" as const,
+          url: selectedFile.url ?? buildSelectedFileUrl()!,
+          size: selectedFile.size ?? null,
+        }
+      : null;
+  const immediatePreview = listedPreview ?? directBinaryPreview;
+  const previewRequestKey =
+    selectedFile && !immediatePreview
+      ? [
+          "task-file-preview",
+          resolvedFilesUrl,
+          selectedFile.path,
+          shouldScopeFilesToVersion ? currentVersion : null,
+          loadFilesLazily,
+          filesUrl ? "raw" : "json",
+          selectedFile.url ?? null,
+          selectedFile.size ?? null,
+        ]
+      : null;
+  const {
+    data: fetchedPreview,
+    error: previewError,
+    mutate: mutateFilePreview,
+  } = useSWR<FilePreview>(
+    previewRequestKey,
+    async () => {
+      if (!selectedFile) throw new Error("No file selected");
+      const size = selectedFile.size ?? null;
+
+      if (isBinaryRendererFile(selectedFile.name)) {
+        const url = buildSelectedFileUrl(true);
+        if (!url) throw new Error("File URL unavailable");
+        const res = await fetch(url);
+        if (!res.ok) throw new Error("Failed to fetch file URL");
+        const data = (await res.json()) as { url?: string };
+        if (!data.url) throw new Error("File URL unavailable");
+        return { kind: "binary", url: data.url, size };
+      }
+
+      const shouldTruncate =
+        selectedFile.size !== undefined &&
+        selectedFile.size > TRUNCATE_THRESHOLD;
+      let content: string | null = null;
+      let isTruncated = false;
+
+      if (selectedFile.url) {
+        try {
+          const headers: HeadersInit = shouldTruncate
+            ? { Range: `bytes=0-${TRUNCATE_THRESHOLD - 1}` }
+            : {};
+          const s3Res = await fetch(selectedFile.url, { headers });
+          if (s3Res.ok || s3Res.status === 206) {
+            content = await s3Res.text();
+            isTruncated =
+              s3Res.status === 206 ||
+              (shouldTruncate && content.length >= TRUNCATE_THRESHOLD);
+          }
+        } catch {
+          content = null;
+        }
+      }
+
+      if (content === null) {
+        const url = buildSelectedFileUrl(
+          false,
+          loadFilesLazily && shouldTruncate ? TRUNCATE_THRESHOLD : undefined
+        );
+        if (!url) throw new Error("File content unavailable");
+        const res = await fetch(url);
+        if (!res.ok) throw new Error("Failed to fetch file content");
+        if (filesUrl && !loadFilesLazily) {
+          content = await res.text();
+        } else {
+          const data = (await res.json()) as {
+            content?: string;
+            is_truncated?: boolean;
+          };
+          content = data.content ?? "";
+          isTruncated = data.is_truncated ?? isTruncated;
+        }
+      }
+
+      return { kind: "text", content, isTruncated, size };
+    },
+    { revalidateOnFocus: false, shouldRetryOnError: false }
+  );
+  const selectedPreview = immediatePreview ?? fetchedPreview ?? null;
 
   const verdictSource = verdictTask ?? task;
   // The whole tree comes back from one recursive request — task trees are
   // shallow, there's nothing to page or lazy-load. stream=1 asks for
-  // NDJSON (tree first, then file bodies); endpoints that don't stream
-  // (trial files) ignore it and answer with plain JSON.
+  // NDJSON (the tree first, then every file's contents); endpoints that
+  // don't stream (trial files) ignore it and answer with plain JSON.
+  // Downloading every file's contents up front is only worth it when the
+  // pane shows a file immediately, which happens in the file-only view
+  // used by the public share page. Panes that open on the overview skip
+  // stream=1, because the plain listing is enough to draw the file tree
+  // and clicking a file downloads just that file. Before this condition
+  // existed, opening a trial downloaded the task's entire file contents
+  // behind a pane that was not showing any of them.
   const buildListingUrl = useCallback(() => {
     const params = new URLSearchParams();
     params.set("recursive", "1");
-    params.set("stream", "1");
+    if (loadFilesLazily) {
+      params.set("inline", "0");
+      params.set("presign", "0");
+    }
+    if (!overviewAvailable) {
+      params.set("stream", "1");
+    }
     if (shouldScopeFilesToVersion && currentVersion != null) {
       params.set("version", String(currentVersion));
     }
     return `${resolvedFilesUrl}?${params.toString()}`;
-  }, [resolvedFilesUrl, shouldScopeFilesToVersion, currentVersion]);
+  }, [
+    resolvedFilesUrl,
+    shouldScopeFilesToVersion,
+    currentVersion,
+    overviewAvailable,
+    loadFilesLazily,
+  ]);
 
   const orderedList = useMemo(() => orderedTasks ?? [], [orderedTasks]);
   const resolvedIndex =
@@ -661,12 +850,12 @@ export function TaskFilesPanel({
     try {
       const res = await fetch(
         `${baseUrl}/tasks/${effectiveChecksTaskId}/qa/pre-trial`,
-        { method: "POST" },
+        { method: "POST" }
       );
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(
-          data.detail || data.error || "Failed to queue static checks",
+          data.detail || data.error || "Failed to queue static checks"
         );
       }
       await mutateChecks();
@@ -690,9 +879,8 @@ export function TaskFilesPanel({
       setLoading(true);
       setError(null);
       setFileTree([]);
-      setSelectedFile(null);
-      setChecksSelected(true);
-      setFileContent(null);
+      setSelectedFilePath(null);
+      setOverviewSelected(true);
       setExpandedDirs(new Set());
 
       // Once the tree is painted, later stream failures must not replace
@@ -700,7 +888,7 @@ export function TaskFilesPanel({
       // to per-file fetches on click.
       let paintedTree = false;
 
-      // The checks pane is the default view, so nothing pre-selects
+      // The overview pane is the default view, so nothing pre-selects
       // behind it: a hidden auto-selected file prefetches content that
       // later flashes under whichever file the user actually picks. Only
       // the file-only view (public share) paints a file immediately.
@@ -709,13 +897,17 @@ export function TaskFilesPanel({
       const applyListing = (tree: TreeNode[]) => {
         paintedTree = true;
         setFileTree(tree);
-        if (!checksAvailable) {
+        // A deep-linked initialFilePath owns the first selection: letting
+        // the default auto-select land first would report the wrong path
+        // upward and clear the link's line anchor before the target file
+        // is applied.
+        if (!overviewAvailable && !initialFilePathRef.current) {
           const defaultFile =
             findNodeBySuffix(tree, "instruction.md") ??
             tree.find((node) => node.type === "file") ??
             findFirstFile(tree);
           if (defaultFile) {
-            setSelectedFile(defaultFile);
+            setSelectedFilePath(defaultFile.path);
           }
         }
       };
@@ -735,30 +927,22 @@ export function TaskFilesPanel({
         if (contentType.includes("application/x-ndjson") && res.body) {
           // Streamed listing: the tree paints as soon as the first chunk
           // lands; file bodies keep trickling in behind it.
-          let nodeMap: Map<string, TreeNode> | null = null;
+          let receivedListing = false;
           for await (const raw of iterateNdjsonLines(res.body)) {
             if (cancelled) return;
             const chunk = raw as FilesStreamChunk;
-            if (chunk.type === "listing" && nodeMap === null) {
+            if (chunk.type === "listing" && !receivedListing) {
               const tree = buildTreeFromListing(chunk.files || []);
-              nodeMap = new Map();
-              collectFileNodes(tree, nodeMap);
+              receivedListing = true;
               applyListing(tree);
               setLoading(false);
-            } else if (chunk.type === "content" && nodeMap) {
-              const node = nodeMap.get(chunk.path);
-              if (node && node.content === undefined) {
-                node.content = chunk.content;
-                // Paint immediately if this file is on screen waiting.
-                if (selectedFileRef.current?.path === chunk.path) {
-                  setFileContent(chunk.content);
-                  setIsTruncated(false);
-                  setFileContentLoading(false);
-                }
-              }
+            } else if (chunk.type === "content" && receivedListing) {
+              setFileTree((tree) =>
+                updateFileContent(tree, chunk.path, chunk.content)
+              );
             }
           }
-          if (nodeMap === null) {
+          if (!receivedListing) {
             throw new Error("Failed to fetch files");
           }
         } else {
@@ -786,147 +970,17 @@ export function TaskFilesPanel({
       cancelled = true;
       controller.abort();
     };
-  }, [isOpen, taskId, filesUrl, resolvedFilesUrl, buildListingUrl, checksAvailable]);
-
-  // Fetch file content when a file is selected
-  useEffect(() => {
-    if (
-      !selectedFile ||
-      selectedFile.type !== "file" ||
-      (!taskId && !filesUrl)
-    ) {
-      return;
-    }
-
-    // Binary renderer types (images, pdf, video, audio, xlsx, docx, archives)
-    // are rendered straight from the URL — don't fetch as text.
-    if (isBinaryRendererFile(selectedFile.name)) {
-      setFileContent("");
-      setIsTruncated(false);
-      setFullFileSize(selectedFile.size || null);
-      setFileContentLoading(false);
-      return;
-    }
-
-    // If we already have content cached in the node, use it. Clear the
-    // loading flag too: a cancelled in-flight fetch for the previously
-    // selected file skips its own reset, and inlined contents make this
-    // the common next branch.
-    if (selectedFile.content !== undefined) {
-      setFileContent(selectedFile.content);
-      setIsTruncated(selectedFile.isTruncated || false);
-      setFullFileSize(selectedFile.size || null);
-      setFileContentLoading(false);
-      return;
-    }
-
-    // Capture values for async function
-    const filePath = selectedFile.path;
-    const fileNode = selectedFile;
-    const presignedUrl = selectedFile.url;
-    const fileSize = selectedFile.size;
-    const shouldTruncate = fileSize && fileSize > TRUNCATE_THRESHOLD;
-    let cancelled = false;
-
-    async function fetchContent() {
-      setFileContentLoading(true);
-      setFullFileSize(fileSize || null);
-      // Deliberately keep the previously rendered ``fileContent`` and
-      // ``isTruncated`` visible while a new file loads so the preview
-      // doesn't blink between selections. They'll be replaced when the new
-      // content arrives.
-
-      try {
-        let content: string | null = null;
-        let truncated = false;
-
-        // Use presigned URL directly from listing if available (fast path)
-        if (presignedUrl) {
-          try {
-            // For large files, use Range header to fetch only first chunk
-            const headers: HeadersInit = shouldTruncate
-              ? { Range: `bytes=0-${TRUNCATE_THRESHOLD - 1}` }
-              : {};
-
-            const s3Res = await fetch(presignedUrl, { headers });
-
-            // 206 = Partial Content (Range request succeeded)
-            // 200 = Full content (Range not supported or file smaller than range)
-            if (s3Res.ok || s3Res.status === 206) {
-              content = await s3Res.text();
-              // Check if we got partial content
-              truncated =
-                s3Res.status === 206 ||
-                (!!shouldTruncate && content.length >= TRUNCATE_THRESHOLD);
-            }
-          } catch {
-            content = null;
-          }
-        }
-
-        // Fallback: fetch via backend proxy (slower, but works if presigned URL expired)
-        if (content === null) {
-          const encodedPath = encodeURIComponent(filePath);
-          const params = new URLSearchParams();
-          if (shouldScopeFilesToVersion && currentVersion != null) {
-            params.set("version", String(currentVersion));
-          }
-          const res = await fetch(
-            `${resolvedFilesUrl}/${encodedPath}${params.toString() ? `?${params.toString()}` : ""}`
-          );
-          if (!res.ok) {
-            throw new Error("Failed to fetch file content");
-          }
-          if (filesUrl) {
-            content = await res.text();
-          } else {
-            const data = await res.json();
-            content = data.content || "";
-          }
-        }
-
-        if (!cancelled) {
-          setFileContent(content || "");
-          setIsTruncated(truncated);
-          // Cache in the node
-          fileNode.content = content || "";
-          fileNode.isTruncated = truncated;
-        }
-      } catch {
-        if (!cancelled) {
-          // The listing stream may have delivered this file's body while
-          // the dedicated fetch was failing — never overwrite real
-          // content with an error message.
-          if (fileNode.content !== undefined) {
-            setFileContent(fileNode.content);
-            setIsTruncated(fileNode.isTruncated || false);
-          } else {
-            setFileContent("Error loading file content");
-          }
-        }
-      } finally {
-        if (!cancelled) {
-          setFileContentLoading(false);
-        }
-      }
-    }
-
-    fetchContent();
-
-    return () => {
-      cancelled = true;
-    };
   }, [
-    selectedFile,
+    isOpen,
     taskId,
     filesUrl,
     resolvedFilesUrl,
-    shouldScopeFilesToVersion,
-    currentVersion,
+    buildListingUrl,
+    overviewAvailable,
   ]);
 
   // Load full file content (when user clicks "Load full file")
-  const loadFullFile = useCallback(async () => {
+  async function loadFullFile() {
     if (!selectedFile) return;
 
     setLoadingFullFile(true);
@@ -935,64 +989,76 @@ export function TaskFilesPanel({
         const s3Res = await fetch(selectedFile.url);
         if (s3Res.ok) {
           const content = await s3Res.text();
-          setFileContent(content);
-          setIsTruncated(false);
-          // Update cache
-          selectedFile.content = content;
-          selectedFile.isTruncated = false;
+          await mutateFilePreview(
+            {
+              kind: "text",
+              content,
+              isTruncated: false,
+              size: selectedFile.size ?? null,
+            },
+            { revalidate: false }
+          );
         }
         return;
       }
 
-      const encodedPath = encodeURIComponent(selectedFile.path);
-      const params = new URLSearchParams();
-      if (shouldScopeFilesToVersion && currentVersion != null) {
-        params.set("version", String(currentVersion));
-      }
-      const res = await fetch(
-        `${resolvedFilesUrl}/${encodedPath}${params.toString() ? `?${params.toString()}` : ""}`
-      );
+      const url = buildSelectedFileUrl();
+      if (!url) return;
+      const res = await fetch(url);
       if (!res.ok) {
         return;
       }
-      if (filesUrl) {
-        const content = await res.text();
-        setFileContent(content);
+      let content: string;
+      if (filesUrl && !loadFilesLazily) {
+        content = await res.text();
       } else {
-        const data = await res.json();
-        setFileContent(data.content || "");
+        const data = (await res.json()) as { content?: string };
+        content = data.content ?? "";
       }
-      setIsTruncated(false);
+      await mutateFilePreview(
+        {
+          kind: "text",
+          content,
+          isTruncated: false,
+          size: selectedFile.size ?? null,
+        },
+        { revalidate: false }
+      );
     } catch {
       // Keep truncated content on error
     } finally {
       setLoadingFullFile(false);
     }
-  }, [
-    selectedFile,
-    filesUrl,
-    resolvedFilesUrl,
-    shouldScopeFilesToVersion,
-    currentVersion,
-  ]);
+  }
 
   // Scroll to top when selected file changes
   useEffect(() => {
     if (contentRef.current) {
       contentRef.current.scrollTop = 0;
     }
-  }, [selectedFile]);
+  }, [selectedFilePath]);
+
+  // Report file selection changes upward for URL sync. Null selections are
+  // never reported: every null write is a transient reset (listing reload,
+  // panel close) — no user gesture deselects a file — and reporting one
+  // would wipe a live ?file= / ?lines= anchor that the next listing is
+  // about to resolve (e.g. keeping the same file across trial navigation).
+  const onSelectedFileChangeRef = useRef(onSelectedFileChange);
+  useEffect(() => {
+    onSelectedFileChangeRef.current = onSelectedFileChange;
+  });
+  useEffect(() => {
+    if (selectedFilePath === null) return;
+    onSelectedFileChangeRef.current?.(selectedFilePath);
+  }, [selectedFilePath]);
 
   // Reset state when panel closes or task changes
   useEffect(() => {
     if (!isOpen) {
       setFileTree([]);
-      setSelectedFile(null);
-      setFileContent(null);
+      setSelectedFilePath(null);
       setError(null);
       setExpandedDirs(new Set());
-      setIsTruncated(false);
-      setFullFileSize(null);
       setLoadingFullFile(false);
       setQAActionError(null);
       setIsRunningQA(false);
@@ -1022,8 +1088,8 @@ export function TaskFilesPanel({
     // doesn't exist in this listing.
     if (!node || node.type !== "file") return;
 
-    setSelectedFile(node);
-    setChecksSelected(false);
+    setSelectedFilePath(node.path);
+    setOverviewSelected(false);
   }, [initialFilePath, fileTree]);
 
   useEffect(() => {
@@ -1078,7 +1144,7 @@ export function TaskFilesPanel({
   const renderFileTree = (nodes: TreeNode[], depth = 0) => {
     return nodes.map((node) => {
       const isExpanded = expandedDirs.has(node.path);
-      const isSelected = !checksShowing && selectedFile?.path === node.path;
+      const isSelected = !overviewShowing && selectedFile?.path === node.path;
       const Icon =
         node.type === "dir"
           ? isExpanded
@@ -1096,8 +1162,8 @@ export function TaskFilesPanel({
               if (node.type === "dir") {
                 toggleDir(node.path);
               } else {
-                setSelectedFile(node);
-                setChecksSelected(false);
+                setSelectedFilePath(node.path);
+                setOverviewSelected(false);
               }
             }}
             className={`h-auto w-full justify-start gap-1.5 rounded px-2 py-1 text-left font-mono text-xs transition-colors ${
@@ -1143,9 +1209,7 @@ export function TaskFilesPanel({
       );
     }
 
-    // A null fileContent only means "not loaded yet" — the load effect
-    // hasn't run for this selection. Failed loads store an error string.
-    if (fileContentLoading || fileContent === null) {
+    if (!selectedPreview && !previewError) {
       return (
         <div className="space-y-2 p-4">
           <Skeleton className="h-4 w-full" />
@@ -1154,49 +1218,52 @@ export function TaskFilesPanel({
         </div>
       );
     }
+    if (previewError || !selectedPreview) {
+      return (
+        <div className="text-muted-foreground flex h-full items-center justify-center text-sm">
+          {FILE_LOAD_ERROR}
+        </div>
+      );
+    }
 
     const isBinary = isBinaryRendererFile(selectedFile.name);
-
-    let fileUrl = selectedFile.url ?? null;
-    if (!fileUrl && (taskId || filesUrl)) {
-      const encodedPath = encodeURIComponent(selectedFile.path);
-      const params = new URLSearchParams();
-      if (shouldScopeFilesToVersion && currentVersion != null) {
-        params.set("version", String(currentVersion));
-      }
-      fileUrl = `${resolvedFilesUrl}/${encodedPath}${
-        params.toString() ? `?${params.toString()}` : ""
-      }`;
-    }
 
     return (
       <div className="flex h-full flex-col">
         <div className="min-h-0 flex-1 overflow-auto">
           <FileRenderer
             fileName={selectedFile.name}
-            url={fileUrl}
-            content={isBinary ? null : fileContent}
-            fileSize={fullFileSize ?? selectedFile.size}
+            url={selectedPreview.kind === "binary" ? selectedPreview.url : null}
+            content={
+              selectedPreview.kind === "text" ? selectedPreview.content : null
+            }
+            fileSize={selectedPreview.size ?? selectedFile.size}
             viewMode={viewMode}
+            selectedLines={selectedLines}
+            onSelectLines={onSelectLinesChange}
           />
         </div>
-        {!isBinary && isTruncated && (
-          <div className="border-border bg-muted/50 flex items-center justify-between border-t px-4 py-3">
-            <span className="text-muted-foreground text-xs">
-              Showing first {formatFileSize(TRUNCATE_THRESHOLD)} of{" "}
-              {fullFileSize ? formatFileSize(fullFileSize) : "large file"}
-            </span>
-            <Button
-              type="button"
-              size="sm"
-              onClick={loadFullFile}
-              disabled={loadingFullFile}
-              className="h-auto px-3 py-1.5 text-xs"
-            >
-              {loadingFullFile ? "Loading..." : "Load full file"}
-            </Button>
-          </div>
-        )}
+        {!isBinary &&
+          selectedPreview.kind === "text" &&
+          selectedPreview.isTruncated && (
+            <div className="border-border bg-muted/50 flex items-center justify-between border-t px-4 py-3">
+              <span className="text-muted-foreground text-xs">
+                Showing first {formatFileSize(TRUNCATE_THRESHOLD)} of{" "}
+                {selectedPreview.size
+                  ? formatFileSize(selectedPreview.size)
+                  : "large file"}
+              </span>
+              <Button
+                type="button"
+                size="sm"
+                onClick={loadFullFile}
+                disabled={loadingFullFile}
+                className="h-auto px-3 py-1.5 text-xs"
+              >
+                {loadingFullFile ? "Loading..." : "Load full file"}
+              </Button>
+            </div>
+          )}
       </div>
     );
   };
@@ -1266,8 +1333,8 @@ export function TaskFilesPanel({
   };
 
   const handleCopyFileContent = async () => {
-    if (fileContent === null) return;
-    await navigator.clipboard.writeText(fileContent);
+    if (selectedPreview?.kind !== "text") return;
+    await navigator.clipboard.writeText(selectedPreview.content);
     setCopiedFileContent(true);
     if (copiedFileContentTimeoutRef.current !== null) {
       window.clearTimeout(copiedFileContentTimeoutRef.current);
@@ -1287,7 +1354,7 @@ export function TaskFilesPanel({
     <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
       <div className="border-border bg-muted/30 max-h-[30vh] w-full border-b p-2 md:max-h-none md:w-56 md:border-r md:border-b-0 lg:w-64">
         <div className="space-y-2 px-2 py-2">
-          {checksAvailable && (
+          {overviewAvailable && (
             <>
               <Skeleton className="h-3 w-24" />
               <Skeleton className="h-6 w-full" />
@@ -1318,7 +1385,7 @@ export function TaskFilesPanel({
     <>
       {isListingLoading ? (
         listingSkeleton
-      ) : listingError && !checksAvailable ? (
+      ) : listingError && !overviewAvailable ? (
         <div className="flex flex-1 items-center justify-center p-4 sm:p-6">
           <div className="space-y-2 text-center">
             <AlertCircle className="mx-auto h-8 w-8 text-red-500" />
@@ -1328,7 +1395,7 @@ export function TaskFilesPanel({
             <p className="text-muted-foreground text-xs">{listingError}</p>
           </div>
         </div>
-      ) : fileTree.length === 0 && !checksAvailable ? (
+      ) : fileTree.length === 0 && !overviewAvailable ? (
         <div className="flex flex-1 items-center justify-center p-4 sm:p-6">
           <div className="space-y-2 text-center">
             <p className="text-muted-foreground text-sm">No files found</p>
@@ -1343,20 +1410,20 @@ export function TaskFilesPanel({
         <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
           <div className="border-border bg-muted/30 max-h-[30vh] w-full overflow-auto border-b md:max-h-none md:w-56 md:border-r md:border-b-0 lg:w-64">
             <div className="p-2">
-              {checksAvailable && (
+              {overviewAvailable && (
                 <div className="border-border mb-2 border-b pb-2">
                   <div className="text-muted-foreground px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
-                    Static checks
+                    Task overview
                   </div>
                   <button
                     type="button"
-                    onClick={() => setChecksSelected(true)}
+                    onClick={() => setOverviewSelected(true)}
                     className={`flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-sm ${
-                      checksSelected
+                      overviewSelected
                         ? "bg-primary/20 text-primary"
                         : "hover:bg-muted/50 cursor-pointer"
                     }`}
-                    title="View the task's static checks"
+                    title="View the task overview: task QA plus aggregated trial QA"
                   >
                     <ListChecks
                       className="h-3.5 w-3.5 shrink-0"
@@ -1367,7 +1434,7 @@ export function TaskFilesPanel({
                         ? "Loading…"
                         : checksLoadFailure
                           ? "Unavailable"
-                          : staticCheckSummary(checksState, checksFindings.length)}
+                          : "Overview"}
                     </span>
                   </button>
                 </div>
@@ -1389,7 +1456,7 @@ export function TaskFilesPanel({
             </div>
           </div>
           <div className="flex flex-1 flex-col overflow-hidden">
-            {!checksShowing && selectedFile && (
+            {!overviewShowing && selectedFile && (
               <div className="border-border bg-muted/30 flex items-center justify-between gap-2 border-b px-3 py-2 sm:px-4">
                 <div className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[10px] sm:text-xs">
                   {selectedFile.path}
@@ -1423,7 +1490,7 @@ export function TaskFilesPanel({
                       type="button"
                       variant="outline"
                       onClick={handleCopyFileContent}
-                      disabled={fileContent === null}
+                      disabled={selectedPreview?.kind !== "text"}
                       className="h-auto w-7 self-stretch p-0"
                       title="Copy raw content"
                       aria-label="Copy raw content"
@@ -1439,17 +1506,46 @@ export function TaskFilesPanel({
               </div>
             )}
             <div ref={contentRef} className="bg-card flex-1 overflow-auto">
-              {checksShowing ? (
-                <StaticChecksPanel
-                  findings={checksFindings}
-                  status={checksVersion?.pre_trial_status}
-                  error={checksVersion?.pre_trial_error}
-                  costUsd={checksVersion?.pre_trial_cost_usd}
-                  onRerun={handleRerunChecks}
-                  rerunning={checksRerunning}
-                  queueError={checksQueueError}
-                  loading={checksLoading}
-                  loadError={checksLoadFailure}
+              {overviewShowing ? (
+                <TaskOverviewPanel
+                  taskId={effectiveChecksTaskId}
+                  apiBaseUrl={baseUrl}
+                  // The pinned version wins outright — falling back to the
+                  // /detail-resolved version while it loads would briefly
+                  // widen the trial aggregation to every version. Without a
+                  // pin, undefined keeps the aggregation waiting until the
+                  // version resolves; only a loaded task with no versions is
+                  // genuinely unscoped.
+                  version={
+                    taskVersion !== undefined
+                      ? taskVersion
+                      : checksVersion
+                        ? checksVersion.version
+                        : checksDetail !== undefined
+                          ? null
+                          : undefined
+                  }
+                  // The host's rows are the authoritative set: an experiment
+                  // drawer aggregates only its own trials. A task prop with
+                  // no trials yet still scopes (empty + overviewTrialsLoading
+                  // renders as loading).
+                  scopeTrials={task ? (task.trials ?? []) : null}
+                  scopeLoading={overviewTrialsLoading}
+                  // Panes with their own header render the verdict card there;
+                  // the filesUrl-driven panes have no header, so the overview
+                  // carries the verdict itself.
+                  verdictTask={filesUrl ? (checksDetail?.task ?? null) : null}
+                  checksFindings={checksFindings}
+                  checksStatus={checksVersion?.pre_trial_status}
+                  checksError={checksVersion?.pre_trial_error}
+                  checksCostUsd={checksVersion?.pre_trial_cost_usd}
+                  onRerunChecks={handleRerunChecks}
+                  checksRerunning={checksRerunning}
+                  checksQueueError={checksQueueError}
+                  checksLoading={checksLoading}
+                  checksLoadError={checksLoadFailure}
+                  qaActive={taskQaActive}
+                  onOpenTrial={onOpenTrial}
                 />
               ) : (
                 renderFileContent()

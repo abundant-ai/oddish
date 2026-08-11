@@ -2,7 +2,6 @@
 
 import {
   Suspense,
-  use,
   useCallback,
   useEffect,
   useMemo,
@@ -16,7 +15,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { ExperimentShareButton } from "@/components/experiment-share-button";
-import { ChatButton } from "@/components/cc-chat/chat-button";
 import {
   ProbeLaunchButton,
   resolveProbeHostTask,
@@ -40,8 +38,7 @@ import {
 } from "@/lib/experiment-task-pages";
 import { ExperimentPageSkeleton } from "./experiment-skeleton";
 
-// Paper-styled header action button, shared by the Probe and Chat buttons so
-// they render as the same element.
+// Shared by the experiment header action buttons so they render identically.
 const HEADER_ACTION_BUTTON_CLASS =
   "h-8 select-none gap-[7px] rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] leading-none text-[color:var(--paper-ink)] transition-colors hover:border-[color:var(--paper-ink-4)] hover:bg-[color:var(--paper-surface-2)]";
 
@@ -106,28 +103,23 @@ async function fetchExperimentTasksPage(url: string): Promise<Task[]> {
 
 type ExperimentClientPageProps = {
   experimentId: string;
-  initialTasksPromise: Promise<Task[] | null>;
 };
 
 export function ExperimentClientPage({
   experimentId,
-  initialTasksPromise,
 }: ExperimentClientPageProps) {
   return (
+    // The Suspense boundary is required because ExperimentDetailView uses
+    // useSearchParams, which needs one during prerendering. The key causes
+    // everything inside to remount when the experiment changes, so no
+    // state carries over from one experiment to another.
     <Suspense key={experimentId} fallback={<ExperimentPageSkeleton />}>
-      <ExperimentContent
-        experimentId={experimentId}
-        initialTasksPromise={initialTasksPromise}
-      />
+      <ExperimentContent experimentId={experimentId} />
     </Suspense>
   );
 }
 
-function ExperimentContent({
-  experimentId,
-  initialTasksPromise,
-}: ExperimentClientPageProps) {
-  const initialTasks = use(initialTasksPromise);
+function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
   const { orgRole } = useAuth();
 
   const [isEditingName, setIsEditingName] = useState(false);
@@ -157,11 +149,7 @@ function ExperimentContent({
   } = useSWR<Task[]>(allTasksUrl, fetchExperimentTasksPage, {
     refreshInterval: 0,
     revalidateOnFocus: false,
-    // A client-side revisit can otherwise prefer SWR's old shell over fresh
-    // server fallback data after the task's default version changes.
-    revalidateOnMount: true,
     revalidateIfStale: true,
-    fallbackData: initialTasks ?? undefined,
   });
 
   // Phase 2: Progressively fetch compact trial data in batches.
@@ -623,12 +611,6 @@ function ExperimentContent({
                     className={HEADER_ACTION_BUTTON_CLASS}
                   />
                 ) : null}
-                <ChatButton
-                  scopeKind="experiment"
-                  scopeId={experimentId}
-                  variant="ghost"
-                  className={HEADER_ACTION_BUTTON_CLASS}
-                />
                 <ExperimentShareButton
                   experimentId={experimentId}
                   canManageShare={canManageExperimentShare}

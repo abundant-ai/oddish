@@ -332,9 +332,7 @@ async def test_resolve_trial_directory_prefers_existing_local_path(
 
 
 @pytest.mark.asyncio
-async def test_resolve_trial_directory_missing_everywhere_raises(
-    monkeypatch, tmp_path
-):
+async def test_resolve_trial_directory_missing_everywhere_raises(monkeypatch, tmp_path):
     storage = _FakeStorage(exists=False)
     monkeypatch.setattr(storage_mod, "get_storage_client", lambda: storage)
 
@@ -623,6 +621,33 @@ async def test_get_task_file_content_reads_archive_member(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_task_file_content_caps_archive_member(monkeypatch):
+    archive_bytes = _make_task_archive({"large.txt": "é" * 100})
+    storage = storage_mod.StorageClient()
+    storage._client = object()
+
+    async def fake_object_exists(s3_key: str) -> bool:
+        return s3_key == "tasks/task-123/.oddish-task.tar.gz"
+
+    async def fake_download_bytes(_s3_key: str) -> bytes:
+        return archive_bytes
+
+    monkeypatch.setattr(storage, "object_exists", fake_object_exists)
+    monkeypatch.setattr(storage, "download_bytes", fake_download_bytes)
+
+    payload = await storage.get_task_file_content(
+        task_id="task-123",
+        file_path="large.txt",
+        presign=True,
+        max_bytes=5,
+    )
+
+    assert payload["content"] == "éé"
+    assert payload["size"] == 200
+    assert payload["is_truncated"] is True
+
+
+@pytest.mark.asyncio
 async def test_delete_prefix_deletes_all_matching_s3_objects(monkeypatch):
     fake_client = _FakeS3Client(
         pages=[
@@ -763,6 +788,50 @@ async def test_list_task_files_uses_expanded_layout_when_available(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_expanded_tree_listing_skips_contents_and_urls(monkeypatch):
+    storage = storage_mod.StorageClient()
+    storage._client = object()
+    expanded_prefix = "tasks/task-123/v2-files/"
+
+    async def fake_object_exists(s3_key: str) -> bool:
+        return s3_key == f"{expanded_prefix}.oddish-manifest.json"
+
+    async def fake_list_objects_all(prefix: str) -> list[dict]:
+        assert prefix == expanded_prefix
+        return _expanded_objects(
+            expanded_prefix,
+            {
+                "instruction.md": 12,
+                ".oddish-manifest.json": 99,
+            },
+        )
+
+    async def unexpected_call(*_args, **_kwargs):
+        raise AssertionError("tree-only listing must not fetch bodies or URLs")
+
+    monkeypatch.setattr(storage, "object_exists", fake_object_exists)
+    monkeypatch.setattr(storage, "list_objects_all", fake_list_objects_all)
+    monkeypatch.setattr(storage, "download_bytes", unexpected_call)
+    monkeypatch.setattr(storage, "get_presigned_urls_batch", unexpected_call)
+
+    listing = await storage.list_task_files(
+        task_id="task-123",
+        prefix=None,
+        recursive=True,
+        limit=1000,
+        cursor=None,
+        presign=False,
+        version=2,
+        inline=False,
+    )
+
+    assert [entry["path"] for entry in listing["files"]] == ["instruction.md"]
+    assert all("content" not in entry for entry in listing["files"])
+    assert all("url" not in entry for entry in listing["files"])
+    assert listing["presigned"] is False
+
+
+@pytest.mark.asyncio
 async def test_list_task_files_expanded_layout_inlines_small_contents(monkeypatch):
     """Recursive expanded-layout listings fetch small text objects
     server-side and attach their contents; binary objects are left to the
@@ -880,8 +949,14 @@ async def test_get_task_file_content_uses_expanded_layout(monkeypatch):
         assert s3_key == f"{expanded_prefix}task.toml"
         return "https://example.com/expanded-task"
 
+    async def fake_download_text_prefix(s3_key: str, max_bytes: int):
+        assert s3_key == f"{expanded_prefix}task.toml"
+        assert max_bytes == 5
+        return "name ", True
+
     monkeypatch.setattr(storage, "object_exists", fake_object_exists)
     monkeypatch.setattr(storage, "download_text", fake_download_text)
+    monkeypatch.setattr(storage, "download_text_prefix", fake_download_text_prefix)
     monkeypatch.setattr(storage, "get_presigned_url", fake_get_presigned_url)
 
     payload = await storage.get_task_file_content(
@@ -901,6 +976,47 @@ async def test_get_task_file_content_uses_expanded_layout(monkeypatch):
     )
     assert presigned_payload["url"] == "https://example.com/expanded-task"
     assert "content" not in presigned_payload
+
+    preview_payload = await storage.get_task_file_content(
+        task_id="task-123",
+        file_path="task.toml",
+        presign=False,
+        version=3,
+        max_bytes=5,
+    )
+    assert preview_payload["content"] == "name "
+    assert preview_payload["is_truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_download_text_prefix_uses_range_and_reports_truncation():
+    class Body:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def read(self):
+            return "ééé".encode()
+
+    class Client:
+        def __init__(self):
+            self.request = None
+
+        async def get_object(self, **kwargs):
+            self.request = kwargs
+            return {"Body": Body()}
+
+    storage = storage_mod.StorageClient()
+    client = Client()
+    storage._client = client
+
+    content, is_truncated = await storage.download_text_prefix("large.txt", 5)
+
+    assert client.request["Range"] == "bytes=0-5"
+    assert content == "éé"
+    assert is_truncated is True
 
 
 @pytest.mark.asyncio

@@ -16,6 +16,7 @@ from rich.console import Console
 
 from oddish.core.endpoints import (
     backfill_task_analysis_core,
+    browse_experiment_options_core,
     browse_tasks_core,
     build_task_sweep_response,
     cancel_task_qa_core,
@@ -91,6 +92,7 @@ from oddish.db import (
 )
 from oddish.schemas import (
     BackfillQARequest,
+    ExperimentOptionsResponse,
     TaskBatchCancelRequest,
     TaskBrowseResponse,
     ExperimentCombineRequest,
@@ -536,6 +538,29 @@ async def browse_tasks(
         )
 
 
+@api.get(
+    "/tasks/browse/experiment-options", response_model=ExperimentOptionsResponse
+)
+async def browse_experiment_options(
+    query: str | None = Query(None),
+    ids: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+) -> ExperimentOptionsResponse:
+    """Typeahead options for the task-browser experiment filter.
+
+    ``query`` narrows by case-insensitive name substring; ``ids`` (CSV) instead
+    hydrates already-selected filter chips and wins over ``query``. Replaces
+    the deprecated, always-empty ``facets.experiments`` list.
+    """
+    async with get_session() as session:
+        return await browse_experiment_options_core(
+            session,
+            query=query,
+            ids=_split_tag_csv(ids),
+            limit=limit,
+        )
+
+
 @api.get("/tasks/{task_id}", response_model=TaskStatusResponse)
 async def get_task_status(task_id: str):
     """Get status of a task with all trials, analyses, and verdict."""
@@ -826,6 +851,7 @@ async def list_task_files(
     limit: int = Query(1000, ge=1, le=1000),
     cursor: str | None = Query(None),
     presign: bool = Query(True),
+    inline: bool = Query(True),
     version: int | None = Query(None, description="Task version number"),
     stream: bool = Query(
         False,
@@ -867,6 +893,7 @@ async def list_task_files(
         cursor=cursor,
         presign=presign,
         version=version,
+        inline=inline,
     )
 
 
@@ -876,6 +903,7 @@ async def get_task_file_content(
     file_path: str,
     presign: bool = Query(False),
     version: int | None = Query(None, description="Task version number"),
+    max_bytes: int | None = Query(None, ge=1),
 ) -> dict:
     """Get content of a specific task file from S3."""
     async with get_session() as session:
@@ -896,6 +924,7 @@ async def get_task_file_content(
         file_path=file_path,
         presign=presign,
         version=version,
+        max_bytes=max_bytes,
     )
 
 

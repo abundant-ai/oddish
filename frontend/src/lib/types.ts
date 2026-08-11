@@ -93,6 +93,14 @@ export interface TagListResponse {
   items: TagSummary[];
 }
 
+/** Whether this trial exploited a pre-trial finding, by finding id. */
+interface TrialExploitation {
+  links_to?: string | null;
+  exploited?: boolean | null;
+  exploit_evidence?: string | null;
+  causal?: boolean | null;
+}
+
 interface TrialAnalysis {
   trial_name?: string;
   classification: AnalysisClassification;
@@ -102,12 +110,9 @@ interface TrialAnalysis {
   recommendation?: string;
   /** Task weaknesses this trial revealed; same shape as pre-trial findings. */
   action_items?: PreTrialFinding[];
+  /** Per pre-trial finding assessments — the trial↔audit finding join. */
+  exploitation?: TrialExploitation[];
   reward?: number | null;
-  prompt_kind?: string;
-  prompt_version?: number;
-  prompt_id?: string;
-  prompt_scope?: "global" | "org" | "user" | "experiment" | "task" | "trial";
-  prompt_scope_id?: string | null;
 }
 
 interface TrialQueueInfo {
@@ -200,6 +205,8 @@ export interface Trial {
 }
 
 interface TaskVerdict {
+  /** Absent on rows stored before the accept/reject label existed. */
+  verdict?: "accept" | "reject";
   is_good: boolean;
   confidence: "high" | "medium" | "low";
   primary_issue?: string | null;
@@ -305,6 +312,9 @@ export interface TaskBrowseResponse {
   has_more: boolean;
 }
 
+// The backend response also carries a deprecated `experiments` field that is
+// always [] (options come from /api/tasks/browse/experiment-options instead);
+// it is deliberately absent here so nothing new codes against it.
 export interface TaskBrowseFacets {
   agents: string[];
   models: string[];
@@ -313,7 +323,17 @@ export interface TaskBrowseFacets {
   environments: string[];
   harbor_stages: string[];
   analysis_classifications: string[];
-  experiments: { id: string; name: string }[];
+}
+
+// GET /api/tasks/browse/experiment-options — async options for the sidebar
+// experiment filter (query= substring search, ids= chip hydration).
+export interface ExperimentOption {
+  id: string;
+  name: string;
+}
+
+export interface ExperimentOptionsResponse {
+  items: ExperimentOption[];
 }
 
 export interface TaskVersionSummary {
@@ -366,6 +386,8 @@ export interface PreTrialFinding {
   detail?: string | null;
   recommendation?: string | null;
   exploited?: boolean | null;
+  /** On post-trial items: the pre-trial finding id this one relates to. */
+  links_to?: string | null;
 }
 
 interface TaskCostTotals {
@@ -681,7 +703,8 @@ export type TrajectoryComponentKind =
   | "thinking_recall"
   | "thinking_understand"
   | "thinking_hypothesize"
-  | "thinking_correction"
+  | "writing_plan"
+  | "plan_correction"
   | "implementing"
   | "implementing_correction"
   | "writing_tests"
@@ -689,7 +712,9 @@ export type TrajectoryComponentKind =
   | "testing_custom"
   | "testing_edge_cases"
   | "debugging"
+  | "writing_report"
   // Retired from the backend enum, but stored summaries still carry them.
+  | "thinking_correction"
   | "thinking_diagnose"
   | "testing_custom_edge_cases";
 
@@ -1146,9 +1171,4 @@ export interface Report {
   experiment_ids: string[];
   created_at?: string | null;
   finished_at?: string | null;
-}
-
-export interface ExperimentOption {
-  id: string;
-  name: string;
 }

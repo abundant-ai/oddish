@@ -54,7 +54,7 @@ async def repro(analyzer_id: str, bucket: str, limit: int) -> None:
 
     from sqlalchemy import text
 
-    from api.services.cc_chat.analyzer_block_runner import run_analyzer_blocks
+    from api.services.blocks.analyzer.analyzer_block_runner import run_analyzer_blocks
     from oddish.db import get_session
     from oddish.evals.analyzer.bucketing import bucket_subanalyses
     from oddish.evals.analyzer.core import build_roster

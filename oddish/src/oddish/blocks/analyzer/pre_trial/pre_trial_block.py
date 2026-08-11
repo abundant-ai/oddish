@@ -62,7 +62,7 @@ class PreTrialBlock(Block):
         recovery reached only the other one, so the fix shipped and prod did
         not move (#959). One implementation, two callers.
 
-        The registry prompt asks for "the structured list of action items", so
+        The audit prompt asks for "the structured list of action items", so
         models sometimes return a bare array instead of the envelope; wrap it
         rather than failing a valid audit on shape alone. Items that fail
         validation are dropped individually: an audit costs minutes of agent
@@ -103,7 +103,10 @@ class PreTrialBlock(Block):
         return {**data, "items": kept}
 
     @classmethod
-    def parse_json(cls, text: str):
+    def parse_json(cls, text: str, *, expect: type | None = None):
+        # Deliberately drops ``expect``: a bare array is a valid answer here
+        # (``_normalize`` wraps it), so this block opts out of the object-only
+        # recovery ``Block.parse`` asks for.
         return cls._normalize(super().parse_json(text))
 
     def to_action_items(self, raw: str) -> dict:
@@ -119,4 +122,4 @@ class PreTrialBlock(Block):
         defaults to empty) and silently produce zero findings on every run.
         """
         obj = self._normalize(parse_stream_json_result(raw))
-        return self.filter_output(self.output_schema(**obj)).model_dump()
+        return self.filter_output(self.output_schema.model_validate(obj)).model_dump()

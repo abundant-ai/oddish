@@ -4,8 +4,8 @@ Phase A scope is exactly the four oddish-side provider concerns that are
 consolidated out of scattered ``if environment == …`` branches:
 capability reporting, Harbor env-kwargs, hung-sandbox teardown, and Modal
 debug capture. The full ``Sandbox`` lifecycle verb set (create/exec/logs/
-files/stop/delete) from spec §5.1 lands with its first consumer (cc_chat)
-in a later phase; it is intentionally NOT defined here (YAGNI).
+files/stop/delete) from spec §5.1 lands with its first consumer in a later
+phase; it is intentionally NOT defined here (YAGNI).
 """
 
 from __future__ import annotations

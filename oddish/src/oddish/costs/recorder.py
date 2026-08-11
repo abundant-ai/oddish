@@ -512,7 +512,7 @@ async def reconcile_compute_cost_spans() -> int:
                             basis="reconciled",
                         )
                     )
-                    closed += int(result.rowcount or 0)
+                    closed += int(getattr(result, "rowcount", 0) or 0)
                     continue
                 close_at = job_finished_at or trial_heartbeat_at or span.started_at
                 closed += await _close_rows(

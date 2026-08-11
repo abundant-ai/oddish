@@ -1408,6 +1408,11 @@ class TaskBrowseFacets(BaseModel):
     Trial-derived facets are scoped to the org's non-probe, non-superseded
     trials. Enum-valued filters (task status, priority, trial status, origin)
     are static and supplied client-side, so they are not returned here.
+
+    ``experiments`` is deprecated and always empty; it used to carry every org
+    experiment (7.7MB at 126k experiments). Experiment filter options are
+    served by ``GET /tasks/browse/experiment-options`` instead. The field is
+    kept so the response shape does not break existing consumers.
     """
 
     agents: list[str] = Field(default_factory=list)
@@ -1417,6 +1422,7 @@ class TaskBrowseFacets(BaseModel):
     environments: list[str] = Field(default_factory=list)
     harbor_stages: list[str] = Field(default_factory=list)
     analysis_classifications: list[str] = Field(default_factory=list)
+    # Deprecated: always empty — see the class docstring.
     experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
 
 
@@ -1964,6 +1970,17 @@ class ExperimentOption(BaseModel):
     name: str
 
 
+class ExperimentOptionsResponse(BaseModel):
+    """Typeahead options for the task-browser experiment filter.
+
+    Served by ``GET /tasks/browse/experiment-options``. Replaces the retired
+    ``TaskBrowseFacets.experiments`` all-org list with a bounded, searchable
+    page, reusing the adjacent ``ExperimentOption`` item shape.
+    """
+
+    items: list[ExperimentOption] = Field(default_factory=list)
+
+
 class ReportResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -1983,91 +2000,6 @@ class ReportResponse(BaseModel):
     experiment_ids: list[str] = []
     created_at: datetime | None = None
     finished_at: datetime | None = None
-
-
-class QAPromptVariant(BaseModel):
-    kind: str = Field(min_length=1, max_length=128)
-    version: int | None = Field(default=None, ge=1)
-
-
-class CustomQARunRequest(BaseModel):
-    scope_type: Literal["experiment", "task", "trial"]
-    scope_id: str = Field(min_length=1, max_length=64)
-    variants: list[QAPromptVariant] = Field(min_length=1)
-    model: str = "claude-sonnet-4-6"
-    reasoning_effort: Literal["low", "medium", "high"] | None = None
-    backend: Literal["api", "sandbox"] = "sandbox"
-    allow_oddish_cli: bool = False
-
-
-class CustomQARunResponse(BaseModel):
-    id: str
-    prompt_kind: str
-    prompt_version: int
-    prompt_version_id: str
-    analyzer_block_id: str
-    scope_type: str
-    scope_id: str
-    model: str
-    reasoning_effort: str | None
-    backend: str
-    status: str
-    output: Any | None = None
-    error: str | None = None
-    run_config: dict
-
-
-class QAJobAssignRequest(BaseModel):
-    """Create or update one QA job assignment at a scope.
-
-    ``model`` and ``backend`` are optional because they have per-stage
-    deployment defaults (``settings.pre_trial_model`` / ``analysis_model``),
-    which is also what makes a bare ``qa-jobs disable`` possible -- a
-    suppression row still has to satisfy the NOT NULL columns.
-    """
-
-    prompt: str = Field(min_length=1, description="Prompt kind, or prompt id.")
-    stage: Literal["pre_trial", "post_trial"]
-    prompt_version: int | None = Field(default=None, ge=1)
-    model: str | None = None
-    reasoning_effort: Literal["low", "medium", "high"] | None = None
-    backend: Literal["api", "sandbox"] | None = None
-    # None (field omitted) means "don't touch runner config" on an update, as a
-    # bare `qa-jobs disable` does; a create still lands False.
-    allow_oddish_cli: bool | None = None
-    enabled: bool = True
-
-
-class QAJobResponse(BaseModel):
-    id: str
-    stage: str
-    prompt_id: str
-    prompt_kind: str
-    prompt_version: int | None = None  # pinned version, NULL = latest-wins
-    effective_version: int | None = None  # what would actually run
-    scope_type: str
-    scope_id: str
-    org_id: str | None = None
-    model: str
-    reasoning_effort: str | None = None
-    backend: str
-    allow_oddish_cli: bool
-    enabled: bool
-    inherited_from: str
-
-
-class QAJobStatusRow(BaseModel):
-    assignment_id: str
-    stage: str
-    prompt_kind: str
-    inherited_from: str
-    total: int
-    counts: dict[str, int] = {}
-
-
-class QAJobStatusResponse(BaseModel):
-    scope: str
-    jobs: list[QAJobStatusRow] = []
 
 
 # ---------------------------------------------------------------------------
@@ -2135,42 +2067,3 @@ class DocumentResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class PromptVersionResponse(BaseModel):
-    version: int
-    content: str
-    created_at: datetime
-    created_by: str | None = None
-    model_config = {"from_attributes": True}
-
-
-class PromptUsageVersion(BaseModel):
-    version: int | None = None
-    count: int
-    last_used_at: datetime
-
-
-class PromptUsage(BaseModel):
-    total: int
-    last_used_at: datetime | None = None
-    by_version: list[PromptUsageVersion] = []
-
-
-class PromptResponse(BaseModel):
-    id: str
-    kind: str
-    description: str
-    scope_type: str | None = None
-    scope_id: str | None = None
-    org_id: str | None = None
-    latest_version: int | None = None  # populated by the router, not the ORM
-    version: int | None = None  # the resolved version content belongs to
-    created_at: datetime
-    updated_at: datetime
-    content: str | None = None  # resolved latest/selected version content
-    usage: PromptUsage | None = None  # populated on single-get only
-    model_config = {"from_attributes": True}
-
-
-class PromptSetRequest(BaseModel):
-    content: str
-    description: str | None = None

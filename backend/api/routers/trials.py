@@ -144,6 +144,10 @@ async def list_task_trials(
         None,
         description="Filter by trial kind: true=probes only, false=real attempts only, omitted=all.",
     ),
+    version: int | None = Query(
+        None,
+        description="Scope to trials of one task version; omitted=all versions.",
+    ),
 ) -> list[TrialResponse]:
     """List all trials for a task (org-scoped)."""
     auth.require_scope(APIKeyScope.READ)
@@ -151,7 +155,9 @@ async def list_task_trials(
     async with get_session() as session:
         await get_task_for_org_core(session, task_id=task_id, org_id=auth.org_id)
 
-        return await list_task_trials_for_task(session, task_id, probe=probe)
+        return await list_task_trials_for_task(
+            session, task_id, probe=probe, version=version
+        )
 
 
 @router.get("/experiments/{experiment_id}/trials", response_model=list[TrialResponse])
@@ -394,14 +400,28 @@ async def get_trial_trajectory(
 async def get_trial_trajectory_summary(
     trial_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
+    refresh: bool = Query(
+        False,
+        description=(
+            "Discard the stored summary and generate a new one. Costs an LLM "
+            "call per request, so it needs the same scope as an analysis rerun."
+        ),
+    ),
 ) -> dict:
     """Get a Claude-generated summary of the trajectory.
 
     Returns the summary from the latest `analyzer_blocks` row (mirrored to
     `trials.trajectory_summary`) when fresh, otherwise generates one. 404 when
     the trial has no trajectory; 502 if generation fails.
+
+    Freshness is keyed on `schema_version` alone, so a change that alters the
+    summary's *content* without altering its shape -- retiring a taxonomy
+    label, say -- leaves stored summaries serving the old vocabulary forever.
+    `refresh=true` is the way out for those.
     """
     auth.require_scope(APIKeyScope.READ)
+    if refresh:
+        auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
     trial = await _get_authorized_trial(trial_id, auth)
     try:
         async with get_session() as session:
@@ -409,7 +429,10 @@ async def get_trial_trajectory_summary(
             if attached_trial is None:
                 raise HTTPException(status_code=404, detail="Trial not found")
             summary = await get_or_generate_summary(
-                session, attached_trial, triggered_by_user_id=auth.user_id
+                session,
+                attached_trial,
+                triggered_by_user_id=auth.user_id,
+                refresh=refresh,
             )
     except SummaryGenerationError as e:
         logger.error(

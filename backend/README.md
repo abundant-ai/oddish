@@ -186,6 +186,7 @@ Common optional settings:
 - GitHub notifier settings such as `GITHUB_TOKEN` and `ODDISH_DASHBOARD_URL`
 - `SLACK_ALERT_BOT_TOKEN` (scopes `chat:write`, `im:write`, `users:read.email`) for deterministic cost alerts, which DM an experiment's owner: a milestone for each $1,000 spent in the past 24 hours, and any trial over $200 that finished in that window. The same token delivers the other DM-only alerts -- trial failed, QA failed, experiment failed -- and resolves in-channel mentions by account email. The email delivery channel has been removed entirely. `SLACK_EXPENSE_WEBHOOK_URL` carries what is left in-channel: unpriceable-model alerts from the past 24 hours; an escalation when a running or retrying trial's live cost rises above the configured floor, which `<@...>`-mentions its owner plus the always-ping list; and a `<!channel>` alert when a user's rolling seven-day spend, including live running-trial checkpoints, rises more than the configured dollar delta above their workspace's average spender. The two channel escalation thresholds and the ping list are set by an admin on the Costs tab of `/admin` and stored in `slack_alert_settings`; the constants in `slack_alert_settings.py` are the defaults they override, and no setting here is environment-configurable. Weekly user alerts re-arm after spend drops back below the threshold. The per-user DM cutoffs (the milestone and completed-trial floor) are separate deploy-time constants in `user_alert_prefs.py` that each person tunes in their own notification settings, not admin-editable here. Notifications are on by default for the production app; previews opt in with `ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS=true` and can attach a preview-only notification secret via `ODDISH_SLACK_EXPENSE_SECRET_NAME` / `ODDISH_SLACK_EXPENSE_SECRET_ENVIRONMENT`.
 - `ODDISH_SLACK_UNFURL_*` for a lean, single-workspace Slack app that unfurls Oddish task, experiment, and public-share links. It requires `links:read` and `links:write`, a `link_shared` event subscription pointed at `/webhooks/slack/events`, a signing secret, bot token, and bound Oddish org. Optional team/channel allowlists add defense in depth. This is separate from the expense notifications above.
+- `ODDISH_CARL_*`, `ODDISH_API_KEY`, and `ODDISH_DATABASE_URL_RO` extend that same Slack app with read-only answers to permitted `app_mention` events. Carl keeps the existing `/webhooks/slack/events` URL and `link_shared` subscription; add `app_mentions:read` and subscribe the installed app to `app_mention`. The SQL DSN must use a dedicated non-superuser role restricted to the analytics table allow-list. See `slackbot/README.md`.
 
 ### Observability (Pydantic Logfire)
 
@@ -301,6 +302,7 @@ All routes require auth unless marked public.
 | GET | `/public/experiments/{public_token}/tasks` | Public tasks and trials for a shared experiment |
 | GET | `/public/experiments/{public_token}/tasks/{task_id}` | Public task status within a shared experiment |
 | GET | `/public/experiments/{public_token}/tasks/{task_id}/trials` | Public trial list within a shared experiment |
+| GET | `/public/experiments/{public_token}/trials/{trial_id}/live` | Public live transcript and running usage |
 | GET | `/public/experiments/{public_token}/trials/{trial_id}/logs` | Public trial logs |
 | GET | `/public/experiments/{public_token}/trials/{trial_id}/logs/structured` | Public structured logs |
 | GET | `/public/experiments/{public_token}/trials/{trial_id}/trajectory` | Public trajectory |
@@ -450,6 +452,7 @@ or globally via the env default. Under `enforce`, an over-cap submission gets
 HTTP **402** (`"Your organization is over its monthly budget …"`); under
 `shadow` it emits `metric=quota.would_block reason=org_over_budget`. Admins see
 month-to-date org usage on `GET /quotas`; any member can read the org budget
-snapshot + adaptive daily goal on `GET /quotas/org`. Advisory-lock order is
-org → payer → row locks (ENFORCE-only on admission; the org lock is always
-taken first, even when no org cap is configured).
+snapshot + adaptive daily goal on `GET /quotas/org`. Admission takes no
+locks; concurrent submissions can briefly overshoot a cap and the
+enforcement sweep cancels the overage. Only the sweep takes the quota
+advisory locks (org → payer, non-blocking).

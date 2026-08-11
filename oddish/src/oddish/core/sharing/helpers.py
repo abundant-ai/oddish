@@ -21,6 +21,7 @@ from oddish.core.helpers import (
 from oddish.db import (
     ExperimentModel,
     TaskModel,
+    TaskVersionModel,
     TrialModel,
     experiment_trials,
     get_storage_client,
@@ -158,7 +159,13 @@ async def get_task_status_counts(
     join_experiment: bool = False,
 ) -> TaskStatusResponse:
     """Get task status with aggregated trial counts."""
-    query = select(TaskModel).where(TaskModel.id == task_id)
+    # ``build_task_status_responses_from_counts`` aggregates trials in SQL
+    # but its response builder still reads ``task.experiments``.
+    query = (
+        select(TaskModel)
+        .options(selectinload(TaskModel.experiments))
+        .where(TaskModel.id == task_id)
+    )
     if join_experiment:
         query = query.join(
             task_experiments, task_experiments.c.task_id == TaskModel.id
@@ -210,7 +217,11 @@ async def list_experiment_trials_for_org(
 
 
 async def list_task_trials_for_task(
-    session: AsyncSession, task_id: str, *, probe: bool | None = None
+    session: AsyncSession,
+    task_id: str,
+    *,
+    probe: bool | None = None,
+    version: int | None = None,
 ) -> list[TrialResponse]:
     """List all trials for a task with their responses.
 
@@ -221,6 +232,13 @@ async def list_task_trials_for_task(
 
     ``probe`` filters by trial kind: True -> only probe trials, False ->
     only real attempts, None -> all.
+
+    ``version`` scopes to trials of one task version. A task can carry
+    trials across many versions and experiments, each row with its full
+    analysis payload, so version-scoped callers (the task overview) must
+    filter here rather than shipping everything to the client. The inner
+    join deliberately drops unversioned trials — they belong to no
+    version, so no version-scoped view should include them.
     """
     conditions = [
         TrialModel.task_id == task_id,
@@ -228,11 +246,16 @@ async def list_task_trials_for_task(
     ]
     if probe is not None:
         conditions.append(TrialModel.is_probe == probe)
+    query = select(TrialModel, TaskModel.task_path).join(
+        TaskModel, TaskModel.id == TrialModel.task_id
+    )
+    if version is not None:
+        query = query.join(
+            TaskVersionModel, TaskVersionModel.id == TrialModel.task_version_id
+        )
+        conditions.append(TaskVersionModel.version == version)
     result = await session.execute(
-        select(TrialModel, TaskModel.task_path)
-        .join(TaskModel, TaskModel.id == TrialModel.task_id)
-        .where(*conditions)
-        .order_by(TrialModel.created_at.asc())
+        query.where(*conditions).order_by(TrialModel.created_at.asc())
     )
     rows = result.all()
     trials = [trial for trial, _ in rows]
@@ -292,6 +315,7 @@ async def list_task_files_s3(
     cursor: str | None,
     presign: bool,
     version: int | None = None,
+    inline: bool = True,
 ) -> dict:
     """List files in a task's S3 directory."""
     storage = get_storage_client()
@@ -305,6 +329,7 @@ async def list_task_files_s3(
             cursor=cursor,
             presign=presign,
             version=version,
+            inline=inline,
         )
     except HTTPException:
         raise
@@ -387,6 +412,7 @@ async def get_task_file_content_s3(
     file_path: str,
     presign: bool,
     version: int | None = None,
+    max_bytes: int | None = None,
 ) -> dict:
     """Get content of a specific task file from S3."""
     storage = get_storage_client()
@@ -397,6 +423,7 @@ async def get_task_file_content_s3(
             file_path=file_path,
             presign=presign,
             version=version,
+            max_bytes=max_bytes,
         )
     except HTTPException:
         raise

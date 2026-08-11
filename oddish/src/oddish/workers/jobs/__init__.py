@@ -52,7 +52,6 @@ def ensure_builtin_handlers_registered() -> None:
         WorkerJobKind.TASK_EXPAND,
         WorkerJobKind.TAG_PROJECT,
         WorkerJobKind.ANALYZER,
-        WorkerJobKind.ANALYZER_BLOCK,
     }
     if _BUILTINS_REGISTERED and required_kinds.issubset(HANDLERS):
         return
@@ -62,7 +61,6 @@ def ensure_builtin_handlers_registered() -> None:
     # ``AnalysisJobHandler`` is transitional (drains legacy ANALYSIS rows).
     from oddish.workers.jobs.handlers import (
         AnalysisJobHandler,
-        AnalyzerBlockJobHandler,
         QaJobHandler,
         AnalyzerJobHandler,
         TagProjectJobHandler,
@@ -77,7 +75,6 @@ def ensure_builtin_handlers_registered() -> None:
         TaskExpandJobHandler(),
         TagProjectJobHandler(),
         AnalyzerJobHandler(),
-        AnalyzerBlockJobHandler(),
     ):
         try:
             register(handler)

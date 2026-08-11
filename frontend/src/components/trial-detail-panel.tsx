@@ -3,7 +3,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import dynamic from "next/dynamic";
 import Image from "next/image";
-import { useSearchParams } from "next/navigation";
 import {
   ResizableDrawer,
   DrawerHeader,
@@ -45,6 +44,22 @@ import {
   Trash2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  formatLineRange,
+  parseLineRange,
+  type LineRange,
+} from "@/lib/line-range";
+import { sameFilePath } from "@/lib/file-path";
+
+/**
+ * Read a query param from the live URL. The panel keeps the URL current
+ * via replaceState, which never refreshes Next's useSearchParams hook —
+ * so live reads must come straight from location.
+ */
+function getLiveParam(name: string): string | null {
+  if (typeof window === "undefined") return null;
+  return new URLSearchParams(window.location.search).get(name);
+}
 import { Skeleton } from "@/components/ui/skeleton";
 import { QaAssessmentReport } from "@/components/qa-report/qa-assessment-report";
 import { QaReportSkeleton } from "@/components/qa-report/skeleton";
@@ -75,6 +90,8 @@ import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { StatusIcon } from "@/components/status-icon";
 import { useVerifierSummary } from "@/components/use-verifier-summary";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
+import { useSWRConfig } from "swr";
+import { isAnalysisStatusActive, trialKey, useTrial } from "@/lib/use-trial";
 
 const TaskFilesPanel = dynamic(
   () =>
@@ -180,17 +197,30 @@ function TrialAnalysisCard({
   apiBaseUrl: string;
   onQueued?: () => void;
 }) {
-  const [live, setLive] = useState<Trial | null>(null);
-  // The parent's snapshot can carry a superseded report (e.g. after a
-  // re-run), so the card holds a loading state instead of painting it and
-  // swapping. Holds the id whose per-trial fetch has settled: an id, not a
-  // boolean, so the first render after a trial switch is already unsynced.
-  const [syncedId, setSyncedId] = useState<string | null>(null);
+  // The drawer already fetches this trial through useTrial. Calling the
+  // same hook with the same id here reuses that request instead of
+  // creating a second one. While the analysis is running, the hook
+  // refetches every few seconds, so the finished report shows up without
+  // the user having to close and reopen the drawer.
+  const { data: liveTrial, error: liveTrialError } = useTrial(trialProp.id, {
+    apiBaseUrl,
+  });
+  // The global mutate writes to an explicitly named cache key. The bound
+  // mutate returned by useTrial would write to whichever trial the card
+  // is currently showing, which is the wrong target when the user
+  // switches trials while a rerun request is in flight.
+  const { mutate: mutateByKey } = useSWRConfig();
+  // The trial object passed in from the parent can contain an outdated
+  // report, for example one from before a re-run. To avoid showing an
+  // outdated report and then swapping it, the card shows a loading state
+  // until the fetch for this trial either returns or fails. The fetched
+  // data and the error both belong to the current trial id only, so
+  // switching to another trial automatically puts the card back into its
+  // loading state.
+  const trial = liveTrial ?? trialProp;
+  const synced = liveTrial !== undefined || liveTrialError !== undefined;
   const [queuing, setQueuing] = useState(false);
   const [queueError, setQueueError] = useState<string | null>(null);
-  // Set when WE queued a run. This keeps the card in its progress state
-  // (and polling) across the gap before a worker claims the job.
-  const [queuedAt, setQueuedAt] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [logText, setLogText] = useState<string | null>(null);
   const [logOpen, setLogOpen] = useState(false);
@@ -199,113 +229,56 @@ function TrialAnalysisCard({
   // Guards async completions: a response that lands after a trial switch
   // must not write another trial's state onto the open card.
   const trialIdRef = useRef(trialProp.id);
-  // The parent passes a new onQueued function on every render. Reading it
-  // through a ref keeps the poll interval alive across parent re-renders.
+  // The parent passes a brand-new onQueued function on every render. The
+  // effect below reads it through this ref so that the effect does not
+  // re-run every time the parent renders.
   const onQueuedRef = useRef(onQueued);
   useEffect(() => {
     onQueuedRef.current = onQueued;
   }, [onQueued]);
 
-  // A different trial means the polled data no longer applies.
+  // When the user switches to a different trial, the re-run button state
+  // and the fetched log are cleared because they describe the previous
+  // trial. The trial data itself does not need clearing, because the
+  // cache stores it under each trial's id.
   useEffect(() => {
     trialIdRef.current = trialProp.id;
-    setLive(null);
     setQueuing(false);
-    setQueuedAt(null);
     setLogText(null);
     setLogOpen(false);
     setQueuePosition(null);
     setQueueError(null);
   }, [trialProp.id]);
 
-  // Fetch fresh state once per shown trial. The parent's trial object is a
-  // snapshot from when the drawer opened; without this, a run that finished
-  // while the user viewed another trial stays hidden until the drawer is
-  // closed and reopened.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        // The timeout bounds the synced gate: a hung fetch must fall back
-        // to the parent snapshot, not pin the report skeleton forever.
-        const res = await fetch(`${apiBaseUrl}/trials/${trialProp.id}`, {
-          cache: "no-store",
-          signal: AbortSignal.timeout(15000),
-        });
-        if (!res.ok || cancelled) return;
-        const fresh = (await res.json()) as Trial;
-        if (!cancelled && trialIdRef.current === trialProp.id) setLive(fresh);
-      } catch {
-        // The card falls back to the parent's snapshot.
-      } finally {
-        if (!cancelled && trialIdRef.current === trialProp.id)
-          setSyncedId(trialProp.id);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [apiBaseUrl, trialProp.id]);
+  // An analysis counts as in progress when the server says it is queued
+  // or running. The rerun endpoint sets the status to QUEUED before it
+  // responds, so the server's status is always current and the client
+  // does not need to track a run on its own.
+  const inProgress = isAnalysisStatusActive(trial.analysis_status);
 
-  // The id check covers the first render after a trial switch, before the
-  // reset effect above has cleared the previous trial's polled state.
-  const trial = live && live.id === trialProp.id ? live : trialProp;
-  const synced = syncedId === trialProp.id;
-  const analysisActive =
-    trial.analysis_status === "running" ||
-    trial.analysis_status === "pending" ||
-    trial.analysis_status === "queued";
-  const waitingForWorker = queuedAt !== null && !analysisActive;
-  const inProgress = analysisActive || waitingForWorker;
-
-  // Poll for fresh trial state while analysis is in progress. The
-  // cancelled flag drops in-flight responses on cleanup, so a late poll
-  // cannot overlay another trial's analysis after navigation.
+  // When an analysis run that we were watching finishes, this tells the
+  // parent to refresh its lists, so the grid shows the result even after
+  // the drawer is closed. It only fires when this same trial moves from
+  // an active status to success or failed. It never fires when a trial
+  // that already finished is loaded for the first time.
+  const lastAnalysisRef = useRef<{
+    id: string;
+    status: Trial["analysis_status"];
+  } | null>(null);
   useEffect(() => {
-    if (!inProgress) return;
-    let cancelled = false;
-    const id = window.setInterval(async () => {
-      try {
-        const res = await fetch(`${apiBaseUrl}/trials/${trialProp.id}`, {
-          cache: "no-store",
-        });
-        if (!res.ok || cancelled) return;
-        const fresh = (await res.json()) as Trial;
-        if (cancelled) return;
-        setLive(fresh);
-        // Terminal state ends the waiting phase. Refresh the parent too,
-        // so the result survives closing the drawer or switching trials.
-        if (
-          fresh.analysis_status === "success" ||
-          fresh.analysis_status === "failed"
-        ) {
-          setQueuedAt(null);
-          onQueuedRef.current?.();
-        }
-      } catch {
-        // Transient fetch error; the next tick retries.
-      }
-    }, 5000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, [inProgress, apiBaseUrl, trialProp.id]);
-
-  // Fallback: if no worker picks the job up within 15 minutes, stop
-  // showing progress and fall back to what the server says. Also drop the
-  // optimistic `live` state — it holds the post-reset empty analysis, and
-  // keeping it would shadow every later refresh from the parent. The timer
-  // is disarmed while the analysis is active: a claimed run can honestly
-  // take longer, and clearing then would stop the polling mid-run.
-  useEffect(() => {
-    if (queuedAt === null || analysisActive) return;
-    const id = window.setTimeout(() => {
-      setQueuedAt(null);
-      setLive(null);
-    }, Math.max(0, queuedAt + 15 * 60_000 - Date.now()));
-    return () => window.clearTimeout(id);
-  }, [queuedAt, analysisActive]);
+    const prev = lastAnalysisRef.current;
+    lastAnalysisRef.current = liveTrial
+      ? { id: liveTrial.id, status: liveTrial.analysis_status }
+      : null;
+    if (!liveTrial || !prev || prev.id !== liveTrial.id) return;
+    if (
+      isAnalysisStatusActive(prev.status) &&
+      (liveTrial.analysis_status === "success" ||
+        liveTrial.analysis_status === "failed")
+    ) {
+      onQueuedRef.current?.();
+    }
+  }, [liveTrial]);
 
   // Tick the elapsed timer once a second while in progress.
   useEffect(() => {
@@ -411,22 +384,31 @@ function TrialAnalysisCard({
       // when the user has switched trials; only the local card state below
       // is scoped to the trial this request was for.
       onQueued?.();
+      // The server set analysis_status to queued before it responded, so
+      // the queued state is already true on the server. Writing it into
+      // the cache shows it immediately and starts the refetching, and
+      // the refetch then confirms it from the server. The write is
+      // addressed by the queued trial's own cache key, so it reaches the
+      // right entry even when the user switched to another trial while
+      // the request was in flight.
+      void mutateByKey(
+        trialKey(apiBaseUrl, requestTrialId),
+        {
+          ...trial,
+          analysis_status: "queued",
+          analysis: null,
+          analysis_error: null,
+          analysis_started_at: null,
+        },
+        { revalidate: true },
+      );
       if (trialIdRef.current !== requestTrialId) return;
-      // Show progress immediately; polling takes over from here. The old
-      // run's log is cleared server-side; clear it here too. Open the log
-      // directly: a re-run over a stale RUNNING analysis keeps inProgress
-      // true, so the open-on-start effect does not fire again.
-      setQueuedAt(Date.now());
+      // The old run's log is cleared server-side; clear it here too. Open
+      // the log directly: a re-run over a stale RUNNING analysis keeps
+      // inProgress true, so the open-on-start effect does not fire again.
       setLogText(null);
       setLogOpen(true);
       setQueuePosition(null);
-      setLive({
-        ...trial,
-        analysis_status: "queued",
-        analysis: null,
-        analysis_error: null,
-        analysis_started_at: null,
-      });
     } catch (err) {
       if (trialIdRef.current === requestTrialId) {
         setQueueError(
@@ -824,8 +806,6 @@ export function TrialDetailPanel({
   contentOnly = false,
   paneAction,
 }: TrialDetailPanelProps) {
-  const searchParams = useSearchParams();
-
   const verifierSummary = useVerifierSummary(trial, apiBaseUrl, isOpen);
 
   const validTabs = useMemo(
@@ -834,7 +814,7 @@ export function TrialDetailPanel({
   );
 
   const [activeTab, setActiveTab] = useState(() => {
-    const urlTab = searchParams.get("tab");
+    const urlTab = getLiveParam("tab");
     return urlTab && validTabs.has(urlTab) ? urlTab : "summary";
   });
   const [showFullError, setShowFullError] = useState(false);
@@ -843,47 +823,162 @@ export function TrialDetailPanel({
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  // ``?file=`` / ``?lines=`` are scoped by ``?tab=``: on the artifacts tab
+  // they address the artifact browser, otherwise the files tab. Each tab
+  // keeps its own state; the URL carries the active tab's pair.
   const [filesTargetPath, setFilesTargetPath] = useState<string | null>(() =>
-    searchParams.get("file"),
+    getLiveParam("tab") === "artifacts" ? null : getLiveParam("file"),
+  );
+  // Line-anchor range within the selected file (``?lines=L12-L20``).
+  const [selectedLines, setSelectedLines] = useState<LineRange | null>(() =>
+    getLiveParam("tab") === "artifacts"
+      ? null
+      : parseLineRange(getLiveParam("lines")),
+  );
+  const [artifactsTargetPath, setArtifactsTargetPath] = useState<
+    string | null
+  >(() => (getLiveParam("tab") === "artifacts" ? getLiveParam("file") : null));
+  const [artifactsLines, setArtifactsLines] = useState<LineRange | null>(() =>
+    getLiveParam("tab") === "artifacts"
+      ? parseLineRange(getLiveParam("lines"))
+      : null,
   );
 
   const hydratedFromUrl = useRef(false);
 
-  // Hydrate from URL on first open
+  // Hydrate from the URL on first open. Reads the live URL, not the
+  // useSearchParams snapshot: replaceState never refreshes that hook, so on
+  // a remount (e.g. the drawer's pane layout changing) the snapshot is the
+  // stale page-load query and would reset the panel to where the user
+  // started instead of where they are.
   useEffect(() => {
     if (!isOpen || hydratedFromUrl.current) return;
     hydratedFromUrl.current = true;
-    const urlTab = searchParams.get("tab");
-    const urlFile = searchParams.get("file");
+    const urlTab = getLiveParam("tab");
+    const urlFile = getLiveParam("file");
+    const urlLines = parseLineRange(getLiveParam("lines"));
     if (urlTab && validTabs.has(urlTab)) setActiveTab(urlTab);
+    if (urlTab === "artifacts") {
+      // ?file=/?lines= address the artifact browser while tab=artifacts.
+      if (urlFile) {
+        setArtifactsTargetPath(urlFile);
+        artifactsTargetPathRef.current = urlFile;
+      }
+      if (urlLines) setArtifactsLines(urlLines);
+      return;
+    }
     if (urlFile) {
       setFilesTargetPath(urlFile);
+      filesTargetPathRef.current = urlFile;
       if (!urlTab) setActiveTab("files");
     }
-  }, [isOpen, searchParams, validTabs]);
+    if (urlLines) setSelectedLines(urlLines);
+  }, [isOpen, validTabs]);
 
-  // Sync tab & file to URL (without triggering Next.js router navigation)
+  // The file viewer reports every selection change (tree clicks and
+  // auto-selects alike): the ?file= param stays live, and switching to a
+  // different file drops the line anchor — the old range would otherwise
+  // highlight arbitrary lines of the new file. The ref mirrors the state
+  // so the comparison doesn't need an impure setState updater.
+  const filesTargetPathRef = useRef<string | null>(filesTargetPath);
+  const handleSelectedFileChange = useCallback((path: string | null) => {
+    if (!sameFilePath(filesTargetPathRef.current, path)) setSelectedLines(null);
+    filesTargetPathRef.current = path;
+    setFilesTargetPath(path);
+  }, []);
+
+  // Same shape for the artifacts tab: its browser reports selections the
+  // same way, and a different file drops the artifact line anchor. The
+  // comparison also accepts the file's storage path — a deep link can
+  // address a multi-step artifact by storage path, and the browser echoes
+  // back the relativized tree path, which is not a suffix match of it.
+  const artifactsTargetPathRef = useRef<string | null>(artifactsTargetPath);
+  const handleArtifactsFileChange = useCallback(
+    (path: string | null, fullPath?: string) => {
+      const prev = artifactsTargetPathRef.current;
+      const same =
+        sameFilePath(prev, path) ||
+        (fullPath !== undefined && sameFilePath(prev, fullPath));
+      if (!same) setArtifactsLines(null);
+      artifactsTargetPathRef.current = path;
+      setArtifactsTargetPath(path);
+    },
+    []
+  );
+
+  // Navigating to a different trial keeps the file paths (attempts share
+  // layouts, and comparing the same file across attempts is the point) but
+  // drops the line anchors — they addressed the previous trial's content
+  // and would highlight arbitrary lines here.
+  const lastTrialIdRef = useRef<string | null>(trial?.id ?? null);
+  useEffect(() => {
+    const id = trial?.id ?? null;
+    if (id && lastTrialIdRef.current && id !== lastTrialIdRef.current) {
+      setSelectedLines(null);
+      setArtifactsLines(null);
+    }
+    lastTrialIdRef.current = id;
+  }, [trial?.id]);
+
+  // Sync tab, file & lines to URL (without triggering router navigation).
+  // Based on the live URL rather than the useSearchParams snapshot:
+  // replaceState doesn't refresh that hook, and the experiment view writes
+  // its own params (task/trial/taskFile/taskLines) the same way — a stale
+  // base would silently wipe them. The tab is written explicitly even for
+  // summary, so every tab is its own address and every tab click visibly
+  // updates the URL.
   useEffect(() => {
     if (!isOpen || !hydratedFromUrl.current) return;
-    const next = new URLSearchParams(searchParams.toString());
+    const current = new URLSearchParams(window.location.search);
+    const next = new URLSearchParams(window.location.search);
 
-    if (activeTab && activeTab !== "summary") {
+    if (activeTab) {
       next.set("tab", activeTab);
     } else {
       next.delete("tab");
     }
 
-    if (filesTargetPath) {
-      next.set("file", filesTargetPath);
+    // ?file=/?lines= describe the active tab's view: the files tab's pair
+    // or the artifacts tab's pair. On tabs with no file view (summary,
+    // live, trajectory) they drop out of the URL — the tab states stay in
+    // React, so flipping back restores and re-writes them.
+    const paneFile =
+      activeTab === "artifacts"
+        ? artifactsTargetPath
+        : activeTab === "files"
+          ? filesTargetPath
+          : null;
+    const paneLines =
+      activeTab === "artifacts"
+        ? artifactsLines
+        : activeTab === "files"
+          ? selectedLines
+          : null;
+
+    if (paneFile) {
+      next.set("file", paneFile);
     } else {
       next.delete("file");
     }
 
-    if (next.toString() !== searchParams.toString()) {
+    if (paneLines) {
+      next.set("lines", formatLineRange(paneLines));
+    } else {
+      next.delete("lines");
+    }
+
+    if (next.toString() !== current.toString()) {
       const url = `${window.location.pathname}${next.toString() ? `?${next.toString()}` : ""}`;
       window.history.replaceState(window.history.state, "", url);
     }
-  }, [isOpen, activeTab, filesTargetPath, searchParams]);
+  }, [
+    isOpen,
+    activeTab,
+    filesTargetPath,
+    selectedLines,
+    artifactsTargetPath,
+    artifactsLines,
+  ]);
 
   const canRetry =
     allowRetry && (trial?.status === "failed" || trial?.status === "success");
@@ -942,7 +1037,10 @@ export function TrialDetailPanel({
   const handleTimelineStageClick = (stageId: string) => {
     const filePath = STAGE_FILE_MAP[stageId] ?? null;
     setActiveTab("files");
-    setFilesTargetPath(filePath);
+    // Through the shared handler so a file change drops the old line
+    // anchor and the path ref stays in sync — a bare setFilesTargetPath
+    // would let the previous ?lines= range land on the new file.
+    handleSelectedFileChange(filePath);
   };
 
   // Reset state when panel closes
@@ -1037,8 +1135,7 @@ export function TrialDetailPanel({
     trial.reward,
     trial.error_message,
   );
-  const showLive =
-    showAnalysis && (trial.status === "running" || trial.status === "retrying");
+  const showLive = trial.status === "running" || trial.status === "retrying";
   const effectiveTab =
     activeTab === "live" && !showLive ? "summary" : activeTab;
   const trialStatusConfig = STATUS_CONFIG[trialStatus];
@@ -1617,6 +1714,9 @@ export function TrialDetailPanel({
               taskId={null}
               filesUrl={`${apiBaseUrl}/trials/${trial.id}/files`}
               initialFilePath={filesTargetPath}
+              selectedLines={selectedLines}
+              onSelectLinesChange={setSelectedLines}
+              onSelectedFileChange={handleSelectedFileChange}
               contentOnly
             />
           </TabsContent>
@@ -1624,6 +1724,10 @@ export function TrialDetailPanel({
           <TabsContent value="artifacts" className="m-0 h-full p-0">
             <ArtifactsViewer
               filesUrl={`${apiBaseUrl}/trials/${trial.id}/files`}
+              initialFilePath={artifactsTargetPath}
+              selectedLines={artifactsLines}
+              onSelectLinesChange={setArtifactsLines}
+              onSelectedFileChange={handleArtifactsFileChange}
             />
           </TabsContent>
 

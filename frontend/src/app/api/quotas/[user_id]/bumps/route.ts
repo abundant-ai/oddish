@@ -14,11 +14,12 @@ export async function POST(
 }
 
 export async function DELETE(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ user_id: string }> },
 ) {
   const { user_id } = await params;
   return proxyBackendJson({
+    request,
     path: `quotas/${encodeURIComponent(user_id)}/bumps`,
     method: "DELETE",
   });

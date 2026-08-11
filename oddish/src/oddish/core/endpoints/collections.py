@@ -5,6 +5,7 @@ from sqlalchemy import insert, or_, select, text, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from oddish.core.cost_basis import not_combine_copy_filter
 from oddish.core.experiment_membership import trial_in_experiment
 from oddish.db import (
     ExperimentModel,
@@ -105,6 +106,7 @@ async def resolve_collection_sources(
                             TrialModel.status.in_(_TERMINAL),
                             TrialModel.is_probe.isnot(True),
                             TrialModel.org_id == org_id,
+                            not_combine_copy_filter(),
                         )
                         .order_by(TrialModel.task_id, TrialModel.created_at)
                     )
@@ -137,9 +139,7 @@ async def resolve_collection_sources(
                 await session.execute(
                     select(TrialModel)
                     .where(
-                        or_(
-                            *[trial_in_experiment(e) for e in source_experiment_ids]
-                        ),
+                        or_(*[trial_in_experiment(e) for e in source_experiment_ids]),
                         TrialModel.org_id == org_id,
                         TrialModel.superseded_by_trial_id.is_(None),
                         TrialModel.status.in_(_TERMINAL),
@@ -298,9 +298,7 @@ async def _live_member_ids(session: AsyncSession, experiment_id: str) -> set[str
     return set(rows)
 
 
-async def _live_member_task_ids(
-    session: AsyncSession, experiment_id: str
-) -> set[str]:
+async def _live_member_task_ids(session: AsyncSession, experiment_id: str) -> set[str]:
     """Tasks represented by a living ``experiment_trials`` row.
 
     ``include_deleted``: membership is the join row, not the trial's own
@@ -347,9 +345,7 @@ async def add_to_collection_core(
     experiment = await _load_collection(
         session, experiment_id=experiment_id, org_id=org_id
     )
-    if not (
-        _dedupe(trial_ids) or _dedupe(task_ids) or _dedupe(from_experiment_ids)
-    ):
+    if not (_dedupe(trial_ids) or _dedupe(task_ids) or _dedupe(from_experiment_ids)):
         raise HTTPException(status_code=400, detail="nothing to add")
 
     trials, _ = await resolve_collection_sources(
