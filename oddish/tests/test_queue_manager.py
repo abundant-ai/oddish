@@ -23,11 +23,13 @@ def test_run_polling_worker_delegates_to_shared_dispatch_loop(monkeypatch) -> No
         max_workers,
         concurrency_limits_for,
         on_stage,
+        capacity_by_lane,
         fallback_interval,
     ) -> None:
         seen["dispatcher"] = dispatcher
         seen["max_workers"] = max_workers
         seen["on_stage"] = on_stage
+        seen["capacity_by_lane"] = capacity_by_lane
         seen["fallback_interval"] = fallback_interval
         seen["limit"] = (await concurrency_limits_for(("openai/gpt-test",)))[
             "openai/gpt-test"
@@ -45,5 +47,6 @@ def test_run_polling_worker_delegates_to_shared_dispatch_loop(monkeypatch) -> No
     assert seen["max_workers"] == 11
     assert seen["fallback_interval"] == 3.5
     assert seen["on_stage"] is queue_manager.stamp_dispatch_stage
+    assert seen["capacity_by_lane"] is cycle.load_sandbox_capacity_by_lane
     assert seen["queue_keys"] == ("openai/gpt-test",)
     assert seen["limit"] == 7

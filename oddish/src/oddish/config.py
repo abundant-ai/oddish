@@ -6,7 +6,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import ClassVar
 
-from pydantic import Field, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from harbor.agents.utils import PROVIDER_KEYS
@@ -151,9 +151,10 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 # trials run a heavier GKE-enabled Harbor on a dedicated blessed-variant image
 # (see HARBOR_VARIANTS in oddish.core.harbor_source), never this default.
 HARBOR_DEFAULT_SOURCE = "https://github.com/abundant-ai/harbor"
-# abundant-ai/harbor main, as resolved into both uv.lock files. Harbor PR #19
-# adds per-model Grok Build context-window overrides.
-HARBOR_DEFAULT_SHA = "4440acb85122d293629f083262c13700f965a867"
+# Exact abundant-ai/harbor revision resolved into both uv.lock files. Harbor
+# PRs #20-#22 add EC2 Helm/k3s support, lifecycle timings, and the first-class
+# environment-provisioned event required for durable launch identity.
+HARBOR_DEFAULT_SHA = "a7caa586de620f8a7103018f99ce9e1603f90eb4"
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
@@ -1226,22 +1227,34 @@ class Settings(BaseSettings):
     # still applies as the idle backstop.
     daytona_ephemeral: bool = True
 
-    # Name of a pre-baked Daytona snapshot for cc_chat sandboxes, with
-    # claude-code + harbor already installed. When set, sandboxes are created
-    # from it and ClaudeCodeRuntime.install() skips the npm/pip installs (~a
-    # minute of per-chat provisioning). Unset -> default base image + install
-    # at provision time. See docs/cc-chat-snapshot.md to build it.
-    cc_chat_daytona_snapshot: str = ""
+    ec2_enabled: bool = False
+    ec2_region: str | None = None
+    ec2_ami_id: str | None = None
+    ec2_instance_type: str = "m7i-flex.large"
+    ec2_subnet_id: str | None = None
+    ec2_security_group_ids: list[str] = Field(default_factory=list)
+    ec2_key_name: str | None = None
+    ec2_ssh_user: str = "ubuntu"
+    ec2_ssh_private_key: SecretStr | None = None
+    ec2_aws_access_key_id: SecretStr | None = None
+    ec2_aws_secret_access_key: SecretStr | None = None
+    ec2_aws_session_token: SecretStr | None = None
+    ec2_instance_profile: str | None = None
+    ec2_root_volume_size_gb: int = 80
+    ec2_use_public_ip: bool = True
+    ec2_bootstrap_docker: bool = True
+    ec2_max_concurrent_instances: int = 16
 
-    # Snapshot for non-chat agent sandboxes (the analyzer). Falls back to the
-    # cc_chat snapshot above, which is the same image: ClaudeCodeRuntime.install
-    # checks claude-code and harbor independently, so a leaner analyzer-only
-    # image would still pay harbor's pip install on every sandbox.
+    # Name of a pre-baked Daytona snapshot for agent sandboxes (the analyzer),
+    # with claude-code + harbor already installed. When set, sandboxes are
+    # created from it and ClaudeCodeRuntime.install() skips the npm/pip installs
+    # (~a minute of per-sandbox provisioning). Unset -> default base image +
+    # install at provision time. See docs/agent-sandbox-snapshot.md to build it.
     agent_daytona_snapshot: str = ""
 
     @property
     def analyzer_snapshot(self) -> str:
-        return self.agent_daytona_snapshot or self.cc_chat_daytona_snapshot
+        return self.agent_daytona_snapshot
 
     # Kill switch for the hosted multi-block sandbox analyzer. Gates
     # registration, so unsetting it reverts to the core API path.
@@ -1309,13 +1322,6 @@ class Settings(BaseSettings):
     # API server
     api_host: str = "0.0.0.0"
     api_port: int = 8000
-
-    # Externally reachable base URL of the oddish backend API. Injected into
-    # global-scope cc_chat sandboxes (as ODDISH_API_BASE_URL) so the uploaded
-    # oddish-query CLI can call back into the backend. Optional override — when
-    # unset, the orchestrator derives it from MODAL_APP_NAME via
-    # api_base_url_for_modal_app(), so prod and PR previews work automatically.
-    public_api_base_url: str = ""
 
     # Database connection pools (constants — override on Settings class
     # in entry modules for different deployment targets)
@@ -1499,6 +1505,46 @@ class Settings(BaseSettings):
         if self.gke_project_id and not self.gke_cluster_name:
             app_name = os.environ.get("MODAL_APP_NAME", "oddish")
             self.gke_cluster_name = f"{app_name}-trials"
+        return self
+
+    @model_validator(mode="after")
+    def validate_ec2_configuration(self) -> "Settings":
+        if not self.ec2_enabled:
+            return self
+        required = {
+            "ec2_region": self.ec2_region,
+            "ec2_ami_id": self.ec2_ami_id,
+            "ec2_instance_type": self.ec2_instance_type,
+            "ec2_subnet_id": self.ec2_subnet_id,
+            "ec2_key_name": self.ec2_key_name,
+            "ec2_ssh_user": self.ec2_ssh_user,
+        }
+        missing = [
+            name
+            for name, value in required.items()
+            if not isinstance(value, str) or not value.strip()
+        ]
+        if not self.ec2_security_group_ids or any(
+            not security_group_id.strip()
+            for security_group_id in self.ec2_security_group_ids
+        ):
+            missing.append("ec2_security_group_ids")
+        if missing:
+            raise ValueError(
+                "EC2 is enabled but required settings are missing: "
+                + ", ".join(missing)
+            )
+        if not self.ec2_use_public_ip:
+            raise ValueError("ec2_use_public_ip must be true for the EC2 v1 backend")
+        if (
+            self.ec2_instance_profile is not None
+            and not self.ec2_instance_profile.strip()
+        ):
+            raise ValueError("ec2_instance_profile cannot be blank when configured")
+        if self.ec2_root_volume_size_gb <= 0:
+            raise ValueError("ec2_root_volume_size_gb must be greater than zero")
+        if self.ec2_max_concurrent_instances <= 0:
+            raise ValueError("ec2_max_concurrent_instances must be greater than zero")
         return self
 
     @model_validator(mode="after")

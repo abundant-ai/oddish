@@ -41,7 +41,10 @@ from oddish.config import (
     zai_bare_model_id,
 )
 from oddish.task_timeouts import PROBE_AGENT_TIMEOUT_SEC
-from .restricted_network import agent_keeps_public_model_identity
+from .restricted_network import (
+    agent_keeps_public_model_identity,
+    set_runtime_model_name,
+)
 
 _ODDISH_CODEX_IMPORT_PATH = "oddish.workers.agents.codex:OddishCodex"
 _AZURE_COMPAT_CODEX_IMPORT_PATH = "oddish.workers.agents.codex:AzureCompatibleCodex"
@@ -439,6 +442,15 @@ def _apply_meta_mini_swe_agent(agent_config: AgentConfig) -> None:
 def _apply_mini_swe_agent(agent_config: AgentConfig) -> None:
     if agent_config.import_path is not None or not _is_mini_swe_agent(agent_config):
         return
+    if is_fireworks_model(agent_config.model_name):
+        api_model = fireworks_api_model_id(
+            fireworks_bare_model_id(agent_config.model_name or "")
+        )
+        set_runtime_model_name(agent_config, f"fireworks_ai/{api_model}")
+        agent_config.env = dict(agent_config.env or {})
+        agent_config.env.setdefault(
+            "FIREWORKS_AI_API_KEY", "${FIREWORKS_API_KEY}"
+        )
     agent_config.name = None
     agent_config.import_path = _ODDISH_MINI_SWE_IMPORT_PATH
 

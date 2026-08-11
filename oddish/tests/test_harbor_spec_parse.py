@@ -66,18 +66,13 @@ def test_probe_harbor_ref_matches_pyproject_pin():
     # The probe fetches harbor at ``harbor_source_ref``; it must resolve to the
     # exact code the worker image runs, or probe trials inspect different harbor
     # code than the trials being probed. Assert it against HARBOR_DEFAULT_SHA --
-    # the commit recorded in uv.lock -- rather than against the pyproject source.
-    # The dependency legitimately tracks the ``main`` BRANCH (uv.lock records the
-    # commit), so comparing the two strings would only prove the probe floats
-    # with main, which is the drift this guards against: the moment main moves
-    # past the lock, a branch-pinned probe reads code the worker never ran.
+    # the commit recorded in uv.lock and pinned in pyproject.
     assert Settings().harbor_source_ref == HARBOR_DEFAULT_SHA
 
-    # The source repo must still agree with the dependency pin, and that pin
-    # stays a branch (the lockfile is what freezes the commit).
+    # The source repo and exact revision must agree with the dependency pin.
     with open("pyproject.toml", "rb") as fh:
         harbor_pin = tomllib.load(fh)["tool"]["uv"]["sources"]["harbor"]
-    assert harbor_pin["branch"] == "main"
+    assert harbor_pin["rev"] == HARBOR_DEFAULT_SHA
     assert harbor_pin["git"].endswith(Settings().harbor_source_repo)
 
 

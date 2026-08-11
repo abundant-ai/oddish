@@ -34,7 +34,7 @@ async def test_cancel_route_terminates_harvest_after_commit(monkeypatch):
     }
     terminated: list[dict] = []
 
-    async def fake_cancel_core(session, task_ids, org_id=None):
+    async def fake_cancel_core(session, task_ids, org_id=None, experiment_id=None):
         return core_result
 
     async def fake_terminate(result):

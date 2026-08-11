@@ -18,6 +18,10 @@ from oddish.core.helpers import (
     build_trial_response,
     fetch_trial_queue_info,
 )
+from oddish.core.model_display_names import (
+    apply_model_display_names,
+    load_model_display_names,
+)
 from oddish.db import (
     ExperimentModel,
     TaskModel,
@@ -159,7 +163,13 @@ async def get_task_status_counts(
     join_experiment: bool = False,
 ) -> TaskStatusResponse:
     """Get task status with aggregated trial counts."""
-    query = select(TaskModel).where(TaskModel.id == task_id)
+    # ``build_task_status_responses_from_counts`` aggregates trials in SQL
+    # but its response builder still reads ``task.experiments``.
+    query = (
+        select(TaskModel)
+        .options(selectinload(TaskModel.experiments))
+        .where(TaskModel.id == task_id)
+    )
     if join_experiment:
         query = query.join(
             task_experiments, task_experiments.c.task_id == TaskModel.id
@@ -286,7 +296,7 @@ async def list_task_trials_for_public_experiment(
     rows = result.all()
     trials = [trial for trial, _ in rows]
     queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=trials)
-    return [
+    responses = [
         build_trial_response(
             trial,
             task_path,
@@ -294,6 +304,8 @@ async def list_task_trials_for_public_experiment(
         )
         for trial, task_path in rows
     ]
+    apply_model_display_names(responses, await load_model_display_names(session))
+    return responses
 
 
 # =============================================================================

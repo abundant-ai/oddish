@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -16,6 +17,7 @@ from api.services.summarize_trajectory import (
     TRUNCATE_HEAD,
     TRUNCATE_TAIL,
     build_task_context,
+    drop_inert_steps,
     get_or_generate_summary,
     preprocess,
 )
@@ -42,6 +44,86 @@ def _make_step(step_id: int, **overrides) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# drop_inert_steps
+
+
+def test_drop_inert_steps_removes_contentless_steps_and_keeps_step_ids():
+    """The real shape: empty user turns between real agent steps."""
+    trajectory = {
+        "steps": [
+            {"step_id": 1, "source": "agent", "message": "looking at the pom"},
+            {"step_id": 2, "source": "user", "message": ""},
+            {"step_id": 3, "source": "user", "message": "   "},
+            {"step_id": 4, "source": "agent", "message": "", "tool_calls": [{"a": 1}]},
+            {"step_id": 5, "source": "user", "message": ""},
+        ]
+    }
+    out = drop_inert_steps(trajectory)
+    # Survivors keep their original ids -- nothing is renumbered, so a cited
+    # step_id still resolves against the unfiltered trajectory.
+    assert [s["step_id"] for s in out["steps"]] == [1, 4]
+    assert trajectory["steps"][1]["step_id"] == 2, "input must not be mutated"
+
+
+def test_drop_inert_steps_keeps_observation_only_and_reasoning_only_steps():
+    trajectory = {
+        "steps": [
+            {
+                "step_id": 1,
+                "message": "",
+                "observation": {"results": [{"content": "BUILD FAILURE"}]},
+            },
+            {"step_id": 2, "message": "", "reasoning_content": "the pom is wrong"},
+            {"step_id": 3, "message": "", "observation": {"results": [{"content": ""}]}},
+        ]
+    }
+    assert [s["step_id"] for s in drop_inert_steps(trajectory)["steps"]] == [1, 2]
+
+
+def test_drop_inert_steps_keeps_the_clip_omission_marker():
+    """clip_trajectory_steps' marker has no step_id; it must still survive."""
+    from api.services.summarize_trajectory import STEP_OMISSION_MARKER
+
+    trajectory = {
+        "steps": [
+            {"step_id": None, "source": "system", "message": STEP_OMISSION_MARKER.format(n=9)},
+            {"step_id": 7, "source": "user", "message": ""},
+        ]
+    }
+    out = drop_inert_steps(trajectory)
+    assert len(out["steps"]) == 1
+    assert "9" in out["steps"][0]["message"]
+
+
+def test_drop_inert_steps_returns_input_when_nothing_is_inert():
+    trajectory = {"steps": [{"step_id": 1, "message": "hi"}]}
+    assert drop_inert_steps(trajectory) is trajectory
+
+
+def test_drop_inert_steps_keeps_content_part_lists():
+    """``message``/``content`` are ``str | list[ContentPart]``.
+
+    Matches the frontend's ``hasContent``: a text part counts when non-blank,
+    and an image part counts on its own.
+    """
+    trajectory = {
+        "steps": [
+            {"step_id": 1, "message": [{"type": "text", "text": "looking at the pom"}]},
+            {"step_id": 2, "message": [{"type": "image", "source": {"data": "..."}}]},
+            {
+                "step_id": 3,
+                "message": [],
+                "observation": {
+                    "results": [{"content": [{"type": "text", "text": "BUILD FAILURE"}]}]
+                },
+            },
+            {"step_id": 4, "message": [{"type": "text", "text": "  "}]},
+            {"step_id": 5, "message": [], "observation": {"results": [{"content": []}]}},
+        ]
+    }
+    assert [s["step_id"] for s in drop_inert_steps(trajectory)["steps"]] == [1, 2, 3]
+
+
 # preprocess
 # ---------------------------------------------------------------------------
 
@@ -240,18 +322,18 @@ async def test_generate_drops_highlights_with_unknown_step_ids(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_generate_strips_code_fences_around_json(monkeypatch):
-    from api.services.summarize_trajectory import generate
+async def test_generate_rejects_code_fences_outside_structured_output(monkeypatch):
+    from api.services.summarize_trajectory import SummaryGenerationError, generate
 
     _patch_block_persistence(monkeypatch)
     body = json.dumps({"summary": "ok", "highlights": [], "components": []})
     _install_fake_llm(monkeypatch, _fake_llm(f"```json\n{body}\n```"))
-    result = await generate(
-        _trajectory_with_steps([1]),
-        _minimal_ctx(),
-        **_PROMPT_KWARGS,
-    )
-    assert result["summary"] == "ok"
+    with pytest.raises(SummaryGenerationError):
+        await generate(
+            _trajectory_with_steps([1]),
+            _minimal_ctx(),
+            **_PROMPT_KWARGS,
+        )
 
 
 @pytest.mark.asyncio
@@ -392,6 +474,74 @@ async def test_get_or_generate_returns_block_when_fresh():
 
 
 @pytest.mark.asyncio
+async def test_get_or_generate_refresh_ignores_a_fresh_block():
+    """refresh=True must regenerate even when a fresh block exists.
+
+    Freshness is keyed on schema_version alone, so a stored summary can be
+    "fresh" and still carry a retired taxonomy. Without this escape hatch
+    those summaries are unreachable -- an analysis rerun goes through this
+    same function and would hand back the stale block.
+    """
+    cached = {
+        "schema_version": "5",
+        "summary": "stale vocabulary",
+        "highlights": [],
+        "components": [],
+    }
+    regenerated = {**cached, "summary": "current vocabulary"}
+    trial = _fake_trial(has_trajectory=True)
+    session = _fake_session()
+    with (
+        patch(
+            "api.services.summarize_trajectory._load_fresh_summary_block",
+            new_callable=AsyncMock,
+            return_value=cached,
+        ) as load,
+        patch(
+            "api.services.summarize_trajectory.read_trial_trajectory",
+            new_callable=AsyncMock,
+            return_value={"steps": [_make_step(1)]},
+        ),
+        patch(
+            "api.services.summarize_trajectory.build_task_context",
+            new_callable=AsyncMock,
+            return_value=SimpleNamespace(
+                task_name="t", instruction="i", final_reward="1",
+                model_used="m", verifier_output="v",
+            ),
+        ),
+        patch(
+            "api.services.summarize_trajectory.generate",
+            new_callable=AsyncMock,
+            return_value=regenerated,
+        ) as gen,
+    ):
+        result = await get_or_generate_summary(session, trial, refresh=True)
+
+    assert result == regenerated
+    gen.assert_awaited_once()
+    # The cache is never consulted, before or inside the generation lock.
+    load.assert_not_awaited()
+    # The new summary is still mirrored into the trials column.
+    session.commit.assert_awaited()
+
+
+def test_summary_stamps_the_shared_schema_version():
+    """to_summary must stamp the constant the freshness query compares to.
+
+    A literal here would make a SCHEMA_VERSION bump unusable: every read would
+    miss, regenerate, write the old version, and miss again forever.
+    """
+    from api.services.blocks.analyzer.trajectory import trajectory_component_block
+    from api.services.summarize_trajectory import SCHEMA_VERSION
+
+    source = Path(trajectory_component_block.__file__).read_text()
+    assert '"schema_version": SCHEMA_VERSION' in source
+    assert '"schema_version": "5"' not in source
+    assert SCHEMA_VERSION == "5"
+
+
+@pytest.mark.asyncio
 async def test_get_or_generate_returns_none_when_no_trajectory():
     trial = _fake_trial(has_trajectory=False)
     session = _fake_session()
@@ -502,8 +652,23 @@ async def test_get_or_generate_fetches_trajectory_and_context_in_parallel():
 # ---------------------------------------------------------------------------
 
 
+class _FakeAwaitableAttrs:
+    """Mirror of SQLAlchemy's ``awaitable_attrs``: each attribute awaits to
+    the underlying object's attribute (``build_task_context`` loads
+    ``trial.task`` through it)."""
+
+    def __init__(self, obj):
+        self._obj = obj
+
+    def __getattr__(self, name):
+        async def _get():
+            return getattr(self._obj, name)
+
+        return _get()
+
+
 def _trial_with_task(*, task_name, reward, model, harbor_config=None):
-    return SimpleNamespace(
+    trial = SimpleNamespace(
         id="t-1",
         name="trial-0",
         trial_s3_key="trials/t-1/",
@@ -512,6 +677,8 @@ def _trial_with_task(*, task_name, reward, model, harbor_config=None):
         harbor_config=harbor_config,
         task=SimpleNamespace(name=task_name),
     )
+    trial.awaitable_attrs = _FakeAwaitableAttrs(trial)
+    return trial
 
 
 @pytest.mark.asyncio
@@ -692,6 +859,25 @@ def test_packaged_summary_prompt_template_has_taxonomy_placeholder():
 
     content = load_summary_prompt_template()
     assert "{{taxonomy}}" in content
+
+
+def test_build_summary_block_wires_structured_output_for_both_provider_paths():
+    from api.services.blocks.analyzer.trajectory.trajectory_component_block import (
+        TrajectoryBlock,
+        TrajectoryOutput,
+    )
+    from api.services.summarize_trajectory import build_summary_block
+
+    block = build_summary_block(
+        _trajectory_with_steps([1]),
+        _minimal_ctx(),
+        analyzer_id="tr_structured",
+        model="claude-sonnet-4-6",
+    )
+
+    assert TrajectoryBlock.output_schema is TrajectoryOutput
+    assert block._response_format is TrajectoryBlock.output_schema
+    assert block._output_schema == TrajectoryBlock.output_schema.model_json_schema()
 
 
 @pytest.mark.asyncio

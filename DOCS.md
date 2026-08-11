@@ -85,7 +85,7 @@ Options
 - `--task-name`, `-t TEXT` - Include task glob filter; can be passed multiple times
 - `--exclude-task-name`, `-x TEXT` - Exclude task glob filter; can be passed multiple times
 - `--n-tasks`, `-l INTEGER` - Limit the number of selected tasks after filtering
-- `--env`, `-e` - Execution environment: `docker`, `daytona`, `e2b`, `modal`, `runloop`, or `gke`
+- `--env`, `-e` - Execution environment: `docker`, `daytona`, `ec2`, `e2b`, `modal`, `runloop`, or `gke`. Hosted EC2 is opt-in and must be enabled by the deployment operator; Daytona remains the CPU default.
 - `--priority`, `-P TEXT` - Queue priority, typically `low` or `high`
 - `--experiment`, `-E TEXT` - Reuse or create an experiment ID/name
 - `--user`, `-u TEXT` - Override the author attached to the run. Defaults to the authenticated identity (Clerk-linked email for API keys / dashboard sessions); set this only to attribute a run to someone other than yourself.
@@ -122,6 +122,22 @@ Options
 - `--yes`, `-y` - Skip confirmation prompts (used with `--retry`)
 - `--api TEXT` - Override the API URL
 - `--json` - Emit JSON for scripts and CI; implies `--background`
+
+### Run on ephemeral EC2
+
+An EC2-enabled deployment can run a trial on one disposable CPU VM by selecting
+the backend explicitly:
+
+```bash
+oddish run ./my-task --env ec2 -a claude-code -m anthropic/claude-sonnet-4-5
+```
+
+The hosted API rejects `--env ec2` when its operator has not enabled and fully
+configured the backend. EC2 is not an automatic fallback: CPU-only hosted runs
+without `--env` continue to use Daytona. V1 does not accept GPU/TPU requests,
+attach mode, retained instances, or caller overrides of platform EC2 settings.
+It uses a public address and key-only SSH; the instance is terminated after the
+trial or cancellation.
 
 ### Re-run with `--retry`
 

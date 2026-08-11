@@ -216,6 +216,16 @@ class WorkerJobStatus(str, Enum):
     BLOCKED = "BLOCKED"
 
 
+class SandboxRunState(str, Enum):
+    """Durable lifecycle state for one remote sandbox launch attempt."""
+
+    PROVISIONING = "PROVISIONING"
+    RUNNING = "RUNNING"
+    TERMINATING = "TERMINATING"
+    TERMINATED = "TERMINATED"
+    FAILED = "FAILED"
+
+
 class TagState(str, Enum):
     """Lifecycle state for a tag definition."""
 
@@ -676,6 +686,13 @@ class TaskModel(TimestampedMixin, Base):
 
     __tablename__ = "tasks"
     __table_args__ = (
+        # JSONB serializes Python None as JSON null on normal ORM inserts, so
+        # both SQL NULL and JSON null mean "no published verdict" here.
+        CheckConstraint(
+            "verdict IS NULL OR verdict = 'null'::jsonb OR "
+            "(verdict_status IS NOT NULL AND verdict_status <> 'FAILED')",
+            name="ck_tasks_published_verdict_status",
+        ),
         Index("idx_tasks_org_created_at", "org_id", "created_at"),
         # Partial mirror of ``idx_tasks_org_created_at`` that matches
         # the ``deleted_at IS NULL`` predicate the soft-delete listener
@@ -818,6 +835,11 @@ class TaskModel(TimestampedMixin, Base):
     )
 
     # Relationships
+    # ``lazy="select"`` (the default): a mapper-level selectin here made
+    # every ``select(TaskModel)`` fan out into the join table on paths
+    # that never read the relationship (org checks, file serving).
+    # Callers that need it add ``selectinload(TaskModel.experiments)``
+    # or go through ``awaitable_attrs``.
     experiments: Mapped[list["ExperimentModel"]] = relationship(  # type: ignore[assignment]
         "ExperimentModel",
         secondary=task_experiments,
@@ -827,12 +849,16 @@ class TaskModel(TimestampedMixin, Base):
         ),
         secondaryjoin=lambda: ExperimentModel.id == task_experiments.c.experiment_id,
         back_populates="tasks",
-        lazy="selectin",
     )
+    # ``lazy="select"``: this collection is unbounded (hundreds of trials
+    # per task) and each row carries wide JSONB columns, so an implicit
+    # selectin charged every TaskModel load -- including the 404/org
+    # checks that load a task only to inspect ``org_id`` -- for the full
+    # trial set. Callers that actually render trials already add
+    # ``selectinload(TaskModel.trials)`` (often filtered) themselves.
     trials: Mapped[list["TrialModel"]] = relationship(  # type: ignore[assignment]
         "TrialModel",
         back_populates="task",
-        lazy="selectin",
         passive_deletes=True,
     )
     # ``lazy="select"``: only the explicit ``list_task_versions_core``
@@ -920,11 +946,13 @@ class TaskVersionModel(TimestampedMixin, Base):
     )
 
     # Relationships
+    # ``lazy="select"``: no read path consumes ``task_version.task``, so
+    # the previous selectin bought an extra round trip per version load
+    # for nothing.
     task: Mapped["TaskModel"] = relationship(  # type: ignore[assignment]
         "TaskModel",
         back_populates="versions",
         foreign_keys=[task_id],
-        lazy="selectin",
     )
 
 
@@ -1142,8 +1170,13 @@ class TrialModel(TimestampedMixin, Base):
     orig_s3_src: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Relationships
+    # ``lazy="select"``: a mapper-level selectin here cascaded -- loading
+    # one trial pulled its task, whose own eager relationships then
+    # pulled every sibling trial at full width. Callers that read
+    # ``trial.task`` add ``selectinload(TrialModel.task)`` or use
+    # ``awaitable_attrs`` (see ``build_task_context``).
     task: Mapped["TaskModel"] = relationship(  # type: ignore[assignment]
-        "TaskModel", back_populates="trials", lazy="selectin"
+        "TaskModel", back_populates="trials"
     )
 
     __table_args__ = (
@@ -1511,7 +1544,7 @@ class QueueSlotModel(Base):
     )
     # When the current lease was taken. Lets the reconciler reclaim a leaked
     # lease per-slot (keyed on the owning worker's liveness) while still
-    # honoring a short grace window for the brief acquire->claim gap.
+    # honoring a short grace window for the brief acquire-to-claim gap.
     locked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -1521,6 +1554,46 @@ class QueueSlotModel(Base):
             "idx_queue_slots_queue_key_locked_until",
             "queue_key",
             "locked_until",
+        ),
+    )
+
+
+class SandboxCapacityLeaseModel(Base):
+    """Provider-wide capacity lease acquired before a worker claims a job."""
+
+    __tablename__ = "sandbox_capacity_leases"
+
+    provider: Mapped[str] = mapped_column(Text, primary_key=True)
+    slot: Mapped[int] = mapped_column(Integer, primary_key=True)
+    locked_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    worker_job_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("worker_jobs.id", ondelete="SET NULL"), nullable=True
+    )
+    locked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    locked_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint("slot >= 0", name="ck_sandbox_capacity_slot_nonnegative"),
+        CheckConstraint(
+            "(locked_by IS NULL AND worker_job_id IS NULL "
+            "AND locked_at IS NULL AND locked_until IS NULL) OR "
+            "(locked_by IS NOT NULL AND locked_at IS NOT NULL "
+            "AND locked_until IS NOT NULL)",
+            name="ck_sandbox_capacity_lock_shape",
+        ),
+        Index(
+            "idx_sandbox_capacity_provider_locked_until",
+            "provider",
+            "locked_until",
+        ),
+        Index(
+            "idx_sandbox_capacity_worker_job",
+            "worker_job_id",
+            postgresql_where=text("worker_job_id IS NOT NULL"),
         ),
     )
 
@@ -1572,6 +1645,12 @@ class WorkerJobModel(TimestampedMixin, Base):
     # is scoped to it.
     harbor_variant_id: Mapped[str] = mapped_column(
         String(64), nullable=False, server_default=text("'default'")
+    )
+
+    # Credential/capacity routing lane. Only ``ec2_trial`` workers receive EC2
+    # control + SSH material; every other job remains on the secret-free lane.
+    execution_lane: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default=text("'default'")
     )
 
     queue_key: Mapped[str] = mapped_column(Text, nullable=False)
@@ -1651,10 +1730,15 @@ class WorkerJobModel(TimestampedMixin, Base):
     org_id: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
+        CheckConstraint(
+            "execution_lane IN ('default', 'ec2_trial')",
+            name="ck_worker_jobs_execution_lane",
+        ),
         Index(
             "idx_worker_jobs_claim",
             "queue_key",
             "harbor_variant_id",
+            "execution_lane",
             "priority",
             "available_after",
             "created_at",
@@ -1734,6 +1818,61 @@ class WorkerJobModel(TimestampedMixin, Base):
     )
     job_token_revoked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+
+
+class SandboxRunModel(TimestampedMixin, Base):
+    """Attempt-scoped ownership ledger for an ephemeral provider sandbox."""
+
+    __tablename__ = "sandbox_runs"
+
+    worker_job_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("worker_jobs.id", ondelete="RESTRICT"), nullable=False
+    )
+    worker_job_attempt: Mapped[int] = mapped_column(Integer, nullable=False)
+    trial_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
+    deployment: Mapped[str] = mapped_column(Text, nullable=False)
+    aws_account_id: Mapped[str] = mapped_column(String(12), nullable=False)
+    region: Mapped[str] = mapped_column(String(32), nullable=False)
+    launch_token: Mapped[str] = mapped_column(String(64), nullable=False)
+    external_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provisioned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    termination_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    terminated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "worker_job_id",
+            "worker_job_attempt",
+            name="uq_sandbox_runs_worker_attempt",
+        ),
+        UniqueConstraint("launch_token", name="uq_sandbox_runs_launch_token"),
+        Index(
+            "uq_sandbox_runs_provider_external_id",
+            "provider",
+            "external_id",
+            unique=True,
+            postgresql_where=text("external_id IS NOT NULL"),
+        ),
+        Index("idx_sandbox_runs_state_updated", "state", "updated_at"),
+        CheckConstraint(
+            "state IN ('PROVISIONING', 'RUNNING', 'TERMINATING', "
+            "'TERMINATED', 'FAILED')",
+            name="ck_sandbox_runs_state",
+        ),
+        CheckConstraint(
+            "worker_job_attempt > 0",
+            name="ck_sandbox_runs_attempt_positive",
+        ),
     )
 
 
@@ -2380,6 +2519,23 @@ class CostExcludedLlmKeyModel(TimestampedMixin, Base):
     created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
+class ModelDisplayNameModel(TimestampedMixin, Base):
+    __tablename__ = "model_display_names"
+    __table_args__ = (
+        Index(
+            "idx_model_display_names_model_live",
+            "model_name",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    model_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
 from oddish.db.soft_delete import register_soft_delete_models
 
 register_soft_delete_models(
@@ -2396,4 +2552,5 @@ register_soft_delete_models(
     SkillModel,
     DocumentModel,
     CostExcludedLlmKeyModel,
+    ModelDisplayNameModel,
 )

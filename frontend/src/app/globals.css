@@ -228,7 +228,8 @@
     --tc-thinking-recall: #0f8fa8;
     --tc-thinking-understand: #1baf7a;
     --tc-thinking-hypothesize: #a184ea;
-    --tc-thinking-correction: #4a3aa7;
+    --tc-plan-correction: #4a3aa7;
+    --tc-writing-plan: #008300;
     --tc-implementing: #b8860b;
     --tc-implementing-correction: #c62828;
     --tc-writing-tests: #eda100;
@@ -236,6 +237,12 @@
     --tc-testing-custom: #c94592;
     --tc-testing-edge: #852c5e;
     --tc-debugging: #eb6834;
+    /* Dark, desaturated brown: writing_report is terminal bookkeeping, so it
+       recedes rather than competing. The warm half is already past the
+       categorical limit and every warm hue between implementing (43deg) and
+       debugging (17deg) is taken, so this separates on value and chroma
+       instead -- sat 0.30 against their 0.92/0.82, and much darker. */
+    --tc-writing-report: #5c4033;
   }
 
   .dark {
@@ -295,7 +302,8 @@
     --tc-thinking-recall: #2aa5bd;
     --tc-thinking-understand: #199e70;
     --tc-thinking-hypothesize: #9085e9;
-    --tc-thinking-correction: #7a68d8;
+    --tc-plan-correction: #7a68d8;
+    --tc-writing-plan: #14923f;
     --tc-implementing: #b5860e;
     --tc-implementing-correction: #e05252;
     --tc-writing-tests: #c98500;
@@ -303,6 +311,7 @@
     --tc-testing-custom: #d55181;
     --tc-testing-edge: #9d3973;
     --tc-debugging: #d95926;
+    --tc-writing-report: #836b5c;
   }
 
   /*

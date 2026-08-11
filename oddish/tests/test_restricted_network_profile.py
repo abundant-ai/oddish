@@ -606,7 +606,7 @@ def test_submitted_route_fails_before_agent_build_or_job_create(
             job_create_called = True
             raise AssertionError("Job.create must not run")
 
-    monkeypatch.setattr(runner, "apply_harbor_patches", lambda: None)
+    monkeypatch.setattr(runner, "apply_harbor_patches", lambda **_kwargs: None)
     monkeypatch.setattr(runner, "Job", SentinelJob)
     monkeypatch.setattr(runner, "get_backend", lambda value: None)
     monkeypatch.setattr(runner, "validate_task_timeout_config", lambda path: None)
@@ -644,7 +644,7 @@ def test_built_serialized_route_fails_before_job_create(monkeypatch, tmp_path) -
             job_create_called = True
             raise AssertionError("Job.create must not run")
 
-    monkeypatch.setattr(runner, "apply_harbor_patches", lambda: None)
+    monkeypatch.setattr(runner, "apply_harbor_patches", lambda **_kwargs: None)
     monkeypatch.setattr(runner, "Job", SentinelJob)
     monkeypatch.setattr(runner, "get_backend", lambda value: None)
     monkeypatch.setattr(runner, "validate_task_timeout_config", lambda path: None)
@@ -689,7 +689,7 @@ def test_restricted_compose_ephemeral_variant_fails_before_dispatch(
         raise AssertionError("restricted ephemeral variant must not dispatch")
 
     monkeypatch.setattr(ephemeral, "run_ephemeral_harbor_trial", _unexpected_dispatch)
-    monkeypatch.setattr(runner, "apply_harbor_patches", lambda: None)
+    monkeypatch.setattr(runner, "apply_harbor_patches", lambda **_kwargs: None)
     monkeypatch.setattr(runner, "get_backend", lambda value: None)
 
     outcome = asyncio.run(
@@ -732,7 +732,7 @@ network_mode = "no-network"
             raise AssertionError("Job.create must not run")
 
     monkeypatch.setattr(runner, "Job", SentinelJob)
-    monkeypatch.setattr(runner, "apply_harbor_patches", lambda: None)
+    monkeypatch.setattr(runner, "apply_harbor_patches", lambda **_kwargs: None)
     monkeypatch.setattr(runner, "get_backend", lambda value: None)
     monkeypatch.setattr(runner, "validate_task_timeout_config", lambda path: None)
     monkeypatch.setattr(

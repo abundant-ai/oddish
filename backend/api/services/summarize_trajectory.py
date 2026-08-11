@@ -185,6 +185,84 @@ def _process_observation(obs: dict | None) -> dict | None:
     return new_obs
 
 
+def _has_content(value: object) -> bool:
+    """True when a MessageContent / ObservationContent carries substance.
+
+    Both are ``str | list[ContentPart] | None``, so the list form has to be
+    walked -- a step whose only substance is a content-part list is real. Mirror
+    of the frontend's ``hasContent``: a text part counts when non-blank, any
+    other part (an image) counts on its own.
+    """
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list):
+        return any(
+            _has_content(part.get("text"))
+            if isinstance(part, dict) and part.get("type") == "text"
+            else bool(part)
+            for part in value
+        )
+    return bool(value)
+
+
+def _step_is_inert(step: dict) -> bool:
+    """True when a step carries no content of any kind.
+
+    Agent protocols emit empty turns between real ones -- ``{"step_id": 3,
+    "source": "user", "message": ""}`` and the like. They are 71-88% of the
+    steps in every trajectory measured, in runs as long as 366 consecutive
+    steps, and they say nothing about what the agent did.
+
+    Deliberately conservative: any tool call, any non-blank message,
+    reasoning, or observation content keeps the step. The step-omission marker
+    from ``clip_trajectory_steps`` carries a message, so it survives too.
+    """
+    if step.get("tool_calls"):
+        return False
+    if _has_content(step.get("message")):
+        return False
+    if _has_content(step.get("reasoning_content")):
+        return False
+
+    observation = step.get("observation")
+    if isinstance(observation, dict):
+        for result in observation.get("results") or []:
+            if isinstance(result, dict):
+                if _has_content(result.get("content")):
+                    return False
+            elif result:
+                return False
+    elif observation:
+        return False
+    return True
+
+
+def drop_inert_steps(trajectory: dict) -> dict:
+    """Return a copy of ``trajectory`` without its contentless steps.
+
+    Applied only where the prompt is built, so it changes what the model reads
+    and nothing else: ``to_summary`` and ``_valid_step_ids`` both key off the
+    unfiltered ``TrajectoryInput.trajectory``, so durations, step indices, and
+    citation validation are unaffected. Surviving steps keep their original
+    ``step_id`` -- nothing is renumbered -- so a cited id still resolves.
+
+    Steps the model never sees go unclaimed by any component, which the
+    frontend already renders through its synthetic "unattributed" bucket.
+    """
+    steps = trajectory.get("steps") or []
+    kept = [s for s in steps if not (isinstance(s, dict) and _step_is_inert(s))]
+    if len(kept) == len(steps):
+        return trajectory
+    logger.info(
+        "trajectory summary: dropped %d/%d contentless steps",
+        len(steps) - len(kept),
+        len(steps),
+    )
+    out = dict(trajectory)
+    out["steps"] = kept
+    return out
+
+
 def preprocess(trajectory: dict) -> dict:
     """Return a copy of ``trajectory`` with images stripped and long text truncated."""
     out = deepcopy(trajectory)
@@ -271,6 +349,8 @@ def build_summary_block(
         output_transform=lambda raw: tb.to_summary(raw, model=model),
         model=model,
         max_tokens=SUMMARY_MAX_TOKENS,
+        response_format=tb.output_schema,
+        output_schema=tb.output_schema.model_json_schema(),
         triggered_by_user_id=triggered_by_user_id,
     )
 
@@ -380,7 +460,11 @@ async def build_task_context(trial) -> TaskContext:
         if isinstance(agent_cfg, dict):
             model_used = agent_cfg.get("model")
 
-    task_name = trial.task.name if trial.task is not None else ""
+    # ``awaitable_attrs``: callers reach here with trials loaded via bare
+    # ``session.get`` (trajectory-summary endpoint, post-trial QA worker
+    # hook), so the task relationship may not be eagerly loaded.
+    task = await trial.awaitable_attrs.task
+    task_name = task.name if task is not None else ""
 
     return TaskContext(
         task_name=task_name,
@@ -429,7 +513,11 @@ async def _load_fresh_summary_block(
 
 
 async def get_or_generate_summary(
-    session: AsyncSession, trial: TrialModel, triggered_by_user_id: str | None = None
+    session: AsyncSession,
+    trial: TrialModel,
+    triggered_by_user_id: str | None = None,
+    *,
+    refresh: bool = False,
 ) -> dict | None:
     """Return the trajectory summary, generating on miss.
 
@@ -438,8 +526,12 @@ async def get_or_generate_summary(
     ``trials.trajectory_summary`` for the graph builder + analyzer-input readers.
     Returns ``None`` when the trial has no trajectory; raises
     ``SummaryGenerationError`` if generation fails.
+
+    ``refresh`` skips the cache and always generates. The new block is written
+    alongside the old one and wins on ``created_at``, so nothing is deleted and
+    a failed regeneration leaves the previous summary serving.
     """
-    fresh = await _load_fresh_summary_block(session, trial.id)
+    fresh = None if refresh else await _load_fresh_summary_block(session, trial.id)
     if fresh is not None:
         return fresh
 
@@ -454,7 +546,11 @@ async def get_or_generate_summary(
 
     async with _GEN_LOCKS[trial.id]:
         # Re-check inside the lock — another coroutine may have generated one.
-        fresh = await _load_fresh_summary_block(session, trial.id)
+        # A refresh deliberately ignores that: it was asked for a new summary,
+        # and the one waiting in front of it may be the stale block it wants
+        # replaced. Two concurrent refreshes therefore generate twice; that is
+        # an explicit, scoped operation, not something a page view can trigger.
+        fresh = None if refresh else await _load_fresh_summary_block(session, trial.id)
         if fresh is not None:
             return fresh
 
