@@ -727,6 +727,45 @@ export interface TrajectoryComponent {
   duration_ms?: number;
 }
 
+/** Behaviour categories from the backend cohort taxonomy. */
+export type BehaviorCategory =
+  | "behavior_discovery"
+  | "planning"
+  | "testing_verification"
+  | "debugging"
+  | "scope_adherence"
+  | "coherence"
+  | "environment_tooling";
+
+export interface BehaviorEvidence {
+  trial_id: string;
+  trajectory_component: TrajectoryComponentKind;
+  step_ids: number[];
+  quote: string;
+}
+
+export interface BehaviorObservation {
+  behavior_description: string;
+  evidence: BehaviorEvidence[];
+}
+
+export interface CategoryComparison {
+  category: BehaviorCategory;
+  label: string | null;
+  successful: BehaviorObservation[];
+  failing: BehaviorObservation[];
+}
+
+export interface CohortComparison {
+  schema_version: number;
+  cohort_success: string[];
+  cohort_failure: string[];
+  categories: CategoryComparison[];
+  dropped?: { evidence: number; observations: number; categories: number };
+  /** Trials whose summary covers under half their run; evidence from these is thin. */
+  thin_coverage?: string[];
+}
+
 export interface TrajectorySummary {
   schema_version: string;
   model: string;
