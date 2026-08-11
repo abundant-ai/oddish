@@ -60,13 +60,17 @@ export function trialKey(apiBaseUrl: string, trialId: string): string {
  */
 export function useTrial(
   trialId: string | null | undefined,
-  { apiBaseUrl = "/api" }: { apiBaseUrl?: string } = {},
+  {
+    apiBaseUrl = "/api",
+    fallbackData,
+  }: { apiBaseUrl?: string; fallbackData?: Trial } = {},
 ): SWRResponse<Trial, Error> {
   return useSWR<Trial>(
     trialId ? trialKey(apiBaseUrl, trialId) : null,
     trialFetcher,
     {
       revalidateOnFocus: false,
+      fallbackData,
       refreshInterval: (data) =>
         isAnalysisStatusActive(data?.analysis_status) ? 5000 : 0,
     },
