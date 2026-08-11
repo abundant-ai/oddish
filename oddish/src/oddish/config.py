@@ -154,7 +154,7 @@ HARBOR_DEFAULT_SOURCE = "https://github.com/abundant-ai/harbor"
 # Exact abundant-ai/harbor revision resolved into both uv.lock files. Harbor
 # PRs #20-#22 add EC2 Helm/k3s support, lifecycle timings, and the first-class
 # environment-provisioned event required for durable launch identity.
-HARBOR_DEFAULT_SHA = "1f7157a0ffbe4792720a15ed7ed58c563e2b777d"
+HARBOR_DEFAULT_SHA = "a7caa586de620f8a7103018f99ce9e1603f90eb4"
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
