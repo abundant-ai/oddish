@@ -38,6 +38,7 @@ from oddish.workers.jobs.registry import (
     get_handler,
 )
 from oddish.workers.queue.shared import console
+from oddish.workers.queue.sandbox_capacity import SANDBOX_CAPACITY_LEASE_SECONDS
 
 
 # Callback invoked after a claimed row completes successfully. Kept as a
@@ -214,7 +215,8 @@ claimed AS (
 ),
 bound_capacity AS (
     UPDATE sandbox_capacity_leases AS lease
-    SET worker_job_id = claimed.id
+    SET worker_job_id = claimed.id,
+        locked_until = NOW() + make_interval(secs => $9)
     FROM claimed
     WHERE lease.provider = $7
       AND lease.slot = $8
@@ -324,7 +326,7 @@ async def heartbeat_worker_job(
                   AND ($2::text IS NULL OR current_worker_id = $2)
             ), renewed AS (
                 UPDATE sandbox_capacity_leases AS lease
-                SET locked_until = NOW() + make_interval(secs => 120)
+                SET locked_until = NOW() + make_interval(secs => $3)
                 FROM running_job AS wj
                 WHERE lease.worker_job_id = wj.id
                   AND lease.locked_by = wj.current_worker_id
@@ -335,6 +337,7 @@ async def heartbeat_worker_job(
             """,
             job_id,
             current_worker_id,
+            SANDBOX_CAPACITY_LEASE_SECONDS,
         )
         if (
             capacity_heartbeat is not None
@@ -391,6 +394,7 @@ async def claim_single_worker_job(
             execution_lane,
             capacity_provider,
             capacity_slot,
+            SANDBOX_CAPACITY_LEASE_SECONDS,
         )
     finally:
         await connection.close()

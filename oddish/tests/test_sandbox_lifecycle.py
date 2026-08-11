@@ -221,6 +221,42 @@ async def test_ec2_claim_refuses_to_bypass_global_capacity_lease() -> None:
 
 
 @pytest.mark.asyncio
+async def test_ec2_claim_renews_capacity_lease_when_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Connection:
+        def __init__(self) -> None:
+            self.statement = ""
+            self.args = ()
+
+        async def fetchrow(self, statement: str, *args):
+            self.statement = statement
+            self.args = args
+            return None
+
+        async def close(self) -> None:
+            return None
+
+    connection = Connection()
+    monkeypatch.setattr(
+        worker_job_single_job, "_open_connection", lambda: _return(connection)
+    )
+
+    claimed = await claim_single_worker_job(
+        "model-queue",
+        worker_id="worker-1",
+        queue_slot=0,
+        execution_lane=sandbox_lifecycle.EC2_TRIAL_EXECUTION_LANE,
+        capacity_provider="ec2",
+        capacity_slot=1,
+    )
+
+    assert claimed is None
+    assert "locked_until = NOW() + make_interval(secs => $9)" in connection.statement
+    assert connection.args[8] == sandbox_capacity.SANDBOX_CAPACITY_LEASE_SECONDS
+
+
+@pytest.mark.asyncio
 async def test_worker_heartbeat_renews_bound_capacity_lease(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
