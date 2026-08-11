@@ -9,7 +9,6 @@ import {
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
 
 type DrawerMode = "task" | "trial";
 
@@ -48,35 +47,15 @@ export function UnifiedDrawerWrapper({
   minWidth = 420,
   maxWidth = 1800,
 }: UnifiedDrawerWrapperProps) {
-  const [displayMode, setDisplayMode] = useState<DrawerMode>(mode);
-  const [isTransitioning, setIsTransitioning] = useState(false);
-  const previousMode = useRef<DrawerMode>(mode);
-
   const hasLeft = Boolean(sideBySideLeft);
-  const sideBySideActive =
-    displayMode === "trial" && showTask && showTrial && hasLeft;
+  const sideBySideActive = mode === "trial" && showTask && showTrial && hasLeft;
   const taskOnlyActive =
-    displayMode === "trial" && showTask && hasLeft && !showTrial;
+    mode === "trial" && showTask && hasLeft && !showTrial;
 
   const [width, setWidth] = useState(
     sideBySideActive ? sideBySideWidth : defaultWidth,
   );
   const userResizedRef = useRef(false);
-
-  useEffect(() => {
-    if (mode !== previousMode.current && open) {
-      setIsTransitioning(true);
-      const timer = setTimeout(() => {
-        setDisplayMode(mode);
-        setIsTransitioning(false);
-        previousMode.current = mode;
-      }, 150);
-      return () => clearTimeout(timer);
-    } else if (!open) {
-      setDisplayMode(mode);
-      previousMode.current = mode;
-    }
-  }, [mode, open]);
 
   useEffect(() => {
     if (userResizedRef.current) return;
@@ -152,11 +131,11 @@ export function UnifiedDrawerWrapper({
     ? renderTrial(taskToggle)
     : (trialContent ?? null);
 
-  const showLeftPane = displayMode === "trial" && hasLeft && showTask;
-  const showTrialPane = displayMode === "trial" && !taskOnlyActive;
+  const showLeftPane = mode === "trial" && hasLeft && showTask;
+  const showTrialPane = mode === "trial" && !taskOnlyActive;
 
   const body =
-    displayMode === "task" ? (
+    mode === "task" ? (
       <div className="flex h-full flex-col overflow-hidden">{taskContent}</div>
     ) : (
       <ResizablePanelGroup
@@ -211,14 +190,7 @@ export function UnifiedDrawerWrapper({
       width={width}
       onWidthChange={handleWidthChange}
     >
-      <div
-        className={cn(
-          "flex flex-1 flex-col overflow-hidden transition-opacity duration-300",
-        )}
-        style={{ opacity: isTransitioning ? 0.3 : 1 }}
-      >
-        {body}
-      </div>
+      <div className="flex flex-1 flex-col overflow-hidden">{body}</div>
     </ResizableDrawer>
   );
 }
