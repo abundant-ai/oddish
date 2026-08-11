@@ -25,6 +25,7 @@ import io
 import json
 import mimetypes
 import tarfile
+import uuid
 from datetime import datetime, timezone
 from typing import cast
 
@@ -91,6 +92,77 @@ def _expanded_prefix_for(task_id: str, version: int) -> str:
     """Sibling-prefix layout (``v{N}-files/``) keeps expansion artifacts
     from leaking into the archive branch's non-archive listing path."""
     return f"tasks/{task_id}/v{version}-files/"
+
+
+def _staging_prefix_for(task_id: str, version: int) -> str:
+    return f"task-expand-staging/{task_id}/v{version}/{uuid.uuid4().hex}/"
+
+
+async def _version_content_hash(task_id: str, version: int) -> str | None:
+    version_id = f"{task_id}-v{version}"
+    async with get_session() as session:
+        row = await session.get(TaskVersionModel, version_id)
+        if row is None:
+            row = await session.scalar(
+                select(TaskVersionModel).where(
+                    TaskVersionModel.task_id == task_id,
+                    TaskVersionModel.version == version,
+                )
+            )
+        return str(row.content_hash) if row is not None and row.content_hash else None
+
+
+async def _promote_expansion_if_current(
+    storage: StorageClient,
+    *,
+    task_id: str,
+    version: int,
+    expected_content_hash: str | None,
+    expanded_prefix: str,
+    manifest_key: str,
+    manifest_bytes: bytes,
+    staged_objects: list[tuple[str, str]],
+) -> bool:
+    """Publish a staged expansion only while its source version is current.
+
+    Member objects are staged outside the canonical prefix. The version-row
+    lock serializes the final promotion with in-place task overwrites, which
+    hold the same lock while replacing the archive and clearing this cache.
+    The manifest is written last, so readers never select a partial promotion.
+    """
+    version_id = f"{task_id}-v{version}"
+    async with get_session() as session:
+        row = await session.get(TaskVersionModel, version_id, with_for_update=True)
+        if row is None:
+            row = await session.scalar(
+                select(TaskVersionModel)
+                .where(
+                    TaskVersionModel.task_id == task_id,
+                    TaskVersionModel.version == version,
+                )
+                .with_for_update()
+            )
+        if row is not None and row.content_hash != expected_content_hash:
+            return False
+
+        await storage.delete_prefix(expanded_prefix)
+        semaphore = asyncio.Semaphore(_MAX_CONCURRENT_MEMBER_UPLOADS)
+
+        async def _copy_one(source: str, destination: str) -> None:
+            async with semaphore:
+                await storage.copy_object(source, destination)
+
+        await asyncio.gather(*(_copy_one(*item) for item in staged_objects))
+        await storage.upload_bytes(
+            manifest_bytes,
+            manifest_key,
+            content_type="application/json",
+        )
+        if row is not None:
+            row.expanded_at = utcnow()
+            row.expanded_manifest_key = manifest_key
+            await session.commit()
+        return True
 
 
 async def _resolve_archive_key(
@@ -320,6 +392,8 @@ async def run_task_expand_job(
     archive_key = await _resolve_archive_key(storage, task_id, version)
     expanded_prefix = _expanded_prefix_for(task_id, version)
     manifest_key = f"{expanded_prefix}{StorageClient._EXPANDED_MANIFEST_OBJECT_NAME}"
+    expected_content_hash = await _version_content_hash(task_id, version)
+    staging_prefix: str | None = None
 
     heartbeat_stop = asyncio.Event()
     heartbeat_task: asyncio.Task | None = None
@@ -351,6 +425,7 @@ async def run_task_expand_job(
                     task_id=task_id,
                     version=version,
                     manifest_key=manifest_key,
+                    expected_content_hash=expected_content_hash,
                 )
                 return {
                     "status": "already_expanded",
@@ -376,6 +451,7 @@ async def run_task_expand_job(
                 task_id=task_id,
                 version=version,
                 manifest_key=manifest_key,
+                expected_content_hash=expected_content_hash,
             )
             console.print(
                 f"[green]TASK_EXPAND {task_id} v{version} "
@@ -419,6 +495,7 @@ async def run_task_expand_job(
                 task_id=task_id,
                 version=version,
                 manifest_key=manifest_key,
+                expected_content_hash=expected_content_hash,
             )
             return {
                 "status": "already_expanded",
@@ -431,6 +508,7 @@ async def run_task_expand_job(
         # Load the archive once (goes through the Phase-0 cache so a
         # later read doesn't re-download).
         archive_bytes, _members, _texts = await storage._load_task_archive(archive_key)
+        staging_prefix = _staging_prefix_for(task_id, version)
 
         max_member = int(settings.tasks_expand_max_member_bytes)
         extracted_members = _extract_regular_members(
@@ -463,7 +541,7 @@ async def run_task_expand_job(
                 body = b""
             digest = hashlib.sha256(body).hexdigest()
             content_type, _ = mimetypes.guess_type(normalized)
-            target_key = f"{expanded_prefix}{normalized}"
+            target_key = f"{staging_prefix}{normalized}"
             idx = len(manifest_files)
             manifest_files.append(
                 {
@@ -523,15 +601,28 @@ async def run_task_expand_job(
             "files": manifest_files,
         }
         manifest_bytes = json.dumps(manifest_payload, sort_keys=True).encode("utf-8")
-        await storage.upload_bytes(
-            manifest_bytes, manifest_key, content_type="application/json"
-        )
-
-        await _mark_version_expanded(
+        failed_indices = {fail[0] for fail in failures if fail is not None}
+        staged_objects = [
+            (target_key, f"{expanded_prefix}{manifest_files[idx]['path']}")
+            for idx, target_key, _body, _content_type in upload_plan
+            if idx not in failed_indices
+        ]
+        promoted = await _promote_expansion_if_current(
+            storage,
             task_id=task_id,
             version=version,
+            expected_content_hash=expected_content_hash,
+            expanded_prefix=expanded_prefix,
             manifest_key=manifest_key,
+            manifest_bytes=manifest_bytes,
+            staged_objects=staged_objects,
         )
+        if not promoted:
+            console.print(
+                f"[yellow]TASK_EXPAND {task_id} v{version} discarded: "
+                "source version changed during expansion[/yellow]"
+            )
+            return {"status": "stale_source"}
 
         summary = {
             "status": "expanded",
@@ -544,6 +635,11 @@ async def run_task_expand_job(
         )
         return summary
     finally:
+        if staging_prefix is not None:
+            try:
+                await storage.delete_prefix(staging_prefix)
+            except Exception:
+                pass
         heartbeat_stop.set()
         if heartbeat_task is not None:
             await asyncio.gather(heartbeat_task, return_exceptions=True)
@@ -554,6 +650,7 @@ async def _mark_version_expanded(
     task_id: str,
     version: int,
     manifest_key: str | None,
+    expected_content_hash: str | None,
 ) -> None:
     """Stamp ``expanded_at`` / ``expanded_manifest_key`` on the version row.
 
@@ -562,17 +659,21 @@ async def _mark_version_expanded(
     """
     version_id = f"{task_id}-v{version}"
     async with get_session() as session:
-        row = await session.get(TaskVersionModel, version_id)
+        row = await session.get(TaskVersionModel, version_id, with_for_update=True)
         if row is None:
             # Fall back to (task_id, version) lookup for callers that
             # don't follow the {task_id}-v{version} id convention.
             row = await session.scalar(
-                select(TaskVersionModel).where(
+                select(TaskVersionModel)
+                .where(
                     TaskVersionModel.task_id == task_id,
                     TaskVersionModel.version == version,
                 )
+                .with_for_update()
             )
         if row is None:
+            return
+        if row.content_hash != expected_content_hash:
             return
         row.expanded_at = utcnow()
         row.expanded_manifest_key = manifest_key

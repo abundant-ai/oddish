@@ -538,19 +538,31 @@ async def _release_pre_trial_claim(task_version_id: str) -> None:
             version.pre_trial_started_at = None
 
 
-async def _pre_trial_store_allowed(session, worker_job_id: str | None) -> bool:
-    """Gate for persisting a pre-trial result: only that the QA job is still
-    running.
+async def _pre_trial_version_content_hash(task_version_id: str) -> str | None:
+    async with get_session() as session:
+        version = await session.get(TaskVersionModel, task_version_id)
+        content_hash = getattr(version, "content_hash", None)
+        return str(content_hash) if version is not None and content_hash else None
+
+
+async def _pre_trial_store_allowed(
+    session,
+    worker_job_id: str | None,
+    task_version_id: str,
+    expected_content_hash: str | None,
+) -> bool:
+    """Persist only while the QA job and audited source snapshot are current.
 
     The audit is pinned to a specific, immutable task version, so its findings
     stay valid for that version's row even if a re-upload made a newer version
-    current mid-audit -- the newer version gets its own audit on the next QA
-    run. (Before the CLAUDE_CLI switch the sandbox agent pulled the task's
-    *current* source, so a mid-audit re-upload meant the findings described the
-    wrong snapshot and had to be discarded; version pinning removes that
-    mismatch, so gating on current-version equality would only drop valid data.)
+    current mid-audit. In-place replacement is different: it mutates that same
+    version row, so the content hash must still match the snapshot observed
+    before synthesis began.
     """
-    return await _worker_job_is_running(session, worker_job_id)
+    if not await _worker_job_is_running(session, worker_job_id):
+        return False
+    version = await session.get(TaskVersionModel, task_version_id)
+    return version is not None and version.content_hash == expected_content_hash
 
 
 async def _run_pre_trial_audit(
@@ -573,6 +585,7 @@ async def _run_pre_trial_audit(
     so the next QA run redoes it promptly instead of waiting out the lease.
     """
     pre_trial_version_id: str | None = None
+    pre_trial_content_hash: str | None = None
     pre_trial_stored: str | None = None
     try:
         # settings.pre_trial_enabled is the *default* the registered check falls
@@ -598,6 +611,9 @@ async def _run_pre_trial_audit(
                 task_id, task_version_id=task_version_id
             )
         if pre_trial_version_id is not None:
+            pre_trial_content_hash = await _pre_trial_version_content_hash(
+                pre_trial_version_id
+            )
             pre_trial_items = await _pre_trial_synth_fn(
                 task_id,
                 pre_trial_version_id,
@@ -618,7 +634,10 @@ async def _run_pre_trial_audit(
                     ),
                     error=None,
                     should_store=lambda session: _pre_trial_store_allowed(
-                        session, worker_job_id
+                        session,
+                        worker_job_id,
+                        pre_trial_version_id,
+                        pre_trial_content_hash,
                     ),
                 )
     except Exception as exc:  # noqa: BLE001
@@ -639,7 +658,10 @@ async def _run_pre_trial_audit(
                     payload=None,
                     error=exc,
                     should_store=lambda session: _pre_trial_store_allowed(
-                        session, worker_job_id
+                        session,
+                        worker_job_id,
+                        pre_trial_version_id,
+                        pre_trial_content_hash,
                     ),
                 )
         except Exception as sync_exc:  # noqa: BLE001

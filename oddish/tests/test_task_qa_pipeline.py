@@ -323,6 +323,21 @@ class _QASession:
 
 
 @pytest.mark.asyncio
+async def test_pre_trial_store_rejects_replaced_version() -> None:
+    version = SimpleNamespace(content_hash="new-hash")
+    session = _QASession(task=None, trials=[], task_version=version)
+
+    allowed = await qa_handler._pre_trial_store_allowed(
+        session,
+        "worker-job",
+        "task-v1",
+        "old-hash",
+    )
+
+    assert allowed is False
+
+
+@pytest.mark.asyncio
 async def test_run_task_qa_job_classifies_then_synthesizes(monkeypatch):
     task = SimpleNamespace(
         id="task-9",
@@ -717,10 +732,10 @@ async def test_run_task_qa_job_uses_injected_pre_trial_synth_fn(monkeypatch):
             )
         ]
 
-    async def fake_claim(_task_id):
+    async def fake_claim(_task_id, *_args):
         return version.id
 
-    async def fake_store_allowed(_session, _worker_job_id):
+    async def fake_store_allowed(_session, _worker_job_id, *_args):
         return True
 
     monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
@@ -804,10 +819,10 @@ async def test_run_task_qa_job_pre_trial_failure_never_blocks_verdict(monkeypatc
     async def boom_pre_trial_synth(task_id, task_version_id, trial_ids, timeout):
         raise RuntimeError("sandbox exploded")
 
-    async def fake_claim(_task_id):
+    async def fake_claim(_task_id, *_args):
         return version.id
 
-    async def fake_store_allowed(_session, _worker_job_id):
+    async def fake_store_allowed(_session, _worker_job_id, *_args):
         return True
 
     monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
@@ -886,10 +901,10 @@ async def test_run_task_qa_job_releases_claim_when_store_vetoed(monkeypatch):
     async def stub_pre_trial_synth(task_id, task_version_id, trial_ids, timeout):
         return []
 
-    async def fake_claim(_task_id):
+    async def fake_claim(_task_id, *_args):
         return version.id
 
-    async def veto_store(_session, _worker_job_id):
+    async def veto_store(_session, _worker_job_id, *_args):
         return False
 
     monkeypatch.setattr(qa_handler, "get_session", fake_get_session)

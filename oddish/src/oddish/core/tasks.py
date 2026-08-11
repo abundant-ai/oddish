@@ -380,6 +380,20 @@ async def complete_task_upload(
                         "start the in-place upload again"
                     ),
                 )
+            if version_row.content_hash == content_hash:
+                try:
+                    await storage.delete_prefix(upload_key)
+                except Exception:
+                    pass
+                return UploadResponse(
+                    task_id=task_id,
+                    name=normalized_name,
+                    s3_key=s3_key,
+                    version=version,
+                    version_id=version_id,
+                    existing_task=True,
+                    content_hash=content_hash,
+                )
             if version_row.content_hash != overwrite_base_content_hash:
                 raise HTTPException(
                     status_code=409,

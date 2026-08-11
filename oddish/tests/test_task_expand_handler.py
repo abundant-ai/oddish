@@ -138,6 +138,13 @@ class _FakeStorage:
         self._objects[s3_key] = data
         self.upload_calls.append((s3_key, data, content_type))
 
+    async def copy_object(self, source: str, destination: str) -> None:
+        self._objects[destination] = self._objects[source]
+
+    async def delete_prefix(self, prefix: str) -> None:
+        for key in [key for key in self._objects if key.startswith(prefix)]:
+            del self._objects[key]
+
     async def _load_task_archive(self, archive_key: str):
         return (self._objects[archive_key], [], {})
 
@@ -241,6 +248,49 @@ async def test_expand_writes_members_and_manifest(monkeypatch, _patched_get_sess
         "task.toml",
         "verifier/check.py",
     }
+
+
+@pytest.mark.asyncio
+async def test_stale_expansion_is_not_promoted(monkeypatch) -> None:
+    row = type("Version", (), {"content_hash": "new-hash"})()
+
+    @asynccontextmanager
+    async def _session():
+        class _S:
+            async def get(self, *_args, **_kwargs):
+                return row
+
+            async def scalar(self, *_args, **_kwargs):
+                return None
+
+            async def commit(self):
+                return None
+
+        yield _S()
+
+    storage = _FakeStorage(
+        loose_objects={"task-expand-staging/task/v1/run/task.toml": b"old"}
+    )
+    monkeypatch.setattr(task_expand_handler, "get_session", _session)
+
+    promoted = await task_expand_handler._promote_expansion_if_current(
+        storage,
+        task_id="task",
+        version=1,
+        expected_content_hash="old-hash",
+        expanded_prefix="tasks/task/v1-files/",
+        manifest_key="tasks/task/v1-files/.oddish-manifest.json",
+        manifest_bytes=b"{}",
+        staged_objects=[
+            (
+                "task-expand-staging/task/v1/run/task.toml",
+                "tasks/task/v1-files/task.toml",
+            )
+        ],
+    )
+
+    assert promoted is False
+    assert "tasks/task/v1-files/task.toml" not in storage._objects
 
 
 @pytest.mark.asyncio

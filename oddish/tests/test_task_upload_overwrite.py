@@ -242,6 +242,37 @@ async def test_complete_overwrite_replay_succeeds_after_staging_cleanup(
 
 
 @pytest.mark.asyncio
+async def test_complete_overwrite_replay_succeeds_before_staging_cleanup(
+    monkeypatch,
+) -> None:
+    version = SimpleNamespace(id="task-1-v2", content_hash="new-hash")
+    task = SimpleNamespace(
+        id="task-1",
+        org_id="org-1",
+        current_version_id=version.id,
+    )
+    session = _Session(task=task, current=version)
+    storage = _Storage()
+    monkeypatch.setattr(tasks, "get_session", _session_context(session))
+    monkeypatch.setattr(tasks, "get_storage_client", lambda: storage)
+
+    result = await tasks.complete_task_upload(
+        task_id="task-1",
+        task_name="task",
+        version=2,
+        content_hash="new-hash",
+        org_id="org-1",
+        overwrite_current_version=True,
+        staging_key=f"task-upload-staging/task-1/{'e' * 32}.tar.gz",
+        overwrite_base_content_hash="old-hash",
+    )
+
+    assert result.existing_task is True
+    assert storage.copied == []
+    assert storage.deleted == [f"task-upload-staging/task-1/{'e' * 32}.tar.gz"]
+
+
+@pytest.mark.asyncio
 async def test_complete_overwrite_rejects_stale_staging_upload(monkeypatch) -> None:
     version = SimpleNamespace(id="task-1-v2", content_hash="newer-hash")
     task = SimpleNamespace(
