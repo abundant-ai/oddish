@@ -1,0 +1,16 @@
+Compare the two cohorts below. For each category, state what the successful runs
+did and what the failing runs did, as short behaviour descriptions.
+
+{{taxonomy}}
+
+Every behaviour description must carry at least one piece of evidence. Evidence
+is a component that appears verbatim in one of the trials above: its trial id,
+its `trajectory_component` label, its step ids, and its summary text copied
+exactly. Do not cite a component that is not listed above, and do not invent
+step ids. A behaviour you cannot cite is one you must omit.
+
+Only include a category when the cohorts actually differ on it. Omit categories
+where you see no difference; an empty comparison is a better answer than a
+manufactured one.
+
+Write all prose in short, plain sentences: one fact per sentence, active voice.
