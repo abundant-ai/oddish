@@ -1434,7 +1434,10 @@ async def cancel_tasks(
     try:
         async with get_session() as session:
             result = await cancel_tasks_runs(
-                session, payload.task_ids, org_id=auth.org_id
+                session,
+                payload.task_ids,
+                org_id=auth.org_id,
+                experiment_id=payload.experiment_id,
             )
             if result.get("error") == "not_found":
                 raise HTTPException(status_code=404, detail="No matching tasks found")
@@ -1445,7 +1448,10 @@ async def cancel_tasks(
         # Postgres deadlock/timeout detail). The UI gets a simple, honest
         # message instead of an opaque "Internal Server Error".
         logger.error(
-            "cancel_tasks failed for task_ids=%s", payload.task_ids, exc_info=exc
+            "cancel_tasks failed for task_ids=%s experiment_id=%s",
+            payload.task_ids,
+            payload.experiment_id,
+            exc_info=exc,
         )
         raise HTTPException(
             status_code=503,
