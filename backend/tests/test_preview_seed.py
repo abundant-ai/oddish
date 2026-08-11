@@ -12,6 +12,7 @@ The deploy-path gate is the real seed step in the prepare-preview-database
 job, which samples actual prod and seeds the actual branch."""
 
 import os
+from datetime import timedelta
 
 import pytest
 from sqlalchemy import text
@@ -23,6 +24,7 @@ from oddish.db.models import Base
 
 URL = os.environ.get("ODDISH_DATABASE_URL")
 SAMPLE_KEY = "77"
+_EPOCH = preview_seed.SEED_EPOCH
 pytestmark = [
     pytest.mark.asyncio,
     pytest.mark.skipif(not URL, reason="ODDISH_DATABASE_URL not set"),
@@ -39,6 +41,27 @@ async def _reset_target(engine):
         await conn.execute(text("drop schema public cascade"))
         await conn.execute(text("create schema public"))
         await conn.run_sync(Base.metadata.create_all)
+
+
+def _uniform(rows: list[dict]) -> list[dict]:
+    """A core executemany compiles one statement for the whole list, so every
+    dict has to carry the same keys; the ones a row omits are NULL."""
+    keys = {k for r in rows for k in r}
+    return [{k: r.get(k) for k in keys} for r in rows]
+
+
+def _block(*, id: str, at=_EPOCH, **over) -> dict:
+    """An analyzer_blocks row with its NOT NULL columns defaulted."""
+    return {
+        "id": id,
+        "created_at": at,
+        "updated_at": at,
+        "type": over.get("type", "trial_classifier"),
+        "key_prefix": f"analyzer/{over.get('type', 'trial_classifier')}",
+        "llm_client_type": "api",
+        "status": "SUCCESS",
+        **over,
+    }
 
 
 def _src_url() -> str:
@@ -335,6 +358,38 @@ async def _make_source_db():
             ],
         )
         await c.execute(
+            t["analyzer_blocks"].insert(),
+            _uniform(
+                [
+                    _block(
+                        id=f"ab-sum-{i}",
+                        at=_EPOCH + timedelta(hours=i),
+                        analyzer_id="tr-ok",
+                        type="trajectory_summary",
+                        prompt="the whole trajectory" * 100,
+                        input={"trial_id": "tr-ok"},
+                        output={"schema_version": "3", "steps": i},
+                    )
+                    # three summaries for one trial: only the newest two are drawn
+                    for i in range(3)
+                ]
+                + [
+                    _block(
+                        id="ab-task",
+                        task_id="task-solo",
+                        type="post_trial",
+                        llm_client_type="claude_cli",
+                        output={"verdict": "good"},
+                        status="FAILED",
+                    ),
+                    # in-flight, soft-deleted, and report-scoped blocks stay out
+                    _block(id="ab-live", analyzer_id="tr-ok", status="RUNNING"),
+                    _block(id="ab-del", analyzer_id="tr-ok", deleted_at=_EPOCH),
+                    _block(id="ab-report", analyzer_id="an-report-1", type="reduce"),
+                ]
+            ),
+        )
+        await c.execute(
             t["skills"].insert(),
             [
                 {
@@ -371,136 +426,140 @@ async def _make_source_db():
         )
         await c.execute(
             t["tags"].insert(),
-            [
-                {
-                    "id": "t-smoke",
-                    "org_id": "org-a",
-                    "key": "smoke",
-                    "normalized_key": "smoke",
-                    "state": "ACTIVE",
-                    "owner_user_id": "u-a1",
-                    "created_by_user_id": "u-a1",
-                },
-                {
-                    "id": "t-flaky",
-                    "org_id": "org-a",
-                    "key": "flaky",
-                    "normalized_key": "flaky",
-                    "state": "ACTIVE",
-                    "owner_user_id": "u-a2",
-                    "created_by_user_id": "u-a1",
-                },
-                {
-                    "id": "t-bonly",
-                    "org_id": "org-b",
-                    "key": "bonly",
-                    "normalized_key": "bonly",
-                    "state": "ACTIVE",
-                    "owner_user_id": "u-b1",
-                },
-                # MERGED tags ARE drawn (the page does its own state filtering);
-                # the merged_into_id self-FK points at a sampled tag.
-                {
-                    "id": "t-merged",
-                    "org_id": "org-a",
-                    "key": "old",
-                    "normalized_key": "old",
-                    "state": "MERGED",
-                    "merged_into_id": "t-smoke",
-                    "owner_user_id": "u-a1",
-                },
-                # Soft-deleted tags are excluded (deleted_at IS NOT NULL).
-                {
-                    "id": "t-del",
-                    "org_id": "org-a",
-                    "key": "gone",
-                    "normalized_key": "gone",
-                    "state": "ACTIVE",
-                    "owner_user_id": "u-a1",
-                    "deleted_at": preview_seed.SEED_EPOCH,
-                },
-            ],
+            _uniform(
+                [
+                    {
+                        "id": "t-smoke",
+                        "org_id": "org-a",
+                        "key": "smoke",
+                        "normalized_key": "smoke",
+                        "state": "ACTIVE",
+                        "owner_user_id": "u-a1",
+                        "created_by_user_id": "u-a1",
+                    },
+                    {
+                        "id": "t-flaky",
+                        "org_id": "org-a",
+                        "key": "flaky",
+                        "normalized_key": "flaky",
+                        "state": "ACTIVE",
+                        "owner_user_id": "u-a2",
+                        "created_by_user_id": "u-a1",
+                    },
+                    {
+                        "id": "t-bonly",
+                        "org_id": "org-b",
+                        "key": "bonly",
+                        "normalized_key": "bonly",
+                        "state": "ACTIVE",
+                        "owner_user_id": "u-b1",
+                    },
+                    # MERGED tags ARE drawn (the page does its own state filtering);
+                    # the merged_into_id self-FK points at a sampled tag.
+                    {
+                        "id": "t-merged",
+                        "org_id": "org-a",
+                        "key": "old",
+                        "normalized_key": "old",
+                        "state": "MERGED",
+                        "merged_into_id": "t-smoke",
+                        "owner_user_id": "u-a1",
+                    },
+                    # Soft-deleted tags are excluded (deleted_at IS NOT NULL).
+                    {
+                        "id": "t-del",
+                        "org_id": "org-a",
+                        "key": "gone",
+                        "normalized_key": "gone",
+                        "state": "ACTIVE",
+                        "owner_user_id": "u-a1",
+                        "deleted_at": preview_seed.SEED_EPOCH,
+                    },
+                ]
+            ),
         )
         await c.execute(
             t["tag_assignments"].insert(),
-            [
-                # DIRECT/ACTIVE onto sampled targets -> kept (one per scope).
-                {
-                    "id": "ta-task",
-                    "tag_id": "t-smoke",
-                    "org_id": "org-a",
-                    "scope": "TASK",
-                    "target_id": "task-solo",
-                    "task_id": "task-solo",
-                    "source": "DIRECT",
-                    "state": "ACTIVE",
-                    "assigned_by_user_id": "u-a1",
-                },
-                {
-                    "id": "ta-ver",
-                    "tag_id": "t-flaky",
-                    "org_id": "org-a",
-                    "scope": "VERSION",
-                    "target_id": "ver-solo-2",
-                    "task_id": "task-solo",
-                    "source": "DIRECT",
-                    "state": "ACTIVE",
-                    "assigned_by_user_id": "u-a2",
-                },
-                {
-                    "id": "ta-exp",
-                    "tag_id": "t-smoke",
-                    "org_id": "org-a",
-                    "scope": "EXPERIMENT",
-                    "target_id": "exp-a",
-                    "source": "DIRECT",
-                    "state": "ACTIVE",
-                    "assigned_by_user_id": "u-a1",
-                },
-                {
-                    "id": "ta-bonly",
-                    "tag_id": "t-bonly",
-                    "org_id": "org-b",
-                    "scope": "TASK",
-                    "target_id": "task-dup-b",
-                    "task_id": "task-dup-b",
-                    "source": "DIRECT",
-                    "state": "ACTIVE",
-                },
-                # Experiment-propagated -> excluded (source != DIRECT).
-                {
-                    "id": "ta-living",
-                    "tag_id": "t-smoke",
-                    "org_id": "org-a",
-                    "scope": "TASK",
-                    "target_id": "task-dup-a",
-                    "task_id": "task-dup-a",
-                    "source": "EXPERIMENT_LIVING",
-                    "state": "ACTIVE",
-                },
-                # Removed -> excluded (state != ACTIVE).
-                {
-                    "id": "ta-removed",
-                    "tag_id": "t-flaky",
-                    "org_id": "org-a",
-                    "scope": "TASK",
-                    "target_id": "task-solo",
-                    "task_id": "task-solo",
-                    "source": "DIRECT",
-                    "state": "REMOVED",
-                    "assigned_by_user_id": "u-a1",
-                },
-                # Target not in the trimmed set (exp-del is deleted) -> excluded.
-                {
-                    "id": "ta-deltarget",
-                    "tag_id": "t-smoke",
-                    "org_id": "org-a",
-                    "scope": "EXPERIMENT",
-                    "target_id": "exp-del",
-                    "source": "DIRECT",
-                    "state": "ACTIVE",
-                },
-            ],
+            _uniform(
+                [
+                    # DIRECT/ACTIVE onto sampled targets -> kept (one per scope).
+                    {
+                        "id": "ta-task",
+                        "tag_id": "t-smoke",
+                        "org_id": "org-a",
+                        "scope": "TASK",
+                        "target_id": "task-solo",
+                        "task_id": "task-solo",
+                        "source": "DIRECT",
+                        "state": "ACTIVE",
+                        "assigned_by_user_id": "u-a1",
+                    },
+                    {
+                        "id": "ta-ver",
+                        "tag_id": "t-flaky",
+                        "org_id": "org-a",
+                        "scope": "VERSION",
+                        "target_id": "ver-solo-2",
+                        "task_id": "task-solo",
+                        "source": "DIRECT",
+                        "state": "ACTIVE",
+                        "assigned_by_user_id": "u-a2",
+                    },
+                    {
+                        "id": "ta-exp",
+                        "tag_id": "t-smoke",
+                        "org_id": "org-a",
+                        "scope": "EXPERIMENT",
+                        "target_id": "exp-a",
+                        "source": "DIRECT",
+                        "state": "ACTIVE",
+                        "assigned_by_user_id": "u-a1",
+                    },
+                    {
+                        "id": "ta-bonly",
+                        "tag_id": "t-bonly",
+                        "org_id": "org-b",
+                        "scope": "TASK",
+                        "target_id": "task-dup-b",
+                        "task_id": "task-dup-b",
+                        "source": "DIRECT",
+                        "state": "ACTIVE",
+                    },
+                    # Experiment-propagated -> excluded (source != DIRECT).
+                    {
+                        "id": "ta-living",
+                        "tag_id": "t-smoke",
+                        "org_id": "org-a",
+                        "scope": "TASK",
+                        "target_id": "task-dup-a",
+                        "task_id": "task-dup-a",
+                        "source": "EXPERIMENT_LIVING",
+                        "state": "ACTIVE",
+                    },
+                    # Removed -> excluded (state != ACTIVE).
+                    {
+                        "id": "ta-removed",
+                        "tag_id": "t-flaky",
+                        "org_id": "org-a",
+                        "scope": "TASK",
+                        "target_id": "task-solo",
+                        "task_id": "task-solo",
+                        "source": "DIRECT",
+                        "state": "REMOVED",
+                        "assigned_by_user_id": "u-a1",
+                    },
+                    # Target not in the trimmed set (exp-del is deleted) -> excluded.
+                    {
+                        "id": "ta-deltarget",
+                        "tag_id": "t-smoke",
+                        "org_id": "org-a",
+                        "scope": "EXPERIMENT",
+                        "target_id": "exp-del",
+                        "source": "DIRECT",
+                        "state": "ACTIVE",
+                    },
+                ]
+            ),
         )
     return src
 
@@ -552,6 +611,18 @@ async def test_sample_is_deterministic_and_prod_faithful():
         jobs = {j["id"]: j for j in rows["worker_jobs"]}
         assert "wj-live" not in jobs  # only terminal jobs imported
         assert jobs["wj-child"]["parent_job_id"] is None  # parent not sampled
+
+        # blocks for sampled subjects, newest SAMPLE_BLOCKS_PER_SUBJECT per
+        # (subject, type), so the preview serves stored trajectory summaries
+        # instead of regenerating them on view
+        blocks = {b["id"]: b for b in rows["analyzer_blocks"]}
+        assert set(blocks) == {"ab-sum-2", "ab-sum-1", "ab-task"}
+        assert blocks["ab-sum-2"]["output"] == {"schema_version": "3", "steps": 2}
+        assert "prompt" not in blocks["ab-sum-2"]  # trajectory text not copied
+        assert "ab-sum-0" not in blocks  # over the per-subject cap
+        assert "ab-live" not in blocks  # only terminal blocks imported
+        assert "ab-del" not in blocks  # soft-deleted
+        assert "ab-report" not in blocks  # analyzer_id is a report, not a trial
 
         assert [s["id"] for s in rows["skills"]] == ["sk-a"]
         assert [f["id"] for f in rows["skill_files"]] == ["skf-a1"]
