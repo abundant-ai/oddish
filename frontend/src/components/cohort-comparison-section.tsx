@@ -17,9 +17,21 @@ const CATEGORY_LABELS: Record<string, string> = {
 
 /** A trial opens in the task page's drawer via ?trial=<id> — there is no
  *  /trials/<id> route, and the drawer resolves no step anchor, so none is
- *  emitted rather than linking somewhere that does not exist. */
-function evidenceHref(taskId: string, trialId: string): string {
-  const params = new URLSearchParams({ trial: trialId });
+ *  emitted rather than linking somewhere that does not exist.
+ *
+ *  ?version= carries the version id, not the number this endpoint takes: the
+ *  page resolves ?trial= against the selected version's trials alone, so a
+ *  citation from an older version's comparison would land on the current
+ *  version with the drawer shut. Same reason the overview's own trial links
+ *  carry it. */
+function evidenceHref(
+  taskId: string,
+  trialId: string,
+  taskVersionId?: string,
+): string {
+  const params = new URLSearchParams();
+  if (taskVersionId) params.set("version", taskVersionId);
+  params.set("trial", trialId);
   return `/tasks/${encodeURIComponent(taskId)}?${params.toString()}`;
 }
 
@@ -32,9 +44,11 @@ function stepRange(stepIds: number[]): string {
 function ObservationList({
   items,
   taskId,
+  taskVersionId,
 }: {
   items: BehaviorObservation[];
   taskId: string;
+  taskVersionId?: string;
 }) {
   if (!items.length) {
     return <p className="text-sm text-muted-foreground">No difference found.</p>;
@@ -47,7 +61,7 @@ function ObservationList({
           {obs.evidence.map((ev, j) => (
             <a
               key={j}
-              href={evidenceHref(taskId, ev.trial_id)}
+              href={evidenceHref(taskId, ev.trial_id, taskVersionId)}
               className="text-xs text-muted-foreground hover:underline"
             >
               <span className="font-mono">
@@ -156,13 +170,21 @@ export function CohortComparisonSection({
               <span className="text-xs uppercase tracking-wide text-muted-foreground">
                 Successful
               </span>
-              <ObservationList items={cat.successful} taskId={taskId} />
+              <ObservationList
+                items={cat.successful}
+                taskId={taskId}
+                taskVersionId={data.task_version_id}
+              />
             </div>
             <div className="flex flex-col gap-2">
               <span className="text-xs uppercase tracking-wide text-muted-foreground">
                 Failing
               </span>
-              <ObservationList items={cat.failing} taskId={taskId} />
+              <ObservationList
+                items={cat.failing}
+                taskId={taskId}
+                taskVersionId={data.task_version_id}
+              />
             </div>
           </div>
         </div>

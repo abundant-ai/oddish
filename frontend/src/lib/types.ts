@@ -761,6 +761,9 @@ export interface CategoryComparison {
 
 export interface CohortComparison {
   schema_version: number;
+  /** The version compared, stamped by the endpoint. Trial links carry it so
+   *  the task page opens the drawer on the version that owns the trial. */
+  task_version_id?: string;
   cohort_success: string[];
   cohort_failure: string[];
   categories: CategoryComparison[];

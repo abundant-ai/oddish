@@ -223,3 +223,91 @@ async def test_cache_lookup_version_filter_tracks_its_argument():
     """Guards against the filter being pinned to a constant rather than to the
     version actually asked for."""
     assert "v-other" not in await _captured_lookup_sql("v-requested")
+
+
+# ---------------------------------------------------------------------------
+# GET /tasks/{id}/cohort-comparison: the response names the version compared
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def client():
+    from fastapi.testclient import TestClient
+
+    from api.app import create_app
+    from auth import APIKeyScope, AuthContext, AuthMethod, require_auth
+
+    async def _fake_require_auth():
+        return AuthContext(
+            method=AuthMethod.API_KEY,
+            org_id="org-1",
+            user_id="u-1",
+            scope=APIKeyScope.READ,
+        )
+
+    app = create_app()
+    app.dependency_overrides[require_auth] = _fake_require_auth
+    return TestClient(app)
+
+
+def _session_returning(*scalars):
+    """A get_session() stub whose execute() yields the given scalars in order."""
+    from contextlib import asynccontextmanager
+
+    remaining = list(scalars)
+
+    async def execute(_statement):
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = remaining.pop(0)
+        return result
+
+    session = MagicMock()
+    session.execute = execute
+
+    @asynccontextmanager
+    async def _fake_get_session():
+        yield session
+
+    return _fake_get_session
+
+
+COMPARISON = {"schema_version": 1, "cohort_success": [], "cohort_failure": [], "categories": []}
+
+
+def test_response_names_the_current_version_it_compared(client):
+    """The UI links citations into the task page, which addresses a version by
+    id while this endpoint takes the number -- so the id has to come back with
+    the comparison or the drawer opens on the wrong version and stays shut."""
+    from unittest.mock import patch
+
+    task = MagicMock(id="t-1", name="task", current_version_id="tv-current")
+
+    with patch(
+        "api.routers.tasks.get_session", new=_session_returning(task)
+    ), patch(
+        "api.routers.tasks.get_or_generate_comparison",
+        new=AsyncMock(return_value=COMPARISON),
+    ):
+        resp = client.get("/tasks/t-1/cohort-comparison")
+
+    assert resp.status_code == 200
+    assert resp.json()["task_version_id"] == "tv-current"
+
+
+def test_response_names_the_requested_version_not_the_current_one(client):
+    """?version=N resolves to another version's id; the response must name that
+    one, or citations from an older comparison link into the current version."""
+    from unittest.mock import patch
+
+    task = MagicMock(id="t-1", name="task", current_version_id="tv-current")
+    generate = AsyncMock(return_value=COMPARISON)
+
+    with patch(
+        "api.routers.tasks.get_session",
+        new=_session_returning(task, "tv-3"),
+    ), patch("api.routers.tasks.get_or_generate_comparison", new=generate):
+        resp = client.get("/tasks/t-1/cohort-comparison?version=3")
+
+    assert resp.status_code == 200
+    assert resp.json()["task_version_id"] == "tv-3"
+    assert generate.await_args.args[1] == "tv-3"

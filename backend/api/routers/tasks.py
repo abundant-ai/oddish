@@ -1648,7 +1648,12 @@ async def get_task_cohort_comparison(
             status_code=404,
             detail="Not enough classified trials to compare",
         )
-    return result
+    # Stamped at serve time rather than stored in the block's output: the
+    # version is what the comparison covers, so every response carries it
+    # whether it was generated or read from cache. The UI needs it because
+    # the task page addresses a version by id (`?version=`), while this
+    # endpoint takes the version number.
+    return {**result, "task_version_id": version_id}
 
 
 # =============================================================================
