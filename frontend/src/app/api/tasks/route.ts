@@ -5,6 +5,10 @@ import {
   getBackendUrl,
   getClerkToken,
 } from "@/lib/backend-config";
+import {
+  attachUpstreamServerTiming,
+  backendFetchHeaders,
+} from "@/lib/proxy-headers";
 
 export async function GET(request: NextRequest) {
   try {
@@ -32,20 +36,23 @@ export async function GET(request: NextRequest) {
 
     const res = await fetch(url, {
       cache: "no-store",
-      headers: getAuthHeaders(token),
+      headers: backendFetchHeaders(request, getAuthHeaders(token)),
     });
 
     if (!res.ok) {
       const errorText = await res.text();
       console.error(`Backend error: ${res.status} - ${errorText}`);
-      return NextResponse.json(
-        { error: "Failed to fetch tasks", details: errorText },
-        { status: res.status },
+      return attachUpstreamServerTiming(
+        NextResponse.json(
+          { error: "Failed to fetch tasks", details: errorText },
+          { status: res.status },
+        ),
+        res,
       );
     }
 
     const data = await res.json();
-    return NextResponse.json(data);
+    return attachUpstreamServerTiming(NextResponse.json(data), res);
   } catch (error) {
     console.error("API route error:", error);
     return NextResponse.json(

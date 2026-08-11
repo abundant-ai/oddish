@@ -5,9 +5,13 @@ import {
   getBackendUrl,
   getClerkToken,
 } from "@/lib/backend-config";
+import {
+  attachUpstreamServerTiming,
+  backendFetchHeaders,
+} from "@/lib/proxy-headers";
 
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ task_id: string }> },
 ) {
   try {
@@ -18,16 +22,19 @@ export async function GET(
     const url = getBackendUrl("tasks", `/${task_id}/detail`);
     const res = await fetch(url, {
       cache: "no-store",
-      headers: getAuthHeaders(token),
+      headers: backendFetchHeaders(request, getAuthHeaders(token)),
     });
 
     if (!res.ok) {
       const error = await res.json().catch(() => ({ error: "Upstream error" }));
-      return NextResponse.json(error, { status: res.status });
+      return attachUpstreamServerTiming(
+        NextResponse.json(error, { status: res.status }),
+        res,
+      );
     }
 
     const data = await res.json();
-    return NextResponse.json(data);
+    return attachUpstreamServerTiming(NextResponse.json(data), res);
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
