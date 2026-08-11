@@ -850,9 +850,7 @@ async def test_entry_requires_ec2_patch_only_for_ec2_payload(
     monkeypatch.setattr(harbor_entry, "_apply_sibling_harbor_patches", stop_after_patch)
 
     with pytest.raises(RuntimeError, match="stop after patch"):
-        await harbor_entry._run(
-            {"environment_config": {"type": environment_type}}
-        )
+        await harbor_entry._run({"environment_config": {"type": environment_type}})
 
     assert calls == [expected]
 
@@ -1009,12 +1007,7 @@ async def test_entry_run_emits_ec2_identity_immediately_after_launch(
 ):
     emitted: list[dict] = []
     registered_callback = None
-    reset_tokens: list[object] = []
     harbor_module = ModuleType("harbor")
-
-    class FakeEnvironment:
-        provider_name = "ec2"
-        external_id = "ec2://123456789012/us-west-2/i-launched"
 
     class FakeJob:
         job_dir = str(tmp_path)
@@ -1023,6 +1016,10 @@ async def test_entry_run_emits_ec2_identity_immediately_after_launch(
         async def create(cls, _config):
             return cls()
 
+        def on_environment_provisioned(self, hook):
+            nonlocal registered_callback
+            registered_callback = hook
+
         def __getattr__(self, name):
             if name.startswith("on_"):
                 return lambda _hook: None
@@ -1030,23 +1027,22 @@ async def test_entry_run_emits_ec2_identity_immediately_after_launch(
 
         async def run(self):
             assert registered_callback is not None
-            await registered_callback(FakeEnvironment())
+            await registered_callback(
+                SimpleNamespace(
+                    event="environment-provisioned",
+                    trial_id=None,
+                    environment_provider="ec2",
+                    environment_external_id=("ec2://123456789012/us-west-2/i-launched"),
+                    result=None,
+                )
+            )
 
-    def set_callback(callback):
-        nonlocal registered_callback
-        registered_callback = callback
-        return "callback-token"
-
-    patch_module = SimpleNamespace(
-        set_ec2_instance_launched_callback=set_callback,
-        reset_ec2_instance_launched_callback=reset_tokens.append,
-    )
     harbor_module.Job = FakeJob
     monkeypatch.setitem(sys.modules, "harbor", harbor_module)
     monkeypatch.setattr(
         harbor_entry,
         "_apply_sibling_harbor_patches",
-        lambda **_kwargs: patch_module,
+        lambda **_kwargs: None,
     )
     monkeypatch.setattr(harbor_entry, "_build_job_config", lambda _payload: object())
     monkeypatch.setattr(harbor_entry, "_emit_event_line", emitted.append)
@@ -1062,16 +1058,13 @@ async def test_entry_run_emits_ec2_identity_immediately_after_launch(
     assert emitted == [
         {
             harbor_entry.EVENT_SENTINEL: True,
-            "event": "environment-start",
+            "event": "environment-provisioned",
             "trial_id": None,
             "environment_provider": "ec2",
-            "environment_external_id": (
-                "ec2://123456789012/us-west-2/i-launched"
-            ),
+            "environment_external_id": ("ec2://123456789012/us-west-2/i-launched"),
             "result": None,
         }
     ]
-    assert reset_tokens == ["callback-token"]
 
 
 def test_runtime_fields_patch_is_idempotent():

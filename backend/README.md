@@ -235,12 +235,15 @@ name two dedicated Modal secrets:
   `ODDISH_EC2_AWS_SESSION_TOKEN`.
 - The worker-only SSH secret contains `ODDISH_EC2_SSH_PRIVATE_KEY`.
 
-Trial workers receive both secrets, while the reconciler and dedicated
-`teardown_ec2_sandbox` function receive only control credentials. API and
-dispatcher functions receive neither. API cancellation delegates one teardown
-call to that dedicated function. Workers materialize the AWS credentials and
-SSH key as mode-`0600` temporary files, pass only the named AWS profile and key
-path to Harbor, and remove the raw secret variables from the Harbor child.
+Only dedicated `ec2_trial` worker functions receive both secrets. Generic trial
+workers receive neither; the reconciler and dedicated `teardown_ec2_sandbox`
+function receive only control credentials. API and dispatcher functions receive
+neither. API cancellation delegates one teardown call to that dedicated
+function. EC2 workers materialize the AWS credentials and SSH key as mode-`0600`
+temporary files, pass only the named AWS profile and key path to Harbor, and
+remove the raw secret variables from the Harbor child. Set
+`ODDISH_EC2_MAX_CONCURRENT_INSTANCES` to the provider-wide instance cap; this is
+enforced across every model and Harbor variant.
 The control policy must include `sts:GetCallerIdentity` in addition to the EC2
 launch, describe, image lookup, tag, and terminate actions listed in
 `.env.example`.

@@ -28,6 +28,7 @@ def test_ec2_image_env_allowlist_contains_only_non_secret_runtime_settings() -> 
         "ODDISH_EC2_ROOT_VOLUME_SIZE_GB",
         "ODDISH_EC2_USE_PUBLIC_IP",
         "ODDISH_EC2_BOOTSTRAP_DOCKER",
+        "ODDISH_EC2_MAX_CONCURRENT_INSTANCES",
     }
 
     assert modal_app._EC2_PUBLIC_ENV_NAMES == expected
@@ -234,8 +235,9 @@ print(json.dumps({
     }
 
 
-def test_default_and_variant_workers_share_the_same_ec2_secret_topology() -> None:
-    assert worker_functions.trial_worker_secrets == [
+def test_only_ec2_lane_workers_receive_ec2_secrets() -> None:
+    assert worker_functions.trial_worker_secrets == [*modal_app.runtime_secrets]
+    assert worker_functions.ec2_trial_worker_secrets == [
         *modal_app.runtime_secrets,
         *modal_app.ec2_worker_secrets,
     ]

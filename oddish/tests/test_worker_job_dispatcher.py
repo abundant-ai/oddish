@@ -13,9 +13,9 @@ wakes up with hundreds of queued jobs:
 4. The spawn budget (``max_workers``) is never exceeded even when
    total demand far outstrips it.
 
-The planner keys on ``(org_id, queue_key, harbor_variant_id)`` queued
-demand and ``(queue_key, harbor_variant_id)`` running counts, and emits
-``(queue_key, harbor_variant_id)`` spawn units.
+Production planner keys include ``execution_lane``. Legacy fixtures in this
+file deliberately omit it and therefore exercise the compatibility default;
+lane-specific tests use the full four-/three-part keys explicitly.
 """
 
 from __future__ import annotations
@@ -333,6 +333,8 @@ def test_blessed_variant_routes_independently_of_default():
 
 _DEFAULT_FN = object()
 _VARIANT_FN = object()
+_EC2_FN = object()
+_EC2_VARIANT_FN = object()
 
 
 def test_default_and_ephemeral_route_to_the_base_function():
@@ -362,3 +364,47 @@ def test_unregistered_variant_falls_back_to_base_function():
     )
     assert fn is _DEFAULT_FN
     assert kwargs["harbor_variant_id"] == "harbor-missing"
+
+
+def test_ec2_lane_routes_only_to_ec2_credential_function():
+    fn, kwargs = select_job_function(
+        ("m1", "default", "ec2_trial"),
+        default_fn=_DEFAULT_FN,
+        ec2_fn=_EC2_FN,
+        variant_fns={},
+        ec2_variant_fns={},
+    )
+    assert fn is _EC2_FN
+    assert kwargs == {
+        "queue_key": "m1",
+        "harbor_variant_id": "default",
+        "execution_lane": "ec2_trial",
+    }
+
+
+def test_ec2_blessed_variant_stays_in_ec2_credential_topology():
+    fn, kwargs = select_job_function(
+        ("m1", "harbor-next", "ec2_trial"),
+        default_fn=_DEFAULT_FN,
+        ec2_fn=_EC2_FN,
+        variant_fns={"harbor-next": _VARIANT_FN},
+        ec2_variant_fns={"harbor-next": _EC2_VARIANT_FN},
+    )
+    assert fn is _EC2_VARIANT_FN
+    assert kwargs["execution_lane"] == "ec2_trial"
+
+
+def test_full_lane_keys_are_preserved_by_spawn_plan():
+    plan = build_spawn_plan(
+        queued_by_org_queue={
+            ("org-a", "m1", "default", "default"): 1,
+            ("org-a", "m1", "default", "ec2_trial"): 1,
+        },
+        running_by_queue={},
+        concurrency_limits={"m1": 2},
+        max_workers=2,
+    )
+    assert set(plan) == {
+        ("m1", "default", "default"),
+        ("m1", "default", "ec2_trial"),
+    }

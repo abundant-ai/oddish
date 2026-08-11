@@ -27,13 +27,24 @@ class _MappingsResult:
 
 
 class _LivenessSession:
-    def __init__(self, rows: list[dict[str, Any]]) -> None:
+    def __init__(
+        self,
+        rows: list[dict[str, Any]],
+        ledger_rows: list[dict[str, Any]] | None = None,
+    ) -> None:
         self.rows = rows
+        self.ledger_rows = ledger_rows or []
         self.execute_calls: list[tuple[str, dict[str, Any]]] = []
 
     async def execute(self, statement, params: dict[str, Any]):
-        self.execute_calls.append((str(statement), params))
-        return _MappingsResult(self.rows)
+        rendered = str(statement)
+        self.execute_calls.append((rendered, params))
+        return _MappingsResult(
+            self.ledger_rows if "FROM sandbox_runs" in rendered else self.rows
+        )
+
+    async def scalar(self, _statement):
+        return NOW
 
 
 def _snapshot(
@@ -53,7 +64,26 @@ def _snapshot(
         account_id_tag=ACCOUNT_ID,
         trial_id_tag=trial_id,
         worker_job_id_tag=worker_job_id,
+        sandbox_run_id_tag="sandbox-run-1",
+        worker_attempt_tag="1",
+        launch_token_tag="launch-token-1",
     )
+
+
+def _ledger(snapshot: Ec2InstanceSnapshot, *, state: str = "RUNNING") -> dict[str, Any]:
+    return {
+        "id": snapshot.sandbox_run_id_tag,
+        "worker_job_id": snapshot.worker_job_id_tag,
+        "worker_job_attempt": int(snapshot.worker_attempt_tag or "0"),
+        "trial_id": snapshot.trial_id_tag,
+        "provider": "ec2",
+        "state": state,
+        "deployment": snapshot.deployment_tag,
+        "aws_account_id": snapshot.account_id_tag,
+        "region": snapshot.region,
+        "launch_token": snapshot.launch_token_tag,
+        "external_id": snapshot.external_id,
+    }
 
 
 def _worker(
@@ -105,7 +135,7 @@ async def test_ec2_orphan_liveness_batch_drives_expected_verdicts(
     expected_target: bool,
     expected_reason: str,
 ) -> None:
-    session = _LivenessSession(workers)
+    session = _LivenessSession(workers, [_ledger(snapshot)])
     lines: list[str] = []
     monkeypatch.setattr(cleanup.console, "print", lines.append)
 
@@ -114,7 +144,6 @@ async def test_ec2_orphan_liveness_batch_drives_expected_verdicts(
         (snapshot,),
         expected_deployment=DEPLOYMENT,
         expected_account_id=ACCOUNT_ID,
-        now=NOW,
         stale_after_minutes=15,
     )
 
@@ -124,7 +153,7 @@ async def test_ec2_orphan_liveness_batch_drives_expected_verdicts(
     )
     assert (expected_handle in targets) is expected_target
     assert kept == (0 if expected_target else 1)
-    assert len(session.execute_calls) == 1
+    assert len(session.execute_calls) == 2
     statement, params = session.execute_calls[0]
     assert "deleted_at IS NULL" in statement
     assert "kind = 'TRIAL'" in statement
@@ -138,10 +167,41 @@ async def test_ec2_orphan_liveness_batch_drives_expected_verdicts(
         "external_ids": [snapshot.external_id],
         "stale_after_minutes": 15,
     }
+    ledger_statement, ledger_params = session.execute_calls[1]
+    assert "FROM sandbox_runs" in ledger_statement
+    assert ledger_params == {"sandbox_run_ids": ["sandbox-run-1"]}
     assert any(
         "metric=ec2_orphan_verdict" in line and f"reason={expected_reason}" in line
         for line in lines
     )
+
+
+@pytest.mark.asyncio
+async def test_ec2_orphan_refuses_destructive_action_without_exact_ledger_tags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot = _snapshot(age=timedelta(hours=15))
+    snapshot = Ec2InstanceSnapshot(
+        **{
+            **snapshot.__dict__,
+            "launch_token_tag": "wrong-token",
+        }
+    )
+    session = _LivenessSession([], [_ledger(snapshot) | {"launch_token": "real-token"}])
+    lines: list[str] = []
+    monkeypatch.setattr(cleanup.console, "print", lines.append)
+
+    targets, kept = await cleanup._decide_ec2_orphan_targets(
+        session,
+        (snapshot,),
+        expected_deployment=DEPLOYMENT,
+        expected_account_id=ACCOUNT_ID,
+        stale_after_minutes=15,
+    )
+
+    assert targets == set()
+    assert kept == 0
+    assert any("reason=ledger_ownership_mismatch" in line for line in lines)
 
 
 def _patch_unrelated_cleanup_phases(
@@ -180,6 +240,7 @@ def _patch_unrelated_cleanup_phases(
 
     monkeypatch.setattr(cleanup, "get_session", fake_get_session)
     monkeypatch.setattr(cleanup, "reap_idle_in_transaction_zombies", zero)
+    monkeypatch.setattr(cleanup, "cleanup_sandbox_capacity_leases", zero)
     monkeypatch.setattr(cleanup, "_reap_stale_worker_jobs", reap)
     monkeypatch.setattr(cleanup, "_advance_running_tasks_to_analysis", zero)
     monkeypatch.setattr(cleanup, "_advance_legacy_analyzing_tasks", zero)
@@ -249,7 +310,7 @@ async def test_ec2_orphan_target_is_terminated_only_after_commit(
         def deployment_name(self) -> str:
             raise AssertionError("cleanup must reuse the inventory deployment")
 
-    session = _LivenessSession([])
+    session = _LivenessSession([], [_ledger(instance)])
     terminated_targets = _patch_unrelated_cleanup_phases(
         monkeypatch,
         events=events,

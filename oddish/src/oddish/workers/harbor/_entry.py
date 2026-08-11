@@ -59,7 +59,9 @@ def _read_payload_and_unlink(payload_path: Path) -> dict[str, Any]:
         try:
             payload_path.unlink(missing_ok=True)
         except OSError:
-            logger.exception("Failed to remove ephemeral Harbor payload %s", payload_path)
+            logger.exception(
+                "Failed to remove ephemeral Harbor payload %s", payload_path
+            )
 
 
 def _event_name(event: Any) -> str:
@@ -118,7 +120,8 @@ def _make_hook(probe_task_dir: str | None, probe_harness_dir: str | None):
                 }
             )
         except Exception:
-            pass
+            if event_name == "environment-provisioned":
+                raise
 
         environment = getattr(event, "environment", None)
         if (
@@ -234,7 +237,7 @@ def _build_job_config(payload: dict[str, Any]):
 
 async def _run(payload: dict[str, Any]) -> dict[str, Any]:
     environment_type = (payload.get("environment_config") or {}).get("type")
-    patch_module = _apply_sibling_harbor_patches(require_ec2=environment_type == "ec2")
+    _apply_sibling_harbor_patches(require_ec2=environment_type == "ec2")
     Job = getattr(importlib.import_module("harbor"), "Job")
     start = time.time()
     config = _build_job_config(payload)
@@ -242,43 +245,26 @@ async def _run(payload: dict[str, Any]) -> dict[str, Any]:
     job_dir = Path(job.job_dir)
 
     hook = _make_hook(payload.get("probe_task_dir"), payload.get("probe_harness_dir"))
-    for register in (
+    registers = [
         "on_trial_started",
         "on_environment_started",
         "on_agent_started",
         "on_verification_started",
         "on_trial_ended",
         "on_trial_cancelled",
-    ):
+    ]
+    provisioned_register = getattr(job, "on_environment_provisioned", None)
+    if environment_type == "ec2" and provisioned_register is None:
+        raise RuntimeError(
+            "Pinned Harbor override lacks the required "
+            "environment-provisioned lifecycle hook"
+        )
+    if provisioned_register is not None:
+        provisioned_register(hook)
+    for register in registers:
         getattr(job, register)(hook)
 
-    ec2_launch_callback_token = None
-    if environment_type == "ec2":
-
-        async def on_ec2_instance_launched(environment: Any) -> None:
-            external_id = environment.external_id
-            provider = getattr(environment, "provider_name", None)
-            if not isinstance(external_id, str) or not external_id:
-                raise RuntimeError("EC2 instance launched without an external identity")
-            _emit_event_line(
-                {
-                    EVENT_SENTINEL: True,
-                    "event": "environment-start",
-                    "trial_id": None,
-                    "environment_provider": provider,
-                    "environment_external_id": external_id,
-                    "result": None,
-                }
-            )
-
-        ec2_launch_callback_token = patch_module.set_ec2_instance_launched_callback(
-            on_ec2_instance_launched
-        )
-    try:
-        await job.run()
-    finally:
-        if ec2_launch_callback_token is not None:
-            patch_module.reset_ec2_instance_launched_callback(ec2_launch_callback_token)
+    await job.run()
     duration = time.time() - start
     job_result_path = job_dir / "result.json"
     return {

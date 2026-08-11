@@ -18,9 +18,13 @@ from oddish.config import settings
 from oddish.runtime.ec2_policy import (
     AWS_ACCOUNT_ID_TAG_KEY,
     DEPLOYMENT_TAG_KEY,
+    Ec2SandboxOwnership,
+    LAUNCH_TOKEN_TAG_KEY,
     MANAGED_TAG_KEY,
     PROTECTED_EC2_KWARGS,
+    SANDBOX_RUN_ID_TAG_KEY,
     TRIAL_ID_TAG_KEY,
+    WORKER_ATTEMPT_TAG_KEY,
     WORKER_JOB_ID_TAG_KEY,
     validate_ec2_user_tags,
 )
@@ -283,6 +287,21 @@ class Ec2Backend:
         }
 
     async def teardown(self, external_id: str) -> bool:
+        # Every destructive EC2 operation must resolve an attempt-scoped ledger
+        # row first. The ledger path calls ``teardown_owned`` below with the
+        # complete immutable ownership tuple.
+        from oddish.runtime.sandbox_lifecycle import (
+            terminate_sandbox_by_external_id,
+        )
+
+        return await terminate_sandbox_by_external_id(external_id)
+
+    async def teardown_owned(
+        self,
+        external_id: str,
+        *,
+        ownership: Ec2SandboxOwnership,
+    ) -> bool:
         if not external_id:
             logger.warning(
                 "metric=ec2_teardown outcome=refused reason=empty_external_id"
@@ -299,6 +318,27 @@ class Ec2Backend:
         account_id = match.group("account_id")
         region = match.group("region")
         instance_id = match.group("instance_id")
+        if ownership.external_id != external_id:
+            logger.error(
+                "metric=ec2_teardown outcome=refused reason=ledger_handle_mismatch "
+                "sandbox_run_id=%s",
+                ownership.sandbox_run_id,
+            )
+            return False
+        if ownership.aws_account_id != account_id or ownership.region != region:
+            logger.error(
+                "metric=ec2_teardown outcome=refused reason=ledger_scope_mismatch "
+                "sandbox_run_id=%s",
+                ownership.sandbox_run_id,
+            )
+            return False
+        if ownership.deployment != self.deployment_name():
+            logger.error(
+                "metric=ec2_teardown outcome=refused reason=ledger_deployment_mismatch "
+                "sandbox_run_id=%s",
+                ownership.sandbox_run_id,
+            )
+            return False
         try:
             with self.worker_credentials(include_ssh=False):
                 import boto3  # type: ignore[import-untyped]
@@ -334,16 +374,13 @@ class Ec2Backend:
                     )
                     return False
                 tags = _instance_tags(instances[0])
-                expected = {
-                    MANAGED_TAG_KEY: "true",
-                    DEPLOYMENT_TAG_KEY: self.deployment_name(),
-                    AWS_ACCOUNT_ID_TAG_KEY: account_id,
-                }
+                expected = ownership.expected_tags()
                 if any(tags.get(key) != value for key, value in expected.items()):
                     logger.warning(
                         "metric=ec2_teardown outcome=refused "
-                        "reason=ownership_tags instance_id=%s",
+                        "reason=ownership_tags instance_id=%s sandbox_run_id=%s",
                         instance_id,
+                        ownership.sandbox_run_id,
                     )
                     return False
                 state = str((instances[0].get("State") or {}).get("Name") or "")
@@ -495,6 +532,9 @@ class Ec2Backend:
                             account_id_tag=tags.get(AWS_ACCOUNT_ID_TAG_KEY),
                             trial_id_tag=tags.get(TRIAL_ID_TAG_KEY),
                             worker_job_id_tag=tags.get(WORKER_JOB_ID_TAG_KEY),
+                            sandbox_run_id_tag=tags.get(SANDBOX_RUN_ID_TAG_KEY),
+                            worker_attempt_tag=tags.get(WORKER_ATTEMPT_TAG_KEY),
+                            launch_token_tag=tags.get(LAUNCH_TOKEN_TAG_KEY),
                         )
                     )
         logger.info(
@@ -535,6 +575,14 @@ class Ec2Backend:
                 "STS GetCallerIdentity returned an invalid AWS account ID"
             )
         return account_id
+
+    async def resolve_aws_account_id_async(self) -> str:
+        with self.worker_credentials(include_ssh=False):
+            return await asyncio.to_thread(self.resolve_aws_account_id)
+
+    @staticmethod
+    def configured_region() -> str:
+        return str(settings.ec2_region or "")
 
     @staticmethod
     def deployment_name() -> str:

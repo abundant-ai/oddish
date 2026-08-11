@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 NAME_TAG_KEY = "Name"
@@ -12,6 +13,9 @@ DEPLOYMENT_TAG_KEY = "oddish:deployment"
 TRIAL_ID_TAG_KEY = "oddish:trial-id"
 WORKER_JOB_ID_TAG_KEY = "oddish:worker-job-id"
 AWS_ACCOUNT_ID_TAG_KEY = "oddish:aws-account-id"
+SANDBOX_RUN_ID_TAG_KEY = "oddish:sandbox-run-id"
+WORKER_ATTEMPT_TAG_KEY = "oddish:worker-attempt"
+LAUNCH_TOKEN_TAG_KEY = "oddish:launch-token"
 
 PROTECTED_EC2_TAGS = frozenset(
     {
@@ -24,8 +28,37 @@ PROTECTED_EC2_TAGS = frozenset(
         TRIAL_ID_TAG_KEY,
         WORKER_JOB_ID_TAG_KEY,
         AWS_ACCOUNT_ID_TAG_KEY,
+        SANDBOX_RUN_ID_TAG_KEY,
+        WORKER_ATTEMPT_TAG_KEY,
+        LAUNCH_TOKEN_TAG_KEY,
     }
 )
+
+
+@dataclass(frozen=True)
+class Ec2SandboxOwnership:
+    deployment: str
+    aws_account_id: str
+    region: str
+    sandbox_run_id: str
+    worker_job_id: str
+    worker_job_attempt: int
+    launch_token: str
+    trial_id: str
+    external_id: str
+
+    def expected_tags(self) -> dict[str, str]:
+        return {
+            MANAGED_TAG_KEY: "true",
+            DEPLOYMENT_TAG_KEY: self.deployment,
+            AWS_ACCOUNT_ID_TAG_KEY: self.aws_account_id,
+            SANDBOX_RUN_ID_TAG_KEY: self.sandbox_run_id,
+            WORKER_JOB_ID_TAG_KEY: self.worker_job_id,
+            WORKER_ATTEMPT_TAG_KEY: str(self.worker_job_attempt),
+            LAUNCH_TOKEN_TAG_KEY: self.launch_token,
+            TRIAL_ID_TAG_KEY: self.trial_id,
+        }
+
 
 PROTECTED_EC2_KWARGS = frozenset(
     {
@@ -64,8 +97,7 @@ def validate_ec2_user_tags(value: Any) -> dict[str, Any]:
     protected = sorted(PROTECTED_EC2_TAGS.intersection(value))
     if protected:
         raise ValueError(
-            "EC2 tags cannot override protected platform tags: "
-            + ", ".join(protected)
+            "EC2 tags cannot override protected platform tags: " + ", ".join(protected)
         )
     return dict(value)
 
@@ -79,9 +111,7 @@ def validate_ec2_environment_config(environment_config: Any) -> None:
         raise ValueError("EC2 v1 does not support GPU requests")
     if environment_config.override_tpu is not None:
         raise ValueError("EC2 v1 does not support TPU requests")
-    protected = sorted(
-        PROTECTED_EC2_KWARGS.intersection(environment_config.kwargs)
-    )
+    protected = sorted(PROTECTED_EC2_KWARGS.intersection(environment_config.kwargs))
     if protected:
         raise ValueError(
             "EC2 environment kwargs cannot override platform-owned settings: "

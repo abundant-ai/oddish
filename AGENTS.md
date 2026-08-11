@@ -540,16 +540,23 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   when a profile is explicitly exposed to Docker containers.
 - Oddish does not create the VPC, subnet, security group, AMI, key pair, or IAM
   policy. Every instance and root volume must carry protected Oddish ownership,
-  deployment, task/trial, worker-job, and Harbor-session tags. Normal teardown,
-  cancellation, stale-heartbeat cleanup, and the orphan reconciler all terminate
-  through the registered EC2 backend after ownership verification.
+  deployment, task/trial, worker-job, worker-attempt, sandbox-run, unguessable
+  launch-token, and Harbor-session tags. A durable `sandbox_runs` row is created
+  before launch; Harbor's `environment-provisioned` event binds the structured
+  handle before SSH/bootstrap. Normal teardown, cancellation, stale-heartbeat
+  cleanup, and reconciliation terminate only after the full ledger/tag tuple
+  agrees.
 - EC2 orphan reconciliation snapshots deployment-tagged instances before the
   shared cleanup transaction, evaluates worker liveness using the database clock,
   and terminates only after the transaction commits. It preserves live linked
   jobs and conservatively preserves unlinked trial startup for 30 minutes, then
-  reaps missing, terminal, stale, and mismatched owners. The protected 14-hour
-  hard maximum age overrides worker liveness. Inventory and termination failures
-  must stay visible in logs/metrics while the rest of queue cleanup continues.
+  reaps terminal and stale owners with an exact ledger match; missing or
+  mismatched ledgers are ownership refusals, never destructive guesses. The
+  protected 14-hour hard maximum age overrides worker liveness only for exactly
+  owned instances. `ODDISH_EC2_MAX_CONCURRENT_INSTANCES` is enforced globally
+  with heartbeat-renewed `sandbox_capacity_leases`, independent of model/variant
+  queue slots. Inventory and termination failures stay visible in logs/metrics
+  while the rest of queue cleanup continues.
 - Claude trials run through AWS Bedrock by default. `CLAUDE_CODE_USE_BEDROCK=1` is
   baked into the Modal image, and Claude model aliases must normalize to an
   invokable inference profile (`global.` / `us.` / ARN) via

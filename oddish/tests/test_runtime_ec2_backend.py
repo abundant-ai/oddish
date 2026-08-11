@@ -28,10 +28,14 @@ from oddish.runtime.ec2_policy import (
     HARBOR_ENVIRONMENT_TAG_KEY,
     HARBOR_SESSION_TAG_KEY,
     HARBOR_TASK_TAG_KEY,
+    LAUNCH_TOKEN_TAG_KEY,
     MANAGED_TAG_KEY,
     NAME_TAG_KEY,
+    SANDBOX_RUN_ID_TAG_KEY,
     TRIAL_ID_TAG_KEY,
+    WORKER_ATTEMPT_TAG_KEY,
     WORKER_JOB_ID_TAG_KEY,
+    Ec2SandboxOwnership,
 )
 from oddish.runtime.routing import default_cloud_environment
 from oddish.schemas import TaskSweepSubmission
@@ -641,12 +645,25 @@ def test_ec2_runner_releases_materialized_key_lease_for_every_ephemeral_exit(
         )
 
     monkeypatch.setattr(ephemeral, "run_ephemeral_harbor_trial", fake_child)
+    from oddish.runtime.sandbox_lifecycle import SandboxLaunchContext
+
+    sandbox_launch = SandboxLaunchContext(
+        sandbox_run_id="sandbox-run-1",
+        worker_job_id="worker-job-1",
+        worker_job_attempt=1,
+        trial_id="trial-1",
+        launch_token="launch-token-1",
+        deployment="oddish-test",
+        aws_account_id="123456789012",
+        region="us-east-1",
+    )
     coroutine = harbor_runner.run_harbor_trial_async(
         task_path=tmp_path,
         agent="nop",
         jobs_dir=tmp_path / "jobs",
         environment=EnvironmentType.EC2,
         harbor_config={"variant_id": "ephemeral"},
+        sandbox_launch=sandbox_launch,
     )
     if exit_mode == "error":
         with pytest.raises(RuntimeError, match="child failed"):
@@ -679,6 +696,22 @@ def _ec2_handle(
     return f"ec2://{account_id}/{region}/{instance_id}"
 
 
+def _ownership(*, external_id: str | None = None) -> Ec2SandboxOwnership:
+    handle = external_id or _ec2_handle()
+    account_id, region = handle.removeprefix("ec2://").split("/", 2)[:2]
+    return Ec2SandboxOwnership(
+        deployment="oddish",
+        aws_account_id=account_id,
+        region=region,
+        sandbox_run_id="sandbox-run-1",
+        worker_job_id="job-1",
+        worker_job_attempt=1,
+        launch_token="launch-token-1",
+        trial_id="trial-1",
+        external_id=handle,
+    )
+
+
 def _owned_instance_description(
     *,
     deployment: str = "oddish",
@@ -696,6 +729,11 @@ def _owned_instance_description(
                             {"Key": MANAGED_TAG_KEY, "Value": "true"},
                             {"Key": DEPLOYMENT_TAG_KEY, "Value": deployment},
                             {"Key": AWS_ACCOUNT_ID_TAG_KEY, "Value": account_id},
+                            {"Key": SANDBOX_RUN_ID_TAG_KEY, "Value": "sandbox-run-1"},
+                            {"Key": WORKER_JOB_ID_TAG_KEY, "Value": "job-1"},
+                            {"Key": WORKER_ATTEMPT_TAG_KEY, "Value": "1"},
+                            {"Key": LAUNCH_TOKEN_TAG_KEY, "Value": "launch-token-1"},
+                            {"Key": TRIAL_ID_TAG_KEY, "Value": "trial-1"},
                         ],
                     }
                 ]
@@ -714,7 +752,9 @@ def test_ec2_teardown_terminates_an_instance_only_after_both_ownership_tags_matc
     client_factory = _install_fake_boto3(monkeypatch, ec2=client)
 
     with caplog.at_level("INFO"):
-        result = asyncio.run(Ec2Backend().teardown(_ec2_handle()))
+        result = asyncio.run(
+            Ec2Backend().teardown_owned(_ec2_handle(), ownership=_ownership())
+        )
 
     assert result is True
     client_factory.assert_called_once_with(
@@ -739,11 +779,18 @@ def test_ec2_cancellation_path_dispatches_terminate_instances_once(
     _install_fake_boto3(monkeypatch, ec2=client)
     backend = Ec2Backend()
     monkeypatch.setattr(runtime_registry, "get_backend", lambda _name: backend)
-    unregister_provider_teardown_delegate("ec2")
+
+    async def teardown_owned(_external_id: str) -> bool:
+        return await backend.teardown_owned(_external_id, ownership=_ownership())
+
+    from oddish.core.helpers import register_provider_teardown_delegate
+
+    register_provider_teardown_delegate("ec2", teardown_owned)
 
     try:
         result = asyncio.run(cancel_job_by_worker("ec2", _ec2_handle()))
     finally:
+        unregister_provider_teardown_delegate("ec2")
         backend.remove_materialized_worker_credentials()
 
     assert result is True
@@ -759,7 +806,9 @@ def test_ec2_teardown_treats_already_terminating_instance_as_success_without_sec
     client.describe_instances.return_value = _owned_instance_description(state=state)
     _install_fake_boto3(monkeypatch, ec2=client)
 
-    result = asyncio.run(Ec2Backend().teardown(_ec2_handle()))
+    result = asyncio.run(
+        Ec2Backend().teardown_owned(_ec2_handle(), ownership=_ownership())
+    )
 
     assert result is True
     client.terminate_instances.assert_not_called()
@@ -784,7 +833,9 @@ def test_ec2_teardown_refuses_missing_or_wrongly_owned_instances(
     _install_fake_boto3(monkeypatch, ec2=client)
 
     with caplog.at_level("WARNING"):
-        result = asyncio.run(Ec2Backend().teardown(_ec2_handle()))
+        result = asyncio.run(
+            Ec2Backend().teardown_owned(_ec2_handle(), ownership=_ownership())
+        )
 
     assert result is False
     client.terminate_instances.assert_not_called()
@@ -800,7 +851,12 @@ def test_ec2_teardown_logs_and_returns_false_when_aws_raises(
     _install_fake_boto3(monkeypatch, ec2=client)
 
     with caplog.at_level("ERROR"):
-        assert asyncio.run(Ec2Backend().teardown(_ec2_handle())) is False
+        assert (
+            asyncio.run(
+                Ec2Backend().teardown_owned(_ec2_handle(), ownership=_ownership())
+            )
+            is False
+        )
     assert "metric=ec2_teardown outcome=error" in caplog.text
 
 
@@ -810,7 +866,9 @@ def test_ec2_teardown_returns_false_when_credentials_cannot_materialize(
     _install_complete_ec2_settings(monkeypatch, ec2_aws_access_key_id=None)
 
     with caplog.at_level("ERROR"):
-        result = asyncio.run(Ec2Backend().teardown(_ec2_handle()))
+        result = asyncio.run(
+            Ec2Backend().teardown_owned(_ec2_handle(), ownership=_ownership())
+        )
 
     assert result is False
     assert "metric=ec2_teardown outcome=error" in caplog.text
@@ -1078,7 +1136,10 @@ def test_ec2_teardown_rechecks_account_after_credentials_rotate(
     backend = Ec2Backend()
 
     assert backend.resolve_aws_account_id() == AWS_ACCOUNT_ID
-    assert asyncio.run(backend.teardown(_ec2_handle())) is False
+    assert (
+        asyncio.run(backend.teardown_owned(_ec2_handle(), ownership=_ownership()))
+        is False
+    )
 
     assert client_factory.call_args_list == [
         ((), {"profile_name": "oddish-ec2", "region_name": "us-east-1"}),
@@ -1096,9 +1157,18 @@ def test_ec2_teardown_rejects_legacy_or_cross_account_handles_before_ec2_call(
     client_factory = _install_fake_boto3(monkeypatch, ec2=ec2)
     backend = Ec2Backend()
 
-    assert asyncio.run(backend.teardown("i-legacy")) is False
     assert (
-        asyncio.run(backend.teardown(_ec2_handle(account_id="999999999999"))) is False
+        asyncio.run(backend.teardown_owned("i-legacy", ownership=_ownership())) is False
+    )
+    cross_account_handle = _ec2_handle(account_id="999999999999")
+    assert (
+        asyncio.run(
+            backend.teardown_owned(
+                cross_account_handle,
+                ownership=_ownership(external_id=cross_account_handle),
+            )
+        )
+        is False
     )
 
     client_factory.assert_not_called()
@@ -1111,7 +1181,13 @@ def test_ec2_teardown_uses_region_persisted_in_handle(monkeypatch) -> None:
     ec2.describe_instances.return_value = _owned_instance_description()
     client_factory = _install_fake_boto3(monkeypatch, ec2=ec2)
 
-    result = asyncio.run(Ec2Backend().teardown(_ec2_handle(region="eu-west-1")))
+    regional_handle = _ec2_handle(region="eu-west-1")
+    result = asyncio.run(
+        Ec2Backend().teardown_owned(
+            regional_handle,
+            ownership=_ownership(external_id=regional_handle),
+        )
+    )
 
     assert result is True
     client_factory.assert_called_once_with(
@@ -1169,10 +1245,7 @@ def test_ec2_harbor_patch_exposes_identity_and_keeps_host_only_imdsv2(
     assert FakeEc2Environment._run_instances_kwargs is first_launch_method
 
 
-@pytest.mark.asyncio
-async def test_ec2_harbor_patch_reports_identity_immediately_after_launch(
-    monkeypatch,
-) -> None:
+def test_ec2_harbor_patch_does_not_interpose_on_upstream_launch(monkeypatch) -> None:
     import oddish.workers.harbor.patches as harbor_patches
 
     class FakeEc2Environment:
@@ -1196,60 +1269,10 @@ async def test_ec2_harbor_patch_reports_identity_immediately_after_launch(
         "import_module",
         lambda _name: module,
     )
-    harbor_patches._patch_ec2_lifecycle(require_ec2=True)
-    seen = []
-
-    async def launched(environment):
-        seen.append(environment.get_sandbox_id())
-
-    token = harbor_patches.set_ec2_instance_launched_callback(launched)
-    try:
-        environment = FakeEc2Environment()
-        instance_id = await environment._launch_instance()
-    finally:
-        harbor_patches.reset_ec2_instance_launched_callback(token)
-
-    assert instance_id == "i-launched"
-    assert environment.instance_id == "i-launched"
-    assert seen == ["ec2://123456789012/us-west-2/i-launched"]
-
-
-@pytest.mark.asyncio
-async def test_ec2_harbor_patch_retains_instance_id_when_launch_callback_fails(
-    monkeypatch,
-) -> None:
-    import oddish.workers.harbor.patches as harbor_patches
-
-    class FakeEc2Environment:
-        def __init__(self):
-            self.instance_id = None
-
-        async def _launch_instance(self):
-            return "i-launched"
-
-        def _run_instances_kwargs(self):
-            return {}
-
-    module = SimpleNamespace(EC2Environment=FakeEc2Environment)
-    monkeypatch.setattr(
-        harbor_patches.importlib,
-        "import_module",
-        lambda _name: module,
-    )
+    original_launch = FakeEc2Environment._launch_instance
     harbor_patches._patch_ec2_lifecycle(require_ec2=True)
 
-    async def fail_after_launch(_environment):
-        raise RuntimeError("identity persistence failed")
-
-    token = harbor_patches.set_ec2_instance_launched_callback(fail_after_launch)
-    environment = FakeEc2Environment()
-    try:
-        with pytest.raises(RuntimeError, match="identity persistence failed"):
-            await environment._launch_instance()
-    finally:
-        harbor_patches.reset_ec2_instance_launched_callback(token)
-
-    assert environment.instance_id == "i-launched"
+    assert FakeEc2Environment._launch_instance is original_launch
 
 
 def test_ec2_harbor_patch_preserves_raw_id_for_non_oddish_environments(

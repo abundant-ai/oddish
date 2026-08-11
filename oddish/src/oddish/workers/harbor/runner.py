@@ -12,7 +12,6 @@ import uuid
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, cast
 from urllib.parse import urlparse
 
@@ -31,7 +30,7 @@ from harbor.models.trial.config import AgentConfig as HarborAgentConfig
 from harbor.models.trial.config import EnvironmentConfig as HarborEnvironmentConfig
 from harbor.models.trial.config import ResourceMode
 from harbor.models.trial.config import TaskConfig
-from harbor.trial.hooks import TrialEvent, TrialHookEvent
+from harbor.trial.hooks import TrialHookEvent
 from harbor.utils.env import resolve_env_vars
 
 from oddish.config import (
@@ -47,10 +46,14 @@ from oddish.costs.modal_cost import (
     provider_default_request,
 )
 from oddish.runtime.ec2_policy import (
+    LAUNCH_TOKEN_TAG_KEY,
+    SANDBOX_RUN_ID_TAG_KEY,
     TRIAL_ID_TAG_KEY,
+    WORKER_ATTEMPT_TAG_KEY,
     WORKER_JOB_ID_TAG_KEY,
     validate_ec2_environment_config,
 )
+from oddish.runtime.sandbox_lifecycle import SandboxLaunchContext
 from oddish.runtime.registry import get_backend
 from oddish.schemas import HarborConfig
 from oddish.task_timeouts import validate_task_timeout_config
@@ -95,11 +98,7 @@ from .outcome import (
     HarborOutcome,
     _extract_outcome_from_job_result,
 )
-from .patches import (
-    apply_harbor_patches,
-    reset_ec2_instance_launched_callback,
-    set_ec2_instance_launched_callback,
-)
+from .patches import apply_harbor_patches
 from .storage import (
     _MIN_REQUIRED_FREE_GB,
     _MIN_REQUIRED_FREE_INODES,
@@ -722,6 +721,12 @@ def capture_live_sandbox_resources(
             )
         )
         pinned = any(value is not None for value in (env.cpus, env.memory_mb, env.gpus))
+        if has_override:
+            spec_source = "override"
+        elif pinned:
+            spec_source = "pinned"
+        else:
+            spec_source = "provider_default"
         return SpanResources(
             cpu_request=cpu_request,
             cpu_limit=cpu_limit,
@@ -731,11 +736,7 @@ def capture_live_sandbox_resources(
             gpu_count=env.gpus or 0,
             price_multiplier=Decimal(1),
             container_class="sandbox",
-            spec_source=(
-                "override"
-                if has_override
-                else "pinned" if pinned else "provider_default"
-            ),
+            spec_source=spec_source,
             cpu_enforcement_mode=cpu_mode.value,
             mem_enforcement_mode=mem_mode.value,
         )
@@ -1230,6 +1231,7 @@ def _resolve_provider_environment_config(
     is_probe: bool,
     trial_id: str | None,
     worker_job_id: str | None,
+    sandbox_launch: SandboxLaunchContext | None,
 ) -> HarborEnvironmentConfig:
     environment_config = hc.environment.model_copy(deep=True)
     environment_config.type = environment
@@ -1244,11 +1246,16 @@ def _resolve_provider_environment_config(
             **environment_config.kwargs,
         }
     if environment == EnvironmentType.EC2:
+        if sandbox_launch is None:
+            raise RuntimeError("EC2 trial is missing its durable sandbox run")
         tags = dict(environment_config.kwargs.get("tags") or {})
         if trial_id:
             tags[TRIAL_ID_TAG_KEY] = trial_id
         if worker_job_id:
             tags[WORKER_JOB_ID_TAG_KEY] = worker_job_id
+        tags[SANDBOX_RUN_ID_TAG_KEY] = sandbox_launch.sandbox_run_id
+        tags[WORKER_ATTEMPT_TAG_KEY] = str(sandbox_launch.worker_job_attempt)
+        tags[LAUNCH_TOKEN_TAG_KEY] = sandbox_launch.launch_token
         environment_config.kwargs = {
             **environment_config.kwargs,
             "tags": tags,
@@ -1270,6 +1277,7 @@ async def run_harbor_trial_async(
     harbor_config: dict[str, Any] | None = None,
     org_id: str | None = None,
     extra_agent_env: dict[str, str] | None = None,
+    sandbox_launch: SandboxLaunchContext | None = None,
 ) -> HarborOutcome:
     """
     Execute a Harbor trial using Harbor's Python API with lifecycle hooks.
@@ -1309,6 +1317,7 @@ async def run_harbor_trial_async(
             harbor_config=harbor_config,
             org_id=org_id,
             extra_agent_env=extra_agent_env,
+            sandbox_launch=sandbox_launch,
             raw=raw,
             hc=hc,
             backend=backend,
@@ -1330,6 +1339,7 @@ async def _run_harbor_trial_async_impl(
     raw: dict[str, Any],
     hc: HarborConfig,
     backend: Any,
+    sandbox_launch: SandboxLaunchContext | None,
 ) -> HarborOutcome:
     # Size the environment-build timeout multiplier BEFORE the dispatch fork so
     # EVERY path that runs a GKE environment carries it -- the in-process blessed
@@ -1386,6 +1396,7 @@ async def _run_harbor_trial_async_impl(
         is_probe=is_probe,
         trial_id=trial_id,
         worker_job_id=worker_job_id,
+        sandbox_launch=sandbox_launch,
     )
 
     # An allowlisted override that is neither the locked default nor a blessed
@@ -1732,8 +1743,16 @@ async def _run_harbor_trial_async_impl(
                     redaction_trial_id, runtime_transport_replacements
                 )
             try:
+                provisioned_hook = getattr(job, "on_environment_provisioned", None)
+                if environment == EnvironmentType.EC2 and provisioned_hook is None:
+                    raise RuntimeError(
+                        "Pinned Harbor lacks the required "
+                        "environment-provisioned lifecycle hook"
+                    )
                 if safe_hook_callback:
                     job.on_trial_started(safe_hook_callback)
+                    if provisioned_hook is not None:
+                        provisioned_hook(safe_hook_callback)
                     job.on_environment_started(safe_hook_callback)
                     job.on_agent_started(safe_hook_callback)
                     job.on_agent_ended(safe_hook_callback)
@@ -1741,40 +1760,11 @@ async def _run_harbor_trial_async_impl(
                     job.on_trial_ended(safe_hook_callback)
                     job.on_trial_cancelled(safe_hook_callback)
 
-                ec2_launch_callback_token = None
-                if environment == EnvironmentType.EC2 and hook_callback is not None:
-
-                    async def on_ec2_instance_launched(ec2_environment: Any) -> None:
-                        external_id = ec2_environment.external_id
-                        provider = getattr(ec2_environment, "provider_name", None)
-                        if not isinstance(external_id, str) or not external_id:
-                            raise RuntimeError(
-                                "EC2 instance launched without an external identity"
-                            )
-                        await hook_callback(
-                            SimpleNamespace(
-                                event=TrialEvent.ENVIRONMENT_START,
-                                environment=ec2_environment,
-                                environment_provider=provider,
-                                environment_external_id=external_id,
-                                result=None,
-                                timestamp=None,
-                            )
-                        )
-
-                    ec2_launch_callback_token = set_ec2_instance_launched_callback(
-                        on_ec2_instance_launched
-                    )
-
-                try:
-                    with _capture_modal_output(
-                        actual_job_dir, environment
-                    ) as captured_log_path:
-                        modal_debug_log_path = captured_log_path
-                        job_result = await job.run()
-                finally:
-                    if ec2_launch_callback_token is not None:
-                        reset_ec2_instance_launched_callback(ec2_launch_callback_token)
+                with _capture_modal_output(
+                    actual_job_dir, environment
+                ) as captured_log_path:
+                    modal_debug_log_path = captured_log_path
+                    job_result = await job.run()
             finally:
                 if redaction_trial_id:
                     harbor_live_tail.clear_runtime_redactions(redaction_trial_id)

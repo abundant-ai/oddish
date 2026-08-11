@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 from collections.abc import Awaitable, Callable
-from contextvars import ContextVar, Token
 from functools import partial
 import importlib
 import inspect
@@ -21,9 +20,6 @@ logger = logging.getLogger(__name__)
 
 _PATCHED = False
 _EC2_PATCHED_CLASSES: WeakSet[type[Any]] = WeakSet()
-_EC2_INSTANCE_LAUNCHED_CALLBACK: ContextVar[Callable[[Any], Awaitable[None]] | None] = (
-    ContextVar("oddish_ec2_instance_launched_callback", default=None)
-)
 
 _EC2_MANAGED_TAG_KEY = "oddish:managed"
 _EC2_AWS_ACCOUNT_ID_TAG_KEY = "oddish:aws-account-id"
@@ -52,18 +48,6 @@ chmod 600 /root/.docker/config.json
 rm -f "$staged"
 """.strip()
 _LOGGED_IN_ATTR = "_oddish_registry_logged_in"
-
-
-def set_ec2_instance_launched_callback(
-    callback: Callable[[Any], Awaitable[None]],
-) -> Token[Callable[[Any], Awaitable[None]] | None]:
-    return _EC2_INSTANCE_LAUNCHED_CALLBACK.set(callback)
-
-
-def reset_ec2_instance_launched_callback(
-    token: Token[Callable[[Any], Awaitable[None]] | None],
-) -> None:
-    _EC2_INSTANCE_LAUNCHED_CALLBACK.reset(token)
 
 
 def apply_harbor_patches(*, require_ec2: bool = False) -> None:
@@ -494,9 +478,7 @@ def _patch_ec2_lifecycle(*, require_ec2: bool = False) -> None:
     cls = getattr(module, "EC2Environment", None)
     if cls is None:
         if require_ec2:
-            raise RuntimeError(
-                "EC2 trial requires Harbor to expose EC2Environment"
-            )
+            raise RuntimeError("EC2 trial requires Harbor to expose EC2Environment")
         logger.warning("Harbor EC2Environment not found; EC2 lifecycle patch skipped")
         return
     original_run_instances_kwargs = getattr(cls, "_run_instances_kwargs", None)
@@ -521,9 +503,10 @@ def _patch_ec2_lifecycle(*, require_ec2: bool = False) -> None:
     def get_sandbox_id(self: Any) -> str | None:
         instance_id = getattr(self, "instance_id", None)
         user_tags = getattr(self, "user_tags", None)
-        if not isinstance(user_tags, dict) or user_tags.get(
-            _EC2_MANAGED_TAG_KEY
-        ) != "true":
+        if (
+            not isinstance(user_tags, dict)
+            or user_tags.get(_EC2_MANAGED_TAG_KEY) != "true"
+        ):
             return instance_id
         if instance_id is None:
             return None
@@ -555,19 +538,7 @@ def _patch_ec2_lifecycle(*, require_ec2: bool = False) -> None:
             }
         return kwargs
 
-    async def launch_instance(self: Any) -> str:
-        if original_launch_instance is None:
-            raise RuntimeError("Harbor EC2 launch method is unavailable")
-        instance_id = cast(str, await original_launch_instance(self))
-        self.instance_id = instance_id
-        callback = _EC2_INSTANCE_LAUNCHED_CALLBACK.get()
-        if callback is not None:
-            await callback(self)
-        return instance_id
-
     cls.provider_name = "ec2"
     cls.get_sandbox_id = get_sandbox_id
     cls._run_instances_kwargs = run_instances_kwargs
-    if original_launch_instance is not None:
-        cls._launch_instance = launch_instance
     _EC2_PATCHED_CLASSES.add(cls)

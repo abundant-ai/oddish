@@ -35,6 +35,7 @@ from oddish.db import (
     utcnow,
 )
 from oddish.registry_auth import RegistryCredential, encrypt_credentials
+from oddish.runtime.sandbox_lifecycle import execution_lane_for_environment
 from oddish.schemas import RegistryAuth, TrialResponse
 
 
@@ -626,16 +627,19 @@ async def retry_trial_core(
             detail="This trial's task was just deleted; not re-queued",
         )
 
-    await enqueue_trial_worker_job(
-        session,
-        trial_id=new_trial_id,
-        queue_key=new_trial.queue_key,
-        org_id=new_trial.org_id,
-        max_attempts=new_trial.max_attempts,
-        harbor_variant_id=(new_trial.harbor_config or {}).get("variant_id")
+    enqueue_kwargs: dict[str, Any] = {
+        "trial_id": new_trial_id,
+        "queue_key": new_trial.queue_key,
+        "org_id": new_trial.org_id,
+        "max_attempts": new_trial.max_attempts,
+        "harbor_variant_id": (new_trial.harbor_config or {}).get("variant_id")
         or "default",
-        registry_auth_enc=registry_auth_enc,
-    )
+        "registry_auth_enc": registry_auth_enc,
+    }
+    execution_lane = execution_lane_for_environment(new_trial.environment)
+    if execution_lane != "default":
+        enqueue_kwargs["execution_lane"] = execution_lane
+    await enqueue_trial_worker_job(session, **enqueue_kwargs)
 
     # Retrying an LLM trial re-arms the gate: a retried agent trial consults its
     # scope's baselines just like a fresh one, so it can't bypass a faulty task.

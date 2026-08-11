@@ -130,27 +130,30 @@ class DispatchPlan:
     """Shared discovery/count/planning result for every dispatcher host.
 
     ``unit_plan`` preserves the effective dispatch unit
-    ``(queue_key, harbor_variant_id)`` so Modal can choose an image-bound
-    Function per variant. Image-agnostic dispatchers collapse it to
-    ``queue_key`` before spawning.
+    ``(queue_key, harbor_variant_id, execution_lane)`` so Modal can choose the
+    credential-scoped, image-bound Function. Legacy injected test fixtures may
+    still expose two-part units, which are treated as the default lane.
     """
 
-    queue_units: tuple[tuple[str, str], ...]
+    queue_units: tuple[tuple, ...]
     queue_keys: tuple[str, ...]
-    queued_by_org_queue: dict[tuple[str | None, str, str], int]
-    running_by_queue: dict[tuple[str, str], int]
+    queued_by_org_queue: dict[tuple[str | None, str, str, str], int]
+    running_by_queue: dict[tuple[str, str, str], int]
     queued_by_queue: dict[str, int]
     running_by_queue_key: dict[str, int]
     held_by_queue_key: dict[str, int]
     concurrency_limits: dict[str, int]
-    unit_plan: list[tuple[str, str]]
+    unit_plan: list[tuple]
 
 
-DiscoverFn = Callable[[], Awaitable[Sequence[tuple[str, str]]]]
+DiscoverFn = Callable[[], Awaitable[Sequence[tuple[str, str, str]]]]
 CountsFn = Callable[
     [tuple[str, ...]],
     Awaitable[
-        tuple[dict[tuple[str | None, str, str], int], dict[tuple[str, str], int]]
+        tuple[
+            dict[tuple[str | None, str, str, str], int],
+            dict[tuple[str, str, str], int],
+        ]
     ],
 ]
 # Per-queue_key HELD ``queue_slots`` lease count (the authoritative in-flight
@@ -172,9 +175,27 @@ async def build_dispatch_plan(
     This is the scheduling brain shared by the generic dispatch cycle and the
     Modal cron. Callers choose how to fan out ``unit_plan``.
     """
-    queue_units = tuple(await _discover())
-    queue_keys = tuple({qk for qk, _variant in queue_units})
-    queued_by_org_queue, running_by_queue = await _counts(queue_keys)
+    raw_queue_units = tuple(await _discover())
+    legacy_shape = all(len(unit) == 2 for unit in raw_queue_units)
+    queue_units = tuple(
+        (unit[0], unit[1], unit[2] if len(unit) == 3 else "default")
+        for unit in raw_queue_units
+    )
+    queue_keys = tuple({qk for qk, _variant, _lane in queue_units})
+    raw_queued_by_org_queue, raw_running_by_queue = await _counts(queue_keys)
+    queued_by_org_queue = {
+        (
+            key[0],
+            key[1],
+            key[2],
+            key[3] if len(key) == 4 else "default",
+        ): value
+        for key, value in raw_queued_by_org_queue.items()
+    }
+    running_by_queue = {
+        (key[0], key[1], key[2] if len(key) == 3 else "default"): value
+        for key, value in raw_running_by_queue.items()
+    }
     # Held ``queue_slots`` leases are the authoritative in-flight concurrency: a
     # lease is taken at spawn/claim, before the job shows RUNNING in worker_jobs.
     # On fast re-fires, plan against max(running, held) per queue_key -- else the
@@ -191,16 +212,19 @@ async def build_dispatch_plan(
     )
 
     queued_by_queue: dict[str, int] = {}
-    for (_org, queue_key, _variant), queued in queued_by_org_queue.items():
+    for (_org, queue_key, _variant, _lane), queued in queued_by_org_queue.items():
         queued_by_queue[queue_key] = queued_by_queue.get(queue_key, 0) + queued
     running_by_queue_key: dict[str, int] = {}
-    for (queue_key, _variant), running in running_by_queue.items():
+    for (queue_key, _variant, _lane), running in running_by_queue.items():
         running_by_queue_key[queue_key] = running_by_queue_key.get(queue_key, 0) + (
             running or 0
         )
 
+    public_unit_plan = (
+        [(unit[0], unit[1]) for unit in unit_plan] if legacy_shape else unit_plan
+    )
     return DispatchPlan(
-        queue_units=queue_units,
+        queue_units=raw_queue_units if legacy_shape else queue_units,
         queue_keys=queue_keys,
         queued_by_org_queue=queued_by_org_queue,
         running_by_queue=running_by_queue,
@@ -208,7 +232,7 @@ async def build_dispatch_plan(
         running_by_queue_key=running_by_queue_key,
         held_by_queue_key=held_by_queue_key,
         concurrency_limits=concurrency_limits,
-        unit_plan=unit_plan,
+        unit_plan=public_unit_plan,
     )
 
 
@@ -299,11 +323,16 @@ async def _run_dispatch_cycle(
     )
     # Off-Modal backends are image-agnostic (no per-variant images), so collapse
     # variant units to queue_keys before admitting / fanning out.
-    spawn_plan = [queue_key for queue_key, _variant in plan.unit_plan]
+    spawn_plan = [unit[0] for unit in plan.unit_plan]
 
     admitted, rejected = admit_spawn_plan(spawn_plan, admit)
 
-    handles = list(await dispatcher.spawn(spawn_plan=admitted))
+    spawn_units = [unit for unit in plan.unit_plan if unit[0] in admitted]
+    unit_spawner = getattr(dispatcher, "spawn_units", None)
+    if unit_spawner is not None:
+        handles = list(await unit_spawner(spawn_units=spawn_units))
+    else:
+        handles = list(await dispatcher.spawn(spawn_plan=admitted))
 
     # Derive both §12 fields from the queue_keys that ACTUALLY got a worker this
     # cycle (the returned handles, preserving per-key multiplicity), NOT the

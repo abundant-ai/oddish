@@ -152,8 +152,9 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 # (see HARBOR_VARIANTS in oddish.core.harbor_source), never this default.
 HARBOR_DEFAULT_SOURCE = "https://github.com/abundant-ai/harbor"
 # Exact abundant-ai/harbor revision resolved into both uv.lock files. Harbor
-# PRs #20 and #21 add EC2 Helm/k3s support and lifecycle subphase timings.
-HARBOR_DEFAULT_SHA = "790e0506dac1046c1adc95765d214d601feabffd"
+# PRs #20-#22 add EC2 Helm/k3s support, lifecycle timings, and the first-class
+# environment-provisioned event required for durable launch identity.
+HARBOR_DEFAULT_SHA = "1f7157a0ffbe4792720a15ed7ed58c563e2b777d"
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
@@ -1242,6 +1243,7 @@ class Settings(BaseSettings):
     ec2_root_volume_size_gb: int = 80
     ec2_use_public_ip: bool = True
     ec2_bootstrap_docker: bool = True
+    ec2_max_concurrent_instances: int = 16
 
     # Name of a pre-baked Daytona snapshot for agent sandboxes (the analyzer),
     # with claude-code + harbor already installed. When set, sandboxes are
@@ -1541,6 +1543,8 @@ class Settings(BaseSettings):
             raise ValueError("ec2_instance_profile cannot be blank when configured")
         if self.ec2_root_volume_size_gb <= 0:
             raise ValueError("ec2_root_volume_size_gb must be greater than zero")
+        if self.ec2_max_concurrent_instances <= 0:
+            raise ValueError("ec2_max_concurrent_instances must be greater than zero")
         return self
 
     @model_validator(mode="after")

@@ -46,6 +46,12 @@ from oddish.observability import (
     log_missing_trial_metering_if_needed,
     log_unpriced_trial_if_needed,
 )
+from oddish.runtime.sandbox_lifecycle import (
+    SandboxLaunchContext,
+    create_ec2_sandbox_run,
+    mark_environment_provisioned,
+    terminate_sandbox_run,
+)
 from oddish.worker.probe_analysis import (
     extract_probe_artifacts,
     run_probe_analyzer,
@@ -75,7 +81,10 @@ from oddish.workers.queue.trial_failures import (
     is_modal_image_build_failure,
 )
 from oddish.workers.queue import byok, job_tokens
-from oddish.workers.queue.worker_job_single_job import heartbeat_worker_job
+from oddish.workers.queue.worker_job_single_job import (
+    SandboxCapacityLeaseLostError,
+    heartbeat_worker_job,
+)
 
 TRIAL_HEARTBEAT_INTERVAL_SECONDS = 30
 
@@ -390,6 +399,7 @@ async def _heartbeat_trial_execution(
     queue_slot: int | None,
     stop_event: asyncio.Event,
     worker_job_id: str | None = None,
+    fatal_error: asyncio.Future[TrialExecutionResult] | None = None,
 ) -> None:
     """Periodically write heartbeat_at to keep the trial out of stale-reap.
 
@@ -455,6 +465,11 @@ async def _heartbeat_trial_execution(
             pending_failure_count = 0
             pending_last_error = None
             pending_last_error_at = None
+        except SandboxCapacityLeaseLostError as exc:
+            console.print(f"[red]Trial {trial_id} capacity lease lost: {exc}[/red]")
+            if fatal_error is not None and not fatal_error.done():
+                fatal_error.set_exception(exc)
+            return
         except Exception as exc:
             consecutive_failures += 1
             pending_failure_count += 1
@@ -1012,6 +1027,7 @@ async def _handle_harbor_event(
     worker_job_id: str | None = None,
     worker_job_attempt: int | None = None,
     cost_state: SandboxCostState | None = None,
+    sandbox_launch: SandboxLaunchContext | None = None,
 ) -> None:
     """Update a trial from Harbor lifecycle events."""
     event = hook_event.event
@@ -1022,6 +1038,19 @@ async def _handle_harbor_event(
         observed_at = utcnow()
     elif observed_at.tzinfo is None:
         observed_at = observed_at.replace(tzinfo=timezone.utc)
+
+    if event == TrialEvent.ENVIRONMENT_PROVISIONED:
+        if sandbox_launch is None:
+            raise RuntimeError(
+                f"Trial {trial_id} received environment-provisioned without a "
+                "sandbox ledger row"
+            )
+        await mark_environment_provisioned(
+            context=sandbox_launch,
+            provider=hook_event.environment_provider,
+            external_id=hook_event.environment_external_id,
+            worker_id=worker_id,
+        )
 
     if event in (TrialEvent.END, TrialEvent.CANCEL) and cost_state is not None:
         cost_state.terminal_at = observed_at
@@ -1267,6 +1296,8 @@ async def _handle_harbor_event(
 
     except Exception as e:
         console.print(f"[yellow]Hook callback error: {e}[/yellow]")
+        if event == TrialEvent.ENVIRONMENT_PROVISIONED:
+            raise
 
 
 async def _execute_trial(
@@ -1280,6 +1311,7 @@ async def _execute_trial(
     worker_job_attempt: int | None = None,
     cost_state: SandboxCostState | None = None,
     extra_agent_env: dict[str, str] | None = None,
+    sandbox_launch: SandboxLaunchContext | None = None,
 ) -> TrialExecutionResult:
     execution_error: str | None = None
     tailed_attempt: int | None = None
@@ -1313,12 +1345,14 @@ async def _execute_trial(
                 worker_job_id=worker_job_id,
                 worker_job_attempt=worker_job_attempt,
                 cost_state=cost_state,
+                sandbox_launch=sandbox_launch,
             ),
             trial_id=trial_id,
             worker_job_id=worker_job_id,
             harbor_config=prepared_trial.trial_harbor_config,
             org_id=prepared_trial.org_id,
             extra_agent_env=extra_agent_env,
+            sandbox_launch=sandbox_launch,
         )
     except asyncio.CancelledError:
         # CancelledError inherits from BaseException, not Exception, so must be caught explicitly.
@@ -1366,7 +1400,7 @@ def _harbor_config_is_ephemeral(harbor_config: dict | None) -> bool:
     child reads it, but BYOK still must not be resolved for these trials -- they
     keep the platform credentials.
     """
-    return (harbor_config or {}).get("variant_id") == "ephemeral"
+    return bool((harbor_config or {}).get("variant_id") == "ephemeral")
 
 
 def _phase_timestamp(value: object) -> datetime | None:
@@ -1582,6 +1616,16 @@ async def run_trial_job(
     span_provider = (
         prepared_trial.trial_environment or settings.harbor_environment
     ).lower()
+    sandbox_launch: SandboxLaunchContext | None = None
+    if span_provider == "ec2":
+        if worker_job_id is None or worker_job_attempt is None:
+            raise RuntimeError("EC2 trial requires worker job attempt identity")
+        sandbox_launch = await create_ec2_sandbox_run(
+            worker_job_id=worker_job_id,
+            worker_job_attempt=worker_job_attempt,
+            trial_id=trial_id,
+        )
+
     cost_state = SandboxCostState(
         resources=capture_sandbox_resources(
             task_path_to_run, prepared_trial.trial_harbor_config, span_provider
@@ -1602,6 +1646,9 @@ async def run_trial_job(
     execution: TrialExecutionResult | None = None
     trial_terminal = False
     heartbeat_stop = asyncio.Event()
+    heartbeat_fatal_error: asyncio.Future[TrialExecutionResult] = (
+        asyncio.get_running_loop().create_future()
+    )
     heartbeat_task = asyncio.create_task(
         _heartbeat_trial_execution(
             trial_id=trial_id,
@@ -1609,6 +1656,7 @@ async def run_trial_job(
             queue_slot=queue_slot,
             stop_event=heartbeat_stop,
             worker_job_id=worker_job_id,
+            fatal_error=heartbeat_fatal_error,
         )
     )
     try:
@@ -1625,20 +1673,32 @@ async def run_trial_job(
                 trial_id=trial_id,
             )
 
-        execution = await _execute_trial(
-            trial_id=trial_id,
-            task_path_to_run=task_path_to_run,
-            temp_task_dir=temp_task_dir,
-            prepared_trial=prepared_trial,
-            worker_id=worker_id,
-            worker_job_id=worker_job_id,
-            worker_job_attempt=worker_job_attempt,
-            cost_state=cost_state,
-            extra_agent_env=job_tokens.merge_agent_env(
-                job_scoped_bundle,
-                byok.merge_byok_env(byok_env, probe_agent_env),
-            ),
+        execution_task = asyncio.create_task(
+            _execute_trial(
+                trial_id=trial_id,
+                task_path_to_run=task_path_to_run,
+                temp_task_dir=temp_task_dir,
+                prepared_trial=prepared_trial,
+                worker_id=worker_id,
+                worker_job_id=worker_job_id,
+                worker_job_attempt=worker_job_attempt,
+                cost_state=cost_state,
+                extra_agent_env=job_tokens.merge_agent_env(
+                    job_scoped_bundle,
+                    byok.merge_byok_env(byok_env, probe_agent_env),
+                ),
+                sandbox_launch=sandbox_launch,
+            )
         )
+        completed, _ = await asyncio.wait(
+            {execution_task, heartbeat_fatal_error},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if heartbeat_fatal_error in completed:
+            execution_task.cancel()
+            await asyncio.gather(execution_task, return_exceptions=True)
+            heartbeat_fatal_error.result()
+        execution = await execution_task
         await _settle_compute_costs(cost_state, execution.outcome)
 
         # Upload trial results to S3.
@@ -1734,7 +1794,26 @@ async def run_trial_job(
         )
     finally:
         heartbeat_stop.set()
+        if not heartbeat_fatal_error.done():
+            heartbeat_fatal_error.cancel()
+        elif not heartbeat_fatal_error.cancelled():
+            heartbeat_fatal_error.exception()
         await asyncio.gather(heartbeat_task, return_exceptions=True)
+        if sandbox_launch is not None:
+            try:
+                terminated = await asyncio.shield(
+                    terminate_sandbox_run(sandbox_launch.sandbox_run_id)
+                )
+                if not terminated:
+                    console.print(
+                        f"[red]EC2 sandbox teardown remains retryable "
+                        f"sandbox_run={sandbox_launch.sandbox_run_id}[/red]"
+                    )
+            except Exception as exc:
+                console.print(
+                    f"[red]EC2 sandbox teardown failed "
+                    f"sandbox_run={sandbox_launch.sandbox_run_id}: {exc}[/red]"
+                )
         # Purge the live transcript only once the trial is terminal. Doing it
         # inside _execute_trial's finally would race the S3 upload/store window
         # and blank the transcript while clients still see the trial running;

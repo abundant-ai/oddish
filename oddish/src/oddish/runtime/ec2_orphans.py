@@ -21,12 +21,13 @@ class Ec2InstanceSnapshot:
     account_id_tag: str | None
     trial_id_tag: str | None
     worker_job_id_tag: str | None
+    sandbox_run_id_tag: str | None = None
+    worker_attempt_tag: str | None = None
+    launch_token_tag: str | None = None
 
     @property
     def external_id(self) -> str:
-        return (
-            f"ec2://{self.account_id_tag}/{self.region}/{self.instance_id}"
-        )
+        return f"ec2://{self.account_id_tag}/{self.region}/{self.instance_id}"
 
 
 @dataclass(frozen=True)
@@ -79,9 +80,7 @@ class Ec2OrphanDecision:
         return self.verdict is Ec2OrphanVerdict.TERMINATE
 
 
-def _decision(
-    verdict: Ec2OrphanVerdict, reason: Ec2OrphanReason
-) -> Ec2OrphanDecision:
+def _decision(verdict: Ec2OrphanVerdict, reason: Ec2OrphanReason) -> Ec2OrphanDecision:
     return Ec2OrphanDecision(verdict=verdict, reason=reason)
 
 
@@ -94,13 +93,10 @@ def _is_running(worker: Ec2WorkerLiveness) -> bool:
     return worker.status.strip().upper() == "RUNNING"
 
 
-def _is_exact_link(
-    worker: Ec2WorkerLiveness, instance: Ec2InstanceSnapshot
-) -> bool:
+def _is_exact_link(worker: Ec2WorkerLiveness, instance: Ec2InstanceSnapshot) -> bool:
     return (
-        (worker.provider or "").strip().lower() == "ec2"
-        and worker.external_id == instance.external_id
-    )
+        worker.provider or ""
+    ).strip().lower() == "ec2" and worker.external_id == instance.external_id
 
 
 def _is_unlinked_from_inventory(

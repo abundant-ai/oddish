@@ -255,7 +255,11 @@ async def _consume_events(
             try:
                 await hook_callback(_bridge_event(event, trial_id=trial_id))
             except Exception:
-                pass
+                if (
+                    str(event.get("event") or "").lower().replace("_", "-")
+                    == "environment-provisioned"
+                ):
+                    raise
         else:
             tail.append(line)
             del tail[:-50]
@@ -403,6 +407,11 @@ async def run_ephemeral_harbor_trial(
     except asyncio.CancelledError:
         if process is not None and process.returncode is None:
             _kill_process_group(process)
+        raise
+    except Exception:
+        if process is not None and process.returncode is None:
+            _kill_process_group(process)
+            await process.wait()
         raise
     finally:
         if payload_path is not None:
