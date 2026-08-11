@@ -409,6 +409,25 @@ def test_ec2_credential_lease_underflow_fails_loudly(monkeypatch) -> None:
         Ec2Backend().release_worker_credentials()
 
 
+def test_ec2_process_exit_cleanup_preserves_active_lease_accounting(
+    monkeypatch,
+) -> None:
+    _install_complete_ec2_settings(monkeypatch)
+    backend = Ec2Backend()
+
+    backend.acquire_worker_credentials(include_ssh=True)
+    profile_path = Path(os.environ["AWS_SHARED_CREDENTIALS_FILE"])
+    key_path = backend.materialize_ssh_private_key()
+
+    backend._force_remove_materialized_worker_credentials()
+
+    assert not profile_path.exists()
+    assert not key_path.exists()
+    backend.release_worker_credentials()
+    with pytest.raises(RuntimeError, match="without acquisition"):
+        backend.release_worker_credentials()
+
+
 @pytest.mark.parametrize(
     "protected_name",
     [

@@ -224,7 +224,6 @@ class Ec2Backend:
 
     def _force_remove_materialized_worker_credentials(self) -> None:
         with self._credential_lock:
-            self._credential_leases = 0
             self._remove_materialized_worker_credentials_unlocked()
 
     def _remove_materialized_worker_credentials_unlocked(self) -> None:
