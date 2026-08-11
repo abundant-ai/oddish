@@ -806,10 +806,15 @@ function trialTitleParts(
     ? trial.id.slice(prefix.length)
     : (raw.match(/-(\d+)$/)?.[1] ?? null);
   const stem = fromId ? taskId : index ? raw.slice(0, -(index.length + 1)) : raw;
-  // The task's own name is the authoritative de-hashed stem when it is one;
-  // otherwise fall back to trimming what looks like the id suffix.
-  const named = task && stem.startsWith(task.name) ? task.name : stem;
-  return { stem: named.replace(/-[0-9a-f]{8}$/, ""), index };
+  // The task's own name is the de-hashed stem when the id extends it, and it
+  // is authoritative: trimming a hex-looking tail off THAT would eat a name
+  // that genuinely ends in one (a task named after a commit). Only the
+  // fallback — no task loaded, or a name that already carries the hash — is
+  // reduced to guessing at the suffix.
+  if (task && stem.startsWith(`${task.name}-`)) {
+    return { stem: task.name, index };
+  }
+  return { stem: stem.replace(/-[0-9a-f]{8}$/, ""), index };
 }
 
 export function TrialDetailPanel({
