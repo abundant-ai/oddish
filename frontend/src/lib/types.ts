@@ -712,6 +712,7 @@ export type TrajectoryComponentKind =
   | "testing_custom"
   | "testing_edge_cases"
   | "debugging"
+  | "writing_report"
   // Retired from the backend enum, but stored summaries still carry them.
   | "thinking_correction"
   | "thinking_diagnose"
