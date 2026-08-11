@@ -1,7 +1,7 @@
 """Add credential-scoped worker execution lanes.
 
 Revision ID: execution_lane_001
-Revises: verdict_state_001
+Revises: task_browse_summary_001
 """
 
 from typing import Sequence, Union
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 
 revision: str = "execution_lane_001"
-down_revision: Union[str, Sequence[str], None] = "verdict_state_001"
+down_revision: Union[str, Sequence[str], None] = "task_browse_summary_001"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
