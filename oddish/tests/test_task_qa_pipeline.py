@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -324,7 +325,12 @@ class _QASession:
 
 @pytest.mark.asyncio
 async def test_pre_trial_store_rejects_replaced_version() -> None:
-    version = SimpleNamespace(content_hash="new-hash")
+    claim_started_at = qa_handler.utcnow()
+    version = SimpleNamespace(
+        content_hash="new-hash",
+        pre_trial_status=VerdictStatus.RUNNING,
+        pre_trial_started_at=claim_started_at,
+    )
     session = _QASession(task=None, trials=[], task_version=version)
 
     allowed = await qa_handler._pre_trial_store_allowed(
@@ -332,9 +338,46 @@ async def test_pre_trial_store_rejects_replaced_version() -> None:
         "worker-job",
         "task-v1",
         "old-hash",
+        claim_started_at,
     )
 
     assert allowed is False
+
+
+@pytest.mark.asyncio
+async def test_stale_pre_trial_cleanup_does_not_touch_replacement(monkeypatch) -> None:
+    old_started_at = qa_handler.utcnow()
+    new_started_at = old_started_at + timedelta(microseconds=1)
+    version = SimpleNamespace(
+        content_hash="new-hash",
+        pre_trial_status=VerdictStatus.RUNNING,
+        pre_trial_started_at=new_started_at,
+        pre_trial_error=None,
+        pre_trial_finished_at=None,
+    )
+    session = _QASession(task=None, trials=[], task_version=version)
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield session
+
+    monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
+
+    await qa_handler._release_pre_trial_claim(
+        "task-v1",
+        expected_content_hash="old-hash",
+        expected_started_at=old_started_at,
+    )
+    await qa_handler._finalize_pre_trial_request(
+        "task",
+        task_version_id="task-v1",
+        expected_content_hash="old-hash",
+        expected_started_at=old_started_at,
+    )
+
+    assert version.pre_trial_status == VerdictStatus.RUNNING
+    assert version.pre_trial_started_at == new_started_at
+    assert version.pre_trial_error is None
 
 
 @pytest.mark.asyncio
@@ -676,11 +719,14 @@ async def test_run_task_qa_job_uses_injected_pre_trial_synth_fn(monkeypatch):
         verdict_finished_at=None,
         finished_at=None,
     )
+    claim_started_at = qa_handler.utcnow()
     version = SimpleNamespace(
         id="task-9c-v1",
         task_id="task-9c",
+        content_hash="hash-9c",
         pre_trial=None,
         pre_trial_status=None,
+        pre_trial_started_at=claim_started_at,
         pre_trial_error=None,
         pre_trial_finished_at=None,
     )
@@ -733,7 +779,7 @@ async def test_run_task_qa_job_uses_injected_pre_trial_synth_fn(monkeypatch):
         ]
 
     async def fake_claim(_task_id, *_args):
-        return version.id
+        return version.id, version.content_hash, claim_started_at
 
     async def fake_store_allowed(_session, _worker_job_id, *_args):
         return True
@@ -781,11 +827,14 @@ async def test_run_task_qa_job_pre_trial_failure_never_blocks_verdict(monkeypatc
         verdict_finished_at=None,
         finished_at=None,
     )
+    claim_started_at = qa_handler.utcnow()
     version = SimpleNamespace(
         id="task-9d-v1",
         task_id="task-9d",
+        content_hash="hash-9d",
         pre_trial=None,
         pre_trial_status=None,
+        pre_trial_started_at=claim_started_at,
         pre_trial_error=None,
         pre_trial_finished_at=None,
     )
@@ -820,7 +869,7 @@ async def test_run_task_qa_job_pre_trial_failure_never_blocks_verdict(monkeypatc
         raise RuntimeError("sandbox exploded")
 
     async def fake_claim(_task_id, *_args):
-        return version.id
+        return version.id, version.content_hash, claim_started_at
 
     async def fake_store_allowed(_session, _worker_job_id, *_args):
         return True
@@ -862,12 +911,14 @@ async def test_run_task_qa_job_releases_claim_when_store_vetoed(monkeypatch):
         verdict_finished_at=None,
         finished_at=None,
     )
+    claim_started_at = qa_handler.utcnow()
     version = SimpleNamespace(
         id="task-9e-v1",
         task_id="task-9e",
+        content_hash="hash-9e",
         pre_trial=None,
         pre_trial_status=VerdictStatus.RUNNING,  # as _claim_pre_trial_version left it
-        pre_trial_started_at=object(),
+        pre_trial_started_at=claim_started_at,
         pre_trial_error=None,
         pre_trial_finished_at=None,
     )
@@ -902,7 +953,7 @@ async def test_run_task_qa_job_releases_claim_when_store_vetoed(monkeypatch):
         return []
 
     async def fake_claim(_task_id, *_args):
-        return version.id
+        return version.id, version.content_hash, claim_started_at
 
     async def veto_store(_session, _worker_job_id, *_args):
         return False
