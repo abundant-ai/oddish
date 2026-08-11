@@ -257,6 +257,7 @@ async def _run_one_job(
     worker_id = f"{queue_key}-{uuid4().hex[:12]}"
     lock_slot: int | None = None
     capacity_slot: int | None = None
+    release_capacity_lease = True
 
     job_span.__enter__()
     try:
@@ -321,6 +322,10 @@ async def _run_one_job(
             nonpreemptible=WORKER_NONPREEMPTIBLE,
         )
         if execution_lane == EC2_TRIAL_EXECUTION_LANE:
+            # Only a normal return proves the sandbox teardown path completed.
+            # On cancellation, reconciliation keeps this lease until the owner
+            # is terminal.
+            release_capacity_lease = False
             jobs_processed = int(
                 await run_single_worker_job(
                     queue_key,
@@ -335,6 +340,7 @@ async def _run_one_job(
                     worker_billing_spec=worker_billing_spec,
                 )
             )
+            release_capacity_lease = True
         else:
             jobs_processed = await drain_worker_jobs(
                 queue_key,
@@ -373,7 +379,7 @@ async def _run_one_job(
                         worker_id=worker_id,
                     )
             finally:
-                if capacity_slot is not None:
+                if capacity_slot is not None and release_capacity_lease:
                     await release_sandbox_capacity_lease(
                         provider="ec2",
                         slot=capacity_slot,
