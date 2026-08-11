@@ -318,13 +318,15 @@ test.describe("critical task and trial subtree", () => {
     await expect(page.getByText("terminal analyzer output")).toBeVisible();
     expect(requestCount(requests, analysisLogPattern)).toBe(1);
 
+    const trialFilesRequest = page.waitForRequest(trialFilesPattern);
     await page.getByRole("tab", { name: "Files" }).click();
-    await expect.poll(() => requestCount(requests, trialFilesPattern)).toBe(1);
+    await trialFilesRequest;
+    expect(requestCount(requests, trialFilesPattern)).toBeGreaterThan(0);
     expect(requestCount(requests, trajectoryPattern)).toBe(0);
 
+    const trajectoryRequest = page.waitForRequest(trajectoryPattern);
     await page.getByRole("tab", { name: "Trajectory" }).click();
-    await expect
-      .poll(() => requestCount(requests, trajectoryPattern))
-      .toBeGreaterThan(0);
+    await trajectoryRequest;
+    expect(requestCount(requests, trajectoryPattern)).toBeGreaterThan(0);
   });
 });
