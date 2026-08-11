@@ -501,7 +501,7 @@ call the shared `oddish.core.endpoints.deletion` helpers.
 
 Public share links use 256-bit `public_token` values and are access-by-link, not
 enumerable. The unauthenticated `/public/experiments` list intentionally returns
-no share tokens. Public task/trial/file routes must stay scoped under
+no share tokens. Public task/trial/live/file routes must stay scoped under
 `/public/experiments/{public_token}/...` and verify membership in that shared
 experiment; do not reintroduce `/public/tasks/{task_id}` or
 `/public/trials/{trial_id}` ID-only access. Unpublishing an experiment clears
