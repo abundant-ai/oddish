@@ -1655,6 +1655,7 @@ export function ExperimentDetailView({
                 isLoading={isLoading}
                 isLoadingTrials={isLoadingTrials}
                 showPassAtK={showPassAtK}
+                experimentId={experimentId}
                 onTaskUnlink={onTaskUnlink}
                 onRerun={onRerun}
                 allowRerun={allowRetry}
@@ -1738,6 +1739,7 @@ export function ExperimentDetailView({
               onSelectLinesChange={setTaskPaneLines}
               onSelectedFileChange={handleTaskPaneFileChange}
               apiBaseUrl={apiBaseUrl}
+              cancelExperimentId={experimentId}
               showAnalysis={showAnalysis}
               contentOnly={true}
             />
@@ -1753,6 +1755,7 @@ export function ExperimentDetailView({
               taskIndex={drawerState.taskIndex}
               onRetryComplete={onRerun}
               allowRetry={allowRetry}
+              cancelExperimentId={experimentId}
               showAnalysis={showAnalysis}
               onNavigate={(nextTask, nextIndex) => {
                 if (!drawerState) return;
