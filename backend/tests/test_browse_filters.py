@@ -35,7 +35,6 @@ from oddish.core.endpoints import (
     browse_tasks_core,
 )
 from oddish.core.trial_facets import rebuild_trial_facets_core
-from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.db.models import Base
 
 URL = os.environ.get("ODDISH_DATABASE_URL")
@@ -82,9 +81,6 @@ async def _setup(engine):
         for stmt in stmts.split(";"):
             if stmt.strip():
                 await c.execute(text(stmt))
-    async with async_sessionmaker(engine, expire_on_commit=False)() as session:
-        await refresh_task_browse_summaries(session, ["v-a", "v-a-old", "v-b", "v-c"])
-        await session.commit()
 
 
 async def _names(session, **filters):
@@ -220,7 +216,9 @@ async def test_experiment_options():
 
             # ids= hydration returns named rows and wins over query.
             resp = await opts(session, org_id=ORG, ids=["exp-real"], query="probe")
-            assert [(o.id, o.name) for o in resp.items] == [("exp-real", "Real Exp")]
+            assert [(o.id, o.name) for o in resp.items] == [
+                ("exp-real", "Real Exp")
+            ]
 
             # Hydration is a keyed lookup, not a paged search: every id
             # resolves even past the default search page size (a restored
