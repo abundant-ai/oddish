@@ -232,6 +232,10 @@ async def list_tasks_core(
                 ExperimentModel.created_at,
                 ExperimentModel.owner,
                 ExperimentModel.link,
+                # The primary-experiment picker and chip builder read shadow_of
+                # to keep shadow (qa report) experiments off task rows; eager-load
+                # it or the read lazy-loads outside the greenlet and 500s /tasks.
+                ExperimentModel.shadow_of,
             )
             query = query.options(
                 load_only(*TASK_STATUS_RESPONSE_COLUMNS),
