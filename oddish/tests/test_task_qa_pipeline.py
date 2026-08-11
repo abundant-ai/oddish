@@ -381,6 +381,35 @@ async def test_stale_pre_trial_cleanup_does_not_touch_replacement(monkeypatch) -
 
 
 @pytest.mark.asyncio
+async def test_unclaimed_pre_trial_finalize_does_not_touch_version(monkeypatch) -> None:
+    version = SimpleNamespace(
+        content_hash="replacement-hash",
+        pre_trial_status=None,
+        pre_trial_started_at=None,
+        pre_trial_error=None,
+        pre_trial_finished_at=None,
+    )
+    session = _QASession(task=None, trials=[], task_version=version)
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield session
+
+    monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
+
+    await qa_handler._finalize_pre_trial_request(
+        "task",
+        task_version_id="task-v1",
+        expected_content_hash=None,
+        expected_started_at=None,
+    )
+
+    assert version.pre_trial_status is None
+    assert version.pre_trial_error is None
+    assert version.pre_trial_finished_at is None
+
+
+@pytest.mark.asyncio
 async def test_run_task_qa_job_classifies_then_synthesizes(monkeypatch):
     task = SimpleNamespace(
         id="task-9",

@@ -480,12 +480,13 @@ async def run_pre_trial_only_job(
             [trial_id for trial_id, _ in live_trials],
             task_version_id=task_version_id,
         )
-        await _finalize_pre_trial_request(
-            task_id,
-            task_version_id=task_version_id,
-            expected_content_hash=claim[1] if claim is not None else None,
-            expected_started_at=claim[2] if claim is not None else None,
-        )
+        if claim is not None:
+            await _finalize_pre_trial_request(
+                task_id,
+                task_version_id=claim[0],
+                expected_content_hash=claim[1],
+                expected_started_at=claim[2],
+            )
     except BaseException as exc:
         try:
             await _fail_queued_pre_trial_request(
@@ -515,8 +516,11 @@ async def _finalize_pre_trial_request(
     next QA run redoes the audit. An explicit re-run has no next run, so
     an unrecorded result would leave the card saying "not audited" with
     no error while the job reports success. Record the failure instead.
-    A RUNNING claim is left alone: another worker owns it.
+    A RUNNING claim is left alone: another worker owns it. A caller without
+    a claim token cannot mutate audit state.
     """
+    if expected_started_at is None:
+        return
     async with get_session() as session:
         version_id = task_version_id or await session.scalar(
             select(TaskModel.current_version_id).where(TaskModel.id == task_id)
@@ -526,14 +530,13 @@ async def _finalize_pre_trial_request(
         version = await session.get(TaskVersionModel, version_id, with_for_update=True)
         if version is None:
             return
-        if expected_started_at is not None:
-            if version.content_hash != expected_content_hash:
-                return
-            if (
-                version.pre_trial_status == VerdictStatus.RUNNING
-                and version.pre_trial_started_at != expected_started_at
-            ):
-                return
+        if version.content_hash != expected_content_hash:
+            return
+        if (
+            version.pre_trial_status == VerdictStatus.RUNNING
+            and version.pre_trial_started_at != expected_started_at
+        ):
+            return
         if version is not None and version.pre_trial_status in (
             None,
             VerdictStatus.PENDING,
