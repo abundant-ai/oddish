@@ -790,6 +790,14 @@ def upload_task(
                     raise typer.Exit(1)
                 complete_body["overwrite_current_version"] = True
                 complete_body["staging_key"] = staging_key
+                if "overwrite_base_content_hash" not in init_payload:
+                    error_console.print(
+                        "[red]Task upload initialization did not return the base content hash.[/red]"
+                    )
+                    raise typer.Exit(1)
+                complete_body["overwrite_base_content_hash"] = init_payload[
+                    "overwrite_base_content_hash"
+                ]
             if message:
                 complete_body["message"] = message
             if register:

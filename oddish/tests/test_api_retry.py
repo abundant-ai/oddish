@@ -246,6 +246,7 @@ def test_upload_task_retries_init_and_complete(monkeypatch, tmp_path):
             "upload_headers": {},
             "existing_task": True,
             "staging_key": f"task-upload-staging/T1/{'a' * 32}.tar.gz",
+            "overwrite_base_content_hash": "old-hash",
         },
     )
     complete_ok = _FakeResp(200, {"task_id": "T1"})
@@ -268,6 +269,7 @@ def test_upload_task_retries_init_and_complete(monkeypatch, tmp_path):
     assert fake.requests[-1][1]["json"]["staging_key"].startswith(
         "task-upload-staging/T1/"
     )
+    assert fake.requests[-1][1]["json"]["overwrite_base_content_hash"] == "old-hash"
 
 
 def test_submit_sweep_is_not_retried(monkeypatch):

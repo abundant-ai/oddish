@@ -764,12 +764,27 @@ class TaskUploadCompleteRequest(BaseModel):
         None,
         description="Server-issued staging object for an in-place replacement.",
     )
+    overwrite_base_content_hash: str | None = Field(
+        None,
+        description=(
+            "Content hash observed when an in-place replacement was initialized; "
+            "used to reject stale completions."
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_overwrite_staging_key(self) -> "TaskUploadCompleteRequest":
         if self.overwrite_current_version and not self.staging_key:
             raise ValueError("staging_key is required for an in-place replacement")
+        if (
+            self.overwrite_current_version
+            and "overwrite_base_content_hash" not in self.model_fields_set
+        ):
+            raise ValueError(
+                "overwrite_base_content_hash is required for an in-place replacement"
+            )
         return self
+
     register_task: bool = Field(
         False,
         description=(
@@ -818,6 +833,7 @@ class TaskUploadInitResponse(UploadResponse):
     upload_headers: dict[str, str] = Field(default_factory=dict)
     requires_completion: bool = False
     staging_key: str | None = None
+    overwrite_base_content_hash: str | None = None
 
 
 class TrialQueueInfo(BaseModel):

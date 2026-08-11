@@ -22,7 +22,7 @@ class _Session:
             raise AssertionError("overwrite mode must not select the latest version")
         return self.task
 
-    async def get(self, model, row_id):
+    async def get(self, model, row_id, **_kwargs):
         if model is TaskModel:
             return self.task
         if model is TaskVersionModel and row_id == self.current.id:
@@ -81,6 +81,18 @@ def test_upload_version_modes_are_mutually_exclusive() -> None:
             overwrite_current_version=True,
         )
 
+    with pytest.raises(
+        ValidationError, match="overwrite_base_content_hash is required"
+    ):
+        TaskUploadCompleteRequest(
+            task_id="task-1",
+            name="task",
+            version=1,
+            content_hash="new-hash",
+            overwrite_current_version=True,
+            staging_key=f"task-upload-staging/task-1/{'a' * 32}.tar.gz",
+        )
+
 
 @pytest.mark.asyncio
 async def test_initialize_overwrite_targets_selected_version(monkeypatch) -> None:
@@ -108,6 +120,7 @@ async def test_initialize_overwrite_targets_selected_version(monkeypatch) -> Non
     assert result.s3_key == "tasks/task-1/v1/"
     assert result.staging_key.startswith("task-upload-staging/task-1/")
     assert result.upload_url.endswith(result.staging_key)
+    assert result.overwrite_base_content_hash == "old-hash"
 
 
 @pytest.mark.asyncio
@@ -145,6 +158,7 @@ async def test_complete_overwrite_updates_row_and_invalidates_derived_state(
         org_id="org-1",
         overwrite_current_version=True,
         staging_key=f"task-upload-staging/task-1/{'a' * 32}.tar.gz",
+        overwrite_base_content_hash="old-hash",
     )
 
     assert result.version == 2
@@ -191,6 +205,7 @@ async def test_complete_overwrite_checks_current_before_promoting(monkeypatch) -
             org_id="org-1",
             overwrite_current_version=True,
             staging_key=f"task-upload-staging/task-1/{'b' * 32}.tar.gz",
+            overwrite_base_content_hash="old-hash",
         )
 
     assert storage.copied == []
@@ -219,7 +234,36 @@ async def test_complete_overwrite_replay_succeeds_after_staging_cleanup(
         org_id="org-1",
         overwrite_current_version=True,
         staging_key=f"task-upload-staging/task-1/{'c' * 32}.tar.gz",
+        overwrite_base_content_hash="old-hash",
     )
 
     assert result.existing_task is True
+    assert storage.copied == []
+
+
+@pytest.mark.asyncio
+async def test_complete_overwrite_rejects_stale_staging_upload(monkeypatch) -> None:
+    version = SimpleNamespace(id="task-1-v2", content_hash="newer-hash")
+    task = SimpleNamespace(
+        id="task-1",
+        org_id="org-1",
+        current_version_id=version.id,
+    )
+    session = _Session(task=task, current=version)
+    storage = _Storage()
+    monkeypatch.setattr(tasks, "get_session", _session_context(session))
+    monkeypatch.setattr(tasks, "get_storage_client", lambda: storage)
+
+    with pytest.raises(HTTPException, match="was overwritten during upload"):
+        await tasks.complete_task_upload(
+            task_id="task-1",
+            task_name="task",
+            version=2,
+            content_hash="stale-hash",
+            org_id="org-1",
+            overwrite_current_version=True,
+            staging_key=f"task-upload-staging/task-1/{'d' * 32}.tar.gz",
+            overwrite_base_content_hash="old-hash",
+        )
+
     assert storage.copied == []

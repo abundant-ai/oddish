@@ -201,6 +201,11 @@ async def initialize_task_upload(
         upload_headers={"Content-Type": "application/gzip"},
         requires_completion=True,
         staging_key=staging_key,
+        overwrite_base_content_hash=(
+            target.content_hash
+            if overwrite_current_version and existing and target is not None
+            else None
+        ),
     )
 
 
@@ -218,6 +223,7 @@ async def complete_task_upload(
     priority: Priority | None = None,
     overwrite_current_version: bool = False,
     staging_key: str | None = None,
+    overwrite_base_content_hash: str | None = None,
 ) -> UploadResponse:
     """Finalize a direct-to-S3 upload after the client has uploaded bytes.
 
@@ -246,7 +252,11 @@ async def complete_task_upload(
             status_code=500, detail=f"Failed to verify S3 upload: {str(exc)}"
         ) from exc
     async with get_session() as session:
-        existing_task = await session.get(TaskModel, task_id)
+        existing_task = await session.get(
+            TaskModel,
+            task_id,
+            with_for_update=overwrite_current_version,
+        )
 
         if (
             existing_task is not None
@@ -356,13 +366,25 @@ async def complete_task_upload(
                 content_hash=content_hash,
             )
 
-        version_row = await session.get(TaskVersionModel, version_id)
+        version_row = await session.get(
+            TaskVersionModel,
+            version_id,
+            with_for_update=overwrite_current_version,
+        )
         if overwrite_current_version:
             if existing_task.current_version_id != version_id or version_row is None:
                 raise HTTPException(
                     status_code=409,
                     detail=(
                         "The selected task version changed during upload; "
+                        "start the in-place upload again"
+                    ),
+                )
+            if version_row.content_hash != overwrite_base_content_hash:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "The selected task version was overwritten during upload; "
                         "start the in-place upload again"
                     ),
                 )
