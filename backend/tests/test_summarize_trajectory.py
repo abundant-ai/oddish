@@ -100,6 +100,30 @@ def test_drop_inert_steps_returns_input_when_nothing_is_inert():
     assert drop_inert_steps(trajectory) is trajectory
 
 
+def test_drop_inert_steps_keeps_content_part_lists():
+    """``message``/``content`` are ``str | list[ContentPart]``.
+
+    Matches the frontend's ``hasContent``: a text part counts when non-blank,
+    and an image part counts on its own.
+    """
+    trajectory = {
+        "steps": [
+            {"step_id": 1, "message": [{"type": "text", "text": "looking at the pom"}]},
+            {"step_id": 2, "message": [{"type": "image", "source": {"data": "..."}}]},
+            {
+                "step_id": 3,
+                "message": [],
+                "observation": {
+                    "results": [{"content": [{"type": "text", "text": "BUILD FAILURE"}]}]
+                },
+            },
+            {"step_id": 4, "message": [{"type": "text", "text": "  "}]},
+            {"step_id": 5, "message": [], "observation": {"results": [{"content": []}]}},
+        ]
+    }
+    assert [s["step_id"] for s in drop_inert_steps(trajectory)["steps"]] == [1, 2, 3]
+
+
 # preprocess
 # ---------------------------------------------------------------------------
 

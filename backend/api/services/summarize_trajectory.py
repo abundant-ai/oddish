@@ -185,8 +185,24 @@ def _process_observation(obs: dict | None) -> dict | None:
     return new_obs
 
 
-def _has_text(value: object) -> bool:
-    return isinstance(value, str) and bool(value.strip())
+def _has_content(value: object) -> bool:
+    """True when a MessageContent / ObservationContent carries substance.
+
+    Both are ``str | list[ContentPart] | None``, so the list form has to be
+    walked -- a step whose only substance is a content-part list is real. Mirror
+    of the frontend's ``hasContent``: a text part counts when non-blank, any
+    other part (an image) counts on its own.
+    """
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list):
+        return any(
+            _has_content(part.get("text"))
+            if isinstance(part, dict) and part.get("type") == "text"
+            else bool(part)
+            for part in value
+        )
+    return bool(value)
 
 
 def _step_is_inert(step: dict) -> bool:
@@ -203,14 +219,16 @@ def _step_is_inert(step: dict) -> bool:
     """
     if step.get("tool_calls"):
         return False
-    if _has_text(step.get("message")) or _has_text(step.get("reasoning_content")):
+    if _has_content(step.get("message")):
+        return False
+    if _has_content(step.get("reasoning_content")):
         return False
 
     observation = step.get("observation")
     if isinstance(observation, dict):
         for result in observation.get("results") or []:
             if isinstance(result, dict):
-                if _has_text(result.get("content")):
+                if _has_content(result.get("content")):
                     return False
             elif result:
                 return False
