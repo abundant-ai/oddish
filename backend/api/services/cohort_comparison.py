@@ -1,7 +1,10 @@
 """Resolve, compare and cache the successful-vs-failing cohort comparison."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
+from collections import defaultdict
+from typing import MutableMapping
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -156,29 +159,92 @@ def validate_evidence(
     return {**output, "categories": kept_categories}, drops
 
 
-def is_stale(block_metadata: dict | None, *, current_hash: str, schema_version: int) -> bool:
-    """Freshness keys on the cohort hash AND the schema version.
+def is_stale(
+    block_metadata: dict | None,
+    *,
+    current_hash: str,
+    schema_version: int,
+    task_version_id: str,
+) -> bool:
+    """Freshness keys on the cohort hash, the schema version, AND the task
+    version.
 
     Keying on schema_version alone is the bug that left stored trajectory
-    summaries serving a retired taxonomy forever.
+    summaries serving a retired taxonomy forever. The task-version check is
+    belt-and-braces on top of the hash (trials belong to exactly one version,
+    so the hash already changes across versions) -- kept explicit rather than
+    relied on implicitly, since block rows are now looked up by the stable
+    ``task_id`` rather than the version id.
     """
     if not block_metadata:
         return True
     return (
         block_metadata.get("cohort_hash") != current_hash
         or block_metadata.get("schema_version") != schema_version
+        or block_metadata.get("task_version_id") != task_version_id
     )
+
+
+# Per-(task_id, task_version_id) locks so two concurrent misses don't both
+# fire an LLM call. Process-local, same tradeoff as summarize_trajectory's
+# _GEN_LOCKS: cross-container racing costs at most a few duplicate
+# generations, and the writes are idempotent.
+_GEN_LOCKS: MutableMapping[tuple[str, str], asyncio.Lock] = defaultdict(asyncio.Lock)
+
+
+async def _load_fresh_comparison(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    task_version_id: str,
+    current_hash: str,
+    schema_version: int,
+) -> dict | None:
+    """The latest fresh SUCCESS cohort_comparison block's output, or None.
+
+    Looked up by ``task_id`` (``TaskModel.id``), not the version id -- the
+    version is a freshness key inside ``block_metadata``, checked by
+    ``is_stale``, not a filter on the query itself.
+    """
+    row = (
+        await session.execute(
+            select(AnalyzerBlockModel)
+            .where(
+                AnalyzerBlockModel.task_id == task_id,
+                AnalyzerBlockModel.type == AnalyzerType.COHORT_COMPARISON.value,
+                AnalyzerBlockModel.status == JobStatus.SUCCESS,
+            )
+            .order_by(AnalyzerBlockModel.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if row is not None and not is_stale(
+        row.block_metadata,
+        current_hash=current_hash,
+        schema_version=schema_version,
+        task_version_id=task_version_id,
+    ):
+        return row.output
+    return None
 
 
 async def get_or_generate_comparison(
     session: AsyncSession,
     task_version_id: str,
     *,
+    task_id: str,
     task_name: str,
     refresh: bool = False,
     triggered_by_user_id: str | None = None,
 ) -> dict | None:
-    """Return the comparison, generating on miss. None when the gate fails."""
+    """Return the comparison, generating on miss. None when the gate fails.
+
+    ``task_id`` must be the real ``TaskModel.id``: ``AnalyzerBlock``'s cost
+    attribution (``_attribute_to_task``) looks it up against ``TaskModel``,
+    and a task-version id never matches there -- it would silently attribute
+    the spend to no org and no user. Version scoping instead lives in
+    ``block_metadata["task_version_id"]``, checked by ``is_stale``.
+    """
     from oddish.blocks.analyzer.analyzer_block import AnalyzerBlock, AnalyzerInput
     from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
 
@@ -200,47 +266,60 @@ async def get_or_generate_comparison(
     )
 
     if not refresh:
-        row = (
-            await session.execute(
-                select(AnalyzerBlockModel)
-                .where(
-                    AnalyzerBlockModel.task_id == task_version_id,
-                    AnalyzerBlockModel.type == AnalyzerType.COHORT_COMPARISON.value,
-                    AnalyzerBlockModel.status == JobStatus.SUCCESS,
-                )
-                .order_by(AnalyzerBlockModel.created_at.desc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-        if row is not None and not is_stale(
-            row.block_metadata, current_hash=current, schema_version=SCHEMA_VERSION
-        ):
-            return row.output
+        fresh = await _load_fresh_comparison(
+            session,
+            task_id=task_id,
+            task_version_id=task_version_id,
+            current_hash=current,
+            schema_version=SCHEMA_VERSION,
+        )
+        if fresh is not None:
+            return fresh
 
-    model = resolve_summary_model()
-    cb = CohortComparisonBlock(
-        CohortInput(task_name=task_name, successful=successful, failing=failing),
-        instructions_template=cp.load_cohort_prompt_template(),
-    )
-    block = AnalyzerBlock(
-        analyzer_type=AnalyzerType.COHORT_COMPARISON,
-        llm_client_type=LLMClientType.API,
-        input=AnalyzerInput(input={"task_version_id": task_version_id}),
-        prompt=cb.build_prompt(),
-        task_id=task_version_id,
-        block_metadata={"schema_version": SCHEMA_VERSION, "cohort_hash": current},
-        output_transform=cb.to_output,
-        model=model,
-        response_format=CohortComparisonOutput,
-        output_schema=CohortComparisonOutput.model_json_schema(),
-        triggered_by_user_id=triggered_by_user_id,
-    )
-    result = await block.run()
-    filtered, drops = validate_evidence(result.output, successful, failing)
-    filtered["dropped"] = drops
-    # Surfaced in the UI so a reader can see when the comparison rests on thin
-    # evidence, rather than the feature averaging over it silently.
-    filtered["thin_coverage"] = [
-        t["trial_id"] for t in (successful + failing) if t["coverage"] < 0.5
-    ]
-    return filtered
+    async with _GEN_LOCKS[(task_id, task_version_id)]:
+        # Re-check inside the lock -- another coroutine may have generated
+        # one while this one waited. A refresh deliberately skips this: it
+        # was explicitly asked for a new comparison, and the one waiting in
+        # front of it may be the stale one it wants replaced.
+        if not refresh:
+            fresh = await _load_fresh_comparison(
+                session,
+                task_id=task_id,
+                task_version_id=task_version_id,
+                current_hash=current,
+                schema_version=SCHEMA_VERSION,
+            )
+            if fresh is not None:
+                return fresh
+
+        model = resolve_summary_model()
+        cb = CohortComparisonBlock(
+            CohortInput(task_name=task_name, successful=successful, failing=failing),
+            instructions_template=cp.load_cohort_prompt_template(),
+        )
+        block = AnalyzerBlock(
+            analyzer_type=AnalyzerType.COHORT_COMPARISON,
+            llm_client_type=LLMClientType.API,
+            input=AnalyzerInput(input={"task_version_id": task_version_id}),
+            prompt=cb.build_prompt(),
+            task_id=task_id,
+            block_metadata={
+                "schema_version": SCHEMA_VERSION,
+                "cohort_hash": current,
+                "task_version_id": task_version_id,
+            },
+            output_transform=cb.to_output,
+            model=model,
+            response_format=CohortComparisonOutput,
+            output_schema=CohortComparisonOutput.model_json_schema(),
+            triggered_by_user_id=triggered_by_user_id,
+        )
+        result = await block.run()
+        filtered, drops = validate_evidence(result.output, successful, failing)
+        filtered["dropped"] = drops
+        # Surfaced in the UI so a reader can see when the comparison rests on
+        # thin evidence, rather than the feature averaging over it silently.
+        filtered["thin_coverage"] = [
+            t["trial_id"] for t in (successful + failing) if t["coverage"] < 0.5
+        ]
+        return filtered

@@ -1608,6 +1608,7 @@ async def get_task_cohort_comparison(
         result = await get_or_generate_comparison(
             session,
             task.current_version_id,
+            task_id=task.id,
             task_name=task.name,
             refresh=refresh,
             triggered_by_user_id=auth.user_id,
