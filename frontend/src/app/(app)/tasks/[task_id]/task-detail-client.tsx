@@ -47,12 +47,13 @@ import {
   STATUS_CONFIG,
 } from "@/lib/status-config";
 import { summarizeTrials, type TrialAggregate } from "@/lib/trial-aggregation";
-import type {
-  Task,
-  TaskDetailResponse,
-  TaskVersionSummary,
-  Trial,
-} from "@/lib/types";
+import {
+  isBrowseTaskDetail,
+  taskDetailKey,
+  taskDetailValue,
+  type TaskDetailResource,
+} from "@/lib/task-detail-resource";
+import type { Task, TaskVersionSummary, Trial } from "@/lib/types";
 import { formatRelativeTime, prBadge, taskPrUrl } from "@/lib/utils";
 import {
   formatLineRange,
@@ -673,34 +674,34 @@ type DrawerState = {
 
 interface TaskDetailClientProps {
   taskId: string;
-  initialDetail?: TaskDetailResponse | null;
   initialVersionId?: string | null;
 }
 
 export function TaskDetailClient({
   taskId,
-  initialDetail,
   initialVersionId,
 }: TaskDetailClientProps) {
-  const swrKey = `/api/tasks/${encodeURIComponent(taskId)}/detail`;
+  const swrKey = taskDetailKey(taskId);
 
-  const { data, error, isLoading, mutate } = useSWR<TaskDetailResponse>(
+  const { data, error, isLoading, mutate } = useSWR<TaskDetailResource>(
     swrKey,
     fetcher,
     {
-      refreshInterval: (latestDetail) =>
-        taskHasCancellableWork(latestDetail?.task) ? 30000 : 0,
+      refreshInterval: (latestResource) =>
+        taskHasCancellableWork(taskDetailValue(latestResource)?.task)
+          ? 30000
+          : 0,
       revalidateOnFocus: false,
-      revalidateOnMount: initialDetail == null,
+      revalidateOnMount: true,
       keepPreviousData: true,
-      fallbackData: initialDetail ?? undefined,
     }
   );
 
-  const detail = data ?? initialDetail ?? null;
+  const detail = taskDetailValue(data) ?? null;
+  const isBrowseSnapshot = isBrowseTaskDetail(data);
   const task = detail?.task ?? null;
   const versions = useMemo(() => detail?.versions ?? [], [detail]);
-  const totals = detail?.totals;
+  const totals = isBrowseSnapshot ? undefined : detail?.totals;
 
   const defaultVersionId = task?.current_version_id ?? versions[0]?.id ?? null;
 
@@ -762,21 +763,23 @@ export function TaskDetailClient({
       }
 
       await mutate(
-        (current) =>
-          current
+        (current) => {
+          const currentDetail = taskDetailValue(current);
+          return currentDetail
             ? {
-                ...current,
+                ...currentDetail,
                 task: {
-                  ...current.task,
+                  ...currentDetail.task,
                   current_version_id: versionId,
                   current_version: versionNumber,
                 },
-                versions: current.versions.map((candidate) => ({
+                versions: currentDetail.versions.map((candidate) => ({
                   ...candidate,
                   is_current: candidate.id === versionId,
                 })),
               }
-            : current,
+            : current;
+        },
         { revalidate: false }
       );
       writeVersionToQuery(versionId, versionId);
@@ -1193,11 +1196,13 @@ export function TaskDetailClient({
           <KpiTile
             label="Total cost (all versions)"
             hint={
-              totals && totals.cost_trial_count > 0
-                ? `${totals.cost_trial_count} of ${totals.total_trials} trials priced`
-                : totals && totals.total_trials > 0
-                  ? `${totals.total_trials} trials, no cost data`
-                  : "no trials yet"
+              isBrowseSnapshot
+                ? "loading all versions"
+                : totals && totals.cost_trial_count > 0
+                  ? `${totals.cost_trial_count} of ${totals.total_trials} trials priced`
+                  : totals && totals.total_trials > 0
+                    ? `${totals.total_trials} trials, no cost data`
+                    : "no trials yet"
             }
           >
             <span className="flex items-baseline gap-1.5">
@@ -1223,11 +1228,13 @@ export function TaskDetailClient({
           <KpiTile
             label="Billed spend"
             hint={
-              totals && totals.billed_trial_count > 0
-                ? `${totals.billed_trial_count} billed trial${
-                    totals.billed_trial_count === 1 ? "" : "s"
-                  }`
-                : "no billed trials"
+              isBrowseSnapshot
+                ? "loading all versions"
+                : totals && totals.billed_trial_count > 0
+                  ? `${totals.billed_trial_count} billed trial${
+                      totals.billed_trial_count === 1 ? "" : "s"
+                    }`
+                  : "no billed trials"
             }
           >
             <CostBadge
@@ -1366,15 +1373,17 @@ export function TaskDetailClient({
           ) : null}
         </div>
 
-        <TaskVerdictBadge
-          task={task}
-          variant="inline"
-          onRunJudge={handleRunJudge}
-          onCancelJudge={handleCancelJudge}
-          isRunning={isRunningJudge}
-          isCancelling={isCancellingJudge}
-          error={judgeError}
-        />
+        {!isBrowseSnapshot ? (
+          <TaskVerdictBadge
+            task={task}
+            variant="inline"
+            onRunJudge={handleRunJudge}
+            onCancelJudge={handleCancelJudge}
+            isRunning={isRunningJudge}
+            isCancelling={isCancellingJudge}
+            error={judgeError}
+          />
+        ) : null}
 
         <div className="space-y-3">
           <div className="flex items-baseline justify-between">
@@ -1426,7 +1435,7 @@ export function TaskDetailClient({
                 // no header, so none of the task-driven header UI appears.
                 task={task}
                 staticChecksTaskId={task.id}
-                taskDetail={detail}
+                taskDetail={data}
                 onOpenTrial={handleOpenTrialFromOverview}
                 filesUrl={`/api/tasks/${task.id}/files`}
                 loadFilesLazily
@@ -1445,7 +1454,7 @@ export function TaskDetailClient({
                 onClose={() => setDrawer(null)}
                 taskId={task.id}
                 task={task}
-                taskDetail={detail}
+                taskDetail={data}
                 loadFilesLazily
                 taskVersion={selectedVersion?.version}
                 onOpenTrial={handleOpenTrialFromOverview}
