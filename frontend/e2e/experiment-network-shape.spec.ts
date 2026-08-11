@@ -50,10 +50,9 @@ const TASK_SHELLS_RE = /\/api\/experiments\/[^/]+\/task-shells/;
 const TRIAL_DETAIL_RE = /\/api\/trials\/[^/?]+(\?.*)?$/;
 const TASK_FILES_RE = /\/api\/tasks\/[^/]+\/files\?/;
 const TASK_FILES_STREAM_RE = /\/api\/tasks\/[^/]+\/files\?[^#]*\bstream=1\b/;
-// Requests with stream=1 return every file's contents. Plain listings are
-// small and are allowed at any time; for example, the verifier badge
-// reads one when a trial opens. Only the stream form has to wait until a
-// file view is on screen.
+// Requests with stream=1 return every file's contents. The visible task pane
+// may request its plain tree, but trial-file requests wait for the Files or
+// Artifacts tab (covered strictly by critical-react-subtree.spec.ts).
 const ANY_FILES_STREAM_RE = /\/files\?[^#]*\bstream=1\b/;
 const TRIAL_FILES_STREAM_RE = /\/api\/trials\/[^/]+\/files\?[^#]*\bstream=1\b/;
 

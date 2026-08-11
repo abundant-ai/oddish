@@ -57,6 +57,9 @@ jobs:
       - name: Sync backend dependencies
         run: uv sync --frozen
 
+      - name: Backfill historical verifier summaries
+        run: uv run modal run ops_backfill_verifier_summaries.py --apply
+
       - name: Deploy Modal backend
         run: uv run modal deploy deploy.py
 

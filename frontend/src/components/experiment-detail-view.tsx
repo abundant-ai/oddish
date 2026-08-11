@@ -48,7 +48,6 @@ import {
   type ExperimentAgentSummary,
 } from "@/lib/experiment-agent-grouping";
 import { resolveExperimentTaskVersion } from "@/lib/experiment-task-version";
-import { useTrial } from "@/lib/use-trial";
 import {
   formatLineRange,
   parseLineRange,
@@ -980,19 +979,6 @@ export function ExperimentDetailView({
     }
     lastDrawerTaskIdRef.current = taskId;
   }, [drawerState?.task.id, handleTaskPaneFileChange]);
-  // The grid rows only contain trimmed-down trial data. This fetches the
-  // full record for the trial that is open in the drawer. The drawer
-  // shows the trimmed row until the full record arrives, and keeps
-  // showing it if the fetch fails. TrialAnalysisCard calls useTrial with
-  // the same id, so opening a trial produces one request instead of two.
-  // The public share page passes loadFullTrialOnOpen as false, so it
-  // never fetches.
-  const openTrialId =
-    drawerState?.mode === "trial" ? (drawerState.trial?.id ?? null) : null;
-  const { data: fullTrial } = useTrial(
-    loadFullTrialOnOpen ? openTrialId : null,
-    { apiBaseUrl }
-  );
   // Probe cells open main's sliding ProbeDetailPanel (kept from origin/main).
   // On the slim experiment path the grid has no probe trials to click, so this
   // stays dormant until probes are fed to that path -- the code is retained so
@@ -1809,7 +1795,7 @@ export function ExperimentDetailView({
               <TrialDetailPanel
                 isOpen={true}
                 onClose={closeDrawer}
-                trial={fullTrial ?? drawerState.trial}
+                trial={drawerState.trial}
                 task={drawerState.task}
                 orderedTrials={drawerState.orderedTrials}
                 trialIndex={drawerState.trialIndex}
@@ -1820,6 +1806,7 @@ export function ExperimentDetailView({
                 onDelete={onTrialDelete}
                 allowRetry={allowRetry}
                 showAnalysis={showAnalysis}
+                revalidateTrial={loadFullTrialOnOpen}
                 allowDelete={Boolean(onTrialDelete)}
                 apiBaseUrl={apiBaseUrl}
                 contentOnly={true}
