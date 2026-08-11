@@ -34,12 +34,13 @@ import type {
   FinalMetrics,
   MessageContent,
   ObservationContent,
-  ContentPart,
 } from "@/lib/types";
 import {
+  contentText,
   isEmptyStep,
   phaseColorVars,
   stepDurationsMs,
+  stepPreview,
 } from "@/lib/trajectory-metrics";
 import {
   groupStatsLabel,
@@ -82,38 +83,13 @@ interface ImageError {
   message: string;
 }
 
-function getTextFromContent(
-  content: MessageContent | ObservationContent
-): string {
-  if (content === null || content === undefined) {
-    return "";
-  }
-  if (typeof content === "string") {
-    return content;
-  }
-
-  return content
-    .filter(
-      (part): part is ContentPart & { type: "text" } => part.type === "text"
-    )
-    .map((part) => part.text || "")
-    .join("\n");
-}
-
-function getFirstLine(
-  content: MessageContent | ObservationContent
-): string | null {
-  const text = getTextFromContent(content);
-  return text?.split("\n")[0] || null;
-}
-
 /**
  * Collect all human-readable text from a step (message, reasoning, tool call
  * names + arguments, and observations) into a single lower-cased string for
  * keyword matching.
  */
 function getStepSearchText(step: TrajectoryStep): string {
-  const parts: string[] = [getTextFromContent(step.message)];
+  const parts: string[] = [contentText(step.message)];
 
   if (step.reasoning_content) {
     parts.push(step.reasoning_content);
@@ -132,7 +108,7 @@ function getStepSearchText(step: TrajectoryStep): string {
 
   if (step.observation) {
     for (const result of step.observation.results) {
-      parts.push(getTextFromContent(result.content));
+      parts.push(contentText(result.content));
     }
   }
 
@@ -563,7 +539,7 @@ function StepTrigger({
   const stepDuration =
     durationMs != null && step.timestamp ? formatMs(durationMs) : null;
   const sinceStart = formatStepDuration(startTimestamp, step.timestamp);
-  const firstLine = getFirstLine(step.message)?.slice(0, 60) || null;
+  const firstLine = stepPreview(step)?.slice(0, 60) || null;
 
   return (
     <StepHeader
@@ -659,7 +635,7 @@ function StepContent({
           </h5>
           <div className="space-y-2">
             {step.observation.results.map((result, idx) => {
-              const text = getTextFromContent(result.content);
+              const text = contentText(result.content);
               const hasMultimodalContent =
                 !!result.content &&
                 typeof result.content !== "string" &&
