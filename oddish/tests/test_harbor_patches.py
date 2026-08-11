@@ -15,7 +15,9 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
+from harbor import Job
 from harbor.agents.factory import AgentFactory
+from harbor.environments.lifecycle_timing import timed_environment_subphase
 from harbor.models.task.config import TaskConfig as HarborTaskConfig
 from harbor.models.trial.config import AgentConfig, TrialConfig
 from harbor.models.trial.config import TaskConfig as TrialTaskConfig
@@ -30,6 +32,11 @@ harbor_entry = importlib.import_module("oddish.workers.harbor._entry")
 
 RegistryCredential = _registry_auth.RegistryCredential
 current_registry_credentials = _registry_auth.current_registry_credentials
+
+
+def test_pinned_harbor_includes_ec2_lifecycle_contract():
+    assert callable(Job.on_environment_provisioned)
+    assert callable(timed_environment_subphase)
 
 
 def test_runtime_allowed_hosts_are_consumed_but_never_serialized(tmp_path):

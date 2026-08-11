@@ -13,10 +13,14 @@ from harbor.models.environment_type import EnvironmentType
 from oddish.runtime.ec2_policy import (
     AWS_ACCOUNT_ID_TAG_KEY,
     DEPLOYMENT_TAG_KEY,
+    LAUNCH_TOKEN_TAG_KEY,
     MANAGED_TAG_KEY,
+    SANDBOX_RUN_ID_TAG_KEY,
     TRIAL_ID_TAG_KEY,
+    WORKER_ATTEMPT_TAG_KEY,
     WORKER_JOB_ID_TAG_KEY,
 )
+from oddish.runtime.sandbox_lifecycle import SandboxLaunchContext
 from oddish.workers.harbor import runner as harbor_runner
 
 
@@ -76,6 +80,9 @@ def _capture_resolved_config(
             async def create(cls, config):
                 return cls(config)
 
+            def on_environment_provisioned(self, callback):
+                self.provisioned_callback = callback
+
             async def run(self):
                 self.job_dir.mkdir(parents=True, exist_ok=True)
                 (self.job_dir / "result.json").write_text("{}\n")
@@ -120,6 +127,20 @@ def _capture_resolved_config(
             trial_id="trial-123",
             worker_job_id="job-456",
             harbor_config=harbor_config,
+            sandbox_launch=(
+                SandboxLaunchContext(
+                    sandbox_run_id="sandbox-run-789",
+                    worker_job_id="job-456",
+                    worker_job_attempt=1,
+                    trial_id="trial-123",
+                    launch_token="launch-token-abc",
+                    deployment="oddish-test",
+                    aws_account_id="123456789012",
+                    region="us-east-1",
+                )
+                if environment == EnvironmentType.EC2
+                else None
+            ),
         )
     )
     key_path = getattr(backend, "key_path", None)
@@ -193,6 +214,9 @@ def test_ec2_normal_and_ephemeral_receive_identical_resolved_config_and_tags(
         AWS_ACCOUNT_ID_TAG_KEY: "123456789012",
         TRIAL_ID_TAG_KEY: "trial-123",
         WORKER_JOB_ID_TAG_KEY: "job-456",
+        SANDBOX_RUN_ID_TAG_KEY: "sandbox-run-789",
+        WORKER_ATTEMPT_TAG_KEY: "1",
+        LAUNCH_TOKEN_TAG_KEY: "launch-token-abc",
     }
     assert normal_key is not None and not normal_key.exists()
     assert ephemeral_key is not None and not ephemeral_key.exists()
