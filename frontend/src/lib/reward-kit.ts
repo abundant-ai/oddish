@@ -259,8 +259,7 @@ export function parseRewardDetailsDocument(
     const entries = Array.isArray(raw) ? raw : [raw];
     for (const entry of entries) {
       const dimension = parseDimensionEntry(name, entry);
-      if (dimension === null) return null;
-      dimensions.push(dimension);
+      if (dimension) dimensions.push(dimension);
     }
   }
   if (dimensions.length === 0) return null;
