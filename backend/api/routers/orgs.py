@@ -39,6 +39,7 @@ from auth import (
 from auth.verification import invalidate_cached_clerk_auth
 from pg_errors import is_undefined_table_error
 from oddish.config import QuotaMode, settings
+from oddish.timing import RequestTimedAsyncClient
 from models import (
     OrganizationModel,
     OrgQuotaModel,
@@ -162,7 +163,7 @@ async def _create_clerk_invitation(
     payload = {"email_address": email, "role": _clerk_invite_role(role)}
 
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with RequestTimedAsyncClient(timeout=10) as client:
             response = await client.post(url, headers=headers, json=payload)
             response.raise_for_status()
             return response.json()
@@ -658,7 +659,7 @@ async def _delete_clerk_user(clerk_user_id: str) -> None:
     headers = {"Authorization": f"Bearer {CLERK_SECRET_KEY}"}
 
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with RequestTimedAsyncClient(timeout=10) as client:
             response = await client.delete(url, headers=headers)
             if response.status_code == 404:
                 return
@@ -712,7 +713,7 @@ async def _clerk_user_exists(clerk_user_id: str) -> bool | None:
     headers = {"Authorization": f"Bearer {CLERK_SECRET_KEY}"}
 
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with RequestTimedAsyncClient(timeout=10) as client:
             response = await client.get(url, headers=headers)
         if response.status_code == 404:
             return False
