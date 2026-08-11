@@ -985,6 +985,11 @@ class TrialModel(TimestampedMixin, Base):
 
     billed_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
+    # Stored per trial because later sweeps may append through a different key.
+    api_key_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
+
     # Idempotency key for preventing duplicate processing of retried jobs
     idempotency_key: Mapped[str | None] = mapped_column(
         String(64), unique=True, nullable=True, index=True
@@ -1913,6 +1918,10 @@ class APIKeyModel(TimestampedMixin, Base):
 
     created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_by_role: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    # Optional rolling-24h trial-spend ceiling for this credential. User and
+    # organization quotas still apply; the most restrictive budget wins.
+    limit_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
 
     # Status and expiry
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

@@ -543,6 +543,42 @@ async def test_shadow_mode_does_not_cancel(session, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_api_key_scope_wins_before_user_quota(monkeypatch):
+    async def locked(*_args):
+        return True
+
+    async def no_org_limit(*_args):
+        return None
+
+    async def key_limit(*_args):
+        return Decimal("0.30")
+
+    async def key_used(*_args):
+        return Decimal("0.30")
+
+    async def no_reservation(*_args):
+        return Decimal(0)
+
+    async def unexpected_user_check(*_args):
+        raise AssertionError("key quota should be selected before user quota")
+
+    monkeypatch.setattr(quota_enforcement, "try_acquire_quota_locks", locked)
+    monkeypatch.setattr(quota_enforcement, "get_effective_org_limit", no_org_limit)
+    monkeypatch.setattr(quota_enforcement, "get_api_key_limit", key_limit)
+    monkeypatch.setattr(quota_enforcement, "sum_api_key_cost_usd", key_used)
+    monkeypatch.setattr(
+        quota_enforcement, "api_key_inflight_reserved_usd", no_reservation
+    )
+    monkeypatch.setattr(quota_enforcement, "get_effective_limit", unexpected_user_check)
+
+    scope = await quota_enforcement._quota_scope_reached(
+        object(), "org-1", "user-1", "key-1"
+    )
+
+    assert scope == "api_key"
+
+
+@pytest.mark.asyncio
 async def test_enforcement_terminates_callers_modal_worker_last(monkeypatch):
     @asynccontextmanager
     async def fake_get_session():

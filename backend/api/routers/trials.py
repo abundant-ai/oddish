@@ -219,6 +219,7 @@ async def retry_trial(
             session,
             trial_id=trial_id,
             org_id=auth.org_id,
+            api_key_id=auth.api_key_id,
             registry_auth=(payload.registry_auth if payload else None),
             gate_baselines=(payload.gate_baselines if payload else True),
         )

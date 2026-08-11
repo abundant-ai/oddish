@@ -153,17 +153,20 @@ High-level flow:
    snapshots without concatenating stale content.
    Each persisted cost checkpoint re-evaluates enforced quotas. Reaching a
    payer's rolling-24h cap cancels every quota-counted nonterminal trial billed
-   to that payer; reaching the org's monthly cap cancels every quota-counted
-   nonterminal trial in the org. Final result settlement performs the same
-   check for agents without live usage. Cancellation retires queued, running,
-   blocked, and retrying worker jobs in the database before terminating remote
-   handles; a task is failed only when no other live trial remains. If quota
-   cancellation interrupts a replacement QA pass, the last successful verdict
-   is restored through `cancel_verdict`; a terminal QA failure instead clears
-   that preserved payload through `fail_verdict`. All task verdict-column
-   mutations go through `oddish.core.verdict_state`: a published payload may
-   coexist with QUEUED/RUNNING while its replacement is active, but it must
-   return to SUCCESS if that pass is abandoned. The
+   to that payer; reaching an API key's optional rolling-24h `limit_usd`
+   cancels nonterminal trials launched through that key; reaching the org's
+   monthly cap cancels every quota-counted nonterminal trial in the org.
+   `trials.api_key_id` records the exact submitting credential, so appends made
+   with different keys stay in the correct budget. Final result settlement
+   performs the same check for agents without live usage. Cancellation retires
+   queued, running, blocked, and retrying worker jobs in the database before
+   terminating remote handles; a task is failed only when no other live trial
+   remains. If quota cancellation interrupts a replacement QA pass, the last
+   successful verdict is restored through `cancel_verdict`; a terminal QA
+   failure instead clears that preserved payload through `fail_verdict`. All
+   task verdict-column mutations go through `oddish.core.verdict_state`: a
+   published payload may coexist with QUEUED/RUNNING while its replacement is
+   active, but it must return to SUCCESS if that pass is abandoned. The
    `ck_tasks_published_verdict_status` database constraint rejects a published
    payload with a missing or FAILED status.
 6. Trial completion persists queryable execution metrics on the trial row:
@@ -749,6 +752,13 @@ blocked from broader org mutations such
 as tagging, collections, documents, skills, and GitHub webhook updates. The
 creator role is stamped on the API key at mint time so later role changes or
 deleted creator rows do not broaden a member-created key.
+
+`POST /api-keys` accepts an optional positive `limit_usd`, and
+`PATCH /api-keys/{key_id}` sets or clears it. The limit covers settled and
+reserved trial spend over the rolling 24-hour window and is additive with the
+creator's user quota and the org monthly budget (the tightest limit wins).
+Members may edit keys they created; admins may edit any non-internal key in the
+active org. A null limit means no key-specific cap.
 
 If a Clerk JWT arrives without `org_id`, the backend tries to resolve a single existing org membership, or provisions a personal org.
 

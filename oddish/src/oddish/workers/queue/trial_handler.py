@@ -178,6 +178,7 @@ class PreparedTrialRun:
     # experiment owner. None means BYOK never applies.
     created_by_user_id: str | None = None
     billed_user_id: str | None = None
+    api_key_id: str | None = None
     trial_attempt: int = 1
 
 
@@ -592,6 +593,7 @@ async def _prepare_trial_run(
             task_tags=task_tags,
             org_id=trial.org_id,
             billed_user_id=trial.billed_user_id,
+            api_key_id=trial.api_key_id,
             trial_attempt=trial.attempts,
             created_by_user_id=(
                 (task.created_by_user_id if task else None) or experiment_owner_user_id
@@ -973,6 +975,7 @@ async def _finish_trial_settlement(
     org_id: str | None,
     billed_user_id: str | None,
     run_post_trial_hooks: bool,
+    api_key_id: str | None = None,
 ) -> None:
     async def finish() -> None:
         from oddish.core.quota_enforcement import enforce_trial_quotas_until_checked
@@ -984,6 +987,7 @@ async def _finish_trial_settlement(
         await enforce_trial_quotas_until_checked(
             org_id=org_id,
             billed_user_id=billed_user_id,
+            api_key_id=api_key_id,
             caller_trial_id=trial_id,
             after_check=after_check,
         )
@@ -1189,6 +1193,7 @@ async def _handle_harbor_event(
                     trial.model,
                     trial.org_id,
                     trial.billed_user_id,
+                    trial.api_key_id,
                 )
                 console.print(f"[cyan]Trial {trial_id} agent started[/cyan]")
             elif event == TrialEvent.VERIFICATION_START:
@@ -1290,6 +1295,7 @@ async def _handle_harbor_event(
                 model=live_tail_spawn[2],
                 org_id=live_tail_spawn[3],
                 billed_user_id=live_tail_spawn[4],
+                api_key_id=live_tail_spawn[5],
             )
         elif event in (TrialEvent.AGENT_END, TrialEvent.END, TrialEvent.CANCEL):
             live_tail.request_stop(trial_id)
@@ -1602,6 +1608,7 @@ async def run_trial_job(
                 trial_id=trial_id,
                 org_id=prepared_trial.org_id,
                 billed_user_id=prepared_trial.billed_user_id,
+                api_key_id=prepared_trial.api_key_id,
                 run_post_trial_hooks=run_post_trial_hooks,
             )
             if temp_task_dir and temp_task_dir.exists():
@@ -1790,6 +1797,7 @@ async def run_trial_job(
             trial_id=trial_id,
             org_id=prepared_trial.org_id,
             billed_user_id=prepared_trial.billed_user_id,
+            api_key_id=prepared_trial.api_key_id,
             run_post_trial_hooks=run_post_trial_hooks,
         )
     finally:

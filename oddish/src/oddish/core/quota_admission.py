@@ -7,12 +7,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import QuotaMode, settings
 from oddish.core.quotas import (
+    api_key_inflight_reserved_usd,
+    get_api_key_limit,
     get_effective_limit,
     get_effective_org_limit,
     inflight_reserved_usd,
     org_inflight_reserved_usd,
     quota_window_start,
     start_of_month_utc,
+    sum_api_key_cost_usd,
     sum_cost_usd,
     sum_org_cost_usd,
     unattributed_cost_usd,
@@ -51,6 +54,24 @@ class OrgQuotaExceeded(HTTPException):
                     f"reserved of ${float(limit_usd):.2f} (monthly). The budget "
                     "resets on the 1st (UTC). Ask an org admin to raise the "
                     "org quota."
+                ),
+                "used_usd": float(used_usd),
+                "reserved_usd": float(reserved_usd),
+                "limit_usd": float(limit_usd),
+            },
+        )
+
+
+class APIKeyQuotaExceeded(HTTPException):
+    def __init__(self, used_usd, reserved_usd, limit_usd) -> None:
+        super().__init__(
+            status_code=402,
+            detail={
+                "message": (
+                    f"This API key is over its 24h budget: used "
+                    f"${float(used_usd):.2f} + ${float(reserved_usd):.2f} "
+                    f"reserved of ${float(limit_usd):.2f}. Edit the key's "
+                    "limit in Oddish settings or wait for spend to age out."
                 ),
                 "used_usd": float(used_usd),
                 "reserved_usd": float(reserved_usd),
@@ -180,6 +201,34 @@ async def _check_org_quota(
     )
 
 
+async def _check_api_key_quota(
+    session: AsyncSession,
+    org_id: str,
+    api_key_id: str,
+    count: int,
+    *,
+    enforce: bool,
+) -> None:
+    limit = await get_api_key_limit(session, org_id, api_key_id)
+    if limit is None:
+        return
+    used = await sum_api_key_cost_usd(session, org_id, api_key_id, quota_window_start())
+    reserved = (
+        await api_key_inflight_reserved_usd(session, org_id, api_key_id)
+        + count * settings.pending_trial_reservation_usd
+    )
+    _raise_or_log_over_budget(
+        org_id,
+        None,
+        used,
+        reserved,
+        limit,
+        enforce=enforce,
+        exc_type=APIKeyQuotaExceeded,
+        reason="api_key_over_budget",
+    )
+
+
 async def _check_unattributed_quota(
     session: AsyncSession,
     org_id: str,
@@ -231,6 +280,7 @@ async def admit_trials(
     billed_user_id: str | None,
     count: int,
     *,
+    api_key_id: str | None = None,
     allow_unattributed: bool = False,
 ) -> None:
     """Reject over-budget submissions (402/403).
@@ -256,5 +306,8 @@ async def admit_trials(
             await _check_unattributed_quota(session, org_id, count, enforce=enforce)
     else:
         await _check_user_quota(session, org_id, billed_user_id, count, enforce=enforce)
+
+    if api_key_id is not None:
+        await _check_api_key_quota(session, org_id, api_key_id, count, enforce=enforce)
 
     await _check_org_quota(session, org_id, billed_user_id, count, enforce=enforce)

@@ -215,6 +215,7 @@ async def _finalize_sweep(
     is_append: bool,
     org_id: str | None,
     billed_user_id: str | None,
+    api_key_id: str | None,
     registry_auth,
     reservation: Reservation | None,
     idempotency_store: IdempotencyStore | None,
@@ -245,6 +246,7 @@ async def _finalize_sweep(
             experiment=experiment,
             org_id=org_id,
             billed_user_id=billed_user_id,
+            api_key_id=api_key_id,
             registry_auth=registry_auth,
         )
     if reservation is not None and idempotency_store is not None and org_id is not None:
@@ -396,6 +398,7 @@ async def create_task_sweep_core(
     submission: TaskSweepSubmission,
     org_id: str | None = None,
     billed_user_id: str | None = None,
+    api_key_id: str | None = None,
     default_environment: EnvironmentType | None = None,
     allowed_environments: Collection[EnvironmentType] | None = None,
     idempotency_key: str | None = None,
@@ -612,7 +615,13 @@ async def create_task_sweep_core(
             allowed_environments=allowed_environments,
         )
         # Authoritative count only (no-op when the locked plan is empty).
-        await admit_trials(session, org_id, billed_user_id, count=len(trials))
+        await admit_trials(
+            session,
+            org_id,
+            billed_user_id,
+            count=len(trials),
+            api_key_id=api_key_id,
+        )
 
         append_submission = submission.model_copy(
             update={
@@ -635,6 +644,7 @@ async def create_task_sweep_core(
                 submission=expanded,
                 experiment_id=new_experiment_id,
                 billed_user_id=billed_user_id,
+                api_key_id=api_key_id,
                 supersede_failed_trial_ids=supersede_by_spec,
             )
         except TrialSupersedeConflict as exc:
@@ -648,6 +658,7 @@ async def create_task_sweep_core(
             is_append=True,
             org_id=org_id,
             billed_user_id=billed_user_id,
+            api_key_id=api_key_id,
             registry_auth=submission.registry_auth,
             reservation=reservation,
             idempotency_store=idempotency_store,
@@ -675,7 +686,13 @@ async def create_task_sweep_core(
         submission, task_path=task_path, trials=trials
     )
 
-    await admit_trials(session, org_id, billed_user_id, count=len(expanded.trials))
+    await admit_trials(
+        session,
+        org_id,
+        billed_user_id,
+        count=len(expanded.trials),
+        api_key_id=api_key_id,
+    )
 
     try:
         task = await create_task(
@@ -684,6 +701,7 @@ async def create_task_sweep_core(
             task_id=submission.task_id,
             org_id=org_id,
             billed_user_id=billed_user_id,
+            api_key_id=api_key_id,
         )
     except TaskTimeoutValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -708,6 +726,7 @@ async def create_task_sweep_core(
         is_append=False,
         org_id=org_id,
         billed_user_id=billed_user_id,
+        api_key_id=api_key_id,
         registry_auth=submission.registry_auth,
         reservation=reservation,
         idempotency_store=idempotency_store,
@@ -720,6 +739,7 @@ async def create_task_sweep_batch_core(
     *,
     submissions: Sequence[TaskSweepSubmission],
     org_id: str | None = None,
+    api_key_id: str | None = None,
     default_environment: EnvironmentType | None = None,
     allowed_environments: Collection[EnvironmentType] | None = None,
     prepare: (
@@ -795,6 +815,7 @@ async def create_task_sweep_batch_core(
                     submission=submission,
                     org_id=org_id,
                     billed_user_id=billed_user_ids[index],
+                    api_key_id=api_key_id,
                     default_environment=item_envs[index],
                     allowed_environments=allowed_environments,
                 )

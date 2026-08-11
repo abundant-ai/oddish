@@ -88,6 +88,26 @@ async def _assert_quota_schema_or_force_off() -> None:
             """,
         ),
         (
+            "trials.api_key_id",
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'trials'
+                  AND column_name = 'api_key_id'
+            )
+            """,
+        ),
+        (
+            "api_keys.limit_usd",
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'api_keys'
+                  AND column_name = 'limit_usd'
+            )
+            """,
+        ),
+        (
             "quotas",
             """
             SELECT EXISTS (

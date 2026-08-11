@@ -353,11 +353,13 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
             )
         ).scalar_one_or_none()
         if claimed_trial_id is not None:
-            org_id, billed_user_id = (
+            org_id, billed_user_id, api_key_id = (
                 await session.execute(
-                    select(TrialModel.org_id, TrialModel.billed_user_id).where(
-                        TrialModel.id == trial_id
-                    )
+                    select(
+                        TrialModel.org_id,
+                        TrialModel.billed_user_id,
+                        TrialModel.api_key_id,
+                    ).where(TrialModel.id == trial_id)
                 )
             ).one()
             # Local mode bypasses the unified dispatcher, so it must mirror the
@@ -478,6 +480,7 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
     await enforce_trial_quotas_until_checked(
         org_id=org_id,
         billed_user_id=billed_user_id,
+        api_key_id=api_key_id,
         caller_trial_id=trial_id,
         after_check=after_check,
         after_gate_release=after_gate_release,

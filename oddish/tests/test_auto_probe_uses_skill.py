@@ -47,7 +47,8 @@ async def test_auto_probe_admits_before_append(monkeypatch):
     async def fake_probed_count(_session, _org_id):
         return 0
 
-    async def fake_admit(_session, org_id, billed_user_id, count):
+    async def fake_admit(_session, org_id, billed_user_id, count, api_key_id=None):
+        assert api_key_id is None
         events.append(("admit", org_id, billed_user_id, count))
 
     async def fake_append(_session, *, billed_user_id, **_kwargs):
@@ -102,7 +103,8 @@ async def test_auto_probe_skips_append_when_admission_blocks(monkeypatch):
     async def fake_probed_count(_session, _org_id):
         return 0
 
-    async def fake_admit(_session, org_id, billed_user_id, count):
+    async def fake_admit(_session, org_id, billed_user_id, count, api_key_id=None):
+        assert api_key_id is None
         events.append(("admit", org_id, billed_user_id, count))
         raise HTTPException(status_code=402, detail="over budget")
 

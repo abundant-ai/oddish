@@ -362,6 +362,7 @@ async def retry_trial_core(
     *,
     trial_id: str,
     org_id: str | None = None,
+    api_key_id: str | None = None,
     registry_auth: list[RegistryAuth] | None = None,
     gate_baselines: bool = True,
 ) -> dict:
@@ -435,6 +436,7 @@ async def retry_trial_core(
         org_id,
         old_trial.billed_user_id,
         count=1,
+        api_key_id=api_key_id,
         allow_unattributed=True,
     )
 
@@ -450,6 +452,7 @@ async def retry_trial_core(
         experiment_id=old_trial.experiment_id,
         org_id=old_trial.org_id,
         billed_user_id=old_trial.billed_user_id,
+        api_key_id=api_key_id,
         agent=old_trial.agent,
         provider=old_trial.provider,
         queue_key=old_trial.queue_key,

@@ -59,9 +59,12 @@ async def test_guard_leaves_enforce_when_schema_ready_and_probes_all_objects(
 
     assert settings.quota_mode == QuotaMode.ENFORCE
     # One probe per object, so an incomplete schema can name what is absent.
-    assert session.scalar_calls == 4
+    assert session.scalar_calls == 6
     assert "table_name = 'trials'" in session.sql
     assert "column_name = 'billed_user_id'" in session.sql
+    assert "column_name = 'api_key_id'" in session.sql
+    assert "table_name = 'api_keys'" in session.sql
+    assert "column_name = 'limit_usd'" in session.sql
     assert "table_name = 'quotas'" in session.sql
     assert "table_name = 'quota_bumps'" in session.sql
     assert "table_name = 'org_quotas'" in session.sql

@@ -15,12 +15,15 @@ from oddish.core.cost_basis import (
 )
 from oddish.core.helpers import HarvestTerminationError, terminate_run_harvest
 from oddish.core.quotas import (
+    api_key_inflight_reserved_usd,
+    get_api_key_limit,
     get_effective_limit,
     get_effective_org_limit,
     inflight_reserved_usd,
     org_inflight_reserved_usd,
     quota_window_start,
     start_of_month_utc,
+    sum_api_key_cost_usd,
     sum_cost_usd,
     sum_org_cost_usd,
     try_acquire_quota_locks,
@@ -76,12 +79,13 @@ async def _quota_scope_reached(
     session: AsyncSession,
     org_id: str,
     billed_user_id: str | None,
+    api_key_id: str | None,
 ) -> str | None:
     # Non-blocking: many workers call enforcement on cost checkpoints. If
-    # another transaction already holds the org/user quota lock (an in-flight
-    # cancellation), raise instead of pile-waiting — and instead of returning
-    # None, which means under-quota.
-    if not await try_acquire_quota_locks(session, org_id, billed_user_id):
+    # another transaction already holds an org/user/key quota lock (an
+    # in-flight cancellation), raise instead of pile-waiting — and instead of
+    # returning None, which means under-quota.
+    if not await try_acquire_quota_locks(session, org_id, billed_user_id, api_key_id):
         raise QuotaLockBusy(
             f"quota lock busy for org_id={org_id} billed_user_id={billed_user_id}"
         )
@@ -91,6 +95,18 @@ async def _quota_scope_reached(
         org_reserved = await org_inflight_reserved_usd(session, org_id)
         if org_used + org_reserved >= org_limit:
             return "org"
+
+    if api_key_id is not None:
+        key_limit = await get_api_key_limit(session, org_id, api_key_id)
+        if key_limit is not None:
+            key_used = await sum_api_key_cost_usd(
+                session, org_id, api_key_id, quota_window_start()
+            )
+            key_reserved = await api_key_inflight_reserved_usd(
+                session, org_id, api_key_id
+            )
+            if key_used + key_reserved >= key_limit:
+                return "api_key"
 
     if billed_user_id is None:
         return None
@@ -104,7 +120,11 @@ async def _quota_scope_reached(
 
 
 def _active_trial_predicates(
-    org_id: str, billed_user_id: str | None, *, scope: str
+    org_id: str,
+    billed_user_id: str | None,
+    api_key_id: str | None,
+    *,
+    scope: str,
 ) -> list:
     predicates = [
         TrialModel.org_id == org_id,
@@ -116,6 +136,8 @@ def _active_trial_predicates(
     ]
     if scope == "user":
         predicates.append(TrialModel.billed_user_id == billed_user_id)
+    elif scope == "api_key":
+        predicates.append(TrialModel.api_key_id == api_key_id)
     return predicates
 
 
@@ -203,6 +225,7 @@ async def cancel_trials_if_quota_reached(
     *,
     org_id: str | None,
     billed_user_id: str | None,
+    api_key_id: str | None = None,
     caller_trial_id: str | None = None,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
@@ -216,18 +239,23 @@ async def cancel_trials_if_quota_reached(
         "affected_task_ids": [],
         "cancelled_trial_ids": [],
         "quota_billed_user_id": billed_user_id,
+        "quota_api_key_id": api_key_id,
     }
     if settings.quota_mode != QuotaMode.ENFORCE or org_id is None:
         return result
 
-    scope = await _quota_scope_reached(session, org_id, billed_user_id)
+    scope = await _quota_scope_reached(session, org_id, billed_user_id, api_key_id)
     if scope is None:
         return result
 
     task_ids = (
         await session.scalars(
             select(TrialModel.task_id)
-            .where(*_active_trial_predicates(org_id, billed_user_id, scope=scope))
+            .where(
+                *_active_trial_predicates(
+                    org_id, billed_user_id, api_key_id, scope=scope
+                )
+            )
             .distinct()
             .order_by(TrialModel.task_id)
             .execution_options(include_deleted=True)
@@ -244,7 +272,11 @@ async def cancel_trials_if_quota_reached(
     trials = (
         await session.scalars(
             select(TrialModel)
-            .where(*_active_trial_predicates(org_id, billed_user_id, scope=scope))
+            .where(
+                *_active_trial_predicates(
+                    org_id, billed_user_id, api_key_id, scope=scope
+                )
+            )
             .order_by(TrialModel.id)
             .with_for_update()
             .execution_options(include_deleted=True)
@@ -322,6 +354,7 @@ async def _reconcile_cancelled_tasks(
 
     scope = result["scope"]
     billed_user_id = result["quota_billed_user_id"]
+    api_key_id = result["quota_api_key_id"]
     preserved_task_ids = {
         trial.task_id
         for trial in trials
@@ -333,6 +366,10 @@ async def _reconcile_cancelled_tasks(
                 scope == "user"
                 and trial.billed_user_id is not None
                 and trial.billed_user_id != billed_user_id
+            )
+            or (
+                scope == "api_key"
+                and trial.api_key_id != api_key_id
             )
         )
     }
@@ -405,6 +442,7 @@ async def enforce_trial_quotas(
     *,
     org_id: str | None,
     billed_user_id: str | None,
+    api_key_id: str | None = None,
     caller_trial_id: str | None = None,
     after_check: Callable[[], Awaitable[None]] | None = None,
     after_gate_release: Callable[[list[str]], Awaitable[None]] | None = None,
@@ -415,6 +453,7 @@ async def enforce_trial_quotas(
                 session,
                 org_id=org_id,
                 billed_user_id=billed_user_id,
+                api_key_id=api_key_id,
                 caller_trial_id=caller_trial_id,
             )
     except QuotaLockBusy:
@@ -512,6 +551,7 @@ async def enforce_trial_quotas_until_checked(
     *,
     org_id: str | None,
     billed_user_id: str | None,
+    api_key_id: str | None = None,
     caller_trial_id: str | None = None,
     after_check: Callable[[], Awaitable[None]] | None = None,
     after_gate_release: Callable[[list[str]], Awaitable[None]] | None = None,
@@ -525,6 +565,7 @@ async def enforce_trial_quotas_until_checked(
         cancelled = await enforce_trial_quotas(
             org_id=org_id,
             billed_user_id=billed_user_id,
+            api_key_id=api_key_id,
             caller_trial_id=caller_trial_id,
             after_check=after_check,
             after_gate_release=after_gate_release,

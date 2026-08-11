@@ -527,7 +527,10 @@ async def test_cost_checkpoint_enforces_trial_quota(monkeypatch):
     patch_db(monkeypatch, price=0.25)
     calls = []
 
-    async def record_enforcement(*, org_id, billed_user_id, caller_trial_id):
+    async def record_enforcement(
+        *, org_id, billed_user_id, caller_trial_id, api_key_id=None
+    ):
+        assert api_key_id is None
         calls.append((org_id, billed_user_id, caller_trial_id))
         return 0
 

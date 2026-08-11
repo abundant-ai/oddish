@@ -49,6 +49,7 @@ import {
   Check,
   Copy,
   Key,
+  Pencil,
   Plus,
   Trash2,
   User as UserIcon,
@@ -192,6 +193,7 @@ interface APIKey {
   is_active: boolean;
   expires_at: string | null;
   last_used_at: string | null;
+  limit_usd: number | null;
   created_at: string;
 }
 
@@ -378,6 +380,7 @@ function CreateAPIKeyModal({
   const defaultScope = allowedScopes[0] ?? "tasks";
   const [scope, setScope] = useState(defaultScope);
   const [expiresInDays, setExpiresInDays] = useState("never");
+  const [limitUsd, setLimitUsd] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -401,6 +404,7 @@ function CreateAPIKeyModal({
           scope,
           expires_in_days:
             expiresInDays === "never" ? null : Number(expiresInDays),
+          limit_usd: limitUsd === "" ? null : limitUsd,
         }),
       });
 
@@ -415,6 +419,7 @@ function CreateAPIKeyModal({
       setName("");
       setScope(defaultScope);
       setExpiresInDays("never");
+      setLimitUsd("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create API key");
     } finally {
@@ -482,6 +487,26 @@ function CreateAPIKeyModal({
             </Select>
           </div>
 
+          <div className="space-y-1.5">
+            <Label htmlFor="api-key-limit">
+              24-hour spend limit (optional)
+            </Label>
+            <Input
+              id="api-key-limit"
+              type="number"
+              min="0.01"
+              max="99999999.99"
+              step="0.01"
+              value={limitUsd}
+              onChange={(e) => setLimitUsd(e.target.value)}
+              placeholder="USD; blank means no limit"
+            />
+            <p className="text-muted-foreground text-xs">
+              Applies to trial spend launched with this key. Your account and
+              workspace budgets still apply.
+            </p>
+          </div>
+
           {error && (
             <Alert variant="destructive">
               <AlertDescription>{error}</AlertDescription>
@@ -494,6 +519,91 @@ function CreateAPIKeyModal({
             </Button>
             <Button type="submit" disabled={isLoading || !name}>
               {isLoading ? "Creating…" : "Create key"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function EditAPIKeyLimitModal({
+  apiKey,
+  onClose,
+  onSaved,
+}: {
+  apiKey: APIKey | null;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [limitUsd, setLimitUsd] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setLimitUsd(apiKey?.limit_usd == null ? "" : String(apiKey.limit_usd));
+    setError(null);
+  }, [apiKey]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!apiKey) return;
+    setIsSaving(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/settings/api-keys/${apiKey.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          limit_usd: limitUsd === "" ? null : limitUsd,
+        }),
+      });
+      if (!res.ok) throw new Error("Failed to update API key limit");
+      await mutate(`/api/settings/api-keys`);
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update limit");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  return (
+    <Dialog open={Boolean(apiKey)} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Edit spend limit</DialogTitle>
+          <DialogDescription>
+            Set a rolling 24-hour trial-spend limit for {apiKey?.name}. Leave it
+            blank for no key-specific limit.
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="edit-api-key-limit">24-hour spend limit</Label>
+            <Input
+              id="edit-api-key-limit"
+              type="number"
+              min="0.01"
+              max="99999999.99"
+              step="0.01"
+              value={limitUsd}
+              onChange={(e) => setLimitUsd(e.target.value)}
+              placeholder="USD; blank means no limit"
+              autoFocus
+            />
+          </div>
+          {error ? (
+            <Alert variant="destructive">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          ) : null}
+          <DialogFooter>
+            <Button type="button" variant="ghost" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={isSaving}>
+              {isSaving ? "Saving…" : "Save limit"}
             </Button>
           </DialogFooter>
         </form>
@@ -558,6 +668,7 @@ function APIKeysPanel() {
   const [revoking, setRevoking] = useState<string | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<APIKey | null>(null);
   const [revokeError, setRevokeError] = useState<string | null>(null);
+  const [editTarget, setEditTarget] = useState<APIKey | null>(null);
   const [showAllKeys, setShowAllKeys] = useState(false);
 
   const {
@@ -750,24 +861,42 @@ function APIKeysPanel() {
                       {key.key_prefix}… · Last used{" "}
                       {formatDateTime(key.last_used_at)}
                     </p>
+                    <p className="text-muted-foreground mt-1 text-xs">
+                      {key.limit_usd == null
+                        ? "No key-specific spend limit"
+                        : `$${key.limit_usd.toFixed(2)} per 24h`}
+                    </p>
                   </div>
                   <div className="flex items-center justify-between gap-3 sm:justify-end">
                     <div className="text-muted-foreground text-xs sm:text-right">
                       <p>Created {formatDate(key.created_at)}</p>
                       <p>Expires {formatDate(key.expires_at)}</p>
                     </div>
-                    {canManageAPIKeys && key.is_active ? (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setRevokeTarget(key)}
-                        disabled={revoking === key.id}
-                        className="text-muted-foreground hover:text-destructive h-7 w-7 p-0"
-                        aria-label={`Revoke ${key.name}`}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </Button>
-                    ) : null}
+                    <div className="flex items-center gap-1">
+                      {canCreateAPIKeys && key.is_active ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setEditTarget(key)}
+                          className="text-muted-foreground h-7 w-7 p-0"
+                          aria-label={`Edit spend limit for ${key.name}`}
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </Button>
+                      ) : null}
+                      {canManageAPIKeys && key.is_active ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setRevokeTarget(key)}
+                          disabled={revoking === key.id}
+                          className="text-muted-foreground hover:text-destructive h-7 w-7 p-0"
+                          aria-label={`Revoke ${key.name}`}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      ) : null}
+                    </div>
                   </div>
                 </div>
               ))}
@@ -789,6 +918,12 @@ function APIKeysPanel() {
       {newKey && (
         <NewKeyDisplay apiKey={newKey} onClose={() => setNewKey(null)} />
       )}
+
+      <EditAPIKeyLimitModal
+        apiKey={editTarget}
+        onClose={() => setEditTarget(null)}
+        onSaved={() => setEditTarget(null)}
+      />
 
       <AlertDialog
         open={Boolean(revokeTarget)}
@@ -967,7 +1102,8 @@ const ALERT_TOGGLES: {
   {
     key: "expensive_trial_enabled",
     label: "Expensive trial",
-    description: "A trial finished within 24 hours costs more than your cutoff.",
+    description:
+      "A trial finished within 24 hours costs more than your cutoff.",
   },
   {
     key: "experiment_failed_enabled",
@@ -1004,7 +1140,7 @@ const ALERT_TOGGLES: {
 function NotificationsPanel() {
   const { data, mutate: mutatePrefs } = useSWR<AlertPrefs>(
     "/api/settings/notifications",
-    fetcher,
+    fetcher
   );
   const [draft, setDraft] = useState<Partial<AlertPrefs> | null>(null);
   const [saving, setSaving] = useState(false);
@@ -1029,7 +1165,7 @@ function NotificationsPanel() {
   const cutoffField = (
     key: "experiment_milestone_usd" | "trial_ping_usd",
     inherited: number,
-    label: string,
+    label: string
   ) => (
     <div className="space-y-1">
       <Label htmlFor={key} className="text-sm">
@@ -1117,12 +1253,12 @@ function NotificationsPanel() {
             {cutoffField(
               "experiment_milestone_usd",
               value.inherited_experiment_milestone_usd,
-              "Experiment milestone ($)",
+              "Experiment milestone ($)"
             )}
             {cutoffField(
               "trial_ping_usd",
               value.inherited_trial_ping_usd,
-              "Expensive-trial cutoff ($)",
+              "Expensive-trial cutoff ($)"
             )}
           </div>
         </div>
@@ -1198,9 +1334,7 @@ function DeleteAccountPanel() {
         window.location.assign("/");
       }
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Failed to delete account"
-      );
+      setError(err instanceof Error ? err.message : "Failed to delete account");
       setIsDeleting(false);
     }
   };
