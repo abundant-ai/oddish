@@ -25,7 +25,11 @@ from oddish.observability import configure_observability
 from oddish.dispatch.backends.docker import DockerPoolDispatcher
 from oddish.dispatch.backends.inprocess import InProcessDispatcher
 from oddish.dispatch.backends.k8s import K8sJobDispatcher
-from oddish.dispatch.cycle import run_dispatch_cycle, run_dispatch_loop
+from oddish.dispatch.cycle import (
+    load_sandbox_capacity_by_lane,
+    run_dispatch_cycle,
+    run_dispatch_loop,
+)
 from oddish.dispatch.ports import Dispatcher
 from oddish.workers.queue.worker_job_dispatcher import stamp_dispatch_stage
 
@@ -98,6 +102,7 @@ async def run_once(env: Mapping[str, str] = os.environ):
         max_workers=_max_workers(env),
         concurrency_limits_for=load_effective_model_concurrency_limits,
         on_stage=stamp_dispatch_stage,
+        capacity_by_lane=load_sandbox_capacity_by_lane,
     )
 
 
@@ -109,6 +114,7 @@ async def run_forever(env: Mapping[str, str] = os.environ) -> None:
         max_workers=_max_workers(env),
         concurrency_limits_for=load_effective_model_concurrency_limits,
         on_stage=stamp_dispatch_stage,
+        capacity_by_lane=load_sandbox_capacity_by_lane,
         fallback_interval=float(env.get("ODDISH_DISPATCH_FALLBACK_SECONDS", "20")),
     )
 

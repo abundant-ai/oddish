@@ -95,6 +95,46 @@ def _nonnegative_int(value: Any) -> int | None:
     return value
 
 
+def parse_ctrf_summary(
+    document: bytes | str, *, report_path: str
+) -> dict[str, Any] | None:
+    """Normalize one CTRF document into the summary stored on a trial row."""
+    size = len(document) if isinstance(document, bytes) else len(document.encode())
+    if size > VERIFIER_CTRF_MAX_BYTES:
+        return None
+    try:
+        payload = json.loads(document, parse_constant=_reject_nonfinite)
+    except (UnicodeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    results = payload.get("results")
+    if not isinstance(results, dict):
+        return None
+    summary = results.get("summary")
+    if not isinstance(summary, dict):
+        return None
+
+    counts: dict[str, int] = {}
+    for key in ("tests", "passed", "failed", "skipped", "pending", "other"):
+        value = _nonnegative_int(summary.get(key))
+        if value is None:
+            return None
+        counts[key] = value
+
+    compact: dict[str, Any] = {
+        "format": "ctrf",
+        **counts,
+        "report_path": report_path,
+    }
+    tool = results.get("tool")
+    if isinstance(tool, dict):
+        tool_name = tool.get("name")
+        if isinstance(tool_name, str) and tool_name.strip():
+            compact["tool"] = tool_name.strip()[:80]
+    return compact
+
+
 def extract_ctrf_summary(path: Path) -> dict[str, Any] | None:
     """Return a compact summary from the first valid ``verifier/ctrf.json``.
 
@@ -111,41 +151,16 @@ def extract_ctrf_summary(path: Path) -> dict[str, Any] | None:
         return None
     for report_path in sorted(path.rglob("verifier/ctrf.json")):
         try:
-            if report_path.stat().st_size > VERIFIER_CTRF_MAX_BYTES:
-                continue
-            payload = json.loads(
-                report_path.read_text(),
-                parse_constant=_reject_nonfinite,
+            with report_path.open("rb") as report:
+                document = report.read(VERIFIER_CTRF_MAX_BYTES + 1)
+            summary = parse_ctrf_summary(
+                document,
+                report_path=report_path.relative_to(path).as_posix(),
             )
-        except (OSError, ValueError):
+        except OSError:
             continue
-        if not isinstance(payload, dict):
-            continue
-        results = payload.get("results")
-        if not isinstance(results, dict):
-            continue
-        summary = results.get("summary")
-        if not isinstance(summary, dict):
-            continue
-
-        counts: dict[str, int] = {}
-        for key in ("tests", "passed", "failed", "skipped", "pending", "other"):
-            value = _nonnegative_int(summary.get(key))
-            if value is None:
-                break
-            counts[key] = value
-        else:
-            compact: dict[str, Any] = {
-                "format": "ctrf",
-                **counts,
-                "report_path": report_path.relative_to(path).as_posix(),
-            }
-            tool = results.get("tool")
-            if isinstance(tool, dict):
-                tool_name = tool.get("name")
-                if isinstance(tool_name, str) and tool_name.strip():
-                    compact["tool"] = tool_name.strip()[:80]
-            return compact
+        if summary is not None:
+            return summary
     return None
 
 

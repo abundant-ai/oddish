@@ -35,6 +35,7 @@ from oddish.db import (
     utcnow,
 )
 from oddish.registry_auth import RegistryCredential, encrypt_credentials
+from oddish.runtime.sandbox_lifecycle import execution_lane_for_environment
 from oddish.schemas import RegistryAuth, TrialResponse
 
 
@@ -634,6 +635,7 @@ async def retry_trial_core(
         max_attempts=new_trial.max_attempts,
         harbor_variant_id=(new_trial.harbor_config or {}).get("variant_id")
         or "default",
+        execution_lane=execution_lane_for_environment(new_trial.environment),
         registry_auth_enc=registry_auth_enc,
     )
 

@@ -47,12 +47,13 @@ import {
   STATUS_CONFIG,
 } from "@/lib/status-config";
 import { summarizeTrials, type TrialAggregate } from "@/lib/trial-aggregation";
-import type {
-  Task,
-  TaskDetailResponse,
-  TaskVersionSummary,
-  Trial,
-} from "@/lib/types";
+import {
+  isBrowseTaskDetail,
+  taskDetailKey,
+  taskDetailValue,
+  type TaskDetailResource,
+} from "@/lib/task-detail-resource";
+import type { Task, TaskVersionSummary, Trial } from "@/lib/types";
 import { formatRelativeTime, prBadge, taskPrUrl } from "@/lib/utils";
 import {
   formatLineRange,
@@ -61,6 +62,7 @@ import {
 } from "@/lib/line-range";
 import { sameFilePath } from "@/lib/file-path";
 import { taskHasCancellableWork } from "@/lib/job-status";
+import { expandTrialParam, shortTrialParam } from "@/lib/trial-url";
 import {
   ArrowLeft,
   ChevronDown,
@@ -663,44 +665,38 @@ function AgentCard({
   );
 }
 
-type DrawerState = {
-  mode: "task" | "trial";
-  trial: Trial | null;
-  trialIndex: number | null;
-  orderedTrials: Trial[];
-  trialGroups: Array<{ agent: string; model: string | null; trials: Trial[] }>;
-};
+type DrawerState = { mode: "task" } | { mode: "trial"; fallbackTrial: Trial };
 
 interface TaskDetailClientProps {
   taskId: string;
-  initialDetail?: TaskDetailResponse | null;
   initialVersionId?: string | null;
 }
 
 export function TaskDetailClient({
   taskId,
-  initialDetail,
   initialVersionId,
 }: TaskDetailClientProps) {
-  const swrKey = `/api/tasks/${encodeURIComponent(taskId)}/detail`;
+  const swrKey = taskDetailKey(taskId);
 
-  const { data, error, isLoading, mutate } = useSWR<TaskDetailResponse>(
+  const { data, error, isLoading, mutate } = useSWR<TaskDetailResource>(
     swrKey,
     fetcher,
     {
-      refreshInterval: (latestDetail) =>
-        taskHasCancellableWork(latestDetail?.task) ? 30000 : 0,
+      refreshInterval: (latestResource) =>
+        taskHasCancellableWork(taskDetailValue(latestResource)?.task)
+          ? 30000
+          : 0,
       revalidateOnFocus: false,
-      revalidateOnMount: initialDetail == null,
+      revalidateOnMount: true,
       keepPreviousData: true,
-      fallbackData: initialDetail ?? undefined,
     }
   );
 
-  const detail = data ?? initialDetail ?? null;
+  const detail = taskDetailValue(data) ?? null;
+  const isBrowseSnapshot = isBrowseTaskDetail(data);
   const task = detail?.task ?? null;
   const versions = useMemo(() => detail?.versions ?? [], [detail]);
-  const totals = detail?.totals;
+  const totals = isBrowseSnapshot ? undefined : detail?.totals;
 
   const defaultVersionId = task?.current_version_id ?? versions[0]?.id ?? null;
 
@@ -762,21 +758,23 @@ export function TaskDetailClient({
       }
 
       await mutate(
-        (current) =>
-          current
+        (current) => {
+          const currentDetail = taskDetailValue(current);
+          return currentDetail
             ? {
-                ...current,
+                ...currentDetail,
                 task: {
-                  ...current.task,
+                  ...currentDetail.task,
                   current_version_id: versionId,
                   current_version: versionNumber,
                 },
-                versions: current.versions.map((candidate) => ({
+                versions: currentDetail.versions.map((candidate) => ({
                   ...candidate,
                   is_current: candidate.id === versionId,
                 })),
               }
-            : current,
+            : current;
+        },
         { revalidate: false }
       );
       writeVersionToQuery(versionId, versionId);
@@ -862,56 +860,43 @@ export function TaskDetailClient({
   const [drawerShowTask, setDrawerShowTask] = useState(true);
   const [drawerShowTrial, setDrawerShowTrial] = useState(true);
 
-  const handleSelectTrial = useCallback(
-    (trial: Trial) => {
-      // The user (or hydration) is driving the drawer now; any unresolved
-      // deep-link trial param no longer needs preserving.
-      unresolvedTrialParamRef.current = false;
-      const trialIndex = orderedTrials.findIndex((t) => t.id === trial.id);
-      setDrawer({
-        mode: "trial",
-        trial,
-        trialIndex: trialIndex >= 0 ? trialIndex : null,
-        orderedTrials,
-        trialGroups,
-      });
-    },
-    [orderedTrials, trialGroups]
-  );
+  const drawerTrial =
+    drawer?.mode === "trial"
+      ? (orderedTrials.find((trial) => trial.id === drawer.fallbackTrial.id) ??
+        drawer.fallbackTrial)
+      : null;
+  const drawerTrialIndex = drawerTrial
+    ? orderedTrials.findIndex((trial) => trial.id === drawerTrial.id)
+    : -1;
+
+  const handleSelectTrial = useCallback((trial: Trial) => {
+    // The user (or hydration) is driving the drawer now; any unresolved
+    // deep-link trial param no longer needs preserving.
+    unresolvedTrialParamRef.current = false;
+    setDrawer({ mode: "trial", fallbackTrial: trial });
+  }, []);
 
   // A trial link from the task overview's aggregated QA. Always opens in
   // this page's drawer: the overview hands over the full trial row, so a
   // trial the current version list doesn't carry still renders in place
-  // instead of routing away. The version-list match is preferred so the
-  // per-group trial nav lines up.
+  // instead of routing away. Render derives a canonical match when the
+  // current version list carries the same id.
   const handleOpenTrialFromOverview = useCallback(
     (trial: Trial): boolean => {
-      const match = orderedTrials.find((t) => t.id === trial.id);
-      handleSelectTrial(match ?? trial);
+      handleSelectTrial(trial);
       return true;
     },
-    [orderedTrials, handleSelectTrial]
+    [handleSelectTrial]
   );
 
   const handleOpenTaskFiles = useCallback(() => {
     unresolvedTrialParamRef.current = false;
-    setDrawer({
-      mode: "task",
-      trial: null,
-      trialIndex: null,
-      orderedTrials,
-      trialGroups,
-    });
-  }, [orderedTrials, trialGroups]);
+    setDrawer({ mode: "task" });
+  }, []);
 
-  const handleNavigateToTrial = useCallback(
-    (trial: Trial, trialIndex: number) => {
-      setDrawer((prev) =>
-        prev ? { ...prev, mode: "trial", trial, trialIndex } : prev
-      );
-    },
-    []
-  );
+  const handleNavigateToTrial = useCallback((trial: Trial) => {
+    setDrawer({ mode: "trial", fallbackTrial: trial });
+  }, []);
 
   // --- Drawer addressability ------------------------------------------
   // The drawer state lives in the URL so any view on this page can be
@@ -945,7 +930,9 @@ export function TaskDetailClient({
     if (drawerHydratedRef.current || isLoading || !task) return;
 
     const params = new URLSearchParams(window.location.search);
-    const urlTrialId = params.get("trial");
+    // ?trial= is an index against the task this page already addresses; older
+    // links spell the whole id out and pass through untouched.
+    const urlTrialId = expandTrialParam(params.get("trial"), task.id);
     // The version's trials arrive a beat after the task itself
     // (selectedVersionId is applied by a later effect), so a trial address
     // waits for the version to be selected. Keying on the version — not an
@@ -989,7 +976,10 @@ export function TaskDetailClient({
   // the preserved param instead of leaving it inert forever.
   useEffect(() => {
     if (!unresolvedTrialParamRef.current) return;
-    const urlTrialId = new URLSearchParams(window.location.search).get("trial");
+    const urlTrialId = expandTrialParam(
+      new URLSearchParams(window.location.search).get("trial"),
+      task?.id,
+    );
     if (!urlTrialId) {
       unresolvedTrialParamRef.current = false;
       return;
@@ -1000,7 +990,7 @@ export function TaskDetailClient({
       hydrationOpeningRef.current = true;
       handleSelectTrial(trial);
     }
-  }, [orderedTrials, handleSelectTrial]);
+  }, [orderedTrials, handleSelectTrial, task?.id]);
 
   // Closing the drawer retires the task pane address along with the URL
   // params the sync effect strips — otherwise reopening would write the
@@ -1049,8 +1039,11 @@ export function TaskDetailClient({
     const current = new URLSearchParams(window.location.search);
     const next = new URLSearchParams(window.location.search);
 
-    if (drawer?.mode === "trial" && drawer.trial) {
-      next.set("trial", drawer.trial.id);
+    if (drawer?.mode === "trial") {
+      next.set(
+        "trial",
+        shortTrialParam(drawer.fallbackTrial.id, drawer.fallbackTrial.task_id),
+      );
       next.delete("drawer");
     } else if (drawer) {
       next.set("drawer", "task");
@@ -1147,7 +1140,7 @@ export function TaskDetailClient({
       ? (versionSummary.rewardSum / versionSummary.rewardTotal) * 100
       : null;
 
-  if (error && !detail) {
+  if (error && (!detail || isBrowseSnapshot)) {
     return (
       <Alert variant="destructive">
         <AlertTitle>Failed to load task</AlertTitle>
@@ -1193,11 +1186,13 @@ export function TaskDetailClient({
           <KpiTile
             label="Total cost (all versions)"
             hint={
-              totals && totals.cost_trial_count > 0
-                ? `${totals.cost_trial_count} of ${totals.total_trials} trials priced`
-                : totals && totals.total_trials > 0
-                  ? `${totals.total_trials} trials, no cost data`
-                  : "no trials yet"
+              isBrowseSnapshot
+                ? "loading all versions"
+                : totals && totals.cost_trial_count > 0
+                  ? `${totals.cost_trial_count} of ${totals.total_trials} trials priced`
+                  : totals && totals.total_trials > 0
+                    ? `${totals.total_trials} trials, no cost data`
+                    : "no trials yet"
             }
           >
             <span className="flex items-baseline gap-1.5">
@@ -1223,11 +1218,13 @@ export function TaskDetailClient({
           <KpiTile
             label="Billed spend"
             hint={
-              totals && totals.billed_trial_count > 0
-                ? `${totals.billed_trial_count} billed trial${
-                    totals.billed_trial_count === 1 ? "" : "s"
-                  }`
-                : "no billed trials"
+              isBrowseSnapshot
+                ? "loading all versions"
+                : totals && totals.billed_trial_count > 0
+                  ? `${totals.billed_trial_count} billed trial${
+                      totals.billed_trial_count === 1 ? "" : "s"
+                    }`
+                  : "no billed trials"
             }
           >
             <CostBadge
@@ -1366,15 +1363,17 @@ export function TaskDetailClient({
           ) : null}
         </div>
 
-        <TaskVerdictBadge
-          task={task}
-          variant="inline"
-          onRunJudge={handleRunJudge}
-          onCancelJudge={handleCancelJudge}
-          isRunning={isRunningJudge}
-          isCancelling={isCancellingJudge}
-          error={judgeError}
-        />
+        {!isBrowseSnapshot ? (
+          <TaskVerdictBadge
+            task={task}
+            variant="inline"
+            onRunJudge={handleRunJudge}
+            onCancelJudge={handleCancelJudge}
+            isRunning={isRunningJudge}
+            isCancelling={isCancellingJudge}
+            error={judgeError}
+          />
+        ) : null}
 
         <div className="space-y-3">
           <div className="flex items-baseline justify-between">
@@ -1426,7 +1425,7 @@ export function TaskDetailClient({
                 // no header, so none of the task-driven header UI appears.
                 task={task}
                 staticChecksTaskId={task.id}
-                taskDetail={detail}
+                taskDetail={data}
                 onOpenTrial={handleOpenTrialFromOverview}
                 filesUrl={`/api/tasks/${task.id}/files`}
                 loadFilesLazily
@@ -1445,7 +1444,7 @@ export function TaskDetailClient({
                 onClose={() => setDrawer(null)}
                 taskId={task.id}
                 task={task}
-                taskDetail={detail}
+                taskDetail={data}
                 loadFilesLazily
                 taskVersion={selectedVersion?.version}
                 onOpenTrial={handleOpenTrialFromOverview}
@@ -1456,10 +1455,9 @@ export function TaskDetailClient({
                 onRetryComplete={handleRerun}
                 allowRetry={true}
                 onNavigateToFirstTrial={
-                  drawer.trialGroups.length > 0 &&
-                  drawer.trialGroups[0].trials.length > 0
+                  trialGroups.length > 0 && trialGroups[0].trials.length > 0
                     ? () => {
-                        const firstTrial = drawer.trialGroups[0].trials[0];
+                        const firstTrial = trialGroups[0].trials[0];
                         handleSelectTrial(firstTrial);
                       }
                     : undefined
@@ -1469,28 +1467,17 @@ export function TaskDetailClient({
               />
             }
             renderTrial={(paneAction) =>
-              drawer.trial && (
+              drawerTrial && (
                 <TrialDetailPanel
                   isOpen={true}
                   onClose={() => setDrawer(null)}
-                  trial={drawer.trial}
+                  trial={drawerTrial}
                   task={task}
-                  orderedTrials={drawer.orderedTrials}
-                  trialIndex={drawer.trialIndex}
-                  trialGroups={drawer.trialGroups}
+                  orderedTrials={orderedTrials}
+                  trialIndex={drawerTrialIndex >= 0 ? drawerTrialIndex : null}
+                  trialGroups={trialGroups}
                   onNavigate={handleNavigateToTrial}
-                  onNavigateToTask={() =>
-                    setDrawer((prev) =>
-                      prev
-                        ? {
-                            ...prev,
-                            mode: "task",
-                            trial: null,
-                            trialIndex: null,
-                          }
-                        : prev
-                    )
-                  }
+                  onNavigateToTask={() => setDrawer({ mode: "task" })}
                   onRetry={handleRerun}
                   allowRetry={true}
                   apiBaseUrl="/api"

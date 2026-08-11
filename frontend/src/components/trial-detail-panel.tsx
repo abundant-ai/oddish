@@ -62,7 +62,6 @@ function getLiveParam(name: string): string | null {
 }
 import { Skeleton } from "@/components/ui/skeleton";
 import { QaAssessmentReport } from "@/components/qa-report/qa-assessment-report";
-import { QaReportSkeleton } from "@/components/qa-report/skeleton";
 import { TimingBreakdownBar } from "@/components/timing-breakdown-bar";
 import { CodeBlock } from "@/components/code-block";
 import type { Trial, Task } from "@/lib/types";
@@ -85,13 +84,12 @@ import {
 } from "@/lib/status-config";
 import { HarborStageTimeline } from "@/components/harbor-stage-timeline";
 import { HarborStageBadge } from "@/components/harbor-stage-badge";
-import { LiveTranscriptPanel } from "@/components/live-transcript-panel";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { StatusIcon } from "@/components/status-icon";
-import { useVerifierSummary } from "@/components/use-verifier-summary";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
 import { useSWRConfig } from "swr";
 import { isAnalysisStatusActive, trialKey, useTrial } from "@/lib/use-trial";
+import { embeddedCtrfSummary } from "@/lib/verifier-results";
 
 const TaskFilesPanel = dynamic(
   () =>
@@ -99,6 +97,17 @@ const TaskFilesPanel = dynamic(
   {
     ssr: false,
     loading: () => <DrawerPanelLoading label="Loading files..." />,
+  },
+);
+
+const LiveTranscriptPanel = dynamic(
+  () =>
+    import("@/components/live-transcript-panel").then(
+      (mod) => mod.LiveTranscriptPanel,
+    ),
+  {
+    ssr: false,
+    loading: () => <DrawerPanelLoading label="Loading live transcript..." />,
   },
 );
 
@@ -136,6 +145,13 @@ function DrawerPanelLoading({ label }: { label: string }) {
   );
 }
 
+function ActiveTabContent({
+  active,
+  ...props
+}: React.ComponentProps<typeof TabsContent> & { active: boolean }) {
+  return active ? <TabsContent {...props} /> : null;
+}
+
 interface TrialDetailPanelProps {
   isOpen: boolean;
   onClose: () => void;
@@ -159,6 +175,8 @@ interface TrialDetailPanelProps {
    * entirely — used by the public read-only share view.
    */
   showAnalysis?: boolean;
+  /** Revalidate a selected row against the full trial resource. */
+  revalidateTrial?: boolean;
   allowDelete?: boolean;
   /** Render content only without ResizableDrawer wrapper */
   contentOnly?: boolean;
@@ -182,6 +200,12 @@ const OUTCOME_CARD_TONE: Record<MatrixStatus, string> = {
   running: "border-blue-500/30 bg-blue-500/10",
 };
 
+type AnalysisLogState =
+  | { status: "idle" | "loading" | "error"; text: null }
+  | { status: "ready"; text: string | null };
+
+const EMPTY_ANALYSIS_LOG: AnalysisLogState = { status: "idle", text: null };
+
 // The QA assessment card. It renders before any analysis exists, so the
 // run button is reachable. It shows queued/running state with elapsed
 // time. While analysis is active it polls the trial, so the result
@@ -190,39 +214,26 @@ function TrialAnalysisCard({
   trial: trialProp,
   task,
   apiBaseUrl,
+  actionsReady,
   onQueued,
 }: {
   trial: Trial;
   task: Task | null;
   apiBaseUrl: string;
+  actionsReady: boolean;
   onQueued?: () => void;
 }) {
-  // The drawer already fetches this trial through useTrial. Calling the
-  // same hook with the same id here reuses that request instead of
-  // creating a second one. While the analysis is running, the hook
-  // refetches every few seconds, so the finished report shows up without
-  // the user having to close and reopen the drawer.
-  const { data: liveTrial, error: liveTrialError } = useTrial(trialProp.id, {
-    apiBaseUrl,
-  });
   // The global mutate writes to an explicitly named cache key. The bound
-  // mutate returned by useTrial would write to whichever trial the card
-  // is currently showing, which is the wrong target when the user
-  // switches trials while a rerun request is in flight.
+  // mutation would write to whichever trial is currently showing, which is
+  // the wrong target when the user switches trials during a rerun request.
   const { mutate: mutateByKey } = useSWRConfig();
-  // The trial object passed in from the parent can contain an outdated
-  // report, for example one from before a re-run. To avoid showing an
-  // outdated report and then swapping it, the card shows a loading state
-  // until the fetch for this trial either returns or fails. The fetched
-  // data and the error both belong to the current trial id only, so
-  // switching to another trial automatically puts the card back into its
-  // loading state.
-  const trial = liveTrial ?? trialProp;
-  const synced = liveTrial !== undefined || liveTrialError !== undefined;
+  const trial = trialProp;
   const [queuing, setQueuing] = useState(false);
   const [queueError, setQueueError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
-  const [logText, setLogText] = useState<string | null>(null);
+  const [analysisLog, setAnalysisLog] = useState<AnalysisLogState>(
+    EMPTY_ANALYSIS_LOG,
+  );
   const [logOpen, setLogOpen] = useState(false);
   const [queuePosition, setQueuePosition] = useState<number | null>(null);
   const logRef = useRef<HTMLPreElement | null>(null);
@@ -244,7 +255,7 @@ function TrialAnalysisCard({
   useEffect(() => {
     trialIdRef.current = trialProp.id;
     setQueuing(false);
-    setLogText(null);
+    setAnalysisLog(EMPTY_ANALYSIS_LOG);
     setLogOpen(false);
     setQueuePosition(null);
     setQueueError(null);
@@ -267,18 +278,19 @@ function TrialAnalysisCard({
   } | null>(null);
   useEffect(() => {
     const prev = lastAnalysisRef.current;
-    lastAnalysisRef.current = liveTrial
-      ? { id: liveTrial.id, status: liveTrial.analysis_status }
-      : null;
-    if (!liveTrial || !prev || prev.id !== liveTrial.id) return;
+    lastAnalysisRef.current = {
+      id: trial.id,
+      status: trial.analysis_status,
+    };
+    if (!prev || prev.id !== trial.id) return;
     if (
       isAnalysisStatusActive(prev.status) &&
-      (liveTrial.analysis_status === "success" ||
-        liveTrial.analysis_status === "failed")
+      (trial.analysis_status === "success" ||
+        trial.analysis_status === "failed")
     ) {
       onQueuedRef.current?.();
     }
-  }, [liveTrial]);
+  }, [trial.id, trial.analysis_status]);
 
   // Tick the elapsed timer once a second while in progress.
   useEffect(() => {
@@ -287,28 +299,39 @@ function TrialAnalysisCard({
     return () => window.clearInterval(id);
   }, [inProgress]);
 
-  // Load the analysis log and queue position: once on open, and on every
-  // poll tick while the analysis is in progress. The cleanup always runs so
-  // a response that lands after a trial switch cannot write stale state.
+  // Active analysis needs its queue position and live log. A terminal log is
+  // cold until the user expands its disclosure.
+  const shouldLoadAnalysisLog = inProgress || logOpen;
   useEffect(() => {
+    if (!shouldLoadAnalysisLog) return;
     let cancelled = false;
     const fetchLog = async () => {
+      setAnalysisLog((current) =>
+        current.status === "ready" ? current : { status: "loading", text: null },
+      );
       try {
         const res = await fetch(
           `${apiBaseUrl}/trials/${trialProp.id}/analysis-log`,
           { cache: "no-store" },
         );
-        if (!res.ok || cancelled) return;
+        if (!res.ok) throw new Error("Failed to load analysis log");
+        if (cancelled) return;
         const data = (await res.json()) as {
           log?: string | null;
           queue_position?: number | null;
         };
         if (!cancelled) {
-          setLogText(data.log ?? null);
+          setAnalysisLog({ status: "ready", text: data.log ?? null });
           setQueuePosition(data.queue_position ?? null);
         }
       } catch {
-        // Transient fetch error; the next tick retries.
+        if (!cancelled) {
+          setAnalysisLog((current) =>
+            current.status === "ready"
+              ? current
+              : { status: "error", text: null },
+          );
+        }
       }
     };
     void fetchLog();
@@ -317,13 +340,13 @@ function TrialAnalysisCard({
       cancelled = true;
       if (id !== null) window.clearInterval(id);
     };
-  }, [apiBaseUrl, trialProp.id, inProgress]);
+  }, [apiBaseUrl, trialProp.id, inProgress, shouldLoadAnalysisLog]);
 
   // Keep the newest log lines in view while the analysis runs.
   useEffect(() => {
     const el = logRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [logText]);
+  }, [analysisLog.text]);
 
   // Open the log panel when a run starts. The user can close and reopen it
   // at any time; renders never force it shut.
@@ -351,21 +374,24 @@ function TrialAnalysisCard({
   // starts. The task's verdict status is the view this card has of that
   // job.
   const taskQaActive = task?.verdict_status === "running";
-  const queueBlockedReason =
-    inProgress && !runStale
-      ? trial.analysis_status === "running"
+  let queueBlockedReason: string | null = null;
+  if (!actionsReady) {
+    queueBlockedReason = "Loading latest trial state.";
+  } else if (inProgress && !runStale) {
+    queueBlockedReason =
+      trial.analysis_status === "running"
         ? "Analysis is already running for this trial"
-        : "Analysis is already queued for this trial"
-      : trial.status !== "success" && trial.status !== "failed"
-        ? "The trial must finish before analysis can run"
-        : taskQaActive
-          ? "Task-level QA is running; wait for it to finish"
-          : null;
+        : "Analysis is already queued for this trial";
+  } else if (trial.status !== "success" && trial.status !== "failed") {
+    queueBlockedReason = "The trial must finish before analysis can run";
+  } else if (taskQaActive) {
+    queueBlockedReason = "Task-level QA is running; wait for it to finish";
+  }
 
   if (!hasAnalysis && !showQueueButton) return null;
 
   const queueRun = async () => {
-    if (queuing) return;
+    if (queuing || !actionsReady) return;
     const requestTrialId = trial.id;
     setQueuing(true);
     setQueueError(null);
@@ -406,7 +432,7 @@ function TrialAnalysisCard({
       // The old run's log is cleared server-side; clear it here too. Open
       // the log directly: a re-run over a stale RUNNING analysis keeps
       // inProgress true, so the open-on-start effect does not fire again.
-      setLogText(null);
+      setAnalysisLog(EMPTY_ANALYSIS_LOG);
       setLogOpen(true);
       setQueuePosition(null);
     } catch (err) {
@@ -459,7 +485,7 @@ function TrialAnalysisCard({
   }
 
   const showReport =
-    synced && hasAnalysis && !inProgress && !!trial.analysis?.classification;
+    hasAnalysis && !inProgress && !!trial.analysis?.classification;
 
   return (
     <Card
@@ -505,12 +531,7 @@ function TrialAnalysisCard({
             {queueBlockedReason}
           </p>
         )}
-        {!synced && !inProgress ? (
-          // The snapshot can carry a superseded report; hold the card's
-          // shape until the fresh fetch settles instead of painting it and
-          // swapping.
-          <QaReportSkeleton />
-        ) : showReport ? (
+        {showReport ? (
           <>
             {trial.analysis_status === "failed" && trial.analysis_error && (
               <p className="mb-2 text-xs text-red-500">
@@ -532,7 +553,8 @@ function TrialAnalysisCard({
                   : null
               }
               actionItems={trial.analysis?.action_items}
-              log={logText}
+              log={analysisLog.text}
+              logStatus={analysisLog.status}
               logOpen={logOpen}
               onLogToggle={setLogOpen}
               duration={analysisDuration}
@@ -589,7 +611,7 @@ function TrialAnalysisCard({
             </div>
           </div>
         )}
-        {logText && !showReport && (
+        {hasAnalysis && !showReport && (
           <details
             className="mt-3"
             open={logOpen}
@@ -600,12 +622,22 @@ function TrialAnalysisCard({
             <summary className="text-muted-foreground cursor-pointer text-[11px] font-medium select-none">
               Analysis log
             </summary>
-            <pre
-              ref={logRef}
-              className="bg-muted/40 mt-1 max-h-48 overflow-auto rounded p-2 font-mono text-[10.5px] leading-relaxed whitespace-pre-wrap"
-            >
-              {logText}
-            </pre>
+            {analysisLog.text ? (
+              <pre
+                ref={logRef}
+                className="bg-muted/40 mt-1 max-h-48 overflow-auto rounded p-2 font-mono text-[10.5px] leading-relaxed whitespace-pre-wrap"
+              >
+                {analysisLog.text}
+              </pre>
+            ) : logOpen ? (
+              <p className="text-muted-foreground mt-1 text-[11px]">
+                {analysisLog.status === "error"
+                  ? "Unable to load the analysis log."
+                  : analysisLog.status === "ready"
+                    ? "No log output."
+                    : "Loading analysis log…"}
+              </p>
+            ) : null}
           </details>
         )}
       </CardContent>
@@ -613,7 +645,7 @@ function TrialAnalysisCard({
   );
 }
 
-function buildOddishRunCommand(trial: Trial, task: Task): string {
+export function buildOddishRunCommand(trial: Trial, task: Task): string {
   const parts: string[] = ["oddish run"];
 
   // `--task <task_id>` re-queues trials against the existing server-side
@@ -668,13 +700,13 @@ function hasLiveQueueSnapshot(trial: Trial): boolean {
   return ["queued", "retrying", "running", "pending"].includes(trial.status);
 }
 
-type SandboxBackendId = "daytona" | "modal";
+type SandboxBackendId = "daytona" | "modal" | "ec2";
 
 type SandboxBackend = {
   id: SandboxBackendId;
   label: string;
-  logoSrc: string;
-  logoWidth: number;
+  logoSrc?: string;
+  logoWidth?: number;
   href?: string;
 };
 
@@ -694,13 +726,21 @@ const SANDBOX_BACKENDS: Record<
     logoSrc: "/modal-logo-icon.png",
     logoWidth: 10,
   },
+  ec2: {
+    id: "ec2",
+    label: "EC2",
+  },
 };
 
 function normalizeSandboxBackend(
   provider: string | null | undefined,
 ): SandboxBackendId | null {
   const normalized = provider?.trim().toLowerCase();
-  if (normalized === "daytona" || normalized === "modal") {
+  if (
+    normalized === "daytona" ||
+    normalized === "modal" ||
+    normalized === "ec2"
+  ) {
     return normalized;
   }
   return null;
@@ -731,16 +771,18 @@ function getSandboxBackend(trial: Trial): SandboxBackend | null {
 function SandboxBackendBadge({ backend }: { backend: SandboxBackend }) {
   const content = (
     <>
-      <span className="inline-flex h-4 items-center justify-center rounded-sm bg-white px-1">
-        <Image
-          src={backend.logoSrc}
-          alt={`${backend.label} logo`}
-          width={backend.logoWidth}
-          height={10}
-          className="h-2.5 w-auto object-contain"
-        />
-      </span>
-      {backend.id === "modal" && (
+      {backend.logoSrc && (
+        <span className="inline-flex h-4 items-center justify-center rounded-sm bg-white px-1">
+          <Image
+            src={backend.logoSrc}
+            alt={`${backend.label} logo`}
+            width={backend.logoWidth ?? 10}
+            height={10}
+            className="h-2.5 w-auto object-contain"
+          />
+        </span>
+      )}
+      {backend.id !== "daytona" && (
         <span className="text-muted-foreground font-sans text-[9px] font-semibold tracking-wide uppercase">
           {backend.label}
         </span>
@@ -787,10 +829,40 @@ function harborRepoLabel(source: string | null | undefined): string {
   );
 }
 
+/**
+ * Split a trial's identifier into the readable task stem and its trial index.
+ *
+ * Trial ids are `{task_id}-{index}` and task ids carry a random 8-hex suffix,
+ * so the raw name is mostly noise ("…-scan-variant-cbb887ea-174"). Derive the
+ * stem from `task_id` rather than parsing the name, so the split is exact.
+ */
+function trialTitleParts(
+  trial: Trial,
+  task: Task | null,
+): { stem: string; index: string | null } {
+  const taskId = trial.task_id;
+  const raw = trial.name || trial.id;
+  const prefix = `${taskId}-`;
+  const fromId = trial.id.startsWith(prefix);
+  const index = fromId
+    ? trial.id.slice(prefix.length)
+    : (raw.match(/-(\d+)$/)?.[1] ?? null);
+  const stem = fromId ? taskId : index ? raw.slice(0, -(index.length + 1)) : raw;
+  // The task's own name is the de-hashed stem when the id extends it, and it
+  // is authoritative: trimming a hex-looking tail off THAT would eat a name
+  // that genuinely ends in one (a task named after a commit). Only the
+  // fallback — no task loaded, or a name that already carries the hash — is
+  // reduced to guessing at the suffix.
+  if (task && stem.startsWith(`${task.name}-`)) {
+    return { stem: task.name, index };
+  }
+  return { stem: stem.replace(/-[0-9a-f]{8}$/, ""), index };
+}
+
 export function TrialDetailPanel({
   isOpen,
   onClose,
-  trial,
+  trial: selectedTrial,
   task,
   orderedTrials,
   trialIndex,
@@ -802,11 +874,22 @@ export function TrialDetailPanel({
   apiBaseUrl = "/api",
   allowRetry = true,
   showAnalysis = true,
+  revalidateTrial = true,
   allowDelete = false,
   contentOnly = false,
   paneAction,
 }: TrialDetailPanelProps) {
-  const verifierSummary = useVerifierSummary(trial, apiBaseUrl, isOpen);
+  const { data: refreshedTrial } = useTrial(
+    isOpen && revalidateTrial ? selectedTrial?.id : null,
+    {
+      apiBaseUrl,
+    },
+  );
+  const canonicalTrial =
+    refreshedTrial?.id === selectedTrial?.id ? refreshedTrial : null;
+  const actionsReady = !revalidateTrial || canonicalTrial !== null;
+  const trial = canonicalTrial ?? selectedTrial;
+  const verifierSummary = embeddedCtrfSummary(trial?.result);
 
   const validTabs = useMemo(
     () => new Set(["summary", "live", "files", "trajectory", "artifacts"]),
@@ -980,11 +1063,13 @@ export function TrialDetailPanel({
     artifactsLines,
   ]);
 
-  const canRetry =
+  const showRetry =
     allowRetry && (trial?.status === "failed" || trial?.status === "success");
-  const canDelete = allowDelete && Boolean(onDelete) && Boolean(trial);
+  const canRetry = actionsReady && showRetry;
+  const showDelete = allowDelete && Boolean(onDelete) && Boolean(trial);
+  const canDelete = actionsReady && showDelete;
   const handleRetry = async () => {
-    if (!trial || retrying || !allowRetry) return;
+    if (!trial || retrying || !canRetry) return;
     setRetrying(true);
     setRetryError(null);
 
@@ -1008,7 +1093,7 @@ export function TrialDetailPanel({
   };
 
   const handleDelete = async () => {
-    if (!trial || !onDelete || deleting) return;
+    if (!trial || !onDelete || deleting || !canDelete) return;
     setDeleting(true);
     setDeleteError(null);
 
@@ -1178,11 +1263,20 @@ export function TrialDetailPanel({
     onNavigate(nextTrial, nextIndex);
   };
 
+  const { stem: titleStem, index: titleIndex } = trialTitleParts(trial, task);
+
   const content = (
     <>
       <DrawerHeader className="border-border border-b px-4 py-3 sm:px-6 sm:py-4">
-        <DrawerTitle className="flex min-w-0 items-center gap-2 pr-8 font-mono text-sm sm:text-base">
-          <span className="min-w-0 truncate">{trial.name}</span>
+        <DrawerTitle className="flex min-w-0 items-center gap-2 pr-16 font-mono text-sm sm:text-base">
+          <span className="min-w-0 truncate" title={trial.id}>
+            {titleStem}
+          </span>
+          {titleIndex && (
+            <span className="text-muted-foreground shrink-0 font-mono text-xs">
+              #{titleIndex}
+            </span>
+          )}
           {showAnalysis && trial.task_version != null && (
             <span className="border-border bg-muted/50 text-muted-foreground inline-flex shrink-0 items-center rounded-md border px-1.5 py-0.5 font-mono text-[11px] font-medium">
               v{trial.task_version}
@@ -1194,7 +1288,10 @@ export function TrialDetailPanel({
               <span className="truncate text-[10px] font-bold sm:text-xs">
                 {trial.agent}
               </span>
-              <span className="flex items-center gap-1 truncate font-mono text-[9px] font-normal sm:text-[10px]">
+              <span
+                className="flex items-center gap-1 truncate font-mono text-[9px] font-normal sm:text-[10px]"
+                title={trial.model ?? undefined}
+              >
                 <QueueKeyIcon
                   queueKey={trial.provider}
                   model={trial.model}
@@ -1202,7 +1299,8 @@ export function TrialDetailPanel({
                   size={11}
                   className="shrink-0"
                 />
-                {trial.model ?? "—"}
+                {/* The icon already carries the provider, so drop its prefix. */}
+                {trial.model?.split("/").pop() ?? "—"}
               </span>
             </span>
             {sandboxBackend && <SandboxBackendBadge backend={sandboxBackend} />}
@@ -1414,10 +1512,11 @@ export function TrialDetailPanel({
                 </CardContent>
               </Card>
             )}
-            {canRetry && (
+            {showRetry && (
               <Button
                 onClick={handleRetry}
-                disabled={retrying}
+                disabled={!canRetry || retrying}
+                title={actionsReady ? undefined : "Loading latest trial state."}
                 variant="outline"
                 size="sm"
                 className="h-7 min-w-[128px] px-2 text-[10px] font-semibold tracking-wide uppercase"
@@ -1452,13 +1551,15 @@ export function TrialDetailPanel({
                 </a>
               </Button>
             )}
-            {canDelete && (
+            {showDelete && (
               <Button
                 onClick={() => {
+                  if (!canDelete) return;
                   setDeleteError(null);
                   setDeleteDialogOpen(true);
                 }}
-                disabled={deleting}
+                disabled={!canDelete || deleting}
+                title={actionsReady ? undefined : "Loading latest trial state."}
                 variant="outline"
                 size="sm"
                 className="text-destructive hover:bg-destructive/10 hover:text-destructive h-7 min-w-[112px] px-2 text-[10px] font-semibold tracking-wide uppercase"
@@ -1531,7 +1632,11 @@ export function TrialDetailPanel({
         </div>
 
         <div className="flex-1 overflow-auto">
-          <TabsContent value="summary" className="m-0 p-4 sm:p-6">
+          <ActiveTabContent
+            active={effectiveTab === "summary"}
+            value="summary"
+            className="m-0 p-4 sm:p-6"
+          >
             <div className="space-y-4 pb-4">
               {showQueueSnapshot && (
                 <Card className="border-purple-500/30 bg-purple-500/5">
@@ -1578,10 +1683,10 @@ export function TrialDetailPanel({
                   trial={trial}
                   task={task}
                   apiBaseUrl={apiBaseUrl}
+                  actionsReady={actionsReady}
                   onQueued={() => onRetry?.(task ? [task.id] : undefined)}
                 />
               )}
-
 
               {/* Execution Timeline - shows progress during running trials */}
               {trial.harbor_stage && (
@@ -1694,22 +1799,28 @@ export function TrialDetailPanel({
                 />
               )}
             </div>
-          </TabsContent>
+          </ActiveTabContent>
 
-          {showLive && (
-            <TabsContent value="live" className="m-0 h-full p-0">
-              <LiveTranscriptPanel
-                key={trial.id}
-                trialId={trial.id}
-                agent={trial.agent}
-                apiBaseUrl={apiBaseUrl}
-              />
-            </TabsContent>
-          )}
+          <ActiveTabContent
+            active={effectiveTab === "live" && showLive}
+            value="live"
+            className="m-0 h-full p-0"
+          >
+            <LiveTranscriptPanel
+              key={trial.id}
+              trialId={trial.id}
+              agent={trial.agent}
+              apiBaseUrl={apiBaseUrl}
+            />
+          </ActiveTabContent>
 
-          <TabsContent value="files" className="m-0 h-full p-0">
+          <ActiveTabContent
+            active={effectiveTab === "files"}
+            value="files"
+            className="m-0 h-full p-0"
+          >
             <TaskFilesPanel
-              isOpen={isOpen && activeTab === "files"}
+              isOpen={isOpen}
               onClose={() => {}}
               taskId={null}
               filesUrl={`${apiBaseUrl}/trials/${trial.id}/files`}
@@ -1719,9 +1830,13 @@ export function TrialDetailPanel({
               onSelectedFileChange={handleSelectedFileChange}
               contentOnly
             />
-          </TabsContent>
+          </ActiveTabContent>
 
-          <TabsContent value="artifacts" className="m-0 h-full p-0">
+          <ActiveTabContent
+            active={effectiveTab === "artifacts"}
+            value="artifacts"
+            className="m-0 h-full p-0"
+          >
             <ArtifactsViewer
               filesUrl={`${apiBaseUrl}/trials/${trial.id}/files`}
               initialFilePath={artifactsTargetPath}
@@ -1729,9 +1844,10 @@ export function TrialDetailPanel({
               onSelectLinesChange={setArtifactsLines}
               onSelectedFileChange={handleArtifactsFileChange}
             />
-          </TabsContent>
+          </ActiveTabContent>
 
-          <TabsContent
+          <ActiveTabContent
+            active={effectiveTab === "trajectory"}
             value="trajectory"
             className="m-0 h-full overflow-auto p-0"
           >
@@ -1740,13 +1856,13 @@ export function TrialDetailPanel({
               hasTrajectory={trial.has_trajectory}
               apiBaseUrl={apiBaseUrl}
             />
-          </TabsContent>
+          </ActiveTabContent>
         </div>
       </Tabs>
     </>
   );
 
-  const deleteDialog = canDelete ? (
+  const deleteDialog = showDelete ? (
     <AlertDialog
       open={deleteDialogOpen}
       onOpenChange={(open) => {
@@ -1778,7 +1894,7 @@ export function TrialDetailPanel({
               event.preventDefault();
               void handleDelete();
             }}
-            disabled={deleting}
+            disabled={!canDelete || deleting}
             className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
           >
             {deleting ? (
