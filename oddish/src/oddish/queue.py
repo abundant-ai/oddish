@@ -77,6 +77,12 @@ ACTIVE_TRIAL_STATUSES = (
     TrialStatus.RUNNING,
     TrialStatus.RETRYING,
 )
+ACTIVE_WORKER_JOB_STATUSES = (
+    WorkerJobStatus.QUEUED,
+    WorkerJobStatus.RUNNING,
+    WorkerJobStatus.RETRYING,
+    WorkerJobStatus.BLOCKED,
+)
 ACTIVE_PIPELINE_STATUSES = (
     AnalysisStatus.PENDING,
     AnalysisStatus.QUEUED,
@@ -1487,13 +1493,14 @@ async def maybe_gate_llm_trials(session: AsyncSession, trial_id: str) -> bool:
 
     Fires only when *trial_id* is a nop/oracle baseline. The decision is scoped
     to the baseline's **(task version, experiment)**: when every baseline trial
-    for that task version in that experiment is terminal, evaluates them and —
-    if they validate the task (oracle passes, nop fails) — releases that scope's
-    BLOCKED LLM trials to QUEUED; otherwise cancels them and mirrors them to
-    FAILED so the task can advance. Scoping by experiment keeps concurrent sweeps
-    in different experiments from sharing each other's gate timing or verdict;
-    scoping by task version keeps an older version's baselines from validating a
-    newer version's (different code) LLM trials.
+    and its authoritative worker job for that task version in that experiment
+    are terminal, evaluates them and — if they validate the task (oracle passes,
+    nop fails) — releases that scope's BLOCKED LLM trials to QUEUED; otherwise
+    cancels them and mirrors them to FAILED so the task can advance. Scoping by
+    experiment keeps concurrent sweeps in different experiments from sharing
+    each other's gate timing or verdict; scoping by task version keeps an older
+    version's baselines from validating a newer version's (different code) LLM
+    trials.
 
     A no-op when there are no BLOCKED LLM trials in this scope (the gate was
     never armed) or other baselines are still running. Uses SELECT FOR UPDATE on
@@ -1595,6 +1602,23 @@ async def _resolve_baseline_gate_for_scope(
     if not blocked_trial_ids:
         return None
 
+    # worker_jobs is authoritative for scheduling state. During failure
+    # settlement the trial mirror can briefly read FAILED before the runner
+    # records the still-live job as RETRYING. Treat either active mirror as
+    # pending so that window cannot turn a retryable baseline into a permanent
+    # faulty gate verdict.
+    active_baseline_job = (
+        select(WorkerJobModel.id)
+        .where(
+            and_(
+                WorkerJobModel.kind == WorkerJobKind.TRIAL,
+                WorkerJobModel.subject_table == "trials",
+                WorkerJobModel.subject_id == TrialModel.id,
+                WorkerJobModel.status.in_(ACTIVE_WORKER_JOB_STATUSES),
+            )
+        )
+        .exists()
+    )
     pending_baselines = await session.scalar(
         select(func.count(TrialModel.id)).where(
             and_(
@@ -1603,7 +1627,10 @@ async def _resolve_baseline_gate_for_scope(
                 TrialModel.task_version_id == task_version_id,
                 TrialModel.queue_key == NOP_ORACLE_QUEUE_KEY,
                 TrialModel.superseded_by_trial_id.is_(None),
-                TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
+                or_(
+                    TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
+                    active_baseline_job,
+                ),
             )
         )
     )
