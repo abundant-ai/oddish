@@ -146,6 +146,10 @@ jobs:
           uv sync --frozen
           uv run alembic upgrade head
 
+      - name: Backfill historical verifier summaries
+        working-directory: backend
+        run: uv run modal run ops_backfill_verifier_summaries.py --apply
+
       - name: Deploy
         working-directory: backend
         run: |

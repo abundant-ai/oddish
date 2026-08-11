@@ -214,11 +214,13 @@ function TrialAnalysisCard({
   trial: trialProp,
   task,
   apiBaseUrl,
+  actionsReady,
   onQueued,
 }: {
   trial: Trial;
   task: Task | null;
   apiBaseUrl: string;
+  actionsReady: boolean;
   onQueued?: () => void;
 }) {
   // The global mutate writes to an explicitly named cache key. The bound
@@ -372,21 +374,24 @@ function TrialAnalysisCard({
   // starts. The task's verdict status is the view this card has of that
   // job.
   const taskQaActive = task?.verdict_status === "running";
-  const queueBlockedReason =
-    inProgress && !runStale
-      ? trial.analysis_status === "running"
+  let queueBlockedReason: string | null = null;
+  if (!actionsReady) {
+    queueBlockedReason = "Loading latest trial state.";
+  } else if (inProgress && !runStale) {
+    queueBlockedReason =
+      trial.analysis_status === "running"
         ? "Analysis is already running for this trial"
-        : "Analysis is already queued for this trial"
-      : trial.status !== "success" && trial.status !== "failed"
-        ? "The trial must finish before analysis can run"
-        : taskQaActive
-          ? "Task-level QA is running; wait for it to finish"
-          : null;
+        : "Analysis is already queued for this trial";
+  } else if (trial.status !== "success" && trial.status !== "failed") {
+    queueBlockedReason = "The trial must finish before analysis can run";
+  } else if (taskQaActive) {
+    queueBlockedReason = "Task-level QA is running; wait for it to finish";
+  }
 
   if (!hasAnalysis && !showQueueButton) return null;
 
   const queueRun = async () => {
-    if (queuing) return;
+    if (queuing || !actionsReady) return;
     const requestTrialId = trial.id;
     setQueuing(true);
     setQueueError(null);
@@ -834,10 +839,16 @@ export function TrialDetailPanel({
   contentOnly = false,
   paneAction,
 }: TrialDetailPanelProps) {
-  const { data: refreshedTrial } = useTrial(
-    isOpen && revalidateTrial ? selectedTrial?.id : null,
-    { apiBaseUrl, fallbackData: selectedTrial ?? undefined },
-  );
+  const {
+    data: refreshedTrial,
+    error: trialError,
+    isLoading: trialLoading,
+  } = useTrial(isOpen && revalidateTrial ? selectedTrial?.id : null, {
+    apiBaseUrl,
+    fallbackData: selectedTrial ?? undefined,
+  });
+  const actionsReady =
+    !revalidateTrial || (!trialLoading && trialError === undefined);
   const trial =
     refreshedTrial?.id === selectedTrial?.id ? refreshedTrial : selectedTrial;
   const verifierSummary = embeddedCtrfSummary(trial?.result);
@@ -1014,11 +1025,13 @@ export function TrialDetailPanel({
     artifactsLines,
   ]);
 
-  const canRetry =
+  const showRetry =
     allowRetry && (trial?.status === "failed" || trial?.status === "success");
-  const canDelete = allowDelete && Boolean(onDelete) && Boolean(trial);
+  const canRetry = actionsReady && showRetry;
+  const showDelete = allowDelete && Boolean(onDelete) && Boolean(trial);
+  const canDelete = actionsReady && showDelete;
   const handleRetry = async () => {
-    if (!trial || retrying || !allowRetry) return;
+    if (!trial || retrying || !canRetry) return;
     setRetrying(true);
     setRetryError(null);
 
@@ -1042,7 +1055,7 @@ export function TrialDetailPanel({
   };
 
   const handleDelete = async () => {
-    if (!trial || !onDelete || deleting) return;
+    if (!trial || !onDelete || deleting || !canDelete) return;
     setDeleting(true);
     setDeleteError(null);
 
@@ -1448,10 +1461,11 @@ export function TrialDetailPanel({
                 </CardContent>
               </Card>
             )}
-            {canRetry && (
+            {showRetry && (
               <Button
                 onClick={handleRetry}
-                disabled={retrying}
+                disabled={!canRetry || retrying}
+                title={actionsReady ? undefined : "Loading latest trial state."}
                 variant="outline"
                 size="sm"
                 className="h-7 min-w-[128px] px-2 text-[10px] font-semibold tracking-wide uppercase"
@@ -1486,13 +1500,15 @@ export function TrialDetailPanel({
                 </a>
               </Button>
             )}
-            {canDelete && (
+            {showDelete && (
               <Button
                 onClick={() => {
+                  if (!canDelete) return;
                   setDeleteError(null);
                   setDeleteDialogOpen(true);
                 }}
-                disabled={deleting}
+                disabled={!canDelete || deleting}
+                title={actionsReady ? undefined : "Loading latest trial state."}
                 variant="outline"
                 size="sm"
                 className="text-destructive hover:bg-destructive/10 hover:text-destructive h-7 min-w-[112px] px-2 text-[10px] font-semibold tracking-wide uppercase"
@@ -1616,6 +1632,7 @@ export function TrialDetailPanel({
                   trial={trial}
                   task={task}
                   apiBaseUrl={apiBaseUrl}
+                  actionsReady={actionsReady}
                   onQueued={() => onRetry?.(task ? [task.id] : undefined)}
                 />
               )}
@@ -1794,7 +1811,7 @@ export function TrialDetailPanel({
     </>
   );
 
-  const deleteDialog = canDelete ? (
+  const deleteDialog = showDelete ? (
     <AlertDialog
       open={deleteDialogOpen}
       onOpenChange={(open) => {
@@ -1826,7 +1843,7 @@ export function TrialDetailPanel({
               event.preventDefault();
               void handleDelete();
             }}
-            disabled={deleting}
+            disabled={!canDelete || deleting}
             className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
           >
             {deleting ? (

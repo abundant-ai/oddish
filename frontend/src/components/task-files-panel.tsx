@@ -458,6 +458,8 @@ export function TaskFilesPanel({
     },
   });
   const checksDetail = taskDetailValue(checksResource);
+  const actionsReady =
+    checksResource !== undefined && !isBrowseTaskDetail(checksResource);
   // Scoped panes (the experiment drawer) pin the version whose files are on
   // screen; the checks must describe that same source.
   const checksVersion = pickChecksVersion(checksDetail, taskVersion);
@@ -689,8 +691,9 @@ export function TaskFilesPanel({
     );
   }, [task]);
 
-  const canRetryTask = allowRetry && retryableTrials.length > 0;
-  const canCancelTask = allowRetry && taskHasCancellableWork(task);
+  const canRetryTask = actionsReady && allowRetry && retryableTrials.length > 0;
+  const canCancelTask =
+    actionsReady && allowRetry && taskHasCancellableWork(task);
   const cancelActionLabel = getCancelActionLabel(task);
   const allTrialsTerminal =
     Boolean(task?.trials?.length) &&
@@ -705,6 +708,7 @@ export function TaskFilesPanel({
   );
   const verdictInFlight = isActivePipelineStatus(verdictSource?.verdict_status);
   const canRunQA =
+    actionsReady &&
     allowRetry &&
     Boolean(task) &&
     allTrialsTerminal &&
@@ -1697,6 +1701,9 @@ export function TaskFilesPanel({
                     size="sm"
                     onClick={handleRetryTask}
                     disabled={!canRetryTask || isRerunning}
+                    title={
+                      actionsReady ? undefined : "Loading latest task state."
+                    }
                     className="h-7 px-2 text-[10px] font-semibold tracking-wide uppercase"
                   >
                     <RefreshCw
@@ -1714,6 +1721,9 @@ export function TaskFilesPanel({
                     size="sm"
                     onClick={handleRunQA}
                     disabled={!canRunQA || isRunningQA}
+                    title={
+                      actionsReady ? undefined : "Loading latest task state."
+                    }
                     className="h-7 px-2 text-[10px] font-semibold tracking-wide uppercase"
                   >
                     {isRunningQA ? (

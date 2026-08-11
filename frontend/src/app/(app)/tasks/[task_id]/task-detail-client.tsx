@@ -664,13 +664,7 @@ function AgentCard({
   );
 }
 
-type DrawerState = {
-  mode: "task" | "trial";
-  trial: Trial | null;
-  trialIndex: number | null;
-  orderedTrials: Trial[];
-  trialGroups: Array<{ agent: string; model: string | null; trials: Trial[] }>;
-};
+type DrawerState = { mode: "task" } | { mode: "trial"; fallbackTrial: Trial };
 
 interface TaskDetailClientProps {
   taskId: string;
@@ -865,56 +859,43 @@ export function TaskDetailClient({
   const [drawerShowTask, setDrawerShowTask] = useState(true);
   const [drawerShowTrial, setDrawerShowTrial] = useState(true);
 
-  const handleSelectTrial = useCallback(
-    (trial: Trial) => {
-      // The user (or hydration) is driving the drawer now; any unresolved
-      // deep-link trial param no longer needs preserving.
-      unresolvedTrialParamRef.current = false;
-      const trialIndex = orderedTrials.findIndex((t) => t.id === trial.id);
-      setDrawer({
-        mode: "trial",
-        trial,
-        trialIndex: trialIndex >= 0 ? trialIndex : null,
-        orderedTrials,
-        trialGroups,
-      });
-    },
-    [orderedTrials, trialGroups]
-  );
+  const drawerTrial =
+    drawer?.mode === "trial"
+      ? (orderedTrials.find((trial) => trial.id === drawer.fallbackTrial.id) ??
+        drawer.fallbackTrial)
+      : null;
+  const drawerTrialIndex = drawerTrial
+    ? orderedTrials.findIndex((trial) => trial.id === drawerTrial.id)
+    : -1;
+
+  const handleSelectTrial = useCallback((trial: Trial) => {
+    // The user (or hydration) is driving the drawer now; any unresolved
+    // deep-link trial param no longer needs preserving.
+    unresolvedTrialParamRef.current = false;
+    setDrawer({ mode: "trial", fallbackTrial: trial });
+  }, []);
 
   // A trial link from the task overview's aggregated QA. Always opens in
   // this page's drawer: the overview hands over the full trial row, so a
   // trial the current version list doesn't carry still renders in place
-  // instead of routing away. The version-list match is preferred so the
-  // per-group trial nav lines up.
+  // instead of routing away. Render derives a canonical match when the
+  // current version list carries the same id.
   const handleOpenTrialFromOverview = useCallback(
     (trial: Trial): boolean => {
-      const match = orderedTrials.find((t) => t.id === trial.id);
-      handleSelectTrial(match ?? trial);
+      handleSelectTrial(trial);
       return true;
     },
-    [orderedTrials, handleSelectTrial]
+    [handleSelectTrial]
   );
 
   const handleOpenTaskFiles = useCallback(() => {
     unresolvedTrialParamRef.current = false;
-    setDrawer({
-      mode: "task",
-      trial: null,
-      trialIndex: null,
-      orderedTrials,
-      trialGroups,
-    });
-  }, [orderedTrials, trialGroups]);
+    setDrawer({ mode: "task" });
+  }, []);
 
-  const handleNavigateToTrial = useCallback(
-    (trial: Trial, trialIndex: number) => {
-      setDrawer((prev) =>
-        prev ? { ...prev, mode: "trial", trial, trialIndex } : prev
-      );
-    },
-    []
-  );
+  const handleNavigateToTrial = useCallback((trial: Trial) => {
+    setDrawer({ mode: "trial", fallbackTrial: trial });
+  }, []);
 
   // --- Drawer addressability ------------------------------------------
   // The drawer state lives in the URL so any view on this page can be
@@ -1052,8 +1033,8 @@ export function TaskDetailClient({
     const current = new URLSearchParams(window.location.search);
     const next = new URLSearchParams(window.location.search);
 
-    if (drawer?.mode === "trial" && drawer.trial) {
-      next.set("trial", drawer.trial.id);
+    if (drawer?.mode === "trial") {
+      next.set("trial", drawer.fallbackTrial.id);
       next.delete("drawer");
     } else if (drawer) {
       next.set("drawer", "task");
@@ -1150,7 +1131,7 @@ export function TaskDetailClient({
       ? (versionSummary.rewardSum / versionSummary.rewardTotal) * 100
       : null;
 
-  if (error && !detail) {
+  if (error && (!detail || isBrowseSnapshot)) {
     return (
       <Alert variant="destructive">
         <AlertTitle>Failed to load task</AlertTitle>
@@ -1465,10 +1446,9 @@ export function TaskDetailClient({
                 onRetryComplete={handleRerun}
                 allowRetry={true}
                 onNavigateToFirstTrial={
-                  drawer.trialGroups.length > 0 &&
-                  drawer.trialGroups[0].trials.length > 0
+                  trialGroups.length > 0 && trialGroups[0].trials.length > 0
                     ? () => {
-                        const firstTrial = drawer.trialGroups[0].trials[0];
+                        const firstTrial = trialGroups[0].trials[0];
                         handleSelectTrial(firstTrial);
                       }
                     : undefined
@@ -1478,28 +1458,17 @@ export function TaskDetailClient({
               />
             }
             renderTrial={(paneAction) =>
-              drawer.trial && (
+              drawerTrial && (
                 <TrialDetailPanel
                   isOpen={true}
                   onClose={() => setDrawer(null)}
-                  trial={drawer.trial}
+                  trial={drawerTrial}
                   task={task}
-                  orderedTrials={drawer.orderedTrials}
-                  trialIndex={drawer.trialIndex}
-                  trialGroups={drawer.trialGroups}
+                  orderedTrials={orderedTrials}
+                  trialIndex={drawerTrialIndex >= 0 ? drawerTrialIndex : null}
+                  trialGroups={trialGroups}
                   onNavigate={handleNavigateToTrial}
-                  onNavigateToTask={() =>
-                    setDrawer((prev) =>
-                      prev
-                        ? {
-                            ...prev,
-                            mode: "task",
-                            trial: null,
-                            trialIndex: null,
-                          }
-                        : prev
-                    )
-                  }
+                  onNavigateToTask={() => setDrawer({ mode: "task" })}
                   onRetry={handleRerun}
                   allowRetry={true}
                   apiBaseUrl="/api"
