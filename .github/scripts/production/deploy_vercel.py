@@ -8,10 +8,13 @@ deployment is created from the connected repository at VERCEL_GIT_COMMIT_SHA —
 the same build pipeline and project settings as the git-triggered deploys it
 replaces; only the trigger moved.
 
-Exits non-zero unless the deployment reaches READY and the production alias is
-assigned. With git deploys off, a red job here is the only signal that
-production is still serving the previous frontend — the polling half of this
-script is load-bearing, not ceremony.
+Exits non-zero unless the deployment reaches READY, the production alias is
+assigned, and this deployment currently owns production. With git deploys off,
+a red job here is the only signal that production is still serving the
+previous frontend — the polling half of this script is load-bearing, not
+ceremony. Superseded runs refuse to act at all: a re-run of an old workflow
+run must neither report green for a commit production no longer serves nor
+rebuild that old commit and hand the domain back to it.
 
 Inputs (env vars):
   VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID,
@@ -21,6 +24,7 @@ Inputs (env vars):
 
 import json
 import os
+import subprocess
 import time
 import urllib.error
 import urllib.parse
@@ -71,6 +75,31 @@ def api(method, path, body=None, query=None):
 def main():
     branch = os.environ["VERCEL_GIT_BRANCH"]
     commit_sha = os.environ["VERCEL_GIT_COMMIT_SHA"]
+
+    # Refuse superseded runs before touching Vercel. main is fast-forward
+    # only, so a run whose sha is no longer the branch tip means a newer
+    # promotion exists: going further would either report green for a commit
+    # production no longer serves, or — via the forceNew retry below —
+    # rebuild the old sha and Vercel would hand the production domain back
+    # to it. Uses the checkout's persisted credentials.
+    try:
+        tip = subprocess.run(
+            ["git", "ls-remote", "origin", f"refs/heads/{branch}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split()
+    except subprocess.CalledProcessError as error:
+        raise SystemExit(
+            f"Could not resolve the {branch} tip to rule out a superseded "
+            f"run: {error.stderr.strip()}"
+        ) from error
+    if not tip or tip[0] != commit_sha:
+        raise SystemExit(
+            f"{branch} has moved to {tip[0] if tip else '<unknown>'}; this "
+            f"run's {commit_sha} is superseded and must not touch production. "
+            "The newer push's own Production Deploy run ships it."
+        )
 
     project = api("GET", f"/v9/projects/{os.environ['VERCEL_PROJECT_ID']}")
     link = project.get("link") or {}
@@ -182,6 +211,30 @@ def main():
     final = poll(
         lambda d: bool(d.get("aliasAssigned")), ALIAS_TIMEOUT_S, "alias assignment"
     )
+
+    # aliasAssigned is historical: it stays truthy on a deployment after a
+    # newer one takes the domain, so it proves assignment happened, not that
+    # this deployment owns production NOW. Confirm current ownership from the
+    # project's production target. Only a positively confirmed different
+    # owner fails; an absent field keeps the poll verdict (older API shapes).
+    # A few retries absorb propagation lag right after the alias flip.
+    owner = None
+    for _ in range(6):
+        target = (
+            api("GET", f"/v9/projects/{os.environ['VERCEL_PROJECT_ID']}").get(
+                "targets"
+            )
+            or {}
+        ).get("production") or {}
+        owner = target.get("id") or target.get("uid")
+        if owner in (None, deployment_id):
+            break
+        time.sleep(POLL_INTERVAL_S)
+    if owner not in (None, deployment_id):
+        raise SystemExit(
+            f"Production is owned by deployment {owner}, not {deployment_id}; "
+            "a newer deploy took the domain while this run was waiting."
+        )
 
     aliases = final.get("alias") or []
     production_url = f"https://{aliases[0]}" if aliases else url
