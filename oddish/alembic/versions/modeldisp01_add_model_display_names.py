@@ -1,7 +1,7 @@
 """add model_display_names
 
 Revision ID: modeldisp01
-Revises: verdict_state_001
+Revises: sandbox_capacity_001
 Create Date: 2026-08-04 00:00:00.000000
 
 Operator-managed aliases from a stored model id to the name rendered on
@@ -17,7 +17,7 @@ from typing import Sequence, Union
 from alembic import op
 
 revision: str = "modeldisp01"
-down_revision: Union[str, Sequence[str], None] = "verdict_state_001"
+down_revision: Union[str, Sequence[str], None] = "sandbox_capacity_001"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -12,10 +12,14 @@ export async function PUT(
 }
 
 export async function DELETE(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
   const encoded = encodeURIComponent(id);
-  return proxyBackendJson({ path: `${PATH}/${encoded}`, method: "DELETE" });
+  return proxyBackendJson({
+    request,
+    path: `${PATH}/${encoded}`,
+    method: "DELETE",
+  });
 }
