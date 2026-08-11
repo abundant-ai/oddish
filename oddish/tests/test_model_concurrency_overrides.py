@@ -54,7 +54,7 @@ async def test_effective_limits_are_keyed_by_the_callers_queue_key():
 
     assert raw in limits and limits[raw] > 0
     plan = build_spawn_plan(
-        queued_by_org_queue={("org1", raw, "default"): 5},
+        queued_by_org_queue={("org1", raw, "default", "default"): 5},
         running_by_queue={},
         concurrency_limits=limits,
         max_workers=10,
@@ -74,7 +74,7 @@ async def test_zero_override_is_an_off_switch():
 
     assert limits["minimax/minimax-m3"] == 0
     plan = build_spawn_plan(
-        queued_by_org_queue={("org1", "minimax/minimax-m3", "default"): 5},
+        queued_by_org_queue={("org1", "minimax/minimax-m3", "default", "default"): 5},
         running_by_queue={},
         concurrency_limits=limits,
         max_workers=10,

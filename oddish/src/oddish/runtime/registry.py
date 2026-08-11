@@ -1,15 +1,15 @@
 """Name → ExecutionBackend resolution + cheap-first ordering.
 
-``ordered_backends()`` returns Daytona before Modal so capability negotiation
-(routing.py) picks the cheap CPU backend by default and only escalates to
-Modal when a capability (GPU, private-registry pull) requires it. GKE joins
-last, only when a cluster is configured, so cheap-first negotiation hands it
-only the TPU work nothing cheaper satisfies."""
+``ordered_backends()`` returns Daytona before the opt-in EC2 backend and Modal,
+so capability negotiation keeps Daytona as the default CPU backend and only
+escalates to Modal when a capability requires it. GKE joins last, only when a
+cluster is configured, so cheap-first negotiation hands it only TPU work."""
 
 from __future__ import annotations
 
 from oddish.config import settings
 from oddish.runtime.backends.daytona import DaytonaBackend
+from oddish.runtime.backends.ec2 import Ec2Backend
 from oddish.runtime.backends.gke import GkeBackend
 from oddish.runtime.backends.modal import ModalBackend
 from oddish.runtime.ports import ExecutionBackend
@@ -20,8 +20,13 @@ _DAYTONA = DaytonaBackend()
 
 REGISTERED_BACKENDS: dict[str, ExecutionBackend] = {
     _DAYTONA.name: _DAYTONA,
-    _MODAL.name: _MODAL,
 }
+
+if settings.ec2_enabled:
+    _EC2 = Ec2Backend()
+    REGISTERED_BACKENDS[_EC2.name] = _EC2
+
+REGISTERED_BACKENDS[_MODAL.name] = _MODAL
 
 # GKE joins only when a cluster is configured, and always AFTER Modal so
 # cheap-first negotiation never hands non-TPU work to it. Installs without GKE
@@ -39,8 +44,7 @@ def get_backend(name: str | None) -> ExecutionBackend | None:
 
 
 def ordered_backends() -> list[ExecutionBackend]:
-    """Backends in cheap-first order: Daytona (CPU), Modal (GPU/private), then
-    GKE (TPU) when a cluster is configured.
+    """Backends in cheap-first order: Daytona, opt-in EC2, Modal, then GKE.
 
     Sourced from ``REGISTERED_BACKENDS`` (insertion-ordered cheap-first) so the
     resolution set and the routing order never desync."""
