@@ -339,6 +339,9 @@ async def get_or_generate_comparison(
         resolve_summary_model,
     )
 
+    # The fast path: answer a cache hit without ever touching the lock. What
+    # this pass resolves is only trusted as far as that hit -- a miss re-reads
+    # it inside the lock, since by then it can be minutes old.
     successful, failing = await resolve_cohorts(session, task_version_id)
     if len(successful) < MIN_COHORT or len(failing) < MIN_COHORT:
         return None
@@ -365,6 +368,23 @@ async def get_or_generate_comparison(
     await _end_read_transaction(session)
 
     async with _GEN_LOCKS[(task_id, task_version_id)]:
+        # Re-resolve rather than reuse the snapshot taken before the wait. The
+        # wait is as long as somebody else's generation, and a trial finishing
+        # post-trial QA in that window changes cohort membership. A caller that
+        # kept its old snapshot would compare the old hash against the row the
+        # lock holder just wrote for the *new* membership, call that fresh row
+        # stale, generate from cohorts it read minutes ago, and leave that the
+        # newest row -- so the next viewer resolves current membership, finds
+        # the newest row stamped with an older hash, and pays for yet another
+        # generation. Two queries after a wait that long cost nothing next to
+        # the generation they prevent.
+        successful, failing = await resolve_cohorts(session, task_version_id)
+        if len(successful) < MIN_COHORT or len(failing) < MIN_COHORT:
+            return None
+        current = cohort_hash(
+            [t["trial_id"] for t in successful], [t["trial_id"] for t in failing]
+        )
+
         # Re-check inside the lock -- another coroutine may have generated
         # one while this one waited. A refresh deliberately skips this: it
         # was explicitly asked for a new comparison, and the one waiting in
@@ -379,8 +399,10 @@ async def get_or_generate_comparison(
             )
             if fresh is not None:
                 return fresh
-            # The re-check opened a transaction of its own.
-            await _end_read_transaction(session)
+
+        # The re-resolve and re-check opened a transaction of their own. Not
+        # inside the `not refresh` branch: a refresh still re-resolves.
+        await _end_read_transaction(session)
 
         model = resolve_summary_model()
         cb = CohortComparisonBlock(
