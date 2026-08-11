@@ -940,9 +940,8 @@ export function TrialDetailPanel({
   const [deleteError, setDeleteError] = useState<string | null>(null);
   // ``?file=`` / ``?lines=`` are scoped by ``?tab=``: on the artifacts tab
   // they address the artifact browser, on the rewards tab ``?file=``
-  // addresses a criterion (``dimension/criterion``), otherwise the files
-  // tab. Each tab keeps its own state; the URL carries the active tab's
-  // pair.
+  // addresses a positional criterion key, otherwise the files tab. Each tab
+  // keeps its own state; the URL carries the active tab's pair.
   const [filesTargetPath, setFilesTargetPath] = useState<string | null>(() =>
     getLiveParam("tab") === "artifacts" || getLiveParam("tab") === "rewards"
       ? null
@@ -962,7 +961,7 @@ export function TrialDetailPanel({
       ? parseLineRange(getLiveParam("lines"))
       : null
   );
-  // The expanded criterion on the rewards tab (``dimension/criterion``).
+  // The expanded criterion on the rewards tab (a positional criterion key).
   const [rewardsTargetCriterion, setRewardsTargetCriterion] = useState<
     string | null
   >(() => (getLiveParam("tab") === "rewards" ? getLiveParam("file") : null));
@@ -991,8 +990,8 @@ export function TrialDetailPanel({
       return;
     }
     if (urlTab === "rewards") {
-      // ?file= addresses a criterion (dimension/criterion) while
-      // tab=rewards; there is no line anchor on this tab.
+      // ?file= addresses a positional criterion key while tab=rewards; there
+      // is no line anchor on this tab.
       if (urlFile) setRewardsTargetCriterion(urlFile);
       return;
     }

@@ -201,10 +201,12 @@ function CriterionRow({
 
 function DimensionSection({
   dimension,
+  dimensionIndex,
   selectedCriterion,
   onSelectCriterion,
 }: {
   dimension: RewardDimensionResult;
+  dimensionIndex: number;
   selectedCriterion?: string | null;
   onSelectCriterion?: (key: string | null) => void;
 }) {
@@ -261,7 +263,7 @@ function DimensionSection({
           key={`${criterion.name}-${index}`}
           criterion={criterion}
           judged={judged}
-          criterionKey={`${dimension.name}/${criterion.name}`}
+          criterionKey={`${dimensionIndex}/${dimension.name}/${index}/${criterion.name}`}
           selectedCriterion={selectedCriterion}
           onSelectCriterion={onSelectCriterion}
         />
@@ -281,10 +283,11 @@ export interface RewardBreakdownViewProps {
   rewards: RewardsMap | null;
   className?: string;
   /**
-   * Addressed criterion as ``dimension/criterion`` — the drawer's
-   * ``?file=`` value while ``?tab=rewards``. When provided together with
-   * ``onSelectCriterion``, expansion is controlled and every expanded
-   * criterion is a shareable address.
+   * Addressed criterion as ``dimension-index/dimension/criterion-index/criterion``
+   * — the drawer's ``?file=`` value while ``?tab=rewards``. Positional
+   * segments keep same-named dimensions and criteria independently
+   * addressable. When provided together with ``onSelectCriterion``,
+   * expansion is controlled and every expanded criterion is shareable.
    */
   selectedCriterion?: string | null;
   onSelectCriterion?: (key: string | null) => void;
@@ -349,6 +352,7 @@ export function RewardBreakdownView({
         <DimensionSection
           key={`${dimension.name}-${index}`}
           dimension={dimension}
+          dimensionIndex={index}
           selectedCriterion={selectedCriterion}
           onSelectCriterion={onSelectCriterion}
         />

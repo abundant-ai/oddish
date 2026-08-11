@@ -319,12 +319,13 @@ export function RewardDesignCard({
       .filter(
         (t) =>
           !t.is_probe &&
+          (taskVersion == null || t.task_version === taskVersion) &&
           t.reward !== null &&
           TERMINAL_STATUSES.includes(t.status)
       )
       .sort((a, b) => (b.finished_at ?? "").localeCompare(a.finished_at ?? ""));
     return candidates[0]?.id ?? null;
-  }, [trials]);
+  }, [taskVersion, trials]);
 
   useEffect(() => {
     const controller = new AbortController();
