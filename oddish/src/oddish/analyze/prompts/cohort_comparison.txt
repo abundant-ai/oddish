@@ -15,4 +15,7 @@ Only include a category when the cohorts actually differ on it. Omit categories
 where you see no difference; an empty comparison is a better answer than a
 manufactured one.
 
+Set `label` only on `behavior_discovery`, where it names the pattern you found.
+Every other category must have `label` set to null.
+
 Write all prose in short, plain sentences: one fact per sentence, active voice.

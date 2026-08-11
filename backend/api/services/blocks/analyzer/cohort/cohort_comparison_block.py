@@ -82,8 +82,14 @@ class CategoryComparison(BaseModel):
         is_discovery = self.category is BehaviorCategory.BEHAVIOR_DISCOVERY
         if is_discovery and not (self.label or "").strip():
             raise ValueError("behavior_discovery requires a label")
-        if not is_discovery and self.label is not None:
-            raise ValueError("only behavior_discovery may carry a label")
+        # A stray label on a fixed category is dropped, not raised on. The
+        # first real run put one on four of five categories, and because the
+        # output is parsed as a whole, raising discarded an otherwise good
+        # comparison over a cosmetic field. The prompt now says labels are
+        # discovery-only; this keeps a model that ignores it from costing the
+        # whole response.
+        if not is_discovery:
+            self.label = None
         return self
 
 

@@ -50,14 +50,27 @@ def test_discovery_requires_a_label():
         )
 
 
-def test_fixed_category_rejects_a_label():
-    with pytest.raises(ValidationError):
-        CategoryComparison(
-            category=BehaviorCategory.PLANNING,
-            label="Sub-agent delegation",
-            successful=[],
-            failing=[],
-        )
+def test_fixed_category_drops_a_stray_label():
+    # Dropped, not raised on. The first real generation put a label on four of
+    # five categories; because the output is parsed as a whole, raising threw
+    # away an otherwise good comparison over a cosmetic field.
+    cat = CategoryComparison(
+        category=BehaviorCategory.PLANNING,
+        label="Sub-agent delegation",
+        successful=[],
+        failing=[],
+    )
+    assert cat.label is None
+
+
+def test_discovery_keeps_its_label():
+    cat = CategoryComparison(
+        category=BehaviorCategory.BEHAVIOR_DISCOVERY,
+        label="Sub-agent delegation",
+        successful=[],
+        failing=[],
+    )
+    assert cat.label == "Sub-agent delegation"
 
 
 def test_full_output_parses():
