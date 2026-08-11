@@ -79,6 +79,7 @@ export async function GET(request: NextRequest) {
   // state, timeout) cancels the backend query instead of letting it run
   // for a result nobody will render.
   return proxyBackendJson({
+    request,
     path: `tasks/browse?${query.toString()}`,
     signal: request.signal,
   });

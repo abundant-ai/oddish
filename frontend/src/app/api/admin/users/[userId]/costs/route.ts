@@ -14,6 +14,7 @@ export async function GET(
   if (taskLimit) query.task_limit = taskLimit;
   const qs = new URLSearchParams(query).toString();
   return proxyBackendJson({
+    request,
     path: `admin/costs/users/${encodeURIComponent(userId)}${qs ? `?${qs}` : ""}`,
   });
 }

@@ -5,6 +5,10 @@ import {
   getBackendUrl,
   getClerkToken,
 } from "@/lib/backend-config";
+import {
+  attachUpstreamServerTiming,
+  backendFetchHeaders,
+} from "@/lib/proxy-headers";
 
 export async function GET(
   request: NextRequest,
@@ -19,12 +23,15 @@ export async function GET(
     const search = request.nextUrl.search;
     const url = getBackendUrl("tasks", `/${task_id}/files${search}`);
     const res = await fetch(url, {
-      headers: getAuthHeaders(token),
+      headers: backendFetchHeaders(request, getAuthHeaders(token)),
     });
 
     if (!res.ok) {
       const error = await res.json().catch(() => ({ detail: res.statusText }));
-      return NextResponse.json(error, { status: res.status });
+      return attachUpstreamServerTiming(
+        NextResponse.json(error, { status: res.status }),
+        res,
+      );
     }
 
     // Presigned URLs expire in 15 min, so cache for 10 min to be safe.
@@ -35,20 +42,26 @@ export async function GET(
     // client can paint the tree before the file contents finish loading.
     const contentType = res.headers.get("content-type") ?? "";
     if (contentType.includes("application/x-ndjson")) {
-      return new NextResponse(res.body, {
-        headers: {
-          "Content-Type": "application/x-ndjson",
-          "Cache-Control": cacheControl,
-        },
-      });
+      return attachUpstreamServerTiming(
+        new NextResponse(res.body, {
+          headers: {
+            "Content-Type": "application/x-ndjson",
+            "Cache-Control": cacheControl,
+          },
+        }),
+        res,
+      );
     }
 
     const data = await res.json();
-    return NextResponse.json(data, {
-      headers: {
-        "Cache-Control": cacheControl,
-      },
-    });
+    return attachUpstreamServerTiming(
+      NextResponse.json(data, {
+        headers: {
+          "Cache-Control": cacheControl,
+        },
+      }),
+      res,
+    );
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },

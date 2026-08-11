@@ -1016,6 +1016,13 @@ The frontend is a Next.js 16 / React 19 App Router app. Browser code calls
 `NEXT_PUBLIC_API_URL` and preserve auth. Public routes are `/`, `/share/*`,
 `/datasets/*`, and `/api/public/*`; everything else is Clerk-protected.
 
+Authenticated proxy routes forward incoming `traceparent`, `tracestate`, and
+`baggage` headers to the backend and join the backend's `Server-Timing` value
+onto the Next response on success, upstream error, and streamed passthrough
+responses. Keep this behavior in `frontend/src/lib/proxy-headers.ts`; the
+generic JSON proxy requires its incoming request, and bespoke hot routes must
+use the same helpers instead of replacing an existing timing value.
+
 The trial drawer surfaces verifier test counts only as a small passed/total
 row in the Summary tab (shown on public share views too); trials without test
 counts show no row. `_verifier` CTRF counts take precedence, and historical
