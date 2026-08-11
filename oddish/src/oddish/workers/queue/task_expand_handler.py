@@ -249,10 +249,9 @@ async def _migrate_loose_task_files(
     *,
     task_id: str,
     version: int,
-    expanded_prefix: str,
-    manifest_key: str,
+    staging_prefix: str,
     loose_files: list[dict[str, object]],
-) -> dict:
+) -> tuple[dict, bytes, list[tuple[str, str]]]:
     """Copy a loose-file task into the unified ``v{N}-files/`` layout.
 
     For pre-archive tasks the source bytes already live as individual
@@ -272,7 +271,7 @@ async def _migrate_loose_task_files(
             try:
                 body = await storage.download_bytes(source_key)
                 content_type, _ = mimetypes.guess_type(rel_path)
-                target_key = f"{expanded_prefix}{rel_path}"
+                target_key = f"{staging_prefix}{rel_path}"
                 await storage.upload_bytes(
                     body, target_key, content_type=content_type or None
                 )
@@ -312,14 +311,23 @@ async def _migrate_loose_task_files(
     manifest_bytes = json.dumps(manifest_payload, sort_keys=True, default=str).encode(
         "utf-8"
     )
-    await storage.upload_bytes(
-        manifest_bytes, manifest_key, content_type="application/json"
+    staged_objects = [
+        (
+            f"{staging_prefix}{entry['path']}",
+            f"{_expanded_prefix_for(task_id, version)}{entry['path']}",
+        )
+        for entry in manifest_files
+        if not entry.get("skipped")
+    ]
+    return (
+        {
+            "status": "expanded",
+            "source": "loose_files",
+            "files": len(manifest_files),
+        },
+        manifest_bytes,
+        staged_objects,
     )
-    return {
-        "status": "expanded",
-        "source": "loose_files",
-        "files": len(manifest_files),
-    }
 
 
 def _extract_regular_members(
@@ -417,9 +425,7 @@ async def run_task_expand_job(
             # stored loose per-file S3 objects at ``tasks/{task_id}/``;
             # migrate those directly into the same ``v{N}-files/`` layout
             # so the reader has one canonical fast path for every task.
-            # A short-circuit on an existing manifest keeps re-runs cheap
-            # (pre-archive tasks are frozen, so the stale-manifest risk
-            # is nil).
+            # A short-circuit on an existing manifest keeps re-runs cheap.
             if await storage.object_exists(manifest_key):
                 await _mark_version_expanded(
                     task_id=task_id,
@@ -439,20 +445,30 @@ async def run_task_expand_job(
                     f"and no loose files under tasks/{task_id}/"
                 ) from exc
 
-            result = await _migrate_loose_task_files(
+            staging_prefix = _staging_prefix_for(task_id, version)
+            result, manifest_bytes, staged_objects = await _migrate_loose_task_files(
                 storage,
                 task_id=task_id,
                 version=version,
-                expanded_prefix=expanded_prefix,
-                manifest_key=manifest_key,
+                staging_prefix=staging_prefix,
                 loose_files=loose_files,
             )
-            await _mark_version_expanded(
+            promoted = await _promote_expansion_if_current(
+                storage,
                 task_id=task_id,
                 version=version,
-                manifest_key=manifest_key,
                 expected_content_hash=expected_content_hash,
+                expanded_prefix=expanded_prefix,
+                manifest_key=manifest_key,
+                manifest_bytes=manifest_bytes,
+                staged_objects=staged_objects,
             )
+            if not promoted:
+                console.print(
+                    f"[yellow]TASK_EXPAND {task_id} v{version} discarded: "
+                    "source version changed during loose-file migration[/yellow]"
+                )
+                return {"status": "stale_source"}
             console.print(
                 f"[green]TASK_EXPAND {task_id} v{version} "
                 f"(loose_files): {result}[/green]"

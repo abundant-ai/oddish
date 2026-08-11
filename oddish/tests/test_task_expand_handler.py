@@ -399,6 +399,47 @@ async def test_expand_migrates_loose_file_task_without_archive(
 
 
 @pytest.mark.asyncio
+async def test_stale_loose_migration_is_not_promoted(monkeypatch):
+    row = type("Version", (), {"content_hash": "new-hash"})()
+
+    @asynccontextmanager
+    async def _session():
+        class _S:
+            async def get(self, *_args, **_kwargs):
+                return row
+
+            async def scalar(self, *_args, **_kwargs):
+                return None
+
+            async def commit(self):
+                return None
+
+        yield _S()
+
+    storage = _FakeStorage(
+        loose_objects={
+            "tasks/task-loose/task.toml": b"old source\n",
+            "tasks/task-loose/v1-files/task.toml": b"new expansion\n",
+        }
+    )
+    monkeypatch.setattr(task_expand_handler, "get_storage_client", lambda: storage)
+    monkeypatch.setattr(task_expand_handler, "get_session", _session)
+
+    async def _old_content_hash(*_args, **_kwargs):
+        return "old-hash"
+
+    monkeypatch.setattr(task_expand_handler, "_version_content_hash", _old_content_hash)
+
+    summary = await task_expand_handler.run_task_expand_job(
+        task_id="task-loose", version=1
+    )
+
+    assert summary == {"status": "stale_source"}
+    assert storage._objects["tasks/task-loose/v1-files/task.toml"] == b"new expansion\n"
+    assert not any(key.startswith("task-expand-staging/") for key in storage._objects)
+
+
+@pytest.mark.asyncio
 async def test_expand_short_circuits_when_loose_manifest_already_exists(
     monkeypatch, _patched_get_session
 ):
