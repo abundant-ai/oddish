@@ -6,7 +6,7 @@ result disappear from status-based readers; a payload paired with FAILED keeps
 a result that the failed replacement should have invalidated.
 
 Revision ID: verdict_state_001
-Revises: drop_analyzers_001
+Revises: drop_prompt_registry_001
 """
 
 from typing import Sequence, Union
@@ -16,7 +16,7 @@ import sqlalchemy as sa
 
 
 revision: str = "verdict_state_001"
-down_revision: Union[str, Sequence[str], None] = "drop_analyzers_001"
+down_revision: Union[str, Sequence[str], None] = "drop_prompt_registry_001"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
