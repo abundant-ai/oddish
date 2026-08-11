@@ -11,6 +11,8 @@ import {
 import useSWR from "swr";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useAuth } from "@clerk/nextjs";
+import { isOrgAdminRole } from "@/lib/org-roles";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -273,6 +275,9 @@ function ExperimentsTableBody({
   onViewOrgExperiments: () => void;
 }) {
   const { experiments, hasMore, ok } = use(promise);
+  // The qa-report experiment is a debug surface; verdicts live inline on the
+  // experiment page. Only admins get a pointer to the machinery.
+  const canSeeQaReport = isOrgAdminRole(useAuth().orgRole);
 
   const [deleteTarget, setDeleteTarget] = useState<{
     id: string;
@@ -396,7 +401,7 @@ function ExperimentsTableBody({
                             aria-label="Published experiment"
                           />
                         )}
-                        {experiment.qa_report_experiment_id && (
+                        {experiment.qa_report_experiment_id && canSeeQaReport && (
                           <Link
                             href={`/experiments/${encodeExperimentRouteParam(
                               experiment.qa_report_experiment_id

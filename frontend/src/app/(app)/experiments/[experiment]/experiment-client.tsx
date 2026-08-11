@@ -289,6 +289,10 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
   const displayName = experimentName || experimentId || "Experiment";
   const initialName = experimentName || experimentId || "";
   const canManageExperimentShare = isOrgAdminRole(orgRole);
+  // The qa-report experiment is QA's machinery, not a product surface: the
+  // verdict, reasoning, and per-trial grades are all inline on this page and
+  // in the task overview. Only admins get the hop, for debugging QA itself.
+  const canSeeQaReport = isOrgAdminRole(orgRole);
 
   // Deletes below write the grid optimistically, so for one round trip the row
   // is gone while the cost tiles still show the pre-delete rollup. Do NOT
@@ -598,19 +602,21 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
                   …
                 </span>
               </div>
-            ) : experimentShare?.shadow_of ? (
+            ) : experimentShare?.shadow_of && canSeeQaReport ? (
               <Link
                 href={`/experiments/${encodeExperimentRouteParam(experimentShare.shadow_of)}`}
                 className="text-muted-foreground text-[10px] hover:underline"
+                title="This page is the QA machinery for the graded experiment"
               >
-                ← graded experiment
+                ⇄ graded experiment
               </Link>
-            ) : experimentShare?.qa_report_experiment_id ? (
+            ) : experimentShare?.qa_report_experiment_id && canSeeQaReport ? (
               <Link
                 href={`/experiments/${encodeExperimentRouteParam(experimentShare.qa_report_experiment_id)}`}
                 className="text-muted-foreground text-[10px] hover:underline"
+                title="Debug view: the QA/audit runs behind this experiment's verdicts"
               >
-                QA report →
+                ⇄ QA report
               </Link>
             ) : null
           }

@@ -97,11 +97,19 @@ function getModelScopedAgents(tasks: Task[]): Set<string> {
 }
 
 export function getExperimentAgentKey(
-  trial: Pick<Trial, "agent" | "model" | "is_probe">,
+  trial: Pick<Trial, "agent" | "model" | "is_probe" | "kind">,
   modelScopedAgents: ReadonlySet<string>
 ): string {
   if (trial.is_probe) {
     return PROBE_AGENT_KEY;
+  }
+  // QA / audit trials are the platform's own runs, not entries of the
+  // agent under test. Give them their own labeled column so a qa-report
+  // experiment reads as "the QA runs", never as a mirror of the agent
+  // matrix ("the same task twice"). Only qa-report experiments carry
+  // these trials in their rows, so agent matrices are unaffected.
+  if (!isAgentTrial(trial)) {
+    return trial.kind as string;
   }
   const display = getDisplayAgentModel(trial);
   if (!modelScopedAgents.has(display.agent)) {
@@ -129,6 +137,18 @@ export function buildExperimentAgentSummaries(tasks: Task[]): {
           agent: PROBE_AGENT_KEY,
           model: null,
           queueKey: null,
+          isModelScoped: false,
+        });
+        continue;
+      }
+
+      if (!isAgentTrial(trial)) {
+        summaries.set(key, {
+          key,
+          label: trial.kind === "qa" ? "QA run" : "Pre-trial audit",
+          agent: trial.agent,
+          model: trial.model ?? null,
+          queueKey: trial.provider ?? null,
           isModelScoped: false,
         });
         continue;

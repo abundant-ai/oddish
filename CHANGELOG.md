@@ -15,6 +15,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a "QA verdicts" tile when any task in the experiment ran QA. The task
   page's non-agent trial section is titled "QA" and labels its chips in
   words ("QA run", "Pre-trial audit") instead of raw kind strings.
+- QA's conclusion and QA's machinery are now separate surfaces. The verdict
+  chip is clickable and opens the task overview — the full graded set,
+  including trials from other experiments with their "elsewhere" chips.
+  Because QA is task-scoped, a verdict can come from a run that did not
+  cover the viewed experiment's trials; the chip then renders dashed with
+  an "earlier run" tooltip saying how many settled trials here it missed.
+  The "(qa report)" shadow experiment is a debug surface: the hop links on
+  the experiment header and the dashboard chip are now admin-only, and its
+  page labels QA/audit trials as their own "QA run" / "Pre-trial audit"
+  columns instead of mirroring the agent matrix.
 
 ### Fixed
 
