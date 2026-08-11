@@ -645,7 +645,7 @@ function TrialAnalysisCard({
   );
 }
 
-function buildOddishRunCommand(trial: Trial, task: Task): string {
+export function buildOddishRunCommand(trial: Trial, task: Task): string {
   const parts: string[] = ["oddish run"];
 
   // `--task <task_id>` re-queues trials against the existing server-side
@@ -700,13 +700,13 @@ function hasLiveQueueSnapshot(trial: Trial): boolean {
   return ["queued", "retrying", "running", "pending"].includes(trial.status);
 }
 
-type SandboxBackendId = "daytona" | "modal";
+type SandboxBackendId = "daytona" | "modal" | "ec2";
 
 type SandboxBackend = {
   id: SandboxBackendId;
   label: string;
-  logoSrc: string;
-  logoWidth: number;
+  logoSrc?: string;
+  logoWidth?: number;
   href?: string;
 };
 
@@ -726,13 +726,21 @@ const SANDBOX_BACKENDS: Record<
     logoSrc: "/modal-logo-icon.png",
     logoWidth: 10,
   },
+  ec2: {
+    id: "ec2",
+    label: "EC2",
+  },
 };
 
 function normalizeSandboxBackend(
   provider: string | null | undefined,
 ): SandboxBackendId | null {
   const normalized = provider?.trim().toLowerCase();
-  if (normalized === "daytona" || normalized === "modal") {
+  if (
+    normalized === "daytona" ||
+    normalized === "modal" ||
+    normalized === "ec2"
+  ) {
     return normalized;
   }
   return null;
@@ -763,16 +771,18 @@ function getSandboxBackend(trial: Trial): SandboxBackend | null {
 function SandboxBackendBadge({ backend }: { backend: SandboxBackend }) {
   const content = (
     <>
-      <span className="inline-flex h-4 items-center justify-center rounded-sm bg-white px-1">
-        <Image
-          src={backend.logoSrc}
-          alt={`${backend.label} logo`}
-          width={backend.logoWidth}
-          height={10}
-          className="h-2.5 w-auto object-contain"
-        />
-      </span>
-      {backend.id === "modal" && (
+      {backend.logoSrc && (
+        <span className="inline-flex h-4 items-center justify-center rounded-sm bg-white px-1">
+          <Image
+            src={backend.logoSrc}
+            alt={`${backend.label} logo`}
+            width={backend.logoWidth ?? 10}
+            height={10}
+            className="h-2.5 w-auto object-contain"
+          />
+        </span>
+      )}
+      {backend.id !== "daytona" && (
         <span className="text-muted-foreground font-sans text-[9px] font-semibold tracking-wide uppercase">
           {backend.label}
         </span>

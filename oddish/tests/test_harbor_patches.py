@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import builtins
 import importlib
 import json
 import logging
@@ -14,7 +15,9 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
+from harbor import Job
 from harbor.agents.factory import AgentFactory
+from harbor.environments.lifecycle_timing import timed_environment_subphase
 from harbor.models.task.config import TaskConfig as HarborTaskConfig
 from harbor.models.trial.config import AgentConfig, TrialConfig
 from harbor.models.trial.config import TaskConfig as TrialTaskConfig
@@ -29,6 +32,11 @@ harbor_entry = importlib.import_module("oddish.workers.harbor._entry")
 
 RegistryCredential = _registry_auth.RegistryCredential
 current_registry_credentials = _registry_auth.current_registry_credentials
+
+
+def test_pinned_harbor_includes_ec2_lifecycle_contract():
+    assert callable(Job.on_environment_provisioned)
+    assert callable(timed_environment_subphase)
 
 
 def test_runtime_allowed_hosts_are_consumed_but_never_serialized(tmp_path):
@@ -102,6 +110,24 @@ def test_runtime_fields_survive_job_to_trial_config_without_serializing(tmp_path
     serialized = trial_cfg.model_dump_json()
     assert "runtime-relay.test" not in serialized
     assert "private-deployment" not in serialized
+
+
+def test_patches_module_loads_without_importing_oddish(monkeypatch):
+    real_import = builtins.__import__
+
+    def guarded_import(name, *args, **kwargs):
+        if name == "oddish" or name.startswith("oddish."):
+            raise AssertionError(f"standalone patches imported {name}")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    module_name = "_standalone_oddish_harbor_patches_test"
+    spec = importlib.util.spec_from_file_location(module_name, harbor_patches.__file__)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert callable(module.apply_harbor_patches)
 
 
 class _FakeStrategy:
@@ -379,7 +405,7 @@ async def test_login_nonzero_log_redacts_token(creds, caplog):
 
 
 def test_apply_harbor_patches_is_idempotent(monkeypatch):
-    calls = {"daytona": 0, "modal": 0}
+    calls = {"daytona": 0, "modal": 0, "ec2": []}
     monkeypatch.setattr(harbor_patches, "_PATCHED", False)
     monkeypatch.setattr(
         harbor_patches,
@@ -391,11 +417,36 @@ def test_apply_harbor_patches_is_idempotent(monkeypatch):
         "_patch_modal_dind",
         lambda: calls.__setitem__("modal", calls["modal"] + 1),
     )
+    monkeypatch.setattr(
+        harbor_patches,
+        "_patch_ec2_lifecycle",
+        lambda *, require_ec2: calls["ec2"].append(require_ec2),
+    )
 
     harbor_patches.apply_harbor_patches()
-    harbor_patches.apply_harbor_patches()
+    harbor_patches.apply_harbor_patches(require_ec2=True)
 
-    assert calls == {"daytona": 1, "modal": 1}
+    assert calls == {"daytona": 1, "modal": 1, "ec2": [False, True]}
+
+
+def test_ec2_lifecycle_patch_allows_prelaunch_events_and_exposes_instance_handle():
+    ec2_module = importlib.import_module("harbor.environments.ec2")
+    harbor_patches._patch_ec2_lifecycle(require_ec2=True)
+    environment = SimpleNamespace(
+        instance_id=None,
+        region="us-west-2",
+        user_tags={
+            harbor_patches._EC2_MANAGED_TAG_KEY: "true",
+            harbor_patches._EC2_AWS_ACCOUNT_ID_TAG_KEY: "022499036267",
+        },
+    )
+
+    assert ec2_module.EC2Environment.get_sandbox_id(environment) is None
+
+    environment.instance_id = "i-0123456789abcdef0"
+    assert ec2_module.EC2Environment.get_sandbox_id(environment) == (
+        "ec2://022499036267/us-west-2/i-0123456789abcdef0"
+    )
 
 
 def test_daytona_mirror_patch_targets_dind_only(monkeypatch):
@@ -772,23 +823,51 @@ def test_wrappers_set_marker_to_prevent_double_wrap(make_wrapped, attr):
 
 
 def test_entry_applies_sibling_harbor_patches(monkeypatch):
-    calls: list[str] = []
+    calls: list[bool] = []
+    patch_module = SimpleNamespace(
+        apply_harbor_patches=lambda *, require_ec2: calls.append(require_ec2)
+    )
 
     def _fake_import(name):
         assert name == "oddish.workers.harbor.patches"
-        return SimpleNamespace(apply_harbor_patches=lambda: calls.append("patched"))
+        return patch_module
 
     monkeypatch.setattr(harbor_entry.importlib, "import_module", _fake_import)
 
-    harbor_entry._apply_sibling_harbor_patches()
+    result = harbor_entry._apply_sibling_harbor_patches(require_ec2=True)
 
-    assert calls == ["patched"]
+    assert calls == [True]
+    assert result is patch_module
+
+
+@pytest.mark.parametrize(
+    ("environment_type", "expected"),
+    [("ec2", True), ("docker", False)],
+)
+@pytest.mark.asyncio
+async def test_entry_requires_ec2_patch_only_for_ec2_payload(
+    monkeypatch, environment_type: str, expected: bool
+) -> None:
+    calls: list[bool] = []
+
+    def stop_after_patch(*, require_ec2: bool) -> None:
+        calls.append(require_ec2)
+        raise RuntimeError("stop after patch")
+
+    monkeypatch.setattr(harbor_entry, "_apply_sibling_harbor_patches", stop_after_patch)
+
+    with pytest.raises(RuntimeError, match="stop after patch"):
+        await harbor_entry._run({"environment_config": {"type": environment_type}})
+
+    assert calls == [expected]
 
 
 def test_standalone_entry_preserves_patch_package_context(monkeypatch):
     calls: list[str] = []
     monkeypatch.setattr(
-        harbor_patches, "apply_harbor_patches", lambda: calls.append("patched")
+        harbor_patches,
+        "apply_harbor_patches",
+        lambda *, require_ec2=False: calls.append("patched"),
     )
 
     namespace = runpy.run_path(
@@ -914,7 +993,7 @@ async def test_entry_run_applies_patches_before_job_create(monkeypatch, tmp_path
     monkeypatch.setattr(
         harbor_entry,
         "_apply_sibling_harbor_patches",
-        lambda: order.append("patch"),
+        lambda **_kwargs: order.append("patch"),
     )
 
     def _fake_build_job_config(_payload):
@@ -927,6 +1006,72 @@ async def test_entry_run_applies_patches_before_job_create(monkeypatch, tmp_path
 
     assert order == ["patch", "config", "create", "run"]
     assert outcome["error"] is None
+
+
+@pytest.mark.asyncio
+async def test_entry_run_emits_ec2_identity_immediately_after_launch(
+    monkeypatch, tmp_path
+):
+    emitted: list[dict] = []
+    registered_callback = None
+    harbor_module = ModuleType("harbor")
+
+    class FakeJob:
+        job_dir = str(tmp_path)
+
+        @classmethod
+        async def create(cls, _config):
+            return cls()
+
+        def on_environment_provisioned(self, hook):
+            nonlocal registered_callback
+            registered_callback = hook
+
+        def __getattr__(self, name):
+            if name.startswith("on_"):
+                return lambda _hook: None
+            raise AttributeError(name)
+
+        async def run(self):
+            assert registered_callback is not None
+            await registered_callback(
+                SimpleNamespace(
+                    event="environment-provisioned",
+                    trial_id=None,
+                    environment_provider="ec2",
+                    environment_external_id=("ec2://123456789012/us-west-2/i-launched"),
+                    result=None,
+                )
+            )
+
+    harbor_module.Job = FakeJob
+    monkeypatch.setitem(sys.modules, "harbor", harbor_module)
+    monkeypatch.setattr(
+        harbor_entry,
+        "_apply_sibling_harbor_patches",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(harbor_entry, "_build_job_config", lambda _payload: object())
+    monkeypatch.setattr(harbor_entry, "_emit_event_line", emitted.append)
+
+    outcome = await harbor_entry._run(
+        {
+            "jobs_dir": str(tmp_path),
+            "environment_config": {"type": "ec2"},
+        }
+    )
+
+    assert outcome["error"] is None
+    assert emitted == [
+        {
+            harbor_entry.EVENT_SENTINEL: True,
+            "event": "environment-provisioned",
+            "trial_id": None,
+            "environment_provider": "ec2",
+            "environment_external_id": ("ec2://123456789012/us-west-2/i-launched"),
+            "result": None,
+        }
+    ]
 
 
 def test_runtime_fields_patch_is_idempotent():

@@ -54,6 +54,7 @@ from oddish.db import (
 from oddish.db.storage import extract_s3_key_from_path, get_storage_client
 from oddish.experiment import generate_experiment_name
 from oddish.registry_auth import RegistryCredential, encrypt_credentials
+from oddish.runtime.sandbox_lifecycle import execution_lane_for_environment
 from oddish.schemas import TaskSubmission, TrialSpec
 from oddish.task_timeouts import validate_task_timeout_config
 from oddish.workers.jobs.enqueue import (
@@ -446,6 +447,7 @@ async def enqueue_trial_worker_job(
     parent_job_id: str | None = None,
     harbor_variant_id: str = "default",
     registry_auth_enc: str | None = None,
+    execution_lane: str = "default",
 ) -> WorkerJobModel:
     return await enqueue_worker_job(
         session,
@@ -459,6 +461,7 @@ async def enqueue_trial_worker_job(
             max_attempts=max_attempts,
             parent_job_id=parent_job_id,
             harbor_variant_id=harbor_variant_id,
+            execution_lane=execution_lane,
         ),
     )
 
@@ -988,6 +991,9 @@ async def create_task(
         queue_key = settings.get_queue_key_for_trial(spec.agent, model)
         trial_id = f"{task_id}-{i}"
         harbor_config = _build_harbor_config_for_trial(submission, spec)
+        trial_environment = spec.environment or (
+            "modal" if (harbor_config or {}).get("mode") == "probe" else None
+        )
         trial_rows.append(
             {
                 "id": trial_id,
@@ -1002,8 +1008,7 @@ async def create_task(
                 "queue_key": queue_key,
                 "model": model,
                 "timeout_minutes": spec.timeout_minutes,
-                "environment": spec.environment
-                or ("modal" if (harbor_config or {}).get("mode") == "probe" else None),
+                "environment": trial_environment,
                 "harbor_config": harbor_config,
                 "is_probe": (harbor_config or {}).get("mode") == "probe",
                 "harbor_sha": (harbor_config or {}).get("resolved_sha"),
@@ -1021,6 +1026,7 @@ async def create_task(
                 org_id=org_id,
                 max_attempts=submission.max_trial_attempts,
                 harbor_variant_id=(harbor_config or {}).get("variant_id") or "default",
+                execution_lane=execution_lane_for_environment(trial_environment),
             )
         )
 
@@ -1247,6 +1253,9 @@ async def append_trials_to_task(
         queue_key = settings.get_queue_key_for_trial(spec.agent, model)
         trial_id = f"{task.id}-{next_index}"
         harbor_config = _build_harbor_config_for_trial(submission, spec)
+        trial_environment = spec.environment or (
+            "modal" if (harbor_config or {}).get("mode") == "probe" else None
+        )
         new_trial_rows.append(
             {
                 "id": trial_id,
@@ -1261,8 +1270,7 @@ async def append_trials_to_task(
                 "queue_key": queue_key,
                 "model": model,
                 "timeout_minutes": spec.timeout_minutes,
-                "environment": spec.environment
-                or ("modal" if (harbor_config or {}).get("mode") == "probe" else None),
+                "environment": trial_environment,
                 "harbor_config": harbor_config,
                 "is_probe": (harbor_config or {}).get("mode") == "probe",
                 "harbor_sha": (harbor_config or {}).get("resolved_sha"),
@@ -1279,6 +1287,7 @@ async def append_trials_to_task(
                 org_id=task.org_id,
                 max_attempts=submission.max_trial_attempts,
                 harbor_variant_id=(harbor_config or {}).get("variant_id") or "default",
+                execution_lane=execution_lane_for_environment(trial_environment),
             )
         )
         new_trial_ids.append(trial_id)

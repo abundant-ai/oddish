@@ -21,7 +21,7 @@ flush failed at handler-commit time.
 
 import asyncio
 from datetime import timedelta
-from typing import cast
+from typing import Any, cast
 
 from sqlalchemy import func, select, text
 from sqlalchemy.engine import CursorResult
@@ -50,11 +50,20 @@ from oddish.db import (
     utcnow,
 )
 from oddish.db.models import AnalyzerModel
+from oddish.runtime.ec2_orphans import (
+    Ec2InstanceSnapshot,
+    Ec2InventorySnapshot,
+    Ec2OrphanVerdict,
+    Ec2WorkerLiveness,
+    decide_ec2_orphan,
+)
+from oddish.runtime.registry import get_backend
 from oddish.workers.queue.worker_job_single_job import (
     calculate_trial_retry_delay_seconds,
     classify_retry_reason,
 )
 from oddish.workers.queue.shared import console
+from oddish.workers.queue.sandbox_capacity import cleanup_sandbox_capacity_leases
 
 # See historical context: we bumped this from 10 -> 15 after a
 # pooler-blip incident reaped 25-70 healthy trials in a single sweep.
@@ -390,7 +399,7 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
                 "cancelled during orphaned queue cleanup."
             )
             trial.analysis_finished_at = utcnow()
-        return trial.id
+        return str(trial.id)
 
     if kind == "ANALYSIS":
         # Legacy per-trial classification rows, drained across a deploy.
@@ -519,7 +528,40 @@ async def cleanup_orphaned_queue_state(
     else -- stage transitions, terminal-runtime-ref cleanup -- is
     either handled by the handler commit or kept as a safety net here.
     """
+    ec2_inventory: Ec2InventorySnapshot | None = None
+    ec2_orphan_snapshot_errors = 0
+
+    if settings.ec2_enabled:
+        ec2_backend = cast(Any, get_backend("ec2"))
+        try:
+            if ec2_backend is None:
+                raise RuntimeError("EC2 is enabled but its backend is not registered")
+            ec2_inventory = await ec2_backend.snapshot_managed_instances()
+            console.print(
+                "metric=ec2_orphan_snapshot "
+                f"outcome=success count={len(ec2_inventory.instances)}"
+            )
+        except Exception as exc:
+            ec2_orphan_snapshot_errors = 1
+            ec2_inventory = None
+            console.print(
+                "metric=ec2_orphan_snapshot_error outcome=error "
+                f"error_type={type(exc).__name__} error={exc}"
+            )
+
     zombie_txn_reaped = await reap_idle_in_transaction_zombies()
+    sandbox_capacity_cleanup_errors = 0
+    try:
+        sandbox_capacity_leases_cleared = await cleanup_sandbox_capacity_leases()
+    except Exception as exc:
+        sandbox_capacity_leases_cleared = 0
+        sandbox_capacity_cleanup_errors = 1
+        console.print(
+            "metric=sandbox_capacity_cleanup outcome=error "
+            f"error_type={type(exc).__name__} error={exc}"
+        )
+    ec2_orphan_keep_verdicts = 0
+    ec2_orphan_terminate_candidates = 0
 
     async with get_session() as session:
         (
@@ -530,10 +572,17 @@ async def cleanup_orphaned_queue_state(
         ) = await _reap_stale_worker_jobs(
             session, stale_after_minutes=stale_after_minutes
         )
+        if ec2_inventory is not None and ec2_inventory.instances:
+            ec2_targets, ec2_orphan_keep_verdicts = await _decide_ec2_orphan_targets(
+                session,
+                ec2_inventory.instances,
+                expected_deployment=ec2_inventory.expected_deployment,
+                expected_account_id=ec2_inventory.expected_account_id,
+                stale_after_minutes=stale_after_minutes,
+            )
+            worker_targets.update(ec2_targets)
+            ec2_orphan_terminate_candidates = len(ec2_targets)
 
-    worker_sandboxes_terminated = await _terminate_orphaned_sandboxes(worker_targets)
-
-    async with get_session() as session:
         tasks_progressed_to_analysis = await _advance_running_tasks_to_analysis(
             session, reaped_trial_ids
         )
@@ -562,15 +611,15 @@ async def cleanup_orphaned_queue_state(
         tag_projections_reconciled = await _maybe_reconcile_tag_projections(session)
         tag_owners_reassigned = await sweep_orphaned_tag_owners(session)
 
+    # These run AFTER the outer commit so a rolled-back sweep never tears down
+    # remote handles / claim metadata the DB still points at. Best-effort; the
+    # provider TTL and the next sweep are the backstops.
+    worker_sandboxes_terminated = await _terminate_orphaned_sandboxes(worker_targets)
     try:
         modal_cost_spans_reconciled = await reconcile_compute_cost_spans()
     except Exception as exc:
         console.print(f"[yellow]Modal cost reconciliation failed: {exc}[/yellow]")
         modal_cost_spans_reconciled = 0
-
-    # These run AFTER the outer commit so a rolled-back sweep never tears down
-    # remote handles / claim metadata the DB still points at. Best-effort; the
-    # provider TTL and the next sweep are the backstops.
     terminal_trial_runtime_refs_cleared = await clear_terminal_trial_runtime_refs()
     stale_trial_events_purged = await purge_stale_trial_events()
 
@@ -578,6 +627,12 @@ async def cleanup_orphaned_queue_state(
         "worker_jobs_retried": worker_jobs_retried,
         "worker_jobs_failed": worker_jobs_failed,
         "worker_sandboxes_terminated": worker_sandboxes_terminated,
+        "ec2_orphan_instances_seen": (
+            len(ec2_inventory.instances) if ec2_inventory is not None else 0
+        ),
+        "ec2_orphan_terminate_candidates": ec2_orphan_terminate_candidates,
+        "ec2_orphan_snapshot_errors": ec2_orphan_snapshot_errors,
+        "ec2_orphan_keep_verdicts": ec2_orphan_keep_verdicts,
         "tasks_progressed_to_analysis": tasks_progressed_to_analysis,
         "tasks_progressed_to_verdict": tasks_progressed_to_verdict,
         "verdict_pending_completed": verdict_pending_completed,
@@ -590,11 +645,208 @@ async def cleanup_orphaned_queue_state(
         "stale_trial_events_purged": stale_trial_events_purged,
         "orphaned_active_slots_cleared": orphaned_active_slots_cleared,
         "zombie_txn_reaped": zombie_txn_reaped,
+        "sandbox_capacity_leases_cleared": sandbox_capacity_leases_cleared,
+        "sandbox_capacity_cleanup_errors": sandbox_capacity_cleanup_errors,
         "experiments_last_activity_reconciled": experiments_last_activity_reconciled,
         "tag_projections_reconciled": tag_projections_reconciled,
         "tag_owners_reassigned": tag_owners_reassigned,
         "modal_cost_spans_reconciled": modal_cost_spans_reconciled,
     }
+
+
+async def _decide_ec2_orphan_targets(
+    session: Any,
+    snapshots: tuple[Ec2InstanceSnapshot, ...],
+    *,
+    expected_deployment: str,
+    expected_account_id: str,
+    stale_after_minutes: int,
+) -> tuple[set[tuple[str, str]], int]:
+    """Join inventory to the attempt ledger before any destructive decision."""
+
+    now = await session.scalar(select(func.now()))
+    if now is None:
+        raise RuntimeError("database did not return NOW() for EC2 orphan decisions")
+
+    worker_job_ids = sorted(
+        {
+            snapshot.worker_job_id_tag
+            for snapshot in snapshots
+            if snapshot.worker_job_id_tag
+        }
+    )
+    trial_ids = sorted(
+        {snapshot.trial_id_tag for snapshot in snapshots if snapshot.trial_id_tag}
+    )
+    external_ids = sorted(
+        {snapshot.external_id for snapshot in snapshots if snapshot.account_id_tag}
+    )
+    rows = (
+        (
+            await session.execute(
+                text(
+                    """
+                    SELECT id,
+                           subject_id,
+                           status::text AS status,
+                           provider,
+                           external_id,
+                           (
+                               heartbeat_at IS NOT NULL
+                               AND heartbeat_at >= NOW() - make_interval(
+                                   mins => :stale_after_minutes
+                               )
+                           ) AS heartbeat_fresh
+                    FROM worker_jobs
+                    WHERE deleted_at IS NULL
+                      AND kind = 'TRIAL'
+                      AND subject_table = 'trials'
+                      AND (
+                          id = ANY(:worker_job_ids)
+                          OR subject_id = ANY(:trial_ids)
+                          OR (
+                              provider = 'ec2'
+                              AND external_id = ANY(:external_ids)
+                          )
+                      )
+                    """
+                ),
+                {
+                    "worker_job_ids": worker_job_ids,
+                    "trial_ids": trial_ids,
+                    "external_ids": external_ids,
+                    "stale_after_minutes": stale_after_minutes,
+                },
+            )
+        )
+        .mappings()
+        .all()
+    )
+    workers = tuple(
+        Ec2WorkerLiveness(
+            worker_job_id=str(row["id"]),
+            trial_id=str(row["subject_id"]) if row["subject_id"] else None,
+            status=str(row["status"]),
+            provider=str(row["provider"]) if row["provider"] else None,
+            external_id=(str(row["external_id"]) if row["external_id"] else None),
+            heartbeat_fresh=bool(row["heartbeat_fresh"]),
+        )
+        for row in rows
+    )
+
+    sandbox_run_ids = sorted(
+        {
+            snapshot.sandbox_run_id_tag
+            for snapshot in snapshots
+            if snapshot.sandbox_run_id_tag
+        }
+    )
+    ledger_rows = []
+    if sandbox_run_ids:
+        ledger_rows = (
+            (
+                await session.execute(
+                    text(
+                        """
+                        SELECT id,
+                               worker_job_id,
+                               worker_job_attempt,
+                               trial_id,
+                               provider,
+                               state,
+                               deployment,
+                               aws_account_id,
+                               region,
+                               launch_token,
+                               external_id
+                        FROM sandbox_runs
+                        WHERE deleted_at IS NULL
+                          AND id = ANY(:sandbox_run_ids)
+                        """
+                    ),
+                    {"sandbox_run_ids": sandbox_run_ids},
+                )
+            )
+            .mappings()
+            .all()
+        )
+    ledger_by_id = {str(row["id"]): row for row in ledger_rows}
+
+    targets: set[tuple[str, str]] = set()
+    kept = 0
+    inventory_handles = frozenset(snapshot.external_id for snapshot in snapshots)
+    for snapshot in snapshots:
+        ledger = ledger_by_id.get(snapshot.sandbox_run_id_tag or "")
+        try:
+            tagged_attempt = int(snapshot.worker_attempt_tag or "")
+        except ValueError:
+            tagged_attempt = -1
+        ledger_matches = bool(
+            ledger is not None
+            and str(ledger["provider"]).lower() == "ec2"
+            and str(ledger["deployment"]) == expected_deployment
+            and str(ledger["aws_account_id"]) == expected_account_id
+            and str(ledger["region"]) == snapshot.region
+            and str(ledger["worker_job_id"]) == snapshot.worker_job_id_tag
+            and int(ledger["worker_job_attempt"]) == tagged_attempt
+            and str(ledger["trial_id"]) == snapshot.trial_id_tag
+            and str(ledger["launch_token"]) == snapshot.launch_token_tag
+            and (
+                ledger["external_id"] is None
+                or str(ledger["external_id"]) == snapshot.external_id
+            )
+        )
+        if not ledger_matches:
+            console.print(
+                "metric=ec2_orphan_verdict "
+                f"instance_id={snapshot.instance_id} verdict=refuse "
+                "reason=ledger_ownership_mismatch"
+            )
+            continue
+
+        decision = decide_ec2_orphan(
+            snapshot,
+            workers,
+            expected_deployment=expected_deployment,
+            expected_account_id=expected_account_id,
+            now=now,
+            inventory_handles=inventory_handles,
+        )
+        teardown_requested = str(ledger["state"]) in {
+            "TERMINATING",
+            "TERMINATED",
+        }
+        if decision.verdict is Ec2OrphanVerdict.KEEP and not teardown_requested:
+            kept += 1
+        console.print(
+            "metric=ec2_orphan_verdict "
+            f"instance_id={snapshot.instance_id} "
+            f"verdict={'terminate' if teardown_requested else decision.verdict.value} "
+            f"reason={'ledger_teardown_requested' if teardown_requested else decision.reason.value}"
+        )
+        if decision.should_terminate or teardown_requested:
+            if ledger["external_id"] is None:
+                await session.execute(
+                    text(
+                        """
+                        UPDATE sandbox_runs
+                        SET external_id = :external_id,
+                            state = 'TERMINATING',
+                            termination_requested_at = COALESCE(
+                                termination_requested_at, NOW()
+                            ),
+                            updated_at = NOW()
+                        WHERE id = :sandbox_run_id
+                          AND external_id IS NULL
+                        """
+                    ),
+                    {
+                        "external_id": snapshot.external_id,
+                        "sandbox_run_id": str(ledger["id"]),
+                    },
+                )
+            targets.add(("ec2", snapshot.external_id))
+    return targets, kept
 
 
 # Advisory-lock key so only one container reconciles tag projections per
@@ -1436,10 +1688,28 @@ async def _terminate_orphaned_sandboxes(worker_targets: set[tuple[str, str]]) ->
     """
     if not worker_targets:
         return 0
+    ordered_targets = sorted(worker_targets)
     results = await asyncio.gather(
         *(
             cancel_job_by_worker(provider, external_id)
-            for provider, external_id in worker_targets
-        )
+            for provider, external_id in ordered_targets
+        ),
+        return_exceptions=True,
     )
-    return sum(1 for ok in results if ok)
+    terminated = 0
+    for (provider, external_id), result in zip(ordered_targets, results, strict=True):
+        if isinstance(result, BaseException):
+            console.print(
+                "metric=orphaned_sandbox_termination outcome=error "
+                f"provider={provider} external_id={external_id} "
+                f"error_type={type(result).__name__} error={result}"
+            )
+            continue
+        if result:
+            terminated += 1
+        console.print(
+            "metric=orphaned_sandbox_termination "
+            f"outcome={'terminated' if result else 'failed'} "
+            f"provider={provider} external_id={external_id}"
+        )
+    return terminated

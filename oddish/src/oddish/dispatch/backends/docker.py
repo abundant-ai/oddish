@@ -75,9 +75,16 @@ class DockerPoolDispatcher:
         self._extra_run_args = list(extra_run_args)
 
     async def spawn(self, *, spawn_plan: Sequence[str]) -> Sequence[WorkerHandle]:
+        return await self.spawn_units(
+            spawn_units=[(queue_key, "default", "default") for queue_key in spawn_plan]
+        )
+
+    async def spawn_units(
+        self, *, spawn_units: Sequence[tuple[str, str, str]]
+    ) -> Sequence[WorkerHandle]:
         handles: list[WorkerHandle] = []
         try:
-            for queue_key in spawn_plan:
+            for queue_key, harbor_variant_id, execution_lane in spawn_units:
                 args = [
                     "run",
                     "-d",
@@ -93,6 +100,12 @@ class DockerPoolDispatcher:
                     args += ["-e", f"{key}={value}"]
                 # The worker drains its assigned queue_key only.
                 args += ["-e", f"ODDISH_WORKER_QUEUE_KEY={queue_key}"]
+                args += [
+                    "-e",
+                    f"ODDISH_WORKER_HARBOR_VARIANT_ID={harbor_variant_id}",
+                    "-e",
+                    f"ODDISH_WORKER_EXECUTION_LANE={execution_lane}",
+                ]
                 args += list(self._extra_run_args)
                 args.append(self._image)
                 args += self._command
@@ -103,6 +116,10 @@ class DockerPoolDispatcher:
                         queue_key=queue_key,
                         id=container_id,
                         provisional=False,
+                        metadata={
+                            "harbor_variant_id": harbor_variant_id,
+                            "execution_lane": execution_lane,
+                        },
                     )
                 )
         except Exception:
