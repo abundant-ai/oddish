@@ -167,3 +167,59 @@ async def test_refresh_ignores_a_fresh_block_inside_the_lock(monkeypatch):
     run.assert_awaited_once()
     load_fresh.assert_not_awaited()
     assert result["cohort_success"] == generated_output["cohort_success"]
+
+
+# ---------------------------------------------------------------------------
+# _load_fresh_comparison: the cache lookup is version-scoped
+# ---------------------------------------------------------------------------
+
+
+async def _captured_lookup_sql(task_version_id: str) -> str:
+    """Run ``_load_fresh_comparison`` against a session that only records the
+    statement, and return that statement as Postgres SQL."""
+    from sqlalchemy.dialects import postgresql
+
+    captured = {}
+
+    async def execute(statement):
+        captured["statement"] = statement
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = None
+        return result
+
+    session = MagicMock()
+    session.execute = execute
+
+    await cc._load_fresh_comparison(
+        session,
+        task_id="t1",
+        task_version_id=task_version_id,
+        current_hash="aaa",
+        schema_version=1,
+    )
+    return str(
+        captured["statement"].compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_cache_lookup_filters_on_the_requested_version():
+    """The newest row for a task may belong to another version.
+
+    Without a version filter in the WHERE clause that row is the only one the
+    query can see, ``is_stale`` rejects it, and viewing two versions in turn
+    regenerates both every time -- an LLM call per view, forever.
+    """
+    sql = await _captured_lookup_sql("v-requested")
+
+    assert "task_version_id" in sql
+    assert "v-requested" in sql
+
+
+@pytest.mark.asyncio
+async def test_cache_lookup_version_filter_tracks_its_argument():
+    """Guards against the filter being pinned to a constant rather than to the
+    version actually asked for."""
+    assert "v-other" not in await _captured_lookup_sql("v-requested")

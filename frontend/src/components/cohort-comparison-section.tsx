@@ -69,14 +69,16 @@ export function CohortComparisonSection({
 }: {
   taskId: string;
   apiBaseUrl?: string;
-  /** Selected task version. The overview scopes its other sections to this, so
-      without it an older version would show the current version's comparison
-      beside that older version's trials. */
-  version?: number;
+  /** Selected task version. Required, not optional: the comparison covers one
+      version's cohorts, and an omitted param falls back server-side to the
+      current version — which is the wrong answer beside an older version's
+      trials, and has no right answer at all when the host is aggregating
+      across versions. The host decides not to render instead. */
+  version: number;
 }) {
   const { data, error, isLoading } = useSWR<CohortComparison>(
     `${apiBaseUrl}/tasks/${encodeURIComponent(taskId)}/cohort-comparison` +
-      (version !== undefined ? `?version=${version}` : ""),
+      `?version=${version}`,
     (url: string) =>
       fetch(url).then((r) => (r.ok ? r.json() : Promise.reject(r.status))),
     { shouldRetryOnError: false },

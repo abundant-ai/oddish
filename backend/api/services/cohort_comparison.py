@@ -250,9 +250,12 @@ async def _load_fresh_comparison(
 ) -> dict | None:
     """The latest fresh SUCCESS cohort_comparison block's output, or None.
 
-    Looked up by ``task_id`` (``TaskModel.id``), not the version id -- the
-    version is a freshness key inside ``block_metadata``, checked by
-    ``is_stale``, not a filter on the query itself.
+    Rows carry the stable ``task_id`` (``TaskModel.id``) because cost
+    attribution resolves against ``TaskModel``, so the version is filtered on
+    inside ``block_metadata``. That filter is load-bearing, not decoration:
+    taking the newest row for the *task* lets a comparison of another version
+    shadow this version's fresh one, and switching between two versions then
+    regenerates both on every view.
     """
     row = (
         await session.execute(
@@ -261,6 +264,8 @@ async def _load_fresh_comparison(
                 AnalyzerBlockModel.task_id == task_id,
                 AnalyzerBlockModel.type == AnalyzerType.COHORT_COMPARISON.value,
                 AnalyzerBlockModel.status == JobStatus.SUCCESS,
+                AnalyzerBlockModel.block_metadata["task_version_id"].astext
+                == task_version_id,
             )
             .order_by(AnalyzerBlockModel.created_at.desc())
             .limit(1)
