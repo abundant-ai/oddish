@@ -33,6 +33,7 @@ from oddish.db import (
     VerdictStatus,
 )
 from oddish.registry_auth import normalize_registry_host
+from oddish.runtime.ec2_policy import validate_ec2_environment_config
 
 
 # =============================================================================
@@ -307,6 +308,7 @@ class TaskSubmission(BaseModel):
         _reject_gpu_tpu_conflict(self.harbor)
         for trial in self.trials:
             _reject_tpu_on_non_gke_environment(self.harbor, trial.environment)
+            _reject_unsupported_ec2_configuration(self.harbor, trial.environment)
         return self
 
     content_hash: str | None = Field(
@@ -507,7 +509,14 @@ class TaskSweepSubmission(BaseModel):
     @model_validator(mode="after")
     def _no_gpu_tpu_conflict(self) -> "TaskSweepSubmission":
         _reject_gpu_tpu_conflict(self.harbor)
-        _reject_tpu_on_non_gke_environment(self.harbor, self.environment)
+        for config in self.configs:
+            resolved_environment = config.environment or self.environment
+            _reject_tpu_on_non_gke_environment(
+                self.harbor, resolved_environment
+            )
+            _reject_unsupported_ec2_configuration(
+                self.harbor, resolved_environment
+            )
         return self
 
     content_hash: str | None = Field(
@@ -1221,6 +1230,14 @@ def _reject_tpu_on_non_gke_environment(
             f"'{environment.value}'. Drop override_tpu or submit with "
             f"environment=gke."
         )
+
+
+def _reject_unsupported_ec2_configuration(
+    harbor: HarborConfig, environment: "EnvironmentType | None"
+) -> None:
+    if environment != EnvironmentType.EC2:
+        return
+    validate_ec2_environment_config(harbor.environment)
 
 
 class TaskSweepBatchRequest(BaseModel):

@@ -38,6 +38,7 @@ from oddish.workers.jobs.registry import (
     get_handler,
 )
 from oddish.workers.queue.shared import console
+from oddish.workers.queue.sandbox_capacity import SANDBOX_CAPACITY_LEASE_SECONDS
 
 
 # Callback invoked after a claimed row completes successfully. Kept as a
@@ -122,9 +123,11 @@ def calculate_trial_retry_delay_seconds(
         random.uniform(0.0, TRIAL_RETRY_JITTER_FRACTION) if jitter is None else jitter
     )
     jitter_value = max(0.0, min(jitter_value, TRIAL_RETRY_JITTER_FRACTION))
-    return min(
-        capped_delay * (1.0 + jitter_value),
-        TRIAL_RETRY_MAX_DELAY_SECONDS,
+    return float(
+        min(
+            capped_delay * (1.0 + jitter_value),
+            TRIAL_RETRY_MAX_DELAY_SECONDS,
+        )
     )
 
 
@@ -145,25 +148,18 @@ def calculate_trial_retry_delay_seconds(
 #     ``priority DESC, created_at ASC`` (plain FIFO with priority).
 # ---------------------------------------------------------------------------
 _CLAIM_WORKER_JOB_SQL = """
-UPDATE worker_jobs
-SET    status = 'RUNNING',
-       claimed_at = NOW(),
-       heartbeat_at = NOW(),
-       attempts = attempts + 1,
-       current_worker_id = $2,
-       current_queue_slot = $3,
-       modal_function_call_id = $4,
-       -- started_at pins to the first attempt so "total elapsed
-       -- across retries" is still recoverable. finished_at clears on
-       -- re-claim so the duration query (finished_at - claimed_at)
-       -- reflects only the last attempt. error_message deliberately
-       -- survives the claim: it is the only record of what killed the
-       -- previous attempt, and every terminal write below sets its own
-       -- value, so a stale message can never outlive the attempt.
-       started_at = COALESCE(started_at, NOW()),
-       finished_at = NULL,
-       next_retry_at = NULL
-WHERE  id = (
+WITH capacity AS (
+    SELECT provider, slot
+    FROM sandbox_capacity_leases
+    WHERE $7::text IS NOT NULL
+      AND provider = $7
+      AND slot = $8
+      AND locked_by = $2
+      AND worker_job_id IS NULL
+      AND locked_until > NOW()
+    FOR UPDATE
+),
+candidate AS (
     SELECT wj.id
     FROM   worker_jobs wj
     LEFT JOIN trials tr
@@ -181,32 +177,56 @@ WHERE  id = (
           AND  wj2.status::text = 'RUNNING'
           AND  wj2.queue_key = $1
           AND  ($5::text IS NULL OR wj2.harbor_variant_id = $5)
+          AND  ($6::text IS NULL OR wj2.execution_lane = $6)
           AND  tr2.deleted_at IS NULL
           AND  tk2.deleted_at IS NULL
         GROUP  BY COALESCE(tk2.created_by_user_id, tk2.user)
     ) rpg ON rpg.fairness_key = COALESCE(tk.created_by_user_id, tk.user)
     WHERE  wj.queue_key = $1
       AND  ($5::text IS NULL OR wj.harbor_variant_id = $5)
+      AND  ($6::text IS NULL OR wj.execution_lane = $6)
+      AND  ($7::text IS NULL OR EXISTS (SELECT 1 FROM capacity))
       AND  wj.status::text IN ('QUEUED', 'RETRYING')
       AND  wj.available_after <= NOW()
-      -- Defense in depth: ``delete_*_core`` already cancels matching
-      -- worker_jobs when a trial / task is soft-deleted, so this
-      -- branch shouldn't trigger in practice. The guard is cheap and
-      -- keeps the queue correct if a cancel ever races a claim. ``tr``
-      -- and ``tk`` are populated only for TRIAL rows (via the LEFT
-      -- JOINs above); for other kinds they are NULL and the
-      -- ``IS NULL`` checks degenerate to TRUE.
-      AND  (tr.deleted_at IS NULL)
-      AND  (tk.deleted_at IS NULL)
+      AND  tr.deleted_at IS NULL
+      AND  tk.deleted_at IS NULL
     ORDER  BY wj.priority DESC,
               COALESCE(rpg.running_count, 0) ASC,
               wj.created_at ASC
     LIMIT  1
     FOR    UPDATE OF wj SKIP LOCKED
+),
+claimed AS (
+    UPDATE worker_jobs
+    SET    status = 'RUNNING',
+           claimed_at = NOW(),
+           heartbeat_at = NOW(),
+           attempts = attempts + 1,
+           current_worker_id = $2,
+           current_queue_slot = $3,
+           modal_function_call_id = $4,
+           started_at = COALESCE(started_at, NOW()),
+           finished_at = NULL,
+           next_retry_at = NULL
+    WHERE id = (SELECT id FROM candidate)
+    RETURNING id, kind::text AS kind, subject_table, subject_id, payload,
+              attempts, max_attempts, queue_key, org_id, parent_job_id,
+              harbor_variant_id, execution_lane, claimed_at
+),
+bound_capacity AS (
+    UPDATE sandbox_capacity_leases AS lease
+    SET worker_job_id = claimed.id,
+        locked_until = NOW() + make_interval(secs => $9)
+    FROM claimed
+    WHERE lease.provider = $7
+      AND lease.slot = $8
+      AND lease.locked_by = $2
+      AND lease.worker_job_id IS NULL
+    RETURNING lease.provider
 )
-RETURNING id, kind::text AS kind, subject_table, subject_id, payload,
-          attempts, max_attempts, queue_key, org_id, parent_job_id,
-          harbor_variant_id, claimed_at;
+SELECT claimed.*
+FROM claimed
+WHERE $7::text IS NULL OR EXISTS (SELECT 1 FROM bound_capacity);
 """
 
 
@@ -232,6 +252,7 @@ class ClaimedWorkerJob:
     org_id: str | None
     parent_job_id: str | None
     harbor_variant_id: str = "default"
+    execution_lane: str = "default"
     worker_id: str | None = None
     queue_slot: int | None = None
     modal_function_call_id: str | None = None
@@ -244,6 +265,10 @@ async def _open_connection() -> asyncpg.Connection:
         statement_cache_size=0,
         server_settings=settings.asyncpg_server_settings(),
     )
+
+
+class SandboxCapacityLeaseLostError(RuntimeError):
+    """Raised when an EC2 worker no longer owns its required global lease."""
 
 
 async def heartbeat_worker_job(
@@ -291,6 +316,37 @@ async def heartbeat_worker_job(
                 job_id,
                 current_worker_id,
             )
+        capacity_heartbeat = await connection.fetchrow(
+            """
+            WITH running_job AS (
+                SELECT id, current_worker_id, execution_lane
+                FROM worker_jobs
+                WHERE id = $1
+                  AND status::text = 'RUNNING'
+                  AND ($2::text IS NULL OR current_worker_id = $2)
+            ), renewed AS (
+                UPDATE sandbox_capacity_leases AS lease
+                SET locked_until = NOW() + make_interval(secs => $3)
+                FROM running_job AS wj
+                WHERE lease.worker_job_id = wj.id
+                  AND lease.locked_by = wj.current_worker_id
+                RETURNING lease.slot
+            )
+            SELECT (SELECT execution_lane FROM running_job) AS execution_lane,
+                   EXISTS (SELECT 1 FROM renewed) AS capacity_renewed
+            """,
+            job_id,
+            current_worker_id,
+            SANDBOX_CAPACITY_LEASE_SECONDS,
+        )
+        if (
+            capacity_heartbeat is not None
+            and capacity_heartbeat["execution_lane"] == "ec2_trial"
+            and not capacity_heartbeat["capacity_renewed"]
+        ):
+            raise SandboxCapacityLeaseLostError(
+                f"EC2 worker_job {job_id} lost its global capacity lease"
+            )
     finally:
         await connection.close()
 
@@ -302,6 +358,9 @@ async def claim_single_worker_job(
     queue_slot: int,
     modal_function_call_id: str | None = None,
     harbor_variant_id: str | None = "default",
+    execution_lane: str | None = "default",
+    capacity_provider: str | None = None,
+    capacity_slot: int | None = None,
 ) -> ClaimedWorkerJob | None:
     """Atomically claim at most one runnable ``worker_jobs`` row.
 
@@ -313,6 +372,16 @@ async def claim_single_worker_job(
     is in ``RUNNING`` state with ``attempts`` incremented and claim metadata
     stamped.
     """
+    if execution_lane == "ec2_trial":
+        if capacity_provider != "ec2" or capacity_slot is None:
+            raise RuntimeError(
+                "EC2 trial claims require a pre-acquired EC2 capacity lease"
+            )
+    elif capacity_provider is not None or capacity_slot is not None:
+        raise RuntimeError(
+            "sandbox capacity lease cannot be attached to a non-EC2 claim"
+        )
+
     connection = await _open_connection()
     try:
         row = await connection.fetchrow(
@@ -322,6 +391,10 @@ async def claim_single_worker_job(
             queue_slot,
             modal_function_call_id,
             harbor_variant_id,
+            execution_lane,
+            capacity_provider,
+            capacity_slot,
+            SANDBOX_CAPACITY_LEASE_SECONDS,
         )
     finally:
         await connection.close()
@@ -351,6 +424,7 @@ async def claim_single_worker_job(
         org_id=row["org_id"],
         parent_job_id=row["parent_job_id"],
         harbor_variant_id=str(row["harbor_variant_id"]),
+        execution_lane=str(row["execution_lane"]),
         worker_id=worker_id,
         queue_slot=queue_slot,
         modal_function_call_id=modal_function_call_id,
@@ -528,6 +602,9 @@ async def run_single_worker_job(
     modal_function_call_id: str | None = None,
     post_success_hooks: PostSuccessHooks | None = None,
     harbor_variant_id: str | None = "default",
+    execution_lane: str | None = "default",
+    capacity_provider: str | None = None,
+    capacity_slot: int | None = None,
     worker_billing_spec: WorkerBillingSpec | None = None,
 ) -> bool:
     """Claim and execute at most one `worker_jobs` row.
@@ -545,13 +622,19 @@ async def run_single_worker_job(
     """
     _ensure_handlers_registered()
 
-    job = await claim_single_worker_job(
-        queue_key,
-        worker_id=worker_id,
-        queue_slot=queue_slot,
-        modal_function_call_id=modal_function_call_id,
-        harbor_variant_id=harbor_variant_id,
-    )
+    claim_kwargs: dict[str, Any] = {
+        "worker_id": worker_id,
+        "queue_slot": queue_slot,
+        "modal_function_call_id": modal_function_call_id,
+        "harbor_variant_id": harbor_variant_id,
+    }
+    if execution_lane != "default" or capacity_provider is not None:
+        claim_kwargs.update(
+            execution_lane=execution_lane,
+            capacity_provider=capacity_provider,
+            capacity_slot=capacity_slot,
+        )
+    job = await claim_single_worker_job(queue_key, **claim_kwargs)
     if job is None:
         return False
 
@@ -662,6 +745,9 @@ async def drain_worker_jobs(
     modal_function_call_id: str | None = None,
     post_success_hooks: PostSuccessHooks | None = None,
     harbor_variant_id: str | None = "default",
+    execution_lane: str | None = "default",
+    capacity_provider: str | None = None,
+    capacity_slot: int | None = None,
     worker_billing_spec: WorkerBillingSpec | None = None,
     _run_job: Callable[..., Awaitable[bool]] | None = None,
     _now: Callable[[], float] = time.monotonic,
@@ -689,15 +775,21 @@ async def drain_worker_jobs(
     deadline = _now() + budget_seconds
     processed = 0
     while True:
-        job_found = await run_job(
-            queue_key,
-            worker_id=worker_id,
-            queue_slot=queue_slot,
-            modal_function_call_id=modal_function_call_id,
-            post_success_hooks=post_success_hooks,
-            harbor_variant_id=harbor_variant_id,
-            worker_billing_spec=worker_billing_spec,
-        )
+        run_kwargs: dict[str, Any] = {
+            "worker_id": worker_id,
+            "queue_slot": queue_slot,
+            "modal_function_call_id": modal_function_call_id,
+            "post_success_hooks": post_success_hooks,
+            "harbor_variant_id": harbor_variant_id,
+            "worker_billing_spec": worker_billing_spec,
+        }
+        if execution_lane != "default" or capacity_provider is not None:
+            run_kwargs.update(
+                execution_lane=execution_lane,
+                capacity_provider=capacity_provider,
+                capacity_slot=capacity_slot,
+            )
+        job_found = await run_job(queue_key, **run_kwargs)
         if not job_found:
             break
         processed += 1

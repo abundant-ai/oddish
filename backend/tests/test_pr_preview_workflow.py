@@ -73,6 +73,11 @@ def test_backend_and_vercel_are_siblings():
     assert "prepare-preview-database" in _needs(jobs["deploy-preview-backend"])
 
 
+def test_disposable_preview_backend_does_not_enable_ec2():
+    env = _wf()["jobs"]["deploy-preview-backend"]["env"]
+    assert not any(name.startswith("ODDISH_EC2_") for name in env)
+
+
 def test_post_links_waits_for_backend_and_vercel():
     job = _wf()["jobs"]["post-preview-links"]
     needs = _needs(job)

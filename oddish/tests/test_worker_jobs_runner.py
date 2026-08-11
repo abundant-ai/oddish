@@ -601,6 +601,7 @@ def test_claimed_worker_job_fields_match_schema_expectations():
         "org_id",
         "parent_job_id",
         "harbor_variant_id",
+        "execution_lane",
         "worker_id",
         "queue_slot",
         "modal_function_call_id",
