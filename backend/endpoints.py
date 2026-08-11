@@ -35,9 +35,9 @@ Settings.db_use_null_pool = False
 Settings.db_pool_size = 2
 Settings.db_pool_max_overflow = 1
 
-import modal
+import modal  # noqa: E402
 
-from modal_app import (
+from modal_app import (  # noqa: E402
     API_BUFFER_CONTAINERS,
     API_CONCURRENCY_MAX,
     API_CONCURRENCY_TARGET,
@@ -51,7 +51,7 @@ from modal_app import (
     image,
     runtime_secrets,
 )
-from api.app import create_app
+from api.app import create_asgi_app  # noqa: E402
 from oddish.core.helpers import register_provider_teardown_delegate
 
 
@@ -66,7 +66,7 @@ async def _teardown_ec2_sandbox(external_id: str) -> bool:
 
 register_provider_teardown_delegate("ec2", _teardown_ec2_sandbox)
 
-api = create_app()
+api = create_asgi_app()
 
 
 @app.function(
