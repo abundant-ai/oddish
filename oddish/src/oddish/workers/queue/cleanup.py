@@ -34,6 +34,7 @@ from oddish.config import (
 )
 from oddish.core.baseline_gate import GATE_SKIP_PREFIX
 from oddish.core.helpers import cancel_job_by_worker
+from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.core.tags.ownership_transfer import sweep_orphaned_tag_owners
 from oddish.core.verdict_state import fail_verdict, queue_verdict
 from oddish.costs.recorder import reconcile_compute_cost_spans
@@ -367,6 +368,9 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
                 f"retry_reason={classify_retry_reason(row['error_message'])} "
                 f"retry_delay_seconds={delay_seconds:.2f}"
             )
+            await refresh_task_browse_summaries(
+                session, [getattr(trial, "task_version_id", None)]
+            )
             return None
         trial.status = TrialStatus.FAILED
         trial.error_message = row["error_message"]
@@ -390,6 +394,9 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
                 "cancelled during orphaned queue cleanup."
             )
             trial.analysis_finished_at = utcnow()
+        await refresh_task_browse_summaries(
+            session, [getattr(trial, "task_version_id", None)]
+        )
         return trial.id
 
     if kind == "ANALYSIS":
