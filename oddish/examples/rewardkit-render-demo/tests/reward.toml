@@ -1,0 +1,7 @@
+[[reward]]
+name = "reward"
+aggregation = "all_pass"
+
+[[reward]]
+name = "soft_score"
+aggregation = "weighted_mean"

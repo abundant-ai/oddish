@@ -72,6 +72,7 @@ import {
   Loader2,
   Star,
 } from "lucide-react";
+import { RewardDesignCard } from "@/components/reward-design-card";
 
 const TaskFilesPanel = dynamic(
   () =>
@@ -901,11 +902,13 @@ export function TaskDetailClient({
   // --- Drawer addressability ------------------------------------------
   // The drawer state lives in the URL so any view on this page can be
   // linked: ?trial=<id> opens that trial, ?drawer=task opens the task
-  // files drawer, and ?taskFile= / ?taskLines= address the task pane's
-  // file and line range (the trial pane's ?file= / ?lines= are handled
-  // inside TrialDetailPanel).
+  // files drawer, ?taskFile= / ?taskLines= address the task pane's file
+  // and line range, and ?taskView=reward addresses its reward-design view
+  // (the trial pane's ?file= / ?lines= are handled inside
+  // TrialDetailPanel).
   const [taskPaneFile, setTaskPaneFile] = useState<string | null>(null);
   const [taskPaneLines, setTaskPaneLines] = useState<LineRange | null>(null);
+  const [taskPaneView, setTaskPaneView] = useState<"reward" | null>(null);
   const taskPaneFileRef = useRef<string | null>(null);
   const handleTaskPaneFileChange = useCallback((path: string | null) => {
     // A different file makes the old line anchor meaningless — drop it.
@@ -913,6 +916,14 @@ export function TaskDetailClient({
     taskPaneFileRef.current = path;
     setTaskPaneFile(path);
   }, []);
+  // Only the reward view is addressed; the overview is the unmarked
+  // default, so it maps to null and keeps URLs clean.
+  const handleTaskPaneViewChange = useCallback(
+    (view: "overview" | "reward" | null) => {
+      setTaskPaneView(view === "reward" ? "reward" : null);
+    },
+    []
+  );
 
   // Hydrate the drawer from the URL once the version's trials are known.
   const drawerHydratedRef = useRef(false);
@@ -948,6 +959,8 @@ export function TaskDetailClient({
       setTaskPaneFile(urlTaskFile);
       if (urlTaskLines) setTaskPaneLines(urlTaskLines);
     }
+    const urlTaskView = params.get("taskView");
+    if (urlTaskView === "reward") setTaskPaneView("reward");
 
     if (urlTrialId) {
       const trial = orderedTrials.find((t) => t.id === urlTrialId);
@@ -958,7 +971,10 @@ export function TaskDetailClient({
       }
       unresolvedTrialParamRef.current = true;
     }
-    if (params.get("drawer") === "task" || (!urlTrialId && urlTaskFile)) {
+    if (
+      params.get("drawer") === "task" ||
+      (!urlTrialId && (urlTaskFile || urlTaskView === "reward"))
+    ) {
       hydrationOpeningRef.current = true;
       handleOpenTaskFiles();
     }
@@ -1006,6 +1022,7 @@ export function TaskDetailClient({
       taskPaneFileRef.current = null;
       setTaskPaneFile(null);
       setTaskPaneLines(null);
+      setTaskPaneView(null);
     }
   }, [drawer]);
 
@@ -1063,6 +1080,7 @@ export function TaskDetailClient({
         next.delete("lines");
         next.delete("taskFile");
         next.delete("taskLines");
+        next.delete("taskView");
       }
     }
     if (drawer) {
@@ -1076,13 +1094,18 @@ export function TaskDetailClient({
       } else {
         next.delete("taskLines");
       }
+      if (taskPaneView === "reward") {
+        next.set("taskView", "reward");
+      } else {
+        next.delete("taskView");
+      }
     }
 
     if (next.toString() !== current.toString()) {
       const url = `${window.location.pathname}${next.toString() ? `?${next.toString()}` : ""}`;
       window.history.replaceState(window.history.state, "", url);
     }
-  }, [drawer, taskPaneFile, taskPaneLines]);
+  }, [drawer, taskPaneFile, taskPaneLines, taskPaneView]);
 
   const handleRerun = useCallback(() => {
     void mutate();
@@ -1375,6 +1398,15 @@ export function TaskDetailClient({
           />
         ) : null}
 
+        {/* RewardKit tasks get their reward program rendered as an
+            explorable design; other tasks render nothing here. */}
+        <RewardDesignCard
+          taskId={task.id}
+          taskVersion={selectedVersion?.version}
+          trials={trialsForVersion}
+          anchorId="reward-design"
+        />
+
         <div className="space-y-3">
           <div className="flex items-baseline justify-between">
             <h2 className="font-mono text-[12px] font-semibold tracking-[0.06em] text-[color:var(--paper-ink-2)] uppercase">
@@ -1434,6 +1466,8 @@ export function TaskDetailClient({
                 selectedLines={taskPaneLines}
                 onSelectLinesChange={setTaskPaneLines}
                 onSelectedFileChange={handleTaskPaneFileChange}
+                initialView={taskPaneView}
+                onViewChange={handleTaskPaneViewChange}
                 apiBaseUrl="/api"
                 contentOnly={true}
               />
@@ -1452,6 +1486,8 @@ export function TaskDetailClient({
                 selectedLines={taskPaneLines}
                 onSelectLinesChange={setTaskPaneLines}
                 onSelectedFileChange={handleTaskPaneFileChange}
+                initialView={taskPaneView}
+                onViewChange={handleTaskPaneViewChange}
                 onRetryComplete={handleRerun}
                 allowRetry={true}
                 onNavigateToFirstTrial={

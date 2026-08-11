@@ -848,6 +848,8 @@ async def _store_trial_results(
                 outcome.error,
                 outcome.exception_type,
                 outcome.verifier_summary,
+                outcome.rewards,
+                outcome.reward_details,
             )
 
             trial.has_trajectory = outcome.has_trajectory

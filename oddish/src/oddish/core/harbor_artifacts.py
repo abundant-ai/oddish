@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -30,6 +31,7 @@ class HarborTrialExtraction:
     total_steps: int | None
     cost_usd: float | None
     phase_timing: dict[str, Any] | None
+    rewards: dict[str, float] | None = None
 
 
 def detect_trajectory(path: Path) -> bool:
@@ -86,6 +88,8 @@ def sanitize_task_result(result: dict[str, Any] | None) -> dict[str, Any] | None
     """Copy task-authored result data without Oddish-owned verifier fields."""
     sanitized = dict(result or {})
     sanitized.pop("_verifier", None)
+    sanitized.pop("_rewards", None)
+    sanitized.pop("_reward_details", None)
     return sanitized or None
 
 
@@ -164,16 +168,238 @@ def extract_ctrf_summary(path: Path) -> dict[str, Any] | None:
     return None
 
 
+# RewardKit-style verifiers (harbor-rewardkit) report named reward dimensions
+# and aggregates in ``verifier/reward.json`` and write the per-criterion
+# breakdown (weights, judge reasoning, errors) to
+# ``verifier/reward-details.json`` beside it. Judge reasoning makes the details
+# file arbitrarily large, so like CTRF the source document is bounded before
+# parsing and only a compact summary rides in ``trials.result``; the full file
+# stays in object storage for the drawer to lazy-load.
+VERIFIER_REWARD_DETAILS_MAX_BYTES = 8 * 1024 * 1024
+REWARD_DETAILS_EMBED_MAX_BYTES = 48 * 1024
+REWARD_DETAILS_RAW_MAX_CHARS = 120
+REWARD_DETAILS_MAX_JUDGE_FILES = 8
+REWARDS_MAP_MAX_KEYS = 32
+
+
+def _finite_rounded(value: Any) -> float | None:
+    number = _as_float(value)
+    if number is None or not math.isfinite(number):
+        return None
+    return round(number, 4)
+
+
+class _ClipTracker:
+    """Marks a summary as lossy so clients know to fetch the full document."""
+
+    def __init__(self) -> None:
+        self.clipped = False
+
+    def mark(self) -> None:
+        self.clipped = True
+
+
+def _compact_reward_criterion(
+    raw: Any, reasoning_limit: int, text_limit: int, clip: _ClipTracker
+) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    name = raw.get("name")
+    value = _finite_rounded(raw.get("value"))
+    if not isinstance(name, str) or not name or value is None:
+        return None
+    compact: dict[str, Any] = {"name": name[:64], "value": value}
+    weight = _finite_rounded(raw.get("weight"))
+    if weight is not None:
+        compact["weight"] = weight
+    # The pre-normalization answer ("yes", 4, true) is what the drawer shows
+    # as "judge answered". Only scalar values ride; anything else stays in
+    # the full document.
+    answer = raw.get("raw")
+    if isinstance(answer, bool) or (
+        isinstance(answer, (int, float)) and math.isfinite(answer)
+    ):
+        compact["raw"] = answer
+    elif isinstance(answer, str) and answer:
+        if len(answer) > REWARD_DETAILS_RAW_MAX_CHARS:
+            clip.mark()
+        compact["raw"] = answer[:REWARD_DETAILS_RAW_MAX_CHARS]
+    elif answer is not None:
+        clip.mark()
+    for key, limit in (
+        ("description", text_limit),
+        ("reasoning", reasoning_limit),
+        ("error", text_limit),
+    ):
+        text = raw.get(key)
+        if isinstance(text, str) and text:
+            if len(text) > limit:
+                clip.mark()
+            if limit > 0:
+                compact[key] = text[:limit]
+    for flag in ("negate", "optional"):
+        if raw.get(flag) is True:
+            compact[flag] = True
+    return compact
+
+
+def _compact_reward_dimension(
+    name: str,
+    raw: Any,
+    reasoning_limit: int,
+    text_limit: int,
+    max_criteria: int,
+    clip: _ClipTracker,
+) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    score = _finite_rounded(raw.get("score"))
+    if score is None:
+        return None
+    compact: dict[str, Any] = {"name": name[:64], "score": score}
+    kind = raw.get("kind")
+    if isinstance(kind, str) and kind:
+        compact["kind"] = kind[:24]
+    judge = raw.get("judge")
+    if isinstance(judge, dict):
+        judge_model = judge.get("model") or judge.get("agent")
+        if isinstance(judge_model, str) and judge_model:
+            compact["judge"] = judge_model[:120]
+        # The exact inputs the judge read — the drawer's "Judge read" chips.
+        files = judge.get("files")
+        if isinstance(files, (list, tuple)):
+            if len(files) > REWARD_DETAILS_MAX_JUDGE_FILES:
+                clip.mark()
+            judge_files: list[str] = []
+            for f in files[:REWARD_DETAILS_MAX_JUDGE_FILES]:
+                if not isinstance(f, str) or not f:
+                    continue
+                if len(f) > 200:
+                    clip.mark()
+                judge_files.append(f[:200])
+            if judge_files:
+                compact["judge_files"] = judge_files
+        trajectory = judge.get("atif_trajectory")
+        if isinstance(trajectory, str) and trajectory:
+            compact["judge_trajectory"] = trajectory[:200]
+    criteria: list[dict[str, Any]] = []
+    criteria_raw = raw.get("criteria")
+    total = 0
+    if isinstance(criteria_raw, list):
+        total = len(criteria_raw)
+        if total > max_criteria:
+            clip.mark()
+        for entry in criteria_raw[:max_criteria]:
+            criterion = _compact_reward_criterion(
+                entry, reasoning_limit, text_limit, clip
+            )
+            if criterion is None:
+                # A single malformed criterion must not cost the whole
+                # breakdown; drop it, keep its siblings, and mark the summary
+                # lossy so the drawer fetches the full document.
+                clip.mark()
+                continue
+            criteria.append(criterion)
+    compact["criteria"] = criteria
+    if total > len(criteria):
+        compact["criteria_total"] = total
+    warnings = raw.get("warnings")
+    if isinstance(warnings, list) and warnings:
+        compact["warnings"] = len(warnings)
+    return compact
+
+
+def extract_reward_details_summary(path: Path) -> dict[str, Any] | None:
+    """Compact summary of the first valid ``verifier/reward-details.json``.
+
+    The summary keeps every reward dimension (score, kind, judge model) and its
+    criteria (value, weight, truncated description/reasoning/error) inside a
+    bounded payload: progressively tighter truncation tiers are tried until the
+    encoded summary fits ``REWARD_DETAILS_EMBED_MAX_BYTES``. ``details_path``
+    points back at the full document in object storage so clients can
+    lazy-load complete judge reasoning, mirroring the CTRF ``report_path``
+    pattern.
+
+    Missing, oversized, malformed, or structurally invalid candidates are
+    ignored, just like metrics.json -- a details problem must never change the
+    settled verifier reward.
+    """
+    if not path or not path.exists():
+        return None
+    for details_path in sorted(path.rglob("verifier/reward-details.json")):
+        try:
+            if details_path.stat().st_size > VERIFIER_REWARD_DETAILS_MAX_BYTES:
+                continue
+            payload = json.loads(
+                details_path.read_text(),
+                parse_constant=_reject_nonfinite,
+            )
+        except (OSError, ValueError):
+            continue
+        if not isinstance(payload, dict) or not payload:
+            continue
+        rel_path = details_path.relative_to(path).as_posix()
+        # (reasoning limit, description/error limit, criteria cap) tiers, from
+        # generous to score-only. The first tier whose encoding fits the embed
+        # budget wins. ``truncated`` marks any loss against the source
+        # document — a tighter tier, clipped text, capped criteria lists, or
+        # a dropped malformed criterion — so clients know to fetch the full
+        # report rather than trust the embed as complete.
+        for reasoning_limit, text_limit, max_criteria in (
+            (400, 300, 40),
+            (120, 120, 20),
+            (0, 0, 12),
+            (0, 0, 0),
+        ):
+            clip = _ClipTracker()
+            dimensions: list[dict[str, Any]] = []
+            valid = True
+            for name, raw in payload.items():
+                if not isinstance(name, str) or not name:
+                    valid = False
+                    break
+                entries = raw if isinstance(raw, list) else [raw]
+                for entry in entries:
+                    compact = _compact_reward_dimension(
+                        name, entry, reasoning_limit, text_limit, max_criteria, clip
+                    )
+                    if compact is None:
+                        valid = False
+                        break
+                    dimensions.append(compact)
+                if not valid:
+                    break
+            if not valid or not dimensions:
+                break
+            summary: dict[str, Any] = {
+                "format": "rewardkit",
+                "details_path": rel_path,
+                "dimensions": dimensions,
+            }
+            if clip.clipped:
+                summary["truncated"] = True
+            encoded = json.dumps(summary, separators=(",", ":"))
+            if len(encoded.encode("utf-8")) <= REWARD_DETAILS_EMBED_MAX_BYTES:
+                return summary
+    return None
+
+
 def build_trial_result(
     metrics: dict[str, Any] | None,
     verifier_summary: dict[str, Any] | None,
     error: str | None,
     exception_type: str | None,
+    rewards: dict[str, float] | None = None,
+    reward_details: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Merge verifier metrics, a compact report, and a quiet exception marker."""
     result: dict[str, Any] = sanitize_task_result(metrics) or {}
     if verifier_summary is not None:
         result["_verifier"] = verifier_summary
+    if rewards is not None:
+        result["_rewards"] = rewards
+    if reward_details is not None:
+        result["_reward_details"] = reward_details
     if exception_type is not None:
         result["harbor_exception"] = {
             "exception_type": exception_type,
@@ -371,6 +597,33 @@ def _extract_reward(trial_result: Any) -> float | None:
     return _as_float(reward_value)
 
 
+def extract_rewards_map(trial_result: Any) -> dict[str, float] | None:
+    """Every named reward from Harbor's verifier result, or None.
+
+    Harbor surfaces the verifier's ``reward.json`` as a dict of named scores;
+    RewardKit tasks report each dimension plus their ``reward.toml`` aggregates
+    there. ``_extract_reward`` still owns the headline scalar this map is
+    collapsed to; the full map is kept (``trials.result["_rewards"]``) so
+    multi-dimensional scoring stays visible. A map holding only the headline
+    ``reward`` key adds nothing over the scalar and is dropped.
+    """
+    verifier_result = getattr(trial_result, "verifier_result", None)
+    rewards = getattr(verifier_result, "rewards", None)
+    if not isinstance(rewards, dict) or set(rewards) <= {"reward"}:
+        return None
+    sanitized: dict[str, float] = {}
+    for key, value in rewards.items():
+        if len(sanitized) >= REWARDS_MAP_MAX_KEYS:
+            break
+        number = _finite_rounded(value)
+        if number is None:
+            continue
+        sanitized[str(key)[:64]] = number
+    if not sanitized or set(sanitized) <= {"reward"}:
+        return None
+    return sanitized
+
+
 def _extract_error(trial_result: Any) -> tuple[str | None, str | None]:
     exc = getattr(trial_result, "exception_info", None)
     if exc is None:
@@ -440,4 +693,5 @@ def extract_trial_result_fields(
         total_steps=total_steps,
         cost_usd=cost_usd,
         phase_timing=extract_timing_info(trial_result),
+        rewards=extract_rewards_map(trial_result),
     )

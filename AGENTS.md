@@ -1053,6 +1053,31 @@ counts show no row. Persisted `_verifier` CTRF counts are the sole source.
 Historical trials without that summary show no count; opening a trial must not
 list or read its artifacts to reconstruct one.
 
+RewardKit output follows the same pattern: the drawer renders the reward
+breakdown from the embedded `_rewards` / `_reward_details` summaries in
+`trial.result` (written by `harbor_artifacts.py`), falling back to the scoped
+trial files API for `verifier/reward.json` / `verifier/reward-details.json`
+when the embedded copies are missing (imports) or truncated. That fallback is
+a tab resource: opening a trial on Summary must not list artifacts, and the
+files request starts only after the Rewards tab is selected or directly
+addressed with `?tab=rewards`. Imported rows expose that lazy discovery tab
+even when they predate embedded summaries; an empty lookup hides it again.
+The task page's Reward design section
+(`reward-design-card.tsx`) reconstructs the reward program client-side from
+the task's `tests/` TOMLs plus a best-effort static scan of Python criteria,
+enriched with criteria observed in a completed trial's breakdown — it executes
+nothing.
+
+Every reward surface is addressable, extending the existing URL contract:
+the trial drawer's Rewards tab is `?tab=rewards`, and while that tab is
+active `?file=` addresses a criterion as `dimension/criterion` (the same
+per-tab `?file=` scoping the files/artifacts tabs use). The task pane's
+reward-design view is `?taskView=reward` beside `?taskFile=`/`?taskLines=`
+(task page and experiment page alike), and the task page's inline design
+section anchors as `#reward-design` / `#reward-design-<dimension>`. When
+adding a new reward surface, give it an address in one of these channels —
+component-local view state alone is not acceptable.
+
 On an experiment page, removing a task always calls the scoped
 `DELETE /experiments/{experiment_id}/tasks/{task_id}` proxy. It unlinks that
 experiment membership and its scoped trials without deleting the task, even

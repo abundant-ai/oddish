@@ -10,6 +10,7 @@ from oddish.core.harbor_artifacts import (
     build_trial_result,
     detect_trajectory,
     extract_ctrf_summary,
+    extract_reward_details_summary,
     extract_trajectory_metrics,
     extract_trial_result_fields,
     extract_verifier_metrics,
@@ -59,6 +60,15 @@ class HarborOutcome:
     # The full report remains in S3; only counts are persisted on the row.
     verifier_summary: dict[str, Any] | None = None
 
+    # Every named reward the verifier reported (``verifier_result.rewards``,
+    # i.e. RewardKit dimensions plus reward.toml aggregates). ``reward`` above
+    # stays the headline scalar this map collapses to.
+    rewards: dict[str, float] | None = None
+
+    # Compact per-criterion breakdown from ``verifier/reward-details.json``.
+    # The full document (complete judge reasoning) remains in S3.
+    reward_details: dict[str, Any] | None = None
+
     # The Python exception class name (e.g. "AddTestsDirError",
     # "AgentTimeoutError") that ended this trial, sourced from
     # ``TrialResult.exception_info.exception_type`` when Harbor produced one,
@@ -74,6 +84,8 @@ def merged_trial_result(
     error: str | None,
     exception_type: str | None,
     verifier_summary: dict[str, Any] | None = None,
+    rewards: dict[str, float] | None = None,
+    reward_details: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Trial ``result`` payload: verifier metrics plus a quiet-exception marker.
 
@@ -85,7 +97,14 @@ def merged_trial_result(
     parsing error strings. The key is reserved: a task metric of the same name
     is overwritten.
     """
-    return build_trial_result(metrics, verifier_summary, error, exception_type)
+    return build_trial_result(
+        metrics,
+        verifier_summary,
+        error,
+        exception_type,
+        rewards=rewards,
+        reward_details=reward_details,
+    )
 
 
 def _detect_trajectory(job_dir: Path) -> bool:
@@ -110,6 +129,7 @@ def _extract_outcome_from_job_result(
     cost_usd: float | None = None
     phase_timing: dict[str, Any] | None = None
     trial_reward: float | None = None
+    rewards_map: dict[str, float] | None = None
 
     for trial_result in job_result.trial_results:
         fields = extract_trial_result_fields(trial_result)
@@ -118,6 +138,8 @@ def _extract_outcome_from_job_result(
             exception_type = fields.exception_type
         if trial_reward is None and fields.reward is not None:
             trial_reward = fields.reward
+        if rewards_map is None and fields.rewards is not None:
+            rewards_map = fields.rewards
         if input_tokens is None and output_tokens is None:
             input_tokens = fields.input_tokens
             cache_tokens = fields.cache_tokens
@@ -146,6 +168,7 @@ def _extract_outcome_from_job_result(
     has_trajectory = detect_trajectory(job_dir)
     metrics = extract_verifier_metrics(job_dir)
     verifier_summary = extract_ctrf_summary(job_dir)
+    reward_details = extract_reward_details_summary(job_dir)
 
     def _outcome(reward: float | None) -> HarborOutcome:
         return HarborOutcome(
@@ -168,6 +191,8 @@ def _extract_outcome_from_job_result(
             has_trajectory=has_trajectory,
             metrics=metrics,
             verifier_summary=verifier_summary,
+            rewards=rewards_map,
+            reward_details=reward_details,
             exception_type=exception_type,
         )
 

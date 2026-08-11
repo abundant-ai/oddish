@@ -21,6 +21,7 @@ import {
   ChevronUp,
   RefreshCw,
   AlertCircle,
+  Award,
   ListChecks,
   Microscope,
   Loader2,
@@ -50,6 +51,7 @@ import {
   type TaskDetailResource,
 } from "@/lib/task-detail-resource";
 import { TaskOverviewPanel } from "@/components/task-overview-panel";
+import { RewardDesignCard } from "@/components/reward-design-card";
 import {
   getCancelActionLabel,
   isActivePipelineStatus,
@@ -197,6 +199,17 @@ interface TaskFilesPanelProps {
    * null — transient resets (listing reloads, close) are not reported.
    */
   onSelectedFileChange?: (path: string) => void;
+  /**
+   * Named pane view to open: "reward" selects the RewardKit reward-design
+   * view (reverting to the overview if the task has none), "overview" the
+   * task overview. Hosts pass this from their ``?taskView=`` address.
+   */
+  initialView?: "overview" | "reward" | null;
+  /**
+   * Reports the active named view — "reward", "overview", or null when a
+   * file is showing — so hosts can keep ``?taskView=`` live.
+   */
+  onViewChange?: (view: "overview" | "reward" | null) => void;
 }
 
 function getNodeName(path: string): string {
@@ -431,6 +444,8 @@ export function TaskFilesPanel({
   selectedLines,
   onSelectLinesChange,
   onSelectedFileChange,
+  initialView,
+  onViewChange,
 }: TaskFilesPanelProps) {
   const baseUrl = apiBaseUrl ?? "/api";
   // The TASK OVERVIEW entry is keyed off the task even in filesUrl-driven
@@ -509,6 +524,38 @@ export function TaskFilesPanel({
   // the main pane must both use it: with the overview hidden (public share),
   // overviewSelected stays true but the pane shows a file.
   const overviewShowing = overviewSelected && overviewAvailable;
+  // RewardKit tasks get a "Reward" entry beside Overview showing the reward
+  // design. Gated on a RewardKit marker in the listing (a TOML under tests/)
+  // so ordinary tasks never grow the entry.
+  const [rewardSelected, setRewardSelected] = useState(false);
+  const rewardDesignAvailable = useMemo(() => {
+    // tests/reward.toml is definitive; any other tests TOML is treated as a
+    // judge config unless it is a well-known tool config. buildRewardDesign
+    // still verifies the content, so a stray TOML lands on the empty state
+    // rather than a phantom design.
+    const TOOL_CONFIG_TOMLS = new Set([
+      "pyproject.toml",
+      "cargo.toml",
+      "poetry.toml",
+      "uv.toml",
+      "ruff.toml",
+      "tox.toml",
+    ]);
+    const hasDesignToml = (nodes: TreeNode[]): boolean =>
+      nodes.some((node) => {
+        if (node.children && hasDesignToml(node.children)) return true;
+        if (node.type !== "file" || !node.path.startsWith("tests/")) {
+          return false;
+        }
+        if (node.path === "tests/reward.toml") return true;
+        return (
+          node.path.endsWith(".toml") &&
+          !TOOL_CONFIG_TOMLS.has(node.name.toLowerCase())
+        );
+      });
+    return hasDesignToml(fileTree);
+  }, [fileTree]);
+  const rewardShowing = rewardSelected && rewardDesignAvailable;
   const [loadingFullFile, setLoadingFullFile] = useState(false);
   const [viewMode, setViewMode] = useState<"rendered" | "raw">("rendered");
   const [copiedTaskName, setCopiedTaskName] = useState(false);
@@ -908,6 +955,7 @@ export function TaskFilesPanel({
       setFileTree([]);
       setSelectedFilePath(null);
       setOverviewSelected(true);
+      setRewardSelected(false);
       setExpandedDirs(new Set());
 
       // Once the tree is painted, later stream failures must not replace
@@ -1079,6 +1127,39 @@ export function TaskFilesPanel({
     onSelectedFileChangeRef.current?.(selectedFilePath);
   }, [selectedFilePath]);
 
+  // Named-view addressing: apply the host's ?taskView= choice, report the
+  // active view back, and fall back to the overview when a reward address
+  // lands on a task without a reward design.
+  useEffect(() => {
+    if (initialView === "reward") {
+      setRewardSelected(true);
+      setOverviewSelected(false);
+    } else if (initialView === "overview") {
+      setOverviewSelected(true);
+      setRewardSelected(false);
+    }
+  }, [initialView]);
+  const onViewChangeRef = useRef(onViewChange);
+  useEffect(() => {
+    onViewChangeRef.current = onViewChange;
+  });
+  useEffect(() => {
+    onViewChangeRef.current?.(
+      rewardSelected ? "reward" : overviewSelected ? "overview" : null
+    );
+  }, [rewardSelected, overviewSelected]);
+  useEffect(() => {
+    if (
+      !loading &&
+      fileTree.length > 0 &&
+      rewardSelected &&
+      !rewardDesignAvailable
+    ) {
+      setRewardSelected(false);
+      setOverviewSelected(true);
+    }
+  }, [loading, fileTree, rewardSelected, rewardDesignAvailable]);
+
   // Reset state when panel closes or task changes
   useEffect(() => {
     if (!isOpen) {
@@ -1117,6 +1198,7 @@ export function TaskFilesPanel({
 
     setSelectedFilePath(node.path);
     setOverviewSelected(false);
+    setRewardSelected(false);
   }, [initialFilePath, fileTree]);
 
   useEffect(() => {
@@ -1171,7 +1253,8 @@ export function TaskFilesPanel({
   const renderFileTree = (nodes: TreeNode[], depth = 0) => {
     return nodes.map((node) => {
       const isExpanded = expandedDirs.has(node.path);
-      const isSelected = !overviewShowing && selectedFile?.path === node.path;
+      const isSelected =
+        !overviewShowing && !rewardShowing && selectedFile?.path === node.path;
       const Icon =
         node.type === "dir"
           ? isExpanded
@@ -1191,6 +1274,7 @@ export function TaskFilesPanel({
               } else {
                 setSelectedFilePath(node.path);
                 setOverviewSelected(false);
+                setRewardSelected(false);
               }
             }}
             className={`h-auto w-full justify-start gap-1.5 rounded px-2 py-1 text-left font-mono text-xs transition-colors ${
@@ -1437,33 +1521,59 @@ export function TaskFilesPanel({
         <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
           <div className="border-border bg-muted/30 max-h-[30vh] w-full overflow-auto border-b md:max-h-none md:w-56 md:border-r md:border-b-0 lg:w-64">
             <div className="p-2">
-              {overviewAvailable && (
+              {(overviewAvailable || rewardDesignAvailable) && (
                 <div className="border-border mb-2 border-b pb-2">
                   <div className="text-muted-foreground px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
                     Task overview
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setOverviewSelected(true)}
-                    className={`flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-sm ${
-                      overviewSelected
-                        ? "bg-primary/20 text-primary"
-                        : "hover:bg-muted/50 cursor-pointer"
-                    }`}
-                    title="View the task overview: task QA plus aggregated trial QA"
-                  >
-                    <ListChecks
-                      className="h-3.5 w-3.5 shrink-0"
-                      aria-hidden="true"
-                    />
-                    <span className="truncate">
-                      {checksLoading
-                        ? "Loading…"
-                        : checksLoadFailure
-                          ? "Unavailable"
-                          : "Overview"}
-                    </span>
-                  </button>
+                  {overviewAvailable && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOverviewSelected(true);
+                        setRewardSelected(false);
+                      }}
+                      className={`flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-sm ${
+                        overviewShowing
+                          ? "bg-primary/20 text-primary"
+                          : "hover:bg-muted/50 cursor-pointer"
+                      }`}
+                      title="View the task overview: task QA plus aggregated trial QA"
+                    >
+                      <ListChecks
+                        className="h-3.5 w-3.5 shrink-0"
+                        aria-hidden="true"
+                      />
+                      <span className="truncate">
+                        {checksLoading
+                          ? "Loading…"
+                          : checksLoadFailure
+                            ? "Unavailable"
+                            : "Overview"}
+                      </span>
+                    </button>
+                  )}
+                  {rewardDesignAvailable && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOverviewSelected(false);
+                        setRewardSelected(true);
+                      }}
+                      className={`flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-sm ${
+                        rewardShowing
+                          ? "bg-primary/20 text-primary"
+                          : "hover:bg-muted/50 cursor-pointer"
+                      }`}
+                      title="View the reward design: RewardKit dimensions, criteria, and aggregation"
+                    >
+                      <Award
+                        className="h-3.5 w-3.5 shrink-0"
+                        aria-hidden="true"
+                      />
+                      <span className="truncate">Reward</span>
+                    </button>
+                  )}
                 </div>
               )}
               <div className="text-muted-foreground px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
@@ -1483,7 +1593,7 @@ export function TaskFilesPanel({
             </div>
           </div>
           <div className="flex flex-1 flex-col overflow-hidden">
-            {!overviewShowing && selectedFile && (
+            {!overviewShowing && !rewardShowing && selectedFile && (
               <div className="border-border bg-muted/30 flex items-center justify-between gap-2 border-b px-3 py-2 sm:px-4">
                 <div className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[10px] sm:text-xs">
                   {selectedFile.path}
@@ -1574,6 +1684,25 @@ export function TaskFilesPanel({
                   qaActive={taskQaActive}
                   onOpenTrial={onOpenTrial}
                 />
+              ) : rewardShowing ? (
+                <div className="p-4 sm:p-6">
+                  <RewardDesignCard
+                    filesUrl={resolvedFilesUrl}
+                    taskVersion={
+                      shouldScopeFilesToVersion && currentVersion != null
+                        ? currentVersion
+                        : undefined
+                    }
+                    trials={task ? (task.trials ?? []) : []}
+                    apiBaseUrl={baseUrl}
+                    emptyState={
+                      <p className="text-muted-foreground text-sm">
+                        No RewardKit reward design found in this task&apos;s
+                        tests.
+                      </p>
+                    }
+                  />
+                </div>
               ) : (
                 renderFileContent()
               )}
