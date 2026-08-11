@@ -16,12 +16,14 @@ class ExploreTrajectoryBlockTaxonomy(str, enum.Enum):
     THINKING_RECALL = "thinking_recall"
     THINKING_UNDERSTAND = "thinking_understand"
     THINKING_HYPOTHESIZE = "thinking_hypothesize"
-    THINKING_CORRECTION = "thinking_correction"
 
 
 class ImplementTrajectoryBlockTaxonomy(str, enum.Enum):
-    # Ordered as the work happens: plan, build, correct, test, debug.
+    # Ordered as the work happens: plan, replan, build, correct, test, debug.
+    # PLAN_CORRECTION sits beside WRITING_PLAN so the model reads the two as a
+    # pair; the flat vocabulary below preserves this order in the prompt.
     WRITING_PLAN = "writing_plan"
+    PLAN_CORRECTION = "plan_correction"
     IMPLEMENTING = "implementing"
     IMPLEMENTING_CORRECTION = "implementing_correction"
     WRITING_TESTS = "writing_tests"

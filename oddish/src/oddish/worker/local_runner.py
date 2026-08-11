@@ -43,6 +43,7 @@ from oddish.db import (
     get_session,
 )
 from oddish.core.harbor_artifacts import cache_write_tokens_from_trajectory
+from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
 from oddish.core.llm_key_fingerprint import platform_key_hash_for_provider
 from oddish.db.models import WorkerJobKind, WorkerJobModel, WorkerJobStatus
 from oddish.db.storage import resolve_task_directory
@@ -314,7 +315,8 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
     """Execute a probe trial in-process and mirror status to the DB.
 
     Status transitions: ``QUEUED`` -> ``RUNNING`` -> ``SUCCESS``
-    (or ``FAILED`` on exception, with ``error_message`` populated).
+    (or ``FAILED`` on exception, with ``error_message`` populated) on both the
+    trial and its worker job.
 
     When ``dry_run`` is True, skips the actual Harbor call. Used in
     tests to exercise the status-transition path without spinning up
@@ -326,8 +328,9 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
     # and a gated (BLOCKED) LLM trial is skipped until the baseline gate
     # releases it. ``run_trial_locally`` is the only dispatch entrypoint, so
     # this claim is the single choke point that prevents double-dispatch.
+    claimed_at = datetime.now(timezone.utc)
     async with get_session() as session:
-        claimed = (
+        claimed_trial_id = (
             await session.execute(
                 update(TrialModel)
                 .where(
@@ -344,19 +347,47 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
                 )
                 .values(
                     status=TrialStatus.RUNNING,
-                    started_at=datetime.now(timezone.utc),
+                    started_at=claimed_at,
                 )
-                .returning(TrialModel.org_id, TrialModel.billed_user_id)
+                .returning(TrialModel.id)
             )
-        ).one_or_none()
-    if claimed is None:
+        ).scalar_one_or_none()
+        if claimed_trial_id is not None:
+            org_id, billed_user_id = (
+                await session.execute(
+                    select(TrialModel.org_id, TrialModel.billed_user_id).where(
+                        TrialModel.id == trial_id
+                    )
+                )
+            ).one()
+            # Local mode bypasses the unified dispatcher, so it must mirror the
+            # scheduling row itself. The baseline gate treats worker_jobs as
+            # authoritative and must never mistake a completed local baseline's
+            # original QUEUED row for work that can still retry.
+            await session.execute(
+                update(WorkerJobModel)
+                .where(
+                    WorkerJobModel.kind == WorkerJobKind.TRIAL,
+                    WorkerJobModel.subject_table == "trials",
+                    WorkerJobModel.subject_id == trial_id,
+                    WorkerJobModel.status.in_(
+                        (WorkerJobStatus.QUEUED, WorkerJobStatus.RETRYING)
+                    ),
+                )
+                .values(
+                    status=WorkerJobStatus.RUNNING,
+                    claimed_at=claimed_at,
+                    started_at=claimed_at,
+                    heartbeat_at=claimed_at,
+                )
+            )
+    if claimed_trial_id is None:
         logger.info(
             "local_runner: trial %s not claimable (already dispatched, gated, "
             "or gone), skipping",
             trial_id,
         )
         return
-    org_id, billed_user_id = claimed
     logger.info("local_runner: trial %s -> RUNNING", trial_id)
 
     failure: Exception | None = None
@@ -368,6 +399,7 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
         failure = exc
 
     completed = False
+    finished_at = datetime.now(timezone.utc)
     async with get_session() as session:
         trial = await session.get(TrialModel, trial_id, with_for_update=True)
         if trial is None:
@@ -382,13 +414,54 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
             else:
                 trial.status = TrialStatus.SUCCESS
                 logger.info("local_runner: trial %s -> SUCCESS", trial_id)
-            trial.finished_at = datetime.now(timezone.utc)
+            trial.finished_at = finished_at
             completed = True
         else:
             logger.info(
                 "local_runner: trial %s completion ignored; status is %s",
                 trial_id,
                 trial.status.value,
+            )
+
+        # A cancellation or another terminal writer can win while Harbor is
+        # still exiting. Preserve that trial outcome, but do not leave local
+        # mode's scheduling row RUNNING forever: the baseline gate treats an
+        # active worker job as authoritative retry evidence.
+        if trial is not None and trial.status in (
+            TrialStatus.SUCCESS,
+            TrialStatus.FAILED,
+            TrialStatus.SKIPPED,
+        ):
+            cancelled = (
+                trial.status == TrialStatus.SKIPPED
+                or trial.harbor_stage == CANCELLED_HARBOR_STAGE
+            )
+            if cancelled:
+                worker_job_status = WorkerJobStatus.CANCELLED
+            elif trial.status == TrialStatus.SUCCESS:
+                worker_job_status = WorkerJobStatus.SUCCESS
+            else:
+                worker_job_status = WorkerJobStatus.FAILED
+            settled_at = trial.finished_at or finished_at
+            await session.execute(
+                update(WorkerJobModel)
+                .where(
+                    WorkerJobModel.kind == WorkerJobKind.TRIAL,
+                    WorkerJobModel.subject_table == "trials",
+                    WorkerJobModel.subject_id == trial_id,
+                    WorkerJobModel.status == WorkerJobStatus.RUNNING,
+                )
+                .values(
+                    status=worker_job_status,
+                    finished_at=settled_at,
+                    heartbeat_at=settled_at,
+                    next_retry_at=None,
+                    error_message=(
+                        None
+                        if worker_job_status == WorkerJobStatus.SUCCESS
+                        else trial.error_message
+                    ),
+                )
             )
 
     from oddish.core.quota_enforcement import enforce_trial_quotas_until_checked

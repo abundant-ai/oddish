@@ -1029,15 +1029,14 @@ async def _advance_running_tasks_to_analysis(
 
     # -----------------------------------------------------------------
     # 2b. Baseline gate backstop: (task_version, experiment) groups whose
-    #     nop/oracle baselines are all terminal but whose LLM trials are
-    #     still BLOCKED. Normally the last baseline's handler resolves the
-    #     gate; this re-drives it if that handler was killed first. The gate
-    #     is (task version, experiment)-scoped, so group + match BLOCKED LLM
-    #     trials by (task_id, task_version_id, experiment_id) and hand it one
-    #     representative baseline trial id per group. ``IS NOT DISTINCT
-    #     FROM`` so a NULL version/experiment still matches itself (plain
-    #     ``=`` would drop those scopes, unlike the ORM push path). Skipped
-    #     entirely when the gate is off so it never touches the hot path.
+    #     nop/oracle trial mirrors and worker jobs are all terminal but whose
+    #     LLM trials are still BLOCKED. Normally the last baseline's handler
+    #     resolves the gate; this re-drives it if that handler was killed first.
+    #     The gate is (task version, experiment)-scoped, so group + match BLOCKED
+    #     LLM trials by (task_id, task_version_id, experiment_id) and hand it one
+    #     representative baseline trial id per group. ``IS NOT DISTINCT FROM``
+    #     lets a NULL version/experiment match itself (plain ``=`` would drop
+    #     those scopes, unlike the ORM push path).
     # -----------------------------------------------------------------
     # Only run the heavy grouped scan when something is actually BLOCKED.
     # Runs regardless of the feature flag so a flag rollback can't strand
@@ -1075,8 +1074,19 @@ async def _advance_running_tasks_to_analysis(
                     GROUP BY base.task_id, base.task_version_id,
                              base.experiment_id
                     HAVING COUNT(*) FILTER (
-                        WHERE base.status
-                            IN ('PENDING', 'QUEUED', 'RUNNING', 'RETRYING')
+                        WHERE base.status IN (
+                            'PENDING', 'QUEUED', 'RUNNING', 'RETRYING'
+                        )
+                        OR EXISTS (
+                            SELECT 1
+                            FROM worker_jobs baseline_job
+                            WHERE baseline_job.subject_table = 'trials'
+                              AND baseline_job.kind::text = 'TRIAL'
+                              AND baseline_job.subject_id = base.id
+                              AND baseline_job.status::text IN (
+                                  'QUEUED', 'RUNNING', 'RETRYING', 'BLOCKED'
+                              )
+                        )
                     ) = 0
                     """
                 ),
