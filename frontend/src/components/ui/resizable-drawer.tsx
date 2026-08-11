@@ -75,6 +75,10 @@ export function ResizableDrawer({
   const displayWidth = maximized
     ? widthCeiling
     : Math.max(Math.min(width, widthCeiling), Math.min(minWidth, widthCeiling));
+  // Chrome follows the width actually rendered, not the mode: a preferred width
+  // wider than the viewport is clamped to the ceiling without ever setting
+  // `maximized`, and that is just as full-bleed.
+  const atFullWidth = displayWidth >= widthCeiling;
 
   // Maximizing by drag writes the ceiling into `width`, so the width to come
   // back to has to be held separately or Restore has nothing to restore to.
@@ -172,7 +176,7 @@ export function ResizableDrawer({
           "border-t",
           // At full width the left border sits off-screen and the rounded
           // corner would clip content against the viewport edge.
-          maximized ? "border-l-0" : "rounded-tl-lg",
+          atFullWidth ? "border-l-0" : "rounded-tl-lg",
           className,
         )}
         style={{
