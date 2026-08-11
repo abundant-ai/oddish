@@ -205,6 +205,7 @@ class _FakeClient:
     def __init__(self, scripts: dict[str, list]):
         self._scripts = scripts
         self.calls: list[str] = []
+        self.requests: list[tuple[str, dict]] = []
 
     def __enter__(self):
         return self
@@ -214,6 +215,7 @@ class _FakeClient:
 
     def post(self, url, **kwargs):
         self.calls.append(url)
+        self.requests.append((url, kwargs))
         for suffix, responses in self._scripts.items():
             if url.endswith(suffix):
                 return responses.pop(0)
@@ -254,11 +256,13 @@ def test_upload_task_retries_init_and_complete(monkeypatch, tmp_path):
     monkeypatch.setattr(api.httpx, "Client", lambda *_a, **_k: fake)
     monkeypatch.setattr(api.time, "sleep", lambda *_a: None)
 
-    result = api.upload_task("http://api", task_dir)
+    result = api.upload_task("http://api", task_dir, overwrite_current_version=True)
 
     assert result == {"task_id": "T1"}
     assert fake.calls.count("http://api/tasks/upload/init") == 2  # retried once
     assert fake.calls.count("http://api/tasks/upload/complete") == 2  # retried once
+    assert fake.requests[0][1]["json"]["overwrite_current_version"] is True
+    assert fake.requests[-1][1]["json"]["overwrite_current_version"] is True
 
 
 def test_submit_sweep_is_not_retried(monkeypatch):

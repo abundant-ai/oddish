@@ -729,6 +729,19 @@ class TaskUploadInitRequest(BaseModel):
             "stamp (e.g. to flip run_analysis on)."
         ),
     )
+    overwrite_current_version: bool = Field(
+        False,
+        description=(
+            "Replace the selected current version in place; trials pinned to "
+            "that version will resolve to the replacement content."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_version_mode(self) -> "TaskUploadInitRequest":
+        if self.force_new_version and self.overwrite_current_version:
+            raise ValueError("version upload modes are mutually exclusive")
+        return self
 
 
 class TaskUploadCompleteRequest(BaseModel):
@@ -742,6 +755,10 @@ class TaskUploadCompleteRequest(BaseModel):
     )
     message: str | None = Field(
         None, description="Optional description of what changed in this version"
+    )
+    overwrite_current_version: bool = Field(
+        False,
+        description="Finalize an in-place current-version replacement.",
     )
     register_task: bool = Field(
         False,
@@ -2089,5 +2106,3 @@ class DocumentResponse(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
-
-

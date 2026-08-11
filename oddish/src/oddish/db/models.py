@@ -793,7 +793,7 @@ class TaskModel(TimestampedMixin, Base):
     )
     link: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # Versioning: points to the latest TaskVersionModel row
+    # User-selected default; this need not be the highest-numbered version.
     current_version_id: Mapped[str | None] = mapped_column(
         String(160),
         ForeignKey("task_versions.id", ondelete="SET NULL", use_alter=True),
@@ -887,11 +887,7 @@ class TaskModel(TimestampedMixin, Base):
 
 
 class TaskVersionModel(TimestampedMixin, Base):
-    """Immutable snapshot of a task's content at a point in time.
-
-    Each re-upload of a task bundle creates a new row.  Trials reference the
-    specific version they ran against via ``task_version_id``.
-    """
+    """Task snapshot, normally immutable unless explicitly overwritten."""
 
     __tablename__ = "task_versions"
     __table_args__ = (

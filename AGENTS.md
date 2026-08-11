@@ -346,6 +346,11 @@ otherwise it falls back to the highest version represented by such trials. The
 so progressive loading cannot change the files/counts pivot or mix one
 version's trials with another's artifacts.
 
+`overwrite_current_version` replaces the archive and metadata for
+`tasks.current_version_id` without changing its ID or version number. It clears
+derived files and pre-trial audit state before re-enqueuing expansion. Existing
+trials pinned to that version resolve to the replacement content.
+
 `GET /experiments/{experiment_id}/cost-totals` reports both cost and token
 usage across every trial owned by the experiment, including older versions,
 superseded retries, probes, and soft-deleted trials. Its `billed_*` cost and

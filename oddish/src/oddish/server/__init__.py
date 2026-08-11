@@ -324,6 +324,8 @@ async def init_task_upload(payload: TaskUploadInitRequest) -> TaskUploadInitResp
         payload.name,
         content_hash=payload.content_hash,
         message=payload.message,
+        force_new_version=payload.force_new_version,
+        overwrite_current_version=payload.overwrite_current_version,
     )
 
 
@@ -339,6 +341,7 @@ async def finalize_task_upload(payload: TaskUploadCompleteRequest) -> UploadResp
         register=payload.register_task,
         user=payload.user,
         priority=payload.priority,
+        overwrite_current_version=payload.overwrite_current_version,
     )
 
 

@@ -91,30 +91,43 @@ async def initialize_task_upload(
     content_hash: str,
     message: str | None = None,
     force_new_version: bool = False,
+    overwrite_current_version: bool = False,
 ) -> TaskUploadInitResponse:
     """Prepare a task upload and return direct-upload details when supported."""
     normalized_name = _normalize_task_name(task_name)
 
     async with get_session() as session:
         existing_task = await _find_task_by_name(session, normalized_name, org_id)
-        latest = (
-            await _latest_version(session, existing_task.id)
-            if existing_task is not None
-            else None
-        )
+        target = None
+        if existing_task is not None:
+            if overwrite_current_version:
+                current_id = existing_task.current_version_id
+                target = (
+                    await session.get(TaskVersionModel, current_id)
+                    if current_id
+                    else None
+                )
+                if target is None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Task {existing_task.id} has no selected version to overwrite",
+                    )
+            else:
+                target = await _latest_version(session, existing_task.id)
 
         if (
             not force_new_version
-            and latest is not None
-            and latest.content_hash
-            and latest.content_hash == content_hash
+            and target is not None
+            and target.content_hash
+            and target.content_hash == content_hash
         ):
+            assert existing_task is not None
             return TaskUploadInitResponse(
                 task_id=existing_task.id,
                 name=normalized_name,
-                s3_key=latest.task_s3_key,
-                version=latest.version,
-                version_id=latest.id,
+                s3_key=target.task_s3_key,
+                version=target.version,
+                version_id=target.id,
                 existing_task=True,
                 content_unchanged=True,
                 content_hash=content_hash,
@@ -122,7 +135,11 @@ async def initialize_task_upload(
 
         if existing_task is not None:
             task_id = existing_task.id
-            version = await _next_version_number(session, task_id)
+            if overwrite_current_version:
+                assert target is not None
+                version = target.version
+            else:
+                version = await _next_version_number(session, task_id)
             existing = True
         else:
             task_id = f"{normalized_name}-{str(uuid.uuid4())[:8]}"
@@ -172,6 +189,7 @@ async def complete_task_upload(
     register: bool = False,
     user: str | None = None,
     priority: Priority | None = None,
+    overwrite_current_version: bool = False,
 ) -> UploadResponse:
     """Finalize a direct-to-S3 upload after the client has uploaded bytes.
 
@@ -230,7 +248,7 @@ async def complete_task_upload(
             session.add(new_task)
             await session.flush()
 
-            version_row = TaskVersionModel(
+            new_version_row = TaskVersionModel(
                 id=version_id,
                 task_id=task_id,
                 version=version,
@@ -240,7 +258,7 @@ async def complete_task_upload(
                 message=message,
                 created_by_user_id=created_by_user_id,
             )
-            session.add(version_row)
+            session.add(new_version_row)
             await session.flush()
 
             new_task.current_version_id = version_id
@@ -281,6 +299,28 @@ async def complete_task_upload(
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
         version_row = await session.get(TaskVersionModel, version_id)
+        if overwrite_current_version:
+            if existing_task.current_version_id != version_id or version_row is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "The selected task version changed during upload; "
+                        "start the in-place upload again"
+                    ),
+                )
+            await storage.delete_prefix(f"tasks/{task_id}/v{version}-files/")
+            version_row.task_path = task_path
+            version_row.task_s3_key = s3_key
+            version_row.content_hash = content_hash
+            version_row.message = message
+            version_row.expanded_at = None
+            version_row.expanded_manifest_key = None
+            version_row.pre_trial = None
+            version_row.pre_trial_status = None
+            version_row.pre_trial_error = None
+            version_row.pre_trial_started_at = None
+            version_row.pre_trial_finished_at = None
+
         new_version_created = False
         if version_row is None:
             version_row = TaskVersionModel(

@@ -693,6 +693,7 @@ def upload_task(
     user: str | None = None,
     priority: str | None = None,
     force_new_version: bool = False,
+    overwrite_current_version: bool = False,
     quiet: bool = False,
 ) -> dict:
     """Upload a task directory to the API.
@@ -733,6 +734,8 @@ def upload_task(
         init_body["message"] = message
     if force_new_version:
         init_body["force_new_version"] = True
+    if overwrite_current_version:
+        init_body["overwrite_current_version"] = True
 
     try:
         with httpx.Client(timeout=600.0, headers=get_auth_headers()) as client:
@@ -786,6 +789,8 @@ def upload_task(
                 complete_body["user"] = user
             if priority:
                 complete_body["priority"] = priority
+            if overwrite_current_version:
+                complete_body["overwrite_current_version"] = True
             # complete is keyed on (task_id, version, content_hash); replaying
             # it after a transient failure resolves to the same version.
             response = _retry_request(
@@ -817,6 +822,7 @@ def upload_tasks_with_progress(
     json_output: bool = False,
     progress_label: str = "Uploading",
     force_new_version: bool = False,
+    overwrite_current_version: bool = False,
     concurrency: int | None = None,
     limiter: AdaptiveConcurrencyLimiter | None = None,
 ) -> list[dict]:
@@ -852,6 +858,7 @@ def upload_tasks_with_progress(
             user=user,
             priority=priority,
             force_new_version=force_new_version,
+            overwrite_current_version=overwrite_current_version,
             quiet=quiet or json_output,
         )
 
