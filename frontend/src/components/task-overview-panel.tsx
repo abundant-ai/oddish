@@ -589,6 +589,12 @@ export function TaskOverviewPanel({
         </div>
       ) : null}
 
+      {taskId ? (
+        <div className="border-border border-b p-4">
+          <CohortComparisonSection taskId={taskId} apiBaseUrl={apiBaseUrl} />
+        </div>
+      ) : null}
+
       <div className="border-border flex flex-col gap-3 border-b p-4">
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-muted-foreground font-mono text-[11px] font-semibold tracking-wider uppercase">
@@ -657,12 +663,6 @@ export function TaskOverviewPanel({
         </div>
         {trialQaBody()}
       </div>
-
-      {taskId ? (
-        <div className="border-border border-t p-4">
-          <CohortComparisonSection taskId={taskId} apiBaseUrl={apiBaseUrl} />
-        </div>
-      ) : null}
     </div>
   );
 }

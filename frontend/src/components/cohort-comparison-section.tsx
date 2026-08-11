@@ -69,15 +69,58 @@ export function CohortComparisonSection({
   taskId: string;
   apiBaseUrl?: string;
 }) {
-  const { data } = useSWR<CohortComparison>(
+  const { data, error, isLoading } = useSWR<CohortComparison>(
     `${apiBaseUrl}/tasks/${encodeURIComponent(taskId)}/cohort-comparison`,
     (url: string) =>
       fetch(url).then((r) => (r.ok ? r.json() : Promise.reject(r.status))),
     { shouldRetryOnError: false },
   );
 
-  // The gate is a 404 from the endpoint; render nothing rather than an empty box.
-  if (!data || !data.categories.length) return null;
+  // A 404 is the gate, not a fault: the task has too few classified trials.
+  // Render nothing for it. Everything else gets a visible state, because a
+  // silent null makes "still generating", "generation failed" and "nothing to
+  // show" indistinguishable — the first view triggers a model call that takes
+  // real time, so an empty panel otherwise reads as broken.
+  if (error === 404) return null;
+
+  if (isLoading) {
+    return (
+      <section className="flex flex-col gap-2">
+        <h3 className="text-sm font-semibold">Successful vs failing agents</h3>
+        <p className="text-muted-foreground animate-pulse text-xs">
+          Comparing successful and failing runs. The first view generates this,
+          which takes a moment.
+        </p>
+      </section>
+    );
+  }
+
+  if (error) {
+    return (
+      <section className="flex flex-col gap-2">
+        <h3 className="text-sm font-semibold">Successful vs failing agents</h3>
+        <p className="text-muted-foreground text-xs">
+          Could not build the comparison{typeof error === "number" ? ` (${error})` : ""}.
+          Reload to try again.
+        </p>
+      </section>
+    );
+  }
+
+  if (!data) return null;
+
+  if (!data.categories.length) {
+    return (
+      <section className="flex flex-col gap-2">
+        <h3 className="text-sm font-semibold">Successful vs failing agents</h3>
+        <p className="text-muted-foreground text-xs">
+          No differences held up against the stored trajectories for these{" "}
+          {data.cohort_success.length} successful and {data.cohort_failure.length}{" "}
+          failing runs.
+        </p>
+      </section>
+    );
+  }
 
   return (
     <section className="flex flex-col gap-4">
