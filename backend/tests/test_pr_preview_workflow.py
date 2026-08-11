@@ -73,6 +73,15 @@ def test_backend_and_vercel_are_siblings():
     assert "prepare-preview-database" in _needs(jobs["deploy-preview-backend"])
 
 
+def test_preview_backend_registers_bounded_ec2_lane():
+    env = _wf()["jobs"]["deploy-preview-backend"]["env"]
+    assert env["ODDISH_EC2_ENABLED"] == "true"
+    assert env["ODDISH_EC2_CONTROL_SECRET_NAME"] == "oddish-ec2-control"
+    assert env["ODDISH_EC2_SSH_SECRET_NAME"] == "oddish-ec2-ssh"
+    assert env["ODDISH_EC2_REGION"] == "us-west-2"
+    assert env["ODDISH_EC2_MAX_CONCURRENT_INSTANCES"] == "2"
+
+
 def test_post_links_waits_for_backend_and_vercel():
     job = _wf()["jobs"]["post-preview-links"]
     needs = _needs(job)
