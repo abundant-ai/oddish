@@ -155,6 +155,21 @@ def parse_timings(raw):
     }
 
 
+def parse_seed_stats(raw):
+    """Run-level seed report emitted by the prepare job as a `seed_stats` output.
+
+    Malformed payloads degrade to no seed section; telemetry must never fail a
+    deployment step that produced it.
+    """
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def _parse_ts(value):
     if not value:
         return None
@@ -274,6 +289,7 @@ def build_report(run, jobs, env, now=None):
         "identifiers": collect_identifiers(env),
         "jobs": jobs_section,
         "phases": phases,
+        "seed": parse_seed_stats(env.get("SEED_STATS", "")),
     }
 
 
