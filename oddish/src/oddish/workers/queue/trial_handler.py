@@ -40,6 +40,7 @@ from oddish.db import (
     utcnow,
 )
 from oddish.core.llm_key_fingerprint import trial_llm_key_hash
+from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.db.storage import get_storage_client, resolve_task_directory
 from oddish.model_pricing import is_native_cost_trusted, settle_cost_usd
 from oddish.observability import (
@@ -557,6 +558,7 @@ async def _prepare_trial_run(
         # ``worker_jobs``. The claim SQL stamped it; the cancel path
         # harvests it from ``worker_jobs.RETURNING``.
 
+        await refresh_task_browse_summaries(session, [trial.task_version_id])
         return PreparedTrialRun(
             task_path=task_path,
             task_s3_key=task_s3_key,
@@ -783,6 +785,9 @@ async def _store_trial_results(
                 f"[dim]Trial {trial_id} was cancelled; stored metering only[/dim]"
             )
             # Report terminal so the caller purges live events immediately.
+            await refresh_task_browse_summaries(
+                session, [getattr(trial, "task_version_id", None)]
+            )
             return trial.finished_at is not None, False
 
         if not await _worker_still_owns_trial(
@@ -920,6 +925,9 @@ async def _store_trial_results(
             trial.analysis_started_at = probe_analysis["analysis_started_at"]
             trial.analysis_finished_at = probe_analysis["analysis_finished_at"]
 
+        await refresh_task_browse_summaries(
+            session, [getattr(trial, "task_version_id", None)]
+        )
         terminal = trial.status in (TrialStatus.SUCCESS, TrialStatus.FAILED)
         return terminal, terminal
 

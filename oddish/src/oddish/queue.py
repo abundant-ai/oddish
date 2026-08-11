@@ -25,6 +25,7 @@ from oddish.core.baseline_gate import (
     evaluate_baseline_gate,
 )
 from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
+from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.core.tags.enqueue import enqueue_tag_project_worker_job
 from oddish.core.tags.projection import recompute_task_browse_projection
 from oddish.core.trial_facets import (
@@ -306,6 +307,9 @@ async def cancel_tasks_runs(
             tasks_cancelled += 1
 
     await session.flush()
+    await refresh_task_browse_summaries(
+        session, (trial.task_version_id for trial in trials)
+    )
 
     return {
         "task_ids": found_task_ids,
@@ -1030,6 +1034,7 @@ async def create_task(
     await session.flush()
     await _bulk_insert_trials(session, trial_rows)
     await bulk_enqueue_worker_jobs(session, worker_job_requests)
+    await refresh_task_browse_summaries(session, [version_id])
 
     await session.refresh(task, attribute_names=["trials"])
     await bump_experiment_last_activity(session, experiment_ids=experiment.id)
@@ -1380,6 +1385,7 @@ async def append_trials_to_task(
         )
 
     await session.flush()
+    await refresh_task_browse_summaries(session, [current_version_id])
     await session.refresh(task, attribute_names=["trials"])
     bump_ids = {trial_experiment_id}
     bump_ids.update(t.experiment_id for t in new_trials if t.experiment_id)
@@ -1714,12 +1720,14 @@ async def _cancel_gated_llm_trials(
     if not trial_ids:
         return
     # Match quota cancellation's ordered Trial -> WorkerJob locks.
-    await session.execute(
-        select(TrialModel.id)
-        .where(TrialModel.id.in_(trial_ids))
-        .order_by(TrialModel.id)
-        .with_for_update()
-    )
+    version_ids = (
+        await session.scalars(
+            select(TrialModel.task_version_id)
+            .where(TrialModel.id.in_(trial_ids))
+            .order_by(TrialModel.id)
+            .with_for_update()
+        )
+    ).all()
     await session.execute(
         update(TrialModel)
         .where(
@@ -1757,6 +1765,7 @@ async def _cancel_gated_llm_trials(
         ),
         {"trial_ids": trial_ids, "reason": reason},
     )
+    await refresh_task_browse_summaries(session, version_ids)
 
 
 async def _scope_has_baseline_trials(
