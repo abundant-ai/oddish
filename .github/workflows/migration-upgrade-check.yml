@@ -66,6 +66,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Run steps in this container job see the workspace owned by the
+          # host runner's UID, not this step's user, and git refuses such a
+          # repo ("detected dubious ownership", exit 128). actions/checkout
+          # marks the path safe for its own git calls, but that does not
+          # reach container run steps. This exact 128 is what the old
+          # pipeline swallowed into a green skip; this PR's first CI run
+          # reproduced it loudly.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           base='${{ github.event.pull_request.base.sha }}'
           git cat-file -e "${base}^{commit}" 2>/dev/null \
             || git fetch --no-tags origin "$base"
