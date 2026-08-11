@@ -63,7 +63,11 @@ async def resolve_cohorts(
     for cls in (SUCCESS_CLASS, FAILURE_CLASS):
         rows = (
             await session.execute(
-                select(TrialModel.id, TrialModel.total_steps).where(
+                select(
+                    TrialModel.id,
+                    TrialModel.total_steps,
+                    TrialModel.trajectory_summary,
+                ).where(
                     TrialModel.task_version_id == task_version_id,
                     TrialModel.is_probe.is_(False),
                     # A retry leaves its superseded attempt in the table, still
@@ -77,11 +81,21 @@ async def resolve_cohorts(
         ).all()
         ids = [r[0] for r in rows]
         total_steps = {r[0]: r[1] for r in rows}
-        summaries = await _summaries_for(session, ids)
+        # Prefer the mirror on the trial row. summarize_trajectory writes every
+        # summary to trials.trajectory_summary as well as analyzer_blocks, and
+        # the mirror is what the sibling QA surfaces read -- post-trial reads
+        # trials.analysis, pre-trial reads task_versions.pre_trial. Reading
+        # analyzer_blocks alone made this the only feature that cannot work on
+        # a preview deploy, because preview_seed copies trials but not
+        # analyzer_blocks. Fall back to the block for rows written before the
+        # mirror existed.
+        mirrored = {r[0]: r[2] for r in rows if r[2]}
+        missing = [t for t in ids if t not in mirrored]
+        summaries = {**(await _summaries_for(session, missing)), **mirrored}
         for tid in ids:
             comps = [
                 c
-                for c in (summaries.get(tid, {}).get("components") or [])
+                for c in ((summaries.get(tid) or {}).get("components") or [])
                 if isinstance(c, dict) and c.get("step_ids")
             ]
             # A trial with no summary contributes nothing citable.

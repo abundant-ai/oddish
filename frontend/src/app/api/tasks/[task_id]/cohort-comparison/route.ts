@@ -20,14 +20,20 @@ export async function GET(
 
     const { task_id } = await params;
 
-    // `refresh` must be forwarded explicitly: getBackendUrl builds a fresh
-    // URL, so a param not named here is silently dropped and the caller
-    // gets the cached comparison it asked to replace.
-    const refresh = new URL(request.url).searchParams.get("refresh");
+    // Every param must be forwarded explicitly: getBackendUrl builds a fresh
+    // URL, so anything not named here is silently dropped. `refresh` would
+    // return the cached comparison it asked to replace, and `version` would
+    // compare the current task version while the overview shows an older one.
+    const incoming = new URL(request.url).searchParams;
+    const forwarded: Record<string, string> = {};
+    for (const name of ["refresh", "version"]) {
+      const value = incoming.get(name);
+      if (value !== null) forwarded[name] = value;
+    }
     const url = getBackendUrl(
       "tasks",
       `/${task_id}/cohort-comparison`,
-      refresh !== null ? { refresh } : undefined,
+      Object.keys(forwarded).length ? forwarded : undefined,
     );
     const res = await fetch(url, {
       cache: "no-store",
