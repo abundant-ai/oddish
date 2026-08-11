@@ -154,3 +154,93 @@ def validate_evidence(
             drops["categories"] += 1
 
     return {**output, "categories": kept_categories}, drops
+
+
+def is_stale(block_metadata: dict | None, *, current_hash: str, schema_version: int) -> bool:
+    """Freshness keys on the cohort hash AND the schema version.
+
+    Keying on schema_version alone is the bug that left stored trajectory
+    summaries serving a retired taxonomy forever.
+    """
+    if not block_metadata:
+        return True
+    return (
+        block_metadata.get("cohort_hash") != current_hash
+        or block_metadata.get("schema_version") != schema_version
+    )
+
+
+async def get_or_generate_comparison(
+    session: AsyncSession,
+    task_version_id: str,
+    *,
+    task_name: str,
+    refresh: bool = False,
+    triggered_by_user_id: str | None = None,
+) -> dict | None:
+    """Return the comparison, generating on miss. None when the gate fails."""
+    from oddish.blocks.analyzer.analyzer_block import AnalyzerBlock, AnalyzerInput
+    from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
+
+    from api.services.blocks.analyzer.cohort import cohort_prompts as cp
+    from api.services.blocks.analyzer.cohort.cohort_comparison_block import (
+        SCHEMA_VERSION,
+        CohortComparisonBlock,
+        CohortComparisonOutput,
+        CohortInput,
+    )
+    from api.services.summarize_trajectory import resolve_summary_model
+
+    successful, failing = await resolve_cohorts(session, task_version_id)
+    if len(successful) < MIN_COHORT or len(failing) < MIN_COHORT:
+        return None
+
+    current = cohort_hash(
+        [t["trial_id"] for t in successful], [t["trial_id"] for t in failing]
+    )
+
+    if not refresh:
+        row = (
+            await session.execute(
+                select(AnalyzerBlockModel)
+                .where(
+                    AnalyzerBlockModel.task_id == task_version_id,
+                    AnalyzerBlockModel.type == AnalyzerType.COHORT_COMPARISON.value,
+                    AnalyzerBlockModel.status == JobStatus.SUCCESS,
+                )
+                .order_by(AnalyzerBlockModel.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if row is not None and not is_stale(
+            row.block_metadata, current_hash=current, schema_version=SCHEMA_VERSION
+        ):
+            return row.output
+
+    model = resolve_summary_model()
+    cb = CohortComparisonBlock(
+        CohortInput(task_name=task_name, successful=successful, failing=failing),
+        instructions_template=cp.load_cohort_prompt_template(),
+    )
+    block = AnalyzerBlock(
+        analyzer_type=AnalyzerType.COHORT_COMPARISON,
+        llm_client_type=LLMClientType.API,
+        input=AnalyzerInput(input={"task_version_id": task_version_id}),
+        prompt=cb.build_prompt(),
+        task_id=task_version_id,
+        block_metadata={"schema_version": SCHEMA_VERSION, "cohort_hash": current},
+        output_transform=cb.to_output,
+        model=model,
+        response_format=CohortComparisonOutput,
+        output_schema=CohortComparisonOutput.model_json_schema(),
+        triggered_by_user_id=triggered_by_user_id,
+    )
+    result = await block.run()
+    filtered, drops = validate_evidence(result.output, successful, failing)
+    filtered["dropped"] = drops
+    # Surfaced in the UI so a reader can see when the comparison rests on thin
+    # evidence, rather than the feature averaging over it silently.
+    filtered["thin_coverage"] = [
+        t["trial_id"] for t in (successful + failing) if t["coverage"] < 0.5
+    ]
+    return filtered

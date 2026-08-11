@@ -97,6 +97,7 @@ from api.routers.task_submission import (
     stamp_experiment_owner,
 )
 from dashboard_attribution import resolve_search_authors
+from api.services.cohort_comparison import get_or_generate_comparison
 from oddish.core.tasks import (
     complete_task_upload,
     initialize_task_upload,
@@ -1570,6 +1571,53 @@ async def get_task_detail(
 
     async with get_session() as session:
         return await get_task_detail_core(session, task_id=task_id, org_id=auth.org_id)
+
+
+@router.get("/tasks/{task_id}/cohort-comparison")
+async def get_task_cohort_comparison(
+    task_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    refresh: bool = Query(
+        False,
+        description=(
+            "Discard the stored comparison and generate a new one. Costs an "
+            "LLM call, so it needs the same scope as an analysis rerun."
+        ),
+    ),
+) -> dict:
+    """Successful-vs-failing comparison for the task's current version.
+
+    404 when the task has too few classified trials to compare.
+    """
+    auth.require_scope(APIKeyScope.READ)
+    if refresh:
+        auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
+    async with get_session() as session:
+        # This router has no _get_authorized_task helper; task-scoped routes
+        # authorize by filtering on auth.org_id (see the READ routes above).
+        task = (
+            await session.execute(
+                select(TaskModel).where(
+                    TaskModel.id == task_id,
+                    TaskModel.org_id == auth.org_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if task is None or not task.current_version_id:
+            raise HTTPException(status_code=404, detail="Task not found")
+        result = await get_or_generate_comparison(
+            session,
+            task.current_version_id,
+            task_name=task.name,
+            refresh=refresh,
+            triggered_by_user_id=auth.user_id,
+        )
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Not enough classified trials to compare",
+        )
+    return result
 
 
 # =============================================================================
