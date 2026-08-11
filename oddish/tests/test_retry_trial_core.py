@@ -391,6 +391,51 @@ async def test_retry_clears_an_inflight_verdict_whose_job_it_cancels(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_retry_restores_published_verdict_from_cancelled_replacement(
+    monkeypatch,
+):
+    from oddish.db import VerdictStatus
+
+    events = []
+    trial = _RecordingTrial(events, status=TrialStatus.SUCCESS)
+    published_at = object()
+    payload = {"verdict": "accept", "is_good": True}
+    task = SimpleNamespace(
+        id="task-1",
+        name="task-1",
+        status=TaskStatus.VERDICT_PENDING,
+        finished_at=object(),
+        verdict=payload,
+        verdict_status=VerdictStatus.RUNNING,
+        verdict_error=None,
+        verdict_started_at=object(),
+        verdict_finished_at=published_at,
+    )
+    session = _RecordingSession(trial=trial, task=task, events=events)
+
+    async def fake_reserve_next_trial_index(_session, *, task_id):
+        return 1
+
+    async def fake_enqueue_trial_worker_job(_session, **_):
+        return None
+
+    monkeypatch.setattr(
+        queue_mod, "reserve_next_trial_index", fake_reserve_next_trial_index
+    )
+    monkeypatch.setattr(
+        queue_mod, "enqueue_trial_worker_job", fake_enqueue_trial_worker_job
+    )
+
+    await endpoints.retry_trial_core(session, trial_id=trial.id, org_id="org-1")
+
+    assert task.status == TaskStatus.RUNNING
+    assert task.verdict is payload
+    assert task.verdict_status == VerdictStatus.SUCCESS
+    assert task.verdict_started_at is None
+    assert task.verdict_finished_at is published_at
+
+
+@pytest.mark.asyncio
 async def test_retry_moves_verdict_pending_task_back_to_running(monkeypatch):
     events = []
     trial = _RecordingTrial(events, status=TrialStatus.SUCCESS)

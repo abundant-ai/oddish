@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from oddish.core.verdict_state import reset_verdict
 from oddish.db import ExperimentModel, TaskModel, TrialModel
 
 USER_CANCELLED_MESSAGE = "Cancelled by user"
@@ -93,9 +94,5 @@ async def get_trial_for_org_core(
 
 
 def _reset_task_verdict(task: TaskModel) -> None:
-    """Clear cached verdict state before re-running analysis or verdict."""
-    task.verdict = None
-    task.verdict_status = None
-    task.verdict_error = None
-    task.verdict_started_at = None
-    task.verdict_finished_at = None
+    """Discard the published verdict and all of its lifecycle metadata."""
+    reset_verdict(task)

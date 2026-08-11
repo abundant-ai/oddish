@@ -36,6 +36,7 @@ from oddish.config import (
 from oddish.core.baseline_gate import GATE_SKIP_PREFIX
 from oddish.core.helpers import cancel_job_by_worker
 from oddish.core.tags.ownership_transfer import sweep_orphaned_tag_owners
+from oddish.core.verdict_state import fail_verdict, queue_verdict
 from oddish.costs.recorder import reconcile_compute_cost_spans
 from oddish.db import (
     AnalysisStatus,
@@ -414,9 +415,7 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
         if task is None:
             return None
         if row["new_status"] == "FAILED":
-            task.verdict_status = VerdictStatus.FAILED
-            task.verdict_error = row["error_message"]
-            task.verdict_finished_at = utcnow()
+            fail_verdict(task, error=row["error_message"], now=utcnow())
             # No further QA attempt will run for this task, so any trial the
             # dead job left mid-classification would stay non-terminal forever
             # (and count as a phantom "running" analysis in the dashboard
@@ -837,15 +836,14 @@ async def _advance_running_tasks_to_analysis(
 
     # -----------------------------------------------------------------
     # 2b. Baseline gate backstop: (task_version, experiment) groups whose
-    #     nop/oracle baselines are all terminal but whose LLM trials are
-    #     still BLOCKED. Normally the last baseline's handler resolves the
-    #     gate; this re-drives it if that handler was killed first. The gate
-    #     is (task version, experiment)-scoped, so group + match BLOCKED LLM
-    #     trials by (task_id, task_version_id, experiment_id) and hand it one
-    #     representative baseline trial id per group. ``IS NOT DISTINCT
-    #     FROM`` so a NULL version/experiment still matches itself (plain
-    #     ``=`` would drop those scopes, unlike the ORM push path). Skipped
-    #     entirely when the gate is off so it never touches the hot path.
+    #     nop/oracle trial mirrors and worker jobs are all terminal but whose
+    #     LLM trials are still BLOCKED. Normally the last baseline's handler
+    #     resolves the gate; this re-drives it if that handler was killed first.
+    #     The gate is (task version, experiment)-scoped, so group + match BLOCKED
+    #     LLM trials by (task_id, task_version_id, experiment_id) and hand it one
+    #     representative baseline trial id per group. ``IS NOT DISTINCT FROM``
+    #     lets a NULL version/experiment match itself (plain ``=`` would drop
+    #     those scopes, unlike the ORM push path).
     # -----------------------------------------------------------------
     # Only run the heavy grouped scan when something is actually BLOCKED.
     # Runs regardless of the feature flag so a flag rollback can't strand
@@ -883,8 +881,19 @@ async def _advance_running_tasks_to_analysis(
                     GROUP BY base.task_id, base.task_version_id,
                              base.experiment_id
                     HAVING COUNT(*) FILTER (
-                        WHERE base.status
-                            IN ('PENDING', 'QUEUED', 'RUNNING', 'RETRYING')
+                        WHERE base.status IN (
+                            'PENDING', 'QUEUED', 'RUNNING', 'RETRYING'
+                        )
+                        OR EXISTS (
+                            SELECT 1
+                            FROM worker_jobs baseline_job
+                            WHERE baseline_job.subject_table = 'trials'
+                              AND baseline_job.kind::text = 'TRIAL'
+                              AND baseline_job.subject_id = base.id
+                              AND baseline_job.status::text IN (
+                                  'QUEUED', 'RUNNING', 'RETRYING', 'BLOCKED'
+                              )
+                        )
                     ) = 0
                     """
                 ),

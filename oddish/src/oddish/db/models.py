@@ -517,6 +517,13 @@ class TaskModel(TimestampedMixin, Base):
 
     __tablename__ = "tasks"
     __table_args__ = (
+        # JSONB serializes Python None as JSON null on normal ORM inserts, so
+        # both SQL NULL and JSON null mean "no published verdict" here.
+        CheckConstraint(
+            "verdict IS NULL OR verdict = 'null'::jsonb OR "
+            "(verdict_status IS NOT NULL AND verdict_status <> 'FAILED')",
+            name="ck_tasks_published_verdict_status",
+        ),
         Index("idx_tasks_org_created_at", "org_id", "created_at"),
         # Partial mirror of ``idx_tasks_org_created_at`` that matches
         # the ``deleted_at IS NULL`` predicate the soft-delete listener

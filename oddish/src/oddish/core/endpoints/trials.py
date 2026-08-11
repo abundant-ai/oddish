@@ -9,7 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oddish.core.endpoints._common import (
     get_trial_for_org_core,
 )
-from oddish.core.verdict_sync import clear_inflight_verdict
 from oddish.core.endpoints.qa_cost import get_trial_qa_costs
 from oddish.core.helpers import (
     build_trial_response,
@@ -22,6 +21,7 @@ from oddish.core.trial_io import (
     read_trial_result,
     read_trial_trajectory,
 )
+from oddish.core.verdict_state import abandon_verdict
 from oddish.db import (
     TaskModel,
     TaskStatus,
@@ -502,7 +502,7 @@ async def retry_trial_core(
     ):
         task.status = TaskStatus.RUNNING
         task.finished_at = None
-    clear_inflight_verdict(task)
+    abandon_verdict(task)
     await session.execute(
         text(
             """

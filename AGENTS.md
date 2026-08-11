@@ -162,7 +162,15 @@ High-level flow:
    nonterminal trial in the org. Final result settlement performs the same
    check for agents without live usage. Cancellation retires queued, running,
    blocked, and retrying worker jobs in the database before terminating remote
-   handles; a task is failed only when no other live trial remains.
+   handles; a task is failed only when no other live trial remains. If quota
+   cancellation interrupts a replacement QA pass, the last successful verdict
+   is restored through `cancel_verdict`; a terminal QA failure instead clears
+   that preserved payload through `fail_verdict`. All task verdict-column
+   mutations go through `oddish.core.verdict_state`: a published payload may
+   coexist with QUEUED/RUNNING while its replacement is active, but it must
+   return to SUCCESS if that pass is abandoned. The
+   `ck_tasks_published_verdict_status` database constraint rejects a published
+   payload with a missing or FAILED status.
 6. Trial completion persists queryable execution metrics on the trial row:
    input/cache/output tokens, total trajectory steps, native runtime cost when
    reported, phase timing, trajectory availability, arbitrary verifier
@@ -222,11 +230,14 @@ a code change that ships with a deploy.
 - unified claim/dispatch SQL, one `run_single_worker_job` runner, and a
   handler registry (`TrialJobHandler`, `TaskExpandJobHandler`,
   `TagProjectJobHandler`)
-- analysis trials (`oddish.workers.analysis_trials` / `analyzer_trials`):
-  brief builders, settlement importers, and the audit/QA/analyzer pipeline
-  edges. Workers execute no LLM calls of their own (the one exception is the
-  probe transcript summarizer in `oddish/worker/probe_analysis.py`); every
-  analysis agent runs as a trial on the analysis model's queue key
+- analysis trials (`oddish.workers.analysis_trials`): brief builders,
+  settlement importers, and the audit/QA pipeline edges. Workers execute no
+  LLM calls of their own (the one exception is the probe transcript
+  summarizer in `oddish/worker/probe_analysis.py`); every analysis agent
+  runs as a trial on the analysis model's queue key
+- the verdict state machine (`oddish.core.verdict_state`), the only writer
+  for `tasks.verdict*` lifecycle columns, which preserves the last published
+  result until a replacement QA pass succeeds or terminally fails
 - shared queue-slot leasing, per-queue-key concurrency limits, and
   per-user fairness on `TRIAL` claims
 - database-backed admin concurrency overrides; these take precedence over
@@ -472,7 +483,7 @@ call the shared `oddish.core.endpoints.deletion` helpers.
 
 Public share links use 256-bit `public_token` values and are access-by-link, not
 enumerable. The unauthenticated `/public/experiments` list intentionally returns
-no share tokens. Public task/trial/file routes must stay scoped under
+no share tokens. Public task/trial/live/file routes must stay scoped under
 `/public/experiments/{public_token}/...` and verify membership in that shared
 experiment; do not reintroduce `/public/tasks/{task_id}` or
 `/public/trials/{trial_id}` ID-only access. Unpublishing an experiment clears
