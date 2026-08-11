@@ -229,6 +229,12 @@ test.describe("critical task and trial subtree", () => {
       }
     );
     await page.route(
+      new RegExp(`/api/tasks/${TASK_ID}/trials(?:\\?|$)`),
+      async (route) => {
+        await route.fulfill({ json: [trial] });
+      }
+    );
+    await page.route(
       new RegExp(`/api/trials/${TRIAL_ID}/analysis-log(?:\\?|$)`),
       async (route) => {
         await route.fulfill({
@@ -259,16 +265,14 @@ test.describe("critical task and trial subtree", () => {
     await page.goto("/tasks");
     const taskLink = page.getByRole("link", { name: "P1 snapshot task" });
     await expect(taskLink).toBeVisible();
-    await taskLink.click();
 
-    await expect
-      .poll(() =>
-        requestCount(
-          requests,
-          new RegExp(`/api/tasks/${TASK_ID}/detail(?:\\?|$)`)
-        )
-      )
-      .toBe(1);
+    const taskDetailPattern = new RegExp(
+      `/api/tasks/${TASK_ID}/detail(?:\\?|$)`
+    );
+    const taskDetailRequest = page.waitForRequest(taskDetailPattern);
+    await taskLink.click();
+    await taskDetailRequest;
+    expect(requestCount(requests, taskDetailPattern)).toBe(1);
     // The detail response is still blocked: this heading can only be the
     // browse snapshot preserved on the detail resource key.
     await expect(
@@ -278,19 +282,22 @@ test.describe("critical task and trial subtree", () => {
     taskDetailGate.release();
     const trialButton = page.getByRole("button", { name: "trial-p1 Fail" });
     await expect(trialButton).toBeVisible();
-    await trialButton.click();
 
-    await expect
-      .poll(() =>
-        requestCount(requests, new RegExp(`/api/trials/${TRIAL_ID}(?:\\?|$)`))
-      )
-      .toBe(1);
+    const trialDetailPattern = new RegExp(`/api/trials/${TRIAL_ID}(?:\\?|$)`);
+    const trialDetailRequest = page.waitForRequest(trialDetailPattern);
+    await trialButton.click();
+    await trialDetailRequest;
+    expect(requestCount(requests, trialDetailPattern)).toBe(1);
     // The full trial response is also blocked. Summary and the known report
     // must render from the selected row, without mounting sibling tabs.
     await expect(page.getByRole("tab", { name: "Summary" })).toBeVisible();
     await expect(
       page.getByRole("heading", { name: "GOOD FAILURE" })
     ).toBeVisible();
+    const analysisLogDisclosure = page
+      .locator("summary")
+      .filter({ hasText: "Analysis log" });
+    await expect(analysisLogDisclosure).toBeVisible();
 
     await page.waitForTimeout(300);
     const analysisLogPattern = new RegExp(
@@ -307,17 +314,19 @@ test.describe("critical task and trial subtree", () => {
     expect(requestCount(requests, trajectoryPattern)).toBe(0);
 
     trialDetailGate.release();
-    await page.getByText("Analysis log", { exact: true }).click();
+    await analysisLogDisclosure.click();
     await expect(page.getByText("terminal analyzer output")).toBeVisible();
     expect(requestCount(requests, analysisLogPattern)).toBe(1);
 
+    const trialFilesRequest = page.waitForRequest(trialFilesPattern);
     await page.getByRole("tab", { name: "Files" }).click();
-    await expect.poll(() => requestCount(requests, trialFilesPattern)).toBe(1);
+    await trialFilesRequest;
+    expect(requestCount(requests, trialFilesPattern)).toBeGreaterThan(0);
     expect(requestCount(requests, trajectoryPattern)).toBe(0);
 
+    const trajectoryRequest = page.waitForRequest(trajectoryPattern);
     await page.getByRole("tab", { name: "Trajectory" }).click();
-    await expect
-      .poll(() => requestCount(requests, trajectoryPattern))
-      .toBeGreaterThan(0);
+    await trajectoryRequest;
+    expect(requestCount(requests, trajectoryPattern)).toBeGreaterThan(0);
   });
 });
