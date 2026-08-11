@@ -986,6 +986,12 @@ uv run alembic upgrade head
 uv run alembic upgrade head
 ```
 
+In hosted environments both stacks run in that order *before* the code deploy,
+because the backend can hard-require new schema on its hot paths.
+`.github/workflows/staging-deploy.yml` sequences migrations then the Modal
+deploy; `modal-deploy.yml` (production) additionally orders the Vercel frontend
+after the backend, so a new frontend never reaches an old backend.
+
 ### Key Files
 
 | Path | Purpose |
@@ -1043,10 +1049,9 @@ use the same helpers instead of replacing an existing timing value.
 
 The trial drawer surfaces verifier test counts only as a small passed/total
 row in the Summary tab (shown on public share views too); trials without test
-counts show no row. `_verifier` CTRF counts take precedence, and historical
-trials without a persisted `_verifier` summary lazily discover and parse their
-`verifier/ctrf.json` artifact through the already-scoped trial files API; do
-not add an unscoped artifact lookup for this fallback.
+counts show no row. Persisted `_verifier` CTRF counts are the sole source.
+Historical trials without that summary show no count; opening a trial must not
+list or read its artifacts to reconstruct one.
 
 On an experiment page, removing a task always calls the scoped
 `DELETE /experiments/{experiment_id}/tasks/{task_id}` proxy. It unlinks that
