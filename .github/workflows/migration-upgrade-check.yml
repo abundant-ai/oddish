@@ -1,7 +1,7 @@
 name: Migration Upgrade Check
 
-# Pre-merge mirror of supabase-db-migrations.yml. That job runs `alembic
-# upgrade head` against PRODUCTION Supabase on push to main — so a migration
+# Pre-merge mirror of the migration steps in modal-deploy.yml, which run
+# `alembic upgrade head` against PRODUCTION Supabase on push to main — so a migration
 # that fails at the SQL/DDL level is only discovered after it is merged and
 # already half-applied to prod. This job runs the identical upgrade against a
 # throwaway Postgres at PR time, so the failure surfaces on the PR instead.
