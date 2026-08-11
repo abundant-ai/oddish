@@ -131,11 +131,10 @@ class DispatchPlan:
 
     ``unit_plan`` preserves the effective dispatch unit
     ``(queue_key, harbor_variant_id, execution_lane)`` so Modal can choose the
-    credential-scoped, image-bound Function. Legacy injected test fixtures may
-    still expose two-part units, which are treated as the default lane.
+    credential-scoped, image-bound Function.
     """
 
-    queue_units: tuple[tuple, ...]
+    queue_units: tuple[tuple[str, str, str], ...]
     queue_keys: tuple[str, ...]
     queued_by_org_queue: dict[tuple[str | None, str, str, str], int]
     running_by_queue: dict[tuple[str, str, str], int]
@@ -143,7 +142,7 @@ class DispatchPlan:
     running_by_queue_key: dict[str, int]
     held_by_queue_key: dict[str, int]
     concurrency_limits: dict[str, int]
-    unit_plan: list[tuple]
+    unit_plan: list[tuple[str, str, str]]
 
 
 DiscoverFn = Callable[[], Awaitable[Sequence[tuple[str, str, str]]]]
@@ -175,27 +174,9 @@ async def build_dispatch_plan(
     This is the scheduling brain shared by the generic dispatch cycle and the
     Modal cron. Callers choose how to fan out ``unit_plan``.
     """
-    raw_queue_units = tuple(await _discover())
-    legacy_shape = all(len(unit) == 2 for unit in raw_queue_units)
-    queue_units = tuple(
-        (unit[0], unit[1], unit[2] if len(unit) == 3 else "default")
-        for unit in raw_queue_units
-    )
+    queue_units = tuple(await _discover())
     queue_keys = tuple({qk for qk, _variant, _lane in queue_units})
-    raw_queued_by_org_queue, raw_running_by_queue = await _counts(queue_keys)
-    queued_by_org_queue = {
-        (
-            key[0],
-            key[1],
-            key[2],
-            key[3] if len(key) == 4 else "default",
-        ): value
-        for key, value in raw_queued_by_org_queue.items()
-    }
-    running_by_queue = {
-        (key[0], key[1], key[2] if len(key) == 3 else "default"): value
-        for key, value in raw_running_by_queue.items()
-    }
+    queued_by_org_queue, running_by_queue = await _counts(queue_keys)
     # Held ``queue_slots`` leases are the authoritative in-flight concurrency: a
     # lease is taken at spawn/claim, before the job shows RUNNING in worker_jobs.
     # On fast re-fires, plan against max(running, held) per queue_key -- else the
@@ -220,11 +201,8 @@ async def build_dispatch_plan(
             running or 0
         )
 
-    public_unit_plan = (
-        [(unit[0], unit[1]) for unit in unit_plan] if legacy_shape else unit_plan
-    )
     return DispatchPlan(
-        queue_units=raw_queue_units if legacy_shape else queue_units,
+        queue_units=queue_units,
         queue_keys=queue_keys,
         queued_by_org_queue=queued_by_org_queue,
         running_by_queue=running_by_queue,
@@ -232,7 +210,7 @@ async def build_dispatch_plan(
         running_by_queue_key=running_by_queue_key,
         held_by_queue_key=held_by_queue_key,
         concurrency_limits=concurrency_limits,
-        unit_plan=public_unit_plan,
+        unit_plan=unit_plan,
     )
 
 

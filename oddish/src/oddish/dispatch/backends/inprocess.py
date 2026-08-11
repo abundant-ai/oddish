@@ -78,15 +78,10 @@ class InProcessDispatcher:
         )
 
     async def spawn_units(
-        self, *, spawn_units: Sequence[tuple]
+        self, *, spawn_units: Sequence[tuple[str, str, str]]
     ) -> Sequence[WorkerHandle]:
         handles: list[WorkerHandle] = []
-        for unit in spawn_units:
-            if len(unit) == 2:
-                queue_key, harbor_variant_id = unit
-                execution_lane = "default"
-            else:
-                queue_key, harbor_variant_id, execution_lane = unit
+        for queue_key, harbor_variant_id, execution_lane in spawn_units:
             self._counter += 1
             worker_id = f"{self._worker_id_prefix}-{queue_key}-{self._counter}"
             task = asyncio.create_task(

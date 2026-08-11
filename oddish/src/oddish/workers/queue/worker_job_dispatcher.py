@@ -25,7 +25,7 @@ beyond ``limit - running`` for that queue_key.
 from __future__ import annotations
 
 from collections import Counter
-from typing import Any, cast
+from typing import Any
 
 from oddish.config import settings
 from oddish.db import get_pool
@@ -234,7 +234,7 @@ async def get_worker_job_org_queue_counts(
 
 
 def select_job_function(
-    unit: tuple[str, str] | tuple[str, str, str],
+    unit: tuple[str, str, str],
     *,
     default_fn: Any,
     variant_fns: dict[str, Any],
@@ -244,26 +244,20 @@ def select_job_function(
     """Pick the worker Function for one ``(queue_key, variant, lane)``.
 
     The execution lane chooses the credential topology first; Harbor variant
-    then chooses the image within that topology. Legacy two-part test fixtures
-    default to the non-EC2 lane and retain their old spawn kwargs.
+    then chooses the image within that topology.
     """
-    legacy_unit = len(unit) == 2
-    queue_key = unit[0]
-    variant = unit[1]
-    lane = cast(tuple[str, str, str], unit)[2] if not legacy_unit else "default"
+    queue_key, variant, lane = unit
     if lane == "ec2_trial":
         if ec2_fn is None:
             raise RuntimeError("EC2 dispatch unit has no EC2 worker Function")
         fn = (ec2_variant_fns or {}).get(variant, ec2_fn)
     else:
         fn = variant_fns.get(variant, default_fn)
-    kwargs = {
+    return fn, {
         "queue_key": queue_key,
         "harbor_variant_id": variant,
+        "execution_lane": lane,
     }
-    if not legacy_unit:
-        kwargs["execution_lane"] = lane
-    return fn, kwargs
 
 
 def _org_sort_key(org_id: str | None) -> tuple[int, str]:
@@ -272,12 +266,12 @@ def _org_sort_key(org_id: str | None) -> tuple[int, str]:
 
 
 def build_spawn_plan(
-    queued_by_org_queue: dict[tuple, int],
-    running_by_queue: dict[tuple, int],
+    queued_by_org_queue: dict[tuple[str | None, str, str, str], int],
+    running_by_queue: dict[tuple[str, str, str], int],
     concurrency_limits: dict[str, int],
     max_workers: int,
     held_by_queue_key: dict[str, int] | None = None,
-) -> list[tuple]:
+) -> list[tuple[str, str, str]]:
     """Decide which ``(queue_key, harbor_variant_id, lane)`` workers to spawn.
 
     Two-level round-robin:
@@ -307,20 +301,9 @@ def build_spawn_plan(
     if max_workers <= 0 or not queued_by_org_queue:
         return []
 
-    legacy_shape = all(len(key) == 3 for key in queued_by_org_queue) and all(
-        len(key) == 2 for key in running_by_queue
-    )
-
     # Bucket queued work by org -> {(queue_key, variant, lane): queued}.
     org_to_unit_queued: dict[str | None, dict[tuple[str, str, str], int]] = {}
-    for key, queued in queued_by_org_queue.items():
-        if len(key) == 3:
-            org_id, queue_key, variant = key
-            lane = "default"
-        elif len(key) == 4:
-            org_id, queue_key, variant, lane = key
-        else:
-            raise ValueError(f"invalid queued dispatch key: {key!r}")
+    for (org_id, queue_key, variant, lane), queued in queued_by_org_queue.items():
         if queued <= 0:
             continue
         org_to_unit_queued.setdefault(org_id, {})[(queue_key, variant, lane)] = queued
@@ -330,13 +313,7 @@ def build_spawn_plan(
 
     # Running counts SUM across variants for the shared per-queue_key cap.
     running_by_queue_key: dict[str, int] = {}
-    for key, running in running_by_queue.items():
-        if len(key) == 2:
-            queue_key, _variant = key
-        elif len(key) == 3:
-            queue_key, _variant, _lane = key
-        else:
-            raise ValueError(f"invalid running dispatch key: {key!r}")
+    for (queue_key, _variant, _lane), running in running_by_queue.items():
         running_by_queue_key[queue_key] = running_by_queue_key.get(queue_key, 0) + (
             running or 0
         )
@@ -398,6 +375,4 @@ def build_spawn_plan(
         if not progressed:
             break
 
-    if legacy_shape:
-        return [(queue_key, variant) for queue_key, variant, _lane in spawn_plan]
     return spawn_plan
