@@ -1135,8 +1135,7 @@ export function TrialDetailPanel({
     trial.reward,
     trial.error_message,
   );
-  const showLive =
-    showAnalysis && (trial.status === "running" || trial.status === "retrying");
+  const showLive = trial.status === "running" || trial.status === "retrying";
   const effectiveTab =
     activeTab === "live" && !showLive ? "summary" : activeTab;
   const trialStatusConfig = STATUS_CONFIG[trialStatus];

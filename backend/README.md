@@ -302,6 +302,7 @@ All routes require auth unless marked public.
 | GET | `/public/experiments/{public_token}/tasks` | Public tasks and trials for a shared experiment |
 | GET | `/public/experiments/{public_token}/tasks/{task_id}` | Public task status within a shared experiment |
 | GET | `/public/experiments/{public_token}/tasks/{task_id}/trials` | Public trial list within a shared experiment |
+| GET | `/public/experiments/{public_token}/trials/{trial_id}/live` | Public live transcript and running usage |
 | GET | `/public/experiments/{public_token}/trials/{trial_id}/logs` | Public trial logs |
 | GET | `/public/experiments/{public_token}/trials/{trial_id}/logs/structured` | Public structured logs |
 | GET | `/public/experiments/{public_token}/trials/{trial_id}/trajectory` | Public trajectory |
