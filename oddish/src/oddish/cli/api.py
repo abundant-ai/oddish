@@ -781,6 +781,15 @@ def upload_task(
                 "version": init_payload["version"],
                 "content_hash": content_hash,
             }
+            staging_key = init_payload.get("staging_key")
+            if overwrite_current_version and init_payload.get("existing_task"):
+                if not isinstance(staging_key, str) or not staging_key:
+                    error_console.print(
+                        "[red]Task upload initialization did not return a staging key.[/red]"
+                    )
+                    raise typer.Exit(1)
+                complete_body["overwrite_current_version"] = True
+                complete_body["staging_key"] = staging_key
             if message:
                 complete_body["message"] = message
             if register:
@@ -789,8 +798,6 @@ def upload_task(
                 complete_body["user"] = user
             if priority:
                 complete_body["priority"] = priority
-            if overwrite_current_version:
-                complete_body["overwrite_current_version"] = True
             # complete is keyed on (task_id, version, content_hash); replaying
             # it after a transient failure resolves to the same version.
             response = _retry_request(

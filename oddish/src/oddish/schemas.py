@@ -760,6 +760,16 @@ class TaskUploadCompleteRequest(BaseModel):
         False,
         description="Finalize an in-place current-version replacement.",
     )
+    staging_key: str | None = Field(
+        None,
+        description="Server-issued staging object for an in-place replacement.",
+    )
+
+    @model_validator(mode="after")
+    def _validate_overwrite_staging_key(self) -> "TaskUploadCompleteRequest":
+        if self.overwrite_current_version and not self.staging_key:
+            raise ValueError("staging_key is required for an in-place replacement")
+        return self
     register_task: bool = Field(
         False,
         description=(
@@ -807,6 +817,7 @@ class TaskUploadInitResponse(UploadResponse):
     upload_method: str | None = None
     upload_headers: dict[str, str] = Field(default_factory=dict)
     requires_completion: bool = False
+    staging_key: str | None = None
 
 
 class TrialQueueInfo(BaseModel):

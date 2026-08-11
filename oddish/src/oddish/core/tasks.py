@@ -84,6 +84,27 @@ def _task_archive_key_for_version(task_id: str, version: int) -> str:
     )
 
 
+def _task_overwrite_staging_key(task_id: str) -> str:
+    return f"task-upload-staging/{task_id}/{uuid.uuid4().hex}.tar.gz"
+
+
+def _validate_task_overwrite_staging_key(task_id: str, staging_key: str | None) -> str:
+    prefix = f"task-upload-staging/{task_id}/"
+    filename = (staging_key or "").removeprefix(prefix)
+    token = filename.removesuffix(".tar.gz")
+    if (
+        not staging_key
+        or not staging_key.startswith(prefix)
+        or not filename.endswith(".tar.gz")
+        or len(token) != 32
+        or any(char not in "0123456789abcdef" for char in token)
+    ):
+        raise HTTPException(
+            status_code=400, detail="Invalid task overwrite staging key"
+        )
+    return staging_key
+
+
 async def initialize_task_upload(
     task_name: str,
     *,
@@ -150,10 +171,15 @@ async def initialize_task_upload(
     s3_key = _task_s3_prefix_for_version(task_id, version)
 
     storage = get_storage_client()
-    archive_key = _task_archive_key_for_version(task_id, version)
+    staging_key = (
+        _task_overwrite_staging_key(task_id)
+        if overwrite_current_version and existing
+        else None
+    )
+    upload_key = staging_key or _task_archive_key_for_version(task_id, version)
     try:
         upload_url = await storage.get_presigned_upload_url(
-            archive_key,
+            upload_key,
             expiration=3600,
             content_type="application/gzip",
         )
@@ -174,6 +200,7 @@ async def initialize_task_upload(
         upload_method="PUT",
         upload_headers={"Content-Type": "application/gzip"},
         requires_completion=True,
+        staging_key=staging_key,
     )
 
 
@@ -190,6 +217,7 @@ async def complete_task_upload(
     user: str | None = None,
     priority: Priority | None = None,
     overwrite_current_version: bool = False,
+    staging_key: str | None = None,
 ) -> UploadResponse:
     """Finalize a direct-to-S3 upload after the client has uploaded bytes.
 
@@ -202,23 +230,56 @@ async def complete_task_upload(
     normalized_name = _normalize_task_name(task_name)
     s3_key = _task_s3_prefix_for_version(task_id, version)
     archive_key = _task_archive_key_for_version(task_id, version)
+    upload_key = (
+        _validate_task_overwrite_staging_key(task_id, staging_key)
+        if overwrite_current_version
+        else archive_key
+    )
     version_id = f"{task_id}-v{version}"
     task_path = f"s3://{s3_key}"
 
     storage = get_storage_client()
     try:
-        archive_exists = await storage.object_exists(archive_key)
+        archive_exists = await storage.object_exists(upload_key)
     except Exception as exc:
         raise HTTPException(
             status_code=500, detail=f"Failed to verify S3 upload: {str(exc)}"
         ) from exc
-    if not archive_exists:
-        raise HTTPException(
-            status_code=400, detail="Uploaded task archive not found in S3"
-        )
-
     async with get_session() as session:
         existing_task = await session.get(TaskModel, task_id)
+
+        if (
+            existing_task is not None
+            and org_id is not None
+            and existing_task.org_id != org_id
+        ):
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+        if not archive_exists:
+            if overwrite_current_version and existing_task is not None:
+                completed_version = await session.get(TaskVersionModel, version_id)
+                if (
+                    existing_task.current_version_id == version_id
+                    and completed_version is not None
+                    and completed_version.content_hash == content_hash
+                ):
+                    return UploadResponse(
+                        task_id=task_id,
+                        name=normalized_name,
+                        s3_key=s3_key,
+                        version=version,
+                        version_id=version_id,
+                        existing_task=True,
+                        content_hash=content_hash,
+                    )
+            raise HTTPException(
+                status_code=400, detail="Uploaded task archive not found in S3"
+            )
+
+        if overwrite_current_version and existing_task is None:
+            raise HTTPException(
+                status_code=409, detail=f"Task {task_id} has no version to overwrite"
+            )
 
         if existing_task is None and not register:
             # Legacy behavior: leave creation of the task row to the
@@ -295,9 +356,6 @@ async def complete_task_upload(
                 content_hash=content_hash,
             )
 
-        if org_id is not None and existing_task.org_id != org_id:
-            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-
         version_row = await session.get(TaskVersionModel, version_id)
         if overwrite_current_version:
             if existing_task.current_version_id != version_id or version_row is None:
@@ -308,11 +366,13 @@ async def complete_task_upload(
                         "start the in-place upload again"
                     ),
                 )
+            await storage.copy_object(upload_key, archive_key)
             await storage.delete_prefix(f"tasks/{task_id}/v{version}-files/")
             version_row.task_path = task_path
             version_row.task_s3_key = s3_key
             version_row.content_hash = content_hash
-            version_row.message = message
+            if message is not None:
+                version_row.message = message
             version_row.expanded_at = None
             version_row.expanded_manifest_key = None
             version_row.pre_trial = None
@@ -369,6 +429,12 @@ async def complete_task_upload(
             )
 
         await session.commit()
+
+    if overwrite_current_version:
+        try:
+            await storage.delete_prefix(upload_key)
+        except Exception:
+            pass
 
     return UploadResponse(
         task_id=task_id,

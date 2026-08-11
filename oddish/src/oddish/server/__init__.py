@@ -342,6 +342,7 @@ async def finalize_task_upload(payload: TaskUploadCompleteRequest) -> UploadResp
         user=payload.user,
         priority=payload.priority,
         overwrite_current_version=payload.overwrite_current_version,
+        staging_key=payload.staging_key,
     )
 
 

@@ -244,6 +244,8 @@ def test_upload_task_retries_init_and_complete(monkeypatch, tmp_path):
             "version": 1,
             "upload_url": "https://s3/put",
             "upload_headers": {},
+            "existing_task": True,
+            "staging_key": f"task-upload-staging/T1/{'a' * 32}.tar.gz",
         },
     )
     complete_ok = _FakeResp(200, {"task_id": "T1"})
@@ -263,6 +265,9 @@ def test_upload_task_retries_init_and_complete(monkeypatch, tmp_path):
     assert fake.calls.count("http://api/tasks/upload/complete") == 2  # retried once
     assert fake.requests[0][1]["json"]["overwrite_current_version"] is True
     assert fake.requests[-1][1]["json"]["overwrite_current_version"] is True
+    assert fake.requests[-1][1]["json"]["staging_key"].startswith(
+        "task-upload-staging/T1/"
+    )
 
 
 def test_submit_sweep_is_not_retried(monkeypatch):

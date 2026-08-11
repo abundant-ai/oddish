@@ -347,9 +347,11 @@ so progressive loading cannot change the files/counts pivot or mix one
 version's trials with another's artifacts.
 
 `overwrite_current_version` replaces the archive and metadata for
-`tasks.current_version_id` without changing its ID or version number. It clears
-derived files and pre-trial audit state before re-enqueuing expansion. Existing
-trials pinned to that version resolve to the replacement content.
+`tasks.current_version_id` without changing its ID or version number. Uploads
+land at a unique staging key and are promoted only after the selected-version
+check passes. The replacement clears derived files and pre-trial audit state
+before re-enqueuing expansion. Existing trials pinned to that version resolve
+to the replacement content.
 
 `GET /experiments/{experiment_id}/cost-totals` reports both cost and token
 usage across every trial owned by the experiment, including older versions,
