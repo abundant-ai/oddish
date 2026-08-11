@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { ExternalLink, GitPullRequest } from "lucide-react";
+import { useSWRConfig } from "swr";
 import { Badge, badgeVariants } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -24,6 +25,12 @@ import {
   STATUS_CONFIG,
 } from "@/lib/status-config";
 import type { TaskBrowseItem } from "@/lib/types";
+import {
+  isBrowseTaskDetail,
+  taskDetailFromBrowse,
+  taskDetailKey,
+  type TaskDetailResource,
+} from "@/lib/task-detail-resource";
 import {
   cn,
   formatRelativeTime,
@@ -313,7 +320,18 @@ function TrialGraphics({ task }: { task: TaskBrowseItem }) {
 
 export function TaskCard({ task }: { task: TaskBrowseItem }) {
   const { isSelected, toggle } = useSelection();
+  const { mutate } = useSWRConfig();
   const selected = isSelected(task.id);
+
+  function preserveBrowseSnapshot() {
+    const snapshot = taskDetailFromBrowse(task);
+    void mutate(
+      taskDetailKey(task.id),
+      (current: TaskDetailResource | undefined) =>
+        current && !isBrowseTaskDetail(current) ? current : snapshot,
+      { revalidate: false }
+    );
+  }
 
   return (
     <Card
@@ -334,6 +352,7 @@ export function TaskCard({ task }: { task: TaskBrowseItem }) {
             <div className="flex flex-wrap items-center gap-2">
               <Link
                 href={`/tasks/${encodeURIComponent(task.id)}`}
+                onClick={preserveBrowseSnapshot}
                 className="text-foreground font-mono text-sm font-semibold transition-colors hover:text-[#5d77a5] dark:hover:text-[#a8b8d2]"
               >
                 {task.name}
