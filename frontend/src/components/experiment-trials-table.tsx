@@ -76,15 +76,11 @@ import {
   taskHasCancellableWork,
 } from "@/lib/job-status";
 import {
-  ANALYSIS_CLASSIFICATION_LABELS,
   formatPartialRewardBadgeValue,
   formatRewardPercent,
   formatRewardValue,
   getMatrixStatus,
-  getQaGlyphMatrixClass,
   getRewardStyle,
-  getVisibleAnalysisClassification,
-  QA_TONE_MATRIX_CLASS,
   STATUS_CONFIG,
   STATUS_GLYPH_BOX,
   type MatrixStatus,
@@ -335,12 +331,12 @@ const ANALYSIS_LEGEND_ITEMS: Array<{
   },
   {
     key: "good",
-    label: "Good",
+    label: "Pass",
     dotClass: ANALYSIS_CONFIG.GOOD_SUCCESS.dotClass,
   },
   {
     key: "bad",
-    label: "Bad",
+    label: "Fail",
     dotClass: ANALYSIS_CONFIG.BAD_SUCCESS.dotClass,
   },
   {
@@ -1566,22 +1562,6 @@ export function ExperimentTrialsTable({
     "analysis-failed": "var(--paper-a-failed)",
   };
 
-  // Good/bad chips show the tone painted on both outcome shapes — a ✓✗
-  // pair — so the legend teaches the cell semiotics (shape = outcome,
-  // color = QA verdict) instead of implying green means "pass".
-  const renderToneGlyphPair = (tone: "good" | "bad") => (
-    <span className="inline-flex items-center gap-[2px]">
-      {(["pass", "fail"] as const).map((shape) => (
-        <span
-          key={shape}
-          className={`inline-flex h-[14px] w-[16px] items-center justify-center rounded-[3px] border ${QA_TONE_MATRIX_CLASS[tone]}`}
-        >
-          <StatusIcon status={shape} className="h-2 w-2" />
-        </span>
-      ))}
-    </span>
-  );
-
   const renderAnalyzerChip = (item: (typeof ANALYSIS_LEGEND_ITEMS)[number]) => {
     const isDimmed = dimmedAnalysisKeys.has(item.key);
     return (
@@ -1595,14 +1575,10 @@ export function ExperimentTrialsTable({
               isDimmed ? "line-through opacity-[0.38]" : ""
             }`}
           >
-            {item.key === "good" || item.key === "bad" ? (
-              renderToneGlyphPair(item.key)
-            ) : (
-              <span
-                className={`inline-block h-2 w-2 rounded-full ${item.animate ? "animate-pulse" : ""}`}
-                style={{ background: ANALYZER_CHIP_COLOR[item.key] }}
-              />
-            )}
+            <span
+              className={`inline-block h-2 w-2 rounded-full ${item.animate ? "animate-pulse" : ""}`}
+              style={{ background: ANALYZER_CHIP_COLOR[item.key] }}
+            />
             <span>{item.label}</span>
           </Button>
         </TooltipTrigger>
@@ -1617,46 +1593,31 @@ export function ExperimentTrialsTable({
     <Tooltip>
       <TooltipTrigger asChild>
         <div className="flex items-center gap-2.5 border-r border-dashed border-[color:var(--paper-line)] pr-2.5 pl-1.5 font-mono text-[9.5px] leading-tight text-[color:var(--paper-ink-3)]">
-          <span className="relative inline-flex gap-[3px]">
+          <span className="relative inline-flex">
             <span
               className={`flex items-center justify-center border-transparent bg-[color:var(--paper-pass)] text-white ${STATUS_GLYPH_BOX}`}
             >
               <StatusIcon status="pass" />
             </span>
-            <span
-              className={`flex items-center justify-center border-transparent text-white ${STATUS_GLYPH_BOX} ${
-                showAnalysis
-                  ? "bg-[color:var(--paper-pass)]"
-                  : "bg-[color:var(--paper-fail)]"
-              }`}
-            >
-              <StatusIcon status="fail" />
-            </span>
             {showAnalysis && (
-              <span className="absolute -top-[2px] -right-[2px] h-[7px] w-[7px] animate-pulse rounded-full bg-[color:var(--paper-a-analyzing)] ring-[1.5px] ring-[color:var(--paper-surface)]" />
+              <span className="absolute -top-[2px] -right-[2px] h-[7px] w-[7px] rounded-full bg-[color:var(--paper-a-good)] ring-[1.5px] ring-[color:var(--paper-surface)]" />
             )}
           </span>
           <span className="flex flex-col gap-0.5">
             <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
-              <StatusIcon status="pass" className="h-2.5 w-2.5" />
-              <StatusIcon status="fail" className="h-2.5 w-2.5" />
-              shape = trial result
+              <span className="inline-block h-2.5 w-2.5 rounded-[2px] bg-[color:var(--paper-pass)]" />
+              trial result
             </span>
             {showAnalysis && (
               <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
-                <span className="inline-block h-2.5 w-2.5 rounded-[2px] bg-[color:var(--paper-pass)]" />
-                <span className="inline-block h-2.5 w-2.5 rounded-[2px] bg-[color:var(--paper-fail)]" />
-                color = QA verdict
+                <span className="mx-[1px] inline-block h-2 w-2 rounded-full bg-[color:var(--paper-a-good)]" />
+                QA result
               </span>
             )}
           </span>
         </div>
       </TooltipTrigger>
-      <TooltipContent>
-        How to read a cell: ✓/✗ is the trial outcome; once QA classifies a
-        trial, green means the outcome is good (expected) and red means bad — a
-        green ✗ is a good failure. A pulsing dot means QA is still running.
-      </TooltipContent>
+      <TooltipContent>How to read a cell</TooltipContent>
     </Tooltip>
   );
 
@@ -2474,26 +2435,6 @@ export function ExperimentTrialsTable({
                                     dimmedAnalysisKeys.has(analysisLegendKey)
                                       ? "opacity-25"
                                       : "";
-                                  // A classified binary outcome takes its QA
-                                  // tone as the glyph fill: shape = outcome,
-                                  // color = QA verdict. A good failure is a
-                                  // green ✗, a bad success a red ✓. The
-                                  // classification (and with it the fill and
-                                  // label) is null when QA is hidden.
-                                  const classification =
-                                    getVisibleAnalysisClassification(
-                                      showAnalysis,
-                                      trial
-                                    );
-                                  const qaGlyphClass = getQaGlyphMatrixClass(
-                                    status,
-                                    classification
-                                  );
-                                  const cellLabel = classification
-                                    ? ANALYSIS_CLASSIFICATION_LABELS[
-                                        classification
-                                      ]
-                                    : config.shortLabel;
                                   const baseTitle = getTrialTitle(
                                     trial,
                                     status
@@ -2535,9 +2476,9 @@ export function ExperimentTrialsTable({
                                             trialGroups,
                                           });
                                         }}
-                                        className={`relative grid place-items-center gap-0 p-0 leading-none transition-transform hover:-translate-y-px ${STATUS_GLYPH_BOX} ${qaGlyphClass ?? config.matrixClass} ${isPartial ? "font-mono text-[9.5px] font-semibold tracking-[-0.02em] tabular-nums" : ""}`}
+                                        className={`relative grid place-items-center gap-0 p-0 leading-none transition-transform hover:-translate-y-px ${STATUS_GLYPH_BOX} ${config.matrixClass} ${isPartial ? "font-mono text-[9.5px] font-semibold tracking-[-0.02em] tabular-nums" : ""}`}
                                         style={getRewardStyle(trial.reward)}
-                                        aria-label={`Trial ${trialIndex + 1} ${cellLabel}`}
+                                        aria-label={`Trial ${trialIndex + 1} ${config.shortLabel}`}
                                         title={fullTitle}
                                       >
                                         {isPartial ? (
@@ -2546,7 +2487,7 @@ export function ExperimentTrialsTable({
                                           <StatusIcon status={status} />
                                         )}
                                       </Button>
-                                      {analysisIndicator && !qaGlyphClass && (
+                                      {analysisIndicator && (
                                         <span
                                           aria-hidden="true"
                                           className={`pointer-events-none absolute -top-[1px] -right-[1px] h-[4px] w-[4px] rounded-full ring-[1px] ring-[color:var(--paper-surface)] ${analysisIndicator.dotClass} ${analysisIndicator.animate ? "animate-pulse" : ""}`}
