@@ -1181,7 +1181,7 @@ export function TrialDetailPanel({
   const content = (
     <>
       <DrawerHeader className="border-border border-b px-4 py-3 sm:px-6 sm:py-4">
-        <DrawerTitle className="flex min-w-0 items-center gap-2 pr-8 font-mono text-sm sm:text-base">
+        <DrawerTitle className="flex min-w-0 items-center gap-2 pr-16 font-mono text-sm sm:text-base">
           <span className="min-w-0 truncate">{trial.name}</span>
           {showAnalysis && trial.task_version != null && (
             <span className="border-border bg-muted/50 text-muted-foreground inline-flex shrink-0 items-center rounded-md border px-1.5 py-0.5 font-mono text-[11px] font-medium">

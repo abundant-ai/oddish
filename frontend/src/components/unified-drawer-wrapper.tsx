@@ -170,7 +170,12 @@ export function UnifiedDrawerWrapper({
             id="task-pane"
             order={1}
             defaultSize={42}
-            minSize={20}
+            // Collapsible so the divider drags all the way over and one pane
+            // takes the whole drawer. Recoverable by dragging the handle back
+            // out, or via the Hide/Show toggle in the *other* pane's header.
+            minSize={15}
+            collapsible
+            collapsedSize={0}
           >
             {taskFilesPane}
           </ResizablePanel>
@@ -184,7 +189,9 @@ export function UnifiedDrawerWrapper({
             id="trial-pane"
             order={2}
             defaultSize={58}
-            minSize={30}
+            minSize={15}
+            collapsible
+            collapsedSize={0}
           >
             <div className="flex h-full flex-col overflow-hidden">
               {renderedTrial}
