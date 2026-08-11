@@ -1584,8 +1584,16 @@ async def get_task_cohort_comparison(
             "LLM call, so it needs the same scope as an analysis rerun."
         ),
     ),
+    version: int | None = Query(
+        None,
+        description=(
+            "Compare this task version instead of the current one. The overview "
+            "scopes its other sections to the selected version, so without this "
+            "an older version would show the current version's comparison."
+        ),
+    ),
 ) -> dict:
-    """Successful-vs-failing comparison for the task's current version.
+    """Successful-vs-failing comparison for a task version.
 
     404 when the task has too few classified trials to compare.
     """
@@ -1605,9 +1613,25 @@ async def get_task_cohort_comparison(
         ).scalar_one_or_none()
         if task is None or not task.current_version_id:
             raise HTTPException(status_code=404, detail="Task not found")
+        version_id = task.current_version_id
+        if version is not None:
+            # Imported here to match this module's convention: TaskVersionModel
+            # is pulled in per-function rather than at module scope.
+            from oddish.db.models import TaskVersionModel
+
+            version_id = (
+                await session.execute(
+                    select(TaskVersionModel.id).where(
+                        TaskVersionModel.task_id == task.id,
+                        TaskVersionModel.version == version,
+                    )
+                )
+            ).scalar_one_or_none()
+            if version_id is None:
+                raise HTTPException(status_code=404, detail="Task version not found")
         result = await get_or_generate_comparison(
             session,
-            task.current_version_id,
+            version_id,
             task_id=task.id,
             task_name=task.name,
             refresh=refresh,

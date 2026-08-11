@@ -190,6 +190,13 @@ class CohortComparisonBlock(Block):
             parsed.model_dump(mode="json"), ci.successful, ci.failing
         )
         out["dropped"] = dropped
+        # Cohort membership is a fact we already hold, not something to take
+        # from the model. The UI renders these lengths as "N successful, M
+        # failing"; leaving the model's lists in place would let a fabricated
+        # or truncated array misreport how much evidence the comparison rests
+        # on -- the same class of problem the citation check exists to stop.
+        out["cohort_success"] = [t["trial_id"] for t in ci.successful]
+        out["cohort_failure"] = [t["trial_id"] for t in ci.failing]
         # Surfaced in the UI so a reader can see when the comparison rests on
         # thin evidence, rather than the feature averaging over it silently.
         out["thin_coverage"] = [

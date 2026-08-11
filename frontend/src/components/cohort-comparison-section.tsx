@@ -65,12 +65,18 @@ function ObservationList({
 export function CohortComparisonSection({
   taskId,
   apiBaseUrl = "/api",
+  version,
 }: {
   taskId: string;
   apiBaseUrl?: string;
+  /** Selected task version. The overview scopes its other sections to this, so
+      without it an older version would show the current version's comparison
+      beside that older version's trials. */
+  version?: number;
 }) {
   const { data, error, isLoading } = useSWR<CohortComparison>(
-    `${apiBaseUrl}/tasks/${encodeURIComponent(taskId)}/cohort-comparison`,
+    `${apiBaseUrl}/tasks/${encodeURIComponent(taskId)}/cohort-comparison` +
+      (version !== undefined ? `?version=${version}` : ""),
     (url: string) =>
       fetch(url).then((r) => (r.ok ? r.json() : Promise.reject(r.status))),
     { shouldRetryOnError: false },
@@ -85,7 +91,7 @@ export function CohortComparisonSection({
 
   if (isLoading) {
     return (
-      <section className="flex flex-col gap-2">
+      <section className="border-border flex flex-col gap-2 border-b p-4">
         <h3 className="text-sm font-semibold">Successful vs failing agents</h3>
         <p className="text-muted-foreground animate-pulse text-xs">
           Comparing successful and failing runs. The first view generates this,
@@ -97,7 +103,7 @@ export function CohortComparisonSection({
 
   if (error) {
     return (
-      <section className="flex flex-col gap-2">
+      <section className="border-border flex flex-col gap-2 border-b p-4">
         <h3 className="text-sm font-semibold">Successful vs failing agents</h3>
         <p className="text-muted-foreground text-xs">
           Could not build the comparison{typeof error === "number" ? ` (${error})` : ""}.
@@ -111,7 +117,7 @@ export function CohortComparisonSection({
 
   if (!data.categories.length) {
     return (
-      <section className="flex flex-col gap-2">
+      <section className="border-border flex flex-col gap-2 border-b p-4">
         <h3 className="text-sm font-semibold">Successful vs failing agents</h3>
         <p className="text-muted-foreground text-xs">
           No differences held up against the stored trajectories for these{" "}
@@ -123,7 +129,7 @@ export function CohortComparisonSection({
   }
 
   return (
-    <section className="flex flex-col gap-4">
+    <section className="border-border flex flex-col gap-4 border-b p-4">
       <div className="flex items-baseline gap-3">
         <h3 className="text-sm font-semibold">Successful vs failing agents</h3>
         <span className="text-xs text-muted-foreground">

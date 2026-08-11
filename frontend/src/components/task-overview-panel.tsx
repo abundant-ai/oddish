@@ -589,10 +589,15 @@ export function TaskOverviewPanel({
         </div>
       ) : null}
 
+      {/* No wrapper: the section returns null below the cohort gate, and a
+          bordered container here would leave an empty strip on every task
+          overview that has too few classified trials. It owns its own frame. */}
       {taskId ? (
-        <div className="border-border border-b p-4">
-          <CohortComparisonSection taskId={taskId} apiBaseUrl={apiBaseUrl} />
-        </div>
+        <CohortComparisonSection
+          taskId={taskId}
+          apiBaseUrl={apiBaseUrl}
+          version={version ?? undefined}
+        />
       ) : null}
 
       <div className="border-border flex flex-col gap-3 border-b p-4">

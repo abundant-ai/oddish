@@ -61,19 +61,22 @@ async def resolve_cohorts(
     """
     out: dict[str, list[dict]] = {SUCCESS_CLASS: [], FAILURE_CLASS: []}
     for cls in (SUCCESS_CLASS, FAILURE_CLASS):
-        ids = list(
-            (
-                await session.execute(
-                    select(TrialModel.id).where(
-                        TrialModel.task_version_id == task_version_id,
-                        TrialModel.is_probe.is_(False),
-                        TrialModel.analysis["classification"].astext == cls,
-                    )
+        rows = (
+            await session.execute(
+                select(TrialModel.id, TrialModel.total_steps).where(
+                    TrialModel.task_version_id == task_version_id,
+                    TrialModel.is_probe.is_(False),
+                    # A retry leaves its superseded attempt in the table, still
+                    # classified. Listings and verdict aggregation exclude those
+                    # (see oddish/core/quotas.py), so cohorts must too, or the
+                    # comparison and its membership hash count abandoned runs.
+                    TrialModel.superseded_by_trial_id.is_(None),
+                    TrialModel.analysis["classification"].astext == cls,
                 )
             )
-            .scalars()
-            .all()
-        )
+        ).all()
+        ids = [r[0] for r in rows]
+        total_steps = {r[0]: r[1] for r in rows}
         summaries = await _summaries_for(session, ids)
         for tid in ids:
             comps = [
@@ -87,15 +90,27 @@ async def resolve_cohorts(
             # Coverage guards against the summariser's long-run defect: one
             # 2,940-step trial yields ~20 covered steps, so a comparison can
             # rest on far thinner evidence than its trial count suggests.
+            #
+            # The denominator is the trial's real length. Dividing by the
+            # highest cited step instead would score a summary that covers a
+            # dense early band of a long run at close to 100%, which is exactly
+            # backwards. total_steps is nullable, so fall back to the cited
+            # span and accept the optimism rather than dropping the trial.
             all_ids = {i for c in comps for i in c["step_ids"]}
             span = max(all_ids)
+            denominator = total_steps.get(tid) or span
             out[cls].append(
                 {
                     "trial_id": tid,
                     "components": comps,
                     "covered_steps": len(all_ids),
                     "span": span,
-                    "coverage": round(len(all_ids) / span, 3) if span else 0.0,
+                    "total_steps": total_steps.get(tid),
+                    "coverage": (
+                        round(min(len(all_ids) / denominator, 1.0), 3)
+                        if denominator
+                        else 0.0
+                    ),
                 }
             )
     return out[SUCCESS_CLASS], out[FAILURE_CLASS]
