@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import { fetcher } from "@/lib/api";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AnalysisProse } from "@/components/analysis-prose";
+import { CohortComparisonSection } from "@/components/cohort-comparison-section";
 import { SeverityGroups } from "@/components/qa-report/action-items";
 import { CopyJsonButton } from "@/components/qa-report/copy-json-button";
 import { FALLBACK_TOKEN, VERDICT_TOKENS } from "@/components/qa-report/tokens";
@@ -656,6 +657,12 @@ export function TaskOverviewPanel({
         </div>
         {trialQaBody()}
       </div>
+
+      {taskId ? (
+        <div className="border-border border-t p-4">
+          <CohortComparisonSection taskId={taskId} apiBaseUrl={apiBaseUrl} />
+        </div>
+      ) : null}
     </div>
   );
 }
