@@ -755,14 +755,25 @@ export function TrajectoryViewer({
     }
   }, [trialId]);
 
-  // Filter steps by keyword, keeping each step's original index so timing,
-  // refs, and duration-bar clicks stay consistent with the full trajectory.
+  // Steps keep their original index so timing, refs, and duration-bar clicks
+  // stay consistent with the full trajectory.
   const lowerQuery = query.trim().toLowerCase();
+  // Padding steps hold nothing to read — gemini-cli exports are mostly these —
+  // so the list drops them the way the duration bar, segments and Activity card
+  // already do.
+  const renderedSteps = useMemo(
+    () =>
+      (trajectory?.steps ?? [])
+        .map((step, idx) => ({ step, idx }))
+        .filter(({ step }) => !isEmptyStep(step)),
+    [trajectory]
+  );
   const visibleSteps = useMemo(() => {
-    const all = (trajectory?.steps ?? []).map((step, idx) => ({ step, idx }));
-    if (!lowerQuery) return all;
-    return all.filter(({ step }) => stepMatchesQuery(step, lowerQuery));
-  }, [trajectory, lowerQuery]);
+    if (!lowerQuery) return renderedSteps;
+    return renderedSteps.filter(({ step }) =>
+      stepMatchesQuery(step, lowerQuery)
+    );
+  }, [renderedSteps, lowerQuery]);
 
   // A summary request can trigger paid on-demand generation server-side, so it
   // must not fire for a trial we already know (via shouldFetch) has no trajectory.
@@ -777,14 +788,17 @@ export function TrajectoryViewer({
     () => renderableStepIds(trajectory?.steps ?? []),
     [trajectory]
   );
+  // Coverage runs over what the list actually draws. Passing the full
+  // trajectory here would hand every padding step to Other -- the summariser
+  // stopped claiming them in #1155, so unclaimed is exactly the padding.
   const segments = useMemo(
     () =>
       withOtherSegment(
         toSegments(summary),
-        trajectory?.steps ?? [],
+        renderedSteps.map(({ step }) => step),
         renderableIds
       ),
-    [summary, trajectory, renderableIds]
+    [summary, renderedSteps, renderableIds]
   );
   const colorFor = useMemo(
     () => phaseColorVars(segments.map((s) => s.key)),
@@ -802,8 +816,24 @@ export function TrajectoryViewer({
     [trajectory]
   );
 
+  // Every jump target resolves through here, so a step the list does not draw
+  // reports -1 and the caller shows it as unavailable rather than scrolling to
+  // nothing. Summaries stored before #1155 can still cite padding.
+  const stepIdToIndex = useCallback(
+    (stepId: number) =>
+      // step_id is typed number but arrives as a string from some producers;
+      // strict === would return -1 and the jump would silently no-op.
+      renderedSteps.find(({ step }) => Number(step.step_id) === Number(stepId))
+        ?.idx ?? -1,
+    [renderedSteps]
+  );
+
   const handleStepClick = useCallback(
     (index: number) => {
+      // Callers resolve targets through stepIdToIndex, so this only catches a
+      // caller that skipped it: expanding a step the list never draws would
+      // clear the search filter and then scroll nowhere.
+      if (!renderedSteps.some(({ idx }) => idx === index)) return;
       const stepKey = `step-${index}`;
       // The duration bar spans every step, so a click may target a step the
       // active filter is hiding — clear the filter so it can be shown.
@@ -821,7 +851,7 @@ export function TrajectoryViewer({
         });
       }, 50);
     },
-    [lowerQuery, visibleSteps]
+    [lowerQuery, visibleSteps, renderedSteps]
   );
 
   // Resolve a #step-<step_id> hash once the trajectory has loaded. The hash
@@ -836,10 +866,14 @@ export function TrajectoryViewer({
       const m = /^#step-(\d+)$/.exec(hash);
       if (!m) return;
       appliedHash.current = hash;
-      const idx = steps.findIndex((s) => Number(s.step_id) === Number(m[1]));
+      const idx = stepIdToIndex(Number(m[1]));
       if (idx >= 0) {
         setDeepLinkError(null);
         handleStepClick(idx);
+      } else if (steps.some((s) => Number(s.step_id) === Number(m[1]))) {
+        // Present but empty: the list never draws it, so expanding the item
+        // would scroll to nothing.
+        setDeepLinkError(`Step ${m[1]} is empty and is not shown.`);
       } else {
         setDeepLinkError(`Step ${m[1]} is not in this trajectory.`);
       }
@@ -848,7 +882,7 @@ export function TrajectoryViewer({
     apply();
     window.addEventListener("hashchange", apply);
     return () => window.removeEventListener("hashchange", apply);
-  }, [trajectory, handleStepClick]);
+  }, [trajectory, handleStepClick, stepIdToIndex]);
 
   if (isLoading) {
     return (
@@ -894,26 +928,14 @@ export function TrajectoryViewer({
         trialId={trialId}
         apiBaseUrl={apiBaseUrl}
         renderableIds={renderableIds}
-        stepIdToIndex={(stepId) =>
-          // step_id is typed number but arrives as a string from some producers;
-          // strict === would return -1 and the scroll would silently no-op.
-          trajectory.steps.findIndex(
-            (s) => Number(s.step_id) === Number(stepId)
-          )
-        }
+        stepIdToIndex={stepIdToIndex}
         onStepSelect={handleStepClick}
       />
       <TrajectoryActivity
         trialId={trialId}
         steps={trajectory.steps}
         apiBaseUrl={apiBaseUrl}
-        stepIdToIndex={(stepId) =>
-          // step_id is typed number but arrives as a string from some producers;
-          // strict === would return -1 and the scroll would silently no-op.
-          trajectory.steps.findIndex(
-            (s) => Number(s.step_id) === Number(stepId)
-          )
-        }
+        stepIdToIndex={stepIdToIndex}
         onStepSelect={handleStepClick}
       />
       <Card>
@@ -926,8 +948,8 @@ export function TrajectoryViewer({
             <span className="flex items-center gap-2">
               <span className="text-muted-foreground text-xs font-normal">
                 {lowerQuery
-                  ? `${visibleSteps.length} of ${trajectory.steps.length} steps`
-                  : `${trajectory.steps.length} steps`}
+                  ? `${visibleSteps.length} of ${renderedSteps.length} steps`
+                  : `${renderedSteps.length} steps`}
                 {trajectory.final_metrics?.total_cost_usd && (
                   <> · ${trajectory.final_metrics.total_cost_usd.toFixed(4)}</>
                 )}
@@ -987,10 +1009,16 @@ export function TrajectoryViewer({
           {/* Steps Accordion */}
           {visibleSteps.length === 0 ? (
             <div className="text-muted-foreground py-8 text-center text-sm">
-              No steps match{" "}
-              <span className="text-foreground font-medium">
-                &ldquo;{query.trim()}&rdquo;
-              </span>
+              {lowerQuery ? (
+                <>
+                  No steps match{" "}
+                  <span className="text-foreground font-medium">
+                    &ldquo;{query.trim()}&rdquo;
+                  </span>
+                </>
+              ) : (
+                "This trajectory has no steps with content."
+              )}
             </div>
           ) : (
             <Accordion
