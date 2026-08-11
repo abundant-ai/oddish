@@ -816,8 +816,24 @@ export function TrajectoryViewer({
     [trajectory]
   );
 
+  // Every jump target resolves through here, so a step the list does not draw
+  // reports -1 and the caller shows it as unavailable rather than scrolling to
+  // nothing. Summaries stored before #1155 can still cite padding.
+  const stepIdToIndex = useCallback(
+    (stepId: number) =>
+      // step_id is typed number but arrives as a string from some producers;
+      // strict === would return -1 and the jump would silently no-op.
+      renderedSteps.find(({ step }) => Number(step.step_id) === Number(stepId))
+        ?.idx ?? -1,
+    [renderedSteps]
+  );
+
   const handleStepClick = useCallback(
     (index: number) => {
+      // Callers resolve targets through stepIdToIndex, so this only catches a
+      // caller that skipped it: expanding a step the list never draws would
+      // clear the search filter and then scroll nowhere.
+      if (!renderedSteps.some(({ idx }) => idx === index)) return;
       const stepKey = `step-${index}`;
       // The duration bar spans every step, so a click may target a step the
       // active filter is hiding — clear the filter so it can be shown.
@@ -835,7 +851,7 @@ export function TrajectoryViewer({
         });
       }, 50);
     },
-    [lowerQuery, visibleSteps]
+    [lowerQuery, visibleSteps, renderedSteps]
   );
 
   // Resolve a #step-<step_id> hash once the trajectory has loaded. The hash
@@ -850,22 +866,23 @@ export function TrajectoryViewer({
       const m = /^#step-(\d+)$/.exec(hash);
       if (!m) return;
       appliedHash.current = hash;
-      const idx = steps.findIndex((s) => Number(s.step_id) === Number(m[1]));
-      if (idx < 0) {
-        setDeepLinkError(`Step ${m[1]} is not in this trajectory.`);
-      } else if (isEmptyStep(steps[idx])) {
-        // The list never renders it, so expanding would scroll to nothing.
-        setDeepLinkError(`Step ${m[1]} is empty and is not shown.`);
-      } else {
+      const idx = stepIdToIndex(Number(m[1]));
+      if (idx >= 0) {
         setDeepLinkError(null);
         handleStepClick(idx);
+      } else if (steps.some((s) => Number(s.step_id) === Number(m[1]))) {
+        // Present but empty: the list never draws it, so expanding the item
+        // would scroll to nothing.
+        setDeepLinkError(`Step ${m[1]} is empty and is not shown.`);
+      } else {
+        setDeepLinkError(`Step ${m[1]} is not in this trajectory.`);
       }
     };
 
     apply();
     window.addEventListener("hashchange", apply);
     return () => window.removeEventListener("hashchange", apply);
-  }, [trajectory, handleStepClick]);
+  }, [trajectory, handleStepClick, stepIdToIndex]);
 
   if (isLoading) {
     return (
@@ -911,26 +928,14 @@ export function TrajectoryViewer({
         trialId={trialId}
         apiBaseUrl={apiBaseUrl}
         renderableIds={renderableIds}
-        stepIdToIndex={(stepId) =>
-          // step_id is typed number but arrives as a string from some producers;
-          // strict === would return -1 and the scroll would silently no-op.
-          trajectory.steps.findIndex(
-            (s) => Number(s.step_id) === Number(stepId)
-          )
-        }
+        stepIdToIndex={stepIdToIndex}
         onStepSelect={handleStepClick}
       />
       <TrajectoryActivity
         trialId={trialId}
         steps={trajectory.steps}
         apiBaseUrl={apiBaseUrl}
-        stepIdToIndex={(stepId) =>
-          // step_id is typed number but arrives as a string from some producers;
-          // strict === would return -1 and the scroll would silently no-op.
-          trajectory.steps.findIndex(
-            (s) => Number(s.step_id) === Number(stepId)
-          )
-        }
+        stepIdToIndex={stepIdToIndex}
         onStepSelect={handleStepClick}
       />
       <Card>
