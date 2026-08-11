@@ -230,6 +230,7 @@ export function TrajectoryActivity({
                           key={step.stepId}
                           type="button"
                           title={step.tokenTitle}
+                          onClick={() => select(step.stepId)}
                           style={{
                             flex: `${step.tokenFlex} 1 0`,
                             background: run.color,

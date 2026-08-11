@@ -391,23 +391,30 @@ function renderActivityCanvas(
   scale: number
 ): HTMLCanvasElement {
   const probe = styleProbe(host);
-  let canvas: HTMLCanvasElement | null = null;
+  // Canvas text is antialiased per the canvas element's own computed style, so
+  // it has to sit inside the card (off-screen) to inherit `antialiased` and
+  // land the same glyph weight the card shows. Attached here, not in the paint
+  // pass, so `finally` still detaches it when painting throws.
+  const canvas = document.createElement("canvas");
+  canvas.style.cssText = "position:absolute;left:-9999px;top:0";
+  host.appendChild(canvas);
   try {
-    canvas = paintActivityCard(host, probe, model, format, scale);
+    paintActivityCard(canvas, host, probe, model, format, scale);
     return canvas;
   } finally {
-    canvas?.remove();
+    canvas.remove();
     probe.dispose();
   }
 }
 
 function paintActivityCard(
+  canvas: HTMLCanvasElement,
   host: HTMLElement,
   probe: ReturnType<typeof styleProbe>,
   model: ActivityViewModel,
   format: ActivityImageFormat,
   scale: number
-): HTMLCanvasElement {
+): void {
   const hostStyle = getComputedStyle(host);
   const surface = hostStyle.backgroundColor;
   const borderColor = hostStyle.borderTopColor;
@@ -423,12 +430,6 @@ function paintActivityCard(
   const right = width - border - PAD;
   const contentW = right - left;
 
-  const canvas = document.createElement("canvas");
-  // Canvas text is antialiased per the canvas element's own computed style, so
-  // it has to sit inside the card (off-screen) to inherit `antialiased` and
-  // land the same glyph weight the card shows.
-  canvas.style.cssText = "position:absolute;left:-9999px;top:0";
-  host.appendChild(canvas);
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("Canvas 2D is unavailable");
 
@@ -739,8 +740,6 @@ function paintActivityCard(
       y += CAPTION_LINE_H;
     }
   }
-
-  return canvas;
 }
 
 function toBlob(canvas: HTMLCanvasElement, type: string): Promise<Blob> {
