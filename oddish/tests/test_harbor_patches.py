@@ -1074,6 +1074,124 @@ async def test_entry_run_emits_ec2_identity_immediately_after_launch(
     ]
 
 
+@pytest.mark.asyncio
+async def test_legacy_ec2_launch_patch_bridges_provider_identity(monkeypatch):
+    events: list[object] = []
+
+    class LegacyEC2Environment:
+        instance_id = None
+        region = "us-west-2"
+        user_tags = {
+            "oddish:managed": "true",
+            "oddish:aws-account-id": "123456789012",
+        }
+
+        def _run_instances_kwargs(self):
+            return {}
+
+        async def _launch_instance(self):
+            self.instance_id = "i-legacy"
+            return "launched"
+
+    ec2_module = SimpleNamespace(EC2Environment=LegacyEC2Environment)
+    original_import = harbor_patches.importlib.import_module
+
+    def import_module(name):
+        if name == "harbor.environments.ec2":
+            return ec2_module
+        return original_import(name)
+
+    monkeypatch.setattr(harbor_patches.importlib, "import_module", import_module)
+    monkeypatch.setattr(harbor_patches, "_EC2_PATCHED_CLASSES", set())
+    harbor_patches._patch_ec2_lifecycle(require_ec2=True)
+
+    async def capture(event):
+        events.append(event)
+
+    token = harbor_patches.set_ec2_provisioned_callback(capture)
+    try:
+        result = await LegacyEC2Environment()._launch_instance()
+    finally:
+        harbor_patches.reset_ec2_provisioned_callback(token)
+
+    assert result == "launched"
+    assert len(events) == 1
+    event = events[0]
+    assert event.event == "environment-provisioned"
+    assert event.environment_provider == "ec2"
+    assert event.environment_external_id == ("ec2://123456789012/us-west-2/i-legacy")
+
+
+@pytest.mark.asyncio
+async def test_entry_uses_legacy_ec2_identity_bridge_when_job_hook_is_absent(
+    monkeypatch, tmp_path
+):
+    emitted: list[dict] = []
+    registered_callback = None
+    reset_tokens: list[object] = []
+    harbor_module = ModuleType("harbor")
+
+    class FakeLegacyJob:
+        job_dir = str(tmp_path)
+
+        @classmethod
+        async def create(cls, _config):
+            return cls()
+
+        def __getattr__(self, name):
+            if name == "on_environment_provisioned":
+                raise AttributeError(name)
+            if name.startswith("on_"):
+                return lambda _hook: None
+            raise AttributeError(name)
+
+        async def run(self):
+            assert registered_callback is not None
+            await registered_callback(
+                SimpleNamespace(
+                    event="environment-provisioned",
+                    trial_id=None,
+                    environment_provider="ec2",
+                    environment_external_id=("ec2://123456789012/us-west-2/i-legacy"),
+                    result=None,
+                )
+            )
+
+    def set_callback(callback):
+        nonlocal registered_callback
+        registered_callback = callback
+        return "legacy-token"
+
+    def reset_callback(token):
+        reset_tokens.append(token)
+
+    patch_module = SimpleNamespace(
+        set_ec2_provisioned_callback=set_callback,
+        reset_ec2_provisioned_callback=reset_callback,
+    )
+    harbor_module.Job = FakeLegacyJob
+    monkeypatch.setitem(sys.modules, "harbor", harbor_module)
+    monkeypatch.setattr(
+        harbor_entry,
+        "_apply_sibling_harbor_patches",
+        lambda **_kwargs: patch_module,
+    )
+    monkeypatch.setattr(harbor_entry, "_build_job_config", lambda _payload: object())
+    monkeypatch.setattr(harbor_entry, "_emit_event_line", emitted.append)
+
+    outcome = await harbor_entry._run(
+        {
+            "jobs_dir": str(tmp_path),
+            "environment_config": {"type": "ec2"},
+        }
+    )
+
+    assert outcome["error"] is None
+    assert reset_tokens == ["legacy-token"]
+    assert emitted[0]["event"] == "environment-provisioned"
+    assert emitted[0]["environment_external_id"].endswith("/i-legacy")
+
+
 def test_runtime_fields_patch_is_idempotent():
     # The AgentFactory wrap must apply at most once even across repeated patch
     # calls; a nested wrapper would treat an already-swapped deployment id as the
