@@ -3,7 +3,6 @@ import type {
   TaskOpenResponse,
   TaskOpenTrialRef,
 } from "@/lib/types";
-import { summarizeTrials } from "@/lib/trial-aggregation";
 
 export type TaskOpenResource =
   | TaskOpenResponse
@@ -39,28 +38,10 @@ export function taskOpenFromBrowse(browse: TaskBrowseItem): TaskOpenResource {
     is_billed: false,
     created_at: browse.last_run_at ?? "",
   }));
-  const preview = summarizeTrials(
-    trials.map((trial) => ({
-      ...trial,
-      task_id: browse.id,
-      task_path: "",
-      attempts: 0,
-      max_attempts: 0,
-      harbor_stage: null,
-      error_message: trial.error_kind ? "Trial error" : null,
-    }))
-  );
-  const active = Math.max(
-    browse.total_trials -
-      browse.completed_trials -
-      browse.failed_trials -
-      preview.skipped,
-    0
-  );
   const status =
     browse.total_trials === 0
       ? "pending"
-      : active > 0
+      : browse.pending_count > 0
         ? "running"
         : browse.completed_trials === 0 && browse.failed_trials > 0
           ? "failed"
@@ -102,11 +83,11 @@ export function taskOpenFromBrowse(browse: TaskBrowseItem): TaskOpenResource {
             trial_count: browse.total_trials,
             completed_count: browse.completed_trials,
             failed_count: browse.failed_trials,
-            skipped_count: preview.skipped,
-            pass_count: preview.passCount,
-            partial_count: preview.partialCount,
-            fail_count: preview.failCount,
-            pending_count: active,
+            skipped_count: browse.skipped_count,
+            pass_count: browse.pass_count,
+            partial_count: browse.partial_count,
+            fail_count: browse.fail_count,
+            pending_count: browse.pending_count,
             reward_sum: browse.reward_sum,
             reward_total: browse.reward_total,
             cost_usd: browse.cost_usd,
@@ -118,7 +99,10 @@ export function taskOpenFromBrowse(browse: TaskBrowseItem): TaskOpenResource {
             billed_has_estimated: browse.billed_has_estimated,
             billed_has_native: browse.billed_has_native,
             last_run_at: browse.last_run_at,
-            user_tags: browse.user_tags,
+            // Browse tags are the task-level effective union, not this
+            // version's direct assignments. The canonical /open response
+            // replaces this snapshot before version-tag editing is enabled.
+            user_tags: [],
             experiments: browse.experiments,
             agent_models: [],
           }
@@ -137,7 +121,7 @@ export function taskOpenFromBrowse(browse: TaskBrowseItem): TaskOpenResource {
         token_trial_count: 0,
       },
       trials,
-      trials_has_more: browse.total_trials > trials.length,
+      trials_has_more: browse.latest_trials_truncated,
     },
   };
 }
