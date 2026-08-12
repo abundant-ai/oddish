@@ -2,6 +2,7 @@
 
 import useSWR from "swr";
 
+import { pooledDeltas, THIN_N } from "@/lib/cohort-metrics";
 import { componentLabel } from "@/lib/trajectory-segments";
 import type { BehaviorObservation, CohortComparison } from "@/lib/types";
 
@@ -92,6 +93,53 @@ function ObservationList({
   );
 }
 
+/** Half the track, in percent, so a delta of ±1 fills one side exactly. */
+function barGeometry(delta: number): { left: string; width: string } {
+  const half = Math.min(Math.abs(delta), 1) * 50;
+  return delta >= 0
+    ? { left: "50%", width: `${half}%` }
+    : { left: `${50 - half}%`, width: `${half}%` };
+}
+
+function CohortDeltaBars({ comparison }: { comparison: CohortComparison }) {
+  const rows = pooledDeltas(comparison);
+  if (rows.every((r) => r.n === 0)) return null;
+  return (
+    <div className="flex flex-col gap-1.5">
+      <h4 className="text-sm font-semibold">Where runs diverged</h4>
+      {rows.map((row) => (
+        <div key={row.category} className="flex items-center gap-2 text-xs">
+          <span className="text-muted-foreground w-40 shrink-0 truncate">
+            {CATEGORY_LABELS[row.category] ?? row.category}
+          </span>
+          <div className="bg-background/40 relative h-3 flex-1 rounded-sm">
+            {/* The centre rule is the cohort's own success share, not 0.5:
+                the delta is measured against it. */}
+            <span className="bg-border absolute inset-y-0 left-1/2 w-px" />
+            {row.delta !== null && (
+              <span
+                className="absolute inset-y-0 rounded-sm"
+                style={{
+                  ...barGeometry(row.delta),
+                  background: row.delta >= 0 ? "#059669" : "#dc2626",
+                  // Thin evidence must not read as a confident bar.
+                  opacity: row.n < THIN_N ? 0.45 : 1,
+                }}
+              />
+            )}
+          </div>
+          <span className="text-muted-foreground w-20 shrink-0 text-right font-mono">
+            {row.delta === null
+              ? "—"
+              : `${row.delta >= 0 ? "+" : ""}${row.delta.toFixed(2)}`}
+            <span className="opacity-60"> n={row.n}</span>
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function CohortComparisonSection({
   taskId,
   apiBaseUrl = "/api",
@@ -168,6 +216,7 @@ export function CohortComparisonSection({
           {data.cohort_success.length} successful, {data.cohort_failure.length} failed
         </span>
       </div>
+      <CohortDeltaBars comparison={data} />
       {data.thin_coverage?.length ? (
         <p className="text-xs text-muted-foreground">
           {data.thin_coverage.length} trial
