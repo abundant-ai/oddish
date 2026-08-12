@@ -3,7 +3,11 @@
 import useSWR from "swr";
 
 import { componentLabel } from "@/lib/trajectory-segments";
-import type { BehaviorObservation, CohortComparison } from "@/lib/types";
+import type {
+  BehaviorEvidence,
+  BehaviorObservation,
+  CohortComparison,
+} from "@/lib/types";
 
 const CATEGORY_LABELS: Record<string, string> = {
   behavior_discovery: "Agent behavior discovery",
@@ -41,10 +45,18 @@ const COHORT_HEADING =
  *  citation from an older version's comparison would land on the current
  *  version with the drawer shut. Same reason the overview's own trial links
  *  carry it. */
+/** The step a citation points at: its own for step evidence, the first of the
+ *  span for summary evidence — where the quoted behaviour starts. */
+function anchorStep(ev: BehaviorEvidence): number | null {
+  if (typeof ev.step_id === "number") return ev.step_id;
+  const ids = ev.step_ids ?? [];
+  return ids.length ? Math.min(...ids) : null;
+}
+
 function evidenceHref(
   taskId: string,
   trialId: string,
-  stepIds: number[],
+  step: number | null,
   taskVersionId?: string,
 ): string {
   const params = new URLSearchParams();
@@ -56,8 +68,19 @@ function evidenceHref(
   // rebuild the address.
   params.set("trial", trialId);
   params.set("tab", "trajectory");
-  const anchor = stepIds.length ? `#step-${Math.min(...stepIds)}` : "";
+  const anchor = step === null ? "" : `#step-${step}`;
   return `/tasks/${encodeURIComponent(taskId)}?${params.toString()}${anchor}`;
+}
+
+/** What the blue part of a citation reads as. Step evidence is one step of a
+ *  run, so it says so; summary evidence keeps the component + span it always
+ *  had. */
+function citationLabel(ev: BehaviorEvidence): string {
+  if (typeof ev.step_id === "number") return `step ${ev.step_id}`;
+  const ids = ev.step_ids ?? [];
+  return ids.length
+    ? `${componentLabel(ev.trajectory_component ?? "")} ${stepRange(ids)}`
+    : componentLabel(ev.trajectory_component ?? "");
 }
 
 /** Discovery labels arrive from the model as identifiers (`subagent_delegation`).
@@ -111,7 +134,7 @@ function ObservationList({
               href={evidenceHref(
                 taskId,
                 ev.trial_id,
-                ev.step_ids,
+                anchorStep(ev),
                 taskVersionId,
               )}
               className="text-xs text-muted-foreground underline-offset-4 hover:underline"
@@ -120,7 +143,7 @@ function ObservationList({
                   quote is the agent's own words, and colouring it too turns a
                   paragraph of body text blue. */}
               <span className="font-mono text-blue-600 dark:text-blue-400">
-                {componentLabel(ev.trajectory_component)} {stepRange(ev.step_ids)}
+                {citationLabel(ev)}
               </span>{" "}
               {/* Which model this example came from. A side can list fourteen
                   models in its chips and cite two trials; without naming the

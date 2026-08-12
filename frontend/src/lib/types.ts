@@ -745,14 +745,19 @@ export type BehaviorCategory =
   | "coherence"
   | "environment_tooling";
 
+/** Two shapes, never both on one citation. Summary evidence quotes a stored
+ *  component summary; step evidence quotes the raw step the agent produced,
+ *  and only the CLAUDE_CLI comparison can read those. Comparisons stored
+ *  before schema 4 carry the summary shape exclusively. */
 export interface BehaviorEvidence {
   trial_id: string;
+  quote: string;
   /** A stored component's label, not a live-enum value: the backend accepts
    *  any string here and verifies it against the trial's stored components,
    *  so retired vocabulary arrives intact. */
-  trajectory_component: string;
-  step_ids: number[];
-  quote: string;
+  trajectory_component?: string | null;
+  step_ids?: number[];
+  step_id?: number | null;
 }
 
 export interface BehaviorObservation {

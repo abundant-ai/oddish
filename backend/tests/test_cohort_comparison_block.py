@@ -207,3 +207,49 @@ def test_to_output_rejects_a_non_object_reply():
     # which is not a ValueError and so escaped the transform contract.
     with pytest.raises(BlockParseError):
         _block().to_output("[]")
+
+
+def _stream_json(payload_json: str) -> str:
+    """A claude-code stream-json transcript ending in a result envelope."""
+    return "\n".join(
+        [
+            json.dumps({"type": "system", "subtype": "init"}),
+            json.dumps({"type": "assistant", "message": {"content": []}}),
+            json.dumps(
+                {"type": "result", "structured_output": json.loads(payload_json)}
+            ),
+        ]
+    )
+
+
+def test_to_output_from_cli_unwraps_the_stream_json_envelope():
+    out = _block().to_output_from_cli(_stream_json(_raw([GOOD_EVIDENCE])))
+    assert out["schema_version"] == SCHEMA_VERSION
+    assert out["categories"][0]["successful"][0]["evidence"][0]["quote"] == (
+        "Ran mvn test for a baseline."
+    )
+
+
+def test_to_output_from_cli_keeps_a_step_citation_backed_by_the_index():
+    block = CohortComparisonBlock(
+        CohortInput(task_name="demo-task", successful=[TRIAL], failing=[]),
+        instructions_template=cp.load_cohort_prompt_template(),
+        step_index={("t1", 34): "Running mvn -q test to get a baseline."},
+    )
+    evidence = [{"trial_id": "t1", "step_id": 34, "quote": "mvn -q test"}]
+    out = block.to_output_from_cli(_stream_json(_raw(evidence)))
+    assert out["categories"][0]["successful"][0]["evidence"][0]["step_id"] == 34
+    assert out["dropped"]["evidence"] == 0
+
+
+def test_a_step_citation_cannot_survive_without_a_step_index():
+    # The API path has no index, so it must not be able to serve step-level
+    # citations it had no way to verify.
+    block = CohortComparisonBlock(
+        CohortInput(task_name="demo-task", successful=[TRIAL], failing=[]),
+        instructions_template=cp.load_cohort_prompt_template(),
+    )
+    evidence = [{"trial_id": "t1", "step_id": 34, "quote": "mvn -q test"}]
+    out = block.to_output(_raw(evidence))
+    assert out["dropped"]["evidence"] == 1
+    assert out["categories"] == []

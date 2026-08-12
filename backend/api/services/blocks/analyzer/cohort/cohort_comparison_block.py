@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    model_validator,
+)
 
 from oddish.blocks.block import Block
 
@@ -11,8 +17,12 @@ from api.services.blocks.analyzer.cohort.cohort_taxonomy import BehaviorCategory
 
 # 2: added `summary`. 3: added `mode` and `models`, and relaxed the gate to one
 # populated cohort -- stored rows carry neither field and were generated under
-# the two-cohort framing, so they have to regenerate to gain either.
-SCHEMA_VERSION = 3
+# the two-cohort framing, so they have to regenerate to gain either. 4: the
+# comparison reads the raw trajectories through CLAUDE_CLI, trials carry a
+# counted `subagents` attribute, and evidence gained a step-level shape. Stored
+# rows predate all three: they were compared from summaries alone, so their
+# delegation findings are the old discovery-slot lottery result.
+SCHEMA_VERSION = 4
 
 # A trial whose summary covers less than this share of its own step span is
 # reported to the reader rather than averaged over silently.
@@ -60,14 +70,28 @@ class BehaviorEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     trial_id: NonEmptyText
-    trajectory_component: NonEmptyText
-    step_ids: list[int]
     quote: NonEmptyText
+    # Summary-level: the quote must match this component's stored summary.
+    trajectory_component: str | None = None
+    step_ids: list[int] = Field(default_factory=list)
+    # Step-level: the quote must appear in this raw step's own text. Only the
+    # CLAUDE_CLI path can produce these, because only it can read the steps.
+    step_id: int | None = None
 
     @model_validator(mode="after")
-    def _steps_present(self) -> "BehaviorEvidence":
-        if not self.step_ids:
-            raise ValueError("step_ids must not be empty")
+    def _exactly_one_shape(self) -> "BehaviorEvidence":
+        """A citation is checked against one thing, so it may name only one.
+
+        Both shapes at once leaves it ambiguous which source the quote is
+        supposed to match, and a validator that guessed would let a quote that
+        matches neither survive by being checked against the other.
+        """
+        summary_shape = bool((self.trajectory_component or "").strip() and self.step_ids)
+        step_shape = self.step_id is not None
+        if summary_shape == step_shape:
+            raise ValueError(
+                "cite either (trajectory_component + step_ids) or step_id, not both"
+            )
         return self
 
 
@@ -148,10 +172,19 @@ class CohortComparisonBlock(Block):
     strict_json_output = True
 
     def __init__(
-        self, cohort_input: CohortInput, *, instructions_template: str
+        self,
+        cohort_input: CohortInput,
+        *,
+        instructions_template: str,
+        step_index: dict | None = None,
     ) -> None:
         self.cohort_input = cohort_input
         self._instructions_template = instructions_template
+        # (trial_id, step_id) -> that step's raw text. Present only on the
+        # CLAUDE_CLI path, which is the only one that can read the steps; None
+        # here makes every step-level citation fail to resolve, which is the
+        # right answer for a run that could not have read one.
+        self.step_index = step_index
 
     def sections(self) -> list[dict]:
         ci = self.cohort_input
@@ -204,14 +237,31 @@ class CohortComparisonBlock(Block):
         """
         # Imported here: the service module is the caller of this block, and a
         # module-level import would make the pair mutually dependent.
+        return self._finalize(self.parse(raw))
+
+    def to_output_from_cli(self, raw: str) -> dict:
+        """``output_transform`` for the CLAUDE_CLI backend.
+
+        The worker-local claude-code run yields stream-json events, not the
+        model's bare answer, so pull the result envelope's payload out before
+        validating. Mirrors PreTrialBlock.to_action_items_from_cli.
+        """
+        from oddish.blocks.analyzer.claude_cli_client import parse_stream_json_result
+
+        obj = parse_stream_json_result(raw)
+        return self._finalize(self.output_schema.model_validate(obj))
+
+    def _finalize(self, parsed: CohortComparisonOutput) -> dict:
         from api.services.cohort_comparison import validate_evidence
 
-        parsed = self.parse(raw)
         # The block owns schema_version, not the model.
         parsed.schema_version = SCHEMA_VERSION
         ci = self.cohort_input
         out, dropped = validate_evidence(
-            parsed.model_dump(mode="json"), ci.successful, ci.failing
+            parsed.model_dump(mode="json"),
+            ci.successful,
+            ci.failing,
+            step_index=self.step_index,
         )
         out["dropped"] = dropped
         # The headline was written against the categories the model produced,

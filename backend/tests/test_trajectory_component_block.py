@@ -171,6 +171,43 @@ def test_to_summary_is_schema_v5_with_component_metadata():
     assert d["components"][0]["duration_ms"] == 2500
 
 
+def _delegation_summary(agent, tool_calls_by_step):
+    raw = json.dumps({
+        "summary": "s", "highlights": [],
+        "components": [{"step_ids": [1, 2], "trajectory_component": "implementing", "summary": "y"}],
+    })
+    trajectory = {
+        "agent": {"name": agent},
+        "steps": [
+            {"step_id": s, "tool_calls": [{"function_name": n} for n in names]}
+            for s, names in tool_calls_by_step.items()
+        ],
+    }
+    return _block(_input(trajectory=trajectory)).to_summary(raw, model="claude-x")
+
+
+def test_to_summary_counts_subagent_dispatches():
+    d = _delegation_summary("claude-code", {1: ["Agent", "Read"], 2: ["Agent"], 3: ["Bash"]})
+    assert d["delegation"]["capable"] is True
+    assert d["delegation"]["dispatches"] == 2
+    # Per component too, so a citation can land on where delegation happened.
+    assert d["components"][0]["subagent_dispatches"] == 2
+
+
+def test_to_summary_reports_no_subagent_tool_as_unknown_not_zero():
+    d = _delegation_summary("codex", {1: ["shell"], 2: ["shell"]})
+    assert d["delegation"]["capable"] is False
+    assert d["delegation"]["dispatches"] is None
+    assert d["components"][0]["subagent_dispatches"] is None
+
+
+def test_component_dispatch_count_covers_only_that_components_steps():
+    # Step 3 is outside the component's [1, 2] span.
+    d = _delegation_summary("claude-code", {1: ["Read"], 2: ["Bash"], 3: ["Agent"]})
+    assert d["delegation"]["dispatches"] == 1
+    assert d["components"][0]["subagent_dispatches"] == 0
+
+
 def test_instructions_template_renders_taxonomy():
     from api.services.blocks.analyzer.trajectory import trajectory_prompts as tp
 
