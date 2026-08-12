@@ -98,7 +98,7 @@ AGGREGATE_SQL = text(
       WHERE tr.task_id = :task_id AND tr.deleted_at IS NULL
         AND tr.superseded_by_trial_id IS NULL
         AND (tr.idempotency_key IS NULL OR tr.idempotency_key NOT LIKE 'combine:%')
-        AND (CAST(:org_id AS text) IS NULL OR tr.org_id = :org_id)
+        AND (CAST(:org_id AS text) IS NULL OR tr.org_id = :org_id OR tr.org_id IS NULL)
     ), groups AS (
       SELECT (tr.task_version_id = CAST(:version_id AS text)) AS is_selected,
         (CAST(:current_version_id AS text) IS NULL
@@ -175,7 +175,7 @@ PREVIEW_SQL = text(
     WHERE tr.task_id = :task_id AND tr.task_version_id = :version_id
       AND tr.deleted_at IS NULL AND tr.superseded_by_trial_id IS NULL
       AND (tr.idempotency_key IS NULL OR tr.idempotency_key NOT LIKE 'combine:%')
-      AND (CAST(:org_id AS text) IS NULL OR tr.org_id = :org_id)
+      AND (CAST(:org_id AS text) IS NULL OR tr.org_id = :org_id OR tr.org_id IS NULL)
     ORDER BY COALESCE(tr.finished_at, tr.started_at, tr.created_at) DESC, tr.id DESC
     LIMIT 21
     """
