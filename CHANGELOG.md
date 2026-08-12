@@ -28,6 +28,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Analysis (QA + the pre-trial audit) runs on `fireworks/glm-5p2` instead of
+  Claude via Bedrock. One model everywhere, prod included; no preview split.
 - A frontend-only push to a backend PR took the preview API down: preparing
   the preview database rotates the branch DB password on every run, but the
   Modal secret only got republished when a backend deploy followed. The

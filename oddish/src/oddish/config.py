@@ -43,15 +43,8 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
     "default",
 }
 
-# Prod runs Claude through Bedrock, so this id MUST have an entry in
-# _ANTHROPIC_TO_BEDROCK_MODEL_IDS or every analysis trial fails at pickup.
-# Preview apps default to Fireworks GLM so preview QA does not draw down the
-# shared Anthropic budget. ODDISH_ANALYSIS_MODEL overrides either.
-ANALYSIS_MODEL = (
-    "fireworks/glm-5p2"
-    if os.environ.get("MODAL_APP_NAME", "").startswith("oddish-pr-")
-    else "claude-sonnet-4-6"
-)
+# Analysis (QA + audit) runs on GLM via Fireworks, not Bedrock.
+ANALYSIS_MODEL = "fireworks/glm-5p2"
 # Model for the probe transcript summarizer. Deliberately larger than
 # ANALYSIS_MODEL: it reads the agent's full transcript (including the final
 # synthesis / audit JSON) and must summarize it reliably. Kept separate from
