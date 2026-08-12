@@ -86,7 +86,11 @@ AGGREGATE_SQL = text(
       WHERE ac.deleted_at IS NULL AND qat.task_id = :task_id
         AND (CAST(:org_id AS text) IS NULL OR ac.org_id = :org_id)
     ), eligible AS (
-      SELECT tr.*,
+      SELECT tr.task_version_id, tr.billed_user_id, tr.is_probe,
+        tr.agent, tr.provider, tr.model, tr.status, tr.reward,
+        tr.experiment_id, tr.created_at, tr.started_at, tr.finished_at,
+        tr.cost_usd, tr.input_tokens, tr.output_tokens,
+        tr.cache_tokens, tr.cache_write_tokens,
         (tr.cost_usd IS NULL AND
          (COALESCE(tr.input_tokens, 0) > 0 OR COALESCE(tr.output_tokens, 0) > 0
           OR COALESCE(tr.cache_write_tokens, 0) > 0)) AS has_estimatable_tokens
