@@ -450,9 +450,10 @@ export function TaskFilesPanel({
   } = useSWR<TaskDetailResource>(checksKey, fetcher, {
     fallbackData: taskDetail ?? undefined,
     revalidateOnMount: taskDetail == null,
-    // Poll while the checks run, and while task QA runs: the full QA job
-    // writes fresh findings when it lands, so the pane keeps tracking
-    // until both are terminal.
+    // Poll quickly while checks or task QA run. Keep a slower poll while the
+    // panel is open even after both are terminal: a CLI in-place overwrite can
+    // replace this version without changing its number, and the refreshed
+    // content hash is what invalidates the file listing and preview caches.
     refreshInterval: (data) => {
       const detail = taskDetailValue(data);
       const checksLive =
@@ -461,7 +462,8 @@ export function TaskFilesPanel({
       const qaLive =
         detail?.task?.verdict_status === "queued" ||
         detail?.task?.verdict_status === "running";
-      return checksLive || qaLive ? 5000 : 0;
+      if (checksLive || qaLive) return 5000;
+      return isOpen ? 30000 : 0;
     },
   });
   const checksDetail = taskDetailValue(checksResource);
