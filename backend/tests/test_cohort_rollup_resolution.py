@@ -88,6 +88,17 @@ async def _make_task_version(session, *, task_id: str, org_id: str, suffix: str)
     return version_id
 
 
+async def _add_task_version(session, *, task_id: str, version: int) -> str:
+    version_id = f"{task_id}-v{version}"
+    session.add(
+        TaskVersionModel(
+            id=version_id, task_id=task_id, version=version, task_path="/tmp/fake"
+        )
+    )
+    await session.flush()
+    return version_id
+
+
 async def _gather(session, *, collection_id: str, trial_id: str) -> None:
     await session.execute(
         experiment_trials.insert().values(
@@ -252,6 +263,7 @@ class CollectionWithProbeAndRetry:
     experiment_id: str
     org_id: str
     probe_version_id: str
+    stale_superseded_version_id: str
 
 
 @pytest_asyncio.fixture
@@ -259,7 +271,12 @@ async def collection_with_probe_and_retry():
     """A collection gathering a probe trial and a superseded/retry pair.
 
     Neither the probe nor the superseded original should contribute a
-    version; only the live retry does.
+    version; only the live retry does. The superseded original is pinned to
+    its own, different task version -- a stale version distinct from the
+    retry's -- so filtering it is actually observable: if the
+    superseded-trial filter were dropped, that stale version would leak into
+    the result set on its own, not just be redundantly re-contributed by the
+    live retry.
     """
     suffix = uuid.uuid4().hex[:8]
     org_id = f"org_cpr_{suffix}"
@@ -338,12 +355,19 @@ async def collection_with_probe_and_retry():
         await session.flush()
         await _gather(session, collection_id=collection_id, trial_id=probe_trial_id)
 
-        # A superseded original + its live retry, both gathered.
+        # A superseded original (pinned to a stale version of its own) plus
+        # its live retry (a newer version of the same task), both gathered.
+        # The live retry is inserted first: superseded_by_trial_id is a real
+        # FK to trials.id, so the target row must exist before it's pointed at.
         retry_task_id = f"task_cpr_retry_{suffix}"
         task_ids.append(retry_task_id)
-        retry_version_id = await _make_task_version(
+        stale_version_id = await _make_task_version(
             session, task_id=retry_task_id, org_id=org_id, suffix=f"{suffix}-retry"
         )
+        retry_version_id = await _add_task_version(
+            session, task_id=retry_task_id, version=2
+        )
+
         retry_new_id = f"trial_cpr_retry_new_{suffix}"
         retry_old_id = f"trial_cpr_retry_old_{suffix}"
         trial_ids.extend([retry_new_id, retry_old_id])
@@ -368,7 +392,7 @@ async def collection_with_probe_and_retry():
                 id=retry_old_id,
                 name=retry_old_id,
                 task_id=retry_task_id,
-                task_version_id=retry_version_id,
+                task_version_id=stale_version_id,
                 experiment_id=home_id,
                 org_id=org_id,
                 agent="claude-code",
@@ -384,7 +408,10 @@ async def collection_with_probe_and_retry():
         await _gather(session, collection_id=collection_id, trial_id=retry_old_id)
 
     yield CollectionWithProbeAndRetry(
-        experiment_id=collection_id, org_id=org_id, probe_version_id=probe_version_id
+        experiment_id=collection_id,
+        org_id=org_id,
+        probe_version_id=probe_version_id,
+        stale_superseded_version_id=stale_version_id,
     )
 
     await _cleanup(
@@ -511,9 +538,9 @@ async def test_probe_and_superseded_trials_do_not_contribute_versions(
             experiment_id=collection_with_probe_and_retry.experiment_id,
             org_id=collection_with_probe_and_retry.org_id,
         )
-    assert collection_with_probe_and_retry.probe_version_id not in {
-        v.task_version_id for v in versions
-    }
+    contributed = {v.task_version_id for v in versions}
+    assert collection_with_probe_and_retry.probe_version_id not in contributed
+    assert collection_with_probe_and_retry.stale_superseded_version_id not in contributed
 
 
 @pytest.mark.asyncio
