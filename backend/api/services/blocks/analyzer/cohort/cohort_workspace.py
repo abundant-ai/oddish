@@ -18,6 +18,8 @@ import json
 import re
 from pathlib import Path
 
+from api.services.blocks.analyzer.cohort.cohort_prompts import short_model_name
+
 _UNSAFE = re.compile(r"[^A-Za-z0-9_.-]")
 
 
@@ -101,8 +103,12 @@ def _map_section(label: str, trials: list[dict], written: dict) -> list[str]:
     for trial in trials:
         tid = trial["trial_id"]
         bits = [f"### {tid}"]
-        if trial.get("model"):
-            bits.append(f"model: {trial['model']}")
+        # The same shortener the prompt uses. The agent reads both the map and
+        # the prompt, so a raw `global.anthropic.claude-opus-4-8` here beside a
+        # shortened one there reads as two models.
+        model = short_model_name(trial.get("model") or "")
+        if model:
+            bits.append(f"model: {model}")
         delegation = trial.get("delegation")
         if isinstance(delegation, dict):
             dispatches = delegation.get("dispatches")

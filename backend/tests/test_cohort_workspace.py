@@ -108,6 +108,21 @@ def test_build_workspace_map_names_every_component_and_its_file(tmp_path):
     assert component_filename(0, "implementing", 1, 2) in text
 
 
+def test_build_workspace_map_shortens_the_model_id(tmp_path):
+    # The agent reads MAP.md and the prompt together; the prompt shortens, so
+    # an unshortened id here is a second spelling of the same model.
+    build_workspace(
+        tmp_path,
+        task_name="cargotracker",
+        successful=[_cohort_trial(model="global.anthropic.claude-opus-4-8")],
+        failing=[],
+        trajectories={"t1": _traj([{"step_id": 1}, {"step_id": 2}])},
+    )
+    text = (tmp_path / "MAP.md").read_text()
+    assert "model: claude-opus-4-8" in text
+    assert "global.anthropic" not in text
+
+
 def test_build_workspace_returns_a_step_index_for_validation(tmp_path):
     index = build_workspace(
         tmp_path,
