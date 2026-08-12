@@ -166,10 +166,20 @@ function CohortDeltaBars({ comparison }: { comparison: CohortComparison }) {
             <span className="bg-border absolute inset-y-0 left-1/2 w-px" />
             {row.delta !== null && (
               <span
-                className="absolute inset-y-0 rounded-sm"
+                className={[
+                  "absolute inset-y-0 rounded-sm",
+                  // `#dc2626` reaches only 2.91:1 against the dark card, under
+                  // the 3:1 floor, so dark gets `#e5484d` (3.1:1 there and on
+                  // the neutral-black theme's `#1a1a1a`). Light keeps `#dc2626`,
+                  // whose CVD separation from the green is the better of the
+                  // two. Both pairs validate against `--card` in their own mode;
+                  // re-run the palette validator after any change.
+                  row.delta >= 0
+                    ? "bg-[#059669]"
+                    : "bg-[#dc2626] dark:bg-[#e5484d]",
+                ].join(" ")}
                 style={{
                   ...barGeometry(row.delta),
-                  background: row.delta >= 0 ? "#059669" : "#dc2626",
                   // Thin evidence must not read as a confident bar.
                   opacity: row.n < THIN_N ? 0.45 : 1,
                 }}
