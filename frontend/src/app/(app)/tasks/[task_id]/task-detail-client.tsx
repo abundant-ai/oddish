@@ -62,7 +62,6 @@ import {
 } from "@/lib/line-range";
 import { sameFilePath } from "@/lib/file-path";
 import { taskHasCancellableWork } from "@/lib/job-status";
-import { expandTrialParam, shortTrialParam } from "@/lib/trial-url";
 import {
   ArrowLeft,
   ChevronDown,
@@ -930,9 +929,7 @@ export function TaskDetailClient({
     if (drawerHydratedRef.current || isLoading || !task) return;
 
     const params = new URLSearchParams(window.location.search);
-    // ?trial= is an index against the task this page already addresses; older
-    // links spell the whole id out and pass through untouched.
-    const urlTrialId = expandTrialParam(params.get("trial"), task.id);
+    const urlTrialId = params.get("trial");
     // The version's trials arrive a beat after the task itself
     // (selectedVersionId is applied by a later effect), so a trial address
     // waits for the version to be selected. Keying on the version — not an
@@ -976,10 +973,7 @@ export function TaskDetailClient({
   // the preserved param instead of leaving it inert forever.
   useEffect(() => {
     if (!unresolvedTrialParamRef.current) return;
-    const urlTrialId = expandTrialParam(
-      new URLSearchParams(window.location.search).get("trial"),
-      task?.id,
-    );
+    const urlTrialId = new URLSearchParams(window.location.search).get("trial");
     if (!urlTrialId) {
       unresolvedTrialParamRef.current = false;
       return;
@@ -990,7 +984,7 @@ export function TaskDetailClient({
       hydrationOpeningRef.current = true;
       handleSelectTrial(trial);
     }
-  }, [orderedTrials, handleSelectTrial, task?.id]);
+  }, [orderedTrials, handleSelectTrial]);
 
   // Closing the drawer retires the task pane address along with the URL
   // params the sync effect strips — otherwise reopening would write the
@@ -1040,10 +1034,7 @@ export function TaskDetailClient({
     const next = new URLSearchParams(window.location.search);
 
     if (drawer?.mode === "trial") {
-      next.set(
-        "trial",
-        shortTrialParam(drawer.fallbackTrial.id, drawer.fallbackTrial.task_id),
-      );
+      next.set("trial", drawer.fallbackTrial.id);
       next.delete("drawer");
     } else if (drawer) {
       next.set("drawer", "task");
