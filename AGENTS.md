@@ -346,6 +346,16 @@ otherwise it falls back to the highest version represented by such trials. The
 so progressive loading cannot change the files/counts pivot or mix one
 version's trials with another's artifacts.
 
+`overwrite_current_version` replaces the archive and metadata for
+`tasks.current_version_id` without changing its ID or version number. Uploads
+land at a unique staging key, copy to an immutable
+`tasks/<id>/v<N>-revisions/<token>/` source, and become visible only when the
+version row atomically switches `task_s3_key`. Expanded-file readers accept a
+manifest only when its `archive_key` matches that selected source, so failed
+cleanup cannot expose the prior expansion. The replacement clears derived-file
+bookkeeping and pre-trial audit state before re-enqueuing expansion. Existing
+trials pinned to that version resolve to the replacement content.
+
 `GET /experiments/{experiment_id}/cost-totals` reports both cost and token
 usage across every trial owned by the experiment, including older versions,
 superseded retries, probes, and soft-deleted trials. Its `billed_*` cost and
@@ -629,7 +639,10 @@ Storage defaults:
 - S3-compatible storage is **required**. Clients PUT task bundles directly
   to a presigned URL returned by `/tasks/upload/init` and then call
   `/tasks/upload/complete`.
-- uploaded task bundles: `tasks/<task_id>/.oddish-task.tar.gz`
+- uploaded task bundles: normally `tasks/<task_id>/v<N>/.oddish-task.tar.gz`;
+  in-place replacements use immutable
+  `tasks/<task_id>/v<N>-revisions/<token>/.oddish-task.tar.gz` sources selected
+  by `task_versions.task_s3_key` (legacy unversioned bundles remain readable)
 - Harbor job outputs: `/tmp/harbor-jobs`
 - Modal workers also check `/mnt/oddish-tasks` before falling back to the S3 download path
 

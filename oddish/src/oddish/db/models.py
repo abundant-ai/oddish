@@ -180,9 +180,9 @@ class WorkerJobKind(str, Enum):
     ANALYSIS = "ANALYSIS"
     QA_REVIEW = "QA_REVIEW"
     # Expand a task tarball into a per-file S3 tree at
-    # ``tasks/{task_id}/v{N}-files/``. Derived cache only; the archive
-    # at ``tasks/{task_id}/v{N}/.oddish-task.tar.gz`` remains the
-    # canonical, immutable artifact.
+    # ``tasks/{task_id}/v{N}-files/``. Derived cache only; the canonical
+    # archive is selected by ``task_versions.task_s3_key`` and is immutable
+    # at that prefix.
     TASK_EXPAND = "TASK_EXPAND"
     # Recompute one or more rows' projected ``effective_tag_ids`` arrays
     # from the truth tables (tags / tag_assignments / tag_exclusions /
@@ -793,7 +793,7 @@ class TaskModel(TimestampedMixin, Base):
     )
     link: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # Versioning: points to the latest TaskVersionModel row
+    # User-selected default; this need not be the highest-numbered version.
     current_version_id: Mapped[str | None] = mapped_column(
         String(160),
         ForeignKey("task_versions.id", ondelete="SET NULL", use_alter=True),
@@ -887,11 +887,7 @@ class TaskModel(TimestampedMixin, Base):
 
 
 class TaskVersionModel(TimestampedMixin, Base):
-    """Immutable snapshot of a task's content at a point in time.
-
-    Each re-upload of a task bundle creates a new row.  Trials reference the
-    specific version they ran against via ``task_version_id``.
-    """
+    """Task snapshot, normally immutable unless explicitly overwritten."""
 
     __tablename__ = "task_versions"
     __table_args__ = (

@@ -282,6 +282,7 @@ def test_aggregate_task_detail_rollups_totals_and_buckets():
             task_id="task-1",
             version=1,
             task_path="/tmp/demo",
+            content_hash="hash-v1",
             created_at=v1_created,
         ),
         TaskVersionResponse(
@@ -289,6 +290,7 @@ def test_aggregate_task_detail_rollups_totals_and_buckets():
             task_id="task-1",
             version=2,
             task_path="/tmp/demo",
+            content_hash="hash-v2",
             created_at=v2_created,
         ),
     ]
@@ -355,6 +357,8 @@ def test_aggregate_task_detail_rollups_totals_and_buckets():
     v2_summary, v1_summary = versions[0], versions[1]
     assert v2_summary.is_current is True
     assert v1_summary.is_current is False
+    assert v2_summary.content_hash == "hash-v2"
+    assert v1_summary.content_hash == "hash-v1"
 
     # v1: both trials succeeded, one full pass + one zero-reward fail.
     assert v1_summary.trial_count == 2

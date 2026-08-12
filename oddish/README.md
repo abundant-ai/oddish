@@ -61,7 +61,7 @@ Run `oddish --help` or see [`../DOCS.md`](../DOCS.md) for the full CLI
 reference. The main commands are:
 
 - `oddish run` — submit local tasks, registry datasets, sweeps, retries, and task-level QA retries; `--env ec2` selects an operator-enabled ephemeral CPU VM while Daytona remains the hosted CPU default.
-- `oddish upload` — register task bundles or import off-oddish Harbor trial results.
+- `oddish upload` — register task bundles or import off-oddish Harbor trial results; `--overwrite-current-version` corrects the selected version in place.
 - `oddish ls` / `oddish status` — browse tasks (including model and trajectory-metric filters) and inspect progress. `oddish status <trial_id>` shows single-trial detail; `--detail`/`--versions` show a task's version history and cost rollups; `--queue` shows queue & worker scheduler diagnostics.
 - `oddish logs` — stream a running trial's live transcript and cost estimate (`--follow` to poll until it ends); finished trials are served by `oddish pull` instead.
 - `oddish costs` — billable-spend accounting (org-wide, or per-user with `--user`).
