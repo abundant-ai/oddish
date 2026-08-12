@@ -78,7 +78,9 @@ that list.
 - runs `uv sync --frozen --extra server` in `oddish/`, producing
   `oddish/.venv/bin/oddish` (the `--extra server` matches AGENTS.md; without it
   the test suite cannot import `sqlalchemy`)
-- puts that venv, `~/.grok/bin`, and `~/.local/bin` on `PATH`
+- puts that venv, `~/.grok/bin`, and `~/.local/bin` on `PATH`, venv first —
+  `~/.local/bin` ships its own `pytest`/`ruff`/`black`/`mypy`, which would
+  otherwise shadow the project's
 - writes the configured credentials into `~/.env` for scripts that `source` it,
   in a marked block so anything else in the file survives
 - prints a status line per input, and names any missing secret
@@ -86,6 +88,13 @@ that list.
 It is remote-only (`CLAUDE_CODE_REMOTE`), idempotent, and always exits 0 — a
 partial bootstrap degrades a session rather than blocking it. It never invents
 a credential: if a variable is not set on the environment, the hook says so.
+
+Idempotency matters here because `SessionStart` fires on `resume`, `clear`, and
+`compact` as well as on startup, and a long eval session compacts repeatedly.
+Each firing rewrites only its own `~/.env` block and writes the `PATH` line at
+most once, so nothing accumulates. The `uv sync` does re-run every time; that is
+deliberate and costs about a second once the cache is warm, and it repairs a
+venv that has been broken or partially installed mid-session.
 
 To enable it, register it in `.claude/settings.json`:
 

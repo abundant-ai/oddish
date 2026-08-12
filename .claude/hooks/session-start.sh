@@ -99,11 +99,19 @@ else
 fi
 
 # --- session env -----------------------------------------------------------
+# One export, venv first: ~/.local/bin carries its own pytest/ruff/black/mypy,
+# which would shadow the venv's if it were prepended afterwards.
+#
+# Written at most once. SessionStart also fires on resume, clear, and compact,
+# and CLAUDE_ENV_FILE persists across those firings, so an unguarded append
+# would stack a duplicate prefix onto PATH every time the session compacted.
 if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
-  {
-    [ -d "$venv_bin" ] && echo "export PATH=\"$venv_bin:\$PATH\""
-    echo "export PATH=\"$ENV_HOME/.grok/bin:$ENV_HOME/.local/bin:\$PATH\""
-  } >> "$CLAUDE_ENV_FILE"
+  path_prefix=""
+  [ -d "$venv_bin" ] && path_prefix="$venv_bin:"
+  path_line="export PATH=\"$path_prefix$ENV_HOME/.grok/bin:$ENV_HOME/.local/bin:\$PATH\""
+  if ! grep -qxF "$path_line" "$CLAUDE_ENV_FILE" 2>/dev/null; then
+    printf '%s\n' "$path_line" >> "$CLAUDE_ENV_FILE"
+  fi
 fi
 
 # --- report ----------------------------------------------------------------
