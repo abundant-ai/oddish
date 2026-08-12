@@ -635,6 +635,7 @@ async def enqueue_pre_trial_worker_job(
     *,
     task_id: str,
     task_version_id: str,
+    task_version_content_hash: str | None,
     org_id: str | None,
 ) -> WorkerJobModel:
     """Enqueue the pre-trial audit for one task version.
@@ -653,6 +654,7 @@ async def enqueue_pre_trial_worker_job(
             payload={
                 "task_id": task_id,
                 "task_version_id": task_version_id,
+                "task_version_content_hash": task_version_content_hash,
                 "mode": "pre_trial",
             },
             subject_table="tasks",

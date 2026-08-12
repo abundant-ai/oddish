@@ -271,6 +271,7 @@ async def init_task_upload(
         content_hash=payload.content_hash,
         message=payload.message,
         force_new_version=payload.force_new_version,
+        overwrite_current_version=payload.overwrite_current_version,
     )
 
 
@@ -303,6 +304,9 @@ async def finalize_task_upload(
         register=payload.register_task,
         user=resolved_user,
         priority=payload.priority,
+        overwrite_current_version=payload.overwrite_current_version,
+        staging_key=payload.staging_key,
+        overwrite_base_content_hash=payload.overwrite_base_content_hash,
     )
 
 
@@ -1810,10 +1814,10 @@ async def get_task_file_content(
 ):
     """Get content of a specific task file from S3.
 
-    When the underlying source is a pinned task archive (immutable at a
-    given version) the response carries ``ETag`` + ``Cache-Control``
-    headers and honors ``If-None-Match`` with a ``304``, so the browser's
-    HTTP cache covers repeated clicks on the same file.
+    When the underlying source is a pinned task archive, the response carries
+    ``ETag`` and revalidating ``Cache-Control`` headers and honors
+    ``If-None-Match`` with a ``304``. Versions can be explicitly overwritten,
+    so clients must revalidate rather than treating a version URL as immutable.
     """
     auth.require_scope(APIKeyScope.READ)
 
@@ -1846,10 +1850,10 @@ async def get_task_file_content(
                 status_code=304,
                 headers={
                     "ETag": etag_value,
-                    "Cache-Control": "private, max-age=86400, immutable",
+                    "Cache-Control": "private, no-cache",
                 },
             )
         response.headers["ETag"] = etag_value
-        response.headers["Cache-Control"] = "private, max-age=86400, immutable"
+        response.headers["Cache-Control"] = "private, no-cache"
 
     return result

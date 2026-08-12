@@ -546,6 +546,9 @@ async def rerun_pre_trial_audit_core(
         session,
         task_id=task.id,
         task_version_id=str(version.id),
+        task_version_content_hash=(
+            str(version.content_hash) if version.content_hash else None
+        ),
         org_id=task.org_id,
     )
     await session.commit()
