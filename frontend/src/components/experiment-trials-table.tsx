@@ -6,6 +6,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
+import { urlWithSearch } from "@/lib/utils";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -671,7 +672,7 @@ export function ExperimentTrialsTable({
       const currentQuery = searchParams.toString();
       if (nextQuery === currentQuery) return;
 
-      const newUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}`;
+      const newUrl = urlWithSearch(nextQuery);
       // Keep filter query params in sync without router navigation work.
       window.history.replaceState(window.history.state, "", newUrl);
     }, 250);

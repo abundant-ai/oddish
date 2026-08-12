@@ -1568,7 +1568,7 @@ export function TaskFilesPanel({
                   // Panes with their own header render the verdict card there;
                   // the filesUrl-driven panes have no header, so the overview
                   // carries the verdict itself.
-                  verdictTask={filesUrl ? (checksDetail?.task ?? null) : null}
+                  verdictTask={checksDetail?.task ?? verdictTask ?? task ?? null}
                   checksFindings={checksFindings}
                   checksStatus={checksVersion?.pre_trial_status}
                   checksError={checksVersion?.pre_trial_error}
@@ -1768,15 +1768,15 @@ export function TaskFilesPanel({
         )}
       </DrawerHeader>
 
+      {/* The verdict lives in the task overview, not above the pane. As a
+          `shrink-0` sibling of the scroll area it held its height forever:
+          a long verdict (activiti's is ~1,600 characters across four
+          recommendations) permanently ate half the pane, above BOTH the
+          overview and the file view, and no amount of scrolling reached past
+          it. TaskOverviewPanel renders it inline instead, so it scrolls with
+          the section it belongs to and does not follow the reader into a
+          file. */}
       <div className="flex flex-1 flex-col overflow-hidden">
-        {showAnalysis && verdictSource ? (
-          <div className="border-border bg-muted/10 shrink-0 border-b">
-            <div className="p-4 sm:p-6">
-              <TaskVerdictBadge task={verdictSource} variant="card" />
-            </div>
-          </div>
-        ) : null}
-
         {fileTreeContent}
       </div>
     </>
