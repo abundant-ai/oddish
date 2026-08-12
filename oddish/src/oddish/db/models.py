@@ -991,6 +991,87 @@ class TaskBrowseSummaryModel(Base):
     )
 
 
+def _counter() -> Mapped[int]:
+    return mapped_column(Integer, nullable=False, default=0, server_default="0")
+
+
+class TaskVersionModelMetricsModel(Base):
+    """Trial metrics for one task version under one agent and model.
+
+    A finer grain than ``TaskBrowseSummaryModel``: that table answers "how did
+    this task version do", this one answers "how did this model do on it", which
+    cannot be recovered by splitting the coarser row.
+    """
+
+    __tablename__ = "task_version_model_metrics"
+
+    task_version_id: Mapped[str] = mapped_column(
+        String(160),
+        ForeignKey("task_versions.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    agent: Mapped[str] = mapped_column(String(128), primary_key=True)
+    # Older trials carry no model; "" keeps them addressable in the primary key
+    # rather than dropping them or inventing a name.
+    model: Mapped[str] = mapped_column(
+        String(256), primary_key=True, server_default=""
+    )
+    task_id: Mapped[str] = mapped_column(
+        String(128), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
+    )
+
+    n_pass: Mapped[int] = _counter()
+    n_partial: Mapped[int] = _counter()
+    n_fail: Mapped[int] = _counter()
+
+    n_unscored_agent: Mapped[int] = _counter()
+    n_unscored_env: Mapped[int] = _counter()
+    n_unscored_verify: Mapped[int] = _counter()
+    n_cancelled_user: Mapped[int] = _counter()
+    n_cancelled_reaped: Mapped[int] = _counter()
+    n_cancelled_other: Mapped[int] = _counter()
+    n_skipped: Mapped[int] = _counter()
+    n_scoreless: Mapped[int] = _counter()
+    n_unscored_unknown: Mapped[int] = _counter()
+    n_inflight: Mapped[int] = _counter()
+
+    sum_reward: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.0, server_default="0"
+    )
+    n_reward_present: Mapped[int] = _counter()
+    sum_runtime: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.0, server_default="0"
+    )
+    n_runtime_present: Mapped[int] = _counter()
+    n_with_trajectory: Mapped[int] = _counter()
+
+    # NULL on every distribution column means "never measured", which is not the
+    # same as a measured zero -- total_steps is absent on most pre-July trials.
+    n_steps_present: Mapped[int] = _counter()
+    sum_steps: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+    steps_all_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steps_all_p50: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steps_all_max: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steps_pass_n: Mapped[int] = _counter()
+    steps_pass_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steps_pass_p50: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steps_pass_max: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steps_fail_n: Mapped[int] = _counter()
+    steps_fail_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steps_fail_p50: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steps_fail_max: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steps_partial_n: Mapped[int] = _counter()
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+        server_default=text("NOW()"),
+    )
+
+
 class TrialModel(TimestampedMixin, Base):
     """Trial database model."""
 

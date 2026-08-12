@@ -11,6 +11,7 @@ from oddish.core.task_browse_metrics import (
     browse_trial_scope,
     trial_bucket_label,
 )
+from oddish.core.task_version_model_metrics import refresh_task_version_model_metrics
 from oddish.db import (
     TaskBrowseSummaryModel,
     TaskVersionModel,
@@ -174,3 +175,8 @@ async def refresh_task_browse_summaries(
             | {"updated_at": func.now()},
         )
     )
+
+    # The per-model rollup is invalidated by exactly the same events, so it
+    # rides this refresh rather than duplicating the hook at all 18 call sites.
+    # Runs under the advisory locks taken above.
+    await refresh_task_version_model_metrics(session, list(summaries))
