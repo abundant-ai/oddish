@@ -21,14 +21,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Nothing changed on the backend: the verdict is still computed and stored,
   and it still drives the dashboard counts, the `verdict_statuses` filter, the
   GitHub PR comment, the Slack and email alerts, and `oddish status`.
-- The successful-vs-failing cohort comparison is gone from the task overview
-  panel, for a different reason: its quality has not been checked. The two QA
-  products we trust are the pre-trial source audit and the per-trial trajectory
-  analysis, and both still show. `cohort-comparison-section.tsx` is deleted.
-  `GET /tasks/{id}/cohort-comparison`, its service, and the frontend proxy
-  route all stay, so putting the section back is a UI-only change — but since
-  the comparison was generated on demand when the panel asked for it, nothing
-  generates one now.
 
 ## [2026-08-07]
 
