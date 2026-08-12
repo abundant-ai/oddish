@@ -204,11 +204,11 @@ export interface Trial {
   } | null;
 }
 
-interface TaskVerdict {
+export interface TaskVerdict {
   /** Absent on rows stored before the accept/reject label existed. */
   verdict?: "accept" | "reject";
-  is_good: boolean;
-  confidence: "high" | "medium" | "low";
+  is_good: boolean | null;
+  confidence: "high" | "medium" | "low" | string | null;
   primary_issue?: string | null;
   reasoning?: string | null;
   recommendations?: string[];
@@ -379,6 +379,110 @@ export interface TaskVersionSummary {
   pre_trial_cost_usd?: number | null;
   user_tags?: UserTagRef[];
   experiments?: { id: string; name: string }[];
+}
+
+export interface TaskOpenVersionRef {
+  id: string;
+  version: number;
+  message?: string | null;
+  created_at: string;
+  is_current: boolean;
+}
+
+export interface TaskOpenVerdict {
+  is_good: boolean | null;
+  confidence?: string | null;
+  primary_issue?: string | null;
+  reasoning?: string | null;
+  recommendations: string[];
+}
+
+export interface TaskOpenAgentModelSummary {
+  agent: string;
+  model: string | null;
+  providers: string[];
+  is_probe: boolean;
+  trial_count: number;
+  completed_count: number;
+  failed_count: number;
+  skipped_count: number;
+  pending_count: number;
+  pass_count: number;
+  partial_count: number;
+  fail_count: number;
+  reward_sum: number;
+  reward_total: number;
+  cost_usd: number;
+  cost_trial_count: number;
+  cost_has_estimated: boolean;
+  cost_has_native: boolean;
+  billed_cost_usd: number;
+  billed_trial_count: number;
+  billed_has_estimated: boolean;
+  billed_has_native: boolean;
+  last_run_at?: string | null;
+  duration_sum_seconds: number;
+  duration_trial_count: number;
+}
+
+export interface TaskOpenVersionSummary extends TaskVersionSummary {
+  agent_models: TaskOpenAgentModelSummary[];
+}
+
+export interface TaskOpenTask {
+  id: string;
+  name: string;
+  status: TaskStatus;
+  priority: Priority;
+  user: string;
+  github_username?: string | null;
+  github_meta?: Record<string, string> | null;
+  link?: string | null;
+  task_path: string;
+  experiments: TaskBrowseExperiment[];
+  current_version?: number | null;
+  current_version_id?: string | null;
+  user_tags: UserTagRef[];
+  run_analysis: boolean;
+  verdict_status?: JobStatus | null;
+  verdict?: TaskOpenVerdict | null;
+  verdict_error?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TaskOpenTrialRef {
+  id: string;
+  name: string;
+  experiment_id?: string | null;
+  task_version_id?: string | null;
+  agent: string;
+  provider: string;
+  model: string | null;
+  status: TrialStatus;
+  reward: number | null;
+  error_kind?: string | null;
+  is_probe: boolean;
+  cost_usd?: number | null;
+  cost_is_estimated?: boolean | null;
+  is_billed: boolean;
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+}
+
+export interface TaskOpenTotals extends TaskCostTotals {
+  token_count: number;
+  token_trial_count: number;
+}
+
+export interface TaskOpenResponse {
+  task: TaskOpenTask;
+  default_version?: TaskOpenVersionRef | null;
+  selected_version?: TaskOpenVersionSummary | null;
+  totals: TaskOpenTotals;
+  trials: TaskOpenTrialRef[];
+  trials_has_more: boolean;
 }
 
 /** One defect the pre-trial source audit found in a task version. */
