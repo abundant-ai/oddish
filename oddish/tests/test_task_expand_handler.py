@@ -156,7 +156,10 @@ class _FakeStorage:
         ]
 
     async def _resolve_task_prefix(
-        self, task_id: str, version: int | None
+        self,
+        task_id: str,
+        version: int | None,
+        task_s3_prefix: str | None = None,
     ) -> tuple[str, str]:
         """Mirror ``StorageClient._resolve_task_prefix`` for the fake.
 
@@ -165,6 +168,9 @@ class _FakeStorage:
         legacy v1 layouts can stage the archive at either location and
         the handler will still resolve it.
         """
+        if task_s3_prefix:
+            root = task_s3_prefix.rstrip("/") + "/"
+            return root, f"{root}{StorageClient._TASK_ARCHIVE_OBJECT_NAME}"
         if version is not None:
             vroot = f"tasks/{task_id}/v{version}/"
             varchive = f"{vroot}{StorageClient._TASK_ARCHIVE_OBJECT_NAME}"

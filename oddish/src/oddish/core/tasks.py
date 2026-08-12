@@ -105,6 +105,14 @@ def _validate_task_overwrite_staging_key(task_id: str, staging_key: str | None) 
     return staging_key
 
 
+def _task_overwrite_revision_prefix(
+    task_id: str, version: int, staging_key: str
+) -> str:
+    """Return the immutable source prefix promoted by one overwrite attempt."""
+    token = Path(staging_key).name.removesuffix(".tar.gz")
+    return f"tasks/{task_id}/v{version}-revisions/{token}/"
+
+
 async def initialize_task_upload(
     task_name: str,
     *,
@@ -234,13 +242,18 @@ async def complete_task_upload(
     path, where the task row is created later by ``create_task``.
     """
     normalized_name = _normalize_task_name(task_name)
-    s3_key = _task_s3_prefix_for_version(task_id, version)
-    archive_key = _task_archive_key_for_version(task_id, version)
-    upload_key = (
+    validated_staging_key = (
         _validate_task_overwrite_staging_key(task_id, staging_key)
         if overwrite_current_version
-        else archive_key
+        else None
     )
+    s3_key = (
+        _task_overwrite_revision_prefix(task_id, version, validated_staging_key)
+        if validated_staging_key is not None
+        else _task_s3_prefix_for_version(task_id, version)
+    )
+    archive_key = f"{s3_key}{StorageClient._TASK_ARCHIVE_OBJECT_NAME}"
+    upload_key = validated_staging_key or archive_key
     version_id = f"{task_id}-v{version}"
     task_path = f"s3://{s3_key}"
 
@@ -276,7 +289,7 @@ async def complete_task_upload(
                     return UploadResponse(
                         task_id=task_id,
                         name=normalized_name,
-                        s3_key=s3_key,
+                        s3_key=completed_version.task_s3_key or s3_key,
                         version=version,
                         version_id=version_id,
                         existing_task=True,
@@ -388,7 +401,7 @@ async def complete_task_upload(
                 return UploadResponse(
                     task_id=task_id,
                     name=normalized_name,
-                    s3_key=s3_key,
+                    s3_key=version_row.task_s3_key or s3_key,
                     version=version,
                     version_id=version_id,
                     existing_task=True,
@@ -402,8 +415,11 @@ async def complete_task_upload(
                         "start the in-place upload again"
                     ),
                 )
+            # Promote into an immutable, attempt-specific prefix. The object is
+            # not visible to readers until the version row commits its new
+            # ``task_s3_key``, so a failed DB transaction leaves only an
+            # unreferenced object rather than split archive/metadata state.
             await storage.copy_object(upload_key, archive_key)
-            await storage.delete_prefix(f"tasks/{task_id}/v{version}-files/")
             version_row.task_path = task_path
             version_row.task_s3_key = s3_key
             version_row.content_hash = content_hash
@@ -467,10 +483,14 @@ async def complete_task_upload(
         await session.commit()
 
     if overwrite_current_version:
-        try:
-            await storage.delete_prefix(upload_key)
-        except Exception:
-            pass
+        # Both are derived/unreferenced after the DB switch. Readers verify an
+        # expanded manifest's source archive before selecting it, so cleanup
+        # failures cannot make stale files authoritative.
+        for prefix in (f"tasks/{task_id}/v{version}-files/", upload_key):
+            try:
+                await storage.delete_prefix(prefix)
+            except Exception:
+                pass
 
     return UploadResponse(
         task_id=task_id,

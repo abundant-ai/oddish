@@ -129,6 +129,7 @@ async def test_complete_overwrite_updates_row_and_invalidates_derived_state(
 ) -> None:
     version = SimpleNamespace(
         id="task-1-v2",
+        task_s3_key="tasks/task-1/v2/",
         content_hash="old-hash",
         message="old message",
         expanded_at=object(),
@@ -165,7 +166,7 @@ async def test_complete_overwrite_updates_row_and_invalidates_derived_state(
     assert storage.copied == [
         (
             f"task-upload-staging/task-1/{'a' * 32}.tar.gz",
-            "tasks/task-1/v2/.oddish-task.tar.gz",
+            f"tasks/task-1/v2-revisions/{'a' * 32}/.oddish-task.tar.gz",
         )
     ]
     assert storage.deleted == [
@@ -173,6 +174,7 @@ async def test_complete_overwrite_updates_row_and_invalidates_derived_state(
         f"task-upload-staging/task-1/{'a' * 32}.tar.gz",
     ]
     assert version.content_hash == "new-hash"
+    assert version.task_s3_key == f"tasks/task-1/v2-revisions/{'a' * 32}/"
     assert version.message == "old message"
     assert version.expanded_at is None
     assert version.expanded_manifest_key is None
@@ -212,10 +214,68 @@ async def test_complete_overwrite_checks_current_before_promoting(monkeypatch) -
 
 
 @pytest.mark.asyncio
+async def test_complete_overwrite_commit_failure_does_not_replace_canonical_archive(
+    monkeypatch,
+) -> None:
+    version = SimpleNamespace(
+        id="task-1-v2",
+        task_s3_key="tasks/task-1/v2/",
+        content_hash="old-hash",
+        message=None,
+        expanded_at=None,
+        expanded_manifest_key=None,
+        pre_trial=None,
+        pre_trial_status=None,
+        pre_trial_error=None,
+        pre_trial_started_at=None,
+        pre_trial_finished_at=None,
+    )
+    task = SimpleNamespace(
+        id="task-1",
+        org_id="org-1",
+        current_version_id=version.id,
+    )
+
+    class _FailingCommitSession(_Session):
+        async def commit(self):
+            raise RuntimeError("database unavailable")
+
+    session = _FailingCommitSession(task=task, current=version)
+    storage = _Storage()
+    monkeypatch.setattr(tasks, "get_session", _session_context(session))
+    monkeypatch.setattr(tasks, "get_storage_client", lambda: storage)
+    monkeypatch.setattr(tasks.settings, "tasks_expand_archive", False)
+
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await tasks.complete_task_upload(
+            task_id="task-1",
+            task_name="task",
+            version=2,
+            content_hash="new-hash",
+            org_id="org-1",
+            overwrite_current_version=True,
+            staging_key=f"task-upload-staging/task-1/{'f' * 32}.tar.gz",
+            overwrite_base_content_hash="old-hash",
+        )
+
+    assert storage.copied == [
+        (
+            f"task-upload-staging/task-1/{'f' * 32}.tar.gz",
+            f"tasks/task-1/v2-revisions/{'f' * 32}/.oddish-task.tar.gz",
+        )
+    ]
+    assert storage.deleted == []
+
+
+@pytest.mark.asyncio
 async def test_complete_overwrite_replay_succeeds_after_staging_cleanup(
     monkeypatch,
 ) -> None:
-    version = SimpleNamespace(id="task-1-v2", content_hash="new-hash")
+    version = SimpleNamespace(
+        id="task-1-v2",
+        content_hash="new-hash",
+        task_s3_key=f"tasks/task-1/v2-revisions/{'c' * 32}/",
+    )
     task = SimpleNamespace(
         id="task-1",
         org_id="org-1",
@@ -245,7 +305,11 @@ async def test_complete_overwrite_replay_succeeds_after_staging_cleanup(
 async def test_complete_overwrite_replay_succeeds_before_staging_cleanup(
     monkeypatch,
 ) -> None:
-    version = SimpleNamespace(id="task-1-v2", content_hash="new-hash")
+    version = SimpleNamespace(
+        id="task-1-v2",
+        content_hash="new-hash",
+        task_s3_key=f"tasks/task-1/v2-revisions/{'c' * 32}/",
+    )
     task = SimpleNamespace(
         id="task-1",
         org_id="org-1",
@@ -268,6 +332,7 @@ async def test_complete_overwrite_replay_succeeds_before_staging_cleanup(
     )
 
     assert result.existing_task is True
+    assert result.s3_key == f"tasks/task-1/v2-revisions/{'c' * 32}/"
     assert storage.copied == []
     assert storage.deleted == [f"task-upload-staging/task-1/{'e' * 32}.tar.gz"]
 

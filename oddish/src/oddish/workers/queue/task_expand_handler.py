@@ -3,9 +3,9 @@
 Expands a task's ``.oddish-task.tar.gz`` archive into a sibling per-file
 S3 layout at ``tasks/{task_id}/v{N}-files/`` plus a
 ``.oddish-manifest.json`` sentinel that records the source archive's
-etag. The canonical archive is never modified — this is a derived cache
-that lets the task-files drawer list objects directly and fetch content
-via per-file presigned URLs, matching the fast path trial files already
+etag and key. The database-selected archive is never modified — this is a
+derived cache that lets the task-files drawer list objects directly and fetch
+content via per-file presigned URLs, matching the fast path trial files already
 use.
 
 Payload shape::
@@ -168,16 +168,24 @@ async def _promote_expansion_if_current(
 async def _resolve_archive_key(
     storage: StorageClient, task_id: str, version: int
 ) -> str:
-    """Return the S3 key of a task's archive, with legacy fallback.
+    """Return the DB-selected S3 archive key, with legacy fallback.
 
-    Mirrors the read-path behavior in ``StorageClient._resolve_task_prefix``:
-    pre-versioning uploads landed at ``tasks/{task_id}/.oddish-task.tar.gz``
-    (no ``v{N}/`` sub-prefix) and still need to be expandable. If the
-    versioned key doesn't exist we fall back to the unversioned one;
-    if neither exists we surface the versioned key so the caller's
-    404 error message points at the expected location.
+    In-place overwrites publish to immutable revision prefixes and switch the
+    version row only after the object exists. Older versions keep the usual
+    versioned/unversioned fallback behavior.
     """
-    _root, archive_key = await storage._resolve_task_prefix(task_id, version)
+    async with get_session() as session:
+        task_s3_prefix = await session.scalar(
+            select(TaskVersionModel.task_s3_key).where(
+                TaskVersionModel.task_id == task_id,
+                TaskVersionModel.version == version,
+            )
+        )
+    _root, archive_key = await storage._resolve_task_prefix(
+        task_id,
+        version,
+        str(task_s3_prefix) if task_s3_prefix else None,
+    )
     return archive_key
 
 
