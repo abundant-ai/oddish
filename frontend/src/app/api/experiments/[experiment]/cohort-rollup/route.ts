@@ -15,7 +15,7 @@ import { decodeExperimentRouteParam } from "@/lib/utils";
 // `version`; see its docstring for why).
 export async function GET(
   _request: NextRequest,
-  { params }: { params: Promise<{ experiment_id: string }> },
+  { params }: { params: Promise<{ experiment: string }> },
 ) {
   try {
     const authObj = await auth();
@@ -31,9 +31,9 @@ export async function GET(
       );
     }
 
-    const { experiment_id } = await params;
-    const experimentId = experiment_id
-      ? decodeExperimentRouteParam(experiment_id)
+    const { experiment } = await params;
+    const experimentId = experiment
+      ? decodeExperimentRouteParam(experiment)
       : "";
     if (!experimentId) {
       return NextResponse.json(
