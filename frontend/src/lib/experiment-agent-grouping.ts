@@ -103,11 +103,9 @@ export function getExperimentAgentKey(
   if (trial.is_probe) {
     return PROBE_AGENT_KEY;
   }
-  // QA / audit trials are the platform's own runs, not entries of the
-  // agent under test. Give them their own labeled column so a qa-report
-  // experiment reads as "the QA runs", never as a mirror of the agent
-  // matrix ("the same task twice"). Only qa-report experiments carry
-  // these trials in their rows, so agent matrices are unaffected.
+  // QA / audit trials are the platform's own runs, not the agent under
+  // test: give them their own column so a qa-report experiment does not
+  // mirror the agent matrix.
   if (!isAgentTrial(trial)) {
     return trial.kind as string;
   }

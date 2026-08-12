@@ -775,7 +775,7 @@ ENV_VARS = {
     # never sees pre-trial findings no matter how many audits the QA-job
     # assignment path (which this flag does not gate) has run.
     #
-    # Enabling is deployment-wide on purpose: qa_handler checks this flag
+    # Enabling is deployment-wide on purpose: the audit path checks this flag
     # BEFORE the per-org pre_trial_analysis_enabled setting, so while it is off
     # an org cannot opt itself in -- the org setting can only ever opt OUT.
     # Post-trial runs for task versions with no audit are unaffected:

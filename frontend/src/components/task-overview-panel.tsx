@@ -9,7 +9,6 @@ import { cn } from "@/lib/utils";
 import { fetcher } from "@/lib/api";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AnalysisProse } from "@/components/analysis-prose";
-import { CohortComparisonSection } from "@/components/cohort-comparison-section";
 import { SeverityGroups } from "@/components/qa-report/action-items";
 import { CopyJsonButton } from "@/components/qa-report/copy-json-button";
 import { FALLBACK_TOKEN, VERDICT_TOKENS } from "@/components/qa-report/tokens";
@@ -607,22 +606,6 @@ export function TaskOverviewPanel({
         <div className="border-border border-b p-4">
           <TaskVerdictBadge task={verdictTask} variant="inline" />
         </div>
-      ) : null}
-
-      {/* No wrapper: the section returns null below the cohort gate, and a
-          bordered container here would leave an empty strip on every task
-          overview that has too few classified trials. It owns its own frame. */}
-      {/* A resolved version is a precondition, not a preference: null means
-          the pane deliberately aggregates every version and undefined means it
-          is still resolving, while a comparison covers exactly one version's
-          cohorts. Passing either through would describe a version the trials
-          beside it are not scoped to. */}
-      {taskId && typeof version === "number" ? (
-        <CohortComparisonSection
-          taskId={taskId}
-          apiBaseUrl={apiBaseUrl}
-          version={version}
-        />
       ) : null}
 
       <div className="border-border flex flex-col gap-3 border-b p-4">

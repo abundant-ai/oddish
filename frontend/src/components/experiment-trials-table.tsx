@@ -348,17 +348,10 @@ const ANALYSIS_LEGEND_ITEMS: Array<{
   },
 ];
 
-// The experiment grid is the primary surface, so each task row answers the
-// QA question directly: Accepted / Rejected verdict, QA in flight, or QA
-// failed. Tasks that never opted into QA render nothing.
-//
-// QA is task-scoped: the verdict covers every live trial of the task, across
-// experiments, as of the run that produced it. When some of THIS experiment's
-// settled trials carry no grade, the verdict came from a run that did not
-// include them — the chip renders dashed with an "earlier run" tooltip so a
-// verdict from elsewhere is never mistaken for one over these trials.
-// Clicking opens the task overview, which lists the full graded set
-// (cross-experiment trials carry their own "elsewhere" chips there).
+// QA is task-scoped: a verdict can come from a run that did not cover this
+// experiment's trials. When settled trials here carry no grade the chip goes
+// dashed ("earlier run"). Clicking opens the task overview, which lists the
+// full graded set.
 function TaskVerdictChip({
   task,
   ungradedSettled,
@@ -2421,10 +2414,8 @@ export function ExperimentTrialsTable({
                             {showAnalysis && (
                               <TaskVerdictChip
                                 task={task}
-                                // Settled agent trials in this experiment the
-                                // verdict's run did not grade. Baselines and
-                                // probes are never graded, skipped/cancelled
-                                // are QA-ineligible — none of those count.
+                                // Settled agent trials this verdict's run
+                                // did not grade (baselines/probes never are).
                                 ungradedSettled={
                                   orderedTrials.filter(
                                     (t) =>

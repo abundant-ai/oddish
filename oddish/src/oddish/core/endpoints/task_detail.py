@@ -201,8 +201,7 @@ async def get_task_detail_core(
     if referenced_exp_ids:
         name_query = select(ExperimentModel.id, ExperimentModel.name).where(
             ExperimentModel.id.in_(referenced_exp_ids),
-            # Shadow (qa report) experiments never chip a version row; the
-            # qa/audit trials that reference them keep their own linkage.
+            # Shadow (qa report) experiments never chip a version row.
             ExperimentModel.shadow_of.is_(None),
         )
         if org_id is not None:

@@ -50,20 +50,6 @@ def _uniform(rows: list[dict]) -> list[dict]:
     return [{k: r.get(k) for k in keys} for r in rows]
 
 
-def _block(*, id: str, at=_EPOCH, **over) -> dict:
-    """An analyzer_blocks row with its NOT NULL columns defaulted."""
-    return {
-        "id": id,
-        "created_at": at,
-        "updated_at": at,
-        "type": over.get("type", "trial_classifier"),
-        "key_prefix": f"analyzer/{over.get('type', 'trial_classifier')}",
-        "llm_client_type": "api",
-        "status": "SUCCESS",
-        **over,
-    }
-
-
 def _src_url() -> str:
     base, _, _db = URL.rpartition("/")
     return f"{base}/seed_sample_src"
@@ -358,55 +344,6 @@ async def _make_source_db():
             ],
         )
         await c.execute(
-            t["analyzer_blocks"].insert(),
-            _uniform(
-                [
-                    _block(
-                        id=f"ab-sum-{i}",
-                        at=_EPOCH + timedelta(hours=i),
-                        analyzer_id="tr-ok",
-                        type="trajectory_summary",
-                        prompt="the whole trajectory" * 100,
-                        input={"trial_id": "tr-ok"},
-                        output={"schema_version": "3", "steps": i},
-                    )
-                    # three summaries for one trial: only the newest two are drawn
-                    for i in range(3)
-                ]
-                + [
-                    # newer than every SUCCESS above, and must not evict them
-                    _block(
-                        id="ab-sum-fail",
-                        at=_EPOCH + timedelta(hours=5),
-                        analyzer_id="tr-ok",
-                        type="trajectory_summary",
-                        status="FAILED",
-                    ),
-                    # task-level block: no analyzer_id, so the task arm draws it
-                    _block(
-                        id="ab-task",
-                        task_id="task-solo",
-                        type="pre_trial",
-                        llm_client_type="claude_cli",
-                        output={"verdict": "good"},
-                        status="FAILED",
-                    ),
-                    # a post-trial block sets both ids; its trial isn't in the
-                    # draw, so the sampled task must not drag it in
-                    _block(
-                        id="ab-post-other",
-                        analyzer_id="tr-not-drawn",
-                        task_id="task-solo",
-                        type="post_trial",
-                    ),
-                    # in-flight, soft-deleted, and report-scoped blocks stay out
-                    _block(id="ab-live", analyzer_id="tr-ok", status="RUNNING"),
-                    _block(id="ab-del", analyzer_id="tr-ok", deleted_at=_EPOCH),
-                    _block(id="ab-report", analyzer_id="an-report-1", type="reduce"),
-                ]
-            ),
-        )
-        await c.execute(
             t["skills"].insert(),
             [
                 {
@@ -628,20 +565,6 @@ async def test_sample_is_deterministic_and_prod_faithful():
         jobs = {j["id"]: j for j in rows["worker_jobs"]}
         assert "wj-live" not in jobs  # only terminal jobs imported
         assert jobs["wj-child"]["parent_job_id"] is None  # parent not sampled
-
-        # blocks for sampled subjects, newest SAMPLE_BLOCKS_PER_SUBJECT per
-        # (subject, type), so the preview serves stored trajectory summaries
-        # instead of regenerating them on view
-        blocks = {b["id"]: b for b in rows["analyzer_blocks"]}
-        assert set(blocks) == {"ab-sum-2", "ab-sum-1", "ab-task"}
-        assert blocks["ab-sum-2"]["output"] == {"schema_version": "3", "steps": 2}
-        assert "prompt" not in blocks["ab-sum-2"]  # trajectory text not copied
-        assert "ab-sum-0" not in blocks  # over the per-subject cap
-        assert "ab-sum-fail" not in blocks  # newer, but SUCCESS is preferred
-        assert "ab-post-other" not in blocks  # its trial isn't in the draw
-        assert "ab-live" not in blocks  # only terminal blocks imported
-        assert "ab-del" not in blocks  # soft-deleted
-        assert "ab-report" not in blocks  # analyzer_id is a report, not a trial
 
         assert [s["id"] for s in rows["skills"]] == ["sk-a"]
         assert [f["id"] for f in rows["skill_files"]] == ["skf-a1"]

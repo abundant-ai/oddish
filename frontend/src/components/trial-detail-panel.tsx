@@ -88,6 +88,7 @@ import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { StatusIcon } from "@/components/status-icon";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
 import { useSWRConfig } from "swr";
+import { taskHasActiveVerdict } from "@/lib/job-status";
 import { isAnalysisStatusActive, trialKey, useTrial } from "@/lib/use-trial";
 import { embeddedCtrfSummary } from "@/lib/verifier-results";
 
@@ -263,11 +264,20 @@ function TrialAnalysisCard({
     setQueueError(null);
   }, [trialProp.id]);
 
-  // An analysis counts as in progress when the server says it is queued
-  // or running. The rerun endpoint sets the status to QUEUED before it
-  // responds, so the server's status is always current and the client
-  // does not need to track a run on its own.
-  const inProgress = isAnalysisStatusActive(trial.analysis_status);
+  // QA is task-scoped: the rerun creates one qa trial that grades every
+  // trial, and never stamps this row's analysis_status. Reading that field
+  // alone showed "No analysis yet" while the run was live.
+  const inProgress =
+    isAnalysisStatusActive(trial.analysis_status) ||
+    taskHasActiveVerdict(task);
+  // The qa trial doing the grading right now. Once it settles the importer
+  // stamps analysis._graded_by and the "graded by" link below takes over.
+  const liveQaTrialId = (task?.trials ?? []).find(
+    (t) =>
+      (t.kind ?? "agent") !== "agent" &&
+      !t.superseded_by_trial_id &&
+      ["pending", "queued", "running", "retrying"].includes(t.status),
+  )?.id;
 
   // When an analysis run that we were watching finishes, this tells the
   // parent to refresh its lists, so the grid shows the result even after
@@ -587,11 +597,26 @@ function TrialAnalysisCard({
                   <span className="font-mono text-sm font-bold">
                     {trial.analysis_status === "running"
                       ? "Analyzing"
-                      : "Analysis queued"}
+                      : trial.analysis_status
+                        ? "Analysis queued"
+                        : "QA is running"}
                   </span>
                   <span className="text-muted-foreground text-xs">
-                    {progressLine}
+                    {trial.analysis_status
+                      ? progressLine
+                      : "The task's QA run grades every trial; this trial's result lands when it finishes."}
                   </span>
+                  {!trial.analysis_status &&
+                    liveQaTrialId &&
+                    onOpenGrader && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenGrader(liveQaTrialId)}
+                        className="text-muted-foreground hover:text-foreground self-start font-mono text-[11px] underline decoration-dotted underline-offset-2"
+                      >
+                        view the QA run
+                      </button>
+                    )}
                 </div>
               ) : hasAnalysis ? (
                 // Analysis state exists but produced no report (e.g. failed

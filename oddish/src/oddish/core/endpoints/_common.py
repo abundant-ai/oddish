@@ -24,9 +24,7 @@ async def _primary_experiment_for_task_model(
     access even when it hasn't been eagerly loaded on ``task``.
     """
     experiments = list(await task.awaitable_attrs.experiments or [])
-    # A shadow (qa report) experiment must never become the task's face:
-    # the eager pre-trial audit can link it before the agent trials link
-    # the real experiment, making it experiments[0].
+    # A shadow (qa report) experiment must never become the task's face.
     non_shadow = [
         e for e in experiments if getattr(e, "shadow_of", None) is None
     ]

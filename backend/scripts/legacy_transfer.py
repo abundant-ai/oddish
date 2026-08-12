@@ -130,7 +130,7 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
     # of the call (same session, restored before commit -> no visible flag
     # change in the DB). Effect: correct status transitions, zero QA jobs,
     # existing verdicts untouched. Migrated trials are additionally excluded
-    # from any future QA pass by the imported_at filter in qa_handler.
+    # from any future QA pass by the imported_at filter on QA eligibility.
     # ------------------------------------------------------------------
     _orig_qa_stage = _oq.maybe_start_qa_stage
 

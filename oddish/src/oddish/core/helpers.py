@@ -793,16 +793,10 @@ def _primary_experiment_for_task(
     to several experiments at once. Response shapes that still expose a
     single ``experiment_id``/``experiment_name`` need to pick one:
 
-    - If ``preferred_experiment_id`` is in the task's set, use it (lets
-      experiment-scoped list endpoints return the experiment the caller
-      is actually looking at).
-    - Otherwise the first non-shadow experiment (stable ordering comes
-      from SQLAlchemy's relationship load, which in turn respects the
-      association table's ``created_at`` insertion order). Shadow (qa
-      report) experiments only win when they are all the task has: the
-      eager pre-trial audit can link the shadow before the agent trials
-      link the real experiment, and the shadow must not become the
-      task's face.
+    - If ``preferred_experiment_id`` is in the task's set, use it.
+    - Otherwise the first non-shadow experiment. A shadow (qa report) wins
+      only when it is all the task has: the eager audit can link it before
+      the agent trials link the real one.
     """
     experiments = list(task.experiments or [])
     if not experiments:
@@ -904,11 +898,8 @@ def _build_task_status_response(
         experiment_created_at=experiment_created_at,
         experiment_owner=experiment_owner,
         experiment_link=experiment_link,
-        # Sorted (name, id) to match the browse chips and because the ORM
-        # relationship has no order_by -- DB return order is not stable.
-        # Shadow (qa report) experiments stay out of the chips, like every
-        # other experiment list; the detail page reaches them through the
-        # experiment's shadow_of linkage instead.
+        # Sorted (name, id): the ORM relationship has no order_by. Shadow
+        # (qa report) experiments stay out of the chips.
         experiments=[
             TaskBrowseExperiment(id=exp.id, name=exp.name)
             for exp in sorted(
