@@ -43,15 +43,11 @@ def stage_query_cli(work_task_dir: Path) -> None:
     dest.chmod(0o755)
 
 
-# The analysis verifier. The agent's artifact under /logs is the whole
-# deliverable, but harbor only collects the agent/ and verifier/ subtrees --
-# a loose file at the /logs root never reaches storage. So the verifier
-# stages the artifact into the collected verifier dir and grades its
-# presence, that it parses, and that the required top-level keys exist.
-# Missing or invalid exits nonzero, which fails the verifier and lets the
-# normal trial retries re-run the agent. Full schema validation stays
-# host-side in the importer: the sandbox check must run on any task image,
-# so it uses whatever runtime is present and installs nothing.
+# The analysis verifier. Harbor only collects the agent/ and verifier/
+# subtrees, so this stages the artifact into the verifier dir and grades that
+# it exists, parses, and has the required keys -- a nonzero exit fails the
+# verifier and lets normal trial retries re-run the agent. Full schema
+# validation stays host-side in the importer.
 _ANALYSIS_TEST_SH = """#!/bin/sh
 OUT="${{HARBOR_VERIFIER_LOG_DIR:-/logs/verifier}}"
 mkdir -p "$OUT"
@@ -93,11 +89,9 @@ _REQUIRED_KEYS = {
 }
 
 
-# An analysis trial is a regular trial on OUR task, not the audited one.
-# The audited task's image is an unknown -- it can lack python, node, or
-# network, and its verifier grades task-solving. The agent reads the
-# audited task through the oddish-query CLI instead. One fixed image also
-# means one cached build across every analysis trial.
+# An analysis trial runs on OUR task image, not the audited one: that image
+# is an unknown (may lack python/node/network) and its verifier grades
+# task-solving. The agent reads the audited task via the oddish-query CLI.
 _ANALYSIS_DOCKERFILE = """FROM python:3.13-slim
 RUN apt-get update \\
     && apt-get install -y --no-install-recommends nodejs curl procps ca-certificates \\

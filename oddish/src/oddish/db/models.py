@@ -166,13 +166,9 @@ class WorkerJobKind(str, Enum):
     """
 
     TRIAL = "TRIAL"
-    # Legacy kinds. Trajectory analysis ran as a per-trial ``ANALYSIS`` job
-    # plus a per-task ``VERDICT`` job, later collapsed into one ``QA`` job;
-    # QA runs as a ``qa``-kind TRIAL now. Nothing enqueues or handles any of
-    # these, and ``drop_legacy_jobs_001`` cancelled still-queued rows. They
-    # are kept as enum members so the native ``worker_job_kind`` Postgres
-    # type (created from this enum) still carries the values that historical
-    # migrations / rows reference.
+    # Legacy kinds: QA runs as a ``qa``-kind TRIAL now and nothing enqueues
+    # or handles these. Kept as enum members so the native
+    # ``worker_job_kind`` Postgres type still carries the historical values.
     QA = "QA"
     VERDICT = "VERDICT"
     ANALYSIS = "ANALYSIS"

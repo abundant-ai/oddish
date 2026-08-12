@@ -43,16 +43,10 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
     "default",
 }
 
-# QA and audit runs are trials now. The prod default runs Claude through
-# Bedrock — so this id MUST have an entry in _ANTHROPIC_TO_BEDROCK_MODEL_IDS.
-# An unmapped id makes every analysis trial fail at pickup.
-#
-# Preview apps (oddish-pr-*) default analysis to Fireworks GLM instead, so
-# preview QA/audit testing doesn't draw down the shared Anthropic/Bedrock
-# budget (its cap otherwise 400s every preview analysis trial). Gated exactly
-# like _DEFAULT_JIT_ROLE (backend/auth/provisioning.py); the trial's model is
-# stamped at create time in the API container, which has MODAL_APP_NAME set.
-# The ODDISH_ANALYSIS_MODEL env still overrides either default.
+# Prod runs Claude through Bedrock, so this id MUST have an entry in
+# _ANTHROPIC_TO_BEDROCK_MODEL_IDS or every analysis trial fails at pickup.
+# Preview apps default to Fireworks GLM so preview QA does not draw down the
+# shared Anthropic budget. ODDISH_ANALYSIS_MODEL overrides either.
 ANALYSIS_MODEL = (
     "fireworks/glm-5p2"
     if os.environ.get("MODAL_APP_NAME", "").startswith("oddish-pr-")

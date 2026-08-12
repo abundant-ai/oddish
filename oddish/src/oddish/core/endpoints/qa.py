@@ -156,10 +156,8 @@ async def cancel_task_qa_core(
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
     now_value = utcnow()
-    # QA and audit run as trials. Cancel their TRIAL worker jobs and mark
-    # the trial rows failed, the same way the append path supersedes an
-    # in-flight qa trial. The settlement path and importer skip on the
-    # cancelled harbor_stage.
+    # Cancel the qa/audit trials' TRIAL jobs and fail their rows; the
+    # settlement path and importer skip on the cancelled harbor_stage.
     analysis_trials = [
         trial
         for trial in task.trials or []

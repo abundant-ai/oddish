@@ -1254,12 +1254,9 @@ async def append_trials_to_task(
         task.finished_at = None
 
     if new_trials and task.run_analysis:
-        # A kept verdict survives until the new QA pass replaces it; only the
-        # in-flight status flags clear. Cancel any in-flight QA trial for the
-        # old trial set so its late import can't overwrite the new set's
-        # verdict. A fresh QA trial is created once every trial of the new
-        # set settles. The cancelled harbor_stage is what the settlement path
-        # and importer skip on.
+        # A kept verdict survives until the new QA pass replaces it. Cancel
+        # any in-flight QA trial so its late import can't overwrite the new
+        # set's verdict; a fresh one is created once the new set settles.
         abandon_verdict(task)
         await session.execute(
             text(
