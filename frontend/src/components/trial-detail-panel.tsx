@@ -43,7 +43,7 @@ import {
   Package,
   Trash2,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, urlWithSearch } from "@/lib/utils";
 import {
   formatLineRange,
   parseLineRange,
@@ -1021,7 +1021,7 @@ export function TrialDetailPanel({
     }
 
     if (next.toString() !== current.toString()) {
-      const url = `${window.location.pathname}${next.toString() ? `?${next.toString()}` : ""}`;
+      const url = urlWithSearch(next.toString());
       window.history.replaceState(window.history.state, "", url);
     }
   }, [

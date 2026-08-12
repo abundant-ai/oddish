@@ -237,7 +237,7 @@ def _build_job_config(payload: dict[str, Any]):
 
 async def _run(payload: dict[str, Any]) -> dict[str, Any]:
     environment_type = (payload.get("environment_config") or {}).get("type")
-    _apply_sibling_harbor_patches(require_ec2=environment_type == "ec2")
+    patch_module = _apply_sibling_harbor_patches(require_ec2=environment_type == "ec2")
     Job = getattr(importlib.import_module("harbor"), "Job")
     start = time.time()
     config = _build_job_config(payload)
@@ -254,17 +254,28 @@ async def _run(payload: dict[str, Any]) -> dict[str, Any]:
         "on_trial_cancelled",
     ]
     provisioned_register = getattr(job, "on_environment_provisioned", None)
-    if environment_type == "ec2" and provisioned_register is None:
-        raise RuntimeError(
-            "Pinned Harbor override lacks the required "
-            "environment-provisioned lifecycle hook"
-        )
+    legacy_provisioned_token = None
     if provisioned_register is not None:
         provisioned_register(hook)
-    for register in registers:
-        getattr(job, register)(hook)
+    elif environment_type == "ec2":
+        set_legacy_callback = getattr(
+            patch_module, "set_ec2_provisioned_callback", None
+        )
+        if set_legacy_callback is None:
+            raise RuntimeError(
+                "Pinned Harbor override lacks both the native and Oddish-shimmed "
+                "environment-provisioned lifecycle hook"
+            )
+        legacy_provisioned_token = set_legacy_callback(hook)
 
-    await job.run()
+    try:
+        for register in registers:
+            getattr(job, register)(hook)
+
+        await job.run()
+    finally:
+        if legacy_provisioned_token is not None:
+            patch_module.reset_ec2_provisioned_callback(legacy_provisioned_token)
     duration = time.time() - start
     job_result_path = job_dir / "result.json"
     return {

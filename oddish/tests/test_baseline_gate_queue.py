@@ -28,6 +28,7 @@ from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE  # noqa: E402
 from oddish.db import (  # noqa: E402
     TaskModel,
     TaskStatus,
+    TaskVersionModel,
     TrialModel,
     TrialStatus,
     WorkerJobKind,
@@ -717,6 +718,46 @@ async def test_qa_classification_excludes_gate_skipped_and_cancelled(
     assert kimi_id not in live_ids
     assert baseline_id not in live_ids
     assert live_ids == set()
+
+
+@pytest.mark.asyncio
+async def test_qa_classification_excludes_historical_task_versions(cleanup_task_ids):
+    from oddish.workers.queue.qa_handler import (
+        _load_live_trials_for_classification,
+    )
+
+    task_id = f"qa-version-{_RUN}"
+    cleanup_task_ids.append(task_id)
+    async with get_session() as session:
+        task = await create_task(
+            session,
+            _mixed_submission("qa-version"),
+            task_id=task_id,
+        )
+        current_trial = next(t for t in task.trials if t.agent == _LLM_AGENT)
+        version_id = f"{task_id}-v2"
+        session.add(
+            TaskVersionModel(
+                id=version_id,
+                task_id=task_id,
+                version=2,
+                task_path=f"s3://test-bucket/{task_id}/v2",
+            )
+        )
+        await session.flush()
+        current_trial_id = current_trial.id
+        current_trial.task_version_id = version_id
+        task.current_version_id = version_id
+        await session.flush()
+
+    live_ids = {
+        trial_id
+        for trial_id, _ in await _load_live_trials_for_classification(
+            task_id,
+            version_id,
+        )
+    }
+    assert live_ids == {current_trial_id}
 
 
 # ---------------------------------------------------------------------------

@@ -14,11 +14,17 @@ import useSWR from "swr";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { ExperimentTrialsTable } from "@/components/experiment-trials-table";
+import { ExperimentPageSkeleton } from "@/components/experiment-page-skeleton";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
 import { TagEditor } from "@/components/tag-editor";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { fetcher } from "@/lib/api";
-import { prBadge, prNumberFromUrl, taskPrUrl } from "@/lib/utils";
+import {
+  prBadge,
+  prNumberFromUrl,
+  taskPrUrl,
+  urlWithSearch,
+} from "@/lib/utils";
 import {
   formatCostUsd,
   formatTokenCount,
@@ -54,6 +60,7 @@ import {
   type LineRange,
 } from "@/lib/line-range";
 import { sameFilePath } from "@/lib/file-path";
+import { expandTrialParam } from "@/lib/trial-url";
 
 type DrawerMode = "task" | "trial";
 
@@ -1186,7 +1193,7 @@ export function ExperimentDetailView({
     }
 
     if (next.toString() !== current.toString()) {
-      const url = `${window.location.pathname}${next.toString() ? `?${next.toString()}` : ""}`;
+      const url = urlWithSearch(next.toString());
       // Keep URL query in sync without triggering app-router navigation work.
       window.history.replaceState(window.history.state, "", url);
     }
@@ -1197,8 +1204,8 @@ export function ExperimentDetailView({
     hydratedFromUrl.current = true;
 
     const urlTaskId = searchParams.get("task");
-    const urlTrialId = searchParams.get("trial");
-    if (!urlTaskId && !urlTrialId) return;
+    const trialParam = searchParams.get("trial");
+    if (!urlTaskId && !trialParam) return;
 
     // Fall back to task name so hand-written links like ?task=<name> work;
     // the URL-sync effect rewrites the param to the canonical id on open.
@@ -1206,6 +1213,10 @@ export function ExperimentDetailView({
       ? (tasksForExperiment.find((t) => t.id === urlTaskId) ??
         tasksForExperiment.find((t) => t.name === urlTaskId))
       : null;
+
+    // A hand-shortened ?trial= is an index against the task in the address;
+    // the full id links carry passes through untouched.
+    const urlTrialId = expandTrialParam(trialParam, task?.id ?? urlTaskId);
 
     if (urlTrialId) {
       // The trial id is the source of truth for its host task, so scan every
@@ -1568,12 +1579,7 @@ export function ExperimentDetailView({
   return (
     <>
       {isInitialLoading ? (
-        <div className="flex min-h-[240px] items-center justify-center rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] py-10">
-          <div className="inline-flex items-center gap-2 rounded-md border border-[color:var(--paper-line)] bg-[color:var(--paper-surface-2)] px-3 py-2 text-sm text-[color:var(--paper-ink-3)]">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            <span>Loading experiment...</span>
-          </div>
-        </div>
+        <ExperimentPageSkeleton />
       ) : (
         <div className="space-y-4">
           {/*

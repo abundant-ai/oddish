@@ -33,6 +33,7 @@ async def get_task_for_org_core(
     task_id: str,
     org_id: str | None = None,
     load_current_version: bool = False,
+    with_for_update: bool = False,
 ) -> TaskModel:
     """Fetch a task by ID with optional org scoping.
 
@@ -47,6 +48,8 @@ async def get_task_for_org_core(
         query = query.options(selectinload(TaskModel.current_version))
     if org_id is not None:
         query = query.where(TaskModel.org_id == org_id)
+    if with_for_update:
+        query = query.with_for_update()
     result = await session.execute(query)
     task: TaskModel | None = result.scalar_one_or_none()
     if not task:

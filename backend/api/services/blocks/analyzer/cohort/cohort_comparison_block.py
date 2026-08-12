@@ -9,11 +9,26 @@ from oddish.blocks.block import Block
 from api.services.blocks.analyzer.cohort import cohort_prompts as cp
 from api.services.blocks.analyzer.cohort.cohort_taxonomy import BehaviorCategory
 
-SCHEMA_VERSION = 1
+# 2: added `summary`. 3: added `mode` and `models`, and relaxed the gate to one
+# populated cohort -- stored rows carry neither field and were generated under
+# the two-cohort framing, so they have to regenerate to gain either.
+SCHEMA_VERSION = 3
 
 # A trial whose summary covers less than this share of its own step span is
 # reported to the reader rather than averaged over silently.
 MIN_COVERAGE = 0.5
+
+
+def _model_counts(trials: list[dict]) -> list[dict]:
+    """[{model, trials}], most frequent first, then alphabetical for stability."""
+    counts: dict[str, int] = {}
+    for t in trials:
+        name = cp.short_model_name(t.get("model") or "unknown")
+        counts[name] = counts.get(name, 0) + 1
+    return [
+        {"model": m, "trials": n}
+        for m, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
 
 
 def _non_empty_text(value: str) -> str:
@@ -100,6 +115,13 @@ class CohortComparisonOutput(BaseModel):
     cohort_success: list[str]
     cohort_failure: list[str]
     categories: list[CategoryComparison]
+    # LAST, and the order is load-bearing. This schema is handed to the model
+    # as `response_format` / `output_schema`, and constrained decoding emits
+    # fields in schema order -- so a `summary` declared above `categories`
+    # would be generated before the rows it is supposed to be bound by,
+    # exactly inverting the prompt's "write summary last" rule and inviting a
+    # headline the categories do not support.
+    summary: NonEmptyText
 
 
 class CohortInput(BaseModel):
@@ -138,7 +160,9 @@ class CohortComparisonBlock(Block):
                 "name": "preamble",
                 "raw_input": {},
                 "schema": _Empty,
-                "formatter": lambda _d: cp.PREAMBLE,
+                "formatter": lambda _d: cp.preamble(
+                    successful=ci.successful, failing=ci.failing
+                ),
             },
             {
                 "name": "task",
@@ -190,6 +214,16 @@ class CohortComparisonBlock(Block):
             parsed.model_dump(mode="json"), ci.successful, ci.failing
         )
         out["dropped"] = dropped
+        # The headline was written against the categories the model produced,
+        # and validation runs after it. If a whole category failed citation
+        # checks and was removed, the summary can name a split the panel no
+        # longer shows -- an unsourced claim sitting above sourced rows, which
+        # is the one thing this feature is built not to do. Drop it rather
+        # than let it describe a comparison that is no longer on screen.
+        # Observation-level drops leave the category standing, so the theme
+        # still holds and the summary survives them.
+        if dropped.get("categories"):
+            out.pop("summary", None)
         # Cohort membership is a fact we already hold, not something to take
         # from the model. The UI renders these lengths as "N successful, M
         # failing"; leaving the model's lists in place would let a fabricated
@@ -197,6 +231,28 @@ class CohortComparisonBlock(Block):
         # on -- the same class of problem the citation check exists to stop.
         out["cohort_success"] = [t["trial_id"] for t in ci.successful]
         out["cohort_failure"] = [t["trial_id"] for t in ci.failing]
+        # Which models landed on which side, counted here rather than asked of
+        # the model. "opus-4-8 succeeded 6 times" is arithmetic over rows we
+        # already hold; routing it through an LLM would make a checkable fact
+        # into an unverifiable claim, and validate_evidence has no way to
+        # police a count.
+        out["models"] = {
+            "successful": _model_counts(ci.successful),
+            "failing": _model_counts(ci.failing),
+        }
+        # trial -> model, so a citation can name the model it came from. The
+        # chips say which models ran on a side; without this the reader cannot
+        # tell which of them the cited behaviour belongs to, and a side listing
+        # fourteen models next to one citation reads as if all fourteen did it.
+        out["trial_models"] = {
+            t["trial_id"]: cp.short_model_name(t.get("model") or "unknown")
+            for t in (*ci.successful, *ci.failing)
+        }
+        # Single-cohort runs describe rather than compare, and the UI needs to
+        # know which without re-deriving it from two list lengths.
+        out["mode"] = (
+            "comparison" if ci.successful and ci.failing else "single"
+        )
         # Surfaced in the UI so a reader can see when the comparison rests on
         # thin evidence, rather than the feature averaging over it silently.
         out["thin_coverage"] = [
