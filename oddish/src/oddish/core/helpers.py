@@ -805,9 +805,7 @@ def _primary_experiment_for_task(
         for exp in experiments:
             if exp.id == preferred_experiment_id:
                 return exp
-    non_shadow = [
-        exp for exp in experiments if getattr(exp, "shadow_of", None) is None
-    ]
+    non_shadow = [exp for exp in experiments if exp.shadow_of is None]
     return (non_shadow or experiments)[0]
 
 
@@ -903,11 +901,7 @@ def _build_task_status_response(
         experiments=[
             TaskBrowseExperiment(id=exp.id, name=exp.name)
             for exp in sorted(
-                (
-                    e
-                    for e in task.experiments or []
-                    if getattr(e, "shadow_of", None) is None
-                ),
+                (e for e in task.experiments or [] if e.shadow_of is None),
                 key=lambda exp: (exp.name, exp.id),
             )
         ],

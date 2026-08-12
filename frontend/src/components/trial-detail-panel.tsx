@@ -89,7 +89,7 @@ import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { StatusIcon } from "@/components/status-icon";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
 import { useSWRConfig } from "swr";
-import { taskHasActiveVerdict } from "@/lib/job-status";
+import { isLiveAnalysisTrial, taskHasActiveVerdict } from "@/lib/job-status";
 import { isAnalysisStatusActive, trialKey, useTrial } from "@/lib/use-trial";
 import { embeddedCtrfSummary } from "@/lib/verifier-results";
 
@@ -273,12 +273,7 @@ function TrialAnalysisCard({
     taskHasActiveVerdict(task);
   // The qa trial doing the grading right now. Once it settles the importer
   // stamps analysis._graded_by and the "graded by" link below takes over.
-  const liveQaTrialId = (task?.trials ?? []).find(
-    (t) =>
-      (t.kind ?? "agent") !== "agent" &&
-      !t.superseded_by_trial_id &&
-      ["pending", "queued", "running", "retrying"].includes(t.status),
-  )?.id;
+  const liveQaTrialId = (task?.trials ?? []).find(isLiveAnalysisTrial)?.id;
 
   // When an analysis run that we were watching finishes, this tells the
   // parent to refresh its lists, so the grid shows the result even after

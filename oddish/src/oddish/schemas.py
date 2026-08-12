@@ -714,7 +714,7 @@ class TaskUploadInitRequest(BaseModel):
         description=(
             "Allocate a new task version even when the content hash matches the "
             "latest existing version. Used when callers need a fresh version "
-            "stamp (e.g. to flip run_probe on)."
+            "stamp."
         ),
     )
     overwrite_current_version: bool = Field(

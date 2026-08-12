@@ -41,7 +41,6 @@ from oddish.db import (
     utcnow,
 )
 from oddish.db.storage import get_storage_client, resolve_trial_s3_prefix
-from oddish.workers.queue.shared import console
 
 logger = logging.getLogger(__name__)
 
@@ -55,10 +54,6 @@ ANALYSIS_ARTIFACTS = {
     "qa": QA_RESULT_FILENAME,
     "audit": AUDIT_RESULT_FILENAME,
 }
-
-
-def artifact_for_kind(kind: str | None) -> str:
-    return ANALYSIS_ARTIFACTS.get(kind or "", QA_RESULT_FILENAME)
 
 ANALYSIS_TRIAL_MAX_ATTEMPTS = 3
 ANALYSIS_TRIAL_TIMEOUT_MINUTES = 60
@@ -274,7 +269,7 @@ def build_qa_brief(
     verdict_section = (
         f"== TASK VERDICT ==\nAfter classifying every trial, synthesize one task verdict:\n{verdict}\n"
         if with_verdict
-        else "== TASK VERDICT ==\nDo NOT produce a verdict for this task: there are too few trials to judge it. Omit the \"verdict\" key entirely.\n"
+        else "== TASK VERDICT ==\nDo NOT produce a verdict for this task: there are too few trials to judge it. Set \"verdict\": null in the output.\n"
     )
     return f"""You are the QA auditor for the task `{task_name}`. You are in a clean analysis sandbox, not the task's own environment. The task source, each trial's logs, and each trial's trajectory come from the oddish-query CLI. Do not solve the task.
 
@@ -311,7 +306,7 @@ Write exactly one file: /logs/{QA_RESULT_FILENAME}
         "action_items": [],
         "exploitation": []
       }},
-      "trajectory_summary": {{"schema_version": 5, "components": [{{"trajectory_component": "<taxonomy value>", "step_ids": [..], "summary": "..."}}]}}
+      "trajectory_summary": <object with the exact shape given in the trajectory summary section>
     }}
   ],
   "verdict": <object matching this JSON schema>
@@ -503,9 +498,7 @@ async def _import_qa_result(trial: TrialModel) -> None:
         )
         return
 
-    expected = set(
-        (trial.harbor_config or {}).get("analysis_payload", {}).get("trial_ids", [])
-    )
+    expected = set(payload_cfg.get("trial_ids", []))
     classifications: list[TrialClassification] = []
     async with get_session() as session:
         for entry in artifact.get("trials", []):
@@ -562,11 +555,11 @@ async def _import_qa_result(trial: TrialModel) -> None:
         return
     if not verdict_expected:
         # Classifications are stored; the task completes with no verdict.
+        # The caller fires the qa-imported hook after this returns.
         await complete_task_without_verdict(
             task_id,
             should_store=lambda s: _qa_import_still_current(s, task_id),
         )
-        await _fire_qa_imported(task_id)
         return
     try:
         verdict = TaskVerdictModel.model_validate(artifact["verdict"])

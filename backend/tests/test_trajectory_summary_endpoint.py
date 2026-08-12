@@ -31,9 +31,7 @@ def client():
 
 
 def _trial(summary):
-    return SimpleNamespace(
-        id="t-1", name="trial-0", trial_s3_key="trials/t-1/", trajectory_summary=summary
-    )
+    return SimpleNamespace(trajectory_summary=summary)
 
 
 def test_endpoint_returns_stored_summary(client):

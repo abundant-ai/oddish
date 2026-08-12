@@ -2,21 +2,11 @@ from .runtime import console
 
 
 async def notify_github_trial(trial_id: str) -> None:
-    """Notify GitHub of trial completion. Analysis trials (QA, audit,
-    analyzer) never post trial status; the QA import hook owns that comment."""
+    """Notify GitHub of trial completion. Analysis trials never post trial
+    status (the notifier skips them); the QA import hook owns that comment."""
     try:
-        from sqlalchemy import select
-
-        from oddish.db import TrialModel, get_session
         from oddish.integrations.github import notify_trial_update
-        from oddish.workers.analysis_trials import is_analysis_kind
 
-        async with get_session() as session:
-            kind = await session.scalar(
-                select(TrialModel.kind).where(TrialModel.id == trial_id)
-            )
-        if is_analysis_kind(kind):
-            return
         await notify_trial_update(trial_id)
     except Exception as e:
         console.print(f"[yellow]GitHub notification failed (trial): {e}[/yellow]")

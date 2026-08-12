@@ -4,9 +4,9 @@ Revision ID: drop_analyzers_001
 Revises: reset_stale_analysis_001
 Create Date: 2026-08-07 00:00:00.000000
 
-The cross-experiment reports feature is removed. Its tables go with it.
-``analyzer_runs`` and the block tables were dropped by earlier
-migrations; this drops the two that remained.
+The cross-experiment reports feature is removed. Its tables go with it:
+this drops the three that remained (``analyzers``, ``analyzer_experiments``,
+``analyzer_blocks``); ``analyzer_runs`` was dropped by an earlier migration.
 """
 
 from typing import Sequence, Union

@@ -42,6 +42,7 @@ def test_task_status_response_includes_experiment_created_at():
         created_at=experiment_created_at,
         owner=None,
         link=None,
+        shadow_of=None,
     )
     task = SimpleNamespace(
         id="task-a",

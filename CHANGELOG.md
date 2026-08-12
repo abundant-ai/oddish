@@ -23,6 +23,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   summaries, but the task completes without a verdict instead of guessing
   from a handful of runs.
 
+### Fixed
+
+- A below-evidence-bar QA run could never succeed: the brief told the model
+  to omit the `verdict` key while the trial verifier required it, so every
+  such run failed and retried to exhaustion. The brief now asks for
+  `"verdict": null`. The same import path also fired the GitHub PR-refresh
+  hook twice; it fires once now.
+- The QA brief gave the model two conflicting shapes for
+  `trajectory_summary` and referenced a taxonomy label that no longer
+  exists; there is now one shape (with `schema_version`) and the guidance
+  names real labels.
+- The analysis trial verifier silently skipped JSON validation when its
+  interpreter probe failed; it now runs `python3` unconditionally (the
+  analysis image guarantees it).
+
 ## [2026-08-10]
 
 ### Changed

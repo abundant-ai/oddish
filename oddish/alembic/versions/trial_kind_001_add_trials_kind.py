@@ -4,9 +4,10 @@ Revision ID: trial_kind_001
 Revises: task_browse_summary_002
 Create Date: 2026-08-07 00:00:00.000000
 
-'agent' is a normal evaluation run. 'qa', 'audit', 'analyzer_map', and
-'analyzer_reduce' are the platform's own analysis agents, which now run
-through the trial pipeline. The partial index serves the exclusion filters
+'agent' is a normal evaluation run; other kinds are the platform's own
+analysis agents, which now run through the trial pipeline ('qa' and
+'audit' today; historical rows may carry the retired 'analyzer_map' /
+'analyzer_reduce' kinds). The partial index serves the exclusion filters
 on user-facing surfaces: almost every trial is 'agent', so a full index
 would be nearly all one value.
 

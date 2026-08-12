@@ -618,14 +618,11 @@ async def _generate_probe_summary_inline(
 ) -> dict:
     """Run the probe analyzer in-process, right after a probe trial finishes.
 
-    The probe summary is the whole point of a probe, but probes never set
-    ``task.run_analysis`` (they're appended to an existing task that owns that
-    flag), so the generic completion path below won't enqueue an ANALYSIS job
-    for them -- which is why probe trials previously had no summary in the
-    cloud. Instead we generate it inline here: same job, same session,
-    mirroring ``worker.local_runner``, while the local Harbor artifacts still
-    exist on disk (before ``_cleanup_uploaded_job_dir`` prunes them). Returns
-    the analysis fields ``_store_trial_results`` writes onto the trial row.
+    Probes are excluded from task-level QA, so this inline pass is the only
+    place their summary is produced: same job, same session, mirroring
+    ``worker.local_runner``, while the local Harbor artifacts still exist on
+    disk (before ``_cleanup_uploaded_job_dir`` prunes them). Returns the
+    analysis fields ``_store_trial_results`` writes onto the trial row.
 
     Never raises: an analyzer failure is captured as ``analysis_status=FAILED``
     so the trial result itself still persists.
@@ -1600,12 +1597,12 @@ async def run_trial_job(
             task_path_to_run = probe_copy_dir
             temp_task_dir = probe_copy_root
         if is_analysis_kind(trial_mode):
-            from oddish.workers.analysis_trials import artifact_for_kind
+            from oddish.workers.analysis_trials import ANALYSIS_ARTIFACTS
 
             apply_analysis_overlay(
                 task_path_to_run,
                 brief=probe_extra_instructions,
-                artifact=artifact_for_kind(trial_mode),
+                artifact=ANALYSIS_ARTIFACTS[trial_mode],
             )
         else:
             await apply_probe_overlay(
@@ -1801,10 +1798,10 @@ async def run_trial_job(
                 console.print(f"[yellow]Sauron mirror failed (non-fatal): {e}[/yellow]")
 
         # Probe trials get their summary generated inline, in this same job,
-        # while the local Harbor artifacts still exist on disk -- mirroring the
-        # local runner. Probes never set task.run_analysis, so this is the only
-        # place their summary is produced in the cloud. Must run before the
-        # cleanup below prunes job_dir.
+        # while the local Harbor artifacts still exist on disk -- mirroring
+        # the local runner. Probes are excluded from task-level QA, so this
+        # is the only place their summary is produced in the cloud. Must run
+        # before the cleanup below prunes job_dir.
         probe_analysis = None
         if probe_extra_instructions and execution.outcome and execution.outcome.job_dir:
             probe_analysis = await _generate_probe_summary_inline(

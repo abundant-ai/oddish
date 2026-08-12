@@ -33,15 +33,13 @@ from oddish.config import (
     ORPHANED_ANALYSIS_ERROR_PREFIX,
     settings,
 )
-from oddish.core.baseline_gate import GATE_SKIP_PREFIX
 from oddish.core.helpers import cancel_job_by_worker
 from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.core.tags.ownership_transfer import sweep_orphaned_tag_owners
-from oddish.core.verdict_state import fail_verdict, queue_verdict
+from oddish.core.verdict_state import fail_verdict
 from oddish.costs.recorder import reconcile_compute_cost_spans
 from oddish.db import (
     AnalysisStatus,
-    JobStatus,
     TaskModel,
     TaskStatus,
     TaskVersionModel,
@@ -102,14 +100,11 @@ ORPHANED_SLOT_GRACE_MINUTES = 2
 STUCK_ANALYZING_MINUTES = 15
 STUCK_ANALYZING_BATCH_LIMIT = 200
 
-# Backstop for tasks wedged in VERDICT_PENDING whose QA job is gone -- e.g. it
-# failed/exhausted without committing a terminal ``verdict_status`` (the old
-# unguarded verdict reconstruction crashed on probe-summary trials and rolled
-# back, leaving ``verdict_status='QUEUED'`` with no live worker_job). The
-# previous step-4 guard keyed off ``verdict_status NOT IN ('QUEUED','RUNNING')``
-# and so skipped exactly these rows, stranding them forever. We instead key off
-# "no live QA/VERDICT worker_job" and re-enqueue (or finalize) them. Batched so
-# a large backlog drains over several ticks instead of one giant burst.
+# Backstop for tasks wedged in VERDICT_PENDING with no live QA trial -- the
+# worker died between the trial settling and the import, or the QA trial was
+# lost. Keyed off "no live qa-kind trial", not ``verdict_status``, so rows
+# stuck at QUEUED with nothing running still heal. Batched so a large backlog
+# drains over several ticks instead of one giant burst.
 STALE_VERDICT_PENDING_BATCH_LIMIT = 200
 STUCK_ANALYZING_REASON = (
     "Analysis never produced a verdict for this trial; marked terminal by "
@@ -564,8 +559,6 @@ async def cleanup_orphaned_queue_state(
             stuck_analysis_nulls_failed,
         ) = await _unwedge_stuck_analyzing(session)
 
-        orphaned_analysis_failed = orphaned_analysis_requeued = 0
-
         orphaned_active_slots_cleared = await _release_orphaned_slots(session)
 
         experiments_last_activity_reconciled = (
@@ -603,8 +596,6 @@ async def cleanup_orphaned_queue_state(
         "stuck_analyzing_advanced": stuck_analyzing_advanced,
         "stuck_analyzing_finalized": stuck_analyzing_finalized,
         "stuck_analysis_nulls_failed": stuck_analysis_nulls_failed,
-        "orphaned_analysis_failed": orphaned_analysis_failed,
-        "orphaned_analysis_requeued": orphaned_analysis_requeued,
         "terminal_trial_runtime_refs_cleared": terminal_trial_runtime_refs_cleared,
         "stale_trial_events_purged": stale_trial_events_purged,
         "orphaned_active_slots_cleared": orphaned_active_slots_cleared,
@@ -1217,25 +1208,16 @@ async def _advance_legacy_analyzing_tasks(session) -> int:
 
 
 async def _heal_stale_verdict_pending(session) -> int:
-    """Step 4 -- VERDICT_PENDING tasks with no LIVE QA job.
+    """Step 4 -- VERDICT_PENDING tasks with no live QA trial.
 
-    A task is wedged here when its QA (task-level) job is gone -- it
-    finished/failed/exhausted (and we missed the hook, or it rolled back before
-    committing a terminal ``verdict_status``), or the task predates the unified
-    refactor and never had one. The condition that matters is "no claimable
-    QA/VERDICT worker_job", NOT ``verdict_status``: a row stuck at
-    ``verdict_status='QUEUED'`` with no live job (the old probe-summary KeyError
-    left thousands of these) would never be healed by a ``verdict_status``-keyed
-    check. Re-enqueue so the dispatcher has something to claim (or finalize if
-    the verdict is already terminal). ``ANALYSIS`` rows are intentionally ignored
-    here -- they no longer drive the verdict. Returns the count finalized.
+    Three repairs, in order: a terminal ``verdict_status`` just needs the
+    task completed; a settled QA trial with a non-terminal verdict means
+    the import never landed (worker died between settle and import), so
+    re-import it; otherwise create a fresh QA trial (or complete the task
+    when nothing is eligible). Returns the count completed without QA.
     """
-    from oddish.queue import qa_eligible_trial_ids
-    from oddish.workers.analysis_trials import (
-        create_qa_trial,
-        handle_analysis_trial_settled,
-        has_verdict_evidence,
-    )
+    from oddish.queue import start_qa_for_task
+    from oddish.workers.analysis_trials import handle_analysis_trial_settled
 
     stale_verdict_pending = (
         await session.execute(
@@ -1296,26 +1278,12 @@ async def _heal_stale_verdict_pending(session) -> int:
             )
             reimport_trial_ids.append(str(settled_qa))
             continue
-        eligible = await qa_eligible_trial_ids(session, task.id)
-        if eligible:
+        if await start_qa_for_task(session, task):
             logger.info(
-                "healer: task %s wedged in VERDICT_PENDING with no qa trial, creating one",
+                "healer: task %s was wedged in VERDICT_PENDING with no qa trial",
                 task.id,
             )
-            task.verdict_status = VerdictStatus.QUEUED
-            task.verdict_error = None
-            task.verdict_started_at = None
-            task.verdict_finished_at = None
-            await create_qa_trial(
-                session,
-                task=task,
-                eligible_trial_ids=eligible,
-                with_verdict=await has_verdict_evidence(session, eligible),
-            )
         else:
-            task.status = TaskStatus.COMPLETED
-            task.finished_at = task.finished_at or utcnow()
-            task.verdict_status = None
             verdict_pending_completed += 1
 
     for trial_id in reimport_trial_ids:

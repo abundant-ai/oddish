@@ -26,45 +26,6 @@ class Classification(str, Enum):
         return self in (Classification.GOOD_SUCCESS, Classification.BAD_SUCCESS)
 
 
-class Subtype(str, Enum):
-    """Detailed subtype explaining the classification."""
-
-    AGENT_NOT_FOUND = "Agent Not Found"
-    CONTAINER_FAILURE = "Container/Docker Failure"
-    MISSING_DEPENDENCIES = "Missing Dependencies"
-    EMPTY_TRAJECTORY = "Empty Trajectory"
-    INFRASTRUCTURE_ERROR = "Infrastructure Error"
-
-    TIMEOUT = "Timeout"
-    WRONG_APPROACH = "Wrong Approach"
-    IMPLEMENTATION_BUGS = "Implementation Bugs"
-    CONTEXT_LOSS = "Context Loss"
-    PREMATURE_STOP = "Premature Stop"
-    COMPLEXITY_OVERWHELM = "Complexity Overwhelm"
-    INCOMPLETE_SOLUTION = "Incomplete Solution"
-    LOGIC_ERROR = "Logic Error"
-
-    UNDERSPECIFIED_INSTRUCTION = "Underspecified Instruction"
-    RIGID_BRITTLE_TESTS = "Rigid/Brittle Tests"
-    NONDETERMINISTIC_TESTS = "Non-deterministic Tests"
-    ENVIRONMENT_ISSUES = "Environment Issues"
-    MISSING_FILE_REFERENCE = "Missing File Reference"
-    AMBIGUOUS_REQUIREMENTS = "Ambiguous Requirements"
-    IMPLEMENTATION_DETAILS_REQUIRED = "Implementation Details Required"
-    EDGE_CASES_NOT_SPECIFIED = "Edge Cases Not Specified"
-    TEST_EXPECTS_SPECIFIC_FORMAT = "Test Expects Specific Format"
-
-    CORRECT_SOLUTION = "Correct Solution"
-    ALTERNATIVE_VALID_SOLUTION = "Alternative Valid Solution"
-
-    HARDCODING = "Hardcoding"
-    TEST_INSPECTION = "Test Inspection"
-    ORACLE_COPYING = "Oracle Copying"
-    MINIMAL_COMPLIANCE = "Minimal Compliance"
-    TESTS_TOO_PERMISSIVE = "Tests Too Permissive"
-    TASK_PRE_SOLVED = "Task Pre-solved"
-
-
 class TrialClassificationModel(BaseModel):
     """Pydantic model for trial-level structured output."""
 
@@ -159,71 +120,6 @@ class TrialClassification:
             action_items=list(model.action_items),
             exploitation=list(model.exploitation),
         )
-
-
-@dataclass
-class BaselineResult:
-    """Result from running a baseline agent (nop or oracle)."""
-
-    agent: Literal["nop", "oracle"]
-    passed: bool
-    reward: float | None
-    error: str | None = None
-
-    @property
-    def is_expected(self) -> bool:
-        if self.agent == "nop":
-            return not self.passed
-        return self.passed
-
-
-@dataclass
-class BaselineValidation:
-    """Results from baseline validation (nop and oracle runs)."""
-
-    nop: BaselineResult | None = None
-    oracle: BaselineResult | None = None
-
-    @property
-    def is_valid(self) -> bool:
-        nop_ok = self.nop is None or self.nop.is_expected
-        oracle_ok = self.oracle is None or self.oracle.is_expected
-        return nop_ok and oracle_ok
-
-    @property
-    def issues(self) -> list[str]:
-        issues = []
-        if self.nop and not self.nop.is_expected:
-            issues.append(
-                "CRITICAL: nop agent passed - task may be pre-solved or tests are broken"
-            )
-        if self.oracle and not self.oracle.is_expected:
-            issues.append(
-                "CRITICAL: oracle agent failed - reference solution doesn't work"
-            )
-        return issues
-
-
-@dataclass
-class TaskVerdict:
-    """Final verdict on task quality based on all analysis."""
-
-    is_good: bool
-    confidence: Literal["high", "medium", "low"]
-    primary_issue: str | None
-    reasoning: str | None = None
-    recommendations: list[str] = field(default_factory=list)
-    task_problem_count: int = 0
-    agent_problem_count: int = 0
-    success_count: int = 0
-    harness_error_count: int = 0
-    classifications: list[TrialClassification] = field(default_factory=list)
-    baseline: BaselineValidation | None = None
-
-    def summary(self) -> str:
-        if self.is_good:
-            return self.reasoning or f"GOOD TASK (confidence: {self.confidence})"
-        return f"NEEDS REVIEW: {self.primary_issue}"
 
 
 class ActionItemSource(str, Enum):

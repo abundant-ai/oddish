@@ -58,24 +58,12 @@ if [ ! -s "$SRC" ]; then
   exit 1
 fi
 cp "$SRC" "$OUT/{artifact}"
-case "{artifact}" in
-  *.jsonl) ;;
-  *)
-    if command -v python3 >/dev/null 2>&1; then
-      python3 -c 'import json,sys
+python3 -c 'import json,sys
 data = json.load(open(sys.argv[1]))
 missing = [k for k in sys.argv[2].split() if k not in data]
 if missing:
     raise SystemExit("missing required keys: %s" % " ".join(missing))
 ' "$SRC" "$KEYS" 2>"$OUT/error.txt" || exit 1
-    elif command -v node >/dev/null 2>&1; then
-      node -e 'const d = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
-const missing = process.argv[2].split(" ").filter(Boolean).filter(k => !(k in d));
-if (missing.length) {{ console.error("missing required keys: " + missing.join(" ")); process.exit(1); }}
-' "$SRC" "$KEYS" 2>"$OUT/error.txt" || exit 1
-    fi
-    ;;
-esac
 echo "1.0" > "$OUT/reward.txt"
 exit 0
 """
@@ -138,7 +126,7 @@ def apply_analysis_overlay(work_task_dir: Path, *, brief: str, artifact: str) ->
     test_sh.write_text(
         _ANALYSIS_TEST_SH.format(
             artifact=artifact,
-            required_keys=_REQUIRED_KEYS.get(artifact, ""),
+            required_keys=_REQUIRED_KEYS[artifact],
         )
     )
     test_sh.chmod(0o755)

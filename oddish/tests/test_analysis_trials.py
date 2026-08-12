@@ -16,6 +16,7 @@ from oddish.workers.analysis_trials import (
     _classification_from_analysis,
     build_audit_brief,
     build_qa_brief,
+    has_verdict_evidence,
     is_analysis_kind,
 )
 
@@ -244,10 +245,9 @@ async def test_a_task_gets_exactly_one_qa_trial():
 
 
 @pytest.mark.asyncio
-async def test_the_verdict_needs_enough_evidence(monkeypatch):
+async def test_the_verdict_needs_enough_evidence():
     """Below 5 trials or 3 distinct agents the QA trial is created without a
     verdict request; at the bar it is asked for one."""
-    from oddish.workers.analysis_trials import has_verdict_evidence
 
     class _Scalars:
         def __init__(self, agents):

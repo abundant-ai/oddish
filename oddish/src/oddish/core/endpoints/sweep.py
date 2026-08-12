@@ -613,7 +613,6 @@ async def create_task_sweep_core(
                 "priority": task.priority,
                 "experiment_id": target_experiment_id,
                 "tags": task.tags or {},
-                "run_analysis": True,
                 "run_probe": want_run_probe,
                 "user": task.user,
             }

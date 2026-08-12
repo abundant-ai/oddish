@@ -45,13 +45,6 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
 
 # Analysis (QA + audit) runs on GLM via Fireworks, not Bedrock.
 ANALYSIS_MODEL = "fireworks/glm-5p2"
-# Model for the probe transcript summarizer. Deliberately larger than
-# ANALYSIS_MODEL: it reads the agent's full transcript (including the final
-# synthesis / audit JSON) and must summarize it reliably. Kept separate from
-# ANALYSIS_MODEL so it does not change the analysis queue key. Normalized to
-# a direct-API id at call time.
-PROBE_ANALYZER_MODEL = "global.anthropic.claude-sonnet-4-6"
-
 PROBE_MODEL_ROTATION: list[str] = [
     "claude-haiku-4-5",
 ]
@@ -1305,7 +1298,6 @@ class Settings(BaseSettings):
     provider_rate_limits: dict[str, dict] = Field(default_factory=dict)
     queue_key_buckets: dict[str, str] = Field(default_factory=dict)
     analysis_model: str = ANALYSIS_MODEL
-    probe_analyzer_model: str = PROBE_ANALYZER_MODEL
 
     # Agent to provider mapping (computed from Harbor's AgentName enum)
     agent_to_provider: ClassVar[dict[str, str]] = _build_agent_provider_map()
@@ -1694,9 +1686,6 @@ class Settings(BaseSettings):
         if self.get_provider_for_agent(agent) == XAI_PROVIDER:
             return XAI_PROVIDER
         return "default"
-
-    def get_analysis_queue_key(self) -> str:
-        return self.normalize_queue_key(self.analysis_model)
 
     def get_qa_queue_key(self) -> str:
         """Concurrency bucket for the task-level QA job.

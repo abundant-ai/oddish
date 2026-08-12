@@ -11,7 +11,7 @@ from oddish.core.endpoints._common import (
     USER_CANCELLED_MESSAGE,
     _ACTIVE_WORKER_JOB_STATUSES_SQL,
 )
-from oddish.core.verdict_state import cancel_verdict, queue_verdict
+from oddish.core.verdict_state import cancel_verdict
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
@@ -24,12 +24,14 @@ from oddish.db import (
 )
 
 
-async def _live_audit_trial_id(session: AsyncSession, task_id: str) -> str | None:
+async def _live_analysis_trial_id(
+    session: AsyncSession, task_id: str, *, kind: str
+) -> str | None:
     return await session.scalar(
         select(TrialModel.id)
         .where(
             TrialModel.task_id == task_id,
-            TrialModel.kind == "audit",
+            TrialModel.kind == kind,
             TrialModel.superseded_by_trial_id.is_(None),
             TrialModel.status.in_(
                 [
@@ -71,10 +73,7 @@ async def _cancel_worker_jobs_for_kind(
                     f"""
                 WITH to_cancel AS (
                     SELECT id,
-                           modal_function_call_id,
-                           provider,
-                           external_id,
-                           payload
+                           modal_function_call_id
                     FROM   worker_jobs
                     WHERE  kind::text = :kind
                       AND  subject_table = :subject_table
@@ -93,10 +92,7 @@ async def _cancel_worker_jobs_for_kind(
                 WHERE  w.id = to_cancel.id
                 RETURNING w.id,
                           w.subject_id,
-                          to_cancel.modal_function_call_id,
-                          to_cancel.provider,
-                          to_cancel.external_id,
-                          to_cancel.payload
+                          to_cancel.modal_function_call_id
                 """
                 ),
                 {
@@ -290,16 +286,13 @@ async def backfill_task_analysis_core(
     trial_ids: list[str] | None = None,
     force: bool = False,
 ) -> dict[str, str | int]:
-    """(Re)run task-level QA to backfill trial analysis.
+    """(Re)run task-level QA for a task.
 
     Queues a replacement verdict without withdrawing the published result.
-    The QA job is idempotent at trial granularity, so:
-
-    * ``force=False`` resets no trial analyses -> only genuinely-missing
-      trials are (re)classified;
-    * ``force=True`` with ``trial_ids`` resets only those trials -> true
-      per-trial re-run;
-    * ``force=True`` without ``trial_ids`` resets every live trial.
+    The QA trial re-reads and re-classifies every eligible trial either
+    way; ``force`` only controls which stored analyses are cleared up
+    front so the UI shows them as pending (all live trials, or just
+    ``trial_ids``).
     """
     # The task row lock serializes this check-and-enqueue against the audit
     # rerun (which takes the same lock): without it, two concurrent requests
@@ -337,23 +330,7 @@ async def backfill_task_analysis_core(
     # The live qa trial IS the in-progress marker. Old status flags
     # (verdict_status, per-trial analysis_status) can be stale after a
     # crash and must not wedge the rerun button.
-    live_qa = await session.scalar(
-        select(TrialModel.id)
-        .where(
-            TrialModel.task_id == task_id,
-            TrialModel.kind == "qa",
-            TrialModel.superseded_by_trial_id.is_(None),
-            TrialModel.status.in_(
-                [
-                    TrialStatus.PENDING,
-                    TrialStatus.QUEUED,
-                    TrialStatus.RUNNING,
-                    TrialStatus.RETRYING,
-                ]
-            ),
-        )
-        .limit(1)
-    )
+    live_qa = await _live_analysis_trial_id(session, task_id, kind="qa")
     if live_qa is not None:
         raise HTTPException(
             status_code=400,
@@ -362,7 +339,7 @@ async def backfill_task_analysis_core(
 
     # The QA brief embeds the audit findings. Starting QA while an audit
     # trial is live would read mixed findings.
-    if await _live_audit_trial_id(session, task_id):
+    if await _live_analysis_trial_id(session, task_id, kind="audit"):
         raise HTTPException(
             status_code=400,
             detail="A pre-trial audit is queued or running; wait for it to finish",
@@ -379,25 +356,10 @@ async def backfill_task_analysis_core(
             _reset_trial_analysis(trial)
             reset_count += 1
 
-    task.status = TaskStatus.VERDICT_PENDING
+    from oddish.queue import start_qa_for_task
+
     task.finished_at = None
-    queue_verdict(task)
-
-    from oddish.queue import qa_eligible_trial_ids
-    from oddish.workers.analysis_trials import create_qa_trial, has_verdict_evidence
-
-    eligible = await qa_eligible_trial_ids(session, task.id)
-    if eligible:
-        await create_qa_trial(
-            session,
-            task=task,
-            eligible_trial_ids=eligible,
-            with_verdict=await has_verdict_evidence(session, eligible),
-        )
-    else:
-        task.status = TaskStatus.COMPLETED
-        task.finished_at = utcnow()
-        task.verdict_status = None
+    await start_qa_for_task(session, task)
 
     await session.commit()
     return {
@@ -457,16 +419,14 @@ async def rerun_pre_trial_audit_core(
     # A queued request with a live audit trial behind it must not be queued
     # again. A stale QUEUED status with no trial (cancelled or crashed) may
     # be: re-queuing is the remedy there.
-    if await _live_audit_trial_id(session, task_id):
+    if await _live_analysis_trial_id(session, task_id, kind="audit"):
         raise HTTPException(
             status_code=400,
             detail="An audit trial is already queued or running for this task",
         )
 
-    # A live full QA job is not a blocker: it runs its own audit of the same
-    # source, so both jobs converge on equivalent findings. If its verdict
-    # reads the findings inside the brief cleared window below, it reports
-    # them as unavailable rather than inventing a pass.
+    # A live qa trial is not a blocker: it snapshotted the findings into its
+    # brief at creation, so clearing version.pre_trial below cannot affect it.
 
     # Reset the previous audit and queue a new one. QUEUED (not None) keeps
     # the card showing progress while the trial waits for a worker.

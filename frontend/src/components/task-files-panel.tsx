@@ -55,7 +55,6 @@ import {
   isActivePipelineStatus,
   taskHasActiveAnalysis,
   taskHasActiveTrials,
-  taskHasLiveAnalysisTrial,
   taskHasActiveVerdict,
   taskHasCancellableWork,
 } from "@/lib/job-status";
@@ -460,13 +459,7 @@ export function TaskFilesPanel({
       const checksLive =
         pickChecksVersion(detail, taskVersion)?.pre_trial_status === "running" ||
         pickChecksVersion(detail, taskVersion)?.pre_trial_status === "queued";
-      const qaLive =
-        detail?.task?.verdict_status === "queued" ||
-        detail?.task?.verdict_status === "running" ||
-        // A live qa/audit trial means QA is in flight even when the status
-        // flags are stale after a crash.
-        taskHasLiveAnalysisTrial(detail?.task);
-      if (checksLive || qaLive) return 5000;
+      if (checksLive || taskHasActiveVerdict(detail?.task)) return 5000;
       return isOpen ? 30000 : 0;
     },
   });
@@ -492,10 +485,7 @@ export function TaskFilesPanel({
       ? "Unable to load the static checks state."
       : null;
   const checksFindings = checksVersion?.pre_trial_findings ?? [];
-  const taskQaActive =
-    checksDetail?.task?.verdict_status === "queued" ||
-    checksDetail?.task?.verdict_status === "running" ||
-    taskHasLiveAnalysisTrial(checksDetail?.task);
+  const taskQaActive = taskHasActiveVerdict(checksDetail?.task);
   const resolvedFilesUrl = filesUrl ?? `${baseUrl}/tasks/${taskId}/files`;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

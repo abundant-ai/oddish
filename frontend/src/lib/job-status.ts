@@ -52,8 +52,8 @@ function trialHasActiveAnalysis(trial: Trial | null | undefined): boolean {
 
 export function taskHasActiveTrials(task: Task | null | undefined): boolean {
   // Agent trials only. A live qa/audit trial counts as active QA (see
-  // taskHasLiveQaTrial), so the cancel path picks the QA cancel endpoint
-  // instead of the whole-task one.
+  // taskHasLiveAnalysisTrial), so the cancel path picks the QA cancel
+  // endpoint instead of the whole-task one.
   return (
     task?.trials?.some(
       (trial) =>
@@ -75,17 +75,18 @@ export function taskHasActiveAnalysis(task: Task | null | undefined): boolean {
 // QA and the source audit run as qa/audit-kind trials now. A live one means
 // analysis is in progress no matter what the status flags say -- after a
 // crash the flags can be stale. The qa/cancel endpoint cancels both kinds.
+export function isLiveAnalysisTrial(trial: Trial): boolean {
+  return (
+    !isAgentTrial(trial) &&
+    !trial.superseded_by_trial_id &&
+    isActiveTrialStatus(trial.status)
+  );
+}
+
 export function taskHasLiveAnalysisTrial(
   task: Task | null | undefined,
 ): boolean {
-  return (
-    task?.trials?.some(
-      (trial) =>
-        !isAgentTrial(trial) &&
-        !trial.superseded_by_trial_id &&
-        isActiveTrialStatus(trial.status),
-    ) === true
-  );
+  return task?.trials?.some(isLiveAnalysisTrial) === true;
 }
 
 export function taskHasActiveVerdict(task: Task | null | undefined): boolean {

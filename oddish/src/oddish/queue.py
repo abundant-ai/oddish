@@ -472,10 +472,7 @@ def _derive_task_name(task_path: str, task_id: str | None = None) -> str:
 # Every domain-row insertion or stage transition that schedules compute
 # work has a sibling ``worker_jobs`` row in the same transaction. The
 # dispatcher claims from ``worker_jobs`` only; these helpers are the
-# single enqueue surface for the TRIAL and (task-level) QA kinds.
-#
-# Trajectory analysis is task-scoped: a single QA worker job classifies
-# every trial in the task and then synthesizes the task verdict.
+# single enqueue surface for the TRIAL and TASK_EXPAND kinds.
 
 
 def _encrypt_submission_registry_auth(submission: TaskSubmission) -> str | None:
@@ -527,8 +524,6 @@ async def enqueue_trial_worker_job(
             execution_lane=execution_lane,
         ),
     )
-
-
 
 
 async def enqueue_task_expand_worker_job(
@@ -1362,6 +1357,46 @@ async def qa_eligible_trial_ids(session: AsyncSession, task_id: str) -> list[str
     ]
 
 
+async def start_qa_for_task(session: AsyncSession, task: TaskModel) -> bool:
+    """Move a settled task into its QA stage, or complete it.
+
+    With QA-eligible trials: queue the verdict bookkeeping, create the QA
+    trial (the verdict is only requested above the evidence bar), and put
+    the task in VERDICT_PENDING. With none -- every live trial is a
+    bulk-migrated import, was skipped/cancelled, or is a nop/oracle
+    baseline -- complete the task; a previously published verdict is
+    restored, anything queued or running is cleared.
+
+    The caller must hold the task row lock. Returns True when a QA trial
+    was created.
+    """
+    from oddish.workers.analysis_trials import create_qa_trial, has_verdict_evidence
+
+    eligible = await qa_eligible_trial_ids(session, task.id)
+    if not eligible:
+        task.status = TaskStatus.COMPLETED
+        task.finished_at = task.finished_at or utcnow()
+        abandon_verdict(task)
+        return False
+
+    with_verdict = await has_verdict_evidence(session, eligible)
+    task.status = TaskStatus.VERDICT_PENDING
+    queue_verdict(task)
+    await create_qa_trial(
+        session,
+        task=task,
+        eligible_trial_ids=eligible,
+        with_verdict=with_verdict,
+    )
+    logger.info(
+        "task %s: qa covers %d trials (verdict=%s)",
+        task.id,
+        len(eligible),
+        with_verdict,
+    )
+    return True
+
+
 async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
     """Check if all trials for a task are done and transition task status.
 
@@ -1414,39 +1449,7 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
     if pending_count > 0:
         return False
 
-    # Only start QA when there is something to classify. A task can have
-    # zero QA-eligible live trials -- e.g. every live
-    # trial is a bulk-migrated Sauron import (excluded on cost), was skipped by
-    # the baseline gate (never ran, no logs), or is a nop/oracle baseline
-    # (fixed scaffolding, never classified). Complete the task instead.
-    qa_eligible_ids = await qa_eligible_trial_ids(session, task_id)
-
-    if qa_eligible_ids:
-        from oddish.workers.analysis_trials import create_qa_trial, has_verdict_evidence
-
-        with_verdict = await has_verdict_evidence(session, qa_eligible_ids)
-        task.status = TaskStatus.VERDICT_PENDING
-        task.verdict_status = VerdictStatus.QUEUED
-        await create_qa_trial(
-            session,
-            task=task,
-            eligible_trial_ids=qa_eligible_ids,
-            with_verdict=with_verdict,
-        )
-        logger.info(
-            "task %s: agent trials settled, qa covers %d trials (verdict=%s)",
-            task_id,
-            len(qa_eligible_ids),
-            with_verdict,
-        )
-    else:
-        task.status = TaskStatus.COMPLETED
-        task.finished_at = utcnow()
-        # No QA job will run, so clear queued or running verdict bookkeeping
-        # -- otherwise the task ends COMPLETED while verdict_status still
-        # reads QUEUED. A finished verdict stays, together with its payload.
-        abandon_verdict(task)
-
+    await start_qa_for_task(session, task)
     await session.flush()
     return True
 
@@ -1828,8 +1831,8 @@ async def maybe_advance_legacy_analyzing_task(
 
     New tasks never enter ANALYZING (they go RUNNING -> VERDICT_PENDING via
     :func:`maybe_start_qa_stage`). This only fires from the cleanup sweep for
-    tasks left in ANALYZING by the pre-QA-refactor code: once every live
-    trial's per-trial classification is terminal, enqueue the single QA job.
+    tasks left in ANALYZING by the pre-QA-refactor code: once every agent
+    trial is terminal, start the QA stage.
 
     Uses SELECT FOR UPDATE to prevent race conditions.
     """
@@ -1871,27 +1874,8 @@ async def maybe_advance_legacy_analyzing_task(
     if pending_count > 0:
         return False
 
-    eligible = await qa_eligible_trial_ids(session, task_id)
-    if not eligible:
-        task.status = TaskStatus.COMPLETED
-        task.finished_at = utcnow()
-        task.verdict_status = None
-        task.verdict_error = None
-        await session.flush()
-        return True
-
-    from oddish.workers.analysis_trials import create_qa_trial, has_verdict_evidence
-
-    task.status = TaskStatus.VERDICT_PENDING
-    task.verdict_status = VerdictStatus.QUEUED
-    await create_qa_trial(
-        session,
-        task=task,
-        eligible_trial_ids=eligible,
-        with_verdict=await has_verdict_evidence(session, eligible),
-    )
+    await start_qa_for_task(session, task)
     await session.flush()
-
     return True
 
 
@@ -1965,9 +1949,9 @@ def _assemble_queue_and_pipeline(
     for queue_key in sorted(queue_keys):
         provider_stats = stats.get(queue_key, _empty_queue_counts())
         if queue_key in (ANALYSIS_PIPELINE_QUEUE_KEY, VERDICT_PIPELINE_QUEUE_KEY):
-            # The pipeline buckets are not their own concurrency gates: both
-            # classification and the verdict run inside the task-level QA
-            # worker job, whose bucket is the analysis model's queue key.
+            # The pipeline buckets are not their own concurrency gates: QA
+            # and audit trials lease slots from the analysis model's queue
+            # key, so report that bucket's concurrency here.
             concurrency = settings.get_model_concurrency(settings.get_qa_queue_key())
         else:
             concurrency = settings.get_model_concurrency(queue_key)

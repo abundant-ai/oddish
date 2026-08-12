@@ -30,7 +30,7 @@ from oddish.queue import (  # noqa: E402
     get_queue_stats,
 )
 
-ANALYSIS_MODEL_KEY = settings.get_analysis_queue_key()
+ANALYSIS_MODEL_KEY = settings.get_qa_queue_key()
 # The QA job's concurrency bucket, reported by the reserved pipeline buckets.
 QA_JOB_KEY = settings.get_qa_queue_key()
 

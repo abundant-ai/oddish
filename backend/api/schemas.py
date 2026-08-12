@@ -20,6 +20,9 @@ class OrganizationResponse(BaseModel):
     created_at: str
 
 
+# =============================================================================
+# User Models
+# =============================================================================
 
 
 class UserResponse(BaseModel):

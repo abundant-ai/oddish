@@ -52,7 +52,7 @@ def backfill_analysis(
     Examples:
         oddish backfill-analysis --task <task_id>
         oddish backfill-analysis --trial <trial_id> --force
-        oddish backfill-analysis --experiment <experiment_id> --enable-analysis
+        oddish backfill-analysis --experiment <experiment_id>
     """
     chosen = [
         (name, val)

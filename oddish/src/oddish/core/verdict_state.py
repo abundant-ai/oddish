@@ -38,20 +38,11 @@ def has_active_verdict(task: VerdictState) -> bool:
     return getattr(task, "verdict_status", None) in ACTIVE_VERDICT_STATUSES
 
 
-def queue_verdict(task: VerdictState, *, error: str | None = None) -> None:
+def queue_verdict(task: VerdictState) -> None:
     """Queue a QA pass without withdrawing its previously published result."""
     task.verdict_status = VerdictStatus.QUEUED
-    task.verdict_error = error
-    task.verdict_started_at = None
-    if not has_published_verdict(task):
-        task.verdict_finished_at = None
-
-
-def start_verdict(task: VerdictState, *, now: datetime) -> None:
-    """Mark the queued QA pass running while retaining any published result."""
-    task.verdict_status = VerdictStatus.RUNNING
     task.verdict_error = None
-    task.verdict_started_at = now
+    task.verdict_started_at = None
     if not has_published_verdict(task):
         task.verdict_finished_at = None
 

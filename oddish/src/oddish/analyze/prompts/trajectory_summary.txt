@@ -4,14 +4,15 @@ Each highlight must reference a real `step_id` from the trajectory below. Pick s
 
 Also segment the run into components. Assign EVERY step to exactly one component. Give each component the step ids that it covers and a one-sentence summary. Cover all steps in order.
 
-The component's `trajectory_component` must be one of these labels. The two groups separate work that builds understanding from work that changes the solution.
+The component's `trajectory_component` must be one of these labels:
 
 {{taxonomy}}
 
-Use `plan_correction` only when the approach changes. An agent that fixes code without reconsidering its approach is doing `implementing_correction`. Prefer the more specific label when two labels fit.
+Use `thinking_correction` only when the approach changes. An agent that fixes code without reconsidering its approach is doing `implementing_correction`. Prefer the more specific label when two labels fit.
 
 The `trajectory_summary` value must be a JSON object with this exact shape:
 {
+  "schema_version": 5,
   "summary": "2-3 sentences",
   "highlights": [
     {"step_id": <int>, "title": "<short label>", "why": "<one sentence>"}

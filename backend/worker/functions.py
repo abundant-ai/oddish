@@ -155,11 +155,8 @@ install_byok_resolver()
 register_qa_imported_hook(notify_github_qa)
 
 # Post-success hooks: fired after the worker_jobs row is in SUCCESS state.
-# The QA hook refreshes the whole PR comment (per-trial classifications +
-# task verdict) in one update. ``ANALYSIS`` is transitional -- it only fires
-# for legacy per-trial rows draining across a deploy. Hook exceptions are
-# swallowed by the runner so a GitHub API hiccup never corrupts scheduling
-# state.
+# Hook exceptions are swallowed by the runner so a GitHub API hiccup never
+# corrupts scheduling state.
 _POST_SUCCESS_HOOKS: PostSuccessHooks = {
     WorkerJobKind.TRIAL: notify_github_trial,
 }
