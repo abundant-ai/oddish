@@ -1433,6 +1433,12 @@ class TaskBrowseItem(BaseModel):
     reward_success: int
     reward_sum: float
     reward_total: int
+    pass_count: int = 0
+    partial_count: int = 0
+    fail_count: int = 0
+    harness_count: int = 0
+    skipped_count: int = 0
+    pending_count: int = 0
     last_run_at: datetime | None = None
     link: str | None = None
     github_meta: dict[str, str] | None = None
@@ -1448,6 +1454,7 @@ class TaskBrowseItem(BaseModel):
     # because ``analysis_costs.task_id`` is NULL on trial-scoped QA rows.
     qa_cost_usd: float = 0.0
     latest_trials: list[TaskBrowseTrial] = Field(default_factory=list)
+    latest_trials_truncated: bool = False
     experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
     user_tags: list[UserTagRef] = Field(default_factory=list)
 
