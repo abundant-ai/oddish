@@ -452,7 +452,8 @@ async def _fail_queued_pre_trial_request(
         payload = (job.payload or {}) or {}
         if payload.get("mode") != "pre_trial":
             return
-        if task_version_id and payload.get("task_version_id") != task_version_id:
+        payload_version_id = payload.get("task_version_id")
+        if payload_version_id is not None and payload_version_id != task_version_id:
             return
         has_expected_content_hash = "task_version_content_hash" in payload
         if (
@@ -506,13 +507,14 @@ async def run_pre_trial_only_job(
                 stop_event=heartbeat_stop,
             )
         )
+    effective_version_id = task_version_id
     try:
-        effective_version_id = task_version_id
         if effective_version_id is None:
             async with get_session() as session:
-                effective_version_id = await session.scalar(
+                resolved_version_id = await session.scalar(
                     select(TaskModel.current_version_id).where(TaskModel.id == task_id)
                 )
+            effective_version_id = resolved_version_id
         live_trials = await _load_live_trials_for_classification(
             task_id,
             effective_version_id,
@@ -537,7 +539,7 @@ async def run_pre_trial_only_job(
             await _fail_queued_pre_trial_request(
                 task_id,
                 error=f"{type(exc).__name__}: {exc}",
-                task_version_id=task_version_id,
+                task_version_id=effective_version_id,
                 worker_job_id=worker_job_id,
                 expected_content_hash=task_version_content_hash,
             )

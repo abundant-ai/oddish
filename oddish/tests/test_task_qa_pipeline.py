@@ -454,6 +454,117 @@ async def test_legacy_pre_trial_job_passes_resolved_current_version(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_legacy_pre_trial_failure_cleanup_stays_on_resolved_version(
+    monkeypatch,
+):
+    resolved_version_id = "task-pre-trial-v1"
+    replacement_version_id = "task-pre-trial-v2"
+    resolved_version = SimpleNamespace(
+        content_hash="v1-hash",
+        pre_trial_status=VerdictStatus.QUEUED,
+        pre_trial_error=None,
+        pre_trial_finished_at=None,
+    )
+    replacement_version = SimpleNamespace(
+        content_hash="v2-hash",
+        pre_trial_status=VerdictStatus.QUEUED,
+        pre_trial_error=None,
+        pre_trial_finished_at=None,
+    )
+    legacy_job = SimpleNamespace(
+        status=WorkerJobStatus.RUNNING,
+        payload={"mode": "pre_trial"},
+    )
+    session_calls = 0
+
+    class _ResolveSession:
+        async def scalar(self, _statement):
+            return resolved_version_id
+
+    class _CleanupSession:
+        async def get(self, model, key, **_kwargs):
+            if model is qa_handler.WorkerJobModel:
+                return legacy_job
+            assert model is qa_handler.TaskVersionModel
+            return {
+                resolved_version_id: resolved_version,
+                replacement_version_id: replacement_version,
+            }[key]
+
+        async def scalar(self, _statement):
+            pytest.fail("pinned cleanup must not re-resolve the current version")
+
+    @asynccontextmanager
+    async def fake_get_session():
+        nonlocal session_calls
+        session_calls += 1
+        if session_calls == 1:
+            yield _ResolveSession()
+        else:
+            yield _CleanupSession()
+
+    async def fake_load_live(task_id, task_version_id=None):
+        assert task_version_id == resolved_version_id
+        return [("trial-current", AnalysisStatus.SUCCESS)]
+
+    async def fake_pre_trial_audit(*_args, task_version_id=None, **_kwargs):
+        assert task_version_id == resolved_version_id
+        raise RuntimeError("audit failed after the current version changed")
+
+    monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
+    monkeypatch.setattr(
+        qa_handler, "_load_live_trials_for_classification", fake_load_live
+    )
+    monkeypatch.setattr(qa_handler, "_run_pre_trial_audit", fake_pre_trial_audit)
+
+    with pytest.raises(RuntimeError, match="audit failed"):
+        await qa_handler.run_pre_trial_only_job(
+            "task-pre-trial",
+            worker_job_id="legacy-job",
+            task_version_id=None,
+        )
+
+    assert session_calls == 2
+    assert resolved_version.pre_trial_status == VerdictStatus.FAILED
+    assert replacement_version.pre_trial_status == VerdictStatus.QUEUED
+
+
+@pytest.mark.asyncio
+async def test_legacy_pre_trial_resolution_failure_keeps_unpinned_cleanup(
+    monkeypatch,
+):
+    cleanup_version_ids = []
+
+    class _ResolveSession:
+        async def scalar(self, _statement):
+            raise RuntimeError("version resolution failed")
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield _ResolveSession()
+
+    async def fake_cleanup(
+        task_id,
+        error,
+        task_version_id=None,
+        **_kwargs,
+    ):
+        cleanup_version_ids.append(task_version_id)
+
+    monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
+    monkeypatch.setattr(qa_handler, "_fail_queued_pre_trial_request", fake_cleanup)
+
+    with pytest.raises(RuntimeError, match="version resolution failed"):
+        await qa_handler.run_pre_trial_only_job(
+            "task-pre-trial",
+            worker_job_id="legacy-job",
+            task_version_id=None,
+        )
+
+    assert cleanup_version_ids == [None]
+
+
+@pytest.mark.asyncio
 async def test_pre_trial_store_rejects_replaced_version() -> None:
     claim_started_at = qa_handler.utcnow()
     version = SimpleNamespace(
