@@ -877,12 +877,11 @@ class TaskVersionResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class TaskVersionSummary(BaseModel):
-    """Per-version aggregates used by the task detail view."""
+class TaskVersionRollup(BaseModel):
+    """Aggregate fields shared by bounded and detailed version responses."""
 
     id: str
     version: int
-    content_hash: str | None = None
     message: str | None = None
     created_at: datetime
     is_current: bool = False
@@ -905,6 +904,12 @@ class TaskVersionSummary(BaseModel):
     billed_has_estimated: bool = False
     billed_has_native: bool = False
     last_run_at: datetime | None = None
+
+
+class TaskVersionSummary(TaskVersionRollup):
+    """Per-version aggregates and audit metadata for the detail resource."""
+
+    content_hash: str | None = None
     # Pre-trial source audit for this version, flattened to the items the task
     # page renders. Empty list + null status means never audited; empty list +
     # SUCCESS means audited and clean.
@@ -1607,9 +1612,11 @@ class TaskOpenAgentModelSummary(BaseModel):
     duration_trial_count: int = 0
 
 
-class TaskOpenVersionSummary(TaskVersionSummary):
-    """Selected-version totals plus exact agent/model card rollups."""
+class TaskOpenVersionSummary(TaskVersionRollup):
+    """Selected-version fields owned by the bounded task-open resource."""
 
+    user_tags: list[UserTagRef] = Field(default_factory=list)
+    experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
     agent_models: list[TaskOpenAgentModelSummary] = Field(default_factory=list)
 
 

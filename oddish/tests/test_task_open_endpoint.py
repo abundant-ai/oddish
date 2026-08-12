@@ -94,6 +94,17 @@ def _identity(
         "selected_version_created_at": NOW if selected else None,
         "experiments": [{"id": "exp-all-time", "name": "All time"}],
         "task_tags": [],
+        "selected_version_tags": [
+            {
+                "tag_id": "tag-selected",
+                "key": "selected",
+                "value": None,
+                "color": "#123456",
+                "visibility": "PRIVATE",
+                "current": True,
+                "older": False,
+            }
+        ],
     }
 
 
@@ -247,6 +258,9 @@ def test_task_open_is_org_scoped_exact_compact_and_bounded():
     assert [(item.id, item.name) for item in selected.experiments] == [
         ("exp-current", "Current")
     ]
+    assert [(item.tag_id, item.key) for item in selected.user_tags] == [
+        ("tag-selected", "selected")
+    ]
     assert {group.agent for group in selected.agent_models} == {
         "codex",
         "legacy-agent",
@@ -274,6 +288,11 @@ def test_task_open_is_org_scoped_exact_compact_and_bounded():
         '"jobs"',
         '"error_message"',
         '"trial_classifications"',
+        '"content_hash"',
+        '"pre_trial_findings"',
+        '"pre_trial_status"',
+        '"pre_trial_error"',
+        '"pre_trial_cost_usd"',
     ):
         assert excluded not in payload
 
@@ -467,6 +486,7 @@ def test_task_open_queries_encode_detail_eligible_population():
         _aggregate([_group(selected=True, current=True, total=1)]),
         [_preview(1)],
     )
+    identity_sql = str(session.calls[0][0])
     aggregate_sql = str(session.calls[1][0])
     preview_sql = str(session.calls[2][0])
     for sql in (aggregate_sql, preview_sql):
@@ -480,6 +500,9 @@ def test_task_open_queries_encode_detail_eligible_population():
     assert "AS duration_trial_count" in aggregate_sql
     assert "tr.finished_at >= tr.started_at" in aggregate_sql
     assert "LIMIT 21" in preview_sql
+    assert "assignment.target_id = i.selected_version_id" in identity_sql
+    assert "assignment.scope = 'VERSION'" in identity_sql
+    assert "AS selected_version_tags" in identity_sql
 
 
 def test_task_open_missing_task_stops_after_identity():

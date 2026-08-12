@@ -343,10 +343,9 @@ export interface ExperimentOptionsResponse {
   items: ExperimentOption[];
 }
 
-export interface TaskVersionSummary {
+export interface TaskVersionRollup {
   id: string;
   version: number;
-  content_hash?: string | null;
   message?: string | null;
   created_at: string;
   is_current: boolean;
@@ -369,6 +368,10 @@ export interface TaskVersionSummary {
   billed_has_estimated: boolean;
   billed_has_native: boolean;
   last_run_at?: string | null;
+}
+
+export interface TaskVersionSummary extends TaskVersionRollup {
+  content_hash?: string | null;
   pre_trial_findings?: PreTrialFinding[];
   /** null = never audited. Otherwise "running" | "success" | "failed": empty
    *  findings mean something different for each, so never infer from the list. */
@@ -425,7 +428,9 @@ export interface TaskOpenAgentModelSummary {
   duration_trial_count: number;
 }
 
-export interface TaskOpenVersionSummary extends TaskVersionSummary {
+export interface TaskOpenVersionSummary extends TaskVersionRollup {
+  user_tags: UserTagRef[];
+  experiments: { id: string; name: string }[];
   agent_models: TaskOpenAgentModelSummary[];
 }
 

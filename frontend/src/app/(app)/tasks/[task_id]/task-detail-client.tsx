@@ -51,7 +51,7 @@ import type {
   Task,
   TaskOpenAgentModelSummary,
   TaskOpenVersionRef,
-  TaskVersionSummary,
+  TaskOpenVersionSummary,
   Trial,
 } from "@/lib/types";
 import {
@@ -322,7 +322,7 @@ function TaskDetailHeader({
   );
 }
 
-function summaryFromVersion(v: TaskVersionSummary): TrialAggregate {
+function summaryFromVersion(v: TaskOpenVersionSummary): TrialAggregate {
   return {
     trialCount: v.trial_count,
     completed: v.completed_count,
@@ -426,7 +426,7 @@ function DefaultVersionControl({
   isSaving,
   onSetDefault,
 }: {
-  version: TaskVersionSummary | undefined;
+  version: TaskOpenVersionSummary | undefined;
   isSaving: boolean;
   onSetDefault: () => void;
 }) {

@@ -50,7 +50,25 @@ IDENTITY_SQL = text(
         GROUP BY canonical.id, canonical.key, canonical.value,
                  canonical.color, canonical.visibility
         ORDER BY canonical.key, canonical.id LIMIT 50
-      ) x), '[]'::jsonb) AS task_tags
+      ) x), '[]'::jsonb) AS task_tags,
+      COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM (
+        SELECT canonical.id AS tag_id, canonical.key, canonical.value,
+               canonical.color, canonical.visibility::text AS visibility,
+               true AS current, false AS older
+        FROM tag_assignments assignment
+        JOIN tags raw ON raw.id = assignment.tag_id
+        JOIN tags canonical ON canonical.id = COALESCE(raw.merged_into_id, raw.id)
+        WHERE assignment.scope = 'VERSION'
+          AND assignment.target_id = i.selected_version_id
+          AND assignment.state = 'ACTIVE'
+          AND assignment.deleted_at IS NULL
+          AND canonical.deleted_at IS NULL
+          AND canonical.state <> 'DELETED'
+          AND (i.org_id IS NULL OR canonical.org_id = i.org_id)
+        GROUP BY canonical.id, canonical.key, canonical.value,
+                 canonical.color, canonical.visibility
+        ORDER BY canonical.key, canonical.id LIMIT 50
+      ) x), '[]'::jsonb) AS selected_version_tags
     FROM identity i
     """
 )
