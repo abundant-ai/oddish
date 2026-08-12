@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -511,12 +511,8 @@ class TaskSweepSubmission(BaseModel):
         _reject_gpu_tpu_conflict(self.harbor)
         for config in self.configs:
             resolved_environment = config.environment or self.environment
-            _reject_tpu_on_non_gke_environment(
-                self.harbor, resolved_environment
-            )
-            _reject_unsupported_ec2_configuration(
-                self.harbor, resolved_environment
-            )
+            _reject_tpu_on_non_gke_environment(self.harbor, resolved_environment)
+            _reject_unsupported_ec2_configuration(self.harbor, resolved_environment)
         return self
 
     content_hash: str | None = Field(
@@ -886,6 +882,7 @@ class TaskVersionSummary(BaseModel):
 
     id: str
     version: int
+    content_hash: str | None = None
     message: str | None = None
     created_at: datetime
     is_current: bool = False

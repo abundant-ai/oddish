@@ -536,6 +536,7 @@ export function TaskFilesPanel({
     taskVersion !== undefined
       ? taskVersion
       : ((verdictTask ?? task)?.current_version ?? null);
+  const currentContentHash = checksVersion?.content_hash ?? null;
   const shouldScopeFilesToVersion = taskVersion !== undefined || !filesUrl;
   const selectedFile = selectedFilePath
     ? findNodeByPath(fileTree, selectedFilePath)
@@ -549,6 +550,7 @@ export function TaskFilesPanel({
     if (shouldScopeFilesToVersion && currentVersion != null) {
       params.set("version", String(currentVersion));
     }
+    if (currentContentHash) params.set("source_hash", currentContentHash);
     const query = params.toString();
     return `${resolvedFilesUrl}/${encodeURIComponent(selectedFile.path)}${
       query ? `?${query}` : ""
@@ -572,6 +574,7 @@ export function TaskFilesPanel({
           resolvedFilesUrl,
           selectedFile.path,
           shouldScopeFilesToVersion ? currentVersion : null,
+          currentContentHash,
           loadFilesLazily,
           filesUrl ? "raw" : "json",
           selectedFile.url ?? null,
@@ -672,11 +675,13 @@ export function TaskFilesPanel({
     if (shouldScopeFilesToVersion && currentVersion != null) {
       params.set("version", String(currentVersion));
     }
+    if (currentContentHash) params.set("source_hash", currentContentHash);
     return `${resolvedFilesUrl}?${params.toString()}`;
   }, [
     resolvedFilesUrl,
     shouldScopeFilesToVersion,
     currentVersion,
+    currentContentHash,
     overviewAvailable,
     loadFilesLazily,
   ]);

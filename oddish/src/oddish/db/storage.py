@@ -278,7 +278,7 @@ class StorageClient:
     # decompression. Size-bounded in total byte footprint so a single task
     # doesn't blow the limit. Keys without a known etag fall back to
     # ``(content_length, last_modified)``.
-    _archive_cache: "OrderedDict[tuple[str, str], tuple[bytes, list[dict[str, object]], dict[str, str]]]" = (OrderedDict())
+    _archive_cache: "OrderedDict[tuple[str, str], tuple[bytes, list[dict[str, object]], dict[str, str]]]" = OrderedDict()
     _archive_cache_bytes: int = 0
 
     @classmethod
@@ -1324,7 +1324,7 @@ class StorageClient:
         and ``key``; ``content`` is populated for archive reads (or when
         ``presign=False`` on expanded) and ``url`` when ``presign=True`` on
         the expanded layout. When an archive is the source we additionally
-        return ``archive_etag`` so HTTP layers can emit immutable
+        return ``archive_etag`` so HTTP layers can emit revalidating
         ``ETag`` / ``Cache-Control`` headers.
         """
         normalized_path = normalize_s3_relative_path(file_path)
