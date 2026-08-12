@@ -43,6 +43,12 @@ import type {
   TaskVersionSummary,
   Trial,
 } from "@/lib/types";
+import {
+  isBrowseTaskDetail,
+  taskDetailKey,
+  taskDetailValue,
+  type TaskDetailResource,
+} from "@/lib/task-detail-resource";
 import { TaskOverviewPanel } from "@/components/task-overview-panel";
 import {
   getCancelActionLabel,
@@ -125,6 +131,12 @@ interface TaskFilesPanelProps {
   onNavigate?: (task: Task, taskIndex: number) => void;
   onNavigateToFirstTrial?: () => void;
   apiBaseUrl?: string;
+  /**
+   * When set, Cancel only stops trials belonging to this experiment. Used by
+   * the experiment drawer so shared tasks keep running elsewhere. Omit on the
+   * task page to cancel every in-flight trial for the task.
+   */
+  cancelExperimentId?: string;
   allowRetry?: boolean;
   /**
    * When false, analysis/verdict UI (the verdict badge and the run
@@ -159,7 +171,7 @@ interface TaskFilesPanelProps {
    */
   staticChecksTaskId?: string | null;
   /** Detail already owned by the host page; avoids re-fetching the same key. */
-  taskDetail?: TaskDetailResponse | null;
+  taskDetail?: TaskDetailResource | null;
   /**
    * Open a trial from the overview's aggregated QA in the caller's own
    * context (drawer / panel). Return false when the trial isn't addressable
@@ -404,6 +416,7 @@ export function TaskFilesPanel({
   onNavigate,
   onNavigateToFirstTrial,
   apiBaseUrl,
+  cancelExperimentId,
   allowRetry = true,
   showAnalysis = true,
   onRetryComplete,
@@ -429,29 +442,37 @@ export function TaskFilesPanel({
   // the cache there.
   const checksKey =
     effectiveChecksTaskId && showAnalysis !== false
-      ? `${baseUrl}/tasks/${effectiveChecksTaskId}/detail`
+      ? taskDetailKey(effectiveChecksTaskId, baseUrl)
       : null;
   const {
-    data: checksDetail,
+    data: checksResource,
     error: checksLoadError,
     mutate: mutateChecks,
-  } = useSWR<TaskDetailResponse>(checksKey, fetcher, {
+  } = useSWR<TaskDetailResource>(checksKey, fetcher, {
     fallbackData: taskDetail ?? undefined,
     revalidateOnMount: taskDetail == null,
-    // Poll while the checks run, and while task QA runs: the full QA job
-    // writes fresh findings when it lands, so the pane keeps tracking
-    // until both are terminal.
+    // Poll quickly while checks or task QA run. Keep a slower poll while the
+    // panel is open even after both are terminal: a CLI in-place overwrite can
+    // replace this version without changing its number, and the refreshed
+    // content hash is what invalidates the file listing and preview caches.
     refreshInterval: (data) => {
+      const detail = taskDetailValue(data);
       const checksLive =
-        pickChecksVersion(data, taskVersion)?.pre_trial_status === "running" ||
-        pickChecksVersion(data, taskVersion)?.pre_trial_status === "queued";
+        pickChecksVersion(detail, taskVersion)?.pre_trial_status === "running" ||
+        pickChecksVersion(detail, taskVersion)?.pre_trial_status === "queued";
       const qaLive =
-        data?.task?.verdict_status === "queued" ||
-        data?.task?.verdict_status === "running" ||
-        taskHasLiveAnalysisTrial(data?.task);
-      return checksLive || qaLive ? 5000 : 0;
+        detail?.task?.verdict_status === "queued" ||
+        detail?.task?.verdict_status === "running" ||
+        // A live qa/audit trial means QA is in flight even when the status
+        // flags are stale after a crash.
+        taskHasLiveAnalysisTrial(detail?.task);
+      if (checksLive || qaLive) return 5000;
+      return isOpen ? 30000 : 0;
     },
   });
+  const checksDetail = taskDetailValue(checksResource);
+  const actionsReady =
+    checksResource !== undefined && !isBrowseTaskDetail(checksResource);
   // Scoped panes (the experiment drawer) pin the version whose files are on
   // screen; the checks must describe that same source.
   const checksVersion = pickChecksVersion(checksDetail, taskVersion);
@@ -460,7 +481,9 @@ export function TaskFilesPanel({
   // Until /detail answers, the checks state is unknown, not "unaudited":
   // an enabled Run button on the misread queues an audit that wipes findings.
   const checksLoading =
-    overviewAvailable && checksDetail === undefined && !checksLoadError;
+    overviewAvailable &&
+    (isBrowseTaskDetail(checksResource) ||
+      (checksDetail === undefined && !checksLoadError));
   // A failed revalidation with data already in hand is not "unavailable":
   // SWR keeps the stale data, and hiding live findings behind an error flash
   // on one bad poll is worse than showing them.
@@ -520,6 +543,7 @@ export function TaskFilesPanel({
     taskVersion !== undefined
       ? taskVersion
       : ((verdictTask ?? task)?.current_version ?? null);
+  const currentContentHash = checksVersion?.content_hash ?? null;
   const shouldScopeFilesToVersion = taskVersion !== undefined || !filesUrl;
   const selectedFile = selectedFilePath
     ? findNodeByPath(fileTree, selectedFilePath)
@@ -533,6 +557,7 @@ export function TaskFilesPanel({
     if (shouldScopeFilesToVersion && currentVersion != null) {
       params.set("version", String(currentVersion));
     }
+    if (currentContentHash) params.set("source_hash", currentContentHash);
     const query = params.toString();
     return `${resolvedFilesUrl}/${encodeURIComponent(selectedFile.path)}${
       query ? `?${query}` : ""
@@ -556,6 +581,7 @@ export function TaskFilesPanel({
           resolvedFilesUrl,
           selectedFile.path,
           shouldScopeFilesToVersion ? currentVersion : null,
+          currentContentHash,
           loadFilesLazily,
           filesUrl ? "raw" : "json",
           selectedFile.url ?? null,
@@ -656,11 +682,13 @@ export function TaskFilesPanel({
     if (shouldScopeFilesToVersion && currentVersion != null) {
       params.set("version", String(currentVersion));
     }
+    if (currentContentHash) params.set("source_hash", currentContentHash);
     return `${resolvedFilesUrl}?${params.toString()}`;
   }, [
     resolvedFilesUrl,
     shouldScopeFilesToVersion,
     currentVersion,
+    currentContentHash,
     overviewAvailable,
     loadFilesLazily,
   ]);
@@ -682,8 +710,9 @@ export function TaskFilesPanel({
     );
   }, [task]);
 
-  const canRetryTask = allowRetry && retryableTrials.length > 0;
-  const canCancelTask = allowRetry && taskHasCancellableWork(task);
+  const canRetryTask = actionsReady && allowRetry && retryableTrials.length > 0;
+  const canCancelTask =
+    actionsReady && allowRetry && taskHasCancellableWork(task);
   const cancelActionLabel = getCancelActionLabel(task);
   const allTrialsTerminal =
     Boolean(task?.trials?.length) &&
@@ -698,6 +727,7 @@ export function TaskFilesPanel({
   );
   const verdictInFlight = isActivePipelineStatus(verdictSource?.verdict_status);
   const canRunQA =
+    actionsReady &&
     allowRetry &&
     Boolean(task) &&
     allTrialsTerminal &&
@@ -763,10 +793,16 @@ export function TaskFilesPanel({
       let path = `${baseUrl}/tasks/cancel`;
       let body: string | undefined = JSON.stringify({
         task_ids: id ? [id] : [],
+        ...(cancelExperimentId
+          ? { experiment_id: cancelExperimentId }
+          : {}),
       });
       // No active trials but QA in flight -> cancel just the task QA job.
+      // Experiment-scoped cancel leaves shared QA alone unless the caller is
+      // on the dedicated cancel-QA path.
       if (
         id &&
+        !cancelExperimentId &&
         !taskHasActiveTrials(task) &&
         (taskHasActiveVerdict(task) || taskHasActiveAnalysis(task))
       ) {
@@ -1690,6 +1726,9 @@ export function TaskFilesPanel({
                     size="sm"
                     onClick={handleRetryTask}
                     disabled={!canRetryTask || isRerunning}
+                    title={
+                      actionsReady ? undefined : "Loading latest task state."
+                    }
                     className="h-7 px-2 text-[10px] font-semibold tracking-wide uppercase"
                   >
                     <RefreshCw
@@ -1707,6 +1746,9 @@ export function TaskFilesPanel({
                     size="sm"
                     onClick={handleRunQA}
                     disabled={!canRunQA || isRunningQA}
+                    title={
+                      actionsReady ? undefined : "Loading latest task state."
+                    }
                     className="h-7 px-2 text-[10px] font-semibold tracking-wide uppercase"
                   >
                     {isRunningQA ? (

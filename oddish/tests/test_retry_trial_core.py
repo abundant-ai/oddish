@@ -20,6 +20,21 @@ from oddish.schemas import RegistryAuth
 from oddish.workers.harbor.outcome import HarborOutcome
 
 
+@pytest.fixture(autouse=True)
+def _stub_browse_summary_refresh(monkeypatch):
+    """These tests drive retry_trial_core against hand-rolled fake sessions
+    that assert exact statement/flush sequences; the task-browser summary
+    refresh (advisory lock + aggregate + upsert, with its own flush) has
+    dedicated real-database coverage and is stubbed out here."""
+
+    async def _noop(session, task_version_ids):
+        return None
+
+    monkeypatch.setattr(
+        trials_endpoint_mod, "refresh_task_browse_summaries", _noop
+    )
+
+
 class _Result:
     def __init__(self, scalar=None, rowcount=0, rows=()):
         self._scalar = scalar
@@ -175,6 +190,7 @@ async def test_retry_trial_flushes_new_trial_before_setting_superseded_fk(
         max_attempts,
         parent_job_id=None,
         harbor_variant_id="default",
+        execution_lane="default",
         registry_auth_enc=None,
     ):
         events.append(("enqueue", trial_id, queue_key, org_id, max_attempts))

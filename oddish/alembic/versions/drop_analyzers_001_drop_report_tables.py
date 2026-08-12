@@ -20,8 +20,13 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # ``analyzer_blocks`` is deliberately NOT dropped. The reports feature it
+    # was built for is gone, but the cohort comparison shipped since (backend/
+    # api/services/cohort_comparison.py) stores its computed comparison in this
+    # table, and reads legacy trajectory-summary rows as a fallback behind the
+    # trials.trajectory_summary mirror. Dropping it would delete a live
+    # feature's storage; the table is otherwise inert once reports are gone.
     op.execute("DROP TABLE IF EXISTS analyzer_experiments")
-    op.execute("DROP TABLE IF EXISTS analyzer_blocks")
     op.execute("DROP TABLE IF EXISTS analyzers")
 
 

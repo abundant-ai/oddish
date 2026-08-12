@@ -151,6 +151,16 @@ def upload(
             help="Optional description attached to this task version",
         ),
     ] = None,
+    overwrite_current_version: Annotated[
+        bool,
+        typer.Option(
+            "--overwrite-current-version",
+            help=(
+                "Replace the selected current version in place; pinned trials "
+                "will use the replacement content."
+            ),
+        ),
+    ] = False,
     task_id: Annotated[
         Optional[str],
         typer.Option(
@@ -277,6 +287,7 @@ def upload(
             experiment_id=experiment_id,
             user=user,
             skip_artifacts=skip_artifacts,
+            overwrite_current_version=overwrite_current_version,
             force=force,
             quiet=quiet,
             json_output=json_output,
@@ -317,6 +328,7 @@ def upload(
         user=user,
         priority=priority,
         message=message,
+        overwrite_current_version=overwrite_current_version,
         force=force,
         quiet=quiet,
         json_output=json_output,
@@ -340,6 +352,7 @@ def _run_task_upload(
     user: str | None,
     priority: str,
     message: str | None,
+    overwrite_current_version: bool = False,
     force: bool,
     quiet: bool,
     json_output: bool,
@@ -374,6 +387,7 @@ def _run_task_upload(
         message=message,
         user=user,
         priority=priority,
+        overwrite_current_version=overwrite_current_version,
         quiet=quiet,
         json_output=json_output,
     )
@@ -412,8 +426,9 @@ def _run_task_upload(
                 f"[bold green]Task unchanged[/bold green] — reused version {version}"
             )
         elif r.get("existing_task"):
+            action = "overwrote" if overwrite_current_version else "created"
             console.print(
-                f"[bold green]Task updated[/bold green] — created version {version}"
+                f"[bold green]Task updated[/bold green] — {action} version {version}"
             )
         else:
             console.print(f"[bold green]Task uploaded[/bold green] — version {version}")
@@ -456,12 +471,18 @@ def _run_trial_import(
     experiment_id: str | None,
     user: str | None,
     skip_artifacts: bool,
+    overwrite_current_version: bool = False,
     force: bool,
     quiet: bool,
     json_output: bool,
 ) -> None:
     if task_id_opt and path_option:
         error_console.print("[red]Provide either --task or --path, not both.[/red]")
+        raise typer.Exit(1)
+    if overwrite_current_version and path_option is None:
+        error_console.print(
+            "[red]--overwrite-current-version requires a task source path to upload.[/red]"
+        )
         raise typer.Exit(1)
 
     resolved_task_id = task_id_opt
@@ -482,6 +503,7 @@ def _run_trial_import(
             path_option,
             register=True,
             user=user,
+            overwrite_current_version=overwrite_current_version,
             quiet=quiet or json_output,
         )
         resolved_task_id = upload_result.get("task_id")

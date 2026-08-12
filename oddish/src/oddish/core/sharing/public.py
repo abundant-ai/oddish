@@ -10,6 +10,10 @@ from sqlalchemy.orm import selectinload
 
 from oddish.core.experiment_membership import gathered_trial_ids_select
 from oddish.core.helpers import build_task_status_response, fetch_trial_queue_info
+from oddish.core.model_display_names import (
+    apply_model_display_names,
+    load_model_display_names,
+)
 from oddish.core.tags.projection import list_effective_user_tags_for_task_versions
 from oddish.core.trial_live import read_trial_live
 from oddish.core.trial_io import (
@@ -276,6 +280,10 @@ async def list_public_experiment_tasks(
             _apply_public_experiments(
                 resp, public_exps.get(task.id, []), preferred_id=exp_id
             )
+        apply_model_display_names(
+            [trial for resp in responses for trial in (resp.trials or [])],
+            await load_model_display_names(session),
+        )
         return responses
 
 
@@ -310,6 +318,9 @@ async def get_public_task_status(
         public_exps = await _public_experiment_refs(session, [task.id])
         _apply_public_experiments(
             response, public_exps.get(task.id, []), preferred_id=exp.id
+        )
+        apply_model_display_names(
+            response.trials or [], await load_model_display_names(session)
         )
         return response
 

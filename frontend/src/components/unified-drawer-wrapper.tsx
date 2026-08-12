@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import type { ImperativePanelGroupHandle } from "react-resizable-panels";
 import { PanelRightClose, PanelRightOpen } from "lucide-react";
 import { ResizableDrawer } from "@/components/ui/resizable-drawer";
 import {
@@ -9,9 +10,11 @@ import {
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
 
 type DrawerMode = "task" | "trial";
+
+const TASK_PANE_SIZE = 42;
+const TRIAL_PANE_SIZE = 58;
 
 interface UnifiedDrawerWrapperProps {
   open: boolean;
@@ -48,35 +51,15 @@ export function UnifiedDrawerWrapper({
   minWidth = 420,
   maxWidth = 1800,
 }: UnifiedDrawerWrapperProps) {
-  const [displayMode, setDisplayMode] = useState<DrawerMode>(mode);
-  const [isTransitioning, setIsTransitioning] = useState(false);
-  const previousMode = useRef<DrawerMode>(mode);
-
   const hasLeft = Boolean(sideBySideLeft);
-  const sideBySideActive =
-    displayMode === "trial" && showTask && showTrial && hasLeft;
+  const sideBySideActive = mode === "trial" && showTask && showTrial && hasLeft;
   const taskOnlyActive =
-    displayMode === "trial" && showTask && hasLeft && !showTrial;
+    mode === "trial" && showTask && hasLeft && !showTrial;
 
   const [width, setWidth] = useState(
     sideBySideActive ? sideBySideWidth : defaultWidth,
   );
   const userResizedRef = useRef(false);
-
-  useEffect(() => {
-    if (mode !== previousMode.current && open) {
-      setIsTransitioning(true);
-      const timer = setTimeout(() => {
-        setDisplayMode(mode);
-        setIsTransitioning(false);
-        previousMode.current = mode;
-      }, 150);
-      return () => clearTimeout(timer);
-    } else if (!open) {
-      setDisplayMode(mode);
-      previousMode.current = mode;
-    }
-  }, [mode, open]);
 
   useEffect(() => {
     if (userResizedRef.current) return;
@@ -152,14 +135,30 @@ export function UnifiedDrawerWrapper({
     ? renderTrial(taskToggle)
     : (trialContent ?? null);
 
-  const showLeftPane = displayMode === "trial" && hasLeft && showTask;
-  const showTrialPane = displayMode === "trial" && !taskOnlyActive;
+  const showLeftPane = mode === "trial" && hasLeft && showTask;
+  const showTrialPane = mode === "trial" && !taskOnlyActive;
+
+  // `autoSaveId` persists a pane collapsed to 0 and restores it on the next
+  // mount, which would leave that pane invisible while showTask/showTrial still
+  // say it is shown — and its 0-width handle sits under the drawer's own resize
+  // handle, so dragging it back out is unreliable. Collapsing is a live drag
+  // state, not a saved one: a restored collapse falls back to the even split.
+  const panelGroupRef = useRef<ImperativePanelGroupHandle>(null);
+  const bothPanesShown = showLeftPane && showTrialPane;
+  useEffect(() => {
+    if (!open || !bothPanesShown) return;
+    const layout = panelGroupRef.current?.getLayout();
+    if (layout?.some((size) => size === 0)) {
+      panelGroupRef.current?.setLayout([TASK_PANE_SIZE, TRIAL_PANE_SIZE]);
+    }
+  }, [open, bothPanesShown]);
 
   const body =
-    displayMode === "task" ? (
+    mode === "task" ? (
       <div className="flex h-full flex-col overflow-hidden">{taskContent}</div>
     ) : (
       <ResizablePanelGroup
+        ref={panelGroupRef}
         direction="horizontal"
         autoSaveId="trial-detail-side-by-side"
         className="h-full"
@@ -169,8 +168,13 @@ export function UnifiedDrawerWrapper({
             key="task-pane"
             id="task-pane"
             order={1}
-            defaultSize={42}
-            minSize={20}
+            defaultSize={TASK_PANE_SIZE}
+            // Collapsible so the divider drags all the way over and one pane
+            // takes the whole drawer. Recoverable by dragging the handle back
+            // out, or via the Hide/Show toggle in the *other* pane's header.
+            minSize={15}
+            collapsible
+            collapsedSize={0}
           >
             {taskFilesPane}
           </ResizablePanel>
@@ -183,8 +187,10 @@ export function UnifiedDrawerWrapper({
             key="trial-pane"
             id="trial-pane"
             order={2}
-            defaultSize={58}
-            minSize={30}
+            defaultSize={TRIAL_PANE_SIZE}
+            minSize={15}
+            collapsible
+            collapsedSize={0}
           >
             <div className="flex h-full flex-col overflow-hidden">
               {renderedTrial}
@@ -204,14 +210,7 @@ export function UnifiedDrawerWrapper({
       width={width}
       onWidthChange={handleWidthChange}
     >
-      <div
-        className={cn(
-          "flex flex-1 flex-col overflow-hidden transition-opacity duration-300",
-        )}
-        style={{ opacity: isTransitioning ? 0.3 : 1 }}
-      >
-        {body}
-      </div>
+      <div className="flex flex-1 flex-col overflow-hidden">{body}</div>
     </ResizableDrawer>
   );
 }

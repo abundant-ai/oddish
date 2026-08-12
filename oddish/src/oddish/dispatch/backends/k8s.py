@@ -90,7 +90,14 @@ class K8sJobDispatcher:
         base = f"{_NAME_PREFIX}-{_sanitize_queue_key(queue_key)}-{suffix}"
         return base[:63].strip("-")
 
-    def _job_manifest(self, queue_key: str, job_name: str) -> dict:
+    def _job_manifest(
+        self,
+        queue_key: str,
+        job_name: str,
+        *,
+        harbor_variant_id: str,
+        execution_lane: str,
+    ) -> dict:
         labels = {
             "app": _NAME_PREFIX,
             MANAGED_LABEL_KEY: "true",
@@ -99,6 +106,13 @@ class K8sJobDispatcher:
         }
         env = [{"name": k, "value": v} for k, v in self._env.items()]
         env.append({"name": "ODDISH_WORKER_QUEUE_KEY", "value": queue_key})
+        env.append(
+            {
+                "name": "ODDISH_WORKER_HARBOR_VARIANT_ID",
+                "value": harbor_variant_id,
+            }
+        )
+        env.append({"name": "ODDISH_WORKER_EXECUTION_LANE", "value": execution_lane})
         pod_spec: dict[str, Any] = {
             "restartPolicy": "Never",
             "containers": [
@@ -124,14 +138,26 @@ class K8sJobDispatcher:
         }
 
     async def spawn(self, *, spawn_plan: Sequence[str]) -> Sequence[WorkerHandle]:
-        if not spawn_plan:
+        return await self.spawn_units(
+            spawn_units=[(queue_key, "default", "default") for queue_key in spawn_plan]
+        )
+
+    async def spawn_units(
+        self, *, spawn_units: Sequence[tuple[str, str, str]]
+    ) -> Sequence[WorkerHandle]:
+        if not spawn_units:
             return []
         api = self._api()
         handles: list[WorkerHandle] = []
         try:
-            for queue_key in spawn_plan:
+            for queue_key, harbor_variant_id, execution_lane in spawn_units:
                 job_name = self._job_name(queue_key)
-                manifest = self._job_manifest(queue_key, job_name)
+                manifest = self._job_manifest(
+                    queue_key,
+                    job_name,
+                    harbor_variant_id=harbor_variant_id,
+                    execution_lane=execution_lane,
+                )
                 await asyncio.to_thread(
                     api.create_namespaced_job,
                     namespace=self._namespace,
@@ -143,6 +169,10 @@ class K8sJobDispatcher:
                         queue_key=queue_key,
                         id=job_name,
                         provisional=False,
+                        metadata={
+                            "harbor_variant_id": harbor_variant_id,
+                            "execution_lane": execution_lane,
+                        },
                     )
                 )
         except Exception:

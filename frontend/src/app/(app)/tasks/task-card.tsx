@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { ExternalLink, GitPullRequest } from "lucide-react";
+import { useSWRConfig } from "swr";
 import { Badge, badgeVariants } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -24,6 +25,12 @@ import {
   STATUS_CONFIG,
 } from "@/lib/status-config";
 import type { TaskBrowseItem } from "@/lib/types";
+import {
+  isBrowseTaskDetail,
+  taskDetailFromBrowse,
+  taskDetailKey,
+  type TaskDetailResource,
+} from "@/lib/task-detail-resource";
 import {
   cn,
   formatRelativeTime,
@@ -50,31 +57,14 @@ function ExperimentsCell({ task }: { task: TaskBrowseItem }) {
 }
 
 function getLatestTrialStatusCounts(task: TaskBrowseItem) {
-  return task.latest_trials.reduce(
-    (counts, trial) => {
-      const status = getMatrixStatus(
-        trial.status,
-        trial.reward,
-        trial.error_message
-      );
-      counts[status] += 1;
-      return counts;
-    },
-    // `satisfies` (not `as`) so a missing MatrixStatus key is a compile error:
-    // omitting one made `counts[status]++` do `undefined + 1 = NaN` and dropped
-    // those trials (e.g. skipped/scoreless) from the breakdown silently.
-    {
-      pass: 0,
-      partial: 0,
-      fail: 0,
-      "harness-error": 0,
-      scoreless: 0,
-      skipped: 0,
-      pending: 0,
-      queued: 0,
-      running: 0,
-    } satisfies Record<ReturnType<typeof getMatrixStatus>, number>
-  );
+  return {
+    pass: task.pass_count,
+    partial: task.partial_count,
+    fail: task.fail_count,
+    "harness-error": task.harness_count,
+    skipped: task.skipped_count,
+    pending: task.pending_count,
+  };
 }
 
 function PassRateCell({ task }: { task: TaskBrowseItem }) {
@@ -107,7 +97,7 @@ function PassRateCell({ task }: { task: TaskBrowseItem }) {
     {
       key: "pending",
       label: "Pending",
-      count: statusCounts.pending + statusCounts.queued + statusCounts.running,
+      count: statusCounts.pending,
     },
   ] as const;
 
@@ -307,13 +297,30 @@ function TrialGraphics({ task }: { task: TaskBrowseItem }) {
           </div>
         );
       })}
+      {task.latest_trials_truncated ? (
+        <div className="text-muted-foreground text-[10px]">
+          Showing the {task.latest_trials.length} most recent of{" "}
+          {task.total_trials} trials.
+        </div>
+      ) : null}
     </div>
   );
 }
 
 export function TaskCard({ task }: { task: TaskBrowseItem }) {
   const { isSelected, toggle } = useSelection();
+  const { mutate } = useSWRConfig();
   const selected = isSelected(task.id);
+
+  function preserveBrowseSnapshot() {
+    const snapshot = taskDetailFromBrowse(task);
+    void mutate(
+      taskDetailKey(task.id),
+      (current: TaskDetailResource | undefined) =>
+        current && !isBrowseTaskDetail(current) ? current : snapshot,
+      { revalidate: false }
+    );
+  }
 
   return (
     <Card
@@ -334,6 +341,7 @@ export function TaskCard({ task }: { task: TaskBrowseItem }) {
             <div className="flex flex-wrap items-center gap-2">
               <Link
                 href={`/tasks/${encodeURIComponent(task.id)}`}
+                onClick={preserveBrowseSnapshot}
                 className="text-foreground font-mono text-sm font-semibold transition-colors hover:text-[#5d77a5] dark:hover:text-[#a8b8d2]"
               >
                 {task.name}

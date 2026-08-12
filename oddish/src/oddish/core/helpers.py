@@ -6,7 +6,7 @@ import heapq
 import json
 import logging
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -1470,18 +1470,48 @@ async def cancel_job_by_worker(
     if not provider or not external_id:
         return False
 
+    provider_key = provider.strip().lower()
+    delegate = _PROVIDER_TEARDOWN_DELEGATES.get(provider_key)
+    if delegate is not None:
+        try:
+            return await delegate(external_id)
+        except Exception:
+            logger.exception(
+                "cancel_job_by_worker: delegated teardown failed for provider %r "
+                "(external_id=%s)",
+                provider_key,
+                external_id,
+            )
+            return False
+
     from oddish.runtime.registry import get_backend
 
-    backend = get_backend(provider)
+    backend = get_backend(provider_key)
     if backend is None:
         logger.warning(
             "cancel_job_by_worker: no teardown for provider %r (external_id=%s)",
-            provider,
+            provider_key,
             external_id,
         )
         return False
 
     return await backend.teardown(external_id)
+
+
+_PROVIDER_TEARDOWN_DELEGATES: dict[str, Callable[[str], Awaitable[bool]]] = {}
+
+
+def register_provider_teardown_delegate(
+    provider: str, delegate: Callable[[str], Awaitable[bool]]
+) -> None:
+    provider_key = provider.strip().lower()
+    if not provider_key:
+        raise ValueError("provider teardown delegate requires a provider name")
+    _PROVIDER_TEARDOWN_DELEGATES[provider_key] = delegate
+
+
+def unregister_provider_teardown_delegate(provider: str) -> None:
+    _PROVIDER_TEARDOWN_DELEGATES.pop(provider.strip().lower(), None)
 
 
 class HarvestTerminationError(RuntimeError):

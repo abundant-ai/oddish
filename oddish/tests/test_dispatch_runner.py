@@ -71,6 +71,7 @@ def test_run_once_invokes_cycle_with_built_dispatcher(monkeypatch) -> None:
         seen["dispatcher"] = dispatcher
         seen["max_workers"] = max_workers
         seen["concurrency_limits_for"] = concurrency_limits_for
+        seen["capacity_by_lane"] = kwargs["capacity_by_lane"]
         return "cycle-result"
 
     monkeypatch.setattr(runner, "run_dispatch_cycle", _fake_cycle)
@@ -81,3 +82,4 @@ def test_run_once_invokes_cycle_with_built_dispatcher(monkeypatch) -> None:
     assert (
         seen["concurrency_limits_for"] is runner.load_effective_model_concurrency_limits
     )
+    assert seen["capacity_by_lane"] is runner.load_sandbox_capacity_by_lane

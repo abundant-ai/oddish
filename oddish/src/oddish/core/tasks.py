@@ -84,6 +84,35 @@ def _task_archive_key_for_version(task_id: str, version: int) -> str:
     )
 
 
+def _task_overwrite_staging_key(task_id: str) -> str:
+    return f"task-upload-staging/{task_id}/{uuid.uuid4().hex}.tar.gz"
+
+
+def _validate_task_overwrite_staging_key(task_id: str, staging_key: str | None) -> str:
+    prefix = f"task-upload-staging/{task_id}/"
+    filename = (staging_key or "").removeprefix(prefix)
+    token = filename.removesuffix(".tar.gz")
+    if (
+        not staging_key
+        or not staging_key.startswith(prefix)
+        or not filename.endswith(".tar.gz")
+        or len(token) != 32
+        or any(char not in "0123456789abcdef" for char in token)
+    ):
+        raise HTTPException(
+            status_code=400, detail="Invalid task overwrite staging key"
+        )
+    return staging_key
+
+
+def _task_overwrite_revision_prefix(
+    task_id: str, version: int, staging_key: str
+) -> str:
+    """Return the immutable source prefix promoted by one overwrite attempt."""
+    token = Path(staging_key).name.removesuffix(".tar.gz")
+    return f"tasks/{task_id}/v{version}-revisions/{token}/"
+
+
 async def initialize_task_upload(
     task_name: str,
     *,
@@ -91,30 +120,43 @@ async def initialize_task_upload(
     content_hash: str,
     message: str | None = None,
     force_new_version: bool = False,
+    overwrite_current_version: bool = False,
 ) -> TaskUploadInitResponse:
     """Prepare a task upload and return direct-upload details when supported."""
     normalized_name = _normalize_task_name(task_name)
 
     async with get_session() as session:
         existing_task = await _find_task_by_name(session, normalized_name, org_id)
-        latest = (
-            await _latest_version(session, existing_task.id)
-            if existing_task is not None
-            else None
-        )
+        target = None
+        if existing_task is not None:
+            if overwrite_current_version:
+                current_id = existing_task.current_version_id
+                target = (
+                    await session.get(TaskVersionModel, current_id)
+                    if current_id
+                    else None
+                )
+                if target is None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Task {existing_task.id} has no selected version to overwrite",
+                    )
+            else:
+                target = await _latest_version(session, existing_task.id)
 
         if (
             not force_new_version
-            and latest is not None
-            and latest.content_hash
-            and latest.content_hash == content_hash
+            and target is not None
+            and target.content_hash
+            and target.content_hash == content_hash
         ):
+            assert existing_task is not None
             return TaskUploadInitResponse(
                 task_id=existing_task.id,
                 name=normalized_name,
-                s3_key=latest.task_s3_key,
-                version=latest.version,
-                version_id=latest.id,
+                s3_key=target.task_s3_key,
+                version=target.version,
+                version_id=target.id,
                 existing_task=True,
                 content_unchanged=True,
                 content_hash=content_hash,
@@ -122,7 +164,11 @@ async def initialize_task_upload(
 
         if existing_task is not None:
             task_id = existing_task.id
-            version = await _next_version_number(session, task_id)
+            if overwrite_current_version:
+                assert target is not None
+                version = target.version
+            else:
+                version = await _next_version_number(session, task_id)
             existing = True
         else:
             task_id = f"{normalized_name}-{str(uuid.uuid4())[:8]}"
@@ -133,10 +179,15 @@ async def initialize_task_upload(
     s3_key = _task_s3_prefix_for_version(task_id, version)
 
     storage = get_storage_client()
-    archive_key = _task_archive_key_for_version(task_id, version)
+    staging_key = (
+        _task_overwrite_staging_key(task_id)
+        if overwrite_current_version and existing
+        else None
+    )
+    upload_key = staging_key or _task_archive_key_for_version(task_id, version)
     try:
         upload_url = await storage.get_presigned_upload_url(
-            archive_key,
+            upload_key,
             expiration=3600,
             content_type="application/gzip",
         )
@@ -157,6 +208,12 @@ async def initialize_task_upload(
         upload_method="PUT",
         upload_headers={"Content-Type": "application/gzip"},
         requires_completion=True,
+        staging_key=staging_key,
+        overwrite_base_content_hash=(
+            target.content_hash
+            if overwrite_current_version and existing and target is not None
+            else None
+        ),
     )
 
 
@@ -172,6 +229,9 @@ async def complete_task_upload(
     register: bool = False,
     user: str | None = None,
     priority: Priority | None = None,
+    overwrite_current_version: bool = False,
+    staging_key: str | None = None,
+    overwrite_base_content_hash: str | None = None,
 ) -> UploadResponse:
     """Finalize a direct-to-S3 upload after the client has uploaded bytes.
 
@@ -182,25 +242,67 @@ async def complete_task_upload(
     path, where the task row is created later by ``create_task``.
     """
     normalized_name = _normalize_task_name(task_name)
-    s3_key = _task_s3_prefix_for_version(task_id, version)
-    archive_key = _task_archive_key_for_version(task_id, version)
+    validated_staging_key = (
+        _validate_task_overwrite_staging_key(task_id, staging_key)
+        if overwrite_current_version
+        else None
+    )
+    s3_key = (
+        _task_overwrite_revision_prefix(task_id, version, validated_staging_key)
+        if validated_staging_key is not None
+        else _task_s3_prefix_for_version(task_id, version)
+    )
+    archive_key = f"{s3_key}{StorageClient._TASK_ARCHIVE_OBJECT_NAME}"
+    upload_key = validated_staging_key or archive_key
     version_id = f"{task_id}-v{version}"
     task_path = f"s3://{s3_key}"
 
     storage = get_storage_client()
     try:
-        archive_exists = await storage.object_exists(archive_key)
+        archive_exists = await storage.object_exists(upload_key)
     except Exception as exc:
         raise HTTPException(
             status_code=500, detail=f"Failed to verify S3 upload: {str(exc)}"
         ) from exc
-    if not archive_exists:
-        raise HTTPException(
-            status_code=400, detail="Uploaded task archive not found in S3"
+    async with get_session() as session:
+        existing_task = await session.get(
+            TaskModel,
+            task_id,
+            with_for_update=overwrite_current_version,
         )
 
-    async with get_session() as session:
-        existing_task = await session.get(TaskModel, task_id)
+        if (
+            existing_task is not None
+            and org_id is not None
+            and existing_task.org_id != org_id
+        ):
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+        if not archive_exists:
+            if overwrite_current_version and existing_task is not None:
+                completed_version = await session.get(TaskVersionModel, version_id)
+                if (
+                    existing_task.current_version_id == version_id
+                    and completed_version is not None
+                    and completed_version.content_hash == content_hash
+                ):
+                    return UploadResponse(
+                        task_id=task_id,
+                        name=normalized_name,
+                        s3_key=completed_version.task_s3_key or s3_key,
+                        version=version,
+                        version_id=version_id,
+                        existing_task=True,
+                        content_hash=content_hash,
+                    )
+            raise HTTPException(
+                status_code=400, detail="Uploaded task archive not found in S3"
+            )
+
+        if overwrite_current_version and existing_task is None:
+            raise HTTPException(
+                status_code=409, detail=f"Task {task_id} has no version to overwrite"
+            )
 
         if existing_task is None and not register:
             # Legacy behavior: leave creation of the task row to the
@@ -230,7 +332,7 @@ async def complete_task_upload(
             session.add(new_task)
             await session.flush()
 
-            version_row = TaskVersionModel(
+            new_version_row = TaskVersionModel(
                 id=version_id,
                 task_id=task_id,
                 version=version,
@@ -240,7 +342,7 @@ async def complete_task_upload(
                 message=message,
                 created_by_user_id=created_by_user_id,
             )
-            session.add(version_row)
+            session.add(new_version_row)
             await session.flush()
 
             new_task.current_version_id = version_id
@@ -277,10 +379,60 @@ async def complete_task_upload(
                 content_hash=content_hash,
             )
 
-        if org_id is not None and existing_task.org_id != org_id:
-            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+        version_row = await session.get(
+            TaskVersionModel,
+            version_id,
+            with_for_update=overwrite_current_version,
+        )
+        if overwrite_current_version:
+            if existing_task.current_version_id != version_id or version_row is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "The selected task version changed during upload; "
+                        "start the in-place upload again"
+                    ),
+                )
+            if version_row.content_hash == content_hash:
+                try:
+                    await storage.delete_prefix(upload_key)
+                except Exception:
+                    pass
+                return UploadResponse(
+                    task_id=task_id,
+                    name=normalized_name,
+                    s3_key=version_row.task_s3_key or s3_key,
+                    version=version,
+                    version_id=version_id,
+                    existing_task=True,
+                    content_hash=content_hash,
+                )
+            if version_row.content_hash != overwrite_base_content_hash:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "The selected task version was overwritten during upload; "
+                        "start the in-place upload again"
+                    ),
+                )
+            # Promote into an immutable, attempt-specific prefix. The object is
+            # not visible to readers until the version row commits its new
+            # ``task_s3_key``, so a failed DB transaction leaves only an
+            # unreferenced object rather than split archive/metadata state.
+            await storage.copy_object(upload_key, archive_key)
+            version_row.task_path = task_path
+            version_row.task_s3_key = s3_key
+            version_row.content_hash = content_hash
+            if message is not None:
+                version_row.message = message
+            version_row.expanded_at = None
+            version_row.expanded_manifest_key = None
+            version_row.pre_trial = None
+            version_row.pre_trial_status = None
+            version_row.pre_trial_error = None
+            version_row.pre_trial_started_at = None
+            version_row.pre_trial_finished_at = None
 
-        version_row = await session.get(TaskVersionModel, version_id)
         new_version_created = False
         if version_row is None:
             version_row = TaskVersionModel(
@@ -329,6 +481,16 @@ async def complete_task_upload(
             )
 
         await session.commit()
+
+    if overwrite_current_version:
+        # The staging upload is unreferenced after the DB switch. Do not delete
+        # the expanded prefix here: the queued TASK_EXPAND job owns replacement
+        # of that cache under the version-row lock. Readers reject its old
+        # manifest because it names the previously selected archive.
+        try:
+            await storage.delete_prefix(upload_key)
+        except Exception:
+            pass
 
     return UploadResponse(
         task_id=task_id,

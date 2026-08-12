@@ -22,6 +22,7 @@ from oddish.core.trial_io import (
     read_trial_trajectory,
 )
 from oddish.core.verdict_state import abandon_verdict
+from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.db import (
     TaskModel,
     TaskStatus,
@@ -33,6 +34,7 @@ from oddish.db import (
     WorkerJobStatus,
 )
 from oddish.registry_auth import RegistryCredential, encrypt_credentials
+from oddish.runtime.sandbox_lifecycle import execution_lane_for_environment
 from oddish.schemas import RegistryAuth, TrialResponse
 
 
@@ -543,6 +545,7 @@ async def retry_trial_core(
         max_attempts=new_trial.max_attempts,
         harbor_variant_id=(new_trial.harbor_config or {}).get("variant_id")
         or "default",
+        execution_lane=execution_lane_for_environment(new_trial.environment),
         registry_auth_enc=registry_auth_enc,
     )
 
@@ -576,6 +579,7 @@ async def retry_trial_core(
             WorkerJobStatus.CANCELLED: "skipped",
         }.get(final_status, "queued")
 
+    await refresh_task_browse_summaries(session, [new_trial.task_version_id])
     await session.commit()
     return {
         "status": status_label,

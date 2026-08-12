@@ -24,6 +24,7 @@ from oddish.core.baseline_gate import (
     evaluate_baseline_gate,
 )
 from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
+from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.core.tags.enqueue import enqueue_tag_project_worker_job
 from oddish.core.tags.projection import recompute_task_browse_projection
 from oddish.core.trial_facets import (
@@ -53,6 +54,7 @@ from oddish.db import (
 from oddish.db.storage import extract_s3_key_from_path, get_storage_client
 from oddish.experiment import generate_experiment_name
 from oddish.registry_auth import RegistryCredential, encrypt_credentials
+from oddish.runtime.sandbox_lifecycle import execution_lane_for_environment
 from oddish.schemas import TaskSubmission, TrialSpec
 from oddish.task_timeouts import validate_task_timeout_config
 from oddish.workers.jobs.enqueue import (
@@ -104,12 +106,19 @@ async def cancel_tasks_runs(
     session: AsyncSession,
     task_ids: list[str],
     org_id: str | None = None,
+    experiment_id: str | None = None,
 ) -> dict:
     """Cancel in-flight runs for a batch of tasks without deleting data.
 
     The cancel path walks ``worker_jobs`` (single UPDATE covers trial /
     analysis / verdict kinds uniformly) and then mirrors the terminal
     state back onto the domain rows for live-UI visibility.
+
+    When ``experiment_id`` is set, only trials that belong to that
+    experiment (including collection-gathered membership) are cancelled.
+    Task-level QA/verdict jobs are left alone in that case: they are
+    task-scoped, and other experiments may still need them. The task row
+    is failed/completed only when no live trials remain on the task.
 
     POST-COMMIT CONTRACT: the harvested ``modal_function_call_ids`` and
     ``worker_targets`` are RETURNED, not terminated here -- a rollback must
@@ -156,74 +165,98 @@ async def cancel_tasks_runs(
     locked_task_rows = await session.execute(locked_task_query)
     tasks = list(locked_task_rows.scalars().all())
 
+    # Lock every trial for the task so we can reconcile task status against
+    # remaining live work in other experiments, then cancel only the scoped
+    # subset when ``experiment_id`` is provided.
     trial_rows = await session.execute(
         select(TrialModel)
         .where(TrialModel.task_id.in_(found_task_ids))
         .order_by(TrialModel.id)
         .with_for_update()
     )
-    trials = list(trial_rows.scalars().all())
+    all_trials = list(trial_rows.scalars().all())
+    if experiment_id is not None:
+        from oddish.core.experiment_membership import trial_in_experiment
+
+        scoped_trial_rows = await session.execute(
+            select(TrialModel.id).where(
+                TrialModel.task_id.in_(found_task_ids),
+                trial_in_experiment(experiment_id),
+            )
+        )
+        scoped_trial_ids = {str(row[0]) for row in scoped_trial_rows.all()}
+        trials = [trial for trial in all_trials if trial.id in scoped_trial_ids]
+    else:
+        trials = all_trials
     trial_ids = [trial.id for trial in trials]
 
     now = utcnow()
 
-    # Cancel every active worker_jobs row belonging to these trials /
-    # tasks. One UPDATE, every kind. Returning the canceled rows gives
-    # us the Modal function-call ids to terminate remotely and the kind
-    # breakdown for the domain-mirror pass below.
-    #
-    # When the task has no trials yet the trial_ids list is empty; omit the
-    # trials branch entirely so we don't pass an empty array to ANY() (asyncpg
-    # cannot infer the element type of an empty list) and avoid a spurious
-    # FALSE predicate that PostgreSQL still has to plan.
-    trial_branch = (
-        "OR (subject_table = 'trials' AND subject_id = ANY(:trial_ids))"
-        if trial_ids
-        else ""
-    )
-    cancel_sql = text(
-        f"""
-        WITH to_cancel AS (
-            SELECT id,
-                   kind::text AS kind,
-                   subject_id,
-                   modal_function_call_id,
-                   provider,
-                   external_id
-            FROM   worker_jobs
-            WHERE  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
-              AND  (
-                  (subject_table = 'tasks' AND subject_id = ANY(:task_ids))
-                  {trial_branch}
-              )
-            ORDER BY id
-            FOR UPDATE
+    async def _cancel_worker_jobs(
+        *,
+        subject_task_ids: list[str] | None = None,
+        subject_trial_ids: list[str] | None = None,
+    ) -> list[Any]:
+        """Cancel matching active worker_jobs and return harvested rows."""
+        predicates: list[str] = []
+        params: dict[str, Any] = {"cancel_msg": USER_CANCELLED_MESSAGE}
+        if subject_task_ids:
+            predicates.append(
+                "(subject_table = 'tasks' AND subject_id = ANY(:task_ids))"
+            )
+            params["task_ids"] = subject_task_ids
+        if subject_trial_ids:
+            predicates.append(
+                "(subject_table = 'trials' AND subject_id = ANY(:trial_ids))"
+            )
+            params["trial_ids"] = subject_trial_ids
+        if not predicates:
+            return []
+        cancel_sql = text(
+            f"""
+            WITH to_cancel AS (
+                SELECT id,
+                       kind::text AS kind,
+                       subject_id,
+                       modal_function_call_id,
+                       provider,
+                       external_id
+                FROM   worker_jobs
+                WHERE  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+                  AND  (
+                      {" OR ".join(predicates)}
+                  )
+                ORDER BY id
+                FOR UPDATE
+            )
+            UPDATE worker_jobs AS w
+            SET    status = 'CANCELLED',
+                   finished_at = NOW(),
+                   error_message = :cancel_msg,
+                   current_worker_id = NULL,
+                   current_queue_slot = NULL,
+                   modal_function_call_id = NULL,
+                   payload = w.payload - 'registry_auth_enc'
+            FROM   to_cancel
+            WHERE  w.id = to_cancel.id
+            RETURNING w.id,
+                      to_cancel.kind,
+                      to_cancel.subject_id,
+                      to_cancel.modal_function_call_id,
+                      to_cancel.provider,
+                      to_cancel.external_id
+            """
         )
-        UPDATE worker_jobs AS w
-        SET    status = 'CANCELLED',
-               finished_at = NOW(),
-               error_message = :cancel_msg,
-               current_worker_id = NULL,
-               current_queue_slot = NULL,
-               modal_function_call_id = NULL,
-               payload = w.payload - 'registry_auth_enc'
-        FROM   to_cancel
-        WHERE  w.id = to_cancel.id
-        RETURNING w.id,
-                  to_cancel.kind,
-                  to_cancel.subject_id,
-                  to_cancel.modal_function_call_id,
-                  to_cancel.provider,
-                  to_cancel.external_id
-        """
+        return list((await session.execute(cancel_sql, params)).mappings().all())
+
+    # Cancel trial (and, for unscoped cancel, task-subject) worker_jobs.
+    # Experiment-scoped cancel omits the task-subject branch here so a cancel
+    # on experiment A cannot retire the shared task QA job that experiment B
+    # still needs; exhausted tasks get a second pass below.
+    canceled_rows = await _cancel_worker_jobs(
+        subject_task_ids=None if experiment_id is not None else found_task_ids,
+        subject_trial_ids=trial_ids or None,
     )
-    cancel_params: dict[str, Any] = {
-        "cancel_msg": USER_CANCELLED_MESSAGE,
-        "task_ids": found_task_ids,
-    }
-    if trial_ids:
-        cancel_params["trial_ids"] = trial_ids
-    canceled_rows = (await session.execute(cancel_sql, cancel_params)).mappings().all()
 
     modal_fc_ids: list[str] = []
     worker_targets: set[tuple[str, str]] = set()
@@ -231,27 +264,31 @@ async def cancel_tasks_runs(
     canceled_verdict_task_ids: set[str] = set()
     canceled_analysis_trial_ids: set[str] = set()
 
-    for row in canceled_rows:
-        fc = row.get("modal_function_call_id")
-        if fc:
-            modal_fc_ids.append(str(fc))
-        provider = row.get("provider")
-        external_id = row.get("external_id")
-        if provider and external_id:
-            worker_targets.add((str(provider), str(external_id)))
-        kind = row["kind"]
-        subject_id = row["subject_id"]
-        if kind == "TRIAL" and subject_id:
-            canceled_trial_kinds.add(str(subject_id))
-        elif kind == "ANALYSIS" and subject_id:
-            # Legacy per-trial classification rows, drained across a deploy.
-            canceled_analysis_trial_ids.add(str(subject_id))
-        elif kind == "QA" and subject_id:
-            canceled_verdict_task_ids.add(str(subject_id))
+    def _ingest_canceled_rows(rows: list[Any]) -> None:
+        for row in rows:
+            fc = row.get("modal_function_call_id")
+            if fc:
+                modal_fc_ids.append(str(fc))
+            provider = row.get("provider")
+            external_id = row.get("external_id")
+            if provider and external_id:
+                worker_targets.add((str(provider), str(external_id)))
+            kind = row["kind"]
+            subject_id = row["subject_id"]
+            if kind == "TRIAL" and subject_id:
+                canceled_trial_kinds.add(str(subject_id))
+            elif kind == "ANALYSIS" and subject_id:
+                # Legacy per-trial classification rows, drained across a deploy.
+                canceled_analysis_trial_ids.add(str(subject_id))
+            elif kind == "QA" and subject_id:
+                canceled_verdict_task_ids.add(str(subject_id))
+
+    _ingest_canceled_rows(canceled_rows)
 
     # Mirror terminal state back to the domain rows so the dashboard
     # sees "FAILED / Cancelled by user" even before handlers exit.
     trials_cancelled = 0
+    cancelled_trial_ids: set[str] = set()
     for trial in trials:
         trial_updated = False
         if trial.id in canceled_trial_kinds or trial.status in ACTIVE_TRIAL_STATUSES:
@@ -270,6 +307,7 @@ async def cancel_tasks_runs(
             trial.current_queue_slot = None
             trials_cancelled += 1
             trial_updated = True
+            cancelled_trial_ids.add(trial.id)
         if (
             trial.id in canceled_analysis_trial_ids
             or trial.analysis_status in ACTIVE_PIPELINE_STATUSES
@@ -281,8 +319,28 @@ async def cancel_tasks_runs(
         if not trial_updated:
             continue
 
+    live_task_ids = {
+        trial.task_id
+        for trial in all_trials
+        if trial.id not in cancelled_trial_ids
+        and (
+            trial.status in ACTIVE_TRIAL_STATUSES
+            or trial.analysis_status in ACTIVE_PIPELINE_STATUSES
+        )
+    }
+    exhausted_task_ids = [task.id for task in tasks if task.id not in live_task_ids]
+
+    # Experiment-scoped cancel: only now that no live trials remain may we
+    # retire the shared task-level QA/verdict worker jobs.
+    if experiment_id is not None and exhausted_task_ids:
+        _ingest_canceled_rows(
+            await _cancel_worker_jobs(subject_task_ids=exhausted_task_ids)
+        )
+
     tasks_cancelled = 0
     for task in tasks:
+        if task.id not in exhausted_task_ids:
+            continue
         task_updated = False
         failed_by_this_cancel = False
         if task.status in ACTIVE_TASK_STATUSES:
@@ -305,6 +363,9 @@ async def cancel_tasks_runs(
             tasks_cancelled += 1
 
     await session.flush()
+    await refresh_task_browse_summaries(
+        session, (trial.task_version_id for trial in trials)
+    )
 
     return {
         "task_ids": found_task_ids,
@@ -449,6 +510,7 @@ async def enqueue_trial_worker_job(
     parent_job_id: str | None = None,
     harbor_variant_id: str = "default",
     registry_auth_enc: str | None = None,
+    execution_lane: str = "default",
 ) -> WorkerJobModel:
     return await enqueue_worker_job(
         session,
@@ -462,6 +524,7 @@ async def enqueue_trial_worker_job(
             max_attempts=max_attempts,
             parent_job_id=parent_job_id,
             harbor_variant_id=harbor_variant_id,
+            execution_lane=execution_lane,
         ),
     )
 
@@ -831,6 +894,9 @@ async def create_task(
         queue_key = settings.get_queue_key_for_trial(spec.agent, model)
         trial_id = f"{task_id}-{i}"
         harbor_config = _build_harbor_config_for_trial(submission, spec)
+        trial_environment = spec.environment or (
+            "modal" if (harbor_config or {}).get("mode") == "probe" else None
+        )
         trial_rows.append(
             {
                 "id": trial_id,
@@ -845,8 +911,7 @@ async def create_task(
                 "queue_key": queue_key,
                 "model": model,
                 "timeout_minutes": spec.timeout_minutes,
-                "environment": spec.environment
-                or ("modal" if (harbor_config or {}).get("mode") == "probe" else None),
+                "environment": trial_environment,
                 "harbor_config": harbor_config,
                 "is_probe": (harbor_config or {}).get("mode") == "probe",
                 "harbor_sha": (harbor_config or {}).get("resolved_sha"),
@@ -864,6 +929,7 @@ async def create_task(
                 org_id=org_id,
                 max_attempts=submission.max_trial_attempts,
                 harbor_variant_id=(harbor_config or {}).get("variant_id") or "default",
+                execution_lane=execution_lane_for_environment(trial_environment),
             )
         )
 
@@ -873,6 +939,7 @@ async def create_task(
     await session.flush()
     await _bulk_insert_trials(session, trial_rows)
     await bulk_enqueue_worker_jobs(session, worker_job_requests)
+    await refresh_task_browse_summaries(session, [version_id])
 
     from oddish.workers.analysis_trials import maybe_enqueue_audit_trial
 
@@ -1096,6 +1163,9 @@ async def append_trials_to_task(
         queue_key = settings.get_queue_key_for_trial(spec.agent, model)
         trial_id = f"{task.id}-{next_index}"
         harbor_config = _build_harbor_config_for_trial(submission, spec)
+        trial_environment = spec.environment or (
+            "modal" if (harbor_config or {}).get("mode") == "probe" else None
+        )
         new_trial_rows.append(
             {
                 "id": trial_id,
@@ -1110,8 +1180,7 @@ async def append_trials_to_task(
                 "queue_key": queue_key,
                 "model": model,
                 "timeout_minutes": spec.timeout_minutes,
-                "environment": spec.environment
-                or ("modal" if (harbor_config or {}).get("mode") == "probe" else None),
+                "environment": trial_environment,
                 "harbor_config": harbor_config,
                 "is_probe": (harbor_config or {}).get("mode") == "probe",
                 "harbor_sha": (harbor_config or {}).get("resolved_sha"),
@@ -1128,6 +1197,7 @@ async def append_trials_to_task(
                 org_id=task.org_id,
                 max_attempts=submission.max_trial_attempts,
                 harbor_variant_id=(harbor_config or {}).get("variant_id") or "default",
+                execution_lane=execution_lane_for_environment(trial_environment),
             )
         )
         new_trial_ids.append(trial_id)
@@ -1254,6 +1324,7 @@ async def append_trials_to_task(
         )
 
     await session.flush()
+    await refresh_task_browse_summaries(session, [current_version_id])
     await session.refresh(task, attribute_names=["trials"])
     bump_ids = {trial_experiment_id}
     bump_ids.update(t.experiment_id for t in new_trials if t.experiment_id)
@@ -1605,12 +1676,14 @@ async def _cancel_gated_llm_trials(
     if not trial_ids:
         return
     # Match quota cancellation's ordered Trial -> WorkerJob locks.
-    await session.execute(
-        select(TrialModel.id)
-        .where(TrialModel.id.in_(trial_ids))
-        .order_by(TrialModel.id)
-        .with_for_update()
-    )
+    version_ids = (
+        await session.scalars(
+            select(TrialModel.task_version_id)
+            .where(TrialModel.id.in_(trial_ids))
+            .order_by(TrialModel.id)
+            .with_for_update()
+        )
+    ).all()
     await session.execute(
         update(TrialModel)
         .where(
@@ -1648,6 +1721,7 @@ async def _cancel_gated_llm_trials(
         ),
         {"trial_ids": trial_ids, "reason": reason},
     )
+    await refresh_task_browse_summaries(session, version_ids)
 
 
 async def _scope_has_baseline_trials(

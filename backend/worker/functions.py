@@ -55,6 +55,8 @@ from modal_app import (
     WORKER_SCALEDOWN_WINDOW_SECONDS,
     WORKER_TIMEOUT_SECONDS,
     app,
+    ec2_control_secrets,
+    ec2_worker_secrets,
     harbor_variant_images,
     image,
     runtime_secrets,
@@ -79,6 +81,12 @@ from oddish.workers.queue.slots import (
     cleanup_stale_queue_slots,
     release_queue_slot,
 )
+from oddish.workers.queue.sandbox_capacity import (
+    SANDBOX_CAPACITY_LEASE_SECONDS,
+    acquire_sandbox_capacity_lease,
+    count_held_sandbox_capacity_leases,
+    release_sandbox_capacity_lease,
+)
 from oddish.workers.queue.runtime_status import (
     DISPATCHER_COMPONENT,
     RECONCILER_COMPONENT,
@@ -95,8 +103,14 @@ from oddish.dispatch.cycle import (
 from oddish.workers.queue.worker_job_single_job import (
     PostSuccessHooks,
     drain_worker_jobs,
+    run_single_worker_job,
 )
 from oddish.core.harbor_source import harbor_variant_function_name
+from oddish.runtime.registry import get_backend
+from oddish.runtime.sandbox_lifecycle import (
+    DEFAULT_EXECUTION_LANE,
+    EC2_TRIAL_EXECUTION_LANE,
+)
 
 from oddish.workers.analysis_trials import (
     register_audit_enabled_check,
@@ -105,6 +119,27 @@ from oddish.workers.analysis_trials import (
 
 from .github import notify_github_qa, notify_github_trial
 from .runtime import configure_storage_paths, console
+
+# Generic workers must never receive EC2 launch credentials or the SSH key.
+# Only the dedicated ``ec2_trial`` lane carries those secrets.
+trial_worker_secrets = [*runtime_secrets]
+ec2_trial_worker_secrets = [*runtime_secrets, *ec2_worker_secrets]
+reconciler_secrets = [*runtime_secrets, *ec2_control_secrets]
+
+
+@app.function(
+    image=image,
+    secrets=reconciler_secrets,
+    timeout=300,
+    cpu=1.0,
+    memory=1024,
+)
+async def teardown_ec2_sandbox(external_id: str) -> bool:
+    backend = get_backend("ec2")
+    if backend is None:
+        raise RuntimeError("EC2 backend is not registered in the teardown worker")
+    return await backend.teardown(external_id)
+
 
 # Register TRIAL / TASK_EXPAND / TAG_PROJECT handlers against the unified
 # registry as soon as this module loads in a worker container. The
@@ -176,7 +211,11 @@ async def _effective_model_concurrency(queue_key: str) -> int:
     return (await _effective_model_concurrency_limits((queue_key,)))[queue_key]
 
 
-async def _run_one_job(queue_key: str, harbor_variant_id: str = "default") -> None:
+async def _run_one_job(
+    queue_key: str,
+    harbor_variant_id: str = "default",
+    execution_lane: str = DEFAULT_EXECUTION_LANE,
+) -> None:
     """Acquire a slot, claim + run ONE ``worker_jobs`` row of this variant.
 
     Shared body for the default ``process_single_job`` and every blessed-variant
@@ -200,18 +239,43 @@ async def _run_one_job(queue_key: str, harbor_variant_id: str = "default") -> No
         "worker.process_single_job",
         queue_key=queue_key,
         harbor_variant_id=harbor_variant_id,
+        execution_lane=execution_lane,
         modal_function_call_id=fc_id,
     )
 
     worker_id = f"{queue_key}-{uuid4().hex[:12]}"
     lock_slot: int | None = None
+    capacity_slot: int | None = None
+    release_capacity_lease = True
 
     job_span.__enter__()
     try:
-        console.print(f"[cyan]Job worker starting (queue_key={queue_key})...[/cyan]")
+        console.print(
+            f"[cyan]Job worker starting (queue_key={queue_key}, "
+            f"execution_lane={execution_lane})...[/cyan]"
+        )
         if fc_id:
             console.print(f"[dim]Modal function call: {fc_id}[/dim]")
         await configure_storage_paths()
+
+        if execution_lane not in {
+            DEFAULT_EXECUTION_LANE,
+            EC2_TRIAL_EXECUTION_LANE,
+        }:
+            raise RuntimeError(f"unsupported execution lane: {execution_lane!r}")
+        if execution_lane == EC2_TRIAL_EXECUTION_LANE:
+            capacity_slot = await acquire_sandbox_capacity_lease(
+                provider="ec2",
+                limit=settings.ec2_max_concurrent_instances,
+                worker_id=worker_id,
+                lease_seconds=SANDBOX_CAPACITY_LEASE_SECONDS,
+            )
+            if capacity_slot is None:
+                console.print(
+                    "metric=sandbox_capacity_exhausted provider=ec2 "
+                    f"limit={settings.ec2_max_concurrent_instances}"
+                )
+                return
 
         queue_limit = await _effective_model_concurrency(queue_key)
         if queue_limit <= 0:
@@ -241,20 +305,43 @@ async def _run_one_job(queue_key: str, harbor_variant_id: str = "default") -> No
             f"[dim]Acquired queue slot {lock_slot + 1}/{queue_limit} (queue_key={queue_key})[/dim]"
         )
 
-        jobs_processed = await drain_worker_jobs(
-            queue_key,
-            worker_id=worker_id,
-            queue_slot=lock_slot,
-            budget_seconds=WORKER_BATCH_BUDGET_SECONDS,
-            modal_function_call_id=fc_id,
-            post_success_hooks=_POST_SUCCESS_HOOKS,
-            harbor_variant_id=harbor_variant_id,
-            worker_billing_spec=WorkerBillingSpec(
-                cpu_cores=WORKER_CPU,
-                memory_mb=WORKER_MEMORY_MB,
-                nonpreemptible=WORKER_NONPREEMPTIBLE,
-            ),
+        worker_billing_spec = WorkerBillingSpec(
+            cpu_cores=WORKER_CPU,
+            memory_mb=WORKER_MEMORY_MB,
+            nonpreemptible=WORKER_NONPREEMPTIBLE,
         )
+        if execution_lane == EC2_TRIAL_EXECUTION_LANE:
+            # Only a normal return proves the sandbox teardown path completed.
+            # On cancellation, reconciliation keeps this lease until the owner
+            # is terminal.
+            release_capacity_lease = False
+            jobs_processed = int(
+                await run_single_worker_job(
+                    queue_key,
+                    worker_id=worker_id,
+                    queue_slot=lock_slot,
+                    modal_function_call_id=fc_id,
+                    post_success_hooks=_POST_SUCCESS_HOOKS,
+                    harbor_variant_id=harbor_variant_id,
+                    execution_lane=execution_lane,
+                    capacity_provider="ec2",
+                    capacity_slot=capacity_slot,
+                    worker_billing_spec=worker_billing_spec,
+                )
+            )
+            release_capacity_lease = True
+        else:
+            jobs_processed = await drain_worker_jobs(
+                queue_key,
+                worker_id=worker_id,
+                queue_slot=lock_slot,
+                budget_seconds=WORKER_BATCH_BUDGET_SECONDS,
+                modal_function_call_id=fc_id,
+                post_success_hooks=_POST_SUCCESS_HOOKS,
+                harbor_variant_id=harbor_variant_id,
+                execution_lane=execution_lane,
+                worker_billing_spec=worker_billing_spec,
+            )
         if jobs_processed == 0:
             console.print(
                 f"[dim]No job available after slot acquisition (queue_key={queue_key})[/dim]"
@@ -272,26 +359,36 @@ async def _run_one_job(queue_key: str, harbor_variant_id: str = "default") -> No
         console.print(f"[red]Worker error: {e}[/red]")
         raise
     finally:
-        if lock_slot is not None:
-            await release_queue_slot(
-                queue_key=queue_key,
-                slot=lock_slot,
-                worker_id=worker_id,
-            )
-        await close_database_connections()
-        import sys as _sys
-
         try:
-            job_span.__exit__(*_sys.exc_info())
-        except Exception:
-            pass
-        console.print("[green]Job worker complete[/green]")
+            try:
+                if lock_slot is not None:
+                    await release_queue_slot(
+                        queue_key=queue_key,
+                        slot=lock_slot,
+                        worker_id=worker_id,
+                    )
+            finally:
+                if capacity_slot is not None and release_capacity_lease:
+                    await release_sandbox_capacity_lease(
+                        provider="ec2",
+                        slot=capacity_slot,
+                        worker_id=worker_id,
+                    )
+        finally:
+            await close_database_connections()
+            import sys as _sys
+
+            try:
+                job_span.__exit__(*_sys.exc_info())
+            except Exception:
+                pass
+            console.print("[green]Job worker complete[/green]")
 
 
 @app.function(
     image=image,
     volumes=worker_volumes,
-    secrets=runtime_secrets,
+    secrets=trial_worker_secrets,
     min_containers=WORKER_MIN_CONTAINERS,
     buffer_containers=WORKER_BUFFER_CONTAINERS,
     scaledown_window=WORKER_SCALEDOWN_WINDOW_SECONDS,
@@ -301,29 +398,72 @@ async def _run_one_job(queue_key: str, harbor_variant_id: str = "default") -> No
     memory=WORKER_MEMORY_MB,
     nonpreemptible=WORKER_NONPREEMPTIBLE,
 )
-async def process_single_job(queue_key: str, harbor_variant_id: str = "default"):
+async def process_single_job(
+    queue_key: str,
+    harbor_variant_id: str = "default",
+    execution_lane: str = DEFAULT_EXECUTION_LANE,
+):
     """Default-image single-job worker.
 
     Serves ``default`` and ``ephemeral`` (the latter spawns an out-of-process
     child from this image); blessed variants run on their own image Function.
     """
-    await _run_one_job(queue_key, harbor_variant_id)
+    if execution_lane != DEFAULT_EXECUTION_LANE:
+        raise RuntimeError(
+            f"generic worker refused non-default execution lane {execution_lane!r}"
+        )
+    await _run_one_job(queue_key, harbor_variant_id, execution_lane)
 
 
-def _make_variant_entry(variant_id: str):
+@app.function(
+    image=image,
+    volumes=worker_volumes,
+    secrets=ec2_trial_worker_secrets,
+    min_containers=0,
+    buffer_containers=0,
+    scaledown_window=WORKER_SCALEDOWN_WINDOW_SECONDS,
+    max_containers=WORKER_MAX_CONTAINERS,
+    timeout=WORKER_TIMEOUT_SECONDS,
+    cpu=WORKER_CPU,
+    memory=WORKER_MEMORY_MB,
+    nonpreemptible=WORKER_NONPREEMPTIBLE,
+)
+async def process_single_ec2_trial_job(
+    queue_key: str,
+    harbor_variant_id: str = "default",
+    execution_lane: str = EC2_TRIAL_EXECUTION_LANE,
+):
+    if execution_lane != EC2_TRIAL_EXECUTION_LANE:
+        raise RuntimeError(
+            f"EC2 worker refused non-EC2 execution lane {execution_lane!r}"
+        )
+    await _run_one_job(queue_key, harbor_variant_id, execution_lane)
+
+
+def _make_variant_entry(variant_id: str, lane: str):
     """Build the entrypoint for a blessed variant's single-job Function.
 
     Closes over *variant_id* so the Function defaults to its own lane even if the
     dispatcher's explicit ``harbor_variant_id`` kwarg is ever omitted.
     """
 
-    async def _entry(queue_key: str, harbor_variant_id: str = variant_id):
-        await _run_one_job(queue_key, harbor_variant_id)
+    async def _entry(
+        queue_key: str,
+        harbor_variant_id: str = variant_id,
+        execution_lane: str = lane,
+    ):
+        if execution_lane != lane:
+            raise RuntimeError(
+                f"variant worker lane mismatch: expected {lane!r}, got {execution_lane!r}"
+            )
+        await _run_one_job(queue_key, harbor_variant_id, execution_lane)
 
     return _entry
 
 
-def build_harbor_variant_functions(modal_app) -> dict[str, object]:
+def build_harbor_variant_functions(
+    modal_app, *, execution_lane: str = DEFAULT_EXECUTION_LANE
+) -> dict[str, object]:
     """Register one image-bound ``process_single_job__<id>`` per blessed variant.
 
     Returns ``variant_id -> Function``. Empty unless ``HARBOR_VARIANTS`` is
@@ -341,7 +481,11 @@ def build_harbor_variant_functions(modal_app) -> dict[str, object]:
         functions[variant_id] = modal_app.function(
             image=variant_image,
             volumes=worker_volumes,
-            secrets=runtime_secrets,
+            secrets=(
+                ec2_trial_worker_secrets
+                if execution_lane == EC2_TRIAL_EXECUTION_LANE
+                else trial_worker_secrets
+            ),
             min_containers=0,
             buffer_containers=0,
             scaledown_window=WORKER_SCALEDOWN_WINDOW_SECONDS,
@@ -350,16 +494,20 @@ def build_harbor_variant_functions(modal_app) -> dict[str, object]:
             cpu=WORKER_CPU,
             memory=WORKER_MEMORY_MB,
             nonpreemptible=WORKER_NONPREEMPTIBLE,
-            name=harbor_variant_function_name(variant_id),
+            name=(
+                f"{harbor_variant_function_name(variant_id)}__ec2_trial"
+                if execution_lane == EC2_TRIAL_EXECUTION_LANE
+                else harbor_variant_function_name(variant_id)
+            ),
             serialized=True,
-        )(_make_variant_entry(variant_id))
+        )(_make_variant_entry(variant_id, execution_lane))
     return functions
 
 
 @app.function(
     image=image,
     volumes=worker_volumes,
-    secrets=runtime_secrets,
+    secrets=reconciler_secrets,
     timeout=CLEANUP_TIMEOUT_SECONDS,
     cpu=RECONCILER_CPU,
     memory=RECONCILER_MEMORY_MB,
@@ -616,6 +764,9 @@ async def refresh_trial_facets():
 # ``ephemeral`` always route to the base ``process_single_job``. Empty unless
 # HARBOR_VARIANTS is populated.
 _VARIANT_JOB_FUNCTIONS: dict[str, object] = build_harbor_variant_functions(app)
+_EC2_VARIANT_JOB_FUNCTIONS: dict[str, object] = build_harbor_variant_functions(
+    app, execution_lane=EC2_TRIAL_EXECUTION_LANE
+)
 
 
 async def _build_gke_task_image_entry(task_id: str, version: int) -> str:
@@ -723,9 +874,21 @@ async def poll_queue():
         console.print("[cyan]Queue dispatcher starting...[/cyan]")
         await configure_storage_paths()
 
+        ec2_capacity_limit = (
+            settings.ec2_max_concurrent_instances if settings.ec2_enabled else 0
+        )
+        held_ec2_capacity = (
+            await count_held_sandbox_capacity_leases(provider="ec2")
+            if ec2_capacity_limit > 0
+            else 0
+        )
         plan = await build_dispatch_plan(
             max_workers=MAX_WORKERS_PER_POLL,
             concurrency_limits_for=_effective_model_concurrency_limits,
+            capacity_limits_by_lane={
+                EC2_TRIAL_EXECUTION_LANE: ec2_capacity_limit,
+            },
+            held_by_lane={EC2_TRIAL_EXECUTION_LANE: held_ec2_capacity},
         )
 
         for queue_key in plan.queue_keys:
@@ -741,7 +904,12 @@ async def poll_queue():
         # Log non-default variant demand so override routing is debuggable from
         # the poll log.
         variant_demand: dict[str, int] = {}
-        for (_org_id, _queue_key, variant), queued in plan.queued_by_org_queue.items():
+        for (
+            _org_id,
+            _queue_key,
+            variant,
+            _lane,
+        ), queued in plan.queued_by_org_queue.items():
             if variant != "default":
                 variant_demand[variant] = variant_demand.get(variant, 0) + queued
         if variant_demand:
@@ -758,6 +926,7 @@ async def poll_queue():
                 org_id,
                 _queue_key,
                 _variant,
+                _lane,
             ), queued in plan.queued_by_org_queue.items():
                 key = org_id or "<none>"
                 org_buckets[key] = org_buckets.get(key, 0) + queued
@@ -767,6 +936,11 @@ async def poll_queue():
             console.print(f"[dim]queued_by_org: {summary}[/dim]")
 
         console.print(f"[dim]Spawn cap per poll: {MAX_WORKERS_PER_POLL}[/dim]")
+        console.print(
+            "[dim]EC2 capacity: "
+            f"held={held_ec2_capacity} "
+            f"limit={ec2_capacity_limit}[/dim]"
+        )
 
         spawn_plan = plan.unit_plan
 
@@ -817,14 +991,16 @@ async def poll_queue():
             fn, spawn_kwargs = select_job_function(
                 unit,
                 default_fn=process_single_job,
+                ec2_fn=process_single_ec2_trial_job,
                 variant_fns=_VARIANT_JOB_FUNCTIONS,
+                ec2_variant_fns=_EC2_VARIANT_JOB_FUNCTIONS,
             )
             spawn_calls.append(fn.spawn.aio(**spawn_kwargs))
         await asyncio.gather(*spawn_calls)
-        for i, (queue_key, variant) in enumerate(spawn_plan, start=1):
+        for i, (queue_key, variant, lane) in enumerate(spawn_plan, start=1):
             console.print(
                 f"[dim]Spawned worker {i}/{len(spawn_plan)} "
-                f"(queue_key={queue_key}, variant={variant})[/dim]"
+                f"(queue_key={queue_key}, variant={variant}, lane={lane})[/dim]"
             )
 
         console.print(f"[green]Dispatched {len(spawn_plan)} workers[/green]")
@@ -832,7 +1008,7 @@ async def poll_queue():
         # Stamp spawned_at only AFTER the spawn actually happened, so a worker
         # that fails to spawn (the gather above raises -> caught below) leaves
         # its row un-stamped instead of falsely reading as 'spawned'.
-        spawned_queue_keys = [queue_key for queue_key, _variant in spawn_plan]
+        spawned_queue_keys = [queue_key for queue_key, _variant, _lane in spawn_plan]
         why_waiting = compute_post_spawn_why_waiting(
             plan,
             spawned_keys=spawned_queue_keys,

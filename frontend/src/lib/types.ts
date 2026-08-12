@@ -296,6 +296,12 @@ export interface TaskBrowseItem {
   reward_success: number;
   reward_sum: number;
   reward_total: number;
+  pass_count: number;
+  partial_count: number;
+  fail_count: number;
+  harness_count: number;
+  skipped_count: number;
+  pending_count: number;
   last_run_at?: string | null;
   link?: string | null;
   github_meta?: Record<string, string> | null;
@@ -309,6 +315,7 @@ export interface TaskBrowseItem {
   billed_has_native: boolean;
   qa_cost_usd?: number;
   latest_trials: TaskBrowseTrial[];
+  latest_trials_truncated: boolean;
   experiments: TaskBrowseExperiment[];
   user_tags: UserTagRef[];
 }
@@ -347,6 +354,7 @@ export interface ExperimentOptionsResponse {
 export interface TaskVersionSummary {
   id: string;
   version: number;
+  content_hash?: string | null;
   message?: string | null;
   created_at: string;
   is_current: boolean;
@@ -734,6 +742,51 @@ export interface TrajectoryComponent {
   /** Deterministic metadata added in summary schema v5; optional for older summaries. */
   tool_count?: number;
   duration_ms?: number;
+}
+
+/** Behaviour categories from the backend cohort taxonomy. */
+export type BehaviorCategory =
+  | "behavior_discovery"
+  | "planning"
+  | "testing_verification"
+  | "debugging"
+  | "scope_adherence"
+  | "coherence"
+  | "environment_tooling";
+
+export interface BehaviorEvidence {
+  trial_id: string;
+  /** A stored component's label, not a live-enum value: the backend accepts
+   *  any string here and verifies it against the trial's stored components,
+   *  so retired vocabulary arrives intact. */
+  trajectory_component: string;
+  step_ids: number[];
+  quote: string;
+}
+
+export interface BehaviorObservation {
+  behavior_description: string;
+  evidence: BehaviorEvidence[];
+}
+
+export interface CategoryComparison {
+  category: BehaviorCategory;
+  label: string | null;
+  successful: BehaviorObservation[];
+  failing: BehaviorObservation[];
+}
+
+export interface CohortComparison {
+  schema_version: number;
+  /** The version compared, stamped by the endpoint. Trial links carry it so
+   *  the task page opens the drawer on the version that owns the trial. */
+  task_version_id?: string;
+  cohort_success: string[];
+  cohort_failure: string[];
+  categories: CategoryComparison[];
+  dropped?: { evidence: number; observations: number; categories: number };
+  /** Trials whose summary covers under half their run; evidence from these is thin. */
+  thin_coverage?: string[];
 }
 
 export interface TrajectorySummary {

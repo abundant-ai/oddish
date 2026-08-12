@@ -17,6 +17,7 @@ from sqlalchemy import (
     nulls_last,
     or_,
     select,
+    text,
     tuple_,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -57,6 +58,7 @@ from oddish.db import (
     TagState,
     TaskModel,
     TaskVersionModel,
+    TaskBrowseSummaryModel,
     TrialFacetModel,
     TrialModel,
     TrialStatus,
@@ -75,6 +77,11 @@ from oddish.schemas import (
     UserTagRef,
 )
 from oddish.core.cost_basis import not_combine_copy_filter
+from oddish.core.task_browse_metrics import (
+    browse_trial_scope,
+    resolve_browse_cost_breakdown,
+    trial_bucket_label,
+)
 from oddish.core.endpoints.qa_cost import get_task_qa_costs, get_trial_qa_costs
 from oddish.filters.trial_metrics import TrialMetricFilter
 from oddish.filters.trial_predicates import (
@@ -716,68 +723,6 @@ def _build_browse_author_filter(
 # denormalizes these into task columns + a backfill + indexes so the same filter
 # surface becomes cheap. Do not assume any of these predicates is free.
 
-# Substrings that mark an agent timeout in ``error_message`` — kept in lockstep
-# with the frontend ``getMatrixStatus`` (see status-config.ts): a timeout that
-# still produced a reward is NOT a harness error, it scores normally.
-_AGENT_TIMEOUT_LIKE = ("%AgentTimeoutError%", "%Agent execution timed out%")
-
-
-def _trial_bucket_label() -> Any:
-    """SQL bucket (``skipped``/``pass``/``partial``/``fail``/``harness``/
-    ``scoreless``/``other``) for one trial, mirroring the frontend
-    ``getMatrixStatus`` (oddish/frontend/src/lib/status-config.ts) EXACTLY so the
-    browser's Pass/Partial/Fail/Harness count filters agree with the card chips:
-
-      * ``SKIPPED`` status is ``skipped`` — checked FIRST, before the
-        error-message rule, because a gate-skipped trial carries
-        ``GATE_SKIP_MESSAGE`` and must not be miscounted as ``harness`` (matches
-        ``getMatrixStatus``, which returns "skipped" before its error-message
-        short-circuit);
-      * an ``error_message`` forces ``harness`` — UNLESS it is an agent timeout
-        that still produced a reward (then it scores normally);
-      * ``FAILED`` status is ``harness`` (same agent-timeout-with-reward carve-out);
-      * ``SUCCESS`` status is the reward bucket (``pass`` reward==1 / ``fail``
-        reward==0 / ``partial`` otherwise) when a reward exists, else ``scoreless``;
-      * anything else (pending/queued/running) is ``other`` and stays uncounted.
-
-    Keep this in lockstep with ``getMatrixStatus``; the AgentTimeout agreement
-    test in ``test_browse_filters.py`` guards the carve-out.
-    """
-    is_agent_timeout = and_(
-        TrialModel.error_message.isnot(None),
-        or_(*(TrialModel.error_message.like(p) for p in _AGENT_TIMEOUT_LIKE)),
-    )
-    has_reward = TrialModel.reward.isnot(None)
-    reward_bucket: Any = case(
-        (TrialModel.reward == 1, "pass"),
-        (TrialModel.reward == 0, "fail"),
-        else_="partial",
-    )
-    return case(
-        # Checked before the error-message rule: a gate-skipped trial carries an
-        # error_message but is its own bucket, not a harness error.
-        (TrialModel.status == TrialStatus.SKIPPED, "skipped"),
-        (
-            and_(
-                TrialModel.error_message.isnot(None),
-                ~and_(is_agent_timeout, has_reward),
-            ),
-            "harness",
-        ),
-        (
-            TrialModel.status == TrialStatus.FAILED,
-            case(
-                (and_(is_agent_timeout, has_reward), reward_bucket),
-                else_="harness",
-            ),
-        ),
-        (
-            TrialModel.status == TrialStatus.SUCCESS,
-            case((has_reward, reward_bucket), else_="scoreless"),
-        ),
-        else_="other",
-    )
-
 
 def _trial_runtime_seconds() -> Any:
     """Wall-clock seconds for one trial (``finished_at − started_at``), NULL when
@@ -871,7 +816,7 @@ def _subject_metric_value(subject_col: Any, value: str, metric: str, agg: str) -
     """
     matches = subject_col == value
     if metric == "pass_rate":
-        pass_ct = func.count(case((and_(matches, _trial_bucket_label() == "pass"), 1)))
+        pass_ct = func.count(case((and_(matches, trial_bucket_label() == "pass"), 1)))
         total_ct = func.count(case((matches, 1)))
         return pass_ct * 100.0 / func.nullif(total_ct, 0)
     scoped: Any = case((matches, _compare_metric_expr(metric)), else_=None)
@@ -984,7 +929,7 @@ def _top_performer_predicate(
     # Per-subject best value (no CASE needed — we group by the subject column).
     if metric == "pass_rate":
         best_val = (
-            func.count(case((_trial_bucket_label() == "pass", 1)))
+            func.count(case((trial_bucket_label() == "pass", 1)))
             * 100.0
             / func.nullif(func.count(TrialModel.id), 0)
         )
@@ -1096,7 +1041,7 @@ def _task_metrics_subquery(
     # Wall-clock seconds, NULL when a timestamp is missing so SUM/AVG ignore
     # unfinished / not-yet-started trials (shared with the Phase 2.1 comparison).
     runtime_seconds = _trial_runtime_seconds()
-    bucket = _trial_bucket_label()
+    bucket = trial_bucket_label()
     cost_scope = []
     if cost_models:
         cost_scope.append(TrialModel.model.in_(list(cost_models)))
@@ -1186,6 +1131,9 @@ _AGGREGATE_GROUP_KEYS = frozenset(
         "pass_rate_max",
     }
 )
+
+
+TASK_BROWSE_TRIAL_PREVIEW_LIMIT = 24
 
 
 async def browse_tasks_core(
@@ -1447,9 +1395,7 @@ async def browse_tasks_core(
     # when it's active so every constraint is checked against the same trial.
     metric_filter_active = not metric_filter.is_empty
     if trial_finished_after is not None:
-        trial_finished_predicates.append(
-            TrialModel.finished_at >= trial_finished_after
-        )
+        trial_finished_predicates.append(TrialModel.finished_at >= trial_finished_after)
     if trial_finished_before is not None:
         trial_finished_predicates.append(
             TrialModel.finished_at <= trial_finished_before
@@ -1976,46 +1922,10 @@ async def browse_tasks_core(
 
     ranked_tasks_subquery = ranked_tasks.subquery()
 
-    version_counts = (
-        select(
-            TaskVersionModel.task_id.label("task_id"),
-            func.count(TaskVersionModel.id).label("version_count"),
-        )
-        .group_by(TaskVersionModel.task_id)
-        .subquery()
-    )
-
-    trial_activity_at = func.greatest(
-        func.coalesce(TrialModel.finished_at, TrialModel.created_at),
-        func.coalesce(TrialModel.started_at, TrialModel.created_at),
-        TrialModel.created_at,
-    )
-    # The page ORDERING needs only max(activity) per (task, version); the
-    # heavy per-task counters are fetched afterwards for just the visible
-    # page. Folding them into this org-wide aggregate made every browse page
-    # compute eight aggregates over every trial in the org (~65% of page
-    # latency at prod volume) to display 25 rows.
-    trial_agg_query = select(
-        TrialModel.task_id.label("task_id"),
-        TrialModel.task_version_id.label("task_version_id"),
-        func.max(trial_activity_at).label("last_run_at"),
-    ).where(
-        TrialModel.superseded_by_trial_id.is_(None),
-        # Probes have their own tab; keep them out of the browser's counts
-        # and out of last_run_at, which drives the page ordering.
-        TrialModel.is_probe.isnot(True),
-        # A combine copy's created_at is its materialization time, so counting it
-        # here would freshen last_run_at and jump an old task up the page even
-        # though the card's counters/cost/icons exclude it. The source trial
-        # still supplies the real activity time.
-        not_combine_copy_filter(),
-    )
-    if org_id is not None:
-        trial_agg_query = trial_agg_query.where(TrialModel.org_id == org_id)
-    trial_aggregates = trial_agg_query.group_by(
-        TrialModel.task_id, TrialModel.task_version_id
-    ).subquery()
-
+    # Join one precomputed row for the selected default version. Page selection
+    # now scales with task/version summaries, never with organization trial
+    # history. The migration backfills every existing version; a brand-new
+    # no-trial version reads as an empty summary without a historical fallback.
     paged_rows = (
         select(
             ranked_tasks_subquery.c.task_id,
@@ -2024,20 +1934,26 @@ async def browse_tasks_core(
             ranked_tasks_subquery.c.current_version_id,
             ranked_tasks_subquery.c.link,
             ranked_tasks_subquery.c.tags,
-            func.coalesce(version_counts.c.version_count, 0).label("version_count"),
-            trial_aggregates.c.last_run_at.label("last_run_at"),
+            TaskBrowseSummaryModel.last_run_at,
+            TaskBrowseSummaryModel.total_trials,
+            TaskBrowseSummaryModel.completed_trials,
+            TaskBrowseSummaryModel.failed_trials,
+            TaskBrowseSummaryModel.reward_success,
+            TaskBrowseSummaryModel.reward_sum,
+            TaskBrowseSummaryModel.reward_total,
+            TaskBrowseSummaryModel.pass_count,
+            TaskBrowseSummaryModel.partial_count,
+            TaskBrowseSummaryModel.fail_count,
+            TaskBrowseSummaryModel.harness_count,
+            TaskBrowseSummaryModel.skipped_count,
+            TaskBrowseSummaryModel.pending_count,
+            TaskBrowseSummaryModel.cost_breakdown,
         )
         .select_from(ranked_tasks_subquery)
         .outerjoin(
-            version_counts, version_counts.c.task_id == ranked_tasks_subquery.c.task_id
-        )
-        .outerjoin(
-            trial_aggregates,
-            and_(
-                trial_aggregates.c.task_id == ranked_tasks_subquery.c.task_id,
-                trial_aggregates.c.task_version_id
-                == ranked_tasks_subquery.c.current_version_id,
-            ),
+            TaskBrowseSummaryModel,
+            TaskBrowseSummaryModel.task_version_id
+            == ranked_tasks_subquery.c.current_version_id,
         )
         .where(ranked_tasks_subquery.c.name_rank == 1)
     )
@@ -2063,7 +1979,7 @@ async def browse_tasks_core(
             # real experiment. Fall back to the task's created_at when
             # no trials have finished yet.
             func.coalesce(
-                trial_aggregates.c.last_run_at,
+                TaskBrowseSummaryModel.last_run_at,
                 ranked_tasks_subquery.c.created_at,
             ).desc(),
             nulls_last(ranked_tasks_subquery.c.current_version.desc()),
@@ -2087,11 +2003,6 @@ async def browse_tasks_core(
 
     experiments_by_task: dict[str, list[TaskBrowseExperiment]] = {}
     latest_trials_by_task: dict[str, list[TaskBrowseTrial]] = {}
-    counters_by_task: dict[str, dict] = {}
-    # Per-task cost rollup (token-estimated for CLI agents that report tokens
-    # but no native cost_usd). Folded into the trials loop below to avoid an
-    # extra query. Mirrors the task-detail TaskCostTotals fields.
-    cost_by_task: dict[str, dict[str, Any]] = {}
     cost_scope_active = sort == "cost_desc"
     task_version_pairs = [
         (str(row["task_id"]), str(row["current_version_id"]))
@@ -2099,50 +2010,42 @@ async def browse_tasks_core(
         if row["current_version_id"] is not None
     ]
     task_ids = [str(row["task_id"]) for row in visible_rows]
+    version_counts_by_task: dict[str, int] = {}
+    if task_ids:
+        version_count_rows = await session.execute(
+            select(
+                TaskVersionModel.task_id,
+                func.count(TaskVersionModel.id).label("version_count"),
+            )
+            .where(TaskVersionModel.task_id.in_(task_ids))
+            .group_by(TaskVersionModel.task_id)
+        )
+        version_counts_by_task = {
+            str(row["task_id"]): int(row["version_count"])
+            for row in version_count_rows.mappings()
+        }
+
+    # Default cards price the persisted raw model/token groups. Aggregate-cost
+    # sorting deliberately keeps its scoped visible-page calculation below.
+    cost_by_task: dict[str, dict[str, Any]] = (
+        {}
+        if cost_scope_active
+        else {
+            str(row["task_id"]): resolve_browse_cost_breakdown(
+                row["cost_breakdown"] or []
+            )
+            for row in visible_rows
+        }
+    )
+    specialized_path_active = bool(
+        aggregate_filter_active
+        or aggregate_sort_active
+        or group_specs
+        or (compare_a and compare_b and compare_metric_known)
+        or (top_value and top_subject_col is not None)
+    )
 
     if task_version_pairs:
-        counters_query = (
-            select(
-                TrialModel.task_id.label("task_id"),
-                func.count(TrialModel.id).label("total_trials"),
-                func.count(case((TrialModel.status == TrialStatus.SUCCESS, 1))).label(
-                    "completed_trials"
-                ),
-                func.count(case((TrialModel.status == TrialStatus.FAILED, 1))).label(
-                    "failed_trials"
-                ),
-                func.count(case((TrialModel.reward == 1, 1))).label("reward_success"),
-                func.sum(TrialModel.reward).label("reward_sum"),
-                func.count(case((TrialModel.reward.isnot(None), 1))).label(
-                    "reward_total"
-                ),
-            )
-            .where(
-                TrialModel.superseded_by_trial_id.is_(None),
-                TrialModel.is_probe.isnot(True),
-                # Combine copies double-count an execution already counted under
-                # its source experiment; drop them so the card's trial counts and
-                # cost match the task-detail view (which excludes them too).
-                not_combine_copy_filter(),
-                tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(
-                    task_version_pairs
-                ),
-            )
-            .group_by(TrialModel.task_id)
-        )
-        if org_id is not None:
-            counters_query = counters_query.where(TrialModel.org_id == org_id)
-        counters_started_at = now()
-        counter_rows = await session.execute(counters_query)
-        if record_timing is not None:
-            record_timing(
-                "browse_counters",
-                elapsed_ms(counters_started_at),
-                "Browse page trial counters",
-            )
-        counters_by_task = {
-            str(row["task_id"]): dict(row) for row in counter_rows.mappings()
-        }
         # All-time experiment membership via ``task_experiments``, matching the
         # task-detail page (and user tags) rather than the current-version trials.
         exp_where = [
@@ -2188,76 +2091,132 @@ async def browse_tasks_core(
                 )
             )
 
-        trial_query = (
-            select(
-                TrialModel.task_id.label("task_id"),
-                TrialModel.id.label("trial_id"),
-                TrialModel.name.label("trial_name"),
-                TrialModel.status.label("trial_status"),
-                TrialModel.reward.label("reward"),
-                TrialModel.error_message.label("error_message"),
-                TrialModel.agent.label("agent"),
-                TrialModel.model.label("model"),
-                TrialModel.cost_usd.label("cost_usd"),
-                TrialModel.input_tokens.label("input_tokens"),
-                TrialModel.output_tokens.label("output_tokens"),
-                TrialModel.cache_tokens.label("cache_tokens"),
-                TrialModel.cache_write_tokens.label("cache_write_tokens"),
-                TrialModel.billed_user_id.label("billed_user_id"),
-                TrialModel.finished_at.label("finished_at"),
-            )
-            .where(
-                TrialModel.superseded_by_trial_id.is_(None),
-                TrialModel.is_probe.isnot(True),
-                # Combine copies re-materialize the same execution under other
-                # experiments; keeping them rendered as duplicate result icons on
-                # the card. Exclude so each execution shows once.
-                not_combine_copy_filter(),
-                tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(
-                    task_version_pairs
-                ),
-            )
-            .order_by(
-                TrialModel.task_id.asc(),
-                TrialModel.created_at.asc(),
-                TrialModel.id.asc(),
-            )
-        )
-        if org_id is not None:
-            trial_query = trial_query.where(TrialModel.org_id == org_id)
         trials_started_at = now()
-        latest_trial_rows = await session.execute(trial_query)
+        if specialized_path_active:
+            trial_query = (
+                select(
+                    TrialModel.task_id.label("task_id"),
+                    TrialModel.id.label("trial_id"),
+                    TrialModel.name.label("trial_name"),
+                    TrialModel.status.label("trial_status"),
+                    TrialModel.reward.label("reward"),
+                    TrialModel.error_message.label("error_message"),
+                    TrialModel.agent.label("agent"),
+                    TrialModel.model.label("model"),
+                    TrialModel.cost_usd.label("cost_usd"),
+                    TrialModel.input_tokens.label("input_tokens"),
+                    TrialModel.output_tokens.label("output_tokens"),
+                    TrialModel.cache_tokens.label("cache_tokens"),
+                    TrialModel.cache_write_tokens.label("cache_write_tokens"),
+                    TrialModel.billed_user_id.label("billed_user_id"),
+                    TrialModel.finished_at.label("finished_at"),
+                )
+                .where(
+                    *browse_trial_scope(),
+                    tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(
+                        task_version_pairs
+                    ),
+                )
+                .order_by(
+                    TrialModel.task_id.asc(),
+                    TrialModel.created_at.asc(),
+                    TrialModel.id.asc(),
+                )
+            )
+            if org_id is not None:
+                trial_query = trial_query.where(TrialModel.org_id == org_id)
+            latest_trial_rows = (await session.execute(trial_query)).mappings().all()
+        else:
+            org_clause = "AND t.org_id = :org_id" if org_id is not None else ""
+            preview_query = text(
+                f"""
+                WITH visible(task_id, task_version_id) AS (
+                    SELECT *
+                    FROM unnest(
+                        CAST(:preview_task_ids AS text[]),
+                        CAST(:preview_version_ids AS text[])
+                    )
+                )
+                SELECT visible.task_id,
+                       trial.id AS trial_id,
+                       trial.name AS trial_name,
+                       trial.status::text AS trial_status,
+                       trial.reward,
+                       trial.error_message,
+                       trial.agent,
+                       trial.model,
+                       trial.cost_usd,
+                       trial.input_tokens,
+                       trial.output_tokens,
+                       trial.cache_tokens,
+                       trial.cache_write_tokens,
+                       trial.billed_user_id,
+                       trial.finished_at
+                FROM visible
+                JOIN LATERAL (
+                    SELECT t.*
+                    FROM trials t
+                    WHERE t.task_id = visible.task_id
+                      AND t.task_version_id = visible.task_version_id
+                      AND t.deleted_at IS NULL
+                      AND t.superseded_by_trial_id IS NULL
+                      AND t.is_probe IS NOT TRUE
+                      AND (
+                          t.idempotency_key IS NULL
+                          OR t.idempotency_key NOT LIKE 'combine:%'
+                      )
+                      {org_clause}
+                    ORDER BY t.created_at DESC, t.id DESC
+                    LIMIT :preview_limit
+                ) AS trial ON TRUE
+                ORDER BY visible.task_id, trial.created_at ASC, trial.id ASC
+                """
+            )
+            preview_params: dict[str, Any] = {
+                "preview_task_ids": [pair[0] for pair in task_version_pairs],
+                "preview_version_ids": [pair[1] for pair in task_version_pairs],
+                "preview_limit": TASK_BROWSE_TRIAL_PREVIEW_LIMIT,
+            }
+            if org_id is not None:
+                preview_params["org_id"] = org_id
+            latest_trial_rows = (
+                (await session.execute(preview_query, preview_params)).mappings().all()
+            )
         if record_timing is not None:
             record_timing(
                 "browse_trials",
                 elapsed_ms(trials_started_at),
                 "Browse trials query",
             )
-        for trial_row in latest_trial_rows.mappings():
+        for trial_row in latest_trial_rows:
             task_key = str(trial_row["task_id"])
+            trial_status = trial_row["trial_status"]
+            if not isinstance(trial_status, TrialStatus):
+                trial_status = TrialStatus[str(trial_status)]
             latest_trials_by_task.setdefault(task_key, []).append(
                 TaskBrowseTrial(
                     id=str(trial_row["trial_id"]),
                     name=str(trial_row["trial_name"]),
-                    status=trial_row["trial_status"],
+                    status=trial_status,
                     reward=trial_row["reward"],
                     error_message=trial_row["error_message"],
                     agent=str(trial_row["agent"]),
                     model=trial_row["model"],
                 )
             )
-            if cost_scope_active:
-                if models and trial_row["model"] not in models:
-                    continue
-                finished_at = trial_row["finished_at"]
-                if trial_finished_after is not None and (
-                    finished_at is None or finished_at < trial_finished_after
-                ):
-                    continue
-                if trial_finished_before is not None and (
-                    finished_at is None or finished_at > trial_finished_before
-                ):
-                    continue
+            if not cost_scope_active:
+                continue
+            if models and trial_row["model"] not in models:
+                continue
+            finished_at = trial_row["finished_at"]
+            if trial_finished_after is not None and (
+                finished_at is None or finished_at < trial_finished_after
+            ):
+                continue
+            if trial_finished_before is not None and (
+                finished_at is None or finished_at > trial_finished_before
+            ):
+                continue
             resolved_cost, cost_estimated = _resolve_browse_trial_cost(trial_row)
             if resolved_cost is not None:
                 cost_agg: dict[str, Any] = cost_by_task.setdefault(
@@ -2327,33 +2286,19 @@ async def browse_tasks_core(
                     if row["current_version_id"] is not None
                     else None
                 ),
-                version_count=int(row["version_count"] or 0),
-                total_trials=int(
-                    counters_by_task.get(str(row["task_id"]), {}).get("total_trials")
-                    or 0
-                ),
-                completed_trials=int(
-                    counters_by_task.get(str(row["task_id"]), {}).get(
-                        "completed_trials"
-                    )
-                    or 0
-                ),
-                failed_trials=int(
-                    counters_by_task.get(str(row["task_id"]), {}).get("failed_trials")
-                    or 0
-                ),
-                reward_success=int(
-                    counters_by_task.get(str(row["task_id"]), {}).get("reward_success")
-                    or 0
-                ),
-                reward_sum=float(
-                    counters_by_task.get(str(row["task_id"]), {}).get("reward_sum")
-                    or 0.0
-                ),
-                reward_total=int(
-                    counters_by_task.get(str(row["task_id"]), {}).get("reward_total")
-                    or 0
-                ),
+                version_count=version_counts_by_task.get(str(row["task_id"]), 0),
+                total_trials=int(row["total_trials"] or 0),
+                completed_trials=int(row["completed_trials"] or 0),
+                failed_trials=int(row["failed_trials"] or 0),
+                reward_success=int(row["reward_success"] or 0),
+                reward_sum=float(row["reward_sum"] or 0.0),
+                reward_total=int(row["reward_total"] or 0),
+                pass_count=int(row["pass_count"] or 0),
+                partial_count=int(row["partial_count"] or 0),
+                fail_count=int(row["fail_count"] or 0),
+                harness_count=int(row["harness_count"] or 0),
+                skipped_count=int(row["skipped_count"] or 0),
+                pending_count=int(row["pending_count"] or 0),
                 last_run_at=row["last_run_at"],
                 link=row["link"],
                 github_meta=_parse_github_meta(row["tags"]),
@@ -2392,6 +2337,11 @@ async def browse_tasks_core(
                     else 0.0
                 ),
                 latest_trials=latest_trials_by_task.get(str(row["task_id"]), []),
+                latest_trials_truncated=(
+                    not specialized_path_active
+                    and int(row["total_trials"] or 0)
+                    > len(latest_trials_by_task.get(str(row["task_id"]), []))
+                ),
                 experiments=experiments_by_task.get(str(row["task_id"]), []),
                 user_tags=[
                     UserTagRef(
@@ -2459,9 +2409,7 @@ async def browse_task_facets_core(
     try:
         stmt = select(
             TrialFacetModel.kind, TrialFacetModel.value, TrialFacetModel.value_2
-        ).order_by(
-            TrialFacetModel.kind, TrialFacetModel.value, TrialFacetModel.value_2
-        )
+        ).order_by(TrialFacetModel.kind, TrialFacetModel.value, TrialFacetModel.value_2)
         if org_id is not None:
             stmt = stmt.where(TrialFacetModel.org_id == org_id)
         prev: tuple[str, str, str] | None = None
@@ -2470,9 +2418,7 @@ async def browse_task_facets_core(
                 continue  # an unscoped read spans orgs; collapse their overlap
             prev = (kind, value, value_2)
             if kind == "agent_model":
-                agent_models.append(
-                    AgentModelFacet(agent=value, model=value_2 or None)
-                )
+                agent_models.append(AgentModelFacet(agent=value, model=value_2 or None))
             elif kind in lists:
                 lists[kind].append(value)
     except Exception:  # noqa: BLE001 - facets are best-effort
@@ -2537,10 +2483,7 @@ async def browse_experiment_options_core(
     limit = max(1, min(limit, EXPERIMENT_OPTIONS_MAX_LIMIT))
     if query and query.strip():
         escaped = (
-            query.strip()
-            .replace("\\", "\\\\")
-            .replace("%", "\\%")
-            .replace("_", "\\_")
+            query.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         )
         base = base.where(ExperimentModel.name.ilike(f"%{escaped}%", escape="\\"))
     stmt = base.order_by(ExperimentModel.name, ExperimentModel.id).limit(limit)

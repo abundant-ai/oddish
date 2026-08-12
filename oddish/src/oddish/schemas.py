@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -33,6 +33,7 @@ from oddish.db import (
     VerdictStatus,
 )
 from oddish.registry_auth import normalize_registry_host
+from oddish.runtime.ec2_policy import validate_ec2_environment_config
 
 
 # =============================================================================
@@ -307,6 +308,7 @@ class TaskSubmission(BaseModel):
         _reject_gpu_tpu_conflict(self.harbor)
         for trial in self.trials:
             _reject_tpu_on_non_gke_environment(self.harbor, trial.environment)
+            _reject_unsupported_ec2_configuration(self.harbor, trial.environment)
         return self
 
     content_hash: str | None = Field(
@@ -507,7 +509,10 @@ class TaskSweepSubmission(BaseModel):
     @model_validator(mode="after")
     def _no_gpu_tpu_conflict(self) -> "TaskSweepSubmission":
         _reject_gpu_tpu_conflict(self.harbor)
-        _reject_tpu_on_non_gke_environment(self.harbor, self.environment)
+        for config in self.configs:
+            resolved_environment = config.environment or self.environment
+            _reject_tpu_on_non_gke_environment(self.harbor, resolved_environment)
+            _reject_unsupported_ec2_configuration(self.harbor, resolved_environment)
         return self
 
     content_hash: str | None = Field(
@@ -720,6 +725,19 @@ class TaskUploadInitRequest(BaseModel):
             "stamp (e.g. to flip run_analysis on)."
         ),
     )
+    overwrite_current_version: bool = Field(
+        False,
+        description=(
+            "Replace the selected current version in place; trials pinned to "
+            "that version will resolve to the replacement content."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_version_mode(self) -> "TaskUploadInitRequest":
+        if self.force_new_version and self.overwrite_current_version:
+            raise ValueError("version upload modes are mutually exclusive")
+        return self
 
 
 class TaskUploadCompleteRequest(BaseModel):
@@ -734,6 +752,35 @@ class TaskUploadCompleteRequest(BaseModel):
     message: str | None = Field(
         None, description="Optional description of what changed in this version"
     )
+    overwrite_current_version: bool = Field(
+        False,
+        description="Finalize an in-place current-version replacement.",
+    )
+    staging_key: str | None = Field(
+        None,
+        description="Server-issued staging object for an in-place replacement.",
+    )
+    overwrite_base_content_hash: str | None = Field(
+        None,
+        description=(
+            "Content hash observed when an in-place replacement was initialized; "
+            "used to reject stale completions."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_overwrite_staging_key(self) -> "TaskUploadCompleteRequest":
+        if self.overwrite_current_version and not self.staging_key:
+            raise ValueError("staging_key is required for an in-place replacement")
+        if (
+            self.overwrite_current_version
+            and "overwrite_base_content_hash" not in self.model_fields_set
+        ):
+            raise ValueError(
+                "overwrite_base_content_hash is required for an in-place replacement"
+            )
+        return self
+
     register_task: bool = Field(
         False,
         description=(
@@ -781,6 +828,8 @@ class TaskUploadInitResponse(UploadResponse):
     upload_method: str | None = None
     upload_headers: dict[str, str] = Field(default_factory=dict)
     requires_completion: bool = False
+    staging_key: str | None = None
+    overwrite_base_content_hash: str | None = None
 
 
 class TrialQueueInfo(BaseModel):
@@ -833,6 +882,7 @@ class TaskVersionSummary(BaseModel):
 
     id: str
     version: int
+    content_hash: str | None = None
     message: str | None = None
     created_at: datetime
     is_current: bool = False
@@ -1188,6 +1238,13 @@ class TaskBatchCancelRequest(BaseModel):
         default_factory=list,
         description="Task IDs to cancel in one request",
     )
+    experiment_id: str | None = Field(
+        default=None,
+        description=(
+            "When set, only cancel trials that belong to this experiment. "
+            "Omitting it cancels every in-flight trial for the listed tasks."
+        ),
+    )
 
 
 class BackfillQARequest(BaseModel):
@@ -1225,6 +1282,14 @@ def _reject_tpu_on_non_gke_environment(
             f"'{environment.value}'. Drop override_tpu or submit with "
             f"environment=gke."
         )
+
+
+def _reject_unsupported_ec2_configuration(
+    harbor: HarborConfig, environment: "EnvironmentType | None"
+) -> None:
+    if environment != EnvironmentType.EC2:
+        return
+    validate_ec2_environment_config(harbor.environment)
 
 
 class TaskSweepBatchRequest(BaseModel):
@@ -1372,6 +1437,12 @@ class TaskBrowseItem(BaseModel):
     reward_success: int
     reward_sum: float
     reward_total: int
+    pass_count: int = 0
+    partial_count: int = 0
+    fail_count: int = 0
+    harness_count: int = 0
+    skipped_count: int = 0
+    pending_count: int = 0
     last_run_at: datetime | None = None
     link: str | None = None
     github_meta: dict[str, str] | None = None
@@ -1387,6 +1458,7 @@ class TaskBrowseItem(BaseModel):
     # because ``analysis_costs.task_id`` is NULL on trial-scoped QA rows.
     qa_cost_usd: float = 0.0
     latest_trials: list[TaskBrowseTrial] = Field(default_factory=list)
+    latest_trials_truncated: bool = False
     experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
     user_tags: list[UserTagRef] = Field(default_factory=list)
 
@@ -2041,5 +2113,3 @@ class DocumentResponse(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
-
-
