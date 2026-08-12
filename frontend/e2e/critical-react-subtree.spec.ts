@@ -130,7 +130,71 @@ const browseResponse: TaskBrowseResponse = {
   offset: 0,
   has_more: false,
 };
-const canonicalTaskOpen = taskOpenValue(taskOpenFromBrowse(browseTask))!;
+const browseTaskOpen = taskOpenValue(taskOpenFromBrowse(browseTask))!;
+const canonicalTaskOpen = {
+  ...browseTaskOpen,
+  selected_version: browseTaskOpen.selected_version
+    ? {
+        ...browseTaskOpen.selected_version,
+        agent_models: [
+          {
+            agent: trial.agent,
+            model: trial.model,
+            providers: [trial.provider],
+            is_probe: false,
+            trial_count: 1,
+            completed_count: 1,
+            failed_count: 0,
+            skipped_count: 0,
+            pending_count: 0,
+            pass_count: 0,
+            partial_count: 0,
+            fail_count: 1,
+            reward_sum: 0,
+            reward_total: 1,
+            cost_usd: trial.cost_usd ?? 0,
+            cost_trial_count: 1,
+            cost_has_estimated: false,
+            cost_has_native: true,
+            billed_cost_usd: trial.cost_usd ?? 0,
+            billed_trial_count: 1,
+            billed_has_estimated: false,
+            billed_has_native: true,
+            last_run_at: trial.finished_at,
+            duration_sum_seconds: 4,
+            duration_trial_count: 1,
+          },
+          {
+            agent: probeTrial.agent,
+            model: probeTrial.model,
+            providers: [probeTrial.provider],
+            is_probe: true,
+            trial_count: 1,
+            completed_count: 1,
+            failed_count: 0,
+            skipped_count: 0,
+            pending_count: 0,
+            pass_count: 1,
+            partial_count: 0,
+            fail_count: 0,
+            reward_sum: 1,
+            reward_total: 1,
+            cost_usd: probeTrial.cost_usd ?? 0,
+            cost_trial_count: 1,
+            cost_has_estimated: false,
+            cost_has_native: true,
+            billed_cost_usd: 0,
+            billed_trial_count: 0,
+            billed_has_estimated: false,
+            billed_has_native: false,
+            last_run_at: probeTrial.finished_at,
+            duration_sum_seconds: 4,
+            duration_trial_count: 1,
+          },
+        ],
+      }
+    : null,
+};
 
 const taskDetail: TaskDetailResponse = {
   task: {
