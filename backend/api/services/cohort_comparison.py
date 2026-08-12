@@ -245,10 +245,22 @@ def _resolves(
     is the right bar. A step citation quotes an agent mid-run, where the useful
     fragment is a phrase inside a long step, so containment is the bar instead.
     Both still require the trial to be on the cited side.
+
+    A citation naming both shapes is checked against neither. The JSON schema
+    given to claude-code cannot express "exactly one of these", so the model
+    can write both, and there is no honest way to pick: whichever source we
+    chose, a quote matching only the other would pass. Enforced here rather
+    than as a raise on the model, so one ambiguous citation is dropped and
+    counted instead of taking the whole comparison down with it.
     """
     trial_id = ev.get("trial_id")
     quote = (ev.get("quote") or "").strip()
+    names_summary = bool(
+        (ev.get("trajectory_component") or "").strip() and ev.get("step_ids")
+    )
     if ev.get("step_id") is not None:
+        if names_summary:
+            return False
         if step_index is None or trial_id not in trials_on_side[side]:
             return False
         text = step_index.get((trial_id, ev["step_id"]))

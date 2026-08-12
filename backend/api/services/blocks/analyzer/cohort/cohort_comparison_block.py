@@ -78,21 +78,17 @@ class BehaviorEvidence(BaseModel):
     # CLAUDE_CLI path can produce these, because only it can read the steps.
     step_id: int | None = None
 
-    @model_validator(mode="after")
-    def _exactly_one_shape(self) -> "BehaviorEvidence":
-        """A citation is checked against one thing, so it may name only one.
-
-        Both shapes at once leaves it ambiguous which source the quote is
-        supposed to match, and a validator that guessed would let a quote that
-        matches neither survive by being checked against the other.
-        """
-        summary_shape = bool((self.trajectory_component or "").strip() and self.step_ids)
-        step_shape = self.step_id is not None
-        if summary_shape == step_shape:
-            raise ValueError(
-                "cite either (trajectory_component + step_ids) or step_id, not both"
-            )
-        return self
+    # A citation is checked against one thing, so it may name only one shape:
+    # both at once leaves it ambiguous which source the quote must match, and
+    # picking one would let a quote that matches neither survive by being
+    # checked against the other. That rule is enforced in ``_resolves``, which
+    # DROPS the citation, and deliberately not by a validator that raises.
+    # `model_json_schema` cannot express "exactly one of these", so the schema
+    # handed to claude-code via `--json-schema` marks both optional and
+    # constrained decoding can emit both or neither. A raise here would fail
+    # `model_validate` for the whole payload and discard a minutes-long run
+    # over one bad citation -- the same trap `_label_matches_category` below
+    # already documents. Dropping costs one citation and keeps the comparison.
 
 
 class BehaviorObservation(BaseModel):

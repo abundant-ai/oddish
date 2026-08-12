@@ -1,6 +1,3 @@
-import pytest
-from pydantic import ValidationError
-
 from api.services.blocks.analyzer.cohort.cohort_comparison_block import BehaviorEvidence
 from api.services.cohort_comparison import validate_evidence
 
@@ -51,21 +48,54 @@ def test_a_summary_level_citation_still_validates():
     assert ev.step_id is None
 
 
-def test_a_citation_must_pick_one_shape():
-    # Both shapes at once is ambiguous about what the quote is checked against.
-    with pytest.raises(ValidationError):
-        BehaviorEvidence(
-            trial_id="t1",
-            trajectory_component="implementing",
-            step_ids=[1, 2],
-            step_id=7,
-            quote="x",
-        )
+def test_a_malformed_shape_parses_rather_than_raising():
+    # `model_json_schema` cannot say "exactly one of these", so constrained
+    # decoding can produce both or neither. Raising here would fail
+    # `model_validate` for the whole payload and throw away a minutes-long
+    # run over one citation; the shape rule is enforced by dropping instead.
+    both = BehaviorEvidence(
+        trial_id="t1",
+        trajectory_component="implementing",
+        step_ids=[1, 2],
+        step_id=7,
+        quote="x",
+    )
+    assert both.step_id == 7
+    assert BehaviorEvidence(trial_id="t1", quote="x").step_id is None
 
 
-def test_a_citation_with_neither_shape_is_rejected():
-    with pytest.raises(ValidationError):
-        BehaviorEvidence(trial_id="t1", quote="x")
+def test_a_citation_naming_both_shapes_is_dropped():
+    # Checked against neither: whichever source we picked, a quote matching
+    # only the other would pass. Both quotes below are individually valid.
+    out, drops = validate_evidence(
+        _output(
+            [
+                {
+                    "trial_id": "t1",
+                    "trajectory_component": "implementing",
+                    "step_ids": [1, 2],
+                    "step_id": 7,
+                    "quote": "Wrote the adapter.",
+                }
+            ]
+        ),
+        [_trial()],
+        [],
+        step_index={("t1", 7): "Wrote the adapter."},
+    )
+    assert out["categories"] == []
+    assert drops["evidence"] == 1
+
+
+def test_a_citation_with_neither_shape_is_dropped():
+    out, drops = validate_evidence(
+        _output([{"trial_id": "t1", "quote": "Wrote the adapter."}]),
+        [_trial()],
+        [],
+        step_index={("t1", 7): "Wrote the adapter."},
+    )
+    assert out["categories"] == []
+    assert drops["evidence"] == 1
 
 
 # ---- validation ----

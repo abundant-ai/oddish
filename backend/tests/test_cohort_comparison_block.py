@@ -242,6 +242,28 @@ def test_to_output_from_cli_keeps_a_step_citation_backed_by_the_index():
     assert out["dropped"]["evidence"] == 0
 
 
+def test_a_malformed_citation_does_not_take_the_whole_run_down():
+    # `--json-schema` cannot say "exactly one of these shapes", so constrained
+    # decoding can hand back a citation naming both, or neither. Those used to
+    # raise in a model_validator, which fails model_validate for the entire
+    # payload -- one bad citation discarding a minutes-long tool loop. They are
+    # dropped instead, so the good citation beside them still lands.
+    block = CohortComparisonBlock(
+        CohortInput(task_name="demo-task", successful=[TRIAL], failing=[]),
+        instructions_template=cp.load_cohort_prompt_template(),
+        step_index={("t1", 34): "Running mvn -q test to get a baseline."},
+    )
+    evidence = [
+        {**GOOD_EVIDENCE, "step_id": 34},  # both shapes
+        {"trial_id": "t1", "quote": "mvn -q test"},  # neither shape
+        GOOD_EVIDENCE,
+    ]
+    out = block.to_output_from_cli(_stream_json(_raw(evidence)))
+    kept = out["categories"][0]["successful"][0]["evidence"]
+    assert [e["quote"] for e in kept] == ["Ran mvn test for a baseline."]
+    assert out["dropped"]["evidence"] == 2
+
+
 def test_a_step_citation_cannot_survive_without_a_step_index():
     # The API path has no index, so it must not be able to serve step-level
     # citations it had no way to verify.
