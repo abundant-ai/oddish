@@ -151,7 +151,9 @@ function barGeometry(delta: number): { left: string; width: string } {
 
 function CohortDeltaBars({ comparison }: { comparison: CohortComparison }) {
   const rows = pooledDeltas(comparison);
-  if (rows.every((r) => r.n === 0)) return null;
+  // Nothing cited anywhere, or a one-sided cohort with no baseline to diverge
+  // from. Either way there is no divergence to draw, so the heading goes too.
+  if (rows.every((r) => r.delta === null)) return null;
   return (
     <div className="flex flex-col gap-1.5">
       <h4 className="text-sm font-semibold">Where runs diverged</h4>

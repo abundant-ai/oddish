@@ -23,11 +23,15 @@ export type CategoryDelta = {
 };
 
 export function pooledDeltas(comparison: CohortComparison): CategoryDelta[] {
-  const baselineTotal =
-    comparison.cohort_success.length + comparison.cohort_failure.length;
-  const baseline = baselineTotal
-    ? comparison.cohort_success.length / baselineTotal
-    : 0;
+  const successes = comparison.cohort_success.length;
+  const failures = comparison.cohort_failure.length;
+  // A one-sided cohort has no baseline to be measured against. Every citable
+  // trial sits on the same side, so the ratio equals the baseline exactly and
+  // all six categories read a confident +0.00 -- "no divergence" drawn where
+  // there was no other side to diverge from. The delta is undefined here, not
+  // zero, and the caller drops a chart whose every delta is null.
+  const comparable = successes > 0 && failures > 0;
+  const baseline = comparable ? successes / (successes + failures) : 0;
   const byCategory = new Map(comparison.categories.map((c) => [c.category, c]));
 
   return CHART_CATEGORIES.map((category) => {
@@ -49,7 +53,7 @@ export function pooledDeltas(comparison: CohortComparison): CategoryDelta[] {
       category,
       n,
       ratio,
-      delta: ratio === null ? null : ratio - baseline,
+      delta: ratio === null || !comparable ? null : ratio - baseline,
     };
   });
 }

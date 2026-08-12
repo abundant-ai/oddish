@@ -71,3 +71,37 @@ test("an uncited category is null, not zero", () => {
   assert.equal(planning.n, 0);
   assert.equal(planning.delta, null);
 });
+
+// No failures ran, so nothing can be cited on the failing side either. The
+// baseline is 1 and every cited ratio is 1: each delta subtracts to exactly
+// zero, and "Where runs diverged" draws six confident +0.00 bars for a cohort
+// that had no other side to diverge from.
+const oneSided = {
+  cohort_success: ["s1", "s2", "s3"],
+  cohort_failure: [],
+  categories: [
+    {
+      category: "debugging",
+      label: null,
+      successful: [
+        {
+          behavior_description: "x",
+          evidence: [
+            { trial_id: "s1", trajectory_component: "c", step_ids: [1], quote: "q" },
+          ],
+        },
+      ],
+      failing: [],
+    },
+  ],
+};
+
+test("a one-sided cohort has no delta at all", () => {
+  const rows = pooledDeltas(oneSided);
+  assert.equal(
+    rows.every((r) => r.delta === null),
+    true,
+  );
+  // The evidence is still counted; it is the comparison that is undefined.
+  assert.equal(rows.find((c) => c.category === "debugging").n, 1);
+});
