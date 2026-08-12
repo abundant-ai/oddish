@@ -1241,7 +1241,7 @@ export function TaskDetailClient({
                 onSetDefault={handleSetDefaultVersion}
               />
             ) : null}
-            {selectedVersionId ? (
+            {selectedVersionId && !isBrowseSnapshot ? (
               <TagEditor
                 key={selectedVersionId}
                 scope="VERSION"
