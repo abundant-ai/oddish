@@ -956,6 +956,45 @@ class TaskVersionModel(TimestampedMixin, Base):
     )
 
 
+class TaskBrowseSummaryModel(Base):
+    """Bounded task-browser aggregate for one immutable task version."""
+
+    __tablename__ = "task_version_browse_summaries"
+
+    task_version_id: Mapped[str] = mapped_column(
+        String(160),
+        ForeignKey("task_versions.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    task_id: Mapped[str] = mapped_column(
+        String(128), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
+    )
+    last_run_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    total_trials: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    completed_trials: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failed_trials: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    reward_success: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    reward_sum: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    reward_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pass_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    partial_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    fail_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    harness_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    skipped_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pending_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cost_breakdown: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+        server_default=text("NOW()"),
+    )
+
+
 class TrialModel(TimestampedMixin, Base):
     """Trial database model."""
 

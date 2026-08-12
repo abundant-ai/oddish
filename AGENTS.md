@@ -351,6 +351,26 @@ usage across every trial owned by the experiment, including older versions,
 superseded retries, probes, and soft-deleted trials. Its `billed_*` cost and
 token fields are the billed-user subset used by the frontend's New spend tile.
 
+### Task Browser Summary
+
+`task_version_browse_summaries` keeps one bounded aggregate row per task
+version: exact card counters, status buckets, model-grouped cost inputs, and
+`last_run_at`. It exists so the default `GET /tasks/browse` page can select
+and order tasks without scanning organization trial history; until the read
+path cuts over to it, the rows are maintained but unread.
+
+Summary scope matches normal task cards: exclude probes, superseded attempts,
+soft-deleted trials, and `combine:` copies. Any mutation that changes that
+population or its metrics must call
+`refresh_task_browse_summaries` inside the same transaction. This includes
+trial create/import, start/reset, completion, cancellation, retry/supersede,
+scoped deletion, and default-version selection.
+
+Refreshes serialize per version with sorted transaction-scoped PostgreSQL
+advisory locks; do not replace those locks with `FOR UPDATE` on
+`task_versions`, because concurrent trial inserts already hold foreign-key
+`KEY SHARE` locks and lock upgrades can deadlock.
+
 ---
 
 ## `oddish/` — Core Package
