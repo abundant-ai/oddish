@@ -393,3 +393,85 @@ async def test_read_transaction_ends_before_waiting_on_the_lock(monkeypatch):
     finally:
         held.release()
     await pending
+
+
+# ---------------------------------------------------------------------------
+# Cohorts are re-resolved after the lock wait, not carried across it
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_generation_uses_cohorts_resolved_after_the_lock_wait(monkeypatch):
+    """The wait is as long as another caller's generation, and a trial
+    finishing post-trial QA in that window changes cohort membership.
+
+    Carrying the pre-wait snapshot across the lock means generating from
+    cohorts read minutes ago and stamping the row with their hash -- which
+    supersedes the fresher row the lock holder just wrote, and makes the next
+    viewer (who resolves current membership) pay for another generation.
+    """
+    from oddish.blocks.analyzer.analyzer_block import AnalyzerBlock, AnalyzerOutput
+
+    before = _fake_trials("stale")
+    after = _fake_trials("current")
+    resolves = [(before, before), (after, after)]
+
+    async def fake_resolve(_session, _task_version_id):
+        return resolves.pop(0) if resolves else (after, after)
+
+    recorded = {}
+    real_init = AnalyzerBlock.__init__
+
+    def spy_init(self, *args, **kwargs):
+        recorded["prompt"] = kwargs.get("prompt")
+        recorded["block_metadata"] = kwargs.get("block_metadata")
+        real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(cc, "resolve_cohorts", fake_resolve)
+    monkeypatch.setattr(cc, "_load_fresh_comparison", AsyncMock(return_value=None))
+    monkeypatch.setattr(AnalyzerBlock, "__init__", spy_init)
+    monkeypatch.setattr(
+        AnalyzerBlock,
+        "run",
+        AsyncMock(return_value=AnalyzerOutput(output=dict(COMPARISON))),
+    )
+
+    await cc.get_or_generate_comparison(
+        _session_with_commit_spy(), "v-race", task_id="t-race", task_name="task"
+    )
+
+    # The prompt renders each cohort's trials, so this reads what the model was
+    # actually shown rather than what the code meant to show it.
+    assert "current-0" in recorded["prompt"]
+    assert "stale-0" not in recorded["prompt"]
+    # And the row is stamped with the membership it was generated from, so a
+    # later viewer resolving the same membership gets a cache hit.
+    assert recorded["block_metadata"]["cohort_hash"] == cc.cohort_hash(
+        [t["trial_id"] for t in after], [t["trial_id"] for t in after]
+    )
+
+
+@pytest.mark.asyncio
+async def test_gate_is_rechecked_against_the_post_wait_cohorts(monkeypatch):
+    """Re-resolving can drop a side below MIN_COHORT -- a trial superseded by a
+    retry, say. The gate has to be re-applied to the new membership rather than
+    generating a comparison the threshold no longer allows."""
+    from oddish.blocks.analyzer.analyzer_block import AnalyzerBlock
+
+    full = _fake_trials("s")
+    resolves = [(full, full), (full[:1], full)]
+
+    async def fake_resolve(_session, _task_version_id):
+        return resolves.pop(0) if resolves else (full, full)
+
+    run = AsyncMock()
+    monkeypatch.setattr(cc, "resolve_cohorts", fake_resolve)
+    monkeypatch.setattr(cc, "_load_fresh_comparison", AsyncMock(return_value=None))
+    monkeypatch.setattr(AnalyzerBlock, "run", run)
+
+    result = await cc.get_or_generate_comparison(
+        _session_with_commit_spy(), "v-gate", task_id="t-gate", task_name="task"
+    )
+
+    assert result is None
+    run.assert_not_awaited()
