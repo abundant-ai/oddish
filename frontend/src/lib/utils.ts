@@ -116,4 +116,19 @@ export function formatMs(ms: number): string {
   return `${hours}h ${remainingMinutes}m`;
 }
 
+/** The query string a URL-sync effect wants, as a full address that keeps the
+ *  fragment.
+ *
+ *  The panels sync their state into the query with `replaceState`. Rebuilding
+ *  the address as `pathname + search` silently drops `#step-<n>`, and the
+ *  drop wins the race: the sync runs when the drawer opens, while
+ *  TrajectoryViewer reads the fragment only after its lazy chunk mounts and
+ *  the trajectory loads. A deep link would land on the right tab and never
+ *  scroll. The fragment is nobody's state here — no sync owns it — so
+ *  carrying it through unchanged is the whole fix. */
+export function urlWithSearch(search: string): string {
+  if (typeof window === "undefined") return search ? `?${search}` : "";
+  return `${window.location.pathname}${search ? `?${search}` : ""}${window.location.hash}`;
+}
+
 export const PUBLIC_API_URL = "/api/public";

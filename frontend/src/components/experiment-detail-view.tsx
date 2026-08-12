@@ -18,7 +18,12 @@ import { QaCostSuffix } from "@/components/qa-cost-suffix";
 import { TagEditor } from "@/components/tag-editor";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { fetcher } from "@/lib/api";
-import { prBadge, prNumberFromUrl, taskPrUrl } from "@/lib/utils";
+import {
+  prBadge,
+  prNumberFromUrl,
+  taskPrUrl,
+  urlWithSearch,
+} from "@/lib/utils";
 import {
   formatCostUsd,
   formatTokenCount,
@@ -1235,7 +1240,7 @@ export function ExperimentDetailView({
     }
 
     if (next.toString() !== current.toString()) {
-      const url = `${window.location.pathname}${next.toString() ? `?${next.toString()}` : ""}`;
+      const url = urlWithSearch(next.toString());
       // Keep URL query in sync without triggering app-router navigation work.
       window.history.replaceState(window.history.state, "", url);
     }

@@ -11,7 +11,6 @@ Attribution on ``analysis_costs`` is asymmetric by producer:
 * ``trial_classifier`` (post-trial QA) sets ``trial_id`` and the trial's HOME
   ``experiment_id``, but never ``task_id``.
 * Task-level QA sets ``task_id`` and nothing else.
-* Cohort blocks set no subject at all, by design.
 
 So ``WHERE task_id = :id`` would report ~$0 for a task whose QA is all
 per-trial classification, and ``WHERE experiment_id = :id`` would miss a

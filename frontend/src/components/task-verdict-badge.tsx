@@ -165,6 +165,28 @@ export function TaskVerdictBadge({
               {p.detail}
             </p>
           ) : null}
+          {/* A rejected task's fixes are the actionable half of the verdict.
+              They rendered only in the card variant, so the panes that moved
+              from the pinned card to this badge kept the rejection and lost
+              what to do about it. */}
+          {!p.pending &&
+          verdict?.recommendations &&
+          verdict.recommendations.length > 0 ? (
+            <div className="mt-1.5 border-l-2 border-amber-500/50 pl-2">
+              <span className="font-mono text-[10px] font-semibold tracking-wider text-[color:var(--paper-ink-3)] uppercase">
+                Fixes ({verdict.recommendations.length})
+              </span>
+              <div className="mt-0.5 space-y-0.5">
+                {verdict.recommendations.map((rec, idx) => (
+                  <AnalysisProse
+                    key={idx}
+                    text={rec}
+                    className="font-mono text-[11px] leading-snug text-[color:var(--paper-ink-2)]"
+                  />
+                ))}
+              </div>
+            </div>
+          ) : null}
           {error ? (
             <p className="mt-0.5 font-mono text-[11px] leading-snug text-red-500">
               {error}
