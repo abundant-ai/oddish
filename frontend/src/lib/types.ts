@@ -840,6 +840,10 @@ export interface CohortRollup {
     cohort_success: number;
     cohort_failure: number;
     baseline: number;
+    /** Distinct trials cited for this model anywhere in the matrix. Not the
+     *  sum of the per-category `n`s, which counts one trial once per category
+     *  it appears in — that sum is what the radar gate must not use. */
+    cited_runs: number;
   }[];
   categories: CohortRollupCategory[];
 }

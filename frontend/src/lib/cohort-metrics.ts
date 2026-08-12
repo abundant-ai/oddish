@@ -60,20 +60,33 @@ export const RADAR_MODEL_CAP = 3;
 
 type RollupLike = {
   thin_threshold: number;
-  models: { model: string }[];
+  models: { model: string; cited_runs: number }[];
   categories: { per_model: { model: string; n: number }[] }[];
 };
 
 /** The models the radar draws: highest total evidence first, capped, and never
- *  a shape built from fewer citations than one thin cell's worth. */
-export function radarModels<T extends RollupLike>(rollup: T): { model: string; n: number }[] {
+ *  a shape built from fewer distinct runs than one thin cell's worth.
+ *
+ *  The gate is `cited_runs` — the distinct trials cited anywhere for that model
+ *  — not the sum of the per-category `n`s. Each `n` is itself a distinct-trial
+ *  count *within* one category, so summing six of them counts a single trial
+ *  cited across all six as six pieces of evidence. That one run would then
+ *  clear the threshold and draw a closed, filled shape touching the outer ring:
+ *  the most confident-looking object on the page, from one trajectory. */
+export function radarModels<T extends RollupLike>(
+  rollup: T,
+): { model: string; n: number; cited_runs: number }[] {
   const totals = new Map<string, number>();
   for (const cat of rollup.categories)
     for (const cell of cat.per_model)
       totals.set(cell.model, (totals.get(cell.model) ?? 0) + cell.n);
   return rollup.models
-    .map((m) => ({ model: m.model, n: totals.get(m.model) ?? 0 }))
-    .filter((m) => m.n >= rollup.thin_threshold)
+    .map((m) => ({
+      model: m.model,
+      n: totals.get(m.model) ?? 0,
+      cited_runs: m.cited_runs ?? 0,
+    }))
+    .filter((m) => m.cited_runs >= rollup.thin_threshold)
     .sort((a, b) => b.n - a.n)
     .slice(0, RADAR_MODEL_CAP);
 }

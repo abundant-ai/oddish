@@ -8,7 +8,11 @@ import {
   RADAR_MODEL_CAP,
   radarModels,
 } from "@/lib/cohort-metrics";
-import type { CohortRollup, CohortRollupCategory } from "@/lib/types";
+import type {
+  CohortRollup,
+  CohortRollupCategory,
+  CohortRollupModelCell,
+} from "@/lib/types";
 import { cn, encodeExperimentRouteParam } from "@/lib/utils";
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -112,19 +116,35 @@ function signed(value: number): string {
   return `${value >= 0 ? "+" : ""}${value.toFixed(2)}`;
 }
 
+/** True when over half of a model's drawn vertices rest on fewer than
+ *  `thinThreshold` cited runs — the shape is a sketch, not a measurement. */
+function isProvisional(
+  cells: (CohortRollupModelCell | undefined)[],
+  present: boolean[],
+  thinThreshold: number,
+): boolean {
+  const drawn = present.filter(Boolean).length;
+  const thin = present.filter(
+    (p, i) => p && (cells[i]?.n ?? 0) < thinThreshold,
+  ).length;
+  return thin * 2 > drawn;
+}
+
 function ShapeForModel({
   model,
   ink,
   axes,
   domain,
+  thinThreshold,
 }: {
   model: string;
   ink: string;
   axes: (CohortRollupCategory | undefined)[];
   domain: number;
+  thinThreshold: number;
 }) {
-  const pts = axes.map((cat, i) => {
-    const cell = cat?.per_model.find((c) => c.model === model);
+  const cells = axes.map((cat) => cat?.per_model.find((c) => c.model === model));
+  const pts = cells.map((cell, i) => {
     // n === 0 is an absent vertex, not a vertex at the baseline.
     if (!cell || cell.n === 0 || cell.delta === null) return null;
     return polar(i, radiusFor(cell.delta, domain));
@@ -138,17 +158,33 @@ function ShapeForModel({
   // outline -- visibly incomplete -- and only a complete one is filled.
   const closed = present.every(Boolean);
 
+  // Weight of evidence has to be visible in the mark itself. A shape built
+  // mostly from thin cells keeps its geometry but loses its fill and goes to a
+  // thinner dashed stroke, so it cannot be mistaken at a glance for one backed
+  // by full cohorts; per-vertex, a thin cell is drawn hollow.
+  const provisional = isProvisional(cells, present, thinThreshold);
+  const strokeProps = provisional
+    ? {
+        strokeWidth: 1.25,
+        strokeOpacity: 0.75,
+        strokeDasharray: "4 3",
+        strokeLinejoin: "round" as const,
+      }
+    : { strokeWidth: 1.75, strokeLinejoin: "round" as const };
+
   return (
     <g className={ink} fill="none" stroke="currentColor">
       {closed ? (
         <>
-          <polygon
-            points={points(pts)}
-            fill="currentColor"
-            fillOpacity={0.14}
-            stroke="none"
-          />
-          <polygon points={points(pts)} strokeWidth={1.75} strokeLinejoin="round" />
+          {!provisional && (
+            <polygon
+              points={points(pts)}
+              fill="currentColor"
+              fillOpacity={0.14}
+              stroke="none"
+            />
+          )}
+          <polygon points={points(pts)} {...strokeProps} />
         </>
       ) : (
         presentRuns(present)
@@ -157,14 +193,15 @@ function ShapeForModel({
             <polyline
               key={i}
               points={points(run.map((idx) => pts[idx]))}
-              strokeWidth={1.75}
-              strokeLinejoin="round"
+              {...strokeProps}
               strokeLinecap="round"
             />
           ))
       )}
       {pts.map((p, i) =>
-        p === null ? null : (
+        p === null ? null : (cells[i]?.n ?? 0) < thinThreshold ? (
+          <circle key={i} cx={p[0]} cy={p[1]} r={2.75} strokeWidth={1.25} />
+        ) : (
           <circle key={i} cx={p[0]} cy={p[1]} r={2.75} fill="currentColor" stroke="none" />
         ),
       )}
@@ -192,6 +229,8 @@ function Radar({
         `Cited-success share against each model's own success rate, over ` +
         `${CHART_CATEGORIES.length} behaviour categories. Outer ring ` +
         `${signed(domain)}, middle ring 0, inner ring ${signed(-domain)}. ` +
+        `Hollow points and dashed outlines mark evidence under ` +
+        `${rollup.thin_threshold} cited runs. ` +
         `The same values are tabulated below.`
       }
     >
@@ -231,6 +270,7 @@ function Radar({
           ink={s.ink}
           axes={axes}
           domain={domain}
+          thinThreshold={rollup.thin_threshold}
         />
       ))}
       <g className="text-muted-foreground" fill="currentColor" fontSize={11}>
@@ -389,13 +429,22 @@ export function CohortRollupSection({
   const emptyAxes = CHART_CATEGORIES.filter(
     (c) => (byCategory.get(c)?.pooled.n ?? 0) === 0,
   );
+  // Whether any drawn vertex is thin, which is what the hollow-point and
+  // dashed-outline treatments key on. The note is only worth the line when the
+  // reader can actually see one.
+  const anyThin = series.some((s) =>
+    axes.some((cat) => {
+      const cell = cat?.per_model.find((c) => c.model === s.model);
+      return cell != null && cell.n > 0 && cell.n < data.thin_threshold;
+    }),
+  );
 
   return (
     <Frame>
       <CoverageLine rollup={data} />
       {series.length === 0 ? (
         <p className="text-muted-foreground text-xs">
-          No model has {data.thin_threshold} citations across the six
+          No model has {data.thin_threshold} distinct runs cited across the six
           categories, so no shape is drawn — the cells are in the table below.
         </p>
       ) : (
@@ -421,6 +470,13 @@ export function CohortRollupSection({
             outside the ring it beats its own average, inside it trails. Outer
             ring {signed(domain)}, inner ring {signed(-domain)}.
           </p>
+          {anyThin && (
+            <p className="text-muted-foreground max-w-prose text-center text-xs">
+              A hollow point rests on fewer than {data.thin_threshold} cited
+              runs; a shape mostly made of those is drawn as a dashed outline
+              with no fill.
+            </p>
+          )}
         </div>
       )}
       {emptyAxes.length > 0 && (
@@ -436,8 +492,8 @@ export function CohortRollupSection({
           {series.length === 1 ? "" : "s"} with the most citations across the six
           categories (at most {RADAR_MODEL_CAP}). {belowBar} other
           {belowBar === 1 ? " is" : "s are"} in the table only — either past that
-          cap or under {data.thin_threshold} such citations, which is too few to
-          draw a shape from.
+          cap or backed by under {data.thin_threshold} distinct cited runs, which
+          is too few to draw a shape from.
         </p>
       )}
       <div className="overflow-x-auto">

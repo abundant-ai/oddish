@@ -137,7 +137,15 @@ async def build_cohort_rollup(
                     if model:
                         cited[(model, name)][side].add(trial_id)
 
-    models = _model_rows(cohort_by_model)
+    # Distinct trials cited anywhere for a model, across every category and both
+    # sides. Summing the per-category ``n`` instead counts one trial once per
+    # category it appears in, so a single run cited in six categories totals six
+    # -- enough to clear a thin-evidence gate on its own.
+    cited_runs: dict[str, set[str]] = defaultdict(set)
+    for (model, _category), sides in cited.items():
+        cited_runs[model] |= sides["success"] | sides["failure"]
+
+    models = _model_rows(cohort_by_model, cited_runs)
     baselines = {m["model"]: m["baseline"] for m in models}
     pooled_baseline = _share(len(pooled_cohort["success"]), len(pooled_cohort["failure"]))
 
@@ -198,7 +206,10 @@ def _cell(cited_success: int, cited_failure: int, baseline: float) -> dict:
     }
 
 
-def _model_rows(cohort_by_model: dict[str, dict[str, set[str]]]) -> list[dict]:
+def _model_rows(
+    cohort_by_model: dict[str, dict[str, set[str]]],
+    cited_runs: dict[str, set[str]],
+) -> list[dict]:
     rows = []
     for model, sides in cohort_by_model.items():
         rows.append(
@@ -207,6 +218,7 @@ def _model_rows(cohort_by_model: dict[str, dict[str, set[str]]]) -> list[dict]:
                 "cohort_success": len(sides["success"]),
                 "cohort_failure": len(sides["failure"]),
                 "baseline": _share(len(sides["success"]), len(sides["failure"])),
+                "cited_runs": len(cited_runs.get(model) or ()),
             }
         )
     rows.sort(key=lambda r: r["cohort_success"] + r["cohort_failure"], reverse=True)

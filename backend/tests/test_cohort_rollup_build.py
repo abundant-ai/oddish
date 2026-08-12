@@ -387,6 +387,13 @@ async def experiment_opus_and_grok():
                 successful_ids=opus_success[:5] + grok_success,
                 failing_ids=opus_failure[:1] + grok_failure[:1],
             ),
+            # The same opus trials again, so the sum of per-category `n` (12)
+            # diverges from the distinct runs behind them (6).
+            _evidence_category(
+                "planning",
+                successful_ids=opus_success[:5],
+                failing_ids=opus_failure[:1],
+            ),
             _evidence_category(
                 "behavior_discovery",
                 successful_ids=opus_success[:1],
@@ -591,6 +598,36 @@ async def test_null_model_falls_back_to_agent(session, experiment_null_model):
         org_id=experiment_null_model.org_id,
     )
     assert [m["model"] for m in body["models"]] == ["claude-code"]
+
+
+@pytest.mark.asyncio
+async def test_cited_runs_counts_a_trial_once_across_categories(
+    session, experiment_opus_and_grok
+):
+    """``cited_runs`` is the union of a model's cited trials, not a column sum.
+
+    The radar gates on it, so a sum would let one trial cited in six categories
+    pass a six-trial threshold and draw a fully confident shape.
+    """
+    body = await build_cohort_rollup(
+        session,
+        experiment_id=experiment_opus_and_grok.experiment_id,
+        org_id=experiment_opus_and_grok.org_id,
+    )
+    by_model = {m["model"]: m for m in body["models"]}
+    per_category_total = {
+        m["model"]: sum(
+            cell["n"]
+            for cat in body["categories"]
+            for cell in cat["per_model"]
+            if cell["model"] == m["model"]
+        )
+        for m in body["models"]
+    }
+    # opus is cited in two categories over the same six trials.
+    assert by_model["opus"]["cited_runs"] == 6
+    assert per_category_total["opus"] == 12
+    assert by_model["grok"]["cited_runs"] == 3
 
 
 @pytest.mark.asyncio
