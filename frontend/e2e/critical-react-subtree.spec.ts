@@ -379,9 +379,13 @@ test.describe("critical task and trial subtree", () => {
     await expect(
       page.getByRole("button", { name: "Rerun trials" })
     ).toBeDisabled();
-    await expect(page.getByRole("button", { name: "Run QA" })).toBeDisabled();
+    await expect(
+      page.getByRole("button", { name: "Rerun QA", exact: true })
+    ).toBeDisabled();
     await page.keyboard.press("Escape");
-    await expect(page.getByRole("button", { name: "Run QA" })).toBeHidden();
+    await expect(
+      page.getByRole("button", { name: "Rerun QA", exact: true })
+    ).toBeHidden();
 
     const trialButton = page.getByRole("button", { name: "trial-p1 Fail" });
     await expect(trialButton).toBeVisible();
