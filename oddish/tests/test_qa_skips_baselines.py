@@ -268,3 +268,115 @@ async def test_qa_stage_enqueues_for_current_version_eligible_trial(cleanup_task
     assert len(qa_jobs) == 1
     assert task.status == TaskStatus.VERDICT_PENDING
     assert task.verdict_status == VerdictStatus.QUEUED
+
+
+@pytest.mark.asyncio
+async def test_qa_stage_historical_active_trial_does_not_block_current_version(
+    cleanup_task_ids,
+):
+    from oddish.queue import maybe_start_qa_stage
+
+    task_id = f"qa-version-active-old-{_RUN}"
+    cleanup_task_ids.append(task_id)
+    async with get_session() as session:
+        task = await create_task(
+            session,
+            _submission(
+                "version-active-old",
+                [(_LLM_AGENT, _LLM_MODEL), (_LLM_AGENT, _LLM_MODEL)],
+                run_analysis=True,
+            ),
+            task_id=task_id,
+        )
+        historical_trial, current_trial = task.trials
+        current_version_id = f"{task_id}-v2"
+        session.add(
+            TaskVersionModel(
+                id=current_version_id,
+                task_id=task_id,
+                version=2,
+                task_path=f"s3://test-bucket/{task_id}/v2",
+            )
+        )
+        await session.flush()
+        current_trial.task_version_id = current_version_id
+        task.current_version_id = current_version_id
+        historical_trial.status = TrialStatus.RUNNING
+        current_trial.status = TrialStatus.SUCCESS
+        current_trial_id = current_trial.id
+
+    async with get_session() as session:
+        assert await maybe_start_qa_stage(session, current_trial_id) is True
+
+    async with get_session() as session:
+        task = await session.get(TaskModel, task_id)
+        qa_jobs = (
+            (
+                await session.execute(
+                    select(WorkerJobModel.id).where(
+                        WorkerJobModel.kind == WorkerJobKind.QA,
+                        WorkerJobModel.subject_id == task_id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert len(qa_jobs) == 1
+    assert task.status == TaskStatus.VERDICT_PENDING
+
+
+@pytest.mark.asyncio
+async def test_qa_stage_current_active_trial_still_blocks_current_version(
+    cleanup_task_ids,
+):
+    from oddish.queue import maybe_start_qa_stage
+
+    task_id = f"qa-version-active-current-{_RUN}"
+    cleanup_task_ids.append(task_id)
+    async with get_session() as session:
+        task = await create_task(
+            session,
+            _submission(
+                "version-active-current",
+                [(_LLM_AGENT, _LLM_MODEL), (_LLM_AGENT, _LLM_MODEL)],
+                run_analysis=True,
+            ),
+            task_id=task_id,
+        )
+        historical_trial, current_trial = task.trials
+        current_version_id = f"{task_id}-v2"
+        session.add(
+            TaskVersionModel(
+                id=current_version_id,
+                task_id=task_id,
+                version=2,
+                task_path=f"s3://test-bucket/{task_id}/v2",
+            )
+        )
+        await session.flush()
+        current_trial.task_version_id = current_version_id
+        task.current_version_id = current_version_id
+        historical_trial.status = TrialStatus.SUCCESS
+        current_trial.status = TrialStatus.RUNNING
+        current_trial_id = current_trial.id
+
+    async with get_session() as session:
+        assert await maybe_start_qa_stage(session, current_trial_id) is False
+
+    async with get_session() as session:
+        qa_jobs = (
+            (
+                await session.execute(
+                    select(WorkerJobModel.id).where(
+                        WorkerJobModel.kind == WorkerJobKind.QA,
+                        WorkerJobModel.subject_id == task_id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert qa_jobs == []

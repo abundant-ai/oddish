@@ -521,7 +521,7 @@ async def run_pre_trial_only_job(
             task_id,
             worker_job_id,
             [trial_id for trial_id, _ in live_trials],
-            task_version_id=task_version_id,
+            task_version_id=effective_version_id,
             expected_content_hash=task_version_content_hash,
             enforce_content_hash=enforce_task_version_content_hash,
         )

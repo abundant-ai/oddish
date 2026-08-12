@@ -185,10 +185,71 @@ async def test_stage_enqueues_single_qa_job_when_trials_done(monkeypatch):
     assert verdict_calls == ["task-1"]
     assert task.status == TaskStatus.VERDICT_PENDING
     assert task.verdict_status == VerdictStatus.QUEUED
+    pending_sql = str(
+        session.scalar_statements[0].compile(compile_kwargs={"literal_binds": True})
+    )
+    assert "trials.task_version_id = 'task-1-v2'" in pending_sql
     qa_eligible_sql = str(
         session.scalar_statements[1].compile(compile_kwargs={"literal_binds": True})
     )
     assert "trials.task_version_id = 'task-1-v2'" in qa_eligible_sql
+
+
+@pytest.mark.asyncio
+async def test_stage_current_version_active_trial_blocks_qa(monkeypatch):
+    trial = SimpleNamespace(task_id="task-active")
+    task = SimpleNamespace(
+        id="task-active",
+        current_version_id="task-active-v2",
+        org_id="org-1",
+        status=TaskStatus.RUNNING,
+        run_analysis=True,
+        verdict_status=None,
+        finished_at=None,
+    )
+    session = _StageSession(trial=trial, task=task, pending_count=1)
+    verdict_calls: list[str] = []
+
+    async def fake_verdict_enqueue(_session, *, task_id, org_id):
+        verdict_calls.append(task_id)
+
+    monkeypatch.setattr(queue_mod, "enqueue_qa_worker_job", fake_verdict_enqueue)
+
+    assert await queue_mod.maybe_start_qa_stage(session, "task-active-0") is False
+    assert verdict_calls == []
+    assert len(session.scalar_statements) == 1
+    pending_sql = str(
+        session.scalar_statements[0].compile(compile_kwargs={"literal_binds": True})
+    )
+    assert "trials.task_version_id = 'task-active-v2'" in pending_sql
+    assert task.status == TaskStatus.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_stage_legacy_task_without_version_keeps_unscoped_counts(monkeypatch):
+    trial = SimpleNamespace(task_id="task-legacy")
+    task = SimpleNamespace(
+        id="task-legacy",
+        current_version_id=None,
+        org_id="org-1",
+        status=TaskStatus.RUNNING,
+        run_analysis=True,
+        verdict_status=None,
+        finished_at=None,
+    )
+    session = _StageSession(trial=trial, task=task, pending_count=0)
+
+    async def fake_verdict_enqueue(_session, *, task_id, org_id):
+        assert task_id == "task-legacy"
+
+    monkeypatch.setattr(queue_mod, "enqueue_qa_worker_job", fake_verdict_enqueue)
+
+    assert await queue_mod.maybe_start_qa_stage(session, "task-legacy-0") is True
+
+    for statement in session.scalar_statements:
+        sql = str(statement.compile(compile_kwargs={"literal_binds": True}))
+        assert "trials.task_version_id" not in sql
+    assert task.status == TaskStatus.VERDICT_PENDING
 
 
 @pytest.mark.asyncio
@@ -336,6 +397,60 @@ class _QASession:
         if len(self._worker_statuses) > 1:
             return self._worker_statuses.pop(0)
         return self._worker_statuses[0]
+
+
+@pytest.mark.asyncio
+async def test_legacy_pre_trial_job_passes_resolved_current_version(monkeypatch):
+    resolved_version_id = "task-pre-trial-v2"
+    captured = {}
+
+    class _ResolveSession:
+        async def scalar(self, _statement):
+            return resolved_version_id
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield _ResolveSession()
+
+    async def fake_load_live(task_id, task_version_id=None):
+        assert task_id == "task-pre-trial"
+        assert task_version_id == resolved_version_id
+        return [("trial-current", AnalysisStatus.SUCCESS)]
+
+    async def fake_pre_trial_audit(
+        task_id,
+        worker_job_id,
+        trial_ids,
+        *,
+        task_version_id=None,
+        **_kwargs,
+    ):
+        captured.update(
+            task_id=task_id,
+            worker_job_id=worker_job_id,
+            trial_ids=trial_ids,
+            task_version_id=task_version_id,
+        )
+        return None
+
+    monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
+    monkeypatch.setattr(
+        qa_handler, "_load_live_trials_for_classification", fake_load_live
+    )
+    monkeypatch.setattr(qa_handler, "_run_pre_trial_audit", fake_pre_trial_audit)
+
+    await qa_handler.run_pre_trial_only_job(
+        "task-pre-trial",
+        worker_job_id=None,
+        task_version_id=None,
+    )
+
+    assert captured == {
+        "task_id": "task-pre-trial",
+        "worker_job_id": None,
+        "trial_ids": ["trial-current"],
+        "task_version_id": resolved_version_id,
+    }
 
 
 @pytest.mark.asyncio
