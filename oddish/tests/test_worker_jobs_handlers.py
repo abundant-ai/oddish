@@ -177,7 +177,7 @@ async def test_trial_handler_returns_retryable_fail_on_retrying(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_trial_handler_returns_retryable_fail_on_failed_with_budget(monkeypatch):
+async def test_trial_handler_returns_permanent_fail_on_failed_with_budget(monkeypatch):
     trial_row = SimpleNamespace(
         status=TrialStatus.FAILED,
         error_message="harbor crash",
@@ -190,10 +190,10 @@ async def test_trial_handler_returns_retryable_fail_on_failed_with_budget(monkey
     outcome = await TrialJobHandler().run(_trial_claim(attempts=1, max_attempts=6))
 
     assert outcome.failure is not None
-    # Handler delegates the budget decision to ``_record_outcome``
-    # in the runner -- "retryable=True" means "retry if attempts
-    # remain", not "always retry".
-    assert outcome.failure.retryable is True
+    # ``run_trial_job`` is the authority that distinguishes RETRYING from
+    # terminal FAILED. The worker-job adapter must preserve that decision even
+    # when the worker job still has attempt budget remaining.
+    assert outcome.failure.retryable is False
 
 
 @pytest.mark.asyncio

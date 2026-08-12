@@ -43,10 +43,6 @@ from oddish.workers.queue.analyzer_handler import (
 from oddish.workers.queue.provider_failures import is_permanent_provider_failure
 from oddish.workers.queue.qa_handler import run_task_qa_job
 from oddish.workers.queue.task_expand_handler import run_task_expand_job
-from oddish.workers.queue.trial_failures import (
-    MODAL_IMAGE_BUILD_FAILED_STAGE,
-    is_modal_image_build_failure,
-)
 from oddish.workers.queue.trial_handler import run_trial_job
 
 
@@ -113,13 +109,7 @@ class TrialJobHandler:
                 )
             if trial.status == TrialStatus.FAILED:
                 error_message = trial.error_message or f"Trial {trial_id} marked FAILED"
-                if getattr(
-                    trial, "harbor_stage", None
-                ) == MODAL_IMAGE_BUILD_FAILED_STAGE or is_modal_image_build_failure(
-                    trial.error_message
-                ):
-                    return _fail_permanent(error_message)
-                return _fail_retryable(error_message)
+                return _fail_permanent(error_message)
             return _fail_retryable(
                 f"Trial {trial_id} left in non-terminal status {trial.status!r}"
             )
