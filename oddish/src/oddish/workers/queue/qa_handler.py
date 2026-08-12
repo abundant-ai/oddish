@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import func, not_, select
@@ -370,8 +371,12 @@ PRE_TRIAL_LEASE_JITTER_SECONDS = 60
 
 
 async def _claim_pre_trial_version(
-    task_id: str, task_version_id: str | None = None
-) -> str | None:
+    task_id: str,
+    task_version_id: str | None = None,
+    *,
+    expected_content_hash: str | None = None,
+    enforce_content_hash: bool = False,
+) -> tuple[str, str | None, datetime] | None:
     """Claim a task version for the pre-trial audit.
 
     An audit-only job pins the version the rerun request marked QUEUED and
@@ -400,6 +405,8 @@ async def _claim_pre_trial_version(
         version = await session.get(TaskVersionModel, version_id, with_for_update=True)
         if version is None:
             return None
+        if enforce_content_hash and version.content_hash != expected_content_hash:
+            return None
         if version.pre_trial_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
             return None
         if (
@@ -413,15 +420,20 @@ async def _claim_pre_trial_version(
             )
         ):
             return None
+        claim_started_at = utcnow()
         version.pre_trial_status = VerdictStatus.RUNNING
-        version.pre_trial_started_at = utcnow()
-    return str(version_id)
+        version.pre_trial_started_at = claim_started_at
+        content_hash = str(version.content_hash) if version.content_hash else None
+    return str(version_id), content_hash, claim_started_at
 
 
 async def _fail_queued_pre_trial_request(
     task_id: str,
     error: str = "Pre-trial audit is not enabled for this org",
     task_version_id: str | None = None,
+    *,
+    worker_job_id: str | None,
+    expected_content_hash: str | None,
 ) -> None:
     """Terminate an explicit audit request that will not be served.
 
@@ -431,14 +443,37 @@ async def _fail_queued_pre_trial_request(
     a running audit forever. Only QUEUED is touched: it can only be set by
     an explicit request, so a normal never-audited version stays untouched.
     """
+    if worker_job_id is None:
+        return
     async with get_session() as session:
+        job = await session.get(WorkerJobModel, worker_job_id)
+        if job is None or job.status != WorkerJobStatus.RUNNING:
+            return
+        payload = (job.payload or {}) or {}
+        if payload.get("mode") != "pre_trial":
+            return
+        if task_version_id and payload.get("task_version_id") != task_version_id:
+            return
+        has_expected_content_hash = "task_version_content_hash" in payload
+        if (
+            has_expected_content_hash
+            and payload.get("task_version_content_hash") != expected_content_hash
+        ):
+            return
         version_id = task_version_id or await session.scalar(
             select(TaskModel.current_version_id).where(TaskModel.id == task_id)
         )
         if version_id is None:
             return
         version = await session.get(TaskVersionModel, version_id, with_for_update=True)
-        if version is not None and version.pre_trial_status == VerdictStatus.QUEUED:
+        if (
+            version is not None
+            and (
+                not has_expected_content_hash
+                or version.content_hash == expected_content_hash
+            )
+            and version.pre_trial_status == VerdictStatus.QUEUED
+        ):
             version.pre_trial_status = VerdictStatus.FAILED
             version.pre_trial_error = error
             version.pre_trial_finished_at = utcnow()
@@ -448,6 +483,8 @@ async def run_pre_trial_only_job(
     task_id: str,
     worker_job_id: str | None,
     task_version_id: str | None = None,
+    task_version_content_hash: str | None = None,
+    enforce_task_version_content_hash: bool = False,
 ) -> None:
     """Run only the pre-trial audit for one task version.
 
@@ -471,19 +508,29 @@ async def run_pre_trial_only_job(
         )
     try:
         live_trials = await _load_live_trials_for_classification(task_id)
-        await _run_pre_trial_audit(
+        claim = await _run_pre_trial_audit(
             task_id,
             worker_job_id,
             [trial_id for trial_id, _ in live_trials],
             task_version_id=task_version_id,
+            expected_content_hash=task_version_content_hash,
+            enforce_content_hash=enforce_task_version_content_hash,
         )
-        await _finalize_pre_trial_request(task_id, task_version_id=task_version_id)
+        if claim is not None:
+            await _finalize_pre_trial_request(
+                task_id,
+                task_version_id=claim[0],
+                expected_content_hash=claim[1],
+                expected_started_at=claim[2],
+            )
     except BaseException as exc:
         try:
             await _fail_queued_pre_trial_request(
                 task_id,
                 error=f"{type(exc).__name__}: {exc}",
                 task_version_id=task_version_id,
+                worker_job_id=worker_job_id,
+                expected_content_hash=task_version_content_hash,
             )
         except Exception:  # noqa: BLE001
             pass  # best-effort; do not mask the original error
@@ -495,7 +542,10 @@ async def run_pre_trial_only_job(
 
 
 async def _finalize_pre_trial_request(
-    task_id: str, task_version_id: str | None = None
+    task_id: str,
+    task_version_id: str | None = None,
+    expected_content_hash: str | None = None,
+    expected_started_at: datetime | None = None,
 ) -> None:
     """After an audit-only run, the version must hold a terminal result.
 
@@ -504,8 +554,11 @@ async def _finalize_pre_trial_request(
     next QA run redoes the audit. An explicit re-run has no next run, so
     an unrecorded result would leave the card saying "not audited" with
     no error while the job reports success. Record the failure instead.
-    A RUNNING claim is left alone: another worker owns it.
+    A RUNNING claim is left alone: another worker owns it. A caller without
+    a claim token cannot mutate audit state.
     """
+    if expected_started_at is None:
+        return
     async with get_session() as session:
         version_id = task_version_id or await session.scalar(
             select(TaskModel.current_version_id).where(TaskModel.id == task_id)
@@ -513,6 +566,15 @@ async def _finalize_pre_trial_request(
         if version_id is None:
             return
         version = await session.get(TaskVersionModel, version_id, with_for_update=True)
+        if version is None:
+            return
+        if version.content_hash != expected_content_hash:
+            return
+        if (
+            version.pre_trial_status == VerdictStatus.RUNNING
+            and version.pre_trial_started_at != expected_started_at
+        ):
+            return
         if version is not None and version.pre_trial_status in (
             None,
             VerdictStatus.PENDING,
@@ -523,7 +585,12 @@ async def _finalize_pre_trial_request(
             version.pre_trial_finished_at = utcnow()
 
 
-async def _release_pre_trial_claim(task_version_id: str) -> None:
+async def _release_pre_trial_claim(
+    task_version_id: str,
+    *,
+    expected_content_hash: str | None,
+    expected_started_at: datetime,
+) -> None:
     """Roll a claimed-but-unpersisted audit back to unclaimed so a later QA
     run redoes it promptly (cancelled job, or the task's current version moved
     on mid-audit) instead of waiting out the RUNNING lease. Only a still-
@@ -533,24 +600,40 @@ async def _release_pre_trial_claim(task_version_id: str) -> None:
         version = await session.get(
             TaskVersionModel, task_version_id, with_for_update=True
         )
-        if version is not None and version.pre_trial_status == VerdictStatus.RUNNING:
+        if (
+            version is not None
+            and version.pre_trial_status == VerdictStatus.RUNNING
+            and version.content_hash == expected_content_hash
+            and version.pre_trial_started_at == expected_started_at
+        ):
             version.pre_trial_status = None
             version.pre_trial_started_at = None
 
 
-async def _pre_trial_store_allowed(session, worker_job_id: str | None) -> bool:
-    """Gate for persisting a pre-trial result: only that the QA job is still
-    running.
+async def _pre_trial_store_allowed(
+    session,
+    worker_job_id: str | None,
+    task_version_id: str,
+    expected_content_hash: str | None,
+    expected_started_at: datetime,
+) -> bool:
+    """Persist only while the QA job and audited source snapshot are current.
 
     The audit is pinned to a specific, immutable task version, so its findings
     stay valid for that version's row even if a re-upload made a newer version
-    current mid-audit -- the newer version gets its own audit on the next QA
-    run. (Before the CLAUDE_CLI switch the sandbox agent pulled the task's
-    *current* source, so a mid-audit re-upload meant the findings described the
-    wrong snapshot and had to be discarded; version pinning removes that
-    mismatch, so gating on current-version equality would only drop valid data.)
+    current mid-audit. In-place replacement is different: it mutates that same
+    version row, so the content hash must still match the snapshot observed
+    before synthesis began.
     """
-    return await _worker_job_is_running(session, worker_job_id)
+    if not await _worker_job_is_running(session, worker_job_id):
+        return False
+    version = await session.get(TaskVersionModel, task_version_id)
+    return (
+        version is not None
+        and version.content_hash == expected_content_hash
+        and version.pre_trial_status == VerdictStatus.RUNNING
+        and version.pre_trial_started_at == expected_started_at
+    )
 
 
 async def _run_pre_trial_audit(
@@ -558,7 +641,10 @@ async def _run_pre_trial_audit(
     worker_job_id: str | None,
     live_trial_ids: list[str],
     task_version_id: str | None = None,
-) -> None:
+    *,
+    expected_content_hash: str | None = None,
+    enforce_content_hash: bool = False,
+) -> tuple[str, str | None, datetime] | None:
     """Claim, run, and persist the per-version pre-trial audit.
 
     A no-op unless the hosted synth is registered; the registered org-level
@@ -573,6 +659,8 @@ async def _run_pre_trial_audit(
     so the next QA run redoes it promptly instead of waiting out the lease.
     """
     pre_trial_version_id: str | None = None
+    pre_trial_content_hash: str | None = None
+    pre_trial_started_at: datetime | None = None
     pre_trial_stored: str | None = None
     try:
         # settings.pre_trial_enabled is the *default* the registered check falls
@@ -580,25 +668,40 @@ async def _run_pre_trial_audit(
         # opt-in unable to enable anything, which is how prod (default off) ran
         # the audit exactly zero times while the orgs API happily accepted the
         # opt-in. Standalone oddish stays a no-op via _pre_trial_synth_fn.
-        audit_enabled = _pre_trial_synth_fn is not None and (
+        synth_fn = _pre_trial_synth_fn
+        audit_enabled = synth_fn is not None and (
             await _pre_trial_enabled_fn(task_id)
             if _pre_trial_enabled_fn is not None
             else settings.pre_trial_enabled
         )
         if audit_enabled:
-            pre_trial_version_id = await _claim_pre_trial_version(
-                task_id, task_version_id
+            claim = await _claim_pre_trial_version(
+                task_id,
+                task_version_id,
+                expected_content_hash=expected_content_hash,
+                enforce_content_hash=enforce_content_hash,
             )
+            if claim is not None:
+                (
+                    pre_trial_version_id,
+                    pre_trial_content_hash,
+                    pre_trial_started_at,
+                ) = claim
         else:
             # An explicit re-run request (status QUEUED) can only be served
             # here. If the audit is disabled for this org, fail the request
             # with the reason -- leaving it QUEUED would show as running
             # forever with no job behind it.
             await _fail_queued_pre_trial_request(
-                task_id, task_version_id=task_version_id
+                task_id,
+                task_version_id=task_version_id,
+                worker_job_id=worker_job_id,
+                expected_content_hash=expected_content_hash,
             )
         if pre_trial_version_id is not None:
-            pre_trial_items = await _pre_trial_synth_fn(
+            assert pre_trial_started_at is not None
+            assert synth_fn is not None
+            pre_trial_items = await synth_fn(
                 task_id,
                 pre_trial_version_id,
                 live_trial_ids,
@@ -618,7 +721,11 @@ async def _run_pre_trial_audit(
                     ),
                     error=None,
                     should_store=lambda session: _pre_trial_store_allowed(
-                        session, worker_job_id
+                        session,
+                        worker_job_id,
+                        pre_trial_version_id,
+                        pre_trial_content_hash,
+                        pre_trial_started_at,
                     ),
                 )
     except Exception as exc:  # noqa: BLE001
@@ -634,12 +741,17 @@ async def _run_pre_trial_audit(
         # pre-trial write hiccup).
         try:
             if pre_trial_version_id is not None:
+                assert pre_trial_started_at is not None
                 pre_trial_stored = await sync_pre_trial_to_task_version(
                     pre_trial_version_id,
                     payload=None,
                     error=exc,
                     should_store=lambda session: _pre_trial_store_allowed(
-                        session, worker_job_id
+                        session,
+                        worker_job_id,
+                        pre_trial_version_id,
+                        pre_trial_content_hash,
+                        pre_trial_started_at,
                     ),
                 )
         except Exception as sync_exc:  # noqa: BLE001
@@ -648,9 +760,17 @@ async def _run_pre_trial_audit(
                 f"{type(sync_exc).__name__}: {sync_exc}[/red]"
             )
     finally:
-        if pre_trial_version_id is not None and pre_trial_stored is None:
+        if (
+            pre_trial_version_id is not None
+            and pre_trial_started_at is not None
+            and pre_trial_stored is None
+        ):
             try:
-                await _release_pre_trial_claim(pre_trial_version_id)
+                await _release_pre_trial_claim(
+                    pre_trial_version_id,
+                    expected_content_hash=pre_trial_content_hash,
+                    expected_started_at=pre_trial_started_at,
+                )
             except Exception as release_exc:  # noqa: BLE001
                 # Lease expiry reclaims it eventually; just don't mask the
                 # in-flight exception (or cancellation) with a release error.
@@ -659,6 +779,9 @@ async def _run_pre_trial_audit(
                     f"{pre_trial_version_id}: "
                     f"{type(release_exc).__name__}: {release_exc}[/red]"
                 )
+    if pre_trial_version_id is None or pre_trial_started_at is None:
+        return None
+    return pre_trial_version_id, pre_trial_content_hash, pre_trial_started_at
 
 
 def _trial_needs_classification(analysis_status: AnalysisStatus | None) -> bool:
