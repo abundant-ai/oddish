@@ -625,6 +625,7 @@ async def test_unclaimed_pre_trial_finalize_does_not_touch_version(monkeypatch) 
 async def test_run_task_qa_job_classifies_then_synthesizes(monkeypatch):
     task = SimpleNamespace(
         id="task-9",
+        current_version_id="task-9-v2",
         org_id="org-1",
         status=TaskStatus.VERDICT_PENDING,
         verdict_status=VerdictStatus.QUEUED,
@@ -656,7 +657,8 @@ async def test_run_task_qa_job_classifies_then_synthesizes(monkeypatch):
     async def fake_get_session():
         yield session
 
-    async def fake_load_live(_task_id):
+    async def fake_load_live(_task_id, task_version_id=None):
+        assert task_version_id == "task-9-v2"
         return [
             ("task-9-0", None),
             ("task-9-1", None),
@@ -713,6 +715,59 @@ async def test_run_task_qa_job_classifies_then_synthesizes(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_task_qa_job_discards_verdict_after_version_changes(monkeypatch):
+    task = SimpleNamespace(
+        id="task-version-changed",
+        current_version_id="task-version-v1",
+        org_id="org-1",
+        status=TaskStatus.VERDICT_PENDING,
+        verdict_status=VerdictStatus.QUEUED,
+        verdict=None,
+        verdict_error=None,
+        verdict_started_at=None,
+        verdict_finished_at=None,
+        finished_at=None,
+    )
+    trial = SimpleNamespace(
+        id="trial-version-v1",
+        analysis_status=AnalysisStatus.SUCCESS,
+        analysis={"classification": "GOOD_SUCCESS", "subtype": "Clean"},
+    )
+    session = _QASession(task=task, trials=[trial])
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield session
+
+    async def fake_load_live(_task_id, task_version_id=None):
+        assert task_version_id == "task-version-v1"
+        return [(trial.id, AnalysisStatus.SUCCESS)]
+
+    async def fake_compute_verdict(*_args, **_kwargs):
+        task.current_version_id = "task-version-v2"
+        return SimpleNamespace(
+            is_good=True,
+            confidence="high",
+            primary_issue=None,
+            reasoning="healthy",
+            recommendations=[],
+        )
+
+    monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
+    monkeypatch.setattr("oddish.core.verdict_sync.get_session", fake_get_session)
+    monkeypatch.setattr(
+        qa_handler, "_load_live_trials_for_classification", fake_load_live
+    )
+    monkeypatch.setattr(qa_handler, "synthesize_task_verdict", fake_compute_verdict)
+
+    await qa_handler.run_task_qa_job(task.id, queue_key="qa")
+
+    assert task.current_version_id == "task-version-v2"
+    assert task.verdict is None
+    assert task.verdict_status == VerdictStatus.RUNNING
+
+
+@pytest.mark.asyncio
 async def test_run_task_qa_job_waits_out_a_peer_classification_claim(monkeypatch):
     """A peer's claim is waited out, never turned into a non-terminal exit.
 
@@ -743,7 +798,7 @@ async def test_run_task_qa_job_waits_out_a_peer_classification_claim(monkeypatch
     async def fake_get_session():
         yield session
 
-    async def fake_load_live(_task_id):
+    async def fake_load_live(_task_id, _task_version_id=None):
         return [(trial.id, AnalysisStatus.RUNNING)]
 
     attempts = 0
@@ -826,7 +881,7 @@ async def test_run_task_qa_job_stops_waiting_when_the_job_is_cancelled(monkeypat
     async def fake_get_session():
         yield session
 
-    async def fake_load_live(_task_id):
+    async def fake_load_live(_task_id, _task_version_id=None):
         return [(trial.id, AnalysisStatus.RUNNING)]
 
     attempts = 0
@@ -841,6 +896,7 @@ async def test_run_task_qa_job_stops_waiting_when_the_job_is_cancelled(monkeypat
 
     monkeypatch.setattr(qa_handler, "QA_CLAIM_WAIT_POLL_SECONDS", 0)
     monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
+    monkeypatch.setattr("oddish.core.verdict_sync.get_session", fake_get_session)
     monkeypatch.setattr(
         qa_handler, "_load_live_trials_for_classification", fake_load_live
     )
@@ -884,7 +940,7 @@ async def test_run_task_qa_job_default_pre_trial_synth_is_noop(monkeypatch):
     async def fake_get_session():
         yield session
 
-    async def fake_load_live(_task_id):
+    async def fake_load_live(_task_id, _task_version_id=None):
         return [(trial.id, AnalysisStatus.SUCCESS)]
 
     async def fake_compute_verdict(classifications, *_args, **_kwargs):
@@ -982,7 +1038,7 @@ async def test_run_task_qa_job_uses_injected_pre_trial_synth_fn(monkeypatch):
     async def fake_get_session():
         yield session
 
-    async def fake_load_live(_task_id):
+    async def fake_load_live(_task_id, _task_version_id=None):
         return [(trial.id, AnalysisStatus.SUCCESS)]
 
     async def fake_compute_verdict(classifications, *_args, **_kwargs):
@@ -1090,7 +1146,7 @@ async def test_run_task_qa_job_pre_trial_failure_never_blocks_verdict(monkeypatc
     async def fake_get_session():
         yield session
 
-    async def fake_load_live(_task_id):
+    async def fake_load_live(_task_id, _task_version_id=None):
         return [(trial.id, AnalysisStatus.SUCCESS)]
 
     async def fake_compute_verdict(classifications, *_args, **_kwargs):
@@ -1174,7 +1230,7 @@ async def test_run_task_qa_job_releases_claim_when_store_vetoed(monkeypatch):
     async def fake_get_session():
         yield session
 
-    async def fake_load_live(_task_id):
+    async def fake_load_live(_task_id, _task_version_id=None):
         return [(trial.id, AnalysisStatus.SUCCESS)]
 
     async def fake_compute_verdict(classifications, *_args, **_kwargs):
@@ -1252,7 +1308,7 @@ async def test_run_task_qa_job_completes_with_no_live_trials(monkeypatch):
     async def fake_get_session():
         yield session
 
-    async def fake_load_live(_task_id):
+    async def fake_load_live(_task_id, _task_version_id=None):
         return []
 
     async def fail_classify(_trial_id, should_store=None):
@@ -1336,7 +1392,7 @@ async def test_run_task_qa_job_ignores_cancelled_worker_job(monkeypatch):
     async def fake_get_session():
         yield session
 
-    async def fake_load_live(_task_id):
+    async def fake_load_live(_task_id, _task_version_id=None):
         return [(trial.id, AnalysisStatus.SUCCESS)]
 
     async def fake_compute_verdict(classifications, *_args, **_kwargs):
@@ -1394,7 +1450,7 @@ async def test_run_task_qa_job_ignores_final_cancelled_worker_job(monkeypatch):
     async def fake_get_session():
         yield session
 
-    async def fake_load_live(_task_id):
+    async def fake_load_live(_task_id, _task_version_id=None):
         return [(trial.id, AnalysisStatus.SUCCESS)]
 
     async def fake_compute_verdict(classifications, *_args, **_kwargs):
@@ -1461,7 +1517,7 @@ async def test_run_task_qa_job_stops_classifying_after_cancel(monkeypatch):
     async def fake_get_session():
         yield session
 
-    async def fake_load_live(_task_id):
+    async def fake_load_live(_task_id, _task_version_id=None):
         return [(trial_id, None) for trial_id in trials]
 
     classified: list[str] = []
@@ -1517,7 +1573,7 @@ async def test_run_task_qa_job_blocks_inflight_classification_store(monkeypatch)
     async def fake_get_session():
         yield session
 
-    async def fake_load_live(_task_id):
+    async def fake_load_live(_task_id, _task_version_id=None):
         return [(trial.id, None)]
 
     async def fake_classify(_trial_id, should_store=None):
@@ -1573,7 +1629,7 @@ async def test_run_task_qa_job_threads_synthesis_args_and_stores_output(monkeypa
     async def fake_get_session():
         yield session
 
-    async def fake_load_live(_task_id):
+    async def fake_load_live(_task_id, _task_version_id=None):
         return [(trial.id, AnalysisStatus.SUCCESS)]
 
     captured: dict = {}

@@ -507,7 +507,16 @@ async def run_pre_trial_only_job(
             )
         )
     try:
-        live_trials = await _load_live_trials_for_classification(task_id)
+        effective_version_id = task_version_id
+        if effective_version_id is None:
+            async with get_session() as session:
+                effective_version_id = await session.scalar(
+                    select(TaskModel.current_version_id).where(TaskModel.id == task_id)
+                )
+        live_trials = await _load_live_trials_for_classification(
+            task_id,
+            effective_version_id,
+        )
         claim = await _run_pre_trial_audit(
             task_id,
             worker_job_id,
@@ -825,8 +834,13 @@ def _classifications_from_trials(trials) -> list:
 
 async def _load_live_trials_for_classification(
     task_id: str,
+    task_version_id: str | None = None,
 ) -> list[tuple[str, AnalysisStatus | None]]:
-    """Return live trial IDs and QA states.
+    """Return live trial IDs and QA states for one task version.
+
+    Versioned tasks must never synthesize a current verdict from historical
+    trials. ``None`` preserves the legacy behavior for tasks created before
+    task versioning existed.
 
     Trials created by the Sauron->Oddish bulk migration (``imported_at IS NOT
     NULL``) are excluded: classifying ~1M historical trials was ruled out on
@@ -853,6 +867,11 @@ async def _load_live_trials_for_classification(
                     TrialModel.analysis_status,
                 ).where(
                     TrialModel.task_id == task_id,
+                    (
+                        TrialModel.task_version_id == task_version_id
+                        if task_version_id is not None
+                        else True
+                    ),
                     TrialModel.superseded_by_trial_id.is_(None),
                     # Exclude bulk-migrated Sauron trials (see docstring): too
                     # costly to classify ~1M historical rows.
@@ -903,6 +922,7 @@ async def run_task_qa_job(
             )
             return
 
+        task_version_id = getattr(task, "current_version_id", None)
         start_verdict(task, now=utcnow())
 
     verdict_result = None
@@ -919,7 +939,10 @@ async def run_task_qa_job(
 
     classifications: list[TrialClassification] = []
     try:
-        live_trials = await _load_live_trials_for_classification(task_id)
+        live_trials = await _load_live_trials_for_classification(
+            task_id,
+            task_version_id,
+        )
 
         # Pre-trial: a per-version task-source audit, independent of trial
         # classification -- runs before the per-trial loop, even when there are
@@ -928,7 +951,10 @@ async def run_task_qa_job(
         # synth hook is registered. Failures are swallowed inside so it can
         # never block the verdict path; cancellation propagates.
         await _run_pre_trial_audit(
-            task_id, worker_job_id, [trial_id for trial_id, _ in live_trials]
+            task_id,
+            worker_job_id,
+            [trial_id for trial_id, _ in live_trials],
+            task_version_id=task_version_id,
         )
 
         if not live_trials:
@@ -949,7 +975,11 @@ async def run_task_qa_job(
             # as neither good nor bad rather than skewing either bucket.
             async with get_session() as session:
                 task = await session.get(TaskModel, task_id, with_for_update=True)
-                if task and await _worker_job_is_running(session, worker_job_id):
+                if (
+                    task
+                    and getattr(task, "current_version_id", None) == task_version_id
+                    and await _worker_job_is_running(session, worker_job_id)
+                ):
                     complete_verdict_without_result(task, now=utcnow())
                     task.status = TaskStatus.COMPLETED
                     task.finished_at = utcnow()
@@ -996,6 +1026,11 @@ async def run_task_qa_job(
             trials_result = await session.execute(
                 select(TrialModel).where(
                     TrialModel.task_id == task_id,
+                    (
+                        TrialModel.task_version_id == task_version_id
+                        if task_version_id is not None
+                        else True
+                    ),
                     TrialModel.superseded_by_trial_id.is_(None),
                 )
             )
@@ -1081,12 +1116,21 @@ async def run_task_qa_job(
         if heartbeat_task is not None:
             await asyncio.gather(heartbeat_task, return_exceptions=True)
 
+    async def _qa_result_is_current(session) -> bool:
+        if not await _worker_job_is_running(session, worker_job_id):
+            return False
+        current_task = await session.get(TaskModel, task_id)
+        return (
+            current_task is not None
+            and getattr(current_task, "current_version_id", None) == task_version_id
+        )
+
     status = await asyncio.shield(
         sync_verdict_to_task(
             task_id,
             payload=verdict_result,
             error=verdict_error,
-            should_store=lambda session: _worker_job_is_running(session, worker_job_id),
+            should_store=_qa_result_is_current,
         )
     )
     if status is None:

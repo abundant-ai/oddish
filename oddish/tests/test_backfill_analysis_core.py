@@ -16,10 +16,16 @@ from oddish.core import endpoints
 from oddish.db import AnalysisStatus, TaskStatus, VerdictStatus, utcnow
 
 
-def _trial(trial_id, *, analysis_status=AnalysisStatus.SUCCESS):
+def _trial(
+    trial_id,
+    *,
+    analysis_status=AnalysisStatus.SUCCESS,
+    task_version_id=None,
+):
     return SimpleNamespace(
         id=trial_id,
         superseded_by_trial_id=None,
+        task_version_id=task_version_id,
         analysis=(
             {"classification": "GOOD_SUCCESS"}
             if analysis_status == AnalysisStatus.SUCCESS
@@ -38,11 +44,13 @@ def _task(
     run_analysis=False,
     verdict=None,
     verdict_status=VerdictStatus.SUCCESS,
+    current_version_id=None,
 ):
     return SimpleNamespace(
         id="tsk",
         org_id="org-1",
         trials=trials,
+        current_version_id=current_version_id,
         run_analysis=run_analysis,
         status=TaskStatus.COMPLETED,
         finished_at="ts",
@@ -130,6 +138,26 @@ async def test_force_resets_all_live_trials(_stub_enqueue):
 
     assert result["reset_count"] == 2
     assert a.analysis_status is None and b.analysis_status is None
+
+
+@pytest.mark.asyncio
+async def test_force_resets_only_current_version_trials(_stub_enqueue):
+    historical = _trial("tsk-old", task_version_id="tsk-v1")
+    current = _trial("tsk-current", task_version_id="tsk-v2")
+    task = _task(
+        [historical, current],
+        current_version_id="tsk-v2",
+    )
+    session = _FakeSession(task)
+
+    result = await endpoints.backfill_task_analysis_core(
+        session, task_id="tsk", org_id="org-1", force=True
+    )
+
+    assert result["trial_count"] == 1
+    assert result["reset_count"] == 1
+    assert historical.analysis_status == AnalysisStatus.SUCCESS
+    assert current.analysis_status is None
 
 
 @pytest.mark.asyncio

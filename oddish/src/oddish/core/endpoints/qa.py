@@ -237,8 +237,13 @@ def _reset_trial_analysis(trial: TrialModel) -> None:
     trial.analysis_log = None
 
 
-async def _count_active_trials(session: AsyncSession, *, task_id: str) -> int:
-    """Count non-terminal, non-superseded trials for a task."""
+async def _count_active_trials(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    task_version_id: str | None,
+) -> int:
+    """Count non-terminal, non-superseded trials for one task version."""
     active_statuses = [
         TrialStatus.PENDING,
         TrialStatus.QUEUED,
@@ -248,6 +253,11 @@ async def _count_active_trials(session: AsyncSession, *, task_id: str) -> int:
     count = await session.scalar(
         select(func.count(TrialModel.id)).where(
             TrialModel.task_id == task_id,
+            (
+                TrialModel.task_version_id == task_version_id
+                if task_version_id is not None
+                else True
+            ),
             TrialModel.superseded_by_trial_id.is_(None),
             TrialModel.status.in_(active_statuses),
         )
@@ -322,10 +332,20 @@ async def backfill_task_analysis_core(
     live_trials = [
         trial for trial in task.trials if trial.superseded_by_trial_id is None
     ]
+    if task.current_version_id is not None:
+        live_trials = [
+            trial
+            for trial in live_trials
+            if trial.task_version_id == task.current_version_id
+        ]
     if not live_trials:
         raise HTTPException(status_code=400, detail="Task has no live trials to QA")
 
-    active_trials = await _count_active_trials(session, task_id=task.id)
+    active_trials = await _count_active_trials(
+        session,
+        task_id=task.id,
+        task_version_id=task.current_version_id,
+    )
     if active_trials > 0:
         raise HTTPException(
             status_code=400,
