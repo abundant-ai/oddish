@@ -346,6 +346,7 @@ export interface ExperimentOptionsResponse {
 export interface TaskVersionSummary {
   id: string;
   version: number;
+  content_hash?: string | null;
   message?: string | null;
   created_at: string;
   is_current: boolean;

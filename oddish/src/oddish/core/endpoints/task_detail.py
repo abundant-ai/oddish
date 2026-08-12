@@ -184,9 +184,7 @@ async def get_task_detail_core(
         version_rows=version_rows,
         current_version_id=task_status.current_version_id,
         billed_trial_ids=billed_trial_ids,
-        qa_cost_usd=(
-            qa_by_task[task_id].qa_cost_usd if task_id in qa_by_task else 0.0
-        ),
+        qa_cost_usd=(qa_by_task[task_id].qa_cost_usd if task_id in qa_by_task else 0.0),
     )
 
     # Version-scoped experiments: which experiments ran non-probe trials
@@ -302,6 +300,7 @@ def _aggregate_task_detail_rollups(
         v.id: TaskVersionSummary(
             id=v.id,
             version=v.version,
+            content_hash=v.content_hash,
             message=v.message,
             created_at=v.created_at,
             is_current=(v.id == current_version_id),

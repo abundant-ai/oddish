@@ -21,6 +21,7 @@ import tomllib
 from pathlib import Path
 
 from oddish.config import settings
+from oddish.core.task_source import resolve_task_source_location
 from oddish.db.storage import StorageClient
 
 
@@ -62,8 +63,13 @@ def _run_cloud_build(*, context_dir: str, image_url: str) -> None:
 
 
 async def _fetch_task_archive(task_id: str, version: int) -> bytes:
+    task_s3_prefix, _task_path = await resolve_task_source_location(
+        task_id, f"{task_id}-v{version}"
+    )
     storage = StorageClient()
-    _root, archive_key = await storage._resolve_task_prefix(task_id, version)
+    _root, archive_key = await storage._resolve_task_prefix(
+        task_id, version, task_s3_prefix
+    )
     return await storage.download_bytes(archive_key)
 
 
@@ -92,7 +98,9 @@ async def ensure_task_image(task_id: str, version: int) -> str:
         _extract_archive(archive_bytes, root)
 
         task_toml_path = root / "task.toml"
-        task_toml = tomllib.loads(task_toml_path.read_text()) if task_toml_path.exists() else {}
+        task_toml = (
+            tomllib.loads(task_toml_path.read_text()) if task_toml_path.exists() else {}
+        )
         docker_image = (task_toml.get("environment") or {}).get("docker_image")
         if docker_image:
             # The pod uses the task-provided image verbatim; nothing to build.
