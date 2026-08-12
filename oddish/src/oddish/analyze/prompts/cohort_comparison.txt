@@ -1,5 +1,11 @@
-Compare the two cohorts below. For each category, state what the successful runs
+Compare the cohorts below. For each category, state what the successful runs
 did and what the failing runs did, as short behaviour descriptions.
+
+When only ONE cohort is present -- every classified run on this task version
+landed on the same side -- describe that cohort instead of comparing. Put every
+observation in its own list, leave the other empty, and never characterise the
+side that does not exist. "Failing runs did X, successful runs presumably did
+Y" is exactly the invention this forbids: you have no successful runs to read.
 
 {{taxonomy}}
 
@@ -12,7 +18,11 @@ not cite a component that is not listed above, and do not invent step ids. A
 behaviour you cannot cite is one you must omit.
 
 Write `summary` last, after the categories are settled: one or two sentences
-naming the capability that separates the cohorts. It must follow from the
+naming the capability that separates the cohorts -- or, with a single cohort,
+the capability these runs show. Where one model's runs behave differently from
+another's, say which model; the trials carry a `model` attribute for exactly
+this. Do not count runs per model in prose -- the reader is shown those counts
+already. It must follow from the
 categories you kept -- do not raise a difference there that you did not
 record below, and do not restate the counts, which the reader can already
 see. Name the behaviour and its consequence, e.g. "Successful runs took a

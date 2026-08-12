@@ -21,6 +21,28 @@ PREAMBLE = (
     "differently."
 )
 
+# A task whose runs all failed (or all succeeded) has one cohort, and it is
+# often the most interesting case there is. Say so plainly rather than leaving
+# the model to infer it from an empty list -- an empty <cohort> block with a
+# "compare the two" preamble above it invites inventing the missing side.
+SINGLE_PREAMBLE = (
+    "You are describing ONE cohort of recorded agent runs on the same task: "
+    "{label} runs. There is no second cohort -- every classified run on this "
+    "task version landed on this side. A developer wants to know what these "
+    "runs did. Do NOT speculate about how a run on the other side would have "
+    "behaved, and do not describe the absent side at all: put every "
+    "observation in `{field}` and leave the other list empty."
+)
+
+
+def preamble(*, successful: list[dict], failing: list[dict]) -> str:
+    """Which framing the run gets, decided by which cohorts actually exist."""
+    if successful and failing:
+        return PREAMBLE
+    if successful:
+        return SINGLE_PREAMBLE.format(label="successful", field="successful")
+    return SINGLE_PREAMBLE.format(label="failing", field="failing")
+
 
 def taxonomy_section() -> str:
     """The categories WITH definitions.
@@ -43,7 +65,9 @@ def cohort_section(label: str, trials: list[dict]) -> str:
     """One cohort's trials, as component streams the model can cite."""
     lines = [f"<cohort name=\"{label}\">"]
     for t in trials:
-        lines.append(f'  <trial id="{t["trial_id"]}">')
+        model = (t.get("model") or "").split("/")[-1]
+        attrs = f' model="{model}"' if model else ""
+        lines.append(f'  <trial id="{t["trial_id"]}"{attrs}>')
         for c in t.get("components") or []:
             ids = c.get("step_ids") or []
             if not ids:

@@ -129,6 +129,56 @@ function ObservationList({
   );
 }
 
+/** One side of a category: heading, the models that ran on that side, and the
+ *  observations. The model chips repeat per category because a reader scanning
+ *  one category should not have to scroll back to learn who ran it. */
+function CohortColumn({
+  tone,
+  items,
+  models,
+  taskId,
+  taskVersionId,
+}: {
+  tone: "successful" | "failing";
+  items: BehaviorObservation[];
+  models?: { model: string; trials: number }[];
+  taskId: string;
+  taskVersionId?: string;
+}) {
+  const successful = tone === "successful";
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span
+          className={`${COHORT_HEADING} ${
+            successful
+              ? "text-emerald-600 dark:text-emerald-400"
+              : "text-red-600 dark:text-red-400"
+          }`}
+        >
+          {successful ? "Successful" : "Failed"}
+        </span>
+        {models?.map((m) => (
+          <span
+            key={m.model}
+            className="border-border text-muted-foreground rounded border px-1.5 py-0.5 font-mono text-[10px]"
+            title={`${m.trials} ${successful ? "successful" : "failed"} ${
+              m.trials === 1 ? "trial" : "trials"
+            } from ${m.model}`}
+          >
+            {m.model} ×{m.trials}
+          </span>
+        ))}
+      </div>
+      <ObservationList
+        items={items}
+        taskId={taskId}
+        taskVersionId={taskVersionId}
+      />
+    </div>
+  );
+}
+
 export function CohortComparisonSection({
   taskId,
   apiBaseUrl = "/api",
@@ -197,13 +247,22 @@ export function CohortComparisonSection({
     );
   }
 
+  // Derived from the cohorts, not read from `mode` alone: comparisons stored
+  // before that field existed still have to pick a layout.
+  const showSuccessful = data.cohort_success.length > 0;
+  const showFailing = data.cohort_failure.length > 0;
+  const single = data.mode === "single" || !showSuccessful || !showFailing;
+
   return (
     <section className="border-border flex flex-col gap-4 border-b p-4">
       <div className="flex items-baseline gap-3">
         <h3 className={SECTION_HEADING}>Agent capability analysis</h3>
         <span className="text-xs text-muted-foreground">
-          {data.cohort_success.length} successful, {data.cohort_failure.length}{" "}
-          failed trials
+          {showSuccessful && showFailing
+            ? `${data.cohort_success.length} successful, ${data.cohort_failure.length} failed trials`
+            : showSuccessful
+              ? `${data.cohort_success.length} successful trials \u00b7 no failures to compare against`
+              : `${data.cohort_failure.length} failed trials \u00b7 no successes to compare against`}
         </span>
       </div>
       {data.summary ? (
@@ -227,31 +286,29 @@ export function CohortComparisonSection({
             {CATEGORY_LABELS[cat.category] ?? cat.category}
             {cat.label ? `: ${discoveryLabel(cat.label)}` : ""}
           </h4>
-          <div className="grid gap-6 md:grid-cols-2">
-            <div className="flex flex-col gap-2">
-              <span
-                className={`${COHORT_HEADING} text-emerald-600 dark:text-emerald-400`}
-              >
-                Successful
-              </span>
-              <ObservationList
+          <div
+            className={
+              single ? "flex flex-col gap-2" : "grid gap-6 md:grid-cols-2"
+            }
+          >
+            {showSuccessful ? (
+              <CohortColumn
+                tone="successful"
                 items={cat.successful}
+                models={data.models?.successful}
                 taskId={taskId}
                 taskVersionId={data.task_version_id}
               />
-            </div>
-            <div className="flex flex-col gap-2">
-              <span
-                className={`${COHORT_HEADING} text-red-600 dark:text-red-400`}
-              >
-                Failed
-              </span>
-              <ObservationList
+            ) : null}
+            {showFailing ? (
+              <CohortColumn
+                tone="failing"
                 items={cat.failing}
+                models={data.models?.failing}
                 taskId={taskId}
                 taskVersionId={data.task_version_id}
               />
-            </div>
+            ) : null}
           </div>
         </div>
       ))}

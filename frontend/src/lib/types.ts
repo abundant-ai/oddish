@@ -778,6 +778,15 @@ export interface CohortComparison {
    *  separates the cohorts. Optional because comparisons stored before
    *  schema_version 2 have no such field. */
   summary?: string;
+  /** "single" when every classified run landed on one side, so the section
+   *  describes a cohort rather than comparing two. Absent on pre-v3 rows. */
+  mode?: "comparison" | "single";
+  /** Which models ran on each side, counted server-side from the trial rows —
+   *  never model-authored, so it is a fact rather than a claim. */
+  models?: {
+    successful: { model: string; trials: number }[];
+    failing: { model: string; trials: number }[];
+  };
   categories: CategoryComparison[];
   dropped?: { evidence: number; observations: number; categories: number };
   /** Trials whose summary covers under half their run; evidence from these is thin. */
