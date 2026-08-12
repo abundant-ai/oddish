@@ -228,9 +228,6 @@ def _patch_unrelated_cleanup_phases(
     async def unwedge(*_args, **_kwargs):
         return 0, 0, 0
 
-    async def zero_pair(*_args, **_kwargs):
-        return 0, 0
-
     terminated_targets: list[set[tuple[str, str]]] = []
 
     async def terminate(targets: set[tuple[str, str]]) -> int:
@@ -246,7 +243,6 @@ def _patch_unrelated_cleanup_phases(
     monkeypatch.setattr(cleanup, "_advance_legacy_analyzing_tasks", zero)
     monkeypatch.setattr(cleanup, "_heal_stale_verdict_pending", zero)
     monkeypatch.setattr(cleanup, "_unwedge_stuck_analyzing", unwedge)
-    monkeypatch.setattr(cleanup, "_reset_orphaned_trial_analysis", zero_pair)
     monkeypatch.setattr(cleanup, "_release_orphaned_slots", zero)
     monkeypatch.setattr(cleanup, "_reconcile_experiment_last_activity", zero)
     monkeypatch.setattr(cleanup, "_maybe_reconcile_tag_projections", zero)

@@ -177,6 +177,16 @@ def test_set_task_default_version_updates_pointer_and_storage_mirror(monkeypatch
         "recompute_task_browse_projection",
         fake_recompute_task_browse_projection,
     )
+    refreshed = []
+
+    async def fake_refresh_task_browse_summaries(_session, version_ids):
+        refreshed.append(list(version_ids))
+
+    monkeypatch.setattr(
+        _task_detail,
+        "refresh_task_browse_summaries",
+        fake_refresh_task_browse_summaries,
+    )
     session = _RecordingSession(results=[_Result(scalar=version)])
 
     selected = _run(
@@ -193,6 +203,7 @@ def test_set_task_default_version_updates_pointer_and_storage_mirror(monkeypatch
     assert task.task_path == "/tmp/old"
     assert task.task_s3_key == "tasks/task-1/v1.tar.gz"
     assert projected == ["task-1"]
+    assert refreshed == [["v1"]]
     assert "task_versions.task_id" in str(session.queries[0])
     assert "task_versions.version" in str(session.queries[0])
 

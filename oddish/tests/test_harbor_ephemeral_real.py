@@ -17,6 +17,9 @@ import shutil
 
 import pytest
 
+from harbor.models.environment_type import EnvironmentType
+from harbor.models.trial.config import EnvironmentConfig
+
 from oddish.config import HARBOR_DEFAULT_SOURCE
 from oddish.workers.harbor.ephemeral import run_ephemeral_harbor_trial
 
@@ -45,6 +48,7 @@ async def test_real_older_harbor_child_runs_and_bridges_outcome(tmp_path):
         task_path=task_dir,
         agent="nop",
         jobs_dir=tmp_path / "jobs",
+        environment_config=EnvironmentConfig(type=EnvironmentType.DOCKER),
         model=None,
         trial_id="t-real-eph",
         harbor_config=harbor_config,
