@@ -16,7 +16,6 @@ import { FALLBACK_TOKEN, VERDICT_TOKENS } from "@/components/qa-report/tokens";
 import { TaskVerdictBadge } from "@/components/task-verdict-badge";
 import { isActivePipelineStatus } from "@/lib/job-status";
 import { formatCostUsd, hasDisplayableCostUsd } from "@/lib/format";
-import { shortTrialParam } from "@/lib/trial-url";
 import type {
   AnalysisClassification,
   PreTrialFinding,
@@ -329,9 +328,7 @@ export function TaskOverviewPanel({
     if (!taskId) return null;
     const params = new URLSearchParams();
     if (trial.task_version_id) params.set("version", trial.task_version_id);
-    // Shorten against the task this href addresses, not the trial's own, so
-    // the link's expansion context is the one that wrote it.
-    params.set("trial", shortTrialParam(trial.id, taskId));
+    params.set("trial", trial.id);
     return `/tasks/${taskId}?${params.toString()}`;
   };
 
