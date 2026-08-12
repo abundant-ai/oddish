@@ -34,9 +34,9 @@ from oddish.config import (
 )
 from oddish.core.baseline_gate import GATE_SKIP_PREFIX
 from oddish.core.helpers import cancel_job_by_worker
-from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.core.tags.ownership_transfer import sweep_orphaned_tag_owners
-from oddish.core.verdict_state import fail_verdict, queue_verdict
+from oddish.core.task_browse_summary import refresh_task_browse_summaries
+from oddish.core.verdict_state import abandon_verdict, fail_verdict, queue_verdict
 from oddish.costs.recorder import reconcile_compute_cost_spans
 from oddish.db import (
     AnalysisStatus,
@@ -59,12 +59,12 @@ from oddish.runtime.ec2_orphans import (
     decide_ec2_orphan,
 )
 from oddish.runtime.registry import get_backend
+from oddish.workers.queue.sandbox_capacity import cleanup_sandbox_capacity_leases
+from oddish.workers.queue.shared import console
 from oddish.workers.queue.worker_job_single_job import (
     calculate_trial_retry_delay_seconds,
     classify_retry_reason,
 )
-from oddish.workers.queue.shared import console
-from oddish.workers.queue.sandbox_capacity import cleanup_sandbox_capacity_leases
 
 # See historical context: we bumped this from 10 -> 15 after a
 # pooler-blip incident reaped 25-70 healthy trials in a single sweep.
@@ -1280,7 +1280,7 @@ async def _heal_stale_verdict_pending(session) -> int:
     the verdict is already terminal). ``ANALYSIS`` rows are intentionally ignored
     here -- they no longer drive the verdict. Returns the count finalized.
     """
-    from oddish.queue import enqueue_qa_worker_job
+    from oddish.queue import maybe_start_task_qa_stage
 
     stale_verdict_pending = (
         await session.execute(
@@ -1309,16 +1309,39 @@ async def _heal_stale_verdict_pending(session) -> int:
 
     verdict_pending_completed = 0
     for (task_id,) in stale_verdict_pending:
-        task = await session.get(TaskModel, str(task_id))
+        task = (
+            await session.execute(
+                select(TaskModel).where(TaskModel.id == str(task_id)).with_for_update()
+            )
+        ).scalar_one_or_none()
         if not task or task.status != TaskStatus.VERDICT_PENDING:
             continue
-        if task.verdict_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
-            task.status = TaskStatus.COMPLETED
-            task.finished_at = task.finished_at or utcnow()
+        # The candidate scan precedes the row lock. A normal trial completion
+        # may have admitted QA while cleanup waited, so recheck after locking
+        # before resetting state or enqueueing a duplicate job.
+        active_qa = await session.scalar(
+            text(
+                """
+                SELECT 1
+                FROM worker_jobs
+                WHERE subject_table = 'tasks'
+                  AND subject_id = :task_id
+                  AND kind::text IN ('QA', 'VERDICT')
+                  AND status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+                LIMIT 1
+                """
+            ),
+            {"task_id": task.id},
+        )
+        if active_qa is not None:
+            continue
+
+        abandon_verdict(task)
+        task.status = TaskStatus.RUNNING
+        task.finished_at = None
+        admission = await maybe_start_task_qa_stage(session, task.id)
+        if admission.advanced and task.status == TaskStatus.COMPLETED:
             verdict_pending_completed += 1
-        else:
-            queue_verdict(task)
-            await enqueue_qa_worker_job(session, task_id=task.id, org_id=task.org_id)
     return verdict_pending_completed
 
 
