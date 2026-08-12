@@ -279,7 +279,6 @@ async def rerun_task_qa_core(
         org_id=org_id,
         trial_ids=None,
         force=True,
-        enable_analysis=True,
     )
 
 
@@ -290,7 +289,6 @@ async def backfill_task_analysis_core(
     org_id: str | None = None,
     trial_ids: list[str] | None = None,
     force: bool = False,
-    enable_analysis: bool = False,
 ) -> dict[str, str | int]:
     """(Re)run task-level QA to backfill trial analysis.
 
@@ -302,10 +300,6 @@ async def backfill_task_analysis_core(
     * ``force=True`` with ``trial_ids`` resets only those trials -> true
       per-trial re-run;
     * ``force=True`` without ``trial_ids`` resets every live trial.
-
-    ``enable_analysis=True`` also flips ``task.run_analysis`` on so future
-    trials auto-analyze. Directly enqueuing the QA job is the gate override:
-    the worker does not recheck ``run_analysis``.
     """
     # The task row lock serializes this check-and-enqueue against the audit
     # rerun (which takes the same lock): without it, two concurrent requests
@@ -385,18 +379,21 @@ async def backfill_task_analysis_core(
             _reset_trial_analysis(trial)
             reset_count += 1
 
-    if enable_analysis:
-        task.run_analysis = True
     task.status = TaskStatus.VERDICT_PENDING
     task.finished_at = None
     queue_verdict(task)
 
     from oddish.queue import qa_eligible_trial_ids
-    from oddish.workers.analysis_trials import create_qa_trial
+    from oddish.workers.analysis_trials import create_qa_trial, has_verdict_evidence
 
     eligible = await qa_eligible_trial_ids(session, task.id)
     if eligible:
-        await create_qa_trial(session, task=task, eligible_trial_ids=eligible)
+        await create_qa_trial(
+            session,
+            task=task,
+            eligible_trial_ids=eligible,
+            with_verdict=await has_verdict_evidence(session, eligible),
+        )
     else:
         task.status = TaskStatus.COMPLETED
         task.finished_at = utcnow()

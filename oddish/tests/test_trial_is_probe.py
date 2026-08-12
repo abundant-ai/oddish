@@ -54,15 +54,20 @@ async def test_create_task_marks_probe_trials(cleanup_task_ids):
     cleanup_task_ids.extend([probe_task.id, normal_task.id])
 
     async with get_session() as session:
+        # kind filter: the always-on pre-trial audit trial is never a probe.
         probe_trials = (
             await session.execute(
-                TrialModel.__table__.select().where(TrialModel.task_id == probe_task.id)
+                TrialModel.__table__.select().where(
+                    TrialModel.task_id == probe_task.id,
+                    TrialModel.kind == "agent",
+                )
             )
         ).all()
         normal_trials = (
             await session.execute(
                 TrialModel.__table__.select().where(
-                    TrialModel.task_id == normal_task.id
+                    TrialModel.task_id == normal_task.id,
+                    TrialModel.kind == "agent",
                 )
             )
         ).all()
@@ -110,10 +115,15 @@ def test_trial_response_exposes_is_probe():
         cost_usd=None,
         billed_user_id=None,
         phase_timing=None,
+        trajectory_duration_seconds=None,
+        total_tool_calls=None,
+        tool_counts=None,
         has_trajectory=False,
         analysis=None,
         analysis_status=None,
         analysis_error=None,
+        analysis_started_at=None,
+        analysis_finished_at=None,
         superseded_by_trial_id=None,
         created_at=_now,
         started_at=None,
@@ -214,6 +224,9 @@ async def test_retry_preserves_is_probe(monkeypatch):
         def scalar_one_or_none(self):
             return self._scalar
 
+        def all(self):
+            return list(self._rows)
+
         def __iter__(self):
             return iter(self._rows)
 
@@ -307,6 +320,7 @@ async def test_retry_preserves_is_probe(monkeypatch):
         max_attempts,
         parent_job_id=None,
         harbor_variant_id="default",
+        execution_lane="default",
         registry_auth_enc=None,
     ):
         pass

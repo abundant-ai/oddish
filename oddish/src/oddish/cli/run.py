@@ -416,13 +416,6 @@ def run(
             help="Suppress infrastructure startup logs",
         ),
     ] = False,
-    run_analysis: Annotated[
-        bool,
-        typer.Option(
-            "--run-analysis",
-            help="Run LLM analysis on each trial and compute task verdict",
-        ),
-    ] = False,
     run_probe: Annotated[
         bool,
         typer.Option(
@@ -500,8 +493,7 @@ def run(
             "--force-new-version",
             help=(
                 "Allocate a new task version even when the local content is "
-                "unchanged from the latest existing version. Useful when "
-                "appending trials with a different run_analysis setting."
+                "unchanged from the latest existing version."
             ),
         ),
     ] = False,
@@ -791,8 +783,6 @@ def run(
         if "n_tasks" in sweep_config and n_tasks is None:
             n_tasks = sweep_config["n_tasks"]
         # Config can enable analysis
-        if "run_analysis" in sweep_config:
-            run_analysis = sweep_config["run_analysis"]
         # Config can enable auto-probe
         if "run_probe" in sweep_config:
             run_probe = sweep_config["run_probe"]
@@ -945,7 +935,6 @@ def run(
             priority=priority,
             experiment_id=experiment_id,
             max_trial_attempts=max_trial_attempts,
-            run_analysis=run_analysis,
             run_probe=run_probe,
             gate_baselines=gate_baselines,
             github_username=github_user,
@@ -990,7 +979,6 @@ def run(
     # ``oddish upload``). ``oddish run`` deliberately uses
     # ``register=False`` so the subsequent sweep call owns TaskModel
     # creation: this keeps ``--run-analysis`` working for fresh tasks
-    # (the server's append-mode guard rejects enabling run_analysis
     # on an already-registered task that didn't opt in). ``oddish
     # upload`` uses ``register=True`` because its whole purpose is
     # making the task visible before any trials exist.

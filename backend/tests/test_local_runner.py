@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import text
 
 from oddish.db import (
     ExperimentModel,
@@ -24,6 +25,7 @@ from oddish.db import (
     TrialStatus,
     get_session,
 )
+from oddish.db.models import task_experiments
 
 from oddish.worker.local_runner import _run_harbor_trial, run_trial_locally
 
@@ -69,19 +71,37 @@ async def seeded_trial_id(tmp_path):
                 origin=TrialOrigin.ODDISH,
             )
         )
+        # Settlement resolves the QA shadow experiment through the task's
+        # live membership, so seed the row every real flow writes.
+        await session.flush()
+        await session.execute(
+            task_experiments.insert().values(
+                task_id=task_id, experiment_id=experiment_id
+            )
+        )
 
     yield trial_id
 
     async with get_session() as session:
+        # Settling the trial spawns a QA trial in a shadow experiment, so
+        # sweep by task rather than by the ids seeded above.
         await session.execute(
-            TrialModel.__table__.delete().where(TrialModel.id == trial_id)
+            text("delete from worker_jobs where subject_id like :prefix"),
+            {"prefix": f"{task_id}-%"},
+        )
+        await session.execute(
+            TrialModel.__table__.delete().where(TrialModel.task_id == task_id)
+        )
+        await session.execute(
+            task_experiments.delete().where(task_experiments.c.task_id == task_id)
         )
         await session.execute(
             TaskModel.__table__.delete().where(TaskModel.id == task_id)
         )
         await session.execute(
             ExperimentModel.__table__.delete().where(
-                ExperimentModel.id == experiment_id
+                (ExperimentModel.id == experiment_id)
+                | (ExperimentModel.shadow_of == experiment_id)
             )
         )
 
@@ -101,9 +121,9 @@ async def test_run_trial_locally_dry_run_marks_success(seeded_trial_id):
 
 
 @pytest.mark.asyncio
-async def test_run_trial_locally_missing_trial_raises():
-    with pytest.raises(ValueError, match="not found"):
-        await run_trial_locally("nonexistent-trial-id", dry_run=True)
+async def test_run_trial_locally_missing_trial_skips():
+    """A missing trial is not claimable; the runner returns without raising."""
+    await run_trial_locally("nonexistent-trial-id", dry_run=True)
 
 
 @pytest_asyncio.fixture

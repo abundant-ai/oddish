@@ -112,10 +112,7 @@ from oddish.runtime.sandbox_lifecycle import (
     EC2_TRIAL_EXECUTION_LANE,
 )
 
-from oddish.workers.analysis_trials import (
-    register_audit_enabled_check,
-    register_qa_imported_hook,
-)
+from oddish.workers.analysis_trials import register_qa_imported_hook
 
 from .github import notify_github_qa, notify_github_trial
 from .runtime import configure_storage_paths, console
@@ -156,12 +153,6 @@ install_byok_resolver()
 
 # QA import writes the verdict; the hook refreshes the whole PR comment.
 register_qa_imported_hook(notify_github_qa)
-
-# Org-level pre-trial audit opt-in, resolved from organizations.settings.
-from .audit_opt_in import org_audit_enabled
-
-register_audit_enabled_check(org_audit_enabled)
-
 
 # Post-success hooks: fired after the worker_jobs row is in SUCCESS state.
 # The QA hook refreshes the whole PR comment (per-trial classifications +

@@ -26,6 +26,7 @@ from oddish.core.verdict_sync import (
     aggregate_exploited_into_pre_trial,
     build_pre_trial_payload,
     build_verdict_payload,
+    complete_task_without_verdict,
     sync_pre_trial_to_task_version,
     sync_verdict_to_task,
 )
@@ -65,16 +66,6 @@ ANALYSIS_TRIAL_TIMEOUT_MINUTES = 60
 
 def is_analysis_kind(kind: str | None) -> bool:
     return kind in ANALYSIS_TRIAL_KINDS
-
-
-# Hosted org-level audit opt-in (task_id -> enabled). oddish/ can't read the
-# org settings table, so backend registers the check at container load.
-_audit_enabled_fn: Callable[[str], Awaitable[bool]] | None = None
-
-
-def register_audit_enabled_check(fn: Callable[[str], Awaitable[bool]]) -> None:
-    global _audit_enabled_fn
-    _audit_enabled_fn = fn
 
 
 # Fired after a QA import writes the task verdict (hosted GitHub PR refresh).
@@ -238,11 +229,38 @@ async def create_analysis_trial(
     return trial
 
 
+# A verdict needs enough evidence to be worth trusting: a handful of runs
+# from more than one or two agents. Below this the task completes with its
+# per-trial analysis and no verdict, rather than a confident call on noise.
+MIN_VERDICT_TRIALS = 5
+MIN_VERDICT_AGENTS = 3
+
+
+async def has_verdict_evidence(
+    session: AsyncSession, trial_ids: list[str]
+) -> bool:
+    """Whether the eligible set can support a task verdict.
+
+    ``trial_ids`` is the QA-eligible set, which already excludes baselines,
+    probes, skipped, cancelled and superseded rows. Queries agents directly
+    rather than touching a possibly-unloaded ``task.trials`` relationship.
+    """
+    if len(trial_ids) < MIN_VERDICT_TRIALS:
+        return False
+    agents = (
+        await session.scalars(
+            select(TrialModel.agent).where(TrialModel.id.in_(trial_ids))
+        )
+    ).all()
+    return len({(a or "").strip().lower() for a in agents if a}) >= MIN_VERDICT_AGENTS
+
+
 def build_qa_brief(
     *,
     task_name: str,
     trial_ids: list[str],
     pre_trial_items: list[dict] | None,
+    with_verdict: bool = True,
 ) -> str:
     classify = _prompt("classify_prompt.txt")
     verdict = _prompt("verdict_prompt.txt")
@@ -253,6 +271,11 @@ def build_qa_brief(
         json.dumps(pre_trial_items, indent=1) if pre_trial_items else "(none recorded)"
     )
     ids = "\n".join(f"- {t}" for t in trial_ids)
+    verdict_section = (
+        f"== TASK VERDICT ==\nAfter classifying every trial, synthesize one task verdict:\n{verdict}\n"
+        if with_verdict
+        else "== TASK VERDICT ==\nDo NOT produce a verdict for this task: there are too few trials to judge it. Omit the \"verdict\" key entirely.\n"
+    )
     return f"""You are the QA auditor for the task `{task_name}`. You are in a clean analysis sandbox, not the task's own environment. The task source, each trial's logs, and each trial's trajectory come from the oddish-query CLI. Do not solve the task.
 
 Audit these trials:
@@ -269,9 +292,7 @@ Known pre-trial audit findings for this task (do not repeat these as per-trial a
 == PER-TRIAL TRAJECTORY SUMMARY ==
 {summary}
 
-== TASK VERDICT ==
-After classifying every trial, synthesize one task verdict:
-{verdict}
+{verdict_section}
 
 == OUTPUT ==
 Write exactly one file: /logs/{QA_RESULT_FILENAME}
@@ -319,11 +340,6 @@ async def maybe_enqueue_audit_trial(
 ) -> bool:
     """Once per task version, CAS pre_trial_status None -> QUEUED and create
     the audit trial. Returns True when this call created it."""
-    if _audit_enabled_fn is not None:
-        if not await _audit_enabled_fn(task.id):
-            return False
-    elif not settings.pre_trial_enabled:
-        return False
     version_id = task_version_id or task.current_version_id
     if version_id is None:
         return False
@@ -344,7 +360,11 @@ async def maybe_enqueue_audit_trial(
 
 
 async def create_qa_trial(
-    session: AsyncSession, *, task: TaskModel, eligible_trial_ids: list[str]
+    session: AsyncSession,
+    *,
+    task: TaskModel,
+    eligible_trial_ids: list[str],
+    with_verdict: bool = True,
 ) -> TrialModel:
     version = (
         await session.get(TaskVersionModel, task.current_version_id)
@@ -360,8 +380,9 @@ async def create_qa_trial(
             task_name=task.name,
             trial_ids=eligible_trial_ids,
             pre_trial_items=items,
+            with_verdict=with_verdict,
         ),
-        payload={"trial_ids": eligible_trial_ids},
+        payload={"trial_ids": eligible_trial_ids, "with_verdict": with_verdict},
     )
 
 
@@ -461,7 +482,13 @@ async def _import_qa_result(trial: TrialModel) -> None:
     artifact = None
     if trial.status == TrialStatus.SUCCESS:
         artifact = await read_analysis_artifact(trial, QA_RESULT_FILENAME)
-    if artifact is None or not isinstance(artifact.get("verdict"), dict):
+    payload_cfg = (trial.harbor_config or {}).get("analysis_payload", {})
+    # A run below the evidence bar was told not to produce a verdict, so a
+    # missing one is the expected outcome, not an import failure.
+    verdict_expected = payload_cfg.get("with_verdict", True)
+    if artifact is None or (
+        verdict_expected and not isinstance(artifact.get("verdict"), dict)
+    ):
         error = f"QA trial {trial.id} " + (
             "produced no valid qa_result.json"
             if trial.status == TrialStatus.SUCCESS
@@ -532,6 +559,14 @@ async def _import_qa_result(trial: TrialModel) -> None:
             should_store=lambda s: _qa_import_still_current(s, task_id),
             error=f"QA trial {trial.id} artifact contained no valid classifications",
         )
+        return
+    if not verdict_expected:
+        # Classifications are stored; the task completes with no verdict.
+        await complete_task_without_verdict(
+            task_id,
+            should_store=lambda s: _qa_import_still_current(s, task_id),
+        )
+        await _fire_qa_imported(task_id)
         return
     try:
         verdict = TaskVerdictModel.model_validate(artifact["verdict"])

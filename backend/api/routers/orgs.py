@@ -18,8 +18,6 @@ from api.schemas import (
     InviteUserRequest,
     InviteUserResponse,
     OrganizationResponse,
-    PreTrialAnalysisSettingResponse,
-    PreTrialAnalysisSettingUpdate,
     OrgQuotaResponse,
     OrgUsageResponse,
     QuotaBumpRequest,
@@ -41,7 +39,6 @@ from pg_errors import is_undefined_table_error
 from oddish.config import QuotaMode, settings
 from oddish.timing import RequestTimedAsyncClient
 from models import (
-    OrganizationModel,
     OrgQuotaModel,
     QuotaBumpModel,
     QuotaModel,
@@ -72,7 +69,6 @@ CLERK_SECRET_KEY = os.getenv("CLERK_SECRET_KEY", "")
 
 router = APIRouter(tags=["Organization"])
 
-PRE_TRIAL_ANALYSIS_SETTING = "pre_trial_analysis_enabled"
 
 
 # =============================================================================
@@ -95,85 +91,6 @@ async def get_organization(
         plan=auth.org.plan,
         created_at=auth.org.created_at.isoformat(),
     )
-
-
-@router.get(
-    "/org/settings/pre-trial-analysis",
-    response_model=PreTrialAnalysisSettingResponse,
-)
-async def get_pre_trial_analysis_setting(
-    auth: Annotated[AuthContext, Depends(require_auth)],
-) -> PreTrialAnalysisSettingResponse:
-    """Return the effective org setting; the deployment flag is its default."""
-    org_settings = auth.org.settings if auth.org and auth.org.settings else {}
-    enabled = org_settings.get(PRE_TRIAL_ANALYSIS_SETTING)
-    if not isinstance(enabled, bool):
-        enabled = settings.pre_trial_enabled
-    return PreTrialAnalysisSettingResponse(
-        enabled=enabled,
-        can_manage=auth.user_role == UserRole.ADMIN,
-    )
-
-
-@router.put(
-    "/org/settings/pre-trial-analysis",
-    response_model=PreTrialAnalysisSettingResponse,
-)
-async def update_pre_trial_analysis_setting(
-    data: PreTrialAnalysisSettingUpdate,
-    auth: Annotated[AuthContext, Depends(require_admin)],
-) -> PreTrialAnalysisSettingResponse:
-    """Enable or disable pre-trial QA for this organization."""
-    async with get_session() as session:
-        org = await session.get(OrganizationModel, auth.org_id, with_for_update=True)
-        if org is None:
-            raise HTTPException(status_code=404, detail="Organization not found")
-        org.settings = {
-            **(org.settings or {}),
-            PRE_TRIAL_ANALYSIS_SETTING: data.enabled,
-        }
-        await session.commit()
-    return PreTrialAnalysisSettingResponse(enabled=data.enabled, can_manage=True)
-
-
-# =============================================================================
-# User Management
-# =============================================================================
-
-
-def _clerk_invite_role(role: UserRole) -> str:
-    if role == UserRole.MEMBER:
-        return "org:member"
-    return "org:admin"
-
-
-async def _create_clerk_invitation(
-    clerk_org_id: str,
-    email: str,
-    role: UserRole,
-) -> dict:
-    if not CLERK_SECRET_KEY:
-        raise HTTPException(
-            status_code=500,
-            detail="CLERK_SECRET_KEY not configured",
-        )
-
-    url = f"https://api.clerk.com/v1/organizations/{clerk_org_id}/invitations"
-    headers = {"Authorization": f"Bearer {CLERK_SECRET_KEY}"}
-    payload = {"email_address": email, "role": _clerk_invite_role(role)}
-
-    try:
-        async with RequestTimedAsyncClient(timeout=10) as client:
-            response = await client.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            return response.json()
-    except httpx.HTTPStatusError as exc:
-        detail = exc.response.text or "Failed to create Clerk invitation"
-        raise HTTPException(status_code=exc.response.status_code, detail=detail)
-    except httpx.HTTPError as exc:
-        raise HTTPException(
-            status_code=503, detail=f"Failed to reach Clerk: {str(exc)}"
-        )
 
 
 @router.get("/users", response_model=list[UserResponse])
@@ -610,6 +527,41 @@ async def revoke_member_quota_bumps(
         )
         await session.flush()
         return await _member_quota_item(session, auth.org_id, member)
+
+
+def _clerk_invite_role(role: UserRole) -> str:
+    if role == UserRole.MEMBER:
+        return "org:member"
+    return "org:admin"
+
+
+async def _create_clerk_invitation(
+    clerk_org_id: str,
+    email: str,
+    role: UserRole,
+) -> dict:
+    if not CLERK_SECRET_KEY:
+        raise HTTPException(
+            status_code=500,
+            detail="CLERK_SECRET_KEY not configured",
+        )
+
+    url = f"https://api.clerk.com/v1/organizations/{clerk_org_id}/invitations"
+    headers = {"Authorization": f"Bearer {CLERK_SECRET_KEY}"}
+    payload = {"email_address": email, "role": _clerk_invite_role(role)}
+
+    try:
+        async with RequestTimedAsyncClient(timeout=10) as client:
+            response = await client.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text or "Failed to create Clerk invitation"
+        raise HTTPException(status_code=exc.response.status_code, detail=detail)
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=503, detail=f"Failed to reach Clerk: {str(exc)}"
+        )
 
 
 @router.post("/users", response_model=InviteUserResponse)

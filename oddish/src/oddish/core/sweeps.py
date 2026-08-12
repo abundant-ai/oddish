@@ -92,7 +92,6 @@ def build_task_submission_from_sweep(
         max_trial_attempts=submission.max_trial_attempts,
         experiment_id=submission.experiment_id,
         tags=submission.tags,
-        run_analysis=submission.run_analysis,
         run_probe=submission.run_probe,
         gate_baselines=submission.gate_baselines,
         github_username=submission.github_username,

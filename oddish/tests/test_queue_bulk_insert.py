@@ -169,9 +169,11 @@ async def test_recompute_still_called_on_append(monkeypatch, cleanup_task_ids):
 
 
 async def _trials_for(session, task_id: str) -> list[TrialModel]:
+    # kind filter: create_task also mints the pre-trial audit trial, which
+    # is not part of the bulk-inserted agent set under test.
     rows = await session.execute(
         TrialModel.__table__.select()
-        .where(TrialModel.task_id == task_id)
+        .where(TrialModel.task_id == task_id, TrialModel.kind == "agent")
         .order_by(TrialModel.id)
     )
     return list(rows.mappings())
@@ -241,8 +243,9 @@ async def test_append_bulk_inserts_in_one_statement(cleanup_task_ids):
         wj_inserts = tracer.count_inserts("worker_jobs", require="unnest")
         new_ids = [t.id for t in new_trials]
 
-    # base task had 1 trial (index 0); appended trials are indices 1..n
-    assert new_ids == [f"{task_id}-{i}" for i in range(1, n + 1)]
+    # base task had 1 agent trial (index 0) plus the pre-trial audit
+    # (index 1); appended trials are indices 2..n+1
+    assert new_ids == [f"{task_id}-{i}" for i in range(2, n + 2)]
     assert trial_inserts == 1, f"expected ONE trials insert, got {trial_inserts}"
     assert wj_inserts == 1, f"expected ONE worker_jobs insert, got {wj_inserts}"
 

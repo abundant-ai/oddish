@@ -6,7 +6,11 @@ from typing import Any, Awaitable, Callable
 from sqlalchemy import select
 
 from oddish.analyze import Classification, TrialClassification
-from oddish.core.verdict_state import complete_verdict, fail_verdict
+from oddish.core.verdict_state import (
+    complete_verdict,
+    complete_verdict_without_result,
+    fail_verdict,
+)
 from oddish.db import (
     TaskModel,
     TaskStatus,
@@ -91,6 +95,29 @@ async def sync_verdict_to_task(
         task.status = TaskStatus.COMPLETED
         task.finished_at = utcnow()
         return terminal_status.value
+
+
+async def complete_task_without_verdict(
+    task_id: str,
+    *,
+    should_store: Callable[[Any], Awaitable[bool]] | None = None,
+) -> str | None:
+    """Finish a QA pass that was not asked for a verdict (too few trials).
+
+    Per-trial analysis is already stored; this only clears the in-flight
+    verdict state and completes the task. A previously published verdict is
+    restored rather than dropped.
+    """
+    async with get_session() as session:
+        task = await session.get(TaskModel, task_id, with_for_update=True)
+        if not task:
+            return None
+        if should_store is not None and not await should_store(session):
+            return None
+        complete_verdict_without_result(task, now=utcnow())
+        task.status = TaskStatus.COMPLETED
+        task.finished_at = utcnow()
+        return VerdictStatus.SUCCESS.value
 
 
 def build_pre_trial_payload(

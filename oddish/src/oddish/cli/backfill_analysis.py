@@ -42,13 +42,6 @@ def backfill_analysis(
             "--force", help="Re-run analysis even for already-analyzed trials"
         ),
     ] = False,
-    enable_analysis: Annotated[
-        bool,
-        typer.Option(
-            "--enable-analysis",
-            help="Also set run_analysis=true so future trials auto-analyze",
-        ),
-    ] = False,
     api_url: Annotated[str, typer.Option("--api", help="API URL")] = "",
     json_output: Annotated[
         bool, typer.Option("--json", help="Output JSON (for CI/scripts)")
@@ -115,7 +108,6 @@ def backfill_analysis(
                 f"{api_url}/tasks/{task_id}/qa/backfill",
                 json={
                     "force": force,
-                    "enable_analysis": enable_analysis,
                     "trial_ids": trial_ids,
                 },
             )

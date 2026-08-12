@@ -812,7 +812,7 @@ async def create_task(
         task_path=submission.task_path,
         task_s3_key=task_s3_key,
         tags=submission.tags,
-        run_analysis=submission.run_analysis,
+        run_analysis=True,
         run_probe=submission.run_probe,
         link=submission.link,
     )
@@ -1253,7 +1253,7 @@ async def append_trials_to_task(
         task.status = TaskStatus.RUNNING
         task.finished_at = None
 
-    if new_trials and task.run_analysis:
+    if new_trials:
         # A kept verdict survives until the new QA pass replaces it. Cancel
         # any in-flight QA trial so its late import can't overwrite the new
         # set's verdict; a fresh one is created once the new set settles.
@@ -1365,10 +1365,9 @@ async def qa_eligible_trial_ids(session: AsyncSession, task_id: str) -> list[str
 async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
     """Check if all trials for a task are done and transition task status.
 
-    If run_analysis (the QA opt-in) is enabled -> enqueue the single
-    task-level QA job (which classifies every trial then synthesizes the
-    verdict) and move the task to VERDICT_PENDING.
-    If it is disabled -> status becomes COMPLETED.
+    With QA-eligible trials -> create the task-level QA trial (classify
+    every trial; synthesize the verdict only above the evidence bar) and
+    move the task to VERDICT_PENDING. Otherwise -> COMPLETED.
 
     There is only one QA job: it handles both per-trial classification and
     the task verdict, so a task goes straight from RUNNING to
@@ -1416,24 +1415,29 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
         return False
 
     # Only start QA when there is something to classify. A task can have
-    # run_analysis=true yet zero QA-eligible live trials -- e.g. every live
+    # zero QA-eligible live trials -- e.g. every live
     # trial is a bulk-migrated Sauron import (excluded on cost), was skipped by
     # the baseline gate (never ran, no logs), or is a nop/oracle baseline
     # (fixed scaffolding, never classified). Complete the task instead.
-    qa_eligible_ids: list[str] = []
-    if task.run_analysis:
-        qa_eligible_ids = await qa_eligible_trial_ids(session, task_id)
+    qa_eligible_ids = await qa_eligible_trial_ids(session, task_id)
 
-    if task.run_analysis and qa_eligible_ids:
-        from oddish.workers.analysis_trials import create_qa_trial
+    if qa_eligible_ids:
+        from oddish.workers.analysis_trials import create_qa_trial, has_verdict_evidence
 
+        with_verdict = await has_verdict_evidence(session, qa_eligible_ids)
         task.status = TaskStatus.VERDICT_PENDING
         task.verdict_status = VerdictStatus.QUEUED
-        await create_qa_trial(session, task=task, eligible_trial_ids=qa_eligible_ids)
+        await create_qa_trial(
+            session,
+            task=task,
+            eligible_trial_ids=qa_eligible_ids,
+            with_verdict=with_verdict,
+        )
         logger.info(
-            "task %s: agent trials settled, qa covers %d trials",
+            "task %s: agent trials settled, qa covers %d trials (verdict=%s)",
             task_id,
             len(qa_eligible_ids),
+            with_verdict,
         )
     else:
         task.status = TaskStatus.COMPLETED
@@ -1876,11 +1880,16 @@ async def maybe_advance_legacy_analyzing_task(
         await session.flush()
         return True
 
-    from oddish.workers.analysis_trials import create_qa_trial
+    from oddish.workers.analysis_trials import create_qa_trial, has_verdict_evidence
 
     task.status = TaskStatus.VERDICT_PENDING
     task.verdict_status = VerdictStatus.QUEUED
-    await create_qa_trial(session, task=task, eligible_trial_ids=eligible)
+    await create_qa_trial(
+        session,
+        task=task,
+        eligible_trial_ids=eligible,
+        with_verdict=await has_verdict_evidence(session, eligible),
+    )
     await session.flush()
 
     return True

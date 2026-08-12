@@ -1236,10 +1236,6 @@ class Settings(BaseSettings):
     ec2_bootstrap_docker: bool = True
     ec2_max_concurrent_instances: int = 16
 
-    # Default for the org-scoped pre-trial audit setting. An explicit
-    # organizations.settings.pre_trial_analysis_enabled value takes precedence
-    # (backend registers the check via register_audit_enabled_check).
-    pre_trial_enabled: bool = False
 
     # GKE execution backend (TPU trials). The cluster and Artifact Registry
     # coordinates are unset by default; configuring GKE (project id, or an

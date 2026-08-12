@@ -41,7 +41,7 @@ Every command except `oddish logs` accepts `--json` for machine-readable output 
 
 A typical run flows through these commands:
 
-1. `oddish run` (or `oddish upload`) — submit a task, dataset, or sweep and get back a task ID and experiment ID.
+1. `oddish run` (or `oddish upload`) — submit a task, dataset, or sweep and get back a task ID and experiment ID. Task-level QA (per-trial trajectory classification, plus a task verdict when there are enough trials from enough distinct agents) runs automatically once every trial settles.
 2. `oddish status` — discover what's in flight, then drill into a specific task or experiment to see trial-level progress and rewards.
 3. `oddish pull` — once you have a trial, task, or experiment ID, download its logs, results, trajectories, and artifact files to disk.
 4. `oddish run --retry` — re-queue failed trials or re-run task-level QA.
@@ -96,7 +96,6 @@ Options
 - `--watch/--no-watch`, `-w` - Watch progress after submission; enabled by default
 - `--background`, `--async`, `-b` - Submit and return immediately
 - `--quiet`, `-q` - Suppress startup logs
-- `--run-analysis` - Run task-level QA (classify every trial's trajectory and compute the task verdict)
 - `--run-probe` - Auto-enqueue a probe trial for the task version (off by default)
 - `--disable-verification/--enable-verification` - Skip task verification or tests
 - `--force-new-version` - Allocate a new task version even when the content is unchanged
@@ -396,7 +395,7 @@ Use `oddish backfill-analysis` to (re)run trial analysis (LLM trajectory classif
 ```bash
 oddish backfill-analysis --task <task_id>
 oddish backfill-analysis --trial <trial_id> --force
-oddish backfill-analysis --experiment <experiment_id> --enable-analysis
+oddish backfill-analysis --experiment <experiment_id>
 ```
 
 Options
@@ -405,7 +404,6 @@ Options
 - `--task TEXT` - Re-analyze all trials in a task
 - `--trial TEXT` - Re-analyze a single trial
 - `--force` - Re-run analysis even for trials already analyzed. With `--trial`, re-runs just that trial; with `--task` or `--experiment`, re-runs all their trials.
-- `--enable-analysis` - Also set `run_analysis=true` on the affected tasks so future trials auto-analyze.
 - `--json` - Emit machine-readable output.
 - `--api TEXT` - Override the API URL
 

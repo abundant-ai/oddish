@@ -365,12 +365,9 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
         if trial.harbor_stage not in {"completed", "cancelled"}:
             trial.harbor_stage = "cancelled"
 
-        task = await session.get(TaskModel, trial.task_id)
-        if (
-            task
-            and task.run_analysis
-            and trial.analysis_status
-            not in (AnalysisStatus.SUCCESS, AnalysisStatus.FAILED)
+        if trial.analysis_status not in (
+            AnalysisStatus.SUCCESS,
+            AnalysisStatus.FAILED,
         ):
             trial.analysis_status = AnalysisStatus.FAILED
             trial.analysis_error = (
@@ -1237,6 +1234,7 @@ async def _heal_stale_verdict_pending(session) -> int:
     from oddish.workers.analysis_trials import (
         create_qa_trial,
         handle_analysis_trial_settled,
+        has_verdict_evidence,
     )
 
     stale_verdict_pending = (
@@ -1308,7 +1306,12 @@ async def _heal_stale_verdict_pending(session) -> int:
             task.verdict_error = None
             task.verdict_started_at = None
             task.verdict_finished_at = None
-            await create_qa_trial(session, task=task, eligible_trial_ids=eligible)
+            await create_qa_trial(
+                session,
+                task=task,
+                eligible_trial_ids=eligible,
+                with_verdict=await has_verdict_evidence(session, eligible),
+            )
         else:
             task.status = TaskStatus.COMPLETED
             task.finished_at = task.finished_at or utcnow()

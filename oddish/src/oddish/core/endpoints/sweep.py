@@ -536,7 +536,6 @@ async def create_task_sweep_core(
         )
         # Read-only intent from the unlocked snapshot. Applied under FOR UPDATE
         # after the quota lock (idempotent flips).
-        want_run_analysis = bool(task.run_analysis or submission.run_analysis)
         want_run_probe = bool(task.run_probe or submission.run_probe)
 
         new_experiment_id: str | None = None
@@ -583,15 +582,9 @@ async def create_task_sweep_core(
             primary_experiment.id if primary_experiment else None
         )
         await session.refresh(task, with_for_update=True)
-        # Allow flipping task.run_analysis from False to True on append.
-        # ``run_analysis`` runs at trial-completion time, so updating the
-        # task-level flag does not retroactively analyze pre-existing
-        # trials, but new trials submitted with ``--run-analysis`` will be
-        # analyzed as the caller requested. This matches the documented
-        # purpose of ``--force-new-version`` (see ``TaskUploadInitRequest``)
-        # and lets a task that was first registered without analysis later
-        # opt in without manual intervention.
-        if want_run_analysis and not task.run_analysis:
+        # Analysis is unconditional now; keep the stored flag true so old
+        # readers of the column agree.
+        if not task.run_analysis:
             task.run_analysis = True
         # Same opt-in flip for auto-probe: a task first run without probes can
         # later opt in on append. Off by default (probes are opt-in).
@@ -620,7 +613,7 @@ async def create_task_sweep_core(
                 "priority": task.priority,
                 "experiment_id": target_experiment_id,
                 "tags": task.tags or {},
-                "run_analysis": want_run_analysis,
+                "run_analysis": True,
                 "run_probe": want_run_probe,
                 "user": task.user,
             }

@@ -1508,8 +1508,7 @@ async def backfill_task_qa(
     """Backfill trial analysis for a task: fill trials with no successful analysis yet.
 
     Default fills only missing/never-analyzed trials; ``force`` re-runs
-    (optionally only ``trial_ids``); ``enable_analysis`` also opts the task
-    into analysis going forward.
+    (optionally only ``trial_ids``).
     """
     auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
 
@@ -1520,7 +1519,6 @@ async def backfill_task_qa(
             org_id=auth.org_id,
             trial_ids=body.trial_ids,
             force=body.force,
-            enable_analysis=body.enable_analysis,
         )
 
 

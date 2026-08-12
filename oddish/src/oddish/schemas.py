@@ -277,10 +277,6 @@ class TaskSubmission(BaseModel):
     )
     experiment_id: str | None = Field(None, description="Optional experiment ID")
     tags: dict[str, str] = Field(default_factory=dict, description="Optional tags")
-    run_analysis: bool = Field(
-        False,
-        description="If True, run LLM analysis on each trial after completion and compute task verdict",
-    )
     run_probe: bool = Field(
         False,
         description="If True, auto-enqueue a probe trial for this task's version on submit. Opt-in (off by default).",
@@ -471,10 +467,6 @@ class TaskSweepSubmission(BaseModel):
     )
     environment: EnvironmentType | None = Field(
         None, description="Default execution backend override"
-    )
-    run_analysis: bool = Field(
-        False,
-        description="If True, run LLM analysis on each trial after completion and compute task verdict",
     )
     run_probe: bool = Field(
         False,
@@ -722,7 +714,7 @@ class TaskUploadInitRequest(BaseModel):
         description=(
             "Allocate a new task version even when the content hash matches the "
             "latest existing version. Used when callers need a fresh version "
-            "stamp (e.g. to flip run_analysis on)."
+            "stamp (e.g. to flip run_probe on)."
         ),
     )
     overwrite_current_version: bool = Field(
@@ -1249,7 +1241,6 @@ class TaskBatchCancelRequest(BaseModel):
 
 class BackfillQARequest(BaseModel):
     force: bool = False
-    enable_analysis: bool = False
     trial_ids: list[str] | None = None
 
 

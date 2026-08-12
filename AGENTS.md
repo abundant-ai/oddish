@@ -128,14 +128,18 @@ High-level flow:
 3. Workers claim one `worker_jobs` row at a time, dispatch to the registered
    handler for its kind, write heartbeats, and exit.
 4. Trajectory analysis is **task-scoped** and runs as a trial: when every
-   agent trial of a `run_analysis` task is terminal, one QA trial
-   (`trials.kind = 'qa'`) is created on the same task. Its agent classifies
+   agent trial of a task is terminal, one QA trial (`trials.kind = 'qa'`)
+   is created on the same task. Its agent classifies
    every live trial, writes per-trial trajectory summaries, and synthesizes
    the task verdict into one artifact (`qa_result.json`); on settlement an
    importer writes `trials.analysis`, `trials.trajectory_summary`, and
-   `tasks.verdict`. A sweep of `T` tasks × `N` trials therefore creates `T`
+   `tasks.verdict`. The verdict is only requested above an evidence bar
+   (≥5 QA-eligible trials from ≥3 agents, `MIN_VERDICT_TRIALS` /
+   `MIN_VERDICT_AGENTS` in `oddish.workers.analysis_trials`); below it the
+   QA trial still classifies trials and the task completes without a
+   verdict. A sweep of `T` tasks × `N` trials therefore creates `T`
    QA trials, not `T × (N + 1)`. The pre-trial audit is an `audit`-kind trial
-   created once per task version at sweep time (org opt-in).
+   created once per task version at sweep time.
    Non-'agent' kinds are excluded from cost, quota, leaderboard, facet, and
    public surfaces (see `oddish.filters.EligibleTrialScope`).
 5. While a trial runs, a worker-side tailer (`oddish.workers.harbor.live_tail`,

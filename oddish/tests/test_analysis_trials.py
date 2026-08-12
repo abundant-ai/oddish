@@ -241,3 +241,39 @@ async def test_a_task_gets_exactly_one_qa_trial():
     # Rule 3: the QA trial is not an agent trial, so it triggers nothing.
     async with get_session() as session:
         assert await maybe_start_qa_stage(session, qa_trials[0].id) is False
+
+
+@pytest.mark.asyncio
+async def test_the_verdict_needs_enough_evidence(monkeypatch):
+    """Below 5 trials or 3 distinct agents the QA trial is created without a
+    verdict request; at the bar it is asked for one."""
+    from oddish.workers.analysis_trials import has_verdict_evidence
+
+    class _Scalars:
+        def __init__(self, agents):
+            self._agents = agents
+
+        def all(self):
+            return self._agents
+
+    class _Session:
+        def __init__(self, agents):
+            self._agents = agents
+
+        async def scalars(self, _query):
+            return _Scalars(self._agents)
+
+    few = [f"t{i}" for i in range(4)]
+    assert await has_verdict_evidence(_Session(["a", "b", "c", "d"]), few) is False
+
+    five_two_agents = [f"t{i}" for i in range(5)]
+    assert (
+        await has_verdict_evidence(_Session(["a", "a", "b", "b", "a"]), five_two_agents)
+        is False
+    )
+
+    five_three_agents = [f"t{i}" for i in range(5)]
+    assert (
+        await has_verdict_evidence(_Session(["a", "b", "c", "a", "b"]), five_three_agents)
+        is True
+    )

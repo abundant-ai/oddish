@@ -20,13 +20,6 @@ class OrganizationResponse(BaseModel):
     created_at: str
 
 
-class PreTrialAnalysisSettingResponse(BaseModel):
-    enabled: bool
-    can_manage: bool = False
-
-
-class PreTrialAnalysisSettingUpdate(BaseModel):
-    enabled: bool
 
 
 class UserResponse(BaseModel):

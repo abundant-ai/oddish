@@ -743,8 +743,7 @@ async def backfill_task_qa(task_id: str, body: BackfillQARequest) -> dict:
     """Backfill trial analysis for a task: (re)run the task-level QA job.
 
     Fills only missing/never-analyzed trials by default; ``force`` re-runs
-    (optionally just ``trial_ids``); ``enable_analysis`` also opts the task
-    into analysis going forward.
+    (optionally just ``trial_ids``).
     """
     async with get_session() as session:
         return await backfill_task_analysis_core(
@@ -752,7 +751,6 @@ async def backfill_task_qa(task_id: str, body: BackfillQARequest) -> dict:
             task_id=task_id,
             trial_ids=body.trial_ids,
             force=body.force,
-            enable_analysis=body.enable_analysis,
         )
 
 

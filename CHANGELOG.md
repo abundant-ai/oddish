@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-08-12]
+
+### Changed
+
+- Analysis no longer has opt-ins. Every task runs QA when its agent trials
+  settle and every task version gets a pre-trial audit at sweep time; the
+  `--run-analysis` / `--enable-analysis` CLI flags, the `run_analysis` /
+  `enable_analysis` API fields, the per-org pre-trial setting (endpoints,
+  worker gate, dashboard route), and the `ODDISH_PRE_TRIAL_ENABLED` env flag
+  are all gone. The `tasks.run_analysis` column stays (always true) for old
+  readers.
+- The task verdict now requires evidence: at least 5 QA-eligible trials from
+  at least 3 distinct agents (baselines and probes never count). Below the
+  bar the QA trial still classifies every trial and writes trajectory
+  summaries, but the task completes without a verdict instead of guessing
+  from a handful of runs.
+
 ## [2026-08-10]
 
 ### Changed
