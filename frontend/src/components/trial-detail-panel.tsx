@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 import Image from "next/image";
 import {
@@ -896,6 +897,7 @@ export function TrialDetailPanel({
   const actionsReady = !revalidateTrial || canonicalTrial !== null;
   const trial = canonicalTrial ?? selectedTrial;
   const verifierSummary = embeddedCtrfSummary(trial?.result);
+  const router = useRouter();
 
   const validTabs = useMemo(
     () => new Set(["summary", "live", "files", "trajectory", "artifacts"]),
@@ -1683,16 +1685,21 @@ export function TrialDetailPanel({
                   apiBaseUrl={apiBaseUrl}
                   actionsReady={actionsReady}
                   onQueued={() => onRetry?.(task ? [task.id] : undefined)}
-                  onOpenGrader={
-                    onNavigate
-                      ? (qaTrialId) => {
-                          const idx = orderedList.findIndex(
-                            (t) => t.id === qaTrialId,
-                          );
-                          if (idx >= 0) onNavigate(orderedList[idx], idx);
-                        }
-                      : undefined
-                  }
+                  onOpenGrader={(qaTrialId) => {
+                    // The qa trial lives in the shadow experiment, so it is
+                    // usually absent from this host's list. Navigate in place
+                    // when it happens to be here, else deep-link the task page.
+                    const idx = orderedList.findIndex(
+                      (t) => t.id === qaTrialId,
+                    );
+                    if (idx >= 0 && onNavigate) {
+                      onNavigate(orderedList[idx], idx);
+                      return;
+                    }
+                    router.push(
+                      `/tasks/${encodeURIComponent(trial.task_id)}?trial=${encodeURIComponent(qaTrialId)}`,
+                    );
+                  }}
                 />
               )}
 

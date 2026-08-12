@@ -14,7 +14,6 @@ import { CopyJsonButton } from "@/components/qa-report/copy-json-button";
 import { FALLBACK_TOKEN, VERDICT_TOKENS } from "@/components/qa-report/tokens";
 import { TaskVerdictBadge } from "@/components/task-verdict-badge";
 import { isActivePipelineStatus } from "@/lib/job-status";
-import { formatCostUsd, hasDisplayableCostUsd } from "@/lib/format";
 import { isAgentTrial } from "@/lib/types";
 import type {
   AnalysisClassification,
@@ -106,7 +105,6 @@ export function TaskOverviewPanel({
   checksFindings,
   checksStatus,
   checksError,
-  checksCostUsd,
   onRerunChecks,
   checksRerunning,
   checksQueueError,
@@ -135,7 +133,6 @@ export function TaskOverviewPanel({
   checksFindings?: PreTrialFinding[] | null;
   checksStatus?: string | null;
   checksError?: string | null;
-  checksCostUsd?: number | null;
   onRerunChecks: () => void;
   checksRerunning: boolean;
   checksQueueError?: string | null;
@@ -615,9 +612,6 @@ export function TaskOverviewPanel({
           </h2>
           <span className="text-muted-foreground font-mono text-[11px]">
             {findingsSummary}
-            {!checksStateUnknown && hasDisplayableCostUsd(checksCostUsd)
-              ? ` · ${formatCostUsd(checksCostUsd)}`
-              : ""}
           </span>
           <div className="ml-auto flex items-center gap-2">
             {findingItems.length > 0 ? (
