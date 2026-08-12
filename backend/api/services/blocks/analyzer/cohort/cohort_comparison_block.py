@@ -240,6 +240,14 @@ class CohortComparisonBlock(Block):
             "successful": _model_counts(ci.successful),
             "failing": _model_counts(ci.failing),
         }
+        # trial -> model, so a citation can name the model it came from. The
+        # chips say which models ran on a side; without this the reader cannot
+        # tell which of them the cited behaviour belongs to, and a side listing
+        # fourteen models next to one citation reads as if all fourteen did it.
+        out["trial_models"] = {
+            t["trial_id"]: cp.short_model_name(t.get("model") or "unknown")
+            for t in (*ci.successful, *ci.failing)
+        }
         # Single-cohort runs describe rather than compare, and the UI needs to
         # know which without re-deriving it from two list lengths.
         out["mode"] = (

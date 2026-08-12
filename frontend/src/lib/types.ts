@@ -787,6 +787,8 @@ export interface CohortComparison {
     successful: { model: string; trials: number }[];
     failing: { model: string; trials: number }[];
   };
+  /** trial id -> short model name, so each citation can name its model. */
+  trial_models?: Record<string, string>;
   categories: CategoryComparison[];
   dropped?: { evidence: number; observations: number; categories: number };
   /** Trials whose summary covers under half their run; evidence from these is thin. */

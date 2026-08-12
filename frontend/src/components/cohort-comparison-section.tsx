@@ -90,10 +90,12 @@ function ObservationList({
   items,
   taskId,
   taskVersionId,
+  trialModels,
 }: {
   items: BehaviorObservation[];
   taskId: string;
   taskVersionId?: string;
+  trialModels?: Record<string, string>;
 }) {
   if (!items.length) {
     return <p className="text-sm text-muted-foreground">No difference found.</p>;
@@ -120,6 +122,15 @@ function ObservationList({
               <span className="font-mono text-blue-600 dark:text-blue-400">
                 {componentLabel(ev.trajectory_component)} {stepRange(ev.step_ids)}
               </span>{" "}
+              {/* Which model this example came from. A side can list fourteen
+                  models in its chips and cite two trials; without naming the
+                  model per citation the reader cannot tell which of the
+                  fourteen actually did the thing being described. */}
+              {trialModels?.[ev.trial_id] ? (
+                <span className="text-muted-foreground/80 font-mono">
+                  {trialModels[ev.trial_id]}
+                </span>
+              ) : null}{" "}
               — {ev.quote}
             </a>
           ))}
@@ -138,12 +149,14 @@ function CohortColumn({
   models,
   taskId,
   taskVersionId,
+  trialModels,
 }: {
   tone: "successful" | "failing";
   items: BehaviorObservation[];
   models?: { model: string; trials: number }[];
   taskId: string;
   taskVersionId?: string;
+  trialModels?: Record<string, string>;
 }) {
   const successful = tone === "successful";
   return (
@@ -174,6 +187,7 @@ function CohortColumn({
         items={items}
         taskId={taskId}
         taskVersionId={taskVersionId}
+        trialModels={trialModels}
       />
     </div>
   );
@@ -302,6 +316,7 @@ export function CohortComparisonSection({
                 models={data.models?.successful}
                 taskId={taskId}
                 taskVersionId={data.task_version_id}
+                trialModels={data.trial_models}
               />
             ) : null}
             {showFailing ? (
@@ -311,6 +326,7 @@ export function CohortComparisonSection({
                 models={data.models?.failing}
                 taskId={taskId}
                 taskVersionId={data.task_version_id}
+                trialModels={data.trial_models}
               />
             ) : null}
           </div>

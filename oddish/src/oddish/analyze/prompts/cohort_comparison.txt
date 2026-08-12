@@ -9,6 +9,13 @@ Y" is exactly the invention this forbids: you have no successful runs to read.
 
 {{taxonomy}}
 
+When a side holds runs from several models, do not rest a behaviour on a
+single trial: cite two or three, from DIFFERENT models where the behaviour
+holds across them. One citation under a column listing fourteen models reads
+as if all fourteen behaved that way. If the behaviour really is one model's,
+say so in the description and cite only that model's runs -- that is a finding,
+not a shortcut.
+
 Every behaviour description must carry at least one piece of evidence. Evidence
 is a component that appears verbatim in one of the trials above: its trial id,
 its `trajectory_component` label, its step ids, and its summary text copied
