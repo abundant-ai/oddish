@@ -921,12 +921,23 @@ async def _store_trial_results(
                 native_cost_trusted=native_cost_trusted,
             )
         else:
-            trial.status = TrialStatus.FAILED
-            trial.finished_at = utcnow()
             trial.error_message = (
                 execution_error or "Trial execution failed with exception"
             )
-            console.print(f"[red]Trial {trial_id} FAILED (exception)[/red]")
+            # Without a HarborOutcome there is no exception type to classify
+            # against Harbor's terminal-failure set. Preserve the default retry
+            # contract until this trial's attempt budget is exhausted.
+            if trial.attempts < trial.max_attempts:
+                trial.status = TrialStatus.RETRYING
+                trial.finished_at = None
+                console.print(
+                    f"[yellow]Trial {trial_id} re-queued after execution exception "
+                    f"({trial.attempts}/{trial.max_attempts})[/yellow]"
+                )
+            else:
+                trial.status = TrialStatus.FAILED
+                trial.finished_at = utcnow()
+                console.print(f"[red]Trial {trial_id} FAILED (exception)[/red]")
 
         trial.current_worker_id = None
         trial.current_queue_slot = None

@@ -3595,6 +3595,38 @@ def test_store_trial_results_retries_when_exception_type_is_missing(monkeypatch)
     assert trial.status == trial_handler.TrialStatus.RETRYING
 
 
+@pytest.mark.parametrize(
+    ("attempts", "expected_status", "expected_terminal"),
+    [
+        (1, trial_handler.TrialStatus.RETRYING, False),
+        (6, trial_handler.TrialStatus.FAILED, True),
+    ],
+)
+def test_store_trial_results_applies_retry_budget_without_harbor_outcome(
+    monkeypatch, attempts, expected_status, expected_terminal
+):
+    """An unclassified execution failure retries until its budget is spent."""
+
+    trial = _make_retry_decision_trial(attempts=attempts, max_attempts=6)
+    _install_retry_decision_session_fakes(monkeypatch, trial)
+
+    terminal, completed = asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id="trial-1",
+            outcome=None,
+            trial_s3_key=None,
+            execution_error="OSError: transient subprocess failure",
+            trial_attempt=trial.attempts,
+        )
+    )
+
+    assert trial.status == expected_status
+    assert trial.error_message == "OSError: transient subprocess failure"
+    assert (trial.finished_at is not None) is expected_terminal
+    assert terminal is expected_terminal
+    assert completed is expected_terminal
+
+
 def test_non_retryable_set_includes_known_terminal_failures():
     """Tripwire: if Harbor's RetryConfig defaults change, we want the test
     to fail loudly so we can decide whether to track the new entry."""
