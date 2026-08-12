@@ -53,3 +53,27 @@ export function pooledDeltas(comparison: CohortComparison): CategoryDelta[] {
     };
   });
 }
+
+/** Overlapping translucent shapes stop being readable past three, and the
+ *  all-pairs colour-separation rule caps categorical series at three too. */
+export const RADAR_MODEL_CAP = 3;
+
+type RollupLike = {
+  thin_threshold: number;
+  models: { model: string }[];
+  categories: { per_model: { model: string; n: number }[] }[];
+};
+
+/** The models the radar draws: highest total evidence first, capped, and never
+ *  a shape built from fewer citations than one thin cell's worth. */
+export function radarModels<T extends RollupLike>(rollup: T): { model: string; n: number }[] {
+  const totals = new Map<string, number>();
+  for (const cat of rollup.categories)
+    for (const cell of cat.per_model)
+      totals.set(cell.model, (totals.get(cell.model) ?? 0) + cell.n);
+  return rollup.models
+    .map((m) => ({ model: m.model, n: totals.get(m.model) ?? 0 }))
+    .filter((m) => m.n >= rollup.thin_threshold)
+    .sort((a, b) => b.n - a.n)
+    .slice(0, RADAR_MODEL_CAP);
+}
