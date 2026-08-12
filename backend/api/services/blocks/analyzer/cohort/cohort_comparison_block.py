@@ -9,14 +9,26 @@ from oddish.blocks.block import Block
 from api.services.blocks.analyzer.cohort import cohort_prompts as cp
 from api.services.blocks.analyzer.cohort.cohort_taxonomy import BehaviorCategory
 
-# 2: added `summary`. Every stored comparison predates the field, and the
-# freshness check keys on this, so the bump is what makes them regenerate
-# rather than serve a headline-less payload forever.
-SCHEMA_VERSION = 2
+# 2: added `summary`. 3: added `mode` and `models`, and relaxed the gate to one
+# populated cohort -- stored rows carry neither field and were generated under
+# the two-cohort framing, so they have to regenerate to gain either.
+SCHEMA_VERSION = 3
 
 # A trial whose summary covers less than this share of its own step span is
 # reported to the reader rather than averaged over silently.
 MIN_COVERAGE = 0.5
+
+
+def _model_counts(trials: list[dict]) -> list[dict]:
+    """[{model, trials}], most frequent first, then alphabetical for stability."""
+    counts: dict[str, int] = {}
+    for t in trials:
+        name = cp.short_model_name(t.get("model") or "unknown")
+        counts[name] = counts.get(name, 0) + 1
+    return [
+        {"model": m, "trials": n}
+        for m, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
 
 
 def _non_empty_text(value: str) -> str:
@@ -148,7 +160,9 @@ class CohortComparisonBlock(Block):
                 "name": "preamble",
                 "raw_input": {},
                 "schema": _Empty,
-                "formatter": lambda _d: cp.PREAMBLE,
+                "formatter": lambda _d: cp.preamble(
+                    successful=ci.successful, failing=ci.failing
+                ),
             },
             {
                 "name": "task",
@@ -217,6 +231,28 @@ class CohortComparisonBlock(Block):
         # on -- the same class of problem the citation check exists to stop.
         out["cohort_success"] = [t["trial_id"] for t in ci.successful]
         out["cohort_failure"] = [t["trial_id"] for t in ci.failing]
+        # Which models landed on which side, counted here rather than asked of
+        # the model. "opus-4-8 succeeded 6 times" is arithmetic over rows we
+        # already hold; routing it through an LLM would make a checkable fact
+        # into an unverifiable claim, and validate_evidence has no way to
+        # police a count.
+        out["models"] = {
+            "successful": _model_counts(ci.successful),
+            "failing": _model_counts(ci.failing),
+        }
+        # trial -> model, so a citation can name the model it came from. The
+        # chips say which models ran on a side; without this the reader cannot
+        # tell which of them the cited behaviour belongs to, and a side listing
+        # fourteen models next to one citation reads as if all fourteen did it.
+        out["trial_models"] = {
+            t["trial_id"]: cp.short_model_name(t.get("model") or "unknown")
+            for t in (*ci.successful, *ci.failing)
+        }
+        # Single-cohort runs describe rather than compare, and the UI needs to
+        # know which without re-deriving it from two list lengths.
+        out["mode"] = (
+            "comparison" if ci.successful and ci.failing else "single"
+        )
         # Surfaced in the UI so a reader can see when the comparison rests on
         # thin evidence, rather than the feature averaging over it silently.
         out["thin_coverage"] = [
