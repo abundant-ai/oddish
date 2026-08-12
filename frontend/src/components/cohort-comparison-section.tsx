@@ -3,6 +3,7 @@
 import useSWR from "swr";
 
 import { componentLabel } from "@/lib/trajectory-segments";
+import { shortTrialParam } from "@/lib/trial-url";
 import type { BehaviorObservation, CohortComparison } from "@/lib/types";
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -48,7 +49,11 @@ function evidenceHref(
 ): string {
   const params = new URLSearchParams();
   if (taskVersionId) params.set("version", taskVersionId);
-  params.set("trial", trialId);
+  // Short form, like every other trial link: the page's URL sync rewrites a
+  // full id to the short one, and a rewrite is a replaceState the fragment
+  // has to survive. Emitting what the sync would write means it has nothing
+  // to correct.
+  params.set("trial", shortTrialParam(trialId, taskId));
   params.set("tab", "trajectory");
   const anchor = stepIds.length ? `#step-${Math.min(...stepIds)}` : "";
   return `/tasks/${encodeURIComponent(taskId)}?${params.toString()}${anchor}`;
