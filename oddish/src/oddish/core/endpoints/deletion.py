@@ -13,6 +13,7 @@ from oddish.core.endpoints._common import (
     get_trial_for_org_core,
     _reset_task_verdict,
 )
+from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.db import (
     AnalysisStatus,
     ExperimentModel,
@@ -168,13 +169,18 @@ async def delete_task_core(
     # Scoped delete: only this experiment's trials + the join row.
     scoped_trial_rows = (
         await session.execute(
-            select(TrialModel.id, TrialModel.trial_s3_key).where(
+            select(
+                TrialModel.id,
+                TrialModel.trial_s3_key,
+                TrialModel.task_version_id,
+            ).where(
                 TrialModel.task_id == resolved_task_id,
                 TrialModel.experiment_id == experiment_id,
             )
         )
     ).all()
     scoped_trial_ids = [row[0] for row in scoped_trial_rows]
+    scoped_version_ids = {row[2] for row in scoped_trial_rows if row[2]}
 
     # Check that this task really belongs to the given experiment.
     link_exists = await session.scalar(
@@ -264,6 +270,7 @@ async def delete_task_core(
         if task is not None:
             _reset_task_verdict(task)
 
+    await refresh_task_browse_summaries(session, scoped_version_ids)
     return {
         "s3_prefixes": [],
         "deleted": {
@@ -349,17 +356,16 @@ async def unlink_task_from_experiment_core(
 
     # Tombstone this experiment's trials for the task (cancel their live
     # worker_jobs first so workers stop heart-beating and release slots).
-    scoped_trial_ids = [
-        row[0]
-        for row in (
-            await session.execute(
-                select(TrialModel.id).where(
-                    TrialModel.task_id == resolved_task_id,
-                    TrialModel.experiment_id == experiment_id,
-                )
+    scoped_trial_rows = (
+        await session.execute(
+            select(TrialModel.id, TrialModel.task_version_id).where(
+                TrialModel.task_id == resolved_task_id,
+                TrialModel.experiment_id == experiment_id,
             )
-        ).all()
-    ]
+        )
+    ).all()
+    scoped_trial_ids = [row[0] for row in scoped_trial_rows]
+    scoped_version_ids = {row[1] for row in scoped_trial_rows if row[1]}
     harvest = _CancelHarvest()
     if scoped_trial_ids:
         await _cancel_worker_jobs_for_trials(
@@ -435,6 +441,7 @@ async def unlink_task_from_experiment_core(
         org_id=task_org_id,
     )
 
+    await refresh_task_browse_summaries(session, scoped_version_ids)
     return {
         "s3_prefixes": [],
         "deleted": {
@@ -620,12 +627,13 @@ async def delete_experiment_core(
             or_(TrialModel.org_id == org_id, TrialModel.org_id.is_(None))
         )
 
-    scoped_trial_ids = [
-        row[0]
-        for row in (
-            await session.execute(select(TrialModel.id).where(*trial_where))
-        ).all()
-    ]
+    scoped_trial_rows = (
+        await session.execute(
+            select(TrialModel.id, TrialModel.task_version_id).where(*trial_where)
+        )
+    ).all()
+    scoped_trial_ids = [row[0] for row in scoped_trial_rows]
+    scoped_version_ids = {row[1] for row in scoped_trial_rows if row[1]}
 
     # Task-level QA/VERDICT jobs are cancelled in the survival loop below,
     # ONLY for tasks that actually die with this experiment -- a task alive
@@ -720,6 +728,9 @@ async def delete_experiment_core(
                 _reset_task_verdict(task)
                 _clear_stale_task_pipeline_status(task)
 
+    # Tasks that survive via other experiments keep their cards; their
+    # summaries must drop the trials this delete just tombstoned.
+    await refresh_task_browse_summaries(session, scoped_version_ids)
     return {
         "s3_prefixes": [],
         "deleted": {
@@ -1055,6 +1066,7 @@ async def delete_trial_core(
         .values(deleted_at=utcnow())
         .execution_options(synchronize_session=False)
     )
+    await refresh_task_browse_summaries(session, [trial.task_version_id])
 
     # Task aggregates (total/completed/failed) are derived from the
     # remaining trials -- the soft-delete filter excludes this one

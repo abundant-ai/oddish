@@ -14,6 +14,7 @@ from oddish.core.helpers import (
     fetch_trial_queue_info,
     fetch_visible_worker_jobs,
 )
+from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.core.tags.projection import (
     list_direct_version_tags,
     list_effective_user_tags_for_task_versions,
@@ -110,6 +111,7 @@ async def set_task_default_version_core(
     # raw SQL in the same transaction.
     await session.flush()
     await recompute_task_browse_projection(session, task_id=task.id)
+    await refresh_task_browse_summaries(session, [version_row.id])
     return TaskVersionResponse.model_validate(version_row)
 
 
