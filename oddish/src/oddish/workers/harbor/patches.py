@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar, Token
 from functools import partial
 import importlib
 import inspect
@@ -13,6 +14,7 @@ import os
 import re
 import shlex
 import tempfile
+from types import SimpleNamespace
 from typing import Any, cast
 from weakref import WeakSet
 
@@ -20,6 +22,10 @@ logger = logging.getLogger(__name__)
 
 _PATCHED = False
 _EC2_PATCHED_CLASSES: WeakSet[type[Any]] = WeakSet()
+_Ec2ProvisionedCallback = Callable[[Any], Awaitable[None]]
+_EC2_PROVISIONED_CALLBACK: ContextVar[_Ec2ProvisionedCallback | None] = ContextVar(
+    "oddish_ec2_provisioned_callback", default=None
+)
 
 _EC2_MANAGED_TAG_KEY = "oddish:managed"
 _EC2_AWS_ACCOUNT_ID_TAG_KEY = "oddish:aws-account-id"
@@ -48,6 +54,19 @@ chmod 600 /root/.docker/config.json
 rm -f "$staged"
 """.strip()
 _LOGGED_IN_ATTR = "_oddish_registry_logged_in"
+
+
+def set_ec2_provisioned_callback(
+    callback: _Ec2ProvisionedCallback,
+) -> Token[_Ec2ProvisionedCallback | None]:
+    """Bridge legacy Harbor EC2 launches into Oddish's lifecycle hook."""
+    return _EC2_PROVISIONED_CALLBACK.set(callback)
+
+
+def reset_ec2_provisioned_callback(
+    token: Token[_Ec2ProvisionedCallback | None],
+) -> None:
+    _EC2_PROVISIONED_CALLBACK.reset(token)
 
 
 def apply_harbor_patches(*, require_ec2: bool = False) -> None:
@@ -493,10 +512,16 @@ def _patch_ec2_lifecycle(*, require_ec2: bool = False) -> None:
         )
         return
     original_launch_instance = getattr(cls, "_launch_instance", None)
-    if original_launch_instance is None and require_ec2:
-        raise RuntimeError(
-            "EC2 trial requires Harbor EC2Environment to expose _launch_instance"
+    if original_launch_instance is None:
+        if require_ec2:
+            raise RuntimeError(
+                "EC2 trial requires Harbor EC2Environment to expose _launch_instance"
+            )
+        logger.warning(
+            "Harbor EC2Environment._launch_instance not found; "
+            "EC2 identity patch skipped"
         )
+        return
     if cls in _EC2_PATCHED_CLASSES:
         return
 
@@ -538,7 +563,38 @@ def _patch_ec2_lifecycle(*, require_ec2: bool = False) -> None:
             }
         return kwargs
 
+    async def launch_instance(self: Any, *args: Any, **kwargs: Any) -> Any:
+        launched = original_launch_instance(self, *args, **kwargs)
+        if inspect.isawaitable(launched):
+            launched = await launched
+
+        callback = _EC2_PROVISIONED_CALLBACK.get()
+        if callback is not None:
+            if (
+                getattr(self, "instance_id", None) is None
+                and isinstance(launched, str)
+            ):
+                self.instance_id = launched
+            external_id = get_sandbox_id(self)
+            if not external_id or not external_id.startswith("ec2://"):
+                raise RuntimeError(
+                    "Oddish-managed EC2 launch completed without a durable "
+                    "account/region/instance identity"
+                )
+            await callback(
+                SimpleNamespace(
+                    event="environment-provisioned",
+                    trial_id=None,
+                    environment=self,
+                    environment_provider="ec2",
+                    environment_external_id=external_id,
+                    result=None,
+                )
+            )
+        return launched
+
     cls.provider_name = "ec2"
     cls.get_sandbox_id = get_sandbox_id
     cls._run_instances_kwargs = run_instances_kwargs
+    cls._launch_instance = launch_instance
     _EC2_PATCHED_CLASSES.add(cls)
