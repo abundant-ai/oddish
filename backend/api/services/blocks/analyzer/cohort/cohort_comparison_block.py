@@ -19,40 +19,11 @@ SCHEMA_VERSION = 3
 MIN_COVERAGE = 0.5
 
 
-# Vendor tokens that appear as a routing prefix on a stored model id. Stripping
-# is a whitelist, not a split on ".": `gpt-5.4` and `claude-opus-4-8` carry dots
-# of their own, and a generic split would render them as "4" and "8".
-_VENDOR_PREFIXES = (
-    "anthropic",
-    "openai",
-    "google",
-    "meta",
-    "mistral",
-    "amazon",
-    "cohere",
-)
-
-
-def short_model_name(raw: str) -> str:
-    """``global.anthropic.claude-opus-4-8`` -> ``claude-opus-4-8``.
-
-    The chips sit in a narrow column and the routing prefix is identical for
-    every row from one provider, so it costs width and carries nothing.
-    """
-    name = raw.split("/")[-1]
-    if name.startswith("global."):
-        name = name[len("global.") :]
-    head, _, rest = name.partition(".")
-    if rest and head in _VENDOR_PREFIXES:
-        name = rest
-    return name
-
-
 def _model_counts(trials: list[dict]) -> list[dict]:
     """[{model, trials}], most frequent first, then alphabetical for stability."""
     counts: dict[str, int] = {}
     for t in trials:
-        name = short_model_name(t.get("model") or "unknown")
+        name = cp.short_model_name(t.get("model") or "unknown")
         counts[name] = counts.get(name, 0) + 1
     return [
         {"model": m, "trials": n}

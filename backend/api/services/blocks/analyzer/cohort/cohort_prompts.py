@@ -14,6 +14,37 @@ from api.services.blocks.analyzer.cohort.cohort_taxonomy import (
     BehaviorCategory,
 )
 
+# Vendor tokens that appear as a routing prefix on a stored model id.
+# Stripping is a whitelist, not a split on ".": `gpt-5.4` and
+# `claude-opus-4-8` carry dots of their own, and a generic split would render
+# them as "4" and "8".
+_VENDOR_PREFIXES = (
+    "anthropic",
+    "openai",
+    "google",
+    "meta",
+    "mistral",
+    "amazon",
+    "cohere",
+)
+
+
+def short_model_name(raw: str) -> str:
+    """``global.anthropic.claude-opus-4-8`` -> ``claude-opus-4-8``.
+
+    Lives here rather than in the block because BOTH readers need it: the
+    prompt, which shows the model on each trial, and the chips built from
+    ``_model_counts``. Two spellings of one id read as two models.
+    """
+    name = raw.split("/")[-1]
+    if name.startswith("global."):
+        name = name[len("global.") :]
+    head, _, rest = name.partition(".")
+    if rest and head in _VENDOR_PREFIXES:
+        name = rest
+    return name
+
+
 PREAMBLE = (
     "You are comparing two cohorts of recorded agent runs on the same task: "
     "runs that succeeded for good reasons, and runs that failed for good "
@@ -65,7 +96,10 @@ def cohort_section(label: str, trials: list[dict]) -> str:
     """One cohort's trials, as component streams the model can cite."""
     lines = [f"<cohort name=\"{label}\">"]
     for t in trials:
-        model = (t.get("model") or "").split("/")[-1]
+        # Same shortener the chips use. Two spellings of one model id --
+        # `global.anthropic.claude-opus-4-8` in the prose the model writes,
+        # `claude-opus-4-8` on the chip beside it -- read as two models.
+        model = short_model_name(t.get("model") or "") if t.get("model") else ""
         attrs = f' model="{model}"' if model else ""
         lines.append(f'  <trial id="{t["trial_id"]}"{attrs}>')
         for c in t.get("components") or []:

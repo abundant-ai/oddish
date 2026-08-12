@@ -31,9 +31,16 @@ the verifier only at the end, after the cause was buried." If the categories
 show only unrelated differences, say that plainly instead of inventing a
 theme.
 
-Only include a category when the cohorts actually differ on it. Omit categories
-where you see no difference; an empty comparison is a better answer than a
-manufactured one.
+With TWO cohorts, only include a category when they actually differ on it.
+Omit categories where you see no difference; an empty comparison is a better
+answer than a manufactured one.
+
+With ONE cohort there is nothing to differ against, so that rule does not
+apply and would silence the whole analysis if you followed it. Include a
+category whenever these runs did something worth reporting in it, and omit
+only the categories the evidence says nothing about. Returning no categories
+at all, for a cohort with runs to read, is a failure -- it is the exact
+outcome this single-cohort mode exists to prevent.
 
 Set `label` only on `behavior_discovery`, where it names the pattern you found.
 Every other category must have `label` set to null. A label is two to four

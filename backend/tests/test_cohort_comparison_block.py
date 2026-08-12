@@ -88,7 +88,7 @@ def test_to_output_parses_and_stamps_schema_version():
 
 def test_short_model_name_keeps_dots_that_belong_to_the_name():
     """A generic split on "." would turn gpt-5.4 into "4"."""
-    from api.services.blocks.analyzer.cohort.cohort_comparison_block import (
+    from api.services.blocks.analyzer.cohort.cohort_prompts import (
         short_model_name,
     )
 

@@ -239,9 +239,13 @@ export function CohortComparisonSection({
       <section className="border-border flex flex-col gap-2 border-b p-4">
         <h3 className={SECTION_HEADING}>Agent capability analysis</h3>
         <p className="text-muted-foreground text-xs">
-          No differences held up against the stored trajectories for these{" "}
-          {data.cohort_success.length} successful and {data.cohort_failure.length}{" "}
-          failed runs.
+          {/* One cohort has nothing to differ from, so "no differences held
+              up" would describe work that was never attempted. */}
+          {data.cohort_success.length > 0 && data.cohort_failure.length > 0
+            ? `No differences held up against the stored trajectories for these ${data.cohort_success.length} successful and ${data.cohort_failure.length} failed runs.`
+            : `Nothing held up against the stored trajectories for these ${
+                data.cohort_success.length || data.cohort_failure.length
+              } ${data.cohort_success.length > 0 ? "successful" : "failed"} runs.`}
         </p>
       </section>
     );
