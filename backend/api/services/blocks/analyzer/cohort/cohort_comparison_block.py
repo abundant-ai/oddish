@@ -200,6 +200,16 @@ class CohortComparisonBlock(Block):
             parsed.model_dump(mode="json"), ci.successful, ci.failing
         )
         out["dropped"] = dropped
+        # The headline was written against the categories the model produced,
+        # and validation runs after it. If a whole category failed citation
+        # checks and was removed, the summary can name a split the panel no
+        # longer shows -- an unsourced claim sitting above sourced rows, which
+        # is the one thing this feature is built not to do. Drop it rather
+        # than let it describe a comparison that is no longer on screen.
+        # Observation-level drops leave the category standing, so the theme
+        # still holds and the summary survives them.
+        if dropped.get("categories"):
+            out.pop("summary", None)
         # Cohort membership is a fact we already hold, not something to take
         # from the model. The UI renders these lengths as "N successful, M
         # failing"; leaving the model's lists in place would let a fabricated

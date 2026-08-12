@@ -86,6 +86,23 @@ def test_to_output_parses_and_stamps_schema_version():
     assert out["categories"][0]["category"] == "testing_verification"
 
 
+def test_summary_survives_a_clean_comparison():
+    out = _block().to_output(_raw([GOOD_EVIDENCE]))
+    assert out["dropped"]["categories"] == 0
+    assert out["summary"]
+
+
+def test_summary_is_dropped_when_a_category_is():
+    """A headline written against categories that validation then removed is
+    an unsourced claim above sourced rows -- exactly what the citation check
+    exists to prevent, so it must not outlive them."""
+    fabricated = {**GOOD_EVIDENCE, "trial_id": "does-not-exist"}
+    out = _block().to_output(_raw([fabricated]))
+    assert out["dropped"]["categories"] == 1
+    assert out["categories"] == []
+    assert "summary" not in out
+
+
 def test_to_output_validates_citations_before_the_block_persists():
     """Validation must happen in the transform, not after block.run().
 
