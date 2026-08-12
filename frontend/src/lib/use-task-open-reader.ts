@@ -3,20 +3,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import useSWR, { useSWRConfig } from "swr";
 import { fetcher } from "@/lib/api";
-import {
-  buildExperimentAgentSummaries,
-  getExperimentAgentKey,
-} from "@/lib/experiment-agent-grouping";
+import { buildTaskOpenAgentGroups } from "@/lib/task-open-agent-groups";
 import { taskDetailKey } from "@/lib/task-detail-resource";
 import {
   isBrowseTaskOpen,
+  isTaskOpenKeyForTask,
   taskOpenKey,
   taskOpenValue,
+  updateTaskOpenDefault,
   type TaskOpenResource,
 } from "@/lib/task-open-resource";
 import type {
   Task,
-  TaskOpenAgentModelSummary,
   TaskOpenResponse,
   TaskOpenTrialRef,
   TaskOpenVersionRef,
@@ -87,29 +85,6 @@ function taskFromOpen(open: TaskOpenResponse): Task {
     reward_sum: selected?.reward_sum ?? 0,
     reward_total: selected?.reward_total ?? 0,
     trials: open.trials.map((trial) => trialFromOpenRef(trial, open.task)),
-  };
-}
-
-function groupingTrialFromSummary(
-  summary: TaskOpenAgentModelSummary,
-  task: Task,
-  index: number
-): Trial {
-  return {
-    id: `agent-summary-${index}`,
-    name: "",
-    task_id: task.id,
-    task_path: task.task_path,
-    agent: summary.agent.trim().toLowerCase(),
-    provider: summary.providers[0] ?? "",
-    model: summary.model?.trim().toLowerCase() ?? null,
-    status: "success",
-    attempts: 0,
-    max_attempts: 0,
-    harbor_stage: null,
-    reward: null,
-    is_probe: summary.is_probe,
-    created_at: summary.last_run_at ?? "",
   };
 }
 
@@ -276,23 +251,24 @@ export function useTaskOpenReader(
             "Failed to change the default version"
         );
       }
-      const nextOpen: TaskOpenResponse = {
-        ...open,
-        task: {
-          ...open.task,
-          current_version_id: versionId,
-          current_version: versionNumber,
-        },
-        default_version: {
-          id: versionId,
-          version: versionNumber,
-          message: selectedVersion.message,
-          created_at: selectedVersion.created_at,
-          is_current: true,
-        },
-        selected_version: { ...selectedVersion, is_current: true },
+      const nextDefault: TaskOpenVersionRef = {
+        id: versionId,
+        version: versionNumber,
+        message: selectedVersion.message,
+        created_at: selectedVersion.created_at,
+        is_current: true,
       };
-      await mutate(nextOpen, { revalidate: false });
+      const nextOpen = taskOpenValue(updateTaskOpenDefault(open, nextDefault))!;
+      const matchesTaskOpenKey = (key: unknown) =>
+        isTaskOpenKeyForTask(key, task.id);
+      await mutateCache(
+        matchesTaskOpenKey,
+        (current: TaskOpenResource | undefined) =>
+          updateTaskOpenDefault(current, nextDefault),
+        { revalidate: false }
+      );
+      // The unversioned resource now selects the new default, so seed it from
+      // the active response rather than retaining the old selected version.
       await mutateCache(taskOpenKey(task.id), nextOpen, {
         revalidate: false,
       });
@@ -310,7 +286,7 @@ export function useTaskOpenReader(
       if (cache.get(detailKey) !== undefined) {
         void mutateCache(detailKey);
       }
-      void mutateCache(taskOpenKey(task.id));
+      void mutateCache(matchesTaskOpenKey);
     } catch (caught) {
       setDefaultVersionError(
         caught instanceof Error
@@ -320,70 +296,17 @@ export function useTaskOpenReader(
     } finally {
       setIsSettingDefaultVersion(false);
     }
-  }, [
-    cache,
-    mutate,
-    mutateCache,
-    mutateVersionHistory,
-    open,
-    selectedVersion,
-    task,
-  ]);
+  }, [cache, mutateCache, mutateVersionHistory, open, selectedVersion, task]);
 
   const exactAgentModels = useMemo(
     () => selectedVersion?.agent_models ?? [],
     [selectedVersion]
   );
-  const groupingTrials = useMemo(
-    () =>
-      task
-        ? [
-            ...trialsForVersion,
-            ...exactAgentModels.map((summary, index) =>
-              groupingTrialFromSummary(summary, task, index)
-            ),
-          ]
-        : [],
-    [exactAgentModels, task, trialsForVersion]
-  );
-  const { agentSummaries: groupingSummaries, modelScopedAgents } = useMemo(
-    () =>
-      buildExperimentAgentSummaries(
-        task ? [{ ...task, trials: groupingTrials }] : []
-      ),
-    [groupingTrials, task]
-  );
-  const agentCards = useMemo(
-    () =>
-      exactAgentModels.map((summary) => {
-        const key = getExperimentAgentKey(
-          normalizedAgentModel(summary),
-          modelScopedAgents
-        );
-        return {
-          key,
-          label:
-            groupingSummaries.find((candidate) => candidate.key === key)
-              ?.label ?? key,
-          summary,
-          trials: trialsForVersion.filter(
-            (trial) =>
-              getExperimentAgentKey(
-                normalizedAgentModel(trial),
-                modelScopedAgents
-              ) === key
-          ),
-        };
-      }),
-    [exactAgentModels, groupingSummaries, modelScopedAgents, trialsForVersion]
-  );
-  const realAgentCount = exactAgentModels.filter(
-    (summary) => !summary.is_probe
-  ).length;
-  const realTrialCount = exactAgentModels.reduce(
-    (count, summary) => count + (summary.is_probe ? 0 : summary.trial_count),
-    0
-  );
+  const { agentCards, modelScopedAgents, realAgentCount, realTrialCount } =
+    useMemo(
+      () => buildTaskOpenAgentGroups(exactAgentModels, trialsForVersion),
+      [exactAgentModels, trialsForVersion]
+    );
   const detailKey = taskDetailKey(taskId);
   const revalidateReaderResources = useCallback(() => {
     void mutate();
