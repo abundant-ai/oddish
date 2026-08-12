@@ -830,6 +830,9 @@ export interface CohortRollup {
       task_id: string;
       task_name: string;
       version: number;
+      /** `"not_compared"` — comparable, nobody has generated one yet — or
+       *  `"below_cohort_gate"`, meaning too few classified runs on either side
+       *  for the generator to accept it at all. */
       reason: string;
     }[];
   };

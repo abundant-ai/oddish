@@ -306,19 +306,31 @@ function Radar({
   );
 }
 
+/** How many uncompared tasks to name before switching to a count. A sweep can
+ *  carry hundreds, and an unbounded list buries the coverage claim above it. */
+const MISSING_NAMED = 8;
+
 function CoverageLine({ rollup }: { rollup: CohortRollup }) {
   const { task_versions_compared, task_versions_total, missing } =
     rollup.coverage;
+  // Only a version the generator would actually accept is offered as a link.
+  // One under the cohort gate cannot be compared as it stands, so linking it
+  // invites the reader to go and ask for something that will be refused.
+  const runnable = missing.filter((m) => m.reason !== "below_cohort_gate");
+  const gated = missing.length - runnable.length;
+  const named = runnable.slice(0, MISSING_NAMED);
+  const unnamed = runnable.length - named.length;
+
   return (
     <div className="flex flex-col gap-1">
       <p className="text-muted-foreground text-xs">
         Based on {task_versions_compared} of {task_versions_total} task
         {task_versions_total === 1 ? "" : "s"}.
       </p>
-      {missing.length > 0 && (
+      {named.length > 0 && (
         <p className="text-muted-foreground text-xs">
-          Not compared:{" "}
-          {missing.map((m, i) => (
+          Not compared yet:{" "}
+          {named.map((m, i) => (
             <span key={`${m.task_id}-${m.version}`}>
               {i > 0 && ", "}
               <a
@@ -329,6 +341,13 @@ function CoverageLine({ rollup }: { rollup: CohortRollup }) {
               </a>
             </span>
           ))}
+          {unnamed > 0 && ` +${unnamed} more`}.
+        </p>
+      )}
+      {gated > 0 && (
+        <p className="text-muted-foreground text-xs">
+          {gated} task{gated === 1 ? "" : "s"} {gated === 1 ? "has" : "have"} too
+          few classified runs on either side to compare.
         </p>
       )}
     </div>
