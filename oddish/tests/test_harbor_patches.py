@@ -1090,8 +1090,7 @@ async def test_legacy_ec2_launch_patch_bridges_provider_identity(monkeypatch):
             return {}
 
         async def _launch_instance(self):
-            self.instance_id = "i-legacy"
-            return "launched"
+            return "i-legacy"
 
     ec2_module = SimpleNamespace(EC2Environment=LegacyEC2Environment)
     original_import = harbor_patches.importlib.import_module
@@ -1114,7 +1113,7 @@ async def test_legacy_ec2_launch_patch_bridges_provider_identity(monkeypatch):
     finally:
         harbor_patches.reset_ec2_provisioned_callback(token)
 
-    assert result == "launched"
+    assert result == "i-legacy"
     assert len(events) == 1
     event = events[0]
     assert event.event == "environment-provisioned"

@@ -570,6 +570,11 @@ def _patch_ec2_lifecycle(*, require_ec2: bool = False) -> None:
 
         callback = _EC2_PROVISIONED_CALLBACK.get()
         if callback is not None:
+            if (
+                getattr(self, "instance_id", None) is None
+                and isinstance(launched, str)
+            ):
+                self.instance_id = launched
             external_id = get_sandbox_id(self)
             if not external_id or not external_id.startswith("ec2://"):
                 raise RuntimeError(
