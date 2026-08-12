@@ -32,12 +32,6 @@ import {
   type TaskDetailResource,
 } from "@/lib/task-detail-resource";
 import {
-  isBrowseTaskOpen,
-  taskOpenFromBrowse,
-  taskOpenKey,
-  type TaskOpenResource,
-} from "@/lib/task-open-resource";
-import {
   cn,
   formatRelativeTime,
   formatShortDateTime,
@@ -319,19 +313,11 @@ export function TaskCard({ task }: { task: TaskBrowseItem }) {
   const selected = isSelected(task.id);
 
   function preserveBrowseSnapshot() {
-    const openSnapshot = taskOpenFromBrowse(task);
-    void mutate(
-      taskOpenKey(task.id),
-      (current: TaskOpenResource | undefined) =>
-        current && !isBrowseTaskOpen(current) ? current : openSnapshot,
-      { revalidate: false }
-    );
-
-    const detailSnapshot = taskDetailFromBrowse(task);
+    const snapshot = taskDetailFromBrowse(task);
     void mutate(
       taskDetailKey(task.id),
       (current: TaskDetailResource | undefined) =>
-        current && !isBrowseTaskDetail(current) ? current : detailSnapshot,
+        current && !isBrowseTaskDetail(current) ? current : snapshot,
       { revalidate: false }
     );
   }

@@ -42,7 +42,6 @@ from oddish.core.endpoints import (
     delete_task_core,
     get_experiment_cost_totals,
     get_task_detail_core,
-    get_task_open_core,
     get_task_for_org_core,
     get_task_status_core,
     get_task_version_core,
@@ -135,7 +134,6 @@ from oddish.schemas import (
     TaskBrowseResponse,
     TaskBatchCancelRequest,
     TaskDetailResponse,
-    TaskOpenResponse,
     TaskUploadCompleteRequest,
     TaskUploadInitRequest,
     TaskUploadInitResponse,
@@ -1570,26 +1568,6 @@ async def get_task_status(
             include_trials=include_trials,
             include_empty_rewards=True,
             org_id=auth.org_id,
-        )
-
-
-@router.get("/tasks/{task_id}/open", response_model=TaskOpenResponse)
-async def get_task_open(
-    request: Request,
-    task_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
-    version_id: str | None = None,
-) -> TaskOpenResponse:
-    """Bounded task-page header, aggregates, and trial preview."""
-    auth.require_scope(APIKeyScope.READ)
-
-    async with get_session() as session:
-        return await get_task_open_core(
-            session,
-            task_id=task_id,
-            version_id=version_id,
-            org_id=auth.org_id,
-            record_timing=_make_timing_recorder(request),
         )
 
 

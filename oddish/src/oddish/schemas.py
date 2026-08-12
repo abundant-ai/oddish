@@ -877,11 +877,12 @@ class TaskVersionResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class TaskVersionRollup(BaseModel):
-    """Aggregate fields shared by bounded and detailed version responses."""
+class TaskVersionSummary(BaseModel):
+    """Per-version aggregates used by the task detail view."""
 
     id: str
     version: int
+    content_hash: str | None = None
     message: str | None = None
     created_at: datetime
     is_current: bool = False
@@ -904,12 +905,6 @@ class TaskVersionRollup(BaseModel):
     billed_has_estimated: bool = False
     billed_has_native: bool = False
     last_run_at: datetime | None = None
-
-
-class TaskVersionSummary(TaskVersionRollup):
-    """Per-version aggregates and audit metadata for the detail resource."""
-
-    content_hash: str | None = None
     # Pre-trial source audit for this version, flattened to the items the task
     # page renders. Empty list + null status means never audited; empty list +
     # SUCCESS means audited and clean.
@@ -1562,120 +1557,6 @@ class TaskStatusResponse(BaseModel):
     finished_at: datetime | None
 
     model_config = {"from_attributes": True}
-
-
-class TaskOpenVersionRef(BaseModel):
-    id: str
-    version: int
-    message: str | None = None
-    created_at: datetime
-    is_current: bool = False
-
-
-class TaskOpenVerdict(BaseModel):
-    """Presentation-only verdict fields needed by the task page."""
-
-    is_good: bool | None = None
-    confidence: str | None = None
-    primary_issue: str | None = None
-    reasoning: str | None = None
-    recommendations: list[str] = Field(default_factory=list)
-
-
-class TaskOpenAgentModelSummary(BaseModel):
-    """Exact selected-version rollup for one task-page agent/model card."""
-
-    agent: str
-    model: str | None = None
-    providers: list[str] = Field(default_factory=list)
-    is_probe: bool = False
-    trial_count: int = 0
-    completed_count: int = 0
-    failed_count: int = 0
-    skipped_count: int = 0
-    pending_count: int = 0
-    pass_count: int = 0
-    partial_count: int = 0
-    fail_count: int = 0
-    reward_sum: float = 0.0
-    reward_total: int = 0
-    cost_usd: float = 0.0
-    cost_trial_count: int = 0
-    cost_has_estimated: bool = False
-    cost_has_native: bool = False
-    billed_cost_usd: float = 0.0
-    billed_trial_count: int = 0
-    billed_has_estimated: bool = False
-    billed_has_native: bool = False
-    last_run_at: datetime | None = None
-    duration_sum_seconds: float = 0.0
-    duration_trial_count: int = 0
-
-
-class TaskOpenVersionSummary(TaskVersionRollup):
-    """Selected-version fields owned by the bounded task-open resource."""
-
-    user_tags: list[UserTagRef] = Field(default_factory=list)
-    experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
-    agent_models: list[TaskOpenAgentModelSummary] = Field(default_factory=list)
-
-
-class TaskOpenTask(BaseModel):
-    id: str
-    name: str
-    status: TaskStatus
-    priority: Priority
-    user: str
-    github_username: str | None = None
-    github_meta: dict[str, str] | None = None
-    link: str | None = None
-    task_path: str
-    experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
-    current_version: int | None = None
-    current_version_id: str | None = None
-    user_tags: list[UserTagRef] = Field(default_factory=list)
-    run_analysis: bool = False
-    verdict_status: VerdictStatus | None = None
-    verdict: TaskOpenVerdict | None = None
-    verdict_error: str | None = None
-    created_at: datetime
-    updated_at: datetime
-
-
-class TaskOpenTotals(TaskCostTotals):
-    token_count: int = 0
-    token_trial_count: int = 0
-
-
-class TaskOpenTrialRef(BaseModel):
-    id: str
-    name: str
-    experiment_id: str | None = None
-    task_version_id: str | None = None
-    agent: str
-    provider: str
-    model: str | None = None
-    status: TrialStatus
-    reward: float | None = None
-    error_kind: str | None = None
-    is_probe: bool = False
-    cost_usd: float | None = None
-    cost_is_estimated: bool | None = None
-    is_billed: bool = False
-    created_at: datetime
-    started_at: datetime | None = None
-    finished_at: datetime | None = None
-
-
-class TaskOpenResponse(BaseModel):
-    """Bounded first-paint resource for ``GET /tasks/{task_id}/open``."""
-
-    task: TaskOpenTask
-    default_version: TaskOpenVersionRef | None = None
-    selected_version: TaskOpenVersionSummary | None = None
-    totals: TaskOpenTotals = Field(default_factory=TaskOpenTotals)
-    trials: list[TaskOpenTrialRef] = Field(default_factory=list)
-    trials_has_more: bool = False
 
 
 # =============================================================================
