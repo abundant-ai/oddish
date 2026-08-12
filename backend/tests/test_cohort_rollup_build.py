@@ -14,10 +14,11 @@ fixture, so this file defines its own local one.
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import func, select
 
 from api.services.blocks.analyzer.cohort.cohort_comparison_block import SCHEMA_VERSION
 from api.services.cohort_comparison import FAILURE_CLASS, SUCCESS_CLASS, cohort_hash
@@ -176,6 +177,7 @@ def _evidence_category(name: str, *, successful_ids: list[str], failing_ids: lis
 class ExperimentTwoOfThreeCompared:
     experiment_id: str
     org_id: str
+    task_ids: list[str] = field(default_factory=list)
 
 
 @pytest_asyncio.fixture
@@ -254,7 +256,9 @@ async def experiment_two_of_three_compared():
                     )
                 )
 
-    yield ExperimentTwoOfThreeCompared(experiment_id=experiment_id, org_id=org_id)
+    yield ExperimentTwoOfThreeCompared(
+        experiment_id=experiment_id, org_id=org_id, task_ids=list(task_ids)
+    )
 
     await _cleanup(
         trial_ids=trial_ids,
@@ -514,18 +518,42 @@ async def test_missing_comparisons_are_counted_not_averaged_over(
 
 @pytest.mark.asyncio
 async def test_build_never_generates(session, experiment_two_of_three_compared, monkeypatch):
-    """The rollup is a READ path. A page view must not cost an LLM call."""
+    """The rollup is a READ path. A page view must not cost an LLM call.
+
+    Patching ``get_or_generate_comparison`` on the ``cc`` module object only
+    intercepts call sites written as ``cc.get_or_generate_comparison(...)``.
+    This codebase's established style for calling it is a direct from-import
+    (``backend/api/routers/tasks.py`` imports the name and calls it
+    unqualified) -- that binds to the real function at ``cohort_rollup.py``'s
+    own import time, before this monkeypatch ever runs, so the patch alone
+    would not catch a generation call written that way. The row count is the
+    side effect that has to hold regardless of which style production code
+    uses: a real generation always persists a new ``analyzer_blocks`` row.
+    The monkeypatch is kept as a cheap second line of defence.
+    """
     import api.services.cohort_comparison as cc
 
     async def explode(*args, **kwargs):
         raise AssertionError("build_cohort_rollup generated a comparison")
 
     monkeypatch.setattr(cc, "get_or_generate_comparison", explode)
+
+    task_ids = experiment_two_of_three_compared.task_ids
+    count_stmt = (
+        select(func.count())
+        .select_from(AnalyzerBlockModel)
+        .where(AnalyzerBlockModel.task_id.in_(task_ids))
+    )
+    before = (await session.execute(count_stmt)).scalar_one()
+
     await build_cohort_rollup(
         session,
         experiment_id=experiment_two_of_three_compared.experiment_id,
         org_id=experiment_two_of_three_compared.org_id,
     )
+
+    after = (await session.execute(count_stmt)).scalar_one()
+    assert after == before
 
 
 @pytest.mark.asyncio
