@@ -16,6 +16,17 @@ where you see no difference; an empty comparison is a better answer than a
 manufactured one.
 
 Set `label` only on `behavior_discovery`, where it names the pattern you found.
-Every other category must have `label` set to null.
+Every other category must have `label` set to null. A label is two to four
+plain English words naming ONE pattern -- `subagent delegation`, not
+`subagent_delegation` and not `delegation_and_scripted_bulk_conversion`. No
+underscores, no `and`: if you are joining two patterns with `and`, pick the one
+the evidence supports better and drop the other.
+
+Each `behavior_description` is ONE sentence, at most about twenty words, and
+starts with the agent, not the cohort. The column the description sits in
+already says which cohort it belongs to, so "Successful runs read the codebase
+first" wastes its opening on something the reader can see. Write "Reads the
+codebase once, then implements without re-planning." Say what was done, not
+whether it was good.
 
 Write all prose in short, plain sentences: one fact per sentence, active voice.
