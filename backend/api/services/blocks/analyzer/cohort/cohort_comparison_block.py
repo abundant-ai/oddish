@@ -102,12 +102,14 @@ class CohortComparisonOutput(BaseModel):
     schema_version: int
     cohort_success: list[str]
     cohort_failure: list[str]
-    # One or two sentences naming the capability that separates the cohorts,
-    # written after the categories below and constrained by them: the prompt
-    # forbids introducing anything the cited categories do not support, so the
-    # headline stays as evidence-bound as the rows under it.
-    summary: NonEmptyText
     categories: list[CategoryComparison]
+    # LAST, and the order is load-bearing. This schema is handed to the model
+    # as `response_format` / `output_schema`, and constrained decoding emits
+    # fields in schema order -- so a `summary` declared above `categories`
+    # would be generated before the rows it is supposed to be bound by,
+    # exactly inverting the prompt's "write summary last" rule and inviting a
+    # headline the categories do not support.
+    summary: NonEmptyText
 
 
 class CohortInput(BaseModel):

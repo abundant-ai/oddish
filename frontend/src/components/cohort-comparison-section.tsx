@@ -3,7 +3,6 @@
 import useSWR from "swr";
 
 import { componentLabel } from "@/lib/trajectory-segments";
-import { shortTrialParam } from "@/lib/trial-url";
 import type { BehaviorObservation, CohortComparison } from "@/lib/types";
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -16,10 +15,11 @@ const CATEGORY_LABELS: Record<string, string> = {
   environment_tooling: "Environment and tooling",
 };
 
-/** The panel's section-header type, shared with Findings and Trial QA
- *  (task-overview-panel.tsx:613, :654) so the overview reads as one column
- *  instead of three unrelated widgets. The category and cohort headings below
- *  reuse the same family and separate themselves by colour, not by size. */
+/** All three headings share the panel's mono-uppercase family (Findings and
+ *  Trial QA use it at task-overview-panel.tsx:613, :654). This section's title
+ *  is deliberately one step louder than those two -- 13px foreground against
+ *  their 11px muted -- because it heads a card of its own rather than a list.
+ *  Below it, category and cohort headings hold 11px and separate by colour. */
 const SECTION_HEADING =
   "text-foreground font-mono text-[13px] font-semibold tracking-wider uppercase";
 const CATEGORY_HEADING =
@@ -49,11 +49,12 @@ function evidenceHref(
 ): string {
   const params = new URLSearchParams();
   if (taskVersionId) params.set("version", taskVersionId);
-  // Short form, like every other trial link: the page's URL sync rewrites a
-  // full id to the short one, and a rewrite is a replaceState the fragment
-  // has to survive. Emitting what the sync would write means it has nothing
-  // to correct.
-  params.set("trial", shortTrialParam(trialId, taskId));
+  // Full id: #1203 reverted the shortened ?trial= form and deleted
+  // shortTrialParam with it. The sync no longer rewrites this param, so
+  // there is no rewrite for the fragment to survive either -- but
+  // urlWithSearch still carries it, because every other drawer sync does
+  // rebuild the address.
+  params.set("trial", trialId);
   params.set("tab", "trajectory");
   const anchor = stepIds.length ? `#step-${Math.min(...stepIds)}` : "";
   return `/tasks/${encodeURIComponent(taskId)}?${params.toString()}${anchor}`;
