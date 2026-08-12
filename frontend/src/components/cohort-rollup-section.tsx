@@ -517,11 +517,22 @@ export function CohortRollupSection({
       )}
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
+          {/* This table is the relief channel that makes the chart's palette
+              acceptable -- two of the three hues only reach WARN contrast on
+              the light card, so colour never carries a value on its own. That
+              only holds if a screen reader can attach a cell to its model, so
+              the model name is a row header, not a plain cell. */}
+          <caption className="sr-only">
+            Behaviour delta and cited-run count for every model and category,
+            the same values the chart plots.
+          </caption>
           <thead>
             <tr className="text-muted-foreground text-left">
-              <th className="py-1 pr-3 font-medium">Model</th>
+              <th scope="col" className="py-1 pr-3 font-medium">
+                Model
+              </th>
               {CHART_CATEGORIES.map((c) => (
-                <th key={c} className="py-1 pr-3 font-medium">
+                <th key={c} scope="col" className="py-1 pr-3 font-medium">
                   {CATEGORY_LABELS[c] ?? c}
                 </th>
               ))}
@@ -532,7 +543,7 @@ export function CohortRollupSection({
               const ink = series.find((s) => s.model === m.model)?.ink;
               return (
                 <tr key={m.model} className="border-border border-t align-top">
-                  <td className="py-1 pr-3">
+                  <th scope="row" className="py-1 pr-3 text-left font-normal">
                     <span className="flex items-center gap-1.5">
                       {ink && (
                         <span
@@ -545,7 +556,7 @@ export function CohortRollupSection({
                     <span className="text-muted-foreground font-mono">
                       base {m.baseline.toFixed(2)}
                     </span>
-                  </td>
+                  </th>
                   {CHART_CATEGORIES.map((c) => {
                     const cell = byCategory
                       .get(c)
