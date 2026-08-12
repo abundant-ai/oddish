@@ -32,6 +32,11 @@ Harbor `ExceptionGroup`) is **not** valid; delete and rerun those.
    isn't wired where the client reads it (e.g. LiteLLM's `openai/` provider reads
    `OPENAI_API_KEY`, not a vendor-specific name).
 4. CLI points at hosted Oddish: `ODDISH_API_URL` + `ODDISH_API_KEY`.
+5. Running this from a Claude Code cloud session? The steps above assume a
+   laptop: a venv at a `~` path, agent CLIs on `PATH`, secrets in `~/.env`. A
+   fresh cloud container has none of those. See
+   `docs/cloud-session-setup.md` for how each one is provisioned there — and
+   note that step 4 is the *whole* of CLI auth: there is no credentials file.
 
 ## 1. Confirm the current 20 tasks and execution classes
 
