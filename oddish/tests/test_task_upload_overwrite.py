@@ -169,10 +169,7 @@ async def test_complete_overwrite_updates_row_and_invalidates_derived_state(
             f"tasks/task-1/v2-revisions/{'a' * 32}/.oddish-task.tar.gz",
         )
     ]
-    assert storage.deleted == [
-        "tasks/task-1/v2-files/",
-        f"task-upload-staging/task-1/{'a' * 32}.tar.gz",
-    ]
+    assert storage.deleted == [f"task-upload-staging/task-1/{'a' * 32}.tar.gz"]
     assert version.content_hash == "new-hash"
     assert version.task_s3_key == f"tasks/task-1/v2-revisions/{'a' * 32}/"
     assert version.message == "old message"

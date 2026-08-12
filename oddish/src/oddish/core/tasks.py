@@ -483,14 +483,14 @@ async def complete_task_upload(
         await session.commit()
 
     if overwrite_current_version:
-        # Both are derived/unreferenced after the DB switch. Readers verify an
-        # expanded manifest's source archive before selecting it, so cleanup
-        # failures cannot make stale files authoritative.
-        for prefix in (f"tasks/{task_id}/v{version}-files/", upload_key):
-            try:
-                await storage.delete_prefix(prefix)
-            except Exception:
-                pass
+        # The staging upload is unreferenced after the DB switch. Do not delete
+        # the expanded prefix here: the queued TASK_EXPAND job owns replacement
+        # of that cache under the version-row lock. Readers reject its old
+        # manifest because it names the previously selected archive.
+        try:
+            await storage.delete_prefix(upload_key)
+        except Exception:
+            pass
 
     return UploadResponse(
         task_id=task_id,
