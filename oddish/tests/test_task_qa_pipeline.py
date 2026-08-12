@@ -38,6 +38,7 @@ from oddish.db import (  # noqa: E402
     WorkerJobKind,
     WorkerJobStatus,
 )
+from oddish.workers.queue import cleanup as cleanup_handler  # noqa: E402
 from oddish.workers.queue import qa_handler  # noqa: E402
 from oddish.workers.queue.qa_handler import (  # noqa: E402
     _classifications_from_trials,
@@ -342,6 +343,113 @@ async def test_pre_trial_store_rejects_replaced_version() -> None:
     )
 
     assert allowed is False
+
+
+@pytest.mark.asyncio
+async def test_pre_trial_claim_rejects_replaced_version(monkeypatch) -> None:
+    version = SimpleNamespace(
+        content_hash="new-hash",
+        pre_trial_status=VerdictStatus.QUEUED,
+        pre_trial_started_at=None,
+    )
+    session = _QASession(task=None, trials=[], task_version=version)
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield session
+
+    monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
+
+    claim = await qa_handler._claim_pre_trial_version(
+        "task",
+        "task-v1",
+        expected_content_hash="old-hash",
+        enforce_content_hash=True,
+    )
+
+    assert claim is None
+    assert version.pre_trial_status == VerdictStatus.QUEUED
+
+
+@pytest.mark.asyncio
+async def test_stale_pre_trial_failure_does_not_touch_replacement(monkeypatch) -> None:
+    version = SimpleNamespace(
+        content_hash="new-hash",
+        pre_trial_status=VerdictStatus.QUEUED,
+        pre_trial_error=None,
+        pre_trial_finished_at=None,
+    )
+    job = SimpleNamespace(
+        status=WorkerJobStatus.RUNNING,
+        payload={
+            "mode": "pre_trial",
+            "task_version_id": "task-v1",
+            "task_version_content_hash": "old-hash",
+        },
+    )
+
+    @asynccontextmanager
+    async def fake_get_session():
+        class _Session:
+            async def get(self, model, *_args, **_kwargs):
+                if model is qa_handler.WorkerJobModel:
+                    return job
+                return version
+
+            async def scalar(self, *_args, **_kwargs):
+                return None
+
+        yield _Session()
+
+    monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
+
+    await qa_handler._fail_queued_pre_trial_request(
+        "task",
+        task_version_id="task-v1",
+        worker_job_id="old-job",
+        expected_content_hash="old-hash",
+    )
+
+    assert version.pre_trial_status == VerdictStatus.QUEUED
+    assert version.pre_trial_error is None
+
+
+@pytest.mark.asyncio
+async def test_stale_pre_trial_cleanup_rejects_replaced_version(monkeypatch) -> None:
+    task = SimpleNamespace(current_version_id="task-v1")
+    version = SimpleNamespace(
+        content_hash="new-hash",
+        pre_trial_status=VerdictStatus.QUEUED,
+        pre_trial_error=None,
+        pre_trial_finished_at=None,
+    )
+
+    async def fake_locked_or_missing(*_args, **_kwargs):
+        return task
+
+    class _Session:
+        async def get(self, *_args, **_kwargs):
+            return version
+
+    monkeypatch.setattr(cleanup_handler, "_locked_or_missing", fake_locked_or_missing)
+
+    await cleanup_handler._mirror_stale_job_to_domain_row(
+        _Session(),
+        {
+            "kind": "QA",
+            "subject_id": "task",
+            "payload": {
+                "mode": "pre_trial",
+                "task_version_id": "task-v1",
+                "task_version_content_hash": "old-hash",
+            },
+            "new_status": "FAILED",
+            "error_message": "old job failed",
+        },
+    )
+
+    assert version.pre_trial_status == VerdictStatus.QUEUED
+    assert version.pre_trial_error is None
 
 
 @pytest.mark.asyncio
@@ -807,7 +915,7 @@ async def test_run_task_qa_job_uses_injected_pre_trial_synth_fn(monkeypatch):
             )
         ]
 
-    async def fake_claim(_task_id, *_args):
+    async def fake_claim(_task_id, *_args, **_kwargs):
         return version.id, version.content_hash, claim_started_at
 
     async def fake_store_allowed(_session, _worker_job_id, *_args):
@@ -897,7 +1005,7 @@ async def test_run_task_qa_job_pre_trial_failure_never_blocks_verdict(monkeypatc
     async def boom_pre_trial_synth(task_id, task_version_id, trial_ids, timeout):
         raise RuntimeError("sandbox exploded")
 
-    async def fake_claim(_task_id, *_args):
+    async def fake_claim(_task_id, *_args, **_kwargs):
         return version.id, version.content_hash, claim_started_at
 
     async def fake_store_allowed(_session, _worker_job_id, *_args):
@@ -981,7 +1089,7 @@ async def test_run_task_qa_job_releases_claim_when_store_vetoed(monkeypatch):
     async def stub_pre_trial_synth(task_id, task_version_id, trial_ids, timeout):
         return []
 
-    async def fake_claim(_task_id, *_args):
+    async def fake_claim(_task_id, *_args, **_kwargs):
         return version.id, version.content_hash, claim_started_at
 
     async def veto_store(_session, _worker_job_id, *_args):

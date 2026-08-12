@@ -227,6 +227,9 @@ class QaJobHandler:
                 task_id,
                 worker_job_id=job.id,
                 task_version_id=(job.payload or {}).get("task_version_id"),
+                task_version_content_hash=(job.payload or {}).get(
+                    "task_version_content_hash"
+                ),
             )
             return JobOutcome.ok()
 

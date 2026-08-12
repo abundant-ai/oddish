@@ -440,6 +440,9 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
             version = await session.get(
                 TaskVersionModel, version_id, with_for_update=True
             )
+            expected_content_hash = payload.get("task_version_content_hash")
+            if version is not None and version.content_hash != expected_content_hash:
+                return None
             if version is not None and version.pre_trial_status in (
                 VerdictStatus.PENDING,
                 VerdictStatus.QUEUED,
