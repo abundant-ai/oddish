@@ -8,8 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from oddish.core.endpoints._common import (
-    USER_CANCELLED_MESSAGE,
     _ACTIVE_WORKER_JOB_STATUSES_SQL,
+    USER_CANCELLED_MESSAGE,
 )
 from oddish.core.verdict_state import cancel_verdict, queue_verdict
 from oddish.db import (
@@ -461,7 +461,21 @@ async def backfill_task_analysis_core(
 
     from oddish.queue import enqueue_qa_worker_job
 
-    await enqueue_qa_worker_job(session, task_id=task.id, org_id=task.org_id)
+    await enqueue_qa_worker_job(
+        session,
+        task_id=task.id,
+        task_version_id=task.current_version_id,
+        task_version_content_hash=(
+            await session.scalar(
+                select(TaskVersionModel.content_hash).where(
+                    TaskVersionModel.id == task.current_version_id
+                )
+            )
+            if task.current_version_id is not None
+            else None
+        ),
+        org_id=task.org_id,
+    )
 
     await session.commit()
     return {

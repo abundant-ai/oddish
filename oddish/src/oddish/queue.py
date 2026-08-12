@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
@@ -25,9 +26,9 @@ from oddish.core.baseline_gate import (
     evaluate_baseline_gate,
 )
 from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
-from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.core.tags.enqueue import enqueue_tag_project_worker_job
 from oddish.core.tags.projection import recompute_task_browse_projection
+from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.core.trial_facets import (
     facet_rows_for_trial_dicts,
     record_trial_facets,
@@ -36,6 +37,7 @@ from oddish.core.verdict_state import (
     abandon_verdict,
     cancel_verdict,
     queue_verdict,
+    reset_verdict,
 )
 from oddish.db import (
     AnalysisStatus,
@@ -71,6 +73,16 @@ USER_CANCELLED_MESSAGE = "Cancelled by user"
 
 class TrialSupersedeConflict(RuntimeError):
     """A failed attempt changed while a sweep was replacing it."""
+
+
+@dataclass(frozen=True)
+class TaskQAStageAdmission:
+    """Current-version QA admission result produced under the task row lock."""
+
+    advanced: bool = False
+    reuse_worker: bool = False
+    task_version_id: str | None = None
+    task_version_content_hash: str | None = None
 
 
 ACTIVE_TRIAL_STATUSES = (
@@ -585,6 +597,8 @@ async def enqueue_qa_worker_job(
     session: AsyncSession,
     *,
     task_id: str,
+    task_version_id: str | None,
+    task_version_content_hash: str | None,
     org_id: str | None,
 ) -> WorkerJobModel:
     """Enqueue the single task-level QA job for a task.
@@ -597,7 +611,11 @@ async def enqueue_qa_worker_job(
         EnqueueRequest(
             kind=WorkerJobKind.QA,
             queue_key=settings.get_qa_queue_key(),
-            payload={"task_id": task_id},
+            payload={
+                "task_id": task_id,
+                "task_version_id": task_version_id,
+                "task_version_content_hash": task_version_content_hash,
+            },
             subject_table="tasks",
             subject_id=task_id,
             org_id=org_id,
@@ -1465,8 +1483,50 @@ async def append_trials_to_task(
 # =============================================================================
 
 
-async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
-    """Check if all trials for a task are done and transition task status.
+async def invalidate_task_qa_for_source_change(
+    session: AsyncSession, task: TaskModel
+) -> TaskQAStageAdmission:
+    """Invalidate old-source QA and admit the newly selected source safely.
+
+    The caller must hold ``task``'s row lock and must already have updated the
+    current-version pointer or immutable source metadata. Cancelling the old QA,
+    clearing its published verdict, and re-entering admission in the same
+    transaction prevents a result committed just before this mutation from
+    remaining authoritative for different source bytes.
+    """
+    await session.execute(
+        text(
+            """
+            UPDATE worker_jobs
+            SET    status = 'CANCELLED',
+                   finished_at = NOW(),
+                   error_message = 'Superseded by task source change',
+                   current_worker_id = NULL,
+                   current_queue_slot = NULL,
+                   modal_function_call_id = NULL
+            WHERE  kind::text IN ('QA', 'VERDICT')
+              AND  subject_table = 'tasks'
+              AND  subject_id = :task_id
+              AND  COALESCE(payload->>'mode', '') <> 'pre_trial'
+              AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+            """
+        ),
+        {"task_id": task.id},
+    )
+    reset_verdict(task)
+    task.status = TaskStatus.RUNNING
+    task.finished_at = None
+    await requeue_inflight_trial_analysis(session, task_id=task.id)
+    return await maybe_start_task_qa_stage(session, task.id)
+
+
+async def maybe_start_task_qa_stage(
+    session: AsyncSession,
+    task_id: str,
+    *,
+    reuse_worker: bool = False,
+) -> TaskQAStageAdmission:
+    """Check if a task's current-version trials are done and transition it.
 
     If run_analysis (the QA opt-in) is enabled -> enqueue the single
     task-level QA job (which classifies every trial then synthesizes the
@@ -1478,24 +1538,24 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
     VERDICT_PENDING (the "QA running" status) rather than passing through a
     separate ANALYZING stage.
 
-    Uses SELECT FOR UPDATE to prevent race conditions.
+    Uses SELECT FOR UPDATE to prevent race conditions. Unlike the trial-facing
+    wrapper, this entry point also works when the current version has no trial
+    rows. Superseded QA jobs use it while retaining their worker retry owner so
+    the replacement version cannot be stranded without a later trial event.
+    ``reuse_worker`` is for a still-running obsolete QA worker: an eligible
+    replacement is admitted and returned to that worker instead of enqueuing a
+    competing row. Admission exceptions therefore keep a retry owner.
     """
-    trial = await session.get(TrialModel, trial_id)
-    if not trial:
-        return False
-
-    task_id = trial.task_id
-
     result = await session.execute(
         select(TaskModel).where(TaskModel.id == task_id).with_for_update()
     )
     task = result.scalar_one_or_none()
 
     if not task:
-        return False
+        return TaskQAStageAdmission()
 
     if task.status not in (TaskStatus.PENDING, TaskStatus.RUNNING):
-        return False
+        return TaskQAStageAdmission()
 
     pending_count = await session.scalar(
         select(func.count(TrialModel.id)).where(
@@ -1520,7 +1580,7 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
     )
 
     if pending_count > 0:
-        return False
+        return TaskQAStageAdmission()
 
     # Only enqueue QA when there is actually something to classify. A task can
     # have run_analysis=true yet zero QA-eligible live trials -- e.g. every live
@@ -1556,9 +1616,33 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
         )
 
     if task.run_analysis and qa_eligible:
+        task_version_content_hash = (
+            await session.scalar(
+                select(TaskVersionModel.content_hash).where(
+                    TaskVersionModel.id == task.current_version_id
+                )
+            )
+            if task.current_version_id is not None
+            else None
+        )
         task.status = TaskStatus.VERDICT_PENDING
         queue_verdict(task)
-        await enqueue_qa_worker_job(session, task_id=task_id, org_id=task.org_id)
+        if reuse_worker:
+            admission = TaskQAStageAdmission(
+                advanced=True,
+                reuse_worker=True,
+                task_version_id=task.current_version_id,
+                task_version_content_hash=task_version_content_hash,
+            )
+        else:
+            await enqueue_qa_worker_job(
+                session,
+                task_id=task_id,
+                task_version_id=task.current_version_id,
+                task_version_content_hash=task_version_content_hash,
+                org_id=task.org_id,
+            )
+            admission = TaskQAStageAdmission(advanced=True)
     else:
         task.status = TaskStatus.COMPLETED
         task.finished_at = utcnow()
@@ -1566,9 +1650,19 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
         # -- otherwise the task ends COMPLETED while verdict_status still
         # reads QUEUED. A finished verdict stays, together with its payload.
         abandon_verdict(task)
+        admission = TaskQAStageAdmission(advanced=True)
 
     await session.flush()
-    return True
+    return admission
+
+
+async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
+    """Advance the owning task after one of its trials becomes terminal."""
+    trial = await session.get(TrialModel, trial_id)
+    if not trial:
+        return False
+    admission = await maybe_start_task_qa_stage(session, trial.task_id)
+    return admission.advanced
 
 
 async def maybe_gate_llm_trials(session: AsyncSession, trial_id: str) -> bool:
@@ -1998,7 +2092,22 @@ async def maybe_advance_legacy_analyzing_task(
 
     task.status = TaskStatus.VERDICT_PENDING
     queue_verdict(task)
-    await enqueue_qa_worker_job(session, task_id=task_id, org_id=task.org_id)
+    task_version_content_hash = (
+        await session.scalar(
+            select(TaskVersionModel.content_hash).where(
+                TaskVersionModel.id == task.current_version_id
+            )
+        )
+        if task.current_version_id is not None
+        else None
+    )
+    await enqueue_qa_worker_job(
+        session,
+        task_id=task_id,
+        task_version_id=task.current_version_id,
+        task_version_content_hash=task_version_content_hash,
+        org_id=task.org_id,
+    )
     await session.flush()
 
     return True

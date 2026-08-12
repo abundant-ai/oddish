@@ -14,17 +14,17 @@ from oddish.config import settings
 from oddish.core.baseline_gate import GATE_SKIP_PREFIX, baseline_agent_clause
 from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
 from oddish.core.result_focus_schema import normalize_findings_schema
+from oddish.core.verdict_state import (
+    abandon_verdict,
+    complete_verdict_without_result,
+    start_verdict,
+)
 from oddish.core.verdict_sync import (
     aggregate_exploited_into_pre_trial,
     build_pre_trial_payload,
     build_verdict_payload,
     sync_pre_trial_to_task_version,
     sync_verdict_to_task,
-)
-from oddish.core.verdict_state import (
-    abandon_verdict,
-    complete_verdict_without_result,
-    start_verdict,
 )
 from oddish.db import (
     AnalysisStatus,
@@ -906,6 +906,10 @@ async def run_task_qa_job(
     queue_key: str,
     modal_function_call_id: str | None = None,
     worker_job_id: str | None = None,
+    task_version_id: str | None = None,
+    enforce_task_version_id: bool = False,
+    task_version_content_hash: str | None = None,
+    enforce_task_version_content_hash: bool = False,
 ) -> bool:
     """Classify a task's live trials and store one verdict.
 
@@ -930,8 +934,31 @@ async def run_task_qa_job(
             )
             return False
 
-        task_version_id = getattr(task, "current_version_id", None)
-        start_verdict(task, now=utcnow())
+        current_version_id = getattr(task, "current_version_id", None)
+        current_version = (
+            await session.get(TaskVersionModel, current_version_id)
+            if current_version_id is not None
+            else None
+        )
+        current_version_content_hash = (
+            current_version.content_hash if current_version is not None else None
+        )
+        if (enforce_task_version_id and current_version_id != task_version_id) or (
+            enforce_task_version_content_hash
+            and current_version_content_hash != task_version_content_hash
+        ):
+            # This queued job was admitted for an older version. Retire it
+            # without ever inspecting the replacement version's trials; the
+            # worker adapter re-enters current-version admission while keeping
+            # this worker as the retry owner.
+            abandon_verdict(task)
+            task.status = TaskStatus.RUNNING
+            task.finished_at = None
+            return True
+        task_version_id = current_version_id
+        task_version_content_hash = current_version_content_hash
+        verdict_claim_started_at = utcnow()
+        start_verdict(task, now=verdict_claim_started_at)
 
     verdict_result = None
     verdict_error = None
@@ -983,14 +1010,40 @@ async def run_task_qa_job(
             # as neither good nor bad rather than skewing either bucket.
             async with get_session() as session:
                 task = await session.get(TaskModel, task_id, with_for_update=True)
-                if (
+                current_version = (
+                    await session.get(TaskVersionModel, task_version_id)
+                    if task_version_id is not None
+                    else None
+                )
+                current_content_hash = (
+                    current_version.content_hash
+                    if current_version is not None
+                    else None
+                )
+                source_is_current = bool(
                     task
                     and getattr(task, "current_version_id", None) == task_version_id
-                    and await _worker_job_is_running(session, worker_job_id)
+                    and current_content_hash == task_version_content_hash
+                )
+                claim_is_current = bool(
+                    source_is_current
+                    and task.verdict_started_at == verdict_claim_started_at
+                )
+                if claim_is_current and await _worker_job_is_running(
+                    session, worker_job_id
                 ):
                     complete_verdict_without_result(task, now=utcnow())
                     task.status = TaskStatus.COMPLETED
                     task.finished_at = utcnow()
+                elif (
+                    task
+                    and not source_is_current
+                    and await _worker_job_is_running(session, worker_job_id)
+                ):
+                    abandon_verdict(task)
+                    task.status = TaskStatus.RUNNING
+                    task.finished_at = None
+                    return True
             console.print(
                 f"[yellow]QA {task_id} skipped: no QA-eligible trials "
                 "(all bulk-imported)[/yellow]"
@@ -1133,8 +1186,26 @@ async def run_task_qa_job(
         current_task = await session.get(TaskModel, task_id)
         if current_task is None:
             return False
-        if getattr(current_task, "current_version_id", None) == task_version_id:
+        current_version = (
+            await session.get(TaskVersionModel, task_version_id)
+            if task_version_id is not None
+            else None
+        )
+        current_content_hash = (
+            current_version.content_hash if current_version is not None else None
+        )
+        source_is_current = (
+            getattr(current_task, "current_version_id", None) == task_version_id
+            and current_content_hash == task_version_content_hash
+        )
+        if source_is_current and (
+            current_task.verdict_started_at == verdict_claim_started_at
+        ):
             return True
+        if source_is_current:
+            # Another same-source QA claim owns the verdict generation. This
+            # duplicate must not reset or overwrite the owner's RUNNING state.
+            return False
 
         # This QA pass belongs to an obsolete version. Retrying the same worker
         # job would silently re-pin it to the new version without going through

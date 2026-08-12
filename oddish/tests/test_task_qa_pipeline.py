@@ -45,7 +45,6 @@ from oddish.workers.queue.qa_handler import (  # noqa: E402
     _trial_needs_classification,
 )
 
-
 # ---------------------------------------------------------------------------
 # Pure helpers
 # ---------------------------------------------------------------------------
@@ -134,10 +133,18 @@ class _StageSession:
     number for every query.
     """
 
-    def __init__(self, *, trial, task, pending_count, qa_eligible=1):
+    def __init__(
+        self,
+        *,
+        trial,
+        task,
+        pending_count,
+        qa_eligible=1,
+        task_version_content_hash="content-hash",
+    ):
         self._trial = trial
         self._task = task
-        self._counts = [pending_count, qa_eligible]
+        self._counts = [pending_count, qa_eligible, task_version_content_hash]
         self._scalar_calls = 0
         self.scalar_statements = []
         self.flushed = 0
@@ -158,6 +165,97 @@ class _StageSession:
         self.flushed += 1
 
 
+class _CleanupResult:
+    def __init__(self, *, rows=None, scalar=None):
+        self._rows = rows or []
+        self._scalar = scalar
+
+    def all(self):
+        return self._rows
+
+    def scalar_one_or_none(self):
+        return self._scalar
+
+
+class _CleanupSession:
+    def __init__(self, task, *, active_qa):
+        self.task = task
+        self.active_qa = active_qa
+        self.execute_calls = 0
+
+    async def execute(self, _statement, _params=None):
+        self.execute_calls += 1
+        if self.execute_calls == 1:
+            return _CleanupResult(rows=[(self.task.id,)])
+        return _CleanupResult(scalar=self.task)
+
+    async def scalar(self, _statement, _params=None):
+        return self.active_qa
+
+
+@pytest.mark.asyncio
+async def test_cleanup_rechecks_live_qa_after_task_lock(monkeypatch):
+    task = SimpleNamespace(
+        id="task-cleanup-race",
+        status=TaskStatus.VERDICT_PENDING,
+        verdict_status=VerdictStatus.QUEUED,
+        verdict=None,
+        verdict_error=None,
+        verdict_started_at=None,
+        verdict_finished_at=None,
+        finished_at=None,
+    )
+    session = _CleanupSession(task, active_qa=1)
+
+    async def fail_admission(*_args, **_kwargs):
+        pytest.fail("cleanup must preserve the QA admitted while it waited")
+
+    monkeypatch.setattr(queue_mod, "maybe_start_task_qa_stage", fail_admission)
+
+    assert await cleanup_handler._heal_stale_verdict_pending(session) == 0
+    assert task.status == TaskStatus.VERDICT_PENDING
+    assert task.verdict_status == VerdictStatus.QUEUED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("admitted_status", "expected_completed"),
+    [(TaskStatus.RUNNING, 0), (TaskStatus.COMPLETED, 1)],
+)
+async def test_cleanup_routes_stale_task_through_current_admission(
+    monkeypatch, admitted_status, expected_completed
+):
+    task = SimpleNamespace(
+        id="task-cleanup-current-version",
+        status=TaskStatus.VERDICT_PENDING,
+        verdict_status=VerdictStatus.QUEUED,
+        verdict=None,
+        verdict_error=None,
+        verdict_started_at=None,
+        verdict_finished_at=None,
+        finished_at=None,
+    )
+    session = _CleanupSession(task, active_qa=None)
+    admitted = []
+
+    async def fake_admission(_session, task_id, *, reuse_worker=False):
+        assert task.status == TaskStatus.RUNNING
+        assert task.verdict_status is None
+        admitted.append((task_id, reuse_worker))
+        task.status = admitted_status
+        return queue_mod.TaskQAStageAdmission(
+            advanced=admitted_status != TaskStatus.RUNNING
+        )
+
+    monkeypatch.setattr(queue_mod, "maybe_start_task_qa_stage", fake_admission)
+
+    assert (
+        await cleanup_handler._heal_stale_verdict_pending(session) == expected_completed
+    )
+    assert admitted == [(task.id, False)]
+    assert task.status == admitted_status
+
+
 @pytest.mark.asyncio
 async def test_stage_enqueues_single_qa_job_when_trials_done(monkeypatch):
     trial = SimpleNamespace(task_id="task-1")
@@ -174,7 +272,16 @@ async def test_stage_enqueues_single_qa_job_when_trials_done(monkeypatch):
 
     verdict_calls: list[str] = []
 
-    async def fake_verdict_enqueue(_session, *, task_id, org_id):
+    async def fake_verdict_enqueue(
+        _session,
+        *,
+        task_id,
+        task_version_id,
+        task_version_content_hash,
+        org_id,
+    ):
+        assert task_version_id == "task-1-v2"
+        assert task_version_content_hash == "content-hash"
         verdict_calls.append(task_id)
 
     monkeypatch.setattr(queue_mod, "enqueue_qa_worker_job", fake_verdict_enqueue)
@@ -210,7 +317,14 @@ async def test_stage_current_version_active_trial_blocks_qa(monkeypatch):
     session = _StageSession(trial=trial, task=task, pending_count=1)
     verdict_calls: list[str] = []
 
-    async def fake_verdict_enqueue(_session, *, task_id, org_id):
+    async def fake_verdict_enqueue(
+        _session,
+        *,
+        task_id,
+        task_version_id,
+        task_version_content_hash,
+        org_id,
+    ):
         verdict_calls.append(task_id)
 
     monkeypatch.setattr(queue_mod, "enqueue_qa_worker_job", fake_verdict_enqueue)
@@ -223,6 +337,75 @@ async def test_stage_current_version_active_trial_blocks_qa(monkeypatch):
     )
     assert "trials.task_version_id = 'task-active-v2'" in pending_sql
     assert task.status == TaskStatus.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_task_stage_active_version_does_not_reuse_worker(monkeypatch):
+    task = SimpleNamespace(
+        id="task-active-reuse",
+        current_version_id="task-active-reuse-v2",
+        org_id="org-1",
+        status=TaskStatus.RUNNING,
+        run_analysis=True,
+        verdict_status=None,
+        finished_at=None,
+    )
+    session = _StageSession(
+        trial=SimpleNamespace(task_id=task.id),
+        task=task,
+        pending_count=1,
+    )
+
+    async def fail_enqueue(*_args, **_kwargs):
+        pytest.fail("active replacement trials must not enqueue or reuse QA")
+
+    monkeypatch.setattr(queue_mod, "enqueue_qa_worker_job", fail_enqueue)
+
+    admission = await queue_mod.maybe_start_task_qa_stage(
+        session,
+        task.id,
+        reuse_worker=True,
+    )
+
+    assert admission.advanced is False
+    assert admission.reuse_worker is False
+    assert task.status == TaskStatus.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_task_stage_reuses_worker_for_terminal_eligible_version(monkeypatch):
+    task = SimpleNamespace(
+        id="task-reuse",
+        current_version_id="task-reuse-v2",
+        org_id="org-1",
+        status=TaskStatus.RUNNING,
+        run_analysis=True,
+        verdict_status=None,
+        finished_at=None,
+    )
+    session = _StageSession(
+        trial=SimpleNamespace(task_id=task.id),
+        task=task,
+        pending_count=0,
+        qa_eligible=1,
+    )
+
+    async def fail_enqueue(*_args, **_kwargs):
+        pytest.fail("a live obsolete worker must be reused, not duplicated")
+
+    monkeypatch.setattr(queue_mod, "enqueue_qa_worker_job", fail_enqueue)
+
+    admission = await queue_mod.maybe_start_task_qa_stage(
+        session,
+        task.id,
+        reuse_worker=True,
+    )
+
+    assert admission.advanced is True
+    assert admission.reuse_worker is True
+    assert admission.task_version_id == "task-reuse-v2"
+    assert task.status == TaskStatus.VERDICT_PENDING
+    assert task.verdict_status == VerdictStatus.QUEUED
 
 
 @pytest.mark.asyncio
@@ -239,7 +422,15 @@ async def test_stage_legacy_task_without_version_keeps_unscoped_counts(monkeypat
     )
     session = _StageSession(trial=trial, task=task, pending_count=0)
 
-    async def fake_verdict_enqueue(_session, *, task_id, org_id):
+    async def fake_verdict_enqueue(
+        _session,
+        *,
+        task_id,
+        task_version_id,
+        task_version_content_hash,
+        org_id,
+    ):
+        assert task_version_id is None
         assert task_id == "task-legacy"
 
     monkeypatch.setattr(queue_mod, "enqueue_qa_worker_job", fake_verdict_enqueue)
@@ -250,6 +441,47 @@ async def test_stage_legacy_task_without_version_keeps_unscoped_counts(monkeypat
         sql = str(statement.compile(compile_kwargs={"literal_binds": True}))
         assert "trials.task_version_id" not in sql
     assert task.status == TaskStatus.VERDICT_PENDING
+
+
+@pytest.mark.asyncio
+async def test_task_stage_completes_current_version_without_trials(monkeypatch):
+    task = SimpleNamespace(
+        id="task-no-trials",
+        current_version_id="task-no-trials-v2",
+        org_id="org-1",
+        status=TaskStatus.RUNNING,
+        run_analysis=True,
+        verdict=None,
+        verdict_status=VerdictStatus.RUNNING,
+        verdict_error=None,
+        verdict_started_at=None,
+        verdict_finished_at=None,
+        finished_at=None,
+    )
+    session = _StageSession(
+        trial=SimpleNamespace(task_id=task.id),
+        task=task,
+        pending_count=0,
+        qa_eligible=0,
+    )
+    enqueued: list[str] = []
+
+    async def fake_enqueue(_session, **kwargs):
+        enqueued.append(kwargs["task_id"])
+
+    monkeypatch.setattr(queue_mod, "enqueue_qa_worker_job", fake_enqueue)
+
+    admission = await queue_mod.maybe_start_task_qa_stage(
+        session,
+        task.id,
+        reuse_worker=True,
+    )
+    assert admission.advanced is True
+    assert admission.reuse_worker is False
+    assert enqueued == []
+    assert task.status == TaskStatus.COMPLETED
+    assert task.verdict_status is None
+    assert task.finished_at is not None
 
 
 @pytest.mark.asyncio
@@ -1015,7 +1247,15 @@ async def test_run_task_qa_job_discards_verdict_after_version_changes(monkeypatc
     active_session = _StageSession(trial=current_trial, task=task, pending_count=1)
     enqueued: list[str] = []
 
-    async def fake_enqueue(_session, *, task_id, org_id):
+    async def fake_enqueue(
+        _session,
+        *,
+        task_id,
+        task_version_id,
+        task_version_content_hash,
+        org_id,
+    ):
+        assert task_version_id == "task-version-v2"
         enqueued.append(task_id)
 
     monkeypatch.setattr(queue_mod, "enqueue_qa_worker_job", fake_enqueue)
@@ -1037,6 +1277,180 @@ async def test_run_task_qa_job_discards_verdict_after_version_changes(monkeypatc
     assert enqueued == [task.id]
     assert task.status == TaskStatus.VERDICT_PENDING
     assert task.verdict_status == VerdictStatus.QUEUED
+
+
+@pytest.mark.asyncio
+async def test_run_task_qa_job_discards_verdict_after_same_version_overwrite(
+    monkeypatch,
+):
+    task = SimpleNamespace(
+        id="task-content-changed",
+        current_version_id="task-content-v1",
+        org_id="org-1",
+        run_analysis=True,
+        status=TaskStatus.VERDICT_PENDING,
+        verdict_status=VerdictStatus.QUEUED,
+        verdict=None,
+        verdict_error=None,
+        verdict_started_at=None,
+        verdict_finished_at=None,
+        finished_at=None,
+    )
+    version = SimpleNamespace(content_hash="hash-before")
+    trial = SimpleNamespace(
+        id="trial-content-v1",
+        analysis_status=AnalysisStatus.SUCCESS,
+        analysis={"classification": "GOOD_SUCCESS", "subtype": "Clean"},
+    )
+    session = _QASession(task=task, trials=[trial], task_version=version)
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield session
+
+    async def fake_load_live(_task_id, task_version_id=None):
+        assert task_version_id == "task-content-v1"
+        return [(trial.id, AnalysisStatus.SUCCESS)]
+
+    async def fake_compute_verdict(*_args, **_kwargs):
+        # overwrite_current_version preserves the row id but changes content.
+        version.content_hash = "hash-after"
+        return SimpleNamespace(
+            is_good=True,
+            confidence="high",
+            primary_issue=None,
+            reasoning="healthy",
+            recommendations=[],
+        )
+
+    monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
+    monkeypatch.setattr("oddish.core.verdict_sync.get_session", fake_get_session)
+    monkeypatch.setattr(
+        qa_handler, "_load_live_trials_for_classification", fake_load_live
+    )
+    monkeypatch.setattr(qa_handler, "synthesize_task_verdict", fake_compute_verdict)
+
+    result_superseded = await qa_handler.run_task_qa_job(
+        task.id,
+        queue_key="qa",
+        task_version_id=task.current_version_id,
+        enforce_task_version_id=True,
+        task_version_content_hash="hash-before",
+        enforce_task_version_content_hash=True,
+    )
+
+    assert result_superseded is True
+    assert task.current_version_id == "task-content-v1"
+    assert version.content_hash == "hash-after"
+    assert task.verdict is None
+    assert task.verdict_status is None
+    assert task.status == TaskStatus.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_run_task_qa_job_duplicate_claim_cannot_overwrite_owner(monkeypatch):
+    task = SimpleNamespace(
+        id="task-duplicate-qa",
+        current_version_id="task-duplicate-v1",
+        org_id="org-1",
+        run_analysis=True,
+        status=TaskStatus.VERDICT_PENDING,
+        verdict_status=VerdictStatus.QUEUED,
+        verdict=None,
+        verdict_error=None,
+        verdict_started_at=None,
+        verdict_finished_at=None,
+        finished_at=None,
+    )
+    version = SimpleNamespace(content_hash="hash-v1")
+    trial = SimpleNamespace(
+        id="trial-duplicate-v1",
+        analysis_status=AnalysisStatus.SUCCESS,
+        analysis={"classification": "GOOD_SUCCESS", "subtype": "Clean"},
+    )
+    session = _QASession(task=task, trials=[trial], task_version=version)
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield session
+
+    async def fake_load_live(*_args, **_kwargs):
+        return [(trial.id, AnalysisStatus.SUCCESS)]
+
+    async def fake_compute_verdict(*_args, **_kwargs):
+        # A second worker has claimed the same source snapshot while this pass
+        # was synthesizing. Its later started_at token is the active owner.
+        task.verdict_started_at = task.verdict_started_at + timedelta(seconds=1)
+        return SimpleNamespace(
+            is_good=True,
+            confidence="high",
+            primary_issue=None,
+            reasoning="healthy",
+            recommendations=[],
+        )
+
+    monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
+    monkeypatch.setattr("oddish.core.verdict_sync.get_session", fake_get_session)
+    monkeypatch.setattr(
+        qa_handler, "_load_live_trials_for_classification", fake_load_live
+    )
+    monkeypatch.setattr(qa_handler, "synthesize_task_verdict", fake_compute_verdict)
+
+    superseded = await qa_handler.run_task_qa_job(
+        task.id,
+        queue_key="qa",
+        task_version_id=task.current_version_id,
+        enforce_task_version_id=True,
+        task_version_content_hash="hash-v1",
+        enforce_task_version_content_hash=True,
+    )
+
+    assert superseded is False
+    assert task.status == TaskStatus.VERDICT_PENDING
+    assert task.verdict_status == VerdictStatus.RUNNING
+    assert task.verdict is None
+
+
+@pytest.mark.asyncio
+async def test_run_task_qa_job_retires_queued_job_after_another_version_change(
+    monkeypatch,
+):
+    task = SimpleNamespace(
+        id="task-version-changed-before-claim",
+        current_version_id="task-version-v3",
+        org_id="org-1",
+        status=TaskStatus.VERDICT_PENDING,
+        verdict_status=VerdictStatus.QUEUED,
+        verdict=None,
+        verdict_error=None,
+        verdict_started_at=None,
+        verdict_finished_at=None,
+        finished_at=None,
+    )
+    session = _QASession(task=task, trials=[])
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield session
+
+    async def fail_load(*_args, **_kwargs):
+        pytest.fail("a version-pinned stale job must not load replacement trials")
+
+    monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
+    monkeypatch.setattr(qa_handler, "_load_live_trials_for_classification", fail_load)
+
+    assert (
+        await qa_handler.run_task_qa_job(
+            task.id,
+            queue_key="qa",
+            worker_job_id="worker-job-v2",
+            task_version_id="task-version-v2",
+            enforce_task_version_id=True,
+        )
+        is True
+    )
+    assert task.status == TaskStatus.RUNNING
+    assert task.verdict_status is None
 
 
 @pytest.mark.asyncio
