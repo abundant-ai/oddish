@@ -326,10 +326,12 @@ by model (`series_qa_by_model`) and by analyzer job kind
 `GET /tasks/{task_id}/open` is the bounded first-paint contract for the task
 page. It resolves one org-scoped task plus the requested/default version before
 running aggregate work. Top-level task status always uses the default version
-from `tasks.current_version_id`; selected-version counters, experiments, and
-exact agent/model summaries use the requested version. Its experiment list is
-derived from that version's live, non-probe, non-superseded, non-combine trial
-population, matching `/detail`. The response also carries compact QA verdict
+from `tasks.current_version_id`; selected-version counters, direct version tags,
+experiments, and exact agent/model summaries use the requested version. Its
+experiment list is derived from that version's live, non-probe, non-superseded,
+non-combine trial population, matching `/detail`. Pre-trial audit metadata stays
+on `/detail` and is not serialized with the bounded version summary. The
+response also carries compact QA verdict
 presentation/control fields and caps the selected-version trial preview at 20
 lightweight refs. The handler uses at most three SQL statements, stays below the
 50 KB response budget, and must not select trial `result`, `analysis`,

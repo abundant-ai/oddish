@@ -71,6 +71,7 @@ async def get_task_open_core(
         float(aggregate["qa_cost_usd"] or 0.0),
     )
     if selected is not None:
+        selected.user_tags = tags(identity["selected_version_tags"])
         selected.experiments = experiments(aggregate["experiments"])
 
     preview_rows: list[Mapping[str, Any]] = []
