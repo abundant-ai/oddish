@@ -182,7 +182,15 @@ class ExperimentTwoOfThreeCompared:
 
 @pytest_asyncio.fixture
 async def experiment_two_of_three_compared():
-    """Three task versions in one experiment; only two carry a fresh comparison."""
+    """Three task versions in one experiment; only two carry a fresh comparison.
+
+    The two compared versions are 1 success / 1 failure each, so the single
+    model's baseline over the included cohort is 0.5. The uncompared third is
+    deliberately lopsided -- 6 successes, no failures -- so that a version
+    leaking past the ``continue`` would move the baseline to 8/10 = 0.8. The
+    asymmetry is what makes ``test_missing_comparisons_are_counted_not_averaged_over``
+    able to fail; with 1/1 everywhere the assertion held either way.
+    """
     suffix = uuid.uuid4().hex[:8]
     org_id = f"org_23c_{suffix}"
     experiment_id = f"exp_23c_{suffix}"
@@ -217,41 +225,38 @@ async def experiment_two_of_three_compared():
             )
             await session.flush()
 
-            success_id = f"trial_23c_{suffix}_{i}_s"
-            failure_id = f"trial_23c_{suffix}_{i}_f"
-            trial_ids.extend([success_id, failure_id])
-            session.add(
-                _trial(
-                    trial_id=success_id,
-                    task_id=task_id,
-                    task_version_id=version_id,
-                    experiment_id=experiment_id,
-                    org_id=org_id,
-                    classification=SUCCESS_CLASS,
-                    model="claude-code",
-                )
+            compared = i < 2
+            success_ids = (
+                [f"trial_23c_{suffix}_{i}_s"]
+                if compared
+                else [f"trial_23c_{suffix}_{i}_s{k}" for k in range(6)]
             )
-            session.add(
-                _trial(
-                    trial_id=failure_id,
-                    task_id=task_id,
-                    task_version_id=version_id,
-                    experiment_id=experiment_id,
-                    org_id=org_id,
-                    classification=FAILURE_CLASS,
-                    model="claude-code",
+            failure_ids = [f"trial_23c_{suffix}_{i}_f"] if compared else []
+            trial_ids.extend(success_ids + failure_ids)
+            for tid, cls in [(t, SUCCESS_CLASS) for t in success_ids] + [
+                (t, FAILURE_CLASS) for t in failure_ids
+            ]:
+                session.add(
+                    _trial(
+                        trial_id=tid,
+                        task_id=task_id,
+                        task_version_id=version_id,
+                        experiment_id=experiment_id,
+                        org_id=org_id,
+                        classification=cls,
+                        model="claude-code",
+                    )
                 )
-            )
             await session.flush()
 
             # Only the first two task versions get a stored comparison; the
             # third is left uncompared.
-            if i < 2:
+            if compared:
                 session.add(
                     _comparison_block(
                         task_id=task_id,
                         task_version_id=version_id,
-                        cohort_hash_value=cohort_hash([success_id], [failure_id]),
+                        cohort_hash_value=cohort_hash(success_ids, failure_ids),
                         categories=[],
                     )
                 )
@@ -514,6 +519,11 @@ async def test_missing_comparisons_are_counted_not_averaged_over(
     assert body["coverage"]["task_versions_compared"] == 2
     assert len(body["coverage"]["missing"]) == 1
     assert body["coverage"]["missing"][0]["task_name"]
+    # The property the coverage counts exist to protect: an uncompared version
+    # contributes nothing to any model's baseline. The two compared versions
+    # are 1 success / 1 failure each; the uncompared third is 6 successes and
+    # no failures, so leaking it in would read 8/10 = 0.8 here.
+    assert body["models"][0]["baseline"] == pytest.approx(0.5)
 
 
 @pytest.mark.asyncio
