@@ -58,6 +58,7 @@ import {
   normalizedAgentModel,
   useTaskOpenReader,
 } from "@/lib/use-task-open-reader";
+import { useTrial } from "@/lib/use-trial";
 import {
   formatRelativeTime,
   prBadge,
@@ -694,7 +695,7 @@ export function TaskDetailClient({
   const [drawerShowTask, setDrawerShowTask] = useState(true);
   const [drawerShowTrial, setDrawerShowTrial] = useState(true);
   const { data: drawerDetailResource, isLoading: isDrawerDetailLoading } =
-    useSWR<TaskDetailResource>(detailKey, fetcher, {
+    useSWR<TaskDetailResource>(drawer ? detailKey : null, fetcher, {
       revalidateOnFocus: false,
       revalidateOnMount: true,
     });
@@ -731,6 +732,21 @@ export function TaskDetailClient({
   const drawerOrderedTrials = useMemo(
     () => drawerTrialGroups.flatMap((group) => group.trials),
     [drawerTrialGroups]
+  );
+
+  const [deepLinkTrialId] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return new URLSearchParams(window.location.search).get("trial");
+  });
+  const previewDeepLinkTrial = deepLinkTrialId
+    ? drawerOrderedTrials.find((trial) => trial.id === deepLinkTrialId)
+    : undefined;
+  const {
+    data: fetchedDeepLinkTrial,
+    error: deepLinkTrialError,
+    isLoading: isDeepLinkTrialLoading,
+  } = useTrial(
+    deepLinkTrialId && !previewDeepLinkTrial ? deepLinkTrialId : null
   );
 
   const drawerTrial =
@@ -823,18 +839,32 @@ export function TaskDetailClient({
     }
 
     if (urlTrialId) {
-      const trial = drawerOrderedTrials.find(
+      const previewTrial = drawerOrderedTrials.find(
         (trial) => trial.id === urlTrialId
       );
-      if (trial) {
+      if (previewTrial) {
         drawerHydratedRef.current = true;
         hydrationOpeningRef.current = true;
-        handleSelectTrial(trial);
+        handleSelectTrial(previewTrial);
         return;
       }
-      if (isDrawerDetailLoading || canonicalDrawerDetail == null) return;
+      if (isDeepLinkTrialLoading) return;
       drawerHydratedRef.current = true;
-      unresolvedTrialParamRef.current = true;
+      if (
+        deepLinkTrialError ||
+        !fetchedDeepLinkTrial ||
+        fetchedDeepLinkTrial.id !== urlTrialId ||
+        fetchedDeepLinkTrial.task_id !== task.id
+      ) {
+        unresolvedTrialParamRef.current = true;
+        return;
+      }
+      const owningVersionId = fetchedDeepLinkTrial.task_version_id ?? null;
+      if (owningVersionId && owningVersionId !== selectedVersionId) {
+        handleSelectVersion(owningVersionId);
+      }
+      hydrationOpeningRef.current = true;
+      handleSelectTrial(fetchedDeepLinkTrial);
       return;
     }
 
@@ -844,11 +874,13 @@ export function TaskDetailClient({
       handleOpenTaskFiles();
     }
   }, [
-    canonicalDrawerDetail,
+    deepLinkTrialError,
     defaultVersionId,
+    fetchedDeepLinkTrial,
+    handleSelectVersion,
     handleOpenTaskFiles,
     handleSelectTrial,
-    isDrawerDetailLoading,
+    isDeepLinkTrialLoading,
     isLoading,
     drawerOrderedTrials,
     selectedVersionId,
