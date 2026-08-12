@@ -26,17 +26,12 @@ import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { ExperimentsList } from "@/components/experiments-list";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
 import { fetcher } from "@/lib/api";
-import {
-  buildExperimentAgentSummaries,
-  getExperimentAgentKey,
-  PROBE_AGENT_KEY,
-} from "@/lib/experiment-agent-grouping";
+import { getExperimentAgentKey } from "@/lib/experiment-agent-grouping";
 import {
   formatCostUsd,
   formatDurationSec,
   formatTokenCount,
   hasDisplayableCostUsd,
-  trialDurationSec,
 } from "@/lib/format";
 import {
   formatPartialRewardBadgeValue,
@@ -54,11 +49,15 @@ import {
 } from "@/lib/task-detail-resource";
 import type {
   Task,
+  TaskOpenAgentModelSummary,
   TaskOpenVersionRef,
   TaskVersionSummary,
   Trial,
 } from "@/lib/types";
-import { useTaskOpenReader } from "@/lib/use-task-open-reader";
+import {
+  normalizedAgentModel,
+  useTaskOpenReader,
+} from "@/lib/use-task-open-reader";
 import {
   formatRelativeTime,
   prBadge,
@@ -528,88 +527,73 @@ function TrialChip({ trial, onClick }: { trial: Trial; onClick: () => void }) {
 
 function AgentCard({
   agentLabel,
-  agent,
-  model,
+  summary,
   trials,
   onTrialSelect,
 }: {
   agentLabel: string;
-  agent: string;
-  model: string | null;
+  summary: TaskOpenAgentModelSummary;
   trials: Trial[];
-  onTrialSelect: (trial: Trial, trials: Trial[]) => void;
+  onTrialSelect: (trial: Trial) => void;
 }) {
-  const summary = useMemo(() => summarizeTrials(trials), [trials]);
   const scorePct =
-    summary.rewardTotal > 0
-      ? (summary.rewardSum / summary.rewardTotal) * 100
+    summary.reward_total > 0
+      ? (summary.reward_sum / summary.reward_total) * 100
       : null;
   const avgCostUsd =
-    summary.costTrialCount > 0
-      ? summary.costUsd / summary.costTrialCount
+    summary.cost_trial_count > 0
+      ? summary.cost_usd / summary.cost_trial_count
       : null;
-  const avgDurationSec = useMemo(() => {
-    let sum = 0;
-    let count = 0;
-    for (const trial of trials) {
-      const duration = trialDurationSec(trial);
-      if (duration != null) {
-        sum += duration;
-        count += 1;
-      }
-    }
-    return count > 0 ? sum / count : null;
-  }, [trials]);
-  const sortedTrials = useMemo(
-    () =>
-      [...trials].sort((a, b) => {
-        const aTime = a.finished_at || a.started_at || a.created_at;
-        const bTime = b.finished_at || b.started_at || b.created_at;
-        return aTime < bTime ? 1 : aTime > bTime ? -1 : 0;
-      }),
-    [trials]
-  );
+  const avgDurationSec =
+    summary.duration_trial_count > 0
+      ? summary.duration_sum_seconds / summary.duration_trial_count
+      : null;
+  const sortedTrials = [...trials].sort((a, b) => {
+    const aTime = a.finished_at || a.started_at || a.created_at;
+    const bTime = b.finished_at || b.started_at || b.created_at;
+    return aTime < bTime ? 1 : aTime > bTime ? -1 : 0;
+  });
 
   return (
     <div className="rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)]">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[color:var(--paper-line-2)] px-4 py-3">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <span className="font-mono text-[14px] font-semibold text-[color:var(--paper-ink)]">
-            {agent}
+            {summary.agent}
           </span>
-          {model ? (
+          {summary.model ? (
             <Badge variant="outline" className="font-mono text-[11px]">
-              {model}
+              {summary.model}
             </Badge>
           ) : null}
-          {agentLabel !== agent && (
+          {agentLabel !== summary.agent ? (
             <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
               {agentLabel}
             </span>
-          )}
+          ) : null}
         </div>
         <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 font-mono text-[11px] text-[color:var(--paper-ink-2)]">
           <span>
             <span className="text-[color:var(--paper-ink-3)]">trials</span>{" "}
             <span className="text-[color:var(--paper-ink)]">
-              {summary.trialCount}
+              {summary.trial_count}
             </span>
           </span>
           <span>
             <span className="text-[color:var(--paper-ink-3)]">avg score</span>{" "}
             <span className="text-[color:var(--paper-ink)]">
               {scorePct != null
-                ? `${scorePct.toFixed(0)}% (${summary.passCount}/${summary.rewardTotal})`
+                ? `${scorePct.toFixed(0)}% (${summary.pass_count}/${summary.reward_total})`
                 : "—"}
             </span>
           </span>
           <span>
             <span className="text-[color:var(--paper-ink-3)]">total cost</span>{" "}
             <CostBadge
-              cost={summary.costUsd}
-              trialCount={summary.costTrialCount}
-              hasEstimated={summary.costHasEstimated}
-              hasNative={summary.costHasNative}
+              cost={summary.cost_usd}
+              trialCount={summary.cost_trial_count}
+              hasEstimated={summary.cost_has_estimated}
+              hasNative={summary.cost_has_native}
               size="sm"
             />
           </span>
@@ -621,7 +605,7 @@ function AgentCard({
                 : "—"}
             </span>
           </span>
-          <span title="Mean wall-clock duration (started_at → finished_at)">
+          <span title="Exact mean wall-clock duration (started_at → finished_at)">
             <span className="text-[color:var(--paper-ink-3)]">
               avg duration
             </span>{" "}
@@ -629,11 +613,11 @@ function AgentCard({
               {avgDurationSec != null ? formatDurationSec(avgDurationSec) : "—"}
             </span>
           </span>
-          {summary.lastRunAt ? (
-            <span title={new Date(summary.lastRunAt).toLocaleString()}>
+          {summary.last_run_at ? (
+            <span title={new Date(summary.last_run_at).toLocaleString()}>
               <span className="text-[color:var(--paper-ink-3)]">last run</span>{" "}
               <span className="text-[color:var(--paper-ink)]">
-                {formatRelativeTime(summary.lastRunAt)}
+                {formatRelativeTime(summary.last_run_at)}
               </span>
             </span>
           ) : null}
@@ -645,10 +629,16 @@ function AgentCard({
             <TrialChip
               key={trial.id}
               trial={trial}
-              onClick={() => onTrialSelect(trial, sortedTrials)}
+              onClick={() => onTrialSelect(trial)}
             />
           ))}
         </div>
+        {summary.trial_count > sortedTrials.length ? (
+          <p className="mt-2 font-mono text-[10px] text-[color:var(--paper-ink-3)]">
+            Showing {sortedTrials.length} most recent of {summary.trial_count}{" "}
+            trials
+          </p>
+        ) : null}
       </div>
     </div>
   );
@@ -666,6 +656,7 @@ export function TaskDetailClient({
   initialVersionId,
 }: TaskDetailClientProps) {
   const {
+    agentCards,
     defaultVersionError,
     defaultVersionId,
     detailKey,
@@ -676,7 +667,10 @@ export function TaskDetailClient({
     isBrowseSnapshot,
     isLoading,
     isSettingDefaultVersion,
+    modelScopedAgents,
     open,
+    realAgentCount,
+    realTrialCount,
     recoveryError,
     revalidateReaderResources,
     selectedVersion,
@@ -718,50 +712,20 @@ export function TaskDetailClient({
       (trial) => trial.task_version_id === selectedVersionId
     );
   }, [canonicalDrawerDetail?.task.trials, selectedVersionId, trialsForVersion]);
-  const tasksForGrouping = useMemo<Task[]>(
-    () =>
-      task
-        ? [
-            {
-              ...task,
-              trials: drawerTrialsForVersion,
-            },
-          ]
-        : [],
-    [drawerTrialsForVersion, task]
-  );
-  const { agentSummaries, modelScopedAgents } = useMemo(
-    () => buildExperimentAgentSummaries(tasksForGrouping),
-    [tasksForGrouping]
-  );
-  const realAgentCount = useMemo(
-    () =>
-      agentSummaries.filter((summary) => summary.key !== PROBE_AGENT_KEY)
-        .length,
-    [agentSummaries]
-  );
-  const realTrialCount = useMemo(
-    () => drawerTrialsForVersion.filter((trial) => !trial.is_probe).length,
-    [drawerTrialsForVersion]
-  );
-  const trialsByAgentKey = useMemo(() => {
-    const byKey = new Map<string, Trial[]>();
-    for (const trial of drawerTrialsForVersion) {
-      const key = getExperimentAgentKey(trial, modelScopedAgents);
-      const trials = byKey.get(key) ?? [];
-      trials.push(trial);
-      byKey.set(key, trials);
-    }
-    return byKey;
-  }, [drawerTrialsForVersion, modelScopedAgents]);
   const drawerTrialGroups = useMemo(
     () =>
-      agentSummaries.map((summary) => ({
-        agent: summary.key,
-        model: summary.model,
-        trials: trialsByAgentKey.get(summary.key) ?? [],
+      agentCards.map((card) => ({
+        agent: card.key,
+        model: card.summary.model,
+        trials: drawerTrialsForVersion.filter(
+          (trial) =>
+            getExperimentAgentKey(
+              normalizedAgentModel(trial),
+              modelScopedAgents
+            ) === card.key
+        ),
       })),
-    [agentSummaries, trialsByAgentKey]
+    [agentCards, drawerTrialsForVersion, modelScopedAgents]
   );
   const drawerOrderedTrials = useMemo(
     () => drawerTrialGroups.flatMap((group) => group.trials),
@@ -1302,20 +1266,19 @@ export function TaskDetailClient({
               {realTrialCount === 1 ? "" : "s"}
             </span>
           </div>
-          {agentSummaries.length === 0 ? (
+          {agentCards.length === 0 ? (
             <div className="rounded-[10px] border border-dashed border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-4 py-10 text-center text-[12px] text-[color:var(--paper-ink-3)]">
-              {isDrawerDetailLoading
-                ? "Loading trial summaries..."
+              {isBrowseSnapshot
+                ? "Loading exact agent totals..."
                 : "No trials for this version yet."}
             </div>
           ) : (
-            agentSummaries.map((summary) => (
+            agentCards.map((card) => (
               <AgentCard
-                key={summary.key}
-                agentLabel={summary.label}
-                agent={summary.agent}
-                model={summary.model}
-                trials={trialsByAgentKey.get(summary.key) ?? []}
+                key={card.key}
+                agentLabel={card.label}
+                summary={card.summary}
+                trials={card.trials}
                 onTrialSelect={handleSelectTrial}
               />
             ))
