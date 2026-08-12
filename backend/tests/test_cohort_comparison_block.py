@@ -5,6 +5,7 @@ import pytest
 from oddish.blocks.block import BlockParseError
 
 from api.services.blocks.analyzer.cohort.cohort_comparison_block import (
+    SCHEMA_VERSION,
     CohortComparisonBlock,
     CohortInput,
 )
@@ -42,6 +43,7 @@ def _raw(evidence, schema_version=99):
             "schema_version": schema_version,
             "cohort_success": ["t1"],
             "cohort_failure": ["t2"],
+            "summary": "Agents took a test baseline before editing.",
             "categories": [
                 {
                     "category": "testing_verification",
@@ -77,7 +79,10 @@ def test_prompt_contains_both_cohorts_and_definitions():
 def test_to_output_parses_and_stamps_schema_version():
     out = _block().to_output(_raw([GOOD_EVIDENCE]))
     # The block owns schema_version; a model-supplied value is overwritten.
-    assert out["schema_version"] == 1
+    # Asserted against the constant: pinning the literal made a deliberate
+    # version bump look like a regression.
+    assert out["schema_version"] == SCHEMA_VERSION
+    assert SCHEMA_VERSION != 99
     assert out["categories"][0]["category"] == "testing_verification"
 
 

@@ -9,7 +9,10 @@ from oddish.blocks.block import Block
 from api.services.blocks.analyzer.cohort import cohort_prompts as cp
 from api.services.blocks.analyzer.cohort.cohort_taxonomy import BehaviorCategory
 
-SCHEMA_VERSION = 1
+# 2: added `summary`. Every stored comparison predates the field, and the
+# freshness check keys on this, so the bump is what makes them regenerate
+# rather than serve a headline-less payload forever.
+SCHEMA_VERSION = 2
 
 # A trial whose summary covers less than this share of its own step span is
 # reported to the reader rather than averaged over silently.
@@ -99,6 +102,11 @@ class CohortComparisonOutput(BaseModel):
     schema_version: int
     cohort_success: list[str]
     cohort_failure: list[str]
+    # One or two sentences naming the capability that separates the cohorts,
+    # written after the categories below and constrained by them: the prompt
+    # forbids introducing anything the cited categories do not support, so the
+    # headline stays as evidence-bound as the rows under it.
+    summary: NonEmptyText
     categories: list[CategoryComparison]
 
 

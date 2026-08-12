@@ -774,6 +774,10 @@ export interface CohortComparison {
   task_version_id?: string;
   cohort_success: string[];
   cohort_failure: string[];
+  /** Model-written headline: one or two sentences naming the capability that
+   *  separates the cohorts. Optional because comparisons stored before
+   *  schema_version 2 have no such field. */
+  summary?: string;
   categories: CategoryComparison[];
   dropped?: { evidence: number; observations: number; categories: number };
   /** Trials whose summary covers under half their run; evidence from these is thin. */

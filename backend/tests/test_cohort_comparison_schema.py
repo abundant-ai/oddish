@@ -78,6 +78,7 @@ def test_full_output_parses():
         schema_version=1,
         cohort_success=["t1"],
         cohort_failure=["t2"],
+        summary="Agents took a test baseline before editing.",
         categories=[
             CategoryComparison(
                 category=BehaviorCategory.TESTING_VERIFICATION,

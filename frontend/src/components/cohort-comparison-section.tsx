@@ -21,7 +21,7 @@ const CATEGORY_LABELS: Record<string, string> = {
  *  instead of three unrelated widgets. The category and cohort headings below
  *  reuse the same family and separate themselves by colour, not by size. */
 const SECTION_HEADING =
-  "text-muted-foreground font-mono text-[11px] font-semibold tracking-wider uppercase";
+  "text-foreground font-mono text-[13px] font-semibold tracking-wider uppercase";
 const CATEGORY_HEADING =
   "text-foreground font-mono text-[11px] font-semibold tracking-wider uppercase";
 const COHORT_HEADING =
@@ -205,19 +205,18 @@ export function CohortComparisonSection({
           failed trials
         </span>
       </div>
-      {data.thin_coverage?.length ? (
-        // Says what the limit actually is. "Summaries covering under half
-        // their run" named an artefact the reader has no reason to know
-        // exists; what matters is that the comparison cannot see the whole
-        // run for these trials, so an absent behaviour is not evidence of
-        // absence.
-        <p className="text-xs text-muted-foreground">
-          Comparisons are drawn from each run&rsquo;s stored trajectory
-          summary. For {data.thin_coverage.length} of these trials the summary
-          reaches under half the steps, so anything the agent did outside that
-          half is invisible here.
-        </p>
+      {data.summary ? (
+        <p className="text-sm text-foreground">{data.summary}</p>
       ) : null}
+      {/* No thin-coverage warning. `thin_coverage` divides covered steps by
+          the trial's FULL step count, but components are built from
+          drop_inert_steps(trajectory) -- so an agent that pads its run with
+          empty steps can never score above its non-padded fraction. Measured
+          on scarf-cargotracker v1: all six flagged trials were gemini (0.10
+          to 0.196, consistent with its 51-91% empty-step padding) while every
+          Anthropic trial scored exactly 1.00. It flagged the agent, not the
+          evidence. Restoring a warning here needs the summariser to persist
+          its post-filter step count as the denominator. */}
       {data.categories.map((cat, i) => (
         <div
           key={i}

@@ -11,6 +11,16 @@ exactly. Each component is shown with its step range as `[first-last]`; write
 not cite a component that is not listed above, and do not invent step ids. A
 behaviour you cannot cite is one you must omit.
 
+Write `summary` last, after the categories are settled: one or two sentences
+naming the capability that separates the cohorts. It must follow from the
+categories you kept -- do not raise a difference there that you did not
+record below, and do not restate the counts, which the reader can already
+see. Name the behaviour and its consequence, e.g. "Successful runs took a
+test baseline before editing and caught regressions early; failing runs ran
+the verifier only at the end, after the cause was buried." If the categories
+show only unrelated differences, say that plainly instead of inventing a
+theme.
+
 Only include a category when the cohorts actually differ on it. Omit categories
 where you see no difference; an empty comparison is a better answer than a
 manufactured one.
@@ -22,11 +32,12 @@ plain English words naming ONE pattern -- `subagent delegation`, not
 underscores, no `and`: if you are joining two patterns with `and`, pick the one
 the evidence supports better and drop the other.
 
-Each `behavior_description` is ONE sentence, at most about twenty words, and
-starts with the agent, not the cohort. The column the description sits in
-already says which cohort it belongs to, so "Successful runs read the codebase
-first" wastes its opening on something the reader can see. Write "Reads the
-codebase once, then implements without re-planning." Say what was done, not
-whether it was good.
+Each `behavior_description` is ONE sentence, at most about twenty words, whose
+subject is `Agents`. The column the description sits in already says which
+cohort it belongs to, so "Successful runs read the codebase first" spends its
+opening on something the reader can see. Write "Agents read the codebase once,
+then implement without re-planning." Never open with "Successful runs",
+"Failing runs", "The successful cohort" or any other naming of the side. Say
+what was done, not whether it was good.
 
 Write all prose in short, plain sentences: one fact per sentence, active voice.
