@@ -86,6 +86,13 @@ ZOMBIE_IDLE_MINUTES = 10
 # meaningfully delaying reclamation of genuinely leaked leases.
 ORPHANED_SLOT_GRACE_MINUTES = 2
 
+# A provider launch may finish just after its worker is cancelled, so a
+# sandbox_run with no external_id cannot be declared absent from the ledger
+# alone. After this grace, a successful provider inventory snapshot is the
+# authority: if neither the run id, launch token, nor worker-attempt identity is
+# present and the owner is no longer RUNNING, the ledger row is safe to close.
+UNPROVISIONED_SANDBOX_GRACE_MINUTES = 30
+
 # Backstop for tasks wedged in ANALYZING because a live trial never produced an
 # analysis verdict. The stage-advance passes treat a live trial whose
 # ``analysis_status`` is NULL as "analysis still pending", so a task with a
@@ -576,6 +583,7 @@ async def cleanup_orphaned_queue_state(
         )
     ec2_orphan_keep_verdicts = 0
     ec2_orphan_terminate_candidates = 0
+    unprovisioned_sandbox_runs_finalized = 0
 
     async with get_session() as session:
         (
@@ -596,6 +604,15 @@ async def cleanup_orphaned_queue_state(
             )
             worker_targets.update(ec2_targets)
             ec2_orphan_terminate_candidates = len(ec2_targets)
+
+        if ec2_inventory is not None:
+            unprovisioned_sandbox_runs_finalized = (
+                await _finalize_unprovisioned_sandbox_runs(
+                    session,
+                    ec2_inventory,
+                    grace_minutes=UNPROVISIONED_SANDBOX_GRACE_MINUTES,
+                )
+            )
 
         tasks_progressed_to_analysis = await _advance_running_tasks_to_analysis(
             session, reaped_trial_ids
@@ -624,6 +641,19 @@ async def cleanup_orphaned_queue_state(
 
         tag_projections_reconciled = await _maybe_reconcile_tag_projections(session)
         tag_owners_reassigned = await sweep_orphaned_tag_owners(session)
+
+    # Re-run after the ledger transaction commits only when it closed rows. They
+    # no longer protect their capacity leases, so the same reconciliation cycle
+    # restores dispatch capacity instead of waiting for another scheduled pass.
+    if unprovisioned_sandbox_runs_finalized:
+        try:
+            sandbox_capacity_leases_cleared += await cleanup_sandbox_capacity_leases()
+        except Exception as exc:
+            sandbox_capacity_cleanup_errors = 1
+            console.print(
+                "metric=sandbox_capacity_cleanup outcome=error phase=post_inventory "
+                f"error_type={type(exc).__name__} error={exc}"
+            )
 
     # These run AFTER the outer commit so a rolled-back sweep never tears down
     # remote handles / claim metadata the DB still points at. Best-effort; the
@@ -661,11 +691,105 @@ async def cleanup_orphaned_queue_state(
         "zombie_txn_reaped": zombie_txn_reaped,
         "sandbox_capacity_leases_cleared": sandbox_capacity_leases_cleared,
         "sandbox_capacity_cleanup_errors": sandbox_capacity_cleanup_errors,
+        "unprovisioned_sandbox_runs_finalized": (unprovisioned_sandbox_runs_finalized),
         "experiments_last_activity_reconciled": experiments_last_activity_reconciled,
         "tag_projections_reconciled": tag_projections_reconciled,
         "tag_owners_reassigned": tag_owners_reassigned,
         "modal_cost_spans_reconciled": modal_cost_spans_reconciled,
     }
+
+
+async def _finalize_unprovisioned_sandbox_runs(
+    session: Any,
+    inventory: Ec2InventorySnapshot,
+    *,
+    grace_minutes: int,
+) -> int:
+    """Close old pre-identity EC2 ledger rows absent from provider inventory."""
+    active_sandbox_run_ids = sorted(
+        {
+            instance.sandbox_run_id_tag
+            for instance in inventory.instances
+            if instance.sandbox_run_id_tag
+        }
+    )
+    active_launch_tokens = sorted(
+        {
+            instance.launch_token_tag
+            for instance in inventory.instances
+            if instance.launch_token_tag
+        }
+    )
+    active_worker_attempts = sorted(
+        {
+            f"{instance.worker_job_id_tag}:{instance.worker_attempt_tag}"
+            for instance in inventory.instances
+            if instance.worker_job_id_tag and instance.worker_attempt_tag
+        }
+    )
+    result = cast(
+        CursorResult,
+        await session.execute(
+            text(
+                """
+                UPDATE sandbox_runs AS run
+                SET    state = 'TERMINATED',
+                       termination_requested_at = COALESCE(
+                           run.termination_requested_at, NOW()
+                       ),
+                       terminated_at = NOW(),
+                       last_error = COALESCE(
+                           run.last_error,
+                           'No provider instance appeared before the inventory grace expired.'
+                       ),
+                       updated_at = NOW()
+                WHERE  run.provider = 'ec2'
+                  AND  run.deleted_at IS NULL
+                  AND  run.state IN ('PROVISIONING', 'TERMINATING')
+                  AND  run.external_id IS NULL
+                  AND  run.terminated_at IS NULL
+                  AND  COALESCE(
+                           run.termination_requested_at,
+                           run.updated_at,
+                           run.created_at
+                       ) <= NOW() - make_interval(mins => :grace_minutes)
+                  AND  NOT EXISTS (
+                      SELECT 1
+                      FROM worker_jobs AS wj
+                      WHERE wj.id = run.worker_job_id
+                        AND wj.status::text = 'RUNNING'
+                  )
+                  AND  NOT (
+                      run.id::text = ANY(
+                          CAST(:active_sandbox_run_ids AS text[])
+                      )
+                  )
+                  AND  NOT (
+                      run.launch_token::text = ANY(
+                          CAST(:active_launch_tokens AS text[])
+                      )
+                  )
+                  AND  NOT (
+                      (run.worker_job_id::text || ':' || run.worker_job_attempt::text)
+                      = ANY(CAST(:active_worker_attempts AS text[]))
+                  )
+                """
+            ),
+            {
+                "active_sandbox_run_ids": active_sandbox_run_ids,
+                "active_launch_tokens": active_launch_tokens,
+                "active_worker_attempts": active_worker_attempts,
+                "grace_minutes": grace_minutes,
+            },
+        ),
+    )
+    finalized = int(result.rowcount or 0)
+    if finalized:
+        console.print(
+            "metric=unprovisioned_sandbox_finalized "
+            f"provider=ec2 count={finalized} grace_minutes={grace_minutes}"
+        )
+    return finalized
 
 
 async def _decide_ec2_orphan_targets(

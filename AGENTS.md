@@ -577,9 +577,13 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   deployment, task/trial, worker-job, worker-attempt, sandbox-run, unguessable
   launch-token, and Harbor-session tags. A durable `sandbox_runs` row is created
   before launch; Harbor's `environment-provisioned` event binds the structured
-  handle before SSH/bootstrap. Normal teardown, cancellation, stale-heartbeat
-  cleanup, and reconciliation terminate only after the full ledger/tag tuple
-  agrees.
+  handle before SSH/bootstrap. The locked Harbor exposes that event natively;
+  ephemeral pins that predate it are bridged by wrapping
+  `EC2Environment._launch_instance` and emitting the same identity immediately
+  after launch. A pin whose EC2 environment does not expose the required launch
+  seam fails before `Job.run()` rather than launching untracked provider state.
+  Normal teardown, cancellation, stale-heartbeat cleanup, and reconciliation
+  terminate only after the full ledger/tag tuple agrees.
 - EC2 orphan reconciliation snapshots deployment-tagged instances before the
   shared cleanup transaction, evaluates worker liveness using the database clock,
   and terminates only after the transaction commits. It preserves live linked
@@ -591,6 +595,11 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   with heartbeat-renewed `sandbox_capacity_leases`, independent of model/variant
   queue slots. The dispatcher budgets against live EC2 leases before spawning,
   while each worker still acquires the lease atomically before claiming a job.
+  A successful inventory snapshot also closes `PROVISIONING` / `TERMINATING`
+  ledger rows that have no provider identity, no running owner, no matching
+  inventory tags, and are older than the 30-minute launch-race grace. Capacity
+  cleanup reruns after that transaction commits so those rows cannot reserve
+  slots forever; an inventory failure never authorizes this finalization.
   Inventory and termination failures stay visible in logs/metrics while the rest
   of queue cleanup continues.
 - Claude trials run through AWS Bedrock by default. `CLAUDE_CODE_USE_BEDROCK=1` is
