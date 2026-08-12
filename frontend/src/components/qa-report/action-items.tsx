@@ -15,6 +15,16 @@ function findingLocation(finding: PreTrialFinding): string | null {
   return `${finding.file}:${start}${end && end !== start ? `-${end}` : ""}`;
 }
 
+// One line of the item itself, for the collapsed group header. Titles are
+// short by construction; detail/recommendation are markdown bodies, so they
+// get flattened and capped rather than dumped into a <summary>.
+function findingPreview(finding: PreTrialFinding): string | null {
+  const raw = finding.title || finding.detail || finding.recommendation || "";
+  const flat = raw.replace(/\s+/g, " ").trim();
+  if (!flat) return null;
+  return flat.length > 120 ? `${flat.slice(0, 119).trimEnd()}…` : flat;
+}
+
 function ActionItemDetail({
   item,
   itemKey,
@@ -117,11 +127,18 @@ export function SeverityGroups({
   /** Extra content under an item — e.g. links to the trials that surfaced it. */
   renderItemFooter?: (item: PreTrialFinding, itemKey: string) => ReactNode;
 }) {
-  const groups = TIER_ORDER.map((tier) => ({
-    tier,
-    meta: TIER_META[tier],
-    items: items.filter((i) => (i.tier ?? "optional") === tier),
-  })).filter((g) => g.items.length > 0);
+  const groups = TIER_ORDER.map((tier) => {
+    const tierItems = items.filter((i) => (i.tier ?? "optional") === tier);
+    const previews = tierItems
+      .map(findingPreview)
+      .filter((p): p is string => Boolean(p));
+    return {
+      tier,
+      meta: TIER_META[tier],
+      items: tierItems,
+      previews,
+    };
+  }).filter((g) => g.items.length > 0);
 
   if (!groups.length) return null;
 
@@ -150,7 +167,23 @@ export function SeverityGroups({
             <span className="text-muted-foreground font-mono text-[10px]">
               {group.items.length} item{group.items.length === 1 ? "" : "s"}
             </span>
-            <span className="text-muted-foreground min-w-0 flex-1 text-[11px] leading-relaxed text-pretty">
+            {/* Collapsed, the line is worth more as the items themselves than
+                as the tier's effect, which the badge already implies. Open,
+                the items are right there, so the effect takes the line back. */}
+            {group.previews.length > 0 ? (
+              <span
+                className="text-muted-foreground min-w-0 flex-1 truncate text-[11px] leading-relaxed group-open:hidden"
+                title={group.previews.join("\n")}
+              >
+                {group.previews.join(" · ")}
+              </span>
+            ) : null}
+            <span
+              className={cn(
+                "text-muted-foreground min-w-0 flex-1 text-[11px] leading-relaxed text-pretty",
+                group.previews.length > 0 && "hidden group-open:block",
+              )}
+            >
               {tierEffects?.[group.tier] ?? group.meta.labelEffect}
             </span>
           </summary>
