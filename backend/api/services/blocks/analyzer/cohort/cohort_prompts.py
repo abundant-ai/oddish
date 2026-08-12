@@ -14,12 +14,73 @@ from api.services.blocks.analyzer.cohort.cohort_taxonomy import (
     BehaviorCategory,
 )
 
+# Vendor tokens that appear as a routing prefix on a stored model id.
+# Stripping is a whitelist, not a split on ".": `gpt-5.4` and
+# `claude-opus-4-8` carry dots of their own, and a generic split would render
+# them as "4" and "8".
+_VENDOR_PREFIXES = (
+    "anthropic",
+    "openai",
+    "google",
+    "meta",
+    "mistral",
+    "amazon",
+    "cohere",
+)
+
+
+# Cross-region inference profile prefixes on stored Bedrock ids. Not just
+# "global.": Opus 4.1 and Opus 4 have no global profile and are stored as
+# "us.anthropic...". Mirrors oddish.config._BEDROCK_REGION_PREFIXES.
+_REGION_PREFIXES = ("global.", "us.", "eu.", "apac.", "apn.")
+
+
+def short_model_name(raw: str) -> str:
+    """``global.anthropic.claude-opus-4-8`` -> ``claude-opus-4-8``.
+
+    Lives here rather than in the block because BOTH readers need it: the
+    prompt, which shows the model on each trial, and the chips built from
+    ``_model_counts``. Two spellings of one id read as two models.
+    """
+    name = raw.split("/")[-1]
+    for prefix in _REGION_PREFIXES:
+        if name.startswith(prefix):
+            name = name[len(prefix) :]
+            break
+    head, _, rest = name.partition(".")
+    if rest and head in _VENDOR_PREFIXES:
+        name = rest
+    return name
+
+
 PREAMBLE = (
     "You are comparing two cohorts of recorded agent runs on the same task: "
     "runs that succeeded for good reasons, and runs that failed for good "
     "reasons. A developer wants to know what the successful runs did "
     "differently."
 )
+
+# A task whose runs all failed (or all succeeded) has one cohort, and it is
+# often the most interesting case there is. Say so plainly rather than leaving
+# the model to infer it from an empty list -- an empty <cohort> block with a
+# "compare the two" preamble above it invites inventing the missing side.
+SINGLE_PREAMBLE = (
+    "You are describing ONE cohort of recorded agent runs on the same task: "
+    "{label} runs. There is no second cohort -- every classified run on this "
+    "task version landed on this side. A developer wants to know what these "
+    "runs did. Do NOT speculate about how a run on the other side would have "
+    "behaved, and do not describe the absent side at all: put every "
+    "observation in `{field}` and leave the other list empty."
+)
+
+
+def preamble(*, successful: list[dict], failing: list[dict]) -> str:
+    """Which framing the run gets, decided by which cohorts actually exist."""
+    if successful and failing:
+        return PREAMBLE
+    if successful:
+        return SINGLE_PREAMBLE.format(label="successful", field="successful")
+    return SINGLE_PREAMBLE.format(label="failing", field="failing")
 
 
 def taxonomy_section() -> str:
@@ -43,7 +104,12 @@ def cohort_section(label: str, trials: list[dict]) -> str:
     """One cohort's trials, as component streams the model can cite."""
     lines = [f"<cohort name=\"{label}\">"]
     for t in trials:
-        lines.append(f'  <trial id="{t["trial_id"]}">')
+        # Same shortener the chips use. Two spellings of one model id --
+        # `global.anthropic.claude-opus-4-8` in the prose the model writes,
+        # `claude-opus-4-8` on the chip beside it -- read as two models.
+        model = short_model_name(t.get("model") or "") if t.get("model") else ""
+        attrs = f' model="{model}"' if model else ""
+        lines.append(f'  <trial id="{t["trial_id"]}"{attrs}>')
         for c in t.get("components") or []:
             ids = c.get("step_ids") or []
             if not ids:
