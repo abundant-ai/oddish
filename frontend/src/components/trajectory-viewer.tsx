@@ -718,8 +718,21 @@ export function TrajectoryViewer({
   const stepRefs = useRef<(HTMLDivElement | null)[]>([]);
   const stepReset = useRef<string | null>(null);
   // The step a #step-<id> address asked for, held here once the address has
-  // been relieved of it (see the capture effect below).
-  const [pendingStep, setPendingStep] = useState<number | null>(null);
+  // been relieved of it (see the capture effect below), TAGGED WITH THE TRIAL
+  // it arrived for. The tag is the correctness property, not the reset below:
+  // clearing on a trial switch is a state update, so the honour effect still
+  // runs this flush with the old step, and re-runs because `trajectory` just
+  // changed -- handing the step being left to the trial arriving. With the
+  // tag, honouring is conditional on the trial matching, so no ordering
+  // between the two effects can apply a step to the wrong run.
+  const [pendingStep, setPendingStep] = useState<{
+    trial: string;
+    step: number;
+  } | null>(null);
+  // Read by the capture effect, which mounts once and would otherwise close
+  // over the mount-time trial for every later hashchange.
+  const trialIdRef = useRef(trialId);
+  trialIdRef.current = trialId;
 
   // Reset expanded steps and search when switching to a different trial
   useEffect(() => {
@@ -763,7 +776,7 @@ export function TrajectoryViewer({
     const take = () => {
       const m = /^#step-(\d+)$/.exec(window.location.hash);
       if (!m) return;
-      setPendingStep(Number(m[1]));
+      setPendingStep({ trial: trialIdRef.current, step: Number(m[1]) });
       const spent = `${window.location.pathname}${window.location.search}`;
       window.history.replaceState(window.history.state, "", spent);
     };
@@ -878,19 +891,23 @@ export function TrajectoryViewer({
   useEffect(() => {
     const steps = trajectory?.steps;
     if (pendingStep === null || !steps?.length) return;
+    // Not this trial's step: leave it alone. It belongs to the run the reader
+    // left, and the reset effect clears it on the next render.
+    if (pendingStep.trial !== trialId) return;
+    const step = pendingStep.step;
     setPendingStep(null);
-    const idx = stepIdToIndex(pendingStep);
+    const idx = stepIdToIndex(step);
     if (idx >= 0) {
       setDeepLinkError(null);
       handleStepClick(idx);
-    } else if (steps.some((s) => Number(s.step_id) === pendingStep)) {
+    } else if (steps.some((s) => Number(s.step_id) === step)) {
       // Present but empty: the list never draws it, so expanding the item
       // would scroll to nothing.
-      setDeepLinkError(`Step ${pendingStep} is empty and is not shown.`);
+      setDeepLinkError(`Step ${step} is empty and is not shown.`);
     } else {
-      setDeepLinkError(`Step ${pendingStep} is not in this trajectory.`);
+      setDeepLinkError(`Step ${step} is not in this trajectory.`);
     }
-  }, [pendingStep, trajectory, handleStepClick, stepIdToIndex]);
+  }, [pendingStep, trialId, trajectory, handleStepClick, stepIdToIndex]);
 
   if (isLoading) {
     return (

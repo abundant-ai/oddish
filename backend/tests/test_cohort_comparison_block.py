@@ -86,6 +86,58 @@ def test_to_output_parses_and_stamps_schema_version():
     assert out["categories"][0]["category"] == "testing_verification"
 
 
+def test_short_model_name_keeps_dots_that_belong_to_the_name():
+    """A generic split on "." would turn gpt-5.4 into "4"."""
+    from api.services.blocks.analyzer.cohort.cohort_prompts import (
+        short_model_name,
+    )
+
+    assert short_model_name("global.anthropic.claude-opus-4-8") == "claude-opus-4-8"
+    assert short_model_name("anthropic/claude-fable-5") == "claude-fable-5"
+    assert short_model_name("gpt-5.4") == "gpt-5.4"
+    assert short_model_name("gemini-3.5-flash") == "gemini-3.5-flash"
+
+
+def test_short_model_name_strips_every_region_prefix():
+    """Opus 4.1 / Opus 4 have no "global." inference profile: they are stored
+    as "us.anthropic...", and a global-only strip left them long."""
+    from api.services.blocks.analyzer.cohort.cohort_prompts import (
+        short_model_name,
+    )
+
+    assert (
+        short_model_name("us.anthropic.claude-opus-4-1-20250805-v1:0")
+        == "claude-opus-4-1-20250805-v1:0"
+    )
+    assert short_model_name("eu.anthropic.claude-sonnet-4-5") == "claude-sonnet-4-5"
+    assert short_model_name("apac.anthropic.claude-haiku-4-5") == "claude-haiku-4-5"
+    assert short_model_name("bedrock/apn.amazon.nova-pro-v1:0") == "nova-pro-v1:0"
+
+
+def test_model_counts_are_ordered_and_stripped():
+    out = _block(
+        successful=[
+            {**TRIAL, "trial_id": "t1", "model": "global.anthropic.claude-opus-4-8"},
+            {**TRIAL, "trial_id": "t3", "model": "global.anthropic.claude-opus-4-8"},
+            {**TRIAL, "trial_id": "t4", "model": "gemini-3.5-flash"},
+        ],
+    ).to_output(_raw([GOOD_EVIDENCE]))
+    assert out["models"]["successful"] == [
+        {"model": "claude-opus-4-8", "trials": 2},
+        {"model": "gemini-3.5-flash", "trials": 1},
+    ]
+
+
+def test_mode_is_single_when_one_cohort_is_empty():
+    """All-failed and all-succeeded tasks are the cases a reader most wants
+    explained; the payload has to say which so the UI drops a column rather
+    than drawing an empty one."""
+    out = _block(failing=[]).to_output(_raw([GOOD_EVIDENCE]))
+    assert out["mode"] == "single"
+    assert out["models"]["failing"] == []
+    assert _block().to_output(_raw([GOOD_EVIDENCE]))["mode"] == "comparison"
+
+
 def test_summary_survives_a_clean_comparison():
     out = _block().to_output(_raw([GOOD_EVIDENCE]))
     assert out["dropped"]["categories"] == 0

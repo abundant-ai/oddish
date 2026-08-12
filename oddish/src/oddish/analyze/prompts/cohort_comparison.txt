@@ -1,7 +1,20 @@
-Compare the two cohorts below. For each category, state what the successful runs
+Compare the cohorts below. For each category, state what the successful runs
 did and what the failing runs did, as short behaviour descriptions.
 
+When only ONE cohort is present -- every classified run on this task version
+landed on the same side -- describe that cohort instead of comparing. Put every
+observation in its own list, leave the other empty, and never characterise the
+side that does not exist. "Failing runs did X, successful runs presumably did
+Y" is exactly the invention this forbids: you have no successful runs to read.
+
 {{taxonomy}}
+
+When a side holds runs from several models, do not rest a behaviour on a
+single trial: cite two or three, from DIFFERENT models where the behaviour
+holds across them. One citation under a column listing fourteen models reads
+as if all fourteen behaved that way. If the behaviour really is one model's,
+say so in the description and cite only that model's runs -- that is a finding,
+not a shortcut.
 
 Every behaviour description must carry at least one piece of evidence. Evidence
 is a component that appears verbatim in one of the trials above: its trial id,
@@ -12,7 +25,11 @@ not cite a component that is not listed above, and do not invent step ids. A
 behaviour you cannot cite is one you must omit.
 
 Write `summary` last, after the categories are settled: one or two sentences
-naming the capability that separates the cohorts. It must follow from the
+naming the capability that separates the cohorts -- or, with a single cohort,
+the capability these runs show. Where one model's runs behave differently from
+another's, say which model; the trials carry a `model` attribute for exactly
+this. Do not count runs per model in prose -- the reader is shown those counts
+already. It must follow from the
 categories you kept -- do not raise a difference there that you did not
 record below, and do not restate the counts, which the reader can already
 see. Name the behaviour and its consequence, e.g. "Successful runs took a
@@ -21,9 +38,16 @@ the verifier only at the end, after the cause was buried." If the categories
 show only unrelated differences, say that plainly instead of inventing a
 theme.
 
-Only include a category when the cohorts actually differ on it. Omit categories
-where you see no difference; an empty comparison is a better answer than a
-manufactured one.
+With TWO cohorts, only include a category when they actually differ on it.
+Omit categories where you see no difference; an empty comparison is a better
+answer than a manufactured one.
+
+With ONE cohort there is nothing to differ against, so that rule does not
+apply and would silence the whole analysis if you followed it. Include a
+category whenever these runs did something worth reporting in it, and omit
+only the categories the evidence says nothing about. Returning no categories
+at all, for a cohort with runs to read, is a failure -- it is the exact
+outcome this single-cohort mode exists to prevent.
 
 Set `label` only on `behavior_discovery`, where it names the pattern you found.
 Every other category must have `label` set to null. A label is two to four
