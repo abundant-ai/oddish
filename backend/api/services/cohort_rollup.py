@@ -4,14 +4,28 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from oddish.blocks.analyzer.analyzer_block import AnalyzerType
 from oddish.core.experiment_membership import trial_in_experiment
-from oddish.db.models import TaskModel, TaskVersionModel, TrialModel
+from oddish.db.models import (
+    AnalyzerBlockModel,
+    JobStatus,
+    TaskModel,
+    TaskVersionModel,
+    TrialModel,
+)
 
 from api.services.blocks.analyzer.cohort.cohort_comparison_block import SCHEMA_VERSION
-from api.services.cohort_comparison import _load_fresh_comparison, cohort_hash, resolve_cohorts
+from api.services.cohort_comparison import (
+    FAILURE_CLASS,
+    MIN_COHORT,
+    SUCCESS_CLASS,
+    _load_fresh_comparison,
+    cohort_hash,
+    resolve_cohorts,
+)
 from api.services.cohort_metrics import CHART_CATEGORIES, THIN_N, cited_trials, delta
 
 ROLLUP_SCHEMA_VERSION = 1
@@ -90,10 +104,27 @@ async def build_cohort_rollup(
         lambda: {"success": set(), "failure": set()}
     )
     pooled_cohort = {"success": set(), "failure": set()}
-    missing: list[dict] = []
+    missing_versions: list[RollupVersion] = []
     compared = 0
 
+    # Which versions could possibly have a comparison, in one query, before the
+    # loop. ``resolve_cohorts`` streams the ``trajectory_summary`` JSONB of every
+    # classified trial (summaries here have run to hundreds of thousands of
+    # characters), and this section is mounted on every experiment detail view
+    # against a pool of two connections plus one overflow. Calling it per version
+    # only to discard the result is the whole cost of the endpoint on an
+    # experiment where most versions were never compared.
+    stored = await _versions_with_stored_comparison(
+        session, sorted({rv.task_id for rv in versions})
+    )
+
     for rv in versions:
+        # Definitively uncompared: no block names this version at all, so there
+        # is nothing for the freshness check to read.
+        if rv.task_version_id not in stored:
+            missing_versions.append(rv)
+            continue
+
         successful, failing = await resolve_cohorts(session, rv.task_version_id)
         comparison = await _load_fresh_comparison(
             session,
@@ -105,14 +136,7 @@ async def build_cohort_rollup(
             schema_version=SCHEMA_VERSION,
         )
         if comparison is None:
-            missing.append(
-                {
-                    "task_id": rv.task_id,
-                    "task_name": rv.task_name,
-                    "version": rv.version,
-                    "reason": "not_compared",
-                }
-            )
+            missing_versions.append(rv)
             continue
         compared += 1
 
@@ -136,6 +160,8 @@ async def build_cohort_rollup(
                     model = model_of.get(trial_id)
                     if model:
                         cited[(model, name)][side].add(trial_id)
+
+    missing = await _missing_rows(session, missing_versions)
 
     # Distinct trials cited anywhere for a model, across every category and both
     # sides. Summing the per-category ``n`` instead counts one trial once per
@@ -185,6 +211,86 @@ async def build_cohort_rollup(
         "models": models,
         "categories": categories,
     }
+
+
+async def _versions_with_stored_comparison(
+    session: AsyncSession, task_ids: list[str]
+) -> set[str]:
+    """Task versions any SUCCESS comparison block names, in one query.
+
+    A pre-filter, not a freshness check: a version in this set still goes
+    through ``_load_fresh_comparison``, whose cohort-hash comparison is what
+    keeps a stale comparison from being served. Its only job is to spare the
+    versions that were definitively never compared an expensive
+    ``resolve_cohorts`` call each.
+    """
+    if not task_ids:
+        return set()
+    rows = (
+        await session.execute(
+            select(AnalyzerBlockModel.block_metadata["task_version_id"].astext)
+            .where(
+                AnalyzerBlockModel.task_id.in_(task_ids),
+                AnalyzerBlockModel.type == AnalyzerType.COHORT_COMPARISON.value,
+                AnalyzerBlockModel.status == JobStatus.SUCCESS,
+            )
+            .distinct()
+        )
+    ).all()
+    return {r[0] for r in rows if r[0]}
+
+
+async def _missing_rows(
+    session: AsyncSession, versions: list[RollupVersion]
+) -> list[dict]:
+    """Uncompared versions, each labelled with why it has no comparison.
+
+    ``get_or_generate_comparison`` refuses any version whose larger cohort side
+    is under ``MIN_COHORT``, so listing those as merely "not compared" invites
+    the reader to go and generate something the gate will decline. The counts
+    come from one grouped pass over ``trials.analysis`` -- no summary JSONB --
+    and are an upper bound on the real cohort, since ``resolve_cohorts`` also
+    drops classified trials that carry no trajectory summary. Erring that way
+    keeps the label conservative: a version is only called gated when it cannot
+    clear the bar even counting every classified trial.
+    """
+    if not versions:
+        return []
+    classification = TrialModel.analysis["classification"].astext
+    rows = (
+        await session.execute(
+            select(
+                TrialModel.task_version_id,
+                func.count().filter(classification == SUCCESS_CLASS),
+                func.count().filter(classification == FAILURE_CLASS),
+            )
+            .where(
+                TrialModel.task_version_id.in_(
+                    [v.task_version_id for v in versions]
+                ),
+                TrialModel.is_probe.is_(False),
+                TrialModel.superseded_by_trial_id.is_(None),
+                classification.in_([SUCCESS_CLASS, FAILURE_CLASS]),
+            )
+            .group_by(TrialModel.task_version_id)
+        )
+    ).all()
+    largest_side: dict[str, int] = defaultdict(int)
+    for version_id, successes, failures in rows:
+        largest_side[version_id] = max(successes, failures)
+    return [
+        {
+            "task_id": v.task_id,
+            "task_name": v.task_name,
+            "version": v.version,
+            "reason": (
+                "not_compared"
+                if largest_side[v.task_version_id] >= MIN_COHORT
+                else "below_cohort_gate"
+            ),
+        }
+        for v in versions
+    ]
 
 
 def _share(success: int, failure: int) -> float:

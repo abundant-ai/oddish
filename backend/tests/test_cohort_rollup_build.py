@@ -274,6 +274,75 @@ async def experiment_two_of_three_compared():
 
 
 # ---------------------------------------------------------------------------
+# Fixture: experiment_below_cohort_gate
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ExperimentBelowCohortGate:
+    experiment_id: str
+    org_id: str
+
+
+@pytest_asyncio.fixture
+async def experiment_below_cohort_gate():
+    """One uncompared task version with two classified trials.
+
+    ``MIN_COHORT`` is 3, so ``get_or_generate_comparison`` would decline this
+    version: it can never be compared as it stands, and offering it to the
+    reader as a link to go and generate one is an invitation to a refusal.
+    """
+    suffix = uuid.uuid4().hex[:8]
+    org_id = f"org_bg_{suffix}"
+    experiment_id = f"exp_bg_{suffix}"
+    task_id = f"task_bg_{suffix}"
+
+    async with get_session() as session:
+        session.add(
+            OrganizationModel(id=org_id, name=f"BG Org {suffix}", slug=f"bg-org-{suffix}")
+        )
+        session.add(ExperimentModel(id=experiment_id, name=f"bg-exp-{suffix}", org_id=org_id))
+        session.add(
+            TaskModel(
+                id=task_id,
+                name=f"bg-task-{suffix}",
+                user="test",
+                task_path="/tmp/fake",
+                org_id=org_id,
+            )
+        )
+        await session.flush()
+        version_id = f"{task_id}-v1"
+        session.add(
+            TaskVersionModel(id=version_id, task_id=task_id, version=1, task_path="/tmp/fake")
+        )
+        await session.flush()
+
+        trial_ids = [f"trial_bg_{suffix}_s", f"trial_bg_{suffix}_f"]
+        for tid, cls in zip(trial_ids, (SUCCESS_CLASS, FAILURE_CLASS)):
+            session.add(
+                _trial(
+                    trial_id=tid,
+                    task_id=task_id,
+                    task_version_id=version_id,
+                    experiment_id=experiment_id,
+                    org_id=org_id,
+                    classification=cls,
+                    model="claude-code",
+                )
+            )
+
+    yield ExperimentBelowCohortGate(experiment_id=experiment_id, org_id=org_id)
+
+    await _cleanup(
+        trial_ids=trial_ids,
+        task_ids=[task_id],
+        experiment_ids=[experiment_id],
+        org_ids=[org_id],
+    )
+
+
+# ---------------------------------------------------------------------------
 # Fixture: experiment_opus_and_grok
 # ---------------------------------------------------------------------------
 
@@ -531,6 +600,61 @@ async def test_missing_comparisons_are_counted_not_averaged_over(
     # are 1 success / 1 failure each; the uncompared third is 6 successes and
     # no failures, so leaking it in would read 8/10 = 0.8 here.
     assert body["models"][0]["baseline"] == pytest.approx(0.5)
+
+
+@pytest.mark.asyncio
+async def test_uncompared_versions_skip_the_cohort_resolution(
+    session, experiment_two_of_three_compared, monkeypatch
+):
+    """Only versions a stored comparison names pay for ``resolve_cohorts``.
+
+    ``resolve_cohorts`` selects the ``trajectory_summary`` JSONB of every
+    classified trial. Running it for a version that was never compared streams
+    those blobs to throw them away, once per version, on every page view.
+    """
+    import api.services.cohort_rollup as cr
+
+    seen: list[str] = []
+    real = cr.resolve_cohorts
+
+    async def counting(session_, task_version_id):
+        seen.append(task_version_id)
+        return await real(session_, task_version_id)
+
+    monkeypatch.setattr(cr, "resolve_cohorts", counting)
+
+    body = await build_cohort_rollup(
+        session,
+        experiment_id=experiment_two_of_three_compared.experiment_id,
+        org_id=experiment_two_of_three_compared.org_id,
+    )
+    assert body["coverage"]["task_versions_total"] == 3
+    assert len(seen) == 2
+
+
+@pytest.mark.asyncio
+async def test_missing_names_why_it_cannot_be_compared(
+    session, experiment_two_of_three_compared, experiment_below_cohort_gate
+):
+    compared_gate = await build_cohort_rollup(
+        session,
+        experiment_id=experiment_two_of_three_compared.experiment_id,
+        org_id=experiment_two_of_three_compared.org_id,
+    )
+    # Six classified successes: the gate would let this one be generated.
+    assert [m["reason"] for m in compared_gate["coverage"]["missing"]] == [
+        "not_compared"
+    ]
+
+    gated = await build_cohort_rollup(
+        session,
+        experiment_id=experiment_below_cohort_gate.experiment_id,
+        org_id=experiment_below_cohort_gate.org_id,
+    )
+    # One success and one failure, against MIN_COHORT of 3.
+    assert [m["reason"] for m in gated["coverage"]["missing"]] == [
+        "below_cohort_gate"
+    ]
 
 
 @pytest.mark.asyncio
