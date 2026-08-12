@@ -139,6 +139,7 @@ class _StageSession:
         self._task = task
         self._counts = [pending_count, qa_eligible]
         self._scalar_calls = 0
+        self.scalar_statements = []
         self.flushed = 0
 
     async def get(self, _model, _key):
@@ -148,6 +149,7 @@ class _StageSession:
         return _ForUpdateResult(self._task)
 
     async def scalar(self, _statement):
+        self.scalar_statements.append(_statement)
         index = self._scalar_calls
         self._scalar_calls += 1
         return self._counts[index] if index < len(self._counts) else 0
@@ -161,6 +163,7 @@ async def test_stage_enqueues_single_qa_job_when_trials_done(monkeypatch):
     trial = SimpleNamespace(task_id="task-1")
     task = SimpleNamespace(
         id="task-1",
+        current_version_id="task-1-v2",
         org_id="org-1",
         status=TaskStatus.RUNNING,
         run_analysis=True,
@@ -182,6 +185,10 @@ async def test_stage_enqueues_single_qa_job_when_trials_done(monkeypatch):
     assert verdict_calls == ["task-1"]
     assert task.status == TaskStatus.VERDICT_PENDING
     assert task.verdict_status == VerdictStatus.QUEUED
+    qa_eligible_sql = str(
+        session.scalar_statements[1].compile(compile_kwargs={"literal_binds": True})
+    )
+    assert "trials.task_version_id = 'task-1-v2'" in qa_eligible_sql
 
 
 @pytest.mark.asyncio
@@ -189,6 +196,7 @@ async def test_stage_completes_when_analysis_disabled(monkeypatch):
     trial = SimpleNamespace(task_id="task-2")
     task = SimpleNamespace(
         id="task-2",
+        current_version_id="task-2-v1",
         org_id="org-1",
         status=TaskStatus.RUNNING,
         run_analysis=False,
@@ -221,6 +229,7 @@ async def test_stage_completes_when_no_qa_eligible_trials(monkeypatch):
     trial = SimpleNamespace(task_id="task-3")
     task = SimpleNamespace(
         id="task-3",
+        current_version_id="task-3-v2",
         org_id="org-1",
         status=TaskStatus.RUNNING,
         run_analysis=True,
@@ -240,6 +249,10 @@ async def test_stage_completes_when_no_qa_eligible_trials(monkeypatch):
     assert task.status == TaskStatus.COMPLETED
     # Must NOT be left VERDICT_PENDING/QUEUED with no job to move it.
     assert task.verdict_status is None
+    qa_eligible_sql = str(
+        session.scalar_statements[1].compile(compile_kwargs={"literal_binds": True})
+    )
+    assert "trials.task_version_id = 'task-3-v2'" in qa_eligible_sql
 
 
 @pytest.mark.asyncio
@@ -255,6 +268,7 @@ async def test_stage_clears_stale_verdict_status_on_completion(monkeypatch):
     trial = SimpleNamespace(task_id="task-4")
     task = SimpleNamespace(
         id="task-4",
+        current_version_id="task-4-v2",
         org_id="org-1",
         status=TaskStatus.RUNNING,
         run_analysis=True,

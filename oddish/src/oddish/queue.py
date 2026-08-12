@@ -1532,6 +1532,11 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
             select(func.count(TrialModel.id)).where(
                 and_(
                     TrialModel.task_id == task_id,
+                    (
+                        TrialModel.task_version_id == task.current_version_id
+                        if task.current_version_id is not None
+                        else True
+                    ),
                     TrialModel.superseded_by_trial_id.is_(None),
                     TrialModel.imported_at.is_(None),
                     func.coalesce(TrialModel.harbor_stage, "")

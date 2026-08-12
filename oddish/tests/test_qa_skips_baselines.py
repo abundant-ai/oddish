@@ -22,8 +22,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.db import (  # noqa: E402
     TaskModel,
+    TaskStatus,
+    TaskVersionModel,
     TrialModel,
     TrialStatus,
+    VerdictStatus,
+    WorkerJobKind,
     WorkerJobModel,
     get_session,
 )
@@ -77,10 +81,14 @@ async def _finish_all_trials(task_id: str) -> None:
     """Mark every trial SUCCESS so it is otherwise QA-eligible."""
     async with get_session() as session:
         trials = (
-            await session.execute(
-                select(TrialModel).where(TrialModel.task_id == task_id)
+            (
+                await session.execute(
+                    select(TrialModel).where(TrialModel.task_id == task_id)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         for trial in trials:
             trial.status = TrialStatus.SUCCESS
 
@@ -123,7 +131,6 @@ async def test_baseline_only_task_enqueues_no_qa_job(cleanup_task_ids):
     it must complete rather than enqueue a QA job that could only no-op. These
     two filters drifting apart is the failure this guards.
     """
-    from oddish.db import TaskStatus, WorkerJobKind, WorkerJobModel
     from oddish.queue import maybe_start_qa_stage
 
     task_id = f"qa-skip-stage-{_RUN}"
@@ -131,9 +138,7 @@ async def test_baseline_only_task_enqueues_no_qa_job(cleanup_task_ids):
     async with get_session() as session:
         await create_task(
             session,
-            _submission(
-                "stage", [("nop", None), ("oracle", None)], run_analysis=True
-            ),
+            _submission("stage", [("nop", None), ("oracle", None)], run_analysis=True),
             task_id=task_id,
         )
     await _finish_all_trials(task_id)
@@ -149,14 +154,117 @@ async def test_baseline_only_task_enqueues_no_qa_job(cleanup_task_ids):
     async with get_session() as session:
         task = await session.get(TaskModel, task_id)
         qa_jobs = (
-            await session.execute(
-                select(WorkerJobModel.id).where(
-                    WorkerJobModel.kind == WorkerJobKind.QA,
-                    WorkerJobModel.subject_id == task_id,
+            (
+                await session.execute(
+                    select(WorkerJobModel.id).where(
+                        WorkerJobModel.kind == WorkerJobKind.QA,
+                        WorkerJobModel.subject_id == task_id,
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
     assert qa_jobs == [], "a baseline-only task enqueued a QA job with nothing to QA"
     assert task.status == TaskStatus.COMPLETED
     assert task.verdict_status is None
+
+
+@pytest.mark.asyncio
+async def test_qa_stage_ignores_historical_version_eligible_trials(cleanup_task_ids):
+    """A historical LLM trial cannot enqueue QA for an empty current version."""
+    from oddish.queue import maybe_start_qa_stage
+
+    task_id = f"qa-version-stage-old-{_RUN}"
+    cleanup_task_ids.append(task_id)
+    async with get_session() as session:
+        task = await create_task(
+            session,
+            _submission(
+                "version-stage-old",
+                [(_LLM_AGENT, _LLM_MODEL)],
+                run_analysis=True,
+            ),
+            task_id=task_id,
+        )
+        historical_trial_id = task.trials[0].id
+        current_version_id = f"{task_id}-v2"
+        session.add(
+            TaskVersionModel(
+                id=current_version_id,
+                task_id=task_id,
+                version=2,
+                task_path=f"s3://test-bucket/{task_id}/v2",
+            )
+        )
+        await session.flush()
+        task.current_version_id = current_version_id
+
+    await _finish_all_trials(task_id)
+
+    async with get_session() as session:
+        assert await maybe_start_qa_stage(session, historical_trial_id) is True
+
+    async with get_session() as session:
+        task = await session.get(TaskModel, task_id)
+        qa_jobs = (
+            (
+                await session.execute(
+                    select(WorkerJobModel.id).where(
+                        WorkerJobModel.kind == WorkerJobKind.QA,
+                        WorkerJobModel.subject_id == task_id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert qa_jobs == []
+    assert task.status == TaskStatus.COMPLETED
+    assert task.verdict_status is None
+
+
+@pytest.mark.asyncio
+async def test_qa_stage_enqueues_for_current_version_eligible_trial(cleanup_task_ids):
+    """A current-version LLM trial still enqueues the task QA job."""
+    from oddish.queue import maybe_start_qa_stage
+
+    task_id = f"qa-version-stage-current-{_RUN}"
+    cleanup_task_ids.append(task_id)
+    async with get_session() as session:
+        task = await create_task(
+            session,
+            _submission(
+                "version-stage-current",
+                [(_LLM_AGENT, _LLM_MODEL)],
+                run_analysis=True,
+            ),
+            task_id=task_id,
+        )
+        current_trial_id = task.trials[0].id
+
+    await _finish_all_trials(task_id)
+
+    async with get_session() as session:
+        assert await maybe_start_qa_stage(session, current_trial_id) is True
+
+    async with get_session() as session:
+        task = await session.get(TaskModel, task_id)
+        qa_jobs = (
+            (
+                await session.execute(
+                    select(WorkerJobModel.id).where(
+                        WorkerJobModel.kind == WorkerJobKind.QA,
+                        WorkerJobModel.subject_id == task_id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert len(qa_jobs) == 1
+    assert task.status == TaskStatus.VERDICT_PENDING
+    assert task.verdict_status == VerdictStatus.QUEUED
