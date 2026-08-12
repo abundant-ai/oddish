@@ -357,6 +357,31 @@ async def test_qa_handler_resets_terminal_state_on_retry(monkeypatch):
     assert outcome.success is not None
 
 
+@pytest.mark.asyncio
+async def test_qa_handler_retires_superseded_version_without_retry(monkeypatch):
+    task_row = SimpleNamespace(
+        verdict_status=None,
+        verdict_error=None,
+    )
+    monkeypatch.setattr(
+        handlers_module, "get_session", _fake_get_session_factory(task_row)
+    )
+    calls = 0
+
+    async def _stub_run(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return True
+
+    monkeypatch.setattr(handlers_module, "run_task_qa_job", _stub_run)
+
+    outcome = await QaJobHandler().run(_verdict_claim())
+
+    assert calls == 1
+    assert outcome.success is not None
+    assert outcome.success.result_summary == {"superseded_by_task_version": True}
+
+
 def _qa_failure_outcome(monkeypatch, verdict_error: str):
     task_row = SimpleNamespace(
         verdict_status=VerdictStatus.RUNNING,

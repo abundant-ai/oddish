@@ -22,6 +22,7 @@ from oddish.core.verdict_sync import (
     sync_verdict_to_task,
 )
 from oddish.core.verdict_state import (
+    abandon_verdict,
     complete_verdict_without_result,
     start_verdict,
 )
@@ -905,8 +906,13 @@ async def run_task_qa_job(
     queue_key: str,
     modal_function_call_id: str | None = None,
     worker_job_id: str | None = None,
-) -> None:
-    """Classify a task's live trials and store one verdict."""
+) -> bool:
+    """Classify a task's live trials and store one verdict.
+
+    Returns true only when a task-version change superseded this pass. The
+    worker adapter uses that signal to retire the obsolete job instead of
+    retrying it against the replacement version without stage admission.
+    """
     console.print(f"[cyan]Processing task QA[/cyan] {task_id} (queue_key={queue_key})")
 
     async with get_session() as session:
@@ -916,13 +922,13 @@ async def run_task_qa_job(
 
         if not await _worker_job_is_running(session, worker_job_id):
             console.print(f"[dim]QA {task_id} skipped; job was cancelled[/dim]")
-            return
+            return False
 
         if task.verdict_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
             console.print(
                 f"[yellow]Task {task_id} verdict already processed, skipping[/yellow]"
             )
-            return
+            return False
 
         task_version_id = getattr(task, "current_version_id", None)
         start_verdict(task, now=utcnow())
@@ -989,7 +995,7 @@ async def run_task_qa_job(
                 f"[yellow]QA {task_id} skipped: no QA-eligible trials "
                 "(all bulk-imported)[/yellow]"
             )
-            return
+            return False
         to_classify = [
             trial_id
             for trial_id, analysis_status in live_trials
@@ -1006,7 +1012,7 @@ async def run_task_qa_job(
                     console.print(
                         f"[dim]QA {task_id} classification stopped; job was cancelled[/dim]"
                     )
-                    return
+                    return False
             try:
                 await _classify_waiting_out_peer_claim(
                     trial_id,
@@ -1024,7 +1030,7 @@ async def run_task_qa_job(
                 console.print(
                     f"[dim]QA {task_id} verdict skipped; job was cancelled[/dim]"
                 )
-                return
+                return False
             trials_result = await session.execute(
                 select(TrialModel).where(
                     TrialModel.task_id == task_id,
@@ -1118,14 +1124,29 @@ async def run_task_qa_job(
         if heartbeat_task is not None:
             await asyncio.gather(heartbeat_task, return_exceptions=True)
 
+    result_superseded = False
+
     async def _qa_result_is_current(session) -> bool:
+        nonlocal result_superseded
         if not await _worker_job_is_running(session, worker_job_id):
             return False
         current_task = await session.get(TaskModel, task_id)
-        return (
-            current_task is not None
-            and getattr(current_task, "current_version_id", None) == task_version_id
-        )
+        if current_task is None:
+            return False
+        if getattr(current_task, "current_version_id", None) == task_version_id:
+            return True
+
+        # This QA pass belongs to an obsolete version. Retrying the same worker
+        # job would silently re-pin it to the new version without going through
+        # maybe_start_qa_stage's current-version trial-completion gates. Reset
+        # the task atomically while sync_verdict_to_task still holds its row
+        # lock, so a concurrently finishing current-version trial sees RUNNING
+        # and can perform normal admission after this transaction commits.
+        abandon_verdict(current_task)
+        current_task.status = TaskStatus.RUNNING
+        current_task.finished_at = None
+        result_superseded = True
+        return False
 
     status = await asyncio.shield(
         sync_verdict_to_task(
@@ -1136,10 +1157,12 @@ async def run_task_qa_job(
         )
     )
     if status is None:
-        console.print(f"[dim]QA {task_id} result ignored; job was cancelled[/dim]")
+        reason = "task version changed" if result_superseded else "job was cancelled"
+        console.print(f"[dim]QA {task_id} result ignored; {reason}[/dim]")
     elif verdict_result:
         console.print(f"[green]Verdict {task_id} SUCCESS - Task COMPLETED[/green]")
     else:
         console.print(
             f"[yellow]Verdict {task_id} FAILED - Task COMPLETED (no verdict)[/yellow]"
         )
+    return result_superseded

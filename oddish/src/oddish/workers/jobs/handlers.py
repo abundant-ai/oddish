@@ -243,12 +243,19 @@ class QaJobHandler:
             if task.verdict_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
                 queue_verdict(task)
 
-        await run_task_qa_job(
+        result_superseded = await run_task_qa_job(
             task_id,
             queue_key=job.queue_key,
             modal_function_call_id=job.modal_function_call_id,
             worker_job_id=job.id,
         )
+
+        # A version switch deliberately retires this obsolete job. The task was
+        # reset to RUNNING inside the verdict write transaction, so only normal
+        # maybe_start_qa_stage admission may enqueue QA for the new version once
+        # its trials finish. Retrying this row would bypass those gates.
+        if result_superseded:
+            return JobOutcome.ok({"superseded_by_task_version": True})
 
         async with get_session() as session:
             task = await session.get(TaskModel, task_id)

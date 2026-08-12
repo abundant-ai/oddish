@@ -960,6 +960,7 @@ async def test_run_task_qa_job_discards_verdict_after_version_changes(monkeypatc
         id="task-version-changed",
         current_version_id="task-version-v1",
         org_id="org-1",
+        run_analysis=True,
         status=TaskStatus.VERDICT_PENDING,
         verdict_status=VerdictStatus.QUEUED,
         verdict=None,
@@ -1000,11 +1001,42 @@ async def test_run_task_qa_job_discards_verdict_after_version_changes(monkeypatc
     )
     monkeypatch.setattr(qa_handler, "synthesize_task_verdict", fake_compute_verdict)
 
-    await qa_handler.run_task_qa_job(task.id, queue_key="qa")
+    result_superseded = await qa_handler.run_task_qa_job(task.id, queue_key="qa")
 
+    assert result_superseded is True
     assert task.current_version_id == "task-version-v2"
     assert task.verdict is None
-    assert task.verdict_status == VerdictStatus.RUNNING
+    assert task.verdict_status is None
+    assert task.status == TaskStatus.RUNNING
+    assert task.finished_at is None
+
+    # The new version is not admitted while one of its trials is active.
+    current_trial = SimpleNamespace(task_id=task.id)
+    active_session = _StageSession(trial=current_trial, task=task, pending_count=1)
+    enqueued: list[str] = []
+
+    async def fake_enqueue(_session, *, task_id, org_id):
+        enqueued.append(task_id)
+
+    monkeypatch.setattr(queue_mod, "enqueue_qa_worker_job", fake_enqueue)
+
+    assert (
+        await queue_mod.maybe_start_qa_stage(active_session, "trial-version-v2")
+        is False
+    )
+    assert enqueued == []
+    assert task.status == TaskStatus.RUNNING
+
+    # Its final trial completion re-enters normal admission and enqueues a
+    # fresh QA job instead of retrying the obsolete v1 worker row.
+    finished_session = _StageSession(trial=current_trial, task=task, pending_count=0)
+    assert (
+        await queue_mod.maybe_start_qa_stage(finished_session, "trial-version-v2")
+        is True
+    )
+    assert enqueued == [task.id]
+    assert task.status == TaskStatus.VERDICT_PENDING
+    assert task.verdict_status == VerdictStatus.QUEUED
 
 
 @pytest.mark.asyncio
