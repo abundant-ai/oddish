@@ -733,7 +733,14 @@ export function TrajectoryViewer({
       // so a step still pending on a switch was addressed to the trial being
       // left. Guarded on `switched` so this cannot wipe the step captured on
       // the first mount, whatever order the two effects run in.
-      if (switched) setPendingStep(null);
+      //
+      // The failure message goes with it. Nothing re-runs the link against the
+      // new trial — the fragment was spent when it was captured — so a message
+      // left standing would describe a run the reader is no longer looking at.
+      if (switched) {
+        setPendingStep(null);
+        setDeepLinkError(null);
+      }
     }
   }, [trialId]);
 
