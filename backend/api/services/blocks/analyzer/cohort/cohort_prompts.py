@@ -29,6 +29,12 @@ _VENDOR_PREFIXES = (
 )
 
 
+# Cross-region inference profile prefixes on stored Bedrock ids. Not just
+# "global.": Opus 4.1 and Opus 4 have no global profile and are stored as
+# "us.anthropic...". Mirrors oddish.config._BEDROCK_REGION_PREFIXES.
+_REGION_PREFIXES = ("global.", "us.", "eu.", "apac.", "apn.")
+
+
 def short_model_name(raw: str) -> str:
     """``global.anthropic.claude-opus-4-8`` -> ``claude-opus-4-8``.
 
@@ -37,8 +43,10 @@ def short_model_name(raw: str) -> str:
     ``_model_counts``. Two spellings of one id read as two models.
     """
     name = raw.split("/")[-1]
-    if name.startswith("global."):
-        name = name[len("global.") :]
+    for prefix in _REGION_PREFIXES:
+        if name.startswith(prefix):
+            name = name[len(prefix) :]
+            break
     head, _, rest = name.partition(".")
     if rest and head in _VENDOR_PREFIXES:
         name = rest

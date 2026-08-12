@@ -98,6 +98,22 @@ def test_short_model_name_keeps_dots_that_belong_to_the_name():
     assert short_model_name("gemini-3.5-flash") == "gemini-3.5-flash"
 
 
+def test_short_model_name_strips_every_region_prefix():
+    """Opus 4.1 / Opus 4 have no "global." inference profile: they are stored
+    as "us.anthropic...", and a global-only strip left them long."""
+    from api.services.blocks.analyzer.cohort.cohort_prompts import (
+        short_model_name,
+    )
+
+    assert (
+        short_model_name("us.anthropic.claude-opus-4-1-20250805-v1:0")
+        == "claude-opus-4-1-20250805-v1:0"
+    )
+    assert short_model_name("eu.anthropic.claude-sonnet-4-5") == "claude-sonnet-4-5"
+    assert short_model_name("apac.anthropic.claude-haiku-4-5") == "claude-haiku-4-5"
+    assert short_model_name("bedrock/apn.amazon.nova-pro-v1:0") == "nova-pro-v1:0"
+
+
 def test_model_counts_are_ordered_and_stripped():
     out = _block(
         successful=[
