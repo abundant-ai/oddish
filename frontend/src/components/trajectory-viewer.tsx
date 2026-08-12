@@ -717,7 +717,6 @@ export function TrajectoryViewer({
   const [deepLinkError, setDeepLinkError] = useState<string | null>(null);
   const stepRefs = useRef<(HTMLDivElement | null)[]>([]);
   const stepReset = useRef<string | null>(null);
-  const appliedHash = useRef<string | null>(null);
 
   // Reset expanded steps and search when switching to a different trial
   useEffect(() => {
@@ -725,9 +724,6 @@ export function TrajectoryViewer({
       stepReset.current = trialId;
       setExpandedSteps([]);
       setQuery("");
-      // Otherwise an unchanged hash across trials (e.g. both #step-1) would
-      // look "already applied" and the deep link would silently no-op.
-      appliedHash.current = null;
     }
   }, [trialId]);
 
@@ -838,10 +834,8 @@ export function TrajectoryViewer({
 
     const apply = () => {
       const hash = window.location.hash;
-      if (hash === appliedHash.current) return;
       const m = /^#step-(\d+)$/.exec(hash);
       if (!m) return;
-      appliedHash.current = hash;
       const idx = stepIdToIndex(Number(m[1]));
       if (idx >= 0) {
         setDeepLinkError(null);
@@ -853,6 +847,16 @@ export function TrajectoryViewer({
       } else {
         setDeepLinkError(`Step ${m[1]} is not in this trajectory.`);
       }
+      // The fragment addresses one step of one run, so it is spent the moment
+      // it resolves. Leaving it in the address lets it outlive that run: the
+      // panels' URL sync carries the fragment through every replaceState
+      // (urlWithSearch), so closing the drawer and opening another trial would
+      // re-apply a step number meant for the last one. Dropping it here is
+      // also what keeps re-runs of this effect from re-scrolling: replaceState
+      // fires no hashchange, so the clear cannot re-enter apply, and every
+      // later pass reads an empty hash and bails at the regex.
+      const spent = `${window.location.pathname}${window.location.search}`;
+      window.history.replaceState(window.history.state, "", spent);
     };
 
     apply();
