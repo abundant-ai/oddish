@@ -179,7 +179,7 @@ function Radar({
   domain,
 }: {
   rollup: CohortRollup;
-  series: { model: string; n: number; ink: string }[];
+  series: { model: string; ink: string }[];
   axes: (CohortRollupCategory | undefined)[];
   domain: number;
 }) {
@@ -350,16 +350,24 @@ export function CohortRollupSection({
   const axes = CHART_CATEGORIES.map((c) => byCategory.get(c));
 
   const drawn = radarModels(data);
-  const stableOrder = new Map(data.models.map((m, i) => [m.model, i]));
-  // Hue follows the model's place in the payload's own model list, never its
-  // evidence rank on the radar: ranking by n means a refresh that shuffles the
-  // counts repaints shapes that did not change.
+  // Hue slots are handed out in model-name order, which nothing in the data can
+  // move. The payload's own order is NOT a stable key: `_model_rows` sorts it by
+  // cohort size, so one more trial can reorder it and repaint shapes whose
+  // evidence did not change. What a name sort cannot fix is a membership change
+  // -- with three slots and more than three models, a model dropping out still
+  // shifts the survivors below it -- so it buys stability under new data, not
+  // under a different cast.
   const series = [...drawn]
-    .sort(
-      (a, b) =>
-        (stableOrder.get(a.model) ?? 0) - (stableOrder.get(b.model) ?? 0),
-    )
+    .sort((a, b) => (a.model < b.model ? -1 : a.model > b.model ? 1 : 0))
     .map((m, slot) => ({ ...m, ink: MODEL_INK[slot] }));
+
+  // Distinct trials in the model's cohort. The legend shows this, not the
+  // `radarModels` total: that total sums one distinct-trial count per category,
+  // so a trial cited in four categories counts four times and reads as far more
+  // evidence than exists.
+  const runsOf = new Map(
+    data.models.map((m) => [m.model, m.cohort_success + m.cohort_failure]),
+  );
 
   const domain = Math.max(
     MIN_DOMAIN,
@@ -387,8 +395,8 @@ export function CohortRollupSection({
       <CoverageLine rollup={data} />
       {series.length === 0 ? (
         <p className="text-muted-foreground text-xs">
-          No model has {data.thin_threshold} cited runs across these
-          comparisons, so no shape is drawn — the cells are in the table below.
+          No model has {data.thin_threshold} citations across the six
+          categories, so no shape is drawn — the cells are in the table below.
         </p>
       ) : (
         <div className="flex flex-col items-center gap-2">
@@ -402,7 +410,7 @@ export function CohortRollupSection({
                 />
                 <span>{s.model}</span>
                 <span className="text-muted-foreground font-mono">
-                  n={s.n}
+                  {runsOf.get(s.model) ?? 0} runs
                 </span>
               </li>
             ))}
@@ -425,11 +433,11 @@ export function CohortRollupSection({
       {series.length > 0 && belowBar > 0 && (
         <p className="text-muted-foreground text-xs">
           Charting the {series.length} model
-          {series.length === 1 ? "" : "s"} with the most cited runs (at most{" "}
-          {RADAR_MODEL_CAP}). {belowBar} other
+          {series.length === 1 ? "" : "s"} with the most citations across the six
+          categories (at most {RADAR_MODEL_CAP}). {belowBar} other
           {belowBar === 1 ? " is" : "s are"} in the table only — either past that
-          cap or under {data.thin_threshold} cited runs, which is too few to draw
-          a shape from.
+          cap or under {data.thin_threshold} such citations, which is too few to
+          draw a shape from.
         </p>
       )}
       <div className="overflow-x-auto">
