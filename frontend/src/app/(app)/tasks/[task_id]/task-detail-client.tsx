@@ -54,7 +54,12 @@ import {
   type TaskDetailResource,
 } from "@/lib/task-detail-resource";
 import type { Task, TaskVersionSummary, Trial } from "@/lib/types";
-import { formatRelativeTime, prBadge, taskPrUrl } from "@/lib/utils";
+import {
+  formatRelativeTime,
+  prBadge,
+  taskPrUrl,
+  urlWithSearch,
+} from "@/lib/utils";
 import {
   formatLineRange,
   parseLineRange,
@@ -1070,7 +1075,7 @@ export function TaskDetailClient({
     }
 
     if (next.toString() !== current.toString()) {
-      const url = `${window.location.pathname}${next.toString() ? `?${next.toString()}` : ""}`;
+      const url = urlWithSearch(next.toString());
       window.history.replaceState(window.history.state, "", url);
     }
   }, [drawer, taskPaneFile, taskPaneLines]);

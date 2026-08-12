@@ -15,9 +15,26 @@ const CATEGORY_LABELS: Record<string, string> = {
   environment_tooling: "Environment and tooling",
 };
 
+/** All three headings share the panel's mono-uppercase family (Findings and
+ *  Trial QA use it at task-overview-panel.tsx:613, :654). This section's title
+ *  is deliberately one step louder than those two -- 13px foreground against
+ *  their 11px muted -- because it heads a card of its own rather than a list.
+ *  Below it, category and cohort headings hold 11px and separate by colour. */
+const SECTION_HEADING =
+  "text-foreground font-mono text-[13px] font-semibold tracking-wider uppercase";
+const CATEGORY_HEADING =
+  "text-foreground font-mono text-[11px] font-semibold tracking-wider uppercase";
+const COHORT_HEADING =
+  "font-mono text-[11px] font-semibold tracking-wider uppercase";
+
 /** A trial opens in the task page's drawer via ?trial=<id> — there is no
- *  /trials/<id> route, and the drawer resolves no step anchor, so none is
- *  emitted rather than linking somewhere that does not exist.
+ *  /trials/<id> route.
+ *
+ *  ?tab=trajectory lands on the tab the citation is quoting, and #step-<id>
+ *  is the anchor TrajectoryViewer already resolves (trajectory-viewer.tsx:833
+ *  matches /^#step-(\d+)$/ and scrolls to it), so the link arrives at the
+ *  cited step rather than the top of the run. The first step of the span is
+ *  the anchor: it is where the quoted behaviour starts.
  *
  *  ?version= carries the version id, not the number this endpoint takes: the
  *  page resolves ?trial= against the selected version's trials alone, so a
@@ -27,12 +44,27 @@ const CATEGORY_LABELS: Record<string, string> = {
 function evidenceHref(
   taskId: string,
   trialId: string,
+  stepIds: number[],
   taskVersionId?: string,
 ): string {
   const params = new URLSearchParams();
   if (taskVersionId) params.set("version", taskVersionId);
+  // Full id: #1203 reverted the shortened ?trial= form and deleted
+  // shortTrialParam with it. The sync no longer rewrites this param, so
+  // there is no rewrite for the fragment to survive either -- but
+  // urlWithSearch still carries it, because every other drawer sync does
+  // rebuild the address.
   params.set("trial", trialId);
-  return `/tasks/${encodeURIComponent(taskId)}?${params.toString()}`;
+  params.set("tab", "trajectory");
+  const anchor = stepIds.length ? `#step-${Math.min(...stepIds)}` : "";
+  return `/tasks/${encodeURIComponent(taskId)}?${params.toString()}${anchor}`;
+}
+
+/** Discovery labels arrive from the model as identifiers (`subagent_delegation`).
+ *  Render them as words; the prompt asks for prose but a stored label written
+ *  before that rule still has to read properly. */
+function discoveryLabel(label: string): string {
+  return label.replace(/_/g, " ").trim();
 }
 
 function stepRange(stepIds: number[]): string {
@@ -74,7 +106,12 @@ function ObservationList({
           {obs.evidence.map((ev, j) => (
             <a
               key={j}
-              href={evidenceHref(taskId, ev.trial_id, taskVersionId)}
+              href={evidenceHref(
+                taskId,
+                ev.trial_id,
+                ev.step_ids,
+                taskVersionId,
+              )}
               className="text-xs text-muted-foreground underline-offset-4 hover:underline"
             >
               {/* Only the component + step range carries the link colour. The
@@ -124,7 +161,7 @@ export function CohortComparisonSection({
   if (isLoading) {
     return (
       <section className="border-border flex flex-col gap-2 border-b p-4">
-        <h3 className="text-sm font-semibold">Successful vs failing agents</h3>
+        <h3 className={SECTION_HEADING}>Agent capability analysis</h3>
         <p className="text-muted-foreground animate-pulse text-xs">
           Analyzing agent behavior across successful and failing runs
           <EllipsisDots />
@@ -136,7 +173,7 @@ export function CohortComparisonSection({
   if (error) {
     return (
       <section className="border-border flex flex-col gap-2 border-b p-4">
-        <h3 className="text-sm font-semibold">Successful vs failing agents</h3>
+        <h3 className={SECTION_HEADING}>Agent capability analysis</h3>
         <p className="text-muted-foreground text-xs">
           Could not build the comparison{typeof error === "number" ? ` (${error})` : ""}.
           Reload to try again.
@@ -150,7 +187,7 @@ export function CohortComparisonSection({
   if (!data.categories.length) {
     return (
       <section className="border-border flex flex-col gap-2 border-b p-4">
-        <h3 className="text-sm font-semibold">Successful vs failing agents</h3>
+        <h3 className={SECTION_HEADING}>Agent capability analysis</h3>
         <p className="text-muted-foreground text-xs">
           No differences held up against the stored trajectories for these{" "}
           {data.cohort_success.length} successful and {data.cohort_failure.length}{" "}
@@ -163,30 +200,38 @@ export function CohortComparisonSection({
   return (
     <section className="border-border flex flex-col gap-4 border-b p-4">
       <div className="flex items-baseline gap-3">
-        <h3 className="text-sm font-semibold">Successful vs failing agents</h3>
+        <h3 className={SECTION_HEADING}>Agent capability analysis</h3>
         <span className="text-xs text-muted-foreground">
-          {data.cohort_success.length} successful, {data.cohort_failure.length} failed
+          {data.cohort_success.length} successful, {data.cohort_failure.length}{" "}
+          failed trials
         </span>
       </div>
-      {data.thin_coverage?.length ? (
-        <p className="text-xs text-muted-foreground">
-          {data.thin_coverage.length} trial
-          {data.thin_coverage.length === 1 ? "" : "s"} in this comparison have
-          summaries covering under half their run; evidence from them is thin.
-        </p>
+      {data.summary ? (
+        <p className="text-sm text-foreground">{data.summary}</p>
       ) : null}
+      {/* No thin-coverage warning. `thin_coverage` divides covered steps by
+          the trial's FULL step count, but components are built from
+          drop_inert_steps(trajectory) -- so an agent that pads its run with
+          empty steps can never score above its non-padded fraction. Measured
+          on scarf-cargotracker v1: all six flagged trials were gemini (0.10
+          to 0.196, consistent with its 51-91% empty-step padding) while every
+          Anthropic trial scored exactly 1.00. It flagged the agent, not the
+          evidence. Restoring a warning here needs the summariser to persist
+          its post-filter step count as the denominator. */}
       {data.categories.map((cat, i) => (
         <div
           key={i}
           className="border-border bg-background/40 flex flex-col gap-2 rounded-lg border p-3"
         >
-          <h4 className="text-sm font-medium">
+          <h4 className={CATEGORY_HEADING}>
             {CATEGORY_LABELS[cat.category] ?? cat.category}
-            {cat.label ? `: ${cat.label}` : ""}
+            {cat.label ? `: ${discoveryLabel(cat.label)}` : ""}
           </h4>
           <div className="grid gap-6 md:grid-cols-2">
             <div className="flex flex-col gap-2">
-              <span className="text-xs uppercase tracking-wide text-emerald-600 dark:text-emerald-400">
+              <span
+                className={`${COHORT_HEADING} text-emerald-600 dark:text-emerald-400`}
+              >
                 Successful
               </span>
               <ObservationList
@@ -196,7 +241,9 @@ export function CohortComparisonSection({
               />
             </div>
             <div className="flex flex-col gap-2">
-              <span className="text-xs uppercase tracking-wide text-red-600 dark:text-red-400">
+              <span
+                className={`${COHORT_HEADING} text-red-600 dark:text-red-400`}
+              >
                 Failed
               </span>
               <ObservationList

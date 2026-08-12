@@ -9,7 +9,10 @@ from oddish.blocks.block import Block
 from api.services.blocks.analyzer.cohort import cohort_prompts as cp
 from api.services.blocks.analyzer.cohort.cohort_taxonomy import BehaviorCategory
 
-SCHEMA_VERSION = 1
+# 2: added `summary`. Every stored comparison predates the field, and the
+# freshness check keys on this, so the bump is what makes them regenerate
+# rather than serve a headline-less payload forever.
+SCHEMA_VERSION = 2
 
 # A trial whose summary covers less than this share of its own step span is
 # reported to the reader rather than averaged over silently.
@@ -100,6 +103,13 @@ class CohortComparisonOutput(BaseModel):
     cohort_success: list[str]
     cohort_failure: list[str]
     categories: list[CategoryComparison]
+    # LAST, and the order is load-bearing. This schema is handed to the model
+    # as `response_format` / `output_schema`, and constrained decoding emits
+    # fields in schema order -- so a `summary` declared above `categories`
+    # would be generated before the rows it is supposed to be bound by,
+    # exactly inverting the prompt's "write summary last" rule and inviting a
+    # headline the categories do not support.
+    summary: NonEmptyText
 
 
 class CohortInput(BaseModel):
@@ -190,6 +200,16 @@ class CohortComparisonBlock(Block):
             parsed.model_dump(mode="json"), ci.successful, ci.failing
         )
         out["dropped"] = dropped
+        # The headline was written against the categories the model produced,
+        # and validation runs after it. If a whole category failed citation
+        # checks and was removed, the summary can name a split the panel no
+        # longer shows -- an unsourced claim sitting above sourced rows, which
+        # is the one thing this feature is built not to do. Drop it rather
+        # than let it describe a comparison that is no longer on screen.
+        # Observation-level drops leave the category standing, so the theme
+        # still holds and the summary survives them.
+        if dropped.get("categories"):
+            out.pop("summary", None)
         # Cohort membership is a fact we already hold, not something to take
         # from the model. The UI renders these lengths as "N successful, M
         # failing"; leaving the model's lists in place would let a fabricated
