@@ -39,10 +39,10 @@ class RollupVersion:
     version: int
 
 
-async def resolve_rollup_versions(
+async def resolve_rollup_membership(
     session: AsyncSession, *, experiment_id: str, org_id: str
-) -> list[RollupVersion]:
-    """Distinct task versions an experiment's trials belong to.
+) -> tuple[list[RollupVersion], set[str]]:
+    """An experiment's trials, and the distinct task versions they belong to.
 
     Membership is ``trial_in_experiment``, the repo's one predicate for this:
     an ordinary experiment owns trials through ``trials.experiment_id`` while a
@@ -50,10 +50,16 @@ async def resolve_rollup_versions(
     alone silently returns nothing for the other kind. The predicate also drops
     combine-copy duplicates, which would otherwise inflate a cohort and shift
     every baseline computed from it.
+
+    The trial ids come back alongside the versions because a task version is
+    not owned by one experiment. ``resolve_cohorts`` takes every classified
+    trial on a version, so the rollup needs this set to keep runs from other
+    experiments out of its baselines and citations.
     """
     rows = (
         await session.execute(
             select(
+                TrialModel.id,
                 TrialModel.task_version_id,
                 TaskModel.id,
                 TaskModel.name,
@@ -71,12 +77,23 @@ async def resolve_rollup_versions(
             .distinct()
         )
     ).all()
-    return [
-        RollupVersion(
-            task_version_id=r[0], task_id=r[1], task_name=r[2], version=r[3]
+    versions = {
+        r[1]: RollupVersion(
+            task_version_id=r[1], task_id=r[2], task_name=r[3], version=r[4]
         )
         for r in rows
-    ]
+    }
+    return list(versions.values()), {r[0] for r in rows}
+
+
+async def resolve_rollup_versions(
+    session: AsyncSession, *, experiment_id: str, org_id: str
+) -> list[RollupVersion]:
+    """Distinct task versions an experiment's trials belong to."""
+    versions, _ = await resolve_rollup_membership(
+        session, experiment_id=experiment_id, org_id=org_id
+    )
+    return versions
 
 
 async def build_cohort_rollup(
@@ -88,7 +105,7 @@ async def build_cohort_rollup(
     in ``coverage.missing`` rather than generated: filling gaps on a GET would
     put an LLM call per task behind a page view.
     """
-    versions = await resolve_rollup_versions(
+    versions, members = await resolve_rollup_membership(
         session, experiment_id=experiment_id, org_id=org_id
     )
 
@@ -125,6 +142,11 @@ async def build_cohort_rollup(
             missing_versions.append(rv)
             continue
 
+        # Unscoped on purpose: the stored comparison was generated over the
+        # whole task version, so its cohort hash is over the whole task
+        # version too. Narrowing the cohort before hashing would never match
+        # and every version would report as uncompared. Membership is applied
+        # after the hash, to the trials that feed the rollup's own numbers.
         successful, failing = await resolve_cohorts(session, rv.task_version_id)
         comparison = await _load_fresh_comparison(
             session,
@@ -140,11 +162,21 @@ async def build_cohort_rollup(
             continue
         compared += 1
 
-        model_of = await _models_for(
-            session, [t["trial_id"] for t in successful] + [t["trial_id"] for t in failing]
-        )
+        # A task version outlives the experiment that first ran it, and a
+        # collection gathers a subset of the runs on one. Every trial past
+        # this point is one this experiment owns; the rest belong to whoever
+        # else ran the version, and counting them would make the radar a
+        # picture of the task rather than of this experiment.
+        cohort_ids = [
+            t["trial_id"]
+            for t in (*successful, *failing)
+            if t["trial_id"] in members
+        ]
+        model_of = await _models_for(session, cohort_ids)
         for side, trials in (("success", successful), ("failure", failing)):
             for t in trials:
+                if t["trial_id"] not in members:
+                    continue
                 model = model_of.get(t["trial_id"])
                 if model:
                     cohort_by_model[model][side].add(t["trial_id"])
@@ -156,6 +188,8 @@ async def build_cohort_rollup(
                 continue
             for side, key in (("success", "successful"), ("failure", "failing")):
                 for trial_id in cited_trials(cat, key):
+                    if trial_id not in members:
+                        continue
                     pooled[name][side].add(trial_id)
                     model = model_of.get(trial_id)
                     if model:

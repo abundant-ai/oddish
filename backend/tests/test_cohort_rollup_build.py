@@ -578,6 +578,121 @@ async def experiment_null_model():
 
 
 # ---------------------------------------------------------------------------
+# Fixture: experiment_sharing_a_task_version
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ExperimentSharingATaskVersion:
+    experiment_id: str
+    org_id: str
+
+
+@pytest_asyncio.fixture
+async def experiment_sharing_a_task_version():
+    """One task version run by two experiments; we roll up only one of them.
+
+    A task version belongs to a task, not to whoever ran it, so
+    ``resolve_cohorts`` returns every classified trial on it regardless of
+    experiment. Ours owns one opus success and one opus failure -- baseline
+    .5. The neighbouring experiment owns four more opus successes and a grok
+    pair, all on the same version, so a rollup that took the cohort at face
+    value would read opus at 5/6 = .833 and invent a grok row entirely.
+
+    The stored comparison is hashed over *all* eight trials, as a real one
+    would be: the comparison was generated for the task version, and scoping
+    the cohort before hashing would leave nothing that ever matches.
+    """
+    suffix = uuid.uuid4().hex[:8]
+    org_id = f"org_sh_{suffix}"
+    experiment_id = f"exp_sh_mine_{suffix}"
+    neighbour_id = f"exp_sh_theirs_{suffix}"
+    task_id = f"task_sh_{suffix}"
+    trial_ids: list[str] = []
+
+    async with get_session() as session:
+        session.add(
+            OrganizationModel(id=org_id, name=f"SH Org {suffix}", slug=f"sh-org-{suffix}")
+        )
+        session.add(ExperimentModel(id=experiment_id, name=f"sh-mine-{suffix}", org_id=org_id))
+        session.add(
+            ExperimentModel(id=neighbour_id, name=f"sh-theirs-{suffix}", org_id=org_id)
+        )
+        session.add(
+            TaskModel(
+                id=task_id,
+                name=f"sh-task-{suffix}",
+                user="test",
+                task_path="/tmp/fake",
+                org_id=org_id,
+            )
+        )
+        await session.flush()
+        version_id = f"{task_id}-v1"
+        session.add(
+            TaskVersionModel(id=version_id, task_id=task_id, version=1, task_path="/tmp/fake")
+        )
+        await session.flush()
+
+        mine_success = f"trial_sh_{suffix}_mine_s"
+        mine_failure = f"trial_sh_{suffix}_mine_f"
+        theirs_opus = [f"trial_sh_{suffix}_their_opus_s{i}" for i in range(4)]
+        theirs_grok_s = f"trial_sh_{suffix}_their_grok_s"
+        theirs_grok_f = f"trial_sh_{suffix}_their_grok_f"
+
+        rows = [
+            (mine_success, experiment_id, SUCCESS_CLASS, "opus"),
+            (mine_failure, experiment_id, FAILURE_CLASS, "opus"),
+            *[(t, neighbour_id, SUCCESS_CLASS, "opus") for t in theirs_opus],
+            (theirs_grok_s, neighbour_id, SUCCESS_CLASS, "grok"),
+            (theirs_grok_f, neighbour_id, FAILURE_CLASS, "grok"),
+        ]
+        for tid, owner, cls, model in rows:
+            trial_ids.append(tid)
+            session.add(
+                _trial(
+                    trial_id=tid,
+                    task_id=task_id,
+                    task_version_id=version_id,
+                    experiment_id=owner,
+                    org_id=org_id,
+                    classification=cls,
+                    model=model,
+                )
+            )
+        await session.flush()
+
+        session.add(
+            _comparison_block(
+                task_id=task_id,
+                task_version_id=version_id,
+                cohort_hash_value=cohort_hash(
+                    [t for t, _, cls, _ in rows if cls == SUCCESS_CLASS],
+                    [t for t, _, cls, _ in rows if cls == FAILURE_CLASS],
+                ),
+                categories=[
+                    # One of ours cited on each side, plus two of theirs on the
+                    # success side. Scoped, opus reads 1 success / 1 failure.
+                    _evidence_category(
+                        "debugging",
+                        successful_ids=[mine_success, theirs_opus[0], theirs_grok_s],
+                        failing_ids=[mine_failure],
+                    )
+                ],
+            )
+        )
+
+    yield ExperimentSharingATaskVersion(experiment_id=experiment_id, org_id=org_id)
+
+    await _cleanup(
+        trial_ids=trial_ids,
+        task_ids=[task_id],
+        experiment_ids=[experiment_id, neighbour_id],
+        org_ids=[org_id],
+    )
+
+
+# ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
@@ -762,3 +877,50 @@ async def test_discovery_is_absent_from_the_matrix(session, experiment_opus_and_
         org_id=experiment_opus_and_grok.org_id,
     )
     assert "behavior_discovery" not in {c["category"] for c in body["categories"]}
+
+
+@pytest.mark.asyncio
+async def test_a_neighbours_trials_do_not_enter_the_baseline(
+    session, experiment_sharing_a_task_version
+):
+    """Version discovery is scoped by membership; the cohort must be too.
+
+    ``resolve_cohorts`` takes a task version, so it hands back the neighbouring
+    experiment's runs alongside ours. Ours is one opus success and one opus
+    failure; the neighbour adds four opus successes on the same version, which
+    would drag the baseline the radar measures every axis against from .5 to
+    .833 -- the model's record on the task, not in this experiment.
+    """
+    body = await build_cohort_rollup(
+        session,
+        experiment_id=experiment_sharing_a_task_version.experiment_id,
+        org_id=experiment_sharing_a_task_version.org_id,
+    )
+    opus = next(m for m in body["models"] if m["model"] == "opus")
+    assert (opus["cohort_success"], opus["cohort_failure"]) == (1, 1)
+    assert opus["baseline"] == pytest.approx(0.5)
+    assert body["pooled_baseline"] == pytest.approx(0.5)
+
+
+@pytest.mark.asyncio
+async def test_a_neighbours_model_and_citations_do_not_enter_the_rollup(
+    session, experiment_sharing_a_task_version
+):
+    """grok never ran in this experiment, so it cannot have an axis in it.
+
+    The citation filter is the same one: the stored comparison cites two of the
+    neighbour's trials on the success side, and counting them would put opus at
+    2 cited successes off runs this experiment does not own.
+    """
+    body = await build_cohort_rollup(
+        session,
+        experiment_id=experiment_sharing_a_task_version.experiment_id,
+        org_id=experiment_sharing_a_task_version.org_id,
+    )
+    assert [m["model"] for m in body["models"]] == ["opus"]
+
+    debugging = next(c for c in body["categories"] if c["category"] == "debugging")
+    assert [cell["model"] for cell in debugging["per_model"]] == ["opus"]
+    opus_cell = debugging["per_model"][0]
+    assert (opus_cell["cited_success"], opus_cell["cited_failure"]) == (1, 1)
+    assert debugging["pooled"]["n"] == 2
