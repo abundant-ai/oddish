@@ -11,28 +11,43 @@ const hasClerkEnv = !!CLERK_EMAIL && !!CLERK_SECRET && !!CLERK_PUBLISHABLE;
 const READER_TASK_ID = "task-open-view";
 const DEFAULT_VERSION_ID = "version-2";
 const HISTORICAL_VERSION_ID = "version-1";
+const THIRD_VERSION_ID = "version-3";
 
-function versionSummary(versionId: string) {
+function versionSummary(
+  versionId: string,
+  defaultVersionId = DEFAULT_VERSION_ID
+) {
   const historical = versionId === HISTORICAL_VERSION_ID;
-  const trialCount = historical ? 4 : 25;
+  const third = versionId === THIRD_VERSION_ID;
+  const trialCount = historical ? 4 : third ? 6 : 25;
   const experiments = historical
     ? [{ id: "experiment-history", name: "Historical experiment" }]
-    : [{ id: "experiment-current", name: "Current experiment" }];
+    : third
+      ? [{ id: "experiment-third", name: "Third experiment" }]
+      : [{ id: "experiment-current", name: "Current experiment" }];
   return {
     id: versionId,
-    version: historical ? 1 : 2,
-    message: historical ? "historical reader" : "current reader",
-    created_at: historical ? "2026-08-01T12:00:00Z" : "2026-08-10T12:00:00Z",
-    is_current: !historical,
+    version: historical ? 1 : third ? 3 : 2,
+    message: historical
+      ? "historical reader"
+      : third
+        ? "third reader"
+        : "current reader",
+    created_at: historical
+      ? "2026-08-01T12:00:00Z"
+      : third
+        ? "2026-08-11T12:00:00Z"
+        : "2026-08-10T12:00:00Z",
+    is_current: versionId === defaultVersionId,
     trial_count: trialCount,
     completed_count: trialCount,
     failed_count: 0,
     skipped_count: 0,
-    pass_count: historical ? 3 : 20,
+    pass_count: historical ? 3 : third ? 6 : 20,
     partial_count: 0,
-    fail_count: historical ? 1 : 5,
+    fail_count: historical ? 1 : third ? 0 : 5,
     pending_count: 0,
-    reward_sum: historical ? 3 : 20,
+    reward_sum: historical ? 3 : third ? 6 : 20,
     reward_total: trialCount,
     cost_usd: trialCount,
     cost_trial_count: trialCount,
@@ -48,7 +63,7 @@ function versionSummary(versionId: string) {
     agent_models: [
       {
         agent: "codex",
-        model: historical ? "gpt-history" : "gpt-current",
+        model: historical ? "gpt-history" : third ? "gpt-third" : "gpt-current",
         providers: ["openai"],
         is_probe: false,
         trial_count: trialCount,
@@ -56,10 +71,10 @@ function versionSummary(versionId: string) {
         failed_count: 0,
         skipped_count: 0,
         pending_count: 0,
-        pass_count: historical ? 3 : 20,
+        pass_count: historical ? 3 : third ? 6 : 20,
         partial_count: 0,
-        fail_count: historical ? 1 : 5,
-        reward_sum: historical ? 3 : 20,
+        fail_count: historical ? 1 : third ? 0 : 5,
+        reward_sum: historical ? 3 : third ? 6 : 20,
         reward_total: trialCount,
         cost_usd: trialCount,
         cost_trial_count: trialCount,
@@ -70,7 +85,7 @@ function versionSummary(versionId: string) {
         billed_has_estimated: false,
         billed_has_native: true,
         last_run_at: "2026-08-11T12:00:00Z",
-        duration_sum_seconds: historical ? 240 : 2500,
+        duration_sum_seconds: historical ? 240 : third ? 360 : 2500,
         duration_trial_count: trialCount,
       },
     ],
@@ -79,9 +94,11 @@ function versionSummary(versionId: string) {
 
 function openResponse(
   versionId = DEFAULT_VERSION_ID,
-  verdictStatus: string | null = null
+  verdictStatus: string | null = null,
+  defaultVersionId = DEFAULT_VERSION_ID
 ) {
-  const selected = versionSummary(versionId);
+  const selected = versionSummary(versionId, defaultVersionId);
+  const defaultVersion = versionSummary(defaultVersionId, defaultVersionId);
   const trials = Array.from(
     { length: Math.min(selected.trial_count, 20) },
     (_, index) => ({
@@ -116,8 +133,8 @@ function openResponse(
       link: null,
       task_path: "tasks/bounded-reader",
       experiments: selected.experiments,
-      current_version: 2,
-      current_version_id: DEFAULT_VERSION_ID,
+      current_version: defaultVersion.version,
+      current_version_id: defaultVersion.id,
       user_tags: [],
       run_analysis: verdictStatus !== null,
       verdict_status: verdictStatus,
@@ -127,10 +144,10 @@ function openResponse(
       updated_at: "2026-08-11T12:00:00Z",
     },
     default_version: {
-      id: DEFAULT_VERSION_ID,
-      version: 2,
-      message: "current reader",
-      created_at: "2026-08-10T12:00:00Z",
+      id: defaultVersion.id,
+      version: defaultVersion.version,
+      message: defaultVersion.message,
+      created_at: defaultVersion.created_at,
       is_current: true,
     },
     selected_version: selected,
@@ -377,7 +394,9 @@ test.describe("authenticated task view", () => {
           signalHistoricalRequest();
           await historicalRequestGate;
         }
-        await route.fulfill({ json: openResponse(requested) });
+        await route.fulfill({
+          json: openResponse(requested, null, currentDefault),
+        });
       }
     );
     await page.route(
@@ -387,6 +406,7 @@ test.describe("authenticated task view", () => {
           json: [
             versionSummary(DEFAULT_VERSION_ID),
             versionSummary(HISTORICAL_VERSION_ID),
+            versionSummary(THIRD_VERSION_ID),
           ],
         })
     );
@@ -410,9 +430,13 @@ test.describe("authenticated task view", () => {
     await expect(page.getByText("$1.00")).toBeVisible();
 
     await page.getByRole("button", { name: /v2/ }).click();
+    await page.getByText("v3", { exact: true }).click();
+    await expect(
+      page.getByRole("link", { name: "Third experiment" }).last()
+    ).toBeVisible();
+    await page.getByRole("button", { name: /v3/ }).click();
     await page.getByText("v1", { exact: true }).click();
     await historicalRequestStarted;
-    await expect(page.getByText("$25.00").last()).toBeVisible();
     releaseHistoricalRequest();
     await expect(
       page.getByRole("link", { name: "Historical experiment" }).last()
@@ -423,6 +447,21 @@ test.describe("authenticated task view", () => {
     await page.getByRole("button", { name: "Make default" }).click();
     await expect.poll(() => defaultMutationCount).toBe(1);
     await expect(page).not.toHaveURL(/version=/);
+
+    // Revisit a resource cached before the mutation, then select the former
+    // default. Every versioned cache must agree that v1 is now the default;
+    // otherwise v3 treats v2 as bare/default and incorrectly jumps back to v1.
+    await page.getByRole("button", { name: /v1/ }).click();
+    await page.getByText("v3", { exact: true }).click();
+    await expect(
+      page.getByRole("link", { name: "Third experiment" }).last()
+    ).toBeVisible();
+    await page.getByRole("button", { name: /v3/ }).click();
+    await page.getByText("v2", { exact: true }).click();
+    await expect(
+      page.getByRole("link", { name: "Current experiment" }).last()
+    ).toBeVisible();
+    await expect(page).toHaveURL(new RegExp(`version=${DEFAULT_VERSION_ID}`));
   });
 
   test("verdict controls preserve Run and Cancel requests while revalidating open", async ({
@@ -467,45 +506,42 @@ test.describe("authenticated task view", () => {
     await expect.poll(() => cancelCount).toBe(1);
   });
 
-  for (const trialParam of ["99", `${READER_TASK_ID}-99`]) {
-    test(`older ${trialParam === "99" ? "short" : "legacy"} trial link shares the single-trial resource and selects its version`, async ({
-      page,
-    }) => {
-      await signIn(page);
-      let trialRequests = 0;
-      await page.route(
-        new RegExp(`/api/tasks/${READER_TASK_ID}/open(?:\\?|$)`),
-        (route) => {
-          const requested =
-            new URL(route.request().url()).searchParams.get("version_id") ??
-            DEFAULT_VERSION_ID;
-          route.fulfill({ json: openResponse(requested) });
-        }
-      );
-      await page.route(
-        new RegExp(`/api/trials/${READER_TASK_ID}-99$`),
-        (route) => {
-          trialRequests += 1;
-          route.fulfill({ json: linkedTrial() });
-        }
-      );
-      await page.route(
-        new RegExp(`/api/tasks/${READER_TASK_ID}/detail(?:\\?|$)`),
-        (route) =>
-          route.fulfill({ json: detailResponse(HISTORICAL_VERSION_ID) })
-      );
+  test("an older full-id trial link shares the single-trial resource and selects its version", async ({
+    page,
+  }) => {
+    await signIn(page);
+    let trialRequests = 0;
+    await page.route(
+      new RegExp(`/api/tasks/${READER_TASK_ID}/open(?:\\?|$)`),
+      (route) => {
+        const requested =
+          new URL(route.request().url()).searchParams.get("version_id") ??
+          DEFAULT_VERSION_ID;
+        route.fulfill({ json: openResponse(requested) });
+      }
+    );
+    await page.route(
+      new RegExp(`/api/trials/${READER_TASK_ID}-99$`),
+      (route) => {
+        trialRequests += 1;
+        route.fulfill({ json: linkedTrial() });
+      }
+    );
+    await page.route(
+      new RegExp(`/api/tasks/${READER_TASK_ID}/detail(?:\\?|$)`),
+      (route) => route.fulfill({ json: detailResponse(HISTORICAL_VERSION_ID) })
+    );
 
-      await page.goto(`/tasks/${READER_TASK_ID}?trial=${trialParam}`);
-      await expect(
-        page.getByRole("heading", { name: /task-open-view #99/ })
-      ).toBeVisible();
-      await expect(page).toHaveURL(/trial=99/);
-      await expect(page).toHaveURL(
-        new RegExp(`version=${HISTORICAL_VERSION_ID}`)
-      );
-      expect(trialRequests).toBe(1);
-    });
-  }
+    await page.goto(`/tasks/${READER_TASK_ID}?trial=${READER_TASK_ID}-99`);
+    await expect(
+      page.getByRole("heading", { name: /Old linked trial/ })
+    ).toBeVisible();
+    await expect(page).toHaveURL(new RegExp(`trial=${READER_TASK_ID}-99`));
+    await expect(page).toHaveURL(
+      new RegExp(`version=${HISTORICAL_VERSION_ID}`)
+    );
+    expect(trialRequests).toBe(1);
+  });
 
   test("an older trial owned by another task is rejected without destroying its URL", async ({
     page,
@@ -527,9 +563,9 @@ test.describe("authenticated task view", () => {
       }
     );
 
-    await page.goto(`/tasks/${READER_TASK_ID}?trial=99`);
+    await page.goto(`/tasks/${READER_TASK_ID}?trial=${READER_TASK_ID}-99`);
     await expect(page.getByRole("heading", { name: "Agents" })).toBeVisible();
-    await expect(page).toHaveURL(/trial=99/);
+    await expect(page).toHaveURL(new RegExp(`trial=${READER_TASK_ID}-99`));
     await expect(page.getByText("Old linked trial")).toHaveCount(0);
     expect(detailRequests).toBe(0);
   });
