@@ -1445,9 +1445,9 @@ class Settings(BaseSettings):
     # When enabled, uploading a new task version enqueues a
     # ``TASK_EXPAND`` worker job that writes the tarball's contents out
     # as individual S3 objects under ``tasks/{task_id}/v{N}-files/``
-    # alongside a ``.oddish-manifest.json`` sentinel. The canonical
-    # archive at ``tasks/{task_id}/v{N}/.oddish-task.tar.gz`` is never
-    # touched, so runner download paths remain unchanged.
+    # alongside a ``.oddish-manifest.json`` sentinel. The selected archive
+    # comes from ``task_versions.task_s3_key``; in-place replacements switch
+    # that pointer to a new immutable revision prefix.
     tasks_expand_archive: bool = True
     tasks_expand_max_bytes: int = 1_073_741_824  # 1 GiB
     tasks_expand_max_member_bytes: int = 104_857_600  # 100 MiB
