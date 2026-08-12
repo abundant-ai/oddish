@@ -66,41 +66,31 @@ VERDICT_FALLBACK_SCHEMA = normalize_findings_schema(
 )
 
 
-async def _load_pre_trial_items(task_id: str) -> list[ActionItem] | None:
-    """The audit findings the verdict must see: the current version's, else
-    the newest audited version's. Returns ``None`` when the state is unknown.
-    Parsed leniently — one malformed item must not hide the rest."""
+async def _load_pre_trial_items(
+    task_id: str, task_version_id: str | None
+) -> list[ActionItem] | None:
+    """Load audit findings for the exact source snapshot under verdict QA.
+
+    A missing audit is unknown. It must never fall back to findings from an
+    older version: those findings describe different task bytes and can turn a
+    clean replacement into a false failure. Parsed leniently so one malformed
+    current-version item does not hide the rest.
+    """
     async with get_session() as session:
-        current_id = await session.scalar(
-            select(TaskModel.current_version_id).where(TaskModel.id == task_id)
-        )
         version = (
-            await session.get(TaskVersionModel, current_id)
-            if current_id is not None
+            await session.get(TaskVersionModel, task_version_id)
+            if task_version_id is not None
             else None
         )
-        if version is not None and version.pre_trial_status is not None:
-            # The current version has its own audit history, and it is
-            # authoritative. A failed or in-flight audit clears the payload,
-            # and that means "unknown" — never another version's findings,
-            # which could mark a fixed task bad from stale leaks.
-            if version.pre_trial is None:
-                return None
-            raw_items = version.pre_trial.get("items", [])
-        else:
-            # Never audited: the newest audited version is the best signal.
-            version = (
-                await session.execute(
-                    select(TaskVersionModel)
-                    .where(TaskVersionModel.task_id == task_id)
-                    .where(TaskVersionModel.pre_trial.isnot(None))
-                    .order_by(TaskVersionModel.version.desc())
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
-            raw_items = ((version.pre_trial if version else None) or {}).get(
-                "items", []
-            )
+        if (
+            version is None
+            or version.task_id != task_id
+            or version.pre_trial_status is None
+        ):
+            return None
+        if version.pre_trial is None:
+            return None
+        raw_items = version.pre_trial.get("items", [])
 
     items: list[ActionItem] = []
     for raw in raw_items:
@@ -1118,7 +1108,7 @@ async def run_task_qa_job(
         pre_trial_items: list[ActionItem] = []
         pre_trial_load_failed = False
         try:
-            loaded = await _load_pre_trial_items(task_id)
+            loaded = await _load_pre_trial_items(task_id, task_version_id)
             if loaded is None:
                 pre_trial_load_failed = True
             else:

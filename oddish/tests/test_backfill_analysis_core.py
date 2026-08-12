@@ -91,8 +91,15 @@ class _FakeSession:
 def _stub_enqueue(monkeypatch):
     calls = []
 
-    async def fake_enqueue(session, *, task_id, org_id):
-        calls.append((task_id, org_id))
+    async def fake_enqueue(
+        session,
+        *,
+        task_id,
+        task_version_id,
+        task_version_content_hash,
+        org_id,
+    ):
+        calls.append((task_id, task_version_id, task_version_content_hash, org_id))
 
     monkeypatch.setattr(queue_mod, "enqueue_qa_worker_job", fake_enqueue)
     return calls
@@ -122,7 +129,7 @@ async def test_only_missing_preserves_verdict_while_replacement_is_queued(
     assert task.verdict is payload
     assert task.verdict_status == VerdictStatus.QUEUED
     assert task.run_analysis is False  # flag untouched
-    assert _stub_enqueue == [("tsk", "org-1")]
+    assert _stub_enqueue == [("tsk", None, None, "org-1")]
 
 
 @pytest.mark.asyncio
@@ -158,6 +165,7 @@ async def test_force_resets_only_current_version_trials(_stub_enqueue):
     assert result["reset_count"] == 1
     assert historical.analysis_status == AnalysisStatus.SUCCESS
     assert current.analysis_status is None
+    assert _stub_enqueue == [("tsk", "tsk-v2", None, "org-1")]
 
 
 @pytest.mark.asyncio
@@ -240,4 +248,4 @@ async def test_stale_running_analysis_does_not_block(_stub_enqueue):
     )
 
     assert result["status"] == "queued"
-    assert _stub_enqueue == [("tsk", "org-1")]
+    assert _stub_enqueue == [("tsk", None, None, "org-1")]

@@ -632,6 +632,59 @@ class _QASession:
 
 
 @pytest.mark.asyncio
+async def test_pre_trial_items_never_fall_back_to_historical_version(
+    monkeypatch,
+):
+    current_version = SimpleNamespace(
+        id="task-v2",
+        task_id="task",
+        pre_trial_status=None,
+        pre_trial=None,
+    )
+
+    class _PinnedVersionSession:
+        async def get(self, model, row_id):
+            assert getattr(model, "__name__", None) == "TaskVersionModel"
+            assert row_id == "task-v2"
+            return current_version
+
+        async def execute(self, _statement):
+            pytest.fail("current-version QA must not query historical audit rows")
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield _PinnedVersionSession()
+
+    monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
+
+    assert await qa_handler._load_pre_trial_items("task", "task-v2") is None
+
+
+@pytest.mark.asyncio
+async def test_pre_trial_items_reject_version_owned_by_another_task(monkeypatch):
+    foreign_version = SimpleNamespace(
+        id="other-task-v1",
+        task_id="other-task",
+        pre_trial_status="SUCCESS",
+        pre_trial={"items": [{"title": "stale foreign finding"}]},
+    )
+
+    class _PinnedVersionSession:
+        async def get(self, model, row_id):
+            assert getattr(model, "__name__", None) == "TaskVersionModel"
+            assert row_id == "other-task-v1"
+            return foreign_version
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield _PinnedVersionSession()
+
+    monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
+
+    assert await qa_handler._load_pre_trial_items("task", "other-task-v1") is None
+
+
+@pytest.mark.asyncio
 async def test_legacy_pre_trial_job_passes_resolved_current_version(monkeypatch):
     resolved_version_id = "task-pre-trial-v2"
     captured = {}
