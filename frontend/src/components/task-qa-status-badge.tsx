@@ -1,5 +1,4 @@
 import {
-  AlertTriangle,
   CheckCircle2,
   Loader2,
   Microscope,
@@ -8,16 +7,13 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 
-import { AnalysisProse } from "@/components/analysis-prose";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { isActivePipelineStatus } from "@/lib/job-status";
 import type { Task } from "@/lib/types";
 
-type VerdictPresentation = {
+type QaStatusPresentation = {
   pending: boolean;
-  failed: boolean;
-  isGood: boolean | null;
   icon: ReactNode;
   title: string;
   detail: string | null;
@@ -25,27 +21,38 @@ type VerdictPresentation = {
   toneInline: string;
 };
 
-function presentVerdict(
+/**
+ * The state of the task's QA job -- not its conclusion.
+ *
+ * The accept/reject verdict used to render here. It is computed over every
+ * trial of the task across every version (``qa_handler.run_task_qa_job``),
+ * while all three badges sit next to version-scoped content: the task page has
+ * a version selector, the drawer and the overview pane are pinned to one
+ * version. So the label could contradict the trials listed right beside it.
+ * Until the verdict knows which version it covers, only the job state is
+ * shown. The payload is still stored and still drives the dashboard counts,
+ * the GitHub comment, and the Slack alert.
+ */
+function presentQaStatus(
   task: Task,
-  iconSizeClass: string,
-): VerdictPresentation {
+  iconSizeClass: string
+): QaStatusPresentation {
   const status = task.verdict_status;
-  const verdict = task.verdict ?? null;
-  const verdictPending =
+  const jobPending =
     status === "running" || status === "pending" || status === "queued";
   const failed = status === "failed";
-  const isGood = verdict?.is_good ?? null;
+  const done = status === "success";
   // The single task-level QA job classifies every trial and then synthesizes
   // the verdict, so any in-flight classification is also "QA running".
   const analysesInFlight =
-    !verdictPending &&
+    !jobPending &&
     !failed &&
-    isGood == null &&
+    !done &&
     (task.status === "analyzing" ||
       (task.trials ?? []).some((t) =>
-        isActivePipelineStatus(t.analysis_status),
+        isActivePipelineStatus(t.analysis_status)
       ));
-  const pending = verdictPending || analysesInFlight;
+  const pending = jobPending || analysesInFlight;
 
   let icon: ReactNode;
   let title: string;
@@ -65,20 +72,15 @@ function presentVerdict(
     title = "QA failed";
     toneCard = "border-red-500/30 bg-red-500/5";
     toneInline = "border-red-500/40 bg-red-500/[0.04]";
-  } else if (isGood === true) {
+  } else if (done) {
+    // Deliberately not green: this says the job finished, not that the task
+    // passed. A colour that reads as approval is the thing being removed.
     icon = (
-      <CheckCircle2 className={`${iconSizeClass} shrink-0 text-emerald-500`} />
+      <CheckCircle2 className={`${iconSizeClass} shrink-0 text-slate-500`} />
     );
-    title = "Accepted";
-    toneCard = "border-emerald-500/30 bg-emerald-500/5";
-    toneInline = "border-emerald-500/40 bg-emerald-500/[0.04]";
-  } else if (isGood === false) {
-    icon = (
-      <AlertTriangle className={`${iconSizeClass} shrink-0 text-amber-500`} />
-    );
-    title = "Rejected";
-    toneCard = "border-amber-500/30 bg-amber-500/5";
-    toneInline = "border-amber-500/40 bg-amber-500/[0.04]";
+    title = "QA complete";
+    toneCard = "border-slate-500/30 bg-slate-500/5";
+    toneInline = "border-[color:var(--paper-line)]";
   } else {
     icon = (
       <Microscope className={`${iconSizeClass} shrink-0 text-slate-500`} />
@@ -88,21 +90,14 @@ function presentVerdict(
     toneInline = "border-[color:var(--paper-line)]";
   }
 
-  // While a replacement QA run is pending, the kept payload belongs to the
-  // previous verdict -- show only the in-progress state.
-  let detail: string | null = null;
-  if (failed && task.verdict_error) {
-    detail = task.verdict_error;
-  } else if (!pending && isGood === true) {
-    detail = verdict?.reasoning?.trim() || null;
-  } else if (!pending && isGood === false) {
-    detail = verdict?.primary_issue ?? verdict?.reasoning ?? null;
-  }
+  // A failed job's error is the only text left: it describes the run, not the
+  // task, so no version scoping question arises.
+  const detail = failed ? (task.verdict_error ?? null) : null;
 
-  return { pending, failed, isGood, icon, title, detail, toneCard, toneInline };
+  return { pending, icon, title, detail, toneCard, toneInline };
 }
 
-export function TaskVerdictBadge({
+export function TaskQaStatusBadge({
   task,
   variant,
   onRunJudge,
@@ -126,12 +121,10 @@ export function TaskVerdictBadge({
   if (!hasAny && !onRunJudge) return null;
 
   const iconSize = variant === "card" ? "h-5 w-5 mt-0.5" : "h-4 w-4";
-  const p = presentVerdict(task, iconSize);
-  const verdict = task.verdict ?? null;
+  const p = presentQaStatus(task, iconSize);
   const showRunButton = onRunJudge != null && !p.pending && !isRunning;
   const showCancelButton = onCancelJudge != null && p.pending;
-  const runLabel =
-    task.verdict_status || task.verdict ? "Rerun verdict" : "Run QA";
+  const runLabel = task.verdict_status || task.verdict ? "Rerun QA" : "Run QA";
 
   if (variant === "inline") {
     return (
@@ -144,16 +137,9 @@ export function TaskVerdictBadge({
           p.icon
         )}
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-baseline gap-x-2">
-            <span className="font-mono text-[12px] font-semibold text-[color:var(--paper-ink)]">
-              {isRunning ? "Queuing QA..." : p.title}
-            </span>
-            {!p.pending && verdict?.confidence ? (
-              <span className="font-mono text-[10.5px] text-[color:var(--paper-ink-3)]">
-                · {verdict.confidence} confidence
-              </span>
-            ) : null}
-          </div>
+          <span className="font-mono text-[12px] font-semibold text-[color:var(--paper-ink)]">
+            {isRunning ? "Queuing QA..." : p.title}
+          </span>
           {p.detail ? (
             <p className="mt-0.5 font-mono text-[11px] leading-snug text-[color:var(--paper-ink-2)]">
               {p.detail}
@@ -200,41 +186,16 @@ export function TaskVerdictBadge({
       <CardHeader className="px-4 pt-2 pb-1">
         <CardTitle className="text-muted-foreground flex items-center gap-1.5 text-[11px] font-semibold tracking-wider uppercase">
           <Microscope className="h-3 w-3" />
-          QA Verdict
+          QA
         </CardTitle>
       </CardHeader>
       <CardContent className="px-4 pb-3">
         <div className="flex items-start gap-3">
           {p.icon}
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <span className="font-mono text-sm font-bold">{p.title}</span>
-              {!p.pending && verdict?.confidence ? (
-                <span className="text-muted-foreground text-xs">
-                  · {verdict.confidence} confidence
-                </span>
-              ) : null}
-            </div>
+            <span className="font-mono text-sm font-bold">{p.title}</span>
             {p.detail ? (
-              <AnalysisProse text={p.detail} className="text-muted-foreground mt-1" />
-            ) : null}
-            {!p.pending &&
-            verdict?.recommendations &&
-            verdict.recommendations.length > 0 ? (
-              <div className="border-border/60 bg-muted/30 mt-2 rounded-md border border-l-2 border-l-amber-500/60 p-2.5">
-                <span className="text-foreground/80 font-mono text-[10px] font-semibold tracking-wider uppercase">
-                  Fixes ({verdict.recommendations.length})
-                </span>
-                <div className="mt-1 space-y-1">
-                  {verdict.recommendations.map((rec, idx) => (
-                    <AnalysisProse
-                      key={idx}
-                      text={rec}
-                      className="text-muted-foreground"
-                    />
-                  ))}
-                </div>
-              </div>
+              <p className="text-muted-foreground mt-1 text-sm">{p.detail}</p>
             ) : null}
           </div>
         </div>

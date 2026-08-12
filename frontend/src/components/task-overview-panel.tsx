@@ -13,7 +13,7 @@ import { CohortComparisonSection } from "@/components/cohort-comparison-section"
 import { SeverityGroups } from "@/components/qa-report/action-items";
 import { CopyJsonButton } from "@/components/qa-report/copy-json-button";
 import { FALLBACK_TOKEN, VERDICT_TOKENS } from "@/components/qa-report/tokens";
-import { TaskVerdictBadge } from "@/components/task-verdict-badge";
+import { TaskQaStatusBadge } from "@/components/task-qa-status-badge";
 import { isActivePipelineStatus } from "@/lib/job-status";
 import { formatCostUsd, hasDisplayableCostUsd } from "@/lib/format";
 import type {
@@ -102,7 +102,7 @@ export function TaskOverviewPanel({
   version,
   scopeTrials,
   scopeLoading,
-  verdictTask,
+  qaStatusTask,
   checksFindings,
   checksStatus,
   checksError,
@@ -129,9 +129,9 @@ export function TaskOverviewPanel({
   /** The host is still streaming its trial rows — an empty scope renders
    *  as loading, not as "no trials". */
   scopeLoading?: boolean;
-  /** Render the QA verdict inline — for panes whose host shows no verdict
-   *  card of its own (the side-by-side "Task definition" pane). */
-  verdictTask?: Task | null;
+  /** Render the QA status inline — for panes whose host shows no QA card of
+   *  its own (the side-by-side "Task definition" pane). */
+  qaStatusTask?: Task | null;
   checksFindings?: PreTrialFinding[] | null;
   checksStatus?: string | null;
   checksError?: string | null;
@@ -583,9 +583,9 @@ export function TaskOverviewPanel({
 
   return (
     <div className={cn("flex flex-col", className)}>
-      {verdictTask ? (
+      {qaStatusTask ? (
         <div className="border-border border-b p-4">
-          <TaskVerdictBadge task={verdictTask} variant="inline" />
+          <TaskQaStatusBadge task={qaStatusTask} variant="inline" />
         </div>
       ) : null}
 

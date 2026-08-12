@@ -9,7 +9,7 @@ import {
 } from "@/components/ui/resizable-drawer";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { TaskVerdictBadge } from "@/components/task-verdict-badge";
+import { TaskQaStatusBadge } from "@/components/task-qa-status-badge";
 import {
   Folder,
   FolderOpen,
@@ -1565,10 +1565,10 @@ export function TaskFilesPanel({
                   // renders as loading).
                   scopeTrials={task ? (task.trials ?? []) : null}
                   scopeLoading={overviewTrialsLoading}
-                  // Panes with their own header render the verdict card there;
+                  // Panes with their own header render the QA card there;
                   // the filesUrl-driven panes have no header, so the overview
-                  // carries the verdict itself.
-                  verdictTask={filesUrl ? (checksDetail?.task ?? null) : null}
+                  // carries the QA status itself.
+                  qaStatusTask={filesUrl ? (checksDetail?.task ?? null) : null}
                   checksFindings={checksFindings}
                   checksStatus={checksVersion?.pre_trial_status}
                   checksError={checksVersion?.pre_trial_error}
@@ -1772,7 +1772,7 @@ export function TaskFilesPanel({
         {showAnalysis && verdictSource ? (
           <div className="border-border bg-muted/10 shrink-0 border-b">
             <div className="p-4 sm:p-6">
-              <TaskVerdictBadge task={verdictSource} variant="card" />
+              <TaskQaStatusBadge task={verdictSource} variant="card" />
             </div>
           </div>
         ) : null}

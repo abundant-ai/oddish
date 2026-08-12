@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-08-12]
+
+### Removed
+
+- The accept/reject verdict no longer shows in the UI. The verdict is computed
+  over every trial of a task across every version, but all three places that
+  displayed it sit next to content scoped to one version — the task page has a
+  version selector, and the task drawer and overview pane are pinned to a
+  version. So the label could disagree with the trials listed right beside it.
+  The badge now shows only the QA job's state (running, complete, failed, or
+  pending) plus the Run QA / Cancel QA buttons; a failed job still shows its
+  error. `TaskVerdictBadge` is renamed to `TaskQaStatusBadge` to match.
+  Nothing changed on the backend: the verdict is still computed and stored,
+  and it still drives the dashboard counts, the `verdict_statuses` filter, the
+  GitHub PR comment, the Slack and email alerts, and `oddish status`.
+
 ## [2026-08-07]
 
 ### Changed

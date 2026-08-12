@@ -21,7 +21,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { TagEditor } from "@/components/tag-editor";
-import { TaskVerdictBadge } from "@/components/task-verdict-badge";
+import { TaskQaStatusBadge } from "@/components/task-qa-status-badge";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { ExperimentsList } from "@/components/experiments-list";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
@@ -1355,7 +1355,7 @@ export function TaskDetailClient({
         </div>
 
         {!isBrowseSnapshot ? (
-          <TaskVerdictBadge
+          <TaskQaStatusBadge
             task={task}
             variant="inline"
             onRunJudge={handleRunJudge}
