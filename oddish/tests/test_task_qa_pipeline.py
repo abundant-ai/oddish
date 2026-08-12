@@ -372,6 +372,33 @@ async def test_pre_trial_claim_rejects_replaced_version(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_legacy_pre_trial_claim_without_hash_still_runs(monkeypatch) -> None:
+    version = SimpleNamespace(
+        content_hash="existing-hash",
+        pre_trial_status=VerdictStatus.QUEUED,
+        pre_trial_started_at=None,
+    )
+    session = _QASession(task=None, trials=[], task_version=version)
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield session
+
+    monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
+
+    claim = await qa_handler._claim_pre_trial_version(
+        "task",
+        "task-v1",
+        expected_content_hash=None,
+        enforce_content_hash=False,
+    )
+
+    assert claim is not None
+    assert claim[1] == "existing-hash"
+    assert version.pre_trial_status == VerdictStatus.RUNNING
+
+
+@pytest.mark.asyncio
 async def test_stale_pre_trial_failure_does_not_touch_replacement(monkeypatch) -> None:
     version = SimpleNamespace(
         content_hash="new-hash",
@@ -415,6 +442,47 @@ async def test_stale_pre_trial_failure_does_not_touch_replacement(monkeypatch) -
 
 
 @pytest.mark.asyncio
+async def test_legacy_pre_trial_failure_without_hash_still_finalizes(
+    monkeypatch,
+) -> None:
+    version = SimpleNamespace(
+        content_hash="existing-hash",
+        pre_trial_status=VerdictStatus.QUEUED,
+        pre_trial_error=None,
+        pre_trial_finished_at=None,
+    )
+    job = SimpleNamespace(
+        status=WorkerJobStatus.RUNNING,
+        payload={"mode": "pre_trial", "task_version_id": "task-v1"},
+    )
+
+    @asynccontextmanager
+    async def fake_get_session():
+        class _Session:
+            async def get(self, model, *_args, **_kwargs):
+                if model is qa_handler.WorkerJobModel:
+                    return job
+                return version
+
+            async def scalar(self, *_args, **_kwargs):
+                return None
+
+        yield _Session()
+
+    monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
+
+    await qa_handler._fail_queued_pre_trial_request(
+        "task",
+        task_version_id="task-v1",
+        worker_job_id="legacy-job",
+        expected_content_hash=None,
+    )
+
+    assert version.pre_trial_status == VerdictStatus.FAILED
+    assert version.pre_trial_error == "Pre-trial audit is not enabled for this org"
+
+
+@pytest.mark.asyncio
 async def test_stale_pre_trial_cleanup_rejects_replaced_version(monkeypatch) -> None:
     task = SimpleNamespace(current_version_id="task-v1")
     version = SimpleNamespace(
@@ -450,6 +518,42 @@ async def test_stale_pre_trial_cleanup_rejects_replaced_version(monkeypatch) -> 
 
     assert version.pre_trial_status == VerdictStatus.QUEUED
     assert version.pre_trial_error is None
+
+
+@pytest.mark.asyncio
+async def test_legacy_pre_trial_cleanup_without_hash_still_finalizes(
+    monkeypatch,
+) -> None:
+    task = SimpleNamespace(current_version_id="task-v1")
+    version = SimpleNamespace(
+        content_hash="existing-hash",
+        pre_trial_status=VerdictStatus.QUEUED,
+        pre_trial_error=None,
+        pre_trial_finished_at=None,
+    )
+
+    async def fake_locked_or_missing(*_args, **_kwargs):
+        return task
+
+    class _Session:
+        async def get(self, *_args, **_kwargs):
+            return version
+
+    monkeypatch.setattr(cleanup_handler, "_locked_or_missing", fake_locked_or_missing)
+
+    await cleanup_handler._mirror_stale_job_to_domain_row(
+        _Session(),
+        {
+            "kind": "QA",
+            "subject_id": "task",
+            "payload": {"mode": "pre_trial", "task_version_id": "task-v1"},
+            "new_status": "FAILED",
+            "error_message": "legacy job failed",
+        },
+    )
+
+    assert version.pre_trial_status == VerdictStatus.FAILED
+    assert version.pre_trial_error == "legacy job failed"
 
 
 @pytest.mark.asyncio

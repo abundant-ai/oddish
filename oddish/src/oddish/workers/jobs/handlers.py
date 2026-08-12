@@ -230,6 +230,9 @@ class QaJobHandler:
                 task_version_content_hash=(job.payload or {}).get(
                     "task_version_content_hash"
                 ),
+                enforce_task_version_content_hash=(
+                    "task_version_content_hash" in (job.payload or {})
+                ),
             )
             return JobOutcome.ok()
 

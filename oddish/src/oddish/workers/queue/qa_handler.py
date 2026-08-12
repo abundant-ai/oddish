@@ -454,7 +454,11 @@ async def _fail_queued_pre_trial_request(
             return
         if task_version_id and payload.get("task_version_id") != task_version_id:
             return
-        if payload.get("task_version_content_hash") != expected_content_hash:
+        has_expected_content_hash = "task_version_content_hash" in payload
+        if (
+            has_expected_content_hash
+            and payload.get("task_version_content_hash") != expected_content_hash
+        ):
             return
         version_id = task_version_id or await session.scalar(
             select(TaskModel.current_version_id).where(TaskModel.id == task_id)
@@ -464,7 +468,10 @@ async def _fail_queued_pre_trial_request(
         version = await session.get(TaskVersionModel, version_id, with_for_update=True)
         if (
             version is not None
-            and version.content_hash == expected_content_hash
+            and (
+                not has_expected_content_hash
+                or version.content_hash == expected_content_hash
+            )
             and version.pre_trial_status == VerdictStatus.QUEUED
         ):
             version.pre_trial_status = VerdictStatus.FAILED
@@ -477,6 +484,7 @@ async def run_pre_trial_only_job(
     worker_job_id: str | None,
     task_version_id: str | None = None,
     task_version_content_hash: str | None = None,
+    enforce_task_version_content_hash: bool = False,
 ) -> None:
     """Run only the pre-trial audit for one task version.
 
@@ -506,7 +514,7 @@ async def run_pre_trial_only_job(
             [trial_id for trial_id, _ in live_trials],
             task_version_id=task_version_id,
             expected_content_hash=task_version_content_hash,
-            enforce_content_hash=True,
+            enforce_content_hash=enforce_task_version_content_hash,
         )
         if claim is not None:
             await _finalize_pre_trial_request(
