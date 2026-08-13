@@ -910,65 +910,6 @@ export interface AgentCapabilities {
   thin_coverage?: string[];
 }
 
-export interface CohortRollupCell {
-  model?: string;
-  cited_success: number;
-  cited_failure: number;
-  n: number;
-  /** null, not 0, when `n === 0` — no evidence is not the same claim as no
-   *  advantage, and the chart must render the difference. */
-  ratio: number | null;
-  delta: number | null;
-}
-
-/** A `per_model` cell, where the server always writes the model key (the
- *  `pooled` cell is the one that carries no model). */
-export interface CohortRollupModelCell extends CohortRollupCell {
-  model: string;
-}
-
-export interface CohortRollupCategory {
-  category: string;
-  pooled: CohortRollupCell;
-  per_model: CohortRollupModelCell[];
-}
-
-/** `GET /api/experiments/{id}/cohort-rollup` — stored comparisons only, so an
- *  uncompared task version is reported in `coverage.missing` rather than
- *  generated on read. */
-export interface CohortRollup {
-  schema_version: number;
-  coverage: {
-    task_versions_total: number;
-    task_versions_compared: number;
-    missing: {
-      task_id: string;
-      /** The id, which is what the task page's `?version=` resolves against.
-       *  `version` below is the display number and cannot address a page. */
-      task_version_id: string;
-      task_name: string;
-      version: number;
-      /** `"not_compared"` — comparable, nobody has generated one yet — or
-       *  `"below_cohort_gate"`, meaning too few classified runs on either side
-       *  for the generator to accept it at all. */
-      reason: string;
-    }[];
-  };
-  thin_threshold: number;
-  pooled_baseline: number;
-  models: {
-    model: string;
-    cohort_success: number;
-    cohort_failure: number;
-    baseline: number;
-    /** Distinct trials cited for this model anywhere in the matrix. Not the
-     *  sum of the per-category `n`s, which counts one trial once per category
-     *  it appears in — that sum is what the radar gate must not use. */
-    cited_runs: number;
-  }[];
-  categories: CohortRollupCategory[];
-}
-
 export interface TrajectorySummary {
   schema_version: string;
   model: string;

@@ -14,7 +14,6 @@ import type { TaskPane } from "@/components/task-files-panel";
 import useSWR from "swr";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { CohortRollupSection } from "@/components/cohort-rollup-section";
 import { ExperimentTrialsTable } from "@/components/experiment-trials-table";
 import { ExperimentPageSkeleton } from "@/components/experiment-page-skeleton";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
@@ -1703,12 +1702,6 @@ export function ExperimentDetailView({
           ) : (
             <div className="space-y-3">
               {inlineAlert}
-              {experimentId && (
-                <CohortRollupSection
-                  experimentId={experimentId}
-                  apiBaseUrl={apiBaseUrl}
-                />
-              )}
               <ExperimentTrialsTable
                 tasks={tasksForExperiment}
                 agentSummaries={displayAgentSummaries}
