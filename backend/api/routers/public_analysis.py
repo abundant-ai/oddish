@@ -5,18 +5,19 @@ These live here rather than beside their siblings in
 services (``api.services.*``), and the ``oddish`` package may not import the
 backend. The share-token resolvers go the other way, which is allowed.
 
-Both routes are cache reads. Their authenticated counterparts generate on a
-miss -- a Claude call per trajectory summary, a claude-code run per comparison
--- and neither may be reachable without a login: the spend is unbounded by
-anything the caller has to hold, and the comparison additionally parks one of
-an API container's three connections for minutes. A miss here is a 404.
+Trajectory summaries are cache-only. Capability analysis is different: a
+share-token holder may enqueue the same durable, task-attributed job as an
+authenticated viewer. The request itself never runs Claude Code or holds an API
+connection while generation proceeds; repeated views coalesce onto one active
+job for the task version.
 """
 
 from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response, status
+from sqlalchemy import select
 
 from api.services.blocks.analyzer.cohort.cohort_prompts import short_model_name
 from oddish.core.model_display_names import (
@@ -128,8 +129,6 @@ async def _version_is_in_experiment(
     trials that keep the ``experiment_id`` of wherever they ran, so an FK-only
     filter misses them.
     """
-    from sqlalchemy import select
-
     from oddish.core.experiment_membership import trial_in_experiment
     from oddish.db.models import TrialModel
 
@@ -150,6 +149,7 @@ async def _version_is_in_experiment(
 async def get_public_task_agent_capabilities(
     public_token: str,
     task_id: str,
+    response: Response,
     version: int | None = Query(
         None,
         description=(
@@ -160,7 +160,11 @@ async def get_public_task_agent_capabilities(
     ),
 ) -> dict:
     """The stored successful-vs-failing comparison for a public task version."""
-    from api.services.agent_capabilities import load_stored_analysis
+    from api.services.agent_capabilities import (
+        analysis_is_eligible,
+        enqueue_analysis,
+        load_stored_analysis,
+    )
 
     async with get_session() as session:
         resolved = await get_public_task_for_experiment(session, public_token, task_id)
@@ -195,9 +199,28 @@ async def get_public_task_agent_capabilities(
             session, version_id, task_id=task.id
         )
         if comparison is None:
-            raise HTTPException(
-                status_code=404, detail="No comparison stored for this version"
+            if not await analysis_is_eligible(session, version_id):
+                raise HTTPException(
+                    status_code=404,
+                    detail="Not enough classified trials to compare",
+                )
+            from oddish.db.models import TaskVersionModel
+
+            await session.execute(
+                select(TaskVersionModel.id)
+                .where(TaskVersionModel.id == version_id)
+                .with_for_update()
             )
+            await enqueue_analysis(
+                session,
+                task_id=task.id,
+                task_version_id=version_id,
+                task_name=task.name,
+                org_id=task.org_id,
+                triggered_by_user_id=None,
+            )
+            response.status_code = status.HTTP_202_ACCEPTED
+            return {"status": "queued", "task_version_id": version_id}
         names = await load_model_display_names(session)
     # Stamped at serve time, matching the authenticated route: the id is what
     # the UI addresses a version by, while this route takes the number.
