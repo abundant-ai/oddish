@@ -413,6 +413,49 @@ def to_moonshot_model_id(model: str | None) -> str | None:
     return f"{MOONSHOT_PROVIDER}/{moonshot_bare_model_id(model)}"
 
 
+# DeepSeek routing for the ``dsh`` harness. Trials use ``deepseek/<model>`` so
+# they get their own provider/queue bucket distinct from OpenRouter or Fireworks.
+DEEPSEEK_PROVIDER = "deepseek"
+DEEPSEEK_DEFAULT_BASE_URL = "https://api.deepseek.com"
+_DEEPSEEK_PROVIDER_PREFIXES: frozenset[str] = frozenset({"deepseek", "ds"})
+_DEEPSEEK_MODEL_ALIASES: dict[str, str] = {
+    "deepseek-v4-pro-0813": "deepseek-v4-pro",
+}
+
+
+def is_deepseek_model(model: str | None) -> bool:
+    """Return True if *model* should route to DeepSeek's official API."""
+    if not model:
+        return False
+    raw = model.strip().lower()
+    if not raw:
+        return False
+    provider_prefix, bare = split_provider_model_name(raw)
+    if provider_prefix:
+        return provider_prefix.strip().lower() in _DEEPSEEK_PROVIDER_PREFIXES
+    bare_id = raw.split("/")[-1]
+    return bare_id.startswith("deepseek-")
+
+
+def deepseek_bare_model_id(model: str) -> str:
+    """Strip the ``deepseek/`` prefix and normalize GA aliases."""
+    raw = model.strip()
+    provider_prefix, bare = split_provider_model_name(raw)
+    if provider_prefix and provider_prefix.strip().lower() in _DEEPSEEK_PROVIDER_PREFIXES:
+        bare = bare.strip()
+    else:
+        bare = raw
+    return _DEEPSEEK_MODEL_ALIASES.get(bare, bare)
+
+
+def to_deepseek_model_id(model: str | None) -> str | None:
+    """Canonicalize a DeepSeek reference to ``deepseek/<bare-id>``."""
+    if not is_deepseek_model(model):
+        return model
+    assert model is not None
+    return f"{DEEPSEEK_PROVIDER}/{deepseek_bare_model_id(model)}"
+
+
 # Fireworks routing. Fireworks serves GLM / MiniMax / Kimi (and many other open
 # models) over a single Anthropic-compatible ``/messages`` endpoint, so they run
 # on the claude-code harness against Fireworks instead of each model's own direct
@@ -938,6 +981,9 @@ _MODEL_PROVIDER_ALIASES: dict[str, str] = {
     "meta": META_PROVIDER,
     # Direct Anthropic API with the separate HDO key (ANTHROPIC_HDO_API_KEY).
     "anthropic-hdo": ANTHROPIC_HDO_PROVIDER,
+    # DeepSeek official API for the dsh harness.
+    "deepseek": DEEPSEEK_PROVIDER,
+    "ds": DEEPSEEK_PROVIDER,
 }
 
 
@@ -1020,6 +1066,8 @@ def _infer_provider_prefix(
         return MOONSHOT_PROVIDER
     if lowered.startswith("grok-"):
         return XAI_PROVIDER
+    if lowered.startswith("deepseek-"):
+        return DEEPSEEK_PROVIDER
 
     return None
 
@@ -1703,6 +1751,8 @@ class Settings(BaseSettings):
             return to_minimax_model_id(cleaned)
         if is_moonshot_model(cleaned):
             return to_moonshot_model_id(cleaned)
+        if is_deepseek_model(cleaned):
+            return to_deepseek_model_id(cleaned)
         # Explicit ``anthropic-hdo/`` keeps Claude on the direct Anthropic API
         # with ANTHROPIC_HDO_API_KEY — must win over the Bedrock chokepoint.
         if is_anthropic_hdo_model(cleaned):
