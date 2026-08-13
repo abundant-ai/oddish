@@ -241,6 +241,7 @@ def _patch_unrelated_cleanup_phases(
     monkeypatch.setattr(cleanup, "get_session", fake_get_session)
     monkeypatch.setattr(cleanup, "reap_idle_in_transaction_zombies", zero)
     monkeypatch.setattr(cleanup, "cleanup_sandbox_capacity_leases", zero)
+    monkeypatch.setattr(cleanup, "_finalize_unprovisioned_sandbox_runs", zero)
     monkeypatch.setattr(cleanup, "_reap_stale_worker_jobs", reap)
     monkeypatch.setattr(cleanup, "_advance_running_tasks_to_analysis", zero)
     monkeypatch.setattr(cleanup, "_advance_legacy_analyzing_tasks", zero)
@@ -259,6 +260,126 @@ def _patch_unrelated_cleanup_phases(
 
 
 @pytest.mark.asyncio
+async def test_unprovisioned_sandbox_runs_are_finalized_only_after_inventory_proof():
+    class Result:
+        rowcount = 2
+
+    class Session:
+        def __init__(self):
+            self.statement = ""
+            self.params: dict[str, Any] = {}
+
+        async def execute(self, statement, params):
+            self.statement = str(statement)
+            self.params = params
+            return Result()
+
+    session = Session()
+    inventory = Ec2InventorySnapshot(
+        expected_account_id=ACCOUNT_ID,
+        expected_deployment=DEPLOYMENT,
+        instances=(),
+    )
+
+    finalized = await cleanup._finalize_unprovisioned_sandbox_runs(
+        session,
+        inventory,
+        grace_minutes=30,
+    )
+
+    assert finalized == 2
+    assert "state IN ('PROVISIONING', 'TERMINATING')" in session.statement
+    assert "external_id IS NULL" in session.statement
+    assert "terminated_at IS NULL" in session.statement
+    assert "wj.status::text = 'RUNNING'" in session.statement
+    assert "run.id::text = ANY" in session.statement
+    assert "run.launch_token::text = ANY" in session.statement
+    assert session.params == {
+        "active_sandbox_run_ids": [],
+        "active_launch_tokens": [],
+        "active_worker_attempts": [],
+        "grace_minutes": 30,
+    }
+
+
+@pytest.mark.asyncio
+async def test_unprovisioned_sandbox_finalizer_excludes_inventory_matches():
+    class Result:
+        rowcount = 0
+
+    class Session:
+        def __init__(self):
+            self.params: dict[str, Any] = {}
+
+        async def execute(self, _statement, params):
+            self.params = params
+            return Result()
+
+    session = Session()
+    instance = _snapshot(age=timedelta(hours=1))
+    inventory = Ec2InventorySnapshot(
+        expected_account_id=ACCOUNT_ID,
+        expected_deployment=DEPLOYMENT,
+        instances=(instance,),
+    )
+
+    finalized = await cleanup._finalize_unprovisioned_sandbox_runs(
+        session,
+        inventory,
+        grace_minutes=30,
+    )
+
+    assert finalized == 0
+    assert session.params["active_sandbox_run_ids"] == ["sandbox-run-1"]
+    assert session.params["active_launch_tokens"] == ["launch-token-1"]
+    assert session.params["active_worker_attempts"] == ["job-1:1"]
+
+
+@pytest.mark.asyncio
+async def test_finalized_sandbox_rows_release_capacity_after_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    class Backend:
+        async def snapshot_managed_instances(self):
+            events.append("snapshot")
+            return Ec2InventorySnapshot(
+                expected_account_id=ACCOUNT_ID,
+                expected_deployment=DEPLOYMENT,
+                instances=(),
+            )
+
+    session = _LivenessSession([])
+    _patch_unrelated_cleanup_phases(monkeypatch, events=events, session=session)
+
+    async def finalize(*_args, **_kwargs):
+        events.append("finalize")
+        return 2
+
+    capacity_calls = 0
+
+    async def clear_capacity():
+        nonlocal capacity_calls
+        capacity_calls += 1
+        events.append(f"capacity_{capacity_calls}")
+        return 2 if capacity_calls == 2 else 0
+
+    monkeypatch.setattr(cleanup, "_finalize_unprovisioned_sandbox_runs", finalize)
+    monkeypatch.setattr(cleanup, "cleanup_sandbox_capacity_leases", clear_capacity)
+    monkeypatch.setattr(cleanup.settings, "ec2_enabled", True)
+    monkeypatch.setattr(cleanup, "get_backend", lambda _name: Backend())
+
+    result = await cleanup.cleanup_orphaned_queue_state()
+
+    assert events.index("capacity_1") < events.index("db_open")
+    assert events.index("finalize") < events.index("db_commit")
+    assert events.index("db_commit") < events.index("capacity_2")
+    assert result["unprovisioned_sandbox_runs_finalized"] == 2
+    assert result["sandbox_capacity_leases_cleared"] == 2
+
+
+@pytest.mark.asyncio
 async def test_ec2_snapshot_failure_does_not_block_database_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -273,6 +394,13 @@ async def test_ec2_snapshot_failure_does_not_block_database_cleanup(
     session = _LivenessSession([])
     terminated_targets = _patch_unrelated_cleanup_phases(
         monkeypatch, events=events, session=session
+    )
+
+    async def must_not_finalize(*_args, **_kwargs):
+        raise AssertionError("failed inventory must not finalize sandbox ledger rows")
+
+    monkeypatch.setattr(
+        cleanup, "_finalize_unprovisioned_sandbox_runs", must_not_finalize
     )
     monkeypatch.setattr(cleanup.settings, "ec2_enabled", True)
     monkeypatch.setattr(cleanup, "get_backend", lambda _name: Backend())

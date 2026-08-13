@@ -88,7 +88,12 @@ async def set_task_default_version_core(
     ``TaskModel`` keeps the selected version's storage fields mirrored for
     legacy callers that do not resolve ``current_version_id`` themselves.
     """
-    task = await get_task_for_org_core(session, task_id=task_id, org_id=org_id)
+    task = await get_task_for_org_core(
+        session,
+        task_id=task_id,
+        org_id=org_id,
+        with_for_update=True,
+    )
     result = await session.execute(
         select(TaskVersionModel).where(
             TaskVersionModel.task_id == task.id,
@@ -102,6 +107,7 @@ async def set_task_default_version_core(
             detail=f"Version {version} not found for task {task_id}",
         )
 
+    source_changed = task.current_version_id != version_row.id
     task.current_version_id = version_row.id
     task.task_path = version_row.task_path
     task.task_s3_key = version_row.task_s3_key
@@ -110,6 +116,10 @@ async def set_task_default_version_core(
     # recomputing because the projection reads ``current_version_id`` through
     # raw SQL in the same transaction.
     await session.flush()
+    if source_changed:
+        from oddish.queue import invalidate_task_qa_for_source_change
+
+        await invalidate_task_qa_for_source_change(session, task)
     await recompute_task_browse_projection(session, task_id=task.id)
     await refresh_task_browse_summaries(session, [version_row.id])
     return TaskVersionResponse.model_validate(version_row)

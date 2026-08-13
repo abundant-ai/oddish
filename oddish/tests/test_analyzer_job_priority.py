@@ -57,9 +57,17 @@ async def test_analyzer_outranks_qa_on_the_shared_queue():
     analyzer = await enqueue_analyzer_worker_job(
         session, analyzer_id="deadbeef", org_id="org123"
     )
-    qa = await enqueue_qa_worker_job(session, task_id="task1", org_id="org123")
+    qa = await enqueue_qa_worker_job(
+        session,
+        task_id="task1",
+        task_version_id="task1-v1",
+        task_version_content_hash="hash-v1",
+        org_id="org123",
+    )
 
     # Same queue_key, so the claim's ORDER BY priority DESC is what decides:
     # without this the two tie at 0 and the older QA backlog always wins.
     assert analyzer.queue_key == qa.queue_key
     assert analyzer.priority > qa.priority
+    assert qa.payload["task_version_id"] == "task1-v1"
+    assert qa.payload["task_version_content_hash"] == "hash-v1"

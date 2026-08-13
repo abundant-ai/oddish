@@ -114,6 +114,16 @@ def test_evidence_without_step_ids_is_dropped():
     assert drops["evidence"] == 1
 
 
+def test_evidence_with_a_blank_component_is_dropped():
+    # Dropped here rather than raised on in the schema: the JSON schema handed
+    # to claude-code cannot require a non-blank component, so a raise would
+    # cost the whole comparison instead of this one citation.
+    bad = {**_good(), "trajectory_component": "  "}
+    filtered, drops = validate_evidence(_out([bad]), SUCCESS, FAILING)
+    assert filtered["categories"] == []
+    assert drops["evidence"] == 1
+
+
 def test_altered_quote_is_dropped():
     bad = {**_good(), "quote": "Ran the tests and everything was fine."}
     filtered, drops = validate_evidence(_out([bad]), SUCCESS, FAILING)

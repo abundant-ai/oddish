@@ -30,14 +30,17 @@ def test_evidence_accepts_a_retired_taxonomy_value():
     assert ev.trajectory_component == "thinking_diagnose"
 
 
-def test_evidence_rejects_an_empty_component():
-    with pytest.raises(ValidationError):
-        BehaviorEvidence(**{**_evidence(), "trajectory_component": "  "})
-
-
-def test_evidence_requires_step_ids():
-    with pytest.raises(ValidationError):
-        BehaviorEvidence(**{**_evidence(), "step_ids": []})
+def test_evidence_with_no_usable_shape_parses_and_is_dropped_later():
+    # A blank component or an empty step_ids leaves nothing to check the quote
+    # against, but the schema handed to claude-code cannot express that, so
+    # raising here would fail model_validate for the whole payload and discard
+    # a minutes-long run over one citation. validate_evidence drops it instead
+    # (test_evidence_without_step_ids_is_dropped and
+    # test_evidence_with_a_blank_component_is_dropped).
+    assert BehaviorEvidence(
+        **{**_evidence(), "trajectory_component": "  "}
+    ).trajectory_component == "  "
+    assert BehaviorEvidence(**{**_evidence(), "step_ids": []}).step_ids == []
 
 
 def test_discovery_requires_a_label():

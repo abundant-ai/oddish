@@ -50,6 +50,7 @@ from oddish.core.endpoints.task_detail import (
     list_task_versions_core,
     set_task_default_version_core,
 )
+from oddish.core.endpoints.task_open import get_task_open_core
 from oddish.core.endpoints.experiment_cost import get_experiment_cost_totals
 from oddish.core.endpoints.qa_cost import (
     ExperimentQaCostTotals,
@@ -106,6 +107,7 @@ __all__ = [
     "get_experiment_cost_totals",
     "get_experiment_qa_cost_totals",
     "get_task_detail_core",
+    "get_task_open_core",
     "get_task_for_org_core",
     "get_task_qa_costs",
     "get_task_status_core",

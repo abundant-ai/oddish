@@ -781,8 +781,7 @@ async def _store_trial_results(
         user_cancelled = trial.error_message == "Cancelled by user" or (
             trial.status == TrialStatus.FAILED and trial.max_attempts <= trial.attempts
         )
-        runtime_cancelled = trial.harbor_stage == "cancelled"
-        if user_cancelled or (runtime_cancelled and not is_modal_image_build_error):
+        if user_cancelled:
             if outcome:
                 _, provider, native_cost_trusted = _settle_trial_metering(
                     trial,
@@ -921,12 +920,22 @@ async def _store_trial_results(
                 native_cost_trusted=native_cost_trusted,
             )
         else:
-            trial.status = TrialStatus.FAILED
-            trial.finished_at = utcnow()
             trial.error_message = (
                 execution_error or "Trial execution failed with exception"
             )
-            console.print(f"[red]Trial {trial_id} FAILED (exception)[/red]")
+            if trial.attempts < trial.max_attempts:
+                trial.status = TrialStatus.RETRYING
+                trial.finished_at = None
+                console.print(
+                    f"[yellow]Trial {trial_id} re-queued after execution exception "
+                    f"({trial.attempts}/{trial.max_attempts})[/yellow]"
+                )
+            else:
+                trial.status = TrialStatus.FAILED
+                trial.finished_at = utcnow()
+                console.print(
+                    f"[red]Trial {trial_id} FAILED (exception; max attempts)[/red]"
+                )
 
         trial.current_worker_id = None
         trial.current_queue_slot = None

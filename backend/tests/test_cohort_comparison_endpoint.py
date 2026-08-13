@@ -123,6 +123,10 @@ async def test_concurrent_misses_generate_only_once(monkeypatch):
     monkeypatch.setattr(
         cc, "resolve_cohorts", AsyncMock(return_value=(successful, failing))
     )
+    # These tests are about the lock and the read transaction, not about S3.
+    # An empty map is also the real degraded path: the comparison runs on
+    # summaries alone when no trajectory can be fetched.
+    monkeypatch.setattr(cc, "_fetch_trajectories", AsyncMock(return_value={}))
     monkeypatch.setattr(cc, "_load_fresh_comparison", fake_load_fresh)
     monkeypatch.setattr(AnalyzerBlock, "run", fake_run)
 
@@ -164,6 +168,10 @@ async def test_refresh_ignores_a_fresh_block_inside_the_lock(monkeypatch):
     monkeypatch.setattr(
         cc, "resolve_cohorts", AsyncMock(return_value=(successful, failing))
     )
+    # These tests are about the lock and the read transaction, not about S3.
+    # An empty map is also the real degraded path: the comparison runs on
+    # summaries alone when no trajectory can be fetched.
+    monkeypatch.setattr(cc, "_fetch_trajectories", AsyncMock(return_value={}))
     monkeypatch.setattr(cc, "_load_fresh_comparison", load_fresh)
     monkeypatch.setattr(AnalyzerBlock, "run", run)
 
@@ -346,6 +354,7 @@ async def test_read_transaction_ends_before_the_generation(monkeypatch):
         "resolve_cohorts",
         AsyncMock(return_value=(_fake_trials("s"), _fake_trials("f"))),
     )
+    monkeypatch.setattr(cc, "_fetch_trajectories", AsyncMock(return_value={}))
     monkeypatch.setattr(cc, "_load_fresh_comparison", AsyncMock(return_value=None))
     monkeypatch.setattr(AnalyzerBlock, "run", fake_run)
 
@@ -371,6 +380,7 @@ async def test_read_transaction_ends_before_waiting_on_the_lock(monkeypatch):
         "resolve_cohorts",
         AsyncMock(return_value=(_fake_trials("s"), _fake_trials("f"))),
     )
+    monkeypatch.setattr(cc, "_fetch_trajectories", AsyncMock(return_value={}))
     monkeypatch.setattr(cc, "_load_fresh_comparison", AsyncMock(return_value=None))
     monkeypatch.setattr(
         AnalyzerBlock, "run", AsyncMock(return_value=AnalyzerOutput(output=dict(COMPARISON)))
@@ -393,3 +403,37 @@ async def test_read_transaction_ends_before_waiting_on_the_lock(monkeypatch):
     finally:
         held.release()
     await pending
+
+
+@pytest.mark.asyncio
+async def test_read_transaction_ends_after_the_trajectory_fetch(monkeypatch):
+    """Fetching the cohort's trajectories reopens a read transaction, and the
+    claude-code run that follows takes minutes. The pre-lock release happens
+    before that query, so it cannot cover it -- this asserts the second one."""
+    from oddish.blocks.analyzer.analyzer_block import AnalyzerBlock, AnalyzerOutput
+
+    session = _session_with_commit_spy()
+    at_fetch = {}
+
+    async def fake_fetch(_session, _trial_ids):
+        at_fetch["count"] = session.commit.await_count
+        return {}
+
+    async def fake_run(self):
+        at_fetch["at_run"] = session.commit.await_count
+        return AnalyzerOutput(output=dict(COMPARISON))
+
+    monkeypatch.setattr(
+        cc,
+        "resolve_cohorts",
+        AsyncMock(return_value=(_fake_trials("s"), _fake_trials("f"))),
+    )
+    monkeypatch.setattr(cc, "_load_fresh_comparison", AsyncMock(return_value=None))
+    monkeypatch.setattr(cc, "_fetch_trajectories", fake_fetch)
+    monkeypatch.setattr(AnalyzerBlock, "run", fake_run)
+
+    await cc.get_or_generate_comparison(
+        session, "v-fetch", task_id="t-fetch", task_name="task"
+    )
+
+    assert at_fetch["at_run"] > at_fetch["count"]
