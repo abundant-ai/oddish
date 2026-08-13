@@ -505,14 +505,21 @@ export function TaskFilesPanel({
   // opening onto an empty pane: it is gated server-side on having enough
   // classified runs, and it is the only thing in this pane. The public route
   // is a pure cache read, so a 404 is cheap and final.
-  const { data: capabilityData } = useCohortComparison(
-    capabilityOnly ? effectiveChecksTaskId : null,
-    baseUrl,
-    overviewVersion,
-  );
+  const { data: capabilityData, isLoading: capabilityLoading } =
+    useCohortComparison(
+      capabilityOnly ? effectiveChecksTaskId : null,
+      baseUrl,
+      overviewVersion,
+    );
+  // Whether a non-file pane exists at all. Synchronous, so it cannot change
+  // under the file listing: `buildListingUrl` reads it (to decide `stream=1`)
+  // and the fetch effect depends on it, so flipping it mid-flight would abort
+  // the in-flight listing and refetch. The capability pane's own arrival is
+  // handled by `overviewShowing` below instead.
+  const overviewPaneExists =
+    effectiveChecksTaskId !== null && (showAnalysis !== false || capabilityOnly);
   const overviewAvailable =
-    effectiveChecksTaskId !== null &&
-    (showAnalysis !== false || (capabilityOnly && capabilityData != null));
+    overviewPaneExists && (!capabilityOnly || capabilityData != null);
   // Until /detail answers, the checks state is unknown, not "unaudited":
   // an enabled Run button on the misread queues an audit that wipes findings.
   // Never in the capability-only pane: `checksKey` is null there, so /detail
@@ -553,6 +560,8 @@ export function TaskFilesPanel({
   // the main pane must both use it: with the overview hidden (public share),
   // overviewSelected stays true but the pane shows a file.
   const overviewShowing = overviewSelected && overviewAvailable;
+  // Still deciding whether the share pane has an analysis to show.
+  const capabilityPending = capabilityOnly && capabilityLoading;
   const [loadingFullFile, setLoadingFullFile] = useState(false);
   const [viewMode, setViewMode] = useState<"rendered" | "raw">("rendered");
   const [copiedTaskName, setCopiedTaskName] = useState(false);
@@ -713,7 +722,7 @@ export function TaskFilesPanel({
       params.set("inline", "0");
       params.set("presign", "0");
     }
-    if (!overviewAvailable) {
+    if (!overviewPaneExists) {
       params.set("stream", "1");
     }
     if (shouldScopeFilesToVersion && currentVersion != null) {
@@ -726,7 +735,7 @@ export function TaskFilesPanel({
     shouldScopeFilesToVersion,
     currentVersion,
     currentContentHash,
-    overviewAvailable,
+    overviewPaneExists,
     loadFilesLazily,
   ]);
 
@@ -973,19 +982,6 @@ export function TaskFilesPanel({
       const applyListing = (tree: TreeNode[]) => {
         paintedTree = true;
         setFileTree(tree);
-        // A deep-linked initialFilePath owns the first selection: letting
-        // the default auto-select land first would report the wrong path
-        // upward and clear the link's line anchor before the target file
-        // is applied.
-        if (!overviewAvailable && !initialFilePathRef.current) {
-          const defaultFile =
-            findNodeBySuffix(tree, "instruction.md") ??
-            tree.find((node) => node.type === "file") ??
-            findFirstFile(tree);
-          if (defaultFile) {
-            setSelectedFilePath(defaultFile.path);
-          }
-        }
       };
 
       try {
@@ -1052,8 +1048,30 @@ export function TaskFilesPanel({
     filesUrl,
     resolvedFilesUrl,
     buildListingUrl,
-    overviewAvailable,
+    overviewPaneExists,
   ]);
+
+  // Paint a default file when this pane will never show a non-file view.
+  //
+  // Split out of the listing effect deliberately. It depends on
+  // `overviewAvailable`, which on the share pane only settles once the
+  // comparison resolves — leaving it inside would either re-run the listing
+  // (aborting an in-flight fetch) or read a stale value and never select
+  // anything when the comparison comes back empty.
+  //
+  // A deep-linked initialFilePath owns the first selection: letting the
+  // default land first would report the wrong path upward and clear the
+  // link's line anchor before the target file is applied.
+  useEffect(() => {
+    if (overviewAvailable || capabilityPending) return;
+    if (initialFilePathRef.current || selectedFilePath) return;
+    if (!fileTree.length) return;
+    const defaultFile =
+      findNodeBySuffix(fileTree, "instruction.md") ??
+      fileTree.find((node) => node.type === "file") ??
+      findFirstFile(fileTree);
+    if (defaultFile) setSelectedFilePath(defaultFile.path);
+  }, [overviewAvailable, capabilityPending, fileTree, selectedFilePath]);
 
   // Load full file content (when user clicks "Load full file")
   async function loadFullFile() {
@@ -1591,7 +1609,16 @@ export function TaskFilesPanel({
               </div>
             )}
             <div ref={contentRef} className="bg-card flex-1 overflow-auto">
-              {overviewShowing && capabilityOnly ? (
+              {capabilityPending && overviewSelected ? (
+                // Neither pane is knowable yet. Painting file content here and
+                // replacing it once the comparison lands is the yank; a
+                // skeleton holds the space for whichever one wins.
+                <div className="space-y-3 p-4">
+                  <Skeleton className="h-4 w-48" />
+                  <Skeleton className="h-24 w-full" />
+                  <Skeleton className="h-24 w-full" />
+                </div>
+              ) : overviewShowing && capabilityOnly ? (
                 // The capability analysis on its own. Rendered here rather
                 // than through TaskOverviewPanel so the QA sections beside it
                 // are structurally absent on a share page, not conditionally

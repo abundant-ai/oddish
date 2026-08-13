@@ -14,8 +14,11 @@ an API container's three connections for minutes. A miss here is a 404.
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, HTTPException, Query
 
+from api.services.blocks.analyzer.cohort.cohort_prompts import short_model_name
 from oddish.core.model_display_names import (
     display_model_name,
     load_model_display_names,
@@ -25,6 +28,8 @@ from oddish.core.sharing.helpers import (
     get_public_trial_for_experiment,
 )
 from oddish.db import get_session
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Public"])
 
@@ -48,6 +53,40 @@ async def get_public_trial_trajectory_summary(
     return summary
 
 
+def _short_name_aliases(names: dict[str, str]) -> dict[str, str]:
+    """Index the alias table by the spelling the comparison actually stores.
+
+    ``load_model_display_names`` keys on the full id (``anthropic/claude-opus-4-8``)
+    because that is what ``trials.model`` holds. The comparison does not: both
+    ``models[].model`` and ``trial_models`` are written through
+    ``short_model_name``, which strips the provider and region
+    (``global.anthropic.claude-opus-4-8`` -> ``claude-opus-4-8``). Masking on the
+    full id alone therefore matches nothing and publishes the real names.
+
+    A short name can collide -- ``global.anthropic.…`` and ``us.anthropic.…``
+    reduce to one string. When two aliases disagree on a collision the key is
+    dropped rather than guessed: naming the wrong model misattributes the
+    behaviour the analysis describes, which is worse than leaving the short
+    name showing.
+    """
+    short: dict[str, str] = {}
+    dropped: set[str] = set()
+    for key in sorted(names):
+        alias = names[key]
+        name = short_model_name(key)
+        if not name or name == key:
+            continue
+        if short.setdefault(name, alias) != alias:
+            dropped.add(name)
+    for name in dropped:
+        short.pop(name, None)
+        logger.warning(
+            "model display names disagree for short name %r; leaving it unmasked",
+            name,
+        )
+    return {**short, **names}
+
+
 def _mask_models(comparison: dict, names: dict[str, str]) -> dict:
     """Rewrite the comparison's model ids through the operator alias table.
 
@@ -56,6 +95,7 @@ def _mask_models(comparison: dict, names: dict[str, str]) -> dict:
     """
     if not names:
         return comparison
+    names = _short_name_aliases(names)
     masked = dict(comparison)
     models = masked.get("models")
     if isinstance(models, dict):
@@ -79,6 +119,33 @@ def _mask_models(comparison: dict, names: dict[str, str]) -> dict:
     return masked
 
 
+async def _version_is_in_experiment(
+    session, experiment_id: str, task_version_id: str
+) -> bool:
+    """Whether the shared experiment has a trial on this task version.
+
+    Membership goes through ``trial_in_experiment`` -- a collection gathers
+    trials that keep the ``experiment_id`` of wherever they ran, so an FK-only
+    filter misses them.
+    """
+    from sqlalchemy import select
+
+    from oddish.core.experiment_membership import trial_in_experiment
+    from oddish.db.models import TrialModel
+
+    return (
+        await session.execute(
+            select(TrialModel.id)
+            .where(
+                TrialModel.task_version_id == task_version_id,
+                TrialModel.is_probe.is_(False),
+                trial_in_experiment(experiment_id),
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none() is not None
+
+
 @router.get("/public/experiments/{public_token}/tasks/{task_id}/cohort-comparison")
 async def get_public_task_cohort_comparison(
     public_token: str,
@@ -99,7 +166,7 @@ async def get_public_task_cohort_comparison(
         resolved = await get_public_task_for_experiment(session, public_token, task_id)
         if resolved is None:
             raise HTTPException(status_code=404, detail="Task not found")
-        _, task, _ = resolved
+        experiment, task, _ = resolved
         if not task.current_version_id:
             raise HTTPException(status_code=404, detail="Task not found")
         version_id = task.current_version_id
@@ -117,6 +184,13 @@ async def get_public_task_cohort_comparison(
             ).scalar_one_or_none()
             if version_id is None:
                 raise HTTPException(status_code=404, detail="Task version not found")
+        # The token publishes an experiment, not a task's whole history. Without
+        # this, `?version=` walks every version the task ever had -- including
+        # ones this experiment never ran, whose trial ids, models and trajectory
+        # quotes the share was never meant to carry. Bound it to the versions
+        # the share actually displays.
+        if not await _version_is_in_experiment(session, experiment.id, version_id):
+            raise HTTPException(status_code=404, detail="Task version not found")
         comparison = await load_stored_comparison(
             session, version_id, task_id=task.id
         )

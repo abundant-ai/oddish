@@ -156,6 +156,15 @@ def test_summary_404_when_token_does_not_expose_the_trial(client, patched_sessio
 # --------------------------------------------------------------------------
 
 
+@pytest.fixture
+def version_in_experiment():
+    """Default the membership check to true; the scoping tests override it."""
+    return patch(
+        "api.routers.public_analysis._version_is_in_experiment",
+        new=AsyncMock(return_value=True),
+    )
+
+
 def _public_task(current_version_id: str | None = "tv-current"):
     task = SimpleNamespace(
         id="task-1", name="task-one", current_version_id=current_version_id
@@ -164,10 +173,10 @@ def _public_task(current_version_id: str | None = "tv-current"):
 
 
 def test_comparison_returns_stored_block_and_stamps_version(
-    client, patched_session, no_display_names
+    client, patched_session, no_display_names, version_in_experiment
 ):
     stored = {"schema_version": 3, "categories": [], "cohort_success": []}
-    with patched_session, no_display_names, patch(
+    with patched_session, no_display_names, version_in_experiment, patch(
         "api.routers.public_analysis.get_public_task_for_experiment",
         new=_public_task(),
     ), patch(
@@ -182,13 +191,13 @@ def test_comparison_returns_stored_block_and_stamps_version(
 
 
 def test_comparison_resolves_the_requested_version_number(
-    client, fake_session, patched_session, no_display_names
+    client, fake_session, patched_session, no_display_names, version_in_experiment
 ):
     fake_session.execute.return_value = MagicMock(
         scalar_one_or_none=MagicMock(return_value="tv-2")
     )
     load = AsyncMock(return_value={"categories": []})
-    with patched_session, no_display_names, patch(
+    with patched_session, no_display_names, version_in_experiment, patch(
         "api.routers.public_analysis.get_public_task_for_experiment",
         new=_public_task(),
     ), patch("api.services.cohort_comparison.load_stored_comparison", new=load):
@@ -216,9 +225,11 @@ def test_comparison_404_for_unknown_version_number(
     load.assert_not_awaited()
 
 
-def test_comparison_miss_is_404_and_never_generates(client, patched_session):
+def test_comparison_miss_is_404_and_never_generates(
+    client, patched_session, version_in_experiment
+):
     generate = AsyncMock()
-    with patched_session, patch(
+    with patched_session, version_in_experiment, patch(
         "api.routers.public_analysis.get_public_task_for_experiment",
         new=_public_task(),
     ), patch(
@@ -243,7 +254,9 @@ def test_comparison_404_when_token_does_not_expose_the_task(client, patched_sess
     load.assert_not_awaited()
 
 
-def test_comparison_masks_model_ids_with_operator_aliases(client, patched_session):
+def test_comparison_masks_model_ids_with_operator_aliases(
+    client, patched_session, version_in_experiment
+):
     """The share view hides real model ids in the trial grid (#1097). The
     comparison names models too, and must be masked by the same table or the
     page hides the id above and prints it below."""
@@ -256,7 +269,7 @@ def test_comparison_masks_model_ids_with_operator_aliases(client, patched_sessio
         "trial_models": {"t-1": "anthropic/claude-opus-4-8", "t-2": "openai/gpt-5.4"},
     }
     aliases = {"anthropic/claude-opus-4-8": "Model A", "openai/gpt-5.4": "Model B"}
-    with patched_session, patch(
+    with patched_session, version_in_experiment, patch(
         "api.routers.public_analysis.load_model_display_names",
         new=AsyncMock(return_value=aliases),
     ), patch(
@@ -275,3 +288,88 @@ def test_comparison_masks_model_ids_with_operator_aliases(client, patched_sessio
     # The stored block is an ORM row's `output` on a live session — masking
     # must not write through to it.
     assert stored["trial_models"]["t-1"] == "anthropic/claude-opus-4-8"
+
+
+def test_comparison_masks_the_SHORT_names_the_block_actually_stores(
+    client, patched_session, version_in_experiment
+):
+    """The production shape, which the full-id test above does not cover.
+
+    `models[].model` and `trial_models` are written through `short_model_name`,
+    so the block holds `claude-opus-4-8` while the alias table keys on
+    `global.anthropic.claude-opus-4-8`. Masking only the full id matches nothing
+    and publishes the real names under a page that hides them in the grid.
+    """
+    stored = {
+        "categories": [],
+        "models": {
+            "successful": [{"model": "claude-opus-4-8", "trials": 4}],
+            "failing": [{"model": "gemini-3.1-pro-preview", "trials": 3}],
+        },
+        "trial_models": {"t-1": "claude-opus-4-8", "t-2": "gemini-3.1-pro-preview"},
+    }
+    aliases = {
+        "global.anthropic.claude-opus-4-8": "Model A",
+        "google/gemini-3.1-pro-preview": "Model B",
+    }
+    with patched_session, version_in_experiment, patch(
+        "api.routers.public_analysis.load_model_display_names",
+        new=AsyncMock(return_value=aliases),
+    ), patch(
+        "api.routers.public_analysis.get_public_task_for_experiment",
+        new=_public_task(),
+    ), patch(
+        "api.services.cohort_comparison.load_stored_comparison",
+        new=AsyncMock(return_value=stored),
+    ):
+        resp = client.get(COMPARISON_URL)
+    body = resp.json()
+    assert body["models"]["successful"] == [{"model": "Model A", "trials": 4}]
+    assert body["models"]["failing"] == [{"model": "Model B", "trials": 3}]
+    assert body["trial_models"] == {"t-1": "Model A", "t-2": "Model B"}
+
+
+def test_comparison_leaves_a_colliding_short_name_unmasked(
+    client, patched_session, version_in_experiment
+):
+    """Two regions reduce to one short name. Guessing between disagreeing
+    aliases would misattribute the behaviour the analysis describes."""
+    stored = {"categories": [], "trial_models": {"t-1": "claude-opus-4-8"}}
+    aliases = {
+        "global.anthropic.claude-opus-4-8": "Model A",
+        "us.anthropic.claude-opus-4-8": "Model Z",
+    }
+    with patched_session, version_in_experiment, patch(
+        "api.routers.public_analysis.load_model_display_names",
+        new=AsyncMock(return_value=aliases),
+    ), patch(
+        "api.routers.public_analysis.get_public_task_for_experiment",
+        new=_public_task(),
+    ), patch(
+        "api.services.cohort_comparison.load_stored_comparison",
+        new=AsyncMock(return_value=stored),
+    ):
+        resp = client.get(COMPARISON_URL)
+    assert resp.json()["trial_models"] == {"t-1": "claude-opus-4-8"}
+
+
+def test_comparison_404s_for_a_version_outside_the_shared_experiment(
+    client, fake_session, patched_session
+):
+    """The token publishes an experiment, not the task's whole history. A
+    version this experiment never ran carries trial ids, models and trajectory
+    quotes the share was never meant to expose."""
+    fake_session.execute.return_value = MagicMock(
+        scalar_one_or_none=MagicMock(return_value="tv-9")
+    )
+    load = AsyncMock()
+    with patched_session, patch(
+        "api.routers.public_analysis.get_public_task_for_experiment",
+        new=_public_task(),
+    ), patch(
+        "api.routers.public_analysis._version_is_in_experiment",
+        new=AsyncMock(return_value=False),
+    ), patch("api.services.cohort_comparison.load_stored_comparison", new=load):
+        resp = client.get(f"{COMPARISON_URL}?version=9")
+    assert resp.status_code == 404
+    load.assert_not_awaited()
