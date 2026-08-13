@@ -114,7 +114,7 @@ async def _summaries_for(session: AsyncSession, trial_ids: list[str]) -> dict:
 
 
 async def resolve_cohorts(
-    session: AsyncSession, task_version_id: str
+    session: AsyncSession, task_version_id: str, experiment_id: str | None = None
 ) -> tuple[list[dict], list[dict]]:
     """Return (successful, failing) trials with their component streams.
 
@@ -123,22 +123,23 @@ async def resolve_cohorts(
     BAD_SUCCESS/BAD_FAILURE/HARNESS_ERROR trajectories remain analyzable.
     """
     out: dict[str, list[dict]] = {SUCCESS_CLASS: [], FAILURE_CLASS: []}
-    rows = (
-        await session.execute(
-            select(
-                TrialModel.id,
-                TrialModel.total_steps,
-                TrialModel.trajectory_summary,
-                TrialModel.model,
-                TrialModel.analysis["classification"].astext,
-                TrialModel.reward,
-            ).where(
-                TrialModel.task_version_id == task_version_id,
-                TrialModel.is_probe.is_(False),
-                TrialModel.superseded_by_trial_id.is_(None),
-            )
-        )
-    ).all()
+    query = select(
+        TrialModel.id,
+        TrialModel.total_steps,
+        TrialModel.trajectory_summary,
+        TrialModel.model,
+        TrialModel.analysis["classification"].astext,
+        TrialModel.reward,
+    ).where(
+        TrialModel.task_version_id == task_version_id,
+        TrialModel.is_probe.is_(False),
+        TrialModel.superseded_by_trial_id.is_(None),
+    )
+    if experiment_id is not None:
+        from oddish.core.experiment_membership import trial_in_experiment
+
+        query = query.where(trial_in_experiment(experiment_id))
+    rows = (await session.execute(query)).all()
     ids = [r[0] for r in rows]
     total_steps = {r[0]: r[1] for r in rows}
     models = {r[0]: r[3] for r in rows}
@@ -198,7 +199,7 @@ async def resolve_cohorts(
 
 
 async def resolve_cohort_membership(
-    session: AsyncSession, task_version_id: str
+    session: AsyncSession, task_version_id: str, experiment_id: str | None = None
 ) -> tuple[list[str], list[str]]:
     """Outcome-side ids before summaries exist.
 
@@ -208,20 +209,17 @@ async def resolve_cohort_membership(
     """
     from oddish.core.helpers import _has_fetchable_trajectory
 
-    trials = (
-        (
-            await session.execute(
-                select(TrialModel).where(
-                    TrialModel.task_version_id == task_version_id,
-                    TrialModel.is_probe.is_(False),
-                    TrialModel.superseded_by_trial_id.is_(None),
-                    TrialModel.finished_at.isnot(None),
-                )
-            )
-        )
-        .scalars()
-        .all()
+    query = select(TrialModel).where(
+        TrialModel.task_version_id == task_version_id,
+        TrialModel.is_probe.is_(False),
+        TrialModel.superseded_by_trial_id.is_(None),
+        TrialModel.finished_at.isnot(None),
     )
+    if experiment_id is not None:
+        from oddish.core.experiment_membership import trial_in_experiment
+
+        query = query.where(trial_in_experiment(experiment_id))
+    trials = (await session.execute(query)).scalars().all()
     out: dict[str, list[str]] = {SUCCESS_CLASS: [], FAILURE_CLASS: []}
     for trial in trials:
         if not _has_fetchable_trajectory(trial):
@@ -432,6 +430,7 @@ def stale_reason(
     current_hash: str,
     schema_version: int,
     task_version_id: str,
+    experiment_id: str | None = None,
 ) -> str | None:
     """Which freshness key drifted, or None when the block is fresh.
 
@@ -452,6 +451,8 @@ def stale_reason(
         return "unknown"
     if block_metadata.get("task_version_id") != task_version_id:
         return "version"
+    if block_metadata.get("experiment_id") != experiment_id:
+        return "experiment"
     if block_metadata.get("schema_version") != schema_version:
         return "schema"
     if block_metadata.get("cohort_hash") != current_hash:
@@ -486,7 +487,11 @@ _GEN_LOCKS: MutableMapping[tuple[str, str], asyncio.Lock] = defaultdict(asyncio.
 
 
 async def _load_latest_block(
-    session: AsyncSession, *, task_id: str, task_version_id: str
+    session: AsyncSession,
+    *,
+    task_id: str,
+    task_version_id: str,
+    experiment_id: str | None = None,
 ) -> AnalyzerBlockModel | None:
     """The newest SUCCESS agent-capabilities block for a version, fresh or not.
 
@@ -501,20 +506,25 @@ async def _load_latest_block(
     shadow this version's fresh one, and switching between two versions then
     regenerates both on every view.
     """
+    query = select(AnalyzerBlockModel).where(
+        AnalyzerBlockModel.task_id == task_id,
+        AnalyzerBlockModel.type.in_(
+            (AnalyzerType.AGENT_CAPABILITIES.value, LEGACY_BLOCK_TYPE)
+        ),
+        AnalyzerBlockModel.status == JobStatus.SUCCESS,
+        AnalyzerBlockModel.block_metadata["task_version_id"].astext == task_version_id,
+    )
+    if experiment_id is None:
+        query = query.where(
+            AnalyzerBlockModel.block_metadata["experiment_id"].astext.is_(None)
+        )
+    else:
+        query = query.where(
+            AnalyzerBlockModel.block_metadata["experiment_id"].astext == experiment_id
+        )
     return (
         await session.execute(
-            select(AnalyzerBlockModel)
-            .where(
-                AnalyzerBlockModel.task_id == task_id,
-                AnalyzerBlockModel.type.in_(
-                    (AnalyzerType.AGENT_CAPABILITIES.value, LEGACY_BLOCK_TYPE)
-                ),
-                AnalyzerBlockModel.status == JobStatus.SUCCESS,
-                AnalyzerBlockModel.block_metadata["task_version_id"].astext
-                == task_version_id,
-            )
-            .order_by(AnalyzerBlockModel.created_at.desc())
-            .limit(1)
+            query.order_by(AnalyzerBlockModel.created_at.desc()).limit(1)
         )
     ).scalar_one_or_none()
 
@@ -526,16 +536,21 @@ async def _load_fresh_analysis(
     task_version_id: str,
     current_hash: str,
     schema_version: int,
+    experiment_id: str | None = None,
 ) -> dict | None:
     """The latest fresh SUCCESS agent-capabilities block's output, or None."""
     row = await _load_latest_block(
-        session, task_id=task_id, task_version_id=task_version_id
+        session,
+        task_id=task_id,
+        task_version_id=task_version_id,
+        experiment_id=experiment_id,
     )
     if row is not None and not is_stale(
         row.block_metadata,
         current_hash=current_hash,
         schema_version=schema_version,
         task_version_id=task_version_id,
+        experiment_id=experiment_id,
     ):
         return row.output
     return None
@@ -554,6 +569,7 @@ async def load_stored_analysis(
     *,
     task_id: str,
     allow_cohort_drift: bool = False,
+    experiment_id: str | None = None,
 ) -> StoredComparison | None:
     """The stored comparison for a version, or None. Never generates.
 
@@ -578,12 +594,15 @@ async def load_stored_analysis(
     )
 
     successful_ids, failing_ids = await resolve_cohort_membership(
-        session, task_version_id
+        session, task_version_id, experiment_id
     )
     if max(len(successful_ids), len(failing_ids)) < MIN_COHORT:
         return None
     row = await _load_latest_block(
-        session, task_id=task_id, task_version_id=task_version_id
+        session,
+        task_id=task_id,
+        task_version_id=task_version_id,
+        experiment_id=experiment_id,
     )
     if row is None:
         return None
@@ -592,6 +611,7 @@ async def load_stored_analysis(
         current_hash=cohort_hash(successful_ids, failing_ids),
         schema_version=SCHEMA_VERSION,
         task_version_id=task_version_id,
+        experiment_id=experiment_id,
     )
     if reason is None:
         return StoredComparison(row.output, stale=False)
@@ -600,39 +620,41 @@ async def load_stored_analysis(
     return None
 
 
-async def analysis_is_eligible(session: AsyncSession, task_version_id: str) -> bool:
+async def analysis_is_eligible(
+    session: AsyncSession, task_version_id: str, experiment_id: str | None = None
+) -> bool:
     """Whether the version has any completed, fetchable trajectory.
 
     Summaries and QA are deliberately absent from this gate: both are inputs
     the durable analyzer job can derive after it has been queued.
     """
     successful_ids, failing_ids = await resolve_cohort_membership(
-        session, task_version_id
+        session, task_version_id, experiment_id
     )
     return bool(successful_ids or failing_ids)
 
 
 async def _ensure_trajectory_summaries(
-    session: AsyncSession, task_version_id: str, triggered_by_user_id: str | None
+    session: AsyncSession,
+    task_version_id: str,
+    triggered_by_user_id: str | None,
+    experiment_id: str | None = None,
 ) -> None:
     """Generate missing component summaries inside the durable worker job."""
     from api.services.summarize_trajectory import get_or_generate_summary
     from oddish.core.helpers import _has_fetchable_trajectory
 
-    trials = (
-        (
-            await session.execute(
-                select(TrialModel).where(
-                    TrialModel.task_version_id == task_version_id,
-                    TrialModel.is_probe.is_(False),
-                    TrialModel.superseded_by_trial_id.is_(None),
-                    TrialModel.finished_at.isnot(None),
-                )
-            )
-        )
-        .scalars()
-        .all()
+    query = select(TrialModel).where(
+        TrialModel.task_version_id == task_version_id,
+        TrialModel.is_probe.is_(False),
+        TrialModel.superseded_by_trial_id.is_(None),
+        TrialModel.finished_at.isnot(None),
     )
+    if experiment_id is not None:
+        from oddish.core.experiment_membership import trial_in_experiment
+
+        query = query.where(trial_in_experiment(experiment_id))
+    trials = (await session.execute(query)).scalars().all()
     for trial in trials:
         if trial.trajectory_summary or not _has_fetchable_trajectory(trial):
             continue
@@ -656,32 +678,35 @@ async def enqueue_analysis(
     task_name: str,
     org_id: str | None,
     triggered_by_user_id: str | None,
+    experiment_id: str | None = None,
 ) -> WorkerJobModel:
     """Return the active generation job, or durably enqueue one.
 
     The version row is locked by callers before this function, making the
     read-then-insert idempotent across API containers and public page views.
     """
-    active = (
-        await session.execute(
-            select(WorkerJobModel)
-            .where(
-                WorkerJobModel.kind == WorkerJobKind.ANALYZER,
-                WorkerJobModel.subject_table == "task_versions",
-                WorkerJobModel.subject_id == task_version_id,
-                WorkerJobModel.payload["mode"].astext == "agent_capabilities",
-                WorkerJobModel.status.in_(
-                    (
-                        WorkerJobStatus.QUEUED,
-                        WorkerJobStatus.RUNNING,
-                        WorkerJobStatus.RETRYING,
-                        WorkerJobStatus.BLOCKED,
-                    )
-                ),
+    query = select(WorkerJobModel).where(
+        WorkerJobModel.kind == WorkerJobKind.ANALYZER,
+        WorkerJobModel.subject_table == "task_versions",
+        WorkerJobModel.subject_id == task_version_id,
+        WorkerJobModel.payload["mode"].astext == "agent_capabilities",
+        WorkerJobModel.status.in_(
+            (
+                WorkerJobStatus.QUEUED,
+                WorkerJobStatus.RUNNING,
+                WorkerJobStatus.RETRYING,
+                WorkerJobStatus.BLOCKED,
             )
-            .order_by(WorkerJobModel.created_at.desc())
-            .limit(1)
+        ),
+    )
+    if experiment_id is None:
+        query = query.where(WorkerJobModel.payload["experiment_id"].astext.is_(None))
+    else:
+        query = query.where(
+            WorkerJobModel.payload["experiment_id"].astext == experiment_id
         )
+    active = (
+        await session.execute(query.order_by(WorkerJobModel.created_at.desc()).limit(1))
     ).scalar_one_or_none()
     if active is not None:
         return active
@@ -701,6 +726,7 @@ async def enqueue_analysis(
                 "task_version_id": task_version_id,
                 "task_name": task_name,
                 "triggered_by_user_id": triggered_by_user_id,
+                "experiment_id": experiment_id,
             },
             subject_table="task_versions",
             subject_id=task_version_id,
@@ -712,11 +738,17 @@ async def enqueue_analysis(
 async def run_queued_analysis(**kwargs) -> dict | None:
     """Worker provider: derive summaries, then run capability analysis."""
     async with get_session() as session:
-        await _ensure_trajectory_summaries(
-            session,
-            kwargs["task_version_id"],
-            kwargs.get("triggered_by_user_id"),
+        ensure_args = (
+            (session, kwargs["task_version_id"], kwargs.get("triggered_by_user_id"))
+            if kwargs.get("experiment_id") is None
+            else (
+                session,
+                kwargs["task_version_id"],
+                kwargs.get("triggered_by_user_id"),
+                kwargs["experiment_id"],
+            )
         )
+        await _ensure_trajectory_summaries(*ensure_args)
         return await get_or_generate_analysis(session, **kwargs)
 
 
@@ -754,6 +786,7 @@ async def get_or_generate_analysis(
     task_name: str,
     refresh: bool = False,
     triggered_by_user_id: str | None = None,
+    experiment_id: str | None = None,
 ) -> dict | None:
     """Return the comparison, generating on miss. None when the gate fails.
 
@@ -776,7 +809,12 @@ async def get_or_generate_analysis(
     )
     from api.services.summarize_trajectory import resolve_summary_model
 
-    successful, failing = await resolve_cohorts(session, task_version_id)
+    cohort_args = (
+        (session, task_version_id)
+        if experiment_id is None
+        else (session, task_version_id, experiment_id)
+    )
+    successful, failing = await resolve_cohorts(*cohort_args)
     # One populated side is enough. Requiring both meant a task whose runs all
     # failed -- the case a reader most wants explained -- got silence, even
     # with ten classified failures on the table. What a cohort did is worth
@@ -789,12 +827,17 @@ async def get_or_generate_analysis(
     )
 
     if not refresh:
-        fresh = await _load_fresh_analysis(
-            session,
+        fresh_kwargs = dict(
             task_id=task_id,
             task_version_id=task_version_id,
             current_hash=current,
             schema_version=SCHEMA_VERSION,
+        )
+        if experiment_id is not None:
+            fresh_kwargs["experiment_id"] = experiment_id
+        fresh = await _load_fresh_analysis(
+            session,
+            **fresh_kwargs,
         )
         if fresh is not None:
             return fresh
@@ -805,7 +848,12 @@ async def get_or_generate_analysis(
     # someone else's generation as well as its own.
     await _end_read_transaction(session)
 
-    async with _GEN_LOCKS[(task_id, task_version_id)]:
+    lock_key = (
+        (task_id, task_version_id)
+        if experiment_id is None
+        else (task_id, f"{task_version_id}:{experiment_id}")
+    )
+    async with _GEN_LOCKS[lock_key]:
         # Re-check inside the lock -- another coroutine may have generated
         # one while this one waited. A refresh deliberately skips this: it
         # was explicitly asked for a new comparison, and the one waiting in
@@ -813,10 +861,7 @@ async def get_or_generate_analysis(
         if not refresh:
             fresh = await _load_fresh_analysis(
                 session,
-                task_id=task_id,
-                task_version_id=task_version_id,
-                current_hash=current,
-                schema_version=SCHEMA_VERSION,
+                **fresh_kwargs,
             )
             if fresh is not None:
                 return fresh
@@ -859,6 +904,7 @@ async def get_or_generate_analysis(
                     "schema_version": SCHEMA_VERSION,
                     "cohort_hash": current,
                     "task_version_id": task_version_id,
+                    "experiment_id": experiment_id,
                 },
                 # The CLI yields stream-json events, not the model's bare
                 # answer; this pulls the result payload out before validating.

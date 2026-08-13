@@ -115,6 +115,10 @@ def test_summary_ignores_a_stale_mirror(client, patched_session):
             "api.services.agent_capabilities.analysis_is_eligible",
             new=AsyncMock(return_value=False),
         ),
+        patch(
+            "api.routers.public_analysis.get_public_experiment",
+            new=AsyncMock(return_value=SimpleNamespace(id="exp-1")),
+        ),
     ):
         resp = client.get(SUMMARY_URL)
     assert resp.status_code == 404
@@ -168,6 +172,10 @@ def test_summary_miss_enqueues_capability_analysis(
             "api.services.agent_capabilities.analysis_is_eligible",
             new=AsyncMock(return_value=True),
         ),
+        patch(
+            "api.routers.public_analysis.get_public_experiment",
+            new=AsyncMock(return_value=SimpleNamespace(id="exp-1")),
+        ),
         patch("api.services.agent_capabilities.enqueue_analysis", new=enqueue),
     ):
         resp = client.get(SUMMARY_URL)
@@ -180,6 +188,7 @@ def test_summary_miss_enqueues_capability_analysis(
         task_name="task-one",
         org_id="org-1",
         triggered_by_user_id=None,
+        experiment_id="exp-1",
     )
 
 
@@ -324,6 +333,7 @@ def test_comparison_miss_enqueues_and_returns_202(
         resp = client.get(COMPARISON_URL)
     assert resp.status_code == 202
     assert resp.json() == {"status": "queued", "task_version_id": "tv-current"}
+    assert enqueue.await_args.kwargs["experiment_id"] == "exp-1"
     enqueue.assert_awaited_once()
 
 
@@ -475,6 +485,7 @@ def test_comparison_asks_for_the_drift_tolerant_read(
     ):
         client.get(COMPARISON_URL)
     assert load.await_args.kwargs["allow_cohort_drift"] is True
+    assert load.await_args.kwargs["experiment_id"] == "exp-1"
 
 
 def test_a_stale_comparison_is_served_and_asks_for_a_rebuild(
@@ -504,6 +515,7 @@ def test_a_stale_comparison_is_served_and_asks_for_a_rebuild(
     assert body["regenerating"] is True
     enqueue.assert_awaited_once()
     assert enqueue.await_args.kwargs["task_version_id"] == "tv-current"
+    assert enqueue.await_args.kwargs["experiment_id"] == "exp-1"
 
 
 def test_a_fresh_comparison_asks_for_no_rebuild(

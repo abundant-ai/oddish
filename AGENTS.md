@@ -193,8 +193,11 @@ inline in an API request. Public requests remain bounded to the task versions
 published by their share token, and repeated views coalesce onto the same active
 job. A public trajectory-summary cache miss triggers that same job and returns
 202, so opening either shared surface generates missing summaries durably while
-the client polls. Any completed, fetchable trajectory is enough to queue
-analysis; cohort size is reported as evidence strength, not used as an
+the client polls. Public capability jobs, cache entries, summary warmup, and
+cohort queries are keyed by the published experiment as well as task version;
+they must never include trials from another experiment on the same version. Any
+completed, fetchable trajectory is enough to queue analysis; cohort size is
+reported as evidence strength, not used as an
 eligibility gate. The worker generates missing trajectory summaries before
 analysis. QA enriches the input but is optional: `GOOD_*`, `BAD_*`, and
 `HARNESS_ERROR` classifications

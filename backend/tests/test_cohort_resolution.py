@@ -1,9 +1,15 @@
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
 from api.services.agent_capabilities import (
     FAILURE_CLASS,
     MIN_COHORT,
     SUCCESS_CLASS,
     _cohort_for_trial,
     cohort_hash,
+    resolve_cohort_membership,
+    resolve_cohorts,
 )
 
 
@@ -36,3 +42,20 @@ def test_cohort_hash_separates_the_two_sides():
 
 def test_cohort_hash_changes_when_a_trial_is_added():
     assert cohort_hash(["a"], ["b"]) != cohort_hash(["a", "z"], ["b"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resolver", [resolve_cohorts, resolve_cohort_membership])
+async def test_public_cohort_queries_are_scoped_to_the_shared_experiment(resolver):
+    result = MagicMock()
+    result.all.return_value = []
+    result.scalars.return_value.all.return_value = []
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=result)
+
+    await resolver(session, "version-1", "experiment-1")
+
+    statement = session.execute.await_args.args[0]
+    compiled = str(statement.compile(compile_kwargs={"literal_binds": True}))
+    assert "experiment-1" in compiled
+    assert "experiment_trials" in compiled

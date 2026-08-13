@@ -23,6 +23,7 @@ from oddish.core.model_display_names import (
     load_model_display_names,
 )
 from oddish.core.sharing.helpers import (
+    get_public_experiment,
     get_public_task_for_experiment,
     get_public_trial_for_experiment,
 )
@@ -47,6 +48,7 @@ async def get_public_trial_trajectory_summary(
         summary = await load_stored_summary(session, trial)
         if summary is not None:
             return summary
+        experiment = await get_public_experiment(session, public_token)
 
         from api.services.agent_capabilities import (
             analysis_is_eligible,
@@ -55,7 +57,7 @@ async def get_public_trial_trajectory_summary(
         from oddish.db.models import TaskModel, TaskVersionModel
 
         if not trial.task_version_id or not await analysis_is_eligible(
-            session, trial.task_version_id
+            session, trial.task_version_id, experiment.id if experiment else None
         ):
             raise HTTPException(
                 status_code=404,
@@ -78,6 +80,7 @@ async def get_public_trial_trajectory_summary(
             task_name=task.name,
             org_id=task.org_id,
             triggered_by_user_id=None,
+            experiment_id=experiment.id if experiment else None,
         )
         response.status_code = status.HTTP_202_ACCEPTED
         return {"status": "queued", "task_version_id": trial.task_version_id}
@@ -228,10 +231,14 @@ async def get_public_task_agent_capabilities(
         # durable rebuild asked for below. A cold miss uses the same queue and
         # returns 202; neither path runs Claude Code in the API container.
         stored = await load_stored_analysis(
-            session, version_id, task_id=task.id, allow_cohort_drift=True
+            session,
+            version_id,
+            task_id=task.id,
+            allow_cohort_drift=True,
+            experiment_id=experiment.id,
         )
         if stored is None:
-            if not await analysis_is_eligible(session, version_id):
+            if not await analysis_is_eligible(session, version_id, experiment.id):
                 raise HTTPException(
                     status_code=404,
                     detail="No completed trajectories available to analyze",
@@ -250,6 +257,7 @@ async def get_public_task_agent_capabilities(
                 task_name=task.name,
                 org_id=task.org_id,
                 triggered_by_user_id=None,
+                experiment_id=experiment.id,
             )
             response.status_code = status.HTTP_202_ACCEPTED
             return {"status": "queued", "task_version_id": version_id}
@@ -269,6 +277,7 @@ async def get_public_task_agent_capabilities(
                 task_name=task.name,
                 org_id=task.org_id,
                 triggered_by_user_id=None,
+                experiment_id=experiment.id,
             )
             regenerating = True
         names = await load_model_display_names(session)
