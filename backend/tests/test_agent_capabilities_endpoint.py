@@ -107,7 +107,9 @@ async def test_concurrent_misses_generate_only_once(monkeypatch):
     run_calls = 0
     generated_row = {"done": False}
 
-    async def fake_load_fresh(session, *, task_id, task_version_id, current_hash, schema_version):
+    async def fake_load_fresh(
+        session, *, task_id, task_version_id, current_hash, schema_version
+    ):
         if generated_row["done"]:
             return {"cached": True}
         return None
@@ -133,12 +135,8 @@ async def test_concurrent_misses_generate_only_once(monkeypatch):
     session = _session_with_commit_spy()
 
     results = await asyncio.gather(
-        cc.get_or_generate_analysis(
-            session, "v1", task_id="t1", task_name="task"
-        ),
-        cc.get_or_generate_analysis(
-            session, "v1", task_id="t1", task_name="task"
-        ),
+        cc.get_or_generate_analysis(session, "v1", task_id="t1", task_name="task"),
+        cc.get_or_generate_analysis(session, "v1", task_id="t1", task_name="task"),
     )
 
     assert run_calls == 1
@@ -265,9 +263,7 @@ def test_pre_rename_route_is_still_served():
     """
     from api.routers.tasks import router
 
-    by_path = {
-        r.path: r.endpoint for r in router.routes if hasattr(r, "endpoint")
-    }
+    by_path = {r.path: r.endpoint for r in router.routes if hasattr(r, "endpoint")}
 
     assert "/tasks/{task_id}/agent-capabilities" in by_path
     assert "/tasks/{task_id}/cohort-comparison" in by_path
@@ -323,7 +319,12 @@ def _session_returning(*scalars):
     return _fake_get_session
 
 
-COMPARISON = {"schema_version": 1, "cohort_success": [], "cohort_failure": [], "categories": []}
+COMPARISON = {
+    "schema_version": 1,
+    "cohort_success": [],
+    "cohort_failure": [],
+    "categories": [],
+}
 
 
 def test_response_names_the_current_version_it_compared(client):
@@ -334,11 +335,12 @@ def test_response_names_the_current_version_it_compared(client):
 
     task = MagicMock(id="t-1", name="task", current_version_id="tv-current")
 
-    with patch(
-        "api.routers.tasks.get_session", new=_session_returning(task)
-    ), patch(
-        "api.services.agent_capabilities.load_stored_analysis",
-        new=AsyncMock(return_value=cc.StoredComparison(COMPARISON, stale=False)),
+    with (
+        patch("api.routers.tasks.get_session", new=_session_returning(task)),
+        patch(
+            "api.services.agent_capabilities.load_stored_analysis",
+            new=AsyncMock(return_value=cc.StoredComparison(COMPARISON, stale=False)),
+        ),
     ):
         resp = client.get("/tasks/t-1/agent-capabilities")
 
@@ -354,10 +356,13 @@ def test_response_names_the_requested_version_not_the_current_one(client):
     task = MagicMock(id="t-1", name="task", current_version_id="tv-current")
     load = AsyncMock(return_value=cc.StoredComparison(COMPARISON, stale=False))
 
-    with patch(
-        "api.routers.tasks.get_session",
-        new=_session_returning(task, "tv-3"),
-    ), patch("api.services.agent_capabilities.load_stored_analysis", new=load):
+    with (
+        patch(
+            "api.routers.tasks.get_session",
+            new=_session_returning(task, "tv-3"),
+        ),
+        patch("api.services.agent_capabilities.load_stored_analysis", new=load),
+    ):
         resp = client.get("/tasks/t-1/agent-capabilities?version=3")
 
     assert resp.status_code == 200
@@ -419,7 +424,9 @@ async def test_read_transaction_ends_before_waiting_on_the_lock(monkeypatch):
     monkeypatch.setattr(cc, "_fetch_trajectories", AsyncMock(return_value={}))
     monkeypatch.setattr(cc, "_load_fresh_analysis", AsyncMock(return_value=None))
     monkeypatch.setattr(
-        AnalyzerBlock, "run", AsyncMock(return_value=AnalyzerOutput(output=dict(COMPARISON)))
+        AnalyzerBlock,
+        "run",
+        AsyncMock(return_value=AnalyzerOutput(output=dict(COMPARISON))),
     )
 
     # Stand in for a generation already in flight for this (task, version).
@@ -473,3 +480,40 @@ async def test_read_transaction_ends_after_the_trajectory_fetch(monkeypatch):
     )
 
     assert at_fetch["at_run"] > at_fetch["count"]
+
+
+@pytest.mark.asyncio
+async def test_queued_analysis_generates_missing_summaries_before_comparison(
+    monkeypatch,
+):
+    """A cold capability request must not depend on someone opening Summary."""
+    from contextlib import asynccontextmanager
+
+    session = object()
+    ensure = AsyncMock()
+    generate = AsyncMock(return_value={"categories": []})
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield session
+
+    monkeypatch.setattr(cc, "get_session", fake_get_session)
+    monkeypatch.setattr(cc, "_ensure_trajectory_summaries", ensure)
+    monkeypatch.setattr(cc, "get_or_generate_analysis", generate)
+
+    result = await cc.run_queued_analysis(
+        task_id="task-1",
+        task_version_id="version-1",
+        task_name="task",
+        triggered_by_user_id="user-1",
+    )
+
+    ensure.assert_awaited_once_with(session, "version-1", "user-1")
+    generate.assert_awaited_once_with(
+        session,
+        task_id="task-1",
+        task_version_id="version-1",
+        task_name="task",
+        triggered_by_user_id="user-1",
+    )
+    assert result == {"categories": []}

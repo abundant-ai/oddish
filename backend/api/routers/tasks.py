@@ -96,8 +96,6 @@ from api.routers.task_submission import (
     resolve_submission_identity,
 )
 from dashboard_attribution import resolve_search_authors
-from api.services.agent_capabilities import get_or_generate_analysis
-from api.services.cohort_rollup import build_cohort_rollup
 from oddish.core.tasks import (
     complete_task_upload,
     initialize_task_upload,
@@ -624,25 +622,6 @@ async def get_experiment_cost_totals_route(
 
     async with get_session() as session:
         return await get_experiment_cost_totals(
-            session, experiment_id=experiment_id, org_id=auth.org_id
-        )
-
-
-@router.get("/experiments/{experiment_id}/cohort-rollup")
-async def get_experiment_cohort_rollup(
-    experiment_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
-) -> dict:
-    """Models x behaviour categories across the experiment's compared versions.
-
-    READ scope only, and deliberately no ``refresh``: the rollup reads stored
-    comparisons and reports what is missing. Generating here would put one LLM
-    call per uncompared task behind a page view.
-    """
-    auth.require_scope(APIKeyScope.READ)
-
-    async with get_session() as session:
-        return await build_cohort_rollup(
             session, experiment_id=experiment_id, org_id=auth.org_id
         )
 
@@ -1605,7 +1584,7 @@ async def get_task_agent_capabilities(
 ) -> dict:
     """Successful-vs-failing comparison for a task version.
 
-    404 when the task has too few classified trials to compare.
+    404 only when the task version has no completed, fetchable trajectory.
     """
     auth.require_scope(APIKeyScope.READ)
     if refresh:
@@ -1653,7 +1632,7 @@ async def get_task_agent_capabilities(
             if not await analysis_is_eligible(session, version_id):
                 raise HTTPException(
                     status_code=404,
-                    detail="Not enough classified trials to compare",
+                    detail="No completed trajectories available to analyze",
                 )
             # Serialize cache misses for this version across API containers.
             await session.execute(
