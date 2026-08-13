@@ -182,6 +182,8 @@ interface TrialDetailPanelProps {
   contentOnly?: boolean;
   /** Slot rendered alongside the navigation row — e.g. a "hide task" toggle. */
   paneAction?: React.ReactNode;
+  /** Start the trajectory tab at its token visualization when it first opens. */
+  initialTrajectoryScrollToTokenBand?: boolean;
 }
 
 // Hardcoded feature flag: shows the per-trial "Re-run analysis" button on the
@@ -848,6 +850,7 @@ export function TrialDetailPanel({
   allowDelete = false,
   contentOnly = false,
   paneAction,
+  initialTrajectoryScrollToTokenBand = false,
 }: TrialDetailPanelProps) {
   const { data: refreshedTrial } = useTrial(
     isOpen && revalidateTrial ? selectedTrial?.id : null,
@@ -1819,6 +1822,7 @@ export function TrialDetailPanel({
               trialId={trial.id}
               hasTrajectory={trial.has_trajectory}
               apiBaseUrl={apiBaseUrl}
+              initialScrollToTokenBand={initialTrajectoryScrollToTokenBand}
             />
           </ActiveTabContent>
         </div>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
@@ -29,6 +29,7 @@ interface TrajectoryActivityProps {
   apiBaseUrl?: string;
   stepIdToIndex: (stepId: number) => number;
   onStepSelect: (index: number) => void;
+  initialScrollToTokenBand?: boolean;
 }
 
 export function TrajectoryActivity({
@@ -37,12 +38,29 @@ export function TrajectoryActivity({
   apiBaseUrl = "/api",
   stepIdToIndex,
   onStepSelect,
+  initialScrollToTokenBand = false,
 }: TrajectoryActivityProps) {
   const { data } = useTrajectorySummary(trialId, apiBaseUrl);
   const cardRef = useRef<HTMLDivElement>(null);
+  const tokenBandRef = useRef<HTMLDivElement>(null);
+  const scrolledTrialRef = useRef<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
 
   const model = buildActivityViewModel(steps, data);
+
+  useEffect(() => {
+    if (
+      !initialScrollToTokenBand ||
+      !model?.hasTokens ||
+      scrolledTrialRef.current === trialId
+    ) {
+      return;
+    }
+
+    tokenBandRef.current?.scrollIntoView({ block: "start", inline: "nearest" });
+    scrolledTrialRef.current = trialId;
+  }, [initialScrollToTokenBand, model?.hasTokens, trialId]);
+
   if (!model) return null;
 
   const select = (stepId: number) => {
@@ -210,7 +228,10 @@ export function TrajectoryActivity({
                 </div>
 
                 {/* the same runs again, sized by tokens not step count */}
-                <div className="mt-3 flex items-baseline justify-between">
+                <div
+                  ref={tokenBandRef}
+                  className="mt-3 flex scroll-mt-3 items-baseline justify-between"
+                >
                   <span className="text-xs font-medium">
                     {TOKEN_BAND_TITLE}
                   </span>

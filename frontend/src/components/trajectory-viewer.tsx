@@ -692,12 +692,14 @@ interface TrajectoryViewerProps {
    */
   hasTrajectory?: boolean;
   apiBaseUrl?: string;
+  initialScrollToTokenBand?: boolean;
 }
 
 export function TrajectoryViewer({
   trialId,
   hasTrajectory,
   apiBaseUrl = "/api",
+  initialScrollToTokenBand = false,
 }: TrajectoryViewerProps) {
   const shouldFetch = hasTrajectory !== false;
   const {
@@ -962,6 +964,7 @@ export function TrajectoryViewer({
         apiBaseUrl={apiBaseUrl}
         stepIdToIndex={stepIdToIndex}
         onStepSelect={handleStepClick}
+        initialScrollToTokenBand={initialScrollToTokenBand}
       />
       <Card>
         <CardHeader className="pb-3">
