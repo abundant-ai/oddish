@@ -12,6 +12,8 @@ the queue execution code.
 
 from __future__ import annotations
 
+from typing import Awaitable, Callable
+
 from sqlalchemy import select, text
 
 from oddish.core.verdict_state import queue_verdict
@@ -55,6 +57,16 @@ class WorkerJobLike:
     worker_id: str | None
     queue_slot: int | None
     modal_function_call_id: str | None
+
+
+AgentCapabilitiesProvider = Callable[..., Awaitable[dict | None]]
+_agent_capabilities_provider: AgentCapabilitiesProvider | None = None
+
+
+def register_agent_capabilities_provider(provider: AgentCapabilitiesProvider) -> None:
+    """Install the hosted capability generator without importing backend code."""
+    global _agent_capabilities_provider
+    _agent_capabilities_provider = provider
 
 
 def _fail_retryable(message: str) -> JobOutcome:
@@ -479,6 +491,20 @@ class AnalyzerJobHandler:
         return payload
 
     async def run(self, job) -> JobOutcome:
+        payload = job.payload or {}
+        if payload.get("mode") == "agent_capabilities":
+            if _agent_capabilities_provider is None:
+                return _fail_permanent("Agent-capabilities provider is not registered")
+            result = await _agent_capabilities_provider(
+                task_id=payload.get("task_id"),
+                task_version_id=payload.get("task_version_id"),
+                task_name=payload.get("task_name"),
+                triggered_by_user_id=payload.get("triggered_by_user_id"),
+            )
+            if result is None:
+                return _fail_permanent("Not enough classified trials to analyze")
+            return JobOutcome.ok({"task_version_id": payload.get("task_version_id")})
+
         analyzer_id = job.subject_id or (job.payload or {}).get("analyzer_id")
         if not analyzer_id:
             raise ValueError(
@@ -524,4 +550,5 @@ __all__ = [
     "TagProjectJobHandler",
     "TaskExpandJobHandler",
     "TrialJobHandler",
+    "register_agent_capabilities_provider",
 ]

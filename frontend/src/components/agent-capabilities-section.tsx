@@ -1,9 +1,8 @@
 "use client";
 
-import useSWR from "swr";
 import { componentLabel } from "@/lib/trajectory-segments";
+import { useAgentCapabilities } from "@/lib/use-agent-capabilities";
 import type {
-  AgentCapabilities,
   BehaviorEvidence,
   BehaviorObservation,
 } from "@/lib/types";
@@ -51,10 +50,12 @@ function evidenceHref(
   taskId: string,
   trialId: string,
   step: number | null,
-  taskVersionId?: string
+  taskVersionId?: string,
+  shareToken?: string
 ): string {
   const params = new URLSearchParams();
-  if (taskVersionId) params.set("version", taskVersionId);
+  if (shareToken) params.set("task", taskId);
+  else if (taskVersionId) params.set("version", taskVersionId);
   // Full id: #1203 reverted the shortened ?trial= form and deleted
   // shortTrialParam with it. The sync no longer rewrites this param, so
   // there is no rewrite for the fragment to survive either -- but
@@ -62,8 +63,12 @@ function evidenceHref(
   // rebuild the address.
   params.set("trial", trialId);
   params.set("tab", "trajectory");
+  if (shareToken) params.set("taskPane", "capabilities");
   const anchor = step === null ? "" : `#step-${step}`;
-  return `/tasks/${encodeURIComponent(taskId)}?${params.toString()}${anchor}`;
+  const pathname = shareToken
+    ? `/share/${encodeURIComponent(shareToken)}`
+    : `/tasks/${encodeURIComponent(taskId)}`;
+  return `${pathname}?${params.toString()}${anchor}`;
 }
 
 /** What the blue part of a citation reads as. Step evidence is one step of a
@@ -109,12 +114,14 @@ function ObservationList({
   taskVersionId,
   trialModels,
   linkEvidence,
+  shareToken,
 }: {
   items: BehaviorObservation[];
   taskId: string;
   taskVersionId?: string;
   trialModels?: Record<string, string>;
   linkEvidence: boolean;
+  shareToken?: string;
 }) {
   if (!items.length) {
     return (
@@ -164,7 +171,8 @@ function ObservationList({
                         taskId,
                         ev.trial_id,
                         anchorStep(ev),
-                        taskVersionId
+                        taskVersionId,
+                        shareToken
                       )}
                       className="text-muted-foreground text-xs underline-offset-4 hover:underline"
                     >
@@ -185,17 +193,93 @@ function ObservationList({
   );
 }
 
+function categoryModels(
+  items: BehaviorObservation[],
+  trialModels?: Record<string, string>
+): { model: string; trials: number }[] {
+  const trialsByModel = new Map<string, Set<string>>();
+  for (const observation of items) {
+    for (const evidence of observation.evidence) {
+      const model = trialModels?.[evidence.trial_id];
+      if (!model) continue;
+      const trials = trialsByModel.get(model) ?? new Set<string>();
+      trials.add(evidence.trial_id);
+      trialsByModel.set(model, trials);
+    }
+  }
+  return Array.from(trialsByModel, ([model, trials]) => ({
+    model,
+    trials: trials.size,
+  })).sort((a, b) => a.model.localeCompare(b.model));
+}
+
+function CategoryCohort({
+  tone,
+  items,
+  taskId,
+  taskVersionId,
+  trialModels,
+  linkEvidence,
+  shareToken,
+}: {
+  tone: "successful" | "failing";
+  items: BehaviorObservation[];
+  taskId: string;
+  taskVersionId?: string;
+  trialModels?: Record<string, string>;
+  linkEvidence: boolean;
+  shareToken?: string;
+}) {
+  const models = categoryModels(items, trialModels);
+  const successful = tone === "successful";
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span
+          className={`${COHORT_HEADING} ${
+            successful
+              ? "text-emerald-600 dark:text-emerald-400"
+              : "text-red-600 dark:text-red-400"
+          }`}
+        >
+          {successful ? "Successful" : "Failed"}
+        </span>
+        {models.map((model) => (
+          <span
+            key={model.model}
+            className="border-border text-muted-foreground rounded border px-1.5 py-0.5 font-mono text-[10px]"
+            title={`${model.trials} cited ${model.trials === 1 ? "trial" : "trials"} from ${model.model}`}
+          >
+            {model.model} ×{model.trials}
+          </span>
+        ))}
+      </div>
+      <ObservationList
+        items={items}
+        taskId={taskId}
+        taskVersionId={taskVersionId}
+        trialModels={trialModels}
+        linkEvidence={linkEvidence}
+        shareToken={shareToken}
+      />
+    </div>
+  );
+}
+
 export function AgentCapabilitiesSection({
   taskId,
   apiBaseUrl = "/api",
   version,
   linkEvidence = true,
+  shareToken,
 }: {
   taskId: string;
   apiBaseUrl?: string;
   /** Whether citations link to the cited step. False on a share page, where
       the task route is not reachable signed out. */
   linkEvidence?: boolean;
+  /** Public share token used to keep evidence links inside the shared view. */
+  shareToken?: string;
   /** Selected task version. Required, not optional: the comparison covers one
       version's cohorts, and an omitted param falls back server-side to the
       current version — which is the wrong answer beside an older version's
@@ -203,14 +287,9 @@ export function AgentCapabilitiesSection({
       across versions. The host decides not to render instead. */
   version: number;
 }) {
-  const { data, error, isLoading } = useSWR<AgentCapabilities>(
-    `${apiBaseUrl}/tasks/${encodeURIComponent(taskId)}/agent-capabilities?version=${version}`,
-    (url: string) =>
-      fetch(url).then((response) =>
-        response.ok ? response.json() : Promise.reject(response.status)
-      ),
-    { shouldRetryOnError: false }
-  );
+  const { data, error, isLoading } = useAgentCapabilities(taskId, version, {
+    apiBaseUrl,
+  });
 
   if (error === 404) {
     return (
@@ -223,7 +302,7 @@ export function AgentCapabilitiesSection({
     );
   }
 
-  if (isLoading) {
+  if (isLoading || data === null) {
     return (
       <section className="flex flex-col gap-2 p-4">
         <h3 className={SECTION_HEADING}>Capabilities</h3>
@@ -357,21 +436,25 @@ export function AgentCapabilitiesSection({
             }
           >
             {showSuccessful ? (
-              <ObservationList
+              <CategoryCohort
+                tone="successful"
                 items={cat.successful}
                 taskId={taskId}
                 taskVersionId={data.task_version_id}
                 trialModels={data.trial_models}
                 linkEvidence={linkEvidence}
+                shareToken={shareToken}
               />
             ) : null}
             {showFailing ? (
-              <ObservationList
+              <CategoryCohort
+                tone="failing"
                 items={cat.failing}
                 taskId={taskId}
                 taskVersionId={data.task_version_id}
                 trialModels={data.trial_models}
                 linkEvidence={linkEvidence}
+                shareToken={shareToken}
               />
             ) : null}
           </div>

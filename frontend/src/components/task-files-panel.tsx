@@ -50,6 +50,7 @@ import {
 } from "@/lib/task-detail-resource";
 import { TaskOverviewPanel } from "@/components/task-overview-panel";
 import { AgentCapabilitiesSection } from "@/components/agent-capabilities-section";
+import { useAgentCapabilities } from "@/lib/use-agent-capabilities";
 import {
   getCancelActionLabel,
   isActivePipelineStatus,
@@ -440,6 +441,9 @@ export function TaskFilesPanel({
   onSelectedFileChange,
 }: TaskFilesPanelProps) {
   const baseUrl = apiBaseUrl ?? "/api";
+  const shareToken = baseUrl.match(
+    /^\/api\/public\/experiments\/([^/]+)$/
+  )?.[1];
   // The TASK OVERVIEW entry is keyed off the task even in filesUrl-driven
   // panes (which pass taskId={null}); staticChecksTaskId supplies the id there.
   const effectiveChecksTaskId = taskId ?? staticChecksTaskId ?? null;
@@ -496,6 +500,14 @@ export function TaskFilesPanel({
   const overviewAvailable =
     effectiveChecksTaskId !== null && showAnalysis !== false;
   const capabilitiesAvailable = effectiveChecksTaskId !== null;
+  // Warm the capability cache as soon as the task overview resolves its
+  // version. The pane stays lazy as UI, but its durable job starts while the
+  // reader is looking at the overview, matching the pre-pane behavior.
+  useAgentCapabilities(
+    effectiveChecksTaskId,
+    typeof overviewVersion === "number" ? overviewVersion : null,
+    { apiBaseUrl: baseUrl, enabled: isOpen && capabilitiesAvailable }
+  );
   const taskPaneExists = overviewAvailable || capabilitiesAvailable;
   // Until /detail answers, the checks state is unknown, not "unaudited":
   // an enabled Run button on the misread queues an audit that wipes findings.
@@ -1587,7 +1599,8 @@ export function TaskFilesPanel({
                     taskId={effectiveChecksTaskId}
                     apiBaseUrl={baseUrl}
                     version={overviewVersion}
-                    linkEvidence={showAnalysis !== false}
+                    linkEvidence
+                    shareToken={shareToken}
                   />
                 ) : overviewVersion === undefined ? (
                   <div className="space-y-3 p-4">

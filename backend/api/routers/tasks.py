@@ -98,7 +98,6 @@ from api.routers.task_submission import (
     stamp_experiment_owner,
 )
 from dashboard_attribution import resolve_search_authors
-from api.services.agent_capabilities import get_or_generate_analysis
 from oddish.core.tasks import (
     complete_task_upload,
     initialize_task_upload,
@@ -1613,6 +1612,7 @@ async def get_task_detail(
 async def get_task_agent_capabilities(
     task_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
+    response: Response,
     refresh: bool = Query(
         False,
         description=(
@@ -1665,19 +1665,38 @@ async def get_task_agent_capabilities(
             ).scalar_one_or_none()
             if version_id is None:
                 raise HTTPException(status_code=404, detail="Task version not found")
-        result = await get_or_generate_analysis(
-            session,
-            version_id,
-            task_id=task.id,
-            task_name=task.name,
-            refresh=refresh,
-            triggered_by_user_id=auth.user_id,
+        from api.services.agent_capabilities import (
+            analysis_is_eligible,
+            enqueue_analysis,
+            load_stored_analysis,
         )
-    if result is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Not enough classified trials to compare",
+        from oddish.db.models import TaskVersionModel
+
+        result = None if refresh else await load_stored_analysis(
+            session, version_id, task_id=task.id
         )
+        if result is None:
+            if not await analysis_is_eligible(session, version_id):
+                raise HTTPException(
+                    status_code=404,
+                    detail="Not enough classified trials to compare",
+                )
+            # Serialize cache misses for this version across API containers.
+            await session.execute(
+                select(TaskVersionModel.id)
+                .where(TaskVersionModel.id == version_id)
+                .with_for_update()
+            )
+            await enqueue_analysis(
+                session,
+                task_id=task.id,
+                task_version_id=version_id,
+                task_name=task.name,
+                org_id=task.org_id,
+                triggered_by_user_id=auth.user_id,
+            )
+            response.status_code = status.HTTP_202_ACCEPTED
+            return {"status": "queued", "task_version_id": version_id}
     # Stamped at serve time rather than stored in the block's output: the
     # version is what the comparison covers, so every response carries it
     # whether it was generated or read from cache. The UI needs it because

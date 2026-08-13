@@ -185,6 +185,14 @@ High-level flow:
    `oddish.filters.trial_predicates.build_trial_metric_predicate` with an
    injected `EligibleTrialScope` rather than reimplementing Any/All logic.
 
+Agent capability analysis is lazy and task-version scoped. An authenticated or
+public-share cache miss enqueues one idempotent `ANALYZER` worker job with
+`payload.mode = "agent_capabilities"`; the HTTP request returns 202 and clients
+poll until the analyzer block is stored. Capability generation must not run
+inline in an API request. Public requests remain bounded to the task versions
+published by their share token, and repeated views coalesce onto the same active
+job.
+
 Trajectory summaries use schema v5. Each taxonomy-valued `components` entry
 contains its `step_ids`, summary, and deterministic `tool_count` and
 `duration_ms` metadata. Step count is the length of `step_ids`; the other
@@ -556,6 +564,10 @@ no share tokens. Public task/trial/live/file routes must stay scoped under
 experiment; do not reintroduce `/public/tasks/{task_id}` or
 `/public/trials/{trial_id}` ID-only access. Unpublishing an experiment clears
 `public_token`, so republishing mints a fresh link and old URLs stay revoked.
+Capability evidence links on a share page must remain inside `/share/{token}`;
+they select the shared task and trial, open the trajectory tab, and retain the
+cited step anchor. They must never point signed-out readers at authenticated
+`/tasks/...` routes.
 
 ### Configuration and model routing
 

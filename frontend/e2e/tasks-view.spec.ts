@@ -328,7 +328,7 @@ test.describe("authenticated task view", () => {
     ).toBe(true);
   });
 
-  test("capabilities are a lazy, addressable task pane", async ({ page }) => {
+  test("capabilities warm eagerly and remain an addressable task pane", async ({ page }) => {
     await signIn(page);
     let capabilityRequests = 0;
 
@@ -363,13 +363,24 @@ test.describe("authenticated task view", () => {
     await expect(
       page.getByRole("button", { name: "Capabilities" })
     ).toBeVisible();
-    expect(capabilityRequests).toBe(0);
+    await expect.poll(() => capabilityRequests).toBe(1);
 
     await page.getByRole("button", { name: "Capabilities" }).click();
     await expect(
       page.getByRole("heading", { name: "Capabilities" })
     ).toBeVisible();
     await expect(page.getByText("Agents found the failure")).toBeVisible();
+    const debuggingCategory = page
+      .getByText("Debugging", { exact: true })
+      .locator("..");
+    await expect(debuggingCategory.getByText("gpt-current ×1")).toBeVisible();
+    await debuggingCategory.getByText("1 example").click();
+    await expect(
+      debuggingCategory.getByRole("link", { name: /step 7/ })
+    ).toHaveAttribute(
+      "href",
+      new RegExp(`trial=trial-1.*tab=trajectory#step-7$`)
+    );
     await expect(page).toHaveURL(/taskPane=capabilities/);
     expect(capabilityRequests).toBe(1);
 
