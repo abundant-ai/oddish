@@ -345,11 +345,6 @@ test.describe("critical task and trial subtree", () => {
       }
     );
     await page.route(
-      new RegExp(`/api/tasks/${FAILED_DETAIL_TASK_ID}/detail(?:\\?|$)`),
-      (route) =>
-        route.fulfill({ status: 500, json: { error: "detail unavailable" } })
-    );
-    await page.route(
       new RegExp(`/api/tasks/${TASK_ID}/files(?:\\?|$)`),
       async (route) => {
         await route.fulfill({ json: { files: [] } });
@@ -423,12 +418,10 @@ test.describe("critical task and trial subtree", () => {
       `/api/tasks/${TASK_ID}/detail(?:\\?|$)`
     );
     const taskOpenRequest = page.waitForRequest(taskOpenPattern);
-    const taskDetailRequest = page.waitForRequest(taskDetailPattern);
     await taskLink.click();
     await taskOpenRequest;
-    await taskDetailRequest;
     expect(requestCount(requests, taskOpenPattern)).toBe(1);
-    expect(requestCount(requests, taskDetailPattern)).toBe(1);
+    expect(requestCount(requests, taskDetailPattern)).toBe(0);
     // The canonical open response is still blocked: this heading can only be
     // the browse snapshot synchronously preserved on the bounded resource.
     await expect(
@@ -438,7 +431,9 @@ test.describe("critical task and trial subtree", () => {
     const taskOpenResponse = page.waitForResponse(taskOpenPattern);
     taskOpenGate.release();
     await taskOpenResponse;
+    const taskDetailRequest = page.waitForRequest(taskDetailPattern);
     await page.getByRole("button", { name: "View task files" }).click();
+    await taskDetailRequest;
     expect(requestCount(requests, taskDetailPattern)).toBe(1);
     await expect(
       page.getByRole("button", { name: "Rerun trials" })
@@ -474,7 +469,7 @@ test.describe("critical task and trial subtree", () => {
     // The open drawer adopts the canonical task list instead of retaining its
     // snapshot copy. That list also contributes the selected trial's report.
     await expect(
-      page.getByRole("heading", { name: "GOOD FAILURE" })
+      page.getByRole("heading", { name: "GOOD FAILURE", exact: true })
     ).toBeVisible();
     const nextTrialButton = page.getByRole("button", { name: "Next trial" });
     await expect(nextTrialButton).toBeEnabled();
@@ -556,5 +551,11 @@ test.describe("critical task and trial subtree", () => {
     await expect(
       page.getByRole("heading", { name: "P1 failed detail task" })
     ).toHaveCount(0);
+    expect(
+      requestCount(
+        requests,
+        new RegExp(`/api/tasks/${FAILED_DETAIL_TASK_ID}/detail(?:\\?|$)`)
+      )
+    ).toBe(0);
   });
 });
