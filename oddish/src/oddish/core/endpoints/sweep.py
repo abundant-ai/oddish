@@ -602,6 +602,14 @@ async def create_task_sweep_core(
         # link leaves the existing value untouched rather than clearing it.
         if submission.link:
             task.link = submission.link
+        # Append submissions normally inherit the task's mutable metadata, but
+        # explicitly supplied tags describe this run's current provenance. Keep
+        # unrelated existing tags while allowing those explicit values (notably
+        # ``github_meta``) to replace stale values from an earlier task version.
+        # An omitted ``--github-meta`` produces an empty tag mapping and leaves
+        # the task unchanged.
+        if submission.tags:
+            task.tags = {**(task.tags or {}), **submission.tags}
 
         trials, supersede_by_spec = await _plan_append_trials(
             session,
