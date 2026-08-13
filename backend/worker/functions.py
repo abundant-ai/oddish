@@ -31,6 +31,8 @@ import modal
 from observability import log_exception, span as _otel_span
 
 from modal_app import (
+    AGENT_CAPABILITIES_REGEN_MAX_CONTAINERS,
+    AGENT_CAPABILITIES_REGEN_TIMEOUT_SECONDS,
     CLEANUP_INTERVAL_SECONDS,
     CLEANUP_TIMEOUT_SECONDS,
     DASHBOARD_PRECOMPUTE_INTERVAL_SECONDS,
@@ -728,6 +730,60 @@ async def precompute_dashboard_stats():
             cycle_span.__exit__(*_sys.exc_info())
         except Exception:
             pass
+
+
+@app.function(
+    image=image,
+    volumes=worker_volumes,
+    secrets=runtime_secrets,
+    timeout=AGENT_CAPABILITIES_REGEN_TIMEOUT_SECONDS,
+    cpu=RECONCILER_CPU,
+    memory=RECONCILER_MEMORY_MB,
+    min_containers=0,  # Spawned on demand; tolerate a cold start.
+    max_containers=AGENT_CAPABILITIES_REGEN_MAX_CONTAINERS,
+)
+async def regenerate_agent_capabilities(
+    task_id: str, task_name: str, task_version_id: str
+) -> None:
+    """Rebuild one task version's capability comparison, off the request path.
+
+    Spawned by the public share route when it serves a comparison whose trial
+    set has moved (``ensure_regeneration``). It has to be a spawn rather than a
+    task on the API's own loop: the API is an ASGI function with a 600s request
+    budget and a scaledown window, so an in-container task would be killed
+    part-way through and leave nothing behind.
+
+    ``get_or_generate_analysis`` re-checks freshness under its per-version lock
+    before spending anything, so a duplicate spawn from another API container
+    costs a cold start, not an LLM call.
+
+    Best-effort like the other background refreshes: failures are logged and
+    swallowed, and the share keeps serving the previous comparison.
+    """
+    started = time.monotonic()
+    try:
+        from api.services.agent_capabilities import get_or_generate_analysis
+
+        with _otel_span("worker.regenerate_agent_capabilities"):
+            async with get_session() as session:
+                await get_or_generate_analysis(
+                    session,
+                    task_version_id,
+                    task_id=task_id,
+                    task_name=task_name,
+                )
+        console.print(
+            f"metric=agent_capabilities_regen task={task_id} "
+            f"version={task_version_id} "
+            f"duration_seconds={round(time.monotonic() - started, 2)}"
+        )
+    except Exception as e:  # noqa: BLE001 - best-effort background rebuild
+        log_exception(e)
+        console.print(
+            f"[yellow]Agent-capabilities rebuild skipped for {task_version_id}: {e}[/yellow]"
+        )
+    finally:
+        await close_database_connections()
 
 
 @app.function(

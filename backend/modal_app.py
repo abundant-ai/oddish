@@ -95,6 +95,20 @@ API_MEMORY_MB = _env_int("ODDISH_MODAL_API_MEMORY_MB", 4096)
 # ANALYSIS_TIMEOUT in api/services/agent_capabilities.py, and the test that
 # holds the two in step.
 API_TIMEOUT_SECONDS = _env_int("ODDISH_MODAL_API_TIMEOUT", 600)
+# Wall clock for one backgrounded agent-capabilities rebuild, spawned when a
+# share page reads a comparison whose trial set has moved. Same budget as the
+# in-request path it mirrors, for the same reason: ANALYSIS_TIMEOUT plus the
+# fetch/workspace/validate work around it has to fit inside the container's
+# life. test_cohort_request_budget holds the three in step.
+AGENT_CAPABILITIES_REGEN_TIMEOUT_SECONDS = _env_int(
+    "ODDISH_MODAL_AGENT_CAPABILITIES_REGEN_TIMEOUT", 600
+)
+# One rebuild container per version at a time is plenty -- the API's cooldown
+# already collapses a burst of readers into a single spawn, and this caps what
+# a many-container API fleet can start in parallel.
+AGENT_CAPABILITIES_REGEN_MAX_CONTAINERS = _env_int(
+    "ODDISH_MODAL_AGENT_CAPABILITIES_REGEN_MAX_CONTAINERS", 4
+)
 LOCAL_DOTENV_PATH = Path(__file__).with_name(".env")
 LOCAL_DOTENV_VARS = {
     key: value

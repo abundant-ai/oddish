@@ -9,12 +9,15 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import shutil
 import tempfile
+import time
 from collections import defaultdict
 from pathlib import Path
-from typing import MutableMapping
+from typing import MutableMapping, NamedTuple
 
+import modal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -378,6 +381,39 @@ def validate_evidence(
     return {**output, "categories": kept_categories}, drops
 
 
+def stale_reason(
+    block_metadata: dict | None,
+    *,
+    current_hash: str,
+    schema_version: int,
+    task_version_id: str,
+) -> str | None:
+    """Which freshness key drifted, or None when the block is fresh.
+
+    Freshness keys on the cohort hash, the schema version, AND the task
+    version. Keying on schema_version alone is the bug that left stored
+    trajectory summaries serving a retired taxonomy forever. The task-version
+    check is belt-and-braces on top of the hash (trials belong to exactly one
+    version, so the hash already changes across versions) -- kept explicit
+    rather than relied on implicitly, since block rows are now looked up by the
+    stable ``task_id`` rather than the version id.
+
+    Naming the reason rather than returning a bool is what lets the share route
+    render a *behind* comparison without rendering a *wrong-shaped* one:
+    ``"cohort"`` means the same task at the same schema with a different trial
+    set, which reads fine; the others do not.
+    """
+    if not block_metadata:
+        return "unknown"
+    if block_metadata.get("task_version_id") != task_version_id:
+        return "version"
+    if block_metadata.get("schema_version") != schema_version:
+        return "schema"
+    if block_metadata.get("cohort_hash") != current_hash:
+        return "cohort"
+    return None
+
+
 def is_stale(
     block_metadata: dict | None,
     *,
@@ -385,22 +421,15 @@ def is_stale(
     schema_version: int,
     task_version_id: str,
 ) -> bool:
-    """Freshness keys on the cohort hash, the schema version, AND the task
-    version.
-
-    Keying on schema_version alone is the bug that left stored trajectory
-    summaries serving a retired taxonomy forever. The task-version check is
-    belt-and-braces on top of the hash (trials belong to exactly one version,
-    so the hash already changes across versions) -- kept explicit rather than
-    relied on implicitly, since block rows are now looked up by the stable
-    ``task_id`` rather than the version id.
-    """
-    if not block_metadata:
-        return True
+    """Whether a stored block must be regenerated. See ``stale_reason``."""
     return (
-        block_metadata.get("cohort_hash") != current_hash
-        or block_metadata.get("schema_version") != schema_version
-        or block_metadata.get("task_version_id") != task_version_id
+        stale_reason(
+            block_metadata,
+            current_hash=current_hash,
+            schema_version=schema_version,
+            task_version_id=task_version_id,
+        )
+        is not None
     )
 
 
@@ -411,15 +440,10 @@ def is_stale(
 _GEN_LOCKS: MutableMapping[tuple[str, str], asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
-async def _load_fresh_analysis(
-    session: AsyncSession,
-    *,
-    task_id: str,
-    task_version_id: str,
-    current_hash: str,
-    schema_version: int,
-) -> dict | None:
-    """The latest fresh SUCCESS agent-capabilities block's output, or None.
+async def _load_latest_block(
+    session: AsyncSession, *, task_id: str, task_version_id: str
+) -> AnalyzerBlockModel | None:
+    """The newest SUCCESS agent-capabilities block for a version, fresh or not.
 
     Matches ``LEGACY_BLOCK_TYPE`` as well as the current type: rows written
     before the rename carry the old string, and missing them would silently
@@ -432,7 +456,7 @@ async def _load_fresh_analysis(
     shadow this version's fresh one, and switching between two versions then
     regenerates both on every view.
     """
-    row = (
+    return (
         await session.execute(
             select(AnalyzerBlockModel)
             .where(
@@ -448,6 +472,20 @@ async def _load_fresh_analysis(
             .limit(1)
         )
     ).scalar_one_or_none()
+
+
+async def _load_fresh_analysis(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    task_version_id: str,
+    current_hash: str,
+    schema_version: int,
+) -> dict | None:
+    """The latest fresh SUCCESS agent-capabilities block's output, or None."""
+    row = await _load_latest_block(
+        session, task_id=task_id, task_version_id=task_version_id
+    )
     if row is not None and not is_stale(
         row.block_metadata,
         current_hash=current_hash,
@@ -458,9 +496,20 @@ async def _load_fresh_analysis(
     return None
 
 
+class StoredComparison(NamedTuple):
+    """A stored comparison and whether it describes a trial set that has moved."""
+
+    output: dict
+    stale: bool
+
+
 async def load_stored_analysis(
-    session: AsyncSession, task_version_id: str, *, task_id: str
-) -> dict | None:
+    session: AsyncSession,
+    task_version_id: str,
+    *,
+    task_id: str,
+    allow_cohort_drift: bool = False,
+) -> StoredComparison | None:
     """The stored comparison for a version, or None. Never generates.
 
     The read half of ``get_or_generate_analysis``, split out for the public
@@ -469,9 +518,16 @@ async def load_stored_analysis(
     which an unauthenticated page view may trigger.
 
     The cohorts still have to be resolved, because the stored block is only
-    valid for the trial set it was built from -- ``is_stale`` compares the
-    membership hash. That resolve is the same handful of indexed reads the
+    valid for the trial set it was built from -- the membership hash is part of
+    freshness. That resolve is the same handful of indexed reads the
     authenticated path does before its own cache hit.
+
+    ``allow_cohort_drift`` returns a block whose trial set has since changed,
+    flagged ``stale``. Only the share route asks for that: it has nothing to
+    fall back on, so a comparison one trial out of date beats an empty pane.
+    The authenticated path must keep seeing the miss, because acting on it --
+    regenerating -- is the whole point there. Schema and task-version drift are
+    withheld either way; those change the payload's shape, not just its age.
     """
     from api.services.blocks.analyzer.cohort.agent_capabilities_block import (
         SCHEMA_VERSION,
@@ -480,15 +536,74 @@ async def load_stored_analysis(
     successful, failing = await resolve_cohorts(session, task_version_id)
     if max(len(successful), len(failing)) < MIN_COHORT:
         return None
-    return await _load_fresh_analysis(
-        session,
-        task_id=task_id,
-        task_version_id=task_version_id,
+    row = await _load_latest_block(
+        session, task_id=task_id, task_version_id=task_version_id
+    )
+    if row is None:
+        return None
+    reason = stale_reason(
+        row.block_metadata,
         current_hash=cohort_hash(
             [t["trial_id"] for t in successful], [t["trial_id"] for t in failing]
         ),
         schema_version=SCHEMA_VERSION,
+        task_version_id=task_version_id,
     )
+    if reason is None:
+        return StoredComparison(row.output, stale=False)
+    if reason == "cohort" and allow_cohort_drift:
+        return StoredComparison(row.output, stale=True)
+    return None
+
+
+# How long one spawned rebuild suppresses the next for the same task version.
+# A share link is held by anyone it was sent to, so without a window every page
+# load would start a paid claude-code run. Generous relative to a generation
+# (ANALYSIS_TIMEOUT is 480s): the point is one rebuild per burst of readers,
+# not one per reader.
+REGEN_COOLDOWN_SECONDS = 900.0
+
+# Process-local, same tradeoff as _GEN_LOCKS: cross-container racing costs at
+# most a few duplicate rebuilds, and the spawned worker re-checks freshness
+# under the per-version lock before spending anything.
+_REGEN_SPAWNED_AT: MutableMapping[tuple[str, str], float] = {}
+
+
+def ensure_regeneration(
+    *, task_id: str, task_name: str, task_version_id: str
+) -> bool:
+    """Ask a worker to rebuild this version's comparison, at most once a window.
+
+    Returns whether a rebuild is believed to be in flight -- just spawned, or
+    spawned recently enough to still be running. That is what the share page
+    shows as "regenerating"; it is a belief, not a job status, because
+    ``AnalyzerBlock`` writes its row only once, at the end.
+
+    Best-effort: ``worker`` is only imported when ENABLE_BACKGROUND_WORKERS, so
+    the function need not exist in every deploy. A stale view is still a view.
+    """
+    key = (task_id, task_version_id)
+    now = time.monotonic()
+    last = _REGEN_SPAWNED_AT.get(key)
+    if last is not None and now - last < REGEN_COOLDOWN_SECONDS:
+        return True
+    # Stamped before the spawn, so a lookup that keeps failing is retried once
+    # a window rather than on every page view.
+    _REGEN_SPAWNED_AT[key] = now
+    try:
+        modal.Function.from_name(
+            os.environ.get("MODAL_APP_NAME", "oddish"),
+            "regenerate_agent_capabilities",
+            environment_name=os.environ.get("MODAL_ENVIRONMENT") or None,
+        ).spawn(task_id, task_name, task_version_id)
+    except Exception:
+        logger.exception(
+            "agent-capabilities regeneration spawn failed task=%s version=%s",
+            task_id,
+            task_version_id,
+        )
+        return False
+    return True
 
 
 async def _end_read_transaction(session: AsyncSession) -> None:

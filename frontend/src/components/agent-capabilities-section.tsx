@@ -20,6 +20,11 @@ const CATEGORY_LABELS: Record<string, string> = {
 
 const SECTION_HEADING =
   "text-foreground font-mono text-[13px] font-semibold tracking-wider uppercase";
+
+/** How often to re-fetch while a rebuild is in flight. A generation takes
+ *  minutes, so this is about swapping the answer in soon after it lands, not
+ *  about watching progress — there is no progress to watch. */
+const REBUILD_POLL_MS = 60_000;
 const CATEGORY_HEADING =
   "text-foreground font-mono text-[11px] font-semibold tracking-wider uppercase";
 const COHORT_HEADING =
@@ -100,6 +105,25 @@ function EllipsisDots() {
       .<span className="ellipsis-dot-2">.</span>
       <span className="ellipsis-dot-3">.</span>
     </span>
+  );
+}
+
+/** Shown when the served comparison predates trials that have since landed on
+ *  the version. It says what is out of date rather than hedging the whole
+ *  pane: the observations and their citations are still true of the runs they
+ *  quote — there are simply newer runs they say nothing about. */
+function StaleNote({ regenerating }: { regenerating?: boolean }) {
+  return (
+    <p className="text-muted-foreground text-xs">
+      New trials have run on this version since this analysis was built.
+      {regenerating ? (
+        <>
+          {" "}
+          Rebuilding it now — this view updates on its own
+          <EllipsisDots />
+        </>
+      ) : null}
+    </p>
   );
 }
 
@@ -209,7 +233,14 @@ export function AgentCapabilitiesSection({
       fetch(url).then((response) =>
         response.ok ? response.json() : Promise.reject(response.status)
       ),
-    { shouldRetryOnError: false }
+    {
+      shouldRetryOnError: false,
+      // Poll only while a rebuild the share route asked for is believed to be
+      // running, so the new comparison swaps itself in. Every other state
+      // fetches once — this pane is otherwise static for the life of a version.
+      refreshInterval: (latest) =>
+        latest?.stale && latest.regenerating ? REBUILD_POLL_MS : 0,
+    }
   );
 
   if (error === 404) {
@@ -262,6 +293,7 @@ export function AgentCapabilitiesSection({
                 data.cohort_success.length || data.cohort_failure.length
               } ${data.cohort_success.length > 0 ? "successful" : "failed"} runs.`}
         </p>
+        {data.stale ? <StaleNote regenerating={data.regenerating} /> : null}
       </section>
     );
   }
@@ -284,6 +316,7 @@ export function AgentCapabilitiesSection({
               : `${data.cohort_failure.length} failed trials \u00b7 no successes to compare against`}
         </span>
       </div>
+      {data.stale ? <StaleNote regenerating={data.regenerating} /> : null}
       <div
         className={single ? "flex flex-col gap-2" : "grid gap-6 md:grid-cols-2"}
       >

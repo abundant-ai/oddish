@@ -35,6 +35,7 @@ with _otel_span("worker.container_init"):
         process_single_job,
         reconcile_queue_state,
         refresh_trial_facets,
+        regenerate_agent_capabilities,
     )
 
 __all__ = [
@@ -43,4 +44,5 @@ __all__ = [
     "process_single_job",
     "reconcile_queue_state",
     "refresh_trial_facets",
+    "regenerate_agent_capabilities",
 ]

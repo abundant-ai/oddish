@@ -17,6 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.app import create_app
+from api.services.agent_capabilities import StoredComparison
 from api.services.summarize_trajectory import SCHEMA_VERSION
 
 TOKEN = "share-tok"
@@ -172,6 +173,10 @@ def _public_task(current_version_id: str | None = "tv-current"):
     return AsyncMock(return_value=(SimpleNamespace(id="exp-1"), task, set()))
 
 
+def _stored(output: dict, *, stale: bool = False):
+    return AsyncMock(return_value=StoredComparison(output, stale=stale))
+
+
 def test_comparison_returns_stored_block_and_stamps_version(
     client, patched_session, no_display_names, version_in_experiment
 ):
@@ -180,14 +185,18 @@ def test_comparison_returns_stored_block_and_stamps_version(
         "api.routers.public_analysis.get_public_task_for_experiment",
         new=_public_task(),
     ), patch(
-        "api.services.agent_capabilities.load_stored_analysis",
-        new=AsyncMock(return_value=stored),
+        "api.services.agent_capabilities.load_stored_analysis", new=_stored(stored)
     ):
         resp = client.get(COMPARISON_URL)
     assert resp.status_code == 200
     # The version the comparison covers is stamped at serve time, matching the
     # authenticated route: the UI addresses a version by id, this route by number.
-    assert resp.json() == {**stored, "task_version_id": "tv-current"}
+    assert resp.json() == {
+        **stored,
+        "task_version_id": "tv-current",
+        "stale": False,
+        "regenerating": False,
+    }
 
 
 def test_comparison_resolves_the_requested_version_number(
@@ -196,7 +205,7 @@ def test_comparison_resolves_the_requested_version_number(
     fake_session.execute.return_value = MagicMock(
         scalar_one_or_none=MagicMock(return_value="tv-2")
     )
-    load = AsyncMock(return_value={"categories": []})
+    load = _stored({"categories": []})
     with patched_session, no_display_names, version_in_experiment, patch(
         "api.routers.public_analysis.get_public_task_for_experiment",
         new=_public_task(),
@@ -276,8 +285,7 @@ def test_comparison_masks_model_ids_with_operator_aliases(
         "api.routers.public_analysis.get_public_task_for_experiment",
         new=_public_task(),
     ), patch(
-        "api.services.agent_capabilities.load_stored_analysis",
-        new=AsyncMock(return_value=stored),
+        "api.services.agent_capabilities.load_stored_analysis", new=_stored(stored)
     ):
         resp = client.get(COMPARISON_URL)
     assert resp.status_code == 200
@@ -319,8 +327,7 @@ def test_comparison_masks_the_SHORT_names_the_block_actually_stores(
         "api.routers.public_analysis.get_public_task_for_experiment",
         new=_public_task(),
     ), patch(
-        "api.services.agent_capabilities.load_stored_analysis",
-        new=AsyncMock(return_value=stored),
+        "api.services.agent_capabilities.load_stored_analysis", new=_stored(stored)
     ):
         resp = client.get(COMPARISON_URL)
     body = resp.json()
@@ -346,11 +353,99 @@ def test_comparison_leaves_a_colliding_short_name_unmasked(
         "api.routers.public_analysis.get_public_task_for_experiment",
         new=_public_task(),
     ), patch(
-        "api.services.agent_capabilities.load_stored_analysis",
-        new=AsyncMock(return_value=stored),
+        "api.services.agent_capabilities.load_stored_analysis", new=_stored(stored)
     ):
         resp = client.get(COMPARISON_URL)
     assert resp.json()["trial_models"] == {"t-1": "claude-opus-4-8"}
+
+
+def test_comparison_asks_for_the_drift_tolerant_read(
+    client, patched_session, no_display_names, version_in_experiment
+):
+    """A share has nothing to fall back on, so a comparison one trial out of
+    date beats an empty pane. The authenticated route must NOT opt in -- it
+    regenerates on the miss instead."""
+    load = _stored({"categories": []})
+    with patched_session, no_display_names, version_in_experiment, patch(
+        "api.routers.public_analysis.get_public_task_for_experiment",
+        new=_public_task(),
+    ), patch("api.services.agent_capabilities.load_stored_analysis", new=load):
+        client.get(COMPARISON_URL)
+    assert load.await_args.kwargs["allow_cohort_drift"] is True
+
+
+def test_a_stale_comparison_is_served_and_asks_for_a_rebuild(
+    client, patched_session, no_display_names, version_in_experiment
+):
+    stored = {"categories": [{"category": "planning"}]}
+    regen = MagicMock(return_value=True)
+    with patched_session, no_display_names, version_in_experiment, patch(
+        "api.routers.public_analysis.get_public_task_for_experiment",
+        new=_public_task(),
+    ), patch(
+        "api.services.agent_capabilities.load_stored_analysis",
+        new=_stored(stored, stale=True),
+    ), patch("api.services.agent_capabilities.ensure_regeneration", new=regen):
+        resp = client.get(COMPARISON_URL)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["categories"] == stored["categories"]
+    assert body["stale"] is True
+    assert body["regenerating"] is True
+    regen.assert_called_once_with(
+        task_id="task-1", task_name="task-one", task_version_id="tv-current"
+    )
+
+
+def test_a_fresh_comparison_asks_for_no_rebuild(
+    client, patched_session, no_display_names, version_in_experiment
+):
+    regen = MagicMock()
+    with patched_session, no_display_names, version_in_experiment, patch(
+        "api.routers.public_analysis.get_public_task_for_experiment",
+        new=_public_task(),
+    ), patch(
+        "api.services.agent_capabilities.load_stored_analysis",
+        new=_stored({"categories": []}),
+    ), patch("api.services.agent_capabilities.ensure_regeneration", new=regen):
+        resp = client.get(COMPARISON_URL)
+    assert resp.json()["regenerating"] is False
+    regen.assert_not_called()
+
+
+def test_a_miss_asks_for_no_rebuild_either(
+    client, patched_session, version_in_experiment
+):
+    """The cold start stays closed. Serving what exists is one thing; letting
+    an unauthenticated view start a paid run from nothing is another."""
+    regen = MagicMock()
+    with patched_session, version_in_experiment, patch(
+        "api.routers.public_analysis.get_public_task_for_experiment",
+        new=_public_task(),
+    ), patch(
+        "api.services.agent_capabilities.load_stored_analysis",
+        new=AsyncMock(return_value=None),
+    ), patch("api.services.agent_capabilities.ensure_regeneration", new=regen):
+        resp = client.get(COMPARISON_URL)
+    assert resp.status_code == 404
+    regen.assert_not_called()
+
+
+def test_a_failed_spawn_still_serves_the_stale_comparison(
+    client, patched_session, no_display_names, version_in_experiment
+):
+    regen = MagicMock(return_value=False)
+    with patched_session, no_display_names, version_in_experiment, patch(
+        "api.routers.public_analysis.get_public_task_for_experiment",
+        new=_public_task(),
+    ), patch(
+        "api.services.agent_capabilities.load_stored_analysis",
+        new=_stored({"categories": []}, stale=True),
+    ), patch("api.services.agent_capabilities.ensure_regeneration", new=regen):
+        resp = client.get(COMPARISON_URL)
+    assert resp.status_code == 200
+    assert resp.json()["stale"] is True
+    assert resp.json()["regenerating"] is False
 
 
 def test_comparison_404s_for_a_version_outside_the_shared_experiment(

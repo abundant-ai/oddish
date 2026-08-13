@@ -160,7 +160,7 @@ async def get_public_task_agent_capabilities(
     ),
 ) -> dict:
     """The stored successful-vs-failing comparison for a public task version."""
-    from api.services.agent_capabilities import load_stored_analysis
+    from api.services.agent_capabilities import ensure_regeneration, load_stored_analysis
 
     async with get_session() as session:
         resolved = await get_public_task_for_experiment(session, public_token, task_id)
@@ -191,14 +191,28 @@ async def get_public_task_agent_capabilities(
         # the share actually displays.
         if not await _version_is_in_experiment(session, experiment.id, version_id):
             raise HTTPException(status_code=404, detail="Task version not found")
-        comparison = await load_stored_analysis(
-            session, version_id, task_id=task.id
+        # A share has nothing to fall back on, so a comparison whose trial set
+        # has since moved is served rather than withheld -- flagged, and with a
+        # rebuild asked for below. What is NOT relaxed is the cold start: a
+        # version that was never analyzed still 404s, so no unauthenticated
+        # view can start a paid run from nothing.
+        stored = await load_stored_analysis(
+            session, version_id, task_id=task.id, allow_cohort_drift=True
         )
-        if comparison is None:
+        if stored is None:
             raise HTTPException(
                 status_code=404, detail="No comparison stored for this version"
             )
         names = await load_model_display_names(session)
+        task_key, task_label = task.id, task.name
+    regenerating = stored.stale and ensure_regeneration(
+        task_id=task_key, task_name=task_label, task_version_id=version_id
+    )
     # Stamped at serve time, matching the authenticated route: the id is what
     # the UI addresses a version by, while this route takes the number.
-    return {**_mask_models(comparison, names), "task_version_id": version_id}
+    return {
+        **_mask_models(stored.output, names),
+        "task_version_id": version_id,
+        "stale": stored.stale,
+        "regenerating": regenerating,
+    }
