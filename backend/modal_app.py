@@ -88,6 +88,13 @@ API_CONCURRENCY_MAX = _env_int("ODDISH_MODAL_API_CONCURRENCY_MAX", 3)
 # the most headroom since it is the most concurrent, latency-sensitive surface.
 API_CPU = _env_float("ODDISH_MODAL_API_CPU", 2.0)
 API_MEMORY_MB = _env_int("ODDISH_MODAL_API_MEMORY_MB", 4096)
+# Wall clock a single API request gets before Modal kills the container. Named
+# rather than inlined on the function because in-request generation has to fit
+# inside it: a subprocess budget larger than this can never be honoured, since
+# the platform kills the request first and whatever it had done is lost. See
+# COMPARISON_TIMEOUT in api/services/cohort_comparison.py, and the test that
+# holds the two in step.
+API_TIMEOUT_SECONDS = _env_int("ODDISH_MODAL_API_TIMEOUT", 600)
 LOCAL_DOTENV_PATH = Path(__file__).with_name(".env")
 LOCAL_DOTENV_VARS = {
     key: value

@@ -3,7 +3,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
+import logging
+import shutil
+import tempfile
 from collections import defaultdict
+from pathlib import Path
 from typing import MutableMapping
 
 from sqlalchemy import select
@@ -12,8 +17,35 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oddish.blocks.analyzer.analyzer_block import AnalyzerType
 from oddish.db.models import AnalyzerBlockModel, JobStatus, TrialModel
 
+from api.services.blocks.analyzer.cohort import cohort_workspace as cw
+
+logger = logging.getLogger(__name__)
+
 # Below three trials per side the comparison is anecdote, not evidence.
 MIN_COHORT = 3
+
+# Bounds the claude-code subprocess from inside, the way pre-trial's does.
+# Reading trajectories is slower than the old single API call, and a hung run
+# would otherwise hold the per-version generation lock indefinitely.
+#
+# It also has to FIT: this generates inline in a GET served by the Modal ASGI
+# function, whose own budget is modal_app.API_TIMEOUT_SECONDS (600s). A larger
+# subprocess budget is unreachable -- Modal kills the request first, so the
+# fetch and workspace work is thrown away and the CLI's own timeout, the
+# degraded paths behind it, and the lock release never run. The allowance
+# covers what the request does around the subprocess: resolving the cohorts,
+# fetching trajectories from S3, writing the workspace, then validating the
+# citations and persisting the block.
+#
+# test_cohort_timeout_fits_the_request_budget holds the two in step. A
+# comparison that genuinely needs longer than this needs to move off the
+# request path, not a bigger number here.
+REQUEST_OVERHEAD_ALLOWANCE = 120.0
+COMPARISON_TIMEOUT = 480.0
+
+# S3 reads for the cohort, in flight at once. The trials are independent, but
+# an unbounded gather over a large cohort would open one connection per trial.
+_FETCH_CONCURRENCY = 8
 
 SUCCESS_CLASS = "GOOD_SUCCESS"
 FAILURE_CLASS = "GOOD_FAILURE"
@@ -119,10 +151,16 @@ async def resolve_cohorts(
             all_ids = {i for c in comps for i in c["step_ids"]}
             span = max(all_ids)
             denominator = total_steps.get(tid) or span
+            # Counted at summary time from the raw trajectory, which this
+            # query does not hold (it lives in S3). Absent on summaries written
+            # before the count existed; the prompt renders that as "unknown"
+            # rather than as zero.
+            delegation = (summaries.get(tid) or {}).get("delegation")
             out[cls].append(
                 {
                     "trial_id": tid,
                     "model": models.get(tid),
+                    "delegation": delegation if isinstance(delegation, dict) else None,
                     "components": comps,
                     "covered_steps": len(all_ids),
                     "span": span,
@@ -135,6 +173,47 @@ async def resolve_cohorts(
                 }
             )
     return out[SUCCESS_CLASS], out[FAILURE_CLASS]
+
+
+async def _fetch_trajectories(
+    session: AsyncSession, trial_ids: list[str]
+) -> dict[str, dict]:
+    """Raw ATIF trajectories for the cohort, keyed by trial id.
+
+    Best-effort by design: a trial whose trajectory will not load is left out,
+    and the comparison runs on the summaries it still has for that trial. The
+    alternative -- failing the whole comparison because one of fourteen trials
+    has an empty S3 prefix -- trades a partial answer for no answer.
+    """
+    if not trial_ids:
+        return {}
+    from oddish.core.trial_io import read_trial_trajectory
+
+    trials = (
+        await session.execute(select(TrialModel).where(TrialModel.id.in_(trial_ids)))
+    ).scalars().all()
+
+    semaphore = asyncio.Semaphore(_FETCH_CONCURRENCY)
+
+    async def one(trial: TrialModel) -> tuple[str, dict | None]:
+        async with semaphore:
+            try:
+                return trial.id, await read_trial_trajectory(trial)
+            except Exception:
+                logger.warning(
+                    "cohort comparison: trajectory unreadable for %s", trial.id
+                )
+                return trial.id, None
+
+    pairs = await asyncio.gather(*(one(t) for t in trials))
+    found = {tid: traj for tid, traj in pairs if isinstance(traj, dict)}
+    if len(found) < len(trial_ids):
+        logger.info(
+            "cohort comparison: %d/%d trajectories on disk",
+            len(found),
+            len(trial_ids),
+        )
+    return found
 
 
 def _span(step_ids) -> tuple[int, int] | None:
@@ -165,8 +244,79 @@ def _index(trials: list[dict]) -> dict[tuple, str]:
     return out
 
 
+def _unescaped(quote: str) -> str | None:
+    """The quote as JSON would decode it, or None if it does not decode.
+
+    The component files are written with ``json.dumps``, so a step reaches the
+    agent with its newlines as ``\\n`` and its quotes as ``\\"``. A citation
+    copied character-for-character out of that file therefore carries the
+    escaping, while ``step_text`` holds the decoded string -- so the faithful
+    copy is not a substring of the very text it was copied from, and the
+    citation is dropped for being too accurate. Decoding it back is not a
+    loosening: containment against the real step text is still the bar.
+    """
+    if "\\" not in quote:
+        return None
+    try:
+        decoded = json.loads(f'"{quote}"')
+    except ValueError:
+        return None
+    return decoded if isinstance(decoded, str) else None
+
+
+def _resolves(
+    ev: dict,
+    *,
+    side: str,
+    index: dict[str, dict],
+    trials_on_side: dict[str, set],
+    step_index: dict | None,
+) -> bool:
+    """Does this citation check out against the side it was filed under?
+
+    Two shapes, two sources of truth. A summary citation must reproduce the
+    stored component summary exactly -- it is quoting text we hold, so equality
+    is the right bar. A step citation quotes an agent mid-run, where the useful
+    fragment is a phrase inside a long step, so containment is the bar instead.
+    Both still require the trial to be on the cited side.
+
+    A citation naming both shapes is checked against neither. The JSON schema
+    given to claude-code cannot express "exactly one of these", so the model
+    can write both, and there is no honest way to pick: whichever source we
+    chose, a quote matching only the other would pass. Enforced here rather
+    than as a raise on the model, so one ambiguous citation is dropped and
+    counted instead of taking the whole comparison down with it.
+    """
+    trial_id = ev.get("trial_id")
+    quote = (ev.get("quote") or "").strip()
+    names_summary = bool(
+        (ev.get("trajectory_component") or "").strip() and ev.get("step_ids")
+    )
+    if ev.get("step_id") is not None:
+        if names_summary:
+            return False
+        if step_index is None or trial_id not in trials_on_side[side]:
+            return False
+        text = step_index.get((trial_id, ev["step_id"]))
+        if not quote or text is None:
+            return False
+        if quote in text:
+            return True
+        decoded = _unescaped(quote)
+        return decoded is not None and decoded in text
+    span = _span(ev.get("step_ids"))
+    if span is None:
+        return False
+    stored = index[side].get((trial_id, ev.get("trajectory_component"), span))
+    return stored is not None and stored == quote
+
+
 def validate_evidence(
-    output: dict, successful: list[dict], failing: list[dict]
+    output: dict,
+    successful: list[dict],
+    failing: list[dict],
+    *,
+    step_index: dict | None = None,
 ) -> tuple[dict, dict]:
     """Drop citations that do not resolve against the stored summaries.
 
@@ -180,6 +330,10 @@ def validate_evidence(
     every later cache hit serving the raw, unvalidated model output.
     """
     index = {"successful": _index(successful), "failing": _index(failing)}
+    trials_on_side = {
+        "successful": {t["trial_id"] for t in successful},
+        "failing": {t["trial_id"] for t in failing},
+    }
     drops = {"evidence": 0, "observations": 0, "categories": 0}
 
     kept_categories = []
@@ -190,14 +344,13 @@ def validate_evidence(
             for obs in cat.get(side) or []:
                 kept_ev = []
                 for ev in obs.get("evidence") or []:
-                    span = _span(ev.get("step_ids"))
-                    key = (
-                        ev.get("trial_id"),
-                        ev.get("trajectory_component"),
-                        span,
-                    )
-                    stored = None if span is None else index[side].get(key)
-                    if stored is not None and stored == (ev.get("quote") or "").strip():
+                    if _resolves(
+                        ev,
+                        side=side,
+                        index=index,
+                        trials_on_side=trials_on_side,
+                        step_index=step_index,
+                    ):
                         kept_ev.append(ev)
                     else:
                         drops["evidence"] += 1
@@ -333,6 +486,7 @@ async def get_or_generate_comparison(
     """
     from oddish.blocks.analyzer.analyzer_block import AnalyzerBlock, AnalyzerInput
     from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
+    from oddish.blocks.analyzer.claude_cli_client import CliConfig
 
     from api.services.blocks.analyzer.cohort import cohort_prompts as cp
     from api.services.blocks.analyzer.cohort.cohort_comparison_block import (
@@ -341,10 +495,7 @@ async def get_or_generate_comparison(
         CohortComparisonOutput,
         CohortInput,
     )
-    from api.services.summarize_trajectory import (
-        SUMMARY_MAX_TOKENS,
-        resolve_summary_model,
-    )
+    from api.services.summarize_trajectory import resolve_summary_model
 
     successful, failing = await resolve_cohorts(session, task_version_id)
     # One populated side is enough. Requiring both meant a task whose runs all
@@ -394,34 +545,65 @@ async def get_or_generate_comparison(
             await _end_read_transaction(session)
 
         model = resolve_summary_model()
-        cb = CohortComparisonBlock(
-            CohortInput(task_name=task_name, successful=successful, failing=failing),
-            instructions_template=cp.load_cohort_prompt_template(),
-        )
-        block = AnalyzerBlock(
-            analyzer_type=AnalyzerType.COHORT_COMPARISON,
-            llm_client_type=LLMClientType.API,
-            input=AnalyzerInput(input={"task_version_id": task_version_id}),
-            prompt=cb.build_prompt(),
-            task_id=task_id,
-            block_metadata={
-                "schema_version": SCHEMA_VERSION,
-                "cohort_hash": current,
-                "task_version_id": task_version_id,
-            },
-            output_transform=cb.to_output,
-            model=model,
-            # Same cap as the trajectory summary, for the same reason: the
-            # default 4096 truncates the model mid-JSON, and a seven-category
-            # two-sided comparison quoting stored summaries verbatim is well
-            # past that. A ceiling, not a target -- billing is on tokens
-            # actually generated.
-            max_tokens=SUMMARY_MAX_TOKENS,
-            response_format=CohortComparisonOutput,
-            output_schema=CohortComparisonOutput.model_json_schema(),
-            triggered_by_user_id=triggered_by_user_id,
-        )
-        # Citation validation and the thin-coverage list are applied inside
-        # cb.to_output, so what run() returns is what was persisted.
-        result = await block.run()
+        # The trajectories go on disk rather than into the prompt: median 1.1 MB
+        # (~263k tokens) each, so even a minimum three-a-side cohort would not
+        # fit inlined. claude-code reads what it needs through Read/Glob/Grep.
+        workspace = Path(tempfile.mkdtemp(prefix="cohort-"))
+        try:
+            trajectories = await _fetch_trajectories(
+                session, [t["trial_id"] for t in (*successful, *failing)]
+            )
+            # Fetching reopened a transaction, and the generation below runs for
+            # minutes. Same reason as the pre-lock release above.
+            await _end_read_transaction(session)
+            step_index = cw.build_workspace(
+                workspace,
+                task_name=task_name,
+                successful=successful,
+                failing=failing,
+                trajectories=trajectories,
+            )
+            cb = CohortComparisonBlock(
+                CohortInput(
+                    task_name=task_name, successful=successful, failing=failing
+                ),
+                instructions_template=cp.load_cohort_prompt_template(),
+                step_index=step_index,
+            )
+            block = AnalyzerBlock(
+                analyzer_type=AnalyzerType.COHORT_COMPARISON,
+                llm_client_type=LLMClientType.CLAUDE_CLI,
+                input=AnalyzerInput(input={"task_version_id": task_version_id}),
+                prompt=cb.build_prompt(),
+                task_id=task_id,
+                block_metadata={
+                    "schema_version": SCHEMA_VERSION,
+                    "cohort_hash": current,
+                    "task_version_id": task_version_id,
+                },
+                # The CLI yields stream-json events, not the model's bare
+                # answer; this pulls the result payload out before validating.
+                output_transform=cb.to_output_from_cli,
+                model=model,
+                cli_config=CliConfig(
+                    cwd=workspace,
+                    # Validate inside claude-code. Otherwise the comparison
+                    # arrives as free text and one unescaped quote loses the
+                    # whole run -- and this output quotes trajectories verbatim,
+                    # so unescaped quotes are the normal case, not the edge one.
+                    json_schema=json.dumps(
+                        CohortComparisonOutput.model_json_schema(),
+                        separators=(",", ":"),
+                    ),
+                    timeout=COMPARISON_TIMEOUT,
+                ),
+                triggered_by_user_id=triggered_by_user_id,
+            )
+            # Citation validation and the thin-coverage list are applied inside
+            # cb.to_output_from_cli, so what run() returns is what was persisted.
+            result = await block.run()
+        finally:
+            # The worker owns this directory (no sandbox aclose to delete it),
+            # so clean it up on every exit path or worker disk fills.
+            shutil.rmtree(workspace, ignore_errors=True)
         return result.output
