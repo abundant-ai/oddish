@@ -32,6 +32,7 @@ def test_daytona_capabilities_are_cpu_only_no_private_registry() -> None:
 
 def test_daytona_env_kwargs_inject_autostop_autodelete_ephemeral() -> None:
     merged = DaytonaBackend().harbor_env_kwargs({})
+    assert settings.daytona_auto_stop_interval_mins == 90
     assert merged["auto_stop_interval_mins"] == settings.daytona_auto_stop_interval_mins
     assert (
         merged["auto_delete_interval_mins"]

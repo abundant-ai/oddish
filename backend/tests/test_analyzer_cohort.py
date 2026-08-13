@@ -223,6 +223,7 @@ async def test_run_cohort_deletes_the_sandbox_on_success():
     runtime = _FakeRuntime([], files=_good_files())
     await _run(client, runtime, **_kwargs())
     assert len(client.deleted) == 2
+    assert {sandbox["auto_stop"] for sandbox in client.sandboxes.values()} == {15}
 
 
 async def test_run_cohort_deletes_the_sandbox_on_failure():
