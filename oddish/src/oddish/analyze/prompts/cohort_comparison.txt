@@ -16,12 +16,54 @@ as if all fourteen behaved that way. If the behaviour really is one model's,
 say so in the description and cite only that model's runs -- that is a finding,
 not a shortcut.
 
-Every behaviour description must carry at least one piece of evidence. Evidence
-is a component that appears verbatim in one of the trials above: its trial id,
-its `trajectory_component` label, its step ids, and its summary text copied
-exactly. Each component is shown with its step range as `[first-last]`; write
-`step_ids` as exactly those two numbers, so `[34-35]` becomes `[34, 35]`. Do
-not cite a component that is not listed above, and do not invent step ids. A
+A trial may carry a `subagents` attribute: how many subagents that run spawned,
+counted from the recorded trajectory rather than read out of the summaries. Use
+it directly -- the component text will rarely mention delegation, so this
+attribute is the only reliable signal that it happened. `n/a` means the agent
+has no subagent tool at all, so never read it as zero and never rest a
+delegation finding on a side whose runs are `n/a`; that is a difference in
+tooling, not in behaviour. A trial with no `subagents` attribute was summarised
+before the count existed -- treat it as unknown and leave it out of any
+delegation claim. A delegation finding still needs a cited component, like any
+other: cite the components spanning the steps where the run was delegating.
+
+You can read the runs themselves. Your working directory holds `MAP.md` — the
+same cohorts, trials and components listed above, each naming a file under
+`trials/<trial_id>/` that holds that component's RAW steps: messages, reasoning,
+tool calls with their arguments, and the output that came back. Read `MAP.md`
+first, then open the component files that bear on the behaviour you are
+testing. The summaries are a table of contents, not the evidence; a claim about
+how an agent worked should be checked against the steps before you make it.
+
+Read selectively. A component file can be large, and opening every file on both
+sides wastes the run. Follow the behaviour: pick the components whose labels and
+summaries suggest it, read those, and stop when the pattern is settled or
+refuted.
+
+Every behaviour description must carry at least one piece of evidence, in ONE of
+these two shapes. Never set fields from both shapes on one citation.
+
+1. Summary evidence — `trial_id`, `trajectory_component`, `step_ids`, `quote`.
+   The `quote` must be the component's summary text copied EXACTLY. Each
+   component is shown with its step range as `[first-last]`; write `step_ids` as
+   exactly those two numbers, so `[34-35]` becomes `[34, 35]`.
+
+2. Step evidence — `trial_id`, `step_id`, `quote`. The `quote` must appear
+   VERBATIM in that step: a phrase from the agent's message or reasoning, a
+   command it ran, or the output it saw. Do not tidy, trim or paraphrase it,
+   and do not join two fragments that are not adjacent. The component files
+   are JSON, so quote what the field SAYS, not how the file spells it: write
+   the newline, quote or backslash itself, never the `\n`, `\"` or `\\` you
+   see on the page. A short single-line phrase is easiest to get right.
+
+Prefer step evidence when you have read the step: it shows the reader what the
+agent actually did, and it deep-links to that step. Fall back to summary
+evidence for a behaviour you are reading off the summaries alone.
+
+Do not cite a component or a step that is not in the files, and do not invent
+ids. Every citation is checked against the stored summaries and the raw steps,
+and one that does not resolve is DELETED — an observation loses its evidence, a
+category can lose all its observations, and the headline is dropped with it. A
 behaviour you cannot cite is one you must omit.
 
 Write `summary` last, after the categories are settled: one or two sentences
