@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from sqlalchemy import Integer, case, delete, func, select
+from sqlalchemy import Integer, case, delete, func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -207,10 +207,22 @@ async def refresh_task_version_model_metrics(
         return
     await session.flush()
 
-    # No locking here: the sole caller is refresh_task_browse_summaries, which
-    # already holds a sorted transaction-scoped advisory lock per version id.
-    # Taking them again would be redundant; taking them in a different order
-    # would reintroduce the deadlock those locks exist to prevent.
+    # Lock here rather than relying on the caller. refresh_task_browse_summaries
+    # already holds these, but the backfill calls this function directly, and an
+    # unlocked backfill batch racing a live refresh can overwrite a fresh row
+    # with the snapshot it aggregated moments earlier -- silent staleness, not a
+    # crash. pg_advisory_xact_lock is re-entrant within a transaction, so taking
+    # an already-held lock is free; the same sorted order keeps both paths in a
+    # single global ordering and cannot deadlock against each other.
+    for version_id in version_ids:
+        await session.execute(
+            text(
+                "SELECT pg_advisory_xact_lock("
+                "hashtextextended(CAST(:version_id AS text), 0))"
+            ),
+            {"version_id": version_id},
+        )
+
     known = (
         await session.execute(
             select(TaskVersionModel.id)

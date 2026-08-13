@@ -347,3 +347,47 @@ async def test_backfill_is_idempotent(session):
         assert await _count() == first
     finally:
         await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_recompute_takes_the_version_advisory_lock(session):
+    """The backfill calls this directly, so it cannot rely on a caller's lock.
+
+    Without a lock, a backfill batch racing a live refresh overwrites a fresh
+    row with the snapshot it aggregated moments earlier. Proven by holding the
+    lock from a second connection and asserting the recompute blocks on it.
+    """
+    import asyncio
+
+    import oddish.db.connection as conn
+    from sqlalchemy import text as sa_text
+
+    _, version_id = await _seed(session, [{"reward": 1.0, "total_steps": 12}])
+    await session.commit()
+
+    holder = conn.async_session_maker()
+    try:
+        # Same hash expression as refresh_task_browse_summaries, so the two
+        # paths contend on one lock rather than two.
+        await holder.execute(
+            sa_text(
+                "SELECT pg_advisory_xact_lock("
+                "hashtextextended(CAST(:v AS text), 0))"
+            ),
+            {"v": version_id},
+        )
+
+        blocked = conn.async_session_maker()
+        try:
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(
+                    refresh_task_version_model_metrics(blocked, [version_id]),
+                    timeout=2.0,
+                )
+        finally:
+            await blocked.rollback()
+            await blocked.close()
+    finally:
+        await holder.rollback()
+        await holder.close()
+        await session.rollback()
