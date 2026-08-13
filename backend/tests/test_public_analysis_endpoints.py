@@ -17,6 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.app import create_app
+from api.services.summarize_trajectory import SCHEMA_VERSION
 
 TOKEN = "share-tok"
 SUMMARY_URL = f"/public/experiments/{TOKEN}/trials/t-1/trajectory/summary"
@@ -61,7 +62,7 @@ def test_summary_returns_stored_block(client, patched_session):
     summary = {"schema_version": "7", "summary": "ok", "highlights": []}
     with patched_session, patch(
         "api.routers.public_analysis.get_public_trial_for_experiment",
-        new=AsyncMock(return_value=SimpleNamespace(id="t-1")),
+        new=AsyncMock(return_value=SimpleNamespace(id="t-1", trajectory_summary=None)),
     ), patch(
         "api.services.summarize_trajectory.load_stored_summary",
         new=AsyncMock(return_value=summary),
@@ -71,11 +72,62 @@ def test_summary_returns_stored_block(client, patched_session):
     assert resp.json() == summary
 
 
+def test_summary_falls_back_to_the_trial_mirror(client, patched_session):
+    """`preview_seed` copies trials but not `analyzer_blocks`, so a block-only
+    read is empty on every preview deploy while the summary sits on the trial
+    row. The authenticated route hides that by generating; this one cannot."""
+    mirror = {"schema_version": SCHEMA_VERSION, "summary": "from the mirror"}
+    trial = SimpleNamespace(id="t-1", trajectory_summary=mirror)
+    with patched_session, patch(
+        "api.routers.public_analysis.get_public_trial_for_experiment",
+        new=AsyncMock(return_value=trial),
+    ), patch(
+        "api.services.summarize_trajectory._load_fresh_summary_block",
+        new=AsyncMock(return_value=None),
+    ):
+        resp = client.get(SUMMARY_URL)
+    assert resp.status_code == 200
+    assert resp.json() == mirror
+
+
+def test_summary_ignores_a_stale_mirror(client, patched_session):
+    """The mirror is held to the same freshness bar as the block: an old
+    schema would render the wrong vocabulary rather than nothing."""
+    trial = SimpleNamespace(
+        id="t-1", trajectory_summary={"schema_version": "1", "summary": "old"}
+    )
+    with patched_session, patch(
+        "api.routers.public_analysis.get_public_trial_for_experiment",
+        new=AsyncMock(return_value=trial),
+    ), patch(
+        "api.services.summarize_trajectory._load_fresh_summary_block",
+        new=AsyncMock(return_value=None),
+    ):
+        resp = client.get(SUMMARY_URL)
+    assert resp.status_code == 404
+
+
+def test_summary_prefers_the_block_over_the_mirror(client, patched_session):
+    trial = SimpleNamespace(
+        id="t-1", trajectory_summary={"schema_version": SCHEMA_VERSION, "s": "mirror"}
+    )
+    block = {"schema_version": SCHEMA_VERSION, "s": "block"}
+    with patched_session, patch(
+        "api.routers.public_analysis.get_public_trial_for_experiment",
+        new=AsyncMock(return_value=trial),
+    ), patch(
+        "api.services.summarize_trajectory._load_fresh_summary_block",
+        new=AsyncMock(return_value=block),
+    ):
+        resp = client.get(SUMMARY_URL)
+    assert resp.json() == block
+
+
 def test_summary_miss_is_404_and_never_generates(client, patched_session):
     generate = AsyncMock()
     with patched_session, patch(
         "api.routers.public_analysis.get_public_trial_for_experiment",
-        new=AsyncMock(return_value=SimpleNamespace(id="t-1")),
+        new=AsyncMock(return_value=SimpleNamespace(id="t-1", trajectory_summary=None)),
     ), patch(
         "api.services.summarize_trajectory.load_stored_summary",
         new=AsyncMock(return_value=None),

@@ -512,14 +512,30 @@ async def _load_fresh_summary_block(
     ).scalar_one_or_none()
 
 
-async def load_stored_summary(session: AsyncSession, trial_id: str) -> dict | None:
+async def load_stored_summary(session: AsyncSession, trial) -> dict | None:
     """The stored trajectory summary for a trial, or None. Never generates.
 
     The read half of ``get_or_generate_summary``, split out for the public
     share route, where generation must stay unreachable: it costs an LLM call
     per miss and an unauthenticated page view may not spend one.
+
+    Falls back to the ``trials.trajectory_summary`` mirror, for the same reason
+    ``resolve_cohorts`` prefers it: ``preview_seed`` copies trials but not
+    ``analyzer_blocks``, so a block-only read is empty on every preview deploy
+    even though the summary is sitting on the trial row. The authenticated
+    route papers over that by generating; this one cannot, so a share page
+    would simply show no summary.
+
+    The mirror is held to the same freshness bar as the block -- it is written
+    from the same output, so it carries the same ``schema_version``.
     """
-    return await _load_fresh_summary_block(session, trial_id)
+    block = await _load_fresh_summary_block(session, trial.id)
+    if block is not None:
+        return block
+    mirror = getattr(trial, "trajectory_summary", None)
+    if isinstance(mirror, dict) and mirror.get("schema_version") == SCHEMA_VERSION:
+        return mirror
+    return None
 
 
 async def get_or_generate_summary(

@@ -40,7 +40,7 @@ async def get_public_trial_trajectory_summary(
         trial = await get_public_trial_for_experiment(session, public_token, trial_id)
         if trial is None:
             raise HTTPException(status_code=404, detail="Trial not found")
-        summary = await load_stored_summary(session, trial.id)
+        summary = await load_stored_summary(session, trial)
     if summary is None:
         raise HTTPException(
             status_code=404, detail="No trajectory summary for this trial"
