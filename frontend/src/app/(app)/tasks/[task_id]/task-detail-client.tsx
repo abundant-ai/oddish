@@ -49,11 +49,16 @@ import {
 import { summarizeTrials, type TrialAggregate } from "@/lib/trial-aggregation";
 import {
   isBrowseTaskDetail,
-  taskDetailKey,
   taskDetailValue,
   type TaskDetailResource,
 } from "@/lib/task-detail-resource";
-import type { Task, TaskVersionSummary, Trial } from "@/lib/types";
+import type {
+  Task,
+  TaskOpenVersionRef,
+  TaskVersionSummary,
+  Trial,
+} from "@/lib/types";
+import { useTaskOpenReader } from "@/lib/use-task-open-reader";
 import {
   formatRelativeTime,
   prBadge,
@@ -67,8 +72,6 @@ import {
 } from "@/lib/line-range";
 import { sameFilePath } from "@/lib/file-path";
 import { expandTrialParam } from "@/lib/trial-url";
-import { expandVersionParam } from "@/lib/version-url";
-import { taskHasCancellableWork } from "@/lib/job-status";
 import {
   ArrowLeft,
   ChevronDown,
@@ -106,30 +109,6 @@ function DrawerContentLoading({ label }: { label: string }) {
       <span>{label}</span>
     </div>
   );
-}
-
-function readVersionFromQuery(
-  taskId: string | null | undefined
-): string | null {
-  if (typeof window === "undefined") return null;
-  return expandVersionParam(
-    new URLSearchParams(window.location.search).get("version"),
-    taskId
-  );
-}
-
-function writeVersionToQuery(
-  versionId: string | null,
-  defaultId: string | null
-) {
-  if (typeof window === "undefined") return;
-  const url = new URL(window.location.href);
-  if (versionId == null || versionId === defaultId) {
-    url.searchParams.delete("version");
-  } else {
-    url.searchParams.set("version", versionId);
-  }
-  window.history.replaceState(window.history.state, "", url.toString());
 }
 
 function CostBadge({
@@ -388,10 +367,12 @@ function VersionSwitcher({
   versions,
   selectedVersionId,
   onSelect,
+  onOpen,
 }: {
-  versions: TaskVersionSummary[];
+  versions: TaskOpenVersionRef[];
   selectedVersionId: string | null;
   onSelect: (id: string) => void;
+  onOpen: () => void;
 }) {
   if (versions.length === 0) return null;
   const selected = versions.find((v) => v.id === selectedVersionId);
@@ -400,7 +381,7 @@ function VersionSwitcher({
     : "Select version";
 
   return (
-    <DropdownMenu>
+    <DropdownMenu onOpenChange={(open) => open && onOpen()}>
       <DropdownMenuTrigger asChild>
         <Button
           type="button"
@@ -419,11 +400,7 @@ function VersionSwitcher({
           const label = v.is_current
             ? `v${v.version} · default`
             : `v${v.version}`;
-          const cost =
-            v.cost_trial_count > 0
-              ? `${v.cost_has_estimated && !v.cost_has_native ? "~" : ""}${formatCostUsd(v.cost_usd)}`
-              : "$0";
-          const sub = `${v.trial_count} trial${v.trial_count === 1 ? "" : "s"} · ${cost}${v.message ? ` · ${v.message}` : ""}`;
+          const sub = v.message;
           const isActive = v.id === selectedVersionId;
           return (
             <DropdownMenuItem
@@ -436,9 +413,11 @@ function VersionSwitcher({
               <span className="font-mono text-[12px] font-semibold text-[color:var(--paper-ink)]">
                 {label}
               </span>
-              <span className="font-mono text-[10.5px] text-[color:var(--paper-ink-3)]">
-                {sub}
-              </span>
+              {sub ? (
+                <span className="font-mono text-[10.5px] text-[color:var(--paper-ink-3)]">
+                  {sub}
+                </span>
+              ) : null}
             </DropdownMenuItem>
           );
         })}
@@ -573,10 +552,10 @@ function AgentCard({
   const avgDurationSec = useMemo(() => {
     let sum = 0;
     let count = 0;
-    for (const t of trials) {
-      const d = trialDurationSec(t);
-      if (d != null) {
-        sum += d;
+    for (const trial of trials) {
+      const duration = trialDurationSec(trial);
+      if (duration != null) {
+        sum += duration;
         count += 1;
       }
     }
@@ -687,197 +666,117 @@ export function TaskDetailClient({
   taskId,
   initialVersionId,
 }: TaskDetailClientProps) {
-  const swrKey = taskDetailKey(taskId);
+  const {
+    defaultVersionError,
+    defaultVersionId,
+    detailKey,
+    error,
+    explicitVersionMissing,
+    handleSelectVersion,
+    handleSetDefaultVersion,
+    isBrowseSnapshot,
+    isLoading,
+    isSettingDefaultVersion,
+    open,
+    recoveryError,
+    revalidateReaderResources,
+    selectedVersion,
+    selectedVersionId,
+    setLoadVersionHistory,
+    task,
+    totals,
+    trialsForVersion,
+    versions,
+  } = useTaskOpenReader(taskId, initialVersionId);
 
-  const { data, error, isLoading, mutate } = useSWR<TaskDetailResource>(
-    swrKey,
-    fetcher,
-    {
-      refreshInterval: (latestResource) =>
-        taskHasCancellableWork(taskDetailValue(latestResource)?.task)
-          ? 30000
-          : 0,
+  const versionSummary: TrialAggregate = useMemo(
+    () =>
+      selectedVersion
+        ? summaryFromVersion(selectedVersion)
+        : summarizeTrials(trialsForVersion),
+    [selectedVersion, trialsForVersion]
+  );
+  const [drawer, setDrawer] = useState<DrawerState | null>(null);
+  const [drawerShowTask, setDrawerShowTask] = useState(true);
+  const [drawerShowTrial, setDrawerShowTrial] = useState(true);
+  const { data: drawerDetailResource, isLoading: isDrawerDetailLoading } =
+    useSWR<TaskDetailResource>(detailKey, fetcher, {
       revalidateOnFocus: false,
       revalidateOnMount: true,
-      keepPreviousData: true,
+    });
+  const canonicalDrawerDetailResource =
+    drawerDetailResource && !isBrowseTaskDetail(drawerDetailResource)
+      ? drawerDetailResource
+      : undefined;
+  const canonicalDrawerDetail = taskDetailValue(canonicalDrawerDetailResource);
+  const drawerTask = canonicalDrawerDetail?.task ?? task;
+  const drawerTrialsForVersion = useMemo(() => {
+    const canonicalTrials = canonicalDrawerDetail?.task.trials;
+    if (!canonicalTrials || selectedVersionId === null) {
+      return trialsForVersion;
     }
-  );
-
-  const detail = taskDetailValue(data) ?? null;
-  const isBrowseSnapshot = isBrowseTaskDetail(data);
-  const task = detail?.task ?? null;
-  const versions = useMemo(() => detail?.versions ?? [], [detail]);
-  const totals = isBrowseSnapshot ? undefined : detail?.totals;
-
-  const defaultVersionId = task?.current_version_id ?? versions[0]?.id ?? null;
-
-  const [selectedVersionId, setSelectedVersionId] = useState<string | null>(
-    () => initialVersionId ?? null
-  );
-  const [isSettingDefaultVersion, setIsSettingDefaultVersion] = useState(false);
-  const [defaultVersionError, setDefaultVersionError] = useState<string | null>(
-    null
-  );
-
-  useEffect(() => {
-    if (
-      selectedVersionId != null &&
-      versions.some((v) => v.id === selectedVersionId)
-    ) {
-      return;
-    }
-    const fromUrl = readVersionFromQuery(taskId);
-    if (fromUrl && versions.some((v) => v.id === fromUrl)) {
-      setSelectedVersionId(fromUrl);
-      return;
-    }
-    if (defaultVersionId != null) setSelectedVersionId(defaultVersionId);
-  }, [versions, defaultVersionId, selectedVersionId, taskId]);
-
-  const handleSelectVersion = useCallback(
-    (id: string) => {
-      setSelectedVersionId(id);
-      setDefaultVersionError(null);
-      writeVersionToQuery(id, defaultVersionId);
-    },
-    [defaultVersionId]
-  );
-
-  const trialsForVersion = useMemo(() => {
-    if (!task?.trials || selectedVersionId == null) return [] as Trial[];
-    return task.trials.filter((t) => t.task_version_id === selectedVersionId);
-  }, [task?.trials, selectedVersionId]);
-
-  const selectedVersion = versions.find((v) => v.id === selectedVersionId);
-  const handleSetDefaultVersion = useCallback(async () => {
-    if (!task || !selectedVersion || selectedVersion.is_current) return;
-
-    const versionId = selectedVersion.id;
-    const versionNumber = selectedVersion.version;
-    setIsSettingDefaultVersion(true);
-    setDefaultVersionError(null);
-    try {
-      const res = await fetch(
-        `/api/tasks/${encodeURIComponent(task.id)}/versions/${versionNumber}/default`,
-        { method: "PUT" }
-      );
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(
-          data.detail || data.error || "Failed to change the default version"
-        );
-      }
-
-      await mutate(
-        (current) => {
-          const currentDetail = taskDetailValue(current);
-          return currentDetail
-            ? {
-                ...currentDetail,
-                task: {
-                  ...currentDetail.task,
-                  current_version_id: versionId,
-                  current_version: versionNumber,
-                },
-                versions: currentDetail.versions.map((candidate) => ({
-                  ...candidate,
-                  is_current: candidate.id === versionId,
-                })),
-              }
-            : current;
-        },
-        { revalidate: false }
-      );
-      writeVersionToQuery(versionId, versionId);
-      void mutate();
-    } catch (err) {
-      setDefaultVersionError(
-        err instanceof Error
-          ? err.message
-          : "Failed to change the default version"
-      );
-    } finally {
-      setIsSettingDefaultVersion(false);
-    }
-  }, [mutate, selectedVersion, task]);
-
-  const versionSummary: TrialAggregate = useMemo(() => {
-    if (selectedVersion) return summaryFromVersion(selectedVersion);
-    return summarizeTrials(trialsForVersion);
-  }, [selectedVersion, trialsForVersion]);
-  const allVersionsSummary = useMemo(
-    () => summarizeTrials(task?.trials ?? []),
-    [task?.trials]
-  );
-
+    return canonicalTrials.filter(
+      (trial) => trial.task_version_id === selectedVersionId
+    );
+  }, [canonicalDrawerDetail?.task.trials, selectedVersionId, trialsForVersion]);
   const tasksForGrouping = useMemo<Task[]>(
     () =>
       task
         ? [
             {
               ...task,
-              trials: trialsForVersion,
+              trials: drawerTrialsForVersion,
             },
           ]
         : [],
-    [task, trialsForVersion]
+    [drawerTrialsForVersion, task]
   );
-
   const { agentSummaries, modelScopedAgents } = useMemo(
     () => buildExperimentAgentSummaries(tasksForGrouping),
     [tasksForGrouping]
   );
-
   const realAgentCount = useMemo(
-    () => agentSummaries.filter((s) => s.key !== PROBE_AGENT_KEY).length,
+    () =>
+      agentSummaries.filter((summary) => summary.key !== PROBE_AGENT_KEY)
+        .length,
     [agentSummaries]
   );
   const realTrialCount = useMemo(
-    () => trialsForVersion.filter((t) => !t.is_probe).length,
-    [trialsForVersion]
+    () => drawerTrialsForVersion.filter((trial) => !trial.is_probe).length,
+    [drawerTrialsForVersion]
   );
-
   const trialsByAgentKey = useMemo(() => {
-    const map = new Map<string, Trial[]>();
-    for (const trial of trialsForVersion) {
+    const byKey = new Map<string, Trial[]>();
+    for (const trial of drawerTrialsForVersion) {
       const key = getExperimentAgentKey(trial, modelScopedAgents);
-      const existing = map.get(key) ?? [];
-      existing.push(trial);
-      map.set(key, existing);
+      const trials = byKey.get(key) ?? [];
+      trials.push(trial);
+      byKey.set(key, trials);
     }
-    return map;
-  }, [trialsForVersion, modelScopedAgents]);
-
-  const trialGroups = useMemo(
+    return byKey;
+  }, [drawerTrialsForVersion, modelScopedAgents]);
+  const drawerTrialGroups = useMemo(
     () =>
-      agentSummaries.map((summary) => {
-        const trials = trialsByAgentKey.get(summary.key) ?? [];
-        return {
-          agent: summary.key,
-          model: summary.model,
-          trials,
-        };
-      }),
+      agentSummaries.map((summary) => ({
+        agent: summary.key,
+        model: summary.model,
+        trials: trialsByAgentKey.get(summary.key) ?? [],
+      })),
     [agentSummaries, trialsByAgentKey]
   );
-
-  const orderedTrials = useMemo(() => {
-    const out: Trial[] = [];
-    for (const group of trialGroups) out.push(...group.trials);
-    return out;
-  }, [trialGroups]);
-
-  const [drawer, setDrawer] = useState<DrawerState | null>(null);
-  const [drawerShowTask, setDrawerShowTask] = useState(true);
-  const [drawerShowTrial, setDrawerShowTrial] = useState(true);
+  const drawerOrderedTrials = useMemo(
+    () => drawerTrialGroups.flatMap((group) => group.trials),
+    [drawerTrialGroups]
+  );
 
   const drawerTrial =
     drawer?.mode === "trial"
-      ? (orderedTrials.find((trial) => trial.id === drawer.fallbackTrial.id) ??
-        drawer.fallbackTrial)
+      ? (drawerOrderedTrials.find(
+          (trial) => trial.id === drawer.fallbackTrial.id
+        ) ?? drawer.fallbackTrial)
       : null;
   const drawerTrialIndex = drawerTrial
-    ? orderedTrials.findIndex((trial) => trial.id === drawerTrial.id)
+    ? drawerOrderedTrials.findIndex((trial) => trial.id === drawerTrial.id)
     : -1;
 
   const handleSelectTrial = useCallback((trial: Trial) => {
@@ -950,7 +849,6 @@ export function TaskDetailClient({
     // empty trial list — lets hydration complete on versions with zero
     // trials, where waiting for trials would disable URL sync forever.
     if (urlTrialId && selectedVersionId == null) return;
-    drawerHydratedRef.current = true;
 
     const urlTaskFile = params.get("taskFile");
     const urlTaskLines = parseLineRange(params.get("taskLines"));
@@ -961,25 +859,36 @@ export function TaskDetailClient({
     }
 
     if (urlTrialId) {
-      const trial = orderedTrials.find((t) => t.id === urlTrialId);
+      const trial = drawerOrderedTrials.find(
+        (trial) => trial.id === urlTrialId
+      );
       if (trial) {
+        drawerHydratedRef.current = true;
         hydrationOpeningRef.current = true;
         handleSelectTrial(trial);
         return;
       }
+      if (isDrawerDetailLoading || canonicalDrawerDetail == null) return;
+      drawerHydratedRef.current = true;
       unresolvedTrialParamRef.current = true;
+      return;
     }
-    if (params.get("drawer") === "task" || (!urlTrialId && urlTaskFile)) {
+
+    drawerHydratedRef.current = true;
+    if (params.get("drawer") === "task" || urlTaskFile) {
       hydrationOpeningRef.current = true;
       handleOpenTaskFiles();
     }
   }, [
-    isLoading,
-    task,
-    selectedVersionId,
-    orderedTrials,
-    handleSelectTrial,
+    canonicalDrawerDetail,
+    defaultVersionId,
     handleOpenTaskFiles,
+    handleSelectTrial,
+    isDrawerDetailLoading,
+    isLoading,
+    drawerOrderedTrials,
+    selectedVersionId,
+    task,
   ]);
 
   // An unresolved ?trial= address gets another chance whenever the trial
@@ -995,13 +904,13 @@ export function TaskDetailClient({
       unresolvedTrialParamRef.current = false;
       return;
     }
-    const trial = orderedTrials.find((t) => t.id === urlTrialId);
+    const trial = drawerOrderedTrials.find((item) => item.id === urlTrialId);
     if (trial) {
       unresolvedTrialParamRef.current = false;
       hydrationOpeningRef.current = true;
       handleSelectTrial(trial);
     }
-  }, [orderedTrials, handleSelectTrial, task?.id]);
+  }, [drawerOrderedTrials, handleSelectTrial, task?.id]);
 
   // Closing the drawer retires the task pane address along with the URL
   // params the sync effect strips — otherwise reopening would write the
@@ -1093,8 +1002,8 @@ export function TaskDetailClient({
   }, [drawer, taskPaneFile, taskPaneLines]);
 
   const handleRerun = useCallback(() => {
-    void mutate();
-  }, [mutate]);
+    revalidateReaderResources();
+  }, [revalidateReaderResources]);
 
   const [isRunningJudge, setIsRunningJudge] = useState(false);
   const [isCancellingJudge, setIsCancellingJudge] = useState(false);
@@ -1114,7 +1023,7 @@ export function TaskDetailClient({
         const data = await res.json().catch(() => ({}));
         throw new Error(data.detail || data.error || "Failed to queue QA");
       }
-      void mutate();
+      revalidateReaderResources();
     } catch (err) {
       setJudgeError(
         err instanceof Error ? err.message : "Failed to queue judge"
@@ -1122,7 +1031,7 @@ export function TaskDetailClient({
     } finally {
       setIsRunningJudge(false);
     }
-  }, [task?.id, isRunningJudge, mutate]);
+  }, [task?.id, isRunningJudge, revalidateReaderResources]);
   const handleCancelJudge = useCallback(async () => {
     if (!task?.id || isCancellingJudge) return;
     setIsCancellingJudge(true);
@@ -1135,20 +1044,24 @@ export function TaskDetailClient({
         const data = await res.json().catch(() => ({}));
         throw new Error(data.detail || data.error || "Failed to cancel QA");
       }
-      void mutate();
+      revalidateReaderResources();
     } catch (err) {
       setJudgeError(err instanceof Error ? err.message : "Failed to cancel QA");
     } finally {
       setIsCancellingJudge(false);
     }
-  }, [task, isCancellingJudge, mutate]);
+  }, [task, isCancellingJudge, revalidateReaderResources]);
 
   const versionScopedScorePct =
     versionSummary.rewardTotal > 0
       ? (versionSummary.rewardSum / versionSummary.rewardTotal) * 100
       : null;
 
-  if (error && (!detail || isBrowseSnapshot)) {
+  if (
+    error &&
+    (!open || isBrowseSnapshot) &&
+    (!explicitVersionMissing || recoveryError !== undefined)
+  ) {
     return (
       <Alert variant="destructive">
         <AlertTitle>Failed to load task</AlertTitle>
@@ -1159,7 +1072,7 @@ export function TaskDetailClient({
     );
   }
 
-  if (!detail || !task) {
+  if (!open || !task) {
     return (
       <div className="space-y-4">
         <Skeleton className="h-10 w-72" />
@@ -1185,7 +1098,7 @@ export function TaskDetailClient({
               targetId={task.id}
               taskId={task.id}
               initialTags={task.user_tags ?? []}
-              onMutate={() => mutate()}
+              onMutate={revalidateReaderResources}
             />
           }
         />
@@ -1217,11 +1130,11 @@ export function TaskDetailClient({
                 title="QA/analysis spend for this task's trials. Not included in the cost figure."
               />
             </span>
-            {allVersionsSummary.tokenTrialCount > 0 && (
+            {(totals?.token_trial_count ?? 0) > 0 ? (
               <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
-                {formatTokenCount(allVersionsSummary.tokenCount)}
+                {formatTokenCount(totals?.token_count ?? 0)}
               </span>
-            )}
+            ) : null}
           </KpiTile>
           <KpiTile
             label="Billed spend"
@@ -1325,6 +1238,7 @@ export function TaskDetailClient({
               versions={versions}
               selectedVersionId={selectedVersionId}
               onSelect={handleSelectVersion}
+              onOpen={() => setLoadVersionHistory(true)}
             />
             {versions.length > 1 ? (
               <DefaultVersionControl
@@ -1333,14 +1247,14 @@ export function TaskDetailClient({
                 onSetDefault={handleSetDefaultVersion}
               />
             ) : null}
-            {selectedVersionId ? (
+            {selectedVersionId && !isBrowseSnapshot ? (
               <TagEditor
                 key={selectedVersionId}
                 scope="VERSION"
                 targetId={selectedVersionId}
                 taskId={task.id}
                 initialTags={selectedVersion?.user_tags ?? []}
-                onMutate={() => mutate()}
+                onMutate={revalidateReaderResources}
               />
             ) : null}
           </div>
@@ -1396,22 +1310,21 @@ export function TaskDetailClient({
           </div>
           {agentSummaries.length === 0 ? (
             <div className="rounded-[10px] border border-dashed border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-4 py-10 text-center text-[12px] text-[color:var(--paper-ink-3)]">
-              No trials for this version yet.
+              {isDrawerDetailLoading
+                ? "Loading trial summaries..."
+                : "No trials for this version yet."}
             </div>
           ) : (
-            agentSummaries.map((summary) => {
-              const trials = trialsByAgentKey.get(summary.key) ?? [];
-              return (
-                <AgentCard
-                  key={summary.key}
-                  agentLabel={summary.label}
-                  agent={summary.agent}
-                  model={summary.model}
-                  trials={trials}
-                  onTrialSelect={handleSelectTrial}
-                />
-              );
-            })
+            agentSummaries.map((summary) => (
+              <AgentCard
+                key={summary.key}
+                agentLabel={summary.label}
+                agent={summary.agent}
+                model={summary.model}
+                trials={trialsByAgentKey.get(summary.key) ?? []}
+                onTrialSelect={handleSelectTrial}
+              />
+            ))
           )}
         </div>
 
@@ -1431,12 +1344,15 @@ export function TaskDetailClient({
                 taskId={null}
                 // Scopes the overview's trial aggregation; this pane renders
                 // no header, so none of the task-driven header UI appears.
-                task={task}
+                task={drawerTask ?? task}
                 staticChecksTaskId={task.id}
-                taskDetail={data}
+                taskDetail={canonicalDrawerDetailResource}
                 onOpenTrial={handleOpenTrialFromOverview}
                 filesUrl={`/api/tasks/${task.id}/files`}
                 loadFilesLazily
+                overviewTrialsLoading={
+                  isDrawerDetailLoading || canonicalDrawerDetail == null
+                }
                 taskVersion={selectedVersion?.version}
                 initialFilePath={taskPaneFile}
                 selectedLines={taskPaneLines}
@@ -1451,9 +1367,12 @@ export function TaskDetailClient({
                 isOpen={true}
                 onClose={() => setDrawer(null)}
                 taskId={task.id}
-                task={task}
-                taskDetail={data}
+                task={drawerTask ?? task}
+                taskDetail={canonicalDrawerDetailResource}
                 loadFilesLazily
+                overviewTrialsLoading={
+                  isDrawerDetailLoading || canonicalDrawerDetail == null
+                }
                 taskVersion={selectedVersion?.version}
                 onOpenTrial={handleOpenTrialFromOverview}
                 initialFilePath={taskPaneFile}
@@ -1463,9 +1382,10 @@ export function TaskDetailClient({
                 onRetryComplete={handleRerun}
                 allowRetry={true}
                 onNavigateToFirstTrial={
-                  trialGroups.length > 0 && trialGroups[0].trials.length > 0
+                  drawerTrialGroups.length > 0 &&
+                  drawerTrialGroups[0].trials.length > 0
                     ? () => {
-                        const firstTrial = trialGroups[0].trials[0];
+                        const firstTrial = drawerTrialGroups[0].trials[0];
                         handleSelectTrial(firstTrial);
                       }
                     : undefined
@@ -1480,10 +1400,10 @@ export function TaskDetailClient({
                   isOpen={true}
                   onClose={() => setDrawer(null)}
                   trial={drawerTrial}
-                  task={task}
-                  orderedTrials={orderedTrials}
+                  task={drawerTask ?? task}
+                  orderedTrials={drawerOrderedTrials}
                   trialIndex={drawerTrialIndex >= 0 ? drawerTrialIndex : null}
-                  trialGroups={trialGroups}
+                  trialGroups={drawerTrialGroups}
                   onNavigate={handleNavigateToTrial}
                   onNavigateToTask={() => setDrawer({ mode: "task" })}
                   onRetry={handleRerun}
