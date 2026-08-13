@@ -25,23 +25,28 @@ from harbor.agents.installed.cursor_cli import CursorCli
 # Merge (never overwrite) the deny into cursor's own config so its defaults and
 # the schema-required `permissions.allow` array are preserved. Runs as the agent,
 # so ~ resolves to the home where `cursor-agent --version` wrote cli-config.json.
-_DENY_WEBFETCH_CMD = r"""python3 - <<'PY'
+_DENY_WEBFETCH_CMD = r"""python3 - <<'PY' || true
 import json, os
-p = os.path.expanduser("~/.cursor/cli-config.json")
 try:
-    with open(p) as f:
-        cfg = json.load(f)
-except Exception:
-    cfg = {}
-perms = cfg.setdefault("permissions", {})
-perms.setdefault("allow", [])
-deny = perms.setdefault("deny", [])
-if "WebFetch(*)" not in deny:
-    deny.append("WebFetch(*)")
-os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
-with open(p, "w") as f:
-    json.dump(cfg, f, indent=2)
-print("oddish: denied WebFetch(*) in", p)
+    p = os.path.expanduser("~/.cursor/cli-config.json")
+    try:
+        with open(p) as f:
+            cfg = json.load(f)
+    except Exception:
+        cfg = {}
+    perms = cfg.setdefault("permissions", {})
+    perms.setdefault("allow", [])
+    deny = perms.setdefault("deny", [])
+    if "WebFetch(*)" not in deny:
+        deny.append("WebFetch(*)")
+    os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+    with open(p, "w") as f:
+        json.dump(cfg, f, indent=2)
+    print("oddish: denied WebFetch(*) in", p)
+except Exception as e:
+    # Fail OPEN: never break a cursor trial because the deny-write failed. Worst
+    # case the web tool stays enabled (the pre-existing behavior), not a crash.
+    print("oddish: WebFetch deny skipped:", e)
 PY"""
 
 
