@@ -17,6 +17,7 @@ from oddish.core.cost_basis import (
     sum_settled_cost,
 )
 from oddish.db import AnalysisCostModel, ModalCostSpanModel, TrialModel, TrialStatus
+from oddish.db.models import APIKeyModel
 from oddish.db.pg_errors import is_missing_table
 
 logger = logging.getLogger(__name__)
@@ -58,10 +59,15 @@ def _quota_user_lock_key(org_id: str, billed_user_id: str) -> str:
     return f"quota:user:{org_id}:{billed_user_id}"
 
 
+def _quota_api_key_lock_key(org_id: str, api_key_id: str) -> str:
+    return f"quota:api-key:{org_id}:{api_key_id}"
+
+
 async def try_acquire_quota_locks(
     session: AsyncSession,
     org_id: str,
     billed_user_id: str | None,
+    api_key_id: str | None = None,
 ) -> bool:
     """Take the org (and optional user) quota advisory locks without waiting.
 
@@ -74,13 +80,20 @@ async def try_acquire_quota_locks(
     )
     if not org_locked:
         return False
-    if billed_user_id is None:
+    if billed_user_id is not None:
+        user_locked = await session.scalar(
+            text("SELECT pg_try_advisory_xact_lock(hashtext(:key))"),
+            {"key": _quota_user_lock_key(org_id, billed_user_id)},
+        )
+        if not user_locked:
+            return False
+    if api_key_id is None:
         return True
-    user_locked = await session.scalar(
+    key_locked = await session.scalar(
         text("SELECT pg_try_advisory_xact_lock(hashtext(:key))"),
-        {"key": _quota_user_lock_key(org_id, billed_user_id)},
+        {"key": _quota_api_key_lock_key(org_id, api_key_id)},
     )
-    return bool(user_locked)
+    return bool(key_locked)
 
 
 def start_of_today_utc(now: datetime | None = None) -> datetime:
@@ -287,6 +300,32 @@ async def sum_cost_usd(
             inclusive_start=False,
         )
     return total
+
+
+async def get_api_key_limit(
+    session: AsyncSession, org_id: str, api_key_id: str
+) -> Decimal | None:
+    limit = await session.scalar(
+        select(APIKeyModel.limit_usd).where(
+            APIKeyModel.id == api_key_id,
+            APIKeyModel.org_id == org_id,
+            APIKeyModel.is_active.is_(True),
+        )
+    )
+    return None if limit is None else to_money_decimal(limit)
+
+
+async def sum_api_key_cost_usd(
+    session: AsyncSession, org_id: str, api_key_id: str, period_start: datetime
+) -> Decimal:
+    """Settled trial spend launched with one API key over the quota window."""
+    return await _sum_settled_cost_usd(
+        session,
+        [
+            *_settled_cost_predicates(org_id, period_start),
+            TrialModel.api_key_id == api_key_id,
+        ],
+    )
 
 
 async def sum_org_cost_usd(
@@ -511,6 +550,15 @@ async def inflight_reserved_usd(
 ) -> Decimal:
     return await _sum_inflight_reserved_usd(
         session, _inflight_predicates(org_id, billed_user_id)
+    )
+
+
+async def api_key_inflight_reserved_usd(
+    session: AsyncSession, org_id: str, api_key_id: str
+) -> Decimal:
+    return await _sum_inflight_reserved_usd(
+        session,
+        [*_org_inflight_predicates(org_id), TrialModel.api_key_id == api_key_id],
     )
 
 

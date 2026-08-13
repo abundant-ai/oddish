@@ -4,6 +4,7 @@ import hashlib
 import os
 import secrets
 from datetime import datetime, timedelta
+from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,6 +31,7 @@ def create_api_key(
     created_by_role: str | None = None,
     expires_at: datetime | None = None,
     is_internal: bool = False,
+    limit_usd: Decimal | None = None,
 ) -> tuple[APIKeyModel, str]:
     raw_key = generate_api_key()
     api_key = APIKeyModel(
@@ -42,6 +44,7 @@ def create_api_key(
         created_by_role=created_by_role,
         expires_at=expires_at,
         is_internal=is_internal,
+        limit_usd=limit_usd,
     )
     return api_key, raw_key
 

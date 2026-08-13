@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.config import QuotaMode, settings  # noqa: E402
 from oddish.core.quota_admission import (  # noqa: E402
+    APIKeyQuotaExceeded,
     QuotaExceeded,
     Unattributed,
     admit_trials,
@@ -94,6 +95,40 @@ async def test_enforced_admission_takes_no_quota_locks(monkeypatch):
 
     assert not hasattr(quota_admission, "acquire_quota_locks")
     assert len(checks) == 2
+
+
+@pytest.mark.asyncio
+async def test_api_key_limit_blocks_in_addition_to_user_quota(monkeypatch):
+    from oddish.core import quota_admission
+
+    async def no_op(*_args, **_kwargs):
+        return None
+
+    async def key_limit(*_args, **_kwargs):
+        return Decimal("0.25")
+
+    async def key_spend(*_args, **_kwargs):
+        return Decimal("0.25")
+
+    async def no_reservation(*_args, **_kwargs):
+        return Decimal("0")
+
+    monkeypatch.setattr(quota_admission, "_check_user_quota", no_op)
+    monkeypatch.setattr(quota_admission, "_check_org_quota", no_op)
+    monkeypatch.setattr(quota_admission, "get_api_key_limit", key_limit)
+    monkeypatch.setattr(quota_admission, "sum_api_key_cost_usd", key_spend)
+    monkeypatch.setattr(
+        quota_admission, "api_key_inflight_reserved_usd", no_reservation
+    )
+
+    with pytest.raises(APIKeyQuotaExceeded) as raised:
+        await admit_trials(object(), "org-key", "user-key", count=1, api_key_id="key-1")
+    assert raised.value.detail == {
+        "message": raised.value.detail["message"],
+        "used_usd": 0.25,
+        "reserved_usd": 0.0,
+        "limit_usd": 0.25,
+    }
 
 
 async def _settle(task_id, index, cost_usd, *, now=None):

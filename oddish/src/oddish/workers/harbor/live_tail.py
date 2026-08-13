@@ -991,6 +991,7 @@ class LiveTailer:
         runtime_redactions: dict[str, str] | None = None,
         org_id: str | None = None,
         billed_user_id: str | None = None,
+        api_key_id: str | None = None,
     ):
         self.trial_id = trial_id
         self.environment = environment
@@ -1001,6 +1002,7 @@ class LiveTailer:
         self.runtime_redactions = dict(runtime_redactions or {})
         self.org_id = org_id
         self.billed_user_id = billed_user_id
+        self.api_key_id = api_key_id
         self.offset = 0
         self.carry = b""
         self.seq = 0
@@ -1175,6 +1177,7 @@ class LiveTailer:
                 cancelled = await enforce_trial_quotas(
                     org_id=self.org_id,
                     billed_user_id=self.billed_user_id,
+                    api_key_id=self.api_key_id,
                     caller_trial_id=self.trial_id,
                 )
                 if cancelled is None:
@@ -1269,6 +1272,7 @@ def start(
     model: str | None,
     org_id: str | None = None,
     billed_user_id: str | None = None,
+    api_key_id: str | None = None,
 ) -> None:
     if not settings.live_tail_enabled:
         return
@@ -1285,6 +1289,7 @@ def start(
         runtime_redactions=_runtime_redactions.get(trial_id),
         org_id=org_id,
         billed_user_id=billed_user_id,
+        api_key_id=api_key_id,
     )
     old = _tailers.pop(trial_id, None)
     if old:

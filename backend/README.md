@@ -86,6 +86,7 @@ curl -H "Authorization: Bearer ok_abc123..." "$API_URL/tasks"
 - Key format starts with `ok_`
 - Stored hashed (SHA-256) in `api_keys`
 - Scope options: `full`, `tasks`, `read`
+- Optional per-key `limit_usd` caps trial spend over a rolling 24-hour window
 
 ### Clerk JWTs (dashboard access)
 
@@ -322,6 +323,7 @@ All routes require auth unless marked public.
 | DELETE | `/users/{user_id}` | Deactivate user |
 | GET | `/api-keys` | List API keys |
 | POST | `/api-keys` | Create API key (any org admin or member; admins mint full/tasks/read, members mint tasks/read) |
+| PATCH | `/api-keys/{key_id}` | Set or clear the key's rolling-24h spend limit (creator or admin) |
 | GET | `/api-keys/permissions` | Whether the current user may create API keys |
 | DELETE | `/api-keys/{key_id}` | Revoke API key |
 
@@ -452,8 +454,9 @@ raise it** — the fix for a full pool is repairing attribution.
 There is **no seed/coverage pre-step**: stamping is already live from the
 attribution slice, and a member with no `quotas` override row is enforced at
 `ODDISH_DEFAULT_DAILY_QUOTA_USD` (default-at-read). When `quota_mode != off`, the
-API startup verifies `trials.billed_user_id` and the `quotas` + `quota_bumps` +
-`org_quotas` tables exist. Under `enforce` a missing object **fails startup**,
+API startup verifies `trials.billed_user_id`, `trials.api_key_id`,
+`api_keys.limit_usd`, and the `quotas` + `quota_bumps` + `org_quotas` tables
+exist. Under `enforce` a missing object **fails startup**,
 naming what is absent: `oddish/` and `backend/` migrate on separate alembic
 trees, so deploy-before-migrate is a real window, and serving every request
 uncapped is worse than being down. Set

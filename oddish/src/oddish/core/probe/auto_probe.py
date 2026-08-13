@@ -58,6 +58,7 @@ async def maybe_enqueue_auto_probe(
     experiment: ExperimentModel | None,
     org_id: str | None,
     billed_user_id: str | None = None,
+    api_key_id: str | None = None,
     registry_auth: list[RegistryAuth] | None = None,
 ) -> None:
     try:
@@ -107,6 +108,7 @@ async def maybe_enqueue_auto_probe(
             org_id,
             billed_user_id,
             count=len(expanded.trials),
+            api_key_id=api_key_id,
         )
         new_trials = await append_trials_to_task(
             session,
@@ -114,6 +116,7 @@ async def maybe_enqueue_auto_probe(
             submission=expanded,
             experiment_id=submission.experiment_id,
             billed_user_id=billed_user_id,
+            api_key_id=api_key_id,
         )
 
         from oddish.config import settings

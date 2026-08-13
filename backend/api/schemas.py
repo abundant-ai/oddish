@@ -176,6 +176,7 @@ class APIKeyResponse(BaseModel):
     is_active: bool
     expires_at: str | None
     last_used_at: str | None
+    limit_usd: float | None
     created_at: str
 
 
@@ -189,6 +190,7 @@ class APIKeyCreateResponse(BaseModel):
     scope: str
     org_id: str
     expires_at: str | None
+    limit_usd: float | None
     created_at: str
 
 
@@ -206,6 +208,17 @@ class CreateAPIKeyRequest(BaseModel):
     name: str
     scope: str = "full"  # full, tasks, or read
     expires_in_days: int | None = None
+    limit_usd: Decimal | None = Field(
+        None, gt=0, le=Decimal("99999999.9999"), max_digits=12, decimal_places=4
+    )
+
+
+class UpdateAPIKeyRequest(BaseModel):
+    """Editable API-key settings. A null limit removes the key-specific cap."""
+
+    limit_usd: Decimal | None = Field(
+        gt=0, le=Decimal("99999999.9999"), max_digits=12, decimal_places=4
+    )
 
 
 # =============================================================================

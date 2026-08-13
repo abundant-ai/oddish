@@ -3,15 +3,6 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
-
-from api.schemas import (
-    APIKeyCreateResponse,
-    APIKeyPermissionsResponse,
-    APIKeyResponse,
-    CreateAPIKeyRequest,
-)
 from auth import (
     APIKeyScope,
     AuthContext,
@@ -22,11 +13,35 @@ from auth import (
     require_api_key_creator,
     require_auth,
 )
+from fastapi import APIRouter, Depends, HTTPException
 from models import APIKeyModel, create_api_key
 from oddish.db import get_session, utcnow
+from sqlalchemy import select
 
+from api.schemas import (
+    APIKeyCreateResponse,
+    APIKeyPermissionsResponse,
+    APIKeyResponse,
+    CreateAPIKeyRequest,
+    UpdateAPIKeyRequest,
+)
 
 router = APIRouter(prefix="/api-keys", tags=["API Keys"])
+
+
+def _response(api_key: APIKeyModel) -> APIKeyResponse:
+    return APIKeyResponse(
+        id=api_key.id,
+        name=api_key.name,
+        key_prefix=api_key.key_prefix,
+        scope=api_key.scope.value,
+        org_id=api_key.org_id,
+        is_active=api_key.is_active,
+        expires_at=api_key.expires_at.isoformat() if api_key.expires_at else None,
+        last_used_at=api_key.last_used_at.isoformat() if api_key.last_used_at else None,
+        limit_usd=float(api_key.limit_usd) if api_key.limit_usd is not None else None,
+        created_at=api_key.created_at.isoformat(),
+    )
 
 
 @router.get("", response_model=list[APIKeyResponse])
@@ -48,20 +63,7 @@ async def list_api_keys(
         result = await session.execute(stmt)
         keys = result.scalars().all()
 
-        return [
-            APIKeyResponse(
-                id=k.id,
-                name=k.name,
-                key_prefix=k.key_prefix,
-                scope=k.scope.value,
-                org_id=k.org_id,
-                is_active=k.is_active,
-                expires_at=k.expires_at.isoformat() if k.expires_at else None,
-                last_used_at=k.last_used_at.isoformat() if k.last_used_at else None,
-                created_at=k.created_at.isoformat(),
-            )
-            for k in keys
-        ]
+        return [_response(key) for key in keys]
 
 
 @router.get("/permissions", response_model=APIKeyPermissionsResponse)
@@ -115,6 +117,7 @@ async def create_api_key_endpoint(
             created_by_user_id=auth.user_id,
             created_by_role=auth.user_role.value if auth.user_role else None,
             expires_at=expires_at,
+            limit_usd=request.limit_usd,
         )
         session.add(api_key_model)
         await session.commit()
@@ -131,8 +134,42 @@ async def create_api_key_endpoint(
                 if api_key_model.expires_at
                 else None
             ),
+            limit_usd=(
+                float(api_key_model.limit_usd)
+                if api_key_model.limit_usd is not None
+                else None
+            ),
             created_at=api_key_model.created_at.isoformat(),
         )
+
+
+@router.patch("/{key_id}", response_model=APIKeyResponse)
+async def update_api_key(
+    key_id: str,
+    request: UpdateAPIKeyRequest,
+    auth: Annotated[AuthContext, Depends(require_api_key_creator)],
+) -> APIKeyResponse:
+    """Set or clear a key's rolling-24h spend limit.
+
+    Organization admins may edit any visible key. Members may edit only keys
+    they created, matching the visibility rules used by ``GET /api-keys``.
+    """
+    async with get_session() as session:
+        api_key = await session.scalar(
+            select(APIKeyModel).where(
+                APIKeyModel.id == key_id,
+                APIKeyModel.org_id == auth.org_id,
+                APIKeyModel.is_internal.is_(False),
+            )
+        )
+        if api_key is None or (
+            not can_manage_api_keys(auth) and api_key.created_by_user_id != auth.user_id
+        ):
+            raise HTTPException(status_code=404, detail="API key not found")
+
+        api_key.limit_usd = request.limit_usd
+        await session.commit()
+        return _response(api_key)
 
 
 @router.delete("/{key_id}")

@@ -1,4 +1,5 @@
 from datetime import timedelta
+from decimal import Decimal
 from oddish.db.models import APIKeyModel, APIKeyScope, utcnow
 from oddish.core.api_keys import (
     create_api_key,
@@ -27,6 +28,16 @@ def test_create_api_key_read_internal():
     assert key.is_internal is True
     assert key.key_hash == hash_api_key(raw)
     assert key.org_id == "org_1"
+
+
+def test_create_api_key_with_limit():
+    key, _ = create_api_key(
+        org_id="org_1",
+        name="limited CI",
+        scope=APIKeyScope.TASKS,
+        limit_usd=Decimal("12.50"),
+    )
+    assert key.limit_usd == Decimal("12.50")
 
 
 def test_api_key_model_has_no_cross_stack_foreign_keys():
