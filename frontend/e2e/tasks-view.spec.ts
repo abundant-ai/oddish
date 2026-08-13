@@ -215,6 +215,44 @@ function detailResponse(versionId = DEFAULT_VERSION_ID) {
   };
 }
 
+function capabilitiesResponse() {
+  return {
+    schema_version: 4,
+    task_version_id: DEFAULT_VERSION_ID,
+    cohort_success: [],
+    cohort_failure: ["trial-1", "trial-2"],
+    mode: "single",
+    summary: "Agents found the failure but stopped before applying the fix.",
+    models: {
+      successful: [],
+      failing: [{ model: "gpt-current", trials: 2 }],
+    },
+    trial_models: {
+      "trial-1": "gpt-current",
+      "trial-2": "gpt-current",
+    },
+    categories: [
+      {
+        category: "debugging",
+        label: null,
+        successful: [],
+        failing: [
+          {
+            behavior_description: "Agents reproduced the reported failure.",
+            evidence: [
+              {
+                trial_id: "trial-1",
+                step_id: 7,
+                quote: "The failing case reproduces consistently.",
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
+
 async function signIn(page: Page) {
   await setupClerkTestingToken({ page });
   await page.goto("/");
@@ -288,6 +326,67 @@ test.describe("authenticated task view", () => {
         (file) => file.content === undefined && file.url === undefined
       )
     ).toBe(true);
+  });
+
+  test("capabilities are a lazy, addressable task pane", async ({ page }) => {
+    await signIn(page);
+    let capabilityRequests = 0;
+
+    await page.route(
+      new RegExp(`/api/tasks/${READER_TASK_ID}/open(?:\\?|$)`),
+      (route) => route.fulfill({ json: openResponse() })
+    );
+    await page.route(
+      new RegExp(`/api/tasks/${READER_TASK_ID}/detail(?:\\?|$)`),
+      (route) => route.fulfill({ json: detailResponse() })
+    );
+    await page.route(
+      new RegExp(`/api/tasks/${READER_TASK_ID}/trials(?:\\?|$)`),
+      (route) => route.fulfill({ json: [] })
+    );
+    await page.route(
+      new RegExp(`/api/tasks/${READER_TASK_ID}/files(?:\\?|$)`),
+      (route) => route.fulfill({ json: { files: [] } })
+    );
+    await page.route(
+      new RegExp(`/api/tasks/${READER_TASK_ID}/agent-capabilities(?:\\?|$)`),
+      (route) => {
+        capabilityRequests += 1;
+        route.fulfill({ json: capabilitiesResponse() });
+      }
+    );
+
+    await page.goto(`/tasks/${READER_TASK_ID}?drawer=task`);
+    await expect(
+      page.getByRole("button", { name: "Overview" })
+    ).toHaveAttribute("aria-current", "page");
+    await expect(
+      page.getByRole("button", { name: "Capabilities" })
+    ).toBeVisible();
+    expect(capabilityRequests).toBe(0);
+
+    await page.getByRole("button", { name: "Capabilities" }).click();
+    await expect(
+      page.getByRole("heading", { name: "Capabilities" })
+    ).toBeVisible();
+    await expect(page.getByText("Agents found the failure")).toBeVisible();
+    await expect(page).toHaveURL(/taskPane=capabilities/);
+    expect(capabilityRequests).toBe(1);
+
+    await page.reload();
+    await expect(
+      page.getByRole("heading", { name: "Capabilities" })
+    ).toBeVisible();
+    expect(capabilityRequests).toBe(2);
+
+    await page.goBack();
+    await expect(
+      page.getByRole("button", { name: "Overview" })
+    ).toHaveAttribute("aria-current", "page");
+    await page.goForward();
+    await expect(
+      page.getByRole("heading", { name: "Capabilities" })
+    ).toBeVisible();
   });
 
   test("binary preview waits for its own presigned URL", async ({ page }) => {
