@@ -8,7 +8,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 
-from oddish.core.helpers import cancel_job_by_worker
+from oddish.core.helpers import (
+    cancel_job_by_worker,
+    register_provider_teardown_delegate,
+    unregister_provider_teardown_delegate,
+)
 from oddish.runtime.backends.daytona import DaytonaBackend
 from oddish.runtime.backends.modal import ModalBackend
 
@@ -89,3 +93,19 @@ def test_cancel_job_by_worker_unknown_provider_returns_false() -> None:
     assert asyncio.run(cancel_job_by_worker("docker", "x")) is False
     assert asyncio.run(cancel_job_by_worker(None, "x")) is False
     assert asyncio.run(cancel_job_by_worker("modal", None)) is False
+
+
+def test_cancel_job_by_worker_uses_registered_provider_delegate_exactly_once() -> None:
+    seen: list[str] = []
+
+    async def delegate(external_id: str) -> bool:
+        seen.append(external_id)
+        return True
+
+    register_provider_teardown_delegate("ec2", delegate)
+    try:
+        assert asyncio.run(cancel_job_by_worker("ec2", "ec2://handle")) is True
+    finally:
+        unregister_provider_teardown_delegate("ec2")
+
+    assert seen == ["ec2://handle"]

@@ -16,10 +16,16 @@ from oddish.core import endpoints
 from oddish.db import AnalysisStatus, TaskStatus, VerdictStatus, utcnow
 
 
-def _trial(trial_id, *, analysis_status=AnalysisStatus.SUCCESS):
+def _trial(
+    trial_id,
+    *,
+    analysis_status=AnalysisStatus.SUCCESS,
+    task_version_id=None,
+):
     return SimpleNamespace(
         id=trial_id,
         superseded_by_trial_id=None,
+        task_version_id=task_version_id,
         analysis=(
             {"classification": "GOOD_SUCCESS"}
             if analysis_status == AnalysisStatus.SUCCESS
@@ -38,11 +44,13 @@ def _task(
     run_analysis=False,
     verdict=None,
     verdict_status=VerdictStatus.SUCCESS,
+    current_version_id=None,
 ):
     return SimpleNamespace(
         id="tsk",
         org_id="org-1",
         trials=trials,
+        current_version_id=current_version_id,
         run_analysis=run_analysis,
         status=TaskStatus.COMPLETED,
         finished_at="ts",
@@ -83,8 +91,15 @@ class _FakeSession:
 def _stub_enqueue(monkeypatch):
     calls = []
 
-    async def fake_enqueue(session, *, task_id, org_id):
-        calls.append((task_id, org_id))
+    async def fake_enqueue(
+        session,
+        *,
+        task_id,
+        task_version_id,
+        task_version_content_hash,
+        org_id,
+    ):
+        calls.append((task_id, task_version_id, task_version_content_hash, org_id))
 
     monkeypatch.setattr(queue_mod, "enqueue_qa_worker_job", fake_enqueue)
     return calls
@@ -114,7 +129,7 @@ async def test_only_missing_preserves_verdict_while_replacement_is_queued(
     assert task.verdict is payload
     assert task.verdict_status == VerdictStatus.QUEUED
     assert task.run_analysis is False  # flag untouched
-    assert _stub_enqueue == [("tsk", "org-1")]
+    assert _stub_enqueue == [("tsk", None, None, "org-1")]
 
 
 @pytest.mark.asyncio
@@ -130,6 +145,27 @@ async def test_force_resets_all_live_trials(_stub_enqueue):
 
     assert result["reset_count"] == 2
     assert a.analysis_status is None and b.analysis_status is None
+
+
+@pytest.mark.asyncio
+async def test_force_resets_only_current_version_trials(_stub_enqueue):
+    historical = _trial("tsk-old", task_version_id="tsk-v1")
+    current = _trial("tsk-current", task_version_id="tsk-v2")
+    task = _task(
+        [historical, current],
+        current_version_id="tsk-v2",
+    )
+    session = _FakeSession(task)
+
+    result = await endpoints.backfill_task_analysis_core(
+        session, task_id="tsk", org_id="org-1", force=True
+    )
+
+    assert result["trial_count"] == 1
+    assert result["reset_count"] == 1
+    assert historical.analysis_status == AnalysisStatus.SUCCESS
+    assert current.analysis_status is None
+    assert _stub_enqueue == [("tsk", "tsk-v2", None, "org-1")]
 
 
 @pytest.mark.asyncio
@@ -212,4 +248,4 @@ async def test_stale_running_analysis_does_not_block(_stub_enqueue):
     )
 
     assert result["status"] == "queued"
-    assert _stub_enqueue == [("tsk", "org-1")]
+    assert _stub_enqueue == [("tsk", None, None, "org-1")]

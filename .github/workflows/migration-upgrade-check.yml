@@ -1,7 +1,7 @@
 name: Migration Upgrade Check
 
-# Pre-merge mirror of supabase-db-migrations.yml. That job runs `alembic
-# upgrade head` against PRODUCTION Supabase on push to main — so a migration
+# Pre-merge mirror of the migration steps in modal-deploy.yml, which run
+# `alembic upgrade head` against PRODUCTION Supabase on push to main — so a migration
 # that fails at the SQL/DDL level is only discovered after it is merged and
 # already half-applied to prod. This job runs the identical upgrade against a
 # throwaway Postgres at PR time, so the failure surfaces on the PR instead.
@@ -56,12 +56,29 @@ jobs:
           # Full history so we can diff HEAD against the PR base commit.
           fetch-depth: 0
 
+      # Fail closed. This required check once reported green on a PR that DID
+      # change migrations: the base sha was not resolvable in the checkout, and
+      # `git diff | grep` in the default shell (no pipefail) turned the failed
+      # diff into empty grep input, which read as "no migration changes". A
+      # base we cannot resolve must fail the check, never skip it.
       - name: Detect migration changes
         id: changes
+        shell: bash
         run: |
+          set -euo pipefail
+          # Run steps in this container job see the workspace owned by the
+          # host runner's UID, not this step's user, and git refuses such a
+          # repo ("detected dubious ownership", exit 128). actions/checkout
+          # marks the path safe for its own git calls, but that does not
+          # reach container run steps. This exact 128 is what the old
+          # pipeline swallowed into a green skip; this PR's first CI run
+          # reproduced it loudly.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           base='${{ github.event.pull_request.base.sha }}'
-          if git diff --name-only "$base" HEAD \
-              | grep -qE '^(oddish|backend)/alembic/'; then
+          git cat-file -e "${base}^{commit}" 2>/dev/null \
+            || git fetch --no-tags origin "$base"
+          changed="$(git diff --name-only "$base" HEAD)"
+          if grep -qE '^(oddish|backend)/alembic/' <<<"$changed"; then
             echo "run=true" >> "$GITHUB_OUTPUT"
             echo "Migration files changed — running upgrade."
           else

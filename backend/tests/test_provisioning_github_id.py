@@ -63,7 +63,7 @@ def _mock_clerk_http(monkeypatch, handler) -> None:
         kwargs["transport"] = httpx.MockTransport(handler)
         return real_client(**kwargs)
 
-    monkeypatch.setattr(prov.httpx, "AsyncClient", _factory)
+    monkeypatch.setattr(prov, "RequestTimedAsyncClient", _factory)
 
 
 @pytest.mark.asyncio

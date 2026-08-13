@@ -53,7 +53,7 @@ function getModelKey(model: string | null | undefined): string {
   return trimmed && trimmed.length > 0 ? trimmed : DEFAULT_EXPERIMENT_MODEL_KEY;
 }
 
-function getDisplayAgentModel(
+export function getExperimentAgentDisplay(
   trial: Pick<Trial, "agent" | "model">
 ): Pick<Trial, "agent" | "model"> {
   const agent = trial.agent.trim().toLowerCase();
@@ -73,20 +73,20 @@ function getDisplayAgentModel(
     };
   }
 
-  return trial;
+  return { agent, model };
 }
 
-function getModelScopedAgents(tasks: Task[]): Set<string> {
+export function getExperimentModelScopedAgents(
+  entries: ReadonlyArray<Pick<Trial, "agent" | "model" | "is_probe">>
+): Set<string> {
   const modelsByAgent = new Map<string, Set<string>>();
 
-  for (const task of tasks) {
-    for (const trial of task.trials ?? []) {
-      if (trial.is_probe) continue;
-      const display = getDisplayAgentModel(trial);
-      const existing = modelsByAgent.get(display.agent) ?? new Set<string>();
-      existing.add(getModelKey(display.model));
-      modelsByAgent.set(display.agent, existing);
-    }
+  for (const entry of entries) {
+    if (entry.is_probe) continue;
+    const display = getExperimentAgentDisplay(entry);
+    const existing = modelsByAgent.get(display.agent) ?? new Set<string>();
+    existing.add(getModelKey(display.model));
+    modelsByAgent.set(display.agent, existing);
   }
 
   return new Set(
@@ -103,7 +103,7 @@ export function getExperimentAgentKey(
   if (trial.is_probe) {
     return PROBE_AGENT_KEY;
   }
-  const display = getDisplayAgentModel(trial);
+  const display = getExperimentAgentDisplay(trial);
   if (!modelScopedAgents.has(display.agent)) {
     return display.agent;
   }
@@ -114,7 +114,8 @@ export function buildExperimentAgentSummaries(tasks: Task[]): {
   agentSummaries: ExperimentAgentSummary[];
   modelScopedAgents: Set<string>;
 } {
-  const modelScopedAgents = getModelScopedAgents(tasks);
+  const entries = tasks.flatMap((task) => task.trials ?? []);
+  const modelScopedAgents = getExperimentModelScopedAgents(entries);
   const summaries = new Map<string, ExperimentAgentSummary>();
 
   for (const task of tasks) {
@@ -134,7 +135,7 @@ export function buildExperimentAgentSummaries(tasks: Task[]): {
         continue;
       }
 
-      const display = getDisplayAgentModel(trial);
+      const display = getExperimentAgentDisplay(trial);
       summaries.set(key, {
         key,
         label: key,

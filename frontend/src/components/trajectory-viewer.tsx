@@ -34,12 +34,13 @@ import type {
   FinalMetrics,
   MessageContent,
   ObservationContent,
-  ContentPart,
 } from "@/lib/types";
 import {
+  contentText,
   isEmptyStep,
   phaseColorVars,
   stepDurationsMs,
+  stepPreview,
 } from "@/lib/trajectory-metrics";
 import {
   groupStatsLabel,
@@ -82,38 +83,13 @@ interface ImageError {
   message: string;
 }
 
-function getTextFromContent(
-  content: MessageContent | ObservationContent
-): string {
-  if (content === null || content === undefined) {
-    return "";
-  }
-  if (typeof content === "string") {
-    return content;
-  }
-
-  return content
-    .filter(
-      (part): part is ContentPart & { type: "text" } => part.type === "text"
-    )
-    .map((part) => part.text || "")
-    .join("\n");
-}
-
-function getFirstLine(
-  content: MessageContent | ObservationContent
-): string | null {
-  const text = getTextFromContent(content);
-  return text?.split("\n")[0] || null;
-}
-
 /**
  * Collect all human-readable text from a step (message, reasoning, tool call
  * names + arguments, and observations) into a single lower-cased string for
  * keyword matching.
  */
 function getStepSearchText(step: TrajectoryStep): string {
-  const parts: string[] = [getTextFromContent(step.message)];
+  const parts: string[] = [contentText(step.message)];
 
   if (step.reasoning_content) {
     parts.push(step.reasoning_content);
@@ -132,7 +108,7 @@ function getStepSearchText(step: TrajectoryStep): string {
 
   if (step.observation) {
     for (const result of step.observation.results) {
-      parts.push(getTextFromContent(result.content));
+      parts.push(contentText(result.content));
     }
   }
 
@@ -563,7 +539,7 @@ function StepTrigger({
   const stepDuration =
     durationMs != null && step.timestamp ? formatMs(durationMs) : null;
   const sinceStart = formatStepDuration(startTimestamp, step.timestamp);
-  const firstLine = getFirstLine(step.message)?.slice(0, 60) || null;
+  const firstLine = stepPreview(step)?.slice(0, 60) || null;
 
   return (
     <StepHeader
@@ -659,7 +635,7 @@ function StepContent({
           </h5>
           <div className="space-y-2">
             {step.observation.results.map((result, idx) => {
-              const text = getTextFromContent(result.content);
+              const text = contentText(result.content);
               const hasMultimodalContent =
                 !!result.content &&
                 typeof result.content !== "string" &&
@@ -741,28 +717,93 @@ export function TrajectoryViewer({
   const [deepLinkError, setDeepLinkError] = useState<string | null>(null);
   const stepRefs = useRef<(HTMLDivElement | null)[]>([]);
   const stepReset = useRef<string | null>(null);
-  const appliedHash = useRef<string | null>(null);
+  // The step a #step-<id> address asked for, held here once the address has
+  // been relieved of it (see the capture effect below), TAGGED WITH THE TRIAL
+  // it arrived for. The tag is the correctness property, not the reset below:
+  // clearing on a trial switch is a state update, so the honour effect still
+  // runs this flush with the old step, and re-runs because `trajectory` just
+  // changed -- handing the step being left to the trial arriving. With the
+  // tag, honouring is conditional on the trial matching, so no ordering
+  // between the two effects can apply a step to the wrong run.
+  const [pendingStep, setPendingStep] = useState<{
+    trial: string;
+    step: number;
+  } | null>(null);
+  // Read by the capture effect, which mounts once and would otherwise close
+  // over the mount-time trial for every later hashchange.
+  const trialIdRef = useRef(trialId);
+  trialIdRef.current = trialId;
 
   // Reset expanded steps and search when switching to a different trial
   useEffect(() => {
     if (trialId !== stepReset.current) {
+      const switched = stepReset.current !== null;
       stepReset.current = trialId;
       setExpandedSteps([]);
       setQuery("");
-      // Otherwise an unchanged hash across trials (e.g. both #step-1) would
-      // look "already applied" and the deep link would silently no-op.
-      appliedHash.current = null;
+      // A deep link belongs to the trial it arrived with. Trials are switched
+      // in place from the drawer's own list, which never carries a fragment,
+      // so a step still pending on a switch was addressed to the trial being
+      // left. Guarded on `switched` so this cannot wipe the step captured on
+      // the first mount, whatever order the two effects run in.
+      //
+      // The failure message goes with it. Nothing re-runs the link against the
+      // new trial — the fragment was spent when it was captured — so a message
+      // left standing would describe a run the reader is no longer looking at.
+      if (switched) {
+        setPendingStep(null);
+        setDeepLinkError(null);
+      }
     }
   }, [trialId]);
 
-  // Filter steps by keyword, keeping each step's original index so timing,
-  // refs, and duration-bar clicks stay consistent with the full trajectory.
+  // Take #step-<step_id> out of the address as soon as this viewer mounts, and
+  // hold the step until the trajectory can honour it.
+  //
+  // The fragment addresses one step of one run, and nothing else reads it, so
+  // its life ends here. It cannot be left parked until the trajectory
+  // resolves: urlWithSearch carries the fragment through every panel
+  // replaceState, so a run that never yields steps — no trajectory, a failed
+  // fetch, a drawer closed mid-flight — would hand its anchor to whichever
+  // trial is opened next. Spending it on sight separates "the link has been
+  // used" from "the link could be honoured".
+  //
+  // Reading it at mount is unambiguous because citations are plain anchors:
+  // they arrive as a document navigation with the fragment and ?trial= already
+  // agreeing. No in-app navigation changes both, so the listener below only
+  // ever sees the fragment move within one trial.
+  useEffect(() => {
+    const take = () => {
+      const m = /^#step-(\d+)$/.exec(window.location.hash);
+      if (!m) return;
+      setPendingStep({ trial: trialIdRef.current, step: Number(m[1]) });
+      const spent = `${window.location.pathname}${window.location.search}`;
+      window.history.replaceState(window.history.state, "", spent);
+    };
+    take();
+    window.addEventListener("hashchange", take);
+    return () => window.removeEventListener("hashchange", take);
+  }, []);
+
+  // Steps keep their original index so timing, refs, and duration-bar clicks
+  // stay consistent with the full trajectory.
   const lowerQuery = query.trim().toLowerCase();
+  // Padding steps hold nothing to read — gemini-cli exports are mostly these —
+  // so the list drops them the way the duration bar, segments and Activity card
+  // already do.
+  const renderedSteps = useMemo(
+    () =>
+      (trajectory?.steps ?? [])
+        .map((step, idx) => ({ step, idx }))
+        .filter(({ step }) => !isEmptyStep(step)),
+    [trajectory]
+  );
   const visibleSteps = useMemo(() => {
-    const all = (trajectory?.steps ?? []).map((step, idx) => ({ step, idx }));
-    if (!lowerQuery) return all;
-    return all.filter(({ step }) => stepMatchesQuery(step, lowerQuery));
-  }, [trajectory, lowerQuery]);
+    if (!lowerQuery) return renderedSteps;
+    return renderedSteps.filter(({ step }) =>
+      stepMatchesQuery(step, lowerQuery)
+    );
+  }, [renderedSteps, lowerQuery]);
 
   // A summary request can trigger paid on-demand generation server-side, so it
   // must not fire for a trial we already know (via shouldFetch) has no trajectory.
@@ -777,14 +818,17 @@ export function TrajectoryViewer({
     () => renderableStepIds(trajectory?.steps ?? []),
     [trajectory]
   );
+  // Coverage runs over what the list actually draws. Passing the full
+  // trajectory here would hand every padding step to Other -- the summariser
+  // stopped claiming them in #1155, so unclaimed is exactly the padding.
   const segments = useMemo(
     () =>
       withOtherSegment(
         toSegments(summary),
-        trajectory?.steps ?? [],
+        renderedSteps.map(({ step }) => step),
         renderableIds
       ),
-    [summary, trajectory, renderableIds]
+    [summary, renderedSteps, renderableIds]
   );
   const colorFor = useMemo(
     () => phaseColorVars(segments.map((s) => s.key)),
@@ -802,8 +846,24 @@ export function TrajectoryViewer({
     [trajectory]
   );
 
+  // Every jump target resolves through here, so a step the list does not draw
+  // reports -1 and the caller shows it as unavailable rather than scrolling to
+  // nothing. Summaries stored before #1155 can still cite padding.
+  const stepIdToIndex = useCallback(
+    (stepId: number) =>
+      // step_id is typed number but arrives as a string from some producers;
+      // strict === would return -1 and the jump would silently no-op.
+      renderedSteps.find(({ step }) => Number(step.step_id) === Number(stepId))
+        ?.idx ?? -1,
+    [renderedSteps]
+  );
+
   const handleStepClick = useCallback(
     (index: number) => {
+      // Callers resolve targets through stepIdToIndex, so this only catches a
+      // caller that skipped it: expanding a step the list never draws would
+      // clear the search filter and then scroll nowhere.
+      if (!renderedSteps.some(({ idx }) => idx === index)) return;
       const stepKey = `step-${index}`;
       // The duration bar spans every step, so a click may target a step the
       // active filter is hiding — clear the filter so it can be shown.
@@ -821,34 +881,33 @@ export function TrajectoryViewer({
         });
       }, 50);
     },
-    [lowerQuery, visibleSteps]
+    [lowerQuery, visibleSteps, renderedSteps]
   );
 
-  // Resolve a #step-<step_id> hash once the trajectory has loaded. The hash
-  // carries a step_id, not an array index; handleStepClick takes an index.
+  // Honour a captured deep link once the trajectory has loaded. It carries a
+  // step_id, not an array index; handleStepClick takes an index. Clearing it
+  // first makes it single-use, so a later pass — this effect re-runs whenever
+  // the search box changes handleStepClick — cannot scroll the reader back.
   useEffect(() => {
     const steps = trajectory?.steps;
-    if (!steps?.length) return;
-
-    const apply = () => {
-      const hash = window.location.hash;
-      if (hash === appliedHash.current) return;
-      const m = /^#step-(\d+)$/.exec(hash);
-      if (!m) return;
-      appliedHash.current = hash;
-      const idx = steps.findIndex((s) => Number(s.step_id) === Number(m[1]));
-      if (idx >= 0) {
-        setDeepLinkError(null);
-        handleStepClick(idx);
-      } else {
-        setDeepLinkError(`Step ${m[1]} is not in this trajectory.`);
-      }
-    };
-
-    apply();
-    window.addEventListener("hashchange", apply);
-    return () => window.removeEventListener("hashchange", apply);
-  }, [trajectory, handleStepClick]);
+    if (pendingStep === null || !steps?.length) return;
+    // Not this trial's step: leave it alone. It belongs to the run the reader
+    // left, and the reset effect clears it on the next render.
+    if (pendingStep.trial !== trialId) return;
+    const step = pendingStep.step;
+    setPendingStep(null);
+    const idx = stepIdToIndex(step);
+    if (idx >= 0) {
+      setDeepLinkError(null);
+      handleStepClick(idx);
+    } else if (steps.some((s) => Number(s.step_id) === step)) {
+      // Present but empty: the list never draws it, so expanding the item
+      // would scroll to nothing.
+      setDeepLinkError(`Step ${step} is empty and is not shown.`);
+    } else {
+      setDeepLinkError(`Step ${step} is not in this trajectory.`);
+    }
+  }, [pendingStep, trialId, trajectory, handleStepClick, stepIdToIndex]);
 
   if (isLoading) {
     return (
@@ -894,26 +953,14 @@ export function TrajectoryViewer({
         trialId={trialId}
         apiBaseUrl={apiBaseUrl}
         renderableIds={renderableIds}
-        stepIdToIndex={(stepId) =>
-          // step_id is typed number but arrives as a string from some producers;
-          // strict === would return -1 and the scroll would silently no-op.
-          trajectory.steps.findIndex(
-            (s) => Number(s.step_id) === Number(stepId)
-          )
-        }
+        stepIdToIndex={stepIdToIndex}
         onStepSelect={handleStepClick}
       />
       <TrajectoryActivity
         trialId={trialId}
         steps={trajectory.steps}
         apiBaseUrl={apiBaseUrl}
-        stepIdToIndex={(stepId) =>
-          // step_id is typed number but arrives as a string from some producers;
-          // strict === would return -1 and the scroll would silently no-op.
-          trajectory.steps.findIndex(
-            (s) => Number(s.step_id) === Number(stepId)
-          )
-        }
+        stepIdToIndex={stepIdToIndex}
         onStepSelect={handleStepClick}
       />
       <Card>
@@ -926,8 +973,8 @@ export function TrajectoryViewer({
             <span className="flex items-center gap-2">
               <span className="text-muted-foreground text-xs font-normal">
                 {lowerQuery
-                  ? `${visibleSteps.length} of ${trajectory.steps.length} steps`
-                  : `${trajectory.steps.length} steps`}
+                  ? `${visibleSteps.length} of ${renderedSteps.length} steps`
+                  : `${renderedSteps.length} steps`}
                 {trajectory.final_metrics?.total_cost_usd && (
                   <> · ${trajectory.final_metrics.total_cost_usd.toFixed(4)}</>
                 )}
@@ -987,10 +1034,16 @@ export function TrajectoryViewer({
           {/* Steps Accordion */}
           {visibleSteps.length === 0 ? (
             <div className="text-muted-foreground py-8 text-center text-sm">
-              No steps match{" "}
-              <span className="text-foreground font-medium">
-                &ldquo;{query.trim()}&rdquo;
-              </span>
+              {lowerQuery ? (
+                <>
+                  No steps match{" "}
+                  <span className="text-foreground font-medium">
+                    &ldquo;{query.trim()}&rdquo;
+                  </span>
+                </>
+              ) : (
+                "This trajectory has no steps with content."
+              )}
             </div>
           ) : (
             <Accordion

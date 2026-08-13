@@ -278,7 +278,7 @@ class StorageClient:
     # decompression. Size-bounded in total byte footprint so a single task
     # doesn't blow the limit. Keys without a known etag fall back to
     # ``(content_length, last_modified)``.
-    _archive_cache: "OrderedDict[tuple[str, str], tuple[bytes, list[dict[str, object]], dict[str, str]]]" = (OrderedDict())
+    _archive_cache: "OrderedDict[tuple[str, str], tuple[bytes, list[dict[str, object]], dict[str, str]]]" = OrderedDict()
     _archive_cache_bytes: int = 0
 
     @classmethod
@@ -535,14 +535,27 @@ class StorageClient:
         return f"{normalized_prefix}{cls._TASK_ARCHIVE_OBJECT_NAME}"
 
     async def _resolve_task_prefix(
-        self, task_id: str, version: int | None
+        self,
+        task_id: str,
+        version: int | None,
+        task_s3_prefix: str | None = None,
     ) -> tuple[str, str]:
         """Return ``(root_prefix, archive_key)`` for a task, with fallback.
+
+        ``task_s3_prefix`` is the database-selected source for an explicitly
+        overwritten version. It points at an immutable revision, so consulting
+        it makes the database row the atomic switch between archive snapshots.
 
         When *version* is given the versioned path is tried first.  If the
         archive doesn't exist there (backfilled v1 tasks), falls back to the
         unversioned ``tasks/{task_id}/`` path.
         """
+        if task_s3_prefix:
+            root = normalize_s3_prefix(task_s3_prefix)
+            if not root:
+                raise ValueError(f"Invalid task S3 prefix: {task_s3_prefix}")
+            return root, self._task_archive_key_from_prefix(root)
+
         if version is not None:
             vroot = f"tasks/{task_id}/v{version}/"
             varchive = f"{vroot}{self._TASK_ARCHIVE_OBJECT_NAME}"
@@ -558,6 +571,16 @@ class StorageClient:
             return vroot, varchive
 
         return f"tasks/{task_id}/", self._task_archive_key(task_id)
+
+    async def _expanded_manifest_matches_archive(
+        self, manifest_key: str, archive_key: str
+    ) -> bool:
+        """Whether an expanded cache was built from the selected archive."""
+        try:
+            manifest = await self.download_json(manifest_key)
+        except Exception:
+            return False
+        return manifest.get("archive_key") == archive_key
 
     async def download_task_directory(self, s3_prefix: str, local_path: Path) -> None:
         """
@@ -849,6 +872,7 @@ class StorageClient:
         presign: bool,
         presign_expiration: int = 900,
         version: int | None = None,
+        task_s3_prefix: str | None = None,
         inline: bool = True,
     ) -> dict:
         """List files in a task's S3 directory.
@@ -862,12 +886,23 @@ class StorageClient:
         file bodies as ``content``. ``stream_task_files`` passes ``inline=False``
         to return the bare tree fast and stream the bodies separately.
         """
-        # Prefer the per-file expanded layout when available. Sibling prefix
-        # (``v{N}-files/``) isolates expansion artifacts from user files.
+        root_prefix, archive_key = await self._resolve_task_prefix(
+            task_id, version, task_s3_prefix
+        )
+        archive_exists = await self.object_exists(archive_key)
+
+        # Prefer the per-file expanded layout when it was built from the
+        # database-selected archive. An overwrite switches that archive key
+        # atomically; a stale manifest is ignored even if cleanup later fails.
         if version is not None:
             expanded_prefix = f"tasks/{task_id}/v{version}-files/"
             manifest_key = f"{expanded_prefix}{self._EXPANDED_MANIFEST_OBJECT_NAME}"
-            if await self.object_exists(manifest_key):
+            if await self.object_exists(manifest_key) and (
+                not archive_exists
+                or await self._expanded_manifest_matches_archive(
+                    manifest_key, archive_key
+                )
+            ):
                 return await self._list_expanded_task_files(
                     task_id=task_id,
                     expanded_prefix=expanded_prefix,
@@ -880,8 +915,7 @@ class StorageClient:
                     inline=inline,
                 )
 
-        root_prefix, archive_key = await self._resolve_task_prefix(task_id, version)
-        if await self.object_exists(archive_key):
+        if archive_exists:
             _bytes, archive_files, archive_texts = await self._load_task_archive(
                 archive_key
             )
@@ -1272,6 +1306,7 @@ class StorageClient:
         presign: bool = True,
         presign_expiration: int = 900,
         version: int | None = None,
+        task_s3_prefix: str | None = None,
     ) -> AsyncIterator[dict]:
         """Stream a task file listing: the tree first, then file contents.
 
@@ -1289,6 +1324,7 @@ class StorageClient:
             presign=presign,
             presign_expiration=presign_expiration,
             version=version,
+            task_s3_prefix=task_s3_prefix,
             inline=False,
         )
         yield {"type": "listing", **listing}
@@ -1314,6 +1350,7 @@ class StorageClient:
         presign: bool,
         presign_expiration: int = 900,
         version: int | None = None,
+        task_s3_prefix: str | None = None,
         max_bytes: int | None = None,
     ) -> dict:
         """Get content of a specific task file from S3.
@@ -1324,18 +1361,28 @@ class StorageClient:
         and ``key``; ``content`` is populated for archive reads (or when
         ``presign=False`` on expanded) and ``url`` when ``presign=True`` on
         the expanded layout. When an archive is the source we additionally
-        return ``archive_etag`` so HTTP layers can emit immutable
+        return ``archive_etag`` so HTTP layers can emit revalidating
         ``ETag`` / ``Cache-Control`` headers.
         """
         normalized_path = normalize_s3_relative_path(file_path)
         if not normalized_path:
             raise HTTPException(status_code=400, detail="Invalid file path")
 
+        root_prefix, archive_key = await self._resolve_task_prefix(
+            task_id, version, task_s3_prefix
+        )
+        archive_exists = await self.object_exists(archive_key)
+
         s3_key: str | None = None
         if version is not None:
             expanded_prefix = f"tasks/{task_id}/v{version}-files/"
             manifest_key = f"{expanded_prefix}{self._EXPANDED_MANIFEST_OBJECT_NAME}"
-            if await self.object_exists(manifest_key):
+            if await self.object_exists(manifest_key) and (
+                not archive_exists
+                or await self._expanded_manifest_matches_archive(
+                    manifest_key, archive_key
+                )
+            ):
                 expanded_key = f"{expanded_prefix}{normalized_path}"
                 # Some members may be absent from the expanded tree
                 # (oversize-member skips, mid-flight expansions, or
@@ -1347,8 +1394,7 @@ class StorageClient:
                     s3_key = expanded_key
 
         if s3_key is None:
-            root_prefix, archive_key = await self._resolve_task_prefix(task_id, version)
-            if await self.object_exists(archive_key):
+            if archive_exists:
                 archive_bytes, members, texts = await self._load_task_archive(
                     archive_key
                 )

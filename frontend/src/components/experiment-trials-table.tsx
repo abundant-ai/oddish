@@ -6,6 +6,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
+import { urlWithSearch } from "@/lib/utils";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -125,6 +126,8 @@ type ExperimentTrialsTableProps = {
   isLoading: boolean;
   isLoadingTrials?: boolean;
   showPassAtK?: boolean;
+  /** Scope bulk cancel to this experiment so shared tasks stay intact elsewhere. */
+  experimentId?: string;
   onTaskUnlink?: (task: Task) => Promise<void>;
   onRerun?: (taskIds?: string[]) => void;
   allowRerun?: boolean;
@@ -466,6 +469,7 @@ export function ExperimentTrialsTable({
   isLoading,
   isLoadingTrials = false,
   showPassAtK = false,
+  experimentId,
   onTaskUnlink,
   onRerun,
   allowRerun = true,
@@ -668,7 +672,7 @@ export function ExperimentTrialsTable({
       const currentQuery = searchParams.toString();
       if (nextQuery === currentQuery) return;
 
-      const newUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}`;
+      const newUrl = urlWithSearch(nextQuery);
       // Keep filter query params in sync without router navigation work.
       window.history.replaceState(window.history.state, "", newUrl);
     }, 250);
@@ -1185,10 +1189,20 @@ export function ExperimentTrialsTable({
 
     try {
       const taskIds = selectedCancellableTasks.map((task) => task.id);
+      const scopedExperimentId =
+        experimentId ||
+        selectedCancellableTasks.find((task) => task.experiment_id)
+          ?.experiment_id ||
+        undefined;
       const res = await fetch(`/api/tasks/cancel`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ task_ids: taskIds }),
+        body: JSON.stringify({
+          task_ids: taskIds,
+          ...(scopedExperimentId
+            ? { experiment_id: scopedExperimentId }
+            : {}),
+        }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));

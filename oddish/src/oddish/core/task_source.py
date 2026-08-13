@@ -1,9 +1,10 @@
-"""Resolve a task's source location for the pre-trial audit.
+"""Resolve a task's database-selected source location.
 
 Both pre-trial execution paths -- the built-in synth (backend) and the
 registry-assignment runner (oddish worker) -- need the ``(task_s3_key,
 task_path)`` pair to feed ``resolve_task_directory``. Sharing one resolver keeps
-their version-pinning and error behavior from drifting.
+their version-pinning and error behavior from drifting. Other consumers that
+must honor an in-place overwrite, such as GKE image builds, use it as well.
 """
 
 from __future__ import annotations
@@ -19,9 +20,10 @@ async def resolve_task_source_location(
 ) -> tuple[str | None, str | None]:
     """The ``(task_s3_key, task_path)`` of a task's source.
 
-    Pins to a specific (immutable) version when ``task_version_id`` is given, so
-    a re-upload can't swap the source under a version-scoped audit; otherwise
-    falls back to the task's latest-version mirror. Raises if the row is gone.
+    Pins to a specific selected version when ``task_version_id`` is given;
+    in-place overwrites atomically switch that version row to its replacement
+    archive. Otherwise falls back to the task's current-version mirror. Raises
+    if the row is gone.
     """
     async with get_session() as session:
         if task_version_id:

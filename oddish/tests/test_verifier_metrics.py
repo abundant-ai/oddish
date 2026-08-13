@@ -200,12 +200,17 @@ def test_ctrf_summary_rejects_bad_counts(tmp_path):
     assert extract_ctrf_summary(tmp_path) is None
 
 
-def test_oversized_ctrf_is_ignored(tmp_path):
+def test_oversized_ctrf_is_ignored_without_an_unbounded_read(tmp_path, monkeypatch):
     verifier_dir = tmp_path / "verifier"
     verifier_dir.mkdir()
     verifier_dir.joinpath("ctrf.json").write_text(
         json.dumps({"blob": "x" * (VERIFIER_CTRF_MAX_BYTES + 1)})
     )
+
+    def reject_unbounded_read(_path: Path) -> bytes:
+        raise AssertionError("oversized CTRF must use a bounded read")
+
+    monkeypatch.setattr(Path, "read_bytes", reject_unbounded_read)
     assert extract_ctrf_summary(tmp_path) is None
 
 

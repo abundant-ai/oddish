@@ -5,6 +5,10 @@ import {
   getBackendUrl,
   getClerkToken,
 } from "@/lib/backend-config";
+import {
+  attachUpstreamServerTiming,
+  backendFetchHeaders,
+} from "@/lib/proxy-headers";
 
 export async function GET(
   request: NextRequest,
@@ -23,22 +27,28 @@ export async function GET(
       `/${task_id}/files/${filePath}${search}`,
     );
     const res = await fetch(url, {
-      headers: getAuthHeaders(token),
+      headers: backendFetchHeaders(request, getAuthHeaders(token)),
     });
 
     if (!res.ok) {
       const error = await res.json().catch(() => ({ detail: res.statusText }));
-      return NextResponse.json(error, { status: res.status });
+      return attachUpstreamServerTiming(
+        NextResponse.json(error, { status: res.status }),
+        res,
+      );
     }
 
     const data = await res.json();
 
     // Cache file content for 5 minutes (fallback path, presigned URLs are preferred)
-    return NextResponse.json(data, {
-      headers: {
-        "Cache-Control": "private, max-age=300, stale-while-revalidate=60",
-      },
-    });
+    return attachUpstreamServerTiming(
+      NextResponse.json(data, {
+        headers: {
+          "Cache-Control": "private, max-age=300, stale-while-revalidate=60",
+        },
+      }),
+      res,
+    );
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },

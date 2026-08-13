@@ -43,6 +43,7 @@ from oddish.db import (
     get_session,
 )
 from oddish.core.harbor_artifacts import cache_write_tokens_from_trajectory
+from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
 from oddish.core.llm_key_fingerprint import platform_key_hash_for_provider
 from oddish.db.models import WorkerJobKind, WorkerJobModel, WorkerJobStatus
@@ -463,6 +464,8 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
                     ),
                 )
             )
+        if trial is not None:
+            await refresh_task_browse_summaries(session, [trial.task_version_id])
 
     from oddish.core.quota_enforcement import enforce_trial_quotas_until_checked
 

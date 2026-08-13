@@ -73,6 +73,11 @@ def test_backend_and_vercel_are_siblings():
     assert "prepare-preview-database" in _needs(jobs["deploy-preview-backend"])
 
 
+def test_disposable_preview_backend_does_not_enable_ec2():
+    env = _wf()["jobs"]["deploy-preview-backend"]["env"]
+    assert not any(name.startswith("ODDISH_EC2_") for name in env)
+
+
 def test_post_links_waits_for_backend_and_vercel():
     job = _wf()["jobs"]["post-preview-links"]
     needs = _needs(job)
@@ -569,6 +574,15 @@ def test_prune_accepts_fractional_second_timestamps():
     proc, deleted = _run_prune(
         [_branch("pr-1", 0, created_at=stamp.strftime("%Y-%m-%dT%H:%M:%S.123456Z"))]
     )
+    assert proc.returncode == 0, proc.stderr
+    assert deleted == ["id-pr-1"]
+
+
+@needs_bash
+def test_prune_accepts_fractional_second_timestamps_with_utc_offset():
+    stamp = datetime.now(timezone.utc) - timedelta(days=10)
+    created_at = stamp.strftime("%Y-%m-%dT%H:%M:%S.297635+00:00")
+    proc, deleted = _run_prune([_branch("pr-1", 0, created_at=created_at)])
     assert proc.returncode == 0, proc.stderr
     assert deleted == ["id-pr-1"]
 

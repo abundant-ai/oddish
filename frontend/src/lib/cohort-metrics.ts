@@ -1,0 +1,107 @@
+import type { AgentCapabilities } from "@/lib/types";
+
+/** behavior_discovery is absent on purpose: DISCOVERY_CAP bounds its evidence
+ *  at two observations, so its magnitude reflects the prompt's budget rather
+ *  than how the agents behaved. It stays in the prose below the chart. */
+export const CHART_CATEGORIES = [
+  "planning",
+  "testing_verification",
+  "debugging",
+  "scope_adherence",
+  "coherence",
+  "environment_tooling",
+] as const;
+
+/** Distinct cited trials below which a bar is drawn faded. */
+export const THIN_N = 5;
+
+export type CategoryDelta = {
+  category: string;
+  n: number;
+  ratio: number | null;
+  delta: number | null;
+};
+
+export function pooledDeltas(comparison: AgentCapabilities): CategoryDelta[] {
+  const successes = comparison.cohort_success.length;
+  const failures = comparison.cohort_failure.length;
+  // A one-sided cohort has no baseline to be measured against. Every citable
+  // trial sits on the same side, so the ratio equals the baseline exactly and
+  // all six categories read a confident +0.00 -- "no divergence" drawn where
+  // there was no other side to diverge from. The delta is undefined here, not
+  // zero, and the caller drops a chart whose every delta is null.
+  const comparable = successes > 0 && failures > 0;
+  const baseline = comparable ? successes / (successes + failures) : 0;
+  const byCategory = new Map(comparison.categories.map((c) => [c.category, c]));
+
+  return CHART_CATEGORIES.map((category) => {
+    const cat = byCategory.get(category);
+    // Distinct trials, not citations: one observation may cite the same run
+    // several times, and that must not outweigh a pattern across runs.
+    const success = new Set<string>();
+    const failure = new Set<string>();
+    for (const obs of cat?.successful ?? [])
+      for (const ev of obs.evidence ?? []) success.add(ev.trial_id);
+    for (const obs of cat?.failing ?? [])
+      for (const ev of obs.evidence ?? []) failure.add(ev.trial_id);
+
+    const n = success.size + failure.size;
+    // No evidence is not the same claim as no advantage; a zero would plot as
+    // the latter, so it stays null and the bar renders as absent.
+    const ratio = n ? success.size / n : null;
+    return {
+      category,
+      n,
+      ratio,
+      delta: ratio === null || !comparable ? null : ratio - baseline,
+    };
+  });
+}
+
+/** Overlapping translucent shapes stop being readable past three, and the
+ *  all-pairs colour-separation rule caps categorical series at three too. */
+export const RADAR_MODEL_CAP = 3;
+
+type RollupLike = {
+  thin_threshold: number;
+  models: { model: string; cited_runs: number }[];
+  categories: {
+    per_model: { model: string; n: number; delta: number | null }[];
+  }[];
+};
+
+/** The models the radar draws: highest total evidence first, capped, and never
+ *  a shape built from fewer distinct runs than one thin cell's worth.
+ *
+ *  The gate is `cited_runs` — the distinct trials cited anywhere for that model
+ *  — not the sum of the per-category `n`s. Each `n` is itself a distinct-trial
+ *  count *within* one category, so summing six of them counts a single trial
+ *  cited across all six as six pieces of evidence. That one run would then
+ *  clear the threshold and draw a closed, filled shape touching the outer ring:
+ *  the most confident-looking object on the page, from one trajectory. */
+export function radarModels<T extends RollupLike>(
+  rollup: T
+): { model: string; n: number; cited_runs: number }[] {
+  const totals = new Map<string, number>();
+  // A model whose cohort is one-sided has a null delta on every axis (see the
+  // backend's `delta`), so ShapeForModel draws nothing for it. Without this it
+  // would still take a colour, a legend row and a place in the chart's
+  // description -- a series the reader is told about and can never find.
+  const drawable = new Set<string>();
+  for (const cat of rollup.categories)
+    for (const cell of cat.per_model) {
+      totals.set(cell.model, (totals.get(cell.model) ?? 0) + cell.n);
+      if (cell.n > 0 && cell.delta !== null) drawable.add(cell.model);
+    }
+  return rollup.models
+    .map((m) => ({
+      model: m.model,
+      n: totals.get(m.model) ?? 0,
+      cited_runs: m.cited_runs ?? 0,
+    }))
+    .filter(
+      (m) => m.cited_runs >= rollup.thin_threshold && drawable.has(m.model)
+    )
+    .sort((a, b) => b.n - a.n)
+    .slice(0, RADAR_MODEL_CAP);
+}

@@ -25,8 +25,14 @@ def test_published_verdict_constraint_matches_model_and_migration() -> None:
     assert "VALIDATE CONSTRAINT" in migration
 
 
-def test_verdict_state_migration_is_the_only_head() -> None:
+def test_verdict_state_migration_stays_in_single_head_lineage() -> None:
     oddish_root = Path(__file__).resolve().parents[2]
     config = Config(str(oddish_root / "alembic.ini"))
     config.set_main_option("script_location", str(oddish_root / "alembic"))
-    assert ScriptDirectory.from_config(config).get_heads() == ["verdict_state_001"]
+    scripts = ScriptDirectory.from_config(config)
+    heads = scripts.get_heads()
+
+    assert len(heads) == 1
+    assert "verdict_state_001" in {
+        revision.revision for revision in scripts.iterate_revisions(heads, "base")
+    }

@@ -18,12 +18,30 @@ def test_apply_disable_web_tools_claude_and_codex():
     codex = apply_disable_web_tools(agent_name="codex", agent_config={})
     assert codex["kwargs"]["web_search"] == "disabled"
 
+    grok = apply_disable_web_tools(agent_name="grok-build", agent_config={})
+    assert grok["kwargs"]["disable_web_search"] is True
+
+    # cursor-cli and gemini-cli run their web tools provider-side, so the
+    # container network can't reach them -- the disable_web_tools switch is the
+    # only lever. Both must get it, or closed-book tasks leak via web fetch.
+    cursor = apply_disable_web_tools(agent_name="cursor-cli", agent_config={})
+    assert cursor["kwargs"]["disable_web_tools"] is True
+
+    gemini = apply_disable_web_tools(agent_name="gemini-cli", agent_config={})
+    assert gemini["kwargs"]["disable_web_tools"] is True
+
     # Explicit user kwargs win.
     custom = apply_disable_web_tools(
         agent_name="claude-code",
         agent_config={"kwargs": {"disallowed_tools": "WebSearch"}},
     )
     assert custom["kwargs"]["disallowed_tools"] == "WebSearch"
+
+    cursor_override = apply_disable_web_tools(
+        agent_name="cursor-cli",
+        agent_config={"kwargs": {"disable_web_tools": False}},
+    )
+    assert cursor_override["kwargs"]["disable_web_tools"] is False
 
 
 def test_build_sweep_payload_closed_internet_flags():

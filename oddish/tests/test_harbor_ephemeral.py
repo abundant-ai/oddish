@@ -13,11 +13,17 @@ from pathlib import Path
 import pytest
 
 from harbor.models.environment_type import EnvironmentType
+from harbor.models.trial.config import EnvironmentConfig
 from harbor.trial.hooks import TrialEvent
 
 from oddish.core.harbor_source import harbor_git_requirement
+from oddish.runtime.backends.daytona import DaytonaBackend
 from oddish.workers.harbor import ephemeral as harbor_ephemeral
-from oddish.workers.harbor._entry import _ProbeClaudeCode, _build_job_config
+from oddish.workers.harbor._entry import (
+    _ProbeClaudeCode,
+    _build_job_config,
+    _read_payload_and_unlink,
+)
 from oddish.workers.harbor.ephemeral import (
     HarborOverrideImportError,
     _bridge_event,
@@ -121,7 +127,7 @@ def test_build_payload_prefers_passed_env_build_multiplier():
         outcome_path=Path("/tmp/jobs/outcome.json"),
         agent="nop",
         model=None,
-        environment=EnvironmentType.GKE,
+        environment_config=EnvironmentConfig(type=EnvironmentType.GKE),
         raw_harbor_config={"environment_build_timeout_multiplier": 2.0},
         is_probe=False,
         environment_build_timeout_multiplier=99.0,
@@ -138,7 +144,7 @@ def test_build_payload_falls_back_to_raw_env_build_multiplier():
         outcome_path=Path("/tmp/jobs/outcome.json"),
         agent="nop",
         model=None,
-        environment=EnvironmentType.DOCKER,
+        environment_config=EnvironmentConfig(type=EnvironmentType.DOCKER),
         raw_harbor_config={"environment_build_timeout_multiplier": 2.0},
         is_probe=False,
     )
@@ -152,7 +158,7 @@ def test_build_payload_carries_extra_agent_env():
         outcome_path=Path("/tmp/jobs/outcome.json"),
         agent="claude-code",
         model="claude-sonnet-4-5",
-        environment=EnvironmentType.DOCKER,
+        environment_config=EnvironmentConfig(type=EnvironmentType.DOCKER),
         raw_harbor_config={},
         is_probe=True,
         extra_agent_env={"ODDISH_API_KEY": "secret-mint"},
@@ -289,7 +295,7 @@ def _payload(**over):
         outcome_path=Path("/tmp/jobs/outcome.json"),
         agent="claude-code",
         model="claude-sonnet-4-5",
-        environment=EnvironmentType.DOCKER,
+        environment_config=EnvironmentConfig(type=EnvironmentType.DOCKER),
         raw_harbor_config={"source": _SOURCE, "resolved_sha": _SHA},
         is_probe=True,
     )
@@ -471,25 +477,28 @@ def test_spawn_args_requests_daytona_extra_for_daytona_env():
 
 
 def test_ephemeral_daytona_forces_ownership_labels():
+    raw_kwargs = {
+        "auto_labels": False,
+        "labels": {
+            "task": "x",
+            "oddish.managed": "false",
+            "oddish.expires_at": "0",
+        },
+    }
+    resolved = EnvironmentConfig.model_validate(
+        {
+            "type": "daytona",
+            "kwargs": DaytonaBackend().harbor_env_kwargs(raw_kwargs),
+        }
+    )
     payload = _build_payload(
         task_path=Path("/tmp/task"),
         jobs_dir=Path("/tmp/jobs"),
         outcome_path=Path("/tmp/jobs/outcome.json"),
         agent="nop",
         model=None,
-        environment=EnvironmentType.DAYTONA,
-        raw_harbor_config={
-            "environment": {
-                "kwargs": {
-                    "auto_labels": False,
-                    "labels": {
-                        "task": "x",
-                        "oddish.managed": "false",
-                        "oddish.expires_at": "0",
-                    },
-                }
-            }
-        },
+        environment_config=resolved,
+        raw_harbor_config={},
         is_probe=False,
     )
     config = _build_job_config(payload)
@@ -498,6 +507,50 @@ def test_ephemeral_daytona_forces_ownership_labels():
     assert labels["task"] == "x"
     assert labels["oddish.managed"] == "true"
     assert int(labels["oddish.expires_at"]) > 0
+
+
+def test_spawn_args_requests_ec2_extra_for_ec2_env():
+    args = harbor_ephemeral._spawn_args(
+        _SOURCE, _SHA, environment=EnvironmentType.EC2
+    )
+    req = args[args.index("--with") + 1]
+    assert req == harbor_git_requirement(_SOURCE, _SHA, extras=["ec2"])
+
+
+def test_payload_serializes_resolved_environment_config_without_child_merges():
+    resolved = EnvironmentConfig.model_validate(
+        {
+            "type": "daytona",
+            "kwargs": {
+                "keep": "value",
+                "auto_stop_interval_mins": 17,
+                "auto_delete_interval_mins": 23,
+                "ephemeral": False,
+            },
+        }
+    )
+    payload = _build_payload(
+        task_path=Path("/tmp/task"),
+        jobs_dir=Path("/tmp/jobs"),
+        outcome_path=Path("/tmp/jobs/outcome.json"),
+        agent="nop",
+        model=None,
+        environment_config=resolved,
+        raw_harbor_config={},
+        is_probe=False,
+    )
+
+    assert payload["environment_config"] == resolved.model_dump(mode="json")
+    assert "daytona_kwargs" not in payload
+    child_config = _build_job_config(
+        {
+            **payload,
+            "daytona_kwargs": {"auto_stop_interval_mins": 999},
+        }
+    )
+    assert child_config.environment.model_dump(mode="json") == (
+        resolved.model_dump(mode="json")
+    )
 
 
 def test_spawn_args_no_extra_for_docker_env():
@@ -594,6 +647,7 @@ async def test_run_ephemeral_streams_events_and_reads_outcome(tmp_path, monkeypa
         task_path=task_dir,
         agent="claude-code",
         jobs_dir=tmp_path / "jobs",
+        environment_config=EnvironmentConfig(type=EnvironmentType.DOCKER),
         model="claude-sonnet-4-5",
         hook_callback=hook,
         trial_id="t-eph",
@@ -613,6 +667,171 @@ _SLEEP_CHILD = textwrap.dedent(
     time.sleep(120)
     """
 )
+
+
+_ENV_CHILD = textwrap.dedent(
+    """
+    import json, os, stat, sys
+    payload = json.loads(open(sys.argv[1]).read())
+    key_path = payload["environment_config"]["kwargs"]["ssh_key_path"]
+    profile_path = os.environ["AWS_SHARED_CREDENTIALS_FILE"]
+    open(payload["jobs_dir"] + "/child-env.json", "w").write(json.dumps({
+        "secret": os.environ.get("ODDISH_EC2_SSH_PRIVATE_KEY"),
+        "access": os.environ.get("ODDISH_EC2_AWS_ACCESS_KEY_ID"),
+        "aws_secret": os.environ.get("ODDISH_EC2_AWS_SECRET_ACCESS_KEY"),
+        "token": os.environ.get("ODDISH_EC2_AWS_SESSION_TOKEN"),
+        "key_path": key_path,
+        "key_mode": stat.S_IMODE(os.stat(key_path).st_mode),
+        "profile": payload["environment_config"]["kwargs"]["aws_profile"],
+        "profile_mode": stat.S_IMODE(os.stat(profile_path).st_mode),
+    }))
+    open(payload["outcome_path"], "w").write(json.dumps({
+        "job_dir": payload["jobs_dir"],
+        "job_result_path": None,
+        "duration_sec": 0.1,
+        "error": "fake child: no result",
+        "exception_type": None,
+    }))
+    """
+)
+
+
+_FAILED_CHILD = textwrap.dedent(
+    """
+    import json, stat, sys
+    from pathlib import Path
+
+    payload_path = Path(sys.argv[1])
+    payload = json.loads(payload_path.read_text())
+    Path(payload["jobs_dir"], "payload-observation.json").write_text(json.dumps({
+        "payload_path": str(payload_path),
+        "payload_mode": stat.S_IMODE(payload_path.stat().st_mode),
+    }))
+    raise SystemExit(19)
+    """
+)
+
+
+def test_child_unlinks_payload_even_when_json_is_invalid(tmp_path):
+    payload_path = tmp_path / "invalid-payload.json"
+    payload_path.write_text("not json")
+
+    with pytest.raises(json.JSONDecodeError):
+        _read_payload_and_unlink(payload_path)
+
+    assert not payload_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_failed_ephemeral_child_cannot_expose_payload_in_job_artifacts(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        harbor_ephemeral, "validate_task_timeout_config", lambda _path: None
+    )
+    monkeypatch.setattr(
+        harbor_ephemeral, "_check_local_storage_preflight", lambda *_a, **_k: None
+    )
+    child = tmp_path / "failed_child.py"
+    child.write_text(_FAILED_CHILD)
+    monkeypatch.setattr(
+        harbor_ephemeral,
+        "_spawn_args",
+        lambda _source, _sha, **_kwargs: [sys.executable, str(child)],
+    )
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    jobs_dir = tmp_path / "jobs"
+    secret = "must-never-become-an-artifact"
+
+    outcome = await run_ephemeral_harbor_trial(
+        task_path=task_dir,
+        agent="nop",
+        jobs_dir=jobs_dir,
+        environment_config=EnvironmentConfig(type=EnvironmentType.DOCKER),
+        harbor_config=_EPHEMERAL_HC,
+        extra_agent_env={"PROVIDER_SECRET": secret},
+    )
+
+    assert outcome.exception_type == "HarborOverrideImportError"
+    assert outcome.job_dir is not None
+    observation = json.loads(
+        (outcome.job_dir / "payload-observation.json").read_text()
+    )
+    payload_path = Path(observation["payload_path"])
+    assert payload_path.parent != outcome.job_dir
+    assert observation["payload_mode"] == 0o600
+    assert not payload_path.exists()
+    artifact_contents = "\n".join(
+        path.read_text(errors="replace")
+        for path in outcome.job_dir.rglob("*")
+        if path.is_file()
+    )
+    assert secret not in artifact_contents
+
+
+@pytest.mark.asyncio
+async def test_ephemeral_child_uses_key_path_without_inheriting_private_key_secret(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        harbor_ephemeral, "validate_task_timeout_config", lambda _path: None
+    )
+    monkeypatch.setattr(
+        harbor_ephemeral, "_check_local_storage_preflight", lambda *_a, **_k: None
+    )
+    child = tmp_path / "env_child.py"
+    child.write_text(_ENV_CHILD)
+    monkeypatch.setattr(
+        harbor_ephemeral,
+        "_spawn_args",
+        lambda _source, _sha, **_kwargs: [sys.executable, str(child)],
+    )
+    monkeypatch.setenv("ODDISH_EC2_SSH_PRIVATE_KEY", "must-not-reach-child")
+    monkeypatch.setenv("ODDISH_EC2_AWS_ACCESS_KEY_ID", "must-not-reach-child")
+    monkeypatch.setenv("ODDISH_EC2_AWS_SECRET_ACCESS_KEY", "must-not-reach-child")
+    monkeypatch.setenv("ODDISH_EC2_AWS_SESSION_TOKEN", "must-not-reach-child")
+    key_path = tmp_path / "ec2-key"
+    key_path.write_text("private key\n")
+    key_path.chmod(0o600)
+    profile_path = tmp_path / "aws-credentials"
+    profile_path.write_text("[oddish-ec2]\n")
+    profile_path.chmod(0o600)
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(profile_path))
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    jobs_dir = tmp_path / "jobs"
+    resolved = EnvironmentConfig.model_validate(
+        {
+            "type": "ec2",
+            "kwargs": {
+                "ssh_key_path": str(key_path),
+                "aws_profile": "oddish-ec2",
+            },
+        }
+    )
+
+    await run_ephemeral_harbor_trial(
+        task_path=task_dir,
+        agent="nop",
+        jobs_dir=jobs_dir,
+        environment_config=resolved,
+        harbor_config=_EPHEMERAL_HC,
+    )
+
+    child_state = json.loads(
+        (next(jobs_dir.iterdir()) / "child-env.json").read_text()
+    )
+    assert child_state == {
+        "secret": None,
+        "access": None,
+        "aws_secret": None,
+        "token": None,
+        "key_path": str(key_path),
+        "key_mode": 0o600,
+        "profile": "oddish-ec2",
+        "profile_mode": 0o600,
+    }
 
 
 @pytest.mark.asyncio
@@ -639,6 +858,7 @@ async def test_run_ephemeral_cancel_kills_child(tmp_path, monkeypatch):
             task_path=task_dir,
             agent="nop",
             jobs_dir=jobs_dir,
+            environment_config=EnvironmentConfig(type=EnvironmentType.DOCKER),
             trial_id="t-cancel",
             harbor_config=_EPHEMERAL_HC,
         )

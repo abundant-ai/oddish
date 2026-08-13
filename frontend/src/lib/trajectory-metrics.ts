@@ -30,6 +30,60 @@ export function isEmptyStep(step: TrajectoryStep): boolean {
   return !hasContent(step.message);
 }
 
+/** All readable text in a message or observation; image parts carry none. */
+export function contentText(
+  content: MessageContent | ObservationContent
+): string {
+  if (content == null) return "";
+  if (typeof content === "string") return content;
+  return content
+    .filter(
+      (part): part is ContentPart & { type: "text" } => part.type === "text"
+    )
+    .map((part) => part.text ?? "")
+    .join("\n");
+}
+
+function firstLine(content: MessageContent | ObservationContent): string {
+  return contentText(content).trim().split("\n")[0]?.trim() ?? "";
+}
+
+const PREVIEW_TOOL_NAMES = 3;
+
+/**
+ * One line describing a step, for the collapsed header. Producers disagree
+ * about where the agent's prose goes: codex fills `message` every step,
+ * claude-code on 58% of them, gemini-cli on ~0.4% — it routes prose into
+ * `reasoning_content` and leaves the rest to the tool calls. Reading `message`
+ * alone rendered "No message" on 95% of one gemini-cli trial's drawn rows, so
+ * fall through the step's other content in the order a reader would want it.
+ * Null only for a step with no text at all, which `isEmptyStep` all but always
+ * hides first.
+ */
+export function stepPreview(step: TrajectoryStep): string | null {
+  const message = firstLine(step.message);
+  if (message) return message;
+
+  const reasoning = firstLine(step.reasoning_content);
+  if (reasoning) return reasoning;
+
+  const names = [
+    ...new Set((step.tool_calls ?? []).map((tc) => tc.function_name)),
+  ].filter(Boolean);
+  if (names.length > 0) {
+    const shown = names.slice(0, PREVIEW_TOOL_NAMES).join(", ");
+    const rest = names.length - PREVIEW_TOOL_NAMES;
+    return rest > 0 ? `${shown} +${rest}` : shown;
+  }
+
+  for (const result of step.observation?.results ?? []) {
+    const observed = firstLine(result.content);
+    if (observed) return observed;
+  }
+
+  return null;
+}
+
 function timestampMs(ts: string | null | undefined): number | null {
   if (!ts) return null;
   const ms = new Date(ts).getTime();
@@ -105,6 +159,7 @@ const COMPONENT_COLOR_VARS: Record<string, string> = {
   testing_custom: "var(--tc-testing-custom)",
   testing_edge_cases: "var(--tc-testing-edge)",
   debugging: "var(--tc-debugging)",
+  writing_report: "var(--tc-writing-report)",
   // Retired kinds, kept so stored summaries keep their fixed color rather than
   // falling through to appearance-order phase slots. Each shares the slot its
   // replacement took over; the two vocabularies never co-occur in one summary.
