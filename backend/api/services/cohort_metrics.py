@@ -42,7 +42,13 @@ def cited_trials(category: dict, side: str) -> set[str]:
     return out
 
 
-def delta(cited_success: int, cited_failure: int, baseline: float) -> float | None:
+def delta(
+    cited_success: int,
+    cited_failure: int,
+    baseline: float,
+    *,
+    comparable: bool = True,
+) -> float | None:
     """How far this category's citations beat the model's own success share.
 
     A trial's cohort side is fixed by its classification, so the raw ratio is
@@ -52,8 +58,16 @@ def delta(cited_success: int, cited_failure: int, baseline: float) -> float | No
 
     None when nothing was cited: no evidence is not the same claim as no
     advantage, and a zero would plot as the latter.
+
+    None too when ``comparable`` is False, meaning the cohort behind the
+    baseline is one-sided. Every citable trial then sits on the side the
+    baseline is pinned to, so the ratio equals it exactly and every category
+    returns 0.0 -- which the radar draws as a closed shape resting on the
+    baseline ring, the picture of a model that is average at everything. A
+    model that never succeeded once has no behavioural signal at all, and
+    saying so is the opposite of what that shape says.
     """
     n = cited_success + cited_failure
-    if n == 0:
+    if n == 0 or not comparable:
         return None
     return cited_success / n - baseline

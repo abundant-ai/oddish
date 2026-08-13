@@ -207,7 +207,11 @@ async def build_cohort_rollup(
 
     models = _model_rows(cohort_by_model, cited_runs)
     baselines = {m["model"]: m["baseline"] for m in models}
+    comparable = {
+        m["model"]: m["cohort_success"] > 0 and m["cohort_failure"] > 0 for m in models
+    }
     pooled_baseline = _share(len(pooled_cohort["success"]), len(pooled_cohort["failure"]))
+    pooled_comparable = bool(pooled_cohort["success"]) and bool(pooled_cohort["failure"])
 
     categories = []
     for name in CHART_CATEGORIES:
@@ -218,6 +222,7 @@ async def build_cohort_rollup(
                     len(pooled[name]["success"]),
                     len(pooled[name]["failure"]),
                     pooled_baseline,
+                    pooled_comparable,
                 ),
                 "per_model": [
                     {
@@ -226,6 +231,7 @@ async def build_cohort_rollup(
                             len(cited[(m["model"], name)]["success"]),
                             len(cited[(m["model"], name)]["failure"]),
                             baselines[m["model"]],
+                            comparable[m["model"]],
                         ),
                     }
                     for m in models
@@ -332,7 +338,15 @@ def _share(success: int, failure: int) -> float:
     return success / total if total else 0.0
 
 
-def _cell(cited_success: int, cited_failure: int, baseline: float) -> dict:
+def _cell(
+    cited_success: int, cited_failure: int, baseline: float, comparable: bool
+) -> dict:
+    """One category x model cell. ``ratio`` is evidence; ``delta`` is a claim.
+
+    A one-sided cohort keeps its ratio -- the citations are real -- but loses
+    its delta, because there is no other side for the baseline to mean
+    anything against. See ``cohort_metrics.delta``.
+    """
     return {
         "cited_success": cited_success,
         "cited_failure": cited_failure,
@@ -342,7 +356,7 @@ def _cell(cited_success: int, cited_failure: int, baseline: float) -> dict:
             if cited_success + cited_failure
             else None
         ),
-        "delta": delta(cited_success, cited_failure, baseline),
+        "delta": delta(cited_success, cited_failure, baseline, comparable=comparable),
     }
 
 

@@ -65,7 +65,9 @@ export const RADAR_MODEL_CAP = 3;
 type RollupLike = {
   thin_threshold: number;
   models: { model: string; cited_runs: number }[];
-  categories: { per_model: { model: string; n: number }[] }[];
+  categories: {
+    per_model: { model: string; n: number; delta: number | null }[];
+  }[];
 };
 
 /** The models the radar draws: highest total evidence first, capped, and never
@@ -81,16 +83,23 @@ export function radarModels<T extends RollupLike>(
   rollup: T,
 ): { model: string; n: number; cited_runs: number }[] {
   const totals = new Map<string, number>();
+  // A model whose cohort is one-sided has a null delta on every axis (see the
+  // backend's `delta`), so ShapeForModel draws nothing for it. Without this it
+  // would still take a colour, a legend row and a place in the chart's
+  // description -- a series the reader is told about and can never find.
+  const drawable = new Set<string>();
   for (const cat of rollup.categories)
-    for (const cell of cat.per_model)
+    for (const cell of cat.per_model) {
       totals.set(cell.model, (totals.get(cell.model) ?? 0) + cell.n);
+      if (cell.n > 0 && cell.delta !== null) drawable.add(cell.model);
+    }
   return rollup.models
     .map((m) => ({
       model: m.model,
       n: totals.get(m.model) ?? 0,
       cited_runs: m.cited_runs ?? 0,
     }))
-    .filter((m) => m.cited_runs >= rollup.thin_threshold)
+    .filter((m) => m.cited_runs >= rollup.thin_threshold && drawable.has(m.model))
     .sort((a, b) => b.n - a.n)
     .slice(0, RADAR_MODEL_CAP);
 }

@@ -45,3 +45,22 @@ def test_delta_is_relative_to_the_models_own_baseline():
 
 def test_no_evidence_is_none_not_zero():
     assert delta(0, 0, 0.5) is None
+
+
+def test_a_one_sided_cohort_has_no_delta():
+    """A model that never failed (or never succeeded) has nothing to compare.
+
+    Its citations can only come from the one side it has, so the ratio equals
+    the baseline exactly and every category returns 0.00 -- which the radar
+    draws as a closed shape resting on the baseline ring, the picture of a
+    model that is average at everything. Seen on real data: a gemini variant
+    with a 0-success / 9-failure cohort scored exactly 0.0 on all five axes it
+    had evidence for.
+    """
+    # 9 failures, no successes: baseline 0, and every cited trial is a failure.
+    assert delta(0, 4, 0.0, comparable=False) is None
+    # The mirror: 6 successes, no failures.
+    assert delta(3, 0, 1.0, comparable=False) is None
+    # Without the guard both of these are a confident zero.
+    assert delta(0, 4, 0.0) == 0.0
+    assert delta(3, 0, 1.0) == 0.0

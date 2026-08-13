@@ -578,6 +578,105 @@ async def experiment_null_model():
 
 
 # ---------------------------------------------------------------------------
+# Fixture: experiment_one_sided_and_mixed
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ExperimentOneSidedAndMixed:
+    experiment_id: str
+    org_id: str
+
+
+@pytest_asyncio.fixture
+async def experiment_one_sided_and_mixed():
+    """One compared version; `solo` never succeeds, `mixed` does both.
+
+    solo: 0 success / 4 failure -- baseline 0, and every trial it could
+    possibly be cited for is a failure, so its ratio is 0 on every axis and
+    subtracting the baseline gives a confident 0.00 across the board.
+    mixed: 2 success / 2 failure -- baseline .5, and "debugging" cites 2 of
+    its successes and 1 failure, so it keeps a real +.1667.
+    """
+    suffix = uuid.uuid4().hex[:8]
+    org_id = f"org_os_{suffix}"
+    experiment_id = f"exp_os_{suffix}"
+    task_id = f"task_os_{suffix}"
+    trial_ids: list[str] = []
+
+    async with get_session() as session:
+        session.add(
+            OrganizationModel(id=org_id, name=f"OS Org {suffix}", slug=f"os-org-{suffix}")
+        )
+        session.add(ExperimentModel(id=experiment_id, name=f"os-exp-{suffix}", org_id=org_id))
+        session.add(
+            TaskModel(
+                id=task_id,
+                name=f"os-task-{suffix}",
+                user="test",
+                task_path="/tmp/fake",
+                org_id=org_id,
+            )
+        )
+        await session.flush()
+        version_id = f"{task_id}-v1"
+        session.add(
+            TaskVersionModel(id=version_id, task_id=task_id, version=1, task_path="/tmp/fake")
+        )
+        await session.flush()
+
+        solo_failure = [f"trial_os_{suffix}_solo_f{i}" for i in range(4)]
+        mixed_success = [f"trial_os_{suffix}_mixed_s{i}" for i in range(2)]
+        mixed_failure = [f"trial_os_{suffix}_mixed_f{i}" for i in range(2)]
+        rows = (
+            [(t, FAILURE_CLASS, "solo") for t in solo_failure]
+            + [(t, SUCCESS_CLASS, "mixed") for t in mixed_success]
+            + [(t, FAILURE_CLASS, "mixed") for t in mixed_failure]
+        )
+        for tid, cls, model in rows:
+            trial_ids.append(tid)
+            session.add(
+                _trial(
+                    trial_id=tid,
+                    task_id=task_id,
+                    task_version_id=version_id,
+                    experiment_id=experiment_id,
+                    org_id=org_id,
+                    classification=cls,
+                    model=model,
+                )
+            )
+        await session.flush()
+
+        session.add(
+            _comparison_block(
+                task_id=task_id,
+                task_version_id=version_id,
+                cohort_hash_value=cohort_hash(
+                    [t for t, cls, _ in rows if cls == SUCCESS_CLASS],
+                    [t for t, cls, _ in rows if cls == FAILURE_CLASS],
+                ),
+                categories=[
+                    _evidence_category(
+                        "debugging",
+                        successful_ids=mixed_success,
+                        failing_ids=solo_failure[:3] + mixed_failure[:1],
+                    )
+                ],
+            )
+        )
+
+    yield ExperimentOneSidedAndMixed(experiment_id=experiment_id, org_id=org_id)
+
+    await _cleanup(
+        trial_ids=trial_ids,
+        task_ids=[task_id],
+        experiment_ids=[experiment_id],
+        org_ids=[org_id],
+    )
+
+
+# ---------------------------------------------------------------------------
 # Fixture: experiment_sharing_a_task_version
 # ---------------------------------------------------------------------------
 
@@ -877,6 +976,45 @@ async def test_discovery_is_absent_from_the_matrix(session, experiment_opus_and_
         org_id=experiment_opus_and_grok.org_id,
     )
     assert "behavior_discovery" not in {c["category"] for c in body["categories"]}
+
+
+@pytest.mark.asyncio
+async def test_a_one_sided_models_axes_are_absent_not_average(
+    session, experiment_one_sided_and_mixed
+):
+    """A model with only one cohort side reports no delta, but keeps its ratio.
+
+    Real data made this concrete: in the OTS rollup a gemini variant held a
+    0-success / 9-failure cohort and scored exactly 0.0 on all five axes it
+    had citations for, drawing a closed shape on the baseline ring -- a model
+    that never once succeeded, rendered as average at everything.
+
+    The mixed model in the same fixture is what keeps the guard from being a
+    blanket: its deltas have to survive.
+    """
+    body = await build_cohort_rollup(
+        session,
+        experiment_id=experiment_one_sided_and_mixed.experiment_id,
+        org_id=experiment_one_sided_and_mixed.org_id,
+    )
+    by_model = {m["model"]: m for m in body["models"]}
+    assert (by_model["solo"]["cohort_success"], by_model["solo"]["cohort_failure"]) == (
+        0,
+        4,
+    )
+    assert (
+        by_model["mixed"]["cohort_success"],
+        by_model["mixed"]["cohort_failure"],
+    ) == (2, 2)
+
+    debugging = next(c for c in body["categories"] if c["category"] == "debugging")
+    cells = {c["model"]: c for c in debugging["per_model"]}
+    # The citations are real and still counted; only the comparison is void.
+    assert cells["solo"]["n"] == 3
+    assert cells["solo"]["ratio"] == 0.0
+    assert cells["solo"]["delta"] is None
+    # The two-sided model is untouched: baseline .5, cited 2 of 3 -> +.1667
+    assert cells["mixed"]["delta"] == pytest.approx(0.1667, abs=1e-4)
 
 
 @pytest.mark.asyncio
