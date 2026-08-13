@@ -157,7 +157,7 @@ HARBOR_DEFAULT_SOURCE = "https://github.com/abundant-ai/harbor"
 # ``subagent_trajectory_ref``), on top of PRs #20-#22 (EC2 Helm/k3s support,
 # lifecycle timings, and the first-class environment-provisioned event
 # required for durable launch identity).
-HARBOR_DEFAULT_SHA = "b329a43d55b23b6574a86c37dd6d28428665cbeb"
+HARBOR_DEFAULT_SHA = "5e40e8c5ec5502b108c5e94356311675f9de9a01"
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
