@@ -321,6 +321,11 @@ async def _missing_rows(
     return [
         {
             "task_id": v.task_id,
+            # The link the coverage line builds needs the version id, not the
+            # number: the task page resolves `?version=` against ids, and
+            # without one it opens on the task's current version -- which is
+            # frequently not the version this row just named as uncompared.
+            "task_version_id": v.task_version_id,
             "task_name": v.task_name,
             "version": v.version,
             "reason": (

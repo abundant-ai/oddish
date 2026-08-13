@@ -847,6 +847,32 @@ async def test_uncompared_versions_skip_the_cohort_resolution(
 
 
 @pytest.mark.asyncio
+async def test_missing_rows_carry_the_version_they_name(
+    session, experiment_two_of_three_compared
+):
+    """A coverage row has to address the version it just named.
+
+    The link the coverage line builds is the only way a reader acts on this
+    list, and the task page resolves `?version=` against ids. With only the
+    display number the link drops the param and opens on the task's current
+    version -- routinely a later one than the row named, and sometimes one
+    that is compared, so the page contradicts the sentence that linked it.
+    """
+    body = await build_cohort_rollup(
+        session,
+        experiment_id=experiment_two_of_three_compared.experiment_id,
+        org_id=experiment_two_of_three_compared.org_id,
+    )
+    missing = body["coverage"]["missing"]
+    assert missing
+    for row in missing:
+        assert row["task_version_id"]
+        # The id addresses the same version the row displays.
+        assert row["task_version_id"].endswith(f"-v{row['version']}")
+        assert row["task_version_id"].startswith(row["task_id"])
+
+
+@pytest.mark.asyncio
 async def test_missing_names_why_it_cannot_be_compared(
     session, experiment_two_of_three_compared, experiment_below_cohort_gate
 ):

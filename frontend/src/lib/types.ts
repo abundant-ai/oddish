@@ -828,6 +828,9 @@ export interface CohortRollup {
     task_versions_compared: number;
     missing: {
       task_id: string;
+      /** The id, which is what the task page's `?version=` resolves against.
+       *  `version` below is the display number and cannot address a page. */
+      task_version_id: string;
       task_name: string;
       version: number;
       /** `"not_compared"` — comparable, nobody has generated one yet — or

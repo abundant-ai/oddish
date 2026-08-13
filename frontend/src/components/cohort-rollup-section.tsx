@@ -333,8 +333,14 @@ function CoverageLine({ rollup }: { rollup: CohortRollup }) {
           {named.map((m, i) => (
             <span key={`${m.task_id}-${m.version}`}>
               {i > 0 && ", "}
+              {/* `?version=` carries the version id, or the page opens on the
+                  task's current version -- routinely a later one than the row
+                  just named, and sometimes one that *is* compared. The link
+                  would then contradict the sentence containing it. */}
               <a
-                href={`/tasks/${encodeURIComponent(m.task_id)}`}
+                href={`/tasks/${encodeURIComponent(m.task_id)}?version=${encodeURIComponent(
+                  m.task_version_id,
+                )}`}
                 className="underline-offset-4 hover:underline"
               >
                 {m.task_name} v{m.version}
