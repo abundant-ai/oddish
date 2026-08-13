@@ -1,8 +1,12 @@
 "use client";
 
+import useSWR from "swr";
 import { componentLabel } from "@/lib/trajectory-segments";
-import { useAgentCapabilities } from "@/lib/use-agent-capabilities";
-import type { BehaviorEvidence, BehaviorObservation } from "@/lib/types";
+import type {
+  AgentCapabilities,
+  BehaviorEvidence,
+  BehaviorObservation,
+} from "@/lib/types";
 
 const CATEGORY_LABELS: Record<string, string> = {
   behavior_discovery: "Agent behavior discovery",
@@ -14,11 +18,6 @@ const CATEGORY_LABELS: Record<string, string> = {
   environment_tooling: "Environment and tooling",
 };
 
-/** All three headings share the panel's mono-uppercase family (Findings and
- *  Trial QA use it at task-overview-panel.tsx:613, :654). This section's title
- *  is deliberately one step louder than those two -- 13px foreground against
- *  their 11px muted -- because it heads a card of its own rather than a list.
- *  Below it, category and cohort headings hold 11px and separate by colour. */
 const SECTION_HEADING =
   "text-foreground font-mono text-[13px] font-semibold tracking-wider uppercase";
 const CATEGORY_HEADING =
@@ -52,7 +51,7 @@ function evidenceHref(
   taskId: string,
   trialId: string,
   step: number | null,
-  taskVersionId?: string,
+  taskVersionId?: string
 ): string {
   const params = new URLSearchParams();
   if (taskVersionId) params.set("version", taskVersionId);
@@ -118,122 +117,71 @@ function ObservationList({
   linkEvidence: boolean;
 }) {
   if (!items.length) {
-    return <p className="text-sm text-muted-foreground">No difference found.</p>;
+    return (
+      <p className="text-muted-foreground text-sm">No difference found.</p>
+    );
   }
   return (
     <ul className="flex flex-col gap-3">
-      {items.map((obs, i) => (
-        <li key={i} className="flex flex-col gap-1.5">
+      {items.map((obs) => (
+        <li
+          key={`${obs.behavior_description}:${obs.evidence.map((ev) => ev.trial_id).join(",")}`}
+          className="flex flex-col gap-1.5"
+        >
           <span className="text-sm">{obs.behavior_description}</span>
-          {obs.evidence.map((ev, j) => {
-            const body = (
-              <>
-                {/* Only the component + step range carries the link colour. The
-                    quote is the agent's own words, and colouring it too turns a
-                    paragraph of body text blue. */}
-                <span
-                  className={
-                    linkEvidence
-                      ? "font-mono text-blue-600 dark:text-blue-400"
-                      : "font-mono"
-                  }
-                >
-                  {citationLabel(ev)}
-                </span>{" "}
-                {/* Which model this example came from. A side can list fourteen
-                    models in its chips and cite two trials; without naming the
-                    model per citation the reader cannot tell which of the
-                    fourteen actually did the thing being described. */}
-                {trialModels?.[ev.trial_id] ? (
-                  <span className="text-muted-foreground/80 font-mono">
-                    {trialModels[ev.trial_id]}
-                  </span>
-                ) : null}{" "}
-                — {ev.quote}
-              </>
-            );
-            // `/tasks/...` is behind `auth.protect()`, which 404s a signed-out
-            // request, so on a share page the citation is text. It keeps the
-            // component, step range, model and quote -- everything except the
-            // jump, which there is nowhere to make.
-            return linkEvidence ? (
-              <a
-                key={j}
-                href={evidenceHref(
-                  taskId,
-                  ev.trial_id,
-                  anchorStep(ev),
-                  taskVersionId,
-                )}
-                className="text-xs text-muted-foreground underline-offset-4 hover:underline"
-              >
-                {body}
-              </a>
-            ) : (
-              <span key={j} className="text-xs text-muted-foreground">
-                {body}
-              </span>
-            );
-          })}
+          {obs.evidence.length > 0 ? (
+            <details className="group">
+              <summary className="text-muted-foreground hover:text-foreground w-fit cursor-pointer font-mono text-[11px]">
+                {obs.evidence.length}{" "}
+                {obs.evidence.length === 1 ? "example" : "examples"}
+              </summary>
+              <div className="border-border mt-2 flex flex-col gap-2 border-l pl-3">
+                {obs.evidence.map((ev) => {
+                  const body = (
+                    <>
+                      <span
+                        className={
+                          linkEvidence
+                            ? "font-mono text-blue-600 dark:text-blue-400"
+                            : "font-mono"
+                        }
+                      >
+                        {citationLabel(ev)}
+                      </span>{" "}
+                      {trialModels?.[ev.trial_id] ? (
+                        <span className="text-muted-foreground/80 font-mono">
+                          {trialModels[ev.trial_id]}
+                        </span>
+                      ) : null}{" "}
+                      — {ev.quote}
+                    </>
+                  );
+                  const key = `${ev.trial_id}:${ev.step_id ?? (ev.step_ids ?? []).join("-")}`;
+                  return linkEvidence ? (
+                    <a
+                      key={key}
+                      href={evidenceHref(
+                        taskId,
+                        ev.trial_id,
+                        anchorStep(ev),
+                        taskVersionId
+                      )}
+                      className="text-muted-foreground text-xs underline-offset-4 hover:underline"
+                    >
+                      {body}
+                    </a>
+                  ) : (
+                    <span key={key} className="text-muted-foreground text-xs">
+                      {body}
+                    </span>
+                  );
+                })}
+              </div>
+            </details>
+          ) : null}
         </li>
       ))}
     </ul>
-  );
-}
-
-/** One side of a category: heading, the models that ran on that side, and the
- *  observations. The model chips repeat per category because a reader scanning
- *  one category should not have to scroll back to learn who ran it. */
-function CohortColumn({
-  tone,
-  items,
-  models,
-  taskId,
-  taskVersionId,
-  trialModels,
-  linkEvidence,
-}: {
-  tone: "successful" | "failing";
-  items: BehaviorObservation[];
-  models?: { model: string; trials: number }[];
-  taskId: string;
-  taskVersionId?: string;
-  trialModels?: Record<string, string>;
-  linkEvidence: boolean;
-}) {
-  const successful = tone === "successful";
-  return (
-    <div className="flex flex-col gap-2">
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-        <span
-          className={`${COHORT_HEADING} ${
-            successful
-              ? "text-emerald-600 dark:text-emerald-400"
-              : "text-red-600 dark:text-red-400"
-          }`}
-        >
-          {successful ? "Successful" : "Failed"}
-        </span>
-        {models?.map((m) => (
-          <span
-            key={m.model}
-            className="border-border text-muted-foreground rounded border px-1.5 py-0.5 font-mono text-[10px]"
-            title={`${m.trials} ${successful ? "successful" : "failed"} ${
-              m.trials === 1 ? "trial" : "trials"
-            } from ${m.model}`}
-          >
-            {m.model} ×{m.trials}
-          </span>
-        ))}
-      </div>
-      <ObservationList
-        items={items}
-        taskId={taskId}
-        taskVersionId={taskVersionId}
-        trialModels={trialModels}
-        linkEvidence={linkEvidence}
-      />
-    </div>
   );
 }
 
@@ -255,23 +203,30 @@ export function AgentCapabilitiesSection({
       across versions. The host decides not to render instead. */
   version: number;
 }) {
-  const { data, error, isLoading } = useAgentCapabilities(
-    taskId,
-    apiBaseUrl,
-    version,
+  const { data, error, isLoading } = useSWR<AgentCapabilities>(
+    `${apiBaseUrl}/tasks/${encodeURIComponent(taskId)}/agent-capabilities?version=${version}`,
+    (url: string) =>
+      fetch(url).then((response) =>
+        response.ok ? response.json() : Promise.reject(response.status)
+      ),
+    { shouldRetryOnError: false }
   );
 
-  // A 404 is the gate, not a fault: the task has too few classified trials.
-  // Render nothing for it. Everything else gets a visible state, because a
-  // silent null makes "still generating", "generation failed" and "nothing to
-  // show" indistinguishable — the first view triggers a model call that takes
-  // real time, so an empty panel otherwise reads as broken.
-  if (error === 404) return null;
+  if (error === 404) {
+    return (
+      <section className="flex flex-col gap-2 p-4">
+        <h3 className={SECTION_HEADING}>Capabilities</h3>
+        <p className="text-muted-foreground text-xs">
+          No capability analysis is available for this task version.
+        </p>
+      </section>
+    );
+  }
 
   if (isLoading) {
     return (
-      <section className="border-border flex flex-col gap-2 border-b p-4">
-        <h3 className={SECTION_HEADING}>Agent capability analysis</h3>
+      <section className="flex flex-col gap-2 p-4">
+        <h3 className={SECTION_HEADING}>Capabilities</h3>
         <p className="text-muted-foreground animate-pulse text-xs">
           Analyzing agent behavior across successful and failing runs
           <EllipsisDots />
@@ -282,11 +237,11 @@ export function AgentCapabilitiesSection({
 
   if (error) {
     return (
-      <section className="border-border flex flex-col gap-2 border-b p-4">
-        <h3 className={SECTION_HEADING}>Agent capability analysis</h3>
+      <section className="flex flex-col gap-2 p-4">
+        <h3 className={SECTION_HEADING}>Capabilities</h3>
         <p className="text-muted-foreground text-xs">
-          Could not build the analysis{typeof error === "number" ? ` (${error})` : ""}.
-          Reload to try again.
+          Could not build the analysis
+          {typeof error === "number" ? ` (${error})` : ""}. Reload to try again.
         </p>
       </section>
     );
@@ -296,8 +251,8 @@ export function AgentCapabilitiesSection({
 
   if (!data.categories.length) {
     return (
-      <section className="border-border flex flex-col gap-2 border-b p-4">
-        <h3 className={SECTION_HEADING}>Agent capability analysis</h3>
+      <section className="flex flex-col gap-2 p-4">
+        <h3 className={SECTION_HEADING}>Capabilities</h3>
         <p className="text-muted-foreground text-xs">
           {/* One cohort has nothing to differ from, so "no differences held
               up" would describe work that was never attempted. */}
@@ -318,10 +273,10 @@ export function AgentCapabilitiesSection({
   const single = data.mode === "single" || !showSuccessful || !showFailing;
 
   return (
-    <section className="border-border flex flex-col gap-4 border-b p-4">
-      <div className="flex items-baseline gap-3">
-        <h3 className={SECTION_HEADING}>Agent capability analysis</h3>
-        <span className="text-xs text-muted-foreground">
+    <section className="flex flex-col gap-4 p-4">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <h3 className={SECTION_HEADING}>Capabilities</h3>
+        <span className="text-muted-foreground text-xs">
           {showSuccessful && showFailing
             ? `${data.cohort_success.length} successful, ${data.cohort_failure.length} failed trials`
             : showSuccessful
@@ -329,8 +284,54 @@ export function AgentCapabilitiesSection({
               : `${data.cohort_failure.length} failed trials \u00b7 no successes to compare against`}
         </span>
       </div>
+      <div
+        className={single ? "flex flex-col gap-2" : "grid gap-6 md:grid-cols-2"}
+      >
+        {showSuccessful ? (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span
+              className={`${COHORT_HEADING} text-emerald-600 dark:text-emerald-400`}
+            >
+              Successful
+            </span>
+            {data.models?.successful?.map((model) => (
+              <span
+                key={model.model}
+                className="border-border text-muted-foreground rounded border px-1.5 py-0.5 font-mono text-[10px]"
+                title={`${model.trials} successful ${
+                  model.trials === 1 ? "trial" : "trials"
+                } from ${model.model}`}
+              >
+                {model.model} ×{model.trials}
+              </span>
+            ))}
+          </div>
+        ) : null}
+        {showFailing ? (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span
+              className={`${COHORT_HEADING} text-red-600 dark:text-red-400`}
+            >
+              Failed
+            </span>
+            {data.models?.failing?.map((model) => (
+              <span
+                key={model.model}
+                className="border-border text-muted-foreground rounded border px-1.5 py-0.5 font-mono text-[10px]"
+                title={`${model.trials} failed ${
+                  model.trials === 1 ? "trial" : "trials"
+                } from ${model.model}`}
+              >
+                {model.model} ×{model.trials}
+              </span>
+            ))}
+          </div>
+        ) : null}
+      </div>
       {data.summary ? (
-        <p className="text-sm text-foreground">{data.summary}</p>
+        <p className="text-foreground max-w-4xl text-sm leading-relaxed">
+          {data.summary}
+        </p>
       ) : null}
       {/* No thin-coverage warning. `thin_coverage` divides covered steps by
           the trial's FULL step count, but components are built from
@@ -341,10 +342,10 @@ export function AgentCapabilitiesSection({
           Anthropic trial scored exactly 1.00. It flagged the agent, not the
           evidence. Restoring a warning here needs the summariser to persist
           its post-filter step count as the denominator. */}
-      {data.categories.map((cat, i) => (
+      {data.categories.map((cat) => (
         <div
-          key={i}
-          className="border-border bg-background/40 flex flex-col gap-2 rounded-lg border p-3"
+          key={`${cat.category}:${cat.label ?? ""}`}
+          className="border-border flex flex-col gap-3 border-t pt-3"
         >
           <h4 className={CATEGORY_HEADING}>
             {CATEGORY_LABELS[cat.category] ?? cat.category}
@@ -356,10 +357,8 @@ export function AgentCapabilitiesSection({
             }
           >
             {showSuccessful ? (
-              <CohortColumn
-                tone="successful"
+              <ObservationList
                 items={cat.successful}
-                models={data.models?.successful}
                 taskId={taskId}
                 taskVersionId={data.task_version_id}
                 trialModels={data.trial_models}
@@ -367,10 +366,8 @@ export function AgentCapabilitiesSection({
               />
             ) : null}
             {showFailing ? (
-              <CohortColumn
-                tone="failing"
+              <ObservationList
                 items={cat.failing}
-                models={data.models?.failing}
                 taskId={taskId}
                 taskVersionId={data.task_version_id}
                 trialModels={data.trial_models}

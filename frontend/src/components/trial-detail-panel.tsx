@@ -1787,6 +1787,7 @@ export function TrialDetailPanel({
             <TaskFilesPanel
               isOpen={isOpen}
               onClose={() => {}}
+              activePane="file"
               taskId={null}
               filesUrl={`${apiBaseUrl}/trials/${trial.id}/files`}
               initialFilePath={filesTargetPath}
