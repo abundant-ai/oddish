@@ -440,6 +440,9 @@ export function TaskFilesPanel({
   onSelectedFileChange,
 }: TaskFilesPanelProps) {
   const baseUrl = apiBaseUrl ?? "/api";
+  const shareToken = baseUrl.match(
+    /^\/api\/public\/experiments\/([^/]+)$/
+  )?.[1];
   // The TASK OVERVIEW entry is keyed off the task even in filesUrl-driven
   // panes (which pass taskId={null}); staticChecksTaskId supplies the id there.
   const effectiveChecksTaskId = taskId ?? staticChecksTaskId ?? null;
@@ -1587,7 +1590,8 @@ export function TaskFilesPanel({
                     taskId={effectiveChecksTaskId}
                     apiBaseUrl={baseUrl}
                     version={overviewVersion}
-                    linkEvidence={showAnalysis !== false}
+                    linkEvidence
+                    shareToken={shareToken}
                   />
                 ) : overviewVersion === undefined ? (
                   <div className="space-y-3 p-4">

@@ -370,6 +370,17 @@ test.describe("authenticated task view", () => {
       page.getByRole("heading", { name: "Capabilities" })
     ).toBeVisible();
     await expect(page.getByText("Agents found the failure")).toBeVisible();
+    const debuggingCategory = page
+      .getByText("Debugging", { exact: true })
+      .locator("..");
+    await expect(debuggingCategory.getByText("gpt-current ×1")).toBeVisible();
+    await debuggingCategory.getByText("1 example").click();
+    await expect(
+      debuggingCategory.getByRole("link", { name: /step 7/ })
+    ).toHaveAttribute(
+      "href",
+      new RegExp(`trial=trial-1.*tab=trajectory#step-7$`)
+    );
     await expect(page).toHaveURL(/taskPane=capabilities/);
     expect(capabilityRequests).toBe(1);
 

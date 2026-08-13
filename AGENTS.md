@@ -556,6 +556,10 @@ no share tokens. Public task/trial/live/file routes must stay scoped under
 experiment; do not reintroduce `/public/tasks/{task_id}` or
 `/public/trials/{trial_id}` ID-only access. Unpublishing an experiment clears
 `public_token`, so republishing mints a fresh link and old URLs stay revoked.
+Capability evidence links on a share page must remain inside `/share/{token}`;
+they select the shared task and trial, open the trajectory tab, and retain the
+cited step anchor. They must never point signed-out readers at authenticated
+`/tasks/...` routes.
 
 ### Configuration and model routing
 
