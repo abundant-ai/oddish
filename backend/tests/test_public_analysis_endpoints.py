@@ -54,12 +54,18 @@ def no_display_names():
 
 def test_summary_returns_stored_block(client, patched_session):
     summary = {"schema_version": "7", "summary": "ok", "highlights": []}
-    with patched_session, patch(
-        "api.routers.public_analysis.get_public_trial_for_experiment",
-        new=AsyncMock(return_value=SimpleNamespace(id="t-1", trajectory_summary=None)),
-    ), patch(
-        "api.services.summarize_trajectory.load_stored_summary",
-        new=AsyncMock(return_value=summary),
+    with (
+        patched_session,
+        patch(
+            "api.routers.public_analysis.get_public_trial_for_experiment",
+            new=AsyncMock(
+                return_value=SimpleNamespace(id="t-1", trajectory_summary=None)
+            ),
+        ),
+        patch(
+            "api.services.summarize_trajectory.load_stored_summary",
+            new=AsyncMock(return_value=summary),
+        ),
     ):
         resp = client.get(SUMMARY_URL)
     assert resp.status_code == 200
@@ -69,15 +75,19 @@ def test_summary_returns_stored_block(client, patched_session):
 def test_summary_falls_back_to_the_trial_mirror(client, patched_session):
     """`preview_seed` copies trials but not `analyzer_blocks`, so a block-only
     read is empty on every preview deploy while the summary sits on the trial
-    row. The authenticated route hides that by generating; this one cannot."""
+    row."""
     mirror = {"schema_version": SCHEMA_VERSION, "summary": "from the mirror"}
     trial = SimpleNamespace(id="t-1", trajectory_summary=mirror)
-    with patched_session, patch(
-        "api.routers.public_analysis.get_public_trial_for_experiment",
-        new=AsyncMock(return_value=trial),
-    ), patch(
-        "api.services.summarize_trajectory._load_fresh_summary_block",
-        new=AsyncMock(return_value=None),
+    with (
+        patched_session,
+        patch(
+            "api.routers.public_analysis.get_public_trial_for_experiment",
+            new=AsyncMock(return_value=trial),
+        ),
+        patch(
+            "api.services.summarize_trajectory._load_fresh_summary_block",
+            new=AsyncMock(return_value=None),
+        ),
     ):
         resp = client.get(SUMMARY_URL)
     assert resp.status_code == 200
@@ -91,15 +101,24 @@ def test_summary_ignores_a_stale_mirror(client, patched_session):
         task_version_id="tv-1",
         trajectory_summary={"schema_version": "1", "summary": "old"},
     )
-    with patched_session, patch(
-        "api.routers.public_analysis.get_public_trial_for_experiment",
-        new=AsyncMock(return_value=trial),
-    ), patch(
-        "api.services.summarize_trajectory._load_fresh_summary_block",
-        new=AsyncMock(return_value=None),
-    ), patch(
-        "api.services.agent_capabilities.analysis_is_eligible",
-        new=AsyncMock(return_value=False),
+    with (
+        patched_session,
+        patch(
+            "api.routers.public_analysis.get_public_trial_for_experiment",
+            new=AsyncMock(return_value=trial),
+        ),
+        patch(
+            "api.services.summarize_trajectory._load_fresh_summary_block",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "api.services.agent_capabilities.analysis_is_eligible",
+            new=AsyncMock(return_value=False),
+        ),
+        patch(
+            "api.routers.public_analysis.get_public_experiment",
+            new=AsyncMock(return_value=SimpleNamespace(id="exp-1")),
+        ),
     ):
         resp = client.get(SUMMARY_URL)
     assert resp.status_code == 404
@@ -110,18 +129,24 @@ def test_summary_prefers_the_block_over_the_mirror(client, patched_session):
         id="t-1", trajectory_summary={"schema_version": SCHEMA_VERSION, "s": "mirror"}
     )
     block = {"schema_version": SCHEMA_VERSION, "s": "block"}
-    with patched_session, patch(
-        "api.routers.public_analysis.get_public_trial_for_experiment",
-        new=AsyncMock(return_value=trial),
-    ), patch(
-        "api.services.summarize_trajectory._load_fresh_summary_block",
-        new=AsyncMock(return_value=block),
+    with (
+        patched_session,
+        patch(
+            "api.routers.public_analysis.get_public_trial_for_experiment",
+            new=AsyncMock(return_value=trial),
+        ),
+        patch(
+            "api.services.summarize_trajectory._load_fresh_summary_block",
+            new=AsyncMock(return_value=block),
+        ),
     ):
         resp = client.get(SUMMARY_URL)
     assert resp.json() == block
 
 
-def test_summary_miss_enqueues_capability_analysis(client, fake_session, patched_session):
+def test_summary_miss_enqueues_capability_analysis(
+    client, fake_session, patched_session
+):
     trial = SimpleNamespace(
         id="t-1",
         task_id="task-1",
@@ -133,16 +158,26 @@ def test_summary_miss_enqueues_capability_analysis(client, fake_session, patched
     task_result.scalar_one.return_value = task
     fake_session.execute.side_effect = [task_result, MagicMock()]
     enqueue = AsyncMock()
-    with patched_session, patch(
-        "api.routers.public_analysis.get_public_trial_for_experiment",
-        new=AsyncMock(return_value=trial),
-    ), patch(
-        "api.services.summarize_trajectory.load_stored_summary",
-        new=AsyncMock(return_value=None),
-    ), patch(
-        "api.services.agent_capabilities.analysis_is_eligible",
-        new=AsyncMock(return_value=True),
-    ), patch("api.services.agent_capabilities.enqueue_analysis", new=enqueue):
+    with (
+        patched_session,
+        patch(
+            "api.routers.public_analysis.get_public_trial_for_experiment",
+            new=AsyncMock(return_value=trial),
+        ),
+        patch(
+            "api.services.summarize_trajectory.load_stored_summary",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "api.services.agent_capabilities.analysis_is_eligible",
+            new=AsyncMock(return_value=True),
+        ),
+        patch(
+            "api.routers.public_analysis.get_public_experiment",
+            new=AsyncMock(return_value=SimpleNamespace(id="exp-1")),
+        ),
+        patch("api.services.agent_capabilities.enqueue_analysis", new=enqueue),
+    ):
         resp = client.get(SUMMARY_URL)
     assert resp.status_code == 202
     assert resp.json() == {"status": "queued", "task_version_id": "tv-1"}
@@ -153,16 +188,21 @@ def test_summary_miss_enqueues_capability_analysis(client, fake_session, patched
         task_name="task-one",
         org_id="org-1",
         triggered_by_user_id=None,
+        experiment_id="exp-1",
     )
 
 
 def test_summary_404_when_token_does_not_expose_the_trial(client, patched_session):
     """An unshared trial must not be readable, and must not be looked up."""
     load = AsyncMock()
-    with patched_session, patch(
-        "api.routers.public_analysis.get_public_trial_for_experiment",
-        new=AsyncMock(return_value=None),
-    ), patch("api.services.summarize_trajectory.load_stored_summary", new=load):
+    with (
+        patched_session,
+        patch(
+            "api.routers.public_analysis.get_public_trial_for_experiment",
+            new=AsyncMock(return_value=None),
+        ),
+        patch("api.services.summarize_trajectory.load_stored_summary", new=load),
+    ):
         resp = client.get(SUMMARY_URL)
     assert resp.status_code == 404
     load.assert_not_awaited()
@@ -200,11 +240,17 @@ def test_comparison_returns_stored_block_and_stamps_version(
     client, patched_session, no_display_names, version_in_experiment
 ):
     stored = {"schema_version": 3, "categories": [], "cohort_success": []}
-    with patched_session, no_display_names, version_in_experiment, patch(
-        "api.routers.public_analysis.get_public_task_for_experiment",
-        new=_public_task(),
-    ), patch(
-        "api.services.agent_capabilities.load_stored_analysis", new=_stored(stored)
+    with (
+        patched_session,
+        no_display_names,
+        version_in_experiment,
+        patch(
+            "api.routers.public_analysis.get_public_task_for_experiment",
+            new=_public_task(),
+        ),
+        patch(
+            "api.services.agent_capabilities.load_stored_analysis", new=_stored(stored)
+        ),
     ):
         resp = client.get(COMPARISON_URL)
     assert resp.status_code == 200
@@ -225,10 +271,16 @@ def test_comparison_resolves_the_requested_version_number(
         scalar_one_or_none=MagicMock(return_value="tv-2")
     )
     load = _stored({"categories": []})
-    with patched_session, no_display_names, version_in_experiment, patch(
-        "api.routers.public_analysis.get_public_task_for_experiment",
-        new=_public_task(),
-    ), patch("api.services.agent_capabilities.load_stored_analysis", new=load):
+    with (
+        patched_session,
+        no_display_names,
+        version_in_experiment,
+        patch(
+            "api.routers.public_analysis.get_public_task_for_experiment",
+            new=_public_task(),
+        ),
+        patch("api.services.agent_capabilities.load_stored_analysis", new=load),
+    ):
         resp = client.get(f"{COMPARISON_URL}?version=2")
     assert resp.status_code == 200
     assert resp.json()["task_version_id"] == "tv-2"
@@ -244,10 +296,14 @@ def test_comparison_404_for_unknown_version_number(
         scalar_one_or_none=MagicMock(return_value=None)
     )
     load = AsyncMock()
-    with patched_session, patch(
-        "api.routers.public_analysis.get_public_task_for_experiment",
-        new=_public_task(),
-    ), patch("api.services.agent_capabilities.load_stored_analysis", new=load):
+    with (
+        patched_session,
+        patch(
+            "api.routers.public_analysis.get_public_task_for_experiment",
+            new=_public_task(),
+        ),
+        patch("api.services.agent_capabilities.load_stored_analysis", new=load),
+    ):
         resp = client.get(f"{COMPARISON_URL}?version=99")
     assert resp.status_code == 404
     load.assert_not_awaited()
@@ -257,30 +313,40 @@ def test_comparison_miss_enqueues_and_returns_202(
     client, patched_session, version_in_experiment
 ):
     enqueue = AsyncMock()
-    with patched_session, version_in_experiment, patch(
-        "api.routers.public_analysis.get_public_task_for_experiment",
-        new=_public_task(),
-    ), patch(
-        "api.services.agent_capabilities.load_stored_analysis",
-        new=AsyncMock(return_value=None),
-    ), patch(
-        "api.services.agent_capabilities.analysis_is_eligible",
-        new=AsyncMock(return_value=True),
-    ), patch(
-        "api.services.agent_capabilities.enqueue_analysis", new=enqueue
+    with (
+        patched_session,
+        version_in_experiment,
+        patch(
+            "api.routers.public_analysis.get_public_task_for_experiment",
+            new=_public_task(),
+        ),
+        patch(
+            "api.services.agent_capabilities.load_stored_analysis",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "api.services.agent_capabilities.analysis_is_eligible",
+            new=AsyncMock(return_value=True),
+        ),
+        patch("api.services.agent_capabilities.enqueue_analysis", new=enqueue),
     ):
         resp = client.get(COMPARISON_URL)
     assert resp.status_code == 202
     assert resp.json() == {"status": "queued", "task_version_id": "tv-current"}
+    assert enqueue.await_args.kwargs["experiment_id"] == "exp-1"
     enqueue.assert_awaited_once()
 
 
 def test_comparison_404_when_token_does_not_expose_the_task(client, patched_session):
     load = AsyncMock()
-    with patched_session, patch(
-        "api.routers.public_analysis.get_public_task_for_experiment",
-        new=AsyncMock(return_value=None),
-    ), patch("api.services.agent_capabilities.load_stored_analysis", new=load):
+    with (
+        patched_session,
+        patch(
+            "api.routers.public_analysis.get_public_task_for_experiment",
+            new=AsyncMock(return_value=None),
+        ),
+        patch("api.services.agent_capabilities.load_stored_analysis", new=load),
+    ):
         resp = client.get(COMPARISON_URL)
     assert resp.status_code == 404
     load.assert_not_awaited()
@@ -301,14 +367,20 @@ def test_comparison_masks_model_ids_with_operator_aliases(
         "trial_models": {"t-1": "anthropic/claude-opus-4-8", "t-2": "openai/gpt-5.4"},
     }
     aliases = {"anthropic/claude-opus-4-8": "Model A", "openai/gpt-5.4": "Model B"}
-    with patched_session, version_in_experiment, patch(
-        "api.routers.public_analysis.load_model_display_names",
-        new=AsyncMock(return_value=aliases),
-    ), patch(
-        "api.routers.public_analysis.get_public_task_for_experiment",
-        new=_public_task(),
-    ), patch(
-        "api.services.agent_capabilities.load_stored_analysis", new=_stored(stored)
+    with (
+        patched_session,
+        version_in_experiment,
+        patch(
+            "api.routers.public_analysis.load_model_display_names",
+            new=AsyncMock(return_value=aliases),
+        ),
+        patch(
+            "api.routers.public_analysis.get_public_task_for_experiment",
+            new=_public_task(),
+        ),
+        patch(
+            "api.services.agent_capabilities.load_stored_analysis", new=_stored(stored)
+        ),
     ):
         resp = client.get(COMPARISON_URL)
     assert resp.status_code == 200
@@ -343,14 +415,20 @@ def test_comparison_masks_the_SHORT_names_the_block_actually_stores(
         "global.anthropic.claude-opus-4-8": "Model A",
         "google/gemini-3.1-pro-preview": "Model B",
     }
-    with patched_session, version_in_experiment, patch(
-        "api.routers.public_analysis.load_model_display_names",
-        new=AsyncMock(return_value=aliases),
-    ), patch(
-        "api.routers.public_analysis.get_public_task_for_experiment",
-        new=_public_task(),
-    ), patch(
-        "api.services.agent_capabilities.load_stored_analysis", new=_stored(stored)
+    with (
+        patched_session,
+        version_in_experiment,
+        patch(
+            "api.routers.public_analysis.load_model_display_names",
+            new=AsyncMock(return_value=aliases),
+        ),
+        patch(
+            "api.routers.public_analysis.get_public_task_for_experiment",
+            new=_public_task(),
+        ),
+        patch(
+            "api.services.agent_capabilities.load_stored_analysis", new=_stored(stored)
+        ),
     ):
         resp = client.get(COMPARISON_URL)
     body = resp.json()
@@ -369,14 +447,20 @@ def test_comparison_leaves_a_colliding_short_name_unmasked(
         "global.anthropic.claude-opus-4-8": "Model A",
         "us.anthropic.claude-opus-4-8": "Model Z",
     }
-    with patched_session, version_in_experiment, patch(
-        "api.routers.public_analysis.load_model_display_names",
-        new=AsyncMock(return_value=aliases),
-    ), patch(
-        "api.routers.public_analysis.get_public_task_for_experiment",
-        new=_public_task(),
-    ), patch(
-        "api.services.agent_capabilities.load_stored_analysis", new=_stored(stored)
+    with (
+        patched_session,
+        version_in_experiment,
+        patch(
+            "api.routers.public_analysis.load_model_display_names",
+            new=AsyncMock(return_value=aliases),
+        ),
+        patch(
+            "api.routers.public_analysis.get_public_task_for_experiment",
+            new=_public_task(),
+        ),
+        patch(
+            "api.services.agent_capabilities.load_stored_analysis", new=_stored(stored)
+        ),
     ):
         resp = client.get(COMPARISON_URL)
     assert resp.json()["trial_models"] == {"t-1": "claude-opus-4-8"}
@@ -389,12 +473,19 @@ def test_comparison_asks_for_the_drift_tolerant_read(
     date beats an empty pane. The authenticated route must NOT opt in -- it
     regenerates on the miss instead."""
     load = _stored({"categories": []})
-    with patched_session, no_display_names, version_in_experiment, patch(
-        "api.routers.public_analysis.get_public_task_for_experiment",
-        new=_public_task(),
-    ), patch("api.services.agent_capabilities.load_stored_analysis", new=load):
+    with (
+        patched_session,
+        no_display_names,
+        version_in_experiment,
+        patch(
+            "api.routers.public_analysis.get_public_task_for_experiment",
+            new=_public_task(),
+        ),
+        patch("api.services.agent_capabilities.load_stored_analysis", new=load),
+    ):
         client.get(COMPARISON_URL)
     assert load.await_args.kwargs["allow_cohort_drift"] is True
+    assert load.await_args.kwargs["experiment_id"] == "exp-1"
 
 
 def test_a_stale_comparison_is_served_and_asks_for_a_rebuild(
@@ -402,13 +493,20 @@ def test_a_stale_comparison_is_served_and_asks_for_a_rebuild(
 ):
     stored = {"categories": [{"category": "planning"}]}
     enqueue = AsyncMock()
-    with patched_session, no_display_names, version_in_experiment, patch(
-        "api.routers.public_analysis.get_public_task_for_experiment",
-        new=_public_task(),
-    ), patch(
-        "api.services.agent_capabilities.load_stored_analysis",
-        new=_stored(stored, stale=True),
-    ), patch("api.services.agent_capabilities.enqueue_analysis", new=enqueue):
+    with (
+        patched_session,
+        no_display_names,
+        version_in_experiment,
+        patch(
+            "api.routers.public_analysis.get_public_task_for_experiment",
+            new=_public_task(),
+        ),
+        patch(
+            "api.services.agent_capabilities.load_stored_analysis",
+            new=_stored(stored, stale=True),
+        ),
+        patch("api.services.agent_capabilities.enqueue_analysis", new=enqueue),
+    ):
         resp = client.get(COMPARISON_URL)
     assert resp.status_code == 200
     body = resp.json()
@@ -417,19 +515,27 @@ def test_a_stale_comparison_is_served_and_asks_for_a_rebuild(
     assert body["regenerating"] is True
     enqueue.assert_awaited_once()
     assert enqueue.await_args.kwargs["task_version_id"] == "tv-current"
+    assert enqueue.await_args.kwargs["experiment_id"] == "exp-1"
 
 
 def test_a_fresh_comparison_asks_for_no_rebuild(
     client, patched_session, no_display_names, version_in_experiment
 ):
     enqueue = AsyncMock()
-    with patched_session, no_display_names, version_in_experiment, patch(
-        "api.routers.public_analysis.get_public_task_for_experiment",
-        new=_public_task(),
-    ), patch(
-        "api.services.agent_capabilities.load_stored_analysis",
-        new=_stored({"categories": []}),
-    ), patch("api.services.agent_capabilities.enqueue_analysis", new=enqueue):
+    with (
+        patched_session,
+        no_display_names,
+        version_in_experiment,
+        patch(
+            "api.routers.public_analysis.get_public_task_for_experiment",
+            new=_public_task(),
+        ),
+        patch(
+            "api.services.agent_capabilities.load_stored_analysis",
+            new=_stored({"categories": []}),
+        ),
+        patch("api.services.agent_capabilities.enqueue_analysis", new=enqueue),
+    ):
         resp = client.get(COMPARISON_URL)
     assert resp.json()["regenerating"] is False
     enqueue.assert_not_awaited()
@@ -445,13 +551,18 @@ def test_comparison_404s_for_a_version_outside_the_shared_experiment(
         scalar_one_or_none=MagicMock(return_value="tv-9")
     )
     load = AsyncMock()
-    with patched_session, patch(
-        "api.routers.public_analysis.get_public_task_for_experiment",
-        new=_public_task(),
-    ), patch(
-        "api.routers.public_analysis._version_is_in_experiment",
-        new=AsyncMock(return_value=False),
-    ), patch("api.services.agent_capabilities.load_stored_analysis", new=load):
+    with (
+        patched_session,
+        patch(
+            "api.routers.public_analysis.get_public_task_for_experiment",
+            new=_public_task(),
+        ),
+        patch(
+            "api.routers.public_analysis._version_is_in_experiment",
+            new=AsyncMock(return_value=False),
+        ),
+        patch("api.services.agent_capabilities.load_stored_analysis", new=load),
+    ):
         resp = client.get(f"{COMPARISON_URL}?version=9")
     assert resp.status_code == 404
     load.assert_not_awaited()

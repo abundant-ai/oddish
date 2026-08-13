@@ -500,6 +500,7 @@ class AnalyzerJobHandler:
                 task_version_id=payload.get("task_version_id"),
                 task_name=payload.get("task_name"),
                 triggered_by_user_id=payload.get("triggered_by_user_id"),
+                experiment_id=payload.get("experiment_id"),
             )
             if result is None:
                 return _fail_permanent("Not enough classified trials to analyze")
