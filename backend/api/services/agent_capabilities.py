@@ -19,7 +19,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.blocks.analyzer.analyzer_block import AnalyzerType
-from oddish.db.models import AnalyzerBlockModel, JobStatus, TrialModel
+from oddish.db import get_session
+from oddish.db.models import (
+    AnalyzerBlockModel,
+    JobStatus,
+    TrialModel,
+    WorkerJobKind,
+    WorkerJobModel,
+    WorkerJobStatus,
+)
 
 from api.services.blocks.analyzer.cohort import cohort_workspace as cw
 
@@ -32,19 +40,9 @@ MIN_COHORT = 3
 # Reading trajectories is slower than the old single API call, and a hung run
 # would otherwise hold the per-version generation lock indefinitely.
 #
-# It also has to FIT: this generates inline in a GET served by the Modal ASGI
-# function, whose own budget is modal_app.API_TIMEOUT_SECONDS (600s). A larger
-# subprocess budget is unreachable -- Modal kills the request first, so the
-# fetch and workspace work is thrown away and the CLI's own timeout, the
-# degraded paths behind it, and the lock release never run. The allowance
-# covers what the request does around the subprocess: resolving the cohorts,
-# fetching trajectories from S3, writing the workspace, then validating the
-# citations and persisting the block.
-#
-# test_cohort_timeout_fits_the_request_budget holds the two in step. A
-# comparison that genuinely needs longer than this needs to move off the
-# request path, not a bigger number here.
-REQUEST_OVERHEAD_ALLOWANCE = 120.0
+# The generation runs in a durable worker job, but still needs an internal
+# deadline so a stuck Claude CLI process becomes a retryable job failure rather
+# than occupying a queue slot indefinitely.
 ANALYSIS_TIMEOUT = 480.0
 
 # S3 reads for the cohort, in flight at once. The trials are independent, but
@@ -463,10 +461,9 @@ async def load_stored_analysis(
 ) -> dict | None:
     """The stored comparison for a version, or None. Never generates.
 
-    The read half of ``get_or_generate_analysis``, split out for the public
-    share route. Generation is deliberately unreachable there: it costs an LLM
-    call and holds a connection from a three-slot pool for minutes, neither of
-    which an unauthenticated page view may trigger.
+    The read half of ``get_or_generate_analysis``. API routes use this before
+    enqueueing generation so cache hits remain fast and request-bound work is
+    limited to indexed reads.
 
     The cohorts still have to be resolved, because the stored block is only
     valid for the trial set it was built from -- ``is_stale`` compares the
@@ -489,6 +486,81 @@ async def load_stored_analysis(
         ),
         schema_version=SCHEMA_VERSION,
     )
+
+
+async def analysis_is_eligible(
+    session: AsyncSession, task_version_id: str
+) -> bool:
+    """Whether either classified cohort is large enough to analyze."""
+    successful, failing = await resolve_cohorts(session, task_version_id)
+    return max(len(successful), len(failing)) >= MIN_COHORT
+
+
+async def enqueue_analysis(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    task_version_id: str,
+    task_name: str,
+    org_id: str | None,
+    triggered_by_user_id: str | None,
+) -> WorkerJobModel:
+    """Return the active generation job, or durably enqueue one.
+
+    The version row is locked by callers before this function, making the
+    read-then-insert idempotent across API containers and public page views.
+    """
+    active = (
+        await session.execute(
+            select(WorkerJobModel)
+            .where(
+                WorkerJobModel.kind == WorkerJobKind.ANALYZER,
+                WorkerJobModel.subject_table == "task_versions",
+                WorkerJobModel.subject_id == task_version_id,
+                WorkerJobModel.payload["mode"].astext == "agent_capabilities",
+                WorkerJobModel.status.in_(
+                    (
+                        WorkerJobStatus.QUEUED,
+                        WorkerJobStatus.RUNNING,
+                        WorkerJobStatus.RETRYING,
+                        WorkerJobStatus.BLOCKED,
+                    )
+                ),
+            )
+            .order_by(WorkerJobModel.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if active is not None:
+        return active
+
+    from oddish.config import settings
+    from oddish.workers.jobs import EnqueueRequest, enqueue_worker_job
+
+    return await enqueue_worker_job(
+        session,
+        EnqueueRequest(
+            kind=WorkerJobKind.ANALYZER,
+            queue_key=settings.get_qa_queue_key(),
+            priority=1,
+            payload={
+                "mode": "agent_capabilities",
+                "task_id": task_id,
+                "task_version_id": task_version_id,
+                "task_name": task_name,
+                "triggered_by_user_id": triggered_by_user_id,
+            },
+            subject_table="task_versions",
+            subject_id=task_version_id,
+            org_id=org_id,
+        ),
+    )
+
+
+async def run_queued_analysis(**kwargs) -> dict | None:
+    """Worker provider: generation owns a short-lived session, not the GET."""
+    async with get_session() as session:
+        return await get_or_generate_analysis(session, **kwargs)
 
 
 async def _end_read_transaction(session: AsyncSession) -> None:

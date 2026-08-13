@@ -185,6 +185,14 @@ High-level flow:
    `oddish.filters.trial_predicates.build_trial_metric_predicate` with an
    injected `EligibleTrialScope` rather than reimplementing Any/All logic.
 
+Agent capability analysis is lazy and task-version scoped. An authenticated or
+public-share cache miss enqueues one idempotent `ANALYZER` worker job with
+`payload.mode = "agent_capabilities"`; the HTTP request returns 202 and clients
+poll until the analyzer block is stored. Capability generation must not run
+inline in an API request. Public requests remain bounded to the task versions
+published by their share token, and repeated views coalesce onto the same active
+job.
+
 Trajectory summaries use schema v5. Each taxonomy-valued `components` entry
 contains its `step_ids`, summary, and deterministic `tool_count` and
 `duration_ms` metadata. Step count is the length of `step_ids`; the other

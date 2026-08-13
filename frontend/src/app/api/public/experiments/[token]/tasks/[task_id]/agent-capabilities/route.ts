@@ -29,7 +29,7 @@ export async function GET(
       });
     }
 
-    return NextResponse.json(data);
+    return NextResponse.json(data, { status: res.status });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
