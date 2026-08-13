@@ -49,10 +49,12 @@ these two shapes. Never set fields from both shapes on one citation.
    exactly those two numbers, so `[34-35]` becomes `[34, 35]`.
 
 2. Step evidence — `trial_id`, `step_id`, `quote`. The `quote` must appear
-   VERBATIM in that step as it is written in the component file: a phrase from
-   the agent's message or reasoning, a command it ran, or the output it saw.
-   Copy it character for character; do not tidy, trim or paraphrase it, and do
-   not join two fragments that are not adjacent.
+   VERBATIM in that step: a phrase from the agent's message or reasoning, a
+   command it ran, or the output it saw. Do not tidy, trim or paraphrase it,
+   and do not join two fragments that are not adjacent. The component files
+   are JSON, so quote what the field SAYS, not how the file spells it: write
+   the newline, quote or backslash itself, never the `\n`, `\"` or `\\` you
+   see on the page. A short single-line phrase is easiest to get right.
 
 Prefer step evidence when you have read the step: it shows the reader what the
 agent actually did, and it deep-links to that step. Fall back to summary

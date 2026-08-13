@@ -1,3 +1,5 @@
+import json
+
 from api.services.blocks.analyzer.cohort.cohort_comparison_block import BehaviorEvidence
 from api.services.cohort_comparison import validate_evidence
 
@@ -62,6 +64,40 @@ def test_a_malformed_shape_parses_rather_than_raising():
     )
     assert both.step_id == 7
     assert BehaviorEvidence(trial_id="t1", quote="x").step_id is None
+
+
+def test_a_quote_copied_with_the_files_json_escaping_still_resolves():
+    # The component files are written with json.dumps, so the agent reads
+    # `I will run \"mvn -q test\" first.\nThen read the log.` -- the prompt
+    # says to copy verbatim, and a citation that does carries the escaping
+    # while step_index holds the decoded string. Dropping it would punish the
+    # most faithful copy of all.
+    raw = 'I will run "mvn -q test" first.\nThen read the log.'
+    as_written = json.dumps(raw)[1:-1]
+    assert as_written not in raw  # the mismatch this guards
+    out, drops = validate_evidence(
+        _output([{"trial_id": "t1", "step_id": 7, "quote": as_written}]),
+        [_trial()],
+        [],
+        step_index={("t1", 7): raw},
+    )
+    assert drops["evidence"] == 0
+    assert len(out["categories"]) == 1
+
+
+def test_decoding_does_not_let_an_unrelated_quote_through():
+    # Containment against the real step text is still the bar -- decoding only
+    # changes the spelling of the quote, never what it has to match.
+    out, drops = validate_evidence(
+        _output(
+            [{"trial_id": "t1", "step_id": 7, "quote": 'never said\\nthis either'}]
+        ),
+        [_trial()],
+        [],
+        step_index={("t1", 7): "I will run the tests.\nThen read the log."},
+    )
+    assert out["categories"] == []
+    assert drops["evidence"] == 1
 
 
 def test_a_citation_naming_both_shapes_is_dropped():

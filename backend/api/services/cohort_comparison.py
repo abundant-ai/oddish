@@ -27,7 +27,21 @@ MIN_COHORT = 3
 # Bounds the claude-code subprocess from inside, the way pre-trial's does.
 # Reading trajectories is slower than the old single API call, and a hung run
 # would otherwise hold the per-version generation lock indefinitely.
-COMPARISON_TIMEOUT = 1200.0
+#
+# It also has to FIT: this generates inline in a GET served by the Modal ASGI
+# function, whose own budget is modal_app.API_TIMEOUT_SECONDS (600s). A larger
+# subprocess budget is unreachable -- Modal kills the request first, so the
+# fetch and workspace work is thrown away and the CLI's own timeout, the
+# degraded paths behind it, and the lock release never run. The allowance
+# covers what the request does around the subprocess: resolving the cohorts,
+# fetching trajectories from S3, writing the workspace, then validating the
+# citations and persisting the block.
+#
+# test_cohort_timeout_fits_the_request_budget holds the two in step. A
+# comparison that genuinely needs longer than this needs to move off the
+# request path, not a bigger number here.
+REQUEST_OVERHEAD_ALLOWANCE = 120.0
+COMPARISON_TIMEOUT = 480.0
 
 # S3 reads for the cohort, in flight at once. The trials are independent, but
 # an unbounded gather over a large cohort would open one connection per trial.
@@ -230,6 +244,26 @@ def _index(trials: list[dict]) -> dict[tuple, str]:
     return out
 
 
+def _unescaped(quote: str) -> str | None:
+    """The quote as JSON would decode it, or None if it does not decode.
+
+    The component files are written with ``json.dumps``, so a step reaches the
+    agent with its newlines as ``\\n`` and its quotes as ``\\"``. A citation
+    copied character-for-character out of that file therefore carries the
+    escaping, while ``step_text`` holds the decoded string -- so the faithful
+    copy is not a substring of the very text it was copied from, and the
+    citation is dropped for being too accurate. Decoding it back is not a
+    loosening: containment against the real step text is still the bar.
+    """
+    if "\\" not in quote:
+        return None
+    try:
+        decoded = json.loads(f'"{quote}"')
+    except ValueError:
+        return None
+    return decoded if isinstance(decoded, str) else None
+
+
 def _resolves(
     ev: dict,
     *,
@@ -264,7 +298,12 @@ def _resolves(
         if step_index is None or trial_id not in trials_on_side[side]:
             return False
         text = step_index.get((trial_id, ev["step_id"]))
-        return bool(quote) and text is not None and quote in text
+        if not quote or text is None:
+            return False
+        if quote in text:
+            return True
+        decoded = _unescaped(quote)
+        return decoded is not None and decoded in text
     span = _span(ev.get("step_ids"))
     if span is None:
         return False
