@@ -5,11 +5,9 @@ These live here rather than beside their siblings in
 services (``api.services.*``), and the ``oddish`` package may not import the
 backend. The share-token resolvers go the other way, which is allowed.
 
-Trajectory summaries are cache-only. Capability analysis is different: a
-share-token holder may enqueue the same durable, task-attributed job as an
-authenticated viewer. The request itself never runs Claude Code or holds an API
-connection while generation proceeds; repeated views coalesce onto one active
-job for the task version.
+Trajectory-summary and capability-analysis misses both trigger the same
+durable, task-attributed job. The request never holds an API connection open
+for paid generation, and repeated views coalesce by task version.
 """
 
 from __future__ import annotations
@@ -37,9 +35,9 @@ router = APIRouter(tags=["Public"])
 
 @router.get("/public/experiments/{public_token}/trials/{trial_id}/trajectory/summary")
 async def get_public_trial_trajectory_summary(
-    public_token: str, trial_id: str
+    public_token: str, trial_id: str, response: Response
 ) -> dict:
-    """The stored trajectory summary for a public trial."""
+    """Return a stored public summary or durably queue its generation."""
     from api.services.summarize_trajectory import load_stored_summary
 
     async with get_session() as session:
@@ -47,11 +45,42 @@ async def get_public_trial_trajectory_summary(
         if trial is None:
             raise HTTPException(status_code=404, detail="Trial not found")
         summary = await load_stored_summary(session, trial)
-    if summary is None:
-        raise HTTPException(
-            status_code=404, detail="No trajectory summary for this trial"
+        if summary is not None:
+            return summary
+
+        from api.services.agent_capabilities import (
+            analysis_is_eligible,
+            enqueue_analysis,
         )
-    return summary
+        from oddish.db.models import TaskModel, TaskVersionModel
+
+        if not trial.task_version_id or not await analysis_is_eligible(
+            session, trial.task_version_id
+        ):
+            raise HTTPException(
+                status_code=404,
+                detail="No completed trajectory available to summarize",
+            )
+        task = (
+            await session.execute(
+                select(TaskModel).where(TaskModel.id == trial.task_id)
+            )
+        ).scalar_one()
+        await session.execute(
+            select(TaskVersionModel.id)
+            .where(TaskVersionModel.id == trial.task_version_id)
+            .with_for_update()
+        )
+        await enqueue_analysis(
+            session,
+            task_id=task.id,
+            task_version_id=trial.task_version_id,
+            task_name=task.name,
+            org_id=task.org_id,
+            triggered_by_user_id=None,
+        )
+        response.status_code = status.HTTP_202_ACCEPTED
+        return {"status": "queued", "task_version_id": trial.task_version_id}
 
 
 def _short_name_aliases(names: dict[str, str]) -> dict[str, str]:
