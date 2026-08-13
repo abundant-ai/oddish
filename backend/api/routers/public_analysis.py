@@ -176,7 +176,6 @@ async def get_public_task_agent_capabilities(
         version_id = task.current_version_id
         if version is not None:
             from oddish.db.models import TaskVersionModel
-            from sqlalchemy import select
 
             version_id = (
                 await session.execute(
@@ -195,10 +194,14 @@ async def get_public_task_agent_capabilities(
         # the share actually displays.
         if not await _version_is_in_experiment(session, experiment.id, version_id):
             raise HTTPException(status_code=404, detail="Task version not found")
-        comparison = await load_stored_analysis(
-            session, version_id, task_id=task.id
+        # A share has nothing to fall back on, so a comparison whose trial set
+        # has since moved is served rather than withheld -- flagged, and with a
+        # durable rebuild asked for below. A cold miss uses the same queue and
+        # returns 202; neither path runs Claude Code in the API container.
+        stored = await load_stored_analysis(
+            session, version_id, task_id=task.id, allow_cohort_drift=True
         )
-        if comparison is None:
+        if stored is None:
             if not await analysis_is_eligible(session, version_id):
                 raise HTTPException(
                     status_code=404,
@@ -221,7 +224,30 @@ async def get_public_task_agent_capabilities(
             )
             response.status_code = status.HTTP_202_ACCEPTED
             return {"status": "queued", "task_version_id": version_id}
+        regenerating = False
+        if stored.stale:
+            from oddish.db.models import TaskVersionModel
+
+            await session.execute(
+                select(TaskVersionModel.id)
+                .where(TaskVersionModel.id == version_id)
+                .with_for_update()
+            )
+            await enqueue_analysis(
+                session,
+                task_id=task.id,
+                task_version_id=version_id,
+                task_name=task.name,
+                org_id=task.org_id,
+                triggered_by_user_id=None,
+            )
+            regenerating = True
         names = await load_model_display_names(session)
     # Stamped at serve time, matching the authenticated route: the id is what
     # the UI addresses a version by, while this route takes the number.
-    return {**_mask_models(comparison, names), "task_version_id": version_id}
+    return {
+        **_mask_models(stored.output, names),
+        "task_version_id": version_id,
+        "stale": stored.stale,
+        "regenerating": regenerating,
+    }

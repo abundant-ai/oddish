@@ -338,7 +338,7 @@ def test_response_names_the_current_version_it_compared(client):
         "api.routers.tasks.get_session", new=_session_returning(task)
     ), patch(
         "api.services.agent_capabilities.load_stored_analysis",
-        new=AsyncMock(return_value=COMPARISON),
+        new=AsyncMock(return_value=cc.StoredComparison(COMPARISON, stale=False)),
     ):
         resp = client.get("/tasks/t-1/agent-capabilities")
 
@@ -352,7 +352,7 @@ def test_response_names_the_requested_version_not_the_current_one(client):
     from unittest.mock import patch
 
     task = MagicMock(id="t-1", name="task", current_version_id="tv-current")
-    load = AsyncMock(return_value=COMPARISON)
+    load = AsyncMock(return_value=cc.StoredComparison(COMPARISON, stale=False))
 
     with patch(
         "api.routers.tasks.get_session",

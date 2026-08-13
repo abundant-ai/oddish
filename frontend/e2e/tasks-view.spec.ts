@@ -328,7 +328,9 @@ test.describe("authenticated task view", () => {
     ).toBe(true);
   });
 
-  test("capabilities warm eagerly and remain an addressable task pane", async ({ page }) => {
+  test("capabilities warm eagerly and remain an addressable task pane", async ({
+    page,
+  }) => {
     await signIn(page);
     let capabilityRequests = 0;
 

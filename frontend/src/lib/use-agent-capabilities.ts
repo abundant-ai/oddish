@@ -34,7 +34,11 @@ export function useAgentCapabilities(
     },
     {
       shouldRetryOnError: false,
-      refreshInterval: (value) => (value === null ? 3000 : 0),
+      refreshInterval: (value) => {
+        if (value === null) return 3000;
+        if (value?.stale && value.regenerating) return 60_000;
+        return 0;
+      },
     }
   );
 }

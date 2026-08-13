@@ -2,10 +2,7 @@
 
 import { componentLabel } from "@/lib/trajectory-segments";
 import { useAgentCapabilities } from "@/lib/use-agent-capabilities";
-import type {
-  BehaviorEvidence,
-  BehaviorObservation,
-} from "@/lib/types";
+import type { BehaviorEvidence, BehaviorObservation } from "@/lib/types";
 
 const CATEGORY_LABELS: Record<string, string> = {
   behavior_discovery: "Agent behavior discovery",
@@ -19,6 +16,7 @@ const CATEGORY_LABELS: Record<string, string> = {
 
 const SECTION_HEADING =
   "text-foreground font-mono text-[13px] font-semibold tracking-wider uppercase";
+
 const CATEGORY_HEADING =
   "text-foreground font-mono text-[11px] font-semibold tracking-wider uppercase";
 const COHORT_HEADING =
@@ -105,6 +103,25 @@ function EllipsisDots() {
       .<span className="ellipsis-dot-2">.</span>
       <span className="ellipsis-dot-3">.</span>
     </span>
+  );
+}
+
+/** Shown when the served comparison predates trials that have since landed on
+ *  the version. It says what is out of date rather than hedging the whole
+ *  pane: the observations and their citations are still true of the runs they
+ *  quote — there are simply newer runs they say nothing about. */
+function StaleNote({ regenerating }: { regenerating?: boolean }) {
+  return (
+    <p className="text-muted-foreground text-xs">
+      New trials have run on this version since this analysis was built.
+      {regenerating ? (
+        <>
+          {" "}
+          Rebuilding it now — this view updates on its own
+          <EllipsisDots />
+        </>
+      ) : null}
+    </p>
   );
 }
 
@@ -341,6 +358,7 @@ export function AgentCapabilitiesSection({
                 data.cohort_success.length || data.cohort_failure.length
               } ${data.cohort_success.length > 0 ? "successful" : "failed"} runs.`}
         </p>
+        {data.stale ? <StaleNote regenerating={data.regenerating} /> : null}
       </section>
     );
   }
@@ -363,6 +381,7 @@ export function AgentCapabilitiesSection({
               : `${data.cohort_failure.length} failed trials \u00b7 no successes to compare against`}
         </span>
       </div>
+      {data.stale ? <StaleNote regenerating={data.regenerating} /> : null}
       <div
         className={single ? "flex flex-col gap-2" : "grid gap-6 md:grid-cols-2"}
       >
