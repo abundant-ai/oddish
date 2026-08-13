@@ -129,13 +129,22 @@ def metric_columns() -> list[Any]:
         # Unscored attribution only applies to trials that never got a reward
         # and are not in flight; the bucket taxonomy owns everything else.
         _count_where(
-            (~scored) & (terminal_unscored == "agent") & (bucket != "skipped")
+            (~scored)
+            & (terminal_unscored == "agent")
+            & (~TrialModel.status.in_(_INFLIGHT))
+            & (bucket != "skipped")
         ).label("n_unscored_agent"),
         _count_where(
-            (~scored) & (terminal_unscored == "env") & (bucket != "skipped")
+            (~scored)
+            & (terminal_unscored == "env")
+            & (~TrialModel.status.in_(_INFLIGHT))
+            & (bucket != "skipped")
         ).label("n_unscored_env"),
         _count_where(
-            (~scored) & (terminal_unscored == "verify") & (bucket != "skipped")
+            (~scored)
+            & (terminal_unscored == "verify")
+            & (~TrialModel.status.in_(_INFLIGHT))
+            & (bucket != "skipped")
         ).label("n_unscored_verify"),
         _count_where(cancelled & (error == _CANCELLED_USER)).label("n_cancelled_user"),
         _count_where(cancelled & error.like(_CANCELLED_REAPED)).label(
@@ -145,6 +154,7 @@ def metric_columns() -> list[Any]:
             cancelled
             & ~func.coalesce(error, "").like(_CANCELLED_REAPED)
             & (func.coalesce(error, "") != _CANCELLED_USER)
+            & (bucket != "skipped")
         ).label("n_cancelled_other"),
         _count_where(bucket == "skipped").label("n_skipped"),
         _count_where(bucket == "scoreless").label("n_scoreless"),

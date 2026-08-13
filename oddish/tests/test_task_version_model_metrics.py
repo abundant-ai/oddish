@@ -171,8 +171,8 @@ async def test_inflight_trials_stay_out_of_scored_counts(session):
         session,
         [
             {"reward": 1.0, "total_steps": 5},
-            {"status": TrialStatus.RUNNING},
-            {"status": TrialStatus.QUEUED},
+            {"status": TrialStatus.RUNNING, "harbor_stage": "agent_running"},
+            {"status": TrialStatus.QUEUED, "harbor_stage": "starting"},
         ],
     )
     await refresh_task_version_model_metrics(session, [version_id])
@@ -181,6 +181,28 @@ async def test_inflight_trials_stay_out_of_scored_counts(session):
     assert row.n_pass == 1
     assert row.n_fail == 0
     assert row.n_inflight == 2
+    assert row.n_unscored_agent == 0
+    assert row.n_unscored_env == 0
+
+
+@pytest.mark.asyncio
+async def test_gate_skipped_trial_is_not_also_cancelled_other(session):
+    """Gate-skipped trials own the skipped bucket despite their cancelled stage."""
+    _, version_id = await _seed(
+        session,
+        [
+            {
+                "status": TrialStatus.SKIPPED,
+                "harbor_stage": "cancelled",
+                "error_message": "Skipped by gate",
+            }
+        ],
+    )
+    await refresh_task_version_model_metrics(session, [version_id])
+    row = await _row(session, version_id)
+
+    assert row.n_skipped == 1
+    assert row.n_cancelled_other == 0
 
 
 @pytest.mark.asyncio
