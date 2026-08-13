@@ -32,7 +32,7 @@ export async function GET(
     }
     const url = getBackendUrl(
       "tasks",
-      `/${task_id}/cohort-comparison`,
+      `/${task_id}/agent-capabilities`,
       Object.keys(forwarded).length ? forwarded : undefined,
     );
     const res = await fetch(url, {

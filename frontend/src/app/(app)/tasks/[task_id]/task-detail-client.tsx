@@ -72,6 +72,7 @@ import {
 } from "@/lib/line-range";
 import { sameFilePath } from "@/lib/file-path";
 import { expandTrialParam } from "@/lib/trial-url";
+import type { TaskPane } from "@/components/task-files-panel";
 import {
   ArrowLeft,
   ChevronDown,
@@ -734,10 +735,20 @@ export function TaskDetailClient({
     [drawerTrialGroups]
   );
 
-  const [deepLinkTrialId] = useState<string | null>(() => {
+  const [deepLinkTrialParam] = useState<string | null>(() => {
     if (typeof window === "undefined") return null;
-    return new URLSearchParams(window.location.search).get("trial");
+    return expandTrialParam(
+      new URLSearchParams(window.location.search).get("trial"),
+      taskId
+    );
   });
+  // Expanded the same way hydration expands it: a hand-shortened index has to
+  // become `{task_id}-{index}` before it can match a preview row or address
+  // /api/trials/{id}, or a short link to an out-of-preview trial never resolves.
+  const deepLinkTrialId = expandTrialParam(
+    deepLinkTrialParam,
+    task?.id ?? taskId
+  );
   const previewDeepLinkTrial = deepLinkTrialId
     ? drawerOrderedTrials.find((trial) => trial.id === deepLinkTrialId)
     : undefined;
@@ -791,9 +802,36 @@ export function TaskDetailClient({
   // --- Drawer addressability ------------------------------------------
   // The drawer state lives in the URL so any view on this page can be
   // linked: ?trial=<id> opens that trial, ?drawer=task opens the task
-  // files drawer, and ?taskFile= / ?taskLines= address the task pane's
-  // file and line range (the trial pane's ?file= / ?lines= are handled
-  // inside TrialDetailPanel).
+  // files drawer, ?taskPane=capabilities opens the lazy analysis, and
+  // ?taskFile= / ?taskLines= address the task pane's file and line range
+  // (the trial pane's ?file= / ?lines= are handled inside TrialDetailPanel).
+  const [activeTaskPane, setActiveTaskPane] = useState<TaskPane>("overview");
+  const selectTaskPane = useCallback((pane: TaskPane) => {
+    setActiveTaskPane(pane);
+    const params = new URLSearchParams(window.location.search);
+    if (pane === "overview") params.delete("taskPane");
+    else params.set("taskPane", pane);
+    window.history.pushState(
+      window.history.state,
+      "",
+      urlWithSearch(params.toString())
+    );
+  }, []);
+  useEffect(() => {
+    const restoreTaskPane = () => {
+      const params = new URLSearchParams(window.location.search);
+      const pane = params.get("taskPane");
+      setActiveTaskPane(
+        pane === "capabilities" || pane === "file"
+          ? pane
+          : params.has("taskFile")
+            ? "file"
+            : "overview"
+      );
+    };
+    window.addEventListener("popstate", restoreTaskPane);
+    return () => window.removeEventListener("popstate", restoreTaskPane);
+  }, []);
   const [taskPaneFile, setTaskPaneFile] = useState<string | null>(null);
   const [taskPaneLines, setTaskPaneLines] = useState<LineRange | null>(null);
   const taskPaneFileRef = useRef<string | null>(null);
@@ -832,6 +870,14 @@ export function TaskDetailClient({
 
     const urlTaskFile = params.get("taskFile");
     const urlTaskLines = parseLineRange(params.get("taskLines"));
+    const urlTaskPane = params.get("taskPane");
+    setActiveTaskPane(
+      urlTaskPane === "capabilities" || urlTaskPane === "file"
+        ? urlTaskPane
+        : urlTaskFile
+          ? "file"
+          : "overview"
+    );
     if (urlTaskFile) {
       taskPaneFileRef.current = urlTaskFile;
       setTaskPaneFile(urlTaskFile);
@@ -869,7 +915,7 @@ export function TaskDetailClient({
     }
 
     drawerHydratedRef.current = true;
-    if (params.get("drawer") === "task" || urlTaskFile) {
+    if (params.get("drawer") === "task" || urlTaskFile || urlTaskPane) {
       hydrationOpeningRef.current = true;
       handleOpenTaskFiles();
     }
@@ -920,6 +966,7 @@ export function TaskDetailClient({
     if (wasDrawerOpenRef.current) {
       wasDrawerOpenRef.current = false;
       taskPaneFileRef.current = null;
+      setActiveTaskPane("overview");
       setTaskPaneFile(null);
       setTaskPaneLines(null);
     }
@@ -976,15 +1023,21 @@ export function TaskDetailClient({
         next.delete("lines");
         next.delete("taskFile");
         next.delete("taskLines");
+        next.delete("taskPane");
       }
     }
     if (drawer) {
-      if (taskPaneFile) {
+      if (activeTaskPane === "overview") {
+        next.delete("taskPane");
+      } else {
+        next.set("taskPane", activeTaskPane);
+      }
+      if (activeTaskPane === "file" && taskPaneFile) {
         next.set("taskFile", taskPaneFile);
       } else {
         next.delete("taskFile");
       }
-      if (taskPaneLines) {
+      if (activeTaskPane === "file" && taskPaneLines) {
         next.set("taskLines", formatLineRange(taskPaneLines));
       } else {
         next.delete("taskLines");
@@ -995,7 +1048,7 @@ export function TaskDetailClient({
       const url = urlWithSearch(next.toString());
       window.history.replaceState(window.history.state, "", url);
     }
-  }, [drawer, taskPaneFile, taskPaneLines]);
+  }, [activeTaskPane, drawer, taskPaneFile, taskPaneLines]);
 
   const handleRerun = useCallback(() => {
     revalidateReaderResources();
@@ -1336,6 +1389,8 @@ export function TaskDetailClient({
               <TaskFilesPanel
                 isOpen={true}
                 onClose={() => {}}
+                activePane={activeTaskPane}
+                onActivePaneChange={selectTaskPane}
                 taskId={null}
                 // Scopes the overview's trial aggregation; this pane renders
                 // no header, so none of the task-driven header UI appears.
@@ -1361,6 +1416,8 @@ export function TaskDetailClient({
               <TaskFilesPanel
                 isOpen={true}
                 onClose={() => setDrawer(null)}
+                activePane={activeTaskPane}
+                onActivePaneChange={selectTaskPane}
                 taskId={task.id}
                 task={drawerTask ?? task}
                 taskDetail={canonicalDrawerDetailResource}

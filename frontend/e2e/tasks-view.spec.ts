@@ -215,6 +215,44 @@ function detailResponse(versionId = DEFAULT_VERSION_ID) {
   };
 }
 
+function capabilitiesResponse() {
+  return {
+    schema_version: 4,
+    task_version_id: DEFAULT_VERSION_ID,
+    cohort_success: [],
+    cohort_failure: ["trial-1", "trial-2"],
+    mode: "single",
+    summary: "Agents found the failure but stopped before applying the fix.",
+    models: {
+      successful: [],
+      failing: [{ model: "gpt-current", trials: 2 }],
+    },
+    trial_models: {
+      "trial-1": "gpt-current",
+      "trial-2": "gpt-current",
+    },
+    categories: [
+      {
+        category: "debugging",
+        label: null,
+        successful: [],
+        failing: [
+          {
+            behavior_description: "Agents reproduced the reported failure.",
+            evidence: [
+              {
+                trial_id: "trial-1",
+                step_id: 7,
+                quote: "The failing case reproduces consistently.",
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
+
 async function signIn(page: Page) {
   await setupClerkTestingToken({ page });
   await page.goto("/");
@@ -288,6 +326,67 @@ test.describe("authenticated task view", () => {
         (file) => file.content === undefined && file.url === undefined
       )
     ).toBe(true);
+  });
+
+  test("capabilities are a lazy, addressable task pane", async ({ page }) => {
+    await signIn(page);
+    let capabilityRequests = 0;
+
+    await page.route(
+      new RegExp(`/api/tasks/${READER_TASK_ID}/open(?:\\?|$)`),
+      (route) => route.fulfill({ json: openResponse() })
+    );
+    await page.route(
+      new RegExp(`/api/tasks/${READER_TASK_ID}/detail(?:\\?|$)`),
+      (route) => route.fulfill({ json: detailResponse() })
+    );
+    await page.route(
+      new RegExp(`/api/tasks/${READER_TASK_ID}/trials(?:\\?|$)`),
+      (route) => route.fulfill({ json: [] })
+    );
+    await page.route(
+      new RegExp(`/api/tasks/${READER_TASK_ID}/files(?:\\?|$)`),
+      (route) => route.fulfill({ json: { files: [] } })
+    );
+    await page.route(
+      new RegExp(`/api/tasks/${READER_TASK_ID}/agent-capabilities(?:\\?|$)`),
+      (route) => {
+        capabilityRequests += 1;
+        route.fulfill({ json: capabilitiesResponse() });
+      }
+    );
+
+    await page.goto(`/tasks/${READER_TASK_ID}?drawer=task`);
+    await expect(
+      page.getByRole("button", { name: "Overview" })
+    ).toHaveAttribute("aria-current", "page");
+    await expect(
+      page.getByRole("button", { name: "Capabilities" })
+    ).toBeVisible();
+    expect(capabilityRequests).toBe(0);
+
+    await page.getByRole("button", { name: "Capabilities" }).click();
+    await expect(
+      page.getByRole("heading", { name: "Capabilities" })
+    ).toBeVisible();
+    await expect(page.getByText("Agents found the failure")).toBeVisible();
+    await expect(page).toHaveURL(/taskPane=capabilities/);
+    expect(capabilityRequests).toBe(1);
+
+    await page.reload();
+    await expect(
+      page.getByRole("heading", { name: "Capabilities" })
+    ).toBeVisible();
+    expect(capabilityRequests).toBe(2);
+
+    await page.goBack();
+    await expect(
+      page.getByRole("button", { name: "Overview" })
+    ).toHaveAttribute("aria-current", "page");
+    await page.goForward();
+    await expect(
+      page.getByRole("heading", { name: "Capabilities" })
+    ).toBeVisible();
   });
 
   test("binary preview waits for its own presigned URL", async ({ page }) => {
@@ -506,11 +605,60 @@ test.describe("authenticated task view", () => {
     await expect.poll(() => cancelCount).toBe(1);
   });
 
-  test("an older full-id trial link shares the single-trial resource and selects its version", async ({
+  for (const { label, trialParam } of [
+    { label: "full-id", trialParam: `${READER_TASK_ID}-99` },
+    { label: "short-id", trialParam: "99" },
+  ]) {
+    test(`an older ${label} trial link shares the single-trial resource and selects its version`, async ({
+      page,
+    }) => {
+      await signIn(page);
+      let trialRequests = 0;
+      let unexpandedTrialRequests = 0;
+      await page.route(
+        new RegExp(`/api/tasks/${READER_TASK_ID}/open(?:\\?|$)`),
+        (route) => {
+          const requested =
+            new URL(route.request().url()).searchParams.get("version_id") ??
+            DEFAULT_VERSION_ID;
+          route.fulfill({ json: openResponse(requested) });
+        }
+      );
+      await page.route(new RegExp(`/api/trials/99$`), (route) => {
+        unexpandedTrialRequests += 1;
+        route.fulfill({ status: 404, json: { error: "Trial not found" } });
+      });
+      await page.route(
+        new RegExp(`/api/trials/${READER_TASK_ID}-99$`),
+        (route) => {
+          trialRequests += 1;
+          route.fulfill({ json: linkedTrial() });
+        }
+      );
+      await page.route(
+        new RegExp(`/api/tasks/${READER_TASK_ID}/detail(?:\\?|$)`),
+        (route) =>
+          route.fulfill({ json: detailResponse(HISTORICAL_VERSION_ID) })
+      );
+
+      await page.goto(`/tasks/${READER_TASK_ID}?trial=${trialParam}`);
+      await expect(
+        page.getByRole("heading", { name: /Old linked trial/ })
+      ).toBeVisible();
+      await expect(page).toHaveURL(new RegExp(`trial=${READER_TASK_ID}-99`));
+      await expect(page).toHaveURL(
+        new RegExp(`version=${HISTORICAL_VERSION_ID}`)
+      );
+      expect(trialRequests).toBe(1);
+      expect(unexpandedTrialRequests).toBe(0);
+    });
+  }
+
+  test("a hand-shortened trial link addresses this page's task", async ({
     page,
   }) => {
     await signIn(page);
-    let trialRequests = 0;
+    const trialPaths: string[] = [];
     await page.route(
       new RegExp(`/api/tasks/${READER_TASK_ID}/open(?:\\?|$)`),
       (route) => {
@@ -520,27 +668,31 @@ test.describe("authenticated task view", () => {
         route.fulfill({ json: openResponse(requested) });
       }
     );
-    await page.route(
-      new RegExp(`/api/trials/${READER_TASK_ID}-99$`),
-      (route) => {
-        trialRequests += 1;
+    // Every single-trial id, not just the expanded one: a request for the bare
+    // index has to 404 the way it does in production, or the short link looks
+    // resolved while addressing a trial that doesn't exist.
+    await page.route(/\/api\/trials\/[^/?]+$/, (route) => {
+      const path = new URL(route.request().url()).pathname;
+      trialPaths.push(path);
+      if (path === `/api/trials/${READER_TASK_ID}-99`) {
         route.fulfill({ json: linkedTrial() });
+        return;
       }
-    );
+      route.fulfill({ status: 404, json: { error: "Trial not found" } });
+    });
     await page.route(
       new RegExp(`/api/tasks/${READER_TASK_ID}/detail(?:\\?|$)`),
       (route) => route.fulfill({ json: detailResponse(HISTORICAL_VERSION_ID) })
     );
 
-    await page.goto(`/tasks/${READER_TASK_ID}?trial=${READER_TASK_ID}-99`);
+    await page.goto(`/tasks/${READER_TASK_ID}?trial=99`);
     await expect(
       page.getByRole("heading", { name: /Old linked trial/ })
     ).toBeVisible();
     await expect(page).toHaveURL(new RegExp(`trial=${READER_TASK_ID}-99`));
-    await expect(page).toHaveURL(
-      new RegExp(`version=${HISTORICAL_VERSION_ID}`)
-    );
-    expect(trialRequests).toBe(1);
+    expect([...new Set(trialPaths)]).toEqual([
+      `/api/trials/${READER_TASK_ID}-99`,
+    ]);
   });
 
   test("an older trial owned by another task is rejected without destroying its URL", async ({

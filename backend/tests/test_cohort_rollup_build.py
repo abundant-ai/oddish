@@ -20,9 +20,9 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import func, select
 
-from api.services.blocks.analyzer.cohort.cohort_comparison_block import SCHEMA_VERSION
-from api.services.cohort_comparison import FAILURE_CLASS, SUCCESS_CLASS, cohort_hash
-from api.services.cohort_rollup import build_cohort_rollup
+from api.services.blocks.analyzer.cohort.agent_capabilities_block import SCHEMA_VERSION
+from api.services.agent_capabilities import FAILURE_CLASS, SUCCESS_CLASS, cohort_hash
+from api.services.cohort_rollup import _models_for, build_cohort_rollup
 from models import OrganizationModel
 from oddish.blocks.analyzer.analyzer_block import AnalyzerType
 from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
@@ -107,7 +107,9 @@ def _trial(
     agent: str = "claude-code",
 ) -> TrialModel:
     """A trial classified into a cohort side, with a citable summary component."""
-    status = TrialStatus.SUCCESS if classification == SUCCESS_CLASS else TrialStatus.FAILED
+    status = (
+        TrialStatus.SUCCESS if classification == SUCCESS_CLASS else TrialStatus.FAILED
+    )
     return TrialModel(
         id=trial_id,
         name=trial_id,
@@ -143,7 +145,7 @@ def _comparison_block(
     """A fresh, SUCCESS `cohort_comparison` block `_load_fresh_comparison` accepts."""
     return AnalyzerBlockModel(
         task_id=task_id,
-        type=AnalyzerType.COHORT_COMPARISON.value,
+        type=AnalyzerType.AGENT_CAPABILITIES.value,
         key_prefix="test-cohort-rollup",
         llm_client_type=LLMClientType.API.value,
         status=JobStatus.SUCCESS,
@@ -156,15 +158,13 @@ def _comparison_block(
     )
 
 
-def _evidence_category(name: str, *, successful_ids: list[str], failing_ids: list[str]) -> dict:
+def _evidence_category(
+    name: str, *, successful_ids: list[str], failing_ids: list[str]
+) -> dict:
     return {
         "category": name,
-        "successful": [
-            {"evidence": [{"trial_id": tid} for tid in successful_ids]}
-        ],
-        "failing": [
-            {"evidence": [{"trial_id": tid} for tid in failing_ids]}
-        ],
+        "successful": [{"evidence": [{"trial_id": tid} for tid in successful_ids]}],
+        "failing": [{"evidence": [{"trial_id": tid} for tid in failing_ids]}],
     }
 
 
@@ -199,9 +199,13 @@ async def experiment_two_of_three_compared():
 
     async with get_session() as session:
         session.add(
-            OrganizationModel(id=org_id, name=f"23c Org {suffix}", slug=f"23c-org-{suffix}")
+            OrganizationModel(
+                id=org_id, name=f"23c Org {suffix}", slug=f"23c-org-{suffix}"
+            )
         )
-        session.add(ExperimentModel(id=experiment_id, name=f"23c-exp-{suffix}", org_id=org_id))
+        session.add(
+            ExperimentModel(id=experiment_id, name=f"23c-exp-{suffix}", org_id=org_id)
+        )
         await session.flush()
 
         for i in range(3):
@@ -299,9 +303,13 @@ async def experiment_below_cohort_gate():
 
     async with get_session() as session:
         session.add(
-            OrganizationModel(id=org_id, name=f"BG Org {suffix}", slug=f"bg-org-{suffix}")
+            OrganizationModel(
+                id=org_id, name=f"BG Org {suffix}", slug=f"bg-org-{suffix}"
+            )
         )
-        session.add(ExperimentModel(id=experiment_id, name=f"bg-exp-{suffix}", org_id=org_id))
+        session.add(
+            ExperimentModel(id=experiment_id, name=f"bg-exp-{suffix}", org_id=org_id)
+        )
         session.add(
             TaskModel(
                 id=task_id,
@@ -314,7 +322,9 @@ async def experiment_below_cohort_gate():
         await session.flush()
         version_id = f"{task_id}-v1"
         session.add(
-            TaskVersionModel(id=version_id, task_id=task_id, version=1, task_path="/tmp/fake")
+            TaskVersionModel(
+                id=version_id, task_id=task_id, version=1, task_path="/tmp/fake"
+            )
         )
         await session.flush()
 
@@ -373,9 +383,13 @@ async def experiment_opus_and_grok():
 
     async with get_session() as session:
         session.add(
-            OrganizationModel(id=org_id, name=f"OG Org {suffix}", slug=f"og-org-{suffix}")
+            OrganizationModel(
+                id=org_id, name=f"OG Org {suffix}", slug=f"og-org-{suffix}"
+            )
         )
-        session.add(ExperimentModel(id=experiment_id, name=f"og-exp-{suffix}", org_id=org_id))
+        session.add(
+            ExperimentModel(id=experiment_id, name=f"og-exp-{suffix}", org_id=org_id)
+        )
         session.add(
             TaskModel(
                 id=task_id,
@@ -388,7 +402,9 @@ async def experiment_opus_and_grok():
         await session.flush()
         version_id = f"{task_id}-v1"
         session.add(
-            TaskVersionModel(id=version_id, task_id=task_id, version=1, task_path="/tmp/fake")
+            TaskVersionModel(
+                id=version_id, task_id=task_id, version=1, task_path="/tmp/fake"
+            )
         )
         await session.flush()
 
@@ -510,9 +526,13 @@ async def experiment_null_model():
 
     async with get_session() as session:
         session.add(
-            OrganizationModel(id=org_id, name=f"NM Org {suffix}", slug=f"nm-org-{suffix}")
+            OrganizationModel(
+                id=org_id, name=f"NM Org {suffix}", slug=f"nm-org-{suffix}"
+            )
         )
-        session.add(ExperimentModel(id=experiment_id, name=f"nm-exp-{suffix}", org_id=org_id))
+        session.add(
+            ExperimentModel(id=experiment_id, name=f"nm-exp-{suffix}", org_id=org_id)
+        )
         session.add(
             TaskModel(
                 id=task_id,
@@ -525,7 +545,9 @@ async def experiment_null_model():
         await session.flush()
         version_id = f"{task_id}-v1"
         session.add(
-            TaskVersionModel(id=version_id, task_id=task_id, version=1, task_path="/tmp/fake")
+            TaskVersionModel(
+                id=version_id, task_id=task_id, version=1, task_path="/tmp/fake"
+            )
         )
         await session.flush()
 
@@ -606,9 +628,13 @@ async def experiment_one_sided_and_mixed():
 
     async with get_session() as session:
         session.add(
-            OrganizationModel(id=org_id, name=f"OS Org {suffix}", slug=f"os-org-{suffix}")
+            OrganizationModel(
+                id=org_id, name=f"OS Org {suffix}", slug=f"os-org-{suffix}"
+            )
         )
-        session.add(ExperimentModel(id=experiment_id, name=f"os-exp-{suffix}", org_id=org_id))
+        session.add(
+            ExperimentModel(id=experiment_id, name=f"os-exp-{suffix}", org_id=org_id)
+        )
         session.add(
             TaskModel(
                 id=task_id,
@@ -621,7 +647,9 @@ async def experiment_one_sided_and_mixed():
         await session.flush()
         version_id = f"{task_id}-v1"
         session.add(
-            TaskVersionModel(id=version_id, task_id=task_id, version=1, task_path="/tmp/fake")
+            TaskVersionModel(
+                id=version_id, task_id=task_id, version=1, task_path="/tmp/fake"
+            )
         )
         await session.flush()
 
@@ -711,9 +739,13 @@ async def experiment_sharing_a_task_version():
 
     async with get_session() as session:
         session.add(
-            OrganizationModel(id=org_id, name=f"SH Org {suffix}", slug=f"sh-org-{suffix}")
+            OrganizationModel(
+                id=org_id, name=f"SH Org {suffix}", slug=f"sh-org-{suffix}"
+            )
         )
-        session.add(ExperimentModel(id=experiment_id, name=f"sh-mine-{suffix}", org_id=org_id))
+        session.add(
+            ExperimentModel(id=experiment_id, name=f"sh-mine-{suffix}", org_id=org_id)
+        )
         session.add(
             ExperimentModel(id=neighbour_id, name=f"sh-theirs-{suffix}", org_id=org_id)
         )
@@ -729,7 +761,9 @@ async def experiment_sharing_a_task_version():
         await session.flush()
         version_id = f"{task_id}-v1"
         session.add(
-            TaskVersionModel(id=version_id, task_id=task_id, version=1, task_path="/tmp/fake")
+            TaskVersionModel(
+                id=version_id, task_id=task_id, version=1, task_path="/tmp/fake"
+            )
         )
         await session.flush()
 
@@ -892,13 +926,13 @@ async def test_missing_names_why_it_cannot_be_compared(
         org_id=experiment_below_cohort_gate.org_id,
     )
     # One success and one failure, against MIN_COHORT of 3.
-    assert [m["reason"] for m in gated["coverage"]["missing"]] == [
-        "below_cohort_gate"
-    ]
+    assert [m["reason"] for m in gated["coverage"]["missing"]] == ["below_cohort_gate"]
 
 
 @pytest.mark.asyncio
-async def test_build_never_generates(session, experiment_two_of_three_compared, monkeypatch):
+async def test_build_never_generates(
+    session, experiment_two_of_three_compared, monkeypatch
+):
     """The rollup is a READ path. A page view must not cost an LLM call.
 
     Patching ``get_or_generate_comparison`` on the ``cc`` module object only
@@ -912,12 +946,12 @@ async def test_build_never_generates(session, experiment_two_of_three_compared, 
     uses: a real generation always persists a new ``analyzer_blocks`` row.
     The monkeypatch is kept as a cheap second line of defence.
     """
-    import api.services.cohort_comparison as cc
+    import api.services.agent_capabilities as cc
 
     async def explode(*args, **kwargs):
         raise AssertionError("build_cohort_rollup generated a comparison")
 
-    monkeypatch.setattr(cc, "get_or_generate_comparison", explode)
+    monkeypatch.setattr(cc, "get_or_generate_analysis", explode)
 
     task_ids = experiment_two_of_three_compared.task_ids
     count_stmt = (
@@ -962,6 +996,30 @@ async def test_null_model_falls_back_to_agent(session, experiment_null_model):
         org_id=experiment_null_model.org_id,
     )
     assert [m["model"] for m in body["models"]] == ["claude-code"]
+
+
+@pytest.mark.asyncio
+async def test_models_for_canonicalizes_provider_qualified_ids():
+    class Result:
+        def all(self):
+            return [
+                (
+                    "trial-1",
+                    "us.anthropic.claude-opus-4-1-20250805-v1:0",
+                    "claude-code",
+                ),
+                ("trial-2", "anthropic/claude-opus-4-1-20250805-v1:0", "claude-code"),
+            ]
+
+    class Session:
+        async def execute(self, _query):
+            return Result()
+
+    models = await _models_for(Session(), ["trial-1", "trial-2"])
+    assert models == {
+        "trial-1": "claude-opus-4-1-20250805-v1:0",
+        "trial-2": "claude-opus-4-1-20250805-v1:0",
+    }
 
 
 @pytest.mark.asyncio

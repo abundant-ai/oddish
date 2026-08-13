@@ -1,4 +1,5 @@
 """Cross-task rollup of stored cohort comparisons. Read-only by construction."""
+
 from __future__ import annotations
 
 from collections import defaultdict
@@ -17,12 +18,14 @@ from oddish.db.models import (
     TrialModel,
 )
 
-from api.services.blocks.analyzer.cohort.cohort_comparison_block import SCHEMA_VERSION
-from api.services.cohort_comparison import (
+from api.services.blocks.analyzer.cohort.agent_capabilities_block import SCHEMA_VERSION
+from api.services.blocks.analyzer.cohort.cohort_prompts import short_model_name
+from api.services.agent_capabilities import (
     FAILURE_CLASS,
+    LEGACY_BLOCK_TYPE,
     MIN_COHORT,
     SUCCESS_CLASS,
-    _load_fresh_comparison,
+    _load_fresh_analysis as _load_fresh_comparison,
     cohort_hash,
     resolve_cohorts,
 )
@@ -168,9 +171,7 @@ async def build_cohort_rollup(
         # else ran the version, and counting them would make the radar a
         # picture of the task rather than of this experiment.
         cohort_ids = [
-            t["trial_id"]
-            for t in (*successful, *failing)
-            if t["trial_id"] in members
+            t["trial_id"] for t in (*successful, *failing) if t["trial_id"] in members
         ]
         model_of = await _models_for(session, cohort_ids)
         for side, trials in (("success", successful), ("failure", failing)):
@@ -210,8 +211,12 @@ async def build_cohort_rollup(
     comparable = {
         m["model"]: m["cohort_success"] > 0 and m["cohort_failure"] > 0 for m in models
     }
-    pooled_baseline = _share(len(pooled_cohort["success"]), len(pooled_cohort["failure"]))
-    pooled_comparable = bool(pooled_cohort["success"]) and bool(pooled_cohort["failure"])
+    pooled_baseline = _share(
+        len(pooled_cohort["success"]), len(pooled_cohort["failure"])
+    )
+    pooled_comparable = bool(pooled_cohort["success"]) and bool(
+        pooled_cohort["failure"]
+    )
 
     categories = []
     for name in CHART_CATEGORIES:
@@ -271,7 +276,9 @@ async def _versions_with_stored_comparison(
             select(AnalyzerBlockModel.block_metadata["task_version_id"].astext)
             .where(
                 AnalyzerBlockModel.task_id.in_(task_ids),
-                AnalyzerBlockModel.type == AnalyzerType.COHORT_COMPARISON.value,
+                AnalyzerBlockModel.type.in_(
+                    (AnalyzerType.AGENT_CAPABILITIES.value, LEGACY_BLOCK_TYPE)
+                ),
                 AnalyzerBlockModel.status == JobStatus.SUCCESS,
             )
             .distinct()
@@ -305,9 +312,7 @@ async def _missing_rows(
                 func.count().filter(classification == FAILURE_CLASS),
             )
             .where(
-                TrialModel.task_version_id.in_(
-                    [v.task_version_id for v in versions]
-                ),
+                TrialModel.task_version_id.in_([v.task_version_id for v in versions]),
                 TrialModel.is_probe.is_(False),
                 TrialModel.superseded_by_trial_id.is_(None),
                 classification.in_([SUCCESS_CLASS, FAILURE_CLASS]),
@@ -400,4 +405,4 @@ async def _models_for(session: AsyncSession, trial_ids: list[str]) -> dict[str, 
             )
         )
     ).all()
-    return {r[0]: (r[1] or r[2]) for r in rows if (r[1] or r[2])}
+    return {r[0]: short_model_name(r[1] or r[2]) for r in rows if (r[1] or r[2])}

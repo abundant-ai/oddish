@@ -98,7 +98,7 @@ from api.routers.task_submission import (
     stamp_experiment_owner,
 )
 from dashboard_attribution import resolve_search_authors
-from api.services.cohort_comparison import get_or_generate_comparison
+from api.services.agent_capabilities import get_or_generate_analysis
 from api.services.cohort_rollup import build_cohort_rollup
 from oddish.core.tasks import (
     complete_task_upload,
@@ -1625,14 +1625,18 @@ async def get_task_detail(
         return await get_task_detail_core(session, task_id=task_id, org_id=auth.org_id)
 
 
-@router.get("/tasks/{task_id}/cohort-comparison")
-async def get_task_cohort_comparison(
+@router.get("/tasks/{task_id}/agent-capabilities")
+# Pre-rename path. Kept so a frontend deploy that lags this one -- or a
+# rollback to it -- keeps working; undocumented so only the new path is
+# published. Remove once no released frontend calls it.
+@router.get("/tasks/{task_id}/cohort-comparison", include_in_schema=False)
+async def get_task_agent_capabilities(
     task_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
     refresh: bool = Query(
         False,
         description=(
-            "Discard the stored comparison and generate a new one. Costs an "
+            "Discard the stored analysis and generate a new one. Costs an "
             "LLM call, so it needs the same scope as an analysis rerun."
         ),
     ),
@@ -1681,7 +1685,7 @@ async def get_task_cohort_comparison(
             ).scalar_one_or_none()
             if version_id is None:
                 raise HTTPException(status_code=404, detail="Task version not found")
-        result = await get_or_generate_comparison(
+        result = await get_or_generate_analysis(
             session,
             version_id,
             task_id=task.id,

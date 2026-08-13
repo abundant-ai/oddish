@@ -1,4 +1,4 @@
-import type { CohortComparison } from "@/lib/types";
+import type { AgentCapabilities } from "@/lib/types";
 
 /** behavior_discovery is absent on purpose: DISCOVERY_CAP bounds its evidence
  *  at two observations, so its magnitude reflects the prompt's budget rather
@@ -22,7 +22,7 @@ export type CategoryDelta = {
   delta: number | null;
 };
 
-export function pooledDeltas(comparison: CohortComparison): CategoryDelta[] {
+export function pooledDeltas(comparison: AgentCapabilities): CategoryDelta[] {
   const successes = comparison.cohort_success.length;
   const failures = comparison.cohort_failure.length;
   // A one-sided cohort has no baseline to be measured against. Every citable
@@ -80,7 +80,7 @@ type RollupLike = {
  *  clear the threshold and draw a closed, filled shape touching the outer ring:
  *  the most confident-looking object on the page, from one trajectory. */
 export function radarModels<T extends RollupLike>(
-  rollup: T,
+  rollup: T
 ): { model: string; n: number; cited_runs: number }[] {
   const totals = new Map<string, number>();
   // A model whose cohort is one-sided has a null delta on every axis (see the
@@ -99,7 +99,9 @@ export function radarModels<T extends RollupLike>(
       n: totals.get(m.model) ?? 0,
       cited_runs: m.cited_runs ?? 0,
     }))
-    .filter((m) => m.cited_runs >= rollup.thin_threshold && drawable.has(m.model))
+    .filter(
+      (m) => m.cited_runs >= rollup.thin_threshold && drawable.has(m.model)
+    )
     .sort((a, b) => b.n - a.n)
     .slice(0, RADAR_MODEL_CAP);
 }
