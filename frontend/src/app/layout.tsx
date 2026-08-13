@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Fraunces, Geist, Geist_Mono } from "next/font/google";
+import localFont from "next/font/local";
 import "./globals.css";
 import { ClerkProvider } from "@clerk/nextjs";
 import { Providers } from "./providers";
@@ -8,24 +8,33 @@ import { PreviewBanner } from "@/components/preview-banner";
 import { SpeedInsights } from "@vercel/speed-insights/next";
 import { Analytics } from "@vercel/analytics/next";
 
-const geistSans = Geist({
-  subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
+const geistSans = localFont({
+  src: "./fonts/geist-latin.woff2",
+  weight: "400 700",
   variable: "--font-geist-sans",
   display: "swap",
 });
 
-const geistMono = Geist_Mono({
-  subsets: ["latin"],
-  weight: ["400", "500", "600"],
+const geistMono = localFont({
+  src: "./fonts/geist-mono-latin.woff2",
+  weight: "400 600",
   variable: "--font-geist-mono",
   display: "swap",
 });
 
-const fraunces = Fraunces({
-  subsets: ["latin"],
-  weight: ["400", "500", "600"],
-  style: ["normal", "italic"],
+const fraunces = localFont({
+  src: [
+    {
+      path: "./fonts/fraunces-latin.woff2",
+      weight: "400 600",
+      style: "normal",
+    },
+    {
+      path: "./fonts/fraunces-italic-latin.woff2",
+      weight: "400 600",
+      style: "italic",
+    },
+  ],
   variable: "--font-fraunces",
   display: "swap",
 });
@@ -107,7 +116,7 @@ export default function RootLayout({
           process.env.NEXT_PUBLIC_ODDISH_PREVIEW === "true" ? "true" : undefined
         }
       >
-        <body className="flex min-h-screen flex-col bg-background font-sans text-foreground antialiased">
+        <body className="bg-background text-foreground flex min-h-screen flex-col font-sans antialiased">
           <Providers>
             <PreviewBanner />
             <div className="flex flex-1 flex-col">{children}</div>

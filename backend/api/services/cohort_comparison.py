@@ -67,6 +67,11 @@ async def resolve_cohorts(
                     TrialModel.id,
                     TrialModel.total_steps,
                     TrialModel.trajectory_summary,
+                    # Which model produced the run. Attribution is computed
+                    # from these in code, never asked of the LLM: "which model
+                    # did better" is a counting question, and a fabricated
+                    # answer to it would be indistinguishable from a real one.
+                    TrialModel.model,
                 ).where(
                     TrialModel.task_version_id == task_version_id,
                     TrialModel.is_probe.is_(False),
@@ -81,6 +86,7 @@ async def resolve_cohorts(
         ).all()
         ids = [r[0] for r in rows]
         total_steps = {r[0]: r[1] for r in rows}
+        models = {r[0]: r[3] for r in rows}
         # Prefer the mirror on the trial row. summarize_trajectory writes every
         # summary to trials.trajectory_summary as well as analyzer_blocks, and
         # the mirror is what the sibling QA surfaces read -- post-trial reads
@@ -116,6 +122,7 @@ async def resolve_cohorts(
             out[cls].append(
                 {
                     "trial_id": tid,
+                    "model": models.get(tid),
                     "components": comps,
                     "covered_steps": len(all_ids),
                     "span": span,
@@ -340,7 +347,11 @@ async def get_or_generate_comparison(
     )
 
     successful, failing = await resolve_cohorts(session, task_version_id)
-    if len(successful) < MIN_COHORT or len(failing) < MIN_COHORT:
+    # One populated side is enough. Requiring both meant a task whose runs all
+    # failed -- the case a reader most wants explained -- got silence, even
+    # with ten classified failures on the table. What a cohort did is worth
+    # reporting on its own; what it did *differently* just needs two.
+    if max(len(successful), len(failing)) < MIN_COHORT:
         return None
 
     current = cohort_hash(
