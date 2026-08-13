@@ -506,42 +506,54 @@ test.describe("authenticated task view", () => {
     await expect.poll(() => cancelCount).toBe(1);
   });
 
-  test("an older full-id trial link shares the single-trial resource and selects its version", async ({
-    page,
-  }) => {
-    await signIn(page);
-    let trialRequests = 0;
-    await page.route(
-      new RegExp(`/api/tasks/${READER_TASK_ID}/open(?:\\?|$)`),
-      (route) => {
-        const requested =
-          new URL(route.request().url()).searchParams.get("version_id") ??
-          DEFAULT_VERSION_ID;
-        route.fulfill({ json: openResponse(requested) });
-      }
-    );
-    await page.route(
-      new RegExp(`/api/trials/${READER_TASK_ID}-99$`),
-      (route) => {
-        trialRequests += 1;
-        route.fulfill({ json: linkedTrial() });
-      }
-    );
-    await page.route(
-      new RegExp(`/api/tasks/${READER_TASK_ID}/detail(?:\\?|$)`),
-      (route) => route.fulfill({ json: detailResponse(HISTORICAL_VERSION_ID) })
-    );
+  for (const { label, trialParam } of [
+    { label: "full-id", trialParam: `${READER_TASK_ID}-99` },
+    { label: "short-id", trialParam: "99" },
+  ]) {
+    test(`an older ${label} trial link shares the single-trial resource and selects its version`, async ({
+      page,
+    }) => {
+      await signIn(page);
+      let trialRequests = 0;
+      let unexpandedTrialRequests = 0;
+      await page.route(
+        new RegExp(`/api/tasks/${READER_TASK_ID}/open(?:\\?|$)`),
+        (route) => {
+          const requested =
+            new URL(route.request().url()).searchParams.get("version_id") ??
+            DEFAULT_VERSION_ID;
+          route.fulfill({ json: openResponse(requested) });
+        }
+      );
+      await page.route(new RegExp(`/api/trials/99$`), (route) => {
+        unexpandedTrialRequests += 1;
+        route.fulfill({ status: 404, json: { error: "Trial not found" } });
+      });
+      await page.route(
+        new RegExp(`/api/trials/${READER_TASK_ID}-99$`),
+        (route) => {
+          trialRequests += 1;
+          route.fulfill({ json: linkedTrial() });
+        }
+      );
+      await page.route(
+        new RegExp(`/api/tasks/${READER_TASK_ID}/detail(?:\\?|$)`),
+        (route) =>
+          route.fulfill({ json: detailResponse(HISTORICAL_VERSION_ID) })
+      );
 
-    await page.goto(`/tasks/${READER_TASK_ID}?trial=${READER_TASK_ID}-99`);
-    await expect(
-      page.getByRole("heading", { name: /Old linked trial/ })
-    ).toBeVisible();
-    await expect(page).toHaveURL(new RegExp(`trial=${READER_TASK_ID}-99`));
-    await expect(page).toHaveURL(
-      new RegExp(`version=${HISTORICAL_VERSION_ID}`)
-    );
-    expect(trialRequests).toBe(1);
-  });
+      await page.goto(`/tasks/${READER_TASK_ID}?trial=${trialParam}`);
+      await expect(
+        page.getByRole("heading", { name: /Old linked trial/ })
+      ).toBeVisible();
+      await expect(page).toHaveURL(new RegExp(`trial=${READER_TASK_ID}-99`));
+      await expect(page).toHaveURL(
+        new RegExp(`version=${HISTORICAL_VERSION_ID}`)
+      );
+      expect(trialRequests).toBe(1);
+      expect(unexpandedTrialRequests).toBe(0);
+    });
+  }
 
   test("a hand-shortened trial link addresses this page's task", async ({
     page,

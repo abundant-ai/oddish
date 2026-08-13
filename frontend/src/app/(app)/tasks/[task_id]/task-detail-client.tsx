@@ -736,7 +736,10 @@ export function TaskDetailClient({
 
   const [deepLinkTrialParam] = useState<string | null>(() => {
     if (typeof window === "undefined") return null;
-    return new URLSearchParams(window.location.search).get("trial");
+    return expandTrialParam(
+      new URLSearchParams(window.location.search).get("trial"),
+      taskId
+    );
   });
   // Expanded the same way hydration expands it: a hand-shortened index has to
   // become `{task_id}-{index}` before it can match a preview row or address
