@@ -146,7 +146,6 @@ async def test_schema_drift_is_never_served_even_when_drift_is_allowed():
         )
     assert got is None
 
-
 @pytest.mark.asyncio
 async def test_a_thin_cohort_is_still_withheld_from_a_drift_tolerant_caller():
     """MIN_COHORT gates the comparison itself, not its freshness."""
@@ -156,69 +155,3 @@ async def test_a_thin_cohort_is_still_withheld_from_a_drift_tolerant_caller():
             session, "tv-1", task_id="task-1", allow_cohort_drift=True
         )
     assert got is None
-
-
-# --------------------------------------------------------------------------
-# ensure_regeneration: one spawn per version per window
-# --------------------------------------------------------------------------
-
-
-@pytest.fixture(autouse=True)
-def clear_cooldown():
-    ac._REGEN_SPAWNED_AT.clear()
-    yield
-    ac._REGEN_SPAWNED_AT.clear()
-
-
-ARGS = dict(task_id="task-1", task_name="task-one", task_version_id="tv-1")
-
-
-def test_first_call_spawns_the_worker():
-    fn = MagicMock()
-    with patch("modal.Function.from_name", return_value=fn):
-        assert ac.ensure_regeneration(**ARGS) is True
-    fn.spawn.assert_called_once_with("task-1", "task-one", "tv-1")
-
-
-def test_a_second_view_inside_the_window_does_not_spawn_again():
-    """The abuse surface: without this, every page load on a link anyone can
-    hold starts a paid claude-code run."""
-    fn = MagicMock()
-    with patch("modal.Function.from_name", return_value=fn):
-        ac.ensure_regeneration(**ARGS)
-        # Still reported as in flight -- the first spawn is presumably running.
-        assert ac.ensure_regeneration(**ARGS) is True
-    assert fn.spawn.call_count == 1
-
-
-def test_the_window_is_per_task_version():
-    fn = MagicMock()
-    with patch("modal.Function.from_name", return_value=fn):
-        ac.ensure_regeneration(**ARGS)
-        ac.ensure_regeneration(**{**ARGS, "task_version_id": "tv-2"})
-    assert fn.spawn.call_count == 2
-
-
-def test_the_window_expires():
-    fn = MagicMock()
-    with patch("modal.Function.from_name", return_value=fn), patch.object(
-        ac.time, "monotonic", side_effect=[0.0, ac.REGEN_COOLDOWN_SECONDS + 1.0]
-    ):
-        ac.ensure_regeneration(**ARGS)
-        ac.ensure_regeneration(**ARGS)
-    assert fn.spawn.call_count == 2
-
-
-def test_a_deploy_without_the_worker_function_degrades_to_no_rebuild():
-    """`worker` is only imported when ENABLE_BACKGROUND_WORKERS, so the
-    function need not exist. A stale view is still a view."""
-    with patch("modal.Function.from_name", side_effect=RuntimeError("not found")):
-        assert ac.ensure_regeneration(**ARGS) is False
-
-
-def test_a_failed_spawn_still_burns_the_window():
-    """Otherwise a broken lookup is retried on every single page view."""
-    with patch("modal.Function.from_name", side_effect=RuntimeError("not found")) as f:
-        ac.ensure_regeneration(**ARGS)
-        ac.ensure_regeneration(**ARGS)
-    assert f.call_count == 1

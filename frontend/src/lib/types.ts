@@ -885,9 +885,7 @@ export interface AgentCapabilities {
    *  describes a smaller trial set than the page shows. Only the share route
    *  serves these — the signed-in route regenerates instead. */
   stale?: boolean;
-  /** A rebuild was spawned, or was spawned recently enough to still be
-   *  running. A belief rather than a job status: the block row is written only
-   *  once, at the end. */
+  /** A durable rebuild job is queued or already active. */
   regenerating?: boolean;
   cohort_success: string[];
   cohort_failure: string[];

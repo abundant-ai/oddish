@@ -1,11 +1,4 @@
-"""Public (share-token) analysis reads: trajectory summary and cohort comparison.
-
-The load-bearing property here is what these routes *cannot* do. Their
-authenticated counterparts generate on a cache miss -- a Claude call per
-summary, a claude-code run per comparison -- and no unauthenticated caller may
-reach that. Every miss test therefore also asserts the generator was never
-called, not merely that the status was 404.
-"""
+"""Public (share-token) analysis reads and queued capability generation."""
 
 from __future__ import annotations
 
@@ -168,7 +161,10 @@ def version_in_experiment():
 
 def _public_task(current_version_id: str | None = "tv-current"):
     task = SimpleNamespace(
-        id="task-1", name="task-one", current_version_id=current_version_id
+        id="task-1",
+        name="task-one",
+        org_id="org-1",
+        current_version_id=current_version_id,
     )
     return AsyncMock(return_value=(SimpleNamespace(id="exp-1"), task, set()))
 
@@ -234,10 +230,10 @@ def test_comparison_404_for_unknown_version_number(
     load.assert_not_awaited()
 
 
-def test_comparison_miss_is_404_and_never_generates(
+def test_comparison_miss_enqueues_and_returns_202(
     client, patched_session, version_in_experiment
 ):
-    generate = AsyncMock()
+    enqueue = AsyncMock()
     with patched_session, version_in_experiment, patch(
         "api.routers.public_analysis.get_public_task_for_experiment",
         new=_public_task(),
@@ -245,11 +241,15 @@ def test_comparison_miss_is_404_and_never_generates(
         "api.services.agent_capabilities.load_stored_analysis",
         new=AsyncMock(return_value=None),
     ), patch(
-        "api.services.agent_capabilities.get_or_generate_analysis", new=generate
+        "api.services.agent_capabilities.analysis_is_eligible",
+        new=AsyncMock(return_value=True),
+    ), patch(
+        "api.services.agent_capabilities.enqueue_analysis", new=enqueue
     ):
         resp = client.get(COMPARISON_URL)
-    assert resp.status_code == 404
-    generate.assert_not_awaited()
+    assert resp.status_code == 202
+    assert resp.json() == {"status": "queued", "task_version_id": "tv-current"}
+    enqueue.assert_awaited_once()
 
 
 def test_comparison_404_when_token_does_not_expose_the_task(client, patched_session):
@@ -378,74 +378,38 @@ def test_a_stale_comparison_is_served_and_asks_for_a_rebuild(
     client, patched_session, no_display_names, version_in_experiment
 ):
     stored = {"categories": [{"category": "planning"}]}
-    regen = MagicMock(return_value=True)
+    enqueue = AsyncMock()
     with patched_session, no_display_names, version_in_experiment, patch(
         "api.routers.public_analysis.get_public_task_for_experiment",
         new=_public_task(),
     ), patch(
         "api.services.agent_capabilities.load_stored_analysis",
         new=_stored(stored, stale=True),
-    ), patch("api.services.agent_capabilities.ensure_regeneration", new=regen):
+    ), patch("api.services.agent_capabilities.enqueue_analysis", new=enqueue):
         resp = client.get(COMPARISON_URL)
     assert resp.status_code == 200
     body = resp.json()
     assert body["categories"] == stored["categories"]
     assert body["stale"] is True
     assert body["regenerating"] is True
-    regen.assert_called_once_with(
-        task_id="task-1", task_name="task-one", task_version_id="tv-current"
-    )
+    enqueue.assert_awaited_once()
+    assert enqueue.await_args.kwargs["task_version_id"] == "tv-current"
 
 
 def test_a_fresh_comparison_asks_for_no_rebuild(
     client, patched_session, no_display_names, version_in_experiment
 ):
-    regen = MagicMock()
+    enqueue = AsyncMock()
     with patched_session, no_display_names, version_in_experiment, patch(
         "api.routers.public_analysis.get_public_task_for_experiment",
         new=_public_task(),
     ), patch(
         "api.services.agent_capabilities.load_stored_analysis",
         new=_stored({"categories": []}),
-    ), patch("api.services.agent_capabilities.ensure_regeneration", new=regen):
+    ), patch("api.services.agent_capabilities.enqueue_analysis", new=enqueue):
         resp = client.get(COMPARISON_URL)
     assert resp.json()["regenerating"] is False
-    regen.assert_not_called()
-
-
-def test_a_miss_asks_for_no_rebuild_either(
-    client, patched_session, version_in_experiment
-):
-    """The cold start stays closed. Serving what exists is one thing; letting
-    an unauthenticated view start a paid run from nothing is another."""
-    regen = MagicMock()
-    with patched_session, version_in_experiment, patch(
-        "api.routers.public_analysis.get_public_task_for_experiment",
-        new=_public_task(),
-    ), patch(
-        "api.services.agent_capabilities.load_stored_analysis",
-        new=AsyncMock(return_value=None),
-    ), patch("api.services.agent_capabilities.ensure_regeneration", new=regen):
-        resp = client.get(COMPARISON_URL)
-    assert resp.status_code == 404
-    regen.assert_not_called()
-
-
-def test_a_failed_spawn_still_serves_the_stale_comparison(
-    client, patched_session, no_display_names, version_in_experiment
-):
-    regen = MagicMock(return_value=False)
-    with patched_session, no_display_names, version_in_experiment, patch(
-        "api.routers.public_analysis.get_public_task_for_experiment",
-        new=_public_task(),
-    ), patch(
-        "api.services.agent_capabilities.load_stored_analysis",
-        new=_stored({"categories": []}, stale=True),
-    ), patch("api.services.agent_capabilities.ensure_regeneration", new=regen):
-        resp = client.get(COMPARISON_URL)
-    assert resp.status_code == 200
-    assert resp.json()["stale"] is True
-    assert resp.json()["regenerating"] is False
+    enqueue.assert_not_awaited()
 
 
 def test_comparison_404s_for_a_version_outside_the_shared_experiment(

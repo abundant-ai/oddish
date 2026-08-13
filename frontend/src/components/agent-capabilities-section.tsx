@@ -1,12 +1,8 @@
 "use client";
 
-import useSWR from "swr";
 import { componentLabel } from "@/lib/trajectory-segments";
-import type {
-  AgentCapabilities,
-  BehaviorEvidence,
-  BehaviorObservation,
-} from "@/lib/types";
+import { useAgentCapabilities } from "@/lib/use-agent-capabilities";
+import type { BehaviorEvidence, BehaviorObservation } from "@/lib/types";
 
 const CATEGORY_LABELS: Record<string, string> = {
   behavior_discovery: "Agent behavior discovery",
@@ -21,10 +17,6 @@ const CATEGORY_LABELS: Record<string, string> = {
 const SECTION_HEADING =
   "text-foreground font-mono text-[13px] font-semibold tracking-wider uppercase";
 
-/** How often to re-fetch while a rebuild is in flight. A generation takes
- *  minutes, so this is about swapping the answer in soon after it lands, not
- *  about watching progress — there is no progress to watch. */
-const REBUILD_POLL_MS = 60_000;
 const CATEGORY_HEADING =
   "text-foreground font-mono text-[11px] font-semibold tracking-wider uppercase";
 const COHORT_HEADING =
@@ -227,21 +219,9 @@ export function AgentCapabilitiesSection({
       across versions. The host decides not to render instead. */
   version: number;
 }) {
-  const { data, error, isLoading } = useSWR<AgentCapabilities>(
-    `${apiBaseUrl}/tasks/${encodeURIComponent(taskId)}/agent-capabilities?version=${version}`,
-    (url: string) =>
-      fetch(url).then((response) =>
-        response.ok ? response.json() : Promise.reject(response.status)
-      ),
-    {
-      shouldRetryOnError: false,
-      // Poll only while a rebuild the share route asked for is believed to be
-      // running, so the new comparison swaps itself in. Every other state
-      // fetches once — this pane is otherwise static for the life of a version.
-      refreshInterval: (latest) =>
-        latest?.stale && latest.regenerating ? REBUILD_POLL_MS : 0,
-    }
-  );
+  const { data, error, isLoading } = useAgentCapabilities(taskId, version, {
+    apiBaseUrl,
+  });
 
   if (error === 404) {
     return (
@@ -254,7 +234,7 @@ export function AgentCapabilitiesSection({
     );
   }
 
-  if (isLoading) {
+  if (isLoading || data === null) {
     return (
       <section className="flex flex-col gap-2 p-4">
         <h3 className={SECTION_HEADING}>Capabilities</h3>

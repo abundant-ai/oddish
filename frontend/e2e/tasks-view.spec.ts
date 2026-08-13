@@ -328,7 +328,9 @@ test.describe("authenticated task view", () => {
     ).toBe(true);
   });
 
-  test("capabilities are a lazy, addressable task pane", async ({ page }) => {
+  test("capabilities warm eagerly and remain an addressable task pane", async ({
+    page,
+  }) => {
     await signIn(page);
     let capabilityRequests = 0;
 
@@ -363,7 +365,7 @@ test.describe("authenticated task view", () => {
     await expect(
       page.getByRole("button", { name: "Capabilities" })
     ).toBeVisible();
-    expect(capabilityRequests).toBe(0);
+    await expect.poll(() => capabilityRequests).toBe(1);
 
     await page.getByRole("button", { name: "Capabilities" }).click();
     await expect(

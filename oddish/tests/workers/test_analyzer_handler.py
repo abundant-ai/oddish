@@ -78,6 +78,38 @@ class _Job:
 
 
 @pytest.mark.asyncio
+async def test_handler_routes_agent_capabilities_payload_to_provider(monkeypatch):
+    import oddish.workers.jobs.handlers as h
+
+    seen = {}
+
+    async def provider(**kwargs):
+        seen.update(kwargs)
+        return {"categories": []}
+
+    monkeypatch.setattr(h, "_agent_capabilities_provider", provider)
+    job = _Job("task-version-1")
+    job.payload = {
+        "mode": "agent_capabilities",
+        "task_id": "task-1",
+        "task_version_id": "task-version-1",
+        "task_name": "Example",
+        "triggered_by_user_id": "user-1",
+    }
+
+    outcome = await h.AnalyzerJobHandler().run(job)
+
+    assert outcome.failure is None
+    assert outcome.success.result_summary == {"task_version_id": "task-version-1"}
+    assert seen == {
+        "task_id": "task-1",
+        "task_version_id": "task-version-1",
+        "task_name": "Example",
+        "triggered_by_user_id": "user-1",
+    }
+
+
+@pytest.mark.asyncio
 async def test_handler_run_maps_status_to_outcome(monkeypatch):
     import oddish.workers.jobs.handlers as h
 
