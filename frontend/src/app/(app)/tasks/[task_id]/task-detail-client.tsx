@@ -70,6 +70,7 @@ import {
   type LineRange,
 } from "@/lib/line-range";
 import { sameFilePath } from "@/lib/file-path";
+import { expandTrialParam } from "@/lib/trial-url";
 import {
   ArrowLeft,
   ChevronDown,
@@ -803,7 +804,9 @@ export function TaskDetailClient({
     if (drawerHydratedRef.current || isLoading || !task) return;
 
     const params = new URLSearchParams(window.location.search);
-    const urlTrialId = params.get("trial");
+    // A hand-shortened ?trial= is an index against the task this page already
+    // addresses; the full id links carry passes through untouched.
+    const urlTrialId = expandTrialParam(params.get("trial"), task.id);
     // The version's trials arrive a beat after the task itself
     // (selectedVersionId is applied by a later effect), so a trial address
     // waits for the version to be selected. Keying on the version — not an
@@ -857,7 +860,10 @@ export function TaskDetailClient({
   // the preserved param instead of leaving it inert forever.
   useEffect(() => {
     if (!unresolvedTrialParamRef.current) return;
-    const urlTrialId = new URLSearchParams(window.location.search).get("trial");
+    const urlTrialId = expandTrialParam(
+      new URLSearchParams(window.location.search).get("trial"),
+      task?.id
+    );
     if (!urlTrialId) {
       unresolvedTrialParamRef.current = false;
       return;
@@ -868,7 +874,7 @@ export function TaskDetailClient({
       hydrationOpeningRef.current = true;
       handleSelectTrial(trial);
     }
-  }, [drawerOrderedTrials, handleSelectTrial]);
+  }, [drawerOrderedTrials, handleSelectTrial, task?.id]);
 
   // Closing the drawer retires the task pane address along with the URL
   // params the sync effect strips — otherwise reopening would write the
