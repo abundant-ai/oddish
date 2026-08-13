@@ -185,6 +185,14 @@ High-level flow:
    `oddish.filters.trial_predicates.build_trial_metric_predicate` with an
    injected `EligibleTrialScope` rather than reimplementing Any/All logic.
 
+Agent capability analysis is lazy and task-version scoped. An authenticated or
+public-share cache miss enqueues one idempotent `ANALYZER` worker job with
+`payload.mode = "agent_capabilities"`; the HTTP request returns 202 and clients
+poll until the analyzer block is stored. Capability generation must not run
+inline in an API request. Public requests remain bounded to the task versions
+published by their share token, and repeated views coalesce onto the same active
+job.
+
 Trajectory summaries use schema v5. Each taxonomy-valued `components` entry
 contains its `step_ids`, summary, and deterministic `tool_count` and
 `duration_ms` metadata. Step count is the length of `step_ids`; the other
@@ -323,6 +331,22 @@ by model (`series_qa_by_model`) and by analyzer job kind
 
 ### Task Identity
 
+`GET /tasks/{task_id}/open` is the bounded first-paint contract for the task
+page. It resolves one org-scoped task plus the requested/default version before
+running aggregate work. Top-level task status always uses the default version
+from `tasks.current_version_id`; selected-version counters, direct version tags,
+experiments, and exact agent/model summaries use the requested version. Its
+experiment list is derived from that version's live, non-probe, non-superseded,
+non-combine trial population, matching `/detail`. Pre-trial audit metadata stays
+on `/detail` and is not serialized with the bounded version summary. The
+response also carries compact QA verdict
+presentation/control fields and caps the selected-version trial preview at 20
+lightweight refs. The handler uses at most three SQL statements, stays below the
+50 KB response budget, and must not select trial `result`, `analysis`,
+`error_message`, jobs, or ORM relationships. `GET /tasks/{task_id}/detail`
+remains the compatibility bundle for CLI and drawer consumers during the soak;
+do not point the task route back at it.
+
 `tasks.name` is the human-readable lookup key within an org. Live task names
 must stay unique and indexed (`idx_tasks_unique_org_name`) so an upload of the
 same task name resolves to the existing task and creates a new `task_versions`
@@ -346,10 +370,44 @@ otherwise it falls back to the highest version represented by such trials. The
 so progressive loading cannot change the files/counts pivot or mix one
 version's trials with another's artifacts.
 
+`overwrite_current_version` replaces the archive and metadata for
+`tasks.current_version_id` without changing its ID or version number. Uploads
+land at a unique staging key, copy to an immutable
+`tasks/<id>/v<N>-revisions/<token>/` source, and become visible only when the
+version row atomically switches `task_s3_key`. Expanded-file readers accept a
+manifest only when its `archive_key` matches that selected source, so failed
+cleanup cannot expose the prior expansion. The replacement clears derived-file
+bookkeeping and pre-trial audit state before re-enqueuing expansion. Existing
+trials pinned to that version resolve to the replacement content.
+
 `GET /experiments/{experiment_id}/cost-totals` reports both cost and token
 usage across every trial owned by the experiment, including older versions,
 superseded retries, probes, and soft-deleted trials. Its `billed_*` cost and
 token fields are the billed-user subset used by the frontend's New spend tile.
+
+### Task Browser Summary
+
+The default `GET /tasks/browse` path selects and paginates tasks before card
+enrichment. Ordering and exact card counters come from the selected
+`tasks.current_version_id` row in `task_version_browse_summaries`; there is no
+fallback scan over organization trial history when a summary row is missing.
+The visible cards then fetch at most 24 current-version trials per task through
+a lateral query. `latest_trials_truncated` tells the frontend that the preview
+is shorter than the exact `total_trials`.
+
+Summary scope matches normal task cards: exclude probes, superseded attempts,
+soft-deleted trials, and `combine:` copies. Any mutation that changes that
+population or its metrics must call
+`refresh_task_browse_summaries` inside the same transaction. This includes
+trial create/import, start/reset, completion, cancellation, retry/supersede,
+scoped deletion, and default-version selection. Advanced aggregate filters,
+comparisons, and non-default aggregate sorts intentionally retain their
+on-demand trial aggregation path.
+
+Refreshes serialize per version with sorted transaction-scoped PostgreSQL
+advisory locks; do not replace those locks with `FOR UPDATE` on
+`task_versions`, because concurrent trial inserts already hold foreign-key
+`KEY SHARE` locks and lock upgrades can deadlock.
 
 ---
 
@@ -486,7 +544,7 @@ extensions) — see `backend/README.md`.
 | Task upload | `POST /tasks/upload/init` (returns presigned PUT URL), `POST /tasks/upload/complete` |
 | Trial import | `POST /trials/import/init`, `POST /trials/import/complete` |
 | Sweeps | `POST /tasks/sweep`, `POST /tasks/sweep/batch` |
-| Tasks | `GET /tasks`, `GET /tasks/browse`, `GET /tasks/browse/experiment-options` (typeahead for the experiment filter; `facets.experiments` is deprecated/always empty; the other facet lists are served from the `trial_facets` vocabulary — write-through on trial creation plus a periodic rebuild sweep, see `oddish/src/oddish/core/trial_facets.py`), `GET /tasks/{task_id}`, `GET /tasks/{task_id}/detail`, `GET /tasks/{task_id}/versions[/{version}]`, `PUT /tasks/{task_id}/versions/{version}/default`, `POST /tasks/cancel` (optional `experiment_id` scopes the cancel to that experiment's trials so shared tasks keep running elsewhere) |
+| Tasks | `GET /tasks`, `GET /tasks/browse`, `GET /tasks/browse/experiment-options` (typeahead for the experiment filter; `facets.experiments` is deprecated/always empty; the other facet lists are served from the `trial_facets` vocabulary — write-through on trial creation plus a periodic rebuild sweep, see `oddish/src/oddish/core/trial_facets.py`), `GET /tasks/{task_id}`, `GET /tasks/{task_id}/open`, `GET /tasks/{task_id}/detail`, `GET /tasks/{task_id}/versions[/{version}]`, `PUT /tasks/{task_id}/versions/{version}/default`, `POST /tasks/cancel` (optional `experiment_id` scopes the cancel to that experiment's trials so shared tasks keep running elsewhere) |
 | Task QA | `POST /tasks/{task_id}/qa/retry`, `POST /tasks/{task_id}/qa/cancel`, `POST /tasks/{task_id}/qa/backfill` |
 | Experiments | `POST /experiments/combine`, `PATCH /experiments/{experiment_id}` |
 | Trials | `GET /tasks/{task_id}/trials/{index}`, `POST /trials/{trial_id}/retry` (optional `registry_auth` body), `GET /trials/{trial_id}/live` ((attempt, seq)-cursor live transcript), `GET /trials/{trial_id}/logs[/structured]`, `GET /trials/{trial_id}/trajectory`, `GET /trials/{trial_id}/result` |
@@ -506,6 +564,10 @@ no share tokens. Public task/trial/live/file routes must stay scoped under
 experiment; do not reintroduce `/public/tasks/{task_id}` or
 `/public/trials/{trial_id}` ID-only access. Unpublishing an experiment clears
 `public_token`, so republishing mints a fresh link and old URLs stay revoked.
+Capability evidence links on a share page must remain inside `/share/{token}`;
+they select the shared task and trial, open the trajectory tab, and retain the
+cited step anchor. They must never point signed-out readers at authenticated
+`/tasks/...` routes.
 
 ### Configuration and model routing
 
@@ -543,9 +605,13 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   deployment, task/trial, worker-job, worker-attempt, sandbox-run, unguessable
   launch-token, and Harbor-session tags. A durable `sandbox_runs` row is created
   before launch; Harbor's `environment-provisioned` event binds the structured
-  handle before SSH/bootstrap. Normal teardown, cancellation, stale-heartbeat
-  cleanup, and reconciliation terminate only after the full ledger/tag tuple
-  agrees.
+  handle before SSH/bootstrap. The locked Harbor exposes that event natively;
+  ephemeral pins that predate it are bridged by wrapping
+  `EC2Environment._launch_instance` and emitting the same identity immediately
+  after launch. A pin whose EC2 environment does not expose the required launch
+  seam fails before `Job.run()` rather than launching untracked provider state.
+  Normal teardown, cancellation, stale-heartbeat cleanup, and reconciliation
+  terminate only after the full ledger/tag tuple agrees.
 - EC2 orphan reconciliation snapshots deployment-tagged instances before the
   shared cleanup transaction, evaluates worker liveness using the database clock,
   and terminates only after the transaction commits. It preserves live linked
@@ -557,6 +623,11 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   with heartbeat-renewed `sandbox_capacity_leases`, independent of model/variant
   queue slots. The dispatcher budgets against live EC2 leases before spawning,
   while each worker still acquires the lease atomically before claiming a job.
+  A successful inventory snapshot also closes `PROVISIONING` / `TERMINATING`
+  ledger rows that have no provider identity, no running owner, no matching
+  inventory tags, and are older than the 30-minute launch-race grace. Capacity
+  cleanup reruns after that transaction commits so those rows cannot reserve
+  slots forever; an inventory failure never authorizes this finalization.
   Inventory and termination failures stay visible in logs/metrics while the rest
   of queue cleanup continues.
 - Claude trials run through AWS Bedrock by default. `CLAUDE_CODE_USE_BEDROCK=1` is
@@ -609,7 +680,10 @@ Storage defaults:
 - S3-compatible storage is **required**. Clients PUT task bundles directly
   to a presigned URL returned by `/tasks/upload/init` and then call
   `/tasks/upload/complete`.
-- uploaded task bundles: `tasks/<task_id>/.oddish-task.tar.gz`
+- uploaded task bundles: normally `tasks/<task_id>/v<N>/.oddish-task.tar.gz`;
+  in-place replacements use immutable
+  `tasks/<task_id>/v<N>-revisions/<token>/.oddish-task.tar.gz` sources selected
+  by `task_versions.task_s3_key` (legacy unversioned bundles remain readable)
 - Harbor job outputs: `/tmp/harbor-jobs`
 - Modal workers also check `/mnt/oddish-tasks` before falling back to the S3 download path
 

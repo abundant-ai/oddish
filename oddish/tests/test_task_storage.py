@@ -488,6 +488,45 @@ async def test_list_task_files_inlines_small_text_contents(monkeypatch):
     assert by_path["environment/run.sh"]["content"] == "#!/bin/sh\necho hi\n"
 
 
+@pytest.mark.asyncio
+async def test_list_task_files_ignores_expansion_from_previous_revision(monkeypatch):
+    archive_bytes = _make_task_archive({"task.toml": "name = 'replacement'\n"})
+    storage = storage_mod.StorageClient()
+    storage._client = object()
+    revision_prefix = "tasks/task-123/v2-revisions/replacement/"
+    archive_key = f"{revision_prefix}.oddish-task.tar.gz"
+    manifest_key = "tasks/task-123/v2-files/.oddish-manifest.json"
+
+    async def fake_object_exists(s3_key: str) -> bool:
+        return s3_key in {archive_key, manifest_key}
+
+    async def fake_download_json(s3_key: str) -> dict:
+        assert s3_key == manifest_key
+        return {"archive_key": "tasks/task-123/v2/.oddish-task.tar.gz"}
+
+    async def fake_download_bytes(s3_key: str) -> bytes:
+        assert s3_key == archive_key
+        return archive_bytes
+
+    monkeypatch.setattr(storage, "object_exists", fake_object_exists)
+    monkeypatch.setattr(storage, "download_json", fake_download_json)
+    monkeypatch.setattr(storage, "download_bytes", fake_download_bytes)
+
+    listing = await storage.list_task_files(
+        task_id="task-123",
+        prefix=None,
+        recursive=True,
+        limit=1000,
+        cursor=None,
+        presign=False,
+        version=2,
+        task_s3_prefix=revision_prefix,
+    )
+
+    assert listing["archive_key"] == archive_key
+    assert listing["files"][0]["content"] == "name = 'replacement'\n"
+
+
 def test_parse_task_archive_skips_binary_and_oversize():
     big_text = "x" * (storage_mod._INLINE_CONTENT_MAX_FILE_BYTES + 1)
     members = {

@@ -717,19 +717,73 @@ export function TrajectoryViewer({
   const [deepLinkError, setDeepLinkError] = useState<string | null>(null);
   const stepRefs = useRef<(HTMLDivElement | null)[]>([]);
   const stepReset = useRef<string | null>(null);
-  const appliedHash = useRef<string | null>(null);
+  // The step a #step-<id> address asked for, held here once the address has
+  // been relieved of it (see the capture effect below), TAGGED WITH THE TRIAL
+  // it arrived for. The tag is the correctness property, not the reset below:
+  // clearing on a trial switch is a state update, so the honour effect still
+  // runs this flush with the old step, and re-runs because `trajectory` just
+  // changed -- handing the step being left to the trial arriving. With the
+  // tag, honouring is conditional on the trial matching, so no ordering
+  // between the two effects can apply a step to the wrong run.
+  const [pendingStep, setPendingStep] = useState<{
+    trial: string;
+    step: number;
+  } | null>(null);
+  // Read by the capture effect, which mounts once and would otherwise close
+  // over the mount-time trial for every later hashchange.
+  const trialIdRef = useRef(trialId);
+  trialIdRef.current = trialId;
 
   // Reset expanded steps and search when switching to a different trial
   useEffect(() => {
     if (trialId !== stepReset.current) {
+      const switched = stepReset.current !== null;
       stepReset.current = trialId;
       setExpandedSteps([]);
       setQuery("");
-      // Otherwise an unchanged hash across trials (e.g. both #step-1) would
-      // look "already applied" and the deep link would silently no-op.
-      appliedHash.current = null;
+      // A deep link belongs to the trial it arrived with. Trials are switched
+      // in place from the drawer's own list, which never carries a fragment,
+      // so a step still pending on a switch was addressed to the trial being
+      // left. Guarded on `switched` so this cannot wipe the step captured on
+      // the first mount, whatever order the two effects run in.
+      //
+      // The failure message goes with it. Nothing re-runs the link against the
+      // new trial — the fragment was spent when it was captured — so a message
+      // left standing would describe a run the reader is no longer looking at.
+      if (switched) {
+        setPendingStep(null);
+        setDeepLinkError(null);
+      }
     }
   }, [trialId]);
+
+  // Take #step-<step_id> out of the address as soon as this viewer mounts, and
+  // hold the step until the trajectory can honour it.
+  //
+  // The fragment addresses one step of one run, and nothing else reads it, so
+  // its life ends here. It cannot be left parked until the trajectory
+  // resolves: urlWithSearch carries the fragment through every panel
+  // replaceState, so a run that never yields steps — no trajectory, a failed
+  // fetch, a drawer closed mid-flight — would hand its anchor to whichever
+  // trial is opened next. Spending it on sight separates "the link has been
+  // used" from "the link could be honoured".
+  //
+  // Reading it at mount is unambiguous because citations are plain anchors:
+  // they arrive as a document navigation with the fragment and ?trial= already
+  // agreeing. No in-app navigation changes both, so the listener below only
+  // ever sees the fragment move within one trial.
+  useEffect(() => {
+    const take = () => {
+      const m = /^#step-(\d+)$/.exec(window.location.hash);
+      if (!m) return;
+      setPendingStep({ trial: trialIdRef.current, step: Number(m[1]) });
+      const spent = `${window.location.pathname}${window.location.search}`;
+      window.history.replaceState(window.history.state, "", spent);
+    };
+    take();
+    window.addEventListener("hashchange", take);
+    return () => window.removeEventListener("hashchange", take);
+  }, []);
 
   // Steps keep their original index so timing, refs, and duration-bar clicks
   // stay consistent with the full trajectory.
@@ -830,35 +884,30 @@ export function TrajectoryViewer({
     [lowerQuery, visibleSteps, renderedSteps]
   );
 
-  // Resolve a #step-<step_id> hash once the trajectory has loaded. The hash
-  // carries a step_id, not an array index; handleStepClick takes an index.
+  // Honour a captured deep link once the trajectory has loaded. It carries a
+  // step_id, not an array index; handleStepClick takes an index. Clearing it
+  // first makes it single-use, so a later pass — this effect re-runs whenever
+  // the search box changes handleStepClick — cannot scroll the reader back.
   useEffect(() => {
     const steps = trajectory?.steps;
-    if (!steps?.length) return;
-
-    const apply = () => {
-      const hash = window.location.hash;
-      if (hash === appliedHash.current) return;
-      const m = /^#step-(\d+)$/.exec(hash);
-      if (!m) return;
-      appliedHash.current = hash;
-      const idx = stepIdToIndex(Number(m[1]));
-      if (idx >= 0) {
-        setDeepLinkError(null);
-        handleStepClick(idx);
-      } else if (steps.some((s) => Number(s.step_id) === Number(m[1]))) {
-        // Present but empty: the list never draws it, so expanding the item
-        // would scroll to nothing.
-        setDeepLinkError(`Step ${m[1]} is empty and is not shown.`);
-      } else {
-        setDeepLinkError(`Step ${m[1]} is not in this trajectory.`);
-      }
-    };
-
-    apply();
-    window.addEventListener("hashchange", apply);
-    return () => window.removeEventListener("hashchange", apply);
-  }, [trajectory, handleStepClick, stepIdToIndex]);
+    if (pendingStep === null || !steps?.length) return;
+    // Not this trial's step: leave it alone. It belongs to the run the reader
+    // left, and the reset effect clears it on the next render.
+    if (pendingStep.trial !== trialId) return;
+    const step = pendingStep.step;
+    setPendingStep(null);
+    const idx = stepIdToIndex(step);
+    if (idx >= 0) {
+      setDeepLinkError(null);
+      handleStepClick(idx);
+    } else if (steps.some((s) => Number(s.step_id) === step)) {
+      // Present but empty: the list never draws it, so expanding the item
+      // would scroll to nothing.
+      setDeepLinkError(`Step ${step} is empty and is not shown.`);
+    } else {
+      setDeepLinkError(`Step ${step} is not in this trajectory.`);
+    }
+  }, [pendingStep, trialId, trajectory, handleStepClick, stepIdToIndex]);
 
   if (isLoading) {
     return (

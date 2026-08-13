@@ -17,6 +17,7 @@ from oddish.core.helpers import build_trial_response
 from oddish.core.model_display_names import (
     apply_model_display_names,
     canonical_model_key,
+    display_model_name,
     load_model_display_names,
 )
 from oddish.core.sharing.helpers import (
@@ -297,3 +298,23 @@ async def test_removed_alias_stops_renaming():
                         ModelDisplayNameModel.id == alias_id
                     )
                 )
+
+
+def test_display_model_name_masks_through_the_same_keys():
+    """The cohort comparison carries model ids outside a TrialResponse. They
+    have to resolve through the same lookup, or a share page masks the id in
+    the trial grid and prints it in the analysis below."""
+    names = {canonical_model_key("anthropic/claude-opus-4-8"): "Model A"}
+    assert display_model_name("anthropic/claude-opus-4-8", names) == "Model A"
+    # Same spelling rules the trial path gets: case and surrounding whitespace
+    # collapse into the one stored key.
+    assert display_model_name("  Anthropic/Claude-Opus-4-8 ", names) == "Model A"
+
+
+def test_display_model_name_passes_unaliased_ids_through():
+    """No alias set is not the same as "hide it" -- the id is what the page
+    showed before this feature, and still shows."""
+    names = {canonical_model_key("anthropic/claude-opus-4-8"): "Model A"}
+    assert display_model_name("openai/gpt-5.4", names) == "openai/gpt-5.4"
+    assert display_model_name("openai/gpt-5.4", {}) == "openai/gpt-5.4"
+    assert display_model_name(None, names) is None

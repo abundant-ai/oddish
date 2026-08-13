@@ -22,6 +22,7 @@ from oddish.core.trial_io import (
     read_trial_trajectory,
 )
 from oddish.core.verdict_state import abandon_verdict
+from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
@@ -669,6 +670,7 @@ async def retry_trial_core(
             WorkerJobStatus.CANCELLED: "skipped",
         }.get(final_status, "queued")
 
+    await refresh_task_browse_summaries(session, [new_trial.task_version_id])
     await session.commit()
     return {
         "status": status_label,

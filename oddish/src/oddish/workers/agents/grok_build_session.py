@@ -25,6 +25,7 @@ stdout-derived trajectory rather than failing the trial.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +46,15 @@ def _observation(content: str, *, source_call_id: str | None = None) -> Observat
 
 # Session-relative directory the agent copies the Grok session store into.
 GROK_SESSION_CAPTURE_DIRNAME = "grok-session"
+
+# Per-observation cap. Tool output is unbounded (a full ``gradle test`` log runs
+# to hundreds of KB) and every byte lands in ``trajectory.json``, which the
+# dashboard and the trajectory summarizer both read whole.
+OBSERVATION_CLIP_CHARS = 8192
+
+# Backgrounded commands replay their terminal through the trajectory, so tool
+# output arrives full of cursor moves and colour codes.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-Z\\-_]")
 
 # Token-usage field aliases seen across Grok's Chat Completions / Responses /
 # Messages payloads and its own session updates. Values are summed per alias
@@ -206,16 +216,112 @@ def _update_payload(record: dict[str, Any]) -> dict[str, Any]:
 
 
 def _chunk_text(content: Any) -> str:
+    """Flatten an ACP content payload to text.
+
+    Recursion is load-bearing: an ``agent_message_chunk`` nests one level
+    (``{"type": "text", "text": ...}``) but a ``tool_call_update`` nests two
+    (``[{"type": "content", "content": {"type": "text", "text": ...}}]``), so
+    stopping at the first hop silently drops every tool result.
+    """
     if isinstance(content, str):
         return content
-    if isinstance(content, dict):
-        for key in ("text", "content", "data"):
-            value = content.get(key)
-            if isinstance(value, str):
-                return value
     if isinstance(content, list):
         return "".join(_chunk_text(item) for item in content)
+    if isinstance(content, dict):
+        if content.get("type") == "diff":
+            return _diff_text(content)
+        for key in ("text", "content", "data"):
+            if key in content:
+                text = _chunk_text(content[key])
+                if text:
+                    return text
     return ""
+
+
+def _diff_text(item: dict[str, Any]) -> str:
+    """Render a ``{"type": "diff"}`` content item -- grok's file-edit result."""
+    path = str(item.get("path") or "")
+    old = _chunk_text(item.get("oldText"))
+    new = _chunk_text(item.get("newText"))
+    parts = [f"edit: {path}" if path else "edit"]
+    if old:
+        parts.append(f"--- before\n{old}")
+    if new:
+        parts.append(f"+++ after\n{new}")
+    return "\n".join(parts)
+
+
+def _decode_output(value: Any) -> str:
+    """Grok serializes some tool stdout as a JSON array of byte values."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list) and value:
+        if all(isinstance(b, int) and 0 <= b < 256 for b in value):
+            return bytes(value).decode("utf-8", errors="replace")
+    return ""
+
+
+def _command_text(raw: Any) -> str:
+    """Render a shell-shaped ``rawOutput`` (``Bash`` / backgrounded task)."""
+    if not isinstance(raw, dict):
+        return ""
+    head: list[str] = []
+    if raw.get("command"):
+        head.append(f"$ {raw['command']}")
+    if raw.get("current_dir"):
+        head.append(f"cwd: {raw['current_dir']}")
+    if raw.get("exit_code") is not None:
+        head.append(f"exit: {raw['exit_code']}")
+    if raw.get("timed_out"):
+        head.append("timed out")
+    if raw.get("truncated"):
+        head.append("output truncated by grok")
+    body = (
+        _decode_output(raw.get("output_for_prompt"))
+        or _decode_output(raw.get("output"))
+        or str(raw.get("summary") or "")
+    )
+    return "\n".join(part for part in ("\n".join(head), body) if part)
+
+
+def _raw_output_text(raw: Any) -> str:
+    """Render ``tool_call_update.rawOutput`` -- the environment's real response.
+
+    ``content`` only carries grok's one-line summary of a result ("found 43
+    matches"), and for ``ListDir`` / ``TaskOutput`` it is absent entirely, so
+    the listing, file body or command output only exists here. Each tool type
+    wraps its payload under its own key.
+    """
+    if not isinstance(raw, dict):
+        return ""
+    kind = str(raw.get("type") or "")
+    if kind == "TaskOutput":
+        return _command_text(raw.get("Result"))
+    if kind in ("Bash", "BackgroundTaskStarted"):
+        return _command_text(raw)
+    if kind == "GrepSearch":
+        streams = (_decode_output(raw.get("stdout")), _decode_output(raw.get("stderr")))
+        return "\n".join(stream for stream in streams if stream)
+    for key in ("Content", "FileContent", "Result"):
+        text = _chunk_text(raw.get(key))
+        if text:
+            return text
+    return ""
+
+
+def _clip(text: str) -> str:
+    text = _ANSI_RE.sub("", text)
+    if len(text) <= OBSERVATION_CLIP_CHARS:
+        return text
+    return f"{text[:OBSERVATION_CLIP_CHARS]}\n... (truncated, {len(text)} chars total)"
+
+
+def _tool_result_text(content: Any, raw_output: Any) -> str:
+    summary = _chunk_text(content).strip()
+    detailed = _raw_output_text(raw_output).strip()
+    if detailed and summary and summary not in detailed:
+        return _clip(f"{summary}\n\n{detailed}")
+    return _clip(detailed or summary)
 
 
 def build_trajectory_from_updates(
@@ -310,15 +416,16 @@ def build_trajectory_from_updates(
         elif kind == "tool_call_update":
             tool_id = str(update.get("toolCallId") or update.get("tool_call_id") or "")
             status = update.get("status")
-            content = update.get("content")
-            observation_text = _chunk_text(content)
+            observation_text = _tool_result_text(
+                update.get("content"), update.get("rawOutput")
+            )
             idx = tool_calls_by_id.get(tool_id)
             if idx is not None and observation_text:
-                existing = steps[idx]
-                if existing.observation is None:
-                    existing.observation = _observation(
-                        observation_text, source_call_id=tool_id or None
-                    )
+                # A call streams several updates as it runs; the terminal
+                # ``completed`` one carries the full output, so let it win.
+                steps[idx].observation = _observation(
+                    observation_text, source_call_id=tool_id or None
+                )
             elif observation_text:
                 steps.append(
                     Step(

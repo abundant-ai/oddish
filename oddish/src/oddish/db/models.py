@@ -180,9 +180,9 @@ class WorkerJobKind(str, Enum):
     ANALYSIS = "ANALYSIS"
     QA_REVIEW = "QA_REVIEW"
     # Expand a task tarball into a per-file S3 tree at
-    # ``tasks/{task_id}/v{N}-files/``. Derived cache only; the archive
-    # at ``tasks/{task_id}/v{N}/.oddish-task.tar.gz`` remains the
-    # canonical, immutable artifact.
+    # ``tasks/{task_id}/v{N}-files/``. Derived cache only; the canonical
+    # archive is selected by ``task_versions.task_s3_key`` and is immutable
+    # at that prefix.
     TASK_EXPAND = "TASK_EXPAND"
     # Recompute one or more rows' projected ``effective_tag_ids`` arrays
     # from the truth tables (tags / tag_assignments / tag_exclusions /
@@ -793,7 +793,7 @@ class TaskModel(TimestampedMixin, Base):
     )
     link: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # Versioning: points to the latest TaskVersionModel row
+    # User-selected default; this need not be the highest-numbered version.
     current_version_id: Mapped[str | None] = mapped_column(
         String(160),
         ForeignKey("task_versions.id", ondelete="SET NULL", use_alter=True),
@@ -887,11 +887,7 @@ class TaskModel(TimestampedMixin, Base):
 
 
 class TaskVersionModel(TimestampedMixin, Base):
-    """Immutable snapshot of a task's content at a point in time.
-
-    Each re-upload of a task bundle creates a new row.  Trials reference the
-    specific version they ran against via ``task_version_id``.
-    """
+    """Task snapshot, normally immutable unless explicitly overwritten."""
 
     __tablename__ = "task_versions"
     __table_args__ = (
@@ -953,6 +949,45 @@ class TaskVersionModel(TimestampedMixin, Base):
         "TaskModel",
         back_populates="versions",
         foreign_keys=[task_id],
+    )
+
+
+class TaskBrowseSummaryModel(Base):
+    """Bounded task-browser aggregate for one immutable task version."""
+
+    __tablename__ = "task_version_browse_summaries"
+
+    task_version_id: Mapped[str] = mapped_column(
+        String(160),
+        ForeignKey("task_versions.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    task_id: Mapped[str] = mapped_column(
+        String(128), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
+    )
+    last_run_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    total_trials: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    completed_trials: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failed_trials: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    reward_success: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    reward_sum: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    reward_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pass_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    partial_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    fail_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    harness_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    skipped_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pending_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cost_breakdown: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+        server_default=text("NOW()"),
     )
 
 

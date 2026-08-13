@@ -107,6 +107,29 @@ async def test_unconfigured_gke_is_noop(monkeypatch):
     assert await gib.ensure_task_image("t", 1) == "no-gke-config"
 
 
+async def test_fetch_uses_database_selected_archive(monkeypatch):
+    selected_prefix = "tasks/t/v2-revisions/replacement/"
+    selected_archive = f"{selected_prefix}.oddish-task.tar.gz"
+
+    async def fake_resolve_source(task_id, task_version_id):
+        assert (task_id, task_version_id) == ("t", "t-v2")
+        return selected_prefix, None
+
+    class FakeStorage:
+        async def _resolve_task_prefix(self, task_id, version, task_s3_prefix=None):
+            assert (task_id, version, task_s3_prefix) == ("t", 2, selected_prefix)
+            return selected_prefix, selected_archive
+
+        async def download_bytes(self, archive_key):
+            assert archive_key == selected_archive
+            return b"replacement archive"
+
+    monkeypatch.setattr(gib, "resolve_task_source_location", fake_resolve_source)
+    monkeypatch.setattr(gib, "StorageClient", FakeStorage)
+
+    assert await gib._fetch_task_archive("t", 2) == b"replacement archive"
+
+
 def test_short_name_matches_harbor_task_config():
     harbor_models = pytest.importorskip("harbor.models.task.config")
     cfg = harbor_models.TaskConfig.model_construct(name="oddish/pt2jax-nano-adder")

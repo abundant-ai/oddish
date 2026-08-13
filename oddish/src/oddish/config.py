@@ -152,9 +152,12 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 # (see HARBOR_VARIANTS in oddish.core.harbor_source), never this default.
 HARBOR_DEFAULT_SOURCE = "https://github.com/abundant-ai/harbor"
 # Exact abundant-ai/harbor revision resolved into both uv.lock files. Harbor
-# PRs #20-#22 add EC2 Helm/k3s support, lifecycle timings, and the first-class
-# environment-provisioned event required for durable launch identity.
-HARBOR_DEFAULT_SHA = "a7caa586de620f8a7103018f99ce9e1603f90eb4"
+# PR #25 attributes Claude Code subagent steps to the subagent that produced
+# them (per-step ``extra.agent_id`` plus a dispatch-call
+# ``subagent_trajectory_ref``), on top of PRs #20-#22 (EC2 Helm/k3s support,
+# lifecycle timings, and the first-class environment-provisioned event
+# required for durable launch identity).
+HARBOR_DEFAULT_SHA = "5e40e8c5ec5502b108c5e94356311675f9de9a01"
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
@@ -1445,9 +1448,9 @@ class Settings(BaseSettings):
     # When enabled, uploading a new task version enqueues a
     # ``TASK_EXPAND`` worker job that writes the tarball's contents out
     # as individual S3 objects under ``tasks/{task_id}/v{N}-files/``
-    # alongside a ``.oddish-manifest.json`` sentinel. The canonical
-    # archive at ``tasks/{task_id}/v{N}/.oddish-task.tar.gz`` is never
-    # touched, so runner download paths remain unchanged.
+    # alongside a ``.oddish-manifest.json`` sentinel. The selected archive
+    # comes from ``task_versions.task_s3_key``; in-place replacements switch
+    # that pointer to a new immutable revision prefix.
     tasks_expand_archive: bool = True
     tasks_expand_max_bytes: int = 1_073_741_824  # 1 GiB
     tasks_expand_max_member_bytes: int = 104_857_600  # 100 MiB

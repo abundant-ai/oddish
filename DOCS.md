@@ -100,6 +100,7 @@ Options
 - `--run-probe` - Auto-enqueue a probe trial for the task version (off by default)
 - `--disable-verification/--enable-verification` - Skip task verification or tests
 - `--force-new-version` - Allocate a new task version even when the content is unchanged
+- `--overwrite-current-version` - Replace the selected current version in place; existing trials pinned to it will resolve to the replacement content
 - `--submit-concurrency INTEGER` - Max parallel task uploads/submissions (default: adaptive)
 - `--override-cpus INTEGER` - Override environment CPU count
 - `--override-memory-mb INTEGER` - Override environment memory
@@ -209,6 +210,9 @@ unchanged task content is idempotent (no new version).
 oddish upload ./my-task
 oddish upload -d swebench@1.0
 
+# Correct the selected version without growing version history
+oddish upload ./my-task --overwrite-current-version
+
 # Import Harbor job results into an existing task
 oddish upload ./jobs --task <task_id>
 
@@ -226,6 +230,7 @@ Options
 - `--skip-artifacts` - Import mode: import metadata without logs/trajectories
 - `--priority`, `-P TEXT` - Task row priority (default `low`)
 - `--message`, `-M TEXT` - Task version description
+- `--overwrite-current-version` - Replace the selected current version in place; existing trials pinned to it will resolve to the replacement content
 - `--user`, `-u TEXT` - Author override
 - `--quiet`, `-q` / `--json` / `--api TEXT`
 

@@ -11,6 +11,12 @@ from api.services.blocks.analyzer.trajectory import trajectory_prompts as tp
 from oddish.blocks.block import Block
 
 
+from api.services.blocks.analyzer.trajectory.delegation import (
+    delegation_facts,
+    subagent_dispatches_in,
+)
+
+
 class ExploreTrajectoryBlockTaxonomy(str, enum.Enum):
     # These two groups are no longer only documentary: the prompt renders them
     # as its own headings, so membership here is what the model is told the
@@ -281,6 +287,8 @@ class TrajectoryBlock(Block):
                 return 0
             return max(0, round(current - previous))
 
+        delegation = delegation_facts(self.trajectory_input.trajectory)
+
         components = []
         for component in out.components:
             component_steps = [
@@ -297,6 +305,15 @@ class TrajectoryBlock(Block):
                         len(step.get("tool_calls") or [])
                         for _, step in component_steps
                         if isinstance(step.get("tool_calls"), list)
+                    ),
+                    # None, not 0, when the agent cannot delegate at all --
+                    # same distinction `delegation.capable` carries.
+                    "subagent_dispatches": (
+                        subagent_dispatches_in(
+                            [step for _, step in component_steps]
+                        )
+                        if delegation["capable"]
+                        else None
                     ),
                     "duration_ms": sum(
                         duration_ms(index, step) for index, step in component_steps
@@ -319,4 +336,8 @@ class TrajectoryBlock(Block):
                 highlight.model_dump(mode="json") for highlight in out.highlights
             ],
             "components": components,
+            # Counted, not asked of the model. Absent on summaries written
+            # before this existed, which readers must treat as unknown rather
+            # than as "did not delegate".
+            "delegation": delegation,
         }

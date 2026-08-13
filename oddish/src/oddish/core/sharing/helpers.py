@@ -28,6 +28,7 @@ from oddish.db import (
     TaskVersionModel,
     TrialModel,
     experiment_trials,
+    get_session,
     get_storage_client,
     task_experiments,
 )
@@ -313,6 +314,20 @@ async def list_task_trials_for_public_experiment(
 # =============================================================================
 
 
+async def _task_version_s3_prefix(task_id: str, version: int | None) -> str | None:
+    """Resolve the DB-selected source prefix for a task version."""
+    if version is None:
+        return None
+    async with get_session() as session:
+        row = await session.scalar(
+            select(TaskVersionModel.task_s3_key).where(
+                TaskVersionModel.task_id == task_id,
+                TaskVersionModel.version == version,
+            )
+        )
+    return str(row) if row else None
+
+
 async def list_task_files_s3(
     task_id: str,
     prefix: str | None,
@@ -327,6 +342,7 @@ async def list_task_files_s3(
     storage = get_storage_client()
 
     try:
+        task_s3_prefix = await _task_version_s3_prefix(task_id, version)
         return await storage.list_task_files(
             task_id=task_id,
             prefix=prefix,
@@ -335,6 +351,7 @@ async def list_task_files_s3(
             cursor=cursor,
             presign=presign,
             version=version,
+            task_s3_prefix=task_s3_prefix,
             inline=inline,
         )
     except HTTPException:
@@ -359,6 +376,7 @@ async def stream_task_files_s3(
     falls back to per-file fetches for missing bodies.
     """
     storage = get_storage_client()
+    task_s3_prefix = await _task_version_s3_prefix(task_id, version)
 
     stream = storage.stream_task_files(
         task_id=task_id,
@@ -368,6 +386,7 @@ async def stream_task_files_s3(
         cursor=cursor,
         presign=presign,
         version=version,
+        task_s3_prefix=task_s3_prefix,
     )
     started = False
     try:
@@ -424,11 +443,13 @@ async def get_task_file_content_s3(
     storage = get_storage_client()
 
     try:
+        task_s3_prefix = await _task_version_s3_prefix(task_id, version)
         return await storage.get_task_file_content(
             task_id=task_id,
             file_path=file_path,
             presign=presign,
             version=version,
+            task_s3_prefix=task_s3_prefix,
             max_bytes=max_bytes,
         )
     except HTTPException:

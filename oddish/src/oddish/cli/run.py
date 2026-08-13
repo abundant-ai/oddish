@@ -505,6 +505,16 @@ def run(
             ),
         ),
     ] = False,
+    overwrite_current_version: Annotated[
+        bool,
+        typer.Option(
+            "--overwrite-current-version",
+            help=(
+                "Replace the selected current version in place; pinned trials "
+                "will use the replacement content."
+            ),
+        ),
+    ] = False,
     force: Annotated[
         bool,
         typer.Option(
@@ -704,6 +714,12 @@ def run(
     require_api_key(api_url)
     is_modal_api = is_modal_api_url(api_url)
 
+    if force_new_version and overwrite_current_version:
+        error_console.print(
+            "[red]--force-new-version and --overwrite-current-version cannot be used together.[/red]"
+        )
+        raise typer.Exit(1)
+
     import os as _os
 
     from oddish.registry_auth import parse_registry_login
@@ -843,6 +859,11 @@ def run(
         if task_names or exclude_task_names or n_tasks is not None:
             error_console.print(
                 "[red]--task does not support task filtering flags.[/red]"
+            )
+            raise typer.Exit(1)
+        if overwrite_current_version:
+            error_console.print(
+                "[red]--overwrite-current-version requires a local task path to upload.[/red]"
             )
             raise typer.Exit(1)
         # --experiment is allowed with --task: tasks can belong to multiple
@@ -993,6 +1014,7 @@ def run(
             json_output=json_output,
             progress_label="Uploading",
             force_new_version=force_new_version,
+            overwrite_current_version=overwrite_current_version,
             limiter=submit_limiter,
         )
         for task_path, result in zip(task_paths, upload_results):
@@ -1004,8 +1026,9 @@ def run(
                         f"[dim]Task '{task_path.name}' unchanged, reusing version {ver}[/dim]"
                     )
                 else:
+                    action = "overwrote" if overwrite_current_version else "created"
                     console.print(
-                        f"[dim]Task '{task_path.name}' updated, created version {ver}[/dim]"
+                        f"[dim]Task '{task_path.name}' updated, {action} version {ver}[/dim]"
                     )
             submit_targets.append(
                 (

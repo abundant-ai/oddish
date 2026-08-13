@@ -138,7 +138,7 @@ async def test_both_cohorts_empty_provisions_nothing(patched, monkeypatch):
     assert out.findings == []
 
 
-async def test_two_cohort_comparisons_get_bucket_headings(patched, monkeypatch):
+async def test_two_agent_capabilitiess_get_bucket_headings(patched, monkeypatch):
     m, _, _ = patched
     monkeypatch.setattr(
         m,
@@ -180,7 +180,7 @@ async def test_two_cohort_comparisons_get_bucket_headings(patched, monkeypatch):
     )
 
 
-async def test_single_cohort_comparison_is_unprefixed(patched, monkeypatch):
+async def test_single_agent_capabilities_is_unprefixed(patched, monkeypatch):
     m, _, _ = patched
     monkeypatch.setattr(
         m,

@@ -43,7 +43,7 @@ import {
   Package,
   Trash2,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, urlWithSearch } from "@/lib/utils";
 import {
   formatLineRange,
   parseLineRange,
@@ -829,36 +829,6 @@ function harborRepoLabel(source: string | null | undefined): string {
   );
 }
 
-/**
- * Split a trial's identifier into the readable task stem and its trial index.
- *
- * Trial ids are `{task_id}-{index}` and task ids carry a random 8-hex suffix,
- * so the raw name is mostly noise ("…-scan-variant-cbb887ea-174"). Derive the
- * stem from `task_id` rather than parsing the name, so the split is exact.
- */
-function trialTitleParts(
-  trial: Trial,
-  task: Task | null,
-): { stem: string; index: string | null } {
-  const taskId = trial.task_id;
-  const raw = trial.name || trial.id;
-  const prefix = `${taskId}-`;
-  const fromId = trial.id.startsWith(prefix);
-  const index = fromId
-    ? trial.id.slice(prefix.length)
-    : (raw.match(/-(\d+)$/)?.[1] ?? null);
-  const stem = fromId ? taskId : index ? raw.slice(0, -(index.length + 1)) : raw;
-  // The task's own name is the de-hashed stem when the id extends it, and it
-  // is authoritative: trimming a hex-looking tail off THAT would eat a name
-  // that genuinely ends in one (a task named after a commit). Only the
-  // fallback — no task loaded, or a name that already carries the hash — is
-  // reduced to guessing at the suffix.
-  if (task && stem.startsWith(`${task.name}-`)) {
-    return { stem: task.name, index };
-  }
-  return { stem: stem.replace(/-[0-9a-f]{8}$/, ""), index };
-}
-
 export function TrialDetailPanel({
   isOpen,
   onClose,
@@ -896,9 +866,17 @@ export function TrialDetailPanel({
     [],
   );
 
+  // A share page opens on the trajectory: its Summary tab is mostly the
+  // operator surfaces this view hides (the QA card, the repro command), so
+  // landing there shows a reader the emptiest tab in the drawer. Only when the
+  // run actually has a trajectory — baselines like nop/oracle have none, and
+  // "No trajectory available" is a worse landing still. An explicit ?tab= wins
+  // either way.
+  const shareDefaultTab =
+    showAnalysis === false && trial?.has_trajectory ? "trajectory" : "summary";
   const [activeTab, setActiveTab] = useState(() => {
     const urlTab = getLiveParam("tab");
-    return urlTab && validTabs.has(urlTab) ? urlTab : "summary";
+    return urlTab && validTabs.has(urlTab) ? urlTab : shareDefaultTab;
   });
   const [showFullError, setShowFullError] = useState(false);
   const [retrying, setRetrying] = useState(false);
@@ -1051,7 +1029,7 @@ export function TrialDetailPanel({
     }
 
     if (next.toString() !== current.toString()) {
-      const url = `${window.location.pathname}${next.toString() ? `?${next.toString()}` : ""}`;
+      const url = urlWithSearch(next.toString());
       window.history.replaceState(window.history.state, "", url);
     }
   }, [
@@ -1263,20 +1241,11 @@ export function TrialDetailPanel({
     onNavigate(nextTrial, nextIndex);
   };
 
-  const { stem: titleStem, index: titleIndex } = trialTitleParts(trial, task);
-
   const content = (
     <>
       <DrawerHeader className="border-border border-b px-4 py-3 sm:px-6 sm:py-4">
         <DrawerTitle className="flex min-w-0 items-center gap-2 pr-16 font-mono text-sm sm:text-base">
-          <span className="min-w-0 truncate" title={trial.id}>
-            {titleStem}
-          </span>
-          {titleIndex && (
-            <span className="text-muted-foreground shrink-0 font-mono text-xs">
-              #{titleIndex}
-            </span>
-          )}
+          <span className="min-w-0 truncate">{trial.name}</span>
           {showAnalysis && trial.task_version != null && (
             <span className="border-border bg-muted/50 text-muted-foreground inline-flex shrink-0 items-center rounded-md border px-1.5 py-0.5 font-mono text-[11px] font-medium">
               v{trial.task_version}
@@ -1288,10 +1257,7 @@ export function TrialDetailPanel({
               <span className="truncate text-[10px] font-bold sm:text-xs">
                 {trial.agent}
               </span>
-              <span
-                className="flex items-center gap-1 truncate font-mono text-[9px] font-normal sm:text-[10px]"
-                title={trial.model ?? undefined}
-              >
+              <span className="flex items-center gap-1 truncate font-mono text-[9px] font-normal sm:text-[10px]">
                 <QueueKeyIcon
                   queueKey={trial.provider}
                   model={trial.model}
@@ -1299,8 +1265,7 @@ export function TrialDetailPanel({
                   size={11}
                   className="shrink-0"
                 />
-                {/* The icon already carries the provider, so drop its prefix. */}
-                {trial.model?.split("/").pop() ?? "—"}
+                {trial.model ?? "—"}
               </span>
             </span>
             {sandboxBackend && <SandboxBackendBadge backend={sandboxBackend} />}
@@ -1822,6 +1787,7 @@ export function TrialDetailPanel({
             <TaskFilesPanel
               isOpen={isOpen}
               onClose={() => {}}
+              activePane="file"
               taskId={null}
               filesUrl={`${apiBaseUrl}/trials/${trial.id}/files`}
               initialFilePath={filesTargetPath}

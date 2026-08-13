@@ -42,6 +42,7 @@ from oddish.core.endpoints import (
     delete_task_core,
     get_experiment_cost_totals,
     get_task_detail_core,
+    get_task_open_core,
     get_task_for_org_core,
     get_task_status_core,
     get_task_version_core,
@@ -97,6 +98,8 @@ from api.routers.task_submission import (
     stamp_experiment_owner,
 )
 from dashboard_attribution import resolve_search_authors
+from api.services.agent_capabilities import get_or_generate_analysis
+from api.services.cohort_rollup import build_cohort_rollup
 from oddish.core.tasks import (
     complete_task_upload,
     initialize_task_upload,
@@ -133,6 +136,7 @@ from oddish.schemas import (
     TaskBrowseResponse,
     TaskBatchCancelRequest,
     TaskDetailResponse,
+    TaskOpenResponse,
     TaskUploadCompleteRequest,
     TaskUploadInitRequest,
     TaskUploadInitResponse,
@@ -270,6 +274,7 @@ async def init_task_upload(
         content_hash=payload.content_hash,
         message=payload.message,
         force_new_version=payload.force_new_version,
+        overwrite_current_version=payload.overwrite_current_version,
     )
 
 
@@ -302,6 +307,9 @@ async def finalize_task_upload(
         register=payload.register_task,
         user=resolved_user,
         priority=payload.priority,
+        overwrite_current_version=payload.overwrite_current_version,
+        staging_key=payload.staging_key,
+        overwrite_base_content_hash=payload.overwrite_base_content_hash,
     )
 
 
@@ -665,6 +673,25 @@ async def get_experiment_cost_totals_route(
 
     async with get_session() as session:
         return await get_experiment_cost_totals(
+            session, experiment_id=experiment_id, org_id=auth.org_id
+        )
+
+
+@router.get("/experiments/{experiment_id}/cohort-rollup")
+async def get_experiment_cohort_rollup(
+    experiment_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> dict:
+    """Models x behaviour categories across the experiment's compared versions.
+
+    READ scope only, and deliberately no ``refresh``: the rollup reads stored
+    comparisons and reports what is missing. Generating here would put one LLM
+    call per uncompared task behind a page view.
+    """
+    auth.require_scope(APIKeyScope.READ)
+
+    async with get_session() as session:
+        return await build_cohort_rollup(
             session, experiment_id=experiment_id, org_id=auth.org_id
         )
 
@@ -1566,6 +1593,26 @@ async def get_task_status(
         )
 
 
+@router.get("/tasks/{task_id}/open", response_model=TaskOpenResponse)
+async def get_task_open(
+    request: Request,
+    task_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    version_id: str | None = None,
+) -> TaskOpenResponse:
+    """Bounded task-page header, aggregates, and trial preview."""
+    auth.require_scope(APIKeyScope.READ)
+
+    async with get_session() as session:
+        return await get_task_open_core(
+            session,
+            task_id=task_id,
+            version_id=version_id,
+            org_id=auth.org_id,
+            record_timing=_make_timing_recorder(request),
+        )
+
+
 @router.get("/tasks/{task_id}/detail", response_model=TaskDetailResponse)
 async def get_task_detail(
     task_id: str,
@@ -1576,6 +1623,107 @@ async def get_task_detail(
 
     async with get_session() as session:
         return await get_task_detail_core(session, task_id=task_id, org_id=auth.org_id)
+
+
+@router.get("/tasks/{task_id}/agent-capabilities")
+# Pre-rename path. Kept so a frontend deploy that lags this one -- or a
+# rollback to it -- keeps working; undocumented so only the new path is
+# published. Remove once no released frontend calls it.
+@router.get("/tasks/{task_id}/cohort-comparison", include_in_schema=False)
+async def get_task_agent_capabilities(
+    task_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    response: Response,
+    refresh: bool = Query(
+        False,
+        description=(
+            "Discard the stored analysis and generate a new one. Costs an "
+            "LLM call, so it needs the same scope as an analysis rerun."
+        ),
+    ),
+    version: int | None = Query(
+        None,
+        description=(
+            "Compare this task version instead of the current one. The overview "
+            "scopes its other sections to the selected version, so without this "
+            "an older version would show the current version's comparison."
+        ),
+    ),
+) -> dict:
+    """Successful-vs-failing comparison for a task version.
+
+    404 when the task has too few classified trials to compare.
+    """
+    auth.require_scope(APIKeyScope.READ)
+    if refresh:
+        auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
+    async with get_session() as session:
+        # This router has no _get_authorized_task helper; task-scoped routes
+        # authorize by filtering on auth.org_id (see the READ routes above).
+        task = (
+            await session.execute(
+                select(TaskModel).where(
+                    TaskModel.id == task_id,
+                    TaskModel.org_id == auth.org_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if task is None or not task.current_version_id:
+            raise HTTPException(status_code=404, detail="Task not found")
+        version_id = task.current_version_id
+        if version is not None:
+            # Imported here to match this module's convention: TaskVersionModel
+            # is pulled in per-function rather than at module scope.
+            from oddish.db.models import TaskVersionModel
+
+            version_id = (
+                await session.execute(
+                    select(TaskVersionModel.id).where(
+                        TaskVersionModel.task_id == task.id,
+                        TaskVersionModel.version == version,
+                    )
+                )
+            ).scalar_one_or_none()
+            if version_id is None:
+                raise HTTPException(status_code=404, detail="Task version not found")
+        from api.services.agent_capabilities import (
+            analysis_is_eligible,
+            enqueue_analysis,
+            load_stored_analysis,
+        )
+        from oddish.db.models import TaskVersionModel
+
+        result = None if refresh else await load_stored_analysis(
+            session, version_id, task_id=task.id
+        )
+        if result is None:
+            if not await analysis_is_eligible(session, version_id):
+                raise HTTPException(
+                    status_code=404,
+                    detail="Not enough classified trials to compare",
+                )
+            # Serialize cache misses for this version across API containers.
+            await session.execute(
+                select(TaskVersionModel.id)
+                .where(TaskVersionModel.id == version_id)
+                .with_for_update()
+            )
+            await enqueue_analysis(
+                session,
+                task_id=task.id,
+                task_version_id=version_id,
+                task_name=task.name,
+                org_id=task.org_id,
+                triggered_by_user_id=auth.user_id,
+            )
+            response.status_code = status.HTTP_202_ACCEPTED
+            return {"status": "queued", "task_version_id": version_id}
+    # Stamped at serve time rather than stored in the block's output: the
+    # version is what the comparison covers, so every response carries it
+    # whether it was generated or read from cache. The UI needs it because
+    # the task page addresses a version by id (`?version=`), while this
+    # endpoint takes the version number.
+    return {**result.output, "task_version_id": version_id}
 
 
 # =============================================================================
@@ -1732,10 +1880,10 @@ async def get_task_file_content(
 ):
     """Get content of a specific task file from S3.
 
-    When the underlying source is a pinned task archive (immutable at a
-    given version) the response carries ``ETag`` + ``Cache-Control``
-    headers and honors ``If-None-Match`` with a ``304``, so the browser's
-    HTTP cache covers repeated clicks on the same file.
+    When the underlying source is a pinned task archive, the response carries
+    ``ETag`` and revalidating ``Cache-Control`` headers and honors
+    ``If-None-Match`` with a ``304``. Versions can be explicitly overwritten,
+    so clients must revalidate rather than treating a version URL as immutable.
     """
     auth.require_scope(APIKeyScope.READ)
 
@@ -1768,10 +1916,10 @@ async def get_task_file_content(
                 status_code=304,
                 headers={
                     "ETag": etag_value,
-                    "Cache-Control": "private, max-age=86400, immutable",
+                    "Cache-Control": "private, no-cache",
                 },
             )
         response.headers["ETag"] = etag_value
-        response.headers["Cache-Control"] = "private, max-age=86400, immutable"
+        response.headers["Cache-Control"] = "private, no-cache"
 
     return result

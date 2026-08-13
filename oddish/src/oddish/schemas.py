@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -511,12 +511,8 @@ class TaskSweepSubmission(BaseModel):
         _reject_gpu_tpu_conflict(self.harbor)
         for config in self.configs:
             resolved_environment = config.environment or self.environment
-            _reject_tpu_on_non_gke_environment(
-                self.harbor, resolved_environment
-            )
-            _reject_unsupported_ec2_configuration(
-                self.harbor, resolved_environment
-            )
+            _reject_tpu_on_non_gke_environment(self.harbor, resolved_environment)
+            _reject_unsupported_ec2_configuration(self.harbor, resolved_environment)
         return self
 
     content_hash: str | None = Field(
@@ -729,6 +725,19 @@ class TaskUploadInitRequest(BaseModel):
             "stamp (e.g. to flip run_analysis on)."
         ),
     )
+    overwrite_current_version: bool = Field(
+        False,
+        description=(
+            "Replace the selected current version in place; trials pinned to "
+            "that version will resolve to the replacement content."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_version_mode(self) -> "TaskUploadInitRequest":
+        if self.force_new_version and self.overwrite_current_version:
+            raise ValueError("version upload modes are mutually exclusive")
+        return self
 
 
 class TaskUploadCompleteRequest(BaseModel):
@@ -743,6 +752,35 @@ class TaskUploadCompleteRequest(BaseModel):
     message: str | None = Field(
         None, description="Optional description of what changed in this version"
     )
+    overwrite_current_version: bool = Field(
+        False,
+        description="Finalize an in-place current-version replacement.",
+    )
+    staging_key: str | None = Field(
+        None,
+        description="Server-issued staging object for an in-place replacement.",
+    )
+    overwrite_base_content_hash: str | None = Field(
+        None,
+        description=(
+            "Content hash observed when an in-place replacement was initialized; "
+            "used to reject stale completions."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_overwrite_staging_key(self) -> "TaskUploadCompleteRequest":
+        if self.overwrite_current_version and not self.staging_key:
+            raise ValueError("staging_key is required for an in-place replacement")
+        if (
+            self.overwrite_current_version
+            and "overwrite_base_content_hash" not in self.model_fields_set
+        ):
+            raise ValueError(
+                "overwrite_base_content_hash is required for an in-place replacement"
+            )
+        return self
+
     register_task: bool = Field(
         False,
         description=(
@@ -790,6 +828,8 @@ class TaskUploadInitResponse(UploadResponse):
     upload_method: str | None = None
     upload_headers: dict[str, str] = Field(default_factory=dict)
     requires_completion: bool = False
+    staging_key: str | None = None
+    overwrite_base_content_hash: str | None = None
 
 
 class TrialQueueInfo(BaseModel):
@@ -837,8 +877,8 @@ class TaskVersionResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class TaskVersionSummary(BaseModel):
-    """Per-version aggregates used by the task detail view."""
+class TaskVersionRollup(BaseModel):
+    """Aggregate fields shared by bounded and detailed version responses."""
 
     id: str
     version: int
@@ -864,6 +904,12 @@ class TaskVersionSummary(BaseModel):
     billed_has_estimated: bool = False
     billed_has_native: bool = False
     last_run_at: datetime | None = None
+
+
+class TaskVersionSummary(TaskVersionRollup):
+    """Per-version aggregates and audit metadata for the detail resource."""
+
+    content_hash: str | None = None
     # Pre-trial source audit for this version, flattened to the items the task
     # page renders. Empty list + null status means never audited; empty list +
     # SUCCESS means audited and clean.
@@ -1392,6 +1438,12 @@ class TaskBrowseItem(BaseModel):
     reward_success: int
     reward_sum: float
     reward_total: int
+    pass_count: int = 0
+    partial_count: int = 0
+    fail_count: int = 0
+    harness_count: int = 0
+    skipped_count: int = 0
+    pending_count: int = 0
     last_run_at: datetime | None = None
     link: str | None = None
     github_meta: dict[str, str] | None = None
@@ -1407,6 +1459,7 @@ class TaskBrowseItem(BaseModel):
     # because ``analysis_costs.task_id`` is NULL on trial-scoped QA rows.
     qa_cost_usd: float = 0.0
     latest_trials: list[TaskBrowseTrial] = Field(default_factory=list)
+    latest_trials_truncated: bool = False
     experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
     user_tags: list[UserTagRef] = Field(default_factory=list)
 
@@ -1509,6 +1562,120 @@ class TaskStatusResponse(BaseModel):
     finished_at: datetime | None
 
     model_config = {"from_attributes": True}
+
+
+class TaskOpenVersionRef(BaseModel):
+    id: str
+    version: int
+    message: str | None = None
+    created_at: datetime
+    is_current: bool = False
+
+
+class TaskOpenVerdict(BaseModel):
+    """Presentation-only verdict fields needed by the task page."""
+
+    is_good: bool | None = None
+    confidence: str | None = None
+    primary_issue: str | None = None
+    reasoning: str | None = None
+    recommendations: list[str] = Field(default_factory=list)
+
+
+class TaskOpenAgentModelSummary(BaseModel):
+    """Exact selected-version rollup for one task-page agent/model card."""
+
+    agent: str
+    model: str | None = None
+    providers: list[str] = Field(default_factory=list)
+    is_probe: bool = False
+    trial_count: int = 0
+    completed_count: int = 0
+    failed_count: int = 0
+    skipped_count: int = 0
+    pending_count: int = 0
+    pass_count: int = 0
+    partial_count: int = 0
+    fail_count: int = 0
+    reward_sum: float = 0.0
+    reward_total: int = 0
+    cost_usd: float = 0.0
+    cost_trial_count: int = 0
+    cost_has_estimated: bool = False
+    cost_has_native: bool = False
+    billed_cost_usd: float = 0.0
+    billed_trial_count: int = 0
+    billed_has_estimated: bool = False
+    billed_has_native: bool = False
+    last_run_at: datetime | None = None
+    duration_sum_seconds: float = 0.0
+    duration_trial_count: int = 0
+
+
+class TaskOpenVersionSummary(TaskVersionRollup):
+    """Selected-version fields owned by the bounded task-open resource."""
+
+    user_tags: list[UserTagRef] = Field(default_factory=list)
+    experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
+    agent_models: list[TaskOpenAgentModelSummary] = Field(default_factory=list)
+
+
+class TaskOpenTask(BaseModel):
+    id: str
+    name: str
+    status: TaskStatus
+    priority: Priority
+    user: str
+    github_username: str | None = None
+    github_meta: dict[str, str] | None = None
+    link: str | None = None
+    task_path: str
+    experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
+    current_version: int | None = None
+    current_version_id: str | None = None
+    user_tags: list[UserTagRef] = Field(default_factory=list)
+    run_analysis: bool = False
+    verdict_status: VerdictStatus | None = None
+    verdict: TaskOpenVerdict | None = None
+    verdict_error: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class TaskOpenTotals(TaskCostTotals):
+    token_count: int = 0
+    token_trial_count: int = 0
+
+
+class TaskOpenTrialRef(BaseModel):
+    id: str
+    name: str
+    experiment_id: str | None = None
+    task_version_id: str | None = None
+    agent: str
+    provider: str
+    model: str | None = None
+    status: TrialStatus
+    reward: float | None = None
+    error_kind: str | None = None
+    is_probe: bool = False
+    cost_usd: float | None = None
+    cost_is_estimated: bool | None = None
+    is_billed: bool = False
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+class TaskOpenResponse(BaseModel):
+    """Bounded first-paint resource for ``GET /tasks/{task_id}/open``."""
+
+    task: TaskOpenTask
+    default_version: TaskOpenVersionRef | None = None
+    selected_version: TaskOpenVersionSummary | None = None
+    totals: TaskOpenTotals = Field(default_factory=TaskOpenTotals)
+    trials: list[TaskOpenTrialRef] = Field(default_factory=list)
+    trials_has_more: bool = False
 
 
 # =============================================================================
@@ -2089,5 +2256,3 @@ class DocumentResponse(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
-
-

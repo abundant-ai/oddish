@@ -3595,6 +3595,82 @@ def test_store_trial_results_retries_when_exception_type_is_missing(monkeypatch)
     assert trial.status == trial_handler.TrialStatus.RETRYING
 
 
+def test_store_trial_results_retries_execution_exception_without_outcome(monkeypatch):
+    """A worker/runtime exception before Harbor returns an outcome is recoverable."""
+
+    trial = _make_retry_decision_trial(attempts=1, max_attempts=6)
+    _install_retry_decision_session_fakes(monkeypatch, trial)
+
+    stored = asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id="trial-1",
+            outcome=None,
+            trial_s3_key=None,
+            execution_error="ConnectionResetError: worker transport disappeared",
+            trial_attempt=trial.attempts,
+        )
+    )
+
+    assert trial.status == trial_handler.TrialStatus.RETRYING
+    assert trial.finished_at is None
+    assert trial.error_message == "ConnectionResetError: worker transport disappeared"
+    assert stored == (False, False)
+
+
+def test_store_trial_results_retries_runtime_cancel_with_budget(monkeypatch):
+    """Harbor runtime CANCEL is retryable unless an external cancel won the row."""
+
+    trial = _make_retry_decision_trial(attempts=1, max_attempts=6)
+    trial.status = trial_handler.TrialStatus.FAILED
+    trial.harbor_stage = "cancelled"
+    trial.error_message = "Trial cancelled by the runtime"
+    trial.finished_at = object()
+    _install_retry_decision_session_fakes(monkeypatch, trial)
+
+    outcome = harbor_runner.HarborOutcome(
+        reward=None,
+        error="ConnectionResetError: environment stopped",
+        exit_code=-1,
+        duration_sec=5.0,
+        job_result_path=None,
+        job_dir=None,
+        exception_type="ConnectionResetError",
+    )
+
+    stored = asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id="trial-1",
+            outcome=outcome,
+            trial_s3_key=None,
+            execution_error=None,
+            trial_attempt=trial.attempts,
+        )
+    )
+
+    assert trial.status == trial_handler.TrialStatus.RETRYING
+    assert trial.finished_at is None
+    assert stored == (False, False)
+
+
+def test_store_trial_results_fails_execution_exception_at_attempt_limit(monkeypatch):
+    trial = _make_retry_decision_trial(attempts=6, max_attempts=6)
+    _install_retry_decision_session_fakes(monkeypatch, trial)
+
+    stored = asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id="trial-1",
+            outcome=None,
+            trial_s3_key=None,
+            execution_error="RuntimeError: worker failed",
+            trial_attempt=trial.attempts,
+        )
+    )
+
+    assert trial.status == trial_handler.TrialStatus.FAILED
+    assert trial.finished_at is not None
+    assert stored == (True, True)
+
+
 def test_non_retryable_set_includes_known_terminal_failures():
     """Tripwire: if Harbor's RetryConfig defaults change, we want the test
     to fail loudly so we can decide whether to track the new entry."""
