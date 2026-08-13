@@ -77,10 +77,14 @@ async def _finish_all_trials(task_id: str) -> None:
     """Mark every trial SUCCESS so it is otherwise QA-eligible."""
     async with get_session() as session:
         trials = (
-            await session.execute(
-                select(TrialModel).where(TrialModel.task_id == task_id)
+            (
+                await session.execute(
+                    select(TrialModel).where(TrialModel.task_id == task_id)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         for trial in trials:
             trial.status = TrialStatus.SUCCESS
 
@@ -96,6 +100,9 @@ async def test_classifier_skips_baselines_including_variants(cleanup_task_ids):
     await _finish_all_trials(task_id)
 
     async with get_session() as session:
+        current_version_id = await session.scalar(
+            select(TaskModel.current_version_id).where(TaskModel.id == task_id)
+        )
         agent_by_id = dict(
             (
                 await session.execute(
@@ -106,13 +113,47 @@ async def test_classifier_skips_baselines_including_variants(cleanup_task_ids):
             ).all()
         )
 
-    live_ids = {tid for tid, _ in await _load_live_trials_for_classification(task_id)}
+    live_ids = {
+        tid
+        for tid, _ in await _load_live_trials_for_classification(
+            task_id, current_version_id
+        )
+    }
 
     assert [agent_by_id[tid] for tid in live_ids] == [_LLM_AGENT]
     # Named individually so a regression says WHICH variant leaked through.
     for tid, agent in agent_by_id.items():
         if agent != _LLM_AGENT:
             assert tid not in live_ids, f"baseline {agent!r} was queued for QA"
+
+
+@pytest.mark.asyncio
+async def test_classifier_selects_only_the_requested_task_version(
+    monkeypatch,
+):
+    captured = []
+
+    class _Rows:
+        def all(self):
+            return []
+
+    class _Session:
+        async def execute(self, statement):
+            captured.append(statement)
+            return _Rows()
+
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield _Session()
+
+    monkeypatch.setattr("oddish.workers.queue.qa_handler.get_session", fake_get_session)
+
+    await _load_live_trials_for_classification("task-1", "task-1-v2")
+
+    compiled = str(captured[0].compile(compile_kwargs={"literal_binds": True}))
+    assert "trials.task_version_id = 'task-1-v2'" in compiled
 
 
 @pytest.mark.asyncio
@@ -131,9 +172,7 @@ async def test_baseline_only_task_enqueues_no_qa_job(cleanup_task_ids):
     async with get_session() as session:
         await create_task(
             session,
-            _submission(
-                "stage", [("nop", None), ("oracle", None)], run_analysis=True
-            ),
+            _submission("stage", [("nop", None), ("oracle", None)], run_analysis=True),
             task_id=task_id,
         )
     await _finish_all_trials(task_id)
@@ -149,13 +188,17 @@ async def test_baseline_only_task_enqueues_no_qa_job(cleanup_task_ids):
     async with get_session() as session:
         task = await session.get(TaskModel, task_id)
         qa_jobs = (
-            await session.execute(
-                select(WorkerJobModel.id).where(
-                    WorkerJobModel.kind == WorkerJobKind.QA,
-                    WorkerJobModel.subject_id == task_id,
+            (
+                await session.execute(
+                    select(WorkerJobModel.id).where(
+                        WorkerJobModel.kind == WorkerJobKind.QA,
+                        WorkerJobModel.subject_id == task_id,
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
     assert qa_jobs == [], "a baseline-only task enqueued a QA job with nothing to QA"
     assert task.status == TaskStatus.COMPLETED

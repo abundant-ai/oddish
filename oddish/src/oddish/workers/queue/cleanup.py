@@ -1052,7 +1052,12 @@ async def _heal_stale_verdict_pending(session) -> int:
             verdict_pending_completed += 1
         else:
             queue_verdict(task)
-            await enqueue_qa_worker_job(session, task_id=task.id, org_id=task.org_id)
+            await enqueue_qa_worker_job(
+                session,
+                task_id=task.id,
+                task_version_id=task.current_version_id,
+                org_id=task.org_id,
+            )
     return verdict_pending_completed
 
 

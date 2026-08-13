@@ -332,6 +332,31 @@ async def test_qa_handler_returns_ok_on_success(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_qa_handler_drains_job_pinned_to_non_current_version(monkeypatch):
+    task_row = SimpleNamespace(
+        current_version_id="task-xyz-v2",
+        verdict_status=VerdictStatus.QUEUED,
+        verdict_error=None,
+    )
+    monkeypatch.setattr(
+        handlers_module, "get_session", _fake_get_session_factory(task_row)
+    )
+
+    async def fail_run(*_args, **_kwargs):
+        raise AssertionError("stale QA job must not run")
+
+    monkeypatch.setattr(handlers_module, "run_task_qa_job", fail_run)
+    claim = _verdict_claim(
+        payload={"task_id": "task-xyz", "task_version_id": "task-xyz-v1"}
+    )
+
+    outcome = await QaJobHandler().run(claim)
+
+    assert outcome.success is not None
+    assert task_row.verdict_status == VerdictStatus.QUEUED
+
+
+@pytest.mark.asyncio
 async def test_qa_handler_resets_terminal_state_on_retry(monkeypatch):
     task_row = SimpleNamespace(
         verdict_status=VerdictStatus.FAILED,

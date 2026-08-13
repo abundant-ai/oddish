@@ -522,19 +522,22 @@ async def enqueue_qa_worker_job(
     session: AsyncSession,
     *,
     task_id: str,
+    task_version_id: str | None,
     org_id: str | None,
 ) -> WorkerJobModel:
-    """Enqueue the single task-level QA job for a task.
+    """Enqueue the single task-level QA job for a task version.
 
-    One job per task: it classifies every live trial's trajectory and then
-    synthesizes the task verdict.
+    The version is pinned at enqueue time so a later default-version change
+    cannot make a queued worker combine one source snapshot with another
+    version's trajectories. ``None`` is retained for legacy tasks without a
+    version row; the worker resolves those against the task row as before.
     """
     return await enqueue_worker_job(
         session,
         EnqueueRequest(
             kind=WorkerJobKind.QA,
             queue_key=settings.get_qa_queue_key(),
-            payload={"task_id": task_id},
+            payload={"task_id": task_id, "task_version_id": task_version_id},
             subject_table="tasks",
             subject_id=task_id,
             org_id=org_id,
@@ -1393,11 +1396,11 @@ async def append_trials_to_task(
 
 
 async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
-    """Check if all trials for a task are done and transition task status.
+    """Check if all current-version trials are done and transition task status.
 
     If run_analysis (the QA opt-in) is enabled -> enqueue the single
-    task-level QA job (which classifies every trial then synthesizes the
-    verdict) and move the task to VERDICT_PENDING.
+    version-pinned task-level QA job (which classifies the current version's
+    trials then synthesizes the verdict) and move the task to VERDICT_PENDING.
     If it is disabled -> status becomes COMPLETED.
 
     There is only one QA job: it handles both per-trial classification and
@@ -1424,10 +1427,17 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
     if task.status not in (TaskStatus.PENDING, TaskStatus.RUNNING):
         return False
 
+    # A late completion from a historical version must not drive the current
+    # version's pipeline. Its result remains queryable on that version, but QA
+    # and the task-level verdict describe only ``tasks.current_version_id``.
+    if trial.task_version_id != task.current_version_id:
+        return False
+
     pending_count = await session.scalar(
         select(func.count(TrialModel.id)).where(
             and_(
                 TrialModel.task_id == task_id,
+                TrialModel.task_version_id == task.current_version_id,
                 TrialModel.superseded_by_trial_id.is_(None),
                 TrialModel.status.in_(
                     [
@@ -1459,6 +1469,7 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
             select(func.count(TrialModel.id)).where(
                 and_(
                     TrialModel.task_id == task_id,
+                    TrialModel.task_version_id == task.current_version_id,
                     TrialModel.superseded_by_trial_id.is_(None),
                     TrialModel.imported_at.is_(None),
                     func.coalesce(TrialModel.harbor_stage, "")
@@ -1475,7 +1486,12 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
     if task.run_analysis and qa_eligible:
         task.status = TaskStatus.VERDICT_PENDING
         queue_verdict(task)
-        await enqueue_qa_worker_job(session, task_id=task_id, org_id=task.org_id)
+        await enqueue_qa_worker_job(
+            session,
+            task_id=task_id,
+            task_version_id=task.current_version_id,
+            org_id=task.org_id,
+        )
     else:
         task.status = TaskStatus.COMPLETED
         task.finished_at = utcnow()
@@ -1888,6 +1904,7 @@ async def maybe_advance_legacy_analyzing_task(
         select(func.count(TrialModel.id)).where(
             and_(
                 TrialModel.task_id == task_id,
+                TrialModel.task_version_id == task.current_version_id,
                 TrialModel.superseded_by_trial_id.is_(None),
                 # SKIPPED trials are never analyzed (analysis_status stays NULL),
                 # so they must not count as pending or the task would never
@@ -1912,7 +1929,12 @@ async def maybe_advance_legacy_analyzing_task(
 
     task.status = TaskStatus.VERDICT_PENDING
     queue_verdict(task)
-    await enqueue_qa_worker_job(session, task_id=task_id, org_id=task.org_id)
+    await enqueue_qa_worker_job(
+        session,
+        task_id=task_id,
+        task_version_id=task.current_version_id,
+        org_id=task.org_id,
+    )
     await session.flush()
 
     return True

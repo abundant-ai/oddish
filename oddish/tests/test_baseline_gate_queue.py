@@ -701,6 +701,9 @@ async def test_qa_classification_excludes_gate_skipped_and_cancelled(
         cancelled_baseline.harbor_stage = CANCELLED_HARBOR_STAGE
 
     async with get_session() as session:
+        current_version_id = await session.scalar(
+            select(TaskModel.current_version_id).where(TaskModel.id == task_id)
+        )
         kimi_id = (
             await session.execute(
                 select(TrialModel.id).where(
@@ -709,7 +712,12 @@ async def test_qa_classification_excludes_gate_skipped_and_cancelled(
             )
         ).scalar_one()
 
-    live_ids = {tid for tid, _ in await _load_live_trials_for_classification(task_id)}
+    live_ids = {
+        tid
+        for tid, _ in await _load_live_trials_for_classification(
+            task_id, current_version_id
+        )
+    }
     # Neither the gate-skipped (never-run) kimi nor the cancelled baseline has
     # an outcome to classify. The remaining completed baseline is excluded too,
     # now that nop/oracle are never classified -- so this mixed task, whose only

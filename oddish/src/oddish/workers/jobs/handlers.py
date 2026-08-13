@@ -234,6 +234,14 @@ class QaJobHandler:
             task = await session.get(TaskModel, task_id)
             if task is None:
                 return _fail_permanent(f"Task {task_id} vanished before QA")
+            task_version_id = (job.payload or {}).get("task_version_id")
+            if task_version_id is not None and task_version_id != getattr(
+                task, "current_version_id", None
+            ):
+                # The task changed versions while this job waited. It is not a
+                # retryable worker failure: a current-version job owns the new
+                # verdict lifecycle, and this stale row must drain quietly.
+                return JobOutcome.ok()
             if task.verdict_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
                 queue_verdict(task)
 
@@ -242,12 +250,17 @@ class QaJobHandler:
             queue_key=job.queue_key,
             modal_function_call_id=job.modal_function_call_id,
             worker_job_id=job.id,
+            task_version_id=task_version_id,
         )
 
         async with get_session() as session:
             task = await session.get(TaskModel, task_id)
             if task is None:
                 return _fail_permanent(f"Task {task_id} vanished mid-QA")
+            if task_version_id is not None and task_version_id != getattr(
+                task, "current_version_id", None
+            ):
+                return JobOutcome.ok()
             if task.verdict_status == VerdictStatus.SUCCESS:
                 return JobOutcome.ok()
             if task.verdict_status == VerdictStatus.FAILED:

@@ -64,12 +64,19 @@ VERDICT_FALLBACK_SCHEMA = normalize_findings_schema(
 )
 
 
-async def _load_pre_trial_items(task_id: str) -> list[ActionItem] | None:
-    """The audit findings the verdict must see: the current version's, else
-    the newest audited version's. Returns ``None`` when the state is unknown.
-    Parsed leniently — one malformed item must not hide the rest."""
+async def _load_pre_trial_items(
+    task_id: str, task_version_id: str | None = None
+) -> list[ActionItem] | None:
+    """Load audit findings for the version being judged.
+
+    New QA jobs always pass their pinned current version. The fallback to the
+    newest audited version is retained only for legacy, unversioned jobs; a
+    current-version verdict must never inherit findings from older source.
+    Returns ``None`` when the selected version's state is unknown. Parsed
+    leniently — one malformed item must not hide the rest.
+    """
     async with get_session() as session:
-        current_id = await session.scalar(
+        current_id = task_version_id or await session.scalar(
             select(TaskModel.current_version_id).where(TaskModel.id == task_id)
         )
         version = (
@@ -85,7 +92,7 @@ async def _load_pre_trial_items(task_id: str) -> list[ActionItem] | None:
             if version.pre_trial is None:
                 return None
             raw_items = version.pre_trial.get("items", [])
-        else:
+        elif task_version_id is None:
             # Never audited: the newest audited version is the best signal.
             version = (
                 await session.execute(
@@ -99,6 +106,10 @@ async def _load_pre_trial_items(task_id: str) -> list[ActionItem] | None:
             raw_items = ((version.pre_trial if version else None) or {}).get(
                 "items", []
             )
+        else:
+            # This version has no audit state. Treat it as unknown instead of
+            # borrowing findings from another immutable source snapshot.
+            return None
 
     items: list[ActionItem] = []
     for raw in raw_items:
@@ -306,6 +317,23 @@ async def _worker_job_is_running(
         statement = statement.with_for_update()
     status = await session.scalar(statement)
     return status == WorkerJobStatus.RUNNING
+
+
+async def _qa_result_store_allowed(
+    session,
+    *,
+    worker_job_id: str | None,
+    task_id: str,
+    task_version_id: str | None,
+) -> bool:
+    """Allow a task verdict write only while its pinned version is current."""
+    if not await _worker_job_is_running(session, worker_job_id):
+        return False
+    task = await session.get(TaskModel, task_id)
+    return (
+        task is not None
+        and getattr(task, "current_version_id", None) == task_version_id
+    )
 
 
 async def _classify_waiting_out_peer_claim(
@@ -702,8 +730,9 @@ def _classifications_from_trials(trials) -> list:
 
 async def _load_live_trials_for_classification(
     task_id: str,
+    task_version_id: str | None = None,
 ) -> list[tuple[str, AnalysisStatus | None]]:
-    """Return live trial IDs and QA states.
+    """Return live trial IDs and QA states for one task version.
 
     Trials created by the Sauron->Oddish bulk migration (``imported_at IS NOT
     NULL``) are excluded: classifying ~1M historical trials was ruled out on
@@ -730,6 +759,7 @@ async def _load_live_trials_for_classification(
                     TrialModel.analysis_status,
                 ).where(
                     TrialModel.task_id == task_id,
+                    TrialModel.task_version_id == task_version_id,
                     TrialModel.superseded_by_trial_id.is_(None),
                     # Exclude bulk-migrated Sauron trials (see docstring): too
                     # costly to classify ~1M historical rows.
@@ -761,8 +791,9 @@ async def run_task_qa_job(
     queue_key: str,
     modal_function_call_id: str | None = None,
     worker_job_id: str | None = None,
+    task_version_id: str | None = None,
 ) -> None:
-    """Classify a task's live trials and store one verdict."""
+    """Classify the pinned current version's live trials and store one verdict."""
     console.print(f"[cyan]Processing task QA[/cyan] {task_id} (queue_key={queue_key})")
 
     async with get_session() as session:
@@ -772,6 +803,15 @@ async def run_task_qa_job(
 
         if not await _worker_job_is_running(session, worker_job_id):
             console.print(f"[dim]QA {task_id} skipped; job was cancelled[/dim]")
+            return
+
+        current_version_id = getattr(task, "current_version_id", None)
+        target_version_id = task_version_id or current_version_id
+        if target_version_id != current_version_id:
+            console.print(
+                f"[dim]QA {task_id} skipped; version {target_version_id} is no "
+                f"longer current ({current_version_id})[/dim]"
+            )
             return
 
         if task.verdict_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
@@ -796,7 +836,9 @@ async def run_task_qa_job(
 
     classifications: list[TrialClassification] = []
     try:
-        live_trials = await _load_live_trials_for_classification(task_id)
+        live_trials = await _load_live_trials_for_classification(
+            task_id, target_version_id
+        )
 
         # Pre-trial: a per-version task-source audit, independent of trial
         # classification -- runs before the per-trial loop, even when there are
@@ -805,7 +847,10 @@ async def run_task_qa_job(
         # synth hook is registered. Failures are swallowed inside so it can
         # never block the verdict path; cancellation propagates.
         await _run_pre_trial_audit(
-            task_id, worker_job_id, [trial_id for trial_id, _ in live_trials]
+            task_id,
+            worker_job_id,
+            [trial_id for trial_id, _ in live_trials],
+            task_version_id=target_version_id,
         )
 
         if not live_trials:
@@ -826,7 +871,11 @@ async def run_task_qa_job(
             # as neither good nor bad rather than skewing either bucket.
             async with get_session() as session:
                 task = await session.get(TaskModel, task_id, with_for_update=True)
-                if task and await _worker_job_is_running(session, worker_job_id):
+                if (
+                    task
+                    and getattr(task, "current_version_id", None) == target_version_id
+                    and await _worker_job_is_running(session, worker_job_id)
+                ):
                     complete_verdict_without_result(task, now=utcnow())
                     task.status = TaskStatus.COMPLETED
                     task.finished_at = utcnow()
@@ -873,6 +922,7 @@ async def run_task_qa_job(
             trials_result = await session.execute(
                 select(TrialModel).where(
                     TrialModel.task_id == task_id,
+                    TrialModel.task_version_id == target_version_id,
                     TrialModel.superseded_by_trial_id.is_(None),
                 )
             )
@@ -884,7 +934,9 @@ async def run_task_qa_job(
         # is a follow-up-audit gap, not a verdict-blocking error, so it must
         # never stop verdict synthesis from running.
         try:
-            await aggregate_exploited_into_pre_trial(task_id)
+            await aggregate_exploited_into_pre_trial(
+                task_id, task_version_id=target_version_id
+            )
         except Exception as exc:  # noqa: BLE001
             console.print(
                 f"[red]Exploited-item aggregation failed for {task_id}: "
@@ -899,7 +951,7 @@ async def run_task_qa_job(
         pre_trial_items: list[ActionItem] = []
         pre_trial_load_failed = False
         try:
-            loaded = await _load_pre_trial_items(task_id)
+            loaded = await _load_pre_trial_items(task_id, target_version_id)
             if loaded is None:
                 pre_trial_load_failed = True
             else:
@@ -963,7 +1015,12 @@ async def run_task_qa_job(
             task_id,
             payload=verdict_result,
             error=verdict_error,
-            should_store=lambda session: _worker_job_is_running(session, worker_job_id),
+            should_store=lambda session: _qa_result_store_allowed(
+                session,
+                worker_job_id=worker_job_id,
+                task_id=task_id,
+                task_version_id=target_version_id,
+            ),
         )
     )
     if status is None:

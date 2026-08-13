@@ -93,6 +93,7 @@ async def _resolve_trajectory_components(trial_id: str) -> list[dict] | None:
         return None
     return summary.get("components") or None
 
+
 # A trial whose analysis reached one of these is decided: no claim applies and
 # no caller should wait on it.
 _TERMINAL_ANALYSIS_STATUSES = (AnalysisStatus.SUCCESS, AnalysisStatus.FAILED)
@@ -246,9 +247,18 @@ async def classify_trial_and_store(
             raise RuntimeError(f"Task {trial.task_id} not found")
 
         task_id = task.id
-        task_s3_key = task.task_s3_key
+        # A task row mirrors the selected default version's source. Pin the
+        # classifier to the immutable version the trial actually ran against,
+        # otherwise changing the default can pair an old trajectory with new
+        # instructions/tests during QA.
+        version = (
+            await session.get(TaskVersionModel, trial.task_version_id)
+            if trial.task_version_id
+            else None
+        )
+        task_s3_key = version.task_s3_key if version is not None else task.task_s3_key
         trial_s3_key = trial.trial_s3_key
-        task_path = task.task_path
+        task_path = version.task_path if version is not None else task.task_path
         trial_result_path = trial.harbor_result_path
         trial_agent = trial.agent
         # Pre-trial findings live on the audited task version; prefer the
@@ -257,9 +267,13 @@ async def classify_trial_and_store(
         pre_trial_items = None
         version_id = trial.task_version_id or task.current_version_id
         if version_id:
-            version = await session.get(TaskVersionModel, version_id)
-            if version is not None and version.pre_trial:
-                pre_trial_items = (version.pre_trial or {}).get("items") or None
+            audit_version = (
+                version
+                if version is not None and version.id == version_id
+                else await session.get(TaskVersionModel, version_id)
+            )
+            if audit_version is not None and audit_version.pre_trial:
+                pre_trial_items = (audit_version.pre_trial or {}).get("items") or None
         # Probe trials carry the operator directive in harbor_config; their
         # analysis is the shared probe_summary, not the generic classifier.
         trial_harbor_config = trial.harbor_config or {}

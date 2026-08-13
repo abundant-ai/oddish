@@ -161,7 +161,9 @@ async def sync_pre_trial_to_task_version(
         return version.pre_trial_status.value
 
 
-async def aggregate_exploited_into_pre_trial(task_id: str) -> None:
+async def aggregate_exploited_into_pre_trial(
+    task_id: str, *, task_version_id: str | None = None
+) -> None:
     """Stamp exploited=true (+ evidence) onto ``task_versions.pre_trial`` items
     whose id was exploited in any trial. The "doubly note" elevation.
     Idempotent.
@@ -171,34 +173,28 @@ async def aggregate_exploited_into_pre_trial(task_id: str) -> None:
     version at all are logged.
     """
     async with get_session() as session:
+        versions_stmt = (
+            select(TaskVersionModel)
+            .where(TaskVersionModel.task_id == task_id)
+            .where(TaskVersionModel.pre_trial.isnot(None))
+        )
+        if task_version_id is not None:
+            versions_stmt = versions_stmt.where(TaskVersionModel.id == task_version_id)
         versions = (
-            (
-                await session.execute(
-                    select(TaskVersionModel)
-                    .where(TaskVersionModel.task_id == task_id)
-                    .where(TaskVersionModel.pre_trial.isnot(None))
-                    .with_for_update()
-                )
-            )
-            .scalars()
-            .all()
+            (await session.execute(versions_stmt.with_for_update())).scalars().all()
         )
         if not versions:
             return
 
-        # Intentionally reads ALL trials, unlike the verdict path which filters
-        # ``superseded_by_trial_id.is_(None)``: a superseded/retried trial that
-        # exploited the weakness is still valid evidence the task-source flaw is
-        # exploitable. This is a task-level audit, not the current-trial verdict.
-        trials = (
-            (
-                await session.execute(
-                    select(TrialModel).where(TrialModel.task_id == task_id)
-                )
+        # Intentionally includes superseded/retried trials for the selected
+        # version: an exploit remains evidence about that immutable source even
+        # when its attempt was replaced. It must not cross version boundaries.
+        trials_stmt = select(TrialModel).where(TrialModel.task_id == task_id)
+        if task_version_id is not None:
+            trials_stmt = trials_stmt.where(
+                TrialModel.task_version_id == task_version_id
             )
-            .scalars()
-            .all()
-        )
+        trials = (await session.execute(trials_stmt)).scalars().all()
 
         exploited: dict[str, str] = {}
         for trial in trials:

@@ -237,8 +237,10 @@ def _reset_trial_analysis(trial: TrialModel) -> None:
     trial.analysis_log = None
 
 
-async def _count_active_trials(session: AsyncSession, *, task_id: str) -> int:
-    """Count non-terminal, non-superseded trials for a task."""
+async def _count_active_trials(
+    session: AsyncSession, *, task_id: str, task_version_id: str | None
+) -> int:
+    """Count non-terminal, non-superseded trials for one task version."""
     active_statuses = [
         TrialStatus.PENDING,
         TrialStatus.QUEUED,
@@ -248,6 +250,7 @@ async def _count_active_trials(session: AsyncSession, *, task_id: str) -> int:
     count = await session.scalar(
         select(func.count(TrialModel.id)).where(
             TrialModel.task_id == task_id,
+            TrialModel.task_version_id == task_version_id,
             TrialModel.superseded_by_trial_id.is_(None),
             TrialModel.status.in_(active_statuses),
         )
@@ -263,9 +266,10 @@ async def rerun_task_qa_core(
 ) -> dict[str, str | int]:
     """(Re)run the single task-level QA job for a finished task.
 
-    Resets every live trial's classification, then enqueues one QA job that
-    re-classifies all live trials and synthesizes a fresh verdict. The current
-    published verdict remains visible until that job replaces it.
+    Resets the current version's live trial classifications, then enqueues one
+    version-pinned QA job that re-classifies those trials and synthesizes a
+    fresh verdict. Historical versions are untouched. The current published
+    verdict remains visible until that job replaces it.
     """
     return await backfill_task_analysis_core(
         session,
@@ -295,7 +299,7 @@ async def backfill_task_analysis_core(
       trials are (re)classified;
     * ``force=True`` with ``trial_ids`` resets only those trials -> true
       per-trial re-run;
-    * ``force=True`` without ``trial_ids`` resets every live trial.
+    * ``force=True`` without ``trial_ids`` resets every current-version live trial.
 
     ``enable_analysis=True`` also flips ``task.run_analysis`` on so future
     trials auto-analyze. Directly enqueuing the QA job is the gate override:
@@ -320,12 +324,19 @@ async def backfill_task_analysis_core(
         raise HTTPException(status_code=400, detail="Task has no trials to QA")
 
     live_trials = [
-        trial for trial in task.trials if trial.superseded_by_trial_id is None
+        trial
+        for trial in task.trials
+        if trial.superseded_by_trial_id is None
+        and trial.task_version_id == task.current_version_id
     ]
     if not live_trials:
         raise HTTPException(status_code=400, detail="Task has no live trials to QA")
 
-    active_trials = await _count_active_trials(session, task_id=task.id)
+    active_trials = await _count_active_trials(
+        session,
+        task_id=task.id,
+        task_version_id=task.current_version_id,
+    )
     if active_trials > 0:
         raise HTTPException(
             status_code=400,
@@ -441,7 +452,12 @@ async def backfill_task_analysis_core(
 
     from oddish.queue import enqueue_qa_worker_job
 
-    await enqueue_qa_worker_job(session, task_id=task.id, org_id=task.org_id)
+    await enqueue_qa_worker_job(
+        session,
+        task_id=task.id,
+        task_version_id=task.current_version_id,
+        org_id=task.org_id,
+    )
 
     await session.commit()
     return {
