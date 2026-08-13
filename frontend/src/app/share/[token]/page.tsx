@@ -64,6 +64,10 @@ export default function PublicExperimentPage() {
             readOnly
             allowRetry={false}
             showAnalysis={false}
+            // No QA on a share page, but the agent capability analysis is
+            // published: it describes what the agents did, read from their
+            // trajectories, and carries no QA verdict.
+            showCapabilityAnalysis
             apiBaseUrl={scopedApiBaseUrl}
           />
         </div>

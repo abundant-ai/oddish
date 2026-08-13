@@ -134,6 +134,12 @@ interface ExperimentDetailViewProps {
   readOnly?: boolean;
   allowRetry?: boolean;
   showAnalysis?: boolean;
+  /**
+   * Offer the agent capability analysis in the task drawer even with
+   * `showAnalysis` false. The share view shows no QA but does show the
+   * analysis; see TaskFilesPanel for why it renders on its own there.
+   */
+  showCapabilityAnalysis?: boolean;
   apiBaseUrl?: string;
   onTaskUnlink?: (task: Task) => Promise<void>;
   onTrialDelete?: (trial: Trial, task: Task | null) => Promise<void>;
@@ -933,6 +939,7 @@ export function ExperimentDetailView({
   readOnly = false,
   allowRetry = true,
   showAnalysis = true,
+  showCapabilityAnalysis = false,
   apiBaseUrl = "/api",
   onTaskUnlink,
   onTrialDelete,
@@ -1747,6 +1754,7 @@ export function ExperimentDetailView({
               apiBaseUrl={apiBaseUrl}
               cancelExperimentId={experimentId}
               showAnalysis={showAnalysis}
+              showCapabilityAnalysis={showCapabilityAnalysis}
               contentOnly={true}
             />
           }
@@ -1763,6 +1771,7 @@ export function ExperimentDetailView({
               allowRetry={allowRetry}
               cancelExperimentId={experimentId}
               showAnalysis={showAnalysis}
+              showCapabilityAnalysis={showCapabilityAnalysis}
               onNavigate={(nextTask, nextIndex) => {
                 if (!drawerState) return;
                 cancelPendingDeepLink();

@@ -50,6 +50,8 @@ import {
   type TaskDetailResource,
 } from "@/lib/task-detail-resource";
 import { TaskOverviewPanel } from "@/components/task-overview-panel";
+import { CohortComparisonSection } from "@/components/cohort-comparison-section";
+import { useCohortComparison } from "@/lib/use-cohort-comparison";
 import {
   getCancelActionLabel,
   isActivePipelineStatus,
@@ -143,6 +145,15 @@ interface TaskFilesPanelProps {
    * read-only share view.
    */
   showAnalysis?: boolean;
+  /**
+   * Offer the agent capability analysis on its own, without the rest of the
+   * overview. For the share view, which shows no QA: with `showAnalysis`
+   * false the overview pane would be hidden outright, and this puts the
+   * cohort comparison back on its own — `TaskOverviewPanel` never mounts, so
+   * the QA sections and their per-trial `analysis` payload are absent rather
+   * than suppressed. Only takes effect when `showAnalysis` is false.
+   */
+  showCapabilityAnalysis?: boolean;
   onRetryComplete?: (taskIds?: string[]) => void;
   /** Render content only without ResizableDrawer wrapper */
   contentOnly?: boolean;
@@ -418,6 +429,7 @@ export function TaskFilesPanel({
   cancelExperimentId,
   allowRetry = true,
   showAnalysis = true,
+  showCapabilityAnalysis = false,
   onRetryComplete,
   contentOnly = false,
   filesUrl,
@@ -472,12 +484,42 @@ export function TaskFilesPanel({
   // Scoped panes (the experiment drawer) pin the version whose files are on
   // screen; the checks must describe that same source.
   const checksVersion = pickChecksVersion(checksDetail, taskVersion);
+  // The pinned version wins outright — falling back to the /detail-resolved
+  // version while it loads would briefly widen the trial aggregation to every
+  // version. Without a pin, undefined keeps the aggregation waiting until the
+  // version resolves; only a loaded task with no versions is genuinely
+  // unscoped. Hoisted out of the render because the capability-only pane
+  // fetches against it before deciding whether to offer the pane at all.
+  const overviewVersion =
+    taskVersion !== undefined
+      ? taskVersion
+      : checksVersion
+        ? checksVersion.version
+        : checksDetail !== undefined
+          ? null
+          : undefined;
+  // The share pane: capability analysis alone, no QA. `TaskOverviewPanel` is
+  // never mounted for it, so its QA sections and its trials fetch are absent.
+  const capabilityOnly = showAnalysis === false && showCapabilityAnalysis;
+  // The comparison decides whether the entry exists, rather than the entry
+  // opening onto an empty pane: it is gated server-side on having enough
+  // classified runs, and it is the only thing in this pane. The public route
+  // is a pure cache read, so a 404 is cheap and final.
+  const { data: capabilityData } = useCohortComparison(
+    capabilityOnly ? effectiveChecksTaskId : null,
+    baseUrl,
+    overviewVersion,
+  );
   const overviewAvailable =
-    showAnalysis !== false && effectiveChecksTaskId !== null;
+    effectiveChecksTaskId !== null &&
+    (showAnalysis !== false || (capabilityOnly && capabilityData != null));
   // Until /detail answers, the checks state is unknown, not "unaudited":
   // an enabled Run button on the misread queues an audit that wipes findings.
+  // Never in the capability-only pane: `checksKey` is null there, so /detail
+  // is never fetched and this would latch on "loading" forever.
   const checksLoading =
     overviewAvailable &&
+    !capabilityOnly &&
     (isBrowseTaskDetail(checksResource) ||
       (checksDetail === undefined && !checksLoadError));
   // A failed revalidation with data already in hand is not "unavailable":
@@ -1447,7 +1489,7 @@ export function TaskFilesPanel({
               {overviewAvailable && (
                 <div className="border-border mb-2 border-b pb-2">
                   <div className="text-muted-foreground px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
-                    Task overview
+                    {capabilityOnly ? "Analysis" : "Task overview"}
                   </div>
                   <button
                     type="button"
@@ -1457,18 +1499,27 @@ export function TaskFilesPanel({
                         ? "bg-primary/20 text-primary"
                         : "hover:bg-muted/50 cursor-pointer"
                     }`}
-                    title="View the task overview: task QA plus aggregated trial QA"
+                    title={
+                      capabilityOnly
+                        ? "What separated the successful runs from the failing ones, drawn from the agents' trajectories"
+                        : "View the task overview: task QA plus aggregated trial QA"
+                    }
                   >
                     <ListChecks
                       className="h-3.5 w-3.5 shrink-0"
                       aria-hidden="true"
                     />
+                    {/* The capability pane has no /detail fetch behind it, and
+                        the entry only exists once its comparison has loaded —
+                        so it is never loading and never unavailable. */}
                     <span className="truncate">
-                      {checksLoading
-                        ? "Loading…"
-                        : checksLoadFailure
-                          ? "Unavailable"
-                          : "Overview"}
+                      {capabilityOnly
+                        ? "Agent capability analysis"
+                        : checksLoading
+                          ? "Loading…"
+                          : checksLoadFailure
+                            ? "Unavailable"
+                            : "Overview"}
                     </span>
                   </button>
                 </div>
@@ -1540,25 +1591,23 @@ export function TaskFilesPanel({
               </div>
             )}
             <div ref={contentRef} className="bg-card flex-1 overflow-auto">
-              {overviewShowing ? (
+              {overviewShowing && capabilityOnly ? (
+                // The capability analysis on its own. Rendered here rather
+                // than through TaskOverviewPanel so the QA sections beside it
+                // are structurally absent on a share page, not conditionally
+                // hidden. `overviewAvailable` already required the comparison
+                // to have loaded, and the version to be a number with it.
+                <CohortComparisonSection
+                  taskId={effectiveChecksTaskId!}
+                  apiBaseUrl={baseUrl}
+                  version={overviewVersion as number}
+                  linkEvidence={false}
+                />
+              ) : overviewShowing ? (
                 <TaskOverviewPanel
                   taskId={effectiveChecksTaskId}
                   apiBaseUrl={baseUrl}
-                  // The pinned version wins outright — falling back to the
-                  // /detail-resolved version while it loads would briefly
-                  // widen the trial aggregation to every version. Without a
-                  // pin, undefined keeps the aggregation waiting until the
-                  // version resolves; only a loaded task with no versions is
-                  // genuinely unscoped.
-                  version={
-                    taskVersion !== undefined
-                      ? taskVersion
-                      : checksVersion
-                        ? checksVersion.version
-                        : checksDetail !== undefined
-                          ? null
-                          : undefined
-                  }
+                  version={overviewVersion}
                   // The host's rows are the authoritative set: an experiment
                   // drawer aggregates only its own trials. A task prop with
                   // no trials yet still scopes (empty + overviewTrialsLoading

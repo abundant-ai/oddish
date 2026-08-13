@@ -512,6 +512,16 @@ async def _load_fresh_summary_block(
     ).scalar_one_or_none()
 
 
+async def load_stored_summary(session: AsyncSession, trial_id: str) -> dict | None:
+    """The stored trajectory summary for a trial, or None. Never generates.
+
+    The read half of ``get_or_generate_summary``, split out for the public
+    share route, where generation must stay unreachable: it costs an LLM call
+    per miss and an unauthenticated page view may not spend one.
+    """
+    return await _load_fresh_summary_block(session, trial_id)
+
+
 async def get_or_generate_summary(
     session: AsyncSession,
     trial: TrialModel,

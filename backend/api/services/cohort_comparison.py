@@ -441,6 +441,39 @@ async def _load_fresh_comparison(
     return None
 
 
+async def load_stored_comparison(
+    session: AsyncSession, task_version_id: str, *, task_id: str
+) -> dict | None:
+    """The stored comparison for a version, or None. Never generates.
+
+    The read half of ``get_or_generate_comparison``, split out for the public
+    share route. Generation is deliberately unreachable there: it costs an LLM
+    call and holds a connection from a three-slot pool for minutes, neither of
+    which an unauthenticated page view may trigger.
+
+    The cohorts still have to be resolved, because the stored block is only
+    valid for the trial set it was built from -- ``is_stale`` compares the
+    membership hash. That resolve is the same handful of indexed reads the
+    authenticated path does before its own cache hit.
+    """
+    from api.services.blocks.analyzer.cohort.cohort_comparison_block import (
+        SCHEMA_VERSION,
+    )
+
+    successful, failing = await resolve_cohorts(session, task_version_id)
+    if max(len(successful), len(failing)) < MIN_COHORT:
+        return None
+    return await _load_fresh_comparison(
+        session,
+        task_id=task_id,
+        task_version_id=task_version_id,
+        current_hash=cohort_hash(
+            [t["trial_id"] for t in successful], [t["trial_id"] for t in failing]
+        ),
+        schema_version=SCHEMA_VERSION,
+    )
+
+
 async def _end_read_transaction(session: AsyncSession) -> None:
     """Close the read transaction before anything slow.
 
