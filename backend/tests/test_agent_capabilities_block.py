@@ -4,9 +4,9 @@ import pytest
 
 from oddish.blocks.block import BlockParseError
 
-from api.services.blocks.analyzer.cohort.cohort_comparison_block import (
+from api.services.blocks.analyzer.cohort.agent_capabilities_block import (
     SCHEMA_VERSION,
-    CohortComparisonBlock,
+    AgentCapabilitiesBlock,
     CohortInput,
 )
 from api.services.blocks.analyzer.cohort import cohort_prompts as cp
@@ -27,7 +27,7 @@ TRIAL = {
 
 
 def _block(**overrides):
-    return CohortComparisonBlock(
+    return AgentCapabilitiesBlock(
         CohortInput(
             task_name="demo-task",
             successful=overrides.get("successful", [TRIAL]),
@@ -203,7 +203,7 @@ def test_to_output_rejects_malformed_json():
 
 
 def test_to_output_rejects_a_non_object_reply():
-    # Previously reached CohortComparisonOutput(**data) and raised TypeError,
+    # Previously reached AgentCapabilitiesOutput(**data) and raised TypeError,
     # which is not a ValueError and so escaped the transform contract.
     with pytest.raises(BlockParseError):
         _block().to_output("[]")
@@ -231,7 +231,7 @@ def test_to_output_from_cli_unwraps_the_stream_json_envelope():
 
 
 def test_to_output_from_cli_keeps_a_step_citation_backed_by_the_index():
-    block = CohortComparisonBlock(
+    block = AgentCapabilitiesBlock(
         CohortInput(task_name="demo-task", successful=[TRIAL], failing=[]),
         instructions_template=cp.load_cohort_prompt_template(),
         step_index={("t1", 34): "Running mvn -q test to get a baseline."},
@@ -248,7 +248,7 @@ def test_a_malformed_citation_does_not_take_the_whole_run_down():
     # raise in a model_validator, which fails model_validate for the entire
     # payload -- one bad citation discarding a minutes-long tool loop. They are
     # dropped instead, so the good citation beside them still lands.
-    block = CohortComparisonBlock(
+    block = AgentCapabilitiesBlock(
         CohortInput(task_name="demo-task", successful=[TRIAL], failing=[]),
         instructions_template=cp.load_cohort_prompt_template(),
         step_index={("t1", 34): "Running mvn -q test to get a baseline."},
@@ -267,7 +267,7 @@ def test_a_malformed_citation_does_not_take_the_whole_run_down():
 def test_a_step_citation_cannot_survive_without_a_step_index():
     # The API path has no index, so it must not be able to serve step-level
     # citations it had no way to verify.
-    block = CohortComparisonBlock(
+    block = AgentCapabilitiesBlock(
         CohortInput(task_name="demo-task", successful=[TRIAL], failing=[]),
         instructions_template=cp.load_cohort_prompt_template(),
     )

@@ -92,7 +92,7 @@ API_MEMORY_MB = _env_int("ODDISH_MODAL_API_MEMORY_MB", 4096)
 # rather than inlined on the function because in-request generation has to fit
 # inside it: a subprocess budget larger than this can never be honoured, since
 # the platform kills the request first and whatever it had done is lost. See
-# COMPARISON_TIMEOUT in api/services/cohort_comparison.py, and the test that
+# ANALYSIS_TIMEOUT in api/services/agent_capabilities.py, and the test that
 # holds the two in step.
 API_TIMEOUT_SECONDS = _env_int("ODDISH_MODAL_API_TIMEOUT", 600)
 LOCAL_DOTENV_PATH = Path(__file__).with_name(".env")

@@ -42,7 +42,7 @@ class AnalyzerType(str, enum.Enum):
     PRE_TRIAL = "pre_trial"
     POST_TRIAL = "post_trial"
     CUSTOM_QA = "custom_qa"
-    COHORT_COMPARISON = "cohort_comparison"
+    AGENT_CAPABILITIES = "agent_capabilities"
 
 
 # The backend each analyzer needs, keyed by what the analyzer is permitted to

@@ -1,7 +1,7 @@
 import json
 
-from api.services.blocks.analyzer.cohort.cohort_comparison_block import BehaviorEvidence
-from api.services.cohort_comparison import validate_evidence
+from api.services.blocks.analyzer.cohort.agent_capabilities_block import BehaviorEvidence
+from api.services.agent_capabilities import validate_evidence
 
 
 def _trial(trial_id="t1"):
