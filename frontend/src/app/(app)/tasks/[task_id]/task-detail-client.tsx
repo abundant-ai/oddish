@@ -734,13 +734,20 @@ export function TaskDetailClient({
     [drawerTrialGroups]
   );
 
-  const [deepLinkTrialId] = useState<string | null>(() => {
+  const [deepLinkTrialParam] = useState<string | null>(() => {
     if (typeof window === "undefined") return null;
     return expandTrialParam(
       new URLSearchParams(window.location.search).get("trial"),
       taskId
     );
   });
+  // Expanded the same way hydration expands it: a hand-shortened index has to
+  // become `{task_id}-{index}` before it can match a preview row or address
+  // /api/trials/{id}, or a short link to an out-of-preview trial never resolves.
+  const deepLinkTrialId = expandTrialParam(
+    deepLinkTrialParam,
+    task?.id ?? taskId
+  );
   const previewDeepLinkTrial = deepLinkTrialId
     ? drawerOrderedTrials.find((trial) => trial.id === deepLinkTrialId)
     : undefined;
