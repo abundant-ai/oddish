@@ -225,10 +225,10 @@ def test_comparison_404_for_unknown_version_number(
     load.assert_not_awaited()
 
 
-def test_comparison_miss_is_404_and_never_generates(
+def test_comparison_miss_enqueues_and_returns_202(
     client, patched_session, version_in_experiment
 ):
-    generate = AsyncMock()
+    enqueue = AsyncMock()
     with patched_session, version_in_experiment, patch(
         "api.routers.public_analysis.get_public_task_for_experiment",
         new=_public_task(),
@@ -236,11 +236,15 @@ def test_comparison_miss_is_404_and_never_generates(
         "api.services.agent_capabilities.load_stored_analysis",
         new=AsyncMock(return_value=None),
     ), patch(
-        "api.services.agent_capabilities.get_or_generate_analysis", new=generate
+        "api.services.agent_capabilities.analysis_is_eligible",
+        new=AsyncMock(return_value=True),
+    ), patch(
+        "api.services.agent_capabilities.enqueue_analysis", new=enqueue
     ):
         resp = client.get(COMPARISON_URL)
-    assert resp.status_code == 404
-    generate.assert_not_awaited()
+    assert resp.status_code == 202
+    assert resp.json() == {"status": "queued", "task_version_id": "tv-current"}
+    enqueue.assert_awaited_once()
 
 
 def test_comparison_404_when_token_does_not_expose_the_task(client, patched_session):

@@ -49,7 +49,10 @@ export async function GET(
     }
 
     const data = await res.json();
-    return attachUpstreamServerTiming(NextResponse.json(data), res);
+    return attachUpstreamServerTiming(
+      NextResponse.json(data, { status: res.status }),
+      res,
+    );
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },

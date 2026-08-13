@@ -203,13 +203,17 @@ export function AgentCapabilitiesSection({
       across versions. The host decides not to render instead. */
   version: number;
 }) {
-  const { data, error, isLoading } = useSWR<AgentCapabilities>(
+  const { data, error, isLoading } = useSWR<AgentCapabilities | null>(
     `${apiBaseUrl}/tasks/${encodeURIComponent(taskId)}/agent-capabilities?version=${version}`,
     (url: string) =>
-      fetch(url).then((response) =>
-        response.ok ? response.json() : Promise.reject(response.status)
-      ),
-    { shouldRetryOnError: false }
+      fetch(url).then((response) => {
+        if (response.status === 202) return null;
+        return response.ok ? response.json() : Promise.reject(response.status);
+      }),
+    {
+      shouldRetryOnError: false,
+      refreshInterval: (value) => (value === null ? 3000 : 0),
+    }
   );
 
   if (error === 404) {
@@ -223,7 +227,7 @@ export function AgentCapabilitiesSection({
     );
   }
 
-  if (isLoading) {
+  if (isLoading || data === null) {
     return (
       <section className="flex flex-col gap-2 p-4">
         <h3 className={SECTION_HEADING}>Capabilities</h3>
