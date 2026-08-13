@@ -60,7 +60,11 @@ async def test_creates_collection_links_trials_and_tasks(session):
     await session.flush()
 
     resp = await create_trial_collection_core(
-        session, name="my collection", trial_ids=[t1.id, t2.id], org_id="org1"
+        session,
+        name="my collection",
+        trial_ids=[t1.id, t2.id],
+        org_id="org1",
+        owner_user_id="user-1",
     )
     await session.flush()
 
@@ -71,6 +75,7 @@ async def test_creates_collection_links_trials_and_tasks(session):
     ).scalar_one()
     assert exp.is_collection is True
     assert exp.org_id == "org1"
+    assert exp.owner_user_id == "user-1"
 
     linked = (
         (

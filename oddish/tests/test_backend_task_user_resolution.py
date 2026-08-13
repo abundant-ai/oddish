@@ -44,6 +44,7 @@ class _UserStub:
         email: str | None = None,
         org_id: str | None = None,
         is_active: bool = True,
+        deleted_at: object | None = None,
     ) -> None:
         self.id = id
         self.github_username = github_username
@@ -52,6 +53,7 @@ class _UserStub:
         self.email = email
         self.org_id = org_id
         self.is_active = is_active
+        self.deleted_at = deleted_at
 
 
 @dataclass
@@ -68,6 +70,14 @@ class _AuthStub:
     user: _UserStub | None = None
     user_id: str | None = None
     org_id: str = "org-1"
+
+
+@dataclass(frozen=True)
+class _SweepAttributionStub:
+    experiment_owner_user_id: str | None = None
+    task_created_by_user_id: str | None = None
+    billed_user_id: str | None = None
+    api_key_id: str | None = None
 
 
 def _execute_result(users: list[Any]) -> Any:
@@ -138,8 +148,8 @@ def _load_helpers() -> dict[str, Any]:
             "async def lookup_users_by_github_username(",
             "async def _lookup_user_by_github_id(",
             "async def resolve_connected_user(",
-            "async def resolve_created_by_user_id(",
-            "async def resolve_experiment_owner_user_id(",
+            "async def resolve_sweep_attribution(",
+            "async def _active_user_id(",
         )
     )
 
@@ -159,6 +169,8 @@ def _load_helpers() -> dict[str, Any]:
         "AuthContext": object,
         "APIKeyModel": _APIKeyStub,
         "UserModel": _UserStub,
+        "SweepAttribution": _SweepAttributionStub,
+        "logger": __import__("logging").getLogger(__name__),
         "func": __import__("sqlalchemy").func,
         "select": _select_stub,
     }
@@ -169,8 +181,7 @@ def _load_helpers() -> dict[str, Any]:
 _HELPERS = _load_helpers()
 _resolve_actor_user = _HELPERS["_resolve_actor_user"]
 _resolve_actor_user_string = _HELPERS["resolve_actor_user_string"]
-_resolve_created_by_user_id = _HELPERS["resolve_created_by_user_id"]
-_resolve_experiment_owner_user_id = _HELPERS["resolve_experiment_owner_user_id"]
+_resolve_sweep_attribution = _HELPERS["resolve_sweep_attribution"]
 
 
 def _run(coro):
@@ -323,8 +334,8 @@ def test_created_by_user_id_prefers_api_key_owner():
     auth = _AuthStub(api_key_id="k1", api_key=api_key, user_id=None)
     session = _SessionStub(objects={(_UserStub, "u1"): user})
     submission = _SubmissionStub()
-    result = _run(_resolve_created_by_user_id(session, submission, auth))
-    assert result == "u1"
+    result = _run(_resolve_sweep_attribution(session, submission, auth))
+    assert result.task_created_by_user_id == "u1"
 
 
 def test_created_by_user_id_resolves_github_username_to_user():
@@ -337,16 +348,16 @@ def test_created_by_user_id_resolves_github_username_to_user():
 
     session.execute = _fake_execute  # type: ignore[attr-defined]
     submission = _SubmissionStub(github_username="octocat")
-    result = _run(_resolve_created_by_user_id(session, submission, auth))
-    assert result == "u2"
+    result = _run(_resolve_sweep_attribution(session, submission, auth))
+    assert result.task_created_by_user_id == "u2"
 
 
 def test_created_by_user_id_falls_back_to_auth_user_id():
     auth = _AuthStub(user_id="u-clerk", org_id="org-1")
     session = _SessionStub()
     submission = _SubmissionStub(github_username=None)
-    result = _run(_resolve_created_by_user_id(session, submission, auth))
-    assert result == "u-clerk"
+    result = _run(_resolve_sweep_attribution(session, submission, auth))
+    assert result.task_created_by_user_id == "u-clerk"
 
 
 def test_experiment_owner_prefers_github_user_over_api_key_owner():
@@ -361,21 +372,20 @@ def test_experiment_owner_prefers_github_user_over_api_key_owner():
     session.execute = _fake_execute  # type: ignore[attr-defined]
     submission = _SubmissionStub(github_username="praxs")
 
-    created_by = _run(_resolve_created_by_user_id(session, submission, auth))
-    owner = _run(_resolve_experiment_owner_user_id(session, submission, auth))
+    attribution = _run(_resolve_sweep_attribution(session, submission, auth))
 
-    assert created_by == "u-ci"
-    assert owner == "u-gh"
+    assert attribution.task_created_by_user_id == "u-ci"
+    assert attribution.experiment_owner_user_id == "u-gh"
 
 
-def test_experiment_owner_unset_when_explicit_github_not_linked():
+def test_experiment_owner_falls_back_when_explicit_github_not_linked():
     api_key = _APIKeyStub(id="k1", created_by_user_id="u-ci")
     auth = _AuthStub(api_key_id="k1", api_key=api_key, org_id="org-1")
     session = _SessionStub(objects={(_APIKeyStub, "k1"): api_key})
     submission = _SubmissionStub(github_username="unknown-gh")
 
-    owner = _run(_resolve_experiment_owner_user_id(session, submission, auth))
-    assert owner is None
+    attribution = _run(_resolve_sweep_attribution(session, submission, auth))
+    assert attribution.experiment_owner_user_id == "u-ci"
 
 
 def test_experiment_owner_falls_back_to_api_key_without_github_username():
@@ -384,8 +394,8 @@ def test_experiment_owner_falls_back_to_api_key_without_github_username():
     session = _SessionStub(objects={(_APIKeyStub, "k1"): api_key})
     submission = _SubmissionStub(github_username=None)
 
-    owner = _run(_resolve_experiment_owner_user_id(session, submission, auth))
-    assert owner == "u-ci"
+    attribution = _run(_resolve_sweep_attribution(session, submission, auth))
+    assert attribution.experiment_owner_user_id == "u-ci"
 
 
 def _split_result(*, by_id, by_handle):
@@ -423,14 +433,15 @@ def test_experiment_owner_prefers_github_id_over_handle():
     session.execute = _fake_execute  # type: ignore[attr-defined]
     submission = _SubmissionStub(github_id="12345", github_username="stale")
 
-    owner = _run(_resolve_experiment_owner_user_id(session, submission, auth))
-    assert owner == "u-id"
+    attribution = _run(_resolve_sweep_attribution(session, submission, auth))
+    assert attribution.experiment_owner_user_id == "u-id"
 
 
-def test_experiment_owner_strict_id_unmatched_does_not_fall_back_to_handle():
+def test_experiment_owner_strict_id_unmatched_falls_back_to_submitter():
     # github_id supplied but unlinked (.first() → None): strict resolution returns
-    # None — it must NOT fall back to the handle lookup (.all()) even though a
-    # DIFFERENT user carries that handle. This is the linkage gate's predicate.
+    # it must NOT fall back to the handle lookup (.all()) even though a different
+    # user carries that handle. The route's linkage gate rejects this before the
+    # resolver; direct resolution falls back to the authenticated submitter.
     handle_user = _UserStub(id="u-handle", github_username="octocat")
     api_key = _APIKeyStub(id="k1", created_by_user_id="u-ci")
     auth = _AuthStub(api_key_id="k1", api_key=api_key, org_id="org-1")
@@ -442,5 +453,5 @@ def test_experiment_owner_strict_id_unmatched_does_not_fall_back_to_handle():
     session.execute = _fake_execute  # type: ignore[attr-defined]
     submission = _SubmissionStub(github_id="99999", github_username="octocat")
 
-    owner = _run(_resolve_experiment_owner_user_id(session, submission, auth))
-    assert owner is None
+    attribution = _run(_resolve_sweep_attribution(session, submission, auth))
+    assert attribution.experiment_owner_user_id == "u-ci"

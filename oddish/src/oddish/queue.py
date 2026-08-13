@@ -397,9 +397,15 @@ async def cancel_tasks_runs(
 
 
 async def get_or_create_experiment(
-    session: AsyncSession, name: str, org_id: str | None = None
+    session: AsyncSession,
+    name: str,
+    org_id: str | None = None,
+    *,
+    owner_user_id: str | None = None,
+    owner: str | None = None,
+    link: str | None = None,
 ) -> ExperimentModel:
-    """Fetch an experiment by name (and org_id if provided) or create it if missing."""
+    """Fetch an experiment or create it with immutable creation provenance."""
     if org_id:
         query = select(ExperimentModel).where(
             ExperimentModel.org_id == org_id,
@@ -415,7 +421,13 @@ async def get_or_create_experiment(
     if existing:
         return existing
 
-    experiment = ExperimentModel(name=name, org_id=org_id)
+    experiment = ExperimentModel(
+        name=name,
+        org_id=org_id,
+        owner_user_id=owner_user_id,
+        owner=owner,
+        link=link,
+    )
     session.add(experiment)
     await session.flush()
     return experiment
@@ -943,6 +955,9 @@ async def create_task(
     task_id: str | None = None,
     org_id: str | None = None,
     billed_user_id: str | None = None,
+    experiment_owner_user_id: str | None = None,
+    task_created_by_user_id: str | None = None,
+    api_key_id: str | None = None,
 ) -> TaskModel:
     """Create a task with its trials.
 
@@ -973,17 +988,31 @@ async def create_task(
         _ensure_not_collection_target(experiment)
         if not experiment:
             experiment = await get_or_create_experiment(
-                session, submission.experiment_id, org_id
+                session,
+                submission.experiment_id,
+                org_id,
+                owner_user_id=experiment_owner_user_id,
+                owner=submission.github_username or submission.user,
+                link=submission.link,
             )
     else:
         experiment_name = generate_experiment_name()
-        experiment = await get_or_create_experiment(session, experiment_name, org_id)
+        experiment = await get_or_create_experiment(
+            session,
+            experiment_name,
+            org_id,
+            owner_user_id=experiment_owner_user_id,
+            owner=submission.github_username or submission.user,
+            link=submission.link,
+        )
 
     # Insert the task first (without version pointer to avoid circular FK).
     task = TaskModel(
         id=task_id,
         name=task_name,
         org_id=org_id,
+        created_by_user_id=task_created_by_user_id,
+        api_key_id=api_key_id,
         user=submission.user or "unknown",
         priority=submission.priority,
         task_path=submission.task_path,

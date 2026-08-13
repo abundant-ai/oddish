@@ -38,6 +38,7 @@ from oddish.core.endpoints.qa import (
     rerun_task_qa_core,
 )
 from oddish.core.endpoints.sweep import (
+    SweepAttribution,
     build_task_sweep_response,
     create_task_sweep_batch_core,
     create_task_sweep_core,
@@ -85,6 +86,7 @@ from oddish.core.endpoints.trials import (
 __all__ = [
     "ExperimentQaCostTotals",
     "QaCostTotals",
+    "SweepAttribution",
     "USER_CANCELLED_MESSAGE",
     "_COMBINE_TRIAL_RESULT_FIELDS",
     "_aggregate_task_detail_rollups",
