@@ -39,6 +39,16 @@ def web_tool_kwargs_for_agent(
         return {"web_search": "disabled"}
     if "grok-build" in name or "grok_build" in path:
         return {"disable_web_search": True}
+    # cursor-cli and gemini-cli both accept a ``disable_web_tools`` bool that
+    # their wrappers translate into the vendor-specific exclusion (cursor:
+    # ``--exclude-tools web_search_tool_call/web_fetch_tool_call``; gemini:
+    # ``tools.exclude = [google_web_search, web_fetch]``). Their web tools run
+    # provider-side, outside the container network namespace, so this switch --
+    # not any container network policy -- is the only thing that removes them.
+    if name == "cursor-cli" or name.startswith("cursor") or "cursor_cli" in path:
+        return {"disable_web_tools": True}
+    if name == "gemini-cli" or name.startswith("gemini") or "gemini_cli" in path:
+        return {"disable_web_tools": True}
     return {}
 
 
