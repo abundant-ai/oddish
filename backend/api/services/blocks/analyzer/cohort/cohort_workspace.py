@@ -12,6 +12,7 @@ bounded unit the comparison reasons in, and its span keeps the working set
 small. `MAP.md` is the index that makes the files findable -- the "map, not a
 sandbox" shape the post-trial classifier settled on.
 """
+
 from __future__ import annotations
 
 import json
@@ -109,6 +110,10 @@ def _map_section(label: str, trials: list[dict], written: dict) -> list[str]:
         model = short_model_name(trial.get("model") or "")
         if model:
             bits.append(f"model: {model}")
+        if trial.get("classification"):
+            bits.append(f"qa: {trial['classification']}")
+        if trial.get("reward") is not None:
+            bits.append(f"verifier reward: {trial['reward']}")
         delegation = trial.get("delegation")
         if isinstance(delegation, dict):
             dispatches = delegation.get("dispatches")

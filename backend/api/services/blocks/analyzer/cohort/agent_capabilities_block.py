@@ -21,8 +21,10 @@ from api.services.blocks.analyzer.cohort.cohort_taxonomy import BehaviorCategory
 # comparison reads the raw trajectories through CLAUDE_CLI, trials carry a
 # counted `subagents` attribute, and evidence gained a step-level shape. Stored
 # rows predate all three: they were compared from summaries alone, so their
-# delegation findings are the old discovery-slot lottery result.
-SCHEMA_VERSION = 4
+# delegation findings are the old discovery-slot lottery result. 5 admits any
+# number of trajectories, includes BAD_* and HARNESS_ERROR runs, and uses
+# verifier outcomes provisionally when QA has not run.
+SCHEMA_VERSION = 5
 
 # A trial whose summary covers less than this share of its own step span is
 # reported to the reader rather than averaged over silently.

@@ -925,8 +925,9 @@ async def test_missing_names_why_it_cannot_be_compared(
         experiment_id=experiment_below_cohort_gate.experiment_id,
         org_id=experiment_below_cohort_gate.org_id,
     )
-    # One success and one failure, against MIN_COHORT of 3.
-    assert [m["reason"] for m in gated["coverage"]["missing"]] == ["below_cohort_gate"]
+    # One success and one failure are now analyzable; only the missing stored
+    # analysis keeps this version out of the read-only rollup.
+    assert [m["reason"] for m in gated["coverage"]["missing"]] == ["not_compared"]
 
 
 @pytest.mark.asyncio

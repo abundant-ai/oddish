@@ -2,6 +2,7 @@
 
 Kept apart from the block logic so prompt edits do not touch parsing.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -121,13 +122,17 @@ def _subagents_attr(delegation: dict | None) -> str:
 
 def cohort_section(label: str, trials: list[dict]) -> str:
     """One cohort's trials, as component streams the model can cite."""
-    lines = [f"<cohort name=\"{label}\">"]
+    lines = [f'<cohort name="{label}">']
     for t in trials:
         # Same shortener the chips use. Two spellings of one model id --
         # `global.anthropic.claude-opus-4-8` in the prose the model writes,
         # `claude-opus-4-8` on the chip beside it -- read as two models.
         model = short_model_name(t.get("model") or "") if t.get("model") else ""
         attrs = f' model="{model}"' if model else ""
+        if t.get("classification"):
+            attrs += f' qa_classification="{t["classification"]}"'
+        if t.get("reward") is not None:
+            attrs += f' verifier_reward="{t["reward"]}"'
         attrs += _subagents_attr(t.get("delegation"))
         lines.append(f'  <trial id="{t["trial_id"]}"{attrs}>')
         for c in t.get("components") or []:
@@ -136,8 +141,8 @@ def cohort_section(label: str, trials: list[dict]) -> str:
                 continue
             rng = f"[{min(ids)}-{max(ids)}]"
             lines.append(
-                f'    {c.get("trajectory_component")} {rng} '
-                f'{(c.get("summary") or "").strip()}'
+                f"    {c.get('trajectory_component')} {rng} "
+                f"{(c.get('summary') or '').strip()}"
             )
         lines.append("  </trial>")
     lines.append("</cohort>")

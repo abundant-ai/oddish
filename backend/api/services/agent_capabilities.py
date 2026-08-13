@@ -3,6 +3,7 @@
 The analysis reads a successful and a failing cohort of trials; the cohorts
 are the input, the capabilities read off them are the output.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -33,8 +34,9 @@ from api.services.blocks.analyzer.cohort import cohort_workspace as cw
 
 logger = logging.getLogger(__name__)
 
-# Below three trials per side the comparison is anecdote, not evidence.
-MIN_COHORT = 3
+# A single trajectory is still useful evidence. Small cohorts are described as
+# limited evidence in the prompt/output rather than being rejected here.
+MIN_COHORT = 1
 
 # Bounds the claude-code subprocess from inside, the way pre-trial's does.
 # Reading trajectories is slower than the old single API call, and a hung run
@@ -49,8 +51,27 @@ ANALYSIS_TIMEOUT = 480.0
 # an unbounded gather over a large cohort would open one connection per trial.
 _FETCH_CONCURRENCY = 8
 
+# Canonical QA labels retained for compatibility with experiment rollup SQL.
+# `_cohort_for_trial` maps every other classification and verifier-only trial
+# onto these two outcome-side keys.
 SUCCESS_CLASS = "GOOD_SUCCESS"
 FAILURE_CLASS = "GOOD_FAILURE"
+
+
+def _cohort_for_trial(classification: str | None, reward: float | None) -> str:
+    """Choose an outcome cohort, using QA when present but never requiring it.
+
+    BAD_SUCCESS and BAD_FAILURE remain evidence: the classification qualifies
+    what happened, but does not make the trajectory disappear. Without QA,
+    verifier reward supplies the provisional outcome label.
+    """
+    normalized = (classification or "").upper()
+    if normalized.endswith("SUCCESS"):
+        return SUCCESS_CLASS
+    if normalized.endswith("FAILURE") or normalized == "HARNESS_ERROR":
+        return FAILURE_CLASS
+    return SUCCESS_CLASS if reward is not None and reward > 0 else FAILURE_CLASS
+
 
 # What this analyzer's blocks were called before the rename to
 # ``agent_capabilities``. Reads accept both so a rollback -- or a replica the
@@ -97,90 +118,117 @@ async def resolve_cohorts(
 ) -> tuple[list[dict], list[dict]]:
     """Return (successful, failing) trials with their component streams.
 
-    Classification lives in the ``analysis`` JSONB column, matching the filter
-    in oddish/src/oddish/core/endpoints/tasks_query.py:1509.
+    QA classification enriches each row when available. It is not an
+    eligibility gate: unclassified trials fall back to verifier reward, and
+    BAD_SUCCESS/BAD_FAILURE/HARNESS_ERROR trajectories remain analyzable.
     """
     out: dict[str, list[dict]] = {SUCCESS_CLASS: [], FAILURE_CLASS: []}
-    for cls in (SUCCESS_CLASS, FAILURE_CLASS):
-        rows = (
+    rows = (
+        await session.execute(
+            select(
+                TrialModel.id,
+                TrialModel.total_steps,
+                TrialModel.trajectory_summary,
+                TrialModel.model,
+                TrialModel.analysis["classification"].astext,
+                TrialModel.reward,
+            ).where(
+                TrialModel.task_version_id == task_version_id,
+                TrialModel.is_probe.is_(False),
+                TrialModel.superseded_by_trial_id.is_(None),
+            )
+        )
+    ).all()
+    ids = [r[0] for r in rows]
+    total_steps = {r[0]: r[1] for r in rows}
+    models = {r[0]: r[3] for r in rows}
+    classifications = {r[0]: r[4] for r in rows}
+    rewards = {r[0]: r[5] for r in rows}
+    # Prefer the mirror on the trial row. Fall back to the block for summaries
+    # written before the mirror existed.
+    mirrored = {r[0]: r[2] for r in rows if r[2]}
+    missing = [t for t in ids if t not in mirrored]
+    summaries = {**(await _summaries_for(session, missing)), **mirrored}
+    for tid in ids:
+        comps = [
+            c
+            for c in ((summaries.get(tid) or {}).get("components") or [])
+            if isinstance(c, dict) and c.get("step_ids")
+        ]
+        # A trial with no summary contributes nothing citable.
+        if not comps:
+            continue
+        # Coverage guards against the summariser's long-run defect: one
+        # 2,940-step trial yields ~20 covered steps, so a comparison can
+        # rest on far thinner evidence than its trial count suggests.
+        #
+        # The denominator is the trial's real length. Dividing by the
+        # highest cited step instead would score a summary that covers a
+        # dense early band of a long run at close to 100%, which is exactly
+        # backwards. total_steps is nullable, so fall back to the cited
+        # span and accept the optimism rather than dropping the trial.
+        all_ids = {i for c in comps for i in c["step_ids"]}
+        span = max(all_ids)
+        denominator = total_steps.get(tid) or span
+        # Counted at summary time from the raw trajectory, which this
+        # query does not hold (it lives in S3). Absent on summaries written
+        # before the count existed; the prompt renders that as "unknown"
+        # rather than as zero.
+        delegation = (summaries.get(tid) or {}).get("delegation")
+        cohort = _cohort_for_trial(classifications.get(tid), rewards.get(tid))
+        out[cohort].append(
+            {
+                "trial_id": tid,
+                "model": models.get(tid),
+                "classification": classifications.get(tid),
+                "reward": rewards.get(tid),
+                "delegation": delegation if isinstance(delegation, dict) else None,
+                "components": comps,
+                "covered_steps": len(all_ids),
+                "span": span,
+                "total_steps": total_steps.get(tid),
+                "coverage": (
+                    round(min(len(all_ids) / denominator, 1.0), 3)
+                    if denominator
+                    else 0.0
+                ),
+            }
+        )
+    return out[SUCCESS_CLASS], out[FAILURE_CLASS]
+
+
+async def resolve_cohort_membership(
+    session: AsyncSession, task_version_id: str
+) -> tuple[list[str], list[str]]:
+    """Outcome-side ids before summaries exist.
+
+    This is the queue/freshness view of the cohort. Keeping it independent of
+    derived summaries prevents a cold-start deadlock and makes a stored block
+    stale as soon as another completed trajectory becomes available.
+    """
+    from oddish.core.helpers import _has_fetchable_trajectory
+
+    trials = (
+        (
             await session.execute(
-                select(
-                    TrialModel.id,
-                    TrialModel.total_steps,
-                    TrialModel.trajectory_summary,
-                    # Which model produced the run. Attribution is computed
-                    # from these in code, never asked of the LLM: "which model
-                    # did better" is a counting question, and a fabricated
-                    # answer to it would be indistinguishable from a real one.
-                    TrialModel.model,
-                ).where(
+                select(TrialModel).where(
                     TrialModel.task_version_id == task_version_id,
                     TrialModel.is_probe.is_(False),
-                    # A retry leaves its superseded attempt in the table, still
-                    # classified. Listings and verdict aggregation exclude those
-                    # (see oddish/core/quotas.py), so cohorts must too, or the
-                    # comparison and its membership hash count abandoned runs.
                     TrialModel.superseded_by_trial_id.is_(None),
-                    TrialModel.analysis["classification"].astext == cls,
+                    TrialModel.finished_at.isnot(None),
                 )
             )
-        ).all()
-        ids = [r[0] for r in rows]
-        total_steps = {r[0]: r[1] for r in rows}
-        models = {r[0]: r[3] for r in rows}
-        # Prefer the mirror on the trial row. summarize_trajectory writes every
-        # summary to trials.trajectory_summary as well as analyzer_blocks, and
-        # the mirror is what the sibling QA surfaces read -- post-trial reads
-        # trials.analysis, pre-trial reads task_versions.pre_trial. Reading
-        # analyzer_blocks alone made this the only feature that cannot work on
-        # a preview deploy, because preview_seed copies trials but not
-        # analyzer_blocks. Fall back to the block for rows written before the
-        # mirror existed.
-        mirrored = {r[0]: r[2] for r in rows if r[2]}
-        missing = [t for t in ids if t not in mirrored]
-        summaries = {**(await _summaries_for(session, missing)), **mirrored}
-        for tid in ids:
-            comps = [
-                c
-                for c in ((summaries.get(tid) or {}).get("components") or [])
-                if isinstance(c, dict) and c.get("step_ids")
-            ]
-            # A trial with no summary contributes nothing citable.
-            if not comps:
-                continue
-            # Coverage guards against the summariser's long-run defect: one
-            # 2,940-step trial yields ~20 covered steps, so a comparison can
-            # rest on far thinner evidence than its trial count suggests.
-            #
-            # The denominator is the trial's real length. Dividing by the
-            # highest cited step instead would score a summary that covers a
-            # dense early band of a long run at close to 100%, which is exactly
-            # backwards. total_steps is nullable, so fall back to the cited
-            # span and accept the optimism rather than dropping the trial.
-            all_ids = {i for c in comps for i in c["step_ids"]}
-            span = max(all_ids)
-            denominator = total_steps.get(tid) or span
-            # Counted at summary time from the raw trajectory, which this
-            # query does not hold (it lives in S3). Absent on summaries written
-            # before the count existed; the prompt renders that as "unknown"
-            # rather than as zero.
-            delegation = (summaries.get(tid) or {}).get("delegation")
-            out[cls].append(
-                {
-                    "trial_id": tid,
-                    "model": models.get(tid),
-                    "delegation": delegation if isinstance(delegation, dict) else None,
-                    "components": comps,
-                    "covered_steps": len(all_ids),
-                    "span": span,
-                    "total_steps": total_steps.get(tid),
-                    "coverage": (
-                        round(min(len(all_ids) / denominator, 1.0), 3)
-                        if denominator
-                        else 0.0
-                    ),
-                }
-            )
+        )
+        .scalars()
+        .all()
+    )
+    out: dict[str, list[str]] = {SUCCESS_CLASS: [], FAILURE_CLASS: []}
+    for trial in trials:
+        if not _has_fetchable_trajectory(trial):
+            continue
+        analysis = trial.analysis if isinstance(trial.analysis, dict) else {}
+        cohort = _cohort_for_trial(analysis.get("classification"), trial.reward)
+        out[cohort].append(trial.id)
     return out[SUCCESS_CLASS], out[FAILURE_CLASS]
 
 
@@ -199,8 +247,10 @@ async def _fetch_trajectories(
     from oddish.core.trial_io import read_trial_trajectory
 
     trials = (
-        await session.execute(select(TrialModel).where(TrialModel.id.in_(trial_ids)))
-    ).scalars().all()
+        (await session.execute(select(TrialModel).where(TrialModel.id.in_(trial_ids))))
+        .scalars()
+        .all()
+    )
 
     semaphore = asyncio.Semaphore(_FETCH_CONCURRENCY)
 
@@ -527,8 +577,10 @@ async def load_stored_analysis(
         SCHEMA_VERSION,
     )
 
-    successful, failing = await resolve_cohorts(session, task_version_id)
-    if max(len(successful), len(failing)) < MIN_COHORT:
+    successful_ids, failing_ids = await resolve_cohort_membership(
+        session, task_version_id
+    )
+    if max(len(successful_ids), len(failing_ids)) < MIN_COHORT:
         return None
     row = await _load_latest_block(
         session, task_id=task_id, task_version_id=task_version_id
@@ -537,9 +589,7 @@ async def load_stored_analysis(
         return None
     reason = stale_reason(
         row.block_metadata,
-        current_hash=cohort_hash(
-            [t["trial_id"] for t in successful], [t["trial_id"] for t in failing]
-        ),
+        current_hash=cohort_hash(successful_ids, failing_ids),
         schema_version=SCHEMA_VERSION,
         task_version_id=task_version_id,
     )
@@ -550,12 +600,52 @@ async def load_stored_analysis(
     return None
 
 
-async def analysis_is_eligible(
-    session: AsyncSession, task_version_id: str
-) -> bool:
-    """Whether either classified cohort is large enough to analyze."""
-    successful, failing = await resolve_cohorts(session, task_version_id)
-    return max(len(successful), len(failing)) >= MIN_COHORT
+async def analysis_is_eligible(session: AsyncSession, task_version_id: str) -> bool:
+    """Whether the version has any completed, fetchable trajectory.
+
+    Summaries and QA are deliberately absent from this gate: both are inputs
+    the durable analyzer job can derive after it has been queued.
+    """
+    successful_ids, failing_ids = await resolve_cohort_membership(
+        session, task_version_id
+    )
+    return bool(successful_ids or failing_ids)
+
+
+async def _ensure_trajectory_summaries(
+    session: AsyncSession, task_version_id: str, triggered_by_user_id: str | None
+) -> None:
+    """Generate missing component summaries inside the durable worker job."""
+    from api.services.summarize_trajectory import get_or_generate_summary
+    from oddish.core.helpers import _has_fetchable_trajectory
+
+    trials = (
+        (
+            await session.execute(
+                select(TrialModel).where(
+                    TrialModel.task_version_id == task_version_id,
+                    TrialModel.is_probe.is_(False),
+                    TrialModel.superseded_by_trial_id.is_(None),
+                    TrialModel.finished_at.isnot(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for trial in trials:
+        if trial.trajectory_summary or not _has_fetchable_trajectory(trial):
+            continue
+        try:
+            await get_or_generate_summary(
+                session,
+                trial,
+                triggered_by_user_id=triggered_by_user_id,
+            )
+        except Exception:
+            logger.exception(
+                "capability analysis: could not summarize trajectory %s", trial.id
+            )
 
 
 async def enqueue_analysis(
@@ -620,8 +710,13 @@ async def enqueue_analysis(
 
 
 async def run_queued_analysis(**kwargs) -> dict | None:
-    """Worker provider: generation owns a short-lived session, not the GET."""
+    """Worker provider: derive summaries, then run capability analysis."""
     async with get_session() as session:
+        await _ensure_trajectory_summaries(
+            session,
+            kwargs["task_version_id"],
+            kwargs.get("triggered_by_user_id"),
+        )
         return await get_or_generate_analysis(session, **kwargs)
 
 

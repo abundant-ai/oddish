@@ -205,7 +205,7 @@ async def get_public_task_agent_capabilities(
             if not await analysis_is_eligible(session, version_id):
                 raise HTTPException(
                     status_code=404,
-                    detail="Not enough classified trials to compare",
+                    detail="No completed trajectories available to analyze",
                 )
             from oddish.db.models import TaskVersionModel
 
