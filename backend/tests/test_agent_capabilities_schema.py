@@ -1,10 +1,10 @@
 import pytest
 from pydantic import ValidationError
 
-from api.services.blocks.analyzer.cohort.cohort_comparison_block import (
+from api.services.blocks.analyzer.cohort.agent_capabilities_block import (
     BehaviorEvidence,
     CategoryComparison,
-    CohortComparisonOutput,
+    AgentCapabilitiesOutput,
 )
 from api.services.blocks.analyzer.cohort.cohort_taxonomy import BehaviorCategory
 
@@ -77,7 +77,7 @@ def test_discovery_keeps_its_label():
 
 
 def test_full_output_parses():
-    out = CohortComparisonOutput(
+    out = AgentCapabilitiesOutput(
         schema_version=1,
         cohort_success=["t1"],
         cohort_failure=["t2"],

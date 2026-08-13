@@ -1,4 +1,8 @@
-"""Resolve, compare and cache the successful-vs-failing cohort comparison."""
+"""Resolve, analyze and cache the agent-capabilities analysis.
+
+The analysis reads a successful and a failing cohort of trials; the cohorts
+are the input, the capabilities read off them are the output.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -41,7 +45,7 @@ MIN_COHORT = 3
 # comparison that genuinely needs longer than this needs to move off the
 # request path, not a bigger number here.
 REQUEST_OVERHEAD_ALLOWANCE = 120.0
-COMPARISON_TIMEOUT = 480.0
+ANALYSIS_TIMEOUT = 480.0
 
 # S3 reads for the cohort, in flight at once. The trials are independent, but
 # an unbounded gather over a large cohort would open one connection per trial.
@@ -49,6 +53,13 @@ _FETCH_CONCURRENCY = 8
 
 SUCCESS_CLASS = "GOOD_SUCCESS"
 FAILURE_CLASS = "GOOD_FAILURE"
+
+# What this analyzer's blocks were called before the rename to
+# ``agent_capabilities``. Reads accept both so a rollback -- or a replica the
+# backfill has not reached -- still resolves rows written under the old name;
+# writes only ever use the new one. Drop once no ``cohort_comparison`` rows
+# remain (``select count(*) from analyzer_blocks where type = ...``).
+LEGACY_BLOCK_TYPE = "cohort_comparison"
 
 
 def cohort_hash(success_ids: list[str], failure_ids: list[str]) -> str:
@@ -325,7 +336,7 @@ def validate_evidence(
     exists, on the side of the comparison it was cited under, covering the
     same step span, with the stored summary text unaltered.
 
-    Called from ``CohortComparisonBlock.to_output`` so the validated shape is
+    Called from ``AgentCapabilitiesBlock.to_output`` so the validated shape is
     what gets persisted -- validating after ``block.run()`` returns would leave
     every later cache hit serving the raw, unvalidated model output.
     """
@@ -400,7 +411,7 @@ def is_stale(
 _GEN_LOCKS: MutableMapping[tuple[str, str], asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
-async def _load_fresh_comparison(
+async def _load_fresh_analysis(
     session: AsyncSession,
     *,
     task_id: str,
@@ -408,7 +419,11 @@ async def _load_fresh_comparison(
     current_hash: str,
     schema_version: int,
 ) -> dict | None:
-    """The latest fresh SUCCESS cohort_comparison block's output, or None.
+    """The latest fresh SUCCESS agent-capabilities block's output, or None.
+
+    Matches ``LEGACY_BLOCK_TYPE`` as well as the current type: rows written
+    before the rename carry the old string, and missing them would silently
+    regenerate every already-analyzed version at LLM cost.
 
     Rows carry the stable ``task_id`` (``TaskModel.id``) because cost
     attribution resolves against ``TaskModel``, so the version is filtered on
@@ -422,7 +437,9 @@ async def _load_fresh_comparison(
             select(AnalyzerBlockModel)
             .where(
                 AnalyzerBlockModel.task_id == task_id,
-                AnalyzerBlockModel.type == AnalyzerType.COHORT_COMPARISON.value,
+                AnalyzerBlockModel.type.in_(
+                    (AnalyzerType.AGENT_CAPABILITIES.value, LEGACY_BLOCK_TYPE)
+                ),
                 AnalyzerBlockModel.status == JobStatus.SUCCESS,
                 AnalyzerBlockModel.block_metadata["task_version_id"].astext
                 == task_version_id,
@@ -439,6 +456,39 @@ async def _load_fresh_comparison(
     ):
         return row.output
     return None
+
+
+async def load_stored_analysis(
+    session: AsyncSession, task_version_id: str, *, task_id: str
+) -> dict | None:
+    """The stored comparison for a version, or None. Never generates.
+
+    The read half of ``get_or_generate_analysis``, split out for the public
+    share route. Generation is deliberately unreachable there: it costs an LLM
+    call and holds a connection from a three-slot pool for minutes, neither of
+    which an unauthenticated page view may trigger.
+
+    The cohorts still have to be resolved, because the stored block is only
+    valid for the trial set it was built from -- ``is_stale`` compares the
+    membership hash. That resolve is the same handful of indexed reads the
+    authenticated path does before its own cache hit.
+    """
+    from api.services.blocks.analyzer.cohort.agent_capabilities_block import (
+        SCHEMA_VERSION,
+    )
+
+    successful, failing = await resolve_cohorts(session, task_version_id)
+    if max(len(successful), len(failing)) < MIN_COHORT:
+        return None
+    return await _load_fresh_analysis(
+        session,
+        task_id=task_id,
+        task_version_id=task_version_id,
+        current_hash=cohort_hash(
+            [t["trial_id"] for t in successful], [t["trial_id"] for t in failing]
+        ),
+        schema_version=SCHEMA_VERSION,
+    )
 
 
 async def _end_read_transaction(session: AsyncSession) -> None:
@@ -467,7 +517,7 @@ async def _end_read_transaction(session: AsyncSession) -> None:
     await session.commit()
 
 
-async def get_or_generate_comparison(
+async def get_or_generate_analysis(
     session: AsyncSession,
     task_version_id: str,
     *,
@@ -489,10 +539,10 @@ async def get_or_generate_comparison(
     from oddish.blocks.analyzer.claude_cli_client import CliConfig
 
     from api.services.blocks.analyzer.cohort import cohort_prompts as cp
-    from api.services.blocks.analyzer.cohort.cohort_comparison_block import (
+    from api.services.blocks.analyzer.cohort.agent_capabilities_block import (
         SCHEMA_VERSION,
-        CohortComparisonBlock,
-        CohortComparisonOutput,
+        AgentCapabilitiesBlock,
+        AgentCapabilitiesOutput,
         CohortInput,
     )
     from api.services.summarize_trajectory import resolve_summary_model
@@ -510,7 +560,7 @@ async def get_or_generate_comparison(
     )
 
     if not refresh:
-        fresh = await _load_fresh_comparison(
+        fresh = await _load_fresh_analysis(
             session,
             task_id=task_id,
             task_version_id=task_version_id,
@@ -532,7 +582,7 @@ async def get_or_generate_comparison(
         # was explicitly asked for a new comparison, and the one waiting in
         # front of it may be the stale one it wants replaced.
         if not refresh:
-            fresh = await _load_fresh_comparison(
+            fresh = await _load_fresh_analysis(
                 session,
                 task_id=task_id,
                 task_version_id=task_version_id,
@@ -563,7 +613,7 @@ async def get_or_generate_comparison(
                 failing=failing,
                 trajectories=trajectories,
             )
-            cb = CohortComparisonBlock(
+            cb = AgentCapabilitiesBlock(
                 CohortInput(
                     task_name=task_name, successful=successful, failing=failing
                 ),
@@ -571,7 +621,7 @@ async def get_or_generate_comparison(
                 step_index=step_index,
             )
             block = AnalyzerBlock(
-                analyzer_type=AnalyzerType.COHORT_COMPARISON,
+                analyzer_type=AnalyzerType.AGENT_CAPABILITIES,
                 llm_client_type=LLMClientType.CLAUDE_CLI,
                 input=AnalyzerInput(input={"task_version_id": task_version_id}),
                 prompt=cb.build_prompt(),
@@ -592,10 +642,10 @@ async def get_or_generate_comparison(
                     # whole run -- and this output quotes trajectories verbatim,
                     # so unescaped quotes are the normal case, not the edge one.
                     json_schema=json.dumps(
-                        CohortComparisonOutput.model_json_schema(),
+                        AgentCapabilitiesOutput.model_json_schema(),
                         separators=(",", ":"),
                     ),
-                    timeout=COMPARISON_TIMEOUT,
+                    timeout=ANALYSIS_TIMEOUT,
                 ),
                 triggered_by_user_id=triggered_by_user_id,
             )

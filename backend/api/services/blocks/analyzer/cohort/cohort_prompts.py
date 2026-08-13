@@ -1,4 +1,4 @@
-"""Prompt text for CohortComparisonBlock.
+"""Prompt text for AgentCapabilitiesBlock.
 
 Kept apart from the block logic so prompt edits do not touch parsing.
 """
@@ -154,7 +154,7 @@ def instructions_section(template: str) -> str:
 # is wrong (parents[5] is `backend/`, not the repo root) and it breaks the
 # moment the module moves.
 _PROMPT_PATH = (
-    Path(_analyze.__file__).resolve().parent / "prompts" / "cohort_comparison.txt"
+    Path(_analyze.__file__).resolve().parent / "prompts" / "agent_capabilities.txt"
 )
 
 

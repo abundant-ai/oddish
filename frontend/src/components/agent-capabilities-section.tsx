@@ -1,13 +1,8 @@
 "use client";
 
-import useSWR from "swr";
-
 import { componentLabel } from "@/lib/trajectory-segments";
-import type {
-  BehaviorEvidence,
-  BehaviorObservation,
-  CohortComparison,
-} from "@/lib/types";
+import { useAgentCapabilities } from "@/lib/use-agent-capabilities";
+import type { BehaviorEvidence, BehaviorObservation } from "@/lib/types";
 
 const CATEGORY_LABELS: Record<string, string> = {
   behavior_discovery: "Agent behavior discovery",
@@ -114,11 +109,13 @@ function ObservationList({
   taskId,
   taskVersionId,
   trialModels,
+  linkEvidence,
 }: {
   items: BehaviorObservation[];
   taskId: string;
   taskVersionId?: string;
   trialModels?: Record<string, string>;
+  linkEvidence: boolean;
 }) {
   if (!items.length) {
     return <p className="text-sm text-muted-foreground">No difference found.</p>;
@@ -128,35 +125,56 @@ function ObservationList({
       {items.map((obs, i) => (
         <li key={i} className="flex flex-col gap-1.5">
           <span className="text-sm">{obs.behavior_description}</span>
-          {obs.evidence.map((ev, j) => (
-            <a
-              key={j}
-              href={evidenceHref(
-                taskId,
-                ev.trial_id,
-                anchorStep(ev),
-                taskVersionId,
-              )}
-              className="text-xs text-muted-foreground underline-offset-4 hover:underline"
-            >
-              {/* Only the component + step range carries the link colour. The
-                  quote is the agent's own words, and colouring it too turns a
-                  paragraph of body text blue. */}
-              <span className="font-mono text-blue-600 dark:text-blue-400">
-                {citationLabel(ev)}
-              </span>{" "}
-              {/* Which model this example came from. A side can list fourteen
-                  models in its chips and cite two trials; without naming the
-                  model per citation the reader cannot tell which of the
-                  fourteen actually did the thing being described. */}
-              {trialModels?.[ev.trial_id] ? (
-                <span className="text-muted-foreground/80 font-mono">
-                  {trialModels[ev.trial_id]}
-                </span>
-              ) : null}{" "}
-              — {ev.quote}
-            </a>
-          ))}
+          {obs.evidence.map((ev, j) => {
+            const body = (
+              <>
+                {/* Only the component + step range carries the link colour. The
+                    quote is the agent's own words, and colouring it too turns a
+                    paragraph of body text blue. */}
+                <span
+                  className={
+                    linkEvidence
+                      ? "font-mono text-blue-600 dark:text-blue-400"
+                      : "font-mono"
+                  }
+                >
+                  {citationLabel(ev)}
+                </span>{" "}
+                {/* Which model this example came from. A side can list fourteen
+                    models in its chips and cite two trials; without naming the
+                    model per citation the reader cannot tell which of the
+                    fourteen actually did the thing being described. */}
+                {trialModels?.[ev.trial_id] ? (
+                  <span className="text-muted-foreground/80 font-mono">
+                    {trialModels[ev.trial_id]}
+                  </span>
+                ) : null}{" "}
+                — {ev.quote}
+              </>
+            );
+            // `/tasks/...` is behind `auth.protect()`, which 404s a signed-out
+            // request, so on a share page the citation is text. It keeps the
+            // component, step range, model and quote -- everything except the
+            // jump, which there is nowhere to make.
+            return linkEvidence ? (
+              <a
+                key={j}
+                href={evidenceHref(
+                  taskId,
+                  ev.trial_id,
+                  anchorStep(ev),
+                  taskVersionId,
+                )}
+                className="text-xs text-muted-foreground underline-offset-4 hover:underline"
+              >
+                {body}
+              </a>
+            ) : (
+              <span key={j} className="text-xs text-muted-foreground">
+                {body}
+              </span>
+            );
+          })}
         </li>
       ))}
     </ul>
@@ -173,6 +191,7 @@ function CohortColumn({
   taskId,
   taskVersionId,
   trialModels,
+  linkEvidence,
 }: {
   tone: "successful" | "failing";
   items: BehaviorObservation[];
@@ -180,6 +199,7 @@ function CohortColumn({
   taskId: string;
   taskVersionId?: string;
   trialModels?: Record<string, string>;
+  linkEvidence: boolean;
 }) {
   const successful = tone === "successful";
   return (
@@ -211,18 +231,23 @@ function CohortColumn({
         taskId={taskId}
         taskVersionId={taskVersionId}
         trialModels={trialModels}
+        linkEvidence={linkEvidence}
       />
     </div>
   );
 }
 
-export function CohortComparisonSection({
+export function AgentCapabilitiesSection({
   taskId,
   apiBaseUrl = "/api",
   version,
+  linkEvidence = true,
 }: {
   taskId: string;
   apiBaseUrl?: string;
+  /** Whether citations link to the cited step. False on a share page, where
+      the task route is not reachable signed out. */
+  linkEvidence?: boolean;
   /** Selected task version. Required, not optional: the comparison covers one
       version's cohorts, and an omitted param falls back server-side to the
       current version — which is the wrong answer beside an older version's
@@ -230,12 +255,10 @@ export function CohortComparisonSection({
       across versions. The host decides not to render instead. */
   version: number;
 }) {
-  const { data, error, isLoading } = useSWR<CohortComparison>(
-    `${apiBaseUrl}/tasks/${encodeURIComponent(taskId)}/cohort-comparison` +
-      `?version=${version}`,
-    (url: string) =>
-      fetch(url).then((r) => (r.ok ? r.json() : Promise.reject(r.status))),
-    { shouldRetryOnError: false },
+  const { data, error, isLoading } = useAgentCapabilities(
+    taskId,
+    apiBaseUrl,
+    version,
   );
 
   // A 404 is the gate, not a fault: the task has too few classified trials.
@@ -262,7 +285,7 @@ export function CohortComparisonSection({
       <section className="border-border flex flex-col gap-2 border-b p-4">
         <h3 className={SECTION_HEADING}>Agent capability analysis</h3>
         <p className="text-muted-foreground text-xs">
-          Could not build the comparison{typeof error === "number" ? ` (${error})` : ""}.
+          Could not build the analysis{typeof error === "number" ? ` (${error})` : ""}.
           Reload to try again.
         </p>
       </section>
@@ -340,6 +363,7 @@ export function CohortComparisonSection({
                 taskId={taskId}
                 taskVersionId={data.task_version_id}
                 trialModels={data.trial_models}
+                linkEvidence={linkEvidence}
               />
             ) : null}
             {showFailing ? (
@@ -350,6 +374,7 @@ export function CohortComparisonSection({
                 taskId={taskId}
                 taskVersionId={data.task_version_id}
                 trialModels={data.trial_models}
+                linkEvidence={linkEvidence}
               />
             ) : null}
           </div>

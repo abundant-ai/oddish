@@ -64,6 +64,19 @@ async def load_model_display_names(session: AsyncSession) -> dict[str, str]:
     return names
 
 
+def display_model_name(model: str | None, names: dict[str, str]) -> str | None:
+    """The alias for one model id, or the id unchanged when none is set.
+
+    For published payloads that carry model ids outside a ``TrialResponse`` --
+    the cohort comparison names the models on each side, and cites one per
+    trial. Those spellings have to be masked by the same table, or a share page
+    hides the real id in the trial grid and prints it in the analysis below.
+    """
+    if not names or not model:
+        return model
+    return next((names[key] for key in _lookup_keys(model) if key in names), model)
+
+
 def apply_model_display_names(
     trials: Iterable[TrialResponse], names: dict[str, str]
 ) -> None:

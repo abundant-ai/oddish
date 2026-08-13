@@ -128,7 +128,7 @@ class CategoryComparison(BaseModel):
         return self
 
 
-class CohortComparisonOutput(BaseModel):
+class AgentCapabilitiesOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: int
@@ -163,8 +163,8 @@ class _CohortIn(BaseModel):
     trials: list[dict]
 
 
-class CohortComparisonBlock(Block):
-    output_schema = CohortComparisonOutput
+class AgentCapabilitiesBlock(Block):
+    output_schema = AgentCapabilitiesOutput
     strict_json_output = True
 
     def __init__(
@@ -247,8 +247,8 @@ class CohortComparisonBlock(Block):
         obj = parse_stream_json_result(raw)
         return self._finalize(self.output_schema.model_validate(obj))
 
-    def _finalize(self, parsed: CohortComparisonOutput) -> dict:
-        from api.services.cohort_comparison import validate_evidence
+    def _finalize(self, parsed: AgentCapabilitiesOutput) -> dict:
+        from api.services.agent_capabilities import validate_evidence
 
         # The block owns schema_version, not the model.
         parsed.schema_version = SCHEMA_VERSION
