@@ -1,4 +1,4 @@
-from api.services.cohort_comparison import MIN_COHORT, cohort_hash
+from api.services.agent_capabilities import MIN_COHORT, cohort_hash
 
 
 def test_min_cohort_is_three():

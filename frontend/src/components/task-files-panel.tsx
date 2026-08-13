@@ -50,8 +50,8 @@ import {
   type TaskDetailResource,
 } from "@/lib/task-detail-resource";
 import { TaskOverviewPanel } from "@/components/task-overview-panel";
-import { CohortComparisonSection } from "@/components/cohort-comparison-section";
-import { useCohortComparison } from "@/lib/use-cohort-comparison";
+import { AgentCapabilitiesSection } from "@/components/agent-capabilities-section";
+import { useAgentCapabilities } from "@/lib/use-agent-capabilities";
 import {
   getCancelActionLabel,
   isActivePipelineStatus,
@@ -506,7 +506,7 @@ export function TaskFilesPanel({
   // classified runs, and it is the only thing in this pane. The public route
   // is a pure cache read, so a 404 is cheap and final.
   const { data: capabilityData, isLoading: capabilityLoading } =
-    useCohortComparison(
+    useAgentCapabilities(
       capabilityOnly ? effectiveChecksTaskId : null,
       baseUrl,
       overviewVersion,
@@ -1624,7 +1624,7 @@ export function TaskFilesPanel({
                 // are structurally absent on a share page, not conditionally
                 // hidden. `overviewAvailable` already required the comparison
                 // to have loaded, and the version to be a number with it.
-                <CohortComparisonSection
+                <AgentCapabilitiesSection
                   taskId={effectiveChecksTaskId!}
                   apiBaseUrl={baseUrl}
                   version={overviewVersion as number}

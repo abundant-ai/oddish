@@ -21,7 +21,7 @@ from api.services.summarize_trajectory import SCHEMA_VERSION
 
 TOKEN = "share-tok"
 SUMMARY_URL = f"/public/experiments/{TOKEN}/trials/t-1/trajectory/summary"
-COMPARISON_URL = f"/public/experiments/{TOKEN}/tasks/task-1/cohort-comparison"
+COMPARISON_URL = f"/public/experiments/{TOKEN}/tasks/task-1/agent-capabilities"
 
 
 @pytest.fixture
@@ -180,7 +180,7 @@ def test_comparison_returns_stored_block_and_stamps_version(
         "api.routers.public_analysis.get_public_task_for_experiment",
         new=_public_task(),
     ), patch(
-        "api.services.cohort_comparison.load_stored_comparison",
+        "api.services.agent_capabilities.load_stored_analysis",
         new=AsyncMock(return_value=stored),
     ):
         resp = client.get(COMPARISON_URL)
@@ -200,7 +200,7 @@ def test_comparison_resolves_the_requested_version_number(
     with patched_session, no_display_names, version_in_experiment, patch(
         "api.routers.public_analysis.get_public_task_for_experiment",
         new=_public_task(),
-    ), patch("api.services.cohort_comparison.load_stored_comparison", new=load):
+    ), patch("api.services.agent_capabilities.load_stored_analysis", new=load):
         resp = client.get(f"{COMPARISON_URL}?version=2")
     assert resp.status_code == 200
     assert resp.json()["task_version_id"] == "tv-2"
@@ -219,7 +219,7 @@ def test_comparison_404_for_unknown_version_number(
     with patched_session, patch(
         "api.routers.public_analysis.get_public_task_for_experiment",
         new=_public_task(),
-    ), patch("api.services.cohort_comparison.load_stored_comparison", new=load):
+    ), patch("api.services.agent_capabilities.load_stored_analysis", new=load):
         resp = client.get(f"{COMPARISON_URL}?version=99")
     assert resp.status_code == 404
     load.assert_not_awaited()
@@ -233,10 +233,10 @@ def test_comparison_miss_is_404_and_never_generates(
         "api.routers.public_analysis.get_public_task_for_experiment",
         new=_public_task(),
     ), patch(
-        "api.services.cohort_comparison.load_stored_comparison",
+        "api.services.agent_capabilities.load_stored_analysis",
         new=AsyncMock(return_value=None),
     ), patch(
-        "api.services.cohort_comparison.get_or_generate_comparison", new=generate
+        "api.services.agent_capabilities.get_or_generate_analysis", new=generate
     ):
         resp = client.get(COMPARISON_URL)
     assert resp.status_code == 404
@@ -248,7 +248,7 @@ def test_comparison_404_when_token_does_not_expose_the_task(client, patched_sess
     with patched_session, patch(
         "api.routers.public_analysis.get_public_task_for_experiment",
         new=AsyncMock(return_value=None),
-    ), patch("api.services.cohort_comparison.load_stored_comparison", new=load):
+    ), patch("api.services.agent_capabilities.load_stored_analysis", new=load):
         resp = client.get(COMPARISON_URL)
     assert resp.status_code == 404
     load.assert_not_awaited()
@@ -276,7 +276,7 @@ def test_comparison_masks_model_ids_with_operator_aliases(
         "api.routers.public_analysis.get_public_task_for_experiment",
         new=_public_task(),
     ), patch(
-        "api.services.cohort_comparison.load_stored_comparison",
+        "api.services.agent_capabilities.load_stored_analysis",
         new=AsyncMock(return_value=stored),
     ):
         resp = client.get(COMPARISON_URL)
@@ -319,7 +319,7 @@ def test_comparison_masks_the_SHORT_names_the_block_actually_stores(
         "api.routers.public_analysis.get_public_task_for_experiment",
         new=_public_task(),
     ), patch(
-        "api.services.cohort_comparison.load_stored_comparison",
+        "api.services.agent_capabilities.load_stored_analysis",
         new=AsyncMock(return_value=stored),
     ):
         resp = client.get(COMPARISON_URL)
@@ -346,7 +346,7 @@ def test_comparison_leaves_a_colliding_short_name_unmasked(
         "api.routers.public_analysis.get_public_task_for_experiment",
         new=_public_task(),
     ), patch(
-        "api.services.cohort_comparison.load_stored_comparison",
+        "api.services.agent_capabilities.load_stored_analysis",
         new=AsyncMock(return_value=stored),
     ):
         resp = client.get(COMPARISON_URL)
@@ -369,7 +369,7 @@ def test_comparison_404s_for_a_version_outside_the_shared_experiment(
     ), patch(
         "api.routers.public_analysis._version_is_in_experiment",
         new=AsyncMock(return_value=False),
-    ), patch("api.services.cohort_comparison.load_stored_comparison", new=load):
+    ), patch("api.services.agent_capabilities.load_stored_analysis", new=load):
         resp = client.get(f"{COMPARISON_URL}?version=9")
     assert resp.status_code == 404
     load.assert_not_awaited()

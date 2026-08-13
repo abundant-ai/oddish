@@ -14,7 +14,7 @@ export async function GET(
     const version = new URL(request.url).searchParams.get("version");
     const url = getBackendUrl(
       "public/experiments",
-      `/${token}/tasks/${task_id}/cohort-comparison${
+      `/${token}/tasks/${task_id}/agent-capabilities${
         version ? `?version=${encodeURIComponent(version)}` : ""
       }`,
     );

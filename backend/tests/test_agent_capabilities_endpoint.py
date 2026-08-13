@@ -3,8 +3,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from api.services import cohort_comparison as cc
-from api.services.cohort_comparison import MIN_COHORT, is_stale
+from api.services import agent_capabilities as cc
+from api.services.agent_capabilities import MIN_COHORT, is_stale
 
 
 def test_is_stale_when_cohort_hash_changed():
@@ -52,7 +52,7 @@ def test_missing_metadata_is_stale():
 
 
 # ---------------------------------------------------------------------------
-# get_or_generate_comparison: generation lock
+# get_or_generate_analysis: generation lock
 # ---------------------------------------------------------------------------
 
 
@@ -84,14 +84,14 @@ async def test_concurrent_misses_generate_only_once(monkeypatch):
     observe the first call's freshly written block and skip generation.
 
     This does not exercise the real AnalyzerBlockModel query -- there is no
-    DB in this test process -- so it substitutes ``_load_fresh_comparison``
+    DB in this test process -- so it substitutes ``_load_fresh_analysis``
     with a fake that starts returning a cached row only after generation has
     run once, and substitutes ``AnalyzerBlock.run`` so no real LLM call or S3
     persist happens. What this proves: the lock serializes the two calls and
     the second one's in-lock cache recheck avoids a second generation. It
     does not prove anything about the real SQL query building the correct
     WHERE clause -- that is covered separately by reading the query in
-    ``_load_fresh_comparison``.
+    ``_load_fresh_analysis``.
     """
     from oddish.blocks.analyzer.analyzer_block import AnalyzerBlock, AnalyzerOutput
 
@@ -127,16 +127,16 @@ async def test_concurrent_misses_generate_only_once(monkeypatch):
     # An empty map is also the real degraded path: the comparison runs on
     # summaries alone when no trajectory can be fetched.
     monkeypatch.setattr(cc, "_fetch_trajectories", AsyncMock(return_value={}))
-    monkeypatch.setattr(cc, "_load_fresh_comparison", fake_load_fresh)
+    monkeypatch.setattr(cc, "_load_fresh_analysis", fake_load_fresh)
     monkeypatch.setattr(AnalyzerBlock, "run", fake_run)
 
     session = _session_with_commit_spy()
 
     results = await asyncio.gather(
-        cc.get_or_generate_comparison(
+        cc.get_or_generate_analysis(
             session, "v1", task_id="t1", task_name="task"
         ),
-        cc.get_or_generate_comparison(
+        cc.get_or_generate_analysis(
             session, "v1", task_id="t1", task_name="task"
         ),
     )
@@ -172,11 +172,11 @@ async def test_refresh_ignores_a_fresh_block_inside_the_lock(monkeypatch):
     # An empty map is also the real degraded path: the comparison runs on
     # summaries alone when no trajectory can be fetched.
     monkeypatch.setattr(cc, "_fetch_trajectories", AsyncMock(return_value={}))
-    monkeypatch.setattr(cc, "_load_fresh_comparison", load_fresh)
+    monkeypatch.setattr(cc, "_load_fresh_analysis", load_fresh)
     monkeypatch.setattr(AnalyzerBlock, "run", run)
 
     session = _session_with_commit_spy()
-    result = await cc.get_or_generate_comparison(
+    result = await cc.get_or_generate_analysis(
         session, "v1", task_id="t1", task_name="task", refresh=True
     )
 
@@ -186,12 +186,12 @@ async def test_refresh_ignores_a_fresh_block_inside_the_lock(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# _load_fresh_comparison: the cache lookup is version-scoped
+# _load_fresh_analysis: the cache lookup is version-scoped
 # ---------------------------------------------------------------------------
 
 
 async def _captured_lookup_sql(task_version_id: str) -> str:
-    """Run ``_load_fresh_comparison`` against a session that only records the
+    """Run ``_load_fresh_analysis`` against a session that only records the
     statement, and return that statement as Postgres SQL."""
     from sqlalchemy.dialects import postgresql
 
@@ -206,7 +206,7 @@ async def _captured_lookup_sql(task_version_id: str) -> str:
     session = MagicMock()
     session.execute = execute
 
-    await cc._load_fresh_comparison(
+    await cc._load_fresh_analysis(
         session,
         task_id="t1",
         task_version_id=task_version_id,
@@ -241,8 +241,44 @@ async def test_cache_lookup_version_filter_tracks_its_argument():
     assert "v-other" not in await _captured_lookup_sql("v-requested")
 
 
+@pytest.mark.asyncio
+async def test_cache_lookup_still_matches_pre_rename_blocks():
+    """Rows written as ``cohort_comparison`` must stay readable.
+
+    The analyzer was renamed to ``agent_capabilities`` and a migration moves
+    the stored rows, but a rollback -- or reading before the migration lands
+    -- leaves rows under the old type. Matching only the new one silently
+    regenerates every already-analyzed version at LLM cost, which reads as a
+    slow page rather than as an error.
+    """
+    sql = await _captured_lookup_sql("v-requested")
+
+    assert "agent_capabilities" in sql
+    assert cc.LEGACY_BLOCK_TYPE in sql
+
+
+def test_pre_rename_route_is_still_served():
+    """The old path stays mounted so a lagging frontend deploy keeps working.
+
+    Both paths must resolve to the same handler; a second, diverging
+    implementation would be worse than a 404.
+    """
+    from api.routers.tasks import router
+
+    by_path = {
+        r.path: r.endpoint for r in router.routes if hasattr(r, "endpoint")
+    }
+
+    assert "/tasks/{task_id}/agent-capabilities" in by_path
+    assert "/tasks/{task_id}/cohort-comparison" in by_path
+    assert (
+        by_path["/tasks/{task_id}/cohort-comparison"]
+        is by_path["/tasks/{task_id}/agent-capabilities"]
+    )
+
+
 # ---------------------------------------------------------------------------
-# GET /tasks/{id}/cohort-comparison: the response names the version compared
+# GET /tasks/{id}/agent-capabilities: the response names the version compared
 # ---------------------------------------------------------------------------
 
 
@@ -301,10 +337,10 @@ def test_response_names_the_current_version_it_compared(client):
     with patch(
         "api.routers.tasks.get_session", new=_session_returning(task)
     ), patch(
-        "api.routers.tasks.get_or_generate_comparison",
+        "api.routers.tasks.get_or_generate_analysis",
         new=AsyncMock(return_value=COMPARISON),
     ):
-        resp = client.get("/tasks/t-1/cohort-comparison")
+        resp = client.get("/tasks/t-1/agent-capabilities")
 
     assert resp.status_code == 200
     assert resp.json()["task_version_id"] == "tv-current"
@@ -321,8 +357,8 @@ def test_response_names_the_requested_version_not_the_current_one(client):
     with patch(
         "api.routers.tasks.get_session",
         new=_session_returning(task, "tv-3"),
-    ), patch("api.routers.tasks.get_or_generate_comparison", new=generate):
-        resp = client.get("/tasks/t-1/cohort-comparison?version=3")
+    ), patch("api.routers.tasks.get_or_generate_analysis", new=generate):
+        resp = client.get("/tasks/t-1/agent-capabilities?version=3")
 
     assert resp.status_code == 200
     assert resp.json()["task_version_id"] == "tv-3"
@@ -355,10 +391,10 @@ async def test_read_transaction_ends_before_the_generation(monkeypatch):
         AsyncMock(return_value=(_fake_trials("s"), _fake_trials("f"))),
     )
     monkeypatch.setattr(cc, "_fetch_trajectories", AsyncMock(return_value={}))
-    monkeypatch.setattr(cc, "_load_fresh_comparison", AsyncMock(return_value=None))
+    monkeypatch.setattr(cc, "_load_fresh_analysis", AsyncMock(return_value=None))
     monkeypatch.setattr(AnalyzerBlock, "run", fake_run)
 
-    await cc.get_or_generate_comparison(
+    await cc.get_or_generate_analysis(
         session, "v-gen", task_id="t-gen", task_name="task"
     )
 
@@ -381,7 +417,7 @@ async def test_read_transaction_ends_before_waiting_on_the_lock(monkeypatch):
         AsyncMock(return_value=(_fake_trials("s"), _fake_trials("f"))),
     )
     monkeypatch.setattr(cc, "_fetch_trajectories", AsyncMock(return_value={}))
-    monkeypatch.setattr(cc, "_load_fresh_comparison", AsyncMock(return_value=None))
+    monkeypatch.setattr(cc, "_load_fresh_analysis", AsyncMock(return_value=None))
     monkeypatch.setattr(
         AnalyzerBlock, "run", AsyncMock(return_value=AnalyzerOutput(output=dict(COMPARISON)))
     )
@@ -391,7 +427,7 @@ async def test_read_transaction_ends_before_waiting_on_the_lock(monkeypatch):
     await held.acquire()
     try:
         pending = asyncio.create_task(
-            cc.get_or_generate_comparison(
+            cc.get_or_generate_analysis(
                 session, key[1], task_id=key[0], task_name="task"
             )
         )
@@ -428,11 +464,11 @@ async def test_read_transaction_ends_after_the_trajectory_fetch(monkeypatch):
         "resolve_cohorts",
         AsyncMock(return_value=(_fake_trials("s"), _fake_trials("f"))),
     )
-    monkeypatch.setattr(cc, "_load_fresh_comparison", AsyncMock(return_value=None))
+    monkeypatch.setattr(cc, "_load_fresh_analysis", AsyncMock(return_value=None))
     monkeypatch.setattr(cc, "_fetch_trajectories", fake_fetch)
     monkeypatch.setattr(AnalyzerBlock, "run", fake_run)
 
-    await cc.get_or_generate_comparison(
+    await cc.get_or_generate_analysis(
         session, "v-fetch", task_id="t-fetch", task_name="task"
     )
 

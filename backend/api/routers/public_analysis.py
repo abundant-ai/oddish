@@ -146,8 +146,8 @@ async def _version_is_in_experiment(
     ).scalar_one_or_none() is not None
 
 
-@router.get("/public/experiments/{public_token}/tasks/{task_id}/cohort-comparison")
-async def get_public_task_cohort_comparison(
+@router.get("/public/experiments/{public_token}/tasks/{task_id}/agent-capabilities")
+async def get_public_task_agent_capabilities(
     public_token: str,
     task_id: str,
     version: int | None = Query(
@@ -160,7 +160,7 @@ async def get_public_task_cohort_comparison(
     ),
 ) -> dict:
     """The stored successful-vs-failing comparison for a public task version."""
-    from api.services.cohort_comparison import load_stored_comparison
+    from api.services.agent_capabilities import load_stored_analysis
 
     async with get_session() as session:
         resolved = await get_public_task_for_experiment(session, public_token, task_id)
@@ -191,7 +191,7 @@ async def get_public_task_cohort_comparison(
         # the share actually displays.
         if not await _version_is_in_experiment(session, experiment.id, version_id):
             raise HTTPException(status_code=404, detail="Task version not found")
-        comparison = await load_stored_comparison(
+        comparison = await load_stored_analysis(
             session, version_id, task_id=task.id
         )
         if comparison is None:

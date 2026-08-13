@@ -1,7 +1,7 @@
 "use client";
 
 import { componentLabel } from "@/lib/trajectory-segments";
-import { useCohortComparison } from "@/lib/use-cohort-comparison";
+import { useAgentCapabilities } from "@/lib/use-agent-capabilities";
 import type { BehaviorEvidence, BehaviorObservation } from "@/lib/types";
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -237,7 +237,7 @@ function CohortColumn({
   );
 }
 
-export function CohortComparisonSection({
+export function AgentCapabilitiesSection({
   taskId,
   apiBaseUrl = "/api",
   version,
@@ -255,7 +255,7 @@ export function CohortComparisonSection({
       across versions. The host decides not to render instead. */
   version: number;
 }) {
-  const { data, error, isLoading } = useCohortComparison(
+  const { data, error, isLoading } = useAgentCapabilities(
     taskId,
     apiBaseUrl,
     version,
@@ -285,7 +285,7 @@ export function CohortComparisonSection({
       <section className="border-border flex flex-col gap-2 border-b p-4">
         <h3 className={SECTION_HEADING}>Agent capability analysis</h3>
         <p className="text-muted-foreground text-xs">
-          Could not build the comparison{typeof error === "number" ? ` (${error})` : ""}.
+          Could not build the analysis{typeof error === "number" ? ` (${error})` : ""}.
           Reload to try again.
         </p>
       </section>
