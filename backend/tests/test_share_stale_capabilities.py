@@ -1,9 +1,7 @@
 """Serving a stale comparison to a share, and the background rebuild behind it.
 
-A share page cannot generate -- that is the property
-``test_public_analysis_endpoints`` guards. This is the seam that lets it show
-the *previous* answer while a worker builds the next one, without acquiring the
-ability to spend an LLM call from a cold start.
+A share page can enqueue durable generation but never runs it inline. This is
+the seam that lets it show the previous answer while the worker builds the next.
 """
 
 from __future__ import annotations
@@ -16,8 +14,8 @@ import pytest
 from api.services import agent_capabilities as ac
 from api.services.agent_capabilities import stale_reason
 
-FRESH_META = {"cohort_hash": "aaa", "schema_version": 4, "task_version_id": "tv-1"}
-FRESH = {"current_hash": "aaa", "schema_version": 4, "task_version_id": "tv-1"}
+FRESH_META = {"cohort_hash": "aaa", "schema_version": 5, "task_version_id": "tv-1"}
+FRESH = {"current_hash": "aaa", "schema_version": 5, "task_version_id": "tv-1"}
 
 
 # --------------------------------------------------------------------------
@@ -61,7 +59,7 @@ def test_is_stale_still_answers_the_boolean_question():
 
 
 def _cohorts(n: int = 4):
-    trials = [{"trial_id": f"t-{i}"} for i in range(n)]
+    trials = [f"t-{i}" for i in range(n)]
     return AsyncMock(return_value=(trials, trials))
 
 
@@ -73,7 +71,7 @@ def _session_returning(row):
     return session
 
 
-def _block(*, cohort_hash: str, schema_version: int = 4, output=None):
+def _block(*, cohort_hash: str, schema_version: int = 5, output=None):
     return SimpleNamespace(
         block_metadata={
             "cohort_hash": cohort_hash,
@@ -86,11 +84,13 @@ def _block(*, cohort_hash: str, schema_version: int = 4, output=None):
 
 @pytest.mark.asyncio
 async def test_a_fresh_block_is_not_marked_stale():
-    with patch.object(ac, "resolve_cohorts", new=_cohorts()), patch.object(
-        ac, "cohort_hash", return_value="aaa"
-    ), patch(
-        "api.services.blocks.analyzer.cohort.agent_capabilities_block.SCHEMA_VERSION",
-        4,
+    with (
+        patch.object(ac, "resolve_cohort_membership", new=_cohorts()),
+        patch.object(ac, "cohort_hash", return_value="aaa"),
+        patch(
+            "api.services.blocks.analyzer.cohort.agent_capabilities_block.SCHEMA_VERSION",
+            5,
+        ),
     ):
         got = await ac.load_stored_analysis(
             _session_returning(_block(cohort_hash="aaa")), "tv-1", task_id="task-1"
@@ -104,11 +104,13 @@ async def test_cohort_drift_is_withheld_unless_the_caller_opts_in():
     """The authenticated path regenerates on drift, so it must keep seeing the
     miss it acts on. Only the share asks for the older answer."""
     session = _session_returning(_block(cohort_hash="old"))
-    with patch.object(ac, "resolve_cohorts", new=_cohorts()), patch.object(
-        ac, "cohort_hash", return_value="new"
-    ), patch(
-        "api.services.blocks.analyzer.cohort.agent_capabilities_block.SCHEMA_VERSION",
-        4,
+    with (
+        patch.object(ac, "resolve_cohort_membership", new=_cohorts()),
+        patch.object(ac, "cohort_hash", return_value="new"),
+        patch(
+            "api.services.blocks.analyzer.cohort.agent_capabilities_block.SCHEMA_VERSION",
+            5,
+        ),
     ):
         assert await ac.load_stored_analysis(session, "tv-1", task_id="task-1") is None
 
@@ -116,11 +118,13 @@ async def test_cohort_drift_is_withheld_unless_the_caller_opts_in():
 @pytest.mark.asyncio
 async def test_cohort_drift_is_served_and_flagged_when_opted_in():
     session = _session_returning(_block(cohort_hash="old", output={"categories": [1]}))
-    with patch.object(ac, "resolve_cohorts", new=_cohorts()), patch.object(
-        ac, "cohort_hash", return_value="new"
-    ), patch(
-        "api.services.blocks.analyzer.cohort.agent_capabilities_block.SCHEMA_VERSION",
-        4,
+    with (
+        patch.object(ac, "resolve_cohort_membership", new=_cohorts()),
+        patch.object(ac, "cohort_hash", return_value="new"),
+        patch(
+            "api.services.blocks.analyzer.cohort.agent_capabilities_block.SCHEMA_VERSION",
+            5,
+        ),
     ):
         got = await ac.load_stored_analysis(
             session, "tv-1", task_id="task-1", allow_cohort_drift=True
@@ -132,26 +136,30 @@ async def test_cohort_drift_is_served_and_flagged_when_opted_in():
 
 @pytest.mark.asyncio
 async def test_schema_drift_is_never_served_even_when_drift_is_allowed():
-    """A schema-3 payload rendered by schema-4 components is missing fields the
+    """A schema-4 payload rendered by schema-5 components is missing fields the
     UI reads. Behind-but-readable is the deal; wrong-shape is not."""
-    session = _session_returning(_block(cohort_hash="aaa", schema_version=3))
-    with patch.object(ac, "resolve_cohorts", new=_cohorts()), patch.object(
-        ac, "cohort_hash", return_value="aaa"
-    ), patch(
-        "api.services.blocks.analyzer.cohort.agent_capabilities_block.SCHEMA_VERSION",
-        4,
+    session = _session_returning(_block(cohort_hash="aaa", schema_version=4))
+    with (
+        patch.object(ac, "resolve_cohort_membership", new=_cohorts()),
+        patch.object(ac, "cohort_hash", return_value="aaa"),
+        patch(
+            "api.services.blocks.analyzer.cohort.agent_capabilities_block.SCHEMA_VERSION",
+            5,
+        ),
     ):
         got = await ac.load_stored_analysis(
             session, "tv-1", task_id="task-1", allow_cohort_drift=True
         )
     assert got is None
 
+
 @pytest.mark.asyncio
-async def test_a_thin_cohort_is_still_withheld_from_a_drift_tolerant_caller():
-    """MIN_COHORT gates the comparison itself, not its freshness."""
+async def test_a_single_trajectory_cohort_can_serve_stale_while_rebuilding():
+    """One trajectory is enough evidence to analyze and rebuild."""
     session = _session_returning(_block(cohort_hash="aaa"))
-    with patch.object(ac, "resolve_cohorts", new=_cohorts(n=1)):
+    with patch.object(ac, "resolve_cohort_membership", new=_cohorts(n=1)):
         got = await ac.load_stored_analysis(
             session, "tv-1", task_id="task-1", allow_cohort_drift=True
         )
-    assert got is None
+    assert got is not None
+    assert got.stale is True

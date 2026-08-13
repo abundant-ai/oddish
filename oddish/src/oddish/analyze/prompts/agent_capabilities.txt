@@ -1,6 +1,12 @@
 Compare the cohorts below. For each category, state what the successful runs
 did and what the failing runs did, as short behaviour descriptions.
 
+QA is optional context, not a gate. A trial may carry `qa_classification` and
+`verifier_reward`; use them to qualify claims about task defects, misleading
+successes, or harness errors, but analyze every trajectory in its outcome
+cohort. When QA is absent, do not invent it: the verifier reward is the only
+outcome signal available.
+
 When only ONE cohort is present -- every classified run on this task version
 landed on the same side -- describe that cohort instead of comparing. Put every
 observation in its own list, leave the other empty, and never characterise the

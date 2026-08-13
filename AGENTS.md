@@ -191,7 +191,13 @@ public-share cache miss enqueues one idempotent `ANALYZER` worker job with
 poll until the analyzer block is stored. Capability generation must not run
 inline in an API request. Public requests remain bounded to the task versions
 published by their share token, and repeated views coalesce onto the same active
-job.
+job. Any completed, fetchable trajectory is enough to queue analysis; cohort
+size is reported as evidence strength, not used as an eligibility gate. The
+worker generates missing trajectory summaries before analysis. QA enriches the
+input but is optional: `GOOD_*`, `BAD_*`, and `HARNESS_ERROR` classifications
+are all retained, while trials without QA fall back to verifier reward for
+provisional successful/failing placement. A later QA classification that moves
+a trial between outcome cohorts invalidates and rebuilds provisional output.
 
 Trajectory summaries use schema v5. Each taxonomy-valued `components` entry
 contains its `step_ids`, summary, and deterministic `tool_count` and

@@ -1631,7 +1631,7 @@ async def get_task_agent_capabilities(
 ) -> dict:
     """Successful-vs-failing comparison for a task version.
 
-    404 when the task has too few classified trials to compare.
+    404 only when the task version has no completed, fetchable trajectory.
     """
     auth.require_scope(APIKeyScope.READ)
     if refresh:
@@ -1679,7 +1679,7 @@ async def get_task_agent_capabilities(
             if not await analysis_is_eligible(session, version_id):
                 raise HTTPException(
                     status_code=404,
-                    detail="Not enough classified trials to compare",
+                    detail="No completed trajectories available to analyze",
                 )
             # Serialize cache misses for this version across API containers.
             await session.execute(
