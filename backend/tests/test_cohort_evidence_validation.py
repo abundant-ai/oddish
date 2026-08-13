@@ -1,4 +1,4 @@
-from api.services.cohort_comparison import validate_evidence
+from api.services.agent_capabilities import validate_evidence
 
 SUCCESS = [
     {

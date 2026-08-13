@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 import { fetcher } from "@/lib/api";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AnalysisProse } from "@/components/analysis-prose";
-import { CohortComparisonSection } from "@/components/cohort-comparison-section";
+import { AgentCapabilitiesSection } from "@/components/agent-capabilities-section";
 import { SeverityGroups } from "@/components/qa-report/action-items";
 import { CopyJsonButton } from "@/components/qa-report/copy-json-button";
 import { FALLBACK_TOKEN, VERDICT_TOKENS } from "@/components/qa-report/tokens";
@@ -598,7 +598,7 @@ export function TaskOverviewPanel({
           cohorts. Passing either through would describe a version the trials
           beside it are not scoped to. */}
       {taskId && typeof version === "number" ? (
-        <CohortComparisonSection
+        <AgentCapabilitiesSection
           taskId={taskId}
           apiBaseUrl={apiBaseUrl}
           version={version}
