@@ -1,9 +1,8 @@
 "use client";
 
-import useSWR from "swr";
 import { componentLabel } from "@/lib/trajectory-segments";
+import { useAgentCapabilities } from "@/lib/use-agent-capabilities";
 import type {
-  AgentCapabilities,
   BehaviorEvidence,
   BehaviorObservation,
 } from "@/lib/types";
@@ -203,18 +202,9 @@ export function AgentCapabilitiesSection({
       across versions. The host decides not to render instead. */
   version: number;
 }) {
-  const { data, error, isLoading } = useSWR<AgentCapabilities | null>(
-    `${apiBaseUrl}/tasks/${encodeURIComponent(taskId)}/agent-capabilities?version=${version}`,
-    (url: string) =>
-      fetch(url).then((response) => {
-        if (response.status === 202) return null;
-        return response.ok ? response.json() : Promise.reject(response.status);
-      }),
-    {
-      shouldRetryOnError: false,
-      refreshInterval: (value) => (value === null ? 3000 : 0),
-    }
-  );
+  const { data, error, isLoading } = useAgentCapabilities(taskId, version, {
+    apiBaseUrl,
+  });
 
   if (error === 404) {
     return (
