@@ -27,9 +27,14 @@ cutoff=$(($(date +%s) - MAX_AGE_DAYS * 86400))
 # be read as "nothing is stale".
 stale=$(supabase branches list --project-ref "$SUPABASE_PROJECT_REF" -o json \
   | jq -r --argjson cutoff "$cutoff" '
+      def parse_supabase_time:
+        sub("\\+00:00$"; "Z")
+        | sub("\\.[0-9]+Z$"; "Z")
+        | fromdateiso8601;
+
       .[] | select(.persistent != true)
           | select(.name | test("^pr-[0-9]+$"))
-          | select((.created_at | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) < $cutoff)
+          | select((.created_at | parse_supabase_time) < $cutoff)
           | [.id, .name, .created_at] | @tsv')
 
 if [ -z "$stale" ]; then
