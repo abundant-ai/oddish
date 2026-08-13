@@ -2,6 +2,7 @@ import type {
   TaskBrowseItem,
   TaskOpenResponse,
   TaskOpenTrialRef,
+  TaskOpenVersionRef,
 } from "@/lib/types";
 
 export type TaskOpenResource =
@@ -15,6 +16,12 @@ export function taskOpenKey(taskId: string, versionId?: string | null): string {
     : path;
 }
 
+export function isTaskOpenKeyForTask(key: unknown, taskId: string): boolean {
+  if (typeof key !== "string") return false;
+  const base = taskOpenKey(taskId);
+  return key === base || key.startsWith(`${base}?`);
+}
+
 export function taskOpenValue(
   resource: TaskOpenResource | undefined
 ): TaskOpenResponse | undefined {
@@ -25,6 +32,32 @@ export function isBrowseTaskOpen(
   resource: TaskOpenResource | undefined
 ): resource is { source: "browse"; open: TaskOpenResponse } {
   return resource !== undefined && "source" in resource;
+}
+
+export function updateTaskOpenDefault(
+  resource: TaskOpenResource | undefined,
+  nextDefault: TaskOpenVersionRef
+): TaskOpenResource | undefined {
+  const open = taskOpenValue(resource);
+  if (!open) return resource;
+  const updated: TaskOpenResponse = {
+    ...open,
+    task: {
+      ...open.task,
+      current_version_id: nextDefault.id,
+      current_version: nextDefault.version,
+    },
+    default_version: nextDefault,
+    selected_version: open.selected_version
+      ? {
+          ...open.selected_version,
+          is_current: open.selected_version.id === nextDefault.id,
+        }
+      : null,
+  };
+  return isBrowseTaskOpen(resource)
+    ? { source: "browse", open: updated }
+    : updated;
 }
 
 export function taskOpenFromBrowse(browse: TaskBrowseItem): TaskOpenResource {

@@ -1,8 +1,11 @@
 import { expect, test } from "@playwright/test";
 
 import {
+  isTaskOpenKeyForTask,
   taskOpenFromBrowse,
+  taskOpenKey,
   taskOpenValue,
+  updateTaskOpenDefault,
 } from "../src/lib/task-open-resource";
 import type { TaskBrowseItem } from "../src/lib/types";
 
@@ -80,4 +83,35 @@ test("browse snapshots do not mislabel effective task tags as direct version tag
 
   expect(open?.task.user_tags).toHaveLength(1);
   expect(open?.selected_version?.user_tags).toEqual([]);
+});
+
+test("task-open cache matching covers every version of only one task", () => {
+  expect(isTaskOpenKeyForTask(taskOpenKey("task/1"), "task/1")).toBe(true);
+  expect(
+    isTaskOpenKeyForTask(taskOpenKey("task/1", "version-2"), "task/1")
+  ).toBe(true);
+  expect(
+    isTaskOpenKeyForTask(taskOpenKey("task/10", "version-2"), "task/1")
+  ).toBe(false);
+  expect(isTaskOpenKeyForTask(["task-open-proof", "task/1"], "task/1")).toBe(
+    false
+  );
+});
+
+test("default changes update shared identity without replacing selected data", () => {
+  const resource = taskOpenFromBrowse(browse);
+  const updated = updateTaskOpenDefault(resource, {
+    id: "task-1-v4",
+    version: 4,
+    created_at: "2026-08-12T00:00:00Z",
+    is_current: true,
+  });
+  const open = taskOpenValue(updated);
+
+  expect(updated).toMatchObject({ source: "browse" });
+  expect(open?.task.current_version_id).toBe("task-1-v4");
+  expect(open?.default_version?.id).toBe("task-1-v4");
+  expect(open?.selected_version?.id).toBe("task-1-v3");
+  expect(open?.selected_version?.is_current).toBe(false);
+  expect(open?.selected_version?.trial_count).toBe(100);
 });
