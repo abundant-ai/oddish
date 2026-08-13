@@ -1,4 +1,4 @@
-"""Prompt text for CohortComparisonBlock.
+"""Prompt text for AgentCapabilitiesBlock.
 
 Kept apart from the block logic so prompt edits do not touch parsing.
 """
@@ -100,6 +100,25 @@ def taxonomy_section() -> str:
     return "\n".join(lines)
 
 
+def _subagents_attr(delegation: dict | None) -> str:
+    """How many subagents the run spawned, as a `<trial>` attribute.
+
+    Three states, and collapsing any two of them produces a false finding:
+    a counted number, `n/a` for an agent with no subagent tool, and the
+    attribute omitted entirely for a summary written before the count existed.
+    Rendering either of the last two as `0` invites the comparison to report
+    that failing runs chose not to delegate.
+    """
+    if not isinstance(delegation, dict):
+        return ""
+    if not delegation.get("capable"):
+        return ' subagents="n/a"'
+    dispatches = delegation.get("dispatches")
+    if not isinstance(dispatches, int):
+        return ""
+    return f' subagents="{dispatches}"'
+
+
 def cohort_section(label: str, trials: list[dict]) -> str:
     """One cohort's trials, as component streams the model can cite."""
     lines = [f"<cohort name=\"{label}\">"]
@@ -109,6 +128,7 @@ def cohort_section(label: str, trials: list[dict]) -> str:
         # `claude-opus-4-8` on the chip beside it -- read as two models.
         model = short_model_name(t.get("model") or "") if t.get("model") else ""
         attrs = f' model="{model}"' if model else ""
+        attrs += _subagents_attr(t.get("delegation"))
         lines.append(f'  <trial id="{t["trial_id"]}"{attrs}>')
         for c in t.get("components") or []:
             ids = c.get("step_ids") or []
@@ -134,7 +154,7 @@ def instructions_section(template: str) -> str:
 # is wrong (parents[5] is `backend/`, not the repo root) and it breaks the
 # moment the module moves.
 _PROMPT_PATH = (
-    Path(_analyze.__file__).resolve().parent / "prompts" / "cohort_comparison.txt"
+    Path(_analyze.__file__).resolve().parent / "prompts" / "agent_capabilities.txt"
 )
 
 

@@ -117,7 +117,7 @@ oddish-docstore-mcp = "oddish.mcp.docstore_server:main"
 
 [tool.uv.sources]
 # Keep the worker image on the exact Harbor revision used by Oddish's runtime gate.
-harbor = { git = "https://github.com/abundant-ai/harbor", rev = "a7caa586de620f8a7103018f99ce9e1603f90eb4" }
+harbor = { git = "https://github.com/abundant-ai/harbor", rev = "5e40e8c5ec5502b108c5e94356311675f9de9a01" }
 
 [tool.uv]
 override-dependencies = ["harbor==0.16.1"]

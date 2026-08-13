@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
 from oddish.core.tags.enqueue import enqueue_tag_project_worker_job
-from oddish.db import Priority, TaskModel, TaskVersionModel, get_session
+from oddish.db import Priority, TaskModel, TaskVersionModel, TrialModel, get_session
 from oddish.db.storage import StorageClient, get_storage_client
 from oddish.schemas import TaskUploadInitResponse, UploadResponse
 
@@ -268,7 +268,10 @@ async def complete_task_upload(
         existing_task = await session.get(
             TaskModel,
             task_id,
-            with_for_update=overwrite_current_version,
+            # Every completion path below may change current_version_id or
+            # current source bytes. Serialize that mutation with QA result
+            # publication and default-version selection.
+            with_for_update=True,
         )
 
         if (
@@ -415,6 +418,23 @@ async def complete_task_upload(
                         "start the in-place upload again"
                     ),
                 )
+            existing_trial_count = await session.scalar(
+                select(func.count(TrialModel.id)).where(
+                    TrialModel.task_id == task_id,
+                    TrialModel.task_version_id == version_id,
+                )
+            )
+            if existing_trial_count or any(
+                getattr(existing_task, field, None) is not None
+                for field in ("verdict", "verdict_status", "verdict_started_at")
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "A task version with trial or QA history cannot be overwritten "
+                        "in place; upload it as a new version"
+                    ),
+                )
             # Promote into an immutable, attempt-specific prefix. The object is
             # not visible to readers until the version row commits its new
             # ``task_s3_key``, so a failed DB transaction leaves only an
@@ -455,9 +475,20 @@ async def complete_task_upload(
             # explicit-flush pattern the new-task branch above already uses.
             await session.flush()
 
+        # A successful overwrite reaching here is necessarily a content
+        # change (same-hash replays returned above). A new version changes the
+        # pointer. Capture this before assigning mirrored source fields.
+        source_changed = (
+            existing_task.current_version_id != version_id or overwrite_current_version
+        )
         existing_task.task_path = task_path
         existing_task.task_s3_key = s3_key
         existing_task.current_version_id = version_id
+
+        if source_changed:
+            from oddish.queue import invalidate_task_qa_for_source_change
+
+            await invalidate_task_qa_for_source_change(session, existing_task)
 
         if settings.tasks_expand_archive:
             # Kick off the per-file expansion so the task-files drawer

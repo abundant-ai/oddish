@@ -1,4 +1,4 @@
-from api.services.cohort_comparison import validate_evidence
+from api.services.agent_capabilities import validate_evidence
 
 SUCCESS = [
     {
@@ -109,6 +109,16 @@ def test_step_ids_are_matched_on_their_span():
 
 def test_evidence_without_step_ids_is_dropped():
     bad = {**_good(), "step_ids": []}
+    filtered, drops = validate_evidence(_out([bad]), SUCCESS, FAILING)
+    assert filtered["categories"] == []
+    assert drops["evidence"] == 1
+
+
+def test_evidence_with_a_blank_component_is_dropped():
+    # Dropped here rather than raised on in the schema: the JSON schema handed
+    # to claude-code cannot require a non-blank component, so a raise would
+    # cost the whole comparison instead of this one citation.
+    bad = {**_good(), "trajectory_component": "  "}
     filtered, drops = validate_evidence(_out([bad]), SUCCESS, FAILING)
     assert filtered["categories"] == []
     assert drops["evidence"] == 1

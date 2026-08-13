@@ -36,7 +36,7 @@ import {
   hasFatalExperimentTaskLoadError,
   mergeExperimentTaskPages,
 } from "@/lib/experiment-task-pages";
-import { ExperimentPageSkeleton } from "./experiment-skeleton";
+import { ExperimentPageSkeleton } from "@/components/experiment-page-skeleton";
 
 // Shared by the experiment header action buttons so they render identically.
 const HEADER_ACTION_BUTTON_CLASS =

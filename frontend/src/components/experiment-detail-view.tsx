@@ -10,10 +10,12 @@ import {
 } from "react";
 import dynamic from "next/dynamic";
 import { useSearchParams } from "next/navigation";
+import type { TaskPane } from "@/components/task-files-panel";
 import useSWR from "swr";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { ExperimentTrialsTable } from "@/components/experiment-trials-table";
+import { ExperimentPageSkeleton } from "@/components/experiment-page-skeleton";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
 import { TagEditor } from "@/components/tag-editor";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
@@ -59,6 +61,7 @@ import {
   type LineRange,
 } from "@/lib/line-range";
 import { sameFilePath } from "@/lib/file-path";
+import { expandTrialParam } from "@/lib/trial-url";
 
 type DrawerMode = "task" | "trial";
 
@@ -824,7 +827,8 @@ function ExperimentSummaryBar({
                   </span>
                 )}
               </>
-            ) : summary.ownedTokenTrialCount === 0 && summary.costTrialCount > 0 ? (
+            ) : summary.ownedTokenTrialCount === 0 &&
+              summary.costTrialCount > 0 ? (
               // Priced work exists and this experiment's own trials reported
               // nothing at all: an explicit zero ("nothing new was spent")
               // reads honestly where a dash would read as "unknown". With
@@ -953,7 +957,41 @@ export function ExperimentDetailView({
   // Task-definition pane addressing. The drawer can show the task's file
   // tree beside the trial view, so the two panes address independently:
   // the trial pane owns ?file= / ?lines= (see TrialDetailPanel) and the
-  // task pane owns ?taskFile= / ?taskLines=.
+  // task pane owns ?taskPane= / ?taskFile= / ?taskLines=.
+  const [activeTaskPane, setActiveTaskPane] = useState<TaskPane>(() => {
+    const pane = searchParams.get("taskPane");
+    if (pane === "capabilities" || pane === "file") return pane;
+    if (searchParams.has("taskFile")) return "file";
+    return showAnalysis ? "overview" : "capabilities";
+  });
+  const selectTaskPane = useCallback((pane: TaskPane) => {
+    setActiveTaskPane(pane);
+    const params = new URLSearchParams(window.location.search);
+    if (pane === "overview") params.delete("taskPane");
+    else params.set("taskPane", pane);
+    window.history.pushState(
+      window.history.state,
+      "",
+      urlWithSearch(params.toString())
+    );
+  }, []);
+  useEffect(() => {
+    const restoreTaskPane = () => {
+      const params = new URLSearchParams(window.location.search);
+      const pane = params.get("taskPane");
+      setActiveTaskPane(
+        pane === "capabilities" || pane === "file"
+          ? pane
+          : params.has("taskFile")
+            ? "file"
+            : showAnalysis
+              ? "overview"
+              : "capabilities"
+      );
+    };
+    window.addEventListener("popstate", restoreTaskPane);
+    return () => window.removeEventListener("popstate", restoreTaskPane);
+  }, [showAnalysis]);
   const [taskPaneFile, setTaskPaneFile] = useState<string | null>(() =>
     searchParams.get("taskFile")
   );
@@ -980,9 +1018,10 @@ export function ExperimentDetailView({
       taskId !== lastDrawerTaskIdRef.current
     ) {
       handleTaskPaneFileChange(null);
+      setActiveTaskPane(showAnalysis ? "overview" : "capabilities");
     }
     lastDrawerTaskIdRef.current = taskId;
-  }, [drawerState?.task.id, handleTaskPaneFileChange]);
+  }, [drawerState?.task.id, handleTaskPaneFileChange, showAnalysis]);
   // Probe cells open main's sliding ProbeDetailPanel (kept from origin/main).
   // On the slim experiment path the grid has no probe trials to click, so this
   // stays dormant until probes are fed to that path -- the code is retained so
@@ -1167,12 +1206,17 @@ export function ExperimentDetailView({
         next.delete("file");
         next.delete("lines");
       }
-      if (taskPaneFile) {
+      if (activeTaskPane === "overview") {
+        next.delete("taskPane");
+      } else {
+        next.set("taskPane", activeTaskPane);
+      }
+      if (activeTaskPane === "file" && taskPaneFile) {
         next.set("taskFile", taskPaneFile);
       } else {
         next.delete("taskFile");
       }
-      if (taskPaneLines) {
+      if (activeTaskPane === "file" && taskPaneLines) {
         next.set("taskLines", formatLineRange(taskPaneLines));
       } else {
         next.delete("taskLines");
@@ -1188,6 +1232,7 @@ export function ExperimentDetailView({
       next.delete("lines");
       next.delete("taskFile");
       next.delete("taskLines");
+      next.delete("taskPane");
     }
 
     if (next.toString() !== current.toString()) {
@@ -1195,15 +1240,21 @@ export function ExperimentDetailView({
       // Keep URL query in sync without triggering app-router navigation work.
       window.history.replaceState(window.history.state, "", url);
     }
-  }, [drawerState, pendingUrlTrialId, taskPaneFile, taskPaneLines]);
+  }, [
+    activeTaskPane,
+    drawerState,
+    pendingUrlTrialId,
+    taskPaneFile,
+    taskPaneLines,
+  ]);
 
   useEffect(() => {
     if (hydratedFromUrl.current || tasksForExperiment.length === 0) return;
     hydratedFromUrl.current = true;
 
     const urlTaskId = searchParams.get("task");
-    const urlTrialId = searchParams.get("trial");
-    if (!urlTaskId && !urlTrialId) return;
+    const trialParam = searchParams.get("trial");
+    if (!urlTaskId && !trialParam) return;
 
     // Fall back to task name so hand-written links like ?task=<name> work;
     // the URL-sync effect rewrites the param to the canonical id on open.
@@ -1211,6 +1262,10 @@ export function ExperimentDetailView({
       ? (tasksForExperiment.find((t) => t.id === urlTaskId) ??
         tasksForExperiment.find((t) => t.name === urlTaskId))
       : null;
+
+    // A hand-shortened ?trial= is an index against the task in the address;
+    // the full id links carry passes through untouched.
+    const urlTrialId = expandTrialParam(trialParam, task?.id ?? urlTaskId);
 
     if (urlTrialId) {
       // The trial id is the source of truth for its host task, so scan every
@@ -1357,9 +1412,7 @@ export function ExperimentDetailView({
   useEffect(() => {
     if (pendingUrlTrialId == null) return;
     for (const host of tasksForExperiment) {
-      const trial = (host.trials ?? []).find(
-        (t) => t.id === pendingUrlTrialId
-      );
+      const trial = (host.trials ?? []).find((t) => t.id === pendingUrlTrialId);
       if (trial) {
         openDeepLinkTrial(host, trial);
         return;
@@ -1490,7 +1543,8 @@ export function ExperimentDetailView({
       // the fields; the client fold's partial owned sum beats a hard $0.00.
       ownedCostUsd: costTotals.owned_cost_usd ?? base.ownedCostUsd,
       ownedTrialCount: costTotals.owned_trial_count ?? base.ownedTrialCount,
-      ownedHasEstimated: costTotals.owned_has_estimated ?? base.ownedHasEstimated,
+      ownedHasEstimated:
+        costTotals.owned_has_estimated ?? base.ownedHasEstimated,
       ownedHasNative: costTotals.owned_has_native ?? base.ownedHasNative,
       ownedTokenCount: costTotals.owned_token_count ?? base.ownedTokenCount,
       ownedTokenTrialCount:
@@ -1573,12 +1627,7 @@ export function ExperimentDetailView({
   return (
     <>
       {isInitialLoading ? (
-        <div className="flex min-h-[240px] items-center justify-center rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] py-10">
-          <div className="inline-flex items-center gap-2 rounded-md border border-[color:var(--paper-line)] bg-[color:var(--paper-surface-2)] px-3 py-2 text-sm text-[color:var(--paper-ink-3)]">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            <span>Loading experiment...</span>
-          </div>
-        </div>
+        <ExperimentPageSkeleton />
       ) : (
         <div className="space-y-4">
           {/*
@@ -1729,6 +1778,8 @@ export function ExperimentDetailView({
               // download files for a pane the user cannot see.
               isOpen={drawerState.mode === "trial" && showTask}
               onClose={() => {}}
+              activePane={activeTaskPane}
+              onActivePaneChange={selectTaskPane}
               taskId={null}
               // The task prop scopes the overview's trial aggregation to
               // this experiment's rows; this pane renders no header, so
@@ -1753,6 +1804,8 @@ export function ExperimentDetailView({
             <TaskFilesPanel
               isOpen={drawerState.mode === "task"}
               onClose={closeDrawer}
+              activePane={activeTaskPane}
+              onActivePaneChange={selectTaskPane}
               taskId={drawerState.task.id}
               task={drawerState.task}
               taskVersion={resolveExperimentTaskVersion(drawerState.task)}

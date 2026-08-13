@@ -14,16 +14,17 @@ from oddish.config import settings
 from oddish.core.baseline_gate import GATE_SKIP_PREFIX, baseline_agent_clause
 from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
 from oddish.core.result_focus_schema import normalize_findings_schema
+from oddish.core.verdict_state import (
+    abandon_verdict,
+    complete_verdict_without_result,
+    start_verdict,
+)
 from oddish.core.verdict_sync import (
     aggregate_exploited_into_pre_trial,
     build_pre_trial_payload,
     build_verdict_payload,
     sync_pre_trial_to_task_version,
     sync_verdict_to_task,
-)
-from oddish.core.verdict_state import (
-    complete_verdict_without_result,
-    start_verdict,
 )
 from oddish.db import (
     AnalysisStatus,
@@ -65,41 +66,31 @@ VERDICT_FALLBACK_SCHEMA = normalize_findings_schema(
 )
 
 
-async def _load_pre_trial_items(task_id: str) -> list[ActionItem] | None:
-    """The audit findings the verdict must see: the current version's, else
-    the newest audited version's. Returns ``None`` when the state is unknown.
-    Parsed leniently — one malformed item must not hide the rest."""
+async def _load_pre_trial_items(
+    task_id: str, task_version_id: str | None
+) -> list[ActionItem] | None:
+    """Load audit findings for the exact source snapshot under verdict QA.
+
+    A missing audit is unknown. It must never fall back to findings from an
+    older version: those findings describe different task bytes and can turn a
+    clean replacement into a false failure. Parsed leniently so one malformed
+    current-version item does not hide the rest.
+    """
     async with get_session() as session:
-        current_id = await session.scalar(
-            select(TaskModel.current_version_id).where(TaskModel.id == task_id)
-        )
         version = (
-            await session.get(TaskVersionModel, current_id)
-            if current_id is not None
+            await session.get(TaskVersionModel, task_version_id)
+            if task_version_id is not None
             else None
         )
-        if version is not None and version.pre_trial_status is not None:
-            # The current version has its own audit history, and it is
-            # authoritative. A failed or in-flight audit clears the payload,
-            # and that means "unknown" — never another version's findings,
-            # which could mark a fixed task bad from stale leaks.
-            if version.pre_trial is None:
-                return None
-            raw_items = version.pre_trial.get("items", [])
-        else:
-            # Never audited: the newest audited version is the best signal.
-            version = (
-                await session.execute(
-                    select(TaskVersionModel)
-                    .where(TaskVersionModel.task_id == task_id)
-                    .where(TaskVersionModel.pre_trial.isnot(None))
-                    .order_by(TaskVersionModel.version.desc())
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
-            raw_items = ((version.pre_trial if version else None) or {}).get(
-                "items", []
-            )
+        if (
+            version is None
+            or version.task_id != task_id
+            or version.pre_trial_status is None
+        ):
+            return None
+        if version.pre_trial is None:
+            return None
+        raw_items = version.pre_trial.get("items", [])
 
     items: list[ActionItem] = []
     for raw in raw_items:
@@ -452,7 +443,8 @@ async def _fail_queued_pre_trial_request(
         payload = (job.payload or {}) or {}
         if payload.get("mode") != "pre_trial":
             return
-        if task_version_id and payload.get("task_version_id") != task_version_id:
+        payload_version_id = payload.get("task_version_id")
+        if payload_version_id is not None and payload_version_id != task_version_id:
             return
         has_expected_content_hash = "task_version_content_hash" in payload
         if (
@@ -506,13 +498,23 @@ async def run_pre_trial_only_job(
                 stop_event=heartbeat_stop,
             )
         )
+    effective_version_id = task_version_id
     try:
-        live_trials = await _load_live_trials_for_classification(task_id)
+        if effective_version_id is None:
+            async with get_session() as session:
+                resolved_version_id = await session.scalar(
+                    select(TaskModel.current_version_id).where(TaskModel.id == task_id)
+                )
+            effective_version_id = resolved_version_id
+        live_trials = await _load_live_trials_for_classification(
+            task_id,
+            effective_version_id,
+        )
         claim = await _run_pre_trial_audit(
             task_id,
             worker_job_id,
             [trial_id for trial_id, _ in live_trials],
-            task_version_id=task_version_id,
+            task_version_id=effective_version_id,
             expected_content_hash=task_version_content_hash,
             enforce_content_hash=enforce_task_version_content_hash,
         )
@@ -528,7 +530,7 @@ async def run_pre_trial_only_job(
             await _fail_queued_pre_trial_request(
                 task_id,
                 error=f"{type(exc).__name__}: {exc}",
-                task_version_id=task_version_id,
+                task_version_id=effective_version_id,
                 worker_job_id=worker_job_id,
                 expected_content_hash=task_version_content_hash,
             )
@@ -825,8 +827,13 @@ def _classifications_from_trials(trials) -> list:
 
 async def _load_live_trials_for_classification(
     task_id: str,
+    task_version_id: str | None = None,
 ) -> list[tuple[str, AnalysisStatus | None]]:
-    """Return live trial IDs and QA states.
+    """Return live trial IDs and QA states for one task version.
+
+    Versioned tasks must never synthesize a current verdict from historical
+    trials. ``None`` preserves the legacy behavior for tasks created before
+    task versioning existed.
 
     Trials created by the Sauron->Oddish bulk migration (``imported_at IS NOT
     NULL``) are excluded: classifying ~1M historical trials was ruled out on
@@ -853,6 +860,11 @@ async def _load_live_trials_for_classification(
                     TrialModel.analysis_status,
                 ).where(
                     TrialModel.task_id == task_id,
+                    (
+                        TrialModel.task_version_id == task_version_id
+                        if task_version_id is not None
+                        else True
+                    ),
                     TrialModel.superseded_by_trial_id.is_(None),
                     # Exclude bulk-migrated Sauron trials (see docstring): too
                     # costly to classify ~1M historical rows.
@@ -884,8 +896,17 @@ async def run_task_qa_job(
     queue_key: str,
     modal_function_call_id: str | None = None,
     worker_job_id: str | None = None,
-) -> None:
-    """Classify a task's live trials and store one verdict."""
+    task_version_id: str | None = None,
+    enforce_task_version_id: bool = False,
+    task_version_content_hash: str | None = None,
+    enforce_task_version_content_hash: bool = False,
+) -> bool:
+    """Classify a task's live trials and store one verdict.
+
+    Returns true only when a task-version change superseded this pass. The
+    worker adapter uses that signal to retire the obsolete job instead of
+    retrying it against the replacement version without stage admission.
+    """
     console.print(f"[cyan]Processing task QA[/cyan] {task_id} (queue_key={queue_key})")
 
     async with get_session() as session:
@@ -895,15 +916,39 @@ async def run_task_qa_job(
 
         if not await _worker_job_is_running(session, worker_job_id):
             console.print(f"[dim]QA {task_id} skipped; job was cancelled[/dim]")
-            return
+            return False
 
         if task.verdict_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
             console.print(
                 f"[yellow]Task {task_id} verdict already processed, skipping[/yellow]"
             )
-            return
+            return False
 
-        start_verdict(task, now=utcnow())
+        current_version_id = getattr(task, "current_version_id", None)
+        current_version = (
+            await session.get(TaskVersionModel, current_version_id)
+            if current_version_id is not None
+            else None
+        )
+        current_version_content_hash = (
+            current_version.content_hash if current_version is not None else None
+        )
+        if (enforce_task_version_id and current_version_id != task_version_id) or (
+            enforce_task_version_content_hash
+            and current_version_content_hash != task_version_content_hash
+        ):
+            # This queued job was admitted for an older version. Retire it
+            # without ever inspecting the replacement version's trials; the
+            # worker adapter re-enters current-version admission while keeping
+            # this worker as the retry owner.
+            abandon_verdict(task)
+            task.status = TaskStatus.RUNNING
+            task.finished_at = None
+            return True
+        task_version_id = current_version_id
+        task_version_content_hash = current_version_content_hash
+        verdict_claim_started_at = utcnow()
+        start_verdict(task, now=verdict_claim_started_at)
 
     verdict_result = None
     verdict_error = None
@@ -919,7 +964,10 @@ async def run_task_qa_job(
 
     classifications: list[TrialClassification] = []
     try:
-        live_trials = await _load_live_trials_for_classification(task_id)
+        live_trials = await _load_live_trials_for_classification(
+            task_id,
+            task_version_id,
+        )
 
         # Pre-trial: a per-version task-source audit, independent of trial
         # classification -- runs before the per-trial loop, even when there are
@@ -928,7 +976,10 @@ async def run_task_qa_job(
         # synth hook is registered. Failures are swallowed inside so it can
         # never block the verdict path; cancellation propagates.
         await _run_pre_trial_audit(
-            task_id, worker_job_id, [trial_id for trial_id, _ in live_trials]
+            task_id,
+            worker_job_id,
+            [trial_id for trial_id, _ in live_trials],
+            task_version_id=task_version_id,
         )
 
         if not live_trials:
@@ -949,15 +1000,45 @@ async def run_task_qa_job(
             # as neither good nor bad rather than skewing either bucket.
             async with get_session() as session:
                 task = await session.get(TaskModel, task_id, with_for_update=True)
-                if task and await _worker_job_is_running(session, worker_job_id):
+                current_version = (
+                    await session.get(TaskVersionModel, task_version_id)
+                    if task_version_id is not None
+                    else None
+                )
+                current_content_hash = (
+                    current_version.content_hash
+                    if current_version is not None
+                    else None
+                )
+                source_is_current = bool(
+                    task
+                    and getattr(task, "current_version_id", None) == task_version_id
+                    and current_content_hash == task_version_content_hash
+                )
+                claim_is_current = bool(
+                    source_is_current
+                    and task.verdict_started_at == verdict_claim_started_at
+                )
+                if claim_is_current and await _worker_job_is_running(
+                    session, worker_job_id
+                ):
                     complete_verdict_without_result(task, now=utcnow())
                     task.status = TaskStatus.COMPLETED
                     task.finished_at = utcnow()
+                elif (
+                    task
+                    and not source_is_current
+                    and await _worker_job_is_running(session, worker_job_id)
+                ):
+                    abandon_verdict(task)
+                    task.status = TaskStatus.RUNNING
+                    task.finished_at = None
+                    return True
             console.print(
                 f"[yellow]QA {task_id} skipped: no QA-eligible trials "
                 "(all bulk-imported)[/yellow]"
             )
-            return
+            return False
         to_classify = [
             trial_id
             for trial_id, analysis_status in live_trials
@@ -974,7 +1055,7 @@ async def run_task_qa_job(
                     console.print(
                         f"[dim]QA {task_id} classification stopped; job was cancelled[/dim]"
                     )
-                    return
+                    return False
             try:
                 await _classify_waiting_out_peer_claim(
                     trial_id,
@@ -992,10 +1073,15 @@ async def run_task_qa_job(
                 console.print(
                     f"[dim]QA {task_id} verdict skipped; job was cancelled[/dim]"
                 )
-                return
+                return False
             trials_result = await session.execute(
                 select(TrialModel).where(
                     TrialModel.task_id == task_id,
+                    (
+                        TrialModel.task_version_id == task_version_id
+                        if task_version_id is not None
+                        else True
+                    ),
                     TrialModel.superseded_by_trial_id.is_(None),
                 )
             )
@@ -1022,7 +1108,7 @@ async def run_task_qa_job(
         pre_trial_items: list[ActionItem] = []
         pre_trial_load_failed = False
         try:
-            loaded = await _load_pre_trial_items(task_id)
+            loaded = await _load_pre_trial_items(task_id, task_version_id)
             if loaded is None:
                 pre_trial_load_failed = True
             else:
@@ -1081,19 +1167,63 @@ async def run_task_qa_job(
         if heartbeat_task is not None:
             await asyncio.gather(heartbeat_task, return_exceptions=True)
 
+    result_superseded = False
+
+    async def _qa_result_is_current(session) -> bool:
+        nonlocal result_superseded
+        if not await _worker_job_is_running(session, worker_job_id):
+            return False
+        current_task = await session.get(TaskModel, task_id)
+        if current_task is None:
+            return False
+        current_version = (
+            await session.get(TaskVersionModel, task_version_id)
+            if task_version_id is not None
+            else None
+        )
+        current_content_hash = (
+            current_version.content_hash if current_version is not None else None
+        )
+        source_is_current = (
+            getattr(current_task, "current_version_id", None) == task_version_id
+            and current_content_hash == task_version_content_hash
+        )
+        if source_is_current and (
+            current_task.verdict_started_at == verdict_claim_started_at
+        ):
+            return True
+        if source_is_current:
+            # Another same-source QA claim owns the verdict generation. This
+            # duplicate must not reset or overwrite the owner's RUNNING state.
+            return False
+
+        # This QA pass belongs to an obsolete version. Retrying the same worker
+        # job would silently re-pin it to the new version without going through
+        # maybe_start_qa_stage's current-version trial-completion gates. Reset
+        # the task atomically while sync_verdict_to_task still holds its row
+        # lock, so a concurrently finishing current-version trial sees RUNNING
+        # and can perform normal admission after this transaction commits.
+        abandon_verdict(current_task)
+        current_task.status = TaskStatus.RUNNING
+        current_task.finished_at = None
+        result_superseded = True
+        return False
+
     status = await asyncio.shield(
         sync_verdict_to_task(
             task_id,
             payload=verdict_result,
             error=verdict_error,
-            should_store=lambda session: _worker_job_is_running(session, worker_job_id),
+            should_store=_qa_result_is_current,
         )
     )
     if status is None:
-        console.print(f"[dim]QA {task_id} result ignored; job was cancelled[/dim]")
+        reason = "task version changed" if result_superseded else "job was cancelled"
+        console.print(f"[dim]QA {task_id} result ignored; {reason}[/dim]")
     elif verdict_result:
         console.print(f"[green]Verdict {task_id} SUCCESS - Task COMPLETED[/green]")
     else:
         console.print(
             f"[yellow]Verdict {task_id} FAILED - Task COMPLETED (no verdict)[/yellow]"
         )
+    return result_superseded

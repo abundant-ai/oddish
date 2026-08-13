@@ -1082,6 +1082,27 @@ def _apply_restricted_agent_network_defaults(
     return None
 
 
+def _ensure_web_tool_wrapper_when_disabling(agent_config: HarborAgentConfig) -> None:
+    """Use the oddish agent wrapper whenever a trial disables web tools.
+
+    disable_web_tools is honored only by ``OddishCursorCli`` / ``OddishGeminiCli``.
+    The restricted-Compose profile swaps those in, but public / non-Compose trials
+    (e.g. closed-book tasks hardened at the container level, not via network_mode)
+    otherwise keep the stock Harbor class, which SILENTLY IGNORES the switch -- so
+    a run with ``--disable-web-tools`` still leaks through the agent's provider-side
+    web tools (cursor's webFetch is served by Cursor's cloud, unreachable by any
+    container network policy; the fix is a permissions deny the wrapper writes).
+
+    Gated on the switch, and the wrappers are idempotent no-ops without it, so this
+    changes nothing for normal trials or for trials the Compose profile already
+    wrapped.
+    """
+    if not (agent_config.kwargs or {}).get("disable_web_tools"):
+        return
+    _apply_gemini_cli_oddish_wrapper(agent_config)
+    _apply_cursor_cli_oddish_wrapper(agent_config)
+
+
 def _claude_code_environment_hosts(agent_config: HarborAgentConfig) -> list[str]:
     """Hosts the claude-code CLI needs across install *and* run.
 
@@ -1630,6 +1651,11 @@ async def _run_harbor_trial_async_impl(
                     **(extra_agent_env or {}),
                 },
             )
+            # Public / non-Compose trials keep the stock agent class above, which
+            # ignores disable_web_tools; swap in the oddish wrapper (idempotent,
+            # no-op unless disabling) so --disable-web-tools actually reaches the
+            # agent's provider-side web tools on those paths too.
+            _ensure_web_tool_wrapper_when_disabling(agent_config)
             # Neither restricted kind serializes extra_allowed_hosts: the
             # dynamic Compose profile grants hosts via the runtime-only
             # attribute (runtime_only_hosts=True), and static (nop/oracle)

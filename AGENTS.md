@@ -323,6 +323,22 @@ by model (`series_qa_by_model`) and by analyzer job kind
 
 ### Task Identity
 
+`GET /tasks/{task_id}/open` is the bounded first-paint contract for the task
+page. It resolves one org-scoped task plus the requested/default version before
+running aggregate work. Top-level task status always uses the default version
+from `tasks.current_version_id`; selected-version counters, direct version tags,
+experiments, and exact agent/model summaries use the requested version. Its
+experiment list is derived from that version's live, non-probe, non-superseded,
+non-combine trial population, matching `/detail`. Pre-trial audit metadata stays
+on `/detail` and is not serialized with the bounded version summary. The
+response also carries compact QA verdict
+presentation/control fields and caps the selected-version trial preview at 20
+lightweight refs. The handler uses at most three SQL statements, stays below the
+50 KB response budget, and must not select trial `result`, `analysis`,
+`error_message`, jobs, or ORM relationships. `GET /tasks/{task_id}/detail`
+remains the compatibility bundle for CLI and drawer consumers during the soak;
+do not point the task route back at it.
+
 `tasks.name` is the human-readable lookup key within an org. Live task names
 must stay unique and indexed (`idx_tasks_unique_org_name`) so an upload of the
 same task name resolves to the existing task and creates a new `task_versions`
@@ -520,7 +536,7 @@ extensions) — see `backend/README.md`.
 | Task upload | `POST /tasks/upload/init` (returns presigned PUT URL), `POST /tasks/upload/complete` |
 | Trial import | `POST /trials/import/init`, `POST /trials/import/complete` |
 | Sweeps | `POST /tasks/sweep`, `POST /tasks/sweep/batch` |
-| Tasks | `GET /tasks`, `GET /tasks/browse`, `GET /tasks/browse/experiment-options` (typeahead for the experiment filter; `facets.experiments` is deprecated/always empty; the other facet lists are served from the `trial_facets` vocabulary — write-through on trial creation plus a periodic rebuild sweep, see `oddish/src/oddish/core/trial_facets.py`), `GET /tasks/{task_id}`, `GET /tasks/{task_id}/detail`, `GET /tasks/{task_id}/versions[/{version}]`, `PUT /tasks/{task_id}/versions/{version}/default`, `POST /tasks/cancel` (optional `experiment_id` scopes the cancel to that experiment's trials so shared tasks keep running elsewhere) |
+| Tasks | `GET /tasks`, `GET /tasks/browse`, `GET /tasks/browse/experiment-options` (typeahead for the experiment filter; `facets.experiments` is deprecated/always empty; the other facet lists are served from the `trial_facets` vocabulary — write-through on trial creation plus a periodic rebuild sweep, see `oddish/src/oddish/core/trial_facets.py`), `GET /tasks/{task_id}`, `GET /tasks/{task_id}/open`, `GET /tasks/{task_id}/detail`, `GET /tasks/{task_id}/versions[/{version}]`, `PUT /tasks/{task_id}/versions/{version}/default`, `POST /tasks/cancel` (optional `experiment_id` scopes the cancel to that experiment's trials so shared tasks keep running elsewhere) |
 | Task QA | `POST /tasks/{task_id}/qa/retry`, `POST /tasks/{task_id}/qa/cancel`, `POST /tasks/{task_id}/qa/backfill` |
 | Experiments | `POST /experiments/combine`, `PATCH /experiments/{experiment_id}` |
 | Trials | `GET /tasks/{task_id}/trials/{index}`, `POST /trials/{trial_id}/retry` (optional `registry_auth` body), `GET /trials/{trial_id}/live` ((attempt, seq)-cursor live transcript), `GET /trials/{trial_id}/logs[/structured]`, `GET /trials/{trial_id}/trajectory`, `GET /trials/{trial_id}/result` |
@@ -577,9 +593,13 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   deployment, task/trial, worker-job, worker-attempt, sandbox-run, unguessable
   launch-token, and Harbor-session tags. A durable `sandbox_runs` row is created
   before launch; Harbor's `environment-provisioned` event binds the structured
-  handle before SSH/bootstrap. Normal teardown, cancellation, stale-heartbeat
-  cleanup, and reconciliation terminate only after the full ledger/tag tuple
-  agrees.
+  handle before SSH/bootstrap. The locked Harbor exposes that event natively;
+  ephemeral pins that predate it are bridged by wrapping
+  `EC2Environment._launch_instance` and emitting the same identity immediately
+  after launch. A pin whose EC2 environment does not expose the required launch
+  seam fails before `Job.run()` rather than launching untracked provider state.
+  Normal teardown, cancellation, stale-heartbeat cleanup, and reconciliation
+  terminate only after the full ledger/tag tuple agrees.
 - EC2 orphan reconciliation snapshots deployment-tagged instances before the
   shared cleanup transaction, evaluates worker liveness using the database clock,
   and terminates only after the transaction commits. It preserves live linked
@@ -591,6 +611,11 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   with heartbeat-renewed `sandbox_capacity_leases`, independent of model/variant
   queue slots. The dispatcher budgets against live EC2 leases before spawning,
   while each worker still acquires the lease atomically before claiming a job.
+  A successful inventory snapshot also closes `PROVISIONING` / `TERMINATING`
+  ledger rows that have no provider identity, no running owner, no matching
+  inventory tags, and are older than the 30-minute launch-race grace. Capacity
+  cleanup reruns after that transaction commits so those rows cannot reserve
+  slots forever; an inventory failure never authorizes this finalization.
   Inventory and termination failures stay visible in logs/metrics while the rest
   of queue cleanup continues.
 - Claude trials run through AWS Bedrock by default. `CLAUDE_CODE_USE_BEDROCK=1` is

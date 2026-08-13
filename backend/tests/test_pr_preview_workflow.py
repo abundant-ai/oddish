@@ -579,6 +579,15 @@ def test_prune_accepts_fractional_second_timestamps():
 
 
 @needs_bash
+def test_prune_accepts_fractional_second_timestamps_with_utc_offset():
+    stamp = datetime.now(timezone.utc) - timedelta(days=10)
+    created_at = stamp.strftime("%Y-%m-%dT%H:%M:%S.297635+00:00")
+    proc, deleted = _run_prune([_branch("pr-1", 0, created_at=created_at)])
+    assert proc.returncode == 0, proc.stderr
+    assert deleted == ["id-pr-1"]
+
+
+@needs_bash
 def test_prune_fails_closed_on_unreadable_timestamp():
     proc, deleted = _run_prune(
         [_branch("pr-1", 10), _branch("pr-2", 0, created_at="whenever")]

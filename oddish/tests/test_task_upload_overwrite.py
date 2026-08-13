@@ -6,18 +6,24 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from oddish.core import tasks
+import oddish.queue as queue_mod
 from oddish.db import TaskModel, TaskVersionModel
 from oddish.schemas import TaskUploadCompleteRequest, TaskUploadInitRequest
 
 
 class _Session:
-    def __init__(self, *, task, current):
+    def __init__(self, *, task, current, trial_count=0):
         self.task = task
         self.current = current
         self.scalar_calls = 0
+        self.trial_count = trial_count
+        self.scalar_queries = []
 
     async def scalar(self, _query):
         self.scalar_calls += 1
+        self.scalar_queries.append(_query)
+        if "count(" in str(_query).lower():
+            return self.trial_count
         if self.scalar_calls > 1:
             raise AssertionError("overwrite mode must not select the latest version")
         return self.task
@@ -61,6 +67,19 @@ def _session_context(session):
         yield session
 
     return _get_session
+
+
+@pytest.fixture(autouse=True)
+def _stub_source_change_invalidation(monkeypatch):
+    calls = []
+
+    async def fake_invalidate(_session, task):
+        calls.append(task.id)
+
+    monkeypatch.setattr(
+        queue_mod, "invalidate_task_qa_for_source_change", fake_invalidate
+    )
+    return calls
 
 
 def test_upload_version_modes_are_mutually_exclusive() -> None:
@@ -359,4 +378,39 @@ async def test_complete_overwrite_rejects_stale_staging_upload(monkeypatch) -> N
             overwrite_base_content_hash="old-hash",
         )
 
+    assert storage.copied == []
+
+
+@pytest.mark.asyncio
+async def test_complete_overwrite_rejects_current_version_trial_history(
+    monkeypatch,
+) -> None:
+    version = SimpleNamespace(id="task-1-v2", content_hash="old-hash")
+    task = SimpleNamespace(
+        id="task-1",
+        org_id="org-1",
+        current_version_id=version.id,
+        verdict=None,
+        verdict_status=None,
+        verdict_started_at=None,
+    )
+    session = _Session(task=task, current=version, trial_count=1)
+    storage = _Storage()
+    monkeypatch.setattr(tasks, "get_session", _session_context(session))
+    monkeypatch.setattr(tasks, "get_storage_client", lambda: storage)
+
+    with pytest.raises(HTTPException, match="cannot be overwritten in place"):
+        await tasks.complete_task_upload(
+            task_id="task-1",
+            task_name="task",
+            version=2,
+            content_hash="new-hash",
+            org_id="org-1",
+            overwrite_current_version=True,
+            staging_key=f"task-upload-staging/task-1/{'9' * 32}.tar.gz",
+            overwrite_base_content_hash="old-hash",
+        )
+
+    history_sql = str(session.scalar_queries[-1].compile())
+    assert "trials.task_version_id" in history_sql
     assert storage.copied == []

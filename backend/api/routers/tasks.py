@@ -42,6 +42,7 @@ from oddish.core.endpoints import (
     delete_task_core,
     get_experiment_cost_totals,
     get_task_detail_core,
+    get_task_open_core,
     get_task_for_org_core,
     get_task_status_core,
     get_task_version_core,
@@ -97,7 +98,7 @@ from api.routers.task_submission import (
     stamp_experiment_owner,
 )
 from dashboard_attribution import resolve_search_authors
-from api.services.cohort_comparison import get_or_generate_comparison
+from api.services.agent_capabilities import get_or_generate_analysis
 from oddish.core.tasks import (
     complete_task_upload,
     initialize_task_upload,
@@ -134,6 +135,7 @@ from oddish.schemas import (
     TaskBrowseResponse,
     TaskBatchCancelRequest,
     TaskDetailResponse,
+    TaskOpenResponse,
     TaskUploadCompleteRequest,
     TaskUploadInitRequest,
     TaskUploadInitResponse,
@@ -1571,6 +1573,26 @@ async def get_task_status(
         )
 
 
+@router.get("/tasks/{task_id}/open", response_model=TaskOpenResponse)
+async def get_task_open(
+    request: Request,
+    task_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    version_id: str | None = None,
+) -> TaskOpenResponse:
+    """Bounded task-page header, aggregates, and trial preview."""
+    auth.require_scope(APIKeyScope.READ)
+
+    async with get_session() as session:
+        return await get_task_open_core(
+            session,
+            task_id=task_id,
+            version_id=version_id,
+            org_id=auth.org_id,
+            record_timing=_make_timing_recorder(request),
+        )
+
+
 @router.get("/tasks/{task_id}/detail", response_model=TaskDetailResponse)
 async def get_task_detail(
     task_id: str,
@@ -1583,14 +1605,18 @@ async def get_task_detail(
         return await get_task_detail_core(session, task_id=task_id, org_id=auth.org_id)
 
 
-@router.get("/tasks/{task_id}/cohort-comparison")
-async def get_task_cohort_comparison(
+@router.get("/tasks/{task_id}/agent-capabilities")
+# Pre-rename path. Kept so a frontend deploy that lags this one -- or a
+# rollback to it -- keeps working; undocumented so only the new path is
+# published. Remove once no released frontend calls it.
+@router.get("/tasks/{task_id}/cohort-comparison", include_in_schema=False)
+async def get_task_agent_capabilities(
     task_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
     refresh: bool = Query(
         False,
         description=(
-            "Discard the stored comparison and generate a new one. Costs an "
+            "Discard the stored analysis and generate a new one. Costs an "
             "LLM call, so it needs the same scope as an analysis rerun."
         ),
     ),
@@ -1639,7 +1665,7 @@ async def get_task_cohort_comparison(
             ).scalar_one_or_none()
             if version_id is None:
                 raise HTTPException(status_code=404, detail="Task version not found")
-        result = await get_or_generate_comparison(
+        result = await get_or_generate_analysis(
             session,
             version_id,
             task_id=task.id,
