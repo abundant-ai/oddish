@@ -736,7 +736,10 @@ export function TaskDetailClient({
 
   const [deepLinkTrialId] = useState<string | null>(() => {
     if (typeof window === "undefined") return null;
-    return new URLSearchParams(window.location.search).get("trial");
+    return expandTrialParam(
+      new URLSearchParams(window.location.search).get("trial"),
+      taskId
+    );
   });
   const previewDeepLinkTrial = deepLinkTrialId
     ? drawerOrderedTrials.find((trial) => trial.id === deepLinkTrialId)
