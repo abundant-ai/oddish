@@ -85,10 +85,11 @@ def test_summary_falls_back_to_the_trial_mirror(client, patched_session):
 
 
 def test_summary_ignores_a_stale_mirror(client, patched_session):
-    """The mirror is held to the same freshness bar as the block: an old
-    schema would render the wrong vocabulary rather than nothing."""
+    """An old schema is not rendered when no trajectory is eligible."""
     trial = SimpleNamespace(
-        id="t-1", trajectory_summary={"schema_version": "1", "summary": "old"}
+        id="t-1",
+        task_version_id="tv-1",
+        trajectory_summary={"schema_version": "1", "summary": "old"},
     )
     with patched_session, patch(
         "api.routers.public_analysis.get_public_trial_for_experiment",
@@ -96,6 +97,9 @@ def test_summary_ignores_a_stale_mirror(client, patched_session):
     ), patch(
         "api.services.summarize_trajectory._load_fresh_summary_block",
         new=AsyncMock(return_value=None),
+    ), patch(
+        "api.services.agent_capabilities.analysis_is_eligible",
+        new=AsyncMock(return_value=False),
     ):
         resp = client.get(SUMMARY_URL)
     assert resp.status_code == 404
@@ -117,20 +121,39 @@ def test_summary_prefers_the_block_over_the_mirror(client, patched_session):
     assert resp.json() == block
 
 
-def test_summary_miss_is_404_and_never_generates(client, patched_session):
-    generate = AsyncMock()
+def test_summary_miss_enqueues_capability_analysis(client, fake_session, patched_session):
+    trial = SimpleNamespace(
+        id="t-1",
+        task_id="task-1",
+        task_version_id="tv-1",
+        trajectory_summary=None,
+    )
+    task = SimpleNamespace(id="task-1", name="task-one", org_id="org-1")
+    task_result = MagicMock()
+    task_result.scalar_one.return_value = task
+    fake_session.execute.side_effect = [task_result, MagicMock()]
+    enqueue = AsyncMock()
     with patched_session, patch(
         "api.routers.public_analysis.get_public_trial_for_experiment",
-        new=AsyncMock(return_value=SimpleNamespace(id="t-1", trajectory_summary=None)),
+        new=AsyncMock(return_value=trial),
     ), patch(
         "api.services.summarize_trajectory.load_stored_summary",
         new=AsyncMock(return_value=None),
     ), patch(
-        "api.services.summarize_trajectory.get_or_generate_summary", new=generate
-    ):
+        "api.services.agent_capabilities.analysis_is_eligible",
+        new=AsyncMock(return_value=True),
+    ), patch("api.services.agent_capabilities.enqueue_analysis", new=enqueue):
         resp = client.get(SUMMARY_URL)
-    assert resp.status_code == 404
-    generate.assert_not_awaited()
+    assert resp.status_code == 202
+    assert resp.json() == {"status": "queued", "task_version_id": "tv-1"}
+    enqueue.assert_awaited_once_with(
+        fake_session,
+        task_id="task-1",
+        task_version_id="tv-1",
+        task_name="task-one",
+        org_id="org-1",
+        triggered_by_user_id=None,
+    )
 
 
 def test_summary_404_when_token_does_not_expose_the_trial(client, patched_session):

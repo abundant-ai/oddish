@@ -1,7 +1,6 @@
 "use client";
 
 import useSWR from "swr";
-import { fetcher } from "@/lib/api";
 import type { TrajectorySummary } from "@/lib/types";
 
 /**
@@ -13,9 +12,27 @@ export function useTrajectorySummary(
   apiBaseUrl = "/api",
   enabled = true,
 ) {
+  const publicShare = apiBaseUrl.includes("/api/public/experiments/");
   return useSWR<TrajectorySummary | null>(
     enabled ? `${apiBaseUrl}/trials/${trialId}/trajectory/summary` : null,
-    fetcher,
-    { revalidateOnFocus: false },
+    async (url: string) => {
+      const response = await fetch(url, { credentials: "include" });
+      if (publicShare && response.status === 202) return null;
+      const body = await response.json().catch(() => null);
+      if (!response.ok) {
+        const error = new Error(
+          body && typeof body === "object" && "detail" in body
+            ? String(body.detail)
+            : response.statusText || "Request failed",
+        );
+        (error as Error & { status?: number }).status = response.status;
+        throw error;
+      }
+      return body as TrajectorySummary;
+    },
+    {
+      revalidateOnFocus: false,
+      refreshInterval: (value) => (publicShare && value === null ? 3000 : 0),
+    },
   );
 }
