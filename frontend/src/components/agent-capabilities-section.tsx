@@ -1,8 +1,13 @@
 "use client";
 
+import { pooledDeltas, THIN_N } from "@/lib/cohort-metrics";
 import { componentLabel } from "@/lib/trajectory-segments";
 import { useAgentCapabilities } from "@/lib/use-agent-capabilities";
-import type { BehaviorEvidence, BehaviorObservation } from "@/lib/types";
+import type {
+  AgentCapabilities,
+  BehaviorEvidence,
+  BehaviorObservation,
+} from "@/lib/types";
 
 const CATEGORY_LABELS: Record<string, string> = {
   behavior_discovery: "Agent behavior discovery",
@@ -210,6 +215,65 @@ function ObservationList({
   );
 }
 
+/** Half the track, in percent, so a delta of ±1 fills one side exactly. */
+function barGeometry(delta: number): { left: string; width: string } {
+  const half = Math.min(Math.abs(delta), 1) * 50;
+  return delta >= 0
+    ? { left: "50%", width: `${half}%` }
+    : { left: `${50 - half}%`, width: `${half}%` };
+}
+
+function CohortDeltaBars({ comparison }: { comparison: AgentCapabilities }) {
+  const rows = pooledDeltas(comparison);
+  // Nothing cited anywhere, or a one-sided cohort with no baseline to diverge
+  // from. Either way there is no divergence to draw, so the heading goes too.
+  if (rows.every((r) => r.delta === null)) return null;
+  return (
+    <div className="flex flex-col gap-1.5">
+      <h4 className="text-sm font-semibold">Where runs diverged</h4>
+      {rows.map((row) => (
+        <div key={row.category} className="flex items-center gap-2 text-xs">
+          <span className="text-muted-foreground w-40 shrink-0 truncate">
+            {CATEGORY_LABELS[row.category] ?? row.category}
+          </span>
+          <div className="bg-background/40 relative h-3 flex-1 rounded-sm">
+            {/* The centre rule is the cohort's own success share, not 0.5:
+                the delta is measured against it. */}
+            <span className="bg-border absolute inset-y-0 left-1/2 w-px" />
+            {row.delta !== null && (
+              <span
+                className={[
+                  "absolute inset-y-0 rounded-sm",
+                  // `#dc2626` reaches only 2.91:1 against the dark card, under
+                  // the 3:1 floor, so dark gets `#e5484d` (3.1:1 there and on
+                  // the neutral-black theme's `#1a1a1a`). Light keeps `#dc2626`,
+                  // whose CVD separation from the green is the better of the
+                  // two. Both pairs validate against `--card` in their own mode;
+                  // re-run the palette validator after any change.
+                  row.delta >= 0
+                    ? "bg-[#059669]"
+                    : "bg-[#dc2626] dark:bg-[#e5484d]",
+                ].join(" ")}
+                style={{
+                  ...barGeometry(row.delta),
+                  // Thin evidence must not read as a confident bar.
+                  opacity: row.n < THIN_N ? 0.45 : 1,
+                }}
+              />
+            )}
+          </div>
+          <span className="text-muted-foreground w-20 shrink-0 text-right font-mono">
+            {row.delta === null
+              ? "—"
+              : `${row.delta >= 0 ? "+" : ""}${row.delta.toFixed(2)}`}
+            <span className="opacity-60"> n={row.n}</span>
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function categoryModels(
   items: BehaviorObservation[],
   trialModels?: Record<string, string>
@@ -381,6 +445,7 @@ export function AgentCapabilitiesSection({
               : `${data.cohort_failure.length} failed trials \u00b7 no successes to compare against`}
         </span>
       </div>
+      <CohortDeltaBars comparison={data} />
       {data.stale ? <StaleNote regenerating={data.regenerating} /> : null}
       <div
         className={single ? "flex flex-col gap-2" : "grid gap-6 md:grid-cols-2"}
