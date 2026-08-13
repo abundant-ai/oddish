@@ -800,6 +800,7 @@ async def combine_experiments_core(
     name: str | None = None,
     org_id: str | None = None,
     copy_artifacts: bool = True,
+    owner_user_id: str | None = None,
 ) -> ExperimentCombineResponse:
     """Create a new experiment that merges the data of several others.
 
@@ -871,6 +872,7 @@ async def combine_experiments_core(
     result = ExperimentModel(
         name=result_name,
         org_id=org_id,
+        owner_user_id=owner_user_id,
         last_activity_at=utcnow(),
     )
     session.add(result)

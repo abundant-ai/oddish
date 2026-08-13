@@ -189,6 +189,7 @@ async def init_trial_import(
         trial_spec=payload.trial,
         upload_artifacts=payload.upload_artifacts,
         org_id=auth.org_id,
+        owner_user_id=auth.user_id,
     )
 
 

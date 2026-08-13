@@ -172,6 +172,7 @@ async def create_trial_collection_core(
     task_ids: list[str] | None = None,
     from_experiment_ids: list[str] | None = None,
     org_id: str | None,
+    owner_user_id: str | None = None,
 ) -> TrialCollectionResponse:
     """Gather existing trials into a new read-only collection experiment.
 
@@ -208,6 +209,7 @@ async def create_trial_collection_core(
     result = ExperimentModel(
         name=name.strip() or "collection",
         org_id=org_id,
+        owner_user_id=owner_user_id,
         is_collection=True,
         last_activity_at=last_activity,
     )

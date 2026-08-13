@@ -652,7 +652,7 @@ function RecentTasksCard({
     STATUS_FILTER_OPTIONS.find((option) => option.value === statusFilter)
       ?.label ?? "Filter status";
   const selectedMember = isMemberSelected
-    ? members.find((member) => member.email === authorFilter)
+    ? members.find((member) => member.id === authorFilter)
     : undefined;
   const memberFilterLabel = selectedMember
     ? memberDisplayName(selectedMember)
@@ -713,7 +713,7 @@ function RecentTasksCard({
                   onValueChange={onAuthorFilterChange}
                 >
                   {members.map((member) => (
-                    <DropdownMenuRadioItem key={member.id} value={member.email}>
+                    <DropdownMenuRadioItem key={member.id} value={member.id}>
                       <span className="flex min-w-0 flex-col">
                         <span className="truncate">
                           {memberDisplayName(member)}

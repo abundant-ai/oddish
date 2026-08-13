@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
-from typing import TYPE_CHECKING, Annotated, cast
+from typing import Annotated, cast
 
 from fastapi import (
     APIRouter,
@@ -28,6 +28,7 @@ from oddish.dispatch.backends.modal import ModalDispatcher
 from oddish.dispatch.ports import WorkerHandle
 from oddish.filters.trial_metrics import TrialMetricFilter
 from oddish.core.endpoints import (
+    SweepAttribution,
     backfill_task_analysis_core,
     browse_experiment_options_core,
     browse_task_facets_core,
@@ -91,11 +92,8 @@ from api.routers.task_submission import (
     require_connected_github_user,
     require_experiment_publish_scope,
     resolve_actor_user_string,
-    resolve_billed_user_id,
-    resolve_created_by_user_id,
-    resolve_experiment_owner_user_id,
+    resolve_sweep_attribution,
     resolve_submission_identity,
-    stamp_experiment_owner,
 )
 from dashboard_attribution import resolve_search_authors
 from api.services.agent_capabilities import get_or_generate_analysis
@@ -150,9 +148,6 @@ from oddish.schemas import (
     TrialCollectionResponse,
     UploadResponse,
 )
-
-if TYPE_CHECKING:
-    from models import UserModel
 
 router = APIRouter(tags=["Tasks"])
 logger = logging.getLogger(__name__)
@@ -373,14 +368,8 @@ async def create_task_sweep(
         # active org user is rejected here, before any rows are written.
         connected_user = await require_connected_github_user(session, submission, auth)
 
-        # Billing follows the resolved owner (submitted github_id/github_username,
-        # github_id first), else the API-key owner / submitter. Reuse the
-        # linkage-gate user so we don't re-query it.
-        owner_user_id = await resolve_experiment_owner_user_id(
+        attribution = await resolve_sweep_attribution(
             session, submission, auth, connected_user
-        )
-        billed_user_id = await resolve_billed_user_id(
-            session, submission, auth, owner_user_id=owner_user_id
         )
 
         try:
@@ -388,7 +377,7 @@ async def create_task_sweep(
                 session,
                 submission=submission,
                 org_id=auth.org_id,
-                billed_user_id=billed_user_id,
+                attribution=attribution,
                 default_environment=get_default_cloud_environment(submission),
                 allowed_environments=ALLOWED_CLOUD_ENVIRONMENTS,
                 idempotency_key=idempotency_key,
@@ -433,16 +422,7 @@ async def create_task_sweep(
                 await _spawn_gke_image_builds(session, [replay_task_id])
             return response
 
-        stamp_experiment_owner(experiment, owner_user_id, claim_unowned=not is_append)
-
         if not is_append:
-            created_by_user_id = await resolve_created_by_user_id(
-                session, submission, auth, connected_user
-            )
-            if created_by_user_id:
-                task.created_by_user_id = created_by_user_id
-            task.api_key_id = auth.api_key_id
-
             await maybe_publish_experiment(session, task, submission, auth)
 
         elif experiment and submission.publish_experiment:
@@ -480,11 +460,9 @@ async def create_task_sweep_batch(
             status_code=400, detail="Must specify at least one submission"
         )
 
-    connected_users: dict[int, UserModel | None] = {}
-
     async def _prepare(
         session: AsyncSession, submission: TaskSweepSubmission
-    ) -> EnvironmentType | None:
+    ) -> tuple[EnvironmentType | None, SweepAttribution]:
         # Per-item, auth-aware setup. Runs in the batch core's read-only
         # pre-loop (identity -> attribution -> billed, same order as the single
         # route); a failure fails only this item.
@@ -493,25 +471,11 @@ async def create_task_sweep_batch(
         # Unconditional linkage gate: a truthy github_id resolving to no active
         # org user raises 403 here; the batch core catches it and fails only
         # this item (rolling back its savepoint) before any rows are written.
-        connected_users[id(submission)] = await require_connected_github_user(
-            session, submission, auth
+        connected_user = await require_connected_github_user(session, submission, auth)
+        attribution = await resolve_sweep_attribution(
+            session, submission, auth, connected_user
         )
-        return get_default_cloud_environment(submission)
-
-    # Owner resolved once in the pre-loop (inside _resolve_billed) and reused
-    # by _finalize -- same single-resolution shape as the single route.
-    owners: dict[int, str | None] = {}
-
-    async def _resolve_billed(
-        session: AsyncSession, submission: TaskSweepSubmission
-    ) -> str | None:
-        owner_user_id = await resolve_experiment_owner_user_id(
-            session, submission, auth
-        )
-        owners[id(submission)] = owner_user_id
-        return await resolve_billed_user_id(
-            session, submission, auth, owner_user_id=owner_user_id
-        )
+        return get_default_cloud_environment(submission), attribution
 
     async def _finalize(
         session: AsyncSession,
@@ -520,19 +484,7 @@ async def create_task_sweep_batch(
         is_append: bool,
         experiment: ExperimentModel | None,
     ) -> None:
-        # Post-create stamping, inside the savepoint (mirrors the single route).
-        # Owner was resolved once in _resolve_billed; connected_user (linkage
-        # gate) is reused for created_by resolution below.
-        connected_user = connected_users.get(id(submission))
-        owner_user_id = owners.get(id(submission))
-        stamp_experiment_owner(experiment, owner_user_id, claim_unowned=not is_append)
         if not is_append:
-            created_by_user_id = await resolve_created_by_user_id(
-                session, submission, auth, connected_user
-            )
-            if created_by_user_id:
-                task.created_by_user_id = created_by_user_id
-            task.api_key_id = auth.api_key_id
             await maybe_publish_experiment(session, task, submission, auth)
         elif experiment and submission.publish_experiment:
             require_experiment_publish_scope(auth)
@@ -546,7 +498,6 @@ async def create_task_sweep_batch(
             allowed_environments=ALLOWED_CLOUD_ENVIRONMENTS,
             prepare=_prepare,
             finalize=_finalize,
-            resolve_billed_user_id=_resolve_billed,
         )
         await session.commit()
 
@@ -1065,6 +1016,7 @@ async def combine_experiments(
             name=payload.name,
             org_id=auth.org_id,
             copy_artifacts=payload.copy_artifacts,
+            owner_user_id=auth.user_id,
         )
         await session.commit()
 
@@ -1091,6 +1043,7 @@ async def create_trial_collection(
             trial_ids=payload.trial_ids,
             task_ids=payload.task_ids,
             org_id=auth.org_id,
+            owner_user_id=auth.user_id,
         )
         await session.commit()
 

@@ -126,6 +126,11 @@ High-level flow:
    rows and the old attempts point to those replacements through
    `superseded_by_trial_id`. This preserves retry history without leaving the
    failed attempts in normal UI/API trial sets.
+   Hosted sweep identity is resolved once into `SweepAttribution` before the
+   core call. New tasks and experiments receive their creator, API-key, owner,
+   display-owner, and link provenance in their constructors; returning an
+   existing experiment never claims or rewrites that provenance. Trial imports,
+   collections, and combined experiments follow the same create-only owner rule.
 3. Workers claim one `worker_jobs` row at a time, dispatch to the registered
    handler for its kind, write heartbeats, and exit.
 4. Trajectory analysis is **task-scoped**: when every trial of a
