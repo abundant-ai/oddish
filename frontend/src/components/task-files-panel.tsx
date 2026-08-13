@@ -50,6 +50,8 @@ import {
   type TaskDetailResource,
 } from "@/lib/task-detail-resource";
 import { TaskOverviewPanel } from "@/components/task-overview-panel";
+import { AgentCapabilitiesSection } from "@/components/agent-capabilities-section";
+import { useAgentCapabilities } from "@/lib/use-agent-capabilities";
 import {
   getCancelActionLabel,
   isActivePipelineStatus,
@@ -143,6 +145,15 @@ interface TaskFilesPanelProps {
    * read-only share view.
    */
   showAnalysis?: boolean;
+  /**
+   * Offer the agent capability analysis on its own, without the rest of the
+   * overview. For the share view, which shows no QA: with `showAnalysis`
+   * false the overview pane would be hidden outright, and this puts the
+   * cohort comparison back on its own — `TaskOverviewPanel` never mounts, so
+   * the QA sections and their per-trial `analysis` payload are absent rather
+   * than suppressed. Only takes effect when `showAnalysis` is false.
+   */
+  showCapabilityAnalysis?: boolean;
   onRetryComplete?: (taskIds?: string[]) => void;
   /** Render content only without ResizableDrawer wrapper */
   contentOnly?: boolean;
@@ -418,6 +429,7 @@ export function TaskFilesPanel({
   cancelExperimentId,
   allowRetry = true,
   showAnalysis = true,
+  showCapabilityAnalysis = false,
   onRetryComplete,
   contentOnly = false,
   filesUrl,
@@ -472,12 +484,49 @@ export function TaskFilesPanel({
   // Scoped panes (the experiment drawer) pin the version whose files are on
   // screen; the checks must describe that same source.
   const checksVersion = pickChecksVersion(checksDetail, taskVersion);
+  // The pinned version wins outright — falling back to the /detail-resolved
+  // version while it loads would briefly widen the trial aggregation to every
+  // version. Without a pin, undefined keeps the aggregation waiting until the
+  // version resolves; only a loaded task with no versions is genuinely
+  // unscoped. Hoisted out of the render because the capability-only pane
+  // fetches against it before deciding whether to offer the pane at all.
+  const overviewVersion =
+    taskVersion !== undefined
+      ? taskVersion
+      : checksVersion
+        ? checksVersion.version
+        : checksDetail !== undefined
+          ? null
+          : undefined;
+  // The share pane: capability analysis alone, no QA. `TaskOverviewPanel` is
+  // never mounted for it, so its QA sections and its trials fetch are absent.
+  const capabilityOnly = showAnalysis === false && showCapabilityAnalysis;
+  // The comparison decides whether the entry exists, rather than the entry
+  // opening onto an empty pane: it is gated server-side on having enough
+  // classified runs, and it is the only thing in this pane. The public route
+  // is a pure cache read, so a 404 is cheap and final.
+  const { data: capabilityData, isLoading: capabilityLoading } =
+    useAgentCapabilities(
+      capabilityOnly ? effectiveChecksTaskId : null,
+      baseUrl,
+      overviewVersion,
+    );
+  // Whether a non-file pane exists at all. Synchronous, so it cannot change
+  // under the file listing: `buildListingUrl` reads it (to decide `stream=1`)
+  // and the fetch effect depends on it, so flipping it mid-flight would abort
+  // the in-flight listing and refetch. The capability pane's own arrival is
+  // handled by `overviewShowing` below instead.
+  const overviewPaneExists =
+    effectiveChecksTaskId !== null && (showAnalysis !== false || capabilityOnly);
   const overviewAvailable =
-    showAnalysis !== false && effectiveChecksTaskId !== null;
+    overviewPaneExists && (!capabilityOnly || capabilityData != null);
   // Until /detail answers, the checks state is unknown, not "unaudited":
   // an enabled Run button on the misread queues an audit that wipes findings.
+  // Never in the capability-only pane: `checksKey` is null there, so /detail
+  // is never fetched and this would latch on "loading" forever.
   const checksLoading =
     overviewAvailable &&
+    !capabilityOnly &&
     (isBrowseTaskDetail(checksResource) ||
       (checksDetail === undefined && !checksLoadError));
   // A failed revalidation with data already in hand is not "unavailable":
@@ -511,6 +560,8 @@ export function TaskFilesPanel({
   // the main pane must both use it: with the overview hidden (public share),
   // overviewSelected stays true but the pane shows a file.
   const overviewShowing = overviewSelected && overviewAvailable;
+  // Still deciding whether the share pane has an analysis to show.
+  const capabilityPending = capabilityOnly && capabilityLoading;
   const [loadingFullFile, setLoadingFullFile] = useState(false);
   const [viewMode, setViewMode] = useState<"rendered" | "raw">("rendered");
   const [copiedTaskName, setCopiedTaskName] = useState(false);
@@ -671,7 +722,7 @@ export function TaskFilesPanel({
       params.set("inline", "0");
       params.set("presign", "0");
     }
-    if (!overviewAvailable) {
+    if (!overviewPaneExists) {
       params.set("stream", "1");
     }
     if (shouldScopeFilesToVersion && currentVersion != null) {
@@ -684,7 +735,7 @@ export function TaskFilesPanel({
     shouldScopeFilesToVersion,
     currentVersion,
     currentContentHash,
-    overviewAvailable,
+    overviewPaneExists,
     loadFilesLazily,
   ]);
 
@@ -931,19 +982,6 @@ export function TaskFilesPanel({
       const applyListing = (tree: TreeNode[]) => {
         paintedTree = true;
         setFileTree(tree);
-        // A deep-linked initialFilePath owns the first selection: letting
-        // the default auto-select land first would report the wrong path
-        // upward and clear the link's line anchor before the target file
-        // is applied.
-        if (!overviewAvailable && !initialFilePathRef.current) {
-          const defaultFile =
-            findNodeBySuffix(tree, "instruction.md") ??
-            tree.find((node) => node.type === "file") ??
-            findFirstFile(tree);
-          if (defaultFile) {
-            setSelectedFilePath(defaultFile.path);
-          }
-        }
       };
 
       try {
@@ -1010,8 +1048,30 @@ export function TaskFilesPanel({
     filesUrl,
     resolvedFilesUrl,
     buildListingUrl,
-    overviewAvailable,
+    overviewPaneExists,
   ]);
+
+  // Paint a default file when this pane will never show a non-file view.
+  //
+  // Split out of the listing effect deliberately. It depends on
+  // `overviewAvailable`, which on the share pane only settles once the
+  // comparison resolves — leaving it inside would either re-run the listing
+  // (aborting an in-flight fetch) or read a stale value and never select
+  // anything when the comparison comes back empty.
+  //
+  // A deep-linked initialFilePath owns the first selection: letting the
+  // default land first would report the wrong path upward and clear the
+  // link's line anchor before the target file is applied.
+  useEffect(() => {
+    if (overviewAvailable || capabilityPending) return;
+    if (initialFilePathRef.current || selectedFilePath) return;
+    if (!fileTree.length) return;
+    const defaultFile =
+      findNodeBySuffix(fileTree, "instruction.md") ??
+      fileTree.find((node) => node.type === "file") ??
+      findFirstFile(fileTree);
+    if (defaultFile) setSelectedFilePath(defaultFile.path);
+  }, [overviewAvailable, capabilityPending, fileTree, selectedFilePath]);
 
   // Load full file content (when user clicks "Load full file")
   async function loadFullFile() {
@@ -1447,7 +1507,7 @@ export function TaskFilesPanel({
               {overviewAvailable && (
                 <div className="border-border mb-2 border-b pb-2">
                   <div className="text-muted-foreground px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
-                    Task overview
+                    {capabilityOnly ? "Analysis" : "Task overview"}
                   </div>
                   <button
                     type="button"
@@ -1457,18 +1517,27 @@ export function TaskFilesPanel({
                         ? "bg-primary/20 text-primary"
                         : "hover:bg-muted/50 cursor-pointer"
                     }`}
-                    title="View the task overview: task QA plus aggregated trial QA"
+                    title={
+                      capabilityOnly
+                        ? "What separated the successful runs from the failing ones, drawn from the agents' trajectories"
+                        : "View the task overview: task QA plus aggregated trial QA"
+                    }
                   >
                     <ListChecks
                       className="h-3.5 w-3.5 shrink-0"
                       aria-hidden="true"
                     />
+                    {/* The capability pane has no /detail fetch behind it, and
+                        the entry only exists once its comparison has loaded —
+                        so it is never loading and never unavailable. */}
                     <span className="truncate">
-                      {checksLoading
-                        ? "Loading…"
-                        : checksLoadFailure
-                          ? "Unavailable"
-                          : "Overview"}
+                      {capabilityOnly
+                        ? "Agent capability analysis"
+                        : checksLoading
+                          ? "Loading…"
+                          : checksLoadFailure
+                            ? "Unavailable"
+                            : "Overview"}
                     </span>
                   </button>
                 </div>
@@ -1540,25 +1609,32 @@ export function TaskFilesPanel({
               </div>
             )}
             <div ref={contentRef} className="bg-card flex-1 overflow-auto">
-              {overviewShowing ? (
+              {capabilityPending && overviewSelected ? (
+                // Neither pane is knowable yet. Painting file content here and
+                // replacing it once the comparison lands is the yank; a
+                // skeleton holds the space for whichever one wins.
+                <div className="space-y-3 p-4">
+                  <Skeleton className="h-4 w-48" />
+                  <Skeleton className="h-24 w-full" />
+                  <Skeleton className="h-24 w-full" />
+                </div>
+              ) : overviewShowing && capabilityOnly ? (
+                // The capability analysis on its own. Rendered here rather
+                // than through TaskOverviewPanel so the QA sections beside it
+                // are structurally absent on a share page, not conditionally
+                // hidden. `overviewAvailable` already required the comparison
+                // to have loaded, and the version to be a number with it.
+                <AgentCapabilitiesSection
+                  taskId={effectiveChecksTaskId!}
+                  apiBaseUrl={baseUrl}
+                  version={overviewVersion as number}
+                  linkEvidence={false}
+                />
+              ) : overviewShowing ? (
                 <TaskOverviewPanel
                   taskId={effectiveChecksTaskId}
                   apiBaseUrl={baseUrl}
-                  // The pinned version wins outright — falling back to the
-                  // /detail-resolved version while it loads would briefly
-                  // widen the trial aggregation to every version. Without a
-                  // pin, undefined keeps the aggregation waiting until the
-                  // version resolves; only a loaded task with no versions is
-                  // genuinely unscoped.
-                  version={
-                    taskVersion !== undefined
-                      ? taskVersion
-                      : checksVersion
-                        ? checksVersion.version
-                        : checksDetail !== undefined
-                          ? null
-                          : undefined
-                  }
+                  version={overviewVersion}
                   // The host's rows are the authoritative set: an experiment
                   // drawer aggregates only its own trials. A task prop with
                   // no trials yet still scopes (empty + overviewTrialsLoading
