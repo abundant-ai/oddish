@@ -1723,7 +1723,7 @@ async def get_task_agent_capabilities(
     # whether it was generated or read from cache. The UI needs it because
     # the task page addresses a version by id (`?version=`), while this
     # endpoint takes the version number.
-    return {**result, "task_version_id": version_id}
+    return {**result.output, "task_version_id": version_id}
 
 
 # =============================================================================

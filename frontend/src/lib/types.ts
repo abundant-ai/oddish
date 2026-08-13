@@ -881,6 +881,12 @@ export interface AgentCapabilities {
   /** The version compared, stamped by the endpoint. Trial links carry it so
    *  the task page opens the drawer on the version that owns the trial. */
   task_version_id?: string;
+  /** Trials have landed on this version since the comparison was built, so it
+   *  describes a smaller trial set than the page shows. Only the share route
+   *  serves these — the signed-in route regenerates instead. */
+  stale?: boolean;
+  /** A durable rebuild job is queued or already active. */
+  regenerating?: boolean;
   cohort_success: string[];
   cohort_failure: string[];
   /** Model-written headline: one or two sentences naming the capability that
