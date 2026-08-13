@@ -152,12 +152,9 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 # (see HARBOR_VARIANTS in oddish.core.harbor_source), never this default.
 HARBOR_DEFAULT_SOURCE = "https://github.com/abundant-ai/harbor"
 # Exact abundant-ai/harbor revision resolved into both uv.lock files. Harbor
-# PR #25 attributes Claude Code subagent steps to the subagent that produced
-# them (per-step ``extra.agent_id`` plus a dispatch-call
-# ``subagent_trajectory_ref``), on top of PRs #20-#22 (EC2 Helm/k3s support,
-# lifecycle timings, and the first-class environment-provisioned event
-# required for durable launch identity).
-HARBOR_DEFAULT_SHA = "5e40e8c5ec5502b108c5e94356311675f9de9a01"
+# PR #24 recovers Claude Code ATIF from the streamed transcript after timeouts,
+# on top of PR #25's subagent attribution and PR #26's lifecycle setup hooks.
+HARBOR_DEFAULT_SHA = "ca4fda6aa75180487c2c7c07fabaaf03d01b2e8d"
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
