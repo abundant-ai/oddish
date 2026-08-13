@@ -868,12 +868,10 @@ export function TrialDetailPanel({
 
   // A share page opens on the trajectory: its Summary tab is mostly the
   // operator surfaces this view hides (the QA card, the repro command), so
-  // landing there shows a reader the emptiest tab in the drawer. Only when the
-  // run actually has a trajectory — baselines like nop/oracle have none, and
-  // "No trajectory available" is a worse landing still. An explicit ?tab= wins
-  // either way.
-  const shareDefaultTab =
-    showAnalysis === false && trial?.has_trajectory ? "trajectory" : "summary";
+  // landing there shows a reader the emptiest tab in the drawer. Do not depend
+  // on has_trajectory here because lightweight public trial rows may omit it.
+  // An explicit ?tab= still wins.
+  const shareDefaultTab = showAnalysis === false ? "trajectory" : "summary";
   const [activeTab, setActiveTab] = useState(() => {
     const urlTab = getLiveParam("tab");
     return urlTab && validTabs.has(urlTab) ? urlTab : shareDefaultTab;

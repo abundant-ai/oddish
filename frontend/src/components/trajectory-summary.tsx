@@ -51,7 +51,10 @@ export function TrajectorySummary({
     return () => clearTimeout(timer);
   }, [isLoading]);
 
-  if (isLoading) {
+  const waitingForPublicGeneration =
+    data === null && apiBaseUrl.includes("/api/public/experiments/");
+
+  if (isLoading || waitingForPublicGeneration) {
     return (
       <Card className="my-3">
         <CardHeader className="pb-2">
@@ -62,7 +65,9 @@ export function TrajectorySummary({
         </CardHeader>
         <CardContent className="text-muted-foreground flex items-center gap-2 text-sm">
           <Loader2 className="h-4 w-4 animate-spin" />
-          {slow
+          {waitingForPublicGeneration
+            ? "Generating summary…"
+            : slow
             ? "Generating summary… (first view can take ~30s)"
             : "Retrieving summary…"}
         </CardContent>
