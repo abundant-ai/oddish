@@ -242,6 +242,37 @@ async def test_cli_client_raises_with_stderr_on_a_nonzero_exit(monkeypatch, tmp_
         await _drain(client)
 
 
+@pytest.mark.asyncio
+async def test_cli_client_surfaces_the_result_message_not_the_envelope(
+    monkeypatch, tmp_path
+):
+    """A failed run whose last stdout event is the CLI's JSON result envelope
+    must raise only its human-readable `result` text — the full envelope
+    (usage counters, session ids) renders as an unreadable blob wherever the
+    error is shown, e.g. the Findings audit panel."""
+    envelope = json.dumps(
+        {
+            "type": "result",
+            "is_error": True,
+            "session_id": "497be066-5c5f-4118-9c62-01a66c80aa07",
+            "usage": {"input_tokens": 0, "output_tokens": 0},
+            "result": "API Error: 400 You have reached your specified API usage limits.",
+        }
+    )
+    _fake_exec(
+        monkeypatch, _FakeProcess(stdout=f"{envelope}\n".encode(), returncode=1)
+    )
+
+    client = ClaudeCliClient(model="anthropic/test", config=CliConfig(cwd=tmp_path))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await _drain(client)
+    message = str(excinfo.value)
+    assert "API Error: 400 You have reached your specified API usage limits." in message
+    assert "session_id" not in message
+    assert "input_tokens" not in message
+
+
 def test_extract_claude_result_prefers_structured_output():
     payload = {"structured_output": {"a": 1}, "result": "ignored"}
     assert extract_claude_result(payload) == {"a": 1}

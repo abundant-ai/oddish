@@ -133,6 +133,30 @@ def parse_stream_json_result(raw: str) -> Any:
     raise RuntimeError("analyzer run emitted no structured result event")
 
 
+def cli_error_text(stderr: str, last_stdout_line: str) -> str:
+    """Short human-readable reason for a failed Claude CLI run.
+
+    Stderr wins; otherwise the last stdout line is usually the CLI's JSON
+    result envelope, whose ``result`` field holds the actual failure text
+    (e.g. "API Error: 400 You have reached your specified API usage
+    limits."). Raising the whole envelope buries that message under usage
+    counters and ids wherever the error is surfaced.
+    """
+    if stderr.strip():
+        return stderr.strip()
+    if last_stdout_line:
+        try:
+            event = json.loads(last_stdout_line)
+        except json.JSONDecodeError:
+            return last_stdout_line
+        if isinstance(event, dict):
+            result = event.get("result")
+            if isinstance(result, str) and result.strip():
+                return result.strip()
+        return last_stdout_line
+    return "Unknown Claude CLI error"
+
+
 class ClaudeCliClient:
     """claude-code in print mode, bound to the directories in ``CliConfig``.
 
@@ -255,11 +279,9 @@ class ClaudeCliClient:
                 print_process_stream("Claude stderr", stderr_decoded, Colors.MAGENTA)
 
             if process.returncode != 0:
-                error_text = (
-                    stderr_decoded.strip() or last_line or "Unknown Claude CLI error"
-                )
                 raise RuntimeError(
-                    f"Claude CLI exited with code {process.returncode}: {error_text}"
+                    f"Claude CLI exited with code {process.returncode}: "
+                    f"{cli_error_text(stderr_decoded, last_line)}"
                 )
         finally:
             if process.returncode is None:
