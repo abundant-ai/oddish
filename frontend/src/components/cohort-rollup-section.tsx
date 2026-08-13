@@ -451,6 +451,20 @@ export function CohortRollupSection({
   );
 
   const belowBar = data.models.length - drawn.length;
+  // Of the undrawn models, the ones held back for having a one-sided cohort
+  // rather than for thin evidence or the cap. Their deltas are all null (see
+  // the backend's `delta`), and some clear the cited-runs gate comfortably --
+  // so blaming the threshold would contradict the run count in the table
+  // directly below, and blaming evidence would misdescribe a model whose
+  // citations are perfectly real and simply have nothing to be measured
+  // against.
+  const drawnModels = new Set(drawn.map((m) => m.model));
+  const oneSided = data.models.filter(
+    (m) =>
+      !drawnModels.has(m.model) &&
+      (m.cohort_success === 0 || m.cohort_failure === 0),
+  ).length;
+  const otherwiseUndrawn = belowBar - oneSided;
   const emptyAxes = CHART_CATEGORIES.filter(
     (c) => (byCategory.get(c)?.pooled.n ?? 0) === 0,
   );
@@ -469,8 +483,20 @@ export function CohortRollupSection({
       <CoverageLine rollup={data} />
       {series.length === 0 ? (
         <p className="text-muted-foreground text-xs">
-          No model has {data.thin_threshold} distinct runs cited across the six
-          categories, so no shape is drawn — the cells are in the table below.
+          {/* Both reasons can apply at once, and a model held back for a
+              one-sided cohort may sit well above the cited-runs threshold --
+              so naming only the threshold would be flatly contradicted by the
+              run counts in the table below. Say whichever actually applies. */}
+          No shape is drawn:{" "}
+          {[
+            otherwiseUndrawn > 0 &&
+              `${otherwiseUndrawn} model${otherwiseUndrawn === 1 ? " has" : "s have"} under ${data.thin_threshold} distinct cited runs`,
+            oneSided > 0 &&
+              `${oneSided} only succeeded or only failed, leaving no success rate for a category to be measured against`,
+          ]
+            .filter(Boolean)
+            .join("; ")}
+          . The cells are in the table below.
         </p>
       ) : (
         <div className="flex flex-col items-center gap-2">
@@ -516,9 +542,16 @@ export function CohortRollupSection({
           Charting the {series.length} model
           {series.length === 1 ? "" : "s"} with the most citations across the six
           categories (at most {RADAR_MODEL_CAP}). {belowBar} other
-          {belowBar === 1 ? " is" : "s are"} in the table only — either past that
-          cap or backed by under {data.thin_threshold} distinct cited runs, which
-          is too few to draw a shape from.
+          {belowBar === 1 ? " is" : "s are"} in the table only
+          {otherwiseUndrawn > 0 &&
+            ` — ${oneSided > 0 ? `${otherwiseUndrawn} ` : ""}past that cap or
+              backed by under ${data.thin_threshold} distinct cited runs, which
+              is too few to draw a shape from`}
+          {oneSided > 0 &&
+            `${otherwiseUndrawn > 0 ? ", and " : " — "}${oneSided} only
+             succeeded or only failed, leaving no success rate for a category to
+             be measured against`}
+          .
         </p>
       )}
       <div className="overflow-x-auto">
