@@ -555,6 +555,47 @@ test.describe("authenticated task view", () => {
     });
   }
 
+  test("a hand-shortened trial link addresses this page's task", async ({
+    page,
+  }) => {
+    await signIn(page);
+    const trialPaths: string[] = [];
+    await page.route(
+      new RegExp(`/api/tasks/${READER_TASK_ID}/open(?:\\?|$)`),
+      (route) => {
+        const requested =
+          new URL(route.request().url()).searchParams.get("version_id") ??
+          DEFAULT_VERSION_ID;
+        route.fulfill({ json: openResponse(requested) });
+      }
+    );
+    // Every single-trial id, not just the expanded one: a request for the bare
+    // index has to 404 the way it does in production, or the short link looks
+    // resolved while addressing a trial that doesn't exist.
+    await page.route(/\/api\/trials\/[^/?]+$/, (route) => {
+      const path = new URL(route.request().url()).pathname;
+      trialPaths.push(path);
+      if (path === `/api/trials/${READER_TASK_ID}-99`) {
+        route.fulfill({ json: linkedTrial() });
+        return;
+      }
+      route.fulfill({ status: 404, json: { error: "Trial not found" } });
+    });
+    await page.route(
+      new RegExp(`/api/tasks/${READER_TASK_ID}/detail(?:\\?|$)`),
+      (route) => route.fulfill({ json: detailResponse(HISTORICAL_VERSION_ID) })
+    );
+
+    await page.goto(`/tasks/${READER_TASK_ID}?trial=99`);
+    await expect(
+      page.getByRole("heading", { name: /Old linked trial/ })
+    ).toBeVisible();
+    await expect(page).toHaveURL(new RegExp(`trial=${READER_TASK_ID}-99`));
+    expect([...new Set(trialPaths)]).toEqual([
+      `/api/trials/${READER_TASK_ID}-99`,
+    ]);
+  });
+
   test("an older trial owned by another task is rejected without destroying its URL", async ({
     page,
   }) => {
