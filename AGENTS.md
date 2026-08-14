@@ -513,6 +513,30 @@ Handler registration lives in `oddish.workers.jobs` (`registry.py`,
 
 ### Local Development
 
+For the hosted backend plus dashboard, use the root launcher. It derives an
+isolated cell from the current worktree, starts per-cell Postgres and MinIO,
+runs both Alembic trees, and starts the backend and frontend with external work
+disabled:
+
+```bash
+mkdir -p ~/.config/oddish
+install -m 600 deploy/dev/dev.env.example ~/.config/oddish/dev.env
+# Fill the five values with credentials from a Clerk development instance.
+./scripts/dev doctor
+./scripts/dev up
+./scripts/dev status
+./scripts/dev down
+```
+
+The launcher stores only ports, process ownership, and logs under
+`.oddish/dev/`; credentials remain in the one explicit env file. `down`
+preserves this cell's database and object-store volumes and refuses to signal a
+PID whose recorded process start time no longer matches. Each cell uses its own
+`<cell>.localhost` browser origin, and the backend starts with the cloud control
+plane disabled so local requests cannot reach Modal or remote worker handles.
+
+For the standalone self-hosted core API, use the lower-level flow below.
+
 You need a running Postgres instance. Start one however you prefer (e.g.
 `docker run -d --name oddish-db -e POSTGRES_USER=oddish -e POSTGRES_PASSWORD=oddish -e POSTGRES_DB=oddish -p 5432:5432 postgres:16-alpine`),
 then:
@@ -1023,6 +1047,10 @@ silently breaks throughput or correctness — read before touching
    shrink with care.
 
 ### Local Development
+
+Prefer the root `./scripts/dev` launcher for normal full-stack dashboard work;
+it runs `backend/serve.py` rather than Modal and isolates every worktree. The
+Modal-specific development path remains:
 
 ```bash
 cd backend

@@ -1103,6 +1103,8 @@ class Settings(BaseSettings):
 
     # Worker behavior
     auto_start_workers: bool = True
+    # Local cells keep API behavior but cannot touch provider control planes.
+    cloud_control_plane_enabled: bool = True
 
     pending_trial_reservation_usd: Decimal = Decimal("1.00")
     default_daily_quota_usd: Decimal = Decimal("200.00")

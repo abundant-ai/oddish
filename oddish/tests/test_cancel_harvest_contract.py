@@ -158,6 +158,23 @@ async def test_terminate_run_harvest_noop_on_empty(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_disabled_cloud_control_plane_discards_remote_handles(monkeypatch):
+    async def must_not_run(*_a, **_k):
+        raise AssertionError("remote teardown must remain disabled")
+
+    monkeypatch.setattr(core_helpers.settings, "cloud_control_plane_enabled", False)
+    monkeypatch.setattr(core_helpers, "cancel_job_by_worker", must_not_run)
+    result = {
+        "status": "cancelled",
+        "modal_function_call_ids": ["fc-1"],
+        "worker_targets": [("daytona", "sb-1")],
+    }
+
+    assert await terminate_run_harvest(result) == 0
+    assert result == {"status": "cancelled"}
+
+
+@pytest.mark.asyncio
 async def test_strict_terminate_reports_only_failed_handles(monkeypatch):
     from oddish.dispatch.backends import modal as modal_backend
 

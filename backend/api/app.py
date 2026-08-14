@@ -179,12 +179,13 @@ async def lifespan(_api: FastAPI):
         # through a shared Modal Dict so a cold container reads a warm entry
         # instead of re-running the multi-second scan. Best-effort: falls back
         # to the process-local cache if the Modal Dict can't be reached.
-        try:
-            from dashboard_cache import install_modal_dashboard_cache
+        if settings.cloud_control_plane_enabled:
+            try:
+                from dashboard_cache import install_modal_dashboard_cache
 
-            install_modal_dashboard_cache()
-        except Exception:
-            logger.warning("dashboard shared cache setup skipped", exc_info=True)
+                install_modal_dashboard_cache()
+            except Exception:
+                logger.warning("dashboard shared cache setup skipped", exc_info=True)
 
     yield
 
