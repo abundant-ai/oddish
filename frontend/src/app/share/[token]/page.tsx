@@ -64,6 +64,7 @@ export default function PublicExperimentPage() {
             readOnly
             allowRetry={false}
             showAnalysis={false}
+            showCapabilities={false}
             apiBaseUrl={scopedApiBaseUrl}
           />
         </div>

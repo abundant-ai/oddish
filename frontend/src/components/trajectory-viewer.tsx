@@ -713,6 +713,7 @@ export function TrajectoryViewer({
   );
 
   const [expandedSteps, setExpandedSteps] = useState<string[]>([]);
+  const expandedStepKeys = new Set(expandedSteps);
   const [query, setQuery] = useState("");
   const [deepLinkError, setDeepLinkError] = useState<string | null>(null);
   const stepRefs = useRef<(HTMLDivElement | null)[]>([]);
@@ -1112,11 +1113,13 @@ export function TrajectoryViewer({
                         />
                       </AccordionTrigger>
                       <AccordionContent>
-                        <StepContent
-                          step={step}
-                          trialId={trialId}
-                          apiBaseUrl={apiBaseUrl}
-                        />
+                        {expandedStepKeys.has(`step-${idx}`) ? (
+                          <StepContent
+                            step={step}
+                            trialId={trialId}
+                            apiBaseUrl={apiBaseUrl}
+                          />
+                        ) : null}
                       </AccordionContent>
                     </AccordionItem>
                   ))}

@@ -385,7 +385,36 @@ test.describe("critical task and trial subtree", () => {
     await page.route(
       new RegExp(`/api/trials/${TRIAL_ID}/trajectory(?:/|\\?|$)`),
       async (route) => {
-        await route.fulfill({ json: null });
+        if (new URL(route.request().url()).pathname.endsWith("/summary")) {
+          await route.fulfill({ status: 404, json: { detail: "not found" } });
+          return;
+        }
+        await route.fulfill({
+          json: {
+            schema_version: "1",
+            session_id: "session-p1",
+            agent: {
+              name: "codex",
+              version: "1",
+              model_name: "gpt-5",
+            },
+            steps: [
+              {
+                step_id: 1,
+                timestamp: NOW,
+                source: "agent",
+                model_name: "gpt-5",
+                message: "Short collapsed preview",
+                reasoning_content: "DEFERRED_TRAJECTORY_STEP_BODY",
+                tool_calls: null,
+                observation: null,
+                metrics: null,
+              },
+            ],
+            notes: null,
+            final_metrics: null,
+          },
+        });
       }
     );
     await page.route(
@@ -510,6 +539,11 @@ test.describe("critical task and trial subtree", () => {
     await page.getByRole("tab", { name: "Trajectory" }).click();
     await trajectoryRequest;
     expect(requestCount(requests, trajectoryPattern)).toBeGreaterThan(0);
+    await expect(page.getByText("DEFERRED_TRAJECTORY_STEP_BODY")).toHaveCount(
+      0
+    );
+    await page.getByRole("button", { name: /^#1/ }).click();
+    await expect(page.getByText("DEFERRED_TRAJECTORY_STEP_BODY")).toBeVisible();
 
     await page.getByRole("tab", { name: "Summary" }).click();
     // The analysis mutation revalidates the canonical trial. A transient
