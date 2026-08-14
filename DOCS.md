@@ -20,6 +20,8 @@ export ODDISH_API_KEY="ok_..."
 
 - `oddish run` - submit work, retry failed trials, or re-run task-level QA
 - `oddish upload` - register a task or upload existing trials
+- `oddish review` - read exact stored QA for one task version without running analysis
+- `oddish iterate` - upload one local task edit, run gated baselines and a pilot, then compare QA
 - `oddish ls` - list uploaded tasks
 - `oddish status` - view progress
 - `oddish logs` - stream a running trial's live transcript and cost estimate
@@ -41,12 +43,13 @@ Every command except `oddish logs` accepts `--json` for machine-readable output 
 
 A typical run flows through these commands:
 
-1. `oddish run` (or `oddish upload`) — submit a task, dataset, or sweep and get back a task ID and experiment ID.
-2. `oddish status` — discover what's in flight, then drill into a specific task or experiment to see trial-level progress and rewards.
-3. `oddish pull` — once you have a trial, task, or experiment ID, download its logs, results, trajectories, and artifact files to disk.
-4. `oddish run --retry` — re-queue failed trials or re-run task-level QA.
-5. `oddish cancel` / `oddish delete` — stop in-flight work or remove data when you're done.
-6. `oddish publish` — share an experiment publicly (read-only) and get a link.
+1. `oddish iterate ./my-task --agent AGENT --model MODEL` — for local task authoring, upload one edit and run the trusted baseline → pilot → QA loop. Use `oddish run` (or `oddish upload`) for general tasks, datasets, and sweeps.
+2. `oddish review TASK` — read the exact stored, version-owned QA and provenance without starting or paying for analysis.
+3. `oddish status` — discover what's in flight, then drill into a specific task or experiment to see trial-level progress and rewards.
+4. `oddish pull` — once you have a trial, task, or experiment ID, download its logs, results, trajectories, and artifact files to disk.
+5. `oddish run --retry` — re-queue failed trials or re-run task-level QA.
+6. `oddish cancel` / `oddish delete` — stop in-flight work or remove data when you're done.
+7. `oddish publish` — share an experiment publicly (read-only) and get a link.
 
 `oddish pull` accepts a trial, task, or experiment ID and auto-detects which kind it is; `oddish status` takes a task ID (falling back to experiment lookup) or `--experiment`. `oddish ls` supports the dashboard's task, tag, status, date, model, and trial-metric filters.
 
@@ -171,7 +174,110 @@ oddish run <experiment_id> --retry -y --json
 - `--qa` requires `--retry`.
 - `-y, --yes` skips the confirmation prompt; `--json` is always non-interactive.
 
-### Sweep Config
+## Review Stored Task QA
+
+`oddish review` reads the canonical QA record for one immutable task version.
+The target must be an exact task ID or exact organization-unique task name;
+there is no fuzzy fallback. The command is a read only operation: it does not
+enqueue analysis, mutate QA state, or add LLM cost.
+
+```bash
+# Selected/default version, all finding tiers
+oddish review <task_id>
+
+# Historical version, scoped to evidence from one experiment
+oddish review my-exact-task-name --version 3 --experiment <experiment_id>
+
+# One or more finding tiers (repeat --tier)
+oddish review <task_id> --tier must_fix --tier should_fix
+
+# CI: emit the complete stable document and fail when the selected tiers find anything
+oddish review <task_id> --tier must_fix --json --fail-on-findings
+```
+
+Omitting `--tier` means all tiers in canonical order: `must_fix`,
+`should_fix`, then `optional`. The human output preserves stored finding IDs,
+file ranges, details, recommendations, source/trial provenance, baseline
+outcomes, verifier rewards, and QA classifications. A verifier failure that QA
+classifies as `GOOD_FAILURE` remains a verifier failure; the two columns are
+not collapsed into one label.
+
+`--json` follows both independent server cursors and emits one complete,
+stable JSON document. It does not stream partial documents. Exit codes are:
+
+- `0` — the review was read successfully (findings are informational unless
+  `--fail-on-findings` is set)
+- `2` — `--fail-on-findings` matched one or more findings in the selected tier
+  scope
+- `1` — authentication, transport, lookup, cursor-consistency, or response
+  validation failure
+
+Legacy verdicts that predate version-owned QA provenance are warned about and
+never guessed into the selected version. The same is true when a trial's
+analysis changed after the published QA run.
+
+## Iterate on One Local Task
+
+`oddish iterate` is the closed local authoring loop for exactly one Harbor task
+directory. It runs normal local preflight checks, uploads the current files as
+an immutable version when content changed, creates the deterministic
+`iterate-<task>-v<N>` experiment, and submits one atomic gated sweep containing
+`nop`, `oracle`, and the selected model pilot. It waits for task QA and compares
+stored finding IDs and model outcomes with the prior iteration.
+
+```bash
+# First iteration: choose the pilot explicitly
+oddish iterate ./my-task --agent codex --model openai/gpt-5.2
+
+# Later edit: reuse the prior iteration's single model config
+oddish iterate ./my-task
+
+# Deliberately replay every prior non-baseline config and count
+oddish iterate ./my-task --same-sweep
+
+# Stable machine-readable result after the full loop completes
+oddish iterate ./my-task --json
+```
+
+The first invocation requires `--agent` and `--model` together because there is
+no stored pilot to reuse. A later invocation reuses the prior iteration when it
+has one unambiguous model config, defaulting to one pilot trial. If the prior
+iteration contains multiple configs, choose a new explicit `--agent`/`--model`
+or acknowledge the larger replay with `--same-sweep`; the two modes are
+mutually exclusive. Secret-bearing stored config keys are never reused.
+
+Baseline admission is strict: both baseline roles must finish, `nop` must have
+reward `0`, and `oracle` must have reward `1` before any paid model trial is
+admitted. A missing, failed, partial, or unexpected baseline makes the gate
+faulty and skips the model pilot. The command always requests task-level QA for
+the resulting version.
+
+Re-running an interrupted or content-identical invocation reconciles the same
+version and deterministic experiment instead of creating duplicate spend. A
+completed identical iteration is read and compared without resubmission.
+Comparison language is deliberately evidence-bounded: a prior finding can be
+`remaining`, `introduced`, or `not_observed_after`; absence is not claimed as a
+proof that it was fixed.
+
+If `task.toml` selects a pinned `docker_image`, iteration stops unless
+`--reuse-pinned-image` is supplied. That flag is an explicit acknowledgement
+that the image already contains the intended local edits. `--force-build` does
+not rebuild or replace a pinned image.
+
+Exit codes are:
+
+- `0` — baselines were valid, execution and QA completed, and the version was
+  accepted
+- `2` — the task needs author attention (faulty baselines or a rejected QA
+  verdict)
+- `1` — preflight, upload, model execution, QA execution, or infrastructure
+  failure
+
+`--json` emits one stable schema-versioned document after completion, including
+the exact task/version, experiment, content hash, changed-file classification
+derived from version checksums, stored QA, trials, and before/after comparisons.
+
+## Sweep Config
 
 Use `oddish run -c sweep.yaml` to run multiple agents:
 

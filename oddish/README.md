@@ -62,6 +62,8 @@ reference. The main commands are:
 
 - `oddish run` — submit local tasks, registry datasets, sweeps, retries, and task-level QA retries; `--env ec2` selects an operator-enabled ephemeral CPU VM while Daytona remains the hosted CPU default.
 - `oddish upload` — register task bundles or import off-oddish Harbor trial results; `--overwrite-current-version` corrects the selected version in place.
+- `oddish review` — read exact stored, version-owned task QA and provenance without enqueueing analysis or adding cost.
+- `oddish iterate` — run one local edit through strict `nop`/`oracle` baselines, a model pilot, task QA, and deterministic before/after comparison.
 - `oddish ls` / `oddish status` — browse tasks (including model and trajectory-metric filters) and inspect progress. `oddish status <trial_id>` shows single-trial detail; `--detail`/`--versions` show a task's version history and cost rollups; `--queue` shows queue & worker scheduler diagnostics.
 - `oddish logs` — stream a running trial's live transcript and cost estimate (`--follow` to poll until it ends); finished trials are served by `oddish pull` instead.
 - `oddish costs` — billable-spend accounting (org-wide, or per-user with `--user`).
@@ -78,15 +80,18 @@ Every command except `oddish logs` supports `--json` for machine-readable output
 ## Typical Workflow
 
 ```bash
-# 1. Submit a run
-oddish run -d swebench@1.0 -a claude-code -m anthropic/claude-sonnet-4-5
+# 1. First pass on one local task (later edits can omit --agent/--model)
+oddish iterate ./my-task --agent claude-code --model anthropic/claude-sonnet-4-5
 
-# 2. Inspect or watch it later
-oddish status <task_id> --watch
+# 2. Re-read the exact stored QA without running or paying for analysis
+oddish review <task_id>
 
 # 3. Pull outputs when you want them locally
 oddish pull <task_id> --watch
 ```
+
+Use `oddish run` instead when submitting a registry dataset, a general sweep,
+or trials that are not part of the single-task authoring loop.
 
 ## More Technical Docs
 

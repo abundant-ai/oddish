@@ -103,6 +103,8 @@ FastAPI server — oddish standalone (python -m oddish.server)
 Postgres
   - worker_jobs       # unified queue (TRIAL / QA / TASK_EXPAND / TAG_PROJECT / …)
   - trials / tasks    # domain state + live UI columns
+  - task_qa_runs      # version-pinned QA passes + exact immutable input provenance
+  - tasks.published_qa_run_id / verdict_version_id  # hot-read published QA pointers
   - trial_events      # short-lived live transcript pages for running trials
   - queue_slots       # per-queue-key concurrency leases
   - model_concurrency_overrides # admin-set limits over deploy configuration
@@ -126,6 +128,10 @@ High-level flow:
    rows and the old attempts point to those replacements through
    `superseded_by_trial_id`. This preserves retry history without leaving the
    failed attempts in normal UI/API trial sets.
+   When a sweep enables baseline gating, paid model trials are admitted only
+   after both roles finish and validate: `nop` must produce reward `0` and
+   `oracle` must produce reward `1`. Missing, failed, partial, or unexpected
+   output from either role fails the gate and skips the model trials.
    Hosted sweep identity is resolved once into `SweepAttribution` before the
    core call. New tasks and experiments receive their creator, API-key, owner,
    display-owner, and link provenance in their constructors; returning an
@@ -138,6 +144,16 @@ High-level flow:
    job classifies every live trial's trajectory (written to `trials.analysis`)
    and then synthesizes the task verdict (`tasks.verdict`). A sweep of `T`
    tasks × `N` trials therefore enqueues `T` QA jobs, not `T × (N + 1)`.
+   Every new QA job owns one `task_qa_runs` row pinned to the selected
+   `task_version_id`. Before classification it snapshots the exact eligible
+   `input_trial_ids` and each trial's analysis fingerprint. Terminal runs keep
+   their analyzer block IDs, verdict/error, timestamps, and domain disposition
+   (`published`, `failed`, `cancelled`, or `superseded`); disposition is not a
+   copy of worker scheduling status. Publishing writes
+   `tasks.published_qa_run_id` and `tasks.verdict_version_id` atomically with
+   the verdict projection. A published pointer and version must always name
+   the same run/version; legacy verdicts with no pointer remain explicitly
+   unscoped rather than being guessed onto the current version.
 5. While a trial runs, a worker-side tailer (`oddish.workers.harbor.live_tail`,
    on by default via `live_tail_enabled` / `live_tail_interval_sec`) polls the
    agent's log file inside the sandbox for supported agents (claude-code,
@@ -410,6 +426,47 @@ usage across every trial owned by the experiment, including older versions,
 superseded retries, probes, and soft-deleted trials. Its `billed_*` cost and
 token fields are the billed-user subset used by the frontend's New spend tile.
 
+### Version-Owned QA Review and Iteration
+
+`GET /tasks/{task_ref}/review` is the canonical read model for stored task QA.
+`task_ref` resolves only an exact task ID or exact live org-unique name. The
+response is always pinned to one task version (the selected default when
+`version` is omitted), may be narrowed to one experiment and repeated
+`ActionTier` values, and uses independent keyset cursors for findings and
+trials. Each page limit is `0..20`; omission of `tier` means all tiers in
+`must_fix`, `should_fix`, `optional` order. The endpoint is strictly read-only:
+it must not enqueue analyzer work, repair state, or incur LLM cost. Queue
+admission, the QA worker snapshot, and review all use
+`oddish.core.qa_scope.qa_review_scope`; do not reproduce that eligibility SQL
+in a caller.
+
+The review response exposes the active and published `task_qa_runs`
+provenance, strict `nop`/`oracle` baseline result, stored verdict, stable
+finding IDs and source linkage, exact counts, and separate verifier reward and
+QA classification. Experiment scope narrows trial/baseline/finding evidence;
+pre-tier finding totals and mismatch flags remain explicit. A
+legacy task verdict with no `published_qa_run_id` is reported as legacy and is
+never assigned to a version by inference.
+
+`GET /tasks/{task_id}/versions/{version}/manifest` returns the authorized
+version's content hash plus regular-file size/SHA-256 evidence. Its status is
+`ready`, `pending`, or `unavailable`; callers poll `pending` with a bound and
+must not treat an unavailable legacy expansion as an empty manifest. Expanded
+manifests remain accepted only when their `archive_key` matches the version's
+selected immutable archive source.
+
+CLI ownership is deliberate: `oddish review` follows both review cursors and
+renders the stored document without recomputing semantics; `oddish iterate`
+owns the single-task local edit → upload → strict baselines → model pilot → QA
+→ comparison orchestration. It uses deterministic `iterate-<task>-v<N>`
+experiments so an interrupted identical invocation reconciles rather than
+duplicating spend. The first run needs an explicit agent/model; later runs may
+reuse one prior model config, while `--same-sweep` explicitly opts into every
+prior non-baseline config/count. A task-pinned Docker image requires
+`--reuse-pinned-image`; `--force-build` does not override that safety check.
+Keep this authoring policy in the CLI rather than adding a generic core
+iteration service without a second real caller.
+
 ### Task Browser Summary
 
 The default `GET /tasks/browse` path selects and paginates tasks before card
@@ -569,8 +626,8 @@ extensions) — see `backend/README.md`.
 | Task upload | `POST /tasks/upload/init` (returns presigned PUT URL), `POST /tasks/upload/complete` |
 | Trial import | `POST /trials/import/init`, `POST /trials/import/complete` |
 | Sweeps | `POST /tasks/sweep`, `POST /tasks/sweep/batch` |
-| Tasks | `GET /tasks`, `GET /tasks/browse`, `GET /tasks/browse/experiment-options` (typeahead for the experiment filter; `facets.experiments` is deprecated/always empty; the other facet lists are served from the `trial_facets` vocabulary — write-through on trial creation plus a periodic rebuild sweep, see `oddish/src/oddish/core/trial_facets.py`), `GET /tasks/{task_id}`, `GET /tasks/{task_id}/open`, `GET /tasks/{task_id}/detail`, `GET /tasks/{task_id}/versions[/{version}]`, `PUT /tasks/{task_id}/versions/{version}/default`, `POST /tasks/cancel` (optional `experiment_id` scopes the cancel to that experiment's trials so shared tasks keep running elsewhere) |
-| Task QA | `POST /tasks/{task_id}/qa/retry`, `POST /tasks/{task_id}/qa/cancel`, `POST /tasks/{task_id}/qa/backfill` |
+| Tasks | `GET /tasks`, `GET /tasks/browse`, `GET /tasks/browse/experiment-options` (typeahead for the experiment filter; `facets.experiments` is deprecated/always empty; the other facet lists are served from the `trial_facets` vocabulary — write-through on trial creation plus a periodic rebuild sweep, see `oddish/src/oddish/core/trial_facets.py`), `GET /tasks/{task_id}`, `GET /tasks/{task_id}/open`, `GET /tasks/{task_id}/detail`, `GET /tasks/{task_id}/versions[/{version}]`, `GET /tasks/{task_id}/versions/{version}/manifest`, `PUT /tasks/{task_id}/versions/{version}/default`, `POST /tasks/cancel` (optional `experiment_id` scopes the cancel to that experiment's trials so shared tasks keep running elsewhere) |
+| Task QA | `GET /tasks/{task_ref}/review` (bounded version-owned read; no writes or analyzer enqueue), `POST /tasks/{task_id}/qa/retry`, `POST /tasks/{task_id}/qa/cancel`, `POST /tasks/{task_id}/qa/backfill` |
 | Experiments | `POST /experiments/combine`, `PATCH /experiments/{experiment_id}` |
 | Trials | `GET /tasks/{task_id}/trials/{index}`, `POST /trials/{trial_id}/retry` (optional `registry_auth` body), `GET /trials/{trial_id}/live` ((attempt, seq)-cursor live transcript), `GET /trials/{trial_id}/logs[/structured]`, `GET /trials/{trial_id}/trajectory`, `GET /trials/{trial_id}/result` |
 | Files | `GET /tasks/{task_id}/files[/{path}]` (`inline=false` omits listing bodies; `presign=false` omits URLs; `max_bytes=N` caps archive-backed file reads), `GET /trials/{trial_id}/files[/{path}]`, `GET /trials/{trial_id}/debug-files` |
@@ -1145,6 +1202,17 @@ onto the Next response on success, upstream error, and streamed passthrough
 responses. Keep this behavior in `frontend/src/lib/proxy-headers.ts`; the
 generic JSON proxy requires its incoming request, and bespoke hot routes must
 use the same helpers instead of replacing an existing timing value.
+
+The task QA overview consumes only the canonical review resource through the
+authenticated no-store `/api/tasks/{task_id}/review` proxy. `TaskFilesPanel`
+owns that SWR resource because it owns selected task/version/experiment scope
+and the QA actions: mount fetches one bounded page, explicit Show more actions
+advance the independent finding/trial cursors, and polling runs only while the
+response's QA state is active. `TaskOverviewPanel` is presentation-only. It
+must not fetch `/tasks/{id}/trials`, rebuild eligibility, merge source/trial
+findings, recount classifications, or infer verdict provenance. Finding and
+trial React keys are the stable server IDs. Keep verifier outcome and QA
+classification in separate columns; `GOOD_FAILURE` is not a verifier pass.
 
 The trial drawer surfaces verifier test counts only as a small passed/total
 row in the Summary tab (shown on public share views too); trials without test
