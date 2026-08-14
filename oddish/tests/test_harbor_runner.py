@@ -230,6 +230,7 @@ def test_gemini_ambient_credentials_enter_redaction_map(monkeypatch):
     # fold into the trial transport env so their raw values are redacted from
     # live-tail / lifecycle / scrubbed artifacts, the same way OpenAI secrets do.
     monkeypatch.setenv("GEMINI_API_KEY", "gm-secret-123")
+    monkeypatch.setenv("GOOGLE_GENERATIVE_AI_API_KEY", "gsdk-secret-789")
     monkeypatch.setenv("GOOGLE_API_KEY", "goog-secret-456")
     agent_config = HarborAgentConfig(name="gemini-cli", model_name="google/gemini-x")
 
@@ -237,11 +238,32 @@ def test_gemini_ambient_credentials_enter_redaction_map(monkeypatch):
         {}, agent_config=agent_config
     )
     assert runtime_env.get("GEMINI_API_KEY") == "gm-secret-123"
+    assert runtime_env.get("GOOGLE_GENERATIVE_AI_API_KEY") == "gsdk-secret-789"
     assert runtime_env.get("GOOGLE_API_KEY") == "goog-secret-456"
 
     replacements = harbor_runner._runtime_transport_redactions(runtime_env)
     assert replacements["gm-secret-123"] == "[REDACTED]"
+    assert replacements["gsdk-secret-789"] == "[REDACTED]"
     assert replacements["goog-secret-456"] == "[REDACTED]"
+
+
+def test_opencode_google_model_folds_ai_sdk_credential(monkeypatch):
+    # opencode has no agent-specific branch: it authenticates through the
+    # general provider-driven fold, keyed on the model's canonical provider
+    # (``google/`` -> ``gemini``). The AI SDK name must be in that provider's
+    # key set, or an opencode google trial reaches the container with no
+    # credential the CLI recognises and dies before its first model call.
+    monkeypatch.setenv("GOOGLE_GENERATIVE_AI_API_KEY", "gsdk-secret-789")
+    agent_config = HarborAgentConfig(
+        name="opencode", model_name="google/gemini-3.7-flash"
+    )
+
+    runtime_env = harbor_runner._resolved_runtime_transport_env(
+        {}, agent_config=agent_config
+    )
+    assert runtime_env.get("GOOGLE_GENERATIVE_AI_API_KEY") == "gsdk-secret-789"
+    replacements = harbor_runner._runtime_transport_redactions(runtime_env)
+    assert replacements["gsdk-secret-789"] == "[REDACTED]"
 
 
 def test_claude_code_ambient_credentials_enter_redaction_map(monkeypatch):
