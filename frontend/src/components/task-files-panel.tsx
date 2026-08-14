@@ -143,6 +143,8 @@ interface TaskFilesPanelProps {
    * read-only share view.
    */
   showAnalysis?: boolean;
+  /** Whether the task drawer offers and may fetch the capability analysis. */
+  showCapabilities?: boolean;
   /** The route host owns this because the drawer can mount two task panes. */
   activePane: TaskPane;
   onActivePaneChange?: (pane: TaskPane) => void;
@@ -423,6 +425,7 @@ export function TaskFilesPanel({
   cancelExperimentId,
   allowRetry = true,
   showAnalysis = true,
+  showCapabilities = true,
   activePane,
   onActivePaneChange,
   onRetryComplete,
@@ -498,7 +501,8 @@ export function TaskFilesPanel({
           : undefined;
   const overviewAvailable =
     effectiveChecksTaskId !== null && showAnalysis !== false;
-  const capabilitiesAvailable = effectiveChecksTaskId !== null;
+  const capabilitiesAvailable =
+    showCapabilities && effectiveChecksTaskId !== null;
   const taskPaneExists = overviewAvailable || capabilitiesAvailable;
   // Until /detail answers, the checks state is unknown, not "unaudited":
   // an enabled Run button on the misread queues an audit that wipes findings.
@@ -700,7 +704,7 @@ export function TaskFilesPanel({
       params.set("inline", "0");
       params.set("presign", "0");
     }
-    if (!taskPaneExists) {
+    if (!taskPaneExists && !loadFilesLazily) {
       params.set("stream", "1");
     }
     if (shouldScopeFilesToVersion && currentVersion != null) {

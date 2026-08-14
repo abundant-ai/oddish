@@ -196,7 +196,13 @@ public-share cache miss enqueues one idempotent `ANALYZER` worker job with
 poll until the analyzer block is stored. Capability generation must not run
 inline in an API request. Public requests remain bounded to the task versions
 published by their share token, and repeated views coalesce onto the same active
-job. A public trajectory-summary cache miss instead enqueues one trial-scoped
+job. The public share UI does not request or offer the capability pane; those
+routes remain available for bounded API consumers and existing evidence links.
+Shared trial drawers open on Summary and fetch a trajectory only after explicit
+user or URL intent. Collapsed trajectory steps must not mount their message,
+reasoning, tool, or observation bodies; those potentially large bodies mount
+only while the step is expanded. A public trajectory-summary cache miss instead
+enqueues one trial-scoped
 `ANALYZER` job with `payload.mode = "trajectory_summary"`, keyed by trial and
 summary schema. Its endpoint returns explicit queued/running/retrying state and
 the client polls until the summary is stored. Terminal failures are returned,
