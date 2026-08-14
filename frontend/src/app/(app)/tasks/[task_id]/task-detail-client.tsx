@@ -701,7 +701,7 @@ export function TaskDetailClient({
     {
       revalidateOnFocus: false,
       revalidateOnMount: true,
-    },
+    }
   );
   const canonicalDrawerDetailResource =
     drawerDetailResource && !isBrowseTaskDetail(drawerDetailResource)

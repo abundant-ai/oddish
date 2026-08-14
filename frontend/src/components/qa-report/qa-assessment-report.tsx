@@ -66,7 +66,7 @@ export function QaAssessmentReport({
         <h2
           className={cn(
             "font-mono text-sm font-semibold tracking-wide",
-            token.accent,
+            token.accent
           )}
         >
           {classification.replace(/_/g, " ")}
@@ -76,7 +76,7 @@ export function QaAssessmentReport({
             className={cn(
               "rounded-md border px-2 py-0.5 font-mono text-[10px]",
               token.chip,
-              token.accent,
+              token.accent
             )}
           >
             {subtype.replace(/_/g, " ")}

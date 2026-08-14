@@ -11,11 +11,7 @@ import type { ReactNode } from "react";
 import { AnalysisProse } from "@/components/analysis-prose";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import type {
-  JobStatus,
-  TaskReviewVerdict,
-  TaskVerdict,
-} from "@/lib/types";
+import type { JobStatus, TaskReviewVerdict, TaskVerdict } from "@/lib/types";
 
 type VerdictPresentation = {
   pending: boolean;
@@ -33,7 +29,7 @@ function presentVerdict(
   verdict: TaskVerdict | TaskReviewVerdict | null | undefined,
   verdictError: string | null | undefined,
   qaInFlight: boolean,
-  iconSizeClass: string,
+  iconSizeClass: string
 ): VerdictPresentation {
   const verdictPending =
     status === "running" ||
@@ -140,20 +136,19 @@ export function TaskVerdictBadge({
     verdict,
     verdictError,
     qaInFlight,
-    iconSize,
+    iconSize
   );
   const previousVersion = Boolean(
     !p.pending &&
-      verdict &&
-      selectedVersionId &&
-      verdictVersionId &&
-      selectedVersionId !== verdictVersionId,
+    verdict &&
+    selectedVersionId &&
+    verdictVersionId &&
+    selectedVersionId !== verdictVersionId
   );
   const title = previousVersion ? `Previous-version QA · ${p.title}` : p.title;
   const showRunButton = onRunJudge != null && !p.pending && !isRunning;
   const showCancelButton = onCancelJudge != null && p.pending;
-  const runLabel =
-    verdictStatus || verdict ? "Rerun verdict" : "Run QA";
+  const runLabel = verdictStatus || verdict ? "Rerun verdict" : "Run QA";
 
   if (variant === "inline") {
     return (
@@ -240,10 +235,10 @@ export function TaskVerdictBadge({
   }
 
   return (
-      <Card
-        className={p.toneCard}
-        title={publishedQaRunId ? `QA run ${publishedQaRunId}` : undefined}
-      >
+    <Card
+      className={p.toneCard}
+      title={publishedQaRunId ? `QA run ${publishedQaRunId}` : undefined}
+    >
       <CardHeader className="px-4 pt-2 pb-1">
         <CardTitle className="text-muted-foreground flex items-center gap-1.5 text-[11px] font-semibold tracking-wider uppercase">
           <Microscope className="h-3 w-3" />
@@ -263,7 +258,10 @@ export function TaskVerdictBadge({
               ) : null}
             </div>
             {p.detail ? (
-              <AnalysisProse text={p.detail} className="text-muted-foreground mt-1" />
+              <AnalysisProse
+                text={p.detail}
+                className="text-muted-foreground mt-1"
+              />
             ) : null}
             {!p.pending &&
             verdict?.recommendations &&

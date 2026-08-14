@@ -37,11 +37,7 @@ import {
   FileRenderer,
   isBinaryRendererFile,
 } from "@/components/renderers/file-renderer";
-import type {
-  Task,
-  TaskReviewResponse,
-  Trial,
-} from "@/lib/types";
+import type { Task, TaskReviewResponse, Trial } from "@/lib/types";
 import { TaskOverviewPanel } from "@/components/task-overview-panel";
 import { AgentCapabilitiesSection } from "@/components/agent-capabilities-section";
 import {
@@ -205,7 +201,7 @@ function taskReviewUrl(
     trialLimit: number;
     findingCursor?: string | null;
     trialCursor?: string | null;
-  },
+  }
 ): string {
   const params = new URLSearchParams({
     finding_limit: String(page.findingLimit),
@@ -453,7 +449,7 @@ export function TaskFilesPanel({
           effectiveChecksTaskId,
           taskVersion,
           cancelExperimentId,
-          { findingLimit: 20, trialLimit: 20 },
+          { findingLimit: 20, trialLimit: 20 }
         )
       : null;
   const {
@@ -466,7 +462,7 @@ export function TaskFilesPanel({
   });
   const getFindingPageKey = (
     pageIndex: number,
-    previousPage: TaskReviewResponse | null,
+    previousPage: TaskReviewResponse | null
   ) => {
     if (!reviewKey || !review?.findings_page.has_more) return null;
     const cursor =
@@ -479,7 +475,7 @@ export function TaskFilesPanel({
       effectiveChecksTaskId!,
       taskVersion,
       cancelExperimentId,
-      { findingLimit: 20, trialLimit: 0, findingCursor: cursor },
+      { findingLimit: 20, trialLimit: 0, findingCursor: cursor }
     );
   };
   const {
@@ -495,7 +491,7 @@ export function TaskFilesPanel({
   });
   const getTrialPageKey = (
     pageIndex: number,
-    previousPage: TaskReviewResponse | null,
+    previousPage: TaskReviewResponse | null
   ) => {
     if (!reviewKey || !review?.trials_page.has_more) return null;
     const cursor =
@@ -508,7 +504,7 @@ export function TaskFilesPanel({
       effectiveChecksTaskId!,
       taskVersion,
       cancelExperimentId,
-      { findingLimit: 0, trialLimit: 20, trialCursor: cursor },
+      { findingLimit: 0, trialLimit: 20, trialCursor: cursor }
     );
   };
   const {
@@ -541,9 +537,7 @@ export function TaskFilesPanel({
     : undefined;
   const actionsReady = review !== undefined;
   const overviewVersion =
-    taskVersion !== undefined
-      ? taskVersion
-      : review?.task.version;
+    taskVersion !== undefined ? taskVersion : review?.task.version;
   const overviewAvailable =
     effectiveChecksTaskId !== null && showAnalysis !== false;
   const capabilitiesAvailable = effectiveChecksTaskId !== null;
@@ -1635,9 +1629,7 @@ export function TaskFilesPanel({
                   }
                   findingsLoadingMore={findingsLoadingMore}
                   findingsPageError={
-                    findingPagesError
-                      ? "Unable to load more findings."
-                      : null
+                    findingPagesError ? "Unable to load more findings." : null
                   }
                   onShowMoreTrials={() =>
                     void setTrialPageCount(trialPageCount + 1)

@@ -1,9 +1,4 @@
-import {
-  CircleCheck,
-  ShieldAlert,
-  TriangleAlert,
-  Unplug,
-} from "lucide-react";
+import { CircleCheck, ShieldAlert, TriangleAlert, Unplug } from "lucide-react";
 
 import type { ActionTier } from "@/lib/types";
 
@@ -56,29 +51,25 @@ export const FALLBACK_TOKEN: VerdictToken = {
   chip: "border-border",
 };
 
-export const TIER_ORDER: ActionTier[] = [
-  "must_fix",
-  "should_fix",
-  "optional",
-];
+export const TIER_ORDER: ActionTier[] = ["must_fix", "should_fix", "optional"];
 
 export const TIER_META: Record<
   ActionTier,
   { label: string; labelEffect: string }
 > = {
-    must_fix: {
-      label: "MUST FIX",
-      labelEffect:
-        "Blocks GOOD FAILURE — a failed run with a must_fix item is BAD FAILURE.",
-    },
-    should_fix: {
-      label: "SHOULD FIX",
-      labelEffect: "Does not change the label.",
-    },
-    optional: {
-      label: "OPTIONAL",
-      labelEffect: "Does not change the label.",
-    },
+  must_fix: {
+    label: "MUST FIX",
+    labelEffect:
+      "Blocks GOOD FAILURE — a failed run with a must_fix item is BAD FAILURE.",
+  },
+  should_fix: {
+    label: "SHOULD FIX",
+    labelEffect: "Does not change the label.",
+  },
+  optional: {
+    label: "OPTIONAL",
+    labelEffect: "Does not change the label.",
+  },
 };
 
 // Severity is deliberately not hue-coded: only must_fix gets colour, because

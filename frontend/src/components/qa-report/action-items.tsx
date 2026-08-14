@@ -140,7 +140,7 @@ export function SeverityGroups<T extends ActionItemFinding>({
             <span
               className={cn(
                 "rounded-md px-2 py-0.5 font-mono text-[9.5px] font-semibold tracking-wider",
-                TIER_BADGE[group.tier],
+                TIER_BADGE[group.tier]
               )}
             >
               {group.meta.label}

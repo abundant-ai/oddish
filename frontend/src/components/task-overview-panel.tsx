@@ -13,10 +13,7 @@ import {
 import { AnalysisProse } from "@/components/analysis-prose";
 import { SeverityGroups } from "@/components/qa-report/action-items";
 import { CopyJsonButton } from "@/components/qa-report/copy-json-button";
-import {
-  FALLBACK_TOKEN,
-  VERDICT_TOKENS,
-} from "@/components/qa-report/tokens";
+import { FALLBACK_TOKEN, VERDICT_TOKENS } from "@/components/qa-report/tokens";
 import { TaskVerdictBadge } from "@/components/task-verdict-badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -53,7 +50,7 @@ function trialLabel(trial: TaskReviewTrial): string {
 
 function baselineLabel(
   name: "nop" | "oracle",
-  baseline: TaskReviewBaselineResult,
+  baseline: TaskReviewBaselineResult
 ): string {
   const expected = baseline.expected_reward === 1 ? "pass" : "fail";
   if (baseline.trial_count === 0) return `No ${name} baseline`;
@@ -101,17 +98,19 @@ function BaselineCard({
         "rounded-lg border p-3",
         valid
           ? "border-emerald-500/30 bg-emerald-500/5"
-          : "border-amber-500/30 bg-amber-500/5",
+          : "border-amber-500/30 bg-amber-500/5"
       )}
     >
       <div className="flex items-center gap-2">
         <Icon
           className={cn(
             "h-4 w-4",
-            valid ? "text-emerald-500" : "text-amber-500",
+            valid ? "text-emerald-500" : "text-amber-500"
           )}
         />
-        <span className="font-mono text-xs font-semibold uppercase">{name}</span>
+        <span className="font-mono text-xs font-semibold uppercase">
+          {name}
+        </span>
       </div>
       <p className="text-muted-foreground mt-1 font-mono text-[11px]">
         {baselineLabel(name, baseline)}
@@ -145,7 +144,7 @@ function TrialQa({ trial }: { trial: TaskReviewTrial }) {
       className={cn(
         "inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold",
         token.chip,
-        token.accent,
+        token.accent
       )}
     >
       <Icon className="h-3 w-3" />
@@ -169,7 +168,7 @@ function TrialRow({
           <button
             type="button"
             onClick={() => onOpen(trial.id)}
-            className="text-foreground hover:text-blue-500 flex max-w-full items-center gap-1 font-mono text-[11px] font-semibold"
+            className="text-foreground flex max-w-full items-center gap-1 font-mono text-[11px] font-semibold hover:text-blue-500"
           >
             <span className="truncate">{trialLabel(trial)}</span>
             <ArrowUpRight className="h-3 w-3 shrink-0" />
@@ -280,7 +279,9 @@ export function TaskOverviewPanel({
 
   if (loadError || !review) {
     return (
-      <div className={cn("flex h-full items-center justify-center p-6", className)}>
+      <div
+        className={cn("flex h-full items-center justify-center p-6", className)}
+      >
         <div className="max-w-md text-center">
           <TriangleAlert className="mx-auto h-5 w-5 text-amber-500" />
           <p className="text-muted-foreground mt-2 text-sm">
@@ -321,7 +322,7 @@ export function TaskOverviewPanel({
           type="button"
           key={trialId}
           onClick={() => openTrial(trialId)}
-          className="border-border hover:border-blue-500 hover:text-blue-500 inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[9.5px]"
+          className="border-border inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[9.5px] hover:border-blue-500 hover:text-blue-500"
         >
           {trialById.has(trialId)
             ? trialLabel(trialById.get(trialId)!)
@@ -333,7 +334,7 @@ export function TaskOverviewPanel({
         <a
           key={experimentId}
           href={`/experiments/${experimentId}`}
-          className="text-muted-foreground hover:text-blue-500 font-mono text-[9.5px]"
+          className="text-muted-foreground font-mono text-[9.5px] hover:text-blue-500"
         >
           experiment {experimentId.slice(0, 8)}
         </a>
@@ -388,13 +389,15 @@ export function TaskOverviewPanel({
       <section>
         <div className="mb-2 flex items-center gap-2">
           <FlaskConical className="h-3.5 w-3.5" />
-          <h3 className="font-mono text-xs font-semibold uppercase">Baselines</h3>
+          <h3 className="font-mono text-xs font-semibold uppercase">
+            Baselines
+          </h3>
           <span
             className={cn(
               "rounded px-1.5 py-0.5 font-mono text-[9px] font-semibold uppercase",
               review.baselines.outcome === "valid"
                 ? "bg-emerald-500/10 text-emerald-600"
-                : "bg-amber-500/10 text-amber-600",
+                : "bg-amber-500/10 text-amber-600"
             )}
           >
             {review.baselines.outcome}
@@ -409,7 +412,9 @@ export function TaskOverviewPanel({
       <section>
         <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
           <div>
-            <h3 className="font-mono text-xs font-semibold uppercase">Findings</h3>
+            <h3 className="font-mono text-xs font-semibold uppercase">
+              Findings
+            </h3>
             <p className="text-muted-foreground mt-0.5 font-mono text-[10px]">
               {review.finding_counts.filtered_total} in scope ·{" "}
               {review.finding_counts.must_fix} must fix ·{" "}
@@ -470,9 +475,12 @@ export function TaskOverviewPanel({
 
       <section>
         <div className="mb-2">
-          <h3 className="font-mono text-xs font-semibold uppercase">Trial QA</h3>
+          <h3 className="font-mono text-xs font-semibold uppercase">
+            Trial QA
+          </h3>
           <p className="text-muted-foreground mt-0.5 font-mono text-[10px]">
-            {review.trial_counts.analyzed}/{review.trial_counts.eligible} analyzed
+            {review.trial_counts.analyzed}/{review.trial_counts.eligible}{" "}
+            analyzed
             {review.trial_counts.unanalyzed
               ? ` · ${review.trial_counts.unanalyzed} pending`
               : ""}
