@@ -72,7 +72,11 @@ from oddish.task_timeouts import (
     validate_task_timeout_config,
 )
 from oddish.text_normalize import normalize_typography, summarize_normalization
-from oddish.schemas import TaskReviewResponse
+from oddish.schemas import (
+    TaskReviewResponse,
+    TaskVersionManifestEntry,
+    TaskVersionManifestResponse,
+)
 
 console = Console()
 TASK_SWEEP_TIMEOUT_SECONDS = 600.0
@@ -373,6 +377,29 @@ def compute_task_content_hash(task_path: Path) -> str:
             hasher.update(file_path.read_bytes())
         hasher.update(b"\0")
     return hasher.hexdigest()
+
+
+def hash_local_task_files(task_path: Path) -> dict[str, TaskVersionManifestEntry]:
+    """Hash regular files exactly as task archive expansion records them.
+
+    This intentionally differs from :func:`compute_task_content_hash`: archive
+    evidence includes descriptive and ignored files even when they do not alter
+    Harbor's execution identity. Symlinks are not regular tar members and are
+    therefore excluded from both the stored expansion and this local view.
+    """
+    root = task_path.resolve()
+    entries: dict[str, TaskVersionManifestEntry] = {}
+    for file_path in sorted(root.rglob("*")):
+        if file_path.is_symlink() or not file_path.is_file():
+            continue
+        body = file_path.read_bytes()
+        relative_path = file_path.relative_to(root).as_posix()
+        entries[relative_path] = TaskVersionManifestEntry(
+            path=relative_path,
+            size=len(body),
+            sha256=hashlib.sha256(body).hexdigest(),
+        )
+    return entries
 
 
 _GIT_LFS_POINTER_PREFIX = b"version https://git-lfs.github.com/spec/v1\n"
@@ -1888,6 +1915,21 @@ def get_task_review(
         )
     response.raise_for_status()
     return TaskReviewResponse.model_validate(response.json())
+
+
+def get_task_version_manifest(
+    api_url: str,
+    task_id: str,
+    version: int,
+) -> TaskVersionManifestResponse:
+    """Fetch checksum metadata for one exact stored task version."""
+    with httpx.Client(timeout=30.0, headers=get_auth_headers(api_url)) as client:
+        response = client.get(
+            f"{api_url.rstrip('/')}/tasks/{quote(task_id, safe='')}/"
+            f"versions/{version}/manifest"
+        )
+    response.raise_for_status()
+    return TaskVersionManifestResponse.model_validate(response.json())
 
 
 # =============================================================================

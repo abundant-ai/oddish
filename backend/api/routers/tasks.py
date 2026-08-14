@@ -48,6 +48,7 @@ from oddish.core.endpoints import (
     get_task_review_core,
     get_task_for_org_core,
     get_task_status_core,
+    get_task_version_manifest_core,
     get_task_version_core,
     list_experiment_slim_tasks,
     list_experiment_task_shells_core,
@@ -145,6 +146,7 @@ from oddish.schemas import (
     TaskSweepBatchResponse,
     TaskSweepSubmission,
     TaskVersionResponse,
+    TaskVersionManifestResponse,
     TrialCollectionRequest,
     TrialCollectionResponse,
     UploadResponse,
@@ -1707,6 +1709,27 @@ async def list_task_versions(
     async with get_session() as session:
         return await list_task_versions_core(
             session, task_id=task_id, org_id=auth.org_id
+        )
+
+
+@router.get(
+    "/tasks/{task_id}/versions/{version}/manifest",
+    response_model=TaskVersionManifestResponse,
+)
+async def get_task_version_manifest(
+    task_id: str,
+    version: int,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> TaskVersionManifestResponse:
+    """Get public file checksums for one exact task version."""
+    auth.require_scope(APIKeyScope.READ)
+
+    async with get_session() as session:
+        return await get_task_version_manifest_core(
+            session,
+            task_id=task_id,
+            version=version,
+            org_id=auth.org_id,
         )
 
 

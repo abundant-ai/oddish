@@ -25,6 +25,12 @@ def test_task_review_route_mounted() -> None:
     assert "/tasks/{task_id}/review" in paths
 
 
+def test_task_version_manifest_route_mounted() -> None:
+    paths = [getattr(route, "path", None) for route in api.routes]
+
+    assert "/tasks/{task_id}/versions/{version}/manifest" in paths
+
+
 @pytest.mark.asyncio
 async def test_task_tree_forwards_inline_flag() -> None:
     session = SimpleNamespace(

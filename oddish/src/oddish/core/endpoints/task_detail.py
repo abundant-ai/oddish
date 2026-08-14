@@ -20,12 +20,23 @@ from oddish.core.tags.projection import (
     list_effective_user_tags_for_task_versions,
     recompute_task_browse_projection,
 )
-from oddish.db import ExperimentModel, TaskModel, TaskVersionModel, TrialStatus
+from oddish.db import (
+    ExperimentModel,
+    TaskModel,
+    TaskVersionModel,
+    TrialStatus,
+    WorkerJobKind,
+    WorkerJobModel,
+    WorkerJobStatus,
+    get_storage_client,
+)
+from oddish.db.storage import resolve_s3_key
 from oddish.schemas import (
     TaskBrowseExperiment,
     TaskCostTotals,
     TaskDetailResponse,
     TaskVersionResponse,
+    TaskVersionManifestResponse,
     TaskVersionSummary,
     UserTagRef,
 )
@@ -74,6 +85,67 @@ async def get_task_version_core(
             detail=f"Version {version} not found for task {task_id}",
         )
     return TaskVersionResponse.model_validate(version_row)
+
+
+async def get_task_version_manifest_core(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    version: int,
+    org_id: str | None = None,
+) -> TaskVersionManifestResponse:
+    """Return public file checksums for one authorized task version."""
+    task = await get_task_for_org_core(session, task_id=task_id, org_id=org_id)
+    version_row = await session.scalar(
+        select(TaskVersionModel).where(
+            TaskVersionModel.task_id == task.id,
+            TaskVersionModel.version == version,
+        )
+    )
+    if version_row is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Version {version} not found for task {task_id}",
+        )
+
+    expansion_pending = False
+    if version_row.expanded_manifest_key is None:
+        active_job_id = await session.scalar(
+            select(WorkerJobModel.id)
+            .where(
+                WorkerJobModel.kind == WorkerJobKind.TASK_EXPAND,
+                WorkerJobModel.subject_table == "task_versions",
+                WorkerJobModel.subject_id == version_row.id,
+                WorkerJobModel.status.in_(
+                    (
+                        WorkerJobStatus.QUEUED,
+                        WorkerJobStatus.RUNNING,
+                        WorkerJobStatus.RETRYING,
+                        WorkerJobStatus.BLOCKED,
+                    )
+                ),
+            )
+            .limit(1)
+        )
+        expansion_pending = active_job_id is not None
+
+    manifest = await get_storage_client().read_task_version_manifest(
+        task_id=task.id,
+        version=version_row.version,
+        manifest_key=version_row.expanded_manifest_key,
+        task_s3_prefix=resolve_s3_key(
+            version_row.task_s3_key,
+            version_row.task_path,
+        ),
+        expansion_pending=expansion_pending,
+    )
+    return TaskVersionManifestResponse(
+        task_id=task.id,
+        version_id=version_row.id,
+        version=version_row.version,
+        content_hash=version_row.content_hash,
+        **manifest,
+    )
 
 
 async def set_task_default_version_core(

@@ -534,6 +534,99 @@ class StorageClient:
             raise ValueError(f"Invalid task S3 prefix: {s3_prefix}")
         return f"{normalized_prefix}{cls._TASK_ARCHIVE_OBJECT_NAME}"
 
+    async def read_task_version_manifest(
+        self,
+        *,
+        task_id: str,
+        version: int,
+        manifest_key: str | None,
+        task_s3_prefix: str | None,
+        expansion_pending: bool,
+    ) -> dict[str, object]:
+        """Read one version's exact expansion manifest as public metadata.
+
+        The version row is the publication pointer. A missing pointer therefore
+        never probes the canonical prefix, which would risk exposing an old
+        manifest while an in-place overwrite is being expanded. Archive keys,
+        source object keys, etags, and any other storage internals are omitted.
+        """
+        missing_status = "pending" if expansion_pending else "unavailable"
+        expected_key = (
+            f"tasks/{task_id}/v{version}-files/{self._EXPANDED_MANIFEST_OBJECT_NAME}"
+        )
+        if manifest_key is None:
+            return {"status": missing_status, "files": []}
+        if manifest_key != expected_key:
+            return {"status": "unavailable", "files": []}
+
+        try:
+            manifest = await self.download_json(manifest_key)
+            if (
+                manifest.get("task_id") != task_id
+                or manifest.get("version") != version
+                or not isinstance(manifest.get("files"), list)
+            ):
+                return {"status": "unavailable", "files": []}
+            selected_prefix = normalize_s3_prefix(task_s3_prefix)
+            if selected_prefix is not None:
+                if manifest.get("source") == "loose_files":
+                    if manifest.get("source_prefix") != selected_prefix:
+                        return {"status": "unavailable", "files": []}
+                elif manifest.get("archive_key") != (
+                    f"{selected_prefix}{self._TASK_ARCHIVE_OBJECT_NAME}"
+                ):
+                    return {"status": "unavailable", "files": []}
+
+            files: list[dict[str, object]] = []
+            seen_paths: set[str] = set()
+            for raw in manifest["files"]:
+                if not isinstance(raw, dict):
+                    return {"status": "unavailable", "files": []}
+                path = raw.get("path")
+                size = raw.get("size")
+                if not isinstance(path, str) or not path:
+                    return {"status": "unavailable", "files": []}
+                normalized_path = normalize_s3_relative_path(path)
+                if normalized_path != path or path in seen_paths:
+                    return {"status": "unavailable", "files": []}
+                if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+                    return {"status": "unavailable", "files": []}
+
+                skipped = raw.get("skipped") is True
+                entry: dict[str, object] = {
+                    "path": path,
+                    "size": size,
+                    "sha256": None,
+                    "skipped": skipped,
+                    "skip_reason": None,
+                }
+                if skipped:
+                    reason = raw.get("skip_reason")
+                    if isinstance(reason, str):
+                        entry["skip_reason"] = reason
+                else:
+                    sha256 = raw.get("sha256")
+                    if (
+                        not isinstance(sha256, str)
+                        or len(sha256) != 64
+                        or any(ch not in "0123456789abcdef" for ch in sha256)
+                    ):
+                        return {"status": "unavailable", "files": []}
+                    entry["sha256"] = sha256
+                seen_paths.add(path)
+                files.append(entry)
+        except Exception:
+            logger.warning(
+                "Task version manifest unavailable: task_id=%s version=%s",
+                task_id,
+                version,
+                exc_info=True,
+            )
+            return {"status": missing_status, "files": []}
+
+        files.sort(key=lambda entry: str(entry["path"]))
+        return {"status": "ready", "files": files}
+
     async def _resolve_task_prefix(
         self,
         task_id: str,

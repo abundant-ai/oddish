@@ -1,4 +1,4 @@
-"""GET /tasks/{id}/files request-shape contract."""
+"""Task file and version-manifest request-shape contracts."""
 
 from __future__ import annotations
 
@@ -102,4 +102,48 @@ def test_selected_file_forwards_preview_limit(client):
         presign=False,
         version=3,
         max_bytes=102400,
+    )
+
+
+def test_version_manifest_uses_authenticated_org_scope(client):
+    session = object()
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield session
+
+    get_manifest = AsyncMock(
+        return_value={
+            "task_id": "task-1",
+            "version_id": "task-1-v3",
+            "version": 3,
+            "content_hash": "execution-hash",
+            "status": "ready",
+            "files": [
+                {
+                    "path": "instruction.md",
+                    "size": 12,
+                    "sha256": "a" * 64,
+                    "skipped": False,
+                    "skip_reason": None,
+                }
+            ],
+        }
+    )
+
+    with (
+        patch("api.routers.tasks.get_session", new=fake_get_session),
+        patch("api.routers.tasks.get_task_version_manifest_core", new=get_manifest),
+    ):
+        response = client.get(
+            "/tasks/task-1/versions/3/manifest?org_id=client-supplied-org"
+        )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready"
+    get_manifest.assert_awaited_once_with(
+        session,
+        task_id="task-1",
+        version=3,
+        org_id="org-1",
     )

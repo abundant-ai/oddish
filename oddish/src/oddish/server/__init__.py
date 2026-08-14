@@ -30,6 +30,7 @@ from oddish.core.endpoints import (
     get_task_open_core,
     get_task_review_core,
     get_task_status_core,
+    get_task_version_manifest_core,
     get_task_version_core,
     get_trial_analysis_log_core,
     get_trial_by_index_core,
@@ -114,6 +115,7 @@ from oddish.schemas import (
     TaskSweepBatchResponse,
     TaskSweepSubmission,
     TaskVersionResponse,
+    TaskVersionManifestResponse,
     TrialImportCompleteRequest,
     TrialImportCompleteResponse,
     TrialImportInitRequest,
@@ -626,6 +628,22 @@ async def list_task_versions(task_id: str):
     """List all versions of a task, newest first."""
     async with get_session() as session:
         return await list_task_versions_core(session, task_id=task_id)
+
+
+@api.get(
+    "/tasks/{task_id}/versions/{version}/manifest",
+    response_model=TaskVersionManifestResponse,
+)
+async def get_task_version_manifest(
+    task_id: str, version: int
+) -> TaskVersionManifestResponse:
+    """Get public file checksums for one exact task version."""
+    async with get_session() as session:
+        return await get_task_version_manifest_core(
+            session,
+            task_id=task_id,
+            version=version,
+        )
 
 
 @api.get("/tasks/{task_id}/versions/{version}", response_model=TaskVersionResponse)

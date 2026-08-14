@@ -879,6 +879,31 @@ class TaskVersionResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class TaskVersionManifestEntry(BaseModel):
+    """One regular file recorded by task archive expansion."""
+
+    path: str
+    size: int = Field(ge=0)
+    sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    skipped: bool = False
+    skip_reason: str | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class TaskVersionManifestResponse(BaseModel):
+    """Public checksum metadata for one exact task version."""
+
+    task_id: str
+    version_id: str
+    version: int = Field(ge=1)
+    content_hash: str | None = None
+    status: Literal["ready", "pending", "unavailable"]
+    files: list[TaskVersionManifestEntry] = Field(default_factory=list)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class TaskVersionRollup(BaseModel):
     """Aggregate fields shared by bounded and detailed version responses."""
 

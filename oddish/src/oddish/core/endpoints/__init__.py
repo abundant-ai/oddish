@@ -47,6 +47,7 @@ from oddish.core.endpoints.sweep import (
 from oddish.core.endpoints.task_detail import (
     _aggregate_task_detail_rollups,
     get_task_detail_core,
+    get_task_version_manifest_core,
     get_task_version_core,
     list_task_versions_core,
     set_task_default_version_core,
@@ -115,6 +116,7 @@ __all__ = [
     "get_task_for_org_core",
     "get_task_qa_costs",
     "get_task_status_core",
+    "get_task_version_manifest_core",
     "get_task_version_core",
     "get_trial_by_index_core",
     "get_trial_for_org_core",
