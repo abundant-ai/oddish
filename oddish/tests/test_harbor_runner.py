@@ -266,6 +266,49 @@ def test_opencode_google_model_folds_ai_sdk_credential(monkeypatch):
     assert replacements["gsdk-secret-789"] == "[REDACTED]"
 
 
+def test_gemini_ai_sdk_alias_mirrors_ambient_google_key(monkeypatch):
+    # opencode authenticates with GOOGLE_GENERATIVE_AI_API_KEY (the AI SDK
+    # name), but the platform publishes its Google key as GEMINI_API_KEY (what
+    # gemini-cli reads). Without the mirror the CLI finds no credential it
+    # recognises and exits before its first model call.
+    monkeypatch.delenv("GOOGLE_GENERATIVE_AI_API_KEY", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "gm-secret-123")
+    assert harbor_runner._gemini_ai_sdk_alias_env("google/gemini-3.7-flash") == {
+        "GOOGLE_GENERATIVE_AI_API_KEY": "gm-secret-123"
+    }
+
+
+def test_gemini_ai_sdk_alias_falls_back_to_google_api_key(monkeypatch):
+    monkeypatch.delenv("GOOGLE_GENERATIVE_AI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("GOOGLE_API_KEY", "goog-secret-456")
+    assert harbor_runner._gemini_ai_sdk_alias_env("google/gemini-3.7-flash") == {
+        "GOOGLE_GENERATIVE_AI_API_KEY": "goog-secret-456"
+    }
+
+
+def test_gemini_ai_sdk_alias_never_overwrites_an_explicit_value(monkeypatch):
+    # A deployment that configures the AI SDK name directly stays authoritative.
+    monkeypatch.setenv("GOOGLE_GENERATIVE_AI_API_KEY", "explicit-789")
+    monkeypatch.setenv("GEMINI_API_KEY", "gm-secret-123")
+    assert harbor_runner._gemini_ai_sdk_alias_env("google/gemini-3.7-flash") == {}
+
+
+def test_gemini_ai_sdk_alias_skips_non_google_providers(monkeypatch):
+    # Least privilege: an OpenAI or Anthropic trial must not carry a Google key.
+    monkeypatch.delenv("GOOGLE_GENERATIVE_AI_API_KEY", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "gm-secret-123")
+    assert harbor_runner._gemini_ai_sdk_alias_env("openai/gpt-5") == {}
+    assert harbor_runner._gemini_ai_sdk_alias_env("anthropic/claude-sonnet-4-5") == {}
+    assert harbor_runner._gemini_ai_sdk_alias_env(None) == {}
+
+
+def test_gemini_ai_sdk_alias_noop_without_any_google_key(monkeypatch):
+    for var in ("GOOGLE_GENERATIVE_AI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    assert harbor_runner._gemini_ai_sdk_alias_env("google/gemini-3.7-flash") == {}
+
+
 def test_claude_code_ambient_credentials_enter_redaction_map(monkeypatch):
     # Ambient claude-code platform credentials (used when job-scoped injection is
     # off) must fold into the trial transport env so their raw values are redacted
