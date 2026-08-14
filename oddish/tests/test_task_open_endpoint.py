@@ -81,6 +81,8 @@ def _identity(
         "verdict_status": "failed",
         "verdict": verdict,
         "verdict_error": "judge timed out",
+        "published_qa_run_id": "qa-run-v2",
+        "verdict_version_id": "task-1-v2",
         "current_version_id": "task-1-v2",
         "created_at": NOW,
         "updated_at": NOW,
@@ -251,6 +253,8 @@ def test_task_open_is_org_scoped_exact_compact_and_bounded():
     assert response.task.verdict.is_good is False
     assert response.task.verdict.primary_issue == "Verifier accepts an empty result"
     assert response.task.verdict_error == "judge timed out"
+    assert response.task.published_qa_run_id == "qa-run-v2"
+    assert response.task.verdict_version_id == "task-1-v2"
 
     selected = response.selected_version
     assert selected is not None

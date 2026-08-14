@@ -1,6 +1,6 @@
 import { cn } from "@/lib/utils";
 import { AnalysisProse } from "@/components/analysis-prose";
-import type { PreTrialFinding } from "@/lib/types";
+import type { ActionItemFinding } from "@/lib/types";
 import { FALLBACK_TOKEN, VERDICT_TOKENS } from "./tokens";
 import { CopyJsonButton } from "./copy-json-button";
 import { FeedbackControl } from "./feedback-control";
@@ -30,7 +30,7 @@ export function QaAssessmentReport({
   rootCause?: string | null;
   recommendation?: string | null;
   evidence?: string | null;
-  actionItems?: PreTrialFinding[] | null;
+  actionItems?: ActionItemFinding[] | null;
   /** the analyzer's run log, shown as a fold under Evidence */
   log?: string | null;
   /** terminal logs stay idle until the fold is opened */

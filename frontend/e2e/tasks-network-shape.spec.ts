@@ -152,6 +152,84 @@ function readerOpenResponse() {
   };
 }
 
+function readerReviewResponse(active = false) {
+  const run = {
+    id: active ? "qa-active" : "qa-published",
+    disposition: active ? null : "published",
+    task_version_id: "version-2",
+    worker_job_id: active ? "job-active" : "job-published",
+    input_trial_count: 0,
+    input_set_sha256: "b".repeat(64),
+    input_analysis_changed_count: 0,
+    pre_trial_block_id: null,
+    verdict_block_id: null,
+    started_at: null,
+    finished_at: active ? null : "2026-08-11T12:00:00Z",
+  };
+  return {
+    schema_version: 1,
+    task: {
+      id: READER_TASK_ID,
+      name: readerBrowseItem.name,
+      version: 2,
+      version_id: "version-2",
+      content_hash: "review-source",
+    },
+    scope: {
+      experiment_id: null,
+      tiers: ["must_fix", "should_fix", "optional"],
+      same_version_across_experiments: true,
+    },
+    qa: {
+      status: active ? "queued" : "success",
+      result_run: active ? null : run,
+      active_run: active ? run : null,
+      is_task_published_run: !active,
+      legacy_unscoped_verdict_available: false,
+      input_analysis_changed_after_run: false,
+    },
+    baselines: {
+      outcome: "faulty",
+      nop: {
+        expected_reward: 0,
+        valid: false,
+        trial_count: 0,
+        unexpected_count: 0,
+      },
+      oracle: {
+        expected_reward: 1,
+        valid: false,
+        trial_count: 0,
+        unexpected_count: 0,
+      },
+    },
+    verdict: null,
+    finding_counts: {
+      unfiltered_total: 21,
+      filtered_total: 21,
+      must_fix: 0,
+      should_fix: 0,
+      optional: 21,
+    },
+    findings: [],
+    findings_page: { has_more: true, next_cursor: "finding-next" },
+    trial_counts: {
+      eligible: 21,
+      analyzed: 0,
+      unanalyzed: 21,
+      classifications: {
+        GOOD_FAILURE: 0,
+        BAD_FAILURE: 0,
+        GOOD_SUCCESS: 0,
+        BAD_SUCCESS: 0,
+        HARNESS_ERROR: 0,
+      },
+    },
+    trials: [],
+    trials_page: { has_more: true, next_cursor: "trial-next" },
+  };
+}
+
 test.describe("tasks page network shape", () => {
   test.skip(
     !hasClerkEnv,
@@ -358,5 +436,110 @@ test.describe("tasks page network shape", () => {
     ).toBeVisible();
     await page.getByRole("button", { name: "View task files" }).click();
     await expect.poll(() => detailCount).toBe(1);
+  });
+
+  test("task overview owns one bounded review resource with explicit independent cursor reads", async ({
+    page,
+  }) => {
+    test.setTimeout(45_000);
+    await setupClerkTestingToken({ page });
+    await page.goto("/");
+    await clerk.signIn({ page, emailAddress: CLERK_EMAIL! });
+
+    let active = false;
+    const reviewUrls: URL[] = [];
+    const taskTrialUrls: URL[] = [];
+    const responseBytes = Buffer.byteLength(
+      JSON.stringify(readerReviewResponse()),
+    );
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.pathname === `/api/tasks/${READER_TASK_ID}/trials`) {
+        taskTrialUrls.push(url);
+      }
+    });
+    await page.route(
+      new RegExp(`/api/tasks/${READER_TASK_ID}/open(?:\\?|$)`),
+      (route) => route.fulfill({ json: readerOpenResponse() }),
+    );
+    await page.route(
+      new RegExp(`/api/tasks/${READER_TASK_ID}/detail(?:\\?|$)`),
+      (route) =>
+        route.fulfill({
+          json: {
+            task: {
+              ...readerOpenResponse().task,
+              experiment_id: "",
+              experiment_name: "",
+              experiment_is_public: false,
+              total: 25,
+              completed: 25,
+              failed: 0,
+              trials: [],
+            },
+            versions: [readerOpenResponse().selected_version],
+            totals: readerOpenResponse().totals,
+          },
+        }),
+    );
+    await page.route(
+      new RegExp(`/api/tasks/${READER_TASK_ID}/files(?:\\?|$)`),
+      (route) => route.fulfill({ json: { files: [] } }),
+    );
+    await page.route(
+      new RegExp(`/api/tasks/${READER_TASK_ID}/review(?:\\?|$)`),
+      (route) => {
+        const url = new URL(route.request().url());
+        reviewUrls.push(url);
+        route.fulfill({ json: readerReviewResponse(active) });
+      },
+    );
+
+    await page.goto(`/tasks/${READER_TASK_ID}?drawer=task`);
+    await expect(
+      page.getByRole("heading", { name: "Task QA review" }),
+    ).toBeVisible();
+    const initialReads = () =>
+      reviewUrls.filter(
+        (url) =>
+          !url.searchParams.has("finding_cursor") &&
+          !url.searchParams.has("trial_cursor"),
+      );
+    await expect.poll(() => initialReads().length).toBe(1);
+    expect(initialReads()[0].searchParams.get("finding_limit")).toBe("20");
+    expect(initialReads()[0].searchParams.get("trial_limit")).toBe("20");
+    expect(responseBytes).toBeLessThan(50_000);
+    expect(taskTrialUrls).toEqual([]);
+
+    await page.waitForTimeout(5_500);
+    expect(initialReads()).toHaveLength(1);
+    await page.getByRole("button", { name: "Show more findings" }).click();
+    await expect
+      .poll(
+        () =>
+          reviewUrls.filter((url) =>
+            url.searchParams.has("finding_cursor"),
+          ).length,
+      )
+      .toBe(1);
+    await page.getByRole("button", { name: "Show more trials" }).click();
+    await expect
+      .poll(
+        () =>
+          reviewUrls.filter((url) => url.searchParams.has("trial_cursor"))
+            .length,
+      )
+      .toBe(1);
+
+    active = true;
+    await page.reload();
+    await expect(
+      page.getByRole("heading", { name: "Task QA review" }),
+    ).toBeVisible();
+    const activeStart = initialReads().length;
+    await expect
+      .poll(() => initialReads().length, { timeout: 7_000 })
+      .toBeGreaterThan(activeStart);
+    expect(taskTrialUrls).toEqual([]);
   });
 });

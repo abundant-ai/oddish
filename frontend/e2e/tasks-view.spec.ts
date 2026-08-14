@@ -215,6 +215,251 @@ function detailResponse(versionId = DEFAULT_VERSION_ID) {
   };
 }
 
+function reviewResponse({
+  active = false,
+  findingCursor = false,
+  trialCursor = false,
+}: {
+  active?: boolean;
+  findingCursor?: boolean;
+  trialCursor?: boolean;
+} = {}) {
+  const run = {
+    id: active ? "qa-run-active" : "qa-run-published",
+    disposition: active ? null : "published",
+    task_version_id: DEFAULT_VERSION_ID,
+    worker_job_id: active ? "qa-job-active" : "qa-job-published",
+    input_trial_count: 2,
+    input_set_sha256: "a".repeat(64),
+    input_analysis_changed_count: active ? 0 : 1,
+    pre_trial_block_id: "pre-trial-block",
+    verdict_block_id: active ? null : "verdict-block",
+    started_at: "2026-08-11T12:00:00Z",
+    finished_at: active ? null : "2026-08-11T12:02:00Z",
+  };
+  const findings = findingCursor
+    ? [
+        {
+          id: "finding-extra",
+          source: "post_trial",
+          problem_type: "incompleteness",
+          dimension: "verifier",
+          file: "verifier/tests.py",
+          line_start: 99,
+          line_end: 99,
+          title: "Extra paginated finding",
+          detail: "This finding came from the next cursor page.",
+          recommendation: "Add the missing assertion.",
+          tier: "optional",
+          links_to: null,
+          exploited: false,
+          exploit_evidence: null,
+          causal: false,
+          from_pre_trial: false,
+          trial_ids: ["review-trial-good-failure"],
+          experiment_ids: ["experiment-review"],
+        },
+      ]
+    : trialCursor
+      ? []
+      : [
+          {
+            id: "finding-optional",
+            source: "pre_trial",
+            problem_type: "incompleteness",
+            dimension: "info_leakage",
+            file: "instruction.md",
+            line_start: 8,
+            line_end: 8,
+            title: "Optional clarification",
+            detail: "The wording could be clearer.",
+            recommendation: "Clarify the sentence.",
+            tier: "optional",
+            links_to: null,
+            exploited: false,
+            exploit_evidence: null,
+            causal: false,
+            from_pre_trial: true,
+            trial_ids: [],
+            experiment_ids: ["experiment-review"],
+          },
+          {
+            id: "finding-must-fix",
+            source: "post_trial",
+            problem_type: "mismatch",
+            dimension: "verifier",
+            file: "verifier/tests.py",
+            line_start: 12,
+            line_end: 14,
+            title: "Verifier rejects the requested behavior",
+            detail: "The verifier checks the opposite outcome.",
+            recommendation: "Align the verifier with instruction.md.",
+            tier: "must_fix",
+            links_to: null,
+            exploited: true,
+            exploit_evidence: "Trial step 4 follows the written requirement.",
+            causal: true,
+            from_pre_trial: false,
+            trial_ids: ["review-trial-good-failure"],
+            experiment_ids: ["experiment-review"],
+          },
+          {
+            id: "finding-should-fix",
+            source: "pre_trial",
+            problem_type: "incompleteness",
+            dimension: "oracle",
+            file: "solution/solve.py",
+            line_start: 3,
+            line_end: 3,
+            title: "Oracle omits an edge case",
+            detail: "The reference path never exercises empty input.",
+            recommendation: "Cover empty input in the oracle.",
+            tier: "should_fix",
+            links_to: null,
+            exploited: false,
+            exploit_evidence: null,
+            causal: false,
+            from_pre_trial: true,
+            trial_ids: [],
+            experiment_ids: ["experiment-review"],
+          },
+        ];
+  const trials = trialCursor
+    ? [
+        {
+          id: "review-trial-extra",
+          role: "model",
+          experiment_id: "experiment-review",
+          agent: "codex",
+          model: "gpt-next",
+          config_fingerprint: "config-extra",
+          environment: "docker",
+          harbor_sha: "harbor-extra",
+          status: "success",
+          reward: 1,
+          cost_usd: 0.02,
+          duration_seconds: 9,
+          included_in_result_run: false,
+          result_run_analysis_fingerprint: null,
+          analysis_matches_result_run: null,
+          analysis_status: null,
+          analysis: null,
+        },
+      ]
+    : findingCursor
+      ? []
+      : [
+          {
+            id: "review-trial-good-failure",
+            role: "model",
+            experiment_id: "experiment-review",
+            agent: "codex",
+            model: "gpt-current",
+            config_fingerprint: "config-main",
+            environment: "docker",
+            harbor_sha: "harbor-main",
+            status: "success",
+            reward: 0,
+            cost_usd: 0.12,
+            duration_seconds: 61,
+            included_in_result_run: true,
+            result_run_analysis_fingerprint: "analysis-old",
+            analysis_matches_result_run: false,
+            analysis_status: "success",
+            analysis: {
+              classification: "GOOD_FAILURE",
+              subtype: "Implementation Bugs",
+              evidence: "The agent failed without exposing a task defect.",
+              root_cause: "The implementation was incomplete.",
+              recommendation: "N/A",
+              action_items: [],
+              exploitation: [],
+            },
+          },
+        ];
+  return {
+    schema_version: 1,
+    task: {
+      id: READER_TASK_ID,
+      name: "Bounded task reader",
+      version: 2,
+      version_id: DEFAULT_VERSION_ID,
+      content_hash: "content-review",
+    },
+    scope: {
+      experiment_id: "experiment-review",
+      tiers: ["must_fix", "should_fix", "optional"],
+      same_version_across_experiments: false,
+    },
+    qa: {
+      status: active ? "queued" : "success",
+      result_run: active ? null : run,
+      active_run: active ? run : null,
+      is_task_published_run: !active,
+      legacy_unscoped_verdict_available: !active,
+      input_analysis_changed_after_run: !active,
+    },
+    baselines: {
+      outcome: "valid",
+      nop: {
+        expected_reward: 0,
+        valid: true,
+        trial_count: 1,
+        unexpected_count: 0,
+      },
+      oracle: {
+        expected_reward: 1,
+        valid: true,
+        trial_count: 1,
+        unexpected_count: 0,
+      },
+    },
+    verdict: active
+      ? null
+      : {
+          verdict: "accept",
+          is_good: true,
+          confidence: "high",
+          primary_issue: null,
+          reasoning: "The task behaves as specified.",
+          recommendations: [],
+          task_problem_count: 0,
+          agent_problem_count: 1,
+          success_count: 0,
+          harness_error_count: 0,
+        },
+    finding_counts: {
+      unfiltered_total: 4,
+      filtered_total: 4,
+      must_fix: 1,
+      should_fix: 1,
+      optional: 2,
+    },
+    findings,
+    findings_page: {
+      has_more: !findingCursor && !trialCursor,
+      next_cursor: !findingCursor && !trialCursor ? "finding-next" : null,
+    },
+    trial_counts: {
+      eligible: 2,
+      analyzed: 1,
+      unanalyzed: 1,
+      classifications: {
+        GOOD_FAILURE: 1,
+        BAD_FAILURE: 0,
+        GOOD_SUCCESS: 0,
+        BAD_SUCCESS: 0,
+        HARNESS_ERROR: 0,
+      },
+    },
+    trials,
+    trials_page: {
+      has_more: !findingCursor && !trialCursor,
+      next_cursor: !findingCursor && !trialCursor ? "trial-next" : null,
+    },
+  };
+}
+
 function capabilitiesResponse() {
   return {
     schema_version: 4,
@@ -403,6 +648,134 @@ test.describe("authenticated task view", () => {
     await expect(
       page.getByRole("heading", { name: "Capabilities" })
     ).toBeVisible();
+  });
+
+  test("task review is bounded, cursor-paginated, provenance-aware, and polls only while active", async ({
+    page,
+  }) => {
+    test.setTimeout(45_000);
+    await signIn(page);
+    let active = false;
+    const reviewUrls: URL[] = [];
+    const trialCollectionUrls: string[] = [];
+    const initialReview = reviewResponse();
+    expect(Buffer.byteLength(JSON.stringify(initialReview))).toBeLessThan(
+      50_000,
+    );
+
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.pathname === `/api/tasks/${READER_TASK_ID}/trials`) {
+        trialCollectionUrls.push(request.url());
+      }
+    });
+    await page.route(
+      new RegExp(`/api/tasks/${READER_TASK_ID}/open(?:\\?|$)`),
+      (route) => route.fulfill({ json: openResponse() }),
+    );
+    await page.route(
+      new RegExp(`/api/tasks/${READER_TASK_ID}/detail(?:\\?|$)`),
+      (route) => route.fulfill({ json: detailResponse() }),
+    );
+    await page.route(
+      new RegExp(`/api/tasks/${READER_TASK_ID}/files(?:\\?|$)`),
+      (route) => route.fulfill({ json: { files: [] } }),
+    );
+    await page.route(
+      new RegExp(`/api/tasks/${READER_TASK_ID}/review(?:\\?|$)`),
+      (route) => {
+        const url = new URL(route.request().url());
+        reviewUrls.push(url);
+        route.fulfill({
+          json: reviewResponse({
+            active,
+            findingCursor: url.searchParams.has("finding_cursor"),
+            trialCursor: url.searchParams.has("trial_cursor"),
+          }),
+        });
+      },
+    );
+
+    await page.goto(`/tasks/${READER_TASK_ID}?drawer=task`);
+    await expect(
+      page.getByRole("heading", { name: "Task QA review" }),
+    ).toBeVisible();
+    await expect(page.getByText("Experiment experiment-review")).toBeVisible();
+    await expect(
+      page.getByText(
+        "A legacy unscoped verdict exists. This view shows only version-owned QA evidence.",
+      ),
+    ).toBeVisible();
+    await expect(
+      page.getByText(
+        "Trial analysis changed after the published QA run. Rerun QA before relying on this verdict.",
+      ),
+    ).toBeVisible();
+    await expect(page.getByText("Fail · 0", { exact: true })).toBeVisible();
+    await expect(page.getByText("Good failure", { exact: true })).toBeVisible();
+
+    const tierOrder = (await page.locator("details > summary").allTextContents())
+      .filter((text) => /MUST FIX|SHOULD FIX|OPTIONAL/.test(text))
+      .map((text) => text.match(/MUST FIX|SHOULD FIX|OPTIONAL/)?.[0]);
+    expect(tierOrder).toEqual(["MUST FIX", "SHOULD FIX", "OPTIONAL"]);
+    await page.locator("summary").filter({ hasText: "MUST FIX" }).click();
+    await expect(
+      page.getByText("The verifier checks the opposite outcome."),
+    ).toBeVisible();
+    await expect(
+      page.getByText("Align the verifier with instruction.md."),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: /codex · gpt-current/ }),
+    ).toBeVisible();
+    await expect(
+      page.locator('a[href="/experiments/experiment-review"]'),
+    ).toHaveAttribute("href", "/experiments/experiment-review");
+
+    const initialRequests = () =>
+      reviewUrls.filter(
+        (url) =>
+          !url.searchParams.has("finding_cursor") &&
+          !url.searchParams.has("trial_cursor"),
+      );
+    await expect.poll(() => initialRequests().length).toBe(1);
+    const first = initialRequests()[0];
+    expect(first.searchParams.get("finding_limit")).toBe("20");
+    expect(first.searchParams.get("trial_limit")).toBe("20");
+    await page.waitForTimeout(5_500);
+    expect(initialRequests()).toHaveLength(1);
+    expect(trialCollectionUrls).toEqual([]);
+
+    await page.getByRole("button", { name: "Show more findings" }).click();
+    await expect
+      .poll(
+        () =>
+          reviewUrls.filter((url) =>
+            url.searchParams.has("finding_cursor"),
+          ).length,
+      )
+      .toBe(1);
+    await expect(page.getByText("Extra paginated finding")).toBeAttached();
+    await page.getByRole("button", { name: "Show more trials" }).click();
+    await expect
+      .poll(
+        () =>
+          reviewUrls.filter((url) => url.searchParams.has("trial_cursor"))
+            .length,
+      )
+      .toBe(1);
+    await expect(page.getByText("codex · gpt-next")).toBeVisible();
+
+    active = true;
+    await page.reload();
+    await expect(
+      page.getByRole("heading", { name: "Task QA review" }),
+    ).toBeVisible();
+    const activeStart = initialRequests().length;
+    await expect
+      .poll(() => initialRequests().length, { timeout: 7_000 })
+      .toBeGreaterThan(activeStart);
+    expect(trialCollectionUrls).toEqual([]);
   });
 
   test("binary preview waits for its own presigned URL", async ({ page }) => {

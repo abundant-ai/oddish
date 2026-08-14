@@ -357,10 +357,13 @@ test.describe("critical task and trial subtree", () => {
       }
     );
     await page.route(
-      new RegExp(`/api/tasks/${TASK_ID}/trials(?:\\?|$)`),
+      new RegExp(`/api/tasks/${TASK_ID}/review(?:\\?|$)`),
       async (route) => {
-        await route.fulfill({ json: [trial, probeTrial] });
-      }
+        await route.fulfill({
+          status: 503,
+          json: { error: "review intentionally unavailable" },
+        });
+      },
     );
     await page.route(
       new RegExp(`/api/trials/${TRIAL_ID}/analysis-log(?:\\?|$)`),

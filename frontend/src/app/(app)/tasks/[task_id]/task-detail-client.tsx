@@ -695,11 +695,14 @@ export function TaskDetailClient({
   const [drawer, setDrawer] = useState<DrawerState | null>(null);
   const [drawerShowTask, setDrawerShowTask] = useState(true);
   const [drawerShowTrial, setDrawerShowTrial] = useState(true);
-  const { data: drawerDetailResource, isLoading: isDrawerDetailLoading } =
-    useSWR<TaskDetailResource>(drawer ? detailKey : null, fetcher, {
+  const { data: drawerDetailResource } = useSWR<TaskDetailResource>(
+    drawer ? detailKey : null,
+    fetcher,
+    {
       revalidateOnFocus: false,
       revalidateOnMount: true,
-    });
+    },
+  );
   const canonicalDrawerDetailResource =
     drawerDetailResource && !isBrowseTaskDetail(drawerDetailResource)
       ? drawerDetailResource
@@ -777,17 +780,16 @@ export function TaskDetailClient({
     setDrawer({ mode: "trial", fallbackTrial: trial });
   }, []);
 
-  // A trial link from the task overview's aggregated QA. Always opens in
-  // this page's drawer: the overview hands over the full trial row, so a
-  // trial the current version list doesn't carry still renders in place
-  // instead of routing away. Render derives a canonical match when the
-  // current version list carries the same id.
+  // Open a review trial only when this page already owns its canonical row.
+  // Otherwise the overview uses its version-pinned task deep link.
   const handleOpenTrialFromOverview = useCallback(
-    (trial: Trial): boolean => {
+    (trialId: string): boolean => {
+      const trial = drawerOrderedTrials.find((item) => item.id === trialId);
+      if (!trial) return false;
       handleSelectTrial(trial);
       return true;
     },
-    [handleSelectTrial]
+    [drawerOrderedTrials, handleSelectTrial]
   );
 
   const handleOpenTaskFiles = useCallback(() => {
@@ -1336,7 +1338,14 @@ export function TaskDetailClient({
 
         {!isBrowseSnapshot ? (
           <TaskVerdictBadge
-            task={task}
+            verdictStatus={task.verdict_status}
+            verdict={task.verdict}
+            verdictError={task.verdict_error}
+            runAnalysis={task.run_analysis}
+            qaInFlight={task.status === "analyzing"}
+            selectedVersionId={selectedVersionId}
+            verdictVersionId={task.verdict_version_id}
+            publishedQaRunId={task.published_qa_run_id}
             variant="inline"
             onRunJudge={handleRunJudge}
             onCancelJudge={handleCancelJudge}
@@ -1396,13 +1405,9 @@ export function TaskDetailClient({
                 // no header, so none of the task-driven header UI appears.
                 task={drawerTask ?? task}
                 staticChecksTaskId={task.id}
-                taskDetail={canonicalDrawerDetailResource}
                 onOpenTrial={handleOpenTrialFromOverview}
                 filesUrl={`/api/tasks/${task.id}/files`}
                 loadFilesLazily
-                overviewTrialsLoading={
-                  isDrawerDetailLoading || canonicalDrawerDetail == null
-                }
                 taskVersion={selectedVersion?.version}
                 initialFilePath={taskPaneFile}
                 selectedLines={taskPaneLines}
@@ -1420,11 +1425,7 @@ export function TaskDetailClient({
                 onActivePaneChange={selectTaskPane}
                 taskId={task.id}
                 task={drawerTask ?? task}
-                taskDetail={canonicalDrawerDetailResource}
                 loadFilesLazily
-                overviewTrialsLoading={
-                  isDrawerDetailLoading || canonicalDrawerDetail == null
-                }
                 taskVersion={selectedVersion?.version}
                 onOpenTrial={handleOpenTrialFromOverview}
                 initialFilePath={taskPaneFile}

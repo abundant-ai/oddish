@@ -119,6 +119,8 @@ async def get_task_open_core(
             verdict_status=identity["verdict_status"],
             verdict=compact_verdict(identity["verdict"]),
             verdict_error=bounded_text(identity["verdict_error"]),
+            published_qa_run_id=identity["published_qa_run_id"],
+            verdict_version_id=identity["verdict_version_id"],
             created_at=identity["created_at"],
             updated_at=identity["updated_at"],
         ),

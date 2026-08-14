@@ -11,8 +11,11 @@ import type { ReactNode } from "react";
 import { AnalysisProse } from "@/components/analysis-prose";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { isActivePipelineStatus } from "@/lib/job-status";
-import type { Task } from "@/lib/types";
+import type {
+  JobStatus,
+  TaskReviewVerdict,
+  TaskVerdict,
+} from "@/lib/types";
 
 type VerdictPresentation = {
   pending: boolean;
@@ -26,26 +29,20 @@ type VerdictPresentation = {
 };
 
 function presentVerdict(
-  task: Task,
+  status: JobStatus | null | undefined,
+  verdict: TaskVerdict | TaskReviewVerdict | null | undefined,
+  verdictError: string | null | undefined,
+  qaInFlight: boolean,
   iconSizeClass: string,
 ): VerdictPresentation {
-  const status = task.verdict_status;
-  const verdict = task.verdict ?? null;
   const verdictPending =
-    status === "running" || status === "pending" || status === "queued";
+    status === "running" ||
+    status === "pending" ||
+    status === "queued" ||
+    status === "retrying";
   const failed = status === "failed";
   const isGood = verdict?.is_good ?? null;
-  // The single task-level QA job classifies every trial and then synthesizes
-  // the verdict, so any in-flight classification is also "QA running".
-  const analysesInFlight =
-    !verdictPending &&
-    !failed &&
-    isGood == null &&
-    (task.status === "analyzing" ||
-      (task.trials ?? []).some((t) =>
-        isActivePipelineStatus(t.analysis_status),
-      ));
-  const pending = verdictPending || analysesInFlight;
+  const pending = verdictPending || (!failed && qaInFlight);
 
   let icon: ReactNode;
   let title: string;
@@ -91,8 +88,8 @@ function presentVerdict(
   // While a replacement QA run is pending, the kept payload belongs to the
   // previous verdict -- show only the in-progress state.
   let detail: string | null = null;
-  if (failed && task.verdict_error) {
-    detail = task.verdict_error;
+  if (failed && verdictError) {
+    detail = verdictError;
   } else if (!pending && isGood === true) {
     detail = verdict?.reasoning?.trim() || null;
   } else if (!pending && isGood === false) {
@@ -103,7 +100,14 @@ function presentVerdict(
 }
 
 export function TaskVerdictBadge({
-  task,
+  verdictStatus,
+  verdict,
+  verdictError,
+  runAnalysis = false,
+  qaInFlight = false,
+  selectedVersionId,
+  verdictVersionId,
+  publishedQaRunId,
   variant,
   onRunJudge,
   onCancelJudge,
@@ -111,7 +115,14 @@ export function TaskVerdictBadge({
   isCancelling,
   error,
 }: {
-  task: Task;
+  verdictStatus?: JobStatus | null;
+  verdict?: TaskVerdict | TaskReviewVerdict | null;
+  verdictError?: string | null;
+  runAnalysis?: boolean;
+  qaInFlight?: boolean;
+  selectedVersionId?: string | null;
+  verdictVersionId?: string | null;
+  publishedQaRunId?: string | null;
   variant: "card" | "inline";
   onRunJudge?: () => void;
   onCancelJudge?: () => void;
@@ -120,18 +131,29 @@ export function TaskVerdictBadge({
   error?: string | null;
 }) {
   const hasAny =
-    Boolean(task.run_analysis) ||
-    Boolean(task.verdict_status) ||
-    Boolean(task.verdict);
+    runAnalysis || Boolean(verdictStatus) || Boolean(verdict) || qaInFlight;
   if (!hasAny && !onRunJudge) return null;
 
   const iconSize = variant === "card" ? "h-5 w-5 mt-0.5" : "h-4 w-4";
-  const p = presentVerdict(task, iconSize);
-  const verdict = task.verdict ?? null;
+  const p = presentVerdict(
+    verdictStatus,
+    verdict,
+    verdictError,
+    qaInFlight,
+    iconSize,
+  );
+  const previousVersion = Boolean(
+    !p.pending &&
+      verdict &&
+      selectedVersionId &&
+      verdictVersionId &&
+      selectedVersionId !== verdictVersionId,
+  );
+  const title = previousVersion ? `Previous-version QA · ${p.title}` : p.title;
   const showRunButton = onRunJudge != null && !p.pending && !isRunning;
   const showCancelButton = onCancelJudge != null && p.pending;
   const runLabel =
-    task.verdict_status || task.verdict ? "Rerun verdict" : "Run QA";
+    verdictStatus || verdict ? "Rerun verdict" : "Run QA";
 
   if (variant === "inline") {
     return (
@@ -146,7 +168,7 @@ export function TaskVerdictBadge({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-baseline gap-x-2">
             <span className="font-mono text-[12px] font-semibold text-[color:var(--paper-ink)]">
-              {isRunning ? "Queuing QA..." : p.title}
+              {isRunning ? "Queuing QA..." : title}
             </span>
             {!p.pending && verdict?.confidence ? (
               <span className="font-mono text-[10.5px] text-[color:var(--paper-ink-3)]">
@@ -218,7 +240,10 @@ export function TaskVerdictBadge({
   }
 
   return (
-    <Card className={p.toneCard}>
+      <Card
+        className={p.toneCard}
+        title={publishedQaRunId ? `QA run ${publishedQaRunId}` : undefined}
+      >
       <CardHeader className="px-4 pt-2 pb-1">
         <CardTitle className="text-muted-foreground flex items-center gap-1.5 text-[11px] font-semibold tracking-wider uppercase">
           <Microscope className="h-3 w-3" />
@@ -230,7 +255,7 @@ export function TaskVerdictBadge({
           {p.icon}
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <span className="font-mono text-sm font-bold">{p.title}</span>
+              <span className="font-mono text-sm font-bold">{title}</span>
               {!p.pending && verdict?.confidence ? (
                 <span className="text-muted-foreground text-xs">
                   · {verdict.confidence} confidence

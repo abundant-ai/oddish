@@ -1667,6 +1667,8 @@ class TaskOpenTask(BaseModel):
     verdict_status: VerdictStatus | None = None
     verdict: TaskOpenVerdict | None = None
     verdict_error: str | None = None
+    published_qa_run_id: str | None = None
+    verdict_version_id: str | None = None
     created_at: datetime
     updated_at: datetime
 

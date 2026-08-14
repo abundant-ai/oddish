@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import useSWR from "swr";
+import useSWRInfinite from "swr/infinite";
 import {
   ResizableDrawer,
   DrawerHeader,
@@ -38,16 +39,9 @@ import {
 } from "@/components/renderers/file-renderer";
 import type {
   Task,
-  TaskDetailResponse,
-  TaskVersionSummary,
+  TaskReviewResponse,
   Trial,
 } from "@/lib/types";
-import {
-  isBrowseTaskDetail,
-  taskDetailKey,
-  taskDetailValue,
-  type TaskDetailResource,
-} from "@/lib/task-detail-resource";
 import { TaskOverviewPanel } from "@/components/task-overview-panel";
 import { AgentCapabilitiesSection } from "@/components/agent-capabilities-section";
 import {
@@ -172,20 +166,12 @@ interface TaskFilesPanelProps {
    * "Task definition" pane). Falls back to `taskId` when not set.
    */
   staticChecksTaskId?: string | null;
-  /** Detail already owned by the host page; avoids re-fetching the same key. */
-  taskDetail?: TaskDetailResource | null;
   /**
    * Open a trial from the overview's aggregated QA in the caller's own
    * context (drawer / panel). Return false when the trial isn't addressable
    * there; the overview then falls back to the task page deep link.
    */
-  onOpenTrial?: (trial: Trial) => boolean;
-  /**
-   * The host is still streaming `task.trials` (progressive experiment
-   * loading) — the overview renders an empty scope as loading, not as
-   * "no trials".
-   */
-  overviewTrialsLoading?: boolean;
+  onOpenTrial?: (trialId: string) => boolean;
   /**
    * Line range to highlight in the selected file — the ``?lines=L12-L20``
    * deep-link anchor. Honored by line-oriented renderers only.
@@ -209,21 +195,37 @@ function getNodeName(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
-/** The version whose static checks the pane shows: the pinned version when
- *  the pane is scoped to one (the experiment drawer), else current, else
- *  newest. /detail orders versions newest-first, so the fallback is
- *  versions[0]. */
-function pickChecksVersion(
-  detail: TaskDetailResponse | undefined,
-  pinnedVersion?: number | null
-): TaskVersionSummary | null {
-  const versions = detail?.versions;
-  if (!versions || versions.length === 0) return null;
-  if (pinnedVersion != null) {
-    const pinned = versions.find((v) => v.version === pinnedVersion);
-    if (pinned) return pinned;
-  }
-  return versions.find((v) => v.is_current) ?? versions[0];
+function taskReviewUrl(
+  baseUrl: string,
+  taskId: string,
+  version: number | null | undefined,
+  experimentId: string | undefined,
+  page: {
+    findingLimit: number;
+    trialLimit: number;
+    findingCursor?: string | null;
+    trialCursor?: string | null;
+  },
+): string {
+  const params = new URLSearchParams({
+    finding_limit: String(page.findingLimit),
+    trial_limit: String(page.trialLimit),
+  });
+  if (typeof version === "number") params.set("version", String(version));
+  if (experimentId) params.set("experiment_id", experimentId);
+  if (page.findingCursor) params.set("finding_cursor", page.findingCursor);
+  if (page.trialCursor) params.set("trial_cursor", page.trialCursor);
+  return `${baseUrl}/tasks/${taskId}/review?${params.toString()}`;
+}
+
+function reviewQaIsActive(review?: TaskReviewResponse): boolean {
+  const status = review?.qa.status;
+  return (
+    status === "pending" ||
+    status === "queued" ||
+    status === "running" ||
+    status === "retrying"
+  );
 }
 
 // Truncate files larger than 100KB initially
@@ -432,9 +434,7 @@ export function TaskFilesPanel({
   taskVersion,
   initialFilePath,
   staticChecksTaskId,
-  taskDetail,
   onOpenTrial,
-  overviewTrialsLoading,
   selectedLines,
   onSelectLinesChange,
   onSelectedFileChange,
@@ -446,79 +446,114 @@ export function TaskFilesPanel({
   // The TASK OVERVIEW entry is keyed off the task even in filesUrl-driven
   // panes (which pass taskId={null}); staticChecksTaskId supplies the id there.
   const effectiveChecksTaskId = taskId ?? staticChecksTaskId ?? null;
-  // The pre_trial_* fields live on the version summaries of /detail, not on
-  // the plain task endpoint. The task page uses the same key, so SWR shares
-  // the cache there.
-  const checksKey =
+  const reviewKey =
     effectiveChecksTaskId && showAnalysis !== false
-      ? taskDetailKey(effectiveChecksTaskId, baseUrl)
+      ? taskReviewUrl(
+          baseUrl,
+          effectiveChecksTaskId,
+          taskVersion,
+          cancelExperimentId,
+          { findingLimit: 20, trialLimit: 20 },
+        )
       : null;
   const {
-    data: checksResource,
-    error: checksLoadError,
-    mutate: mutateChecks,
-  } = useSWR<TaskDetailResource>(checksKey, fetcher, {
-    fallbackData: taskDetail ?? undefined,
-    revalidateOnMount: taskDetail == null,
-    // Poll quickly while checks or task QA run. Keep a slower poll while the
-    // panel is open even after both are terminal: a CLI in-place overwrite can
-    // replace this version without changing its number, and the refreshed
-    // content hash is what invalidates the file listing and preview caches.
-    refreshInterval: (data) => {
-      const detail = taskDetailValue(data);
-      const checksLive =
-        pickChecksVersion(detail, taskVersion)?.pre_trial_status ===
-          "running" ||
-        pickChecksVersion(detail, taskVersion)?.pre_trial_status === "queued";
-      const qaLive =
-        detail?.task?.verdict_status === "queued" ||
-        detail?.task?.verdict_status === "running";
-      if (checksLive || qaLive) return 5000;
-      return isOpen ? 30000 : 0;
-    },
+    data: review,
+    error: reviewLoadError,
+    mutate: mutateReview,
+  } = useSWR<TaskReviewResponse>(reviewKey, fetcher, {
+    refreshInterval: (data) => (reviewQaIsActive(data) ? 5000 : 0),
+    revalidateOnFocus: false,
   });
-  const checksDetail = taskDetailValue(checksResource);
-  const actionsReady =
-    checksResource !== undefined && !isBrowseTaskDetail(checksResource);
-  // Scoped panes (the experiment drawer) pin the version whose files are on
-  // screen; the checks must describe that same source.
-  const checksVersion = pickChecksVersion(checksDetail, taskVersion);
-  // The pinned version wins outright — falling back to the /detail-resolved
-  // version while it loads would briefly widen the trial aggregation to every
-  // version. Without a pin, undefined keeps the aggregation waiting until the
-  // version resolves; only a loaded task with no versions is genuinely
-  // unscoped.
+  const getFindingPageKey = (
+    pageIndex: number,
+    previousPage: TaskReviewResponse | null,
+  ) => {
+    if (!reviewKey || !review?.findings_page.has_more) return null;
+    const cursor =
+      pageIndex === 0
+        ? review.findings_page.next_cursor
+        : previousPage?.findings_page.next_cursor;
+    if (!cursor) return null;
+    return taskReviewUrl(
+      baseUrl,
+      effectiveChecksTaskId!,
+      taskVersion,
+      cancelExperimentId,
+      { findingLimit: 20, trialLimit: 0, findingCursor: cursor },
+    );
+  };
+  const {
+    data: findingPages,
+    error: findingPagesError,
+    size: findingPageCount,
+    setSize: setFindingPageCount,
+    isValidating: findingsLoadingMore,
+  } = useSWRInfinite<TaskReviewResponse>(getFindingPageKey, fetcher, {
+    initialSize: 0,
+    revalidateFirstPage: false,
+    revalidateOnFocus: false,
+  });
+  const getTrialPageKey = (
+    pageIndex: number,
+    previousPage: TaskReviewResponse | null,
+  ) => {
+    if (!reviewKey || !review?.trials_page.has_more) return null;
+    const cursor =
+      pageIndex === 0
+        ? review.trials_page.next_cursor
+        : previousPage?.trials_page.next_cursor;
+    if (!cursor) return null;
+    return taskReviewUrl(
+      baseUrl,
+      effectiveChecksTaskId!,
+      taskVersion,
+      cancelExperimentId,
+      { findingLimit: 0, trialLimit: 20, trialCursor: cursor },
+    );
+  };
+  const {
+    data: trialPages,
+    error: trialPagesError,
+    size: trialPageCount,
+    setSize: setTrialPageCount,
+    isValidating: trialsLoadingMore,
+  } = useSWRInfinite<TaskReviewResponse>(getTrialPageKey, fetcher, {
+    initialSize: 0,
+    revalidateFirstPage: false,
+    revalidateOnFocus: false,
+  });
+  const lastFindingPage = findingPages?.at(-1);
+  const lastTrialPage = trialPages?.at(-1);
+  const assembledReview = review
+    ? {
+        ...review,
+        findings: [
+          ...review.findings,
+          ...(findingPages ?? []).flatMap((page) => page.findings),
+        ],
+        findings_page: lastFindingPage?.findings_page ?? review.findings_page,
+        trials: [
+          ...review.trials,
+          ...(trialPages ?? []).flatMap((page) => page.trials),
+        ],
+        trials_page: lastTrialPage?.trials_page ?? review.trials_page,
+      }
+    : undefined;
+  const actionsReady = review !== undefined;
   const overviewVersion =
     taskVersion !== undefined
       ? taskVersion
-      : checksVersion
-        ? checksVersion.version
-        : checksDetail !== undefined
-          ? null
-          : undefined;
+      : review?.task.version;
   const overviewAvailable =
     effectiveChecksTaskId !== null && showAnalysis !== false;
   const capabilitiesAvailable = effectiveChecksTaskId !== null;
   const taskPaneExists = overviewAvailable || capabilitiesAvailable;
-  // Until /detail answers, the checks state is unknown, not "unaudited":
-  // an enabled Run button on the misread queues an audit that wipes findings.
-  // Never on public shares: `checksKey` is null there, so /detail is not
-  // fetched and this would otherwise latch on "loading" forever.
   const checksLoading =
-    overviewAvailable &&
-    (isBrowseTaskDetail(checksResource) ||
-      (checksDetail === undefined && !checksLoadError));
-  // A failed revalidation with data already in hand is not "unavailable":
-  // SWR keeps the stale data, and hiding live findings behind an error flash
-  // on one bad poll is worse than showing them.
+    overviewAvailable && review === undefined && !reviewLoadError;
   const checksLoadFailure =
-    checksLoadError && checksDetail === undefined
-      ? "Unable to load the static checks state."
+    reviewLoadError && review === undefined
+      ? "Unable to load the task review."
       : null;
-  const checksFindings = checksVersion?.pre_trial_findings ?? [];
-  const taskQaActive =
-    checksDetail?.task?.verdict_status === "queued" ||
-    checksDetail?.task?.verdict_status === "running";
   const resolvedFilesUrl = filesUrl ?? `${baseUrl}/tasks/${taskId}/files`;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -546,21 +581,11 @@ export function TaskFilesPanel({
   useEffect(() => {
     initialFilePathRef.current = initialFilePath;
   }, [initialFilePath]);
-  const verdictTaskKey =
-    isOpen && taskId ? `${baseUrl}/tasks/${taskId}?include_trials=false` : null;
-  const { data: verdictTask } = useSWR<Task>(verdictTaskKey, fetcher, {
-    refreshInterval: (data) => {
-      if (!data) return 10000;
-      const done = data.status === "completed" || data.status === "failed";
-      return done ? 0 : 15000;
-    },
-    revalidateOnFocus: false,
-  });
   const currentVersion =
     taskVersion !== undefined
       ? taskVersion
-      : ((verdictTask ?? task)?.current_version ?? null);
-  const currentContentHash = checksVersion?.content_hash ?? null;
+      : (review?.task.version ?? task?.current_version ?? null);
+  const currentContentHash = review?.task.content_hash ?? null;
   const shouldScopeFilesToVersion = taskVersion !== undefined || !filesUrl;
   const selectedFile = selectedFilePath
     ? findNodeByPath(fileTree, selectedFilePath)
@@ -674,7 +699,6 @@ export function TaskFilesPanel({
   );
   const selectedPreview = immediatePreview ?? fetchedPreview ?? null;
 
-  const verdictSource = verdictTask ?? task;
   // The whole tree comes back from one recursive request — task trees are
   // shallow, there's nothing to page or lazy-load. stream=1 asks for
   // NDJSON (the tree first, then every file's contents); endpoints that
@@ -738,7 +762,7 @@ export function TaskFilesPanel({
   const hasAnalysisInFlight = (task?.trials ?? []).some((trial) =>
     isActivePipelineStatus(trial.analysis_status)
   );
-  const verdictInFlight = isActivePipelineStatus(verdictSource?.verdict_status);
+  const verdictInFlight = reviewQaIsActive(review);
   const canRunQA =
     actionsReady &&
     allowRetry &&
@@ -747,11 +771,7 @@ export function TaskFilesPanel({
     !hasAnalysisInFlight &&
     !verdictInFlight;
   const qaActionLabel =
-    verdictSource?.verdict_status ||
-    verdictSource?.verdict ||
-    (task?.trials ?? []).some(
-      (trial) => trial.analysis_status || trial.analysis
-    )
+    review?.qa.status || review?.verdict || review?.qa.result_run
       ? "Rerun QA"
       : "Run QA";
 
@@ -856,9 +876,7 @@ export function TaskFilesPanel({
         throw new Error(data.detail || data.error || "Failed to queue task QA");
       }
       onRetryComplete?.([task.id]);
-      // The QA-active guard reads this cache; refresh it so the guard flips
-      // on now instead of after the next unrelated revalidation.
-      void mutateChecks();
+      void mutateReview();
     } catch (err) {
       setQAActionError(
         err instanceof Error ? err.message : "Failed to queue task QA"
@@ -908,13 +926,13 @@ export function TaskFilesPanel({
           data.detail || data.error || "Failed to queue static checks"
         );
       }
-      await mutateChecks();
+      await mutateReview();
     } catch (e) {
       setChecksQueueError(e instanceof Error ? e.message : String(e));
     } finally {
       setChecksRerunning(false);
     }
-  }, [baseUrl, effectiveChecksTaskId, checksRerunning, mutateChecks]);
+  }, [baseUrl, effectiveChecksTaskId, checksRerunning, mutateReview]);
 
   // Fetch root file list when panel opens
   useEffect(() => {
@@ -1606,31 +1624,28 @@ export function TaskFilesPanel({
                 )
               ) : activePane === "overview" && overviewAvailable ? (
                 <TaskOverviewPanel
-                  taskId={effectiveChecksTaskId}
-                  apiBaseUrl={baseUrl}
-                  version={overviewVersion}
-                  // The host's rows are the authoritative set: an experiment
-                  // drawer aggregates only its own trials. A task prop with
-                  // no trials yet still scopes (empty + overviewTrialsLoading
-                  // renders as loading).
-                  scopeTrials={task ? (task.trials ?? []) : null}
-                  scopeLoading={overviewTrialsLoading}
-                  // Panes with their own header render the verdict card there;
-                  // the filesUrl-driven panes have no header, so the overview
-                  // carries the verdict itself.
-                  verdictTask={
-                    checksDetail?.task ?? verdictTask ?? task ?? null
-                  }
-                  checksFindings={checksFindings}
-                  checksStatus={checksVersion?.pre_trial_status}
-                  checksError={checksVersion?.pre_trial_error}
-                  checksCostUsd={checksVersion?.pre_trial_cost_usd}
+                  review={assembledReview}
+                  loading={checksLoading}
+                  loadError={checksLoadFailure}
                   onRerunChecks={handleRerunChecks}
                   checksRerunning={checksRerunning}
                   checksQueueError={checksQueueError}
-                  checksLoading={checksLoading}
-                  checksLoadError={checksLoadFailure}
-                  qaActive={taskQaActive}
+                  onShowMoreFindings={() =>
+                    void setFindingPageCount(findingPageCount + 1)
+                  }
+                  findingsLoadingMore={findingsLoadingMore}
+                  findingsPageError={
+                    findingPagesError
+                      ? "Unable to load more findings."
+                      : null
+                  }
+                  onShowMoreTrials={() =>
+                    void setTrialPageCount(trialPageCount + 1)
+                  }
+                  trialsLoadingMore={trialsLoadingMore}
+                  trialsPageError={
+                    trialPagesError ? "Unable to load more trials." : null
+                  }
                   onOpenTrial={onOpenTrial}
                 />
               ) : (

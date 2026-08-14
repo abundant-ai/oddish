@@ -2,29 +2,27 @@ import type { ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
 import { AnalysisProse } from "@/components/analysis-prose";
-import type { PreTrialFinding } from "@/lib/types";
+import type { ActionItemFinding, ActionTier } from "@/lib/types";
 import { TIER_BADGE, TIER_META, TIER_ORDER } from "./tokens";
 import { CopyJsonButton } from "./copy-json-button";
 import { FeedbackControl } from "./feedback-control";
 import type { FeedbackRecord } from "./types";
 
-function findingLocation(finding: PreTrialFinding): string | null {
+function findingLocation(finding: ActionItemFinding): string | null {
   if (!finding.file) return null;
   const { line_start: start, line_end: end } = finding;
   if (!start) return finding.file;
   return `${finding.file}:${start}${end && end !== start ? `-${end}` : ""}`;
 }
 
-function ActionItemDetail({
+function ActionItemDetail<T extends ActionItemFinding>({
   item,
-  itemKey,
   onFeedback,
   renderItemFooter,
 }: {
-  item: PreTrialFinding;
-  itemKey: string;
+  item: T;
   onFeedback?: (r: FeedbackRecord) => void;
-  renderItemFooter?: (item: PreTrialFinding, itemKey: string) => ReactNode;
+  renderItemFooter?: (item: T, itemKey: string) => ReactNode;
 }) {
   const where = findingLocation(item);
   return (
@@ -42,7 +40,7 @@ function ActionItemDetail({
         ) : null}
         <CopyJsonButton
           value={item}
-          label={`action item: ${item.title ?? itemKey}`}
+          label={`action item: ${item.title}`}
           compact
           className="ml-auto"
         />
@@ -79,15 +77,15 @@ function ActionItemDetail({
         </div>
       ) : null}
 
-      {renderItemFooter?.(item, itemKey)}
+      {renderItemFooter?.(item, item.id)}
 
       {onFeedback ? (
         <FeedbackControl
-          label={`action item: ${item.title ?? itemKey}`}
+          label={`action item: ${item.title}`}
           className="mt-1.5"
           onSubmit={(vote, note) =>
             onFeedback({
-              target: { kind: "action_item", id: itemKey },
+              target: { kind: "action_item", id: item.id },
               vote,
               note,
             })
@@ -102,25 +100,25 @@ function ActionItemDetail({
  * Action items grouped by severity tier, each tier its own independently
  * collapsible <details>, all starting collapsed.
  */
-export function SeverityGroups({
+export function SeverityGroups<T extends ActionItemFinding>({
   items,
   onFeedback,
   className,
   tierEffects,
   renderItemFooter,
 }: {
-  items: PreTrialFinding[];
+  items: T[];
   onFeedback?: (r: FeedbackRecord) => void;
   className?: string;
   /** Per-tier effect line; the default narrates trial classification. */
-  tierEffects?: Partial<Record<string, string>>;
+  tierEffects?: Partial<Record<ActionTier, string>>;
   /** Extra content under an item — e.g. links to the trials that surfaced it. */
-  renderItemFooter?: (item: PreTrialFinding, itemKey: string) => ReactNode;
+  renderItemFooter?: (item: T, itemKey: string) => ReactNode;
 }) {
   const groups = TIER_ORDER.map((tier) => ({
     tier,
     meta: TIER_META[tier],
-    items: items.filter((i) => (i.tier ?? "optional") === tier),
+    items: items.filter((i) => i.tier === tier),
   })).filter((g) => g.items.length > 0);
 
   if (!groups.length) return null;
@@ -156,19 +154,15 @@ export function SeverityGroups({
           </summary>
 
           <ul className="divide-border border-border flex flex-col divide-y border-t">
-            {group.items.map((item, index) => {
-              const key = item.id ?? `${group.tier}-${item.title ?? index}`;
-              return (
-                <li key={key} className="px-3 py-3">
-                  <ActionItemDetail
-                    item={item}
-                    itemKey={key}
-                    onFeedback={onFeedback}
-                    renderItemFooter={renderItemFooter}
-                  />
-                </li>
-              );
-            })}
+            {group.items.map((item) => (
+              <li key={item.id} className="px-3 py-3">
+                <ActionItemDetail
+                  item={item}
+                  onFeedback={onFeedback}
+                  renderItemFooter={renderItemFooter}
+                />
+              </li>
+            ))}
           </ul>
         </details>
       ))}

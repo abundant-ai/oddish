@@ -5,6 +5,8 @@ import {
   Unplug,
 } from "lucide-react";
 
+import type { ActionTier } from "@/lib/types";
+
 // Colour carries good/bad, not success/failure: green = valid signal,
 // amber = task needs fixing, red = false positive, orange = infrastructure.
 export type VerdictToken = {
@@ -54,10 +56,16 @@ export const FALLBACK_TOKEN: VerdictToken = {
   chip: "border-border",
 };
 
-export const TIER_ORDER = ["must_fix", "should_fix", "optional"] as const;
+export const TIER_ORDER: ActionTier[] = [
+  "must_fix",
+  "should_fix",
+  "optional",
+];
 
-export const TIER_META: Record<string, { label: string; labelEffect: string }> =
-  {
+export const TIER_META: Record<
+  ActionTier,
+  { label: string; labelEffect: string }
+> = {
     must_fix: {
       label: "MUST FIX",
       labelEffect:
@@ -71,12 +79,12 @@ export const TIER_META: Record<string, { label: string; labelEffect: string }> =
       label: "OPTIONAL",
       labelEffect: "Does not change the label.",
     },
-  };
+};
 
 // Severity is deliberately not hue-coded: only must_fix gets colour, because
 // only must_fix can change the label, so a severity badge can never be
 // mistaken for a verdict.
-export const TIER_BADGE: Record<string, string> = {
+export const TIER_BADGE: Record<ActionTier, string> = {
   must_fix: "bg-destructive text-destructive-foreground",
   should_fix: "border-foreground/25 bg-foreground/10 text-foreground border",
   optional: "border-border text-muted-foreground border bg-transparent",

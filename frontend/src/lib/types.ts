@@ -1,4 +1,4 @@
-type TaskStatus =
+export type TaskStatus =
   | "pending"
   | "running"
   | "analyzing"
@@ -6,7 +6,7 @@ type TaskStatus =
   | "completed"
   | "failed";
 
-type TrialStatus =
+export type TrialStatus =
   | "pending"
   | "queued"
   | "running"
@@ -15,7 +15,7 @@ type TrialStatus =
   | "retrying"
   | "skipped";
 
-export type JobStatus = "pending" | "queued" | "running" | "success" | "failed";
+export type JobStatus = TrialStatus;
 
 type VisibleJobKind = "trial" | "qa" | "analysis";
 
@@ -101,7 +101,7 @@ interface TrialExploitation {
   causal?: boolean | null;
 }
 
-interface TrialAnalysis {
+export interface TrialAnalysis {
   trial_name?: string;
   classification: AnalysisClassification;
   subtype: string;
@@ -109,7 +109,7 @@ interface TrialAnalysis {
   root_cause?: string;
   recommendation?: string;
   /** Task weaknesses this trial revealed; same shape as pre-trial findings. */
-  action_items?: PreTrialFinding[];
+  action_items?: ActionItemFinding[];
   /** Per pre-trial finding assessments — the trial↔audit finding join. */
   exploitation?: TrialExploitation[];
   reward?: number | null;
@@ -248,6 +248,8 @@ export interface Task {
   verdict_status?: JobStatus | null;
   verdict?: TaskVerdict | null;
   verdict_error?: string | null;
+  published_qa_run_id?: string | null;
+  verdict_version_id?: string | null;
   jobs?: VisibleWorkerJob[];
   current_version?: number | null;
   current_version_id?: string | null;
@@ -447,6 +449,8 @@ export interface TaskOpenTask {
   verdict_status?: JobStatus | null;
   verdict?: TaskOpenVerdict | null;
   verdict_error?: string | null;
+  published_qa_run_id?: string | null;
+  verdict_version_id?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -500,6 +504,160 @@ export interface PreTrialFinding {
   exploited?: boolean | null;
   /** On post-trial items: the pre-trial finding id this one relates to. */
   links_to?: string | null;
+}
+
+export type ActionTier = "must_fix" | "should_fix" | "optional";
+export type FindingSource = "pre_trial" | "post_trial";
+export type FindingProblemType = "incompleteness" | "mismatch";
+export type FindingDimension = "verifier" | "oracle" | "info_leakage";
+export type TaskQaRunDisposition =
+  | "published"
+  | "failed"
+  | "cancelled"
+  | "superseded";
+
+/** Canonical finding returned by the version-owned task review resource. */
+export interface ActionItemFinding {
+  id: string;
+  source: FindingSource;
+  problem_type: FindingProblemType;
+  dimension: FindingDimension;
+  file: string;
+  line_start: number;
+  line_end: number;
+  title: string;
+  detail: string;
+  recommendation: string;
+  tier: ActionTier;
+  links_to?: string | null;
+  exploited: boolean;
+  exploit_evidence?: string | null;
+  causal: boolean;
+}
+
+export interface ReviewFinding extends ActionItemFinding {
+  from_pre_trial: boolean;
+  trial_ids: string[];
+  experiment_ids: string[];
+}
+
+export interface TaskQaRunProvenance {
+  id: string;
+  disposition?: TaskQaRunDisposition | null;
+  task_version_id: string;
+  worker_job_id: string;
+  input_trial_count: number;
+  input_set_sha256: string;
+  input_analysis_changed_count: number;
+  pre_trial_block_id?: string | null;
+  verdict_block_id?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+}
+
+export interface TaskReviewQa {
+  status?: JobStatus | null;
+  result_run?: TaskQaRunProvenance | null;
+  active_run?: TaskQaRunProvenance | null;
+  is_task_published_run: boolean;
+  legacy_unscoped_verdict_available: boolean;
+  input_analysis_changed_after_run: boolean;
+}
+
+export interface TaskReviewBaselineResult {
+  expected_reward: number;
+  valid: boolean;
+  trial_count: number;
+  unexpected_count: number;
+}
+
+export interface TaskReviewBaselines {
+  outcome: "valid" | "faulty";
+  nop: TaskReviewBaselineResult;
+  oracle: TaskReviewBaselineResult;
+}
+
+export interface TaskReviewVerdict {
+  verdict: "accept" | "reject";
+  is_good: boolean;
+  confidence: "high" | "medium" | "low";
+  primary_issue?: string | null;
+  reasoning?: string | null;
+  recommendations: string[];
+  task_problem_count: number;
+  agent_problem_count: number;
+  success_count: number;
+  harness_error_count: number;
+}
+
+export interface TaskReviewFindingCounts {
+  unfiltered_total: number;
+  filtered_total: number;
+  must_fix: number;
+  should_fix: number;
+  optional: number;
+}
+
+export type TaskReviewClassificationCounts = Record<
+  AnalysisClassification,
+  number
+>;
+
+export interface TaskReviewTrialCounts {
+  eligible: number;
+  analyzed: number;
+  unanalyzed: number;
+  classifications: TaskReviewClassificationCounts;
+}
+
+export interface TaskReviewTrial {
+  id: string;
+  role: "model" | "nop" | "oracle";
+  experiment_id: string;
+  agent: string;
+  model?: string | null;
+  config_fingerprint: string;
+  environment?: string | null;
+  harbor_sha?: string | null;
+  status: TrialStatus;
+  reward?: number | null;
+  cost_usd?: number | null;
+  duration_seconds?: number | null;
+  included_in_result_run: boolean;
+  result_run_analysis_fingerprint?: string | null;
+  analysis_matches_result_run?: boolean | null;
+  analysis_status?: JobStatus | null;
+  analysis?: TrialAnalysis | null;
+}
+
+export interface TaskReviewPage {
+  has_more: boolean;
+  next_cursor?: string | null;
+}
+
+export interface TaskReviewResponse {
+  schema_version: 1;
+  task: {
+    id: string;
+    name: string;
+    version: number;
+    version_id: string;
+    content_hash?: string | null;
+  };
+  scope: {
+    experiment_id?: string | null;
+    tiers: ActionTier[];
+    same_version_across_experiments: boolean;
+  };
+  qa: TaskReviewQa;
+  baselines: TaskReviewBaselines;
+  verdict?: TaskReviewVerdict | null;
+  finding_counts: TaskReviewFindingCounts;
+  findings: ReviewFinding[];
+  findings_page: TaskReviewPage;
+  trial_counts: TaskReviewTrialCounts;
+  trials: TaskReviewTrial[];
+  trials_page: TaskReviewPage;
 }
 
 interface TaskCostTotals {
