@@ -157,9 +157,7 @@ def _render_finding(finding: TaskReviewFinding) -> None:
     if finding.trial_ids:
         provenance.append(f"seen in {', '.join(finding.trial_ids)}")
     if finding.exploited:
-        provenance.append(
-            f"exploited: {finding.exploit_evidence or 'yes'}"
-        )
+        provenance.append(f"exploited: {finding.exploit_evidence or 'yes'}")
     console.print("\n  [bold]Provenance[/bold]")
     console.print(Text(f"  {' · '.join(provenance)}"))
 
@@ -183,11 +181,17 @@ def _trial_qa(trial: TaskReviewTrial) -> tuple[str, str]:
     return verifier, f"QA {classification}"
 
 
-def render_review(response: TaskReviewResponse) -> None:
+def render_review(
+    response: TaskReviewResponse,
+    *,
+    title: str = "TASK REVIEW",
+    read_only_notice: bool = True,
+) -> None:
     """Render stored review fields; never paraphrase or recompute QA."""
 
     console.print(
-        f"[bold]TASK REVIEW[/bold]  {escape(response.task.name)} · v{response.task.version}"
+        f"[bold]{escape(title)}[/bold]  "
+        f"{escape(response.task.name)} · v{response.task.version}"
     )
     console.print(f"[bold]Task[/bold]          {escape(response.task.id)}")
     run = response.qa.result_run or response.qa.active_run
@@ -221,7 +225,9 @@ def render_review(response: TaskReviewResponse) -> None:
             console.print(Text(response.verdict.primary_issue))
 
     for tier in response.scope.tiers:
-        tier_findings = [finding for finding in response.findings if finding.tier == tier]
+        tier_findings = [
+            finding for finding in response.findings if finding.tier == tier
+        ]
         if not tier_findings:
             continue
         console.print(f"\n[bold]{_TIER_LABELS[tier]} ({len(tier_findings)})[/bold]")
@@ -254,7 +260,8 @@ def render_review(response: TaskReviewResponse) -> None:
         f"\nShowing {response.finding_counts.filtered_total}/"
         f"{response.finding_counts.unfiltered_total} findings after filter."
     )
-    console.print("[dim]No analysis was run by this command.[/dim]")
+    if read_only_notice:
+        console.print("[dim]No analysis was run by this command.[/dim]")
 
 
 def _warn_review_state(response: TaskReviewResponse) -> None:
@@ -263,9 +270,7 @@ def _warn_review_state(response: TaskReviewResponse) -> None:
             "[yellow]Warning: the stored task verdict predates version-owned QA "
             "provenance and is not shown.[/yellow]"
         )
-        error_console.print(
-            f"Run: oddish run {response.task.id} --retry --qa"
-        )
+        error_console.print(f"Run: oddish run {response.task.id} --retry --qa")
     if response.qa.input_analysis_changed_after_run:
         error_console.print(
             "[yellow]Warning: one or more trial analyses changed after the "

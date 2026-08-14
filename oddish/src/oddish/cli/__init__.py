@@ -8,6 +8,7 @@ from oddish.cli.combine import combine
 from oddish.cli.costs import costs
 from oddish.cli.delete import delete
 from oddish.cli.experiment import experiment_app
+from oddish.cli.iterate import iterate
 from oddish.cli.link import link_app
 from oddish.cli.logs import logs
 from oddish.cli.ls import ls
@@ -34,6 +35,7 @@ app.command()(preflight)
 app.command(name="ls")(ls)
 app.command()(status)
 app.command()(review)
+app.command()(iterate)
 app.command(help="Stream a running trial's live transcript and running cost.")(logs)
 app.command()(cancel)
 app.command()(combine)

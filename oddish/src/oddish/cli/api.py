@@ -2611,6 +2611,8 @@ def watch_task(
     task_id: str,
     experiment_id: str | None = None,
     trial_ids: Iterable[str] | None = None,
+    *,
+    wait_for_qa: bool = False,
 ) -> dict | None:
     """Watch a task until completion. Returns the final result.
 
@@ -2620,6 +2622,10 @@ def watch_task(
     When *trial_ids* is given, only trials whose ``id`` is in that set are
     shown. This is useful when appending trials to an existing task and the
     caller only wants to monitor the freshly-submitted trials.
+
+    When *wait_for_qa* is true, terminal filtered trials are not sufficient:
+    the task itself must reach ``completed`` or ``failed`` so a queued or
+    running task-level QA pass cannot be mistaken for a finished iteration.
     """
     final_result = None
     headers = get_auth_headers()
@@ -2739,8 +2745,10 @@ def watch_task(
                 # Check if done
                 if trial_id_filter is not None or experiment_id:
                     terminal = {"success", "failed", "cancelled", "skipped"}
-                    if all_trials and all(
-                        t.get("status") in terminal for t in all_trials
+                    if (
+                        all_trials
+                        and all(t.get("status") in terminal for t in all_trials)
+                        and (not wait_for_qa or task_status in ("completed", "failed"))
                     ):
                         break
                 elif task_status in ("completed", "failed"):
@@ -2750,6 +2758,8 @@ def watch_task(
 
             except Exception as e:
                 live.update(f"[red]Error:[/red] {e}")
+                if wait_for_qa:
+                    break
                 time.sleep(2)
 
     return final_result
