@@ -1,9 +1,19 @@
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
+
+import pytest
 
 from oddish.analyze import Classification, TrialClassification
 from oddish.core.verdict_state import cancel_verdict, fail_verdict
-from oddish.core.verdict_sync import build_verdict_payload
-from oddish.db import VerdictStatus
+from oddish.core import verdict_sync
+from oddish.core.verdict_sync import build_verdict_payload, close_unfinished_qa_run
+from oddish.db import (
+    TaskModel,
+    TaskQaRunDisposition,
+    TaskQaRunModel,
+    TaskStatus,
+    VerdictStatus,
+)
 
 
 class _Verdict:
@@ -105,3 +115,88 @@ def test_fail_verdict_discards_the_preserved_success() -> None:
     assert task.verdict_status == VerdictStatus.FAILED
     assert task.verdict_error == "replacement failed"
     assert task.verdict_finished_at is failed_at
+
+
+class _SyncSession:
+    def __init__(self, task, qa_run):
+        self.task = task
+        self.qa_run = qa_run
+
+    async def get(self, model, row_id, **_kwargs):
+        if model is TaskModel and row_id == self.task.id:
+            return self.task
+        if model is TaskQaRunModel and row_id == self.qa_run.id:
+            return self.qa_run
+        return None
+
+
+@pytest.mark.asyncio
+async def test_task_projection_and_qa_run_publish_together(monkeypatch) -> None:
+    task = SimpleNamespace(
+        id="task-1",
+        verdict=None,
+        verdict_status=VerdictStatus.RUNNING,
+        verdict_error=None,
+        verdict_started_at=object(),
+        verdict_finished_at=None,
+        published_qa_run_id=None,
+        verdict_version_id=None,
+        status=TaskStatus.VERDICT_PENDING,
+        finished_at=None,
+    )
+    qa_run = SimpleNamespace(
+        id="qa-1",
+        task_id=task.id,
+        task_version_id="task-1-v2",
+        disposition=None,
+        verdict=None,
+        error=None,
+        finished_at=None,
+    )
+    session = _SyncSession(task, qa_run)
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield session
+
+    monkeypatch.setattr(verdict_sync, "get_session", fake_get_session)
+    payload = {"verdict": "accept", "is_good": True}
+
+    status = await verdict_sync.sync_verdict_to_task(
+        task.id, qa_run_id=qa_run.id, payload=payload, error=None
+    )
+
+    assert status == VerdictStatus.SUCCESS.value
+    assert qa_run.disposition == TaskQaRunDisposition.PUBLISHED
+    assert qa_run.verdict is payload
+    assert task.verdict is payload
+    assert task.published_qa_run_id == qa_run.id
+    assert task.verdict_version_id == qa_run.task_version_id
+
+
+@pytest.mark.asyncio
+async def test_close_unfinished_qa_run_is_guarded() -> None:
+    task = SimpleNamespace(id="task-1")
+    qa_run = SimpleNamespace(
+        id="qa-1",
+        disposition=None,
+        error=None,
+        finished_at=None,
+    )
+    session = _SyncSession(task, qa_run)
+
+    assert await close_unfinished_qa_run(
+        session,
+        qa_run.id,
+        disposition=TaskQaRunDisposition.CANCELLED,
+        reason="cancelled",
+    )
+    assert qa_run.disposition == TaskQaRunDisposition.CANCELLED
+    assert qa_run.error == "cancelled"
+    assert not await close_unfinished_qa_run(
+        session,
+        qa_run.id,
+        disposition=TaskQaRunDisposition.SUPERSEDED,
+        reason="later",
+    )
+    assert qa_run.disposition == TaskQaRunDisposition.CANCELLED

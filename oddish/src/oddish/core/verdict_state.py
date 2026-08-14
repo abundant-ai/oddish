@@ -21,6 +21,8 @@ class VerdictState(Protocol):
     verdict_error: str | None
     verdict_started_at: datetime | None
     verdict_finished_at: datetime | None
+    published_qa_run_id: str | None
+    verdict_version_id: str | None
 
 
 ACTIVE_VERDICT_STATUSES = frozenset(
@@ -57,10 +59,17 @@ def start_verdict(task: VerdictState, *, now: datetime) -> None:
 
 
 def complete_verdict(
-    task: VerdictState, *, payload: dict[str, Any], now: datetime
+    task: VerdictState,
+    *,
+    payload: dict[str, Any],
+    now: datetime,
+    qa_run_id: str | None = None,
+    task_version_id: str | None = None,
 ) -> None:
     """Publish a replacement verdict after a successful QA pass."""
     task.verdict = payload
+    task.published_qa_run_id = qa_run_id
+    task.verdict_version_id = task_version_id
     task.verdict_status = VerdictStatus.SUCCESS
     task.verdict_error = None
     task.verdict_finished_at = now
@@ -72,6 +81,8 @@ def complete_verdict_without_result(task: VerdictState, *, now: datetime) -> Non
         _restore_published_verdict(task)
         return
     task.verdict_status = VerdictStatus.SUCCESS
+    task.published_qa_run_id = None
+    task.verdict_version_id = None
     task.verdict_error = None
     task.verdict_finished_at = now
 
@@ -79,6 +90,8 @@ def complete_verdict_without_result(task: VerdictState, *, now: datetime) -> Non
 def fail_verdict(task: VerdictState, *, error: str, now: datetime) -> None:
     """Fail a QA pass and discard the result that it was replacing."""
     task.verdict = None
+    task.published_qa_run_id = None
+    task.verdict_version_id = None
     task.verdict_status = VerdictStatus.FAILED
     task.verdict_error = error
     task.verdict_finished_at = now
@@ -108,6 +121,8 @@ def abandon_verdict(task: VerdictState) -> None:
 def reset_verdict(task: VerdictState) -> None:
     """Remove both the published result and all QA lifecycle metadata."""
     task.verdict = None
+    task.published_qa_run_id = None
+    task.verdict_version_id = None
     task.verdict_status = None
     task.verdict_error = None
     task.verdict_started_at = None

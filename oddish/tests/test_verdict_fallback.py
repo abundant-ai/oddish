@@ -58,6 +58,7 @@ def _install_fake_block(monkeypatch, *, behaviors):
         def __init__(self, **kwargs):
             seen.append(kwargs)
             self._behavior = queue.pop(0)
+            self.id = f"block-{len(seen)}"
 
         async def run(self):
             if isinstance(self._behavior, Exception):
@@ -86,11 +87,12 @@ async def test_permanent_provider_error_falls_back_to_claude(monkeypatch):
         behaviors=[PermissionDeniedError(AZURE_403), GOOD_OUTPUT],
     )
 
-    verdict = await qa_handler.synthesize_task_verdict(
+    (verdict, block_id) = await qa_handler.synthesize_task_verdict(
         _classifications(), None, True, 30.0, task_id="task-1"
     )
 
     assert verdict.is_good is True
+    assert block_id == "block-2"
     assert len(seen) == 2, "expected one primary attempt and one fallback"
     assert seen[0]["model"] == settings.verdict_model
     assert seen[1]["model"] == settings.verdict_fallback_model
@@ -221,9 +223,10 @@ async def test_output_schema_reaches_the_api_client():
 async def test_primary_success_never_builds_a_second_block(monkeypatch):
     seen = _install_fake_block(monkeypatch, behaviors=[GOOD_OUTPUT])
 
-    verdict = await qa_handler.synthesize_task_verdict(
+    verdict, block_id = await qa_handler.synthesize_task_verdict(
         _classifications(), None, True, 30.0, task_id="task-1"
     )
 
     assert verdict.is_good is True
+    assert block_id == "block-1"
     assert len(seen) == 1

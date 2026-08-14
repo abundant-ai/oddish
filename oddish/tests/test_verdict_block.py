@@ -102,7 +102,9 @@ def test_to_verdict_returns_plain_dict():
 
 def test_to_verdict_strips_code_fences():
     vb = VerdictBlock(_classifications())
-    body = json.dumps({"verdict": "accept", "confidence": "medium", "recommendations": []})
+    body = json.dumps(
+        {"verdict": "accept", "confidence": "medium", "recommendations": []}
+    )
     out = vb.to_verdict(f"```json\n{body}\n```")
     assert out["verdict"] == "accept"
     assert out["confidence"] == "medium"
@@ -256,7 +258,9 @@ async def test_synthesize_task_verdict_default_construction_wires_response_forma
     }
     fake, sent = _patch_openai_builder(monkeypatch, payload)
 
-    result = await synthesize_task_verdict(_classifications(), None, True, 180)
+    result, block_id = await synthesize_task_verdict(
+        _classifications(), None, True, 180
+    )
 
     assert sent["response_format"] is TaskVerdictModel
     # gpt-5.x-class models reject `max_tokens`; the wire param must be
@@ -269,6 +273,7 @@ async def test_synthesize_task_verdict_default_construction_wires_response_forma
     assert fake.closed is True
     assert result.is_good is True
     assert result.confidence == "high"
+    assert block_id
 
 
 @pytest.mark.asyncio

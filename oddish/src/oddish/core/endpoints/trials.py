@@ -22,10 +22,12 @@ from oddish.core.trial_io import (
     read_trial_trajectory,
 )
 from oddish.core.verdict_state import abandon_verdict
+from oddish.core.verdict_sync import close_unfinished_qa_run
 from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
+    TaskQaRunDisposition,
     TaskStatus,
     TaskVersionModel,
     TrialModel,
@@ -596,9 +598,11 @@ async def retry_trial_core(
         task.status = TaskStatus.RUNNING
         task.finished_at = None
     abandon_verdict(task)
-    await session.execute(
-        text(
-            """
+    cancelled_qa_rows = (
+        (
+            await session.execute(
+                text(
+                    """
             UPDATE worker_jobs
             SET    status = 'CANCELLED',
                    finished_at = NOW(),
@@ -610,10 +614,25 @@ async def retry_trial_core(
               AND  subject_table = 'tasks'
               AND  subject_id = :task_id
               AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+            RETURNING payload
             """
-        ),
-        {"task_id": task.id},
+                ),
+                {"task_id": task.id},
+            )
+        )
+        .mappings()
+        .all()
     )
+    for row in cancelled_qa_rows:
+        payload = (row.get("payload") or {}) or {}
+        if payload.get("mode") == "pre_trial":
+            continue
+        await close_unfinished_qa_run(
+            session,
+            payload.get("qa_run_id"),
+            disposition=TaskQaRunDisposition.SUPERSEDED,
+            reason="Superseded by user retry",
+        )
 
     # Task deleted while we worked (its tombstone won the row-lock interleaving
     # the old-trial CAS guard doesn't cover): the new trial would be

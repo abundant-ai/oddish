@@ -426,7 +426,9 @@ def build_trial_response(
     qa_cost_usd: float | None = None,
 ) -> TrialResponse:
     """Build a TrialResponse from a TrialModel."""
-    normalized_model = settings.normalize_trial_model(trial.agent, trial.model, strict=False)
+    normalized_model = settings.normalize_trial_model(
+        trial.agent, trial.model, strict=False
+    )
     task_version, task_version_id = _resolve_trial_version_fields(trial)
     cost_usd, cost_is_estimated = _resolve_trial_cost(trial, normalized_model)
     return TrialResponse(
@@ -505,7 +507,9 @@ def build_compact_trial_response(
         resolved_analysis_summary = (
             analysis_summary if isinstance(analysis_summary, dict) else None
         )
-    normalized_model = settings.normalize_trial_model(trial.agent, trial.model, strict=False)
+    normalized_model = settings.normalize_trial_model(
+        trial.agent, trial.model, strict=False
+    )
     task_version, task_version_id = _resolve_trial_version_fields(trial)
     cost_usd, cost_is_estimated = _resolve_trial_cost(trial, normalized_model)
 
@@ -822,6 +826,8 @@ TASK_STATUS_RESPONSE_COLUMNS = (
     TaskModel.run_probe,
     TaskModel.verdict_status,
     TaskModel.verdict,
+    TaskModel.published_qa_run_id,
+    TaskModel.verdict_version_id,
     TaskModel.verdict_error,
     TaskModel.created_at,
     TaskModel.updated_at,
@@ -923,6 +929,8 @@ def _build_task_status_response(
         run_probe=task.run_probe,
         verdict_status=task.verdict_status,
         verdict=task.verdict,
+        published_qa_run_id=task.published_qa_run_id,
+        verdict_version_id=task.verdict_version_id,
         verdict_error=task.verdict_error,
         jobs=list(jobs or []),
         created_at=task.created_at,
@@ -1145,7 +1153,9 @@ def build_slim_trial_response(
             "subtype": trial.analysis.get("subtype"),
             "evidence": trial.analysis.get("evidence"),
         }
-    normalized_model = settings.normalize_trial_model(trial.agent, trial.model, strict=False)
+    normalized_model = settings.normalize_trial_model(
+        trial.agent, trial.model, strict=False
+    )
     task_version, task_version_id = _resolve_trial_version_fields(trial)
     cost_usd, cost_is_estimated = _resolve_trial_cost(trial, normalized_model)
 

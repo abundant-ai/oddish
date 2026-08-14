@@ -33,6 +33,8 @@ from oddish.analyze.models import (  # noqa: E402
 )
 from oddish.db import (  # noqa: E402
     AnalysisStatus,
+    TaskQaRunDisposition,
+    TaskQaRunModel,
     TaskStatus,
     VerdictStatus,
     WorkerJobKind,
@@ -409,7 +411,7 @@ async def test_task_stage_reuses_worker_for_terminal_eligible_version(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_stage_legacy_task_without_version_keeps_unscoped_counts(monkeypatch):
+async def test_stage_legacy_task_without_version_requires_reupload(monkeypatch):
     trial = SimpleNamespace(task_id="task-legacy")
     task = SimpleNamespace(
         id="task-legacy",
@@ -422,25 +424,14 @@ async def test_stage_legacy_task_without_version_keeps_unscoped_counts(monkeypat
     )
     session = _StageSession(trial=trial, task=task, pending_count=0)
 
-    async def fake_verdict_enqueue(
-        _session,
-        *,
-        task_id,
-        task_version_id,
-        task_version_content_hash,
-        org_id,
-    ):
-        assert task_version_id is None
-        assert task_id == "task-legacy"
+    async def fake_verdict_enqueue(*_args, **_kwargs):
+        pytest.fail("an unversioned task must fail before enqueue")
 
     monkeypatch.setattr(queue_mod, "enqueue_qa_worker_job", fake_verdict_enqueue)
 
-    assert await queue_mod.maybe_start_qa_stage(session, "task-legacy-0") is True
-
-    for statement in session.scalar_statements:
-        sql = str(statement.compile(compile_kwargs={"literal_binds": True}))
-        assert "trials.task_version_id" not in sql
-    assert task.status == TaskStatus.VERDICT_PENDING
+    with pytest.raises(ValueError, match="re-upload"):
+        await queue_mod.maybe_start_qa_stage(session, "task-legacy-0")
+    assert task.status == TaskStatus.RUNNING
 
 
 @pytest.mark.asyncio
@@ -608,10 +599,12 @@ class _QASession:
         trials,
         worker_status=WorkerJobStatus.RUNNING,
         task_version=None,
+        qa_run=None,
     ):
         self._task = task
         self._trials = trials
         self._task_version = task_version
+        self._qa_run = qa_run
         if isinstance(worker_status, list):
             self._worker_statuses = worker_status
         else:
@@ -620,6 +613,8 @@ class _QASession:
     async def get(self, model, _key, **_kwargs):
         if getattr(model, "__name__", None) == "TaskVersionModel":
             return self._task_version
+        if model is TaskQaRunModel:
+            return self._qa_run
         return self._task
 
     async def execute(self, _statement):
@@ -629,6 +624,104 @@ class _QASession:
         if len(self._worker_statuses) > 1:
             return self._worker_statuses.pop(0)
         return self._worker_statuses[0]
+
+
+@pytest.mark.asyncio
+async def test_run_task_qa_job_freezes_and_publishes_run_provenance(monkeypatch):
+    version = SimpleNamespace(
+        id="task-provenance-v2",
+        task_id="task-provenance",
+        content_hash="content-v2",
+        pre_trial=None,
+        pre_trial_status=None,
+    )
+    task = SimpleNamespace(
+        id="task-provenance",
+        current_version_id=version.id,
+        status=TaskStatus.VERDICT_PENDING,
+        verdict_status=VerdictStatus.QUEUED,
+        verdict=None,
+        verdict_error=None,
+        verdict_started_at=None,
+        verdict_finished_at=None,
+        published_qa_run_id=None,
+        verdict_version_id=None,
+        finished_at=None,
+    )
+    trial = SimpleNamespace(
+        id="task-provenance-0",
+        analysis_status=AnalysisStatus.SUCCESS,
+        analysis={"classification": "GOOD_SUCCESS", "subtype": "Clean"},
+    )
+    qa_run = SimpleNamespace(
+        id="qa-provenance",
+        task_id=task.id,
+        task_version_id=version.id,
+        worker_job_id="job-provenance",
+        disposition=None,
+        input_trial_ids=[],
+        input_analysis_fingerprints={},
+        verdict=None,
+        error=None,
+        pre_trial_block_id=None,
+        verdict_block_id=None,
+        started_at=None,
+        finished_at=None,
+    )
+    session = _QASession(
+        task=task,
+        trials=[trial],
+        task_version=version,
+        qa_run=qa_run,
+    )
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield session
+
+    async def fake_load_live(_task_id, _task_version_id=None):
+        return [(trial.id, AnalysisStatus.SUCCESS)]
+
+    async def fake_verdict(*_args, **_kwargs):
+        return (
+            SimpleNamespace(
+                is_good=True,
+                confidence="high",
+                primary_issue=None,
+                reasoning="sound task",
+                recommendations=[],
+            ),
+            "block-verdict",
+        )
+
+    async def no_aggregate(_task_id):
+        return None
+
+    monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
+    monkeypatch.setattr("oddish.core.verdict_sync.get_session", fake_get_session)
+    monkeypatch.setattr(
+        qa_handler, "_load_live_trials_for_classification", fake_load_live
+    )
+    monkeypatch.setattr(qa_handler, "synthesize_task_verdict", fake_verdict)
+    monkeypatch.setattr(qa_handler, "aggregate_exploited_into_pre_trial", no_aggregate)
+
+    await qa_handler.run_task_qa_job(
+        task.id,
+        queue_key="qa",
+        worker_job_id=qa_run.worker_job_id,
+        qa_run_id=qa_run.id,
+        task_version_id=version.id,
+        enforce_task_version_id=True,
+        task_version_content_hash=version.content_hash,
+        enforce_task_version_content_hash=True,
+    )
+
+    assert qa_run.input_trial_ids == [trial.id]
+    assert qa_run.input_analysis_fingerprints[trial.id].startswith("sha256:")
+    assert qa_run.verdict_block_id == "block-verdict"
+    assert qa_run.disposition == TaskQaRunDisposition.PUBLISHED
+    assert task.published_qa_run_id == qa_run.id
+    assert task.verdict_version_id == version.id
 
 
 @pytest.mark.asyncio
@@ -1206,7 +1299,7 @@ async def test_run_task_qa_job_classifies_then_synthesizes(monkeypatch):
 
     async def fake_compute_verdict(classifications, *_args, **_kwargs):
         captured["classifications"] = classifications
-        return SimpleNamespace(
+        verdict = SimpleNamespace(
             is_good=False,
             confidence="high",
             primary_issue="task issue",
@@ -1217,6 +1310,7 @@ async def test_run_task_qa_job_classifies_then_synthesizes(monkeypatch):
             success_count=1,
             harness_error_count=0,
         )
+        return verdict, "block-task-9"
 
     monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
     monkeypatch.setattr("oddish.core.verdict_sync.get_session", fake_get_session)
@@ -1271,13 +1365,14 @@ async def test_run_task_qa_job_discards_verdict_after_version_changes(monkeypatc
 
     async def fake_compute_verdict(*_args, **_kwargs):
         task.current_version_id = "task-version-v2"
-        return SimpleNamespace(
+        verdict = SimpleNamespace(
             is_good=True,
             confidence="high",
             primary_issue=None,
             reasoning="healthy",
             recommendations=[],
         )
+        return verdict, "block-version-change"
 
     monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
     monkeypatch.setattr("oddish.core.verdict_sync.get_session", fake_get_session)
@@ -1368,13 +1463,14 @@ async def test_run_task_qa_job_discards_verdict_after_same_version_overwrite(
     async def fake_compute_verdict(*_args, **_kwargs):
         # overwrite_current_version preserves the row id but changes content.
         version.content_hash = "hash-after"
-        return SimpleNamespace(
+        verdict = SimpleNamespace(
             is_good=True,
             confidence="high",
             primary_issue=None,
             reasoning="healthy",
             recommendations=[],
         )
+        return verdict, "block-content-change"
 
     monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
     monkeypatch.setattr("oddish.core.verdict_sync.get_session", fake_get_session)
@@ -1434,13 +1530,14 @@ async def test_run_task_qa_job_duplicate_claim_cannot_overwrite_owner(monkeypatc
         # A second worker has claimed the same source snapshot while this pass
         # was synthesizing. Its later started_at token is the active owner.
         task.verdict_started_at = task.verdict_started_at + timedelta(seconds=1)
-        return SimpleNamespace(
+        verdict = SimpleNamespace(
             is_good=True,
             confidence="high",
             primary_issue=None,
             reasoning="healthy",
             recommendations=[],
         )
+        return verdict, "block-duplicate-claim"
 
     monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
     monkeypatch.setattr("oddish.core.verdict_sync.get_session", fake_get_session)
@@ -1554,7 +1651,7 @@ async def test_run_task_qa_job_waits_out_a_peer_classification_claim(monkeypatch
 
     async def fake_compute_verdict(classifications, *_args, **_kwargs):
         assert len(classifications) == 1
-        return SimpleNamespace(
+        verdict = SimpleNamespace(
             is_good=True,
             confidence="high",
             primary_issue=None,
@@ -1565,6 +1662,7 @@ async def test_run_task_qa_job_waits_out_a_peer_classification_claim(monkeypatch
             success_count=1,
             harness_error_count=0,
         )
+        return verdict, "block-peer-claim"
 
     monkeypatch.setattr(qa_handler, "QA_CLAIM_WAIT_POLL_SECONDS", 0)
     monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
@@ -1683,7 +1781,7 @@ async def test_run_task_qa_job_default_pre_trial_synth_is_noop(monkeypatch):
         return [(trial.id, AnalysisStatus.SUCCESS)]
 
     async def fake_compute_verdict(classifications, *_args, **_kwargs):
-        return SimpleNamespace(
+        verdict = SimpleNamespace(
             is_good=True,
             confidence="high",
             primary_issue="",
@@ -1694,6 +1792,7 @@ async def test_run_task_qa_job_default_pre_trial_synth_is_noop(monkeypatch):
             success_count=1,
             harness_error_count=0,
         )
+        return verdict, "block-default-pre-trial"
 
     async def fail_sync_pre_trial(*_args, **_kwargs):
         raise AssertionError(
@@ -1781,7 +1880,7 @@ async def test_run_task_qa_job_uses_injected_pre_trial_synth_fn(monkeypatch):
         return [(trial.id, AnalysisStatus.SUCCESS)]
 
     async def fake_compute_verdict(classifications, *_args, **_kwargs):
-        return SimpleNamespace(
+        verdict = SimpleNamespace(
             is_good=True,
             confidence="high",
             primary_issue="",
@@ -1792,6 +1891,7 @@ async def test_run_task_qa_job_uses_injected_pre_trial_synth_fn(monkeypatch):
             success_count=1,
             harness_error_count=0,
         )
+        return verdict, "block-injected-pre-trial"
 
     captured: dict = {}
 
@@ -1889,7 +1989,7 @@ async def test_run_task_qa_job_pre_trial_failure_never_blocks_verdict(monkeypatc
         return [(trial.id, AnalysisStatus.SUCCESS)]
 
     async def fake_compute_verdict(classifications, *_args, **_kwargs):
-        return SimpleNamespace(
+        verdict = SimpleNamespace(
             is_good=True,
             confidence="high",
             primary_issue="",
@@ -1900,6 +2000,7 @@ async def test_run_task_qa_job_pre_trial_failure_never_blocks_verdict(monkeypatc
             success_count=1,
             harness_error_count=0,
         )
+        return verdict, "block-pre-trial-failure"
 
     async def boom_pre_trial_synth(task_id, task_version_id, trial_ids, timeout):
         raise RuntimeError("sandbox exploded")
@@ -1973,7 +2074,7 @@ async def test_run_task_qa_job_releases_claim_when_store_vetoed(monkeypatch):
         return [(trial.id, AnalysisStatus.SUCCESS)]
 
     async def fake_compute_verdict(classifications, *_args, **_kwargs):
-        return SimpleNamespace(
+        verdict = SimpleNamespace(
             is_good=True,
             confidence="high",
             primary_issue="",
@@ -1984,6 +2085,7 @@ async def test_run_task_qa_job_releases_claim_when_store_vetoed(monkeypatch):
             success_count=1,
             harness_error_count=0,
         )
+        return verdict, "block-vetoed-pre-trial"
 
     async def stub_pre_trial_synth(task_id, task_version_id, trial_ids, timeout):
         return []
@@ -2135,16 +2237,19 @@ async def test_run_task_qa_job_ignores_cancelled_worker_job(monkeypatch):
         return [(trial.id, AnalysisStatus.SUCCESS)]
 
     async def fake_compute_verdict(classifications, *_args, **_kwargs):
-        return SimpleNamespace(
-            is_good=True,
-            confidence="high",
-            primary_issue=None,
-            reasoning="done",
-            recommendations=[],
-            task_problem_count=0,
-            agent_problem_count=0,
-            success_count=1,
-            harness_error_count=0,
+        return (
+            SimpleNamespace(
+                is_good=True,
+                confidence="high",
+                primary_issue=None,
+                reasoning="done",
+                recommendations=[],
+                task_problem_count=0,
+                agent_problem_count=0,
+                success_count=1,
+                harness_error_count=0,
+            ),
+            None,
         )
 
     monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
@@ -2388,13 +2493,14 @@ async def test_run_task_qa_job_threads_synthesis_args_and_stores_output(monkeypa
         captured["timeout"] = timeout
         captured["task_id"] = task_id
         captured["pre_trial_items"] = pre_trial_items
-        return SimpleNamespace(
+        verdict = SimpleNamespace(
             is_good=True,
             confidence="stub-confidence",
             primary_issue="stub issue",
             reasoning="stub reasoning",
             recommendations=["stub rec"],
         )
+        return verdict, "block-threaded-output"
 
     monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
     monkeypatch.setattr("oddish.core.verdict_sync.get_session", fake_get_session)

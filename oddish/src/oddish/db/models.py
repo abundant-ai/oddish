@@ -216,6 +216,20 @@ class WorkerJobStatus(str, Enum):
     BLOCKED = "BLOCKED"
 
 
+class TaskQaRunDisposition(str, Enum):
+    """Terminal domain outcome for one version-pinned task QA pass.
+
+    This deliberately does not mirror ``worker_jobs.status``.  The worker row
+    owns scheduling and retries; this value records what happened to the QA
+    result after the pass stopped being mutable.
+    """
+
+    PUBLISHED = "published"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    SUPERSEDED = "superseded"
+
+
 class SandboxRunState(str, Enum):
     """Durable lifecycle state for one remote sandbox launch attempt."""
 
@@ -826,6 +840,30 @@ class TaskModel(TimestampedMixin, Base):
     verdict_finished_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Hot-read provenance for the currently published verdict projection.
+    # ``published_qa_run_id`` identifies the immutable QA pass; the version
+    # projection avoids a task-list join merely to detect a stale-version
+    # verdict.  Both are written only by ``core.verdict_state``.
+    published_qa_run_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey(
+            "task_qa_runs.id",
+            name="fk_tasks_published_qa_run_id_task_qa_runs",
+            ondelete="SET NULL",
+            use_alter=True,
+        ),
+        nullable=True,
+    )
+    verdict_version_id: Mapped[str | None] = mapped_column(
+        String(160),
+        ForeignKey(
+            "task_versions.id",
+            name="fk_tasks_verdict_version_id_task_versions",
+            ondelete="SET NULL",
+            use_alter=True,
+        ),
+        nullable=True,
+    )
 
     # Migration provenance: set when created by the Sauron->Oddish importer,
     # NULL otherwise. Rich provenance lives in ``tags``; this is the clean
@@ -882,6 +920,17 @@ class TaskModel(TimestampedMixin, Base):
     current_version: Mapped["TaskVersionModel | None"] = relationship(  # type: ignore[assignment]
         "TaskVersionModel",
         foreign_keys=[current_version_id],
+        uselist=False,
+    )
+    published_qa_run: Mapped["TaskQaRunModel | None"] = relationship(  # type: ignore[assignment]
+        "TaskQaRunModel",
+        foreign_keys=[published_qa_run_id],
+        uselist=False,
+        post_update=True,
+    )
+    verdict_version: Mapped["TaskVersionModel | None"] = relationship(  # type: ignore[assignment]
+        "TaskVersionModel",
+        foreign_keys=[verdict_version_id],
         uselist=False,
     )
 
@@ -1853,6 +1902,82 @@ class WorkerJobModel(TimestampedMixin, Base):
     )
     job_token_revoked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+
+
+class TaskQaRunModel(TimestampedMixin, Base):
+    """One version-pinned task QA pass and its immutable result provenance.
+
+    The row is mutable only while the linked worker is active.  Terminal rows
+    preserve the exact input cohort, analysis identities, analyzer blocks, and
+    verdict that were used for the task-level decision.
+    """
+
+    __tablename__ = "task_qa_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "disposition IS NULL OR disposition IN "
+            "('published', 'failed', 'cancelled', 'superseded')",
+            name="ck_task_qa_runs_disposition",
+        ),
+        UniqueConstraint("worker_job_id", name="uq_task_qa_runs_worker_job_id"),
+        Index(
+            "idx_task_qa_runs_version_created",
+            "task_version_id",
+            text("created_at DESC"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    task_id: Mapped[str] = mapped_column(
+        String(128), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
+    )
+    task_version_id: Mapped[str] = mapped_column(
+        String(160),
+        ForeignKey("task_versions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    worker_job_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("worker_jobs.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    disposition: Mapped[TaskQaRunDisposition | None] = mapped_column(
+        String(16), nullable=True
+    )
+    input_trial_ids: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), nullable=False, default=list, server_default=text("'{}'::text[]")
+    )
+    input_analysis_fingerprints: Mapped[dict[str, str]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    verdict: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pre_trial_block_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("analyzer_blocks.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    verdict_block_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("analyzer_blocks.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    task: Mapped["TaskModel"] = relationship(  # type: ignore[assignment]
+        "TaskModel", foreign_keys=[task_id]
+    )
+    task_version: Mapped["TaskVersionModel"] = relationship(  # type: ignore[assignment]
+        "TaskVersionModel", foreign_keys=[task_version_id]
+    )
+    worker_job: Mapped["WorkerJobModel"] = relationship(  # type: ignore[assignment]
+        "WorkerJobModel", foreign_keys=[worker_job_id]
     )
 
 

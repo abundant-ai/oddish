@@ -6,13 +6,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, not_, select
+from sqlalchemy import select
 
 from oddish.analyze import BaselineValidation, TrialClassification
 from oddish.analyze.models import ActionItem, TaskVerdictModel
 from oddish.config import settings
-from oddish.core.baseline_gate import GATE_SKIP_PREFIX, baseline_agent_clause
-from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
+from oddish.core.qa_scope import analysis_fingerprint, qa_classification_scope
 from oddish.core.result_focus_schema import normalize_findings_schema
 from oddish.core.verdict_state import (
     abandon_verdict,
@@ -23,16 +22,18 @@ from oddish.core.verdict_sync import (
     aggregate_exploited_into_pre_trial,
     build_pre_trial_payload,
     build_verdict_payload,
+    close_unfinished_qa_run,
     sync_pre_trial_to_task_version,
     sync_verdict_to_task,
 )
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
+    TaskQaRunDisposition,
+    TaskQaRunModel,
     TaskStatus,
     TaskVersionModel,
     TrialModel,
-    TrialStatus,
     VerdictStatus,
     WorkerJobModel,
     WorkerJobStatus,
@@ -111,7 +112,7 @@ async def synthesize_task_verdict(
     task_id: str | None = None,
     pre_trial_items: list[ActionItem] | None = None,
     pre_trial_load_failed: bool = False,
-) -> TaskVerdictModel:
+) -> tuple[TaskVerdictModel, str]:
     """Synthesize the task verdict through VerdictBlock + AnalyzerBlock.
 
     The block self-provisions the direct API client for ``settings.verdict_model``
@@ -166,10 +167,11 @@ async def synthesize_task_verdict(
             block_metadata={"verdict_fallback": True} if fallback else None,
             output_transform=vb.to_verdict,
         )
-        return await asyncio.wait_for(block.run(), timeout=timeout or VERDICT_TIMEOUT)
+        output = await asyncio.wait_for(block.run(), timeout=timeout or VERDICT_TIMEOUT)
+        return output, block.id
 
     try:
-        out = await _run(settings.verdict_model, fallback=False)
+        out, block_id = await _run(settings.verdict_model, fallback=False)
     except Exception as exc:
         primary_error = f"{type(exc).__name__}: {exc}"
         if not is_permanent_provider_failure(primary_error):
@@ -180,7 +182,7 @@ async def synthesize_task_verdict(
             f"{settings.verdict_fallback_model}[/yellow]"
         )
         try:
-            out = await _run(settings.verdict_fallback_model, fallback=True)
+            out, block_id = await _run(settings.verdict_fallback_model, fallback=True)
         except Exception as fallback_exc:
             # Carry the primary's permanent failure into the raised message.
             # It becomes ``task.verdict_error``, which is the only thing
@@ -193,7 +195,7 @@ async def synthesize_task_verdict(
                 f"[verdict fallback {settings.verdict_fallback_model} failed "
                 f"after permanent primary failure -- {primary_error}]"
             ) from fallback_exc
-    return TaskVerdictModel(**out.output)
+    return TaskVerdictModel(**out.output), block_id
 
 
 @dataclass
@@ -858,33 +860,7 @@ async def _load_live_trials_for_classification(
                 select(
                     TrialModel.id,
                     TrialModel.analysis_status,
-                ).where(
-                    TrialModel.task_id == task_id,
-                    (
-                        TrialModel.task_version_id == task_version_id
-                        if task_version_id is not None
-                        else True
-                    ),
-                    TrialModel.superseded_by_trial_id.is_(None),
-                    # Exclude bulk-migrated Sauron trials (see docstring): too
-                    # costly to classify ~1M historical rows.
-                    TrialModel.imported_at.is_(None),
-                    # Cancelled trials have no outcome to classify.
-                    func.coalesce(TrialModel.harbor_stage, "")
-                    != CANCELLED_HARBOR_STAGE,
-                    # Gate-skipped trials never ran (no logs to classify); a
-                    # classifier run on them would emit phantom failures and
-                    # pollute the verdict + the agent's pass/fail metrics. New
-                    # skipped trials carry status=SKIPPED; the legacy prefix
-                    # check still excludes pre-SKIPPED rows (marked FAILED +
-                    # the old sentinel message, since we don't backfill).
-                    TrialModel.status != TrialStatus.SKIPPED,
-                    func.coalesce(TrialModel.error_message, "").notlike(
-                        f"{GATE_SKIP_PREFIX}%"
-                    ),
-                    # Deterministic baselines: no agent trajectory to classify.
-                    not_(baseline_agent_clause(TrialModel.agent)),
-                )
+                ).where(qa_classification_scope(task_id, task_version_id))
             )
         ).all()
 
@@ -896,6 +872,7 @@ async def run_task_qa_job(
     queue_key: str,
     modal_function_call_id: str | None = None,
     worker_job_id: str | None = None,
+    qa_run_id: str | None = None,
     task_version_id: str | None = None,
     enforce_task_version_id: bool = False,
     task_version_content_hash: str | None = None,
@@ -914,8 +891,29 @@ async def run_task_qa_job(
         if not task:
             raise RuntimeError(f"Task {task_id} not found in database")
 
+        qa_run = None
+        if qa_run_id is not None:
+            qa_run = await session.get(TaskQaRunModel, qa_run_id, with_for_update=True)
+            if qa_run is None:
+                raise RuntimeError(f"Task QA run {qa_run_id} not found")
+            if qa_run.task_id != task_id or (
+                worker_job_id is not None and qa_run.worker_job_id != worker_job_id
+            ):
+                raise RuntimeError(
+                    f"Task QA run {qa_run_id} does not own worker {worker_job_id} "
+                    f"for task {task_id}"
+                )
+            task_version_id = qa_run.task_version_id
+            enforce_task_version_id = True
+
         if not await _worker_job_is_running(session, worker_job_id):
             console.print(f"[dim]QA {task_id} skipped; job was cancelled[/dim]")
+            await close_unfinished_qa_run(
+                session,
+                qa_run_id,
+                disposition=TaskQaRunDisposition.CANCELLED,
+                reason="QA worker job was cancelled before execution",
+            )
             return False
 
         if task.verdict_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
@@ -944,11 +942,24 @@ async def run_task_qa_job(
             abandon_verdict(task)
             task.status = TaskStatus.RUNNING
             task.finished_at = None
+            await close_unfinished_qa_run(
+                session,
+                qa_run_id,
+                disposition=TaskQaRunDisposition.SUPERSEDED,
+                reason="Superseded by task source change before QA started",
+            )
             return True
         task_version_id = current_version_id
         task_version_content_hash = current_version_content_hash
         verdict_claim_started_at = utcnow()
         start_verdict(task, now=verdict_claim_started_at)
+        if qa_run is not None:
+            qa_run.started_at = verdict_claim_started_at
+            qa_run.finished_at = None
+            qa_run.error = None
+            if qa_run.disposition == TaskQaRunDisposition.FAILED:
+                # A retry of the same scheduling job is still the same QA pass.
+                qa_run.disposition = None
 
     verdict_result = None
     verdict_error = None
@@ -968,6 +979,15 @@ async def run_task_qa_job(
             task_id,
             task_version_id,
         )
+        input_trial_ids = sorted(trial_id for trial_id, _ in live_trials)
+        if qa_run_id is not None:
+            async with get_session() as session:
+                qa_run = await session.get(
+                    TaskQaRunModel, qa_run_id, with_for_update=True
+                )
+                if qa_run is not None and qa_run.disposition is None:
+                    # Freeze cohort membership before any classifier writes.
+                    qa_run.input_trial_ids = input_trial_ids
 
         # Pre-trial: a per-version task-source audit, independent of trial
         # classification -- runs before the per-trial loop, even when there are
@@ -1023,6 +1043,12 @@ async def run_task_qa_job(
                     session, worker_job_id
                 ):
                     complete_verdict_without_result(task, now=utcnow())
+                    await close_unfinished_qa_run(
+                        session,
+                        qa_run_id,
+                        disposition=TaskQaRunDisposition.SUPERSEDED,
+                        reason="No QA-eligible trials remained when the pass started",
+                    )
                     task.status = TaskStatus.COMPLETED
                     task.finished_at = utcnow()
                 elif (
@@ -1031,6 +1057,12 @@ async def run_task_qa_job(
                     and await _worker_job_is_running(session, worker_job_id)
                 ):
                     abandon_verdict(task)
+                    await close_unfinished_qa_run(
+                        session,
+                        qa_run_id,
+                        disposition=TaskQaRunDisposition.SUPERSEDED,
+                        reason="Superseded by task source change during QA admission",
+                    )
                     task.status = TaskStatus.RUNNING
                     task.finished_at = None
                     return True
@@ -1076,17 +1108,31 @@ async def run_task_qa_job(
                 return False
             trials_result = await session.execute(
                 select(TrialModel).where(
-                    TrialModel.task_id == task_id,
-                    (
-                        TrialModel.task_version_id == task_version_id
-                        if task_version_id is not None
-                        else True
-                    ),
-                    TrialModel.superseded_by_trial_id.is_(None),
+                    qa_classification_scope(task_id, task_version_id)
                 )
             )
             trials = trials_result.scalars().all()
             classifications = _classifications_from_trials(trials)
+            if qa_run_id is not None:
+                qa_run = await session.get(
+                    TaskQaRunModel, qa_run_id, with_for_update=True
+                )
+                if qa_run is not None and qa_run.disposition is None:
+                    qa_run.input_analysis_fingerprints = {
+                        trial.id: analysis_fingerprint(trial.analysis)
+                        for trial in trials
+                    }
+                    version = (
+                        await session.get(TaskVersionModel, task_version_id)
+                        if task_version_id is not None
+                        else None
+                    )
+                    pre_trial = version.pre_trial if version is not None else None
+                    qa_run.pre_trial_block_id = (
+                        pre_trial.get("block_id")
+                        if isinstance(pre_trial, dict)
+                        else None
+                    )
 
         # The "doubly note" elevation: union each trial's exploitation
         # assessments back onto task.pre_trial. Best-effort -- a failure here
@@ -1136,7 +1182,7 @@ async def run_task_qa_job(
         baseline = None
         quality_check_passed = True
         timeout = 180
-        verdict = await synthesize_task_verdict(
+        verdict, verdict_block_id = await synthesize_task_verdict(
             classifications,
             baseline,
             quality_check_passed,
@@ -1147,6 +1193,13 @@ async def run_task_qa_job(
         )
 
         verdict_result = build_verdict_payload(verdict, classifications)
+        if qa_run_id is not None:
+            async with get_session() as session:
+                qa_run = await session.get(
+                    TaskQaRunModel, qa_run_id, with_for_update=True
+                )
+                if qa_run is not None and qa_run.disposition is None:
+                    qa_run.verdict_block_id = verdict_block_id
 
         console.print(
             f"[green]Verdict computed:[/green] {verdict.verdict.upper()} "
@@ -1204,6 +1257,12 @@ async def run_task_qa_job(
         # lock, so a concurrently finishing current-version trial sees RUNNING
         # and can perform normal admission after this transaction commits.
         abandon_verdict(current_task)
+        await close_unfinished_qa_run(
+            session,
+            qa_run_id,
+            disposition=TaskQaRunDisposition.SUPERSEDED,
+            reason="Superseded by task source change before QA publication",
+        )
         current_task.status = TaskStatus.RUNNING
         current_task.finished_at = None
         result_superseded = True
@@ -1212,6 +1271,7 @@ async def run_task_qa_job(
     status = await asyncio.shield(
         sync_verdict_to_task(
             task_id,
+            qa_run_id=qa_run_id,
             payload=verdict_result,
             error=verdict_error,
             should_store=_qa_result_is_current,

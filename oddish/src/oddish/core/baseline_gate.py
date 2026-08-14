@@ -98,15 +98,25 @@ def baseline_agent_clause(agent_column):
     lists, the frontend's ``isBaselineAgentName``, and this all have to agree on
     what counts as a baseline.
     """
+    nop_clause, oracle_clause = baseline_agent_kind_clauses(agent_column)
+    return or_(nop_clause, oracle_clause)
+
+
+def baseline_agent_kind_clauses(agent_column):
+    """Return the SQL membership clauses for nop and oracle respectively."""
+
     agent_lower = func.lower(func.coalesce(agent_column, ""))
-    return or_(
+    nop_clause = or_(
         agent_lower == AgentName.NOP.value,
-        agent_lower == AgentName.ORACLE.value,
         agent_lower.like("nop-%"),
-        agent_lower.like("oracle-%"),
         agent_lower.like("agent-nop%"),
+    )
+    oracle_clause = or_(
+        agent_lower == AgentName.ORACLE.value,
+        agent_lower.like("oracle-%"),
         agent_lower.like("agent-oracle%"),
     )
+    return nop_clause, oracle_clause
 
 
 __all__ = [
@@ -114,5 +124,6 @@ __all__ = [
     "GATE_SKIP_PREFIX",
     "GateOutcome",
     "baseline_agent_clause",
+    "baseline_agent_kind_clauses",
     "evaluate_baseline_gate",
 ]

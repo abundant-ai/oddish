@@ -19,6 +19,8 @@ def _task(
     *,
     payload: dict | None = None,
     status: VerdictStatus | None = None,
+    qa_run_id: str | None = "qa-old",
+    version_id: str | None = "task-v1",
 ) -> SimpleNamespace:
     return SimpleNamespace(
         verdict=payload,
@@ -26,6 +28,8 @@ def _task(
         verdict_error="old error",
         verdict_started_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         verdict_finished_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        published_qa_run_id=qa_run_id,
+        verdict_version_id=version_id,
     )
 
 
@@ -70,6 +74,8 @@ def test_replacement_lifecycle_retains_published_result_until_success() -> None:
     assert task.verdict is original
     assert task.verdict_status == VerdictStatus.QUEUED
     assert task.verdict_finished_at == published_at
+    assert task.published_qa_run_id == "qa-old"
+    assert task.verdict_version_id == "task-v1"
 
     start_verdict(task, now=started_at)
     assert task.verdict is original
@@ -77,10 +83,18 @@ def test_replacement_lifecycle_retains_published_result_until_success() -> None:
     assert task.verdict_started_at == started_at
     assert task.verdict_finished_at == published_at
 
-    complete_verdict(task, payload=replacement, now=finished_at)
+    complete_verdict(
+        task,
+        payload=replacement,
+        now=finished_at,
+        qa_run_id="qa-new",
+        task_version_id="task-v2",
+    )
     assert task.verdict is replacement
     assert task.verdict_status == VerdictStatus.SUCCESS
     assert task.verdict_finished_at == finished_at
+    assert task.published_qa_run_id == "qa-new"
+    assert task.verdict_version_id == "task-v2"
 
 
 def test_cancel_replacement_restores_result_but_failure_discards_it() -> None:
@@ -92,6 +106,8 @@ def test_cancel_replacement_restores_result_but_failure_discards_it() -> None:
     assert task.verdict is payload
     assert task.verdict_status == VerdictStatus.SUCCESS
     assert task.verdict_finished_at == published_at
+    assert task.published_qa_run_id == "qa-old"
+    assert task.verdict_version_id == "task-v1"
 
     queue_verdict(task)
     failed_at = datetime.now(timezone.utc)
@@ -100,6 +116,8 @@ def test_cancel_replacement_restores_result_but_failure_discards_it() -> None:
     assert task.verdict_status == VerdictStatus.FAILED
     assert task.verdict_error == "provider failed"
     assert task.verdict_finished_at == failed_at
+    assert task.published_qa_run_id is None
+    assert task.verdict_version_id is None
 
 
 def test_noop_qa_restores_existing_result() -> None:

@@ -26,6 +26,7 @@ from cloud_policy import (
 )
 from oddish.dispatch.backends.modal import ModalDispatcher
 from oddish.dispatch.ports import WorkerHandle
+from oddish.analyze.models import ActionTier
 from oddish.filters.trial_metrics import TrialMetricFilter
 from oddish.core.endpoints import (
     SweepAttribution,
@@ -44,6 +45,7 @@ from oddish.core.endpoints import (
     get_experiment_cost_totals,
     get_task_detail_core,
     get_task_open_core,
+    get_task_review_core,
     get_task_for_org_core,
     get_task_status_core,
     get_task_version_core,
@@ -133,6 +135,7 @@ from oddish.schemas import (
     TaskBatchCancelRequest,
     TaskDetailResponse,
     TaskOpenResponse,
+    TaskReviewResponse,
     TaskUploadCompleteRequest,
     TaskUploadInitRequest,
     TaskUploadInitResponse,
@@ -1542,6 +1545,36 @@ async def get_task_open(
             version_id=version_id,
             org_id=auth.org_id,
             record_timing=_make_timing_recorder(request),
+        )
+
+
+@router.get("/tasks/{task_id}/review", response_model=TaskReviewResponse)
+async def get_task_review(
+    task_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    version: int | None = Query(None, ge=1),
+    experiment_id: str | None = Query(None),
+    tier: list[ActionTier] | None = Query(None),
+    finding_limit: int = Query(20, ge=0, le=20),
+    finding_cursor: str | None = Query(None),
+    trial_limit: int = Query(20, ge=0, le=20),
+    trial_cursor: str | None = Query(None),
+) -> TaskReviewResponse:
+    """Read the canonical task-version QA review for this organization."""
+    auth.require_scope(APIKeyScope.READ)
+
+    async with get_session() as session:
+        return await get_task_review_core(
+            session,
+            task_ref=task_id,
+            org_id=auth.org_id,
+            version=version,
+            experiment_id=experiment_id,
+            tiers=tier,
+            finding_limit=finding_limit,
+            finding_cursor=finding_cursor,
+            trial_limit=trial_limit,
+            trial_cursor=trial_cursor,
         )
 
 

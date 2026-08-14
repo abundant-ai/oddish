@@ -30,9 +30,11 @@ from oddish.core.verdict_state import (
     has_active_verdict,
     has_published_verdict,
 )
+from oddish.core.verdict_sync import close_unfinished_qa_run
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
+    TaskQaRunDisposition,
     TaskStatus,
     TrialModel,
     TrialStatus,
@@ -125,7 +127,7 @@ async def _cancel_worker_jobs(
     trial_ids: list[str],
     task_ids: list[str],
     caller_trial_id: str | None,
-) -> tuple[list[str], list[str], list[tuple[str, str]]]:
+) -> tuple[list[str], list[str], list[tuple[str, str]], list[str]]:
     trial_branch = (
         "(subject_table = 'trials' AND subject_id = ANY(:trial_ids))"
         if trial_ids
@@ -147,7 +149,7 @@ async def _cancel_worker_jobs(
                 f"""
                 WITH to_cancel AS (
                     SELECT id, subject_table, subject_id,
-                           modal_function_call_id, provider, external_id
+                           modal_function_call_id, provider, external_id, payload
                     FROM worker_jobs
                     WHERE status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
                       AND ({trial_branch} OR {task_branch})
@@ -168,7 +170,8 @@ async def _cancel_worker_jobs(
                           to_cancel.subject_id,
                           to_cancel.modal_function_call_id,
                           to_cancel.provider,
-                          to_cancel.external_id
+                          to_cancel.external_id,
+                          to_cancel.payload
                 """
             ),
             params,
@@ -195,7 +198,16 @@ async def _cancel_worker_jobs(
             if row[3] is not None and row[4] is not None
         }
     )
-    return modal_ids, caller_modal_ids, worker_targets
+    qa_run_ids = list(
+        dict.fromkeys(
+            str(payload["qa_run_id"])
+            for row in rows
+            if row[0] == "tasks"
+            for payload in [((row[5] or {}) or {})]
+            if payload.get("mode") != "pre_trial" and payload.get("qa_run_id")
+        )
+    )
+    return modal_ids, caller_modal_ids, worker_targets, qa_run_ids
 
 
 async def cancel_trials_if_quota_reached(
@@ -274,7 +286,7 @@ async def cancel_trials_if_quota_reached(
     result["affected_task_ids"] = affected_task_ids
     result["cancelled_trial_ids"] = trial_ids
 
-    modal_ids, caller_modal_ids, worker_targets = await _cancel_worker_jobs(
+    modal_ids, caller_modal_ids, worker_targets, _ = await _cancel_worker_jobs(
         session,
         trial_ids=trial_ids,
         task_ids=[],
@@ -391,7 +403,7 @@ async def _reconcile_cancelled_tasks(
     )
     result["tasks_cancelled"] = max(result["tasks_cancelled"], tasks_cancelled)
 
-    modal_ids, _, worker_targets = await _cancel_worker_jobs(
+    modal_ids, _, worker_targets, qa_run_ids = await _cancel_worker_jobs(
         session,
         trial_ids=[],
         task_ids=exhausted_task_ids,
@@ -403,6 +415,13 @@ async def _reconcile_cancelled_tasks(
     result["worker_targets"] = sorted(
         set(result["worker_targets"]) | set(worker_targets)
     )
+    for qa_run_id in qa_run_ids:
+        await close_unfinished_qa_run(
+            session,
+            qa_run_id,
+            disposition=TaskQaRunDisposition.CANCELLED,
+            reason=QUOTA_CANCELLED_MESSAGE,
+        )
     await session.flush()
 
 

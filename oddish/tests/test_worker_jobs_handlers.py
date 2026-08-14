@@ -118,13 +118,20 @@ def _analysis_claim(**overrides) -> ClaimedWorkerJob:
 
 
 def _verdict_claim(**overrides) -> ClaimedWorkerJob:
+    payload = {
+        "task_id": "task-xyz",
+        "task_version_id": "task-v1",
+        "task_version_content_hash": "hash-v1",
+        "qa_run_id": "qa-run-1",
+    }
+    payload.update(overrides.pop("payload", {}))
     defaults = dict(
         id="wj-vd-1",
         kind=WorkerJobKind.QA,
         queue_key="qa",
         subject_table="tasks",
         subject_id="task-xyz",
-        payload={"task_id": "task-xyz"},
+        payload=payload,
         attempts=1,
         max_attempts=6,
         org_id=None,
@@ -338,10 +345,11 @@ async def test_qa_handler_returns_ok_on_success(monkeypatch):
     )
 
     async def _stub_run(*args, **kwargs):
-        assert kwargs["task_version_id"] is None
-        assert kwargs["enforce_task_version_id"] is False
-        assert kwargs["task_version_content_hash"] is None
-        assert kwargs["enforce_task_version_content_hash"] is False
+        assert kwargs["qa_run_id"] == "qa-run-1"
+        assert kwargs["task_version_id"] == "task-v1"
+        assert kwargs["enforce_task_version_id"] is True
+        assert kwargs["task_version_content_hash"] == "hash-v1"
+        assert kwargs["enforce_task_version_content_hash"] is True
         task_row.verdict_status = VerdictStatus.SUCCESS
 
     monkeypatch.setattr(handlers_module, "run_task_qa_job", _stub_run)
@@ -519,115 +527,13 @@ async def test_qa_handler_retries_failed_current_pinned_verdict(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_qa_handler_retries_failed_explicitly_pinned_legacy_snapshot(
-    monkeypatch,
-):
-    task_row = SimpleNamespace(
-        status=TaskStatus.COMPLETED,
-        current_version_id=None,
-        verdict_status=VerdictStatus.FAILED,
-        verdict_error="transient synth failure",
-        verdict=None,
-        verdict_started_at=None,
-        verdict_finished_at="finished",
-        finished_at="finished",
-    )
-    monkeypatch.setattr(
-        handlers_module, "get_session", _fake_get_session_factory(task_row)
-    )
-    ran = []
-
-    async def rerun(*_args, **kwargs):
-        ran.append(kwargs["enforce_task_version_id"])
-        task_row.verdict_status = VerdictStatus.SUCCESS
-        return False
-
-    monkeypatch.setattr(handlers_module, "run_task_qa_job", rerun)
-    outcome = await QaJobHandler().run(
-        _verdict_claim(
-            payload={
-                "task_id": "task-xyz",
-                "task_version_id": None,
-                "task_version_content_hash": None,
-            }
-        )
-    )
-
-    assert ran == [True]
-    assert outcome.success is not None
+async def test_qa_handler_rejects_an_unversioned_full_qa_job(monkeypatch):
+    with pytest.raises(ValueError, match="task_version_id"):
+        await QaJobHandler().run(_verdict_claim(payload={"task_version_id": None}))
 
 
 @pytest.mark.asyncio
-async def test_qa_handler_unpinned_failed_retry_reenters_current_admission(
-    monkeypatch,
-):
-    task_row = SimpleNamespace(
-        status=TaskStatus.VERDICT_PENDING,
-        current_version_id="task-v1",
-        current_version_content_hash="hash-v1",
-        verdict_status=VerdictStatus.QUEUED,
-        verdict_error=None,
-        verdict=None,
-        verdict_started_at=None,
-        verdict_finished_at=None,
-        finished_at=None,
-    )
-    monkeypatch.setattr(
-        handlers_module, "get_session", _fake_get_session_factory(task_row)
-    )
-    run_count = 0
-    admission_count = 0
-
-    async def run_attempt(*_args, **kwargs):
-        nonlocal run_count
-        run_count += 1
-        if run_count == 1:
-            assert kwargs["enforce_task_version_id"] is True
-            task_row.status = TaskStatus.COMPLETED
-            task_row.verdict_status = VerdictStatus.FAILED
-            task_row.verdict_error = "transient synth failure"
-        else:
-            assert kwargs["task_version_id"] == "task-v2"
-            assert kwargs["task_version_content_hash"] == "hash-v2"
-            task_row.verdict_status = VerdictStatus.SUCCESS
-            task_row.verdict_error = None
-        return False
-
-    async def admit(_session, task_id, *, reuse_worker):
-        nonlocal admission_count
-        admission_count += 1
-        assert task_id == "task-xyz"
-        assert reuse_worker is True
-        assert task_row.status == TaskStatus.RUNNING
-        task_row.status = TaskStatus.VERDICT_PENDING
-        task_row.verdict_status = VerdictStatus.QUEUED
-        return TaskQAStageAdmission(
-            advanced=True,
-            reuse_worker=True,
-            task_version_id="task-v1" if admission_count == 1 else "task-v2",
-            task_version_content_hash=(
-                "hash-v1" if admission_count == 1 else "hash-v2"
-            ),
-        )
-
-    monkeypatch.setattr(handlers_module, "run_task_qa_job", run_attempt)
-    monkeypatch.setattr("oddish.queue.maybe_start_task_qa_stage", admit)
-    claim = _verdict_claim()
-
-    first = await QaJobHandler().run(claim)
-    assert first.failure is not None
-    assert first.failure.retryable is True
-    assert task_row.status == TaskStatus.COMPLETED
-
-    second = await QaJobHandler().run(claim)
-
-    assert second.success is not None
-    assert admission_count == 2
-    assert run_count == 2
-
-
-@pytest.mark.asyncio
-async def test_qa_handler_retires_superseded_version_without_retry(monkeypatch):
+async def test_qa_handler_superseded_run_admits_a_fresh_job(monkeypatch):
     task_row = SimpleNamespace(
         verdict_status=None,
         verdict_error=None,
@@ -642,147 +548,24 @@ async def test_qa_handler_retires_superseded_version_without_retry(monkeypatch):
         assert kwargs["enforce_task_version_id"] is True
         return True
 
-    async def _active_version_blocks(_session, task_id, *, reuse_worker):
+    admissions = []
+
+    async def _admit_fresh(_session, task_id, *, reuse_worker=False):
         assert task_id == "task-xyz"
-        assert reuse_worker is True
+        admissions.append(reuse_worker)
         return TaskQAStageAdmission()
 
     monkeypatch.setattr(handlers_module, "run_task_qa_job", _stub_run)
-    monkeypatch.setattr(
-        "oddish.queue.maybe_start_task_qa_stage", _active_version_blocks
-    )
+    monkeypatch.setattr("oddish.queue.maybe_start_task_qa_stage", _admit_fresh)
 
     outcome = await QaJobHandler().run(
         _verdict_claim(payload={"task_id": "task-xyz", "task_version_id": "task-v1"})
     )
 
     assert pins == ["task-v1"]
+    assert admissions == [False]
     assert outcome.success is not None
     assert outcome.success.result_summary is None
-
-
-@pytest.mark.asyncio
-async def test_qa_handler_reuses_worker_after_current_version_admission(monkeypatch):
-    task_row = SimpleNamespace(
-        verdict_status=None,
-        verdict_error=None,
-    )
-    monkeypatch.setattr(
-        handlers_module, "get_session", _fake_get_session_factory(task_row)
-    )
-    pins = []
-
-    async def _stub_run(*args, **kwargs):
-        pins.append(kwargs["task_version_id"])
-        assert kwargs["enforce_task_version_id"] is True
-        if len(pins) == 1:
-            return True
-        task_row.verdict_status = VerdictStatus.SUCCESS
-        return False
-
-    async def _reuse(_session, task_id, *, reuse_worker):
-        return TaskQAStageAdmission(
-            advanced=True,
-            reuse_worker=True,
-            task_version_id="task-v2",
-            task_version_content_hash="hash-v2",
-        )
-
-    monkeypatch.setattr(handlers_module, "run_task_qa_job", _stub_run)
-    monkeypatch.setattr("oddish.queue.maybe_start_task_qa_stage", _reuse)
-
-    outcome = await QaJobHandler().run(
-        _verdict_claim(payload={"task_id": "task-xyz", "task_version_id": "task-v1"})
-    )
-
-    assert pins == ["task-v1", "task-v2"]
-    assert outcome.success is not None
-
-
-@pytest.mark.asyncio
-async def test_qa_handler_legacy_unpinned_retry_is_admitted_before_run(monkeypatch):
-    task_row = SimpleNamespace(
-        status=TaskStatus.VERDICT_PENDING,
-        finished_at=None,
-        verdict=None,
-        verdict_status=VerdictStatus.QUEUED,
-        verdict_error=None,
-        verdict_started_at=None,
-        verdict_finished_at=None,
-    )
-    monkeypatch.setattr(
-        handlers_module, "get_session", _fake_get_session_factory(task_row)
-    )
-    calls = []
-
-    async def _admit(_session, task_id, *, reuse_worker):
-        assert task_row.status == TaskStatus.RUNNING
-        return TaskQAStageAdmission(
-            advanced=True,
-            reuse_worker=True,
-            task_version_id="task-current-v2",
-            task_version_content_hash="hash-current-v2",
-        )
-
-    async def _stub_run(*_args, **kwargs):
-        calls.append(
-            (
-                kwargs["task_version_id"],
-                kwargs["enforce_task_version_id"],
-                kwargs["task_version_content_hash"],
-                kwargs["enforce_task_version_content_hash"],
-            )
-        )
-        task_row.verdict_status = VerdictStatus.SUCCESS
-        return False
-
-    monkeypatch.setattr("oddish.queue.maybe_start_task_qa_stage", _admit)
-    monkeypatch.setattr(handlers_module, "run_task_qa_job", _stub_run)
-
-    outcome = await QaJobHandler().run(_verdict_claim())
-
-    assert calls == [("task-current-v2", True, "hash-current-v2", True)]
-    assert outcome.success is not None
-
-
-@pytest.mark.asyncio
-async def test_qa_handler_rechecks_pin_across_second_version_switch(monkeypatch):
-    task_row = SimpleNamespace(
-        verdict_status=None,
-        verdict_error=None,
-    )
-    monkeypatch.setattr(
-        handlers_module, "get_session", _fake_get_session_factory(task_row)
-    )
-    pins = []
-    admitted_versions = iter(("task-v2", "task-v3"))
-    admitted_hashes = iter(("hash-v2", "hash-v3"))
-
-    async def _stub_run(*args, **kwargs):
-        pins.append(kwargs["task_version_id"])
-        assert kwargs["enforce_task_version_id"] is True
-        if len(pins) < 3:
-            return True
-        task_row.verdict_status = VerdictStatus.SUCCESS
-        return False
-
-    async def _reuse(_session, task_id, *, reuse_worker):
-        return TaskQAStageAdmission(
-            advanced=True,
-            reuse_worker=True,
-            task_version_id=next(admitted_versions),
-            task_version_content_hash=next(admitted_hashes),
-        )
-
-    monkeypatch.setattr(handlers_module, "run_task_qa_job", _stub_run)
-    monkeypatch.setattr("oddish.queue.maybe_start_task_qa_stage", _reuse)
-
-    outcome = await QaJobHandler().run(
-        _verdict_claim(payload={"task_id": "task-xyz", "task_version_id": "task-v1"})
-    )
-
-    assert pins == ["task-v1", "task-v2", "task-v3"]
-    assert outcome.success is not None
 
 
 @pytest.mark.asyncio

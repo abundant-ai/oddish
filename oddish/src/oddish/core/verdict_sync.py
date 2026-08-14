@@ -9,6 +9,8 @@ from oddish.analyze import Classification, TrialClassification
 from oddish.core.verdict_state import complete_verdict, fail_verdict
 from oddish.db import (
     TaskModel,
+    TaskQaRunDisposition,
+    TaskQaRunModel,
     TaskStatus,
     TaskVersionModel,
     TrialModel,
@@ -18,6 +20,43 @@ from oddish.db import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def close_unfinished_qa_run(
+    session,
+    qa_run_id: str | None,
+    *,
+    disposition: TaskQaRunDisposition | str,
+    reason: str,
+) -> bool:
+    """Close one active QA provenance row exactly once.
+
+    Cancellation, supersession, and terminal worker failure all use this
+    guarded mutation so a terminal worker cannot leave a run looking active.
+    Publishing remains owned by :func:`sync_verdict_to_task`.
+    """
+
+    allowed = {
+        TaskQaRunDisposition.CANCELLED.value,
+        TaskQaRunDisposition.SUPERSEDED.value,
+        TaskQaRunDisposition.FAILED.value,
+    }
+    value = (
+        disposition.value
+        if isinstance(disposition, TaskQaRunDisposition)
+        else disposition
+    )
+    if value not in allowed:
+        raise ValueError(f"unsupported unfinished QA disposition: {value}")
+    if not qa_run_id:
+        return False
+    run = await session.get(TaskQaRunModel, qa_run_id, with_for_update=True)
+    if run is None or run.disposition is not None:
+        return False
+    run.disposition = TaskQaRunDisposition(value)
+    run.error = reason
+    run.finished_at = utcnow()
+    return True
 
 
 def build_verdict_payload(
@@ -62,6 +101,7 @@ def build_verdict_payload(
 async def sync_verdict_to_task(
     task_id: str,
     *,
+    qa_run_id: str | None = None,
     payload: dict | None,
     error: str | None,
     should_store: Callable[[Any], Awaitable[bool]] | None = None,
@@ -77,15 +117,41 @@ async def sync_verdict_to_task(
         if not task:
             return None
 
+        qa_run = None
+        if qa_run_id is not None:
+            qa_run = await session.get(TaskQaRunModel, qa_run_id, with_for_update=True)
+            if qa_run is None or qa_run.task_id != task_id:
+                return None
+
         if should_store is not None and not await should_store(session):
             return None
 
         if payload:
-            complete_verdict(task, payload=payload, now=utcnow())
+            finished_at = utcnow()
+            if qa_run is not None:
+                qa_run.disposition = TaskQaRunDisposition.PUBLISHED
+                qa_run.verdict = payload
+                qa_run.error = None
+                qa_run.finished_at = finished_at
+            complete_verdict(
+                task,
+                payload=payload,
+                now=finished_at,
+                qa_run_id=qa_run.id if qa_run is not None else None,
+                task_version_id=(
+                    qa_run.task_version_id if qa_run is not None else None
+                ),
+            )
             terminal_status = VerdictStatus.SUCCESS
         else:
             failure = error or "Verdict synthesis failed with exception"
-            fail_verdict(task, error=failure, now=utcnow())
+            finished_at = utcnow()
+            if qa_run is not None:
+                qa_run.disposition = TaskQaRunDisposition.FAILED
+                qa_run.verdict = None
+                qa_run.error = failure
+                qa_run.finished_at = finished_at
+            fail_verdict(task, error=failure, now=finished_at)
             terminal_status = VerdictStatus.FAILED
 
         task.status = TaskStatus.COMPLETED

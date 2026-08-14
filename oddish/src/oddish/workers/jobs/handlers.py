@@ -250,11 +250,15 @@ class QaJobHandler:
             return JobOutcome.ok()
 
         payload = job.payload or {}
+        qa_run_id = payload.get("qa_run_id")
+        if not qa_run_id:
+            raise ValueError("full QA worker_job missing payload.qa_run_id")
         task_version_id = payload.get("task_version_id")
         task_version_pinned = "task_version_id" in payload
+        if not task_version_pinned or not task_version_id:
+            raise ValueError("full QA worker_job missing payload.task_version_id")
         task_version_content_hash = payload.get("task_version_content_hash")
         task_version_content_hash_pinned = "task_version_content_hash" in payload
-        legacy_admission = None
         async with get_session() as session:
             # Cancellation can land after claim. Check the durable worker row
             # before resetting verdict state or touching the task at all.
@@ -284,15 +288,8 @@ class QaJobHandler:
             )
             if qa_owner_id is not None and qa_owner_id != job.id:
                 return JobOutcome.ok()
-            # A retired legacy worker must not revive a terminal task after a
-            # default-version change. A legitimate new version resets the task
-            # to RUNNING at upload time and enters admission below.
             task_status = getattr(task, "status", None)
             if task_status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-                # sync_verdict_to_task intentionally completes the task even
-                # when synthesis FAILED, then asks this same pinned worker to
-                # retry. Only that exact current source snapshot may revive;
-                # historical/unpinned workers remain retired.
                 current_version = (
                     await session.get(TaskVersionModel, task.current_version_id)
                     if getattr(task, "current_version_id", None) is not None
@@ -303,96 +300,37 @@ class QaJobHandler:
                     if current_version is not None
                     else None
                 )
-                pinned_retry_is_current = bool(
-                    task_version_pinned
-                    and task_version_content_hash_pinned
+                retry_is_current = bool(
+                    task_version_content_hash_pinned
                     and task.verdict_status == VerdictStatus.FAILED
                     and task.current_version_id == task_version_id
                     and current_content_hash == task_version_content_hash
                 )
-                legacy_failed_retry = bool(
-                    not task_version_pinned
-                    and task.verdict_status == VerdictStatus.FAILED
-                )
-                if not pinned_retry_is_current and not legacy_failed_retry:
+                if not retry_is_current:
                     return JobOutcome.ok()
-                if legacy_failed_retry:
-                    # Pre-pin jobs still own a genuine transient retry, but
-                    # must resolve and pass current-version trial admission
-                    # afresh rather than blindly running whatever is current.
-                    from oddish.core.verdict_state import abandon_verdict
-
-                    abandon_verdict(task)
-                    task.status = TaskStatus.RUNNING
-                    task.finished_at = None
             if task.verdict_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
                 queue_verdict(task)
-            task_status = getattr(task, "status", None)
-            if not task_version_pinned and task_status in (
-                TaskStatus.PENDING,
-                TaskStatus.RUNNING,
-                TaskStatus.VERDICT_PENDING,
-            ):
-                # Jobs created before task-version pins existed must also pass
-                # current admission on every attempt. Reset an old admitted
-                # state in this same transaction, so an admission exception
-                # rolls it back and the worker retry cannot bypass the gates.
-                if task_status == TaskStatus.VERDICT_PENDING:
-                    from oddish.core.verdict_state import abandon_verdict
 
-                    abandon_verdict(task)
-                    task.status = TaskStatus.RUNNING
-                    task.finished_at = None
-                from oddish.queue import maybe_start_task_qa_stage
-
-                legacy_admission = await maybe_start_task_qa_stage(
-                    session,
-                    task_id,
-                    reuse_worker=True,
-                )
-
-        if legacy_admission is not None:
-            if not legacy_admission.reuse_worker:
-                return JobOutcome.ok()
-            task_version_id = legacy_admission.task_version_id
-            task_version_pinned = True
-            task_version_content_hash = legacy_admission.task_version_content_hash
-            task_version_content_hash_pinned = True
-
-        while True:
-            result_superseded = await run_task_qa_job(
-                task_id,
-                queue_key=job.queue_key,
-                modal_function_call_id=job.modal_function_call_id,
-                worker_job_id=job.id,
-                task_version_id=task_version_id,
-                enforce_task_version_id=task_version_pinned,
-                task_version_content_hash=task_version_content_hash,
-                enforce_task_version_content_hash=task_version_content_hash_pinned,
-            )
-            if not result_superseded:
-                break
-
-            # Re-enter the same current-version trial gates while this worker
-            # still owns the retry. Active trials leave the task RUNNING and
-            # retire this obsolete job; zero eligible trials complete it. If
-            # all eligible trials are terminal, reuse this worker rather than
-            # enqueueing a competing row. A DB failure escapes to the runner,
-            # which retries this still-live job instead of stranding the task.
+        result_superseded = await run_task_qa_job(
+            task_id,
+            queue_key=job.queue_key,
+            modal_function_call_id=job.modal_function_call_id,
+            worker_job_id=job.id,
+            qa_run_id=qa_run_id,
+            task_version_id=task_version_id,
+            enforce_task_version_id=task_version_pinned,
+            task_version_content_hash=task_version_content_hash,
+            enforce_task_version_content_hash=task_version_content_hash_pinned,
+        )
+        if result_superseded:
+            # This run is permanently pinned to its original version. Admit a
+            # fresh job/run for the replacement instead of mutating provenance
+            # or reusing the obsolete worker.
             from oddish.queue import maybe_start_task_qa_stage
 
             async with get_session() as session:
-                admission = await maybe_start_task_qa_stage(
-                    session,
-                    task_id,
-                    reuse_worker=True,
-                )
-            if not admission.reuse_worker:
-                return JobOutcome.ok()
-            task_version_id = admission.task_version_id
-            task_version_pinned = True
-            task_version_content_hash = admission.task_version_content_hash
-            task_version_content_hash_pinned = True
+                await maybe_start_task_qa_stage(session, task_id)
+            return JobOutcome.ok()
 
         async with get_session() as session:
             task = await session.get(TaskModel, task_id)
@@ -511,7 +449,9 @@ class AnalyzerJobHandler:
                 trial_id, payload.get("triggered_by_user_id")
             )
             if result is None:
-                return _fail_permanent(f"Trial {trial_id} has no trajectory to summarize")
+                return _fail_permanent(
+                    f"Trial {trial_id} has no trajectory to summarize"
+                )
             return JobOutcome.ok(
                 {
                     "trial_id": trial_id,

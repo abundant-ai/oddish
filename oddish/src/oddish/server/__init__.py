@@ -14,6 +14,7 @@ from typing import Annotated, cast
 import uvicorn
 from rich.console import Console
 
+from oddish.analyze.models import ActionTier
 from oddish.core.endpoints import (
     backfill_task_analysis_core,
     browse_experiment_options_core,
@@ -27,6 +28,7 @@ from oddish.core.endpoints import (
     create_task_sweep_core,
     get_task_detail_core,
     get_task_open_core,
+    get_task_review_core,
     get_task_status_core,
     get_task_version_core,
     get_trial_analysis_log_core,
@@ -102,6 +104,7 @@ from oddish.schemas import (
     ExperimentUpdateResponse,
     TaskDetailResponse,
     TaskOpenResponse,
+    TaskReviewResponse,
     TaskUploadCompleteRequest,
     TaskUploadInitRequest,
     TaskUploadInitResponse,
@@ -583,6 +586,32 @@ async def get_task_open(task_id: str, version_id: str | None = None):
     """Bounded task-page header, aggregates, and trial preview."""
     async with get_session() as session:
         return await get_task_open_core(session, task_id=task_id, version_id=version_id)
+
+
+@api.get("/tasks/{task_id}/review", response_model=TaskReviewResponse)
+async def get_task_review(
+    task_id: str,
+    version: int | None = Query(None, ge=1),
+    experiment_id: str | None = Query(None),
+    tier: list[ActionTier] | None = Query(None),
+    finding_limit: int = Query(20, ge=0, le=20),
+    finding_cursor: str | None = Query(None),
+    trial_limit: int = Query(20, ge=0, le=20),
+    trial_cursor: str | None = Query(None),
+) -> TaskReviewResponse:
+    """Read existing version-pinned QA evidence without starting analysis."""
+    async with get_session() as session:
+        return await get_task_review_core(
+            session,
+            task_ref=task_id,
+            version=version,
+            experiment_id=experiment_id,
+            tiers=tier,
+            finding_limit=finding_limit,
+            finding_cursor=finding_cursor,
+            trial_limit=trial_limit,
+            trial_cursor=trial_cursor,
+        )
 
 
 @api.get("/tasks/{task_id}/detail", response_model=TaskDetailResponse)

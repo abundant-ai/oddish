@@ -23,10 +23,12 @@ from harbor.models.trial.config import (
     VerifierConfig as HarborVerifierConfig,
 )
 
+from oddish.analyze.models import ActionItem, ActionTier, TrialClassificationModel
 from oddish.config import is_nop_oracle_agent, normalize_model_id
 from oddish.db import (
     AnalysisStatus,
     Priority,
+    TaskQaRunDisposition,
     TaskStatus,
     TrialOrigin,
     TrialStatus,
@@ -1546,6 +1548,8 @@ class TaskStatusResponse(BaseModel):
     run_probe: bool = False
     verdict_status: VerdictStatus | None = None
     verdict: dict | None = None
+    published_qa_run_id: str | None = None
+    verdict_version_id: str | None = None
     verdict_error: str | None = Field(
         None,
         description="Error message if verdict computation failed",
@@ -1676,6 +1680,152 @@ class TaskOpenResponse(BaseModel):
     totals: TaskOpenTotals = Field(default_factory=TaskOpenTotals)
     trials: list[TaskOpenTrialRef] = Field(default_factory=list)
     trials_has_more: bool = False
+
+
+class _StrictReviewModel(BaseModel):
+    """Closed review contract: producers and consumers may not add ad-hoc fields."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class TaskReviewTask(_StrictReviewModel):
+    id: str
+    name: str
+    version: int
+    version_id: str
+    content_hash: str | None = None
+
+
+class TaskReviewScope(_StrictReviewModel):
+    experiment_id: str | None = None
+    tiers: list[ActionTier]
+    same_version_across_experiments: bool
+
+
+class TaskQaRunProvenance(_StrictReviewModel):
+    id: str
+    disposition: TaskQaRunDisposition | None = None
+    task_version_id: str
+    worker_job_id: str
+    input_trial_count: int
+    input_set_sha256: str
+    input_analysis_changed_count: int
+    pre_trial_block_id: str | None = None
+    verdict_block_id: str | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+class TaskReviewQa(_StrictReviewModel):
+    status: VerdictStatus | None = None
+    result_run: TaskQaRunProvenance | None = None
+    active_run: TaskQaRunProvenance | None = None
+    is_task_published_run: bool
+    legacy_unscoped_verdict_available: bool
+    input_analysis_changed_after_run: bool
+
+
+class TaskReviewBaselineResult(_StrictReviewModel):
+    expected_reward: float
+    valid: bool
+    trial_count: int
+    unexpected_count: int
+
+
+class TaskReviewBaselines(_StrictReviewModel):
+    outcome: Literal["valid", "faulty"]
+    nop: TaskReviewBaselineResult
+    oracle: TaskReviewBaselineResult
+
+
+class TaskReviewVerdict(_StrictReviewModel):
+    verdict: Literal["accept", "reject"]
+    is_good: bool
+    confidence: Literal["high", "medium", "low"]
+    primary_issue: str | None = None
+    reasoning: str | None = None
+    recommendations: list[str] = Field(default_factory=list)
+    task_problem_count: int
+    agent_problem_count: int
+    success_count: int
+    harness_error_count: int
+
+
+class TaskReviewFinding(ActionItem):
+    id: str
+    from_pre_trial: bool
+    trial_ids: list[str] = Field(default_factory=list)
+    experiment_ids: list[str] = Field(default_factory=list)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class TaskReviewFindingCounts(_StrictReviewModel):
+    unfiltered_total: int
+    filtered_total: int
+    must_fix: int
+    should_fix: int
+    optional: int
+
+
+class TaskReviewClassificationCounts(_StrictReviewModel):
+    GOOD_FAILURE: int = 0
+    BAD_FAILURE: int = 0
+    GOOD_SUCCESS: int = 0
+    BAD_SUCCESS: int = 0
+    HARNESS_ERROR: int = 0
+
+
+class TaskReviewTrialCounts(_StrictReviewModel):
+    eligible: int
+    analyzed: int
+    unanalyzed: int
+    classifications: TaskReviewClassificationCounts
+
+
+class TaskReviewTrial(_StrictReviewModel):
+    id: str
+    role: Literal["model", "nop", "oracle"]
+    experiment_id: str
+    agent: str
+    model: str | None = None
+    config_fingerprint: str
+    environment: str | None = None
+    harbor_sha: str | None = None
+    status: TrialStatus
+    reward: float | None = None
+    cost_usd: float | None = None
+    duration_seconds: float | None = None
+    included_in_result_run: bool
+    result_run_analysis_fingerprint: str | None = None
+    analysis_matches_result_run: bool | None = None
+    analysis_status: AnalysisStatus | None = None
+    analysis: TrialClassificationModel | None = None
+
+
+class TaskReviewFindingsPage(_StrictReviewModel):
+    has_more: bool
+    next_cursor: str | None = None
+
+
+class TaskReviewTrialsPage(_StrictReviewModel):
+    has_more: bool
+    next_cursor: str | None = None
+
+
+class TaskReviewResponse(_StrictReviewModel):
+    schema_version: Literal[1] = 1
+    task: TaskReviewTask
+    scope: TaskReviewScope
+    qa: TaskReviewQa
+    baselines: TaskReviewBaselines
+    verdict: TaskReviewVerdict | None = None
+    finding_counts: TaskReviewFindingCounts
+    findings: list[TaskReviewFinding] = Field(default_factory=list)
+    findings_page: TaskReviewFindingsPage
+    trial_counts: TaskReviewTrialCounts
+    trials: list[TaskReviewTrial] = Field(default_factory=list)
+    trials_page: TaskReviewTrialsPage
 
 
 # =============================================================================

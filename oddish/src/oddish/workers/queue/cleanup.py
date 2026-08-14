@@ -37,11 +37,13 @@ from oddish.core.helpers import cancel_job_by_worker
 from oddish.core.tags.ownership_transfer import sweep_orphaned_tag_owners
 from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.core.verdict_state import abandon_verdict, fail_verdict, queue_verdict
+from oddish.core.verdict_sync import close_unfinished_qa_run
 from oddish.costs.recorder import reconcile_compute_cost_spans
 from oddish.db import (
     AnalysisStatus,
     JobStatus,
     TaskModel,
+    TaskQaRunDisposition,
     TaskStatus,
     TaskVersionModel,
     TrialModel,
@@ -466,6 +468,13 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
                     version.pre_trial_status = VerdictStatus.QUEUED
                 version.pre_trial_error = row["error_message"]
             return None
+        if row["new_status"] == "FAILED":
+            await close_unfinished_qa_run(
+                session,
+                payload.get("qa_run_id"),
+                disposition=TaskQaRunDisposition.FAILED,
+                reason=row["error_message"],
+            )
         task = await _locked_or_missing(session, TaskModel, str(subject_id))
         if task is None:
             return None

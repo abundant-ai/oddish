@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
-from sqlalchemy import and_, func, not_, or_, select, text, update
+from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,10 +22,13 @@ from oddish.config import (
 from oddish.core.baseline_gate import (
     GATE_SKIP_PREFIX,
     GateOutcome,
-    baseline_agent_clause,
     evaluate_baseline_gate,
 )
 from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
+from oddish.core.qa_scope import (
+    live_same_version_trial_scope,
+    qa_classification_scope,
+)
 from oddish.core.tags.enqueue import enqueue_tag_project_worker_job
 from oddish.core.tags.projection import recompute_task_browse_projection
 from oddish.core.task_browse_summary import refresh_task_browse_summaries
@@ -39,10 +42,13 @@ from oddish.core.verdict_state import (
     queue_verdict,
     reset_verdict,
 )
+from oddish.core.verdict_sync import close_unfinished_qa_run
 from oddish.db import (
     AnalysisStatus,
     ExperimentModel,
     TaskModel,
+    TaskQaRunDisposition,
+    TaskQaRunModel,
     TaskStatus,
     TaskVersionModel,
     TrialModel,
@@ -233,7 +239,8 @@ async def cancel_tasks_runs(
                        subject_id,
                        modal_function_call_id,
                        provider,
-                       external_id
+                       external_id,
+                       payload
                 FROM   worker_jobs
                 WHERE  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
                   AND  (
@@ -257,7 +264,8 @@ async def cancel_tasks_runs(
                       to_cancel.subject_id,
                       to_cancel.modal_function_call_id,
                       to_cancel.provider,
-                      to_cancel.external_id
+                      to_cancel.external_id,
+                      to_cancel.payload
             """
         )
         return list((await session.execute(cancel_sql, params)).mappings().all())
@@ -276,6 +284,7 @@ async def cancel_tasks_runs(
     canceled_trial_kinds: set[str] = set()
     canceled_verdict_task_ids: set[str] = set()
     canceled_analysis_trial_ids: set[str] = set()
+    canceled_qa_run_ids: set[str] = set()
 
     def _ingest_canceled_rows(rows: list[Any]) -> None:
         for row in rows:
@@ -295,6 +304,9 @@ async def cancel_tasks_runs(
                 canceled_analysis_trial_ids.add(str(subject_id))
             elif kind == "QA" and subject_id:
                 canceled_verdict_task_ids.add(str(subject_id))
+                payload = (row.get("payload") or {}) or {}
+                if payload.get("mode") != "pre_trial" and payload.get("qa_run_id"):
+                    canceled_qa_run_ids.add(str(payload["qa_run_id"]))
 
     _ingest_canceled_rows(canceled_rows)
 
@@ -348,6 +360,14 @@ async def cancel_tasks_runs(
     if experiment_id is not None and exhausted_task_ids:
         _ingest_canceled_rows(
             await _cancel_worker_jobs(subject_task_ids=exhausted_task_ids)
+        )
+
+    for qa_run_id in sorted(canceled_qa_run_ids):
+        await close_unfinished_qa_run(
+            session,
+            qa_run_id,
+            disposition=TaskQaRunDisposition.CANCELLED,
+            reason=USER_CANCELLED_MESSAGE,
         )
 
     tasks_cancelled = 0
@@ -609,7 +629,7 @@ async def enqueue_qa_worker_job(
     session: AsyncSession,
     *,
     task_id: str,
-    task_version_id: str | None,
+    task_version_id: str,
     task_version_content_hash: str | None,
     org_id: str | None,
 ) -> WorkerJobModel:
@@ -618,7 +638,12 @@ async def enqueue_qa_worker_job(
     One job per task: it classifies every live trial's trajectory and then
     synthesizes the task verdict.
     """
-    return await enqueue_worker_job(
+    if not task_version_id:
+        raise ValueError(
+            "task-level QA requires task_version_id; re-upload the legacy task first"
+        )
+    qa_run_id = generate_id()
+    job = await enqueue_worker_job(
         session,
         EnqueueRequest(
             kind=WorkerJobKind.QA,
@@ -627,12 +652,25 @@ async def enqueue_qa_worker_job(
                 "task_id": task_id,
                 "task_version_id": task_version_id,
                 "task_version_content_hash": task_version_content_hash,
+                "qa_run_id": qa_run_id,
             },
             subject_table="tasks",
             subject_id=task_id,
             org_id=org_id,
         ),
     )
+    session.add(
+        TaskQaRunModel(
+            id=qa_run_id,
+            task_id=task_id,
+            task_version_id=task_version_id,
+            worker_job_id=job.id,
+            input_trial_ids=[],
+            input_analysis_fingerprints={},
+        )
+    )
+    await session.flush()
+    return job
 
 
 async def enqueue_trial_analysis_worker_job(
@@ -1454,9 +1492,11 @@ async def append_trials_to_task(
         # overwrite the new verdict with stale data. The dispatcher
         # re-enqueues a fresh QA row once all trials for the new set
         # complete.
-        await session.execute(
-            text(
-                """
+        cancelled_qa_rows = (
+            (
+                await session.execute(
+                    text(
+                        """
                 UPDATE worker_jobs
                 SET    status = 'CANCELLED',
                        finished_at = NOW(),
@@ -1468,10 +1508,25 @@ async def append_trials_to_task(
                   AND  subject_table = 'tasks'
                   AND  subject_id = :task_id
                   AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+                RETURNING payload
                 """
-            ),
-            {"task_id": task.id},
+                    ),
+                    {"task_id": task.id},
+                )
+            )
+            .mappings()
+            .all()
         )
+        for row in cancelled_qa_rows:
+            payload = (row.get("payload") or {}) or {}
+            if payload.get("mode") == "pre_trial":
+                continue
+            await close_unfinished_qa_run(
+                session,
+                payload.get("qa_run_id"),
+                disposition=TaskQaRunDisposition.SUPERSEDED,
+                reason="Superseded by appended trials",
+            )
         # A classification the cancelled job had mid-flight skips its store
         # (``should_store`` sees the job is no longer RUNNING), which would
         # leave that trial's ``analysis_status`` stuck on RUNNING until the
@@ -1523,9 +1578,11 @@ async def invalidate_task_qa_for_source_change(
     transaction prevents a result committed just before this mutation from
     remaining authoritative for different source bytes.
     """
-    await session.execute(
-        text(
-            """
+    cancelled_qa_rows = (
+        (
+            await session.execute(
+                text(
+                    """
             UPDATE worker_jobs
             SET    status = 'CANCELLED',
                    finished_at = NOW(),
@@ -1538,10 +1595,23 @@ async def invalidate_task_qa_for_source_change(
               AND  subject_id = :task_id
               AND  COALESCE(payload->>'mode', '') <> 'pre_trial'
               AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+            RETURNING payload
             """
-        ),
-        {"task_id": task.id},
+                ),
+                {"task_id": task.id},
+            )
+        )
+        .mappings()
+        .all()
     )
+    for row in cancelled_qa_rows:
+        payload = (row.get("payload") or {}) or {}
+        await close_unfinished_qa_run(
+            session,
+            payload.get("qa_run_id"),
+            disposition=TaskQaRunDisposition.SUPERSEDED,
+            reason="Superseded by task source change",
+        )
     reset_verdict(task)
     task.status = TaskStatus.RUNNING
     task.finished_at = None
@@ -1586,16 +1656,16 @@ async def maybe_start_task_qa_stage(
     if task.status not in (TaskStatus.PENDING, TaskStatus.RUNNING):
         return TaskQAStageAdmission()
 
-    pending_count = await session.scalar(
-        select(func.count(TrialModel.id)).where(
-            and_(
-                TrialModel.task_id == task_id,
-                (
-                    TrialModel.task_version_id == task.current_version_id
-                    if task.current_version_id is not None
-                    else True
-                ),
-                TrialModel.superseded_by_trial_id.is_(None),
+    if task.run_analysis and task.current_version_id is None:
+        raise ValueError(
+            f"Task {task.id} has no task version; re-upload it before starting QA"
+        )
+
+    pending_count = 0
+    if task.current_version_id is not None:
+        pending_count = await session.scalar(
+            select(func.count(TrialModel.id)).where(
+                live_same_version_trial_scope(task_id, task.current_version_id),
                 TrialModel.status.in_(
                     [
                         TrialStatus.PENDING,
@@ -1606,7 +1676,6 @@ async def maybe_start_task_qa_stage(
                 ),
             )
         )
-    )
 
     if pending_count > 0:
         return TaskQAStageAdmission()
@@ -1621,26 +1690,10 @@ async def maybe_start_task_qa_stage(
     # attempts and lands FAILED for what is not an error. Complete the task
     # instead. Filters MUST mirror qa_handler._load_live_trials_for_classification.
     qa_eligible = 0
-    if task.run_analysis:
+    if task.run_analysis and task.current_version_id is not None:
         qa_eligible = await session.scalar(
             select(func.count(TrialModel.id)).where(
-                and_(
-                    TrialModel.task_id == task_id,
-                    (
-                        TrialModel.task_version_id == task.current_version_id
-                        if task.current_version_id is not None
-                        else True
-                    ),
-                    TrialModel.superseded_by_trial_id.is_(None),
-                    TrialModel.imported_at.is_(None),
-                    func.coalesce(TrialModel.harbor_stage, "")
-                    != CANCELLED_HARBOR_STAGE,
-                    TrialModel.status != TrialStatus.SKIPPED,
-                    func.coalesce(TrialModel.error_message, "").notlike(
-                        f"{GATE_SKIP_PREFIX}%"
-                    ),
-                    not_(baseline_agent_clause(TrialModel.agent)),
-                )
+                qa_classification_scope(task_id, task.current_version_id)
             )
         )
 

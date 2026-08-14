@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.db import (  # noqa: E402
     TaskModel,
+    TaskQaRunModel,
     TaskStatus,
     TaskVersionModel,
     TrialModel,
@@ -52,6 +53,11 @@ async def cleanup_task_ids():
     yield task_ids
     async with get_session() as session:
         for task_id in task_ids:
+            await session.execute(
+                TaskQaRunModel.__table__.delete().where(
+                    TaskQaRunModel.task_id == task_id
+                )
+            )
             await session.execute(
                 WorkerJobModel.__table__.delete().where(
                     WorkerJobModel.subject_id.like(f"{task_id}%")

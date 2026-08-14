@@ -18,7 +18,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from oddish.db.models import WorkerJobKind  # noqa: E402
+from oddish.db.models import TaskQaRunModel, WorkerJobKind  # noqa: E402
 from oddish.queue import (  # noqa: E402
     enqueue_analyzer_worker_job,
     enqueue_qa_worker_job,
@@ -71,3 +71,7 @@ async def test_analyzer_outranks_qa_on_the_shared_queue():
     assert analyzer.priority > qa.priority
     assert qa.payload["task_version_id"] == "task1-v1"
     assert qa.payload["task_version_content_hash"] == "hash-v1"
+    qa_run = next(row for row in session.added if isinstance(row, TaskQaRunModel))
+    assert qa.payload["qa_run_id"] == qa_run.id
+    assert qa_run.worker_job_id == qa.id
+    assert qa_run.task_version_id == "task1-v1"

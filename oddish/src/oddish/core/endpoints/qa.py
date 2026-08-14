@@ -12,9 +12,11 @@ from oddish.core.endpoints._common import (
     USER_CANCELLED_MESSAGE,
 )
 from oddish.core.verdict_state import cancel_verdict, queue_verdict
+from oddish.core.verdict_sync import close_unfinished_qa_run
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
+    TaskQaRunDisposition,
     TaskStatus,
     TaskVersionModel,
     TrialModel,
@@ -171,6 +173,16 @@ async def cancel_task_qa_core(
     full_qa_cancelled = any(
         ((row.get("payload") or {}) or {}).get("mode") != "pre_trial" for row in rows
     )
+    for row in rows:
+        payload = (row.get("payload") or {}) or {}
+        if payload.get("mode") == "pre_trial":
+            continue
+        await close_unfinished_qa_run(
+            session,
+            payload.get("qa_run_id"),
+            disposition=TaskQaRunDisposition.CANCELLED,
+            reason=USER_CANCELLED_MESSAGE,
+        )
     if (
         full_qa_cancelled
         or _has_active_verdict(task)
