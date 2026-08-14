@@ -328,7 +328,7 @@ test.describe("authenticated task view", () => {
     ).toBe(true);
   });
 
-  test("capabilities warm eagerly and remain an addressable task pane", async ({
+  test("capabilities load only when their pane is selected", async ({
     page,
   }) => {
     await signIn(page);
@@ -353,6 +353,9 @@ test.describe("authenticated task view", () => {
     await page.route(
       new RegExp(`/api/tasks/${READER_TASK_ID}/agent-capabilities(?:\\?|$)`),
       (route) => {
+        expect(new URL(page.url()).searchParams.get("taskPane")).toBe(
+          "capabilities"
+        );
         capabilityRequests += 1;
         route.fulfill({ json: capabilitiesResponse() });
       }
@@ -365,9 +368,9 @@ test.describe("authenticated task view", () => {
     await expect(
       page.getByRole("button", { name: "Capabilities" })
     ).toBeVisible();
-    await expect.poll(() => capabilityRequests).toBe(1);
 
     await page.getByRole("button", { name: "Capabilities" }).click();
+    await expect.poll(() => capabilityRequests).toBe(1);
     await expect(
       page.getByRole("heading", { name: "Capabilities" })
     ).toBeVisible();
