@@ -92,17 +92,24 @@ def mask_trajectory_model_names(
     """
     if not names or not trajectory:
         return trajectory
+
+    def masked_name(value):
+        # The document is agent-written JSON, not a validated schema. A
+        # model_name that is not a string reaches _lookup_keys' .strip() and
+        # 500s the whole trajectory read, so pass anything odd straight
+        # through rather than trusting the declared type.
+        if not isinstance(value, str):
+            return value
+        return display_model_name(value, names)
+
     masked = dict(trajectory)
     agent = masked.get("agent")
     if isinstance(agent, dict):
-        masked["agent"] = {
-            **agent,
-            "model_name": display_model_name(agent.get("model_name"), names),
-        }
+        masked["agent"] = {**agent, "model_name": masked_name(agent.get("model_name"))}
     steps = masked.get("steps")
     if isinstance(steps, list):
         masked["steps"] = [
-            {**step, "model_name": display_model_name(step.get("model_name"), names)}
+            {**step, "model_name": masked_name(step.get("model_name"))}
             if isinstance(step, dict)
             else step
             for step in steps

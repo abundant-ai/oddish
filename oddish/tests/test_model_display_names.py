@@ -359,3 +359,18 @@ def test_mask_trajectory_model_names_no_aliases_is_a_passthrough():
     trajectory = {"agent": {"model_name": "openai/gpt-5.4"}, "steps": []}
     assert mask_trajectory_model_names(trajectory, {}) is trajectory
     assert mask_trajectory_model_names(None, {"a": "b"}) is None
+
+
+def test_mask_trajectory_model_names_tolerates_a_non_string_model_name():
+    """The ATIF document is agent-written JSON, not a validated schema. A
+    stray non-string must not 500 the whole trajectory read."""
+    names = {canonical_model_key("xai/v9m-rl-learnability-tp8"): "xai/Grok-4.5"}
+    trajectory = {
+        "agent": {"model_name": 7},
+        "steps": [{"step_id": 0, "model_name": {"nested": "junk"}}],
+    }
+
+    masked = mask_trajectory_model_names(trajectory, names)
+
+    assert masked["agent"]["model_name"] == 7
+    assert masked["steps"][0]["model_name"] == {"nested": "junk"}
