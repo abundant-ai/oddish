@@ -520,6 +520,12 @@ export function TaskFilesPanel({
     checksDetail?.task?.verdict_status === "queued" ||
     checksDetail?.task?.verdict_status === "running";
   const resolvedFilesUrl = filesUrl ?? `${baseUrl}/tasks/${taskId}/files`;
+  // Trial file routes stream the file itself; task file routes answer with a
+  // JSON envelope ({path, content, key}, or {url} when presigning). Read that
+  // off the route, not off whether a filesUrl prop was passed — the drawer's
+  // side-by-side task pane passes a TASK filesUrl, and treating its envelope
+  // as the file body rendered every task file blank.
+  const fileRouteServesBytes = !/\/tasks\/[^/]+\/files$/.test(resolvedFilesUrl);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isRerunning, setIsRerunning] = useState(false);
@@ -583,7 +589,12 @@ export function TaskFilesPanel({
 
   const listedPreview = selectedFile ? listedFilePreview(selectedFile) : null;
   const directBinaryPreview =
-    selectedFile && isBinaryRendererFile(selectedFile.name) && !loadFilesLazily
+    selectedFile &&
+    isBinaryRendererFile(selectedFile.name) &&
+    !loadFilesLazily &&
+    // Without a presigned URL from the listing, only a byte-serving route can
+    // back an <img>/<embed> src directly; a task route would hand it JSON.
+    (selectedFile.url || fileRouteServesBytes)
       ? {
           kind: "binary" as const,
           url: selectedFile.url ?? buildSelectedFileUrl()!,
@@ -600,7 +611,7 @@ export function TaskFilesPanel({
           shouldScopeFilesToVersion ? currentVersion : null,
           currentContentHash,
           loadFilesLazily,
-          filesUrl ? "raw" : "json",
+          fileRouteServesBytes ? "raw" : "json",
           selectedFile.url ?? null,
           selectedFile.size ?? null,
         ]
@@ -656,7 +667,7 @@ export function TaskFilesPanel({
         if (!url) throw new Error("File content unavailable");
         const res = await fetch(url);
         if (!res.ok) throw new Error("Failed to fetch file content");
-        if (filesUrl && !loadFilesLazily) {
+        if (fileRouteServesBytes) {
           content = await res.text();
         } else {
           const data = (await res.json()) as {
@@ -1061,7 +1072,7 @@ export function TaskFilesPanel({
         return;
       }
       let content: string;
-      if (filesUrl && !loadFilesLazily) {
+      if (fileRouteServesBytes) {
         content = await res.text();
       } else {
         const data = (await res.json()) as { content?: string };
