@@ -398,8 +398,15 @@ async def get_public_trial_trajectory(public_token: str, trial_id: str) -> dict 
 
     Masked: the step headers render the trajectory's own ``model_name``, so an
     unmasked payload prints the real id right under the aliased one the trial
-    grid shows. Raw artifacts under Files still carry the real id -- aliases
-    cover rendered model fields, not the run's recorded output.
+    grid shows.
+
+    This closes one hole, not the class. An alias is a display convenience, NOT
+    a boundary: the same drawer's Files tab serves ``config.json`` -- which
+    ``ConfigJsonRenderer`` prints under a literal "Model" label -- and
+    ``agent/trajectory.json``, the very bytes this route rewrites, both with
+    the real id. Masking those means rewriting a run's recorded output, which
+    is a bigger call than this route. Don't read the admin UI's promise as
+    airtight until they're covered.
     """
     trial, names = await _detached_public_trial_with_display_names(
         public_token, trial_id
