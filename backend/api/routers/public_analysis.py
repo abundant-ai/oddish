@@ -5,9 +5,9 @@ These live here rather than beside their siblings in
 services (``api.services.*``), and the ``oddish`` package may not import the
 backend. The share-token resolvers go the other way, which is allowed.
 
-Trajectory-summary and capability-analysis misses both trigger the same
-durable, task-attributed job. The request never holds an API connection open
-for paid generation, and repeated views coalesce by task version.
+Trajectory-summary misses trigger a trial-scoped durable job. The request never
+holds an API connection open for paid generation, and repeated views coalesce
+by trial and summary schema.
 """
 
 from __future__ import annotations
@@ -23,7 +23,6 @@ from oddish.core.model_display_names import (
     load_model_display_names,
 )
 from oddish.core.sharing.helpers import (
-    get_public_experiment,
     get_public_task_for_experiment,
     get_public_trial_for_experiment,
 )
@@ -39,7 +38,12 @@ async def get_public_trial_trajectory_summary(
     public_token: str, trial_id: str, response: Response
 ) -> dict:
     """Return a stored public summary or durably queue its generation."""
-    from api.services.summarize_trajectory import load_stored_summary
+    from api.services.summarize_trajectory import (
+        get_or_enqueue_summary_job,
+        load_stored_summary,
+    )
+    from oddish.core.helpers import _has_fetchable_trajectory
+    from oddish.db.models import WorkerJobStatus
 
     async with get_session() as session:
         trial = await get_public_trial_for_experiment(session, public_token, trial_id)
@@ -48,42 +52,45 @@ async def get_public_trial_trajectory_summary(
         summary = await load_stored_summary(session, trial)
         if summary is not None:
             return summary
-        experiment = await get_public_experiment(session, public_token)
-
-        from api.services.agent_capabilities import (
-            analysis_is_eligible,
-            enqueue_analysis,
-        )
-        from oddish.db.models import TaskModel, TaskVersionModel
-
-        if not trial.task_version_id or not await analysis_is_eligible(
-            session, trial.task_version_id, experiment.id if experiment else None
-        ):
+        if not _has_fetchable_trajectory(trial):
             raise HTTPException(
                 status_code=404,
                 detail="No completed trajectory available to summarize",
             )
-        task = (
-            await session.execute(
-                select(TaskModel).where(TaskModel.id == trial.task_id)
+        job = await get_or_enqueue_summary_job(session, trial)
+        if job.status == WorkerJobStatus.SUCCESS:
+            # The worker may have committed between the first cache read and
+            # our row lock. Re-read before reporting an inconsistent success.
+            summary = await load_stored_summary(session, trial)
+            if summary is not None:
+                return summary
+            raise HTTPException(
+                status_code=502,
+                detail="Summary generation finished without a stored summary",
             )
-        ).scalar_one()
-        await session.execute(
-            select(TaskVersionModel.id)
-            .where(TaskVersionModel.id == trial.task_version_id)
-            .with_for_update()
-        )
-        await enqueue_analysis(
-            session,
-            task_id=task.id,
-            task_version_id=trial.task_version_id,
-            task_name=task.name,
-            org_id=task.org_id,
-            triggered_by_user_id=None,
-            experiment_id=experiment.id if experiment else None,
-        )
+        if job.status == WorkerJobStatus.FAILED:
+            logger.warning(
+                "public trajectory summary job %s failed for trial %s: %s",
+                job.id,
+                trial.id,
+                job.error_message,
+            )
+            raise HTTPException(
+                status_code=502,
+                detail="Summary generation failed",
+            )
+        if job.status == WorkerJobStatus.CANCELLED:
+            raise HTTPException(
+                status_code=503,
+                detail="Summary generation was cancelled",
+            )
         response.status_code = status.HTTP_202_ACCEPTED
-        return {"status": "queued", "task_version_id": trial.task_version_id}
+        response.headers["Retry-After"] = "3"
+        return {
+            "status": job.status.value.lower(),
+            "job_id": job.id,
+            "retry_after_ms": 3000,
+        }
 
 
 def _short_name_aliases(names: dict[str, str]) -> dict[str, str]:

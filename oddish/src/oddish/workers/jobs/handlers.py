@@ -62,11 +62,20 @@ class WorkerJobLike:
 AgentCapabilitiesProvider = Callable[..., Awaitable[dict | None]]
 _agent_capabilities_provider: AgentCapabilitiesProvider | None = None
 
+TrajectorySummaryProvider = Callable[[str, str | None], Awaitable[dict | None]]
+_trajectory_summary_provider: TrajectorySummaryProvider | None = None
+
 
 def register_agent_capabilities_provider(provider: AgentCapabilitiesProvider) -> None:
     """Install the hosted capability generator without importing backend code."""
     global _agent_capabilities_provider
     _agent_capabilities_provider = provider
+
+
+def register_trajectory_summary_provider(provider: TrajectorySummaryProvider) -> None:
+    """Install the hosted per-trial trajectory-summary generator."""
+    global _trajectory_summary_provider
+    _trajectory_summary_provider = provider
 
 
 def _fail_retryable(message: str) -> JobOutcome:
@@ -492,6 +501,24 @@ class AnalyzerJobHandler:
 
     async def run(self, job) -> JobOutcome:
         payload = job.payload or {}
+        if payload.get("mode") == "trajectory_summary":
+            if _trajectory_summary_provider is None:
+                return _fail_permanent("Trajectory-summary provider is not registered")
+            trial_id = job.subject_id or payload.get("trial_id")
+            if not trial_id:
+                return _fail_permanent("Trajectory-summary job is missing trial_id")
+            result = await _trajectory_summary_provider(
+                trial_id, payload.get("triggered_by_user_id")
+            )
+            if result is None:
+                return _fail_permanent(f"Trial {trial_id} has no trajectory to summarize")
+            return JobOutcome.ok(
+                {
+                    "trial_id": trial_id,
+                    "schema_version": result.get("schema_version"),
+                }
+            )
+
         if payload.get("mode") == "agent_capabilities":
             if _agent_capabilities_provider is None:
                 return _fail_permanent("Agent-capabilities provider is not registered")
@@ -552,4 +579,5 @@ __all__ = [
     "TaskExpandJobHandler",
     "TrialJobHandler",
     "register_agent_capabilities_provider",
+    "register_trajectory_summary_provider",
 ]

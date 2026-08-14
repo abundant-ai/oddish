@@ -95,6 +95,7 @@ async def test_handler_routes_agent_capabilities_payload_to_provider(monkeypatch
         "task_version_id": "task-version-1",
         "task_name": "Example",
         "triggered_by_user_id": "user-1",
+        "experiment_id": None,
     }
 
     outcome = await h.AnalyzerJobHandler().run(job)
@@ -106,7 +107,50 @@ async def test_handler_routes_agent_capabilities_payload_to_provider(monkeypatch
         "task_version_id": "task-version-1",
         "task_name": "Example",
         "triggered_by_user_id": "user-1",
+        "experiment_id": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_handler_routes_trajectory_summary_payload_to_provider(monkeypatch):
+    import oddish.workers.jobs.handlers as h
+
+    seen = []
+
+    async def provider(trial_id, triggered_by_user_id):
+        seen.append((trial_id, triggered_by_user_id))
+        return {"schema_version": "5", "summary": "done"}
+
+    monkeypatch.setattr(h, "_trajectory_summary_provider", provider)
+    job = _Job("trial-1")
+    job.payload = {"mode": "trajectory_summary", "trial_id": "trial-1"}
+
+    outcome = await h.AnalyzerJobHandler().run(job)
+
+    assert outcome.failure is None
+    assert outcome.success.result_summary == {
+        "trial_id": "trial-1",
+        "schema_version": "5",
+    }
+    assert seen == [("trial-1", None)]
+
+
+@pytest.mark.asyncio
+async def test_handler_fails_permanently_when_summary_has_no_trajectory(monkeypatch):
+    import oddish.workers.jobs.handlers as h
+
+    async def provider(_trial_id, _triggered_by_user_id):
+        return None
+
+    monkeypatch.setattr(h, "_trajectory_summary_provider", provider)
+    job = _Job("trial-1")
+    job.payload = {"mode": "trajectory_summary"}
+
+    outcome = await h.AnalyzerJobHandler().run(job)
+
+    assert outcome.success is None
+    assert outcome.failure.retryable is False
+    assert "no trajectory" in outcome.failure.error_message
 
 
 @pytest.mark.asyncio
