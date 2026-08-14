@@ -50,7 +50,6 @@ import {
 } from "@/lib/task-detail-resource";
 import { TaskOverviewPanel } from "@/components/task-overview-panel";
 import { AgentCapabilitiesSection } from "@/components/agent-capabilities-section";
-import { useAgentCapabilities } from "@/lib/use-agent-capabilities";
 import {
   getCancelActionLabel,
   isActivePipelineStatus,
@@ -500,14 +499,6 @@ export function TaskFilesPanel({
   const overviewAvailable =
     effectiveChecksTaskId !== null && showAnalysis !== false;
   const capabilitiesAvailable = effectiveChecksTaskId !== null;
-  // Warm the capability cache as soon as the task overview resolves its
-  // version. The pane stays lazy as UI, but its durable job starts while the
-  // reader is looking at the overview, matching the pre-pane behavior.
-  useAgentCapabilities(
-    effectiveChecksTaskId,
-    typeof overviewVersion === "number" ? overviewVersion : null,
-    { apiBaseUrl: baseUrl, enabled: isOpen && capabilitiesAvailable }
-  );
   const taskPaneExists = overviewAvailable || capabilitiesAvailable;
   // Until /detail answers, the checks state is unknown, not "unaudited":
   // an enabled Run button on the misread queues an audit that wipes findings.
