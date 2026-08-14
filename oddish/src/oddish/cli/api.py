@@ -18,6 +18,7 @@ from pathlib import Path
 from collections import Counter
 from collections.abc import Iterable, MutableMapping, MutableSequence
 from typing import Any, cast
+from urllib.parse import quote
 
 import httpx
 import tomlkit
@@ -56,6 +57,7 @@ from oddish.cli._concurrency import (
     resolve_submit_concurrency,
 )
 from oddish.cli.config import get_auth_headers, error_console
+from oddish.analyze.models import ActionTier
 from oddish.core.idempotency import compute_sweep_idempotency_key
 from oddish.core.harbor_artifacts import (
     build_trial_result,
@@ -70,6 +72,7 @@ from oddish.task_timeouts import (
     validate_task_timeout_config,
 )
 from oddish.text_normalize import normalize_typography, summarize_normalization
+from oddish.schemas import TaskReviewResponse
 
 console = Console()
 TASK_SWEEP_TIMEOUT_SECONDS = 600.0
@@ -1847,6 +1850,44 @@ def get_task_summary(api_url: str, task_id: str) -> dict | None:
     if response.status_code != 200:
         return None
     return cast(dict, response.json())
+
+
+def get_task_review(
+    api_url: str,
+    task_ref: str,
+    *,
+    version: int | None = None,
+    experiment_id: str | None = None,
+    tiers: list[ActionTier] | None = None,
+    finding_limit: int = 20,
+    finding_cursor: str | None = None,
+    trial_limit: int = 20,
+    trial_cursor: str | None = None,
+) -> TaskReviewResponse:
+    """Fetch one bounded page of the canonical task review response."""
+
+    params: list[tuple[str, str | int]] = [
+        ("finding_limit", finding_limit),
+        ("trial_limit", trial_limit),
+    ]
+    if version is not None:
+        params.append(("version", version))
+    if experiment_id is not None:
+        params.append(("experiment_id", experiment_id))
+    if tiers is not None:
+        params.extend(("tier", tier.value) for tier in tiers)
+    if finding_cursor is not None:
+        params.append(("finding_cursor", finding_cursor))
+    if trial_cursor is not None:
+        params.append(("trial_cursor", trial_cursor))
+
+    with httpx.Client(timeout=30.0, headers=get_auth_headers(api_url)) as client:
+        response = client.get(
+            f"{api_url.rstrip('/')}/tasks/{quote(task_ref, safe='')}/review",
+            params=params,
+        )
+    response.raise_for_status()
+    return TaskReviewResponse.model_validate(response.json())
 
 
 # =============================================================================
