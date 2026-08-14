@@ -15,12 +15,19 @@ from __future__ import annotations
 
 from oddish.db import get_session
 from oddish.db.models import TrialModel
-from oddish.workers.queue.analysis_handler import register_trajectory_summary_provider
+from oddish.workers.jobs.handlers import (
+    register_trajectory_summary_provider as register_job_provider,
+)
+from oddish.workers.queue.analysis_handler import (
+    register_trajectory_summary_provider as register_analysis_provider,
+)
 
 from api.services.summarize_trajectory import get_or_generate_summary
 
 
-async def provide_trajectory_summary(trial_id: str) -> dict | None:
+async def provide_trajectory_summary(
+    trial_id: str, triggered_by_user_id: str | None = None
+) -> dict | None:
     """TrajectorySummaryProviderFn impl backed by get_or_generate_summary.
 
     Returns the summary dict (mirrored into ``trials.trajectory_summary``) or
@@ -32,8 +39,11 @@ async def provide_trajectory_summary(trial_id: str) -> dict | None:
         trial = await session.get(TrialModel, trial_id)
         if trial is None:
             return None
-        return await get_or_generate_summary(session, trial)
+        return await get_or_generate_summary(
+            session, trial, triggered_by_user_id=triggered_by_user_id
+        )
 
 
 # Importing this module (from backend.worker.functions) installs the hook.
-register_trajectory_summary_provider(provide_trajectory_summary)
+register_analysis_provider(provide_trajectory_summary)
+register_job_provider(provide_trajectory_summary)

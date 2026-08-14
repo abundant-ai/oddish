@@ -31,6 +31,7 @@ from oddish.db.models import (
 )
 
 from api.services.blocks.analyzer.cohort import cohort_workspace as cw
+from api.services.summarize_trajectory import SCHEMA_VERSION, is_fresh_summary
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +93,7 @@ def cohort_hash(success_ids: list[str], failure_ids: list[str]) -> str:
 
 
 async def _summaries_for(session: AsyncSession, trial_ids: list[str]) -> dict:
-    """Latest SUCCESS trajectory summary per trial, in one DISTINCT ON pass."""
+    """Latest current-schema SUCCESS summary per trial in one DISTINCT ON pass."""
     if not trial_ids:
         return {}
     rows = (
@@ -102,6 +103,7 @@ async def _summaries_for(session: AsyncSession, trial_ids: list[str]) -> dict:
                 AnalyzerBlockModel.analyzer_id.in_(trial_ids),
                 AnalyzerBlockModel.type == AnalyzerType.TRAJECTORY_SUMMARY.value,
                 AnalyzerBlockModel.status == JobStatus.SUCCESS,
+                AnalyzerBlockModel.output["schema_version"].astext == SCHEMA_VERSION,
             )
             .order_by(
                 AnalyzerBlockModel.analyzer_id,
@@ -147,7 +149,7 @@ async def resolve_cohorts(
     rewards = {r[0]: r[5] for r in rows}
     # Prefer the mirror on the trial row. Fall back to the block for summaries
     # written before the mirror existed.
-    mirrored = {r[0]: r[2] for r in rows if r[2]}
+    mirrored = {r[0]: r[2] for r in rows if is_fresh_summary(r[2])}
     missing = [t for t in ids if t not in mirrored]
     summaries = {**(await _summaries_for(session, missing)), **mirrored}
     for tid in ids:
@@ -640,7 +642,7 @@ async def _ensure_trajectory_summaries(
     triggered_by_user_id: str | None,
     experiment_id: str | None = None,
 ) -> None:
-    """Generate missing component summaries inside the durable worker job."""
+    """Generate missing or stale component summaries in the durable job."""
     from api.services.summarize_trajectory import get_or_generate_summary
     from oddish.core.helpers import _has_fetchable_trajectory
 
@@ -656,7 +658,9 @@ async def _ensure_trajectory_summaries(
         query = query.where(trial_in_experiment(experiment_id))
     trials = (await session.execute(query)).scalars().all()
     for trial in trials:
-        if trial.trajectory_summary or not _has_fetchable_trajectory(trial):
+        if is_fresh_summary(trial.trajectory_summary) or not _has_fetchable_trajectory(
+            trial
+        ):
             continue
         try:
             await get_or_generate_summary(

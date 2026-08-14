@@ -90,6 +90,7 @@ import { QaCostSuffix } from "@/components/qa-cost-suffix";
 import { useSWRConfig } from "swr";
 import { isAnalysisStatusActive, trialKey, useTrial } from "@/lib/use-trial";
 import { embeddedCtrfSummary } from "@/lib/verifier-results";
+import { trialDetailDefaultTab } from "@/lib/trial-detail-tabs";
 
 const TaskFilesPanel = dynamic(
   () =>
@@ -871,10 +872,10 @@ export function TrialDetailPanel({
   // landing there shows a reader the emptiest tab in the drawer. Do not depend
   // on has_trajectory here because lightweight public trial rows may omit it.
   // An explicit ?tab= still wins.
-  const shareDefaultTab = showAnalysis === false ? "trajectory" : "summary";
+  const defaultTab = trialDetailDefaultTab(showAnalysis);
   const [activeTab, setActiveTab] = useState(() => {
     const urlTab = getLiveParam("tab");
-    return urlTab && validTabs.has(urlTab) ? urlTab : shareDefaultTab;
+    return urlTab && validTabs.has(urlTab) ? urlTab : defaultTab;
   });
   const [showFullError, setShowFullError] = useState(false);
   const [retrying, setRetrying] = useState(false);
@@ -1107,7 +1108,7 @@ export function TrialDetailPanel({
   // Reset state when panel closes
   useEffect(() => {
     if (!isOpen) {
-      setActiveTab("summary");
+      setActiveTab(defaultTab);
       setShowFullError(false);
       setRetrying(false);
       setRetryError(null);
@@ -1117,7 +1118,7 @@ export function TrialDetailPanel({
       setFilesTargetPath(null);
       hydratedFromUrl.current = false;
     }
-  }, [isOpen]);
+  }, [isOpen, defaultTab]);
 
   const orderedList = useMemo(
     () => orderedTrials ?? task?.trials ?? [],
