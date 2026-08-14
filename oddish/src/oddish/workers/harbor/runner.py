@@ -140,6 +140,7 @@ _GEMINI_RUNTIME_ENV_KEYS = (*GEMINI_BASE_URL_KEYS, *GEMINI_OAUTH_ENV_KEYS)
 # file path -- its secret is the file's contents, outside this exact-value map.
 _GEMINI_RUNTIME_SECRET_KEYS = (
     "GEMINI_API_KEY",
+    "GOOGLE_GENERATIVE_AI_API_KEY",
     "GOOGLE_API_KEY",
 )
 # Ambient claude-code platform credentials must fold into the redaction map for
@@ -217,7 +218,11 @@ _PROVIDER_RUNTIME_SECRET_KEYS: dict[str, tuple[str, ...]] = {
         "AWS_SECRET_ACCESS_KEY",
         "AWS_SESSION_TOKEN",
     ),
-    "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    # GOOGLE_GENERATIVE_AI_API_KEY is the name the AI SDK's google provider
+    # reads, so it is what opencode authenticates with on a ``google/`` model.
+    # It is a credential value like the other two -- listed for redaction
+    # coverage, never a base URL, so it cannot affect transport-host selection.
+    "gemini": ("GEMINI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "GOOGLE_API_KEY"),
     "xai": ("XAI_API_KEY", "XAI_API_KEYS"),
     "meta": ("META_API_KEY", "OPENAI_API_KEY"),
     "fireworks": ("FIREWORKS_API_KEY",),
