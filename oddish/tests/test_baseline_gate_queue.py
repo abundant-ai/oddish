@@ -3,7 +3,7 @@
 When ``settings.gate_llm_on_baselines`` is on and a task mixes nop/oracle
 baselines with LLM agents, the LLM trials are enqueued ``BLOCKED`` and only
 released once the baselines finish: ``QUEUED`` if the baselines validate the
-task, ``CANCELLED`` (trial mirrored to ``FAILED``) if they prove it faulty.
+task, ``CANCELLED`` (trial marked ``SKIPPED``) if they prove it faulty.
 
 Runs against a real Postgres (``ODDISH_DATABASE_URL``), like the other
 queue tests.
@@ -59,6 +59,18 @@ def _mixed_submission(name: str) -> TaskSubmission:
         trials=[
             TrialSpec(agent="oracle", model=None),
             TrialSpec(agent="nop", model=None),
+            TrialSpec(agent=_LLM_AGENT, model=_LLM_MODEL),
+        ],
+    )
+
+
+def _single_baseline_submission(name: str, agent: str) -> TaskSubmission:
+    return TaskSubmission(
+        name=name,
+        task_path="s3://test-bucket/baseline-gate-fake-task",
+        user="test",
+        trials=[
+            TrialSpec(agent=agent, model=None),
             TrialSpec(agent=_LLM_AGENT, model=_LLM_MODEL),
         ],
     )
@@ -129,6 +141,37 @@ async def _set_baseline_outcomes(
                 )
             )
         ).scalar_one()
+    return baseline_id
+
+
+async def _finish_only_baseline(task_id: str, *, reward: float) -> str:
+    """Finish a scope's sole baseline and return its trial ID."""
+    async with get_session() as session:
+        baseline_id = (
+            await session.execute(
+                select(TrialModel.id).where(
+                    TrialModel.task_id == task_id,
+                    TrialModel.queue_key == "nop_oracle",
+                )
+            )
+        ).scalar_one()
+        await session.execute(
+            update(TrialModel)
+            .where(TrialModel.id == baseline_id)
+            .values(
+                status=TrialStatus.SUCCESS,
+                reward=reward,
+                finished_at=utcnow(),
+            )
+        )
+        await session.execute(
+            update(WorkerJobModel)
+            .where(
+                WorkerJobModel.kind == WorkerJobKind.TRIAL,
+                WorkerJobModel.subject_id == baseline_id,
+            )
+            .values(status=WorkerJobStatus.SUCCESS)
+        )
     return baseline_id
 
 
@@ -239,6 +282,52 @@ async def test_valid_baselines_unblock_llm(monkeypatch, cleanup_task_ids):
             )
         ).scalar_one()
     assert llm_trial.status != TrialStatus.FAILED
+
+
+@pytest.mark.parametrize(
+    ("only_agent", "reward"),
+    [("oracle", 1.0), ("nop", 0.0)],
+)
+@pytest.mark.asyncio
+async def test_missing_baseline_kind_never_releases_llm(
+    monkeypatch,
+    cleanup_task_ids,
+    only_agent: str,
+    reward: float,
+):
+    monkeypatch.setattr(settings, "gate_llm_on_baselines", True)
+    task_id = f"gate-only-{only_agent}-{_RUN}"
+    cleanup_task_ids.append(task_id)
+    async with get_session() as session:
+        await create_task(
+            session,
+            _single_baseline_submission(f"only-{only_agent}", only_agent),
+            task_id=task_id,
+        )
+
+    # Even a clean result from the one present control cannot prove both sides
+    # of the task invariant. Paid work stays blocked until that result settles.
+    assert (await _job_status_by_agent(task_id))[_LLM_AGENT] == (
+        WorkerJobStatus.BLOCKED
+    )
+    baseline_id = await _finish_only_baseline(task_id, reward=reward)
+    async with get_session() as session:
+        assert await maybe_gate_llm_trials(session, baseline_id) is True
+
+    assert (await _job_status_by_agent(task_id))[_LLM_AGENT] == (
+        WorkerJobStatus.CANCELLED
+    )
+    async with get_session() as session:
+        llm_trial = (
+            await session.execute(
+                select(TrialModel).where(
+                    TrialModel.task_id == task_id,
+                    TrialModel.agent == _LLM_AGENT,
+                )
+            )
+        ).scalar_one()
+    assert llm_trial.status == TrialStatus.SKIPPED
+    assert llm_trial.error_message == GATE_SKIP_MESSAGE
 
 
 @pytest.mark.parametrize(

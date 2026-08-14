@@ -173,8 +173,8 @@ class BaselineResult:
     @property
     def is_expected(self) -> bool:
         if self.agent == "nop":
-            return not self.passed
-        return self.passed
+            return not self.passed and self.reward == 0
+        return self.passed and self.reward == 1
 
 
 @dataclass
@@ -186,20 +186,31 @@ class BaselineValidation:
 
     @property
     def is_valid(self) -> bool:
-        nop_ok = self.nop is None or self.nop.is_expected
-        oracle_ok = self.oracle is None or self.oracle.is_expected
-        return nop_ok and oracle_ok
+        return (
+            self.nop is not None
+            and self.oracle is not None
+            and self.nop.is_expected
+            and self.oracle.is_expected
+        )
 
     @property
     def issues(self) -> list[str]:
         issues = []
-        if self.nop and not self.nop.is_expected:
+        if self.nop is None:
             issues.append(
-                "CRITICAL: nop agent passed - task may be pre-solved or tests are broken"
+                "CRITICAL: nop agent missing - task was not checked for free credit"
             )
-        if self.oracle and not self.oracle.is_expected:
+        elif not self.nop.is_expected:
             issues.append(
-                "CRITICAL: oracle agent failed - reference solution doesn't work"
+                "CRITICAL: nop baseline invalid - expected a failing run with reward 0.0"
+            )
+        if self.oracle is None:
+            issues.append(
+                "CRITICAL: oracle agent missing - reference solution was not validated"
+            )
+        elif not self.oracle.is_expected:
+            issues.append(
+                "CRITICAL: oracle baseline invalid - expected a passing run with reward 1.0"
             )
         return issues
 

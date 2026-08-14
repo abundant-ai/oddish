@@ -19,10 +19,10 @@ Decision rule -- every baseline run must land cleanly; errors count against it:
     landed cleanly, so any error makes the task FAULTY. (This is stricter than
     the earlier "ignore infra errors" rule -- we now require *all* oracle runs
     to pass and *all* nop runs to fail, with zero errors.)
-  - The gate is VALID iff every baseline kind present passed for all its runs.
-    Anything else -- a wrong verdict, partial credit, or any error -- is FAULTY
-    and the LLM trials are not run. When no baseline is present at all the task
-    is likewise FAULTY (nothing validated it).
+  - The gate is VALID iff both baseline kinds are present and every run of each
+    kind landed at its expected extreme. Anything else -- a missing kind, wrong
+    verdict, partial credit, or any error -- is FAULTY and the LLM trials are
+    not run.
 """
 
 from __future__ import annotations
@@ -72,13 +72,13 @@ def evaluate_baseline_gate(
         if kind is not None:
             rewards_by_kind[kind].append(reward)
 
-    present = {kind: rs for kind, rs in rewards_by_kind.items() if rs}
-    if not present:
-        # No nop/oracle baseline present at all -> nothing validated the task.
+    if not all(rewards_by_kind.values()):
+        # Both controls are required: oracle proves the reference solution can
+        # pass, while nop proves the verifier does not award credit for free.
         return GateOutcome.FAULTY, GATE_SKIP_MESSAGE
 
-    for kind, rewards in present.items():
-        # Every run of a present baseline kind must land cleanly at its extreme.
+    for kind, rewards in rewards_by_kind.items():
+        # Every run of each baseline kind must land cleanly at its extreme.
         # An infra error (reward is None) is NOT ignored -- ``None == 1`` /
         # ``None == 0`` are both False, so any error fails the check just like a
         # wrong verdict does.

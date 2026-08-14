@@ -2,7 +2,8 @@
 
 ``evaluate_baseline_gate`` decides whether a task's nop/oracle baselines
 validate it: *every* oracle run must pass (reward 1.0) and *every* nop run must
-fail (reward 0.0). Any wrong verdict, partial credit, or infra error
+fail (reward 0.0), and both kinds must be present. Any missing kind, wrong
+verdict, partial credit, or infra error
 (``reward is None``) makes the task faulty. No DB needed.
 """
 
@@ -15,6 +16,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from oddish.analyze.models import BaselineResult, BaselineValidation  # noqa: E402
 from oddish.core.baseline_gate import (  # noqa: E402
     GATE_SKIP_MESSAGE,
     GateOutcome,
@@ -30,9 +32,9 @@ from oddish.core.baseline_gate import (  # noqa: E402
         ([("oracle", 1.0), ("oracle", 1.0), ("nop", 0.0)], GateOutcome.VALID),
         # Suffixed/prefixed baseline variants still classify.
         ([("oracle-v2", 1.0), ("agent-nop", 0.0)], GateOutcome.VALID),
-        # Only one baseline kind present -> gate on what we have.
-        ([("oracle", 1.0)], GateOutcome.VALID),
-        ([("nop", 0.0)], GateOutcome.VALID),
+        # Both controls are required even when the one present is clean.
+        ([("oracle", 1.0)], GateOutcome.FAULTY),
+        ([("nop", 0.0)], GateOutcome.FAULTY),
         # Errors are now disqualifying: not every oracle/nop run landed cleanly.
         ([("oracle", 1.0), ("oracle", None), ("nop", 0.0)], GateOutcome.FAULTY),
         ([("oracle", 1.0), ("nop", 0.0), ("nop", None)], GateOutcome.FAULTY),
@@ -78,3 +80,78 @@ def test_faulty_reason_is_uniform_across_cases():
     _, inverted = evaluate_baseline_gate([("oracle", 0.0), ("nop", 0.0)])
     _, no_baselines = evaluate_baseline_gate([])
     assert inverted == GATE_SKIP_MESSAGE == no_baselines
+
+
+@pytest.mark.parametrize(
+    "validation, expected_issues",
+    [
+        (
+            BaselineValidation(
+                nop=BaselineResult(agent="nop", passed=False, reward=0.0),
+                oracle=BaselineResult(agent="oracle", passed=True, reward=1.0),
+            ),
+            [],
+        ),
+        (
+            BaselineValidation(
+                oracle=BaselineResult(agent="oracle", passed=True, reward=1.0)
+            ),
+            ["CRITICAL: nop agent missing - task was not checked for free credit"],
+        ),
+        (
+            BaselineValidation(
+                nop=BaselineResult(agent="nop", passed=False, reward=0.0)
+            ),
+            [
+                "CRITICAL: oracle agent missing - reference solution was not validated"
+            ],
+        ),
+        (
+            BaselineValidation(),
+            [
+                "CRITICAL: nop agent missing - task was not checked for free credit",
+                "CRITICAL: oracle agent missing - reference solution was not validated",
+            ],
+        ),
+        (
+            BaselineValidation(
+                nop=BaselineResult(agent="nop", passed=False, reward=None),
+                oracle=BaselineResult(agent="oracle", passed=True, reward=1.0),
+            ),
+            [
+                "CRITICAL: nop baseline invalid - expected a failing run with reward 0.0"
+            ],
+        ),
+        (
+            BaselineValidation(
+                nop=BaselineResult(agent="nop", passed=False, reward=0.5),
+                oracle=BaselineResult(agent="oracle", passed=True, reward=1.0),
+            ),
+            [
+                "CRITICAL: nop baseline invalid - expected a failing run with reward 0.0"
+            ],
+        ),
+        (
+            BaselineValidation(
+                nop=BaselineResult(agent="nop", passed=False, reward=0.0),
+                oracle=BaselineResult(agent="oracle", passed=True, reward=0.5),
+            ),
+            [
+                "CRITICAL: oracle baseline invalid - expected a passing run with reward 1.0"
+            ],
+        ),
+        (
+            BaselineValidation(
+                nop=BaselineResult(agent="nop", passed=True, reward=1.0),
+                oracle=BaselineResult(agent="oracle", passed=False, reward=0.0),
+            ),
+            [
+                "CRITICAL: nop baseline invalid - expected a failing run with reward 0.0",
+                "CRITICAL: oracle baseline invalid - expected a passing run with reward 1.0",
+            ],
+        ),
+    ],
+)
+def test_baseline_validation_requires_both_kinds(validation, expected_issues):
+    assert validation.is_valid is (not expected_issues)
+    assert validation.issues == expected_issues
