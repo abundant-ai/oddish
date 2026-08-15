@@ -32,9 +32,13 @@ plateaus: once `existing + want` stops changing between passes the payload is
 byte-identical and the cell stops filling forever. Every submit therefore
 carries a unique ODDISH_EVAL_NONCE.
 
---ak flags are load-bearing: opencode's `variant` is a CliFlag with NO default,
-so omitting `--ak variant=high` silently runs a different configuration than the
-original arm. Pass every knob explicitly, every time.
+Agent kwargs are load-bearing: opencode's `variant` is a CliFlag with NO
+default, so omitting variant=high silently runs a different configuration than
+the original arm. Pass every knob explicitly, every time.
+
+Nested kwargs cannot go through --ak at all -- oddish parses those into
+dict[str, str], so a dict would arrive at Harbor as a string. Use
+--sweep-template for those; see submit_cmd.
 """
 import argparse, json, re, subprocess, sys, time, datetime
 
@@ -56,6 +60,29 @@ def api(args, tries=6):
     return None
 
 
+def submit_cmd(a, name, n, nonce):
+    """Build one submit. Two shapes, because a sweep template is the only way to
+    pass a nested agent kwarg -- see --sweep-template."""
+    base = [ODDISH, "run", "-p", a.dataset, "-t", name, "-e", "modal",
+            "-E", a.exp, "--force", "--background", "--ae", nonce]
+    if not a.sweep_template:
+        cmd = base + ["-a", a.agent, "-m", a.model, "--n-trials", str(n)]
+        for kv in a.ak:
+            cmd += ["--ak", kv]
+        return cmd, None
+    # Render the template with this submit's n_trials. Written per task so
+    # concurrent passes cannot race on one shared file.
+    tpl = open(a.sweep_template).read()
+    rendered, hits = re.subn(r"(?m)^(\s*n_trials:\s*)\d+\s*$", rf"\g<1>{n}", tpl)
+    if hits != 1:
+        raise SystemExit(f"sweep template must contain exactly one n_trials line "
+                         f"(found {hits}) -- refusing to submit")
+    path = f"/home/user/terra-run/.sweep-{name}.yaml"
+    with open(path, "w") as f:
+        f.write(rendered)
+    return base + ["-c", path], path
+
+
 def stamp():
     return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
 
@@ -72,8 +99,18 @@ def main():
     p.add_argument("--per-task-inflight", type=int, default=0,
                    help="keep this many trials in flight for EVERY task; "
                         "overrides --batch/--cap round-robin mode")
+    p.add_argument("--min-total-inflight", type=int, default=0,
+                   help="floor on TOTAL in-flight; the neediest tasks are given "
+                        "more than --per-task-inflight to reach it")
     p.add_argument("--ak", action="append", default=[], help="agent kwarg, repeatable")
     p.add_argument("--dataset", default="/home/user/terra-run/ds-none")
+    p.add_argument("--sweep-template",
+                   help="YAML sweep config to submit with (-c) instead of "
+                        "-a/-m/--ak. Required for any agent kwarg that is not a "
+                        "flat string: oddish parses --ak into dict[str, str], so "
+                        "a nested value like opencode_config would reach Harbor "
+                        "as a STRING and blow up its dict merge. n_trials in the "
+                        "template is rewritten per submit.")
     p.add_argument("--dry-run", action="store_true")
     a = p.parse_args()
 
@@ -129,6 +166,31 @@ def main():
             n_new = min(a.per_task_inflight - c["pend"], a.target - c["held"])
             if n_new > 0:
                 want[name] = n_new
+
+        # Even dispersion sets the shape; the floor sets the volume. As tasks
+        # finish, N-per-task stops being enough to keep the fleet's concurrency
+        # limit saturated -- with 6 tasks left, 3 each is 18 in flight against a
+        # limit of 20 plus a queue. Hand the surplus to the tasks with the
+        # fewest valid trials, since those are the ones that decide when this
+        # finishes.
+        if a.min_total_inflight:
+            room = {n: a.target - c["held"] - want.get(n, 0)
+                    for n, c in cells.items() if c["held"] < a.target}
+            neediest = sorted(room, key=lambda n: (cells[n]["valid"], cells[n]["held"]))
+            projected = in_flight + sum(want.values())
+            while projected < a.min_total_inflight:
+                progressed = False
+                for name in neediest:
+                    if projected >= a.min_total_inflight:
+                        break
+                    if room[name] <= 0:
+                        continue
+                    want[name] = want.get(name, 0) + 1
+                    room[name] -= 1
+                    projected += 1
+                    progressed = True
+                if not progressed:      # every task is capped at its target
+                    break
         print(f"{stamp()} in_flight={in_flight} per_task_target={a.per_task_inflight} "
               f"topping_up={len(want)} tasks (+{sum(want.values())}) "
               f"valid={sum(c['valid'] for c in cells.values())}"
@@ -140,14 +202,17 @@ def main():
             print("every task already at its in-flight target")
             return 1
         created = 0
-        for name, n_new in sorted(want.items(), key=lambda kv: -kv[1]):
+        # Neediest task first: fewest VALID trials, then fewest held. The
+        # submits go out serially and the fleet has a fixed concurrency limit,
+        # so whoever is asked for first gets scheduled first -- that ordering is
+        # the only lever here for closing the gap between the tasks that are
+        # nearly done and the ones still near zero.
+        order = sorted(want.items(),
+                       key=lambda kv: (cells[kv[0]]["valid"], cells[kv[0]]["held"]))
+        for name, n_new in order:
             n = cells[name]["existing"] + n_new
-            cmd = [ODDISH, "run", "-p", a.dataset, "-t", name, "-a", a.agent,
-                   "-m", a.model, "--n-trials", str(n), "-e", "modal",
-                   "-E", a.exp, "--force", "--background",
-                   "--ae", f"ODDISH_EVAL_NONCE={name}-{time.time_ns()}"]
-            for kv in a.ak:
-                cmd += ["--ak", kv]
+            cmd, _ = submit_cmd(a, name, n,
+                                f"ODDISH_EVAL_NONCE={name}-{time.time_ns()}")
             if a.dry_run:
                 print(f"  DRY {name:<32} pend={cells[name]['pend']} "
                       f"existing={cells[name]['existing']} -> --n-trials {n} (+{n_new})")
@@ -207,12 +272,8 @@ def main():
         # trials in any cell with a past failure, and that cell silently never
         # fills while the loop reports "ok" forever.
         n = cells[name]["existing"] + 1       # target-based: creates exactly one
-        cmd = [ODDISH, "run", "-p", a.dataset, "-t", name, "-a", a.agent,
-               "-m", a.model, "--n-trials", str(n), "-e", "modal",
-               "-E", a.exp, "--force", "--background",
-               "--ae", f"ODDISH_EVAL_NONCE={name}-{time.time_ns()}"]
-        for kv in a.ak:
-            cmd += ["--ak", kv]
+        cmd, _ = submit_cmd(a, name, n,
+                            f"ODDISH_EVAL_NONCE={name}-{time.time_ns()}")
         if a.dry_run:
             print(f"  DRY {name:<32} held={held} existing={cells[name]['existing']}"
                   f" -> --n-trials {n}")

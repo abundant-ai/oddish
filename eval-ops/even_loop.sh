@@ -2,20 +2,26 @@
 # Keep the opencode/gemini arm filling, evenly, until every task holds 10 valid
 # trials.
 #
-#   --per-task-inflight 3   keep three trials running for EVERY task, so all 20
-#                           advance together instead of one draining the queue.
-#                           Oddish has its own concurrency control, so this does
-#                           not throttle the fleet further -- it just makes sure
-#                           no task sits idle waiting its turn.
+#   --per-task-inflight 3    keep three trials in flight for EVERY task, so all
+#                            of them advance together instead of one draining
+#                            the queue. Submits go out neediest-first (fewest
+#                            valid trials), which is what closes the gap between
+#                            the nearly-done tasks and the ones near zero.
+#   --min-total-inflight 40  Oddish runs 20 concurrently, so this keeps roughly
+#                            20 more queued behind them and the fleet never goes
+#                            idle. As tasks finish, 3-per-task alone stops being
+#                            enough to fill that, and the surplus goes to the
+#                            tasks with the fewest valid trials.
 #
 # Note on rate limits: Gemini allows 20M input tokens/minute shared fleet-wide.
 # An earlier run at 34-35 concurrent had every completion come back
 # 429 RESOURCE_EXHAUSTED. Watch the valid count -- if it stops climbing while
 # trials keep finishing, the fleet is back over the ceiling.
 #
-# --ak variant=high is LOAD-BEARING. opencode's `variant` is a CliFlag with no
-# default, so dropping it silently runs a different configuration than the arm
-# we are trying to reproduce.
+# Submits go through oc_sweep.yaml rather than --ak. That file carries BOTH
+# variant=high (a CliFlag with no default -- dropping it silently changes the
+# configuration) and opencode_config.compaction.reserved, which is nested and
+# therefore cannot travel through --ak at all.
 #
 # Self-heals from git if the container is recycled mid-run.
 set -u
@@ -41,7 +47,7 @@ for pass in $(seq 1 4000); do
   # pass resumes) but wastes the poll, so give it room to finish.
   out=$(timeout 3000 python3 -u even_fill.py 826d7d88 opencode \
         google/gemini-3.7-flash --target 10 --cap 9999 --per-task-inflight 3 \
-        --ak variant=high 2>&1)
+        --min-total-inflight 40 --sweep-template $HERE/oc_sweep.yaml 2>&1)
   echo "$out" | sed "s/^/[pass $pass] /" >>$LOG
 
   if echo "$out" | grep -q 'COMPLETE'; then
