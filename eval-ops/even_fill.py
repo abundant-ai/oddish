@@ -62,6 +62,9 @@ def main():
     p.add_argument("--cap", type=int, required=True, help="global in-flight cap")
     p.add_argument("--batch", type=int, default=0,
                    help="max NEW trials this pass (0 = fill all headroom)")
+    p.add_argument("--per-task-inflight", type=int, default=0,
+                   help="keep this many trials in flight for EVERY task; "
+                        "overrides --batch/--cap round-robin mode")
     p.add_argument("--ak", action="append", default=[], help="agent kwarg, repeatable")
     p.add_argument("--dataset", default="/home/user/terra-run/ds-none")
     p.add_argument("--dry-run", action="store_true")
@@ -105,6 +108,69 @@ def main():
                  f"({', '.join(missing[:4])}) -- skipping this pass")
 
     in_flight = sum(c["pend"] for c in cells.values())
+
+    # --- per-task in-flight mode -------------------------------------------
+    # Keep N trials running for EVERY task, letting Oddish's own concurrency
+    # control decide what actually executes rather than throttling here.
+    if a.per_task_inflight:
+        want = {}
+        for name, c in cells.items():
+            if c["held"] >= a.target:
+                continue
+            # Never queue past what the target still needs: held already counts
+            # the in-flight ones, so this is the remaining room, not the deficit.
+            n_new = min(a.per_task_inflight - c["pend"], a.target - c["held"])
+            if n_new > 0:
+                want[name] = n_new
+        print(f"{stamp()} in_flight={in_flight} per_task_target={a.per_task_inflight} "
+              f"topping_up={len(want)} tasks (+{sum(want.values())}) "
+              f"valid={sum(c['valid'] for c in cells.values())}"
+              f"/{a.target * len(cells)}")
+        if not want:
+            if all(c["held"] >= a.target for c in cells.values()):
+                print("COMPLETE -- every task at target")
+                return 0
+            print("every task already at its in-flight target")
+            return 1
+        created = 0
+        for name, n_new in sorted(want.items(), key=lambda kv: -kv[1]):
+            n = cells[name]["existing"] + n_new
+            cmd = [ODDISH, "run", "-p", a.dataset, "-t", name, "-a", a.agent,
+                   "-m", a.model, "--n-trials", str(n), "-e", "modal",
+                   "-E", a.exp, "--force", "--background"]
+            for kv in a.ak:
+                cmd += ["--ak", kv]
+            if a.dry_run:
+                print(f"  DRY {name:<32} pend={cells[name]['pend']} "
+                      f"existing={cells[name]['existing']} -> --n-trials {n} (+{n_new})")
+                continue
+            ok, made = False, None
+            for attempt in (1, 2, 3):
+                try:
+                    r = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+                    out = r.stdout + r.stderr
+                except Exception as e:
+                    out = str(e)
+                if "Task submitted!" in out:
+                    ok = True
+                    m = re.search(r"trials:\s*(\d+)", out, re.I)
+                    made = int(m.group(1)) if m else None
+                    break
+                if "new version" in out.lower() or "budget" in out.lower():
+                    print(f"  {name:<32} ABORT: {out.strip().splitlines()[-1][:80]}")
+                    break
+                subprocess.run(["sleep", str(10 * attempt)])
+            flag = "" if made in (None, n_new) else f"  <-- CREATED {made}, EXPECTED {n_new}"
+            print(f"  {name:<32} pend={cells[name]['pend']} "
+                  f"existing={cells[name]['existing']} -> n={n} (+{n_new}) "
+                  f"{'ok' if ok else 'FAILED'}"
+                  + (f" made={made}" if made is not None else "") + flag)
+            if ok:
+                created += made if made is not None else n_new
+        print(f"{stamp()} created={created}")
+        return 1
+    # --- end per-task mode --------------------------------------------------
+
     headroom = a.cap - in_flight
     # Batch size is the real throttle. Gemini's 20M input-tokens/minute quota is
     # shared across every concurrent trial, so a big burst makes ALL of them 429
