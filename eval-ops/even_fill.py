@@ -25,11 +25,18 @@ Asking for held+1 in a cell that has any past failure resolves to zero new
 trials while still printing "Task submitted!", so the cell never fills and the
 loop reports success forever.
 
+A sweep payload is deduplicated for 24h by a hash of the whole request, so two
+identical submits collapse into one and the second silently creates nothing
+while still reporting the original trial count. That bites exactly when a cell
+plateaus: once `existing + want` stops changing between passes the payload is
+byte-identical and the cell stops filling forever. Every submit therefore
+carries a unique ODDISH_EVAL_NONCE.
+
 --ak flags are load-bearing: opencode's `variant` is a CliFlag with NO default,
 so omitting `--ak variant=high` silently runs a different configuration than the
 original arm. Pass every knob explicitly, every time.
 """
-import argparse, json, re, subprocess, sys, datetime
+import argparse, json, re, subprocess, sys, time, datetime
 
 ODDISH = "/home/user/oddish/oddish/.venv/bin/oddish"
 PENDING = ("pending", "queued", "running", "blocked", "preparing", "submitted",
@@ -137,7 +144,8 @@ def main():
             n = cells[name]["existing"] + n_new
             cmd = [ODDISH, "run", "-p", a.dataset, "-t", name, "-a", a.agent,
                    "-m", a.model, "--n-trials", str(n), "-e", "modal",
-                   "-E", a.exp, "--force", "--background"]
+                   "-E", a.exp, "--force", "--background",
+                   "--ae", f"ODDISH_EVAL_NONCE={name}-{time.time_ns()}"]
             for kv in a.ak:
                 cmd += ["--ak", kv]
             if a.dry_run:
@@ -201,7 +209,8 @@ def main():
         n = cells[name]["existing"] + 1       # target-based: creates exactly one
         cmd = [ODDISH, "run", "-p", a.dataset, "-t", name, "-a", a.agent,
                "-m", a.model, "--n-trials", str(n), "-e", "modal",
-               "-E", a.exp, "--force", "--background"]
+               "-E", a.exp, "--force", "--background",
+               "--ae", f"ODDISH_EVAL_NONCE={name}-{time.time_ns()}"]
         for kv in a.ak:
             cmd += ["--ak", kv]
         if a.dry_run:
