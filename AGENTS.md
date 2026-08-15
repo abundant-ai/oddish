@@ -23,6 +23,29 @@ Python `3.13` is required for `oddish` and `backend`. Node.js `20+` and `pnpm` a
   Modal app wiring, managed worker spawning, GitHub/webhook integrations, and
   cloud-only policy) belong in `backend/`.
 
+## Pull Request and Deployment Process
+
+- Keep each PR below 500 lines of application-code changes. If a coherent
+  change cannot fit, split it into independently reviewable PRs.
+- Write a human-readable PR title and description: explain the problem, the
+  behavior change, the important design choices, and how it was verified.
+  Remove filler, canned prose, and generated-sounding language before handoff.
+- Require a successful preview deployment before declaring a PR ready. Verify
+  the frontend, backend, and database/migrations when the change affects them.
+- Deploy to staging and closely test the affected workflows there before any
+  production promotion.
+- Never merge or promote a PR unless the user explicitly requests it. When
+  production promotion is requested, open a PR from `staging` to `main` and
+  comment `/promote` on that PR.
+- Own production regressions caused by your change: fix them and write a
+  postmortem. If the required process was skipped, obtain a reviewer before
+  further production changes.
+- Close abandoned or completed PRs when their lifecycle is actually finished;
+  do not close a fresh PR that is being handed off for review.
+- Treat this repository and its services as shared infrastructure. Keep scope
+  tight, preserve unrelated work, test carefully, and leave the codebase in a
+  state you are prepared to support.
+
 ## Repository Layout
 
 ```text
