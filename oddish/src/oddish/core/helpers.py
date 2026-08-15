@@ -25,6 +25,7 @@ from oddish.db import (
     WorkerJobStatus,
 )
 from oddish.core.cost_basis import is_combine_copy
+from oddish.core.cost_exclusions import CostExclusions
 from oddish.core.tags.projection import (
     list_effective_user_tags_for_task_versions,
 )
@@ -424,6 +425,10 @@ def build_trial_response(
     # None = "not resolved by this caller", which the UI renders as nothing.
     # Distinct from 0.0, which would mean "resolved, and there was no QA".
     qa_cost_usd: float | None = None,
+    # None = "this caller didn't resolve exclusions", so the trial is reported
+    # unlabelled rather than asserted to be real spend. Load one snapshot per
+    # request (``load_cost_exclusions``) and pass it to every trial.
+    exclusions: CostExclusions | None = None,
 ) -> TrialResponse:
     """Build a TrialResponse from a TrialModel."""
     normalized_model = settings.normalize_trial_model(trial.agent, trial.model, strict=False)
@@ -464,6 +469,16 @@ def build_trial_response(
         cost_usd=cost_usd,
         cost_is_estimated=cost_is_estimated,
         is_billed=trial.billed_user_id is not None,
+        # ``trial.model``, not ``normalized_model``: the SQL predicate matches
+        # ``trials.model``, and normalize_trial_model is agent-aware, so
+        # pricing's spelling and exclusion's spelling are not the same key.
+        cost_exclusion_reason=(
+            exclusions.reason_for(
+                model=trial.model, experiment_id=trial.experiment_id
+            )
+            if exclusions
+            else None
+        ),
         phase_timing=trial.phase_timing,
         has_trajectory=_has_fetchable_trajectory(trial),
         analysis_status=trial.analysis_status,
@@ -943,6 +958,7 @@ def build_task_status_response(
     effective_version_id: str | None | object = _VERSION_ID_UNSET,
     gathered_trial_ids: set[str] | None = None,
     exclude_combine_copies: bool = False,
+    exclusions: CostExclusions | None = None,
 ) -> TaskStatusResponse:
     """Build a TaskStatusResponse from a TaskModel with eagerly loaded trials.
 
@@ -958,6 +974,9 @@ def build_task_status_response(
 
     ``exclude_combine_copies`` is forwarded to :func:`get_task_status_trials`;
     see the caveat there before enabling it on an experiment-scoped caller.
+
+    ``exclusions`` is forwarded to every trial so the UI can label spend the
+    cost dashboards don't count; omit it and trials are reported unlabelled.
     """
     if effective_version_id is _VERSION_ID_UNSET:
         effective_version_id = resolve_effective_version_id(
@@ -992,6 +1011,7 @@ def build_task_status_response(
                     if jobs_by_subject is not None
                     else None
                 ),
+                exclusions=exclusions,
             )
             for t in task_trials
         ]

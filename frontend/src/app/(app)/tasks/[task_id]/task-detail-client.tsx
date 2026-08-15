@@ -25,6 +25,7 @@ import { TaskVerdictBadge } from "@/components/task-verdict-badge";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { ExperimentsList } from "@/components/experiments-list";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
+import { trialNotRealSpendNote } from "@/components/not-real-spend-badge";
 import { fetcher } from "@/lib/api";
 import { getExperimentAgentKey } from "@/lib/experiment-agent-grouping";
 import {
@@ -520,6 +521,13 @@ function TrialChip({ trial, onClick }: { trial: Trial; onClick: () => void }) {
             <div className="text-muted-foreground">
               {trial.cost_is_estimated ? "~" : ""}
               {formatCostUsd(trial.cost_usd)}
+            </div>
+          )}
+          {/* Already inside a tooltip, so the exclusion note is a line here
+              rather than another hover target. */}
+          {trialNotRealSpendNote(trial.cost_exclusion_reason) && (
+            <div className="text-muted-foreground mt-1 max-w-[220px] text-[10px]">
+              {trialNotRealSpendNote(trial.cost_exclusion_reason)}
             </div>
           )}
         </div>

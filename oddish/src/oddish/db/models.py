@@ -1145,9 +1145,7 @@ class TrialModel(TimestampedMixin, Base):
     cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # SHA-256 of the platform provider API key this trial ran on, stamped at
-    # settlement (forward-only; NULL for pre-rollout / unresolved keys). Matched
-    # against ``cost_excluded_llm_keys`` to drop sponsored/free spend from cost
-    # accounting -- see ``oddish.core.cost_basis.first_party_spend_filter``.
+    # settlement (forward-only; NULL for pre-rollout / unresolved keys).
     llm_key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Per-phase timing breakdown (from Harbor's TrialResult TimingInfo)
@@ -2526,30 +2524,65 @@ class TagProjectionSweepStateModel(Base):
     )
 
 
-class CostExcludedLlmKeyModel(TimestampedMixin, Base):
-    """An LLM provider API key whose spend is excluded from cost accounting.
+class CostExcludedModelModel(TimestampedMixin, Base):
+    """A model whose spend is excluded from cost accounting.
 
-    The admin-managed list of sponsored/free keys. Only the one-way ``key_hash``
-    (SHA-256) is stored -- exclusion is pure equality matching against
-    ``trials.llm_key_hash``, never key reuse -- plus a masked ``key_hint`` for
-    display; the plaintext key is never persisted. ``deleted_at`` (soft delete)
-    is the live/removed state, and the partial UNIQUE keeps one live row per hash
-    so a removed key can be re-added.
+    The model-level cost exclusion, for models the deployment does not
+    really pay for (provider-sponsored capacity, free
+    preview tiers, vendor credits). ``model_name`` is stored canonicalized
+    through ``core.cost_exclusions.canonical_excluded_model`` so the live
+    UNIQUE index collapses case/whitespace variants into one row, and matching
+    is equality against ``lower(trim(trials.model))`` -- ``trials.model`` is
+    already normalized on write (``schemas`` runs ``normalize_model_id``), so
+    the two spellings meet. ``deleted_at`` (soft delete) is the live/removed
+    state, and the partial UNIQUE keeps one live row per model so a removed
+    one can be re-added.
     """
 
-    __tablename__ = "cost_excluded_llm_keys"
+    __tablename__ = "cost_excluded_models"
     __table_args__ = (
         Index(
-            "idx_cost_excluded_llm_keys_hash_live",
-            "key_hash",
+            "idx_cost_excluded_models_model_live",
+            "model_name",
             unique=True,
             postgresql_where=text("deleted_at IS NULL"),
         ),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
-    key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    key_hint: Mapped[str] = mapped_column(String(8), nullable=False, server_default="")
+    model_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    label: Mapped[str] = mapped_column(String(255), nullable=False, server_default="")
+    created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class CostExcludedExperimentModel(TimestampedMixin, Base):
+    """An experiment whose trials' spend is excluded from cost accounting.
+
+    The experiment-level sibling of :class:`CostExcludedModelModel`. Exclusion
+    is equality matching against ``trials.experiment_id`` (the home experiment),
+    so collection experiments that merely gather trials are unaffected -- a
+    gathered trial keeps counting wherever it was really spent.
+    ``experiment_name`` is a display snapshot from registration time (no FK, so
+    the row outlives the experiment it names).
+    ``deleted_at`` (soft delete) is the live/removed state, and the partial
+    UNIQUE keeps one live row per experiment so a removed one can be re-added.
+    """
+
+    __tablename__ = "cost_excluded_experiments"
+    __table_args__ = (
+        Index(
+            "idx_cost_excluded_experiments_exp_live",
+            "experiment_id",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    experiment_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    experiment_name: Mapped[str] = mapped_column(
+        String(255), nullable=False, server_default=""
+    )
     label: Mapped[str] = mapped_column(String(255), nullable=False, server_default="")
     created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
@@ -2586,6 +2619,7 @@ register_soft_delete_models(
     SavedTagFilterModel,
     SkillModel,
     DocumentModel,
-    CostExcludedLlmKeyModel,
+    CostExcludedModelModel,
+    CostExcludedExperimentModel,
     ModelDisplayNameModel,
 )

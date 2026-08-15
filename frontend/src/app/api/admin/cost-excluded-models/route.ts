@@ -15,7 +15,7 @@ export async function GET() {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const url = getBackendUrl("admin/cost-excluded-keys");
+    const url = getBackendUrl("admin/cost-excluded-models");
     const res = await fetch(url, {
       cache: "no-store",
       headers: getAuthHeaders(token),
@@ -24,10 +24,10 @@ export async function GET() {
     if (!res.ok) {
       const errorText = await res.text();
       console.error(
-        `[cost-excluded-keys] Backend error: ${res.status} - ${errorText}`
+        `[cost-excluded-models] Backend error: ${res.status} - ${errorText}`
       );
       return NextResponse.json(
-        { error: "Failed to fetch cost-excluded keys", details: errorText },
+        { error: "Failed to fetch cost-excluded models", details: errorText },
         { status: res.status }
       );
     }
@@ -51,7 +51,7 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const url = getBackendUrl("admin/cost-excluded-keys");
+    const url = getBackendUrl("admin/cost-excluded-models");
 
     const res = await fetch(url, {
       method: "POST",
@@ -65,10 +65,10 @@ export async function POST(request: NextRequest) {
     if (!res.ok) {
       const errorText = await res.text();
       console.error(
-        `[cost-excluded-keys] Backend error: ${res.status} - ${errorText}`
+        `[cost-excluded-models] Backend error: ${res.status} - ${errorText}`
       );
       return NextResponse.json(
-        { error: "Failed to add cost-excluded key", details: errorText },
+        { error: "Failed to add cost-excluded model", details: errorText },
         { status: res.status }
       );
     }

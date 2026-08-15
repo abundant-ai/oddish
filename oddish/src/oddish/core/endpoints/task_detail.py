@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from oddish.core.cost_basis import is_combine_copy
+from oddish.core.cost_exclusions import load_cost_exclusions
 from oddish.core.endpoints._common import get_task_for_org_core
 from oddish.core.endpoints.qa_cost import get_task_qa_costs
 from oddish.core.helpers import (
@@ -173,12 +174,14 @@ async def get_task_detail_core(
         for t in task.trials
         if t.superseded_by_trial_id is None and not is_combine_copy(t)
     ]
+    exclusions = await load_cost_exclusions(session)
     task_status.trials = [
         build_trial_response(
             t,
             task.task_path,
             queue_info=queue_info_by_trial_id.get(t.id),
             jobs=jobs_by_subject.get(("trials", t.id), []),
+            exclusions=exclusions,
         )
         for t in all_trial_models
     ]

@@ -18,7 +18,6 @@ from oddish.core.quota_enforcement import (
 )
 from oddish.db import (
     AnalysisStatus,
-    CostExcludedLlmKeyModel,
     ExperimentModel,
     TaskModel,
     TaskStatus,
@@ -401,8 +400,7 @@ async def test_org_quota_cancels_every_users_active_trials(session, monkeypatch)
     org_id = f"org-org-qc-{suffix}"
     experiment_id = f"exp-org-qc-{suffix}"
     task_id = f"task-org-qc-{suffix}"
-    preserved_task_id = f"task-org-preserved-qc-{suffix}"
-    excluded_key_hash = ("e" * 56) + suffix
+    second_task_id = f"task-org-second-qc-{suffix}"
     now = datetime.now(timezone.utc)
 
     async def org_limit(*_args):
@@ -420,15 +418,8 @@ async def test_org_quota_cancels_every_users_active_trials(session, monkeypatch)
                 task_path="s3://test-bucket/org-quota-cancel-task",
                 status=TaskStatus.RUNNING,
             )
-            for current_task_id in (task_id, preserved_task_id)
+            for current_task_id in (task_id, second_task_id)
         ]
-    )
-    session.add(
-        CostExcludedLlmKeyModel(
-            key_hash=excluded_key_hash,
-            key_hint="excluded",
-            label="sponsored",
-        )
     )
     session.add_all(
         [
@@ -459,8 +450,8 @@ async def test_org_quota_cancels_every_users_active_trials(session, monkeypatch)
                 status=TrialStatus.QUEUED,
             ),
             _trial(
-                trial_id=f"{preserved_task_id}-baseline",
-                task_id=preserved_task_id,
+                trial_id=f"{second_task_id}-baseline",
+                task_id=second_task_id,
                 experiment_id=experiment_id,
                 org_id=org_id,
                 billed_user_id="user-b",
@@ -469,17 +460,8 @@ async def test_org_quota_cancels_every_users_active_trials(session, monkeypatch)
                 queue_key=NOP_ORACLE_QUEUE_KEY,
             ),
             _trial(
-                trial_id=f"{preserved_task_id}-excluded",
-                task_id=preserved_task_id,
-                experiment_id=experiment_id,
-                org_id=org_id,
-                billed_user_id="user-b",
-                status=TrialStatus.QUEUED,
-                llm_key_hash=excluded_key_hash,
-            ),
-            _trial(
-                trial_id=f"{preserved_task_id}-cancelled",
-                task_id=preserved_task_id,
+                trial_id=f"{second_task_id}-cancelled",
+                task_id=second_task_id,
                 experiment_id=experiment_id,
                 org_id=org_id,
                 billed_user_id="user-b",
@@ -487,21 +469,14 @@ async def test_org_quota_cancels_every_users_active_trials(session, monkeypatch)
             ),
         ]
     )
-    preserved_job = _job(
-        subject_table="trials",
-        subject_id=f"{preserved_task_id}-excluded",
-        kind=WorkerJobKind.TRIAL,
-        modal_id=None,
-        status=WorkerJobStatus.BLOCKED,
-    )
     cancelled_job = _job(
         subject_table="trials",
-        subject_id=f"{preserved_task_id}-cancelled",
+        subject_id=f"{second_task_id}-cancelled",
         kind=WorkerJobKind.TRIAL,
         modal_id=None,
         status=WorkerJobStatus.BLOCKED,
     )
-    session.add_all([preserved_job, cancelled_job])
+    session.add(cancelled_job)
     await session.flush()
 
     result = await cancel_trials_if_quota_reached(
@@ -514,22 +489,15 @@ async def test_org_quota_cancels_every_users_active_trials(session, monkeypatch)
     assert (await session.get(TrialModel, f"{task_id}-2")).status == TrialStatus.FAILED
     assert (await session.get(TaskModel, task_id)).status == TaskStatus.FAILED
     assert (
-        await session.get(TrialModel, f"{preserved_task_id}-baseline")
+        await session.get(TrialModel, f"{second_task_id}-baseline")
     ).status == TrialStatus.FAILED
     assert (
-        await session.get(TrialModel, f"{preserved_task_id}-excluded")
-    ).status == TrialStatus.QUEUED
-    assert (
-        await session.get(TrialModel, f"{preserved_task_id}-cancelled")
+        await session.get(TrialModel, f"{second_task_id}-cancelled")
     ).status == TrialStatus.FAILED
-    assert (
-        await session.get(TaskModel, preserved_task_id)
-    ).status == TaskStatus.RUNNING
-    await session.refresh(preserved_job)
+    assert (await session.get(TaskModel, second_task_id)).status == TaskStatus.FAILED
     await session.refresh(cancelled_job)
-    assert preserved_job.status == WorkerJobStatus.QUEUED
     assert cancelled_job.status == WorkerJobStatus.CANCELLED
-    assert result["released_trial_ids"] == [f"{preserved_task_id}-excluded"]
+    assert result["released_trial_ids"] == []
 
 
 @pytest.mark.asyncio

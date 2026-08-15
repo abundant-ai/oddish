@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-import hashlib
-
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from api.app import create_app
-from api.routers import cost_excluded_keys as router_mod
+from api.routers import cost_excluded_experiments as router_mod
 from auth import AuthContext, AuthMethod, require_auth
 from models import APIKeyScope, UserRole
+from oddish.db import CostExcludedExperimentModel, ExperimentModel, utcnow
 
 pytestmark = pytest.mark.asyncio
 
@@ -19,35 +18,36 @@ def operator_org(monkeypatch):
     monkeypatch.setenv("ODDISH_OPERATOR_ORG_ID", "org_1")
 
 
-class _FakeResult:
+class _FakeScalars:
     def __init__(self, rows):
         self._rows = list(rows)
 
-    def scalar_one_or_none(self):
+    def first(self):
         return self._rows[0] if self._rows else None
-
-    def scalars(self):
-        return self
 
     def all(self):
         return list(self._rows)
 
+    def __iter__(self):
+        return iter(self._rows)
+
 
 class FakeSession:
-    def __init__(self, query_rows=()):
-        self.query_rows = list(query_rows)
+    """Returns one queued result list per scalars() call, in order."""
+
+    def __init__(self, results=()):
+        self.results = [list(rows) for rows in results]
         self.added: list[object] = []
         self.committed = False
 
-    async def execute(self, _stmt):
-        return _FakeResult(self.query_rows)
+    async def scalars(self, _stmt):
+        return _FakeScalars(self.results.pop(0) if self.results else [])
 
     def add(self, obj):
         self.added.append(obj)
 
     async def commit(self):
-        # Simulate the Python-side column defaults a real flush would apply.
-        from oddish.db import generate_id, utcnow
+        from oddish.db import generate_id
 
         for obj in self.added:
             if getattr(obj, "id", None) is None:
@@ -70,6 +70,10 @@ class _FakeSessionCtx:
 
 def _install_fake_get_session(monkeypatch, session):
     monkeypatch.setattr(router_mod, "get_session", lambda: _FakeSessionCtx(session))
+
+
+def _experiment(exp_id="exp_1", name="glm sweep") -> ExperimentModel:
+    return ExperimentModel(id=exp_id, name=name)
 
 
 def _admin_jwt() -> AuthContext:
@@ -131,32 +135,62 @@ async def admin_client(app):
         app.dependency_overrides.pop(require_auth, None)
 
 
-async def test_add_hashes_key_and_discards_plaintext(admin_client, monkeypatch):
-    session = FakeSession(query_rows=[])
+async def test_add_by_id_snapshots_name(admin_client, monkeypatch):
+    # Queries: resolve by id (hit), duplicate check (miss).
+    session = FakeSession(results=[[_experiment()], []])
     _install_fake_get_session(monkeypatch, session)
 
     resp = await admin_client.post(
-        "/admin/cost-excluded-keys",
-        json={"key": "xai-super-secret-9f2c", "label": "sponsored"},
+        "/admin/cost-excluded-experiments",
+        json={"experiment": "exp_1", "label": "sponsored"},
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["key_hint"] == "9f2c"
-    assert body["label"] == "sponsored"
-    assert "key" not in body and "key_hash" not in body
-
-    assert len(session.added) == 1
-    row = session.added[0]
-    assert row.key_hash == hashlib.sha256(b"xai-super-secret-9f2c").hexdigest()
-    assert row.key_hint == "9f2c"
-    assert "xai-super-secret-9f2c" not in (row.key_hash, row.key_hint)
+    assert body["experiment_id"] == "exp_1"
+    # Name is a display snapshot: the row outlives the experiment.
+    assert body["experiment_name"] == "glm sweep"
+    assert session.added[0].experiment_id == "exp_1"
     assert session.committed
 
 
-async def test_add_duplicate_is_409(admin_client, monkeypatch):
-    _install_fake_get_session(monkeypatch, FakeSession(query_rows=[object()]))
+async def test_add_by_name_resolves(admin_client, monkeypatch):
+    # Queries: resolve by id (miss), by name (hit), duplicate check (miss).
+    session = FakeSession(results=[[], [_experiment()], []])
+    _install_fake_get_session(monkeypatch, session)
+
     resp = await admin_client.post(
-        "/admin/cost-excluded-keys", json={"key": "xai-dupe-key"}
+        "/admin/cost-excluded-experiments", json={"experiment": "glm sweep"}
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["experiment_id"] == "exp_1"
+
+
+async def test_add_ambiguous_name_is_409(admin_client, monkeypatch):
+    # Experiment names are not unique, so an ambiguous one must not silently
+    # exclude the wrong experiment's spend.
+    session = FakeSession(results=[[], [_experiment("exp_1"), _experiment("exp_2")]])
+    _install_fake_get_session(monkeypatch, session)
+
+    resp = await admin_client.post(
+        "/admin/cost-excluded-experiments", json={"experiment": "glm sweep"}
+    )
+    assert resp.status_code == 409
+    assert "ambiguous" in resp.json()["detail"]
+
+
+async def test_add_unknown_experiment_is_404(admin_client, monkeypatch):
+    _install_fake_get_session(monkeypatch, FakeSession(results=[[], []]))
+    resp = await admin_client.post(
+        "/admin/cost-excluded-experiments", json={"experiment": "missing"}
+    )
+    assert resp.status_code == 404
+
+
+async def test_add_duplicate_is_409(admin_client, monkeypatch):
+    session = FakeSession(results=[[_experiment()], [object()]])
+    _install_fake_get_session(monkeypatch, session)
+    resp = await admin_client.post(
+        "/admin/cost-excluded-experiments", json={"experiment": "exp_1"}
     )
     assert resp.status_code == 409
 
@@ -168,64 +202,59 @@ async def test_add_race_integrity_error_is_409(admin_client, monkeypatch):
         async def commit(self):
             raise IntegrityError("INSERT", {}, Exception("duplicate key"))
 
-    _install_fake_get_session(monkeypatch, RacingSession(query_rows=[]))
+    _install_fake_get_session(monkeypatch, RacingSession(results=[[_experiment()], []]))
     resp = await admin_client.post(
-        "/admin/cost-excluded-keys", json={"key": "xai-race-key"}
+        "/admin/cost-excluded-experiments", json={"experiment": "exp_1"}
     )
     assert resp.status_code == 409
 
 
-async def test_add_empty_key_is_400(admin_client, monkeypatch):
-    _install_fake_get_session(monkeypatch, FakeSession(query_rows=[]))
-    resp = await admin_client.post("/admin/cost-excluded-keys", json={"key": "   "})
-    assert resp.status_code == 400
-
-
-async def test_add_short_key_is_400(admin_client, monkeypatch):
-    _install_fake_get_session(monkeypatch, FakeSession(query_rows=[]))
-    resp = await admin_client.post("/admin/cost-excluded-keys", json={"key": "abc"})
-    assert resp.status_code == 400
-    assert resp.json()["detail"] == "key is too short to be an LLM API key"
-
-
-async def test_list_returns_hints(admin_client, monkeypatch):
-    from oddish.db import CostExcludedLlmKeyModel, utcnow
-
-    row = CostExcludedLlmKeyModel(
-        id="k1", key_hash="h", key_hint="9f2c", label="sponsored", created_at=utcnow()
+async def test_add_empty_experiment_is_400(admin_client, monkeypatch):
+    _install_fake_get_session(monkeypatch, FakeSession())
+    resp = await admin_client.post(
+        "/admin/cost-excluded-experiments", json={"experiment": "   "}
     )
-    _install_fake_get_session(monkeypatch, FakeSession(query_rows=[row]))
-    resp = await admin_client.get("/admin/cost-excluded-keys")
+    assert resp.status_code == 400
+
+
+async def test_list_returns_rows(admin_client, monkeypatch):
+    row = CostExcludedExperimentModel(
+        id="x1",
+        experiment_id="exp_1",
+        experiment_name="glm sweep",
+        label="sponsored",
+        created_at=utcnow(),
+    )
+    _install_fake_get_session(monkeypatch, FakeSession(results=[[row]]))
+    resp = await admin_client.get("/admin/cost-excluded-experiments")
     assert resp.status_code == 200
-    body = resp.json()
-    assert body[0]["key_hint"] == "9f2c"
-    assert "key_hash" not in body[0]
+    assert resp.json()[0]["experiment_id"] == "exp_1"
 
 
 async def test_delete_soft_deletes(admin_client, monkeypatch):
-    from oddish.db import CostExcludedLlmKeyModel
-
-    row = CostExcludedLlmKeyModel(id="k1", key_hash="h", key_hint="9f2c", label="x")
-    session = FakeSession(query_rows=[row])
+    row = CostExcludedExperimentModel(
+        id="x1", experiment_id="exp_1", experiment_name="glm sweep", label=""
+    )
+    session = FakeSession(results=[[row]])
     _install_fake_get_session(monkeypatch, session)
-    resp = await admin_client.delete("/admin/cost-excluded-keys/k1")
+    resp = await admin_client.delete("/admin/cost-excluded-experiments/x1")
     assert resp.status_code == 200
     assert row.deleted_at is not None
     assert session.committed
 
 
 async def test_delete_not_found_is_404(admin_client, monkeypatch):
-    _install_fake_get_session(monkeypatch, FakeSession(query_rows=[]))
-    resp = await admin_client.delete("/admin/cost-excluded-keys/missing")
+    _install_fake_get_session(monkeypatch, FakeSession(results=[[]]))
+    resp = await admin_client.delete("/admin/cost-excluded-experiments/missing")
     assert resp.status_code == 404
 
 
 async def test_member_jwt_cannot_add(app, monkeypatch):
-    _install_fake_get_session(monkeypatch, FakeSession(query_rows=[]))
+    _install_fake_get_session(monkeypatch, FakeSession())
     client = _client(app, _member_jwt())
     try:
         resp = await client.post(
-            "/admin/cost-excluded-keys", json={"key": "xai-key"}
+            "/admin/cost-excluded-experiments", json={"experiment": "exp_1"}
         )
         assert resp.status_code == 403
     finally:
@@ -234,11 +263,11 @@ async def test_member_jwt_cannot_add(app, monkeypatch):
 
 
 async def test_full_api_key_cannot_add(app, monkeypatch):
-    _install_fake_get_session(monkeypatch, FakeSession(query_rows=[]))
+    _install_fake_get_session(monkeypatch, FakeSession())
     client = _client(app, _full_api_key())
     try:
         resp = await client.post(
-            "/admin/cost-excluded-keys", json={"key": "xai-key"}
+            "/admin/cost-excluded-experiments", json={"experiment": "exp_1"}
         )
         assert resp.status_code == 403
     finally:
@@ -247,18 +276,18 @@ async def test_full_api_key_cannot_add(app, monkeypatch):
 
 
 @pytest.mark.parametrize("method", ["get", "post", "delete"])
-async def test_non_operator_admin_cannot_access_list(app, monkeypatch, method):
-    _install_fake_get_session(monkeypatch, FakeSession(query_rows=[]))
+async def test_non_operator_admin_cannot_access(app, monkeypatch, method):
+    _install_fake_get_session(monkeypatch, FakeSession())
     client = _client(app, _other_admin_jwt())
     try:
         if method == "get":
-            resp = await client.get("/admin/cost-excluded-keys")
+            resp = await client.get("/admin/cost-excluded-experiments")
         elif method == "post":
             resp = await client.post(
-                "/admin/cost-excluded-keys", json={"key": "xai-key"}
+                "/admin/cost-excluded-experiments", json={"experiment": "exp_1"}
             )
         else:
-            resp = await client.delete("/admin/cost-excluded-keys/k1")
+            resp = await client.delete("/admin/cost-excluded-experiments/x1")
         assert resp.status_code == 403
     finally:
         await client.aclose()

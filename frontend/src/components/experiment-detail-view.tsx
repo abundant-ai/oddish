@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { ExperimentTrialsTable } from "@/components/experiment-trials-table";
 import { ExperimentPageSkeleton } from "@/components/experiment-page-skeleton";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
+import { NotRealSpendBadge } from "@/components/not-real-spend-badge";
 import { TagEditor } from "@/components/tag-editor";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { fetcher } from "@/lib/api";
@@ -198,6 +199,9 @@ type ExperimentSummary = {
   billedHasNative: boolean;
   billedTokenCount: number;
   billedTokenTrialCount: number;
+  excludedCostUsd: number;
+  ownedExcludedCostUsd: number;
+  experimentCostExcluded: boolean;
 };
 
 function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
@@ -291,6 +295,11 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
     billedHasNative: acc.billedHasNative,
     billedTokenCount: acc.billedTokenCount,
     billedTokenTrialCount: acc.billedTokenTrialCount,
+    // Exclusions have no client-side fold either: the grid rows carry no
+    // exclusion flag, so these ride in only via the server rollup below.
+    excludedCostUsd: 0,
+    ownedExcludedCostUsd: 0,
+    experimentCostExcluded: false,
   };
 }
 
@@ -764,6 +773,13 @@ function ExperimentSummaryBar({
               }
             />
           )}
+          {!costPending && (
+            <NotRealSpendBadge
+              excludedCostUsd={summary.excludedCostUsd}
+              totalCostUsd={summary.costUsd}
+              wholeSubjectExcluded={summary.experimentCostExcluded}
+            />
+          )}
         </span>
         {!costPending && summary.tokenTrialCount > 0 && (
           <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
@@ -843,6 +859,13 @@ function ExperimentSummaryBar({
                 costUsd={summary.ownedQaCostUsd}
                 size="tile"
                 title="QA/analysis spend on this experiment's own trials. Not included in the new spend figure."
+              />
+            )}
+            {!costPending && (
+              <NotRealSpendBadge
+                excludedCostUsd={summary.ownedExcludedCostUsd}
+                totalCostUsd={summary.ownedCostUsd}
+                wholeSubjectExcluded={summary.experimentCostExcluded}
               />
             )}
           </span>
@@ -1560,6 +1583,12 @@ export function ExperimentDetailView({
       billedHasNative: costTotals.billed_has_native,
       billedTokenCount: costTotals.billed_token_count,
       billedTokenTrialCount: costTotals.billed_token_trial_count,
+      // ?? 0 / false: same deploy-skew guard as owned_* — a backend that
+      // predates cost exclusions omits these, and "nothing is excluded" is
+      // the honest reading of their absence.
+      excludedCostUsd: costTotals.excluded_cost_usd ?? 0,
+      ownedExcludedCostUsd: costTotals.owned_excluded_cost_usd ?? 0,
+      experimentCostExcluded: costTotals.experiment_cost_excluded ?? false,
     };
   }, [deferredTasksForDerivedData, costTotals]);
 

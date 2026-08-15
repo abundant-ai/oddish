@@ -986,6 +986,20 @@ class ExperimentCostTotals(BaseModel):
     billed_token_trial_count: int = 0
     total_trials: int = 0
 
+    # How much of the figures above admins declared not real spend -- a model
+    # on the cost-exclusion list, or this experiment itself being excluded
+    # (``core.cost_exclusions``). The page keeps SHOWING this money, because
+    # the work did run; the admin cost dashboards and quota sums drop it. The
+    # split is what lets the tile explain that gap instead of leaving a reader
+    # to discover it. ``excluded_cost_usd`` is a subset of ``cost_usd``,
+    # ``owned_excluded_cost_usd`` of ``owned_cost_usd``.
+    excluded_cost_usd: float = 0.0
+    owned_excluded_cost_usd: float = 0.0
+    # Set when the experiment is itself on the exclusion list, which is a
+    # stronger statement than "some of its spend is excluded": every dollar it
+    # spends is comped, including future trials.
+    experiment_cost_excluded: bool = False
+
     # QA/analysis spend (``analysis_costs``), scoped exactly like the agent
     # figures above: ``qa_cost_usd`` over every member trial, ``owned_*`` over
     # homed trials only. Never folded into ``cost_usd`` -- the UI renders it as
@@ -1135,6 +1149,19 @@ class TrialResponse(BaseModel):
             "True when the trial is attributed to a billed user "
             "(``billed_user_id`` is set), i.e. its cost counts toward "
             "billed spend and quota usage."
+        ),
+    )
+    cost_exclusion_reason: str | None = Field(
+        None,
+        description=(
+            "Why this trial's ``cost_usd`` is not real spend: ``model`` when "
+            "it ran on a cost-excluded model, ``experiment`` when its home "
+            "experiment is cost-excluded (``core.cost_exclusions``). The cost "
+            "is still reported -- the work ran -- but it is absent from the "
+            "admin cost dashboards and from quota enforcement, and the UI "
+            "labels it. Null means the spend is real, OR that the builder "
+            "did not resolve exclusions; only callers that pass an "
+            "exclusions snapshot populate it."
         ),
     )
     # QA/analysis spend for this trial. None when no QA ran -- distinct from

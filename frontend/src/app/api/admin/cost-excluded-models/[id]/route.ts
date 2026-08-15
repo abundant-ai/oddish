@@ -19,7 +19,7 @@ export async function DELETE(
     }
 
     const { id } = await params;
-    const url = getBackendUrl("admin/cost-excluded-keys", `/${id}`);
+    const url = getBackendUrl("admin/cost-excluded-models", `/${id}`);
 
     const res = await fetch(url, {
       method: "DELETE",
@@ -29,10 +29,10 @@ export async function DELETE(
     if (!res.ok) {
       const errorText = await res.text();
       console.error(
-        `[cost-excluded-keys] Backend error: ${res.status} - ${errorText}`
+        `[cost-excluded-models] Backend error: ${res.status} - ${errorText}`
       );
       return NextResponse.json(
-        { error: "Failed to remove cost-excluded key", details: errorText },
+        { error: "Failed to remove cost-excluded model", details: errorText },
         { status: res.status }
       );
     }

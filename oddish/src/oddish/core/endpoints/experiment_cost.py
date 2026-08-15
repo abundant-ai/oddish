@@ -32,6 +32,13 @@ admin spend filter keeps billed probes too. So this counts all versions,
 superseded retries, and probes, and the tile's tooltip tells the reader the
 table below is a filtered view of it.
 
+Admin cost exclusions (``core.cost_exclusions``) are reported, not applied.
+The work ran and the page prices it, so an excluded model or an excluded
+experiment still contributes to ``cost_*`` and ``owned_*`` -- but the same
+groups are split on the exclusion predicate to fill ``excluded_cost_usd`` /
+``owned_excluded_cost_usd``, which is how the tile can tell the reader that
+part of this number is absent from the admin dashboards and from quotas.
+
 Membership rows are the one place soft-deletes DO apply: a soft-deleted
 ``experiment_trials`` row means "removed from this collection", so its trial
 stops counting here (it never stops counting on its home experiment).
@@ -71,6 +78,7 @@ from sqlalchemy import Select, and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
+from oddish.core.cost_exclusions import excluded_spend_filter, load_cost_exclusions
 from oddish.core.endpoints.qa_cost import get_experiment_qa_cost_totals
 from oddish.core.experiment_membership import trial_in_experiment
 from oddish.db.models import TrialModel
@@ -137,6 +145,7 @@ def experiment_cost_groups_select(
     """
     billed = TrialModel.billed_user_id.isnot(None)
     owned = TrialModel.experiment_id == experiment_id
+    excluded = excluded_spend_filter()
     member = trial_in_experiment(experiment_id)
 
     query = (
@@ -145,6 +154,7 @@ def experiment_cost_groups_select(
             TrialModel.model.label("model"),
             billed.label("billed"),
             owned.label("owned"),
+            excluded.label("excluded"),
             func.count().label("trial_count"),
             func.count(case((_HAS_NATIVE_COST, 1))).label("native_count"),
             _sum_when(_HAS_NATIVE_COST, TrialModel.cost_usd).label("native_cost_usd"),
@@ -157,7 +167,7 @@ def experiment_cost_groups_select(
             _sum_when(_ESTIMATED_ROW, _OUTPUT).label("output_tokens"),
         )
         .where(member)
-        .group_by(TrialModel.agent, TrialModel.model, billed, owned)
+        .group_by(TrialModel.agent, TrialModel.model, billed, owned, excluded)
         .execution_options(include_deleted=True)
     )
     if org_id is not None:
@@ -209,12 +219,16 @@ def fold_experiment_cost_groups(rows) -> ExperimentCostTotals:
         for cost_usd, trial_count, is_estimated in priced:
             totals.cost_usd += cost_usd
             totals.cost_trial_count += trial_count
+            if row.excluded:
+                totals.excluded_cost_usd += cost_usd
             if is_estimated:
                 totals.cost_has_estimated = True
             else:
                 totals.cost_has_native = True
             if not row.owned:
                 continue
+            if row.excluded:
+                totals.owned_excluded_cost_usd += cost_usd
             totals.owned_cost_usd += cost_usd
             totals.owned_trial_count += trial_count
             if is_estimated:
@@ -254,4 +268,10 @@ async def get_experiment_cost_totals(
     totals.qa_cost_usd = qa.qa_cost_usd
     totals.owned_qa_cost_usd = qa.owned_qa_cost_usd
     totals.qa_has_estimated = qa.qa_has_estimated
+
+    # Whether the experiment is itself excluded is not derivable from the
+    # groups above: an excluded experiment that has not run anything yet has
+    # no rows to carry the flag, and the tile still has to say so.
+    exclusions = await load_cost_exclusions(session)
+    totals.experiment_cost_excluded = exclusions.excludes(experiment_id=experiment_id)
     return totals
