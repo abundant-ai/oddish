@@ -8,17 +8,28 @@ a time. Filling fewest-held-first means every task advances together, so a
 partial run is still a usable cross-section of the dataset.
 
 Sweeps are TARGET-based (runbook 3.1): `--n-trials N` creates N - existing for
-that (task, agent, model, experiment). So submitting held+1 creates exactly one
-trial, and re-running this pass is never double-submission.
+that (task, agent, model, experiment), so re-running a pass is never a double
+submit.
 
-held = valid + pending. Failed/deleted trials do not count toward the target,
-which is why a cell can sit below target with plenty of trials in its history.
+Two different counts matter, and conflating them stalls the fill silently:
+
+  existing -- every trial the SERVER still has for the cell. It counts by
+              status, and infra failures report status=success with reward=0
+              and a populated error_message, so a burnt trial keeps occupying a
+              slot. Submit `existing + 1` to create exactly one new trial.
+  held     -- valid + pending, i.e. actual progress toward the target. Burnt
+              trials do not count here, which is why a cell can sit below
+              target with a long trial history.
+
+Asking for held+1 in a cell that has any past failure resolves to zero new
+trials while still printing "Task submitted!", so the cell never fills and the
+loop reports success forever.
 
 --ak flags are load-bearing: opencode's `variant` is a CliFlag with NO default,
 so omitting `--ak variant=high` silently runs a different configuration than the
 original arm. Pass every knob explicitly, every time.
 """
-import argparse, json, subprocess, sys, datetime
+import argparse, json, re, subprocess, sys, datetime
 
 ODDISH = "/home/user/oddish/oddish/.venv/bin/oddish"
 PENDING = ("pending", "queued", "running", "blocked", "preparing", "submitted",
@@ -67,10 +78,15 @@ def main():
         if td is None:
             missing.append(tname)
             continue
-        held = pend = valid = 0
+        held = pend = valid = existing = 0
         for tr in td.get("trials") or []:
             if tr.get("experiment_id") != a.exp or tr.get("superseded_by_trial_id"):
                 continue
+            # `existing` is what the SERVER counts when resolving --n-trials N.
+            # It counts by status, and infra failures report status=success with
+            # reward=0 and a populated error_message -- so a burnt trial still
+            # occupies a slot against the target even though it scores nothing.
+            existing += 1
             st = (tr.get("status") or "").lower()
             err = (tr.get("error_message") or "").lower()
             if st in PENDING:
@@ -79,7 +95,8 @@ def main():
             elif not err or any(k in err for k in OK_ERR):
                 valid += 1
                 held += 1
-        cells[tname] = {"held": held, "pend": pend, "valid": valid}
+        cells[tname] = {"held": held, "pend": pend, "valid": valid,
+                        "existing": existing}
 
     # A failed read looks exactly like an empty cell, and acting on that
     # over-submits. Refuse the pass instead of guessing.
@@ -111,17 +128,22 @@ def main():
     for held, name in sorted(short):          # fewest-held first == even progress
         if headroom <= 0:
             break
-        n = held + 1                          # target-based: creates exactly one
+        # Ask for existing+1, NOT held+1. The server subtracts what it already
+        # has, and it counts burnt trials too -- so held+1 resolves to zero new
+        # trials in any cell with a past failure, and that cell silently never
+        # fills while the loop reports "ok" forever.
+        n = cells[name]["existing"] + 1       # target-based: creates exactly one
         cmd = [ODDISH, "run", "-p", a.dataset, "-t", name, "-a", a.agent,
                "-m", a.model, "--n-trials", str(n), "-e", "modal",
                "-E", a.exp, "--force", "--background"]
         for kv in a.ak:
             cmd += ["--ak", kv]
         if a.dry_run:
-            print(f"  DRY {name:<32} held={held} -> --n-trials {n}")
+            print(f"  DRY {name:<32} held={held} existing={cells[name]['existing']}"
+                  f" -> --n-trials {n}")
             headroom -= 1
             continue
-        ok = False
+        ok, made = False, None
         for attempt in (1, 2, 3):
             try:
                 r = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
@@ -130,12 +152,20 @@ def main():
                 out = str(e)
             if "Task submitted!" in out:
                 ok = True
+                m = re.search(r"trials:\s*(\d+)", out, re.I)
+                made = int(m.group(1)) if m else None
                 break
             if "new version" in out.lower() or "budget" in out.lower():
                 print(f"  {name:<32} ABORT: {out.strip().splitlines()[-1][:80]}")
                 break
             subprocess.run(["sleep", str(10 * attempt)])
-        print(f"  {name:<32} held={held} -> n={n} {'ok' if ok else 'FAILED'}")
+        # `made` is the server's own count of trials created. It should be 1;
+        # anything else means the server's notion of "existing" diverges from
+        # ours and the batch discipline is not holding. Surface it loudly.
+        flag = "" if made in (None, 1) else f"  <-- CREATED {made}, EXPECTED 1"
+        print(f"  {name:<32} held={held} existing={cells[name]['existing']}"
+              f" -> n={n} {'ok' if ok else 'FAILED'}"
+              + (f" made={made}" if made is not None else "") + flag)
         if ok:
             created += 1
             headroom -= 1
