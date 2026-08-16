@@ -44,7 +44,6 @@ _SQL_FORBIDDEN_COLUMNS = {
     "trial_s3_key",
     "harbor_result_path",
     "orig_s3_src",
-    "llm_key_hash",
     "trajectory_summary",
     "trajectory_graph",
     "analysis",

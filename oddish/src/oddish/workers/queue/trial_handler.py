@@ -39,7 +39,6 @@ from oddish.db import (
     get_session,
     utcnow,
 )
-from oddish.core.llm_key_fingerprint import trial_llm_key_hash
 from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.db.storage import get_storage_client, resolve_task_directory
 from oddish.model_pricing import is_native_cost_trusted, settle_cost_usd
@@ -516,9 +515,6 @@ async def _prepare_trial_run(
         trial.total_tool_calls = None
         trial.tool_counts = None
         trial.cost_usd = None
-        # llm_key_hash deliberately survives this reset: it is the last
-        # attempt's funding key and the best prediction for the retry.
-        # Settlement overwrites it with the actual key.
         trial.phase_timing = None
         trial.has_trajectory = False
         trial.attempts += 1
@@ -706,8 +702,6 @@ def _settle_trial_metering(
     if preserve_checkpointed_cost and prev_cost_usd is not None:
         if trial.cost_usd is None or trial.cost_usd < prev_cost_usd:
             trial.cost_usd = prev_cost_usd
-    # Attribute spend to the BYOK overlay or platform key that funded the run.
-    trial.llm_key_hash = trial_llm_key_hash(provider, byok_env)
     return prev_cost_usd, provider, native_cost_trusted
 
 
@@ -1526,22 +1520,20 @@ async def run_trial_job(
             agent=prepared_trial.trial_agent,
         )
     byok_env = byok_resolution.env if byok_resolution else None
-    funding_key_hash = trial_llm_key_hash(
-        settings.get_provider_for_trial(
-            prepared_trial.trial_agent, prepared_trial.trial_model
-        ),
-        byok_env,
-    )
-    stamp = update(TrialModel).where(
+    # Claim guard: re-assert that this attempt is still ours before doing any
+    # expensive work. A conditional UPDATE (not a SELECT) so the check is
+    # atomic against a concurrent finish or reassignment; ``updated_at`` is
+    # simply the column it writes, since an UPDATE needs a SET.
+    claim = update(TrialModel).where(
         TrialModel.id == trial_id,
         TrialModel.finished_at.is_(None),
         TrialModel.attempts == prepared_trial.trial_attempt,
     )
     if worker_id is not None:
-        stamp = stamp.where(TrialModel.current_worker_id == worker_id)
+        claim = claim.where(TrialModel.current_worker_id == worker_id)
     async with get_session() as session:
-        stamped = await session.execute(stamp.values(llm_key_hash=funding_key_hash))
-    if not getattr(stamped, "rowcount", 0):
+        claimed = await session.execute(claim.values(updated_at=utcnow()))
+    if not getattr(claimed, "rowcount", 0):
         return
 
     # Determine task path: download from S3 if needed, or use local path

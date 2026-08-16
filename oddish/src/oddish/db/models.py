@@ -1144,10 +1144,6 @@ class TrialModel(TimestampedMixin, Base):
     tool_counts: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
 
-    # SHA-256 of the platform provider API key this trial ran on, stamped at
-    # settlement (forward-only; NULL for pre-rollout / unresolved keys).
-    llm_key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
-
     # Per-phase timing breakdown (from Harbor's TrialResult TimingInfo)
     phase_timing: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 

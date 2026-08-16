@@ -44,7 +44,6 @@ def _trial(
     agent: str = "codex",
     queue_key: str = "openai/gpt-5",
     imported_at: datetime | None = None,
-    llm_key_hash: str | None = None,
 ) -> TrialModel:
     return TrialModel(
         id=trial_id,
@@ -64,7 +63,6 @@ def _trial(
         cost_usd=cost_usd,
         finished_at=finished_at,
         imported_at=imported_at,
-        llm_key_hash=llm_key_hash,
     )
 
 

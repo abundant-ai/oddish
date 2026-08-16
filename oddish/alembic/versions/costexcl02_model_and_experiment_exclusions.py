@@ -10,14 +10,16 @@ operators actually reach for: a **model** that costs nothing (sponsored
 capacity, free preview tiers) and an **experiment** that was comped.
 
 Both correlate on columns ``trials`` already indexes -- ``trials.model`` and
-``trials.experiment_id`` -- so neither needs a new index on that hot table,
-and neither migration step touches it. ``deleted_at`` is the soft-delete
-tombstone; the partial UNIQUEs keep one live row per model / per experiment so
-a removed entry can be re-added.
+``trials.experiment_id`` -- so neither needs a new index on that hot table.
+``deleted_at`` is the soft-delete tombstone; the partial UNIQUEs keep one live
+row per model / per experiment so a removed entry can be re-added.
 
-``trials.llm_key_hash`` is deliberately left in place: dropping a column off
-``trials`` is a separate, riskier change, and the column is inert once nothing
-reads it.
+``trials.llm_key_hash`` goes too. It existed only to correlate the key list,
+nothing else ever read it, and the exclusion lists that replace it correlate
+on columns ``trials`` already has. Dropping a column is a catalog-only change
+in Postgres, but it still needs a brief ACCESS EXCLUSIVE lock on a hot table,
+so it runs under a short ``lock_timeout``: failing fast and retrying beats
+queueing behind a long read and stalling every writer behind us.
 """
 
 from typing import Sequence, Union
@@ -70,14 +72,18 @@ def upgrade() -> None:
         ON cost_excluded_experiments (experiment_id) WHERE deleted_at IS NULL
         """
     )
-    # The key-hash list is gone from the code paths above; drop it last so a
-    # failed create leaves the old feature's data intact for a re-run.
+    # The key-hash feature is gone from the code paths above; drop its table
+    # and the trials column last, so a failed create leaves nothing half-done.
     op.execute("DROP TABLE IF EXISTS cost_excluded_llm_keys")
+    op.execute("SET LOCAL lock_timeout = '5s'")
+    op.execute("ALTER TABLE trials DROP COLUMN IF EXISTS llm_key_hash")
 
 
 def downgrade() -> None:
-    # Recreates the key list's shape only. Its rows are not recoverable --
-    # nothing else stored the hashes.
+    # Recreates the key feature's shape only. Neither the exclusion rows nor
+    # the per-trial hashes are recoverable -- nothing else stored either.
+    op.execute("SET LOCAL lock_timeout = '5s'")
+    op.execute("ALTER TABLE trials ADD COLUMN IF NOT EXISTS llm_key_hash VARCHAR(64)")
     op.execute(
         """
         CREATE TABLE IF NOT EXISTS cost_excluded_llm_keys (
