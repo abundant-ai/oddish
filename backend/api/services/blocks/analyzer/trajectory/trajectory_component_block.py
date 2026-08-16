@@ -15,6 +15,7 @@ from api.services.blocks.analyzer.trajectory.delegation import (
     delegation_facts,
     subagent_dispatches_in,
 )
+from api.services.blocks.analyzer.trajectory.provenance import component_provenance
 
 
 class ExploreTrajectoryBlockTaxonomy(str, enum.Enum):
@@ -347,6 +348,15 @@ class TrajectoryBlock(Block):
                     ),
                     "duration_ms": sum(
                         duration_ms(index, step) for index, step in component_steps
+                    ),
+                    # Who authored the files this component touches, counted
+                    # rather than judged. The three least reproducible labels
+                    # in the taxonomy (plan_correction 36.4%,
+                    # implementing_correction 59.6%, testing_custom 66.3%) all
+                    # hinge on exactly this, and all ask the model to carry it
+                    # across the whole trajectory in one pass.
+                    **component_provenance(
+                        self.trajectory_input.trajectory, component_steps
                     ),
                 }
             )
