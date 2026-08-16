@@ -269,9 +269,6 @@ async def get_experiment_cost_totals(
     totals.owned_qa_cost_usd = qa.owned_qa_cost_usd
     totals.qa_has_estimated = qa.qa_has_estimated
 
-    # Whether the experiment is itself excluded is not derivable from the
-    # groups above: an excluded experiment that has not run anything yet has
-    # no rows to carry the flag, and the tile still has to say so.
     exclusions = await load_cost_exclusions(session)
     totals.experiment_cost_excluded = exclusions.excludes(experiment_id=experiment_id)
     return totals

@@ -1,11 +1,3 @@
-"""DB-backed tests for spend admins declared isn't real.
-
-Spend on a model in ``cost_excluded_models``, or homed in an experiment in
-``cost_excluded_experiments``, must vanish from every surface that shares
-``first_party_spend_filter``: the admin cost breakdown and the quota sums.
-Removing the entry re-includes it -- the exclusion only ever hid the money.
-"""
-
 from __future__ import annotations
 
 import sys
@@ -36,8 +28,6 @@ _RUN = uuid.uuid4().hex[:8]
 ORG = f"excl-org-{_RUN}"
 USER = f"excl-user-{_RUN}"
 
-# Three experiments so the two axes can be separated: one excluded outright,
-# one that merely runs an excluded model, and a control that counts.
 EXCLUDED_EXP = f"excl-exp-{_RUN}"
 FREE_MODEL_EXP = f"excl-freemodel-{_RUN}"
 INCLUDED_EXP = f"excl-included-{_RUN}"
@@ -174,8 +164,6 @@ async def test_excluded_experiment_spend_reincluded_on_removal(seeded_data):
         org_total = await sum_org_cost_usd(session, ORG, period_start)
         assert abs(float(org_total) - INCLUDED_COST) <= 1e-6, org_total
 
-        # The exclusion probe only matches live rows, so soft-deleting the
-        # entry must restore the spend rather than leave it hidden forever.
         await session.execute(
             CostExcludedExperimentModel.__table__.update()
             .where(CostExcludedExperimentModel.id == excluded_exp_id)
@@ -217,8 +205,6 @@ async def test_excluded_model_spend_reincluded_on_removal(seeded_data):
 async def test_inflight_reservation_skips_excluded_spend(
     seeded_data, monkeypatch, experiment_id, model
 ):
-    # An in-flight trial whose spend the settled sums will never charge must
-    # not reserve quota against the cap either.
     from oddish.config import settings
     from oddish.core.quotas import (
         inflight_reserved_usd,
@@ -244,8 +230,6 @@ async def test_inflight_reservation_skips_excluded_spend(
 
 @pytest.mark.asyncio
 async def test_model_exclusion_matches_case_and_whitespace_variants(seeded_data):
-    # Stored canonically, and trials.model is normalized by the same function
-    # on write -- so a trial recorded with odd spelling still matches.
     from oddish.core.cost_exclusions import canonical_excluded_model
 
     assert canonical_excluded_model("  XAI/Grok-Free-Preview ") == FREE_MODEL
@@ -261,10 +245,6 @@ async def test_model_exclusion_matches_case_and_whitespace_variants(seeded_data)
 async def test_quota_sweep_does_not_cancel_excluded_trials(
     seeded_data, experiment_id, model
 ):
-    # The cancellation sweep must share the exclusion filters with the sums
-    # that trip the cap. An excluded trial contributed nothing to the number
-    # that tripped it and reserves nothing, so cancelling it frees no headroom
-    # and is pure collateral.
     from sqlalchemy import select
 
     from oddish.core.quota_enforcement import _active_trial_predicates

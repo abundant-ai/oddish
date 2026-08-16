@@ -113,8 +113,6 @@ def _active_trial_predicates(
         TrialModel.deleted_at.is_(None),
         TrialModel.superseded_by_trial_id.is_(None),
         TrialModel.status.in_(_ACTIVE_TRIAL_STATUSES),
-        # Excluded spend never pushed the cap over and reserves nothing, so
-        # cancelling it frees no headroom -- it is pure collateral.
         not_excluded_model_filter(),
         not_excluded_experiment_filter(),
     ]

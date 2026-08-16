@@ -33,8 +33,6 @@ class _FakeScalars:
 
 
 class FakeSession:
-    """Returns one queued result list per scalars() call, in order."""
-
     def __init__(self, results=()):
         self.results = [list(rows) for rows in results]
         self.added: list[object] = []
@@ -136,7 +134,6 @@ async def admin_client(app):
 
 
 async def test_add_by_id_snapshots_name(admin_client, monkeypatch):
-    # Queries: resolve by id (hit), duplicate check (miss).
     session = FakeSession(results=[[_experiment()], []])
     _install_fake_get_session(monkeypatch, session)
 
@@ -147,14 +144,12 @@ async def test_add_by_id_snapshots_name(admin_client, monkeypatch):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["experiment_id"] == "exp_1"
-    # Name is a display snapshot: the row outlives the experiment.
     assert body["experiment_name"] == "glm sweep"
     assert session.added[0].experiment_id == "exp_1"
     assert session.committed
 
 
 async def test_add_by_name_resolves(admin_client, monkeypatch):
-    # Queries: resolve by id (miss), by name (hit), duplicate check (miss).
     session = FakeSession(results=[[], [_experiment()], []])
     _install_fake_get_session(monkeypatch, session)
 
@@ -166,8 +161,6 @@ async def test_add_by_name_resolves(admin_client, monkeypatch):
 
 
 async def test_add_ambiguous_name_is_409(admin_client, monkeypatch):
-    # Experiment names are not unique, so an ambiguous one must not silently
-    # exclude the wrong experiment's spend.
     session = FakeSession(results=[[], [_experiment("exp_1"), _experiment("exp_2")]])
     _install_fake_get_session(monkeypatch, session)
 
@@ -263,7 +256,6 @@ async def test_member_jwt_cannot_add(app, monkeypatch):
 
 
 async def test_operator_full_api_key_can_add(app, monkeypatch):
-    # The CLI's only credential; operator-org membership is the real gate.
     _install_fake_get_session(monkeypatch, FakeSession(results=[[_experiment()], []]))
     client = _client(app, _full_api_key())
     try:

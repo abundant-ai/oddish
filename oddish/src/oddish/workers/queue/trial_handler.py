@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import partial
@@ -676,7 +675,6 @@ async def _worker_still_owns_trial(
 def _settle_trial_metering(
     trial,
     outcome: HarborOutcome,
-    byok_env,
     *,
     preserve_checkpointed_cost: bool = False,
 ):
@@ -747,7 +745,6 @@ async def _store_trial_results(
     worker_id: str | None = None,
     worker_job_id: str | None = None,
     trial_attempt: int,
-    byok_env: Mapping[str, str] | None = None,
 ) -> tuple[bool, bool]:
     """Return whether the trial is terminal and whether this call completed it."""
     async with _trial_session(trial_id, allow_missing=True, with_for_update=True) as (
@@ -777,10 +774,7 @@ async def _store_trial_results(
         if user_cancelled:
             if outcome:
                 _, provider, native_cost_trusted = _settle_trial_metering(
-                    trial,
-                    outcome,
-                    byok_env,
-                    preserve_checkpointed_cost=True,
+                    trial, outcome, preserve_checkpointed_cost=True
                 )
                 _log_trial_metering_integrity(
                     trial,
@@ -829,7 +823,7 @@ async def _store_trial_results(
             trial.trial_s3_key = trial_s3_key
 
             prev_cost_usd, provider, native_cost_trusted = _settle_trial_metering(
-                trial, outcome, byok_env
+                trial, outcome
             )
             trial.total_steps = outcome.total_steps
             trial.trajectory_duration_seconds = outcome.trajectory_duration_seconds
@@ -1520,10 +1514,6 @@ async def run_trial_job(
             agent=prepared_trial.trial_agent,
         )
     byok_env = byok_resolution.env if byok_resolution else None
-    # Claim guard: re-assert that this attempt is still ours before doing any
-    # expensive work. A conditional UPDATE (not a SELECT) so the check is
-    # atomic against a concurrent finish or reassignment; ``updated_at`` is
-    # simply the column it writes, since an UPDATE needs a SET.
     claim = update(TrialModel).where(
         TrialModel.id == trial_id,
         TrialModel.finished_at.is_(None),
@@ -1791,7 +1781,6 @@ async def run_trial_job(
                 worker_id=worker_id,
                 worker_job_id=worker_job_id,
                 trial_attempt=prepared_trial.trial_attempt,
-                byok_env=byok_env,
             )
         )
         await _finish_trial_settlement(

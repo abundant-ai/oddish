@@ -440,8 +440,6 @@ async def _bump_aware_limits_by_org_user_all_orgs(
 
 
 def _inflight_predicates(org_id: str | None, billed_user_id: str) -> list:
-    # Exclusion filters: spend the settled sums will never charge must not
-    # keep reserving against the cap while it is in flight either.
     return [
         TrialModel.org_id == org_id,
         TrialModel.billed_user_id == billed_user_id,

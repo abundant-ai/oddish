@@ -33,8 +33,6 @@ class _FakeScalars:
 
 
 class FakeSession:
-    """Returns one queued result list per scalars() call, in order."""
-
     def __init__(self, results=()):
         self.results = [list(rows) for rows in results]
         self.added: list[object] = []
@@ -50,7 +48,6 @@ class FakeSession:
         self.added.extend(objs)
 
     async def commit(self):
-        # Simulate the Python-side column defaults a real flush would apply.
         from oddish.db import generate_id
 
         for obj in self.added:
@@ -136,9 +133,6 @@ async def admin_client(app):
 
 
 async def test_add_stores_the_spelling_trials_actually_use(admin_client, monkeypatch):
-    # Queries: resolve against trials.model (hit), duplicate check (miss).
-    # The operator typed a bare id; trials store the agent-routed one, and that
-    # is what has to be stored or the exclusion matches nothing.
     session = FakeSession(results=[["moonshot/kimi-k2"], []])
     _install_fake_get_session(monkeypatch, session)
 
@@ -155,11 +149,7 @@ async def test_add_stores_the_spelling_trials_actually_use(admin_client, monkeyp
 
 
 async def test_add_covers_every_stored_spelling(admin_client, monkeypatch):
-    # One model can be stored two ways; excluding one would leave half the
-    # spend counting.
-    session = FakeSession(
-        results=[["grok-free-preview", "xai/grok-free-preview"], []]
-    )
+    session = FakeSession(results=[["grok-free-preview", "xai/grok-free-preview"], []])
     _install_fake_get_session(monkeypatch, session)
 
     resp = await admin_client.post(
@@ -173,8 +163,6 @@ async def test_add_covers_every_stored_spelling(admin_client, monkeypatch):
 
 
 async def test_add_unknown_model_is_404(admin_client, monkeypatch):
-    # Silently registering a row that matches nothing is the failure mode this
-    # endpoint exists to prevent.
     _install_fake_get_session(monkeypatch, FakeSession(results=[[]]))
     resp = await admin_client.post(
         "/admin/cost-excluded-models", json={"model_name": "never/ran"}
@@ -255,8 +243,6 @@ async def test_member_jwt_cannot_add(app, monkeypatch):
 
 
 async def test_operator_full_api_key_can_add(app, monkeypatch):
-    # The CLI's only credential. `require_admin` already counts a full-scope
-    # key as admin; the operator-org check is what keeps this privileged.
     _install_fake_get_session(monkeypatch, FakeSession(results=[["xai/grok-4"], []]))
     client = _client(app, _full_api_key())
     try:

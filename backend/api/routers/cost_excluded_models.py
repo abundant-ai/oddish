@@ -8,12 +8,12 @@ from sqlalchemy import distinct, or_, select
 from sqlalchemy.exc import IntegrityError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.routers.cost_exclusions_shared import soft_delete, unavailable
 from auth import AuthContext, require_admin
 from auth.permissions import require_operator_org
 from oddish.config import normalize_model_id
 from oddish.core.cost_exclusions import canonical_excluded_model
-from oddish.db import CostExcludedModelModel, TrialModel, get_session, utcnow
-from pg_errors import is_undefined_table_error
+from oddish.db import CostExcludedModelModel, TrialModel, get_session
 
 router = APIRouter(prefix="/admin/cost-excluded-models", tags=["Admin"])
 
@@ -41,29 +41,7 @@ def _response(row: CostExcludedModelModel) -> CostExcludedModelResponse:
     )
 
 
-def _unavailable(exc: ProgrammingError) -> HTTPException:
-    if not is_undefined_table_error(exc):
-        raise exc
-    return HTTPException(
-        503,
-        "Cost exclusions are not available yet (schema is still migrating). "
-        "Try again shortly.",
-    )
-
-
 async def _resolve_models(session: AsyncSession, ref: str) -> list[str]:
-    """Every spelling of ``ref`` that ``trials.model`` actually stores.
-
-    Exclusion matches ``trials.model`` verbatim, but that value is written by
-    the agent-aware ``normalize_trial_model``, which re-routes ids: an operator
-    who types ``kimi-k2`` has trials stored under ``moonshot/kimi-k2``, and
-    ``claude-sonnet-4-5`` lands as a Bedrock id. Storing what they typed would
-    register a row that silently matches nothing. So resolve against the values
-    on disk and store those, and return every match -- one model can legitimately
-    have two stored spellings (bare ``grok-free-preview`` and the routed
-    ``xai/grok-free-preview``), and excluding only one would leave half the
-    spend counting.
-    """
     canonical = canonical_excluded_model(ref)
     rows = await session.scalars(
         select(distinct(TrialModel.model)).where(
@@ -75,16 +53,16 @@ async def _resolve_models(session: AsyncSession, ref: str) -> list[str]:
             ),
         )
     )
-    stored = [m for m in rows if m]
-    # The ILIKE can over-match on a suffix (``a/b-c`` for ``b-c``); confirm in
-    # Python against the same normalization the writer used.
     return sorted(
         {
             m
-            for m in stored
-            if m == ref
-            or normalize_model_id(m) == canonical
-            or (normalize_model_id(m) or "").endswith(f"/{canonical}")
+            for m in rows
+            if m
+            and (
+                m == ref
+                or normalize_model_id(m) == canonical
+                or (normalize_model_id(m) or "").endswith(f"/{canonical}")
+            )
         }
     )
 
@@ -103,7 +81,7 @@ async def list_cost_excluded_models(
             )
             return [_response(row) for row in rows]
     except ProgrammingError as exc:
-        raise _unavailable(exc)
+        raise unavailable(exc)
 
 
 @router.post("", response_model=list[CostExcludedModelResponse])
@@ -153,7 +131,7 @@ async def add_cost_excluded_model(
                 raise HTTPException(status_code=409, detail="model is already excluded")
             return [_response(row) for row in rows]
     except ProgrammingError as exc:
-        raise _unavailable(exc)
+        raise unavailable(exc)
 
 
 @router.delete("/{row_id}")
@@ -164,18 +142,9 @@ async def remove_cost_excluded_model(
     require_operator_org(auth)
     try:
         async with get_session() as session:
-            result = await session.scalars(
-                select(CostExcludedModelModel).where(
-                    CostExcludedModelModel.id == row_id
-                )
+            await soft_delete(
+                session, CostExcludedModelModel, row_id, "cost-excluded model not found"
             )
-            row = result.first()
-            if row is None:
-                raise HTTPException(
-                    status_code=404, detail="cost-excluded model not found"
-                )
-            row.deleted_at = utcnow()
-            await session.commit()
     except ProgrammingError as exc:
-        raise _unavailable(exc)
+        raise unavailable(exc)
     return {"deleted": row_id}

@@ -1,17 +1,3 @@
-"""``oddish cost-exclusions`` — declare spend that isn't real.
-
-Wraps the operator-only admin endpoints behind the same two lists the admin
-dashboard edits:
-
-- ``/admin/cost-excluded-models``       -> models that cost nothing
-- ``/admin/cost-excluded-experiments``  -> experiments that were comped
-
-Excluded spend still shows on experiment, task, and trial pages -- labelled as
-not real -- but is dropped from the admin cost dashboards and from quota
-enforcement. Operator-gated on hosted Oddish (a full-scope API key belonging
-to the operator org); a self-hosted core server does not expose these routes.
-"""
-
 from __future__ import annotations
 
 from typing import Annotated, Any, Optional
@@ -37,8 +23,6 @@ cost_exclusions_app = typer.Typer(
     no_args_is_help=True,
 )
 
-# kind -> (endpoint path, request field the reference goes in, display noun).
-# ``add`` and ``remove`` both key off this so a new axis is one entry.
 _KINDS: dict[str, tuple[str, str, str]] = {
     "model": ("/admin/cost-excluded-models", "model_name", "model"),
     "experiment": ("/admin/cost-excluded-experiments", "experiment", "experiment"),
@@ -73,11 +57,6 @@ def _request(
     json_output: bool,
     json_body: dict[str, Any] | None = None,
 ) -> Any:
-    """One admin call, with the shared gate/absence error vocabulary.
-
-    Mirrors ``oddish costs``: 401/403 means the key isn't operator-scoped,
-    404 on the collection means the deployment has no such route at all.
-    """
     try:
         with httpx.Client(timeout=30.0, headers=get_auth_headers(api_url)) as client:
             response = client.request(
@@ -114,8 +93,9 @@ def _request(
                 detail = response.json().get("detail", detail)
             except ValueError:
                 pass
-            error_console.print(f"[red]Request failed (HTTP "
-                                f"{response.status_code}):[/red] {detail}")
+            error_console.print(
+                f"[red]Request failed (HTTP {response.status_code}):[/red] {detail}"
+            )
         raise typer.Exit(1)
 
     return response.json()
@@ -178,12 +158,12 @@ def list_exclusions(
     for value in kinds:
         _kind(value, json_output=json_output)
 
-    payload: dict[str, Any] = {}
-    for value in kinds:
-        path, _, _ = _KINDS[value]
-        payload[f"{value}s"] = _request(
-            "GET", api_url, path, json_output=json_output
+    payload: dict[str, Any] = {
+        f"{value}s": _request(
+            "GET", api_url, _KINDS[value][0], json_output=json_output
         )
+        for value in kinds
+    }
 
     if json_output:
         print_json(payload)
@@ -215,12 +195,7 @@ def add_exclusion(
         bool, typer.Option("--json", help="Emit the created row as JSON.")
     ] = False,
 ) -> None:
-    """Stop a model's or an experiment's spend counting toward cost.
-
-    Takes effect retroactively: spend already recorded against a newly
-    excluded model or experiment leaves the cost dashboards and stops
-    counting against quotas.
-    """
+    """Stop a model's or an experiment's spend counting toward cost."""
     if not api_url:
         api_url = get_api_url()
     require_api_key(api_url)
@@ -237,11 +212,8 @@ def add_exclusion(
     if json_output:
         print_json(row)
         return
-    rows = row if isinstance(row, list) else [row]
-    for created in rows:
-        name = (
-            created.get("model_name") or created.get("experiment_name") or reference
-        )
+    for created in row if isinstance(row, list) else [row]:
+        name = created.get("model_name") or created.get("experiment_name") or reference
         console.print(
             f"[green]Excluded {noun}[/green] {name} [dim]({created.get('id')})[/dim]"
         )
@@ -263,11 +235,7 @@ def remove_exclusion(
         bool, typer.Option("--json", help="Emit the deletion result as JSON.")
     ] = False,
 ) -> None:
-    """Put a model's or an experiment's spend back into cost accounting.
-
-    Also retroactive: the exclusion only ever hid the spend, so removing it
-    restores every dollar to the dashboards and to quota sums.
-    """
+    """Put a model's or an experiment's spend back into cost accounting."""
     if not api_url:
         api_url = get_api_url()
     require_api_key(api_url)
@@ -278,9 +246,6 @@ def remove_exclusion(
     if kind == "model" and (canonical := normalize_model_id(reference)):
         refs.add(canonical)
 
-    # Accept whatever the operator has to hand -- the row id `list` printed,
-    # or the model/experiment they originally excluded. Matching the row id
-    # first keeps it unambiguous when a name happens to collide with an id.
     match = next((row for row in rows if row.get("id") == reference), None)
     if match is None:
         candidates = [
@@ -314,4 +279,6 @@ def remove_exclusion(
         print_json(result)
         return
     name = match.get("model_name") or match.get("experiment_name") or reference
-    console.print(f"[green]Re-included {noun}[/green] {name} [dim]({match['id']})[/dim]")
+    console.print(
+        f"[green]Re-included {noun}[/green] {name} [dim]({match['id']})[/dim]"
+    )

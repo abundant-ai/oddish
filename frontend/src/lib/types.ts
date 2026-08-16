@@ -175,12 +175,6 @@ export interface Trial {
   // would mean "resolved, and there was no QA".
   qa_cost_usd?: number | null;
   is_billed?: boolean;
-  /** Why this trial's `cost_usd` isn't real spend — `"model"` when it ran on
-   * a cost-excluded model, `"experiment"` when its home experiment is
-   * excluded. The cost is still reported, because the work ran, but it is
-   * absent from the admin cost dashboards and from quota enforcement, so the
-   * UI labels it. Null/undefined also means "the endpoint that served this
-   * trial didn't resolve exclusions" — not a claim that the spend is real. */
   cost_exclusion_reason?: string | null;
   has_trajectory?: boolean;
   is_probe?: boolean;
@@ -560,15 +554,8 @@ export interface ExperimentCostTotals {
   qa_cost_usd?: number;
   owned_qa_cost_usd?: number;
   qa_has_estimated?: boolean;
-  /** The part of `cost_usd` / `owned_cost_usd` an admin declared isn't real
-   * spend — a cost-excluded model, or this experiment being excluded. Still
-   * counted in the figures above, because the work ran; absent from the admin
-   * cost dashboards and from quota sums, which is what the tile has to
-   * explain. Optional: a backend predating cost exclusions omits them. */
   excluded_cost_usd?: number;
   owned_excluded_cost_usd?: number;
-  /** The experiment itself is on the exclusion list, so everything it spends
-   * is comped — a stronger claim than "some of this is excluded". */
   experiment_cost_excluded?: boolean;
 }
 

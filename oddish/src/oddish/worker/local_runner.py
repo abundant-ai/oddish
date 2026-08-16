@@ -863,9 +863,6 @@ async def _run_harbor_trial(trial_id: str) -> None:
             if not owns_outcome and prev_cost_usd is not None:
                 if trial.cost_usd is None or trial.cost_usd < prev_cost_usd:
                     trial.cost_usd = prev_cost_usd
-            # Local-mode trials land in the same cost accounting as queue
-            # trials, so stamp the platform key hash here too (see
-            # workers/queue/trial_handler settlement).
             log_unpriced_trial_if_needed(
                 cost_usd=trial.cost_usd,
                 trial_id=trial.id,

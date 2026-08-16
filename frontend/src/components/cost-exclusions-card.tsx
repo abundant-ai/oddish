@@ -26,21 +26,16 @@ type ExcludedExperiment = {
 
 type ExcludedRow = ExcludedModel | ExcludedExperiment;
 
-// The proxy wraps backend failures as { error, details } where details is the
-// raw FastAPI response text; unwrap its "detail" message for display.
-function backendDetail(body: unknown): string | null {
-  const details = (body as { details?: string } | null)?.details;
-  if (!details) return null;
-  try {
-    const parsed = JSON.parse(details);
-    if (typeof parsed?.detail === "string") return parsed.detail;
-  } catch {
-    // not JSON — fall through to the raw text
-  }
-  return details;
+function backendError(body: unknown, fallback: string): string {
+  const { detail, error } = (body ?? {}) as {
+    detail?: unknown;
+    error?: unknown;
+  };
+  if (typeof detail === "string" && detail) return detail;
+  if (typeof error === "string" && error) return error;
+  return fallback;
 }
 
-/** One exclusion axis: its own list, its own add form, same shape. */
 function ExclusionList<T extends ExcludedRow>({
   endpoint,
   field,
@@ -79,8 +74,9 @@ function ExclusionList<T extends ExcludedRow>({
         }),
       });
       if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        setFormError(backendDetail(body) || body?.error || "Failed to add.");
+        setFormError(
+          backendError(await res.json().catch(() => ({})), "Failed to add.")
+        );
         return;
       }
       setReference("");
@@ -95,8 +91,9 @@ function ExclusionList<T extends ExcludedRow>({
     setFormError(null);
     const res = await fetch(`${endpoint}/${id}`, { method: "DELETE" });
     if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      setFormError(backendDetail(body) || body?.error || "Failed to remove.");
+      setFormError(
+        backendError(await res.json().catch(() => ({})), "Failed to remove.")
+      );
     }
     await mutate();
   }

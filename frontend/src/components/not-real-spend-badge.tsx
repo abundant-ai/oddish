@@ -9,13 +9,6 @@ import {
 } from "@/components/ui/tooltip";
 import { formatCostUsd } from "@/lib/format";
 
-/** Why a figure on this page is absent from the admin cost dashboards.
- *
- * Operators mark models and experiments whose spend was never really paid for
- * (sponsored capacity, free tiers, a comped run). Pages that price work keep
- * showing that money — it describes what ran — but the cost dashboards and
- * quota sums drop it. Without this marker the two disagree silently, and a
- * reader reconciling them has no way to find out why. */
 export function notRealSpendNote({
   excludedCostUsd,
   totalCostUsd,
@@ -33,8 +26,6 @@ export function notRealSpendNote({
     );
   }
   if (!(excludedCostUsd > 0)) return null;
-  // Naming the excluded slice only helps when it is a slice — when it is the
-  // whole figure, the amount is already on screen right next to this.
   const partial =
     typeof totalCostUsd === "number" && totalCostUsd > excludedCostUsd;
   return partial
@@ -46,11 +37,6 @@ export function notRealSpendNote({
         "and from quota enforcement.";
 }
 
-/** Why one trial's cost isn't real, from its `cost_exclusion_reason`.
- *
- * Null for a real cost — and also for an endpoint that never resolved
- * exclusions, which is why the absence of a badge is not a claim that the
- * spend is real. */
 export function trialNotRealSpendNote(reason?: string | null): string | null {
   if (!reason) return null;
   const because =
@@ -66,7 +52,6 @@ export function trialNotRealSpendNote(reason?: string | null): string | null {
   );
 }
 
-/** The trial-level marker, sized to sit inline next to a cost figure. */
 export function TrialNotRealSpendBadge({
   reason,
   className = "",
@@ -94,8 +79,6 @@ export function TrialNotRealSpendBadge({
   );
 }
 
-/** The visible marker for {@link notRealSpendNote}. Renders nothing when the
- * spend is real, so callers can drop it in unconditionally. */
 export function NotRealSpendBadge({
   excludedCostUsd,
   totalCostUsd,

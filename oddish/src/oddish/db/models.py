@@ -2521,20 +2521,6 @@ class TagProjectionSweepStateModel(Base):
 
 
 class CostExcludedModelModel(TimestampedMixin, Base):
-    """A model whose spend is excluded from cost accounting.
-
-    The model-level cost exclusion, for models the deployment does not
-    really pay for (provider-sponsored capacity, free
-    preview tiers, vendor credits). ``model_name`` is stored canonicalized
-    through ``core.cost_exclusions.canonical_excluded_model`` so the live
-    UNIQUE index collapses case/whitespace variants into one row, and matching
-    is equality against ``lower(trim(trials.model))`` -- ``trials.model`` is
-    already normalized on write (``schemas`` runs ``normalize_model_id``), so
-    the two spellings meet. ``deleted_at`` (soft delete) is the live/removed
-    state, and the partial UNIQUE keeps one live row per model so a removed
-    one can be re-added.
-    """
-
     __tablename__ = "cost_excluded_models"
     __table_args__ = (
         Index(
@@ -2552,18 +2538,6 @@ class CostExcludedModelModel(TimestampedMixin, Base):
 
 
 class CostExcludedExperimentModel(TimestampedMixin, Base):
-    """An experiment whose trials' spend is excluded from cost accounting.
-
-    The experiment-level sibling of :class:`CostExcludedModelModel`. Exclusion
-    is equality matching against ``trials.experiment_id`` (the home experiment),
-    so collection experiments that merely gather trials are unaffected -- a
-    gathered trial keeps counting wherever it was really spent.
-    ``experiment_name`` is a display snapshot from registration time (no FK, so
-    the row outlives the experiment it names).
-    ``deleted_at`` (soft delete) is the live/removed state, and the partial
-    UNIQUE keeps one live row per experiment so a removed one can be re-added.
-    """
-
     __tablename__ = "cost_excluded_experiments"
     __table_args__ = (
         Index(

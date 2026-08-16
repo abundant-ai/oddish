@@ -523,8 +523,6 @@ function TrialChip({ trial, onClick }: { trial: Trial; onClick: () => void }) {
               {formatCostUsd(trial.cost_usd)}
             </div>
           )}
-          {/* Already inside a tooltip, so the exclusion note is a line here
-              rather than another hover target. */}
           {trialNotRealSpendNote(trial.cost_exclusion_reason) && (
             <div className="text-muted-foreground mt-1 max-w-[220px] text-[10px]">
               {trialNotRealSpendNote(trial.cost_exclusion_reason)}

@@ -1,5 +1,3 @@
-"""Tests for the ``oddish cost-exclusions`` command group."""
-
 from __future__ import annotations
 
 import json
@@ -31,11 +29,6 @@ _EXPERIMENT_ROW = {
 
 
 def _invoke(args: list[str], responses: list[tuple[int, object]]):
-    """Run the group with a scripted sequence of HTTP responses.
-
-    ``responses`` is consumed in request order, so a test can model the
-    two-step flows (``remove`` lists before it deletes).
-    """
     calls: list[dict] = []
     queue = list(responses)
 
@@ -117,8 +110,6 @@ def test_add_model_posts_to_the_model_endpoint():
 
 
 def test_add_experiment_uses_the_experiment_field():
-    # The two endpoints name their reference field differently; the kind table
-    # is what keeps the CLI from sending the wrong one.
     result, calls = _invoke(["add", "experiment", "glm sweep"], [(200, _EXPERIMENT_ROW)])
     assert result.exit_code == 0, result.output
     assert calls[0]["json"] == {"experiment": "glm sweep", "label": ""}
@@ -161,15 +152,12 @@ def test_remove_resolves_an_experiment_name():
 
 
 def test_remove_refuses_an_ambiguous_name():
-    # Experiment names are not unique, and picking one silently would
-    # re-include the wrong experiment's spend.
     twin = {**_EXPERIMENT_ROW, "id": "x2", "experiment_id": "exp_2"}
     result, calls = _invoke(
         ["remove", "experiment", "glm sweep"], [(200, [_EXPERIMENT_ROW, twin])]
     )
     assert result.exit_code == 1
     assert "matches 2 entries" in result.output
-    # Nothing was deleted.
     assert len(calls) == 1
 
 

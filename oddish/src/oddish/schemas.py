@@ -986,18 +986,8 @@ class ExperimentCostTotals(BaseModel):
     billed_token_trial_count: int = 0
     total_trials: int = 0
 
-    # How much of the figures above admins declared not real spend -- a model
-    # on the cost-exclusion list, or this experiment itself being excluded
-    # (``core.cost_exclusions``). The page keeps SHOWING this money, because
-    # the work did run; the admin cost dashboards and quota sums drop it. The
-    # split is what lets the tile explain that gap instead of leaving a reader
-    # to discover it. ``excluded_cost_usd`` is a subset of ``cost_usd``,
-    # ``owned_excluded_cost_usd`` of ``owned_cost_usd``.
     excluded_cost_usd: float = 0.0
     owned_excluded_cost_usd: float = 0.0
-    # Set when the experiment is itself on the exclusion list, which is a
-    # stronger statement than "some of its spend is excluded": every dollar it
-    # spends is comped, including future trials.
     experiment_cost_excluded: bool = False
 
     # QA/analysis spend (``analysis_costs``), scoped exactly like the agent

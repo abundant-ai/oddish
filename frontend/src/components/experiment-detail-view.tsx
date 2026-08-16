@@ -295,8 +295,6 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
     billedHasNative: acc.billedHasNative,
     billedTokenCount: acc.billedTokenCount,
     billedTokenTrialCount: acc.billedTokenTrialCount,
-    // Exclusions have no client-side fold either: the grid rows carry no
-    // exclusion flag, so these ride in only via the server rollup below.
     excludedCostUsd: 0,
     ownedExcludedCostUsd: 0,
     experimentCostExcluded: false,
@@ -1582,9 +1580,6 @@ export function ExperimentDetailView({
       billedHasNative: costTotals.billed_has_native,
       billedTokenCount: costTotals.billed_token_count,
       billedTokenTrialCount: costTotals.billed_token_trial_count,
-      // ?? 0 / false: same deploy-skew guard as owned_* — a backend that
-      // predates cost exclusions omits these, and "nothing is excluded" is
-      // the honest reading of their absence.
       excludedCostUsd: costTotals.excluded_cost_usd ?? 0,
       ownedExcludedCostUsd: costTotals.owned_excluded_cost_usd ?? 0,
       experimentCostExcluded: costTotals.experiment_cost_excluded ?? false,
