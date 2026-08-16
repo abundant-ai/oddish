@@ -33,7 +33,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -81,8 +81,7 @@ def _excluded_model_spend():
     return (
         select(CostExcludedModelModel.id)
         .where(
-            CostExcludedModelModel.model_name
-            == func.lower(func.trim(TrialModel.model)),
+            CostExcludedModelModel.model_name == TrialModel.model,
             CostExcludedModelModel.deleted_at.is_(None),
         )
         .correlate(TrialModel)
@@ -163,7 +162,7 @@ class CostExclusions:
         durable reason: the experiment can be un-excluded, but a free model is
         free whatever ran it.
         """
-        if model and canonical_excluded_model(model) in self.models:
+        if model and model in self.models:
             return REASON_MODEL
         if experiment_id and experiment_id in self.experiment_ids:
             return REASON_EXPERIMENT
@@ -201,8 +200,6 @@ async def load_cost_exclusions(session: AsyncSession) -> CostExclusions:
         return CostExclusions()
 
     return CostExclusions(
-        models=frozenset(
-            key for row in models if (key := canonical_excluded_model(row.model_name))
-        ),
+        models=frozenset(row.model_name for row in models),
         experiment_ids=frozenset(row.experiment_id for row in experiments),
     )

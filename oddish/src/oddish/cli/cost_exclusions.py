@@ -21,7 +21,13 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from oddish.cli.config import get_api_url, get_auth_headers, print_json, require_api_key
+from oddish.config import normalize_model_id
+from oddish.cli.config import (
+    get_api_url,
+    get_auth_headers,
+    print_json,
+    require_api_key,
+)
 
 console = Console()
 error_console = Console(stderr=True)
@@ -39,15 +45,24 @@ _KINDS: dict[str, tuple[str, str, str]] = {
 }
 
 
-def _kind(value: str) -> tuple[str, str, str]:
+def _fail(message: str, *, json_output: bool, code: int = 1) -> None:
+    if json_output:
+        print_json({"error": message})
+    else:
+        error_console.print(f"[red]{message}[/red]")
+    raise typer.Exit(code)
+
+
+def _kind(value: str, *, json_output: bool = False) -> tuple[str, str, str]:
     try:
         return _KINDS[value]
     except KeyError:
-        error_console.print(
-            f"[red]Unknown kind '{value}'.[/red] Expected one of: "
-            f"{', '.join(sorted(_KINDS))}."
+        _fail(
+            f"Unknown kind '{value}'. Expected one of: {', '.join(sorted(_KINDS))}.",
+            json_output=json_output,
+            code=2,
         )
-        raise typer.Exit(2) from None
+        raise
 
 
 def _request(
@@ -69,8 +84,8 @@ def _request(
                 method, f"{api_url}{path}", json=json_body, follow_redirects=True
             )
     except httpx.HTTPError as exc:
-        error_console.print(f"[red]Failed to connect to API:[/red] {exc}")
-        raise typer.Exit(1) from exc
+        _fail(f"Failed to connect to API: {exc}", json_output=json_output)
+        raise
 
     if response.status_code in (401, 403):
         if json_output:
@@ -161,7 +176,7 @@ def list_exclusions(
 
     kinds = [kind] if kind else ["model", "experiment"]
     for value in kinds:
-        _kind(value)
+        _kind(value, json_output=json_output)
 
     payload: dict[str, Any] = {}
     for value in kinds:
@@ -210,7 +225,7 @@ def add_exclusion(
         api_url = get_api_url()
     require_api_key(api_url)
 
-    path, field, noun = _kind(kind)
+    path, field, noun = _kind(kind, json_output=json_output)
     row = _request(
         "POST",
         api_url,
@@ -222,8 +237,14 @@ def add_exclusion(
     if json_output:
         print_json(row)
         return
-    name = row.get("model_name") or row.get("experiment_name") or reference
-    console.print(f"[green]Excluded {noun}[/green] {name} [dim]({row.get('id')})[/dim]")
+    rows = row if isinstance(row, list) else [row]
+    for created in rows:
+        name = (
+            created.get("model_name") or created.get("experiment_name") or reference
+        )
+        console.print(
+            f"[green]Excluded {noun}[/green] {name} [dim]({created.get('id')})[/dim]"
+        )
 
 
 @cost_exclusions_app.command("remove")
@@ -251,8 +272,11 @@ def remove_exclusion(
         api_url = get_api_url()
     require_api_key(api_url)
 
-    path, _, noun = _kind(kind)
+    path, _, noun = _kind(kind, json_output=json_output)
     rows = _request("GET", api_url, path, json_output=json_output)
+    refs = {reference}
+    if kind == "model" and (canonical := normalize_model_id(reference)):
+        refs.add(canonical)
 
     # Accept whatever the operator has to hand -- the row id `list` printed,
     # or the model/experiment they originally excluded. Matching the row id
@@ -262,26 +286,26 @@ def remove_exclusion(
         candidates = [
             row
             for row in rows
-            if reference
-            in (
+            if refs
+            & {
                 row.get("model_name"),
                 row.get("experiment_id"),
                 row.get("experiment_name"),
-            )
+            }
         ]
         if len(candidates) > 1:
-            error_console.print(
-                f"[red]'{reference}' matches {len(candidates)} entries;[/red] "
-                "use the row id from `oddish cost-exclusions list`."
+            _fail(
+                f"'{reference}' matches {len(candidates)} entries; use the row "
+                "id from `oddish cost-exclusions list`.",
+                json_output=json_output,
             )
-            raise typer.Exit(1)
         match = candidates[0] if candidates else None
     if match is None:
-        error_console.print(
-            f"[red]No excluded {noun} matches '{reference}'.[/red] "
-            "Run `oddish cost-exclusions list` to see the current entries."
+        _fail(
+            f"No excluded {noun} matches '{reference}'. Run "
+            "`oddish cost-exclusions list` to see the current entries.",
+            json_output=json_output,
         )
-        raise typer.Exit(1)
 
     result = _request(
         "DELETE", api_url, f"{path}/{match['id']}", json_output=json_output

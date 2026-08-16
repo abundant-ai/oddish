@@ -262,14 +262,15 @@ async def test_member_jwt_cannot_add(app, monkeypatch):
         app.dependency_overrides.pop(require_auth, None)
 
 
-async def test_full_api_key_cannot_add(app, monkeypatch):
-    _install_fake_get_session(monkeypatch, FakeSession())
+async def test_operator_full_api_key_can_add(app, monkeypatch):
+    # The CLI's only credential; operator-org membership is the real gate.
+    _install_fake_get_session(monkeypatch, FakeSession(results=[[_experiment()], []]))
     client = _client(app, _full_api_key())
     try:
         resp = await client.post(
             "/admin/cost-excluded-experiments", json={"experiment": "exp_1"}
         )
-        assert resp.status_code == 403
+        assert resp.status_code == 200, resp.text
     finally:
         await client.aclose()
         app.dependency_overrides.pop(require_auth, None)

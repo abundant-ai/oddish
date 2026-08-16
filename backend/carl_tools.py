@@ -36,6 +36,7 @@ _SQL_FORBIDDEN_NODES = {
     "RangeTableFunc",
 }
 _SQL_FORBIDDEN_COLUMNS = {
+    "llm_key_hash",
     "harbor_config",
     "idempotency_key",
     "result",

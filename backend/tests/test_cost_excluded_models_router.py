@@ -46,6 +46,9 @@ class FakeSession:
     def add(self, obj):
         self.added.append(obj)
 
+    def add_all(self, objs):
+        self.added.extend(objs)
+
     async def commit(self):
         # Simulate the Python-side column defaults a real flush would apply.
         from oddish.db import generate_id
@@ -132,27 +135,57 @@ async def admin_client(app):
         app.dependency_overrides.pop(require_auth, None)
 
 
-async def test_add_canonicalizes_model(admin_client, monkeypatch):
-    # One query: the duplicate check (miss).
-    session = FakeSession(results=[[]])
+async def test_add_stores_the_spelling_trials_actually_use(admin_client, monkeypatch):
+    # Queries: resolve against trials.model (hit), duplicate check (miss).
+    # The operator typed a bare id; trials store the agent-routed one, and that
+    # is what has to be stored or the exclusion matches nothing.
+    session = FakeSession(results=[["moonshot/kimi-k2"], []])
     _install_fake_get_session(monkeypatch, session)
 
     resp = await admin_client.post(
         "/admin/cost-excluded-models",
-        json={"model_name": "  XAI/Grok-4  ", "label": "sponsored"},
+        json={"model_name": "  Kimi-K2  ", "label": "sponsored"},
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    # Stored canonicalized so it matches trials.model, which is normalized by
-    # the same function on write.
-    assert body["model_name"] == "xai/grok-4"
-    assert body["label"] == "sponsored"
-    assert session.added[0].model_name == "xai/grok-4"
+    assert [r["model_name"] for r in body] == ["moonshot/kimi-k2"]
+    assert body[0]["label"] == "sponsored"
+    assert session.added[0].model_name == "moonshot/kimi-k2"
     assert session.committed
 
 
+async def test_add_covers_every_stored_spelling(admin_client, monkeypatch):
+    # One model can be stored two ways; excluding one would leave half the
+    # spend counting.
+    session = FakeSession(
+        results=[["grok-free-preview", "xai/grok-free-preview"], []]
+    )
+    _install_fake_get_session(monkeypatch, session)
+
+    resp = await admin_client.post(
+        "/admin/cost-excluded-models", json={"model_name": "grok-free-preview"}
+    )
+    assert resp.status_code == 200, resp.text
+    assert sorted(r["model_name"] for r in resp.json()) == [
+        "grok-free-preview",
+        "xai/grok-free-preview",
+    ]
+
+
+async def test_add_unknown_model_is_404(admin_client, monkeypatch):
+    # Silently registering a row that matches nothing is the failure mode this
+    # endpoint exists to prevent.
+    _install_fake_get_session(monkeypatch, FakeSession(results=[[]]))
+    resp = await admin_client.post(
+        "/admin/cost-excluded-models", json={"model_name": "never/ran"}
+    )
+    assert resp.status_code == 404
+
+
 async def test_add_duplicate_is_409(admin_client, monkeypatch):
-    _install_fake_get_session(monkeypatch, FakeSession(results=[[object()]]))
+    _install_fake_get_session(
+        monkeypatch, FakeSession(results=[["xai/grok-4"], ["xai/grok-4"]])
+    )
     resp = await admin_client.post(
         "/admin/cost-excluded-models", json={"model_name": "xai/grok-4"}
     )
@@ -166,7 +199,7 @@ async def test_add_race_integrity_error_is_409(admin_client, monkeypatch):
         async def commit(self):
             raise IntegrityError("INSERT", {}, Exception("duplicate key"))
 
-    _install_fake_get_session(monkeypatch, RacingSession(results=[[]]))
+    _install_fake_get_session(monkeypatch, RacingSession(results=[["xai/grok-4"], []]))
     resp = await admin_client.post(
         "/admin/cost-excluded-models", json={"model_name": "xai/grok-4"}
     )
@@ -221,16 +254,16 @@ async def test_member_jwt_cannot_add(app, monkeypatch):
         app.dependency_overrides.pop(require_auth, None)
 
 
-async def test_full_api_key_cannot_add(app, monkeypatch):
-    # Mutations are Clerk-admin only: a full-scope API key must not be able to
-    # silently zero out a deployment's spend reporting.
-    _install_fake_get_session(monkeypatch, FakeSession())
+async def test_operator_full_api_key_can_add(app, monkeypatch):
+    # The CLI's only credential. `require_admin` already counts a full-scope
+    # key as admin; the operator-org check is what keeps this privileged.
+    _install_fake_get_session(monkeypatch, FakeSession(results=[["xai/grok-4"], []]))
     client = _client(app, _full_api_key())
     try:
         resp = await client.post(
             "/admin/cost-excluded-models", json={"model_name": "xai/grok-4"}
         )
-        assert resp.status_code == 403
+        assert resp.status_code == 200, resp.text
     finally:
         await client.aclose()
         app.dependency_overrides.pop(require_auth, None)

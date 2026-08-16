@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from auth import AuthContext, can_manage_api_keys, require_admin
+from auth import AuthContext, require_admin
 from auth.permissions import require_operator_org
 from oddish.db import (
     CostExcludedExperimentModel,
@@ -55,11 +55,6 @@ def _response(row: CostExcludedExperimentModel) -> CostExcludedExperimentRespons
 
 def _require_manage(auth: AuthContext) -> None:
     require_operator_org(auth)
-    if not can_manage_api_keys(auth):
-        raise HTTPException(
-            status_code=403,
-            detail="Only organization admins may edit the cost-exclusion list",
-        )
 
 
 def _unavailable(exc: ProgrammingError) -> HTTPException:
@@ -102,6 +97,18 @@ async def _resolve_experiment(session: AsyncSession, ref: str) -> ExperimentMode
     return matches[0]
 
 
+def _reject_collection(experiment: ExperimentModel) -> None:
+    if getattr(experiment, "is_collection", False):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "that experiment is a collection: it homes no trials of its "
+                "own, so excluding it would exclude nothing. Exclude the "
+                "experiments that actually ran the work."
+            ),
+        )
+
+
 @router.get("", response_model=list[CostExcludedExperimentResponse])
 async def list_cost_excluded_experiments(
     auth: Annotated[AuthContext, Depends(require_admin)],
@@ -133,6 +140,7 @@ async def add_cost_excluded_experiment(
     try:
         async with get_session() as session:
             experiment = await _resolve_experiment(session, ref)
+            _reject_collection(experiment)
             existing = await session.scalars(
                 select(CostExcludedExperimentModel).where(
                     CostExcludedExperimentModel.experiment_id == experiment.id

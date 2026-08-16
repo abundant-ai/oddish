@@ -77,13 +77,14 @@ def upgrade() -> None:
     op.execute("DROP TABLE IF EXISTS cost_excluded_llm_keys")
     op.execute("SET LOCAL lock_timeout = '5s'")
     op.execute("ALTER TABLE trials DROP COLUMN IF EXISTS llm_key_hash")
+    # All pending revisions share one transaction, so an un-reset SET LOCAL
+    # would impose this timeout on every later migration in the same run.
+    op.execute("SET LOCAL lock_timeout = DEFAULT")
 
 
 def downgrade() -> None:
     # Recreates the key feature's shape only. Neither the exclusion rows nor
     # the per-trial hashes are recoverable -- nothing else stored either.
-    op.execute("SET LOCAL lock_timeout = '5s'")
-    op.execute("ALTER TABLE trials ADD COLUMN IF NOT EXISTS llm_key_hash VARCHAR(64)")
     op.execute(
         """
         CREATE TABLE IF NOT EXISTS cost_excluded_llm_keys (
@@ -106,3 +107,6 @@ def downgrade() -> None:
     )
     op.execute("DROP TABLE IF EXISTS cost_excluded_experiments")
     op.execute("DROP TABLE IF EXISTS cost_excluded_models")
+    op.execute("SET LOCAL lock_timeout = '5s'")
+    op.execute("ALTER TABLE trials ADD COLUMN IF NOT EXISTS llm_key_hash VARCHAR(64)")
+    op.execute("SET LOCAL lock_timeout = DEFAULT")

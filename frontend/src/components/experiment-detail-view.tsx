@@ -777,7 +777,6 @@ function ExperimentSummaryBar({
             <NotRealSpendBadge
               excludedCostUsd={summary.excludedCostUsd}
               totalCostUsd={summary.costUsd}
-              wholeSubjectExcluded={summary.experimentCostExcluded}
             />
           )}
         </span>
