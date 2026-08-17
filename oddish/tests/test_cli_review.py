@@ -391,3 +391,93 @@ def test_review_response_fixture_itself_is_strict_and_complete():
     response = TaskReviewResponse.model_validate(payload)
 
     assert response.model_dump(mode="json") == payload
+
+
+def _active_payload() -> dict:
+    """A review page whose QA pass is still running."""
+    payload = copy.deepcopy(
+        _payload(findings=[], trials=[], filtered_total=0)
+    )
+    payload["qa"]["status"] = "running"
+    payload["qa"]["result_run"] = None
+    # No trials have entered the active pass yet; keep the exact totals
+    # consistent so the post-timeout full fetch validates.
+    payload["trial_counts"]["eligible"] = 0
+    payload["baselines"]["nop"]["trial_count"] = 0
+    payload["baselines"]["oracle"]["trial_count"] = 0
+    payload["qa"]["active_run"] = {
+        "id": "qa-active",
+        "disposition": None,
+        "task_version_id": "task-1-v18",
+        "worker_job_id": "job-2",
+        "input_trial_count": 0,
+        "input_set_sha256": "sha256:pending",
+        "input_analysis_changed_count": 0,
+        "pre_trial_block_id": None,
+        "verdict_block_id": None,
+        "started_at": None,
+        "finished_at": None,
+    }
+    return payload
+
+
+def test_review_wait_polls_with_zero_limit_pages_until_qa_settles():
+    calls: list[list[tuple[str, str]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"  # --wait stays read-only
+        params = list(request.url.params.multi_items())
+        calls.append(params)
+        is_light_poll = ("finding_limit", "0") in params and (
+            "trial_limit",
+            "0",
+        ) in params
+        if is_light_poll and len(calls) == 1:
+            return httpx.Response(200, json=_active_payload())
+        return httpx.Response(
+            200,
+            json=_payload(
+                findings=[_MUST],
+                trials=[_NOP, _ORACLE, _MODEL],
+                filtered_total=1,
+            ),
+        )
+
+    with patch("time.sleep") as sleep_mock:
+        result = _invoke(
+            handler,
+            ["task-1", "--api", "https://example.test", "--wait", "--json"],
+        )
+
+    assert result.exit_code == 0, result.output
+    document = json.loads(result.stdout)
+    assert document["qa"]["status"] == "success"
+    assert calls[0].count(("finding_limit", "0")) == 1
+    assert calls[0].count(("trial_limit", "0")) == 1
+    sleep_mock.assert_called_once()
+
+
+def test_review_wait_timeout_warns_and_renders_current_state():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        return httpx.Response(200, json=_active_payload())
+
+    with (
+        patch("time.sleep"),
+        patch("time.monotonic", side_effect=[0.0, 0.0, 100.0, 100.0]),
+    ):
+        result = _invoke(
+            handler,
+            [
+                "task-1",
+                "--api",
+                "https://example.test",
+                "--wait",
+                "--wait-timeout",
+                "10",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert "QA is still active after 10s" in result.output
+    assert "qa-active" in result.output

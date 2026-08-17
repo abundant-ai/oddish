@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Optional
+import time
+from typing import Annotated, Callable, Optional
 
 import httpx
 import typer
@@ -39,6 +40,53 @@ def _same_review(first: TaskReviewResponse, page: TaskReviewResponse) -> None:
         or page.verdict != first.verdict
     ):
         raise ValueError("Task review changed while its pages were being read")
+
+
+_WAIT_POLL_SECONDS = 5.0
+_WAIT_DEFAULT_TIMEOUT_SECONDS = 900.0
+_ACTIVE_QA_STATUSES = {"pending", "queued", "running"}
+
+
+def _qa_active(response: TaskReviewResponse) -> bool:
+    if response.qa.active_run is not None:
+        return True
+    status = response.qa.status
+    return status is not None and status.value in _ACTIVE_QA_STATUSES
+
+
+def wait_for_qa(
+    api_url: str,
+    task_ref: str,
+    *,
+    version: int | None,
+    experiment_id: str | None,
+    tiers: list[ActionTier] | None,
+    timeout_seconds: float,
+    sleep: Callable[[float], None] | None = None,
+) -> bool:
+    """Poll lightweight review pages until no QA run is active.
+
+    Read-only: this never enqueues analysis. Returns True when QA settled,
+    False when *timeout_seconds* elapsed with QA still active.
+    """
+
+    sleep = sleep or time.sleep
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        page = get_task_review(
+            api_url,
+            task_ref,
+            version=version,
+            experiment_id=experiment_id,
+            tiers=tiers,
+            finding_limit=0,
+            trial_limit=0,
+        )
+        if not _qa_active(page):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        sleep(min(_WAIT_POLL_SECONDS, max(deadline - time.monotonic(), 0.0)))
 
 
 def fetch_complete_review(
@@ -318,6 +366,22 @@ def review(
             help="Exit 2 when the selected tier scope contains findings",
         ),
     ] = False,
+    wait: Annotated[
+        bool,
+        typer.Option(
+            "--wait",
+            help="Poll until the active QA run settles before rendering "
+            "(read-only; never starts analysis)",
+        ),
+    ] = False,
+    wait_timeout: Annotated[
+        float,
+        typer.Option(
+            "--wait-timeout",
+            min=1.0,
+            help="Seconds --wait polls before giving up (default 900)",
+        ),
+    ] = _WAIT_DEFAULT_TIMEOUT_SECONDS,
     api_url: Annotated[
         str,
         typer.Option("--api", help="API URL"),
@@ -332,6 +396,18 @@ def review(
     api_url = api_url or get_api_url()
     try:
         require_api_key(api_url)
+        if wait and not wait_for_qa(
+            api_url,
+            task_ref,
+            version=version,
+            experiment_id=experiment_id,
+            tiers=tier,
+            timeout_seconds=wait_timeout,
+        ):
+            error_console.print(
+                f"[yellow]Warning: QA is still active after {wait_timeout:.0f}s; "
+                "showing its current state.[/yellow]"
+            )
         response = fetch_complete_review(
             api_url,
             task_ref,
@@ -361,4 +437,4 @@ def review(
         raise typer.Exit(2)
 
 
-__all__ = ["fetch_complete_review", "render_review", "review"]
+__all__ = ["fetch_complete_review", "render_review", "review", "wait_for_qa"]

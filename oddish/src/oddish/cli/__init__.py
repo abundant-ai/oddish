@@ -19,6 +19,7 @@ from oddish.cli.preflight import preflight
 from oddish.cli.report import report_app
 from oddish.cli.review import review
 from oddish.cli.run import run
+from oddish.cli.skill import skill
 from oddish.cli.status import status
 from oddish.cli.upload import upload
 
@@ -35,6 +36,7 @@ app.command()(preflight)
 app.command(name="ls")(ls)
 app.command()(status)
 app.command()(review)
+app.command()(skill)
 app.command()(iterate)
 app.command(help="Stream a running trial's live transcript and running cost.")(logs)
 app.command()(cancel)
