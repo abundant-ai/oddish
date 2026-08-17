@@ -220,6 +220,87 @@ async def _captured_lookup_sql(task_version_id: str) -> str:
     )
 
 
+async def _load_fresh_with_stored_block(block_metadata: dict, experiment_id):
+    """``_load_fresh_analysis`` against a session that returns one stored block.
+
+    Every other cache-lookup test hands back ``None``, which never reaches the
+    freshness comparison -- the half where a hit is either served or rejected.
+    """
+
+    async def execute(statement):
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = SimpleNamespace(
+            block_metadata=block_metadata, output={"summary": "stored"}
+        )
+        return result
+
+    session = MagicMock()
+    session.execute = execute
+
+    return await cc._load_fresh_analysis(
+        session,
+        task_id="t1",
+        task_version_id="v1",
+        current_hash="aaa",
+        schema_version=1,
+        experiment_id=experiment_id,
+    )
+
+
+@pytest.mark.asyncio
+async def test_experiment_scoped_cache_hit_is_served():
+    """A stored block must survive the freshness check, not raise on it.
+
+    The scoping argument is threaded from the lookup into ``is_stale``; if the
+    two signatures drift the call raises TypeError, the durable job burns all
+    six attempts, and the pane polls a job that can never succeed -- rendered
+    as an indefinite "Analyzing..." spinner rather than as an error.
+    """
+    fresh = await _load_fresh_with_stored_block(
+        {
+            "cohort_hash": "aaa",
+            "schema_version": 1,
+            "task_version_id": "v1",
+            "experiment_id": "e1",
+        },
+        experiment_id="e1",
+    )
+
+    assert fresh == {"summary": "stored"}
+
+
+@pytest.mark.asyncio
+async def test_unscoped_cache_hit_is_served():
+    fresh = await _load_fresh_with_stored_block(
+        {
+            "cohort_hash": "aaa",
+            "schema_version": 1,
+            "task_version_id": "v1",
+            "experiment_id": None,
+        },
+        experiment_id=None,
+    )
+
+    assert fresh == {"summary": "stored"}
+
+
+@pytest.mark.asyncio
+async def test_cache_hit_from_another_experiment_is_rejected():
+    """Scope is part of freshness: an experiment-scoped comparison covers a
+    different trial set than the unscoped one and must not be served for it."""
+    fresh = await _load_fresh_with_stored_block(
+        {
+            "cohort_hash": "aaa",
+            "schema_version": 1,
+            "task_version_id": "v1",
+            "experiment_id": "e1",
+        },
+        experiment_id=None,
+    )
+
+    assert fresh is None
+
+
 @pytest.mark.asyncio
 async def test_cache_lookup_filters_on_the_requested_version():
     """The newest row for a task may belong to another version.
