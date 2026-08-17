@@ -159,30 +159,24 @@ export function CostExclusionsCard() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">
-          Spend that doesn&apos;t count
-        </CardTitle>
+        <CardTitle className="text-base">Remove Spend Tracking</CardTitle>
         <p className="text-muted-foreground text-sm">
-          Spend on these models and experiments is ignored by cost accounting:
-          the admin cost dashboards above and quota enforcement. Experiment,
-          task, and trial pages still show the money, marked as not real. Both
-          lists are deployment-wide and apply retroactively — adding an entry
-          removes spend already recorded, and removing one restores it.
+          Spend listed here is hidden from the cost dashboards and does not
+          count against quotas.
         </p>
       </CardHeader>
       <CardContent className="space-y-6">
         <section className="space-y-2">
           <h3 className="text-sm font-medium">Models</h3>
           <p className="text-muted-foreground text-sm">
-            Every trial that ever ran on the model stops counting — for
-            sponsored capacity, free preview tiers, and vendor credits.
+            Every trial that used this model stops counting.
           </p>
           <ExclusionList<ExcludedModel>
             endpoint="/api/admin/cost-excluded-models"
             field="model_name"
             placeholder="Model id, e.g. xai/grok-4"
             addLabel="Exclude model"
-            emptyLabel="No models are excluded from cost."
+            emptyLabel="No models excluded."
             primary={(row) => row.model_name}
             secondary={() => null}
           />
@@ -191,16 +185,14 @@ export function CostExclusionsCard() {
         <section className="space-y-2">
           <h3 className="text-sm font-medium">Experiments</h3>
           <p className="text-muted-foreground text-sm">
-            Only trials the experiment ran itself stop counting. Trials it
-            merely gathered from elsewhere keep counting on the experiment that
-            actually spent the money. Add one by name or id.
+            Trials this experiment ran itself stop counting.
           </p>
           <ExclusionList<ExcludedExperiment>
             endpoint="/api/admin/cost-excluded-experiments"
             field="experiment"
             placeholder="Experiment name or id"
             addLabel="Exclude experiment"
-            emptyLabel="No experiments are excluded from cost."
+            emptyLabel="No experiments excluded."
             primary={(row) => row.experiment_name || row.experiment_id}
             secondary={(row) => row.experiment_id}
           />

@@ -26,7 +26,7 @@ export ODDISH_API_KEY="ok_..."
 - `oddish cancel` - stop in-flight task runs or task-level QA jobs
 - `oddish backfill-analysis` - (re)run trial analysis for a trial, task, or experiment
 - `oddish costs` - view billable-spend accounting (org-wide, or per-user with `--user`)
-- `oddish cost-exclusions` - manage the models and experiments whose spend doesn't count
+- `oddish cost-exclusions` - hide spend for models and experiments that were never really paid for
 - `oddish pull` - download logs and artifacts
 - `oddish combine` - merge several experiments into a new one
 - `oddish collect` - gather trials from tasks/trial IDs into a shareable read-only collection
@@ -435,26 +435,22 @@ Options
 - `--api TEXT` - Override the API URL
 - `--json` - Emit the raw cost breakdown JSON
 
-## Spend That Doesn't Count
+## Remove Spend Tracking
 
-Some spend Oddish records was never actually paid for: provider-sponsored
-capacity, free preview tiers, vendor credits, a bake-off someone comped.
-Operators mark it with `oddish cost-exclusions`, along two axes:
+Hide spend that was never really paid for - sponsored capacity, free preview
+tiers, vendor credits, a comped run. Excluded spend drops off the admin cost
+dashboards and stops counting against quotas. It is still shown on experiment,
+task, and trial pages, marked as not real, so the two never disagree silently.
 
-- **Models** - every trial that ever ran on the model stops counting, because
-  the reason its spend isn't real is a property of the model.
-- **Experiments** - only trials the experiment ran *itself* stop counting.
-  Trials it merely gathered from elsewhere keep counting on the experiment that
-  actually spent the money.
+- **Models** - every trial that used the model stops counting.
+- **Experiments** - trials the experiment ran itself stop counting. Trials it
+  gathered from elsewhere keep counting on the experiment that ran them.
 
-Excluded spend is dropped from the admin cost dashboards and from quota
-enforcement. It is **not** hidden: experiment, task, and trial pages still show
-the money, marked as not real, so the two surfaces never disagree silently.
-
-Both lists are deployment-wide and apply retroactively - adding an entry removes
-spend already recorded, and removing one restores every dollar. Operator-only on
-hosted Oddish (a full-scope API key belonging to the operator org); not
-available on a self-hosted core server.
+Both lists are deployment-wide and retroactive: adding an entry removes spend
+already recorded, removing one puts every dollar back. Operator-only on hosted
+Oddish (a full-scope API key in the operator org); not available on a
+self-hosted core server. Also editable in the admin dashboard under
+Costs -> Remove Spend Tracking.
 
 ```bash
 # What currently doesn't count
@@ -462,11 +458,11 @@ oddish cost-exclusions list
 oddish cost-exclusions list --kind model --json
 
 # Stop counting a free model, and a comped experiment
-oddish cost-exclusions add model xai/grok-4 --label "sponsored"
+oddish cost-exclusions add model kimi-k2 --label "sponsored"
 oddish cost-exclusions add experiment "glm sweep" --label "comped"
 
 # Put the spend back (by row id, model name, or experiment name/id)
-oddish cost-exclusions remove model xai/grok-4
+oddish cost-exclusions remove model kimi-k2
 oddish cost-exclusions remove experiment exp_01j...
 ```
 
@@ -477,8 +473,11 @@ Options
 - `--api TEXT` - Override the API URL
 - `--json` - Emit raw JSON
 
-An experiment can be named or referenced by id. Names are not unique, so an
-ambiguous name is rejected rather than resolved to a guess - pass the id.
+`add model` matches what trials actually store, so `kimi-k2` finds trials saved
+as `moonshot/kimi-k2`. A model no trial has ever used is rejected rather than
+saved as an entry that matches nothing. Experiments take a name or an id;
+ambiguous names are rejected, and a collection is rejected because it runs no
+trials of its own.
 
 ## Download Outputs
 
