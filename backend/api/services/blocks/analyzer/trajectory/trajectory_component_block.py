@@ -15,6 +15,7 @@ from api.services.blocks.analyzer.trajectory.delegation import (
     delegation_facts,
     subagent_dispatches_in,
 )
+from api.services.blocks.analyzer.trajectory.provenance import component_provenance
 
 
 class ExploreTrajectoryBlockTaxonomy(str, enum.Enum):
@@ -85,13 +86,43 @@ class TrajectoryHighlightOutput(BaseModel):
     why: NonEmptyText
 
 
+class ActionAxis(str, enum.Enum):
+    """What the step physically did. Nearly mechanical: follows the tool calls."""
+
+    READ = "read"
+    EDIT = "edit"
+    RUN = "run"
+    PROSE = "prose"
+
+
+class PurposeAxis(str, enum.Enum):
+    """What the step was for. The judgement the flat vocabulary muddles."""
+
+    UNDERSTAND = "understand"
+    PLAN = "plan"
+    BUILD = "build"
+    VERIFY = "verify"
+    DIAGNOSE = "diagnose"
+
+
 class TrajectoryComponentOutput(BaseModel):
-    """One taxonomy-labelled segment in a trajectory summary."""
+    """One taxonomy-labelled segment in a trajectory summary.
+
+    ``action`` and ``purpose`` are additive, not a replacement: the flat
+    ``trajectory_component`` is read by the frontend segment bar, the cohort
+    blocks, and agent_capabilities, so it stays. They exist because the flat
+    vocabulary forces one label onto a step that is genuinely two things --
+    grepping a file to chase a stack trace is `reading_files` by action and
+    `debugging` by purpose, and picking one made 17.9% of steps change side of
+    the explore/implement boundary between identical runs.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     step_ids: list[int]
     trajectory_component: TrajectoryBlockTaxonomy
+    action: ActionAxis
+    purpose: PurposeAxis
     summary: NonEmptyText
 
 
@@ -318,17 +349,29 @@ class TrajectoryBlock(Block):
                     "duration_ms": sum(
                         duration_ms(index, step) for index, step in component_steps
                     ),
+                    # Who authored the files this component touches, counted
+                    # rather than judged. The three least reproducible labels
+                    # in the taxonomy (plan_correction 36.4%,
+                    # implementing_correction 59.6%, testing_custom 66.3%) all
+                    # hinge on exactly this, and all ask the model to carry it
+                    # across the whole trajectory in one pass.
+                    **component_provenance(
+                        self.trajectory_input.trajectory, component_steps
+                    ),
                 }
             )
         # Imported here, not at module scope: summarize_trajectory imports this
         # module (lazily, inside its functions) to build the block.
-        from api.services.summarize_trajectory import SCHEMA_VERSION
+        from api.services.summarize_trajectory import SCHEMA_VERSION, taxonomy_version
 
         return {
             # Must be the same constant the freshness query compares against.
             # A literal here would mean bumping SCHEMA_VERSION makes every read
             # miss, regenerate, write the old version, and miss again forever.
             "schema_version": SCHEMA_VERSION,
+            # Same contract, for the label vocabulary. Written from the same
+            # helper the freshness query calls, so the two cannot drift.
+            "taxonomy_version": taxonomy_version(),
             "model": model,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "summary": out.summary,

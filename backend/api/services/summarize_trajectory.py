@@ -41,12 +41,37 @@ MAX_TEXT_CHARS = 2000
 TRUNCATE_HEAD = 800
 TRUNCATE_TAIL = 400
 TRUNCATION_MARKER = "\n[...truncated {n} chars...]\n"
-SCHEMA_VERSION = "5"
+SCHEMA_VERSION = "6"
+
+
+def taxonomy_version() -> str:
+    """Fingerprint of the label semantics a stored summary was produced under.
+
+    Imported lazily-ish at call time so this module keeps its existing import
+    shape; ``trajectory_prompts`` is pure text with no back-import.
+    """
+    from api.services.blocks.analyzer.trajectory.trajectory_prompts import (
+        taxonomy_fingerprint,
+    )
+
+    return taxonomy_fingerprint()
 
 
 def is_fresh_summary(summary: object) -> bool:
-    """Whether a stored summary matches the schema every reader accepts."""
-    return isinstance(summary, dict) and summary.get("schema_version") == SCHEMA_VERSION
+    """Whether a stored summary matches the schema AND the label vocabulary.
+
+    ``schema_version`` alone was not enough. It gates the response *shape*, so
+    retiring or redefining a label -- which changes what the numbers mean
+    without changing their shape -- left every cached summary serving the old
+    vocabulary indefinitely. Production summaries still carry
+    `thinking_diagnose` and `testing_custom_edge_cases`, labels the enum no
+    longer offers, and any comparison across time silently mixes them.
+    """
+    if not isinstance(summary, dict):
+        return False
+    if summary.get("schema_version") != SCHEMA_VERSION:
+        return False
+    return summary.get("taxonomy_version") == taxonomy_version()
 
 # Must retain the ``{{taxonomy}}`` placeholder rendered by ``TrajectoryBlock``.
 _SUMMARY_PROMPT_PATH = (
@@ -353,6 +378,7 @@ def build_summary_block(
         analyzer_id=analyzer_id,
         block_metadata={
             "schema_version": SCHEMA_VERSION,
+            "taxonomy_version": taxonomy_version(),
             "model": model,
         },
         output_transform=lambda raw: tb.to_summary(raw, model=model),
@@ -514,6 +540,10 @@ async def _load_fresh_summary_block(
                 AnalyzerBlockModel.type == AnalyzerType.TRAJECTORY_SUMMARY.value,
                 AnalyzerBlockModel.status == JobStatus.SUCCESS,
                 AnalyzerBlockModel.output["schema_version"].astext == SCHEMA_VERSION,
+                # Same bar as ``is_fresh_summary``: a block written under a
+                # different label vocabulary is stale even at the right schema.
+                AnalyzerBlockModel.output["taxonomy_version"].astext
+                == taxonomy_version(),
             )
             .order_by(AnalyzerBlockModel.created_at.desc())
             .limit(1)

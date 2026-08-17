@@ -1,0 +1,7 @@
+{
+ "phase": "B",
+ "noncua_target": 10,
+ "cua_target": 10,
+ "cua_cap": 25,
+ "note": "Phase B. Charles 2026-08-06T03:0xZ: 'the concurrency can go up to 25. just queue up all of the trials for the cua. trust me.' -- cap raised 10 -> 25 on his explicit call, and the remaining CUA trials are queued outright to target rather than filled in waves. Oddish's own queue is the throttle now."
+}
