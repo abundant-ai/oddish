@@ -72,6 +72,7 @@ reference. The main commands are:
 - `oddish delete` — delete trials (hosted) or tasks/experiments (self-host only).
 - `oddish publish` / `oddish unpublish` — toggle public read-only experiment sharing.
 - `oddish backfill-analysis` and `oddish probe` — specialized QA/probe tools.
+- `oddish skill` — print (or `--install`) the packaged SKILL.md that teaches agents to drive this CLI.
 
 Every command except `oddish logs` supports `--json` for machine-readable output.
 

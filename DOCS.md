@@ -33,6 +33,7 @@ export ODDISH_API_KEY="ok_..."
 - `oddish experiment add` / `oddish experiment remove` / `oddish experiment rename` - edit a collection in place; its share link keeps working
 - `oddish delete` - delete task data (trial delete works on hosted Oddish; task/experiment delete is self-host only)
 - `oddish publish` / `oddish unpublish` - toggle public read-only sharing for an experiment
+- `oddish skill` - print or install the packaged SKILL.md agent guide
 - `oddish probe` - internal probe-trial helpers (`oddish probe`, `oddish probe skill add`)
 
 Every command except `oddish logs` accepts `--json` for machine-readable output (CI / scripts / agents).
@@ -49,6 +50,28 @@ A typical run flows through these commands:
 6. `oddish publish` — share an experiment publicly (read-only) and get a link.
 
 `oddish pull` accepts a trial, task, or experiment ID and auto-detects which kind it is; `oddish status` takes a task ID (falling back to experiment lookup) or `--experiment`. `oddish ls` supports the dashboard's task, tag, status, date, model, and trial-metric filters.
+
+## Agent Skill
+
+The package ships a prebuilt SKILL.md that teaches coding agents how to drive
+this CLI (auth, sweeps with nop/oracle baselines, monitoring, triggering and
+reading task QA, pulling artifacts).
+
+```bash
+# Print it to stdout (pipe anywhere)
+oddish skill
+
+# Copy it into an agent skills directory (./.claude/skills, ~/.claude/skills,
+# ~/.kimi-code/skills, or ~/.agents/skills — first one found, or pass --dir)
+oddish skill --install [--dir <skills_dir>]
+
+# Print the packaged file location
+oddish skill --path
+```
+
+This guide is about driving the CLI; it is unrelated to the probe skills
+library (`oddish probe skill add`). The command is local-only and needs no API
+key.
 
 ## Submit a Job
 
