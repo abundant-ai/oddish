@@ -207,7 +207,14 @@ enqueues one trial-scoped
 summary schema. Its endpoint returns explicit queued/running/retrying state and
 the client polls until the summary is stored. Terminal failures are returned,
 not re-enqueued by anonymous refreshes; a schema bump creates the next valid
-idempotency key. Public capability jobs, cache entries, summary warmup, and
+idempotency key. `ODDISH_AUTO_TRAJECTORY_SUMMARY` (off by default) adds a second
+trigger for that same job: every finished non-baseline, non-probe trial enqueues
+one from `_run_post_trial_hooks`, so trials on `run_analysis=False` tasks stop
+depending on a human opening them. It must go through
+`get_or_enqueue_summary_job` -- reached from `oddish/` via the enqueuer seam in
+`workers.queue.trajectory_summary_job`, since only `backend/` knows
+`SCHEMA_VERSION`. A second enqueue site owning its own idempotency key would not
+find this job, and the next page view would pay for the same summary again. Public capability jobs, cache entries, summary warmup, and
 cohort queries are keyed by the published experiment as well as task version;
 they must never include trials from another experiment on the same version. Any
 completed, fetchable trajectory is enough to queue analysis; cohort size is

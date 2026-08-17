@@ -1341,6 +1341,13 @@ class Settings(BaseSettings):
     # ODDISH_GATE_LLM_ON_BASELINES; default off leaves every path unchanged.
     gate_llm_on_baselines: bool = False
 
+    # When enabled, every finished agent trial enqueues its own trajectory-summary
+    # job from the post-trial hook, instead of a summary existing only where
+    # post-trial classification built one (run_analysis tasks) or somebody read a
+    # trajectory. Env-driven via ODDISH_AUTO_TRAJECTORY_SUMMARY. Off by default:
+    # it is one LLM call per trial, and standalone oddish registers no enqueuer.
+    auto_trajectory_summary: bool = False
+
     # DEPRECATED (default OFF; see workers.queue.concurrency_controller). The
     # self-tuning advisory controller predates database-backed admin overrides,
     # which are now the supported way to change a per-model limit at runtime:
@@ -1570,6 +1577,15 @@ class Settings(BaseSettings):
         gate_raw = os.getenv("ODDISH_GATE_LLM_ON_BASELINES")
         if gate_raw is not None:
             self.gate_llm_on_baselines = gate_raw.strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+
+        auto_summary_raw = os.getenv("ODDISH_AUTO_TRAJECTORY_SUMMARY")
+        if auto_summary_raw is not None:
+            self.auto_trajectory_summary = auto_summary_raw.strip().lower() in {
                 "1",
                 "true",
                 "yes",

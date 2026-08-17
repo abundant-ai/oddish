@@ -958,6 +958,9 @@ async def _store_trial_results(
 
 async def _run_post_trial_hooks(trial_id: str) -> None:
     from oddish.queue import maybe_gate_llm_trials, maybe_start_qa_stage
+    from oddish.workers.queue.trajectory_summary_job import (
+        enqueue_trajectory_summary_job,
+    )
 
     async with get_session() as session:
         if (
@@ -982,6 +985,10 @@ async def _run_post_trial_hooks(trial_id: str) -> None:
             console.print(
                 f"[blue]Task {trial.task_id} transitioned to next stage[/blue]"
             )
+        # In this same transaction, and after the stage transition: a hook that
+        # rolls back must not leave a paid job behind, and the QA job enqueued
+        # above finds the summary already cached rather than building its own.
+        await enqueue_trajectory_summary_job(session, trial)
 
 
 async def _finish_trial_settlement(

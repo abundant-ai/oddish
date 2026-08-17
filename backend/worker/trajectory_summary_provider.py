@@ -21,7 +21,11 @@ from oddish.workers.jobs.handlers import (
 from oddish.workers.queue.analysis_handler import (
     register_trajectory_summary_provider as register_analysis_provider,
 )
+from oddish.workers.queue.trajectory_summary_job import (
+    register_trajectory_summary_enqueuer,
+)
 
+from api.services import summarize_trajectory
 from api.services.summarize_trajectory import get_or_generate_summary
 
 
@@ -44,6 +48,17 @@ async def provide_trajectory_summary(
         )
 
 
-# Importing this module (from backend.worker.functions) installs the hook.
+async def enqueue_trajectory_summary(session, trial):
+    """TrajectorySummaryEnqueuer impl for the post-trial auto-enqueue.
+
+    A pass-through on purpose: ``get_or_enqueue_summary_job`` stays the only
+    writer of the job's payload and its ``schema_version`` idempotency key, so a
+    later page view finds this job instead of paying for the summary again.
+    """
+    return await summarize_trajectory.get_or_enqueue_summary_job(session, trial)
+
+
+# Importing this module (from backend.worker.functions) installs the hooks.
 register_analysis_provider(provide_trajectory_summary)
 register_job_provider(provide_trajectory_summary)
+register_trajectory_summary_enqueuer(enqueue_trajectory_summary)
