@@ -3,29 +3,15 @@
 import useSWR from "swr";
 import type { AgentCapabilities } from "@/lib/types";
 
-export function agentCapabilitiesKey(
+/** Capability-analysis lifecycle. A 202 means generation was durably queued,
+ * so poll until the stored analysis is available. */
+export function useAgentCapabilities(
   taskId: string,
   version: number,
-  apiBaseUrl = "/api"
-): string {
-  return `${apiBaseUrl}/tasks/${encodeURIComponent(taskId)}/agent-capabilities?version=${version}`;
-}
-
-/**
- * Shared capability-analysis request. A 202 means the backend durably queued
- * generation, so keep the SWR value null and poll until the stored block is
- * returned. The task overview and Capabilities pane deliberately use the same
- * key: opening the pane reuses the overview's eager warmup.
- */
-export function useAgentCapabilities(
-  taskId: string | null,
-  version: number | null,
-  { apiBaseUrl = "/api", enabled = true } = {}
+  { apiBaseUrl = "/api" } = {}
 ) {
   return useSWR<AgentCapabilities | null>(
-    enabled && taskId && version !== null
-      ? agentCapabilitiesKey(taskId, version, apiBaseUrl)
-      : null,
+    `${apiBaseUrl}/tasks/${encodeURIComponent(taskId)}/agent-capabilities?version=${version}`,
     async (url: string) => {
       const response = await fetch(url);
       if (response.status === 202) return null;

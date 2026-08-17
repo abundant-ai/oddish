@@ -29,7 +29,11 @@ from oddish.core.trial_io import (
     read_trial_trajectory,
     read_trial_verifier_output,
 )
-from oddish.db.models import TrialModel
+from oddish.db.models import (
+    TrialModel,
+    WorkerJobKind,
+    WorkerJobModel,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +41,37 @@ MAX_TEXT_CHARS = 2000
 TRUNCATE_HEAD = 800
 TRUNCATE_TAIL = 400
 TRUNCATION_MARKER = "\n[...truncated {n} chars...]\n"
-SCHEMA_VERSION = "5"
+SCHEMA_VERSION = "6"
+
+
+def taxonomy_version() -> str:
+    """Fingerprint of the label semantics a stored summary was produced under.
+
+    Imported lazily-ish at call time so this module keeps its existing import
+    shape; ``trajectory_prompts`` is pure text with no back-import.
+    """
+    from api.services.blocks.analyzer.trajectory.trajectory_prompts import (
+        taxonomy_fingerprint,
+    )
+
+    return taxonomy_fingerprint()
+
+
+def is_fresh_summary(summary: object) -> bool:
+    """Whether a stored summary matches the schema AND the label vocabulary.
+
+    ``schema_version`` alone was not enough. It gates the response *shape*, so
+    retiring or redefining a label -- which changes what the numbers mean
+    without changing their shape -- left every cached summary serving the old
+    vocabulary indefinitely. Production summaries still carry
+    `thinking_diagnose` and `testing_custom_edge_cases`, labels the enum no
+    longer offers, and any comparison across time silently mixes them.
+    """
+    if not isinstance(summary, dict):
+        return False
+    if summary.get("schema_version") != SCHEMA_VERSION:
+        return False
+    return summary.get("taxonomy_version") == taxonomy_version()
 
 # Must retain the ``{{taxonomy}}`` placeholder rendered by ``TrajectoryBlock``.
 _SUMMARY_PROMPT_PATH = (
@@ -344,6 +378,7 @@ def build_summary_block(
         analyzer_id=analyzer_id,
         block_metadata={
             "schema_version": SCHEMA_VERSION,
+            "taxonomy_version": taxonomy_version(),
             "model": model,
         },
         output_transform=lambda raw: tb.to_summary(raw, model=model),
@@ -505,6 +540,10 @@ async def _load_fresh_summary_block(
                 AnalyzerBlockModel.type == AnalyzerType.TRAJECTORY_SUMMARY.value,
                 AnalyzerBlockModel.status == JobStatus.SUCCESS,
                 AnalyzerBlockModel.output["schema_version"].astext == SCHEMA_VERSION,
+                # Same bar as ``is_fresh_summary``: a block written under a
+                # different label vocabulary is stale even at the right schema.
+                AnalyzerBlockModel.output["taxonomy_version"].astext
+                == taxonomy_version(),
             )
             .order_by(AnalyzerBlockModel.created_at.desc())
             .limit(1)
@@ -515,9 +554,8 @@ async def _load_fresh_summary_block(
 async def load_stored_summary(session: AsyncSession, trial) -> dict | None:
     """The stored trajectory summary for a trial, or None. Never generates.
 
-    The read half of ``get_or_generate_summary``, split out for the public
-    share route, where generation must stay unreachable: it costs an LLM call
-    per miss and an unauthenticated page view may not spend one.
+    The read half of ``get_or_generate_summary``. Public reads use this before
+    enqueueing paid work so a warm summary remains a cheap cache hit.
 
     Falls back to the ``trials.trajectory_summary`` mirror, for the same reason
     ``resolve_cohorts`` prefers it: ``preview_seed`` copies trials but not
@@ -533,9 +571,64 @@ async def load_stored_summary(session: AsyncSession, trial) -> dict | None:
     if block is not None:
         return block
     mirror = getattr(trial, "trajectory_summary", None)
-    if isinstance(mirror, dict) and mirror.get("schema_version") == SCHEMA_VERSION:
+    if is_fresh_summary(mirror):
         return mirror
     return None
+
+
+async def get_or_enqueue_summary_job(
+    session: AsyncSession,
+    trial: TrialModel,
+    *,
+    triggered_by_user_id: str | None = None,
+) -> WorkerJobModel:
+    """Return the one durable generation job for this trial and schema.
+
+    Locking the trial makes the read-then-insert atomic across API processes.
+    A terminal failure is deliberately returned instead of silently enqueueing
+    another paid LLM call on every anonymous page refresh. A schema bump forms
+    a new idempotency key and is allowed to enqueue fresh work.
+    """
+    await session.execute(
+        select(TrialModel.id).where(TrialModel.id == trial.id).with_for_update()
+    )
+    existing = (
+        await session.execute(
+            select(WorkerJobModel)
+            .where(
+                WorkerJobModel.kind == WorkerJobKind.ANALYZER,
+                WorkerJobModel.subject_table == "trials",
+                WorkerJobModel.subject_id == trial.id,
+                WorkerJobModel.payload["mode"].astext == "trajectory_summary",
+                WorkerJobModel.payload["schema_version"].astext == SCHEMA_VERSION,
+            )
+            .order_by(WorkerJobModel.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+
+    from oddish.config import settings
+    from oddish.workers.jobs import EnqueueRequest, enqueue_worker_job
+
+    return await enqueue_worker_job(
+        session,
+        EnqueueRequest(
+            kind=WorkerJobKind.ANALYZER,
+            queue_key=settings.get_qa_queue_key(),
+            priority=1,
+            payload={
+                "mode": "trajectory_summary",
+                "trial_id": trial.id,
+                "schema_version": SCHEMA_VERSION,
+                "triggered_by_user_id": triggered_by_user_id,
+            },
+            subject_table="trials",
+            subject_id=trial.id,
+            org_id=trial.org_id,
+        ),
+    )
 
 
 async def get_or_generate_summary(

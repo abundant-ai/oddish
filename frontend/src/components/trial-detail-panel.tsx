@@ -866,15 +866,9 @@ export function TrialDetailPanel({
     [],
   );
 
-  // A share page opens on the trajectory: its Summary tab is mostly the
-  // operator surfaces this view hides (the QA card, the repro command), so
-  // landing there shows a reader the emptiest tab in the drawer. Do not depend
-  // on has_trajectory here because lightweight public trial rows may omit it.
-  // An explicit ?tab= still wins.
-  const shareDefaultTab = showAnalysis === false ? "trajectory" : "summary";
   const [activeTab, setActiveTab] = useState(() => {
     const urlTab = getLiveParam("tab");
-    return urlTab && validTabs.has(urlTab) ? urlTab : shareDefaultTab;
+    return urlTab && validTabs.has(urlTab) ? urlTab : "summary";
   });
   const [showFullError, setShowFullError] = useState(false);
   const [retrying, setRetrying] = useState(false);

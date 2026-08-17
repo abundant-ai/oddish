@@ -1,10 +1,12 @@
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from api.services import agent_capabilities as cc
 from api.services.agent_capabilities import MIN_COHORT, is_stale
+from api.services.summarize_trajectory import SCHEMA_VERSION
 
 
 def test_is_stale_when_cohort_hash_changed():
@@ -517,3 +519,69 @@ async def test_queued_analysis_generates_missing_summaries_before_comparison(
         triggered_by_user_id="user-1",
     )
     assert result == {"categories": []}
+
+
+@pytest.mark.asyncio
+async def test_summary_warmup_regenerates_truthy_stale_xai_summary(monkeypatch):
+    """A stale mirror must not masquerade as a completed summary.
+
+    Older Grok Build trials can synthesize a fetchable trajectory even when
+    ``has_trajectory`` is false. This is the production shape that the former
+    truthiness guard skipped forever.
+    """
+    stale = SimpleNamespace(
+        id="xai-stale",
+        trajectory_summary={"schema_version": "4", "components": []},
+        has_trajectory=False,
+        agent="grok-build",
+        finished_at=object(),
+    )
+    fresh = SimpleNamespace(
+        id="fresh",
+        trajectory_summary={"schema_version": SCHEMA_VERSION, "components": []},
+        has_trajectory=True,
+        agent="codex",
+        finished_at=object(),
+    )
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = [stale, fresh]
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=result)
+    generate = AsyncMock(return_value={"schema_version": SCHEMA_VERSION})
+    monkeypatch.setattr(
+        "api.services.summarize_trajectory.get_or_generate_summary", generate
+    )
+
+    await cc._ensure_trajectory_summaries(session, "version-1", "user-1")
+
+    generate.assert_awaited_once_with(
+        session,
+        stale,
+        triggered_by_user_id="user-1",
+    )
+
+
+@pytest.mark.asyncio
+async def test_resolve_cohorts_rejects_stale_mirror_and_uses_fresh_block(monkeypatch):
+    stale = {
+        "schema_version": "4",
+        "components": [{"component": "retired", "step_ids": [1]}],
+    }
+    current = {
+        "schema_version": SCHEMA_VERSION,
+        "components": [{"component": "reading_files", "step_ids": [2]}],
+    }
+    result = MagicMock()
+    result.all.return_value = [
+        ("trial-1", 2, stale, "xai/grok", "GOOD_SUCCESS", 1.0)
+    ]
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=result)
+    load_blocks = AsyncMock(return_value={"trial-1": current})
+    monkeypatch.setattr(cc, "_summaries_for", load_blocks)
+
+    successful, failing = await cc.resolve_cohorts(session, "version-1")
+
+    load_blocks.assert_awaited_once_with(session, ["trial-1"])
+    assert failing == []
+    assert successful[0]["components"] == current["components"]

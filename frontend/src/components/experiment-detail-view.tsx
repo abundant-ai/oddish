@@ -135,6 +135,7 @@ interface ExperimentDetailViewProps {
   readOnly?: boolean;
   allowRetry?: boolean;
   showAnalysis?: boolean;
+  showCapabilities?: boolean;
   apiBaseUrl?: string;
   onTaskUnlink?: (task: Task) => Promise<void>;
   onTrialDelete?: (trial: Trial, task: Task | null) => Promise<void>;
@@ -935,6 +936,7 @@ export function ExperimentDetailView({
   readOnly = false,
   allowRetry = true,
   showAnalysis = true,
+  showCapabilities = true,
   apiBaseUrl = "/api",
   onTaskUnlink,
   onTrialDelete,
@@ -958,11 +960,23 @@ export function ExperimentDetailView({
   // tree beside the trial view, so the two panes address independently:
   // the trial pane owns ?file= / ?lines= (see TrialDetailPanel) and the
   // task pane owns ?taskPane= / ?taskFile= / ?taskLines=.
+  const defaultTaskPane: TaskPane = showAnalysis
+    ? "overview"
+    : showCapabilities
+      ? "capabilities"
+      : "file";
+  const readTaskPane = useCallback(
+    (params: Pick<URLSearchParams, "get" | "has">): TaskPane => {
+      const pane = params.get("taskPane");
+      if (pane === "file") return "file";
+      if (pane === "capabilities" && showCapabilities) return "capabilities";
+      if (params.has("taskFile")) return "file";
+      return defaultTaskPane;
+    },
+    [defaultTaskPane, showCapabilities]
+  );
   const [activeTaskPane, setActiveTaskPane] = useState<TaskPane>(() => {
-    const pane = searchParams.get("taskPane");
-    if (pane === "capabilities" || pane === "file") return pane;
-    if (searchParams.has("taskFile")) return "file";
-    return showAnalysis ? "overview" : "capabilities";
+    return readTaskPane(searchParams);
   });
   const selectTaskPane = useCallback((pane: TaskPane) => {
     setActiveTaskPane(pane);
@@ -978,20 +992,11 @@ export function ExperimentDetailView({
   useEffect(() => {
     const restoreTaskPane = () => {
       const params = new URLSearchParams(window.location.search);
-      const pane = params.get("taskPane");
-      setActiveTaskPane(
-        pane === "capabilities" || pane === "file"
-          ? pane
-          : params.has("taskFile")
-            ? "file"
-            : showAnalysis
-              ? "overview"
-              : "capabilities"
-      );
+      setActiveTaskPane(readTaskPane(params));
     };
     window.addEventListener("popstate", restoreTaskPane);
     return () => window.removeEventListener("popstate", restoreTaskPane);
-  }, [showAnalysis]);
+  }, [readTaskPane]);
   const [taskPaneFile, setTaskPaneFile] = useState<string | null>(() =>
     searchParams.get("taskFile")
   );
@@ -1018,10 +1023,10 @@ export function ExperimentDetailView({
       taskId !== lastDrawerTaskIdRef.current
     ) {
       handleTaskPaneFileChange(null);
-      setActiveTaskPane(showAnalysis ? "overview" : "capabilities");
+      setActiveTaskPane(defaultTaskPane);
     }
     lastDrawerTaskIdRef.current = taskId;
-  }, [drawerState?.task.id, handleTaskPaneFileChange, showAnalysis]);
+  }, [drawerState?.task.id, handleTaskPaneFileChange, defaultTaskPane]);
   // Probe cells open main's sliding ProbeDetailPanel (kept from origin/main).
   // On the slim experiment path the grid has no probe trials to click, so this
   // stays dormant until probes are fed to that path -- the code is retained so
@@ -1797,6 +1802,8 @@ export function ExperimentDetailView({
               apiBaseUrl={apiBaseUrl}
               cancelExperimentId={experimentId}
               showAnalysis={showAnalysis}
+              showCapabilities={showCapabilities}
+              loadFilesLazily={readOnly}
               contentOnly={true}
             />
           }
@@ -1815,6 +1822,8 @@ export function ExperimentDetailView({
               allowRetry={allowRetry}
               cancelExperimentId={experimentId}
               showAnalysis={showAnalysis}
+              showCapabilities={showCapabilities}
+              loadFilesLazily={readOnly}
               onNavigate={(nextTask, nextIndex) => {
                 if (!drawerState) return;
                 cancelPendingDeepLink();

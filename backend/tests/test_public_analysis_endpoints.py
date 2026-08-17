@@ -1,4 +1,4 @@
-"""Public (share-token) analysis reads and queued capability generation."""
+"""Public (share-token) analysis reads and durable generation status."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from api.app import create_app
 from api.services.agent_capabilities import StoredComparison
 from api.services.summarize_trajectory import SCHEMA_VERSION
+from oddish.db.models import WorkerJobStatus
 
 TOKEN = "share-tok"
 SUMMARY_URL = f"/public/experiments/{TOKEN}/trials/t-1/trajectory/summary"
@@ -94,13 +95,20 @@ def test_summary_falls_back_to_the_trial_mirror(client, patched_session):
     assert resp.json() == mirror
 
 
-def test_summary_ignores_a_stale_mirror(client, patched_session):
-    """An old schema is not rendered when no trajectory is eligible."""
+def test_stale_xai_mirror_queues_regeneration(client, fake_session, patched_session):
+    """A truthy old summary must not prevent a fetchable xAI trial regenerating."""
     trial = SimpleNamespace(
         id="t-1",
         task_version_id="tv-1",
         trajectory_summary={"schema_version": "1", "summary": "old"},
+        has_trajectory=False,
+        agent="grok-build",
+        finished_at=object(),
     )
+    job = SimpleNamespace(
+        id="job-stale", status=WorkerJobStatus.QUEUED, error_message=None
+    )
+    enqueue = AsyncMock(return_value=job)
     with (
         patched_session,
         patch(
@@ -112,12 +120,33 @@ def test_summary_ignores_a_stale_mirror(client, patched_session):
             new=AsyncMock(return_value=None),
         ),
         patch(
-            "api.services.agent_capabilities.analysis_is_eligible",
-            new=AsyncMock(return_value=False),
+            "api.services.summarize_trajectory.get_or_enqueue_summary_job",
+            new=enqueue,
+        ),
+    ):
+        resp = client.get(SUMMARY_URL)
+    assert resp.status_code == 202
+    assert resp.json()["job_id"] == "job-stale"
+    enqueue.assert_awaited_once_with(fake_session, trial)
+
+
+def test_stale_mirror_without_fetchable_trajectory_is_404(client, patched_session):
+    trial = SimpleNamespace(
+        id="t-1",
+        trajectory_summary={"schema_version": "1", "summary": "old"},
+        has_trajectory=False,
+        agent="codex",
+        finished_at=None,
+    )
+    with (
+        patched_session,
+        patch(
+            "api.routers.public_analysis.get_public_trial_for_experiment",
+            new=AsyncMock(return_value=trial),
         ),
         patch(
-            "api.routers.public_analysis.get_public_experiment",
-            new=AsyncMock(return_value=SimpleNamespace(id="exp-1")),
+            "api.services.summarize_trajectory._load_fresh_summary_block",
+            new=AsyncMock(return_value=None),
         ),
     ):
         resp = client.get(SUMMARY_URL)
@@ -144,20 +173,20 @@ def test_summary_prefers_the_block_over_the_mirror(client, patched_session):
     assert resp.json() == block
 
 
-def test_summary_miss_enqueues_capability_analysis(
+def test_summary_miss_enqueues_only_the_trial_summary_job(
     client, fake_session, patched_session
 ):
     trial = SimpleNamespace(
         id="t-1",
-        task_id="task-1",
-        task_version_id="tv-1",
         trajectory_summary=None,
+        has_trajectory=True,
+        agent="codex",
+        finished_at=object(),
     )
-    task = SimpleNamespace(id="task-1", name="task-one", org_id="org-1")
-    task_result = MagicMock()
-    task_result.scalar_one.return_value = task
-    fake_session.execute.side_effect = [task_result, MagicMock()]
-    enqueue = AsyncMock()
+    job = SimpleNamespace(
+        id="job-1", status=WorkerJobStatus.QUEUED, error_message=None
+    )
+    enqueue = AsyncMock(return_value=job)
     with (
         patched_session,
         patch(
@@ -169,27 +198,56 @@ def test_summary_miss_enqueues_capability_analysis(
             new=AsyncMock(return_value=None),
         ),
         patch(
-            "api.services.agent_capabilities.analysis_is_eligible",
-            new=AsyncMock(return_value=True),
+            "api.services.summarize_trajectory.get_or_enqueue_summary_job",
+            new=enqueue,
         ),
-        patch(
-            "api.routers.public_analysis.get_public_experiment",
-            new=AsyncMock(return_value=SimpleNamespace(id="exp-1")),
-        ),
-        patch("api.services.agent_capabilities.enqueue_analysis", new=enqueue),
     ):
         resp = client.get(SUMMARY_URL)
     assert resp.status_code == 202
-    assert resp.json() == {"status": "queued", "task_version_id": "tv-1"}
-    enqueue.assert_awaited_once_with(
-        fake_session,
-        task_id="task-1",
-        task_version_id="tv-1",
-        task_name="task-one",
-        org_id="org-1",
-        triggered_by_user_id=None,
-        experiment_id="exp-1",
+    assert resp.headers["retry-after"] == "3"
+    assert resp.json() == {
+        "status": "queued",
+        "job_id": "job-1",
+        "retry_after_ms": 3000,
+    }
+    enqueue.assert_awaited_once_with(fake_session, trial)
+
+
+def test_summary_failure_is_reported_without_reenqueue_loop(
+    client, fake_session, patched_session
+):
+    trial = SimpleNamespace(
+        id="t-1",
+        trajectory_summary=None,
+        has_trajectory=True,
+        agent="codex",
+        finished_at=object(),
     )
+    job = SimpleNamespace(
+        id="job-1",
+        status=WorkerJobStatus.FAILED,
+        error_message="provider rejected the request",
+    )
+    enqueue = AsyncMock(return_value=job)
+    with (
+        patched_session,
+        patch(
+            "api.routers.public_analysis.get_public_trial_for_experiment",
+            new=AsyncMock(return_value=trial),
+        ),
+        patch(
+            "api.services.summarize_trajectory.load_stored_summary",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "api.services.summarize_trajectory.get_or_enqueue_summary_job",
+            new=enqueue,
+        ),
+    ):
+        resp = client.get(SUMMARY_URL)
+    assert resp.status_code == 502
+    assert resp.json() == {"detail": "Summary generation failed"}
+    enqueue.assert_awaited_once_with(fake_session, trial)
 
 
 def test_summary_404_when_token_does_not_expose_the_trial(client, patched_session):

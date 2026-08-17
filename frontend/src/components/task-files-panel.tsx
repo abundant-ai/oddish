@@ -50,7 +50,6 @@ import {
 } from "@/lib/task-detail-resource";
 import { TaskOverviewPanel } from "@/components/task-overview-panel";
 import { AgentCapabilitiesSection } from "@/components/agent-capabilities-section";
-import { useAgentCapabilities } from "@/lib/use-agent-capabilities";
 import {
   getCancelActionLabel,
   isActivePipelineStatus,
@@ -144,6 +143,8 @@ interface TaskFilesPanelProps {
    * read-only share view.
    */
   showAnalysis?: boolean;
+  /** Whether the task drawer offers and may fetch the capability analysis. */
+  showCapabilities?: boolean;
   /** The route host owns this because the drawer can mount two task panes. */
   activePane: TaskPane;
   onActivePaneChange?: (pane: TaskPane) => void;
@@ -424,6 +425,7 @@ export function TaskFilesPanel({
   cancelExperimentId,
   allowRetry = true,
   showAnalysis = true,
+  showCapabilities = true,
   activePane,
   onActivePaneChange,
   onRetryComplete,
@@ -499,15 +501,8 @@ export function TaskFilesPanel({
           : undefined;
   const overviewAvailable =
     effectiveChecksTaskId !== null && showAnalysis !== false;
-  const capabilitiesAvailable = effectiveChecksTaskId !== null;
-  // Warm the capability cache as soon as the task overview resolves its
-  // version. The pane stays lazy as UI, but its durable job starts while the
-  // reader is looking at the overview, matching the pre-pane behavior.
-  useAgentCapabilities(
-    effectiveChecksTaskId,
-    typeof overviewVersion === "number" ? overviewVersion : null,
-    { apiBaseUrl: baseUrl, enabled: isOpen && capabilitiesAvailable }
-  );
+  const capabilitiesAvailable =
+    showCapabilities && effectiveChecksTaskId !== null;
   const taskPaneExists = overviewAvailable || capabilitiesAvailable;
   // Until /detail answers, the checks state is unknown, not "unaudited":
   // an enabled Run button on the misread queues an audit that wipes findings.
@@ -529,6 +524,12 @@ export function TaskFilesPanel({
     checksDetail?.task?.verdict_status === "queued" ||
     checksDetail?.task?.verdict_status === "running";
   const resolvedFilesUrl = filesUrl ?? `${baseUrl}/tasks/${taskId}/files`;
+  // Trial file routes stream the file itself; task file routes answer with a
+  // JSON envelope ({path, content, key}, or {url} when presigning). Read that
+  // off the route, not off whether a filesUrl prop was passed — the drawer's
+  // side-by-side task pane passes a TASK filesUrl, and treating its envelope
+  // as the file body rendered every task file blank.
+  const fileRouteServesBytes = !/\/tasks\/[^/]+\/files$/.test(resolvedFilesUrl);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isRerunning, setIsRerunning] = useState(false);
@@ -592,7 +593,12 @@ export function TaskFilesPanel({
 
   const listedPreview = selectedFile ? listedFilePreview(selectedFile) : null;
   const directBinaryPreview =
-    selectedFile && isBinaryRendererFile(selectedFile.name) && !loadFilesLazily
+    selectedFile &&
+    isBinaryRendererFile(selectedFile.name) &&
+    !loadFilesLazily &&
+    // Without a presigned URL from the listing, only a byte-serving route can
+    // back an <img>/<embed> src directly; a task route would hand it JSON.
+    (selectedFile.url || fileRouteServesBytes)
       ? {
           kind: "binary" as const,
           url: selectedFile.url ?? buildSelectedFileUrl()!,
@@ -609,7 +615,7 @@ export function TaskFilesPanel({
           shouldScopeFilesToVersion ? currentVersion : null,
           currentContentHash,
           loadFilesLazily,
-          filesUrl ? "raw" : "json",
+          fileRouteServesBytes ? "raw" : "json",
           selectedFile.url ?? null,
           selectedFile.size ?? null,
         ]
@@ -665,7 +671,7 @@ export function TaskFilesPanel({
         if (!url) throw new Error("File content unavailable");
         const res = await fetch(url);
         if (!res.ok) throw new Error("Failed to fetch file content");
-        if (filesUrl && !loadFilesLazily) {
+        if (fileRouteServesBytes) {
           content = await res.text();
         } else {
           const data = (await res.json()) as {
@@ -698,7 +704,7 @@ export function TaskFilesPanel({
       params.set("inline", "0");
       params.set("presign", "0");
     }
-    if (!taskPaneExists) {
+    if (!taskPaneExists && !loadFilesLazily) {
       params.set("stream", "1");
     }
     if (shouldScopeFilesToVersion && currentVersion != null) {
@@ -1070,7 +1076,7 @@ export function TaskFilesPanel({
         return;
       }
       let content: string;
-      if (filesUrl && !loadFilesLazily) {
+      if (fileRouteServesBytes) {
         content = await res.text();
       } else {
         const data = (await res.json()) as { content?: string };

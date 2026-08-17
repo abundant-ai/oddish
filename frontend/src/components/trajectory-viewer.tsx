@@ -713,6 +713,7 @@ export function TrajectoryViewer({
   );
 
   const [expandedSteps, setExpandedSteps] = useState<string[]>([]);
+  const expandedStepKeys = new Set(expandedSteps);
   const [query, setQuery] = useState("");
   const [deepLinkError, setDeepLinkError] = useState<string | null>(null);
   const stepRefs = useRef<(HTMLDivElement | null)[]>([]);
@@ -807,11 +808,13 @@ export function TrajectoryViewer({
 
   // A summary request can trigger paid on-demand generation server-side, so it
   // must not fire for a trial we already know (via shouldFetch) has no trajectory.
-  const { data: summary } = useTrajectorySummary(
+  const summaryQuery = useTrajectorySummary(
     trialId,
     apiBaseUrl,
     shouldFetch
   );
+  const summary =
+    summaryQuery.data?.status === "ready" ? summaryQuery.data.summary : null;
   // Derived from the whole trajectory, so attribution stays put while the user
   // searches, and shared with the Activity card so both agree on every owner.
   const renderableIds = useMemo(
@@ -950,8 +953,10 @@ export function TrajectoryViewer({
   return (
     <div className="p-4">
       <TrajectorySummary
-        trialId={trialId}
-        apiBaseUrl={apiBaseUrl}
+        resource={summaryQuery.data}
+        error={summaryQuery.error}
+        isLoading={summaryQuery.isLoading}
+        onRetry={() => void summaryQuery.mutate()}
         renderableIds={renderableIds}
         stepIdToIndex={stepIdToIndex}
         onStepSelect={handleStepClick}
@@ -959,7 +964,7 @@ export function TrajectoryViewer({
       <TrajectoryActivity
         trialId={trialId}
         steps={trajectory.steps}
-        apiBaseUrl={apiBaseUrl}
+        summary={summary}
         stepIdToIndex={stepIdToIndex}
         onStepSelect={handleStepClick}
       />
@@ -1108,11 +1113,13 @@ export function TrajectoryViewer({
                         />
                       </AccordionTrigger>
                       <AccordionContent>
-                        <StepContent
-                          step={step}
-                          trialId={trialId}
-                          apiBaseUrl={apiBaseUrl}
-                        />
+                        {expandedStepKeys.has(`step-${idx}`) ? (
+                          <StepContent
+                            step={step}
+                            trialId={trialId}
+                            apiBaseUrl={apiBaseUrl}
+                          />
+                        ) : null}
                       </AccordionContent>
                     </AccordionItem>
                   ))}

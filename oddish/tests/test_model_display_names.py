@@ -18,6 +18,7 @@ from oddish.core.model_display_names import (
     apply_model_display_names,
     canonical_model_key,
     display_model_name,
+    mask_trajectory_model_names,
     load_model_display_names,
 )
 from oddish.core.sharing.helpers import (
@@ -318,3 +319,58 @@ def test_display_model_name_passes_unaliased_ids_through():
     assert display_model_name("openai/gpt-5.4", names) == "openai/gpt-5.4"
     assert display_model_name("openai/gpt-5.4", {}) == "openai/gpt-5.4"
     assert display_model_name(None, names) is None
+
+
+def test_mask_trajectory_model_names_masks_agent_and_steps():
+    """A share page renders the trajectory's own model_name in every step
+    header, so leaving it raw prints the real id under the aliased one."""
+    names = {canonical_model_key("xai/v9m-rl-learnability-tp8"): "xai/Grok-4.5"}
+    trajectory = {
+        "agent": {"name": "grok-build", "model_name": "xai/v9m-rl-learnability-tp8"},
+        "steps": [
+            {"step_id": 0, "model_name": "xai/v9m-rl-learnability-tp8"},
+            {"step_id": 1, "model_name": None},
+        ],
+    }
+
+    masked = mask_trajectory_model_names(trajectory, names)
+
+    assert masked["agent"]["model_name"] == "xai/Grok-4.5"
+    assert [step["model_name"] for step in masked["steps"]] == ["xai/Grok-4.5", None]
+
+
+def test_mask_trajectory_model_names_leaves_the_cached_document_alone():
+    """read_trial_trajectory memoizes the parsed document and the
+    authenticated route serves that same object -- masking must copy."""
+    names = {canonical_model_key("xai/v9m-rl-learnability-tp8"): "xai/Grok-4.5"}
+    trajectory = {
+        "agent": {"model_name": "xai/v9m-rl-learnability-tp8"},
+        "steps": [{"step_id": 0, "model_name": "xai/v9m-rl-learnability-tp8"}],
+    }
+
+    mask_trajectory_model_names(trajectory, names)
+
+    assert trajectory["agent"]["model_name"] == "xai/v9m-rl-learnability-tp8"
+    assert trajectory["steps"][0]["model_name"] == "xai/v9m-rl-learnability-tp8"
+
+
+def test_mask_trajectory_model_names_no_aliases_is_a_passthrough():
+    """The common case pays nothing: no table rows, same object back."""
+    trajectory = {"agent": {"model_name": "openai/gpt-5.4"}, "steps": []}
+    assert mask_trajectory_model_names(trajectory, {}) is trajectory
+    assert mask_trajectory_model_names(None, {"a": "b"}) is None
+
+
+def test_mask_trajectory_model_names_tolerates_a_non_string_model_name():
+    """The ATIF document is agent-written JSON, not a validated schema. A
+    stray non-string must not 500 the whole trajectory read."""
+    names = {canonical_model_key("xai/v9m-rl-learnability-tp8"): "xai/Grok-4.5"}
+    trajectory = {
+        "agent": {"model_name": 7},
+        "steps": [{"step_id": 0, "model_name": {"nested": "junk"}}],
+    }
+
+    masked = mask_trajectory_model_names(trajectory, names)
+
+    assert masked["agent"]["model_name"] == 7
+    assert masked["steps"][0]["model_name"] == {"nested": "junk"}

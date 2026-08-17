@@ -6,10 +6,13 @@ import { Button } from "@/components/ui/button";
 import { Sparkles, ChevronRight, AlertCircle, Loader2 } from "lucide-react";
 import { phaseColorVars } from "@/lib/trajectory-metrics";
 import { segmentOwners, toSegments } from "@/lib/trajectory-segments";
-import { useTrajectorySummary } from "@/lib/use-trajectory-summary";
+import type { TrajectorySummaryResource } from "@/lib/use-trajectory-summary";
 
 interface TrajectorySummaryProps {
-  trialId: string;
+  resource?: TrajectorySummaryResource;
+  error?: Error;
+  isLoading: boolean;
+  onRetry: () => void;
   /**
    * Map a step_id from the summary to the array index used by the
    * accordion in TrajectoryViewer. Returns -1 if the step_id is unknown
@@ -17,7 +20,6 @@ interface TrajectorySummaryProps {
    */
   stepIdToIndex: (stepId: number) => number;
   onStepSelect: (index: number) => void;
-  apiBaseUrl?: string;
   /**
    * Renderable step ids from the viewer, so a highlight's underline resolves
    * through the same owner map the Activity card and step groups use. Without
@@ -28,17 +30,14 @@ interface TrajectorySummaryProps {
 }
 
 export function TrajectorySummary({
-  trialId,
+  resource,
+  error,
+  isLoading,
+  onRetry,
   stepIdToIndex,
   onStepSelect,
-  apiBaseUrl = "/api",
   renderableIds,
 }: TrajectorySummaryProps) {
-  const { data, error, isLoading, mutate } = useTrajectorySummary(
-    trialId,
-    apiBaseUrl
-  );
-
   // A stored summary returns in well under a second; only a long in-flight
   // request means the backend is actually generating one (~30s).
   const [slow, setSlow] = useState(false);
@@ -51,10 +50,9 @@ export function TrajectorySummary({
     return () => clearTimeout(timer);
   }, [isLoading]);
 
-  const waitingForPublicGeneration =
-    data === null && apiBaseUrl.includes("/api/public/experiments/");
+  const waitingForGeneration = resource?.status !== "ready" && !!resource;
 
-  if (isLoading || waitingForPublicGeneration) {
+  if (isLoading || waitingForGeneration) {
     return (
       <Card className="my-3">
         <CardHeader className="pb-2">
@@ -65,7 +63,7 @@ export function TrajectorySummary({
         </CardHeader>
         <CardContent className="text-muted-foreground flex items-center gap-2 text-sm">
           <Loader2 className="h-4 w-4 animate-spin" />
-          {waitingForPublicGeneration
+          {waitingForGeneration
             ? "Generating summary…"
             : slow
             ? "Generating summary… (first view can take ~30s)"
@@ -87,7 +85,7 @@ export function TrajectorySummary({
         </CardHeader>
         <CardContent className="space-y-2">
           <p className="text-muted-foreground text-xs">{error.message}</p>
-          <Button size="sm" variant="outline" onClick={() => mutate()}>
+          <Button size="sm" variant="outline" onClick={onRetry}>
             Retry
           </Button>
         </CardContent>
@@ -95,7 +93,8 @@ export function TrajectorySummary({
     );
   }
 
-  if (!data) return null;
+  if (!resource || resource.status !== "ready") return null;
+  const data = resource.summary;
 
   // Same segment → color assignment as the Activity card and step groups, so
   // a highlight's underline matches its component everywhere.
