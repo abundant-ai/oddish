@@ -468,6 +468,7 @@ def is_stale(
     current_hash: str,
     schema_version: int,
     task_version_id: str,
+    experiment_id: str | None = None,
 ) -> bool:
     """Whether a stored block must be regenerated. See ``stale_reason``."""
     return (
@@ -476,6 +477,7 @@ def is_stale(
             current_hash=current_hash,
             schema_version=schema_version,
             task_version_id=task_version_id,
+            experiment_id=experiment_id,
         )
         is not None
     )
