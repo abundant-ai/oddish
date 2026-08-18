@@ -319,7 +319,6 @@ export function useTaskOpenReader(
     agentCards,
     defaultVersionError,
     defaultVersionId,
-    detailKey,
     error,
     exactAgentModels,
     explicitVersionMissing,

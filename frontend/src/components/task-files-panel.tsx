@@ -416,7 +416,7 @@ export function TaskFilesPanel({
   isOpen,
   onClose,
   taskId,
-  task,
+  task: taskSnapshot,
   orderedTasks,
   taskIndex,
   onNavigate,
@@ -450,8 +450,8 @@ export function TaskFilesPanel({
   // panes (which pass taskId={null}); staticChecksTaskId supplies the id there.
   const effectiveChecksTaskId = taskId ?? staticChecksTaskId ?? null;
   // The pre_trial_* fields live on the version summaries of /detail, not on
-  // the plain task endpoint. The task page uses the same key, so SWR shares
-  // the cache there.
+  // the plain task endpoint. Task cards seed this key from their browse rows;
+  // SWR replaces that snapshot with the full response when this pane mounts.
   const checksKey =
     effectiveChecksTaskId && showAnalysis !== false
       ? taskDetailKey(effectiveChecksTaskId, baseUrl)
@@ -481,6 +481,9 @@ export function TaskFilesPanel({
     },
   });
   const checksDetail = taskDetailValue(checksResource);
+  const task = cancelExperimentId
+    ? taskSnapshot
+    : (checksDetail?.task ?? taskSnapshot);
   const actionsReady =
     checksResource !== undefined && !isBrowseTaskDetail(checksResource);
   // Scoped panes (the experiment drawer) pin the version whose files are on
@@ -933,7 +936,7 @@ export function TaskFilesPanel({
 
   // Fetch root file list when panel opens
   useEffect(() => {
-    if (!isOpen || (!taskId && !filesUrl)) {
+    if (!isOpen || activePane !== "file" || (!taskId && !filesUrl)) {
       return;
     }
 
@@ -1023,6 +1026,7 @@ export function TaskFilesPanel({
     };
   }, [
     isOpen,
+    activePane,
     taskId,
     filesUrl,
     resolvedFilesUrl,
