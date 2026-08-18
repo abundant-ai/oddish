@@ -1534,11 +1534,30 @@ export function TaskFilesPanel({
                       <span className="truncate">Capabilities</span>
                     </button>
                   ) : null}
+                  <button
+                    type="button"
+                    onClick={() => onActivePaneChange?.("file")}
+                    aria-current={activePane === "file" ? "page" : undefined}
+                    className={`flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-sm ${
+                      activePane === "file"
+                        ? "bg-primary/20 text-primary"
+                        : "hover:bg-muted/50 cursor-pointer"
+                    }`}
+                    title="Browse task files"
+                  >
+                    <FolderOpen
+                      className="h-3.5 w-3.5 shrink-0"
+                      aria-hidden="true"
+                    />
+                    <span className="truncate">Files</span>
+                  </button>
                 </div>
               )}
-              <div className="text-muted-foreground px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
-                Files
-              </div>
+              {!taskPaneExists ? (
+                <div className="text-muted-foreground px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
+                  Files
+                </div>
+              ) : null}
               {listingError ? (
                 <p className="text-muted-foreground px-2 py-2 text-xs">
                   Unable to load files: {listingError}
