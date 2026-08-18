@@ -16,6 +16,7 @@ from rich.console import Console
 
 from oddish.core.endpoints import (
     backfill_task_analysis_core,
+    browse_experiment_options_core,
     browse_tasks_core,
     build_task_sweep_response,
     cancel_task_qa_core,
@@ -25,6 +26,7 @@ from oddish.core.endpoints import (
     create_task_sweep_batch_core,
     create_task_sweep_core,
     get_task_detail_core,
+    get_task_open_core,
     get_task_status_core,
     get_task_version_core,
     get_trial_analysis_log_core,
@@ -91,6 +93,7 @@ from oddish.db import (
 )
 from oddish.schemas import (
     BackfillQARequest,
+    ExperimentOptionsResponse,
     TaskBatchCancelRequest,
     TaskBrowseResponse,
     ExperimentCombineRequest,
@@ -98,6 +101,7 @@ from oddish.schemas import (
     ExperimentUpdateRequest,
     ExperimentUpdateResponse,
     TaskDetailResponse,
+    TaskOpenResponse,
     TaskUploadCompleteRequest,
     TaskUploadInitRequest,
     TaskUploadInitResponse,
@@ -322,6 +326,8 @@ async def init_task_upload(payload: TaskUploadInitRequest) -> TaskUploadInitResp
         payload.name,
         content_hash=payload.content_hash,
         message=payload.message,
+        force_new_version=payload.force_new_version,
+        overwrite_current_version=payload.overwrite_current_version,
     )
 
 
@@ -337,6 +343,9 @@ async def finalize_task_upload(payload: TaskUploadCompleteRequest) -> UploadResp
         register=payload.register_task,
         user=payload.user,
         priority=payload.priority,
+        overwrite_current_version=payload.overwrite_current_version,
+        staging_key=payload.staging_key,
+        overwrite_base_content_hash=payload.overwrite_base_content_hash,
     )
 
 
@@ -536,6 +545,27 @@ async def browse_tasks(
         )
 
 
+@api.get("/tasks/browse/experiment-options", response_model=ExperimentOptionsResponse)
+async def browse_experiment_options(
+    query: str | None = Query(None),
+    ids: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+) -> ExperimentOptionsResponse:
+    """Typeahead options for the task-browser experiment filter.
+
+    ``query`` narrows by case-insensitive name substring; ``ids`` (CSV) instead
+    hydrates already-selected filter chips and wins over ``query``. Replaces
+    the deprecated, always-empty ``facets.experiments`` list.
+    """
+    async with get_session() as session:
+        return await browse_experiment_options_core(
+            session,
+            query=query,
+            ids=_split_tag_csv(ids),
+            limit=limit,
+        )
+
+
 @api.get("/tasks/{task_id}", response_model=TaskStatusResponse)
 async def get_task_status(task_id: str):
     """Get status of a task with all trials, analyses, and verdict."""
@@ -546,6 +576,13 @@ async def get_task_status(task_id: str):
             include_trials=True,
             include_empty_rewards=False,
         )
+
+
+@api.get("/tasks/{task_id}/open", response_model=TaskOpenResponse)
+async def get_task_open(task_id: str, version_id: str | None = None):
+    """Bounded task-page header, aggregates, and trial preview."""
+    async with get_session() as session:
+        return await get_task_open_core(session, task_id=task_id, version_id=version_id)
 
 
 @api.get("/tasks/{task_id}/detail", response_model=TaskDetailResponse)
@@ -591,7 +628,11 @@ async def cancel_tasks(payload: TaskBatchCancelRequest):
 
     try:
         async with get_session() as session:
-            result = await cancel_tasks_runs(session, payload.task_ids)
+            result = await cancel_tasks_runs(
+                session,
+                payload.task_ids,
+                experiment_id=payload.experiment_id,
+            )
             if result.get("error") == "not_found":
                 raise HTTPException(status_code=404, detail="No matching tasks found")
             await session.commit()
@@ -599,7 +640,10 @@ async def cancel_tasks(payload: TaskBatchCancelRequest):
         # Full detail (traceback + failing SQL + Postgres detail) to the logs;
         # the UI gets a simple message instead of an opaque 500.
         logger.error(
-            "cancel_tasks failed for task_ids=%s", payload.task_ids, exc_info=exc
+            "cancel_tasks failed for task_ids=%s experiment_id=%s",
+            payload.task_ids,
+            payload.experiment_id,
+            exc_info=exc,
         )
         raise HTTPException(
             status_code=503,
@@ -826,6 +870,7 @@ async def list_task_files(
     limit: int = Query(1000, ge=1, le=1000),
     cursor: str | None = Query(None),
     presign: bool = Query(True),
+    inline: bool = Query(True),
     version: int | None = Query(None, description="Task version number"),
     stream: bool = Query(
         False,
@@ -867,6 +912,7 @@ async def list_task_files(
         cursor=cursor,
         presign=presign,
         version=version,
+        inline=inline,
     )
 
 
@@ -876,6 +922,7 @@ async def get_task_file_content(
     file_path: str,
     presign: bool = Query(False),
     version: int | None = Query(None, description="Task version number"),
+    max_bytes: int | None = Query(None, ge=1),
 ) -> dict:
     """Get content of a specific task file from S3."""
     async with get_session() as session:
@@ -896,6 +943,7 @@ async def get_task_file_content(
         file_path=file_path,
         presign=presign,
         version=version,
+        max_bytes=max_bytes,
     )
 
 

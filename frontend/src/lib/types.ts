@@ -113,11 +113,6 @@ interface TrialAnalysis {
   /** Per pre-trial finding assessments — the trial↔audit finding join. */
   exploitation?: TrialExploitation[];
   reward?: number | null;
-  prompt_kind?: string;
-  prompt_version?: number;
-  prompt_id?: string;
-  prompt_scope?: "global" | "org" | "user" | "experiment" | "task" | "trial";
-  prompt_scope_id?: string | null;
 }
 
 interface TrialQueueInfo {
@@ -209,9 +204,11 @@ export interface Trial {
   } | null;
 }
 
-interface TaskVerdict {
-  is_good: boolean;
-  confidence: "high" | "medium" | "low";
+export interface TaskVerdict {
+  /** Absent on rows stored before the accept/reject label existed. */
+  verdict?: "accept" | "reject";
+  is_good: boolean | null;
+  confidence: "high" | "medium" | "low" | string | null;
   primary_issue?: string | null;
   reasoning?: string | null;
   recommendations?: string[];
@@ -291,6 +288,12 @@ export interface TaskBrowseItem {
   reward_success: number;
   reward_sum: number;
   reward_total: number;
+  pass_count: number;
+  partial_count: number;
+  fail_count: number;
+  harness_count: number;
+  skipped_count: number;
+  pending_count: number;
   last_run_at?: string | null;
   link?: string | null;
   github_meta?: Record<string, string> | null;
@@ -304,6 +307,7 @@ export interface TaskBrowseItem {
   billed_has_native: boolean;
   qa_cost_usd?: number;
   latest_trials: TaskBrowseTrial[];
+  latest_trials_truncated: boolean;
   experiments: TaskBrowseExperiment[];
   user_tags: UserTagRef[];
 }
@@ -315,6 +319,9 @@ export interface TaskBrowseResponse {
   has_more: boolean;
 }
 
+// The backend response also carries a deprecated `experiments` field that is
+// always [] (options come from /api/tasks/browse/experiment-options instead);
+// it is deliberately absent here so nothing new codes against it.
 export interface TaskBrowseFacets {
   agents: string[];
   models: string[];
@@ -323,12 +330,23 @@ export interface TaskBrowseFacets {
   environments: string[];
   harbor_stages: string[];
   analysis_classifications: string[];
-  experiments: { id: string; name: string }[];
+}
+
+// GET /api/tasks/browse/experiment-options — async options for the sidebar
+// experiment filter (query= substring search, ids= chip hydration).
+export interface ExperimentOption {
+  id: string;
+  name: string;
+}
+
+export interface ExperimentOptionsResponse {
+  items: ExperimentOption[];
 }
 
 export interface TaskVersionSummary {
   id: string;
   version: number;
+  content_hash?: string | null;
   message?: string | null;
   created_at: string;
   is_current: boolean;
@@ -361,6 +379,110 @@ export interface TaskVersionSummary {
   pre_trial_cost_usd?: number | null;
   user_tags?: UserTagRef[];
   experiments?: { id: string; name: string }[];
+}
+
+export interface TaskOpenVersionRef {
+  id: string;
+  version: number;
+  message?: string | null;
+  created_at: string;
+  is_current: boolean;
+}
+
+export interface TaskOpenVerdict {
+  is_good: boolean | null;
+  confidence?: string | null;
+  primary_issue?: string | null;
+  reasoning?: string | null;
+  recommendations: string[];
+}
+
+export interface TaskOpenAgentModelSummary {
+  agent: string;
+  model: string | null;
+  providers: string[];
+  is_probe: boolean;
+  trial_count: number;
+  completed_count: number;
+  failed_count: number;
+  skipped_count: number;
+  pending_count: number;
+  pass_count: number;
+  partial_count: number;
+  fail_count: number;
+  reward_sum: number;
+  reward_total: number;
+  cost_usd: number;
+  cost_trial_count: number;
+  cost_has_estimated: boolean;
+  cost_has_native: boolean;
+  billed_cost_usd: number;
+  billed_trial_count: number;
+  billed_has_estimated: boolean;
+  billed_has_native: boolean;
+  last_run_at?: string | null;
+  duration_sum_seconds: number;
+  duration_trial_count: number;
+}
+
+export interface TaskOpenVersionSummary extends TaskVersionSummary {
+  agent_models: TaskOpenAgentModelSummary[];
+}
+
+export interface TaskOpenTask {
+  id: string;
+  name: string;
+  status: TaskStatus;
+  priority: Priority;
+  user: string;
+  github_username?: string | null;
+  github_meta?: Record<string, string> | null;
+  link?: string | null;
+  task_path: string;
+  experiments: TaskBrowseExperiment[];
+  current_version?: number | null;
+  current_version_id?: string | null;
+  user_tags: UserTagRef[];
+  run_analysis: boolean;
+  verdict_status?: JobStatus | null;
+  verdict?: TaskOpenVerdict | null;
+  verdict_error?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TaskOpenTrialRef {
+  id: string;
+  name: string;
+  experiment_id?: string | null;
+  task_version_id?: string | null;
+  agent: string;
+  provider: string;
+  model: string | null;
+  status: TrialStatus;
+  reward: number | null;
+  error_kind?: string | null;
+  is_probe: boolean;
+  cost_usd?: number | null;
+  cost_is_estimated?: boolean | null;
+  is_billed: boolean;
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+}
+
+export interface TaskOpenTotals extends TaskCostTotals {
+  token_count: number;
+  token_trial_count: number;
+}
+
+export interface TaskOpenResponse {
+  task: TaskOpenTask;
+  default_version?: TaskOpenVersionRef | null;
+  selected_version?: TaskOpenVersionSummary | null;
+  totals: TaskOpenTotals;
+  trials: TaskOpenTrialRef[];
+  trials_has_more: boolean;
 }
 
 /** One defect the pre-trial source audit found in a task version. */
@@ -693,7 +815,8 @@ export type TrajectoryComponentKind =
   | "thinking_recall"
   | "thinking_understand"
   | "thinking_hypothesize"
-  | "thinking_correction"
+  | "writing_plan"
+  | "plan_correction"
   | "implementing"
   | "implementing_correction"
   | "writing_tests"
@@ -701,7 +824,9 @@ export type TrajectoryComponentKind =
   | "testing_custom"
   | "testing_edge_cases"
   | "debugging"
+  | "writing_report"
   // Retired from the backend enum, but stored summaries still carry them.
+  | "thinking_correction"
   | "thinking_diagnose"
   | "testing_custom_edge_cases";
 
@@ -712,6 +837,77 @@ export interface TrajectoryComponent {
   /** Deterministic metadata added in summary schema v5; optional for older summaries. */
   tool_count?: number;
   duration_ms?: number;
+}
+
+/** Behaviour categories from the backend cohort taxonomy. */
+export type BehaviorCategory =
+  | "behavior_discovery"
+  | "planning"
+  | "testing_verification"
+  | "debugging"
+  | "scope_adherence"
+  | "coherence"
+  | "environment_tooling";
+
+/** Two shapes, never both on one citation. Summary evidence quotes a stored
+ *  component summary; step evidence quotes the raw step the agent produced,
+ *  and only the CLAUDE_CLI comparison can read those. Comparisons stored
+ *  before schema 4 carry the summary shape exclusively. */
+export interface BehaviorEvidence {
+  trial_id: string;
+  quote: string;
+  /** A stored component's label, not a live-enum value: the backend accepts
+   *  any string here and verifies it against the trial's stored components,
+   *  so retired vocabulary arrives intact. */
+  trajectory_component?: string | null;
+  step_ids?: number[];
+  step_id?: number | null;
+}
+
+export interface BehaviorObservation {
+  behavior_description: string;
+  evidence: BehaviorEvidence[];
+}
+
+export interface CategoryComparison {
+  category: BehaviorCategory;
+  label: string | null;
+  successful: BehaviorObservation[];
+  failing: BehaviorObservation[];
+}
+
+export interface AgentCapabilities {
+  schema_version: number;
+  /** The version compared, stamped by the endpoint. Trial links carry it so
+   *  the task page opens the drawer on the version that owns the trial. */
+  task_version_id?: string;
+  /** Trials have landed on this version since the comparison was built, so it
+   *  describes a smaller trial set than the page shows. Only the share route
+   *  serves these — the signed-in route regenerates instead. */
+  stale?: boolean;
+  /** A durable rebuild job is queued or already active. */
+  regenerating?: boolean;
+  cohort_success: string[];
+  cohort_failure: string[];
+  /** Model-written headline: one or two sentences naming the capability that
+   *  separates the cohorts. Optional because comparisons stored before
+   *  schema_version 2 have no such field. */
+  summary?: string;
+  /** "single" when every classified run landed on one side, so the section
+   *  describes a cohort rather than comparing two. Absent on pre-v3 rows. */
+  mode?: "comparison" | "single";
+  /** Which models ran on each side, counted server-side from the trial rows —
+   *  never model-authored, so it is a fact rather than a claim. */
+  models?: {
+    successful: { model: string; trials: number }[];
+    failing: { model: string; trials: number }[];
+  };
+  /** trial id -> short model name, so each citation can name its model. */
+  trial_models?: Record<string, string>;
+  categories: CategoryComparison[];
+  dropped?: { evidence: number; observations: number; categories: number };
+  /** Trials whose summary covers under half their run; evidence from these is thin. */
+  thin_coverage?: string[];
 }
 
 export interface TrajectorySummary {
@@ -1158,9 +1354,4 @@ export interface Report {
   experiment_ids: string[];
   created_at?: string | null;
   finished_at?: string | null;
-}
-
-export interface ExperimentOption {
-  id: string;
-  name: string;
 }

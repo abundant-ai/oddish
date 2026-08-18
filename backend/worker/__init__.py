@@ -34,6 +34,7 @@ with _otel_span("worker.container_init"):
         precompute_dashboard_stats,
         process_single_job,
         reconcile_queue_state,
+        refresh_trial_facets,
     )
 
 __all__ = [
@@ -41,4 +42,5 @@ __all__ = [
     "precompute_dashboard_stats",
     "process_single_job",
     "reconcile_queue_state",
+    "refresh_trial_facets",
 ]

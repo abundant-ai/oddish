@@ -20,6 +20,7 @@ from models import (
     hash_api_key,
 )
 from oddish.db import utcnow
+from oddish.timing import RequestTimedAsyncClient
 
 from auth.types import AuthMethod
 
@@ -149,7 +150,7 @@ async def get_clerk_jwks() -> dict:
 
     jwks_url = f"https://{CLERK_DOMAIN}/.well-known/jwks.json"
 
-    async with httpx.AsyncClient() as client:
+    async with RequestTimedAsyncClient() as client:
         response = await client.get(jwks_url)
         response.raise_for_status()
         _jwks_cache = response.json()

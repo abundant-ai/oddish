@@ -92,10 +92,12 @@ def test_run_dispatch_cycle_invokes_on_stage_with_admitted_and_reasons() -> None
         seen["why_waiting"] = dict(why_waiting)
 
     async def _discover():
-        return (("gpt-4o", "default"),)
+        return (("gpt-4o", "default", "default"),)
 
     async def _counts(_keys):
-        return {(None, "gpt-4o", "default"): 2}, {("gpt-4o", "default"): 0}
+        return {(None, "gpt-4o", "default", "default"): 2}, {
+            ("gpt-4o", "default", "default"): 0
+        }
 
     async def _held(_keys):
         return {}
@@ -132,10 +134,12 @@ def test_run_dispatch_cycle_on_stage_stamps_spawned_handles_not_admitted() -> No
         seen["spawned"] = list(spawned_keys)
 
     async def _discover():
-        return (("gpt-4o", "default"),)
+        return (("gpt-4o", "default", "default"),)
 
     async def _counts(_keys):
-        return {(None, "gpt-4o", "default"): 3}, {("gpt-4o", "default"): 0}
+        return {(None, "gpt-4o", "default", "default"): 3}, {
+            ("gpt-4o", "default", "default"): 0
+        }
 
     async def _held(_keys):
         return {}

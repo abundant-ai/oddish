@@ -19,6 +19,8 @@ from oddish.workers.queue.shared import console
 # one-job-per-container model a Docker/Kubernetes Dispatcher.spawn launches.
 # Unset -> long-poll every active queue_key (the standalone-server pool).
 ASSIGNED_QUEUE_KEY_ENV = "ODDISH_WORKER_QUEUE_KEY"
+ASSIGNED_HARBOR_VARIANT_ENV = "ODDISH_WORKER_HARBOR_VARIANT_ID"
+ASSIGNED_EXECUTION_LANE_ENV = "ODDISH_WORKER_EXECUTION_LANE"
 
 
 async def run_worker() -> None:
@@ -42,7 +44,11 @@ async def run_worker() -> None:
             console.print(
                 f"[cyan]Draining assigned queue_key={assigned_queue_key}[/cyan]"
             )
-            await run_assigned_queue_worker(assigned_queue_key)
+            await run_assigned_queue_worker(
+                assigned_queue_key,
+                harbor_variant_id=os.environ.get(ASSIGNED_HARBOR_VARIANT_ENV),
+                execution_lane=os.environ.get(ASSIGNED_EXECUTION_LANE_ENV, "default"),
+            )
         else:
             await run_polling_worker()
     except asyncio.CancelledError:

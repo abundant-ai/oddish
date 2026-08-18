@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import func, select, text
@@ -41,35 +41,50 @@ QUOTA_WINDOW = timedelta(hours=24)
 
 
 def quota_window_start(now: datetime | None = None) -> datetime:
-    return (now or datetime.now(timezone.utc)) - QUOTA_WINDOW
+    return (now or datetime.now(UTC)) - QUOTA_WINDOW
 
 
 def start_of_month_utc(now: datetime | None = None) -> datetime:
-    return (now or datetime.now(timezone.utc)).replace(
+    return (now or datetime.now(UTC)).replace(
         day=1, hour=0, minute=0, second=0, microsecond=0
     )
 
 
-async def acquire_quota_locks(
+def _quota_org_lock_key(org_id: str) -> str:
+    return f"quota:org:{org_id}"
+
+
+def _quota_user_lock_key(org_id: str, billed_user_id: str) -> str:
+    return f"quota:user:{org_id}:{billed_user_id}"
+
+
+async def try_acquire_quota_locks(
     session: AsyncSession,
     org_id: str,
     billed_user_id: str | None,
-) -> None:
-    await session.execute(
-        text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
-        {"key": f"quota:org:{org_id}"},
+) -> bool:
+    """Take the org (and optional user) quota advisory locks without waiting.
+
+    Only the enforcement sweep uses these. ``False`` means another sweep
+    holds them; skip instead of waiting.
+    """
+    org_locked = await session.scalar(
+        text("SELECT pg_try_advisory_xact_lock(hashtext(:key))"),
+        {"key": _quota_org_lock_key(org_id)},
     )
-    if billed_user_id is not None:
-        await session.execute(
-            text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
-            {"key": f"quota:user:{org_id}:{billed_user_id}"},
-        )
+    if not org_locked:
+        return False
+    if billed_user_id is None:
+        return True
+    user_locked = await session.scalar(
+        text("SELECT pg_try_advisory_xact_lock(hashtext(:key))"),
+        {"key": _quota_user_lock_key(org_id, billed_user_id)},
+    )
+    return bool(user_locked)
 
 
 def start_of_today_utc(now: datetime | None = None) -> datetime:
-    return (now or datetime.now(timezone.utc)).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
+    return (now or datetime.now(UTC)).replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 def _settled_cost_predicates(

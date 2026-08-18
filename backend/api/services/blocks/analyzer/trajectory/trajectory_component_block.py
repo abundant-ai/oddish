@@ -2,28 +2,39 @@ from __future__ import annotations
 
 import enum
 import json
-import logging
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Annotated
 
-from pydantic import BaseModel, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict
 
 from api.services.blocks.analyzer.trajectory import trajectory_prompts as tp
 from oddish.blocks.block import Block
 
-logger = logging.getLogger("oddish.trajectory_block")
+
+from api.services.blocks.analyzer.trajectory.delegation import (
+    delegation_facts,
+    subagent_dispatches_in,
+)
+from api.services.blocks.analyzer.trajectory.provenance import component_provenance
 
 
 class ExploreTrajectoryBlockTaxonomy(str, enum.Enum):
+    # These two groups are no longer only documentary: the prompt renders them
+    # as its own headings, so membership here is what the model is told the
+    # label means. Planning lives on this side because it is thinking about the
+    # work, not doing it -- PLAN_CORRECTION sits beside WRITING_PLAN so the two
+    # read as a pair.
     READING_FILES = "reading_files"
     THINKING_RECALL = "thinking_recall"
     THINKING_UNDERSTAND = "thinking_understand"
     THINKING_HYPOTHESIZE = "thinking_hypothesize"
-    THINKING_CORRECTION = "thinking_correction"
+    WRITING_PLAN = "writing_plan"
+    PLAN_CORRECTION = "plan_correction"
 
 
 class ImplementTrajectoryBlockTaxonomy(str, enum.Enum):
+    # Ordered as the work happens: build, correct, test, debug, report.
+    # WRITING_REPORT is last because it is what a run ends with.
     IMPLEMENTING = "implementing"
     IMPLEMENTING_CORRECTION = "implementing_correction"
     WRITING_TESTS = "writing_tests"
@@ -31,6 +42,7 @@ class ImplementTrajectoryBlockTaxonomy(str, enum.Enum):
     TESTING_CUSTOM = "testing_custom"
     TESTING_EDGE_CASES = "testing_edge_cases"
     DEBUGGING = "debugging"
+    WRITING_REPORT = "writing_report"
 
 
 # One flat vocabulary built from the two sub-enums, so a component carries a
@@ -45,15 +57,6 @@ TrajectoryBlockTaxonomy = enum.Enum(
 )
 
 
-@dataclass
-class TrajectoryComponent:
-    step_ids: list[int]
-    trajectory_component: TrajectoryBlockTaxonomy
-    summary: Optional[str] = None
-    tool_count: int = 0
-    duration_ms: int = 0
-
-
 class TrajectoryInput(BaseModel):
     task_name: str
     instruction: str | None = None
@@ -63,35 +66,74 @@ class TrajectoryInput(BaseModel):
     trajectory: dict
 
 
-class TrajectoryComponentModel(BaseModel):
-    step_ids: list[int] = []
+def _non_empty_text(value: str) -> str:
+    value = value.strip()
+    if not value:
+        raise ValueError("must not be empty")
+    return value
+
+
+NonEmptyText = Annotated[str, AfterValidator(_non_empty_text)]
+
+
+class TrajectoryHighlightOutput(BaseModel):
+    """One important step in a trajectory summary."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    step_id: int
+    title: NonEmptyText
+    why: NonEmptyText
+
+
+class ActionAxis(str, enum.Enum):
+    """What the step physically did. Nearly mechanical: follows the tool calls."""
+
+    READ = "read"
+    EDIT = "edit"
+    RUN = "run"
+    PROSE = "prose"
+
+
+class PurposeAxis(str, enum.Enum):
+    """What the step was for. The judgement the flat vocabulary muddles."""
+
+    UNDERSTAND = "understand"
+    PLAN = "plan"
+    BUILD = "build"
+    VERIFY = "verify"
+    DIAGNOSE = "diagnose"
+
+
+class TrajectoryComponentOutput(BaseModel):
+    """One taxonomy-labelled segment in a trajectory summary.
+
+    ``action`` and ``purpose`` are additive, not a replacement: the flat
+    ``trajectory_component`` is read by the frontend segment bar, the cohort
+    blocks, and agent_capabilities, so it stays. They exist because the flat
+    vocabulary forces one label onto a step that is genuinely two things --
+    grepping a file to chase a stack trace is `reading_files` by action and
+    `debugging` by purpose, and picking one made 17.9% of steps change side of
+    the explore/implement boundary between identical runs.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    step_ids: list[int]
     trajectory_component: TrajectoryBlockTaxonomy
-    summary: str | None = None
+    action: ActionAxis
+    purpose: PurposeAxis
+    summary: NonEmptyText
 
 
 class TrajectoryOutput(BaseModel):
-    # One bad element must not fail the whole parse: the pre-validator below drops
-    # non-dict entries and coerces summary, so a single stray list item (LLMs
-    # occasionally emit one) degrades gracefully. filter_output then does the
-    # strict per-element validation + step-id filtering.
-    summary: str = ""
-    highlights: list[dict] = []
-    components: list[dict] = []
+    """Canonical contract for trajectory-summary generation and parsing."""
 
-    @model_validator(mode="before")
-    @classmethod
-    def _drop_bad_elements(cls, data):
-        if not isinstance(data, dict):
-            return data
-        data = dict(data)
-        data["summary"] = str(data.get("summary") or "")
-        data["highlights"] = [
-            h for h in (data.get("highlights") or []) if isinstance(h, dict)
-        ]
-        data["components"] = [
-            c for c in (data.get("components") or []) if isinstance(c, dict)
-        ]
-        return data
+    model_config = ConfigDict(extra="forbid")
+
+    summary: NonEmptyText
+    highlights: list[TrajectoryHighlightOutput]
+    components: list[TrajectoryComponentOutput]
 
 
 _MAX_TEXT_CHARS = 2000
@@ -138,6 +180,7 @@ class TrajectoryBlock(Block):
     this supplies the sections, output schema, and per-element cleanup."""
 
     output_schema = TrajectoryOutput
+    strict_json_output = True
 
     def __init__(
         self, trajectory_input: TrajectoryInput, *, instructions_template: str
@@ -148,7 +191,11 @@ class TrajectoryBlock(Block):
     # ---- prompt sections (build_prompt is inherited) ----
     def sections(self) -> list[dict]:
         ti = self.trajectory_input
-        taxonomy_values = [m.value for m in TrajectoryBlockTaxonomy]
+        # Rendered per sub-enum, not from the flat vocabulary: the prompt shows
+        # the two groups, and both lists stay derived from the members so a new
+        # label cannot go missing from the prompt.
+        explore_values = [m.value for m in ExploreTrajectoryBlockTaxonomy]
+        implement_values = [m.value for m in ImplementTrajectoryBlockTaxonomy]
         return [
             {
                 "name": "preamble",
@@ -177,7 +224,7 @@ class TrajectoryBlock(Block):
                 "raw_input": {},
                 "schema": _InstructionsIn,
                 "formatter": lambda _d: tp.instructions_section(
-                    self._instructions_template, taxonomy_values
+                    self._instructions_template, explore_values, implement_values
                 ),
             },
             {
@@ -208,9 +255,13 @@ class TrajectoryBlock(Block):
 
     @staticmethod
     def _fmt_trajectory(d: _TrajectoryIn) -> str:
-        from api.services.summarize_trajectory import preprocess
+        from api.services.summarize_trajectory import drop_inert_steps, preprocess
 
-        return tp.trajectory_section(json.dumps(preprocess(d.trajectory)))
+        # Drop first: contentless steps are most of a trajectory, and there is
+        # no point truncating text on a step the model will never read.
+        return tp.trajectory_section(
+            json.dumps(preprocess(drop_inert_steps(d.trajectory)))
+        )
 
     # ---- parsing (parse is inherited; this filters elements) ----
     def _valid_step_ids(self) -> set[int]:
@@ -222,38 +273,15 @@ class TrajectoryBlock(Block):
 
     def filter_output(self, parsed: TrajectoryOutput) -> TrajectoryOutput:
         valid = self._valid_step_ids()
-        highlights = [
-            {
-                "step_id": h["step_id"],
-                "title": str(h.get("title") or "").strip(),
-                "why": str(h.get("why") or "").strip(),
-            }
-            for h in parsed.highlights
-            if isinstance(h, dict)
-            and isinstance(h.get("step_id"), int)
-            and h["step_id"] in valid
-        ]
-        components: list[dict] = []
+        highlights = [h for h in parsed.highlights if h.step_id in valid]
+        components: list[TrajectoryComponentOutput] = []
         for c in parsed.components:
-            try:
-                m = TrajectoryComponentModel(**c)
-            except Exception:
-                logger.exception("dropping malformed trajectory component %r", c)
-                continue
-            ids = [s for s in m.step_ids if s in valid]
+            ids = [step_id for step_id in c.step_ids if step_id in valid]
             if not ids:
                 continue
-            components.append(
-                {
-                    "step_ids": ids,
-                    "trajectory_component": m.trajectory_component.value,
-                    "summary": m.summary,
-                }
-            )
-        return TrajectoryOutput(
-            summary=str(parsed.summary or "").strip(),
-            highlights=highlights,
-            components=components,
+            components.append(c.model_copy(update={"step_ids": ids}))
+        return parsed.model_copy(
+            update={"highlights": highlights, "components": components}
         )
 
     def to_summary(self, raw: str, *, model: str) -> dict:
@@ -290,16 +318,18 @@ class TrajectoryBlock(Block):
                 return 0
             return max(0, round(current - previous))
 
+        delegation = delegation_facts(self.trajectory_input.trajectory)
+
         components = []
         for component in out.components:
             component_steps = [
                 step_by_id[step_id]
-                for step_id in component["step_ids"]
+                for step_id in component.step_ids
                 if step_id in step_by_id
             ]
             components.append(
                 {
-                    **component,
+                    **component.model_dump(mode="json"),
                     # These fields are derived from the immutable trajectory rather
                     # than supplied by the LLM, so consumers can safely aggregate them.
                     "tool_count": sum(
@@ -307,16 +337,50 @@ class TrajectoryBlock(Block):
                         for _, step in component_steps
                         if isinstance(step.get("tool_calls"), list)
                     ),
+                    # None, not 0, when the agent cannot delegate at all --
+                    # same distinction `delegation.capable` carries.
+                    "subagent_dispatches": (
+                        subagent_dispatches_in(
+                            [step for _, step in component_steps]
+                        )
+                        if delegation["capable"]
+                        else None
+                    ),
                     "duration_ms": sum(
                         duration_ms(index, step) for index, step in component_steps
                     ),
+                    # Who authored the files this component touches, counted
+                    # rather than judged. The three least reproducible labels
+                    # in the taxonomy (plan_correction 36.4%,
+                    # implementing_correction 59.6%, testing_custom 66.3%) all
+                    # hinge on exactly this, and all ask the model to carry it
+                    # across the whole trajectory in one pass.
+                    **component_provenance(
+                        self.trajectory_input.trajectory, component_steps
+                    ),
                 }
             )
+        # Imported here, not at module scope: summarize_trajectory imports this
+        # module (lazily, inside its functions) to build the block.
+        from api.services.summarize_trajectory import SCHEMA_VERSION, taxonomy_version
+
         return {
-            "schema_version": "5",
+            # Must be the same constant the freshness query compares against.
+            # A literal here would mean bumping SCHEMA_VERSION makes every read
+            # miss, regenerate, write the old version, and miss again forever.
+            "schema_version": SCHEMA_VERSION,
+            # Same contract, for the label vocabulary. Written from the same
+            # helper the freshness query calls, so the two cannot drift.
+            "taxonomy_version": taxonomy_version(),
             "model": model,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "summary": out.summary,
-            "highlights": out.highlights,
+            "highlights": [
+                highlight.model_dump(mode="json") for highlight in out.highlights
+            ],
             "components": components,
+            # Counted, not asked of the model. Absent on summaries written
+            # before this existed, which readers must treat as unknown rather
+            # than as "did not delegate".
+            "delegation": delegation,
         }

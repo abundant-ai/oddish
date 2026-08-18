@@ -7,7 +7,7 @@ import {
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { ChevronDown, FileText, Filter, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -36,6 +36,7 @@ import { fetcher } from "@/lib/api";
 import { tagColor } from "@/lib/tag-colors";
 import { cn } from "@/lib/utils";
 import type {
+  ExperimentOptionsResponse,
   TagListResponse,
   TagSummary,
   TaskBrowseFacets,
@@ -76,6 +77,7 @@ const ARRAY_FIELD: Record<string, keyof FilterValues> = {
   trialStatuses: "trialStatuses",
   origins: "origins",
   analysisClassifications: "analysisClassifications",
+  experiments: "experimentIds",
 };
 
 // numrange filter key -> [min field, max field] on FilterValues.
@@ -114,10 +116,18 @@ function optionsFor(def: FilterDef, facets: TaskBrowseFacets | null): Option[] {
 
 const FILTERS_BODY_ID = "tasks-filters-body";
 
+// Facet vocabularies drift as trials introduce new agents, models, and
+// environments, so they're not session-stable — but they needn't be
+// re-asked on every remount either. Remounts inside this window reuse the
+// cache silently; later ones serve it instantly and refresh in the
+// background.
+const FACETS_DEDUPE_MS = 5 * 60_000;
+
 export function TasksFilterSidebar() {
-  // Facets are fetched client-side once so a router.refresh() of the task
-  // results never reloads the filter options. revalidateOnFocus stays off and
-  // there's no interval, so this loads a single time per mount.
+  // Facets load client-side so a task-grid refresh never reloads the
+  // filter options; the dedupe window above keeps remounts from re-asking
+  // (the 2026-08-06 HAR showed this fetch running twice per session,
+  // seconds apart). The Retry below revalidates immediately regardless.
   const {
     data: facetsData,
     error: facetsError,
@@ -125,10 +135,10 @@ export function TasksFilterSidebar() {
     mutate: mutateFacets,
   } = useSWR<TaskBrowseFacets>("/api/tasks/browse/facets", fetcher, {
     revalidateOnFocus: false,
+    dedupingInterval: FACETS_DEDUPE_MS,
   });
   const facets = facetsData ?? null;
 
-  const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
 
@@ -153,17 +163,25 @@ export function TasksFilterSidebar() {
     }
   }
 
-  // Every URL write goes through here so paramsRef/pendingWrites stay in sync.
+  // Every URL write goes through here so paramsRef/pendingWrites stay in
+  // sync. Writes go through the History API (Next syncs useSearchParams
+  // from it): a filter change only re-keys the grid's client-side browse
+  // fetch, so the dynamic-route RSC re-render that router.replace would
+  // trigger has nothing left to do. replaceState never scrolls, preserving
+  // the old scroll: false behavior.
   const commitParams = (params: string) => {
     pendingWrites.current.push(params);
     paramsRef.current = params;
-    router.replace(params ? `${pathname}?${params}` : pathname, {
-      scroll: false,
-    });
+    window.history.replaceState(
+      null,
+      "",
+      params ? `${pathname}?${params}` : pathname
+    );
   };
 
-  // Filter state lives in the URL so the server-rendered results refetch (and a
-  // Suspense skeleton shows) whenever a filter changes — and links are shareable.
+  // Filter state lives in the URL so the grid's browse key changes (the
+  // previous grid stays on screen while the next state loads) whenever a
+  // filter changes — and links are shareable.
   const values = useMemo(
     () => searchParamsToFilters(new URLSearchParams(searchParams.toString())),
     [searchParams]
@@ -665,6 +683,8 @@ function FilterControl({
       return <TagsControl values={values} set={set} />;
     case "agentmodel":
       return <AgentModelControl values={values} set={set} facets={facets} />;
+    case "experiment":
+      return <ExperimentControl values={values} set={set} />;
     default:
       return null;
   }
@@ -799,6 +819,135 @@ function AgentModelControl({
   );
 }
 
+// Async experiment filter. Options are fetched per (debounced) search term from
+// /api/tasks/browse/experiment-options instead of arriving in the facets
+// payload — an org can hold 100k+ experiments, so the full list never ships.
+// Selected ids are hydrated to names through the endpoint's `ids=` mode and
+// pinned above the results; an id that no longer resolves (deleted experiment)
+// stays visible as the raw id so it can be unchecked.
+function ExperimentControl({
+  values,
+  set,
+}: {
+  values: FilterValues;
+  set: (patch: Partial<FilterValues>) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const [debounced, setDebounced] = useState("");
+  useEffect(() => {
+    const handle = window.setTimeout(() => setDebounced(search.trim()), 300);
+    return () => window.clearTimeout(handle);
+  }, [search]);
+
+  const selected = values.experimentIds;
+  // keepPreviousData: while a narrower search is in flight the previous
+  // results stay rendered, so the list never flashes empty between keystrokes.
+  const { data, error, isLoading, mutate } = useSWR<ExperimentOptionsResponse>(
+    `/api/tasks/browse/experiment-options${
+      debounced ? `?query=${encodeURIComponent(debounced)}` : ""
+    }`,
+    fetcher,
+    { revalidateOnFocus: false, keepPreviousData: true }
+  );
+  const { data: selectedData } = useSWR<ExperimentOptionsResponse>(
+    selected.length
+      ? `/api/tasks/browse/experiment-options?ids=${encodeURIComponent(
+          selected.join(",")
+        )}`
+      : null,
+    fetcher,
+    { revalidateOnFocus: false }
+  );
+
+  const nameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const option of selectedData?.items ?? [])
+      map.set(option.id, option.name);
+    for (const option of data?.items ?? []) map.set(option.id, option.name);
+    return map;
+  }, [data, selectedData]);
+
+  const toggle = (id: string) =>
+    set({
+      experimentIds: selected.includes(id)
+        ? selected.filter((v) => v !== id)
+        : [...selected, id],
+    });
+
+  if (isLoading && !data) return <ControlSkeleton />;
+
+  const results = (data?.items ?? []).filter((o) => !selected.includes(o.id));
+  const label =
+    selected.length === 0
+      ? "Any"
+      : selected.length === 1
+        ? (nameById.get(selected[0]) ?? selected[0])
+        : `${selected.length} selected`;
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-8 w-full justify-between text-xs font-normal"
+        >
+          <span className="truncate">{label}</span>
+          <ChevronDown className="h-3.5 w-3.5 opacity-60" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="z-30 w-64 p-2">
+        <Input
+          autoFocus
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search experiments…"
+          className="mb-2 h-7 text-xs"
+        />
+        <div className="max-h-56 space-y-0.5 overflow-auto">
+          {selected.map((id) => (
+            <label
+              key={id}
+              className="hover:bg-muted/60 flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-xs"
+            >
+              <Checkbox checked onCheckedChange={() => toggle(id)} />
+              <span className="truncate">{nameById.get(id) ?? id}</span>
+            </label>
+          ))}
+          {/* With keepPreviousData, post-failure `data` may belong to the
+              previous query — the error replaces only the results it owns;
+              chips and the input stay live, and typing retries. */}
+          {error ? (
+            <ControlError onRetry={() => mutate()} />
+          ) : results.length === 0 && selected.length === 0 ? (
+            <p className="text-muted-foreground px-1 py-2 text-xs">
+              {debounced ? "No matches" : "No experiments"}
+            </p>
+          ) : (
+            results.map((o) => (
+              <label
+                key={o.id}
+                className="hover:bg-muted/60 flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-xs"
+              >
+                <Checkbox
+                  checked={false}
+                  onCheckedChange={() => toggle(o.id)}
+                />
+                <span className="truncate">{o.name}</span>
+              </label>
+            ))
+          )}
+        </div>
+        {!error && (data?.items.length ?? 0) >= 50 ? (
+          <p className="text-muted-foreground px-1 pt-1.5 text-[10px]">
+            First 50 matches — keep typing to narrow
+          </p>
+        ) : null}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 /** The `tag:` token form the backend expects for a tag. */
 function tagToken(tag: Pick<TagSummary, "key" | "value">): string {
   return tag.value ? `${tag.key}:${tag.value}` : tag.key;
@@ -811,10 +960,13 @@ function TagsControl({
   values: FilterValues;
   set: (patch: Partial<FilterValues>) => void;
 }) {
+  // revalidateIfStale off: the shared "/api/tags" key is asked once per
+  // session across this control and the dashboard's tag dropdown; tag
+  // mutations and the open-gated pickers revalidate it explicitly.
   const { data, error, isLoading, mutate } = useSWR<TagListResponse>(
     "/api/tags",
     fetcher,
-    { revalidateOnFocus: false }
+    { revalidateOnFocus: false, revalidateIfStale: false }
   );
   const tags = useMemo(
     () => (data?.items ?? []).filter((t) => t.state === "ACTIVE"),

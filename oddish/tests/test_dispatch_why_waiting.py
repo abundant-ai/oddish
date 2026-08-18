@@ -99,9 +99,12 @@ def test_run_dispatch_cycle_still_computes_reasons_via_helper() -> None:
             FakeDispatcher(),
             max_workers=10,
             concurrency_limits_for=_fake_limits(2),
-            _discover=lambda: _aval((("busy", "default"),)),
+            _discover=lambda: _aval((("busy", "default", "default"),)),
             _counts=lambda keys: _aval(
-                ({(None, "busy", "default"): 4}, {("busy", "default"): 2})
+                (
+                    {(None, "busy", "default", "default"): 4},
+                    {("busy", "default", "default"): 2},
+                )
             ),
             _held=lambda keys: _aval({}),
         )
@@ -125,9 +128,12 @@ def test_on_stage_failure_never_breaks_dispatch() -> None:
             max_workers=10,
             concurrency_limits_for=_fake_limits(5),
             on_stage=_boom,
-            _discover=lambda: _aval((("q", "default"),)),
+            _discover=lambda: _aval((("q", "default", "default"),)),
             _counts=lambda keys: _aval(
-                ({(None, "q", "default"): 1}, {("q", "default"): 0})
+                (
+                    {(None, "q", "default", "default"): 1},
+                    {("q", "default", "default"): 0},
+                )
             ),
             _held=lambda keys: _aval({}),
         )

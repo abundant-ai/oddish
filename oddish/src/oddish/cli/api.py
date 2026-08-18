@@ -693,6 +693,7 @@ def upload_task(
     user: str | None = None,
     priority: str | None = None,
     force_new_version: bool = False,
+    overwrite_current_version: bool = False,
     quiet: bool = False,
 ) -> dict:
     """Upload a task directory to the API.
@@ -733,6 +734,8 @@ def upload_task(
         init_body["message"] = message
     if force_new_version:
         init_body["force_new_version"] = True
+    if overwrite_current_version:
+        init_body["overwrite_current_version"] = True
 
     try:
         with httpx.Client(timeout=600.0, headers=get_auth_headers()) as client:
@@ -778,6 +781,23 @@ def upload_task(
                 "version": init_payload["version"],
                 "content_hash": content_hash,
             }
+            staging_key = init_payload.get("staging_key")
+            if overwrite_current_version and init_payload.get("existing_task"):
+                if not isinstance(staging_key, str) or not staging_key:
+                    error_console.print(
+                        "[red]Task upload initialization did not return a staging key.[/red]"
+                    )
+                    raise typer.Exit(1)
+                complete_body["overwrite_current_version"] = True
+                complete_body["staging_key"] = staging_key
+                if "overwrite_base_content_hash" not in init_payload:
+                    error_console.print(
+                        "[red]Task upload initialization did not return the base content hash.[/red]"
+                    )
+                    raise typer.Exit(1)
+                complete_body["overwrite_base_content_hash"] = init_payload[
+                    "overwrite_base_content_hash"
+                ]
             if message:
                 complete_body["message"] = message
             if register:
@@ -817,6 +837,7 @@ def upload_tasks_with_progress(
     json_output: bool = False,
     progress_label: str = "Uploading",
     force_new_version: bool = False,
+    overwrite_current_version: bool = False,
     concurrency: int | None = None,
     limiter: AdaptiveConcurrencyLimiter | None = None,
 ) -> list[dict]:
@@ -852,6 +873,7 @@ def upload_tasks_with_progress(
             user=user,
             priority=priority,
             force_new_version=force_new_version,
+            overwrite_current_version=overwrite_current_version,
             quiet=quiet or json_output,
         )
 

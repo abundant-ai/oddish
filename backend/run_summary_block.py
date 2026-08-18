@@ -1,11 +1,10 @@
 """Dev harness: run the trajectory-SUMMARY AnalyzerBlock for a single trial.
 
 Entry point is the *first (and only) AnalyzerBlock* of the generate-summary
-process — the same block `summarize_trajectory.generate()` builds: a
-`TrajectoryBlock` supplies the prompt + `to_summary` parser, and an
-`AnalyzerBlock` (API backend) streams it and self-persists to `analyzer_blocks`
-+ S3. This script wires that block by hand so you can inspect the block object
-(status / id / output / error / duration), not just the returned dict.
+process. It uses `summarize_trajectory.build_summary_block`, the same
+construction site as production generation and the offline dump harness, then
+exposes the block object (status / id / output / error / duration) for
+inspection.
 
 Set TRIAL_ID below, then run from the backend package (its uv env has `oddish`
 + `api.services` importable) with prod DB + S3 + Anthropic creds in the env:
@@ -29,20 +28,8 @@ import json
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from oddish.blocks.analyzer.analyzer_block import (
-    AnalyzerBlock,
-    AnalyzerInput,
-    AnalyzerType,
-)
-from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
-from api.services.blocks.analyzer.trajectory.trajectory_component_block import (
-    TrajectoryBlock,
-    TrajectoryInput,
-)
 from api.services.summarize_trajectory import (
-    SCHEMA_VERSION,
-    SUMMARY_PROMPT_KEY,
-    _load_summary_prompt,
+    build_summary_block,
     build_task_context,
 )
 from oddish.config import settings, to_anthropic_api_model_id
@@ -83,14 +70,6 @@ async def run() -> None:
         if trajectory is None:
             raise SystemExit(f"Trial {TRIAL_ID!r} has no fetchable trajectory.")
         task_context = await build_task_context(trial)
-        prompt_template, prompt_version, prompt_id = await _load_summary_prompt(
-            session,
-            org_id=trial.org_id,
-            user_id=trial.billed_user_id,
-            experiment_id=trial.experiment_id,
-            task_id=trial.task_id,
-            trial_id=trial.id,
-        )
 
     print(
         f"trial={TRIAL_ID}  task={task_context.task_name!r}  "
@@ -98,35 +77,11 @@ async def run() -> None:
     )
 
     model = _model()
-    tb = TrajectoryBlock(
-        TrajectoryInput(
-            task_name=task_context.task_name,
-            instruction=task_context.instruction,
-            final_reward=task_context.final_reward,
-            model_used=task_context.model_used,
-            verifier_output=task_context.verifier_output,
-            trajectory=trajectory,
-        ),
-        instructions_template=prompt_template,
-    )
-    block = AnalyzerBlock(
-        analyzer_type=AnalyzerType.TRAJECTORY_SUMMARY,
-        llm_client_type=LLMClientType.API,
-        input=AnalyzerInput(
-            input={"trial_id": TRIAL_ID, "task_name": task_context.task_name}
-        ),
-        prompt=tb.build_prompt(),
+    block = build_summary_block(
+        trajectory,
+        task_context,
         analyzer_id=TRIAL_ID,
-        block_metadata={
-            "schema_version": SCHEMA_VERSION,
-            "model": model,
-            "prompt_key": SUMMARY_PROMPT_KEY,
-            "prompt_version": prompt_version,
-            "prompt_id": prompt_id,
-        },
-        output_transform=lambda raw: tb.to_summary(raw, model=model),
         model=model,
-        max_tokens=2048,
     )
 
     if DRY_RUN:

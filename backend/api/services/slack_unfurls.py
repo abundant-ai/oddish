@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from typing import Any, Literal
 from urllib.parse import unquote, urlparse
 
-import httpx
 from sqlalchemy import func, select
 from sqlalchemy.orm import noload
 
@@ -24,6 +23,7 @@ from oddish.db import (
     task_experiments,
 )
 from oddish.model_pricing import estimate_cost_usd
+from oddish.timing import RequestTimedAsyncClient
 
 log = logging.getLogger(__name__)
 
@@ -607,7 +607,7 @@ async def process_link_shared_event(payload: dict[str, Any]) -> None:
     else:
         body.update({"channel": event.get("channel"), "ts": event.get("message_ts")})
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with RequestTimedAsyncClient(timeout=10) as client:
             response = await client.post(
                 "https://slack.com/api/chat.unfurl",
                 headers={"Authorization": f"Bearer {config.bot_token}"},

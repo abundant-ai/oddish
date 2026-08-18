@@ -257,7 +257,12 @@ jobs:
       - prepare-preview-database
       - deploy-preview-backend
       - update-vercel-preview
-    if: always() && github.event.action != 'closed'
+    # `!cancelled()` rather than `always()`: the gate must still run when
+    # upstream jobs are SKIPPED (fork and promotion paths), but a run that
+    # cancel-in-progress superseded must not publish a failing check and a
+    # failing deployment status for a commit whose replacement run is still
+    # building.
+    if: "!cancelled() && github.event.action != 'closed'"
     runs-on: ubuntu-latest
     # No job-level `environment:` key here: GitHub attributes that deployment
     # record to the person who triggered the run, so pull requests showed a

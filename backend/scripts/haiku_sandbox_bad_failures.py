@@ -8,7 +8,7 @@ pulls each trajectory and does MAP then REDUCE.
 
 Why this shape:
   - The repo's only streaming + tool-use infrastructure is Claude Code in a
-    Daytona sandbox (cc_chat: ``RealDaytonaClient`` + ``ClaudeCodeRuntime``); we
+    Daytona sandbox (``RealDaytonaClient`` + ``ClaudeCodeRuntime``); we
     reuse it rather than hand-rolling an Anthropic tool loop.
   - The ``oddish-query`` CLI cannot *classify* bad failures — no analysis/bucket
     verb — so the harness precomputes the BAD cohort and injects the exact IDs.
@@ -20,7 +20,7 @@ a deployed backend (prod) — a localhost/modal-serve backend is unreachable fro
 the cloud sandbox.
 
 Run from the backend package — its uv env is the only one with ``oddish`` +
-``api.services.cc_chat`` + the ``daytona`` SDK all importable:
+``api.services.sandbox`` + the ``daytona`` SDK all importable:
 
     cd backend
     ODDISH_DATABASE_URL=<prod> \
@@ -44,9 +44,9 @@ from importlib.resources import files
 
 from sqlalchemy import select
 
-from api.services.cc_chat.claude_code_runtime import ClaudeCodeRuntime
-from api.services.cc_chat.daytona_client import RealDaytonaClient
-from api.services.cc_chat.stream_render import render_event
+from api.services.sandbox.claude_code_runtime import ClaudeCodeRuntime
+from api.services.sandbox.daytona_client import RealDaytonaClient
+from api.services.sandbox.stream_render import render_event
 from oddish.core.analyzer_inputs import subanalysis_from_trial
 from oddish.core.experiment_membership import trial_in_experiment
 from oddish.db import get_session

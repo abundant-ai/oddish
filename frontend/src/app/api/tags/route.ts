@@ -5,8 +5,12 @@ import {
   getBackendUrl,
   getClerkToken,
 } from "@/lib/backend-config";
+import {
+  attachUpstreamServerTiming,
+  backendFetchHeaders,
+} from "@/lib/proxy-headers";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     const { getToken } = await auth();
     const token = await getClerkToken(getToken);
@@ -17,19 +21,22 @@ export async function GET() {
     const url = getBackendUrl("tags");
     const res = await fetch(url, {
       cache: "no-store",
-      headers: getAuthHeaders(token),
+      headers: backendFetchHeaders(request, getAuthHeaders(token)),
     });
 
     const text = await res.text();
     const data = text ? JSON.parse(text) : null;
 
     if (!res.ok) {
-      return NextResponse.json(data ?? { error: "Upstream error" }, {
-        status: res.status,
-      });
+      return attachUpstreamServerTiming(
+        NextResponse.json(data ?? { error: "Upstream error" }, {
+          status: res.status,
+        }),
+        res,
+      );
     }
 
-    return NextResponse.json(data);
+    return attachUpstreamServerTiming(NextResponse.json(data), res);
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
@@ -51,10 +58,10 @@ export async function POST(request: NextRequest) {
     const res = await fetch(url, {
       method: "POST",
       cache: "no-store",
-      headers: {
+      headers: backendFetchHeaders(request, {
         "Content-Type": "application/json",
         ...getAuthHeaders(token),
-      },
+      }),
       body: JSON.stringify(body),
     });
 
@@ -62,12 +69,15 @@ export async function POST(request: NextRequest) {
     const data = text ? JSON.parse(text) : null;
 
     if (!res.ok) {
-      return NextResponse.json(data ?? { error: "Upstream error" }, {
-        status: res.status,
-      });
+      return attachUpstreamServerTiming(
+        NextResponse.json(data ?? { error: "Upstream error" }, {
+          status: res.status,
+        }),
+        res,
+      );
     }
 
-    return NextResponse.json(data);
+    return attachUpstreamServerTiming(NextResponse.json(data), res);
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },

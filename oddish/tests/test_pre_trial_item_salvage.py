@@ -114,3 +114,20 @@ def test_well_formed_items_are_untouched(run):
     assert out["items"][0]["title"] == "stderr ignored"
     assert out["items"][0]["tier"] == "should_fix"
     assert out["items"][0]["dimension"] == "verifier"
+
+
+def test_a_bare_array_of_items_is_still_wrapped():
+    """``Block.parse`` now asks for objects only; pre-trial opts out.
+
+    The registry prompt asks for "the structured list of action items", so
+    models return a bare array often enough that ``_normalize`` wraps it. If
+    this block ever propagates the object-only hint, every such audit fails
+    shape validation and reports zero findings.
+    """
+    out = _block().to_action_items(json.dumps([_GOOD]))
+    assert [item["title"] for item in out["items"]] == ["stderr ignored"]
+
+
+def test_a_bare_array_after_prose_is_still_wrapped():
+    out = _block().to_action_items("Here is my audit:\n" + json.dumps([_GOOD]))
+    assert [item["title"] for item in out["items"]] == ["stderr ignored"]

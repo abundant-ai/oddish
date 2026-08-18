@@ -15,6 +15,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from oddish.config import (
+    DEEPSEEK_DEFAULT_BASE_URL,
     FIREWORKS_DEFAULT_BASE_URL,
     META_DEFAULT_BASE_URL,
     MINIMAX_DEFAULT_BASE_URL,
@@ -22,6 +23,7 @@ from oddish.config import (
     ZAI_DEFAULT_BASE_URL,
     infer_model_provider_prefix,
     is_anthropic_hdo_model,
+    is_deepseek_model,
     is_fireworks_model,
     is_meta_model,
     is_minimax_model,
@@ -48,6 +50,7 @@ FIREWORKS_BASE_URL_KEYS = ("FIREWORKS_BASE_URL",)
 ZAI_BASE_URL_KEYS = ("ZAI_BASE_URL",)
 MINIMAX_BASE_URL_KEYS = ("MINIMAX_BASE_URL",)
 MOONSHOT_BASE_URL_KEYS = ("MOONSHOT_BASE_URL",)
+DEEPSEEK_BASE_URL_KEYS = ("DEEPSEEK_BASE_URL",)
 GEMINI_BASE_URL_KEYS = (
     "GOOGLE_GEMINI_BASE_URL",
     "GEMINI_API_BASE_URL",
@@ -77,6 +80,7 @@ _BASE_URL_ENV_KEYS = (
     *ZAI_BASE_URL_KEYS,
     *MINIMAX_BASE_URL_KEYS,
     *MOONSHOT_BASE_URL_KEYS,
+    *DEEPSEEK_BASE_URL_KEYS,
     *GEMINI_BASE_URL_KEYS,
     *CURSOR_BASE_URL_KEYS,
 )
@@ -112,6 +116,15 @@ _CURSOR_RUNTIME_HOSTS = ("*.cursor.sh",)
 # is keyed on a ``cursor/`` model prefix.
 TBH_BASE_URL_KEYS = ("TBH_BASE_URL",)
 _TBH_RUNTIME_HOSTS = ("api.meta.ai",)
+_DSH_INSTALL_HOSTS: tuple[str, ...] = (
+    "raw.githubusercontent.com",
+    "github.com",
+    "objects.githubusercontent.com",
+    "codeload.github.com",
+    "nodejs.org",
+    "registry.npmjs.org",
+)
+_DSH_DEEPSEEK_RUNTIME_HOSTS = ("api.deepseek.com",)
 # opencode has no pre-baked worker image: Harbor's ``OpenCode.install``
 # bootstraps nvm, a Node runtime, and the ``opencode-ai`` npm package during
 # agent SETUP -- which runs under the ENVIRONMENT baseline, before the
@@ -130,7 +143,10 @@ OPENCODE_INSTALL_HOSTS: tuple[str, ...] = (
     "nodejs.org",  # Node runtime downloaded by nvm
     "registry.npmjs.org",  # npm metadata + package tarballs
 )
-_AGENT_RUNTIME_HOSTS: dict[str, tuple[str, ...]] = {"tbh": _TBH_RUNTIME_HOSTS}
+_AGENT_RUNTIME_HOSTS: dict[str, tuple[str, ...]] = {
+    "tbh": _TBH_RUNTIME_HOSTS,
+    "dsh": _DSH_INSTALL_HOSTS + _DSH_DEEPSEEK_RUNTIME_HOSTS,
+}
 
 _DEFAULT_BEDROCK_REGION = "us-east-1"
 _BEDROCK_STS_DOMAINS = ("sts.amazonaws.com",)
@@ -234,11 +250,17 @@ def agent_runtime_hosts(
         extra_env = agent_kwargs.get("extra_env")
         if not override and isinstance(extra_env, Mapping):
             override = next(
-                (extra_env.get(k) for k in TBH_BASE_URL_KEYS if extra_env.get(k)), None
+                (
+                    extra_env.get(k)
+                    for k in (*TBH_BASE_URL_KEYS, *DEEPSEEK_BASE_URL_KEYS)
+                    if extra_env.get(k)
+                ),
+                None,
             )
     if not override and isinstance(agent_env, Mapping):
         override = next(
-            (agent_env.get(k) for k in TBH_BASE_URL_KEYS if agent_env.get(k)), None
+            (agent_env.get(k) for k in (*TBH_BASE_URL_KEYS, *DEEPSEEK_BASE_URL_KEYS) if agent_env.get(k)),
+            None,
         )
     if isinstance(override, str):
         host = _host_from_url(override)
@@ -316,6 +338,12 @@ def outbound_hosts_for_model(
     elif is_moonshot_model(model_name):
         host = _default_host(
             os.environ.get("MOONSHOT_BASE_URL") or MOONSHOT_DEFAULT_BASE_URL
+        )
+        if host:
+            hosts.append(host)
+    elif is_deepseek_model(model_name):
+        host = _default_host(
+            os.environ.get("DEEPSEEK_BASE_URL") or DEEPSEEK_DEFAULT_BASE_URL
         )
         if host:
             hosts.append(host)

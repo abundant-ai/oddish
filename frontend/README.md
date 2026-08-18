@@ -167,6 +167,13 @@ pnpm dev
 
 ## Deployment
 
+The hosted dashboard (oddish.app) deploys from `.github/workflows/modal-deploy.yml`,
+which orders it after the database migrations and the Modal backend. `vercel.json`
+disables Vercel's git deployments for `main` on purpose — the pipeline creates the
+production deployment through the Vercel API once the backend is live. Re-enabling
+git deployments for `main` (there or in the Vercel dashboard) restores the race
+between a new frontend and the old backend.
+
 `next.config.ts` enables `output: "standalone"`, and the checked-in `Dockerfile` builds a production container around the generated standalone server:
 
 ```bash

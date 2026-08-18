@@ -1,6 +1,6 @@
 """Billing identity must belong to the request org.
 
-``resolve_billed_user_id`` previously checked liveness only. A payer row from
+The attribution resolver must check payer organization as well as liveness. A payer row from
 another org would silently miss its ``(org_id, user_id)`` quota override and
 fall back to the default — and this org's admin list would never show it.
 """
@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from api.routers.task_submission import resolve_billed_user_id
+from api.routers.task_submission import resolve_sweep_attribution
 from auth.types import AuthContext, AuthMethod
 from models import APIKeyScope, UserModel, UserRole
 
@@ -72,7 +72,9 @@ async def test_payer_in_request_org_is_billed():
     session = _GetSession({payer.id: payer})
     auth = _api_key_auth(org_id="org_1", creator_id=payer.id)
 
-    assert await resolve_billed_user_id(session, _submission(), auth) == payer.id
+    assert (
+        await resolve_sweep_attribution(session, _submission(), auth)
+    ).billed_user_id == payer.id
 
 
 @pytest.mark.asyncio
@@ -82,7 +84,9 @@ async def test_payer_in_other_org_is_none_and_warns(caplog):
     auth = _api_key_auth(org_id="org_1", creator_id=payer.id)
 
     with caplog.at_level(logging.WARNING, logger="api.routers.task_submission"):
-        result = await resolve_billed_user_id(session, _submission(), auth)
+        result = (
+            await resolve_sweep_attribution(session, _submission(), auth)
+        ).billed_user_id
 
     assert result is None
     mismatches = [r for r in caplog.records if "payer org mismatch" in r.getMessage()]
@@ -103,7 +107,9 @@ async def test_soft_deleted_payer_in_request_org_is_none():
     session = _GetSession({payer.id: payer})
     auth = _api_key_auth(org_id="org_1", creator_id=payer.id)
 
-    assert await resolve_billed_user_id(session, _submission(), auth) is None
+    assert (
+        await resolve_sweep_attribution(session, _submission(), auth)
+    ).billed_user_id is None
 
 
 @pytest.mark.asyncio
@@ -112,4 +118,6 @@ async def test_inactive_payer_is_none():
     session = _GetSession({payer.id: payer})
     auth = _api_key_auth(org_id="org_1", creator_id=payer.id)
 
-    assert await resolve_billed_user_id(session, _submission(), auth) is None
+    assert (
+        await resolve_sweep_attribution(session, _submission(), auth)
+    ).billed_user_id is None

@@ -71,7 +71,7 @@ def _install_fake_block(monkeypatch, *, behaviors):
 
 
 GOOD_OUTPUT = {
-    "is_good": True,
+    "verdict": "accept",
     "confidence": "high",
     "primary_issue": None,
     "recommendations": [],
@@ -112,7 +112,7 @@ async def test_fallback_sends_a_json_schema_not_response_format(monkeypatch):
 
     fallback = seen[1]
     assert fallback["output_schema"] is not None
-    assert fallback["output_schema"]["properties"]["is_good"]
+    assert fallback["output_schema"]["properties"]["verdict"]
     assert fallback["response_format"] is None
 
 

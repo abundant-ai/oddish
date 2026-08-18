@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { proxyBackendJson } from "@/lib/backend-response";
 
-export async function GET() {
-  return proxyBackendJson({ path: "quotas/org" });
+export async function GET(request: NextRequest) {
+  return proxyBackendJson({ request, path: "quotas/org" });
 }
 
 export async function PUT(request: NextRequest) {
@@ -12,5 +12,10 @@ export async function PUT(request: NextRequest) {
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
-  return proxyBackendJson({ path: "quotas/org", method: "PUT", body });
+  return proxyBackendJson({
+    request,
+    path: "quotas/org",
+    method: "PUT",
+    body,
+  });
 }

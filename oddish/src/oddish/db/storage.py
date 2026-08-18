@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import logging
 from collections import OrderedDict
 from collections.abc import AsyncIterator
@@ -65,8 +66,7 @@ def extract_s3_key_from_path(path: str | None) -> str | None:
 # are rejected outright, and one rejected PUT used to abort the whole trial
 # upload, leaving ``trial_s3_key`` NULL and breaking later QA analysis.
 _S3_KEY_ALLOWED_CHARS = frozenset(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
-    "/!-.*'() &$@=;:+,?"
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_/!-.*'() &$@=;:+,?"
 )
 
 
@@ -144,7 +144,8 @@ def _inline_eligible_files(files: list[dict[str, object]]) -> list[dict[str, obj
     budget = _INLINE_CONTENT_MAX_TOTAL_BYTES
     eligible: list[dict[str, object]] = []
     for meta in ordered:
-        size = int(meta.get("size") or 0)
+        raw_size = meta.get("size", 0)
+        size = raw_size if isinstance(raw_size, int) else int(str(raw_size or 0))
         if size > _INLINE_CONTENT_MAX_FILE_BYTES or size > budget:
             continue
         budget -= size
@@ -208,14 +209,20 @@ def _merge_inline_contents(
     if not texts:
         return files
     return [
-        {**meta, "content": texts[str(meta["path"])]}
-        if str(meta["path"]) in texts
-        else meta
+        (
+            {**meta, "content": texts[str(meta["path"])]}
+            if str(meta["path"]) in texts
+            else meta
+        )
         for meta in files
     ]
 
 
-def _read_task_archive_text(archive_bytes: bytes, file_path: str) -> str:
+def _read_task_archive_text(
+    archive_bytes: bytes,
+    file_path: str,
+    max_bytes: int | None = None,
+) -> tuple[str, int, bool]:
     normalized_path = normalize_s3_relative_path(file_path)
     if not normalized_path:
         raise HTTPException(status_code=400, detail="Invalid file path")
@@ -230,7 +237,11 @@ def _read_task_archive_text(archive_bytes: bytes, file_path: str) -> str:
             extracted = tar.extractfile(member)
             if extracted is None:
                 break
-            return extracted.read().decode("utf-8")
+            size = int(member.size)
+            truncated = max_bytes is not None and size > max_bytes
+            body = extracted.read(max_bytes if truncated else -1)
+            decoder = codecs.getincrementaldecoder("utf-8")()
+            return decoder.decode(body, final=not truncated), size, truncated
 
     raise HTTPException(
         status_code=404, detail=f"Task file not found: {normalized_path}"
@@ -524,14 +535,27 @@ class StorageClient:
         return f"{normalized_prefix}{cls._TASK_ARCHIVE_OBJECT_NAME}"
 
     async def _resolve_task_prefix(
-        self, task_id: str, version: int | None
+        self,
+        task_id: str,
+        version: int | None,
+        task_s3_prefix: str | None = None,
     ) -> tuple[str, str]:
         """Return ``(root_prefix, archive_key)`` for a task, with fallback.
+
+        ``task_s3_prefix`` is the database-selected source for an explicitly
+        overwritten version. It points at an immutable revision, so consulting
+        it makes the database row the atomic switch between archive snapshots.
 
         When *version* is given the versioned path is tried first.  If the
         archive doesn't exist there (backfilled v1 tasks), falls back to the
         unversioned ``tasks/{task_id}/`` path.
         """
+        if task_s3_prefix:
+            root = normalize_s3_prefix(task_s3_prefix)
+            if not root:
+                raise ValueError(f"Invalid task S3 prefix: {task_s3_prefix}")
+            return root, self._task_archive_key_from_prefix(root)
+
         if version is not None:
             vroot = f"tasks/{task_id}/v{version}/"
             varchive = f"{vroot}{self._TASK_ARCHIVE_OBJECT_NAME}"
@@ -547,6 +571,16 @@ class StorageClient:
             return vroot, varchive
 
         return f"tasks/{task_id}/", self._task_archive_key(task_id)
+
+    async def _expanded_manifest_matches_archive(
+        self, manifest_key: str, archive_key: str
+    ) -> bool:
+        """Whether an expanded cache was built from the selected archive."""
+        try:
+            manifest = await self.download_json(manifest_key)
+        except Exception:
+            return False
+        return manifest.get("archive_key") == archive_key
 
     async def download_task_directory(self, s3_prefix: str, local_path: Path) -> None:
         """
@@ -838,6 +872,7 @@ class StorageClient:
         presign: bool,
         presign_expiration: int = 900,
         version: int | None = None,
+        task_s3_prefix: str | None = None,
         inline: bool = True,
     ) -> dict:
         """List files in a task's S3 directory.
@@ -851,12 +886,23 @@ class StorageClient:
         file bodies as ``content``. ``stream_task_files`` passes ``inline=False``
         to return the bare tree fast and stream the bodies separately.
         """
-        # Prefer the per-file expanded layout when available. Sibling prefix
-        # (``v{N}-files/``) isolates expansion artifacts from user files.
+        root_prefix, archive_key = await self._resolve_task_prefix(
+            task_id, version, task_s3_prefix
+        )
+        archive_exists = await self.object_exists(archive_key)
+
+        # Prefer the per-file expanded layout when it was built from the
+        # database-selected archive. An overwrite switches that archive key
+        # atomically; a stale manifest is ignored even if cleanup later fails.
         if version is not None:
             expanded_prefix = f"tasks/{task_id}/v{version}-files/"
             manifest_key = f"{expanded_prefix}{self._EXPANDED_MANIFEST_OBJECT_NAME}"
-            if await self.object_exists(manifest_key):
+            if await self.object_exists(manifest_key) and (
+                not archive_exists
+                or await self._expanded_manifest_matches_archive(
+                    manifest_key, archive_key
+                )
+            ):
                 return await self._list_expanded_task_files(
                     task_id=task_id,
                     expanded_prefix=expanded_prefix,
@@ -869,8 +915,7 @@ class StorageClient:
                     inline=inline,
                 )
 
-        root_prefix, archive_key = await self._resolve_task_prefix(task_id, version)
-        if await self.object_exists(archive_key):
+        if archive_exists:
             _bytes, archive_files, archive_texts = await self._load_task_archive(
                 archive_key
             )
@@ -893,9 +938,11 @@ class StorageClient:
             if recursive:
                 return {
                     "task_id": task_id,
-                    "files": _merge_inline_contents(filtered_files, archive_texts)
-                    if inline
-                    else filtered_files,
+                    "files": (
+                        _merge_inline_contents(filtered_files, archive_texts)
+                        if inline
+                        else filtered_files
+                    ),
                     "dirs": [],
                     "prefix": full_prefix,
                     "recursive": True,
@@ -979,9 +1026,7 @@ class StorageClient:
 
             return {
                 "task_id": task_id,
-                "files": await self._inline_object_contents(files)
-                if inline
-                else files,
+                "files": await self._inline_object_contents(files) if inline else files,
                 "dirs": [],
                 "prefix": full_prefix,
                 "recursive": True,
@@ -1092,9 +1137,7 @@ class StorageClient:
 
             return {
                 "task_id": task_id,
-                "files": await self._inline_object_contents(files)
-                if inline
-                else files,
+                "files": await self._inline_object_contents(files) if inline else files,
                 "dirs": [],
                 "prefix": full_prefix,
                 "recursive": True,
@@ -1263,6 +1306,7 @@ class StorageClient:
         presign: bool = True,
         presign_expiration: int = 900,
         version: int | None = None,
+        task_s3_prefix: str | None = None,
     ) -> AsyncIterator[dict]:
         """Stream a task file listing: the tree first, then file contents.
 
@@ -1280,6 +1324,7 @@ class StorageClient:
             presign=presign,
             presign_expiration=presign_expiration,
             version=version,
+            task_s3_prefix=task_s3_prefix,
             inline=False,
         )
         yield {"type": "listing", **listing}
@@ -1305,6 +1350,8 @@ class StorageClient:
         presign: bool,
         presign_expiration: int = 900,
         version: int | None = None,
+        task_s3_prefix: str | None = None,
+        max_bytes: int | None = None,
     ) -> dict:
         """Get content of a specific task file from S3.
 
@@ -1314,64 +1361,81 @@ class StorageClient:
         and ``key``; ``content`` is populated for archive reads (or when
         ``presign=False`` on expanded) and ``url`` when ``presign=True`` on
         the expanded layout. When an archive is the source we additionally
-        return ``archive_etag`` so HTTP layers can emit immutable
+        return ``archive_etag`` so HTTP layers can emit revalidating
         ``ETag`` / ``Cache-Control`` headers.
         """
         normalized_path = normalize_s3_relative_path(file_path)
         if not normalized_path:
             raise HTTPException(status_code=400, detail="Invalid file path")
 
+        root_prefix, archive_key = await self._resolve_task_prefix(
+            task_id, version, task_s3_prefix
+        )
+        archive_exists = await self.object_exists(archive_key)
+
+        s3_key: str | None = None
         if version is not None:
             expanded_prefix = f"tasks/{task_id}/v{version}-files/"
             manifest_key = f"{expanded_prefix}{self._EXPANDED_MANIFEST_OBJECT_NAME}"
-            if await self.object_exists(manifest_key):
-                s3_key = f"{expanded_prefix}{normalized_path}"
+            if await self.object_exists(manifest_key) and (
+                not archive_exists
+                or await self._expanded_manifest_matches_archive(
+                    manifest_key, archive_key
+                )
+            ):
+                expanded_key = f"{expanded_prefix}{normalized_path}"
                 # Some members may be absent from the expanded tree
                 # (oversize-member skips, mid-flight expansions, or
                 # ad-hoc object deletions). Check presence before
                 # handing out a URL / downloading, and fall through to
                 # the archive branch on miss so deep-links keep
                 # working.
-                if await self.object_exists(s3_key):
-                    if presign:
-                        url = await self.get_presigned_url(
-                            s3_key, expiration=presign_expiration
-                        )
-                        return {
-                            "path": normalized_path,
-                            "key": s3_key,
-                            "url": url,
-                        }
-                    content = await self.download_text(s3_key)
-                    return {
-                        "path": normalized_path,
-                        "content": content,
-                        "key": s3_key,
-                    }
+                if await self.object_exists(expanded_key):
+                    s3_key = expanded_key
 
-        root_prefix, archive_key = await self._resolve_task_prefix(task_id, version)
-        if await self.object_exists(archive_key):
-            archive_bytes, _members, texts = await self._load_task_archive(archive_key)
-            # Small text members were extracted during the (cached) parse;
-            # only oversize members pay a tar read here.
-            content = texts.get(normalized_path)
-            if content is None:
-                content = _read_task_archive_text(archive_bytes, normalized_path)
-            archive_etag = await self._head_archive_etag(archive_key)
-            return {
-                "path": normalized_path,
-                "content": content,
-                "key": f"{archive_key}#{normalized_path}",
-                "archive_key": archive_key,
-                "archive_etag": archive_etag,
-            }
-        s3_key = f"{root_prefix}{normalized_path}"
+        if s3_key is None:
+            if archive_exists:
+                archive_bytes, members, texts = await self._load_task_archive(
+                    archive_key
+                )
+                # Small text members were extracted during the (cached) parse;
+                # only oversize members pay a tar read here.
+                content = texts.get(normalized_path)
+                member = next(
+                    (item for item in members if item["path"] == normalized_path), None
+                )
+                size = int(member["size"]) if member else 0
+                is_truncated = max_bytes is not None and size > max_bytes
+                if content is None or is_truncated:
+                    content, size, is_truncated = _read_task_archive_text(
+                        archive_bytes, normalized_path, max_bytes
+                    )
+                archive_etag = await self._head_archive_etag(archive_key)
+                return {
+                    "path": normalized_path,
+                    "content": content,
+                    "size": size,
+                    "is_truncated": is_truncated,
+                    "key": f"{archive_key}#{normalized_path}",
+                    "archive_key": archive_key,
+                    "archive_etag": archive_etag,
+                }
+            s3_key = f"{root_prefix}{normalized_path}"
 
         if presign:
             url = await self.get_presigned_url(s3_key, expiration=presign_expiration)
             return {"path": normalized_path, "key": s3_key, "url": url}
-        content = await self.download_text(s3_key)
-        return {"path": normalized_path, "content": content, "key": s3_key}
+        if max_bytes is None:
+            content = await self.download_text(s3_key)
+            is_truncated = False
+        else:
+            content, is_truncated = await self.download_text_prefix(s3_key, max_bytes)
+        return {
+            "path": normalized_path,
+            "content": content,
+            "is_truncated": is_truncated,
+            "key": s3_key,
+        }
 
     async def get_trial_result_json(self, s3_prefix: str) -> dict | None:
         """
@@ -1434,12 +1498,14 @@ class StorageClient:
             with open(local_path, "wb") as f:
                 f.write(content)
 
-    async def download_bytes(self, s3_key: str) -> bytes:
+    async def download_bytes(self, s3_key: str, max_bytes: int | None = None) -> bytes:
         """Download binary content from S3."""
         await self._ensure_client()
+        options = {"Range": f"bytes=0-{max_bytes - 1}"} if max_bytes else {}
         response = await self._s3.get_object(
             Bucket=settings.s3_bucket,
             Key=s3_key,
+            **options,
         )
         async with response["Body"] as stream:
             content: bytes = await stream.read()
@@ -1447,15 +1513,16 @@ class StorageClient:
 
     async def download_text(self, s3_key: str) -> str:
         """Download text content from S3."""
-        await self._ensure_client()
-        response = await self._s3.get_object(
-            Bucket=settings.s3_bucket,
-            Key=s3_key,
-        )
-        async with response["Body"] as stream:
-            content = await stream.read()
-            result: str = content.decode("utf-8")
-            return result
+        return (await self.download_bytes(s3_key)).decode("utf-8")
+
+    async def download_text_prefix(
+        self, s3_key: str, max_bytes: int
+    ) -> tuple[str, bool]:
+        """Download at most max_bytes of UTF-8 text using one ranged S3 read."""
+        body = await self.download_bytes(s3_key, max_bytes + 1)
+        is_truncated = len(body) > max_bytes
+        decoder = codecs.getincrementaldecoder("utf-8")()
+        return decoder.decode(body[:max_bytes], final=not is_truncated), is_truncated
 
     async def download_json(self, s3_key: str) -> dict:
         """Download and parse JSON from S3."""

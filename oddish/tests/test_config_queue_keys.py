@@ -383,6 +383,21 @@ def test_moonshot_model_routes_to_moonshot_not_bedrock(monkeypatch):
         ), raw
 
 
+def test_deepseek_model_routes_to_deepseek_provider(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    cases = {
+        "deepseek-v4-pro": "deepseek/deepseek-v4-pro",
+        "deepseek/deepseek-v4-pro": "deepseek/deepseek-v4-pro",
+        "deepseek/deepseek-v4-pro-0813": "deepseek/deepseek-v4-pro",
+        "ds/deepseek-v4-flash": "deepseek/deepseek-v4-flash",
+    }
+    for raw, canonical in cases.items():
+        assert settings.normalize_trial_model("dsh", raw) == canonical, raw
+        assert settings.get_provider_for_trial("dsh", raw) == "deepseek", raw
+        assert settings.get_queue_key_for_trial("dsh", raw) == canonical, raw
+
+
 def test_fireworks_models_route_to_fireworks_not_direct_providers(monkeypatch):
     settings = _settings(monkeypatch, clear_openai_env=False)
 

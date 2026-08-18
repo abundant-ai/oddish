@@ -160,7 +160,11 @@ def test_set_task_default_version_updates_pointer_and_storage_mirror(monkeypatch
     version.task_s3_key = "tasks/task-1/v1.tar.gz"
 
     async def fake_get_task_for_org_core(*_args, **kwargs):
-        assert kwargs == {"task_id": "task-1", "org_id": "org-1"}
+        assert kwargs == {
+            "task_id": "task-1",
+            "org_id": "org-1",
+            "with_for_update": True,
+        }
         return task
 
     monkeypatch.setattr(
@@ -177,6 +181,20 @@ def test_set_task_default_version_updates_pointer_and_storage_mirror(monkeypatch
         "recompute_task_browse_projection",
         fake_recompute_task_browse_projection,
     )
+    invalidated = []
+
+    async def fake_invalidate(_session, changed_task):
+        invalidated.append(changed_task.id)
+
+    monkeypatch.setattr(
+        "oddish.queue.invalidate_task_qa_for_source_change", fake_invalidate
+    )
+    refreshed = []
+
+    async def fake_refresh(_session, version_ids):
+        refreshed.extend(version_ids)
+
+    monkeypatch.setattr(_task_detail, "refresh_task_browse_summaries", fake_refresh)
     session = _RecordingSession(results=[_Result(scalar=version)])
 
     selected = _run(
@@ -193,6 +211,8 @@ def test_set_task_default_version_updates_pointer_and_storage_mirror(monkeypatch
     assert task.task_path == "/tmp/old"
     assert task.task_s3_key == "tasks/task-1/v1.tar.gz"
     assert projected == ["task-1"]
+    assert invalidated == ["task-1"]
+    assert refreshed == ["v1"]
     assert "task_versions.task_id" in str(session.queries[0])
     assert "task_versions.version" in str(session.queries[0])
 
@@ -282,6 +302,7 @@ def test_aggregate_task_detail_rollups_totals_and_buckets():
             task_id="task-1",
             version=1,
             task_path="/tmp/demo",
+            content_hash="hash-v1",
             created_at=v1_created,
         ),
         TaskVersionResponse(
@@ -289,6 +310,7 @@ def test_aggregate_task_detail_rollups_totals_and_buckets():
             task_id="task-1",
             version=2,
             task_path="/tmp/demo",
+            content_hash="hash-v2",
             created_at=v2_created,
         ),
     ]
@@ -355,6 +377,8 @@ def test_aggregate_task_detail_rollups_totals_and_buckets():
     v2_summary, v1_summary = versions[0], versions[1]
     assert v2_summary.is_current is True
     assert v1_summary.is_current is False
+    assert v2_summary.content_hash == "hash-v2"
+    assert v1_summary.content_hash == "hash-v1"
 
     # v1: both trials succeeded, one full pass + one zero-reward fail.
     assert v1_summary.trial_count == 2

@@ -38,6 +38,7 @@ from oddish.core.endpoints.qa import (
     rerun_task_qa_core,
 )
 from oddish.core.endpoints.sweep import (
+    SweepAttribution,
     build_task_sweep_response,
     create_task_sweep_batch_core,
     create_task_sweep_core,
@@ -50,6 +51,7 @@ from oddish.core.endpoints.task_detail import (
     list_task_versions_core,
     set_task_default_version_core,
 )
+from oddish.core.endpoints.task_open import get_task_open_core
 from oddish.core.endpoints.experiment_cost import get_experiment_cost_totals
 from oddish.core.endpoints.qa_cost import (
     ExperimentQaCostTotals,
@@ -61,6 +63,7 @@ from oddish.core.endpoints.qa_cost import (
 from oddish.core.endpoints.tasks_query import (
     _build_browse_author_filter,
     _task_freetext_match,
+    browse_experiment_options_core,
     browse_task_facets_core,
     browse_tasks_core,
     get_task_status_core,
@@ -83,6 +86,7 @@ from oddish.core.endpoints.trials import (
 __all__ = [
     "ExperimentQaCostTotals",
     "QaCostTotals",
+    "SweepAttribution",
     "USER_CANCELLED_MESSAGE",
     "_COMBINE_TRIAL_RESULT_FIELDS",
     "_aggregate_task_detail_rollups",
@@ -91,6 +95,7 @@ __all__ = [
     "_reset_task_verdict",
     "_task_freetext_match",
     "backfill_task_analysis_core",
+    "browse_experiment_options_core",
     "browse_task_facets_core",
     "browse_tasks_core",
     "build_task_sweep_response",
@@ -104,6 +109,7 @@ __all__ = [
     "get_experiment_cost_totals",
     "get_experiment_qa_cost_totals",
     "get_task_detail_core",
+    "get_task_open_core",
     "get_task_for_org_core",
     "get_task_qa_costs",
     "get_task_status_core",

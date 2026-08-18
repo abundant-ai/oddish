@@ -63,7 +63,7 @@ def test_parse_produces_task_verdict_model():
     vb = VerdictBlock(_classifications())
     raw = json.dumps(
         {
-            "is_good": True,
+            "verdict": "accept",
             "confidence": "high",
             "primary_issue": None,
             "recommendations": [],
@@ -82,7 +82,7 @@ def test_to_verdict_returns_plain_dict():
     vb = VerdictBlock(_classifications())
     raw = json.dumps(
         {
-            "is_good": False,
+            "verdict": "reject",
             "confidence": "low",
             "primary_issue": "bad tests",
             "recommendations": ["fix x"],
@@ -91,7 +91,7 @@ def test_to_verdict_returns_plain_dict():
     )
     out = vb.to_verdict(raw)
     assert out == {
-        "is_good": False,
+        "verdict": "reject",
         "confidence": "low",
         "primary_issue": "bad tests",
         "recommendations": ["fix x"],
@@ -102,9 +102,9 @@ def test_to_verdict_returns_plain_dict():
 
 def test_to_verdict_strips_code_fences():
     vb = VerdictBlock(_classifications())
-    body = json.dumps({"is_good": True, "confidence": "medium", "recommendations": []})
+    body = json.dumps({"verdict": "accept", "confidence": "medium", "recommendations": []})
     out = vb.to_verdict(f"```json\n{body}\n```")
-    assert out["is_good"] is True
+    assert out["verdict"] == "accept"
     assert out["confidence"] == "medium"
 
 
@@ -248,7 +248,7 @@ async def test_synthesize_task_verdict_default_construction_wires_response_forma
 
     _patch_block_persistence(monkeypatch)
     payload = {
-        "is_good": True,
+        "verdict": "accept",
         "confidence": "high",
         "primary_issue": None,
         "recommendations": [],
@@ -281,7 +281,7 @@ async def test_synthesize_task_verdict_honors_verdict_model_override(monkeypatch
 
     _patch_block_persistence(monkeypatch)
     monkeypatch.setattr(settings, "verdict_model", "gpt-5.4-custom-override")
-    payload = {"is_good": True, "confidence": "high", "recommendations": []}
+    payload = {"verdict": "accept", "confidence": "high", "recommendations": []}
     fake, sent = _patch_openai_builder(
         monkeypatch, payload, runtime_model="gpt-5.4-custom-override"
     )
@@ -299,7 +299,7 @@ async def test_synthesize_task_verdict_uses_task_verdict_analyzer_type_and_real_
     from oddish.workers.queue.qa_handler import synthesize_task_verdict
 
     _patch_block_persistence(monkeypatch)
-    payload = {"is_good": True, "confidence": "high", "recommendations": []}
+    payload = {"verdict": "accept", "confidence": "high", "recommendations": []}
     _patch_openai_builder(monkeypatch, payload)
 
     captured = {}
@@ -319,10 +319,10 @@ async def test_synthesize_task_verdict_uses_task_verdict_analyzer_type_and_real_
     # non-None callable: prove it actually parses per VerdictBlock's contract.
     ot = captured["output_transform"]
     out = ot(
-        json.dumps({"is_good": True, "confidence": "medium", "recommendations": []})
+        json.dumps({"verdict": "accept", "confidence": "medium", "recommendations": []})
     )
     assert out == {
-        "is_good": True,
+        "verdict": "accept",
         "confidence": "medium",
         "primary_issue": None,
         "recommendations": [],
@@ -335,7 +335,7 @@ async def test_synthesize_task_verdict_closes_the_client_it_creates(monkeypatch)
     from oddish.workers.queue.qa_handler import synthesize_task_verdict
 
     _patch_block_persistence(monkeypatch)
-    payload = {"is_good": False, "confidence": "low", "recommendations": []}
+    payload = {"verdict": "reject", "confidence": "low", "recommendations": []}
     fake, _sent = _patch_openai_builder(monkeypatch, payload)
 
     await synthesize_task_verdict(_classifications(), None, True, 180)
@@ -364,7 +364,7 @@ async def test_synthesize_task_verdict_raises_and_never_persists_when_prompt_deg
 
     monkeypatch.setattr(vp_module, "build_verdict_prompt", _boom)
 
-    payload = {"is_good": True, "confidence": "high", "recommendations": []}
+    payload = {"verdict": "accept", "confidence": "high", "recommendations": []}
     fake, sent = _patch_openai_builder(monkeypatch, payload)
 
     with pytest.raises(RuntimeError, match="failed to render"):

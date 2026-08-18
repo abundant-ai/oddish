@@ -40,6 +40,7 @@ export interface FilterValues {
   trialStatuses: string[];
   origins: string[];
   analysisClassifications: string[];
+  experimentIds: string[];
   tagsAll: string[];
   tagsAny: string[];
   tagsNone: string[];
@@ -161,6 +162,7 @@ type ControlKind =
   | "num"
   | "tags"
   | "agentmodel"
+  | "experiment"
   | "sort"
   | "compare"
   | "top"
@@ -288,6 +290,15 @@ export const FILTER_DEFS: FilterDef[] = [
     group: "Task",
     control: "daterange",
     pinned: true,
+  },
+  // Options come from the async /api/tasks/browse/experiment-options endpoint
+  // (an org can hold 100k+ experiments), NOT from the facets payload — so no
+  // `facet` key here.
+  {
+    key: "experiments",
+    label: "Experiment",
+    group: "Task",
+    control: "experiment",
   },
   {
     key: "environments",
@@ -702,6 +713,8 @@ export function isFilterActive(key: string, f: FilterValues): boolean {
       return f.origins.length > 0;
     case "analysisClassifications":
       return f.analysisClassifications.length > 0;
+    case "experiments":
+      return f.experimentIds.length > 0;
     case "tags":
       return (
         f.tagsAll.length > 0 || f.tagsAny.length > 0 || f.tagsNone.length > 0
@@ -808,6 +821,7 @@ export function filterParams(f: FilterValues): [string, string][] {
   csv("trial_statuses", f.trialStatuses);
   csv("origins", f.origins);
   csv("analysis_classifications", f.analysisClassifications);
+  csv("experiment_ids", f.experimentIds);
   csv("tags", f.tagsAll);
   csv("tags_any", f.tagsAny);
   csv("tags_none", f.tagsNone);
@@ -899,6 +913,7 @@ export const FILTER_PARAM_KEYS = [
   "trial_statuses",
   "origins",
   "analysis_classifications",
+  "experiment_ids",
   "tags",
   "tags_any",
   "tags_none",
@@ -961,8 +976,9 @@ export const FILTER_PARAM_KEYS = [
 // loader forwards these in addition to FILTER_PARAM_KEYS so they aren't
 // silently dropped. They're intentionally NOT in FILTER_PARAM_KEYS so the
 // sidebar's clear-on-change loop doesn't wipe deep-linked values.
+// (`experiment_ids` graduated to FILTER_PARAM_KEYS with the Experiment
+// filter control; it now round-trips through searchParamsToFilters.)
 const EXTRA_BROWSE_PARAM_KEYS = [
-  "experiment_ids",
   "run_analysis",
   "run_probe",
   "harbor_shas",
@@ -1002,6 +1018,7 @@ export function searchParamsToFilters(sp: URLSearchParams): FilterValues {
     trialStatuses: csv("trial_statuses"),
     origins: csv("origins"),
     analysisClassifications: csv("analysis_classifications"),
+    experimentIds: csv("experiment_ids"),
     tagsAll: csv("tags"),
     tagsAny: csv("tags_any"),
     tagsNone: csv("tags_none"),

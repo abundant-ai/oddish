@@ -138,6 +138,13 @@ class _FakeStorage:
         self._objects[s3_key] = data
         self.upload_calls.append((s3_key, data, content_type))
 
+    async def copy_object(self, source: str, destination: str) -> None:
+        self._objects[destination] = self._objects[source]
+
+    async def delete_prefix(self, prefix: str) -> None:
+        for key in [key for key in self._objects if key.startswith(prefix)]:
+            del self._objects[key]
+
     async def _load_task_archive(self, archive_key: str):
         return (self._objects[archive_key], [], {})
 
@@ -149,7 +156,10 @@ class _FakeStorage:
         ]
 
     async def _resolve_task_prefix(
-        self, task_id: str, version: int | None
+        self,
+        task_id: str,
+        version: int | None,
+        task_s3_prefix: str | None = None,
     ) -> tuple[str, str]:
         """Mirror ``StorageClient._resolve_task_prefix`` for the fake.
 
@@ -158,6 +168,9 @@ class _FakeStorage:
         legacy v1 layouts can stage the archive at either location and
         the handler will still resolve it.
         """
+        if task_s3_prefix:
+            root = task_s3_prefix.rstrip("/") + "/"
+            return root, f"{root}{StorageClient._TASK_ARCHIVE_OBJECT_NAME}"
         if version is not None:
             vroot = f"tasks/{task_id}/v{version}/"
             varchive = f"{vroot}{StorageClient._TASK_ARCHIVE_OBJECT_NAME}"
@@ -241,6 +254,49 @@ async def test_expand_writes_members_and_manifest(monkeypatch, _patched_get_sess
         "task.toml",
         "verifier/check.py",
     }
+
+
+@pytest.mark.asyncio
+async def test_stale_expansion_is_not_promoted(monkeypatch) -> None:
+    row = type("Version", (), {"content_hash": "new-hash"})()
+
+    @asynccontextmanager
+    async def _session():
+        class _S:
+            async def get(self, *_args, **_kwargs):
+                return row
+
+            async def scalar(self, *_args, **_kwargs):
+                return None
+
+            async def commit(self):
+                return None
+
+        yield _S()
+
+    storage = _FakeStorage(
+        loose_objects={"task-expand-staging/task/v1/run/task.toml": b"old"}
+    )
+    monkeypatch.setattr(task_expand_handler, "get_session", _session)
+
+    promoted = await task_expand_handler._promote_expansion_if_current(
+        storage,
+        task_id="task",
+        version=1,
+        expected_content_hash="old-hash",
+        expanded_prefix="tasks/task/v1-files/",
+        manifest_key="tasks/task/v1-files/.oddish-manifest.json",
+        manifest_bytes=b"{}",
+        staged_objects=[
+            (
+                "task-expand-staging/task/v1/run/task.toml",
+                "tasks/task/v1-files/task.toml",
+            )
+        ],
+    )
+
+    assert promoted is False
+    assert "tasks/task/v1-files/task.toml" not in storage._objects
 
 
 @pytest.mark.asyncio
@@ -346,6 +402,47 @@ async def test_expand_migrates_loose_file_task_without_archive(
     assert all(
         f["source_key"].startswith("tasks/task-loose/") for f in manifest["files"]
     )
+
+
+@pytest.mark.asyncio
+async def test_stale_loose_migration_is_not_promoted(monkeypatch):
+    row = type("Version", (), {"content_hash": "new-hash"})()
+
+    @asynccontextmanager
+    async def _session():
+        class _S:
+            async def get(self, *_args, **_kwargs):
+                return row
+
+            async def scalar(self, *_args, **_kwargs):
+                return None
+
+            async def commit(self):
+                return None
+
+        yield _S()
+
+    storage = _FakeStorage(
+        loose_objects={
+            "tasks/task-loose/task.toml": b"old source\n",
+            "tasks/task-loose/v1-files/task.toml": b"new expansion\n",
+        }
+    )
+    monkeypatch.setattr(task_expand_handler, "get_storage_client", lambda: storage)
+    monkeypatch.setattr(task_expand_handler, "get_session", _session)
+
+    async def _old_content_hash(*_args, **_kwargs):
+        return "old-hash"
+
+    monkeypatch.setattr(task_expand_handler, "_version_content_hash", _old_content_hash)
+
+    summary = await task_expand_handler.run_task_expand_job(
+        task_id="task-loose", version=1
+    )
+
+    assert summary == {"status": "stale_source"}
+    assert storage._objects["tasks/task-loose/v1-files/task.toml"] == b"new expansion\n"
+    assert not any(key.startswith("task-expand-staging/") for key in storage._objects)
 
 
 @pytest.mark.asyncio

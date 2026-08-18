@@ -36,13 +36,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
-import httpx
 from fastapi import HTTPException
 from harbor.models.job.config import JobConfig
 from harbor.models.job.result import JobResult
 from harbor.models.trial.config import TrialConfig
 from harbor.models.trial.result import TrialResult
 from sqlalchemy import and_, select
+from oddish.timing import RequestTimedAsyncClient
 
 from oddish.cli.api import (
     _tar_trial_dir,
@@ -425,7 +425,9 @@ async def _put_to_presigned(
     """
     upload_headers = dict(headers)
     upload_headers.setdefault("Content-Length", str(archive_path.stat().st_size))
-    async with httpx.AsyncClient(timeout=600.0, follow_redirects=True) as client:
+    async with RequestTimedAsyncClient(
+        timeout=600.0, follow_redirects=True
+    ) as client:
         response = await client.put(
             url,
             headers=upload_headers,
@@ -550,6 +552,7 @@ async def _import_one_trial(
     trial_dir: Path,
     upload_artifacts: bool,
     org_id: str | None,
+    owner_user_id: str | None,
 ) -> tuple[ZipImportTrialResult, str | None, str | None]:
     """Import one trial. Returns (result, experiment_id, experiment_name)."""
     trial_result = load_harbor_trial_result(trial_dir)
@@ -579,6 +582,7 @@ async def _import_one_trial(
         trial_spec=trial_spec,
         upload_artifacts=upload_artifacts,
         org_id=org_id,
+        owner_user_id=owner_user_id,
     )
 
     files_extracted = 0
@@ -613,6 +617,7 @@ async def _import_trials(
     experiment_id_or_name: str | None,
     upload_artifacts: bool,
     org_id: str | None,
+    owner_user_id: str | None,
 ) -> tuple[list[ZipImportTrialResult], str | None, str | None]:
     """Import every trial under *job_root* into *task_id*.
 
@@ -645,6 +650,7 @@ async def _import_trials(
         trial_dir=first_dir,
         upload_artifacts=upload_artifacts,
         org_id=org_id,
+        owner_user_id=owner_user_id,
     )
     results.append(first_result)
 
@@ -665,6 +671,7 @@ async def _import_trials(
                     trial_dir=trial_dir,
                     upload_artifacts=upload_artifacts,
                     org_id=org_id,
+                    owner_user_id=owner_user_id,
                 )
 
         for tup in await asyncio.gather(*(_bounded(e) for e in remaining)):
@@ -817,6 +824,7 @@ async def import_zip(
                 experiment_id_or_name=experiment_id_or_name,
                 upload_artifacts=upload_artifacts,
                 org_id=org_id,
+                owner_user_id=user_id,
             )
 
         return ZipImportResult(

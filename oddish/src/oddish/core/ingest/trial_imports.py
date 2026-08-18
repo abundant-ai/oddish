@@ -44,6 +44,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import normalize_model_id, settings
 from oddish.core.harbor_artifacts import build_trial_result
+from oddish.core.task_browse_summary import refresh_task_browse_summaries
+from oddish.core.trial_facets import facet_rows_for_trial, record_trial_facets
 from oddish.db import (
     ExperimentModel,
     TaskModel,
@@ -91,6 +93,7 @@ async def _resolve_experiment_for_import(
     *,
     experiment_id_or_name: str | None,
     org_id: str | None,
+    owner_user_id: str | None,
 ) -> ExperimentModel:
     """Pick or create the experiment to attach imported trials to.
 
@@ -116,9 +119,19 @@ async def _resolve_experiment_for_import(
         # Treat the string as a *name* and create it. This keeps the
         # "pin to a specific experiment" UX symmetrical between imports
         # into new and existing experiments.
-        return await get_or_create_experiment(session, experiment_id_or_name, org_id)
+        return await get_or_create_experiment(
+            session,
+            experiment_id_or_name,
+            org_id,
+            owner_user_id=owner_user_id,
+        )
 
-    return await get_or_create_experiment(session, generate_experiment_name(), org_id)
+    return await get_or_create_experiment(
+        session,
+        generate_experiment_name(),
+        org_id,
+        owner_user_id=owner_user_id,
+    )
 
 
 def _next_trial_index(existing_trial_ids: list[str], task_id: str) -> int:
@@ -174,6 +187,7 @@ async def initialize_trial_import(
     trial_spec: ImportedTrialSpec,
     upload_artifacts: bool,
     org_id: str | None = None,
+    owner_user_id: str | None = None,
 ) -> TrialImportInitResponse:
     """Create an imported trial row and return a presigned artifact URL.
 
@@ -192,6 +206,7 @@ async def initialize_trial_import(
             session,
             experiment_id_or_name=experiment_id_or_name,
             org_id=org_id,
+            owner_user_id=owner_user_id,
         )
 
         # Load existing trial IDs for this task under the row lock so
@@ -308,6 +323,21 @@ async def initialize_trial_import(
         )
         session.add(trial_row)
 
+        # Write-through vocabulary: imports can introduce brand-new facet
+        # values (external agents/models), and land terminal with a stage.
+        await record_trial_facets(
+            session,
+            facet_rows_for_trial(
+                org_id=trial_row.org_id,
+                agent=trial_row.agent,
+                model=trial_row.model,
+                provider=trial_row.provider,
+                environment=trial_row.environment,
+                harbor_stage=trial_row.harbor_stage,
+                is_probe=trial_row.is_probe,
+            ),
+        )
+
         # Keep the task ↔ experiment association in sync. Imports can
         # attach a task that already belongs to other experiments to an
         # additional one via ``--experiment``.
@@ -356,6 +386,7 @@ async def initialize_trial_import(
         from oddish.queue import maybe_start_qa_stage
 
         await maybe_start_qa_stage(session, trial_id)
+        await refresh_task_browse_summaries(session, [task_version_id])
 
         await session.commit()
 

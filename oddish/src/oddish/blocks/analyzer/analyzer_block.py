@@ -4,7 +4,9 @@ import asyncio
 import enum
 import json
 import logging
+from collections.abc import MutableMapping
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Callable
 
 from sqlalchemy import select
@@ -40,6 +42,7 @@ class AnalyzerType(str, enum.Enum):
     PRE_TRIAL = "pre_trial"
     POST_TRIAL = "post_trial"
     CUSTOM_QA = "custom_qa"
+    AGENT_CAPABILITIES = "agent_capabilities"
 
 
 # The backend each analyzer needs, keyed by what the analyzer is permitted to
@@ -103,7 +106,9 @@ def block_key_prefix(analyzer_type: AnalyzerType) -> str:
 
 
 class _PrefixAdapter(logging.LoggerAdapter):
-    def process(self, msg: str, kwargs: dict) -> tuple[str, dict]:
+    def process(
+        self, msg: str, kwargs: MutableMapping[str, Any]
+    ) -> tuple[str, MutableMapping[str, Any]]:
         return f"[{self.extra['prefix']}] {msg}", kwargs
 
 
@@ -194,8 +199,8 @@ class AnalyzerBlock(Block):
         self.attribution_org_id = attribution_org_id
         # What this block is ABOUT, as opposed to ``analyzer_id``, which is an
         # overloaded association id. Set explicitly by callers that know their
-        # subject (see ``analyzer_block_handler``); cohort blocks leave it None
-        # because they span many trials and have no single subject to charge.
+        # subject; cohort blocks leave it None because they span many trials
+        # and have no single subject to charge.
         self.subject_type = subject_type
         self.subject_id = subject_id
         self._cli_config = cli_config
@@ -211,8 +216,8 @@ class AnalyzerBlock(Block):
         self.status: JobStatus = JobStatus.PENDING
         self.output: AnalyzerOutput | None = None
         self.error: str | None = None
-        self.job_started_at = None
-        self.job_ended_at = None
+        self.job_started_at: datetime | None = None
+        self.job_ended_at: datetime | None = None
         self.job_duration_seconds: float | None = None
         self._chunks: list[str] = []
         self.usage: AnalysisUsage | None = None
@@ -491,9 +496,7 @@ class AnalyzerBlock(Block):
                 # in the same shape as the streamed events.
                 try:
                     self._on_chunk(
-                        json.dumps(
-                            {"type": "sandbox_info", "sandbox_id": sandbox_id}
-                        )
+                        json.dumps({"type": "sandbox_info", "sandbox_id": sandbox_id})
                     )
                 except Exception:  # noqa: BLE001
                     self.log.exception("on_chunk hook failed")
@@ -506,9 +509,9 @@ class AnalyzerBlock(Block):
             else:
                 raw = "".join(self._chunks)
                 self.output = AnalyzerOutput(
-                    output=self._output_transform(raw)
-                    if self._output_transform
-                    else raw
+                    output=(
+                        self._output_transform(raw) if self._output_transform else raw
+                    )
                 )
             self.status = JobStatus.SUCCESS
             self.log.info("block succeeded (%d chunk(s))", len(self._chunks))

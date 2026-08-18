@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { X, GripVertical } from "lucide-react";
+import { X, GripVertical, Maximize2, Minimize2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 
@@ -11,6 +11,11 @@ interface ResizableDrawerProps {
   children: React.ReactNode;
   defaultWidth?: number;
   minWidth?: number;
+  /**
+   * Upper bound for the drag before the viewport is known (on the server and
+   * the first paint). Once mounted the viewport is the ceiling instead, so the
+   * drawer can always be pulled out to the whole screen.
+   */
   maxWidth?: number;
   className?: string;
   /** Hide the close button (useful when parent controls closing) */
@@ -21,6 +26,18 @@ interface ResizableDrawerProps {
   width?: number;
   /** Called whenever the user drags the resize handle. */
   onWidthChange?: (width: number) => void;
+}
+
+/** Viewport width, or null until mounted (there is no window on the server). */
+function useViewportWidth(): number | null {
+  const [viewportWidth, setViewportWidth] = React.useState<number | null>(null);
+  React.useEffect(() => {
+    const read = () => setViewportWidth(window.innerWidth);
+    read();
+    window.addEventListener("resize", read);
+    return () => window.removeEventListener("resize", read);
+  }, []);
+  return viewportWidth;
 }
 
 export function ResizableDrawer({
@@ -49,6 +66,30 @@ export function ResizableDrawer({
   const [isResizing, setIsResizing] = React.useState(false);
   const drawerRef = React.useRef<HTMLDivElement>(null);
 
+  const viewportWidth = useViewportWidth();
+  const widthCeiling = viewportWidth ?? maxWidth;
+  // Its own state rather than a `width === ceiling` derivation, so the drawer
+  // keeps filling the screen when the window is resized and so `width` survives
+  // as the restore target.
+  const [maximized, setMaximized] = React.useState(false);
+  const displayWidth = maximized
+    ? widthCeiling
+    : Math.max(Math.min(width, widthCeiling), Math.min(minWidth, widthCeiling));
+  // Chrome follows the width actually rendered, not the mode: a preferred width
+  // wider than the viewport is clamped to the ceiling without ever setting
+  // `maximized`, and that is just as full-bleed.
+  const atFullWidth = displayWidth >= widthCeiling;
+
+  // Maximizing by drag writes the ceiling into `width`, so the width to come
+  // back to has to be held separately or Restore has nothing to restore to.
+  const restoreWidthRef = React.useRef(defaultWidth);
+  const rememberRestoreWidth = React.useCallback(
+    (candidate: number) => {
+      if (candidate < widthCeiling) restoreWidthRef.current = candidate;
+    },
+    [widthCeiling],
+  );
+
   // Handle resize via mouse drag
   const handleMouseDown = React.useCallback(
     (e: React.MouseEvent) => {
@@ -56,14 +97,20 @@ export function ResizableDrawer({
       setIsResizing(true);
 
       const startX = e.clientX;
-      const startWidth = width;
+      const startWidth = displayWidth;
+      const startMaximized = maximized;
 
       const handleMouseMove = (moveEvent: MouseEvent) => {
         const deltaX = startX - moveEvent.clientX;
         const newWidth = Math.min(
-          maxWidth,
+          widthCeiling,
           Math.max(minWidth, startWidth + deltaX),
         );
+        const nextMaximized = newWidth >= widthCeiling;
+        if (nextMaximized && !startMaximized) {
+          rememberRestoreWidth(startWidth);
+        }
+        setMaximized(nextMaximized);
         setWidth(newWidth);
       };
 
@@ -76,8 +123,25 @@ export function ResizableDrawer({
       document.addEventListener("mousemove", handleMouseMove);
       document.addEventListener("mouseup", handleMouseUp);
     },
-    [width, minWidth, maxWidth, setWidth],
+    [
+      displayWidth,
+      maximized,
+      minWidth,
+      widthCeiling,
+      rememberRestoreWidth,
+      setWidth,
+    ],
   );
+
+  const toggleMaximized = React.useCallback(() => {
+    if (maximized) {
+      setMaximized(false);
+      setWidth(restoreWidthRef.current);
+    } else {
+      rememberRestoreWidth(displayWidth);
+      setMaximized(true);
+    }
+  }, [maximized, displayWidth, rememberRestoreWidth, setWidth]);
 
   // Handle escape key to close
   React.useEffect(() => {
@@ -109,11 +173,14 @@ export function ResizableDrawer({
           "border-border bg-background fixed right-0 z-40 flex border-l shadow-2xl",
           "animate-in slide-in-from-right duration-300",
           isResizing && "select-none",
-          "rounded-tl-lg border-t",
+          "border-t",
+          // At full width the left border sits off-screen and the rounded
+          // corner would clip content against the viewport edge.
+          atFullWidth ? "border-l-0" : "rounded-tl-lg",
           className,
         )}
         style={{
-          width: `${width}px`,
+          width: `${displayWidth}px`,
           // Below the nav header (h-14 = 56px) + optional preview banner
           top: "calc(56px + var(--preview-banner-h, 0px))",
           height: "calc(100vh - 56px - var(--preview-banner-h, 0px))",
@@ -132,6 +199,26 @@ export function ResizableDrawer({
 
         {/* Top right buttons */}
         <div className="absolute top-4 right-4 z-10 flex items-center gap-1">
+          {/* Maximize / restore button */}
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={toggleMaximized}
+            aria-pressed={maximized}
+            title={maximized ? "Restore width" : "Expand to full screen"}
+            className="h-8 w-8 opacity-70 hover:opacity-100"
+          >
+            {maximized ? (
+              <Minimize2 className="h-4 w-4" />
+            ) : (
+              <Maximize2 className="h-4 w-4" />
+            )}
+            <span className="sr-only">
+              {maximized ? "Restore width" : "Expand to full screen"}
+            </span>
+          </Button>
+
           {/* Close button */}
           {!hideCloseButton && (
             <Button
