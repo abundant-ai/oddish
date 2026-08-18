@@ -62,6 +62,13 @@ def test_default_sha_matches_uv_lock_pin():
     ), "HARBOR_DEFAULT_SHA drifted from backend/uv.lock"
 
 
+def test_harbor_pin_toml_matches_default():
+    with open("src/oddish/harbor-pin.toml", "rb") as fh:
+        pin = tomllib.load(fh)
+    assert pin["git"] == HARBOR_DEFAULT_SOURCE
+    assert pin["rev"] == HARBOR_DEFAULT_SHA
+
+
 def test_probe_harbor_ref_matches_pyproject_pin():
     # The probe fetches harbor at ``harbor_source_ref``; it must resolve to the
     # exact code the worker image runs, or probe trials inspect different harbor
