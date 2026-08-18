@@ -103,10 +103,27 @@ Read these fields from the task JSON:
 
 - `verdict_status` — `queued` / `running` (QA in flight; poll again in a few
   seconds), `success` / `failed` (settled).
-- `verdict` — the task verdict payload once settled, including `is_good`,
-  confidence, reasoning, and per-finding details.
-- Per-trial `analysis.classification` — one of `GOOD_SUCCESS`, `GOOD_FAILURE`,
-  `BAD_SUCCESS`, `BAD_FAILURE`, `HARNESS_ERROR`.
+- `verdict` — the settled task verdict: `verdict` (`accept` / `reject`),
+  `is_good`, `confidence`, `primary_issue`, `reasoning`, and
+  **`recommendations` — the task-level fix list** (3–5 items for rejected
+  tasks). The verdict carries no per-finding details; those live on trials.
+- Per-trial `analysis` — TRIMMED here to `classification` / `subtype` /
+  `evidence`. Classifications: `GOOD_SUCCESS`, `GOOD_FAILURE`, `BAD_SUCCESS`,
+  `BAD_FAILURE`, `HARNESS_ERROR`.
+
+The concrete fix suggestions are one level down, on the full trial record:
+
+```bash
+oddish status <trial_id> --json      # <task_id>-<index>
+```
+
+Its full `analysis` adds `recommendation` (per-trial fix) and
+`action_items[]` — findings with `file`, `line_start`–`line_end`, `title`,
+`detail`, **`recommendation`** (the fix), `tier` (`must_fix` / `should_fix` /
+`optional`), `exploited` + `exploit_evidence`, and `source` (`pre_trial` =
+found by the source audit before any run, `post_trial` = found from
+trajectories). Everything the web UI's QA panel renders is these stored
+fields; nothing is UI-only.
 
 Reading it correctly:
 
@@ -115,7 +132,6 @@ Reading it correctly:
   QA suspects the pass (e.g. reward hacking).
 - If baselines gated the sweep (`skipped` model trials), fix the task's
   baselines before reading anything into model results.
-- `oddish status <trial_id>` shows one trial's tokens, cost, and analysis.
 
 ## Workflow 4 — Pull evidence (read-only)
 
