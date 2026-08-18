@@ -41,7 +41,8 @@ class AnalyzerType(str, enum.Enum):
     PRE_TRIAL = "pre_trial"
     POST_TRIAL = "post_trial"
     CUSTOM_QA = "custom_qa"
-    AGENT_CAPABILITIES = "agent_capabilities"
+    # "agent_capabilities" was a member until the feature's execution path was
+    # removed; stored analyzer_blocks rows may still carry the string.
 
 
 # The backend each analyzer needs, keyed by what the analyzer is permitted to

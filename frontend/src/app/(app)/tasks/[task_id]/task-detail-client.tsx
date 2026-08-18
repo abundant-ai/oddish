@@ -775,7 +775,7 @@ export function TaskDetailClient({
   // --- Drawer addressability ------------------------------------------
   // The drawer state lives in the URL so any view on this page can be
   // linked: ?trial=<id> opens that trial, ?drawer=task opens the task
-  // files drawer, ?taskPane=capabilities opens the lazy analysis, and
+  // files drawer, and
   // ?taskFile= / ?taskLines= address the task pane's file and line range
   // (the trial pane's ?file= / ?lines= are handled inside TrialDetailPanel).
   const [activeTaskPane, setActiveTaskPane] = useState<TaskPane>("overview");
@@ -795,7 +795,7 @@ export function TaskDetailClient({
       const params = new URLSearchParams(window.location.search);
       const pane = params.get("taskPane");
       setActiveTaskPane(
-        pane === "capabilities" || pane === "file"
+        pane === "file"
           ? pane
           : params.has("taskFile")
             ? "file"
@@ -845,7 +845,7 @@ export function TaskDetailClient({
     const urlTaskLines = parseLineRange(params.get("taskLines"));
     const urlTaskPane = params.get("taskPane");
     setActiveTaskPane(
-      urlTaskPane === "capabilities" || urlTaskPane === "file"
+      urlTaskPane === "file"
         ? urlTaskPane
         : urlTaskFile
           ? "file"
