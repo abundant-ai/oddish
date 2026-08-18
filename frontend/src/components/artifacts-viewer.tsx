@@ -415,26 +415,28 @@ export function ArtifactsViewer({
   }`;
 
   return (
-    <div className="flex h-full flex-col overflow-hidden md:flex-row">
-      <div className="border-border bg-muted/30 max-h-[30vh] w-full overflow-auto border-b md:max-h-none md:w-56 md:border-r md:border-b-0 lg:w-64">
-        <div className="p-2">
-          <div className="text-muted-foreground flex items-center justify-between gap-2 px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
-            <span>Artifacts</span>
-            <span className="text-muted-foreground/70 font-sans text-[10px] font-normal normal-case">
-              {fileCountLabel}
-            </span>
+    <div className="@container/file-browser flex h-full min-h-0 min-w-0 overflow-hidden">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden @2xl/file-browser:flex-row">
+        <div className="border-border bg-muted/30 max-h-[30vh] w-full overflow-auto border-b @2xl/file-browser:max-h-none @2xl/file-browser:w-56 @2xl/file-browser:shrink-0 @2xl/file-browser:border-r @2xl/file-browser:border-b-0 @3xl/file-browser:w-64">
+          <div className="p-2">
+            <div className="text-muted-foreground flex items-center justify-between gap-2 px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
+              <span>Artifacts</span>
+              <span className="text-muted-foreground/70 font-sans text-[10px] font-normal normal-case">
+                {fileCountLabel}
+              </span>
+            </div>
+            {renderTree(tree)}
           </div>
-          {renderTree(tree)}
         </div>
+        <ArtifactContentPane
+          filesUrl={filesUrl}
+          selectedFile={selectedFile}
+          viewMode={viewMode}
+          onViewModeChange={setViewMode}
+          selectedLines={selectedLines}
+          onSelectLinesChange={onSelectLinesChange}
+        />
       </div>
-      <ArtifactContentPane
-        filesUrl={filesUrl}
-        selectedFile={selectedFile}
-        viewMode={viewMode}
-        onViewModeChange={setViewMode}
-        selectedLines={selectedLines}
-        onSelectLinesChange={onSelectLinesChange}
-      />
     </div>
   );
 }
@@ -600,7 +602,7 @@ function ArtifactContentPane({
   const renderUrl = presignedUrl || proxyUrl || null;
 
   return (
-    <div className="flex flex-1 flex-col overflow-hidden">
+    <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
       <div className="border-border bg-muted/30 flex items-center justify-between gap-2 border-b px-3 py-2 sm:px-4">
         <div className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[10px] sm:text-xs">
           {selectedFile.path}
