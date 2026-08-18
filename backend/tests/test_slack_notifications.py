@@ -495,6 +495,7 @@ def test_build_alerts_does_not_channel_escalate_a_finished_trial() -> None:
 
 
 def test_build_alerts_pings_channel_for_user_above_daily_overage_margin() -> None:
+    now = datetime(2026, 8, 18, 12, tzinfo=timezone.utc)
     alerts = build_alerts(
         AlertCandidates(
             user_spend=[
@@ -509,11 +510,13 @@ def test_build_alerts_pings_channel_for_user_above_daily_overage_margin() -> Non
             ]
         ),
         settings=DEFAULT_ALERT_SETTINGS,
-        recent_cutoff=datetime.now(timezone.utc) - timedelta(hours=24),
+        recent_cutoff=now - timedelta(hours=24),
         dashboard_url="https://www.oddish.app",
     )
 
-    assert [alert.key for alert in alerts] == ["user-daily-overage:org-1:user-1"]
+    assert [alert.key for alert in alerts] == [
+        "user-daily-overage:org-1:user-1:2026-08-18"
+    ]
     assert alerts[0].text.splitlines() == [
         "<!channel>",
         ":moneybag: *User spend above their 7-day daily average*",
@@ -530,6 +533,7 @@ def test_build_alerts_pings_channel_for_user_above_daily_overage_margin() -> Non
 def test_build_alerts_user_daily_overage_is_exclusive_and_configurable() -> None:
     # 24h spend $6,000 runs $5,000 above the $1,000 daily average.
     candidate = UserSpend("org-1", "user-1", "Pat", 6_000, 1_000, 0)
+    now = datetime(2026, 8, 18, 12, tzinfo=timezone.utc)
 
     def keys(delta: float) -> list[str]:
         alerts = build_alerts(
@@ -538,13 +542,51 @@ def test_build_alerts_user_daily_overage_is_exclusive_and_configurable() -> None
                 DEFAULT_ALERT_SETTINGS,
                 user_daily_overage_delta_usd=delta,
             ),
-            recent_cutoff=datetime.now(timezone.utc) - timedelta(hours=24),
+            recent_cutoff=now - timedelta(hours=24),
             dashboard_url="https://www.oddish.app",
         )
         return [alert.key for alert in alerts]
 
     assert keys(5_000) == []
-    assert keys(4_999) == ["user-daily-overage:org-1:user-1"]
+    assert keys(4_999) == ["user-daily-overage:org-1:user-1:2026-08-18"]
+
+
+@pytest.mark.asyncio
+async def test_user_daily_overage_alerts_once_per_utc_day(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows: dict[str, dict] = {}
+    posted: list[str] = []
+    candidates = AlertCandidates(
+        user_spend=[UserSpend("org-1", "user-1", "Pat", 6_000, 1_000, 0)]
+    )
+
+    async def post(*_args) -> None:
+        posted.append("")
+
+    def alerts(now: datetime) -> list[SlackAlert]:
+        return build_alerts(
+            candidates,
+            settings=DEFAULT_ALERT_SETTINGS,
+            recent_cutoff=now - timedelta(hours=24),
+            dashboard_url="https://www.oddish.app",
+        )
+
+    _outbox_stubs(monkeypatch, rows)
+    monkeypatch.setattr(notifications, "_post", post)
+
+    for now in (
+        datetime(2026, 8, 18, 1, tzinfo=timezone.utc),
+        datetime(2026, 8, 18, 23, tzinfo=timezone.utc),
+        datetime(2026, 8, 19, 1, tzinfo=timezone.utc),
+    ):
+        await _record_and_deliver(alerts(now), webhook_url="https://hooks.slack.test")
+
+    assert len(posted) == 2
+    assert _sent_keys(rows) == {
+        "user-daily-overage:org-1:user-1:2026-08-18",
+        "user-daily-overage:org-1:user-1:2026-08-19",
+    }
 
 
 def test_build_alerts_reports_unpriceable_models_once_each() -> None:
