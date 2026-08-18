@@ -255,6 +255,7 @@ _PROVIDER_RUNTIME_SECRET_KEYS: dict[str, tuple[str, ...]] = {
     "xai": ("XAI_API_KEY", "XAI_API_KEYS"),
     "meta": ("META_API_KEY", "OPENAI_API_KEY"),
     "fireworks": ("FIREWORKS_API_KEY",),
+    "deepseek": ("DEEPSEEK_API_KEY",),
     "zai": ("ZAI_API_KEY",),
     "minimax": ("MINIMAX_API_KEY",),
     "moonshot": ("MOONSHOT_API_KEY",),
