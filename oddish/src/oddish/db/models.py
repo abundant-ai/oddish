@@ -190,9 +190,9 @@ class WorkerJobKind(str, Enum):
     # rebuilds from source rather than applying a delta. Sibling-enqueued
     # by every tag write in the same transaction.
     TAG_PROJECT = "TAG_PROJECT"
-    # Hosted analyzer work. Payload mode selects cross-experiment report
-    # orchestration, agent capabilities, or one trial's trajectory summary.
-    # Runs on the QA queue; handled by AnalyzerJobHandler.
+    # Hosted analyzer work. Payload mode selects agent capabilities or one
+    # trial's trajectory summary (the report mode was removed with the reports
+    # feature). Runs on the QA queue; handled by AnalyzerJobHandler.
     ANALYZER = "ANALYZER"
     # Legacy: executed one row of the dropped ``analyzer_runs`` table.
     # Enum value only, no handler; nothing enqueues it anymore.
@@ -398,30 +398,6 @@ experiment_trials = Table(
 )
 
 
-# Association table: analyzers ↔ experiments. A analyzer analyzes trajectories
-# across N experiments; membership is additive and soft-deletable, mirroring
-# ``experiment_trials``.
-analyzer_experiments = Table(
-    "analyzer_experiments",
-    Base.metadata,
-    Column(
-        "analyzer_id",
-        String(64),
-        ForeignKey("analyzers.id", ondelete="CASCADE"),
-        primary_key=True,
-    ),
-    Column(
-        "experiment_id",
-        String(64),
-        ForeignKey("experiments.id", ondelete="CASCADE"),
-        primary_key=True,
-    ),
-    Column("created_at", DateTime(timezone=True), default=utcnow, nullable=False),
-    Column("deleted_at", DateTime(timezone=True), nullable=True),
-    Index("idx_analyzer_experiments_experiment_id", "experiment_id"),
-)
-
-
 class ExperimentModel(TimestampedMixin, Base):
     """Experiment database model (grouping for tasks)."""
 
@@ -535,94 +511,11 @@ class ExperimentModel(TimestampedMixin, Base):
     )
 
 
-class AnalyzerModel(TimestampedMixin, Base):
-    """Cross-experiment trajectory-analysis analyzer.
-
-    Inherits from experiments in the domain sense: a analyzer references N
-    experiments (via ``analyzer_experiments``), gathers their trials, and rolls
-    the per-trial subanalysis up one tier into four narrative sections. The
-    section bodies are markdown with inline ``/tasks/{task_id}/probe/{trial_id}``
-    deep links.
-    """
-
-    __tablename__ = "analyzers"
-    __table_args__ = (
-        Index(
-            "idx_analyzers_org_created_live",
-            "org_id",
-            "created_at",
-            postgresql_where=text("deleted_at IS NULL"),
-        ),
-        Index(
-            "idx_analyzers_org_owner_user_live",
-            "org_id",
-            "owner_user_id",
-            postgresql_where=text("deleted_at IS NULL"),
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
-    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
-    owner_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    owner: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    status: Mapped[JobStatus] = mapped_column(
-        SQLEnum(JobStatus, name="jobstatus", create_type=False),
-        default=JobStatus.PENDING,
-        nullable=False,
-    )
-    error: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    bad_failure_content: Mapped[str | None] = mapped_column(Text, nullable=True)
-    good_failure_content: Mapped[str | None] = mapped_column(Text, nullable=True)
-    universal_capabilities_content: Mapped[str | None] = mapped_column(
-        Text, nullable=True
-    )
-    headroom_analysis: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    # Per-model insights payload. NULL = pre-analyzers_008 report; the report UI
-    # falls back to the four-section render on NULL, so do not default this to {}.
-    by_model: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-
-    # The reduce-stage prompt that produced the section bodies above; persisted
-    # for debugging/reproducibility. NULL for zero-failure analyzers (no reduce).
-    reduce_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    num_trials: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    num_bad_failures: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    num_good_failures: Mapped[int | None] = mapped_column(Integer, nullable=True)
-
-    # Additive: per-subcategory counts (1a/1b, 3a/3b/3c, emergent) for FE chips.
-    breakdown: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-
-    # Per-trial findings from the map phase. NULL = analyzed before findings
-    # were persisted; [] = analyzed, no failures found. Not the same thing.
-    findings: Mapped[list | None] = mapped_column(JSONB, nullable=True)
-
-    # Per-task roster of models that ran it, including those that passed --
-    # the Task Construction denominator can't come from findings (failures only).
-    models_by_task: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-
-    # Opt-in (set at create time): when true, the worker uploads the per-trial
-    # findings+subanalyses to S3 (analyzers/{id}/trial_analyses.json).
-    save_trial_analyses: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False, server_default="false"
-    )
-
-    started_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    finished_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-
-
 class AnalyzerBlockModel(TimestampedMixin, Base):
     """One run of a single composable analyzer block.
 
-    Standalone primitive (not part of ``run_analyzer_generation_job``): many
-    blocks chain arbitrarily in test scripts. ``type`` / ``llm_client_type`` are
+    Standalone primitive: many blocks chain arbitrarily in test scripts.
+    ``type`` / ``llm_client_type`` are
     the ``.value`` of the ``AnalyzerType`` / ``LLMClientType`` enums defined in
     ``backend/api/services`` -- stored as plain strings so this module stays free
     of any backend-package dependency. Raw streamed output lives in S3 at
@@ -642,8 +535,9 @@ class AnalyzerBlockModel(TimestampedMixin, Base):
     analyzer_id: Mapped[str | None] = mapped_column(
         String(64), nullable=True, index=True
     )
-    # Task-level QA blocks use this explicit subject link. ``analyzer_id`` is
-    # reserved for the existing AnalyzerModel/report association.
+    # Task-level QA blocks use this explicit subject link. ``analyzer_id`` held
+    # the report association for the removed reports feature; historical rows
+    # keep their ids (the ``analyzers`` table itself is dropped).
     task_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     type: Mapped[str] = mapped_column(String(64), nullable=False)
     key_prefix: Mapped[str] = mapped_column(Text, nullable=False)
@@ -1370,8 +1264,9 @@ class AnalysisCostModel(TimestampedMixin, Base):
     org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     billed_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     task_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    # AnalyzerModel/report association. Task-level QA and classifiers leave
-    # this NULL and reconcile through task_id/trial_id instead.
+    # Historical report association (the reports feature is removed; the column
+    # stays for old rows). Task-level QA and classifiers leave this NULL and
+    # reconcile through task_id/trial_id instead.
     analyzer_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -2575,7 +2470,6 @@ from oddish.db.soft_delete import register_soft_delete_models
 
 register_soft_delete_models(
     ExperimentModel,
-    AnalyzerModel,
     AnalyzerBlockModel,
     TaskModel,
     TrialModel,

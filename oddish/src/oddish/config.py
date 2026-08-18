@@ -1293,21 +1293,6 @@ class Settings(BaseSettings):
     ec2_bootstrap_docker: bool = True
     ec2_max_concurrent_instances: int = 16
 
-    # Name of a pre-baked Daytona snapshot for agent sandboxes (the analyzer),
-    # with claude-code + harbor already installed. When set, sandboxes are
-    # created from it and ClaudeCodeRuntime.install() skips the npm/pip installs
-    # (~a minute of per-sandbox provisioning). Unset -> default base image +
-    # install at provision time. See docs/agent-sandbox-snapshot.md to build it.
-    agent_daytona_snapshot: str = ""
-
-    @property
-    def analyzer_snapshot(self) -> str:
-        return self.agent_daytona_snapshot
-
-    # Kill switch for the hosted multi-block sandbox analyzer. Gates
-    # registration, so unsetting it reverts to the core API path.
-    analyzer_sandbox_enabled: bool = True
-
     # Default for the org-scoped AnalyzerBlock pre-trial QA setting. An explicit
     # organizations.settings.pre_trial_analysis_enabled value takes precedence.
     # The hosted backend must register the synth via register_pre_trial_synth();

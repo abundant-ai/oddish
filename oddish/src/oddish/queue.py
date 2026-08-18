@@ -694,32 +694,6 @@ async def enqueue_pre_trial_worker_job(
     )
 
 
-async def enqueue_analyzer_worker_job(
-    session: AsyncSession, *, analyzer_id: str, org_id: str | None
-) -> WorkerJobModel:
-    """Enqueue a cross-experiment analyzer generation job.
-
-    Shares the QA queue key, so it contends with the QA backlog on the claim's
-    ``priority DESC, running_count ASC, created_at ASC``. Analyzers are rare,
-    interactive (someone is watching the dashboard), and enqueued after the QA
-    burst that a sweep produces -- on pure FIFO one waited ~59 minutes. The
-    raised priority is the only thing that lets a draining worker pick it up
-    ahead of that backlog; every other kind leaves priority at 0.
-    """
-    return await enqueue_worker_job(
-        session,
-        EnqueueRequest(
-            kind=WorkerJobKind.ANALYZER,
-            queue_key=settings.get_qa_queue_key(),
-            priority=1,
-            payload={"analyzer_id": analyzer_id},
-            subject_table="analyzers",
-            subject_id=analyzer_id,
-            org_id=org_id,
-        ),
-    )
-
-
 async def enqueue_task_expand_worker_job(
     session: AsyncSession,
     *,
