@@ -49,7 +49,6 @@ import {
   type TaskDetailResource,
 } from "@/lib/task-detail-resource";
 import { TaskOverviewPanel } from "@/components/task-overview-panel";
-import { AgentCapabilitiesSection } from "@/components/agent-capabilities-section";
 import {
   getCancelActionLabel,
   isActivePipelineStatus,
@@ -144,7 +143,6 @@ interface TaskFilesPanelProps {
    */
   showAnalysis?: boolean;
   /** Whether the task drawer offers and may fetch the capability analysis. */
-  showCapabilities?: boolean;
   /** The route host owns this because the drawer can mount two task panes. */
   activePane: TaskPane;
   onActivePaneChange?: (pane: TaskPane) => void;
@@ -204,7 +202,7 @@ interface TaskFilesPanelProps {
   onSelectedFileChange?: (path: string) => void;
 }
 
-export type TaskPane = "overview" | "capabilities" | "file";
+export type TaskPane = "overview" | "file";
 
 function getNodeName(path: string): string {
   const parts = path.split("/").filter(Boolean);
@@ -425,7 +423,6 @@ export function TaskFilesPanel({
   cancelExperimentId,
   allowRetry = true,
   showAnalysis = true,
-  showCapabilities = true,
   activePane,
   onActivePaneChange,
   onRetryComplete,
@@ -504,9 +501,7 @@ export function TaskFilesPanel({
           : undefined;
   const overviewAvailable =
     effectiveChecksTaskId !== null && showAnalysis !== false;
-  const capabilitiesAvailable =
-    showCapabilities && effectiveChecksTaskId !== null;
-  const taskPaneExists = overviewAvailable || capabilitiesAvailable;
+  const taskPaneExists = overviewAvailable;
   // Until /detail answers, the checks state is unknown, not "unaudited":
   // an enabled Run button on the misread queues an audit that wipes findings.
   // Never on public shares: `checksKey` is null there, so /detail is not
@@ -1513,27 +1508,6 @@ export function TaskFilesPanel({
                       </span>
                     </button>
                   ) : null}
-                  {capabilitiesAvailable ? (
-                    <button
-                      type="button"
-                      onClick={() => onActivePaneChange?.("capabilities")}
-                      aria-current={
-                        activePane === "capabilities" ? "page" : undefined
-                      }
-                      className={`flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-sm ${
-                        activePane === "capabilities"
-                          ? "bg-primary/20 text-primary"
-                          : "hover:bg-muted/50 cursor-pointer"
-                      }`}
-                      title="Analyze agent behavior across the task's trials"
-                    >
-                      <Microscope
-                        className="h-3.5 w-3.5 shrink-0"
-                        aria-hidden="true"
-                      />
-                      <span className="truncate">Capabilities</span>
-                    </button>
-                  ) : null}
                   <button
                     type="button"
                     onClick={() => onActivePaneChange?.("file")}
@@ -1622,27 +1596,7 @@ export function TaskFilesPanel({
               </div>
             )}
             <div ref={contentRef} className="bg-card flex-1 overflow-auto">
-              {activePane === "capabilities" ? (
-                effectiveChecksTaskId && typeof overviewVersion === "number" ? (
-                  <AgentCapabilitiesSection
-                    taskId={effectiveChecksTaskId}
-                    apiBaseUrl={baseUrl}
-                    version={overviewVersion}
-                    linkEvidence
-                    shareToken={shareToken}
-                  />
-                ) : overviewVersion === undefined ? (
-                  <div className="space-y-3 p-4">
-                    <Skeleton className="h-4 w-48" />
-                    <Skeleton className="h-24 w-full" />
-                    <Skeleton className="h-24 w-full" />
-                  </div>
-                ) : (
-                  <div className="text-muted-foreground flex h-full items-center justify-center p-6 text-sm">
-                    No capability analysis is available for this task version.
-                  </div>
-                )
-              ) : activePane === "overview" && overviewAvailable ? (
+              {activePane === "overview" && overviewAvailable ? (
                 <TaskOverviewPanel
                   taskId={effectiveChecksTaskId}
                   apiBaseUrl={baseUrl}

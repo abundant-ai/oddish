@@ -70,7 +70,6 @@ from oddish.core.model_concurrency import get_model_concurrency_overrides
 from oddish.db import close_database_connections, get_session, WorkerJobKind
 from oddish.runtime.backends.daytona import reap_stale_daytona_sandboxes
 from oddish.workers.jobs import ensure_builtin_handlers_registered
-from oddish.workers.jobs.handlers import register_agent_capabilities_provider
 from oddish.workers.queue.cleanup import cleanup_orphaned_queue_state
 from oddish.workers.queue.concurrency_controller import (
     get_advisory_limits,
@@ -83,7 +82,6 @@ from oddish.workers.queue.slots import (
     release_queue_slot,
 )
 
-from api.services.agent_capabilities import run_queued_analysis
 from oddish.workers.queue.sandbox_capacity import (
     SANDBOX_CAPACITY_LEASE_SECONDS,
     acquire_sandbox_capacity_lease,
@@ -144,7 +142,6 @@ async def teardown_ec2_sandbox(external_id: str) -> bool:
 # dispatcher and single-job runner also call this defensively, but
 # doing it here makes the startup order explicit for readers.
 ensure_builtin_handlers_registered()
-register_agent_capabilities_provider(run_queued_analysis)
 
 # Let the core trial handler resolve per-user BYOK keys (Statsig-gated) without
 # the core package importing backend. Inert until a user has a key and the gate

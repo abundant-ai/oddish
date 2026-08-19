@@ -135,7 +135,6 @@ interface ExperimentDetailViewProps {
   readOnly?: boolean;
   allowRetry?: boolean;
   showAnalysis?: boolean;
-  showCapabilities?: boolean;
   apiBaseUrl?: string;
   onTaskUnlink?: (task: Task) => Promise<void>;
   onTrialDelete?: (trial: Trial, task: Task | null) => Promise<void>;
@@ -936,7 +935,6 @@ export function ExperimentDetailView({
   readOnly = false,
   allowRetry = true,
   showAnalysis = true,
-  showCapabilities = true,
   apiBaseUrl = "/api",
   onTaskUnlink,
   onTrialDelete,
@@ -960,20 +958,15 @@ export function ExperimentDetailView({
   // tree beside the trial view, so the two panes address independently:
   // the trial pane owns ?file= / ?lines= (see TrialDetailPanel) and the
   // task pane owns ?taskPane= / ?taskFile= / ?taskLines=.
-  const defaultTaskPane: TaskPane = showAnalysis
-    ? "overview"
-    : showCapabilities
-      ? "capabilities"
-      : "file";
+  const defaultTaskPane: TaskPane = showAnalysis ? "overview" : "file";
   const readTaskPane = useCallback(
     (params: Pick<URLSearchParams, "get" | "has">): TaskPane => {
       const pane = params.get("taskPane");
       if (pane === "file") return "file";
-      if (pane === "capabilities" && showCapabilities) return "capabilities";
       if (params.has("taskFile")) return "file";
       return defaultTaskPane;
     },
-    [defaultTaskPane, showCapabilities]
+    [defaultTaskPane]
   );
   const [activeTaskPane, setActiveTaskPane] = useState<TaskPane>(() => {
     return readTaskPane(searchParams);
@@ -1802,7 +1795,6 @@ export function ExperimentDetailView({
               apiBaseUrl={apiBaseUrl}
               cancelExperimentId={experimentId}
               showAnalysis={showAnalysis}
-              showCapabilities={showCapabilities}
               loadFilesLazily={readOnly}
               contentOnly={true}
             />
@@ -1822,7 +1814,6 @@ export function ExperimentDetailView({
               allowRetry={allowRetry}
               cancelExperimentId={experimentId}
               showAnalysis={showAnalysis}
-              showCapabilities={showCapabilities}
               loadFilesLazily={readOnly}
               onNavigate={(nextTask, nextIndex) => {
                 if (!drawerState) return;

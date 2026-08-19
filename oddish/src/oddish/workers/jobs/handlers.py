@@ -54,17 +54,8 @@ class WorkerJobLike:
     modal_function_call_id: str | None
 
 
-AgentCapabilitiesProvider = Callable[..., Awaitable[dict | None]]
-_agent_capabilities_provider: AgentCapabilitiesProvider | None = None
-
 TrajectorySummaryProvider = Callable[[str, str | None], Awaitable[dict | None]]
 _trajectory_summary_provider: TrajectorySummaryProvider | None = None
-
-
-def register_agent_capabilities_provider(provider: AgentCapabilitiesProvider) -> None:
-    """Install the hosted capability generator without importing backend code."""
-    global _agent_capabilities_provider
-    _agent_capabilities_provider = provider
 
 
 def register_trajectory_summary_provider(provider: TrajectorySummaryProvider) -> None:
@@ -512,18 +503,10 @@ class AnalyzerJobHandler:
             )
 
         if payload.get("mode") == "agent_capabilities":
-            if _agent_capabilities_provider is None:
-                return _fail_permanent("Agent-capabilities provider is not registered")
-            result = await _agent_capabilities_provider(
-                task_id=payload.get("task_id"),
-                task_version_id=payload.get("task_version_id"),
-                task_name=payload.get("task_name"),
-                triggered_by_user_id=payload.get("triggered_by_user_id"),
-                experiment_id=payload.get("experiment_id"),
+            return _fail_permanent(
+                "agent-capabilities feature removed; "
+                "agent_capabilities ANALYZER jobs no longer run"
             )
-            if result is None:
-                return _fail_permanent("Not enough classified trials to analyze")
-            return JobOutcome.ok({"task_version_id": payload.get("task_version_id")})
 
         # Any other mode was a cross-experiment report job; the reports feature
         # was removed, so surviving queued rows fail terminally instead of
@@ -538,6 +521,5 @@ __all__ = [
     "TagProjectJobHandler",
     "TaskExpandJobHandler",
     "TrialJobHandler",
-    "register_agent_capabilities_provider",
     "register_trajectory_summary_provider",
 ]
