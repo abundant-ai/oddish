@@ -1939,6 +1939,7 @@ export function ExperimentDetailView({
                 apiBaseUrl={apiBaseUrl}
                 contentOnly={true}
                 paneAction={paneAction}
+                initialTrajectoryScrollToTokenBand={readOnly}
               />
             )
           }
