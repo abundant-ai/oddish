@@ -86,6 +86,16 @@ def test_pyproject_default_source_matches_config():
     assert harbor_pin["git"] == HARBOR_DEFAULT_SOURCE
 
 
+def test_backend_pyproject_harbor_pin_matches_default():
+    # The production worker image is built from backend/pyproject.toml. Keep its
+    # direct dependency aligned with the server-side default provenance stamp,
+    # not merely with the generated backend lock file.
+    with open("../backend/pyproject.toml", "rb") as fh:
+        harbor_pin = tomllib.load(fh)["tool"]["uv"]["sources"]["harbor"]
+    assert harbor_pin["git"] == HARBOR_DEFAULT_SOURCE
+    assert harbor_pin["rev"] == HARBOR_DEFAULT_SHA
+
+
 def test_r1_url_with_userinfo_does_not_split_ref_on_userinfo_at():
     # A userinfo '@' (user:token@host) must NOT be treated as the ref delimiter;
     # the source URL is kept intact and the ref is empty (default-branch HEAD).

@@ -15,6 +15,7 @@ touches ``worker_jobs``.
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 import re
 import time
@@ -33,12 +34,15 @@ from oddish.costs.recorder import (
 )
 from oddish.db import WorkerJobKind, WorkerJobStatus
 from oddish.workers.jobs.registry import (
+    HANDLERS,
     JobOutcome,
     NoHandlerRegisteredError,
     get_handler,
 )
 from oddish.workers.queue.shared import console
 from oddish.workers.queue.sandbox_capacity import SANDBOX_CAPACITY_LEASE_SECONDS
+
+logger = logging.getLogger(__name__)
 
 
 # Callback invoked after a claimed row completes successfully. Kept as a
@@ -186,6 +190,11 @@ candidate AS (
       AND  ($5::text IS NULL OR wj.harbor_variant_id = $5)
       AND  ($6::text IS NULL OR wj.execution_lane = $6)
       AND  ($7::text IS NULL OR EXISTS (SELECT 1 FROM capacity))
+      -- Only claim kinds this worker can actually run. Rows of retired
+      -- kinds (or kinds added by a newer deploy) stay QUEUED instead of
+      -- failing with "no handler registered". $10: $6-$9 are the
+      -- execution-lane / sandbox-capacity params above.
+      AND  wj.kind::text = ANY($10::text[])
       AND  wj.status::text IN ('QUEUED', 'RETRYING')
       AND  wj.available_after <= NOW()
       AND  tr.deleted_at IS NULL
@@ -395,6 +404,7 @@ async def claim_single_worker_job(
             capacity_provider,
             capacity_slot,
             SANDBOX_CAPACITY_LEASE_SECONDS,
+            sorted(kind.value for kind in HANDLERS),
         )
     finally:
         await connection.close()
@@ -686,7 +696,12 @@ async def run_single_worker_job(
         )
         raise
     except Exception as exc:  # handler-raised exceptions are retryable by default
-        console.print(f"[red]worker_job {job.id} handler error: {exc!r}[/red]")
+        logger.exception(
+            "worker_job %s (%s, subject=%s) handler error",
+            job.id,
+            job.kind.value,
+            job.subject_id,
+        )
         outcome = JobOutcome.fail(f"{type(exc).__name__}: {exc}", retryable=True)
 
     if (outcome.success is None) == (outcome.failure is None):
@@ -727,10 +742,11 @@ async def run_single_worker_job(
         if hook is not None:
             try:
                 await hook(job.subject_id)
-            except Exception as exc:
-                console.print(
-                    f"[yellow]post-success hook for kind={job.kind.value} "
-                    f"job={job.id} failed: {exc}[/yellow]"
+            except Exception:
+                logger.exception(
+                    "post-success hook for kind=%s job=%s failed",
+                    job.kind.value,
+                    job.id,
                 )
 
     return True

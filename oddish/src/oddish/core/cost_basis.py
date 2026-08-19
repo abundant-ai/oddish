@@ -27,7 +27,7 @@ from collections.abc import Iterable
 from sqlalchemy import and_, case, func, or_, select
 
 from oddish.config import settings
-from oddish.db import CostExcludedLlmKeyModel, TrialModel, TrialOrigin
+from oddish.db import AGENT_TRIAL_KIND, CostExcludedLlmKeyModel, TrialModel, TrialOrigin
 from oddish.model_pricing import estimate_cost_usd
 
 # ``harbor_stage='cancelled'`` marks an abandoned trial. Three paths stamp it:
@@ -106,15 +106,31 @@ def first_party_spend_filter():
     Imported trials were paid for outside Oddish. Experiment-combine rows copy
     an existing trial's result and cost, so counting them would charge the same
     execution twice. Spend stamped with an LLM key on the admin cost-exclusion
-    list (sponsored/free keys) is deliberately not counted. Keep this
-    eligibility rule shared by quota accounting and cost reporting so both
-    surfaces count the same execution population.
+    list (sponsored/free keys) is deliberately not counted. Platform analysis
+    runs (``kind != 'agent'``) are the platform's own spend, not the user's --
+    they are reported separately via :func:`analysis_spend_filter`, never mixed
+    into agent spend. Keep this eligibility rule shared by quota accounting and
+    cost reporting so both surfaces count the same execution population.
     """
     return and_(
         TrialModel.origin == TrialOrigin.ODDISH,
+        TrialModel.kind == AGENT_TRIAL_KIND,
         not_combine_copy_filter(),
         not_excluded_llm_key_filter(),
     )
+
+
+def analysis_spend_filter():
+    """Select the platform's analysis agent runs (``kind != 'agent'``).
+
+    The complement of :func:`first_party_spend_filter`'s kind clause, for the
+    QA-cost surfaces. Written as an inequality (not an enumeration of analysis
+    kinds) so new kinds are counted automatically. No consumer exists yet --
+    the analysis-trial pipeline that writes non-agent rows lands next; this
+    ships with the ``trials.kind`` column so both sides of the split are
+    defined in one place from the start.
+    """
+    return TrialModel.kind != AGENT_TRIAL_KIND
 
 
 def _estimatable():

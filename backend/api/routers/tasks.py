@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
-from typing import TYPE_CHECKING, Annotated, cast
+from typing import Annotated, cast
 
 from fastapi import (
     APIRouter,
@@ -28,6 +28,7 @@ from oddish.dispatch.backends.modal import ModalDispatcher
 from oddish.dispatch.ports import WorkerHandle
 from oddish.filters.trial_metrics import TrialMetricFilter
 from oddish.core.endpoints import (
+    SweepAttribution,
     backfill_task_analysis_core,
     browse_experiment_options_core,
     browse_task_facets_core,
@@ -91,11 +92,8 @@ from api.routers.task_submission import (
     require_connected_github_user,
     require_experiment_publish_scope,
     resolve_actor_user_string,
-    resolve_billed_user_id,
-    resolve_created_by_user_id,
-    resolve_experiment_owner_user_id,
+    resolve_sweep_attribution,
     resolve_submission_identity,
-    stamp_experiment_owner,
 )
 from dashboard_attribution import resolve_search_authors
 from oddish.core.tasks import (
@@ -148,9 +146,6 @@ from oddish.schemas import (
     TrialCollectionResponse,
     UploadResponse,
 )
-
-if TYPE_CHECKING:
-    from models import UserModel
 
 router = APIRouter(tags=["Tasks"])
 logger = logging.getLogger(__name__)
@@ -371,14 +366,8 @@ async def create_task_sweep(
         # active org user is rejected here, before any rows are written.
         connected_user = await require_connected_github_user(session, submission, auth)
 
-        # Billing follows the resolved owner (submitted github_id/github_username,
-        # github_id first), else the API-key owner / submitter. Reuse the
-        # linkage-gate user so we don't re-query it.
-        owner_user_id = await resolve_experiment_owner_user_id(
+        attribution = await resolve_sweep_attribution(
             session, submission, auth, connected_user
-        )
-        billed_user_id = await resolve_billed_user_id(
-            session, submission, auth, owner_user_id=owner_user_id
         )
 
         try:
@@ -386,7 +375,7 @@ async def create_task_sweep(
                 session,
                 submission=submission,
                 org_id=auth.org_id,
-                billed_user_id=billed_user_id,
+                attribution=attribution,
                 default_environment=get_default_cloud_environment(submission),
                 allowed_environments=ALLOWED_CLOUD_ENVIRONMENTS,
                 idempotency_key=idempotency_key,
@@ -431,16 +420,7 @@ async def create_task_sweep(
                 await _spawn_gke_image_builds(session, [replay_task_id])
             return response
 
-        stamp_experiment_owner(experiment, owner_user_id, claim_unowned=not is_append)
-
         if not is_append:
-            created_by_user_id = await resolve_created_by_user_id(
-                session, submission, auth, connected_user
-            )
-            if created_by_user_id:
-                task.created_by_user_id = created_by_user_id
-            task.api_key_id = auth.api_key_id
-
             await maybe_publish_experiment(session, task, submission, auth)
 
         elif experiment and submission.publish_experiment:
@@ -478,11 +458,9 @@ async def create_task_sweep_batch(
             status_code=400, detail="Must specify at least one submission"
         )
 
-    connected_users: dict[int, UserModel | None] = {}
-
     async def _prepare(
         session: AsyncSession, submission: TaskSweepSubmission
-    ) -> EnvironmentType | None:
+    ) -> tuple[EnvironmentType | None, SweepAttribution]:
         # Per-item, auth-aware setup. Runs in the batch core's read-only
         # pre-loop (identity -> attribution -> billed, same order as the single
         # route); a failure fails only this item.
@@ -491,25 +469,11 @@ async def create_task_sweep_batch(
         # Unconditional linkage gate: a truthy github_id resolving to no active
         # org user raises 403 here; the batch core catches it and fails only
         # this item (rolling back its savepoint) before any rows are written.
-        connected_users[id(submission)] = await require_connected_github_user(
-            session, submission, auth
+        connected_user = await require_connected_github_user(session, submission, auth)
+        attribution = await resolve_sweep_attribution(
+            session, submission, auth, connected_user
         )
-        return get_default_cloud_environment(submission)
-
-    # Owner resolved once in the pre-loop (inside _resolve_billed) and reused
-    # by _finalize -- same single-resolution shape as the single route.
-    owners: dict[int, str | None] = {}
-
-    async def _resolve_billed(
-        session: AsyncSession, submission: TaskSweepSubmission
-    ) -> str | None:
-        owner_user_id = await resolve_experiment_owner_user_id(
-            session, submission, auth
-        )
-        owners[id(submission)] = owner_user_id
-        return await resolve_billed_user_id(
-            session, submission, auth, owner_user_id=owner_user_id
-        )
+        return get_default_cloud_environment(submission), attribution
 
     async def _finalize(
         session: AsyncSession,
@@ -518,19 +482,7 @@ async def create_task_sweep_batch(
         is_append: bool,
         experiment: ExperimentModel | None,
     ) -> None:
-        # Post-create stamping, inside the savepoint (mirrors the single route).
-        # Owner was resolved once in _resolve_billed; connected_user (linkage
-        # gate) is reused for created_by resolution below.
-        connected_user = connected_users.get(id(submission))
-        owner_user_id = owners.get(id(submission))
-        stamp_experiment_owner(experiment, owner_user_id, claim_unowned=not is_append)
         if not is_append:
-            created_by_user_id = await resolve_created_by_user_id(
-                session, submission, auth, connected_user
-            )
-            if created_by_user_id:
-                task.created_by_user_id = created_by_user_id
-            task.api_key_id = auth.api_key_id
             await maybe_publish_experiment(session, task, submission, auth)
         elif experiment and submission.publish_experiment:
             require_experiment_publish_scope(auth)
@@ -544,7 +496,6 @@ async def create_task_sweep_batch(
             allowed_environments=ALLOWED_CLOUD_ENVIRONMENTS,
             prepare=_prepare,
             finalize=_finalize,
-            resolve_billed_user_id=_resolve_billed,
         )
         await session.commit()
 
@@ -1044,6 +995,7 @@ async def combine_experiments(
             name=payload.name,
             org_id=auth.org_id,
             copy_artifacts=payload.copy_artifacts,
+            owner_user_id=auth.user_id,
         )
         await session.commit()
 
@@ -1070,6 +1022,7 @@ async def create_trial_collection(
             trial_ids=payload.trial_ids,
             task_ids=payload.task_ids,
             org_id=auth.org_id,
+            owner_user_id=auth.user_id,
         )
         await session.commit()
 
@@ -1180,11 +1133,21 @@ async def get_experiment_share(
         if not experiment:
             raise HTTPException(status_code=404, detail="Experiment not found")
 
+        qa_report_experiment_id = None
+        if experiment.shadow_of is None:
+            qa_report_experiment_id = await session.scalar(
+                select(ExperimentModel.id).where(
+                    ExperimentModel.shadow_of == experiment.id
+                )
+            )
+
         return ExperimentShareResponse(
             name=experiment.name,
             is_public=bool(experiment.is_public),
             public_token=experiment.public_token,
             description=experiment.description,
+            shadow_of=experiment.shadow_of,
+            qa_report_experiment_id=qa_report_experiment_id,
         )
 
 
@@ -1500,8 +1463,7 @@ async def backfill_task_qa(
     """Backfill trial analysis for a task: fill trials with no successful analysis yet.
 
     Default fills only missing/never-analyzed trials; ``force`` re-runs
-    (optionally only ``trial_ids``); ``enable_analysis`` also opts the task
-    into analysis going forward.
+    (optionally only ``trial_ids``).
     """
     auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
 
@@ -1512,7 +1474,6 @@ async def backfill_task_qa(
             org_id=auth.org_id,
             trial_ids=body.trial_ids,
             force=body.force,
-            enable_analysis=body.enable_analysis,
         )
 
 
@@ -1602,107 +1563,6 @@ async def get_task_detail(
 
     async with get_session() as session:
         return await get_task_detail_core(session, task_id=task_id, org_id=auth.org_id)
-
-
-@router.get("/tasks/{task_id}/agent-capabilities")
-# Pre-rename path. Kept so a frontend deploy that lags this one -- or a
-# rollback to it -- keeps working; undocumented so only the new path is
-# published. Remove once no released frontend calls it.
-@router.get("/tasks/{task_id}/cohort-comparison", include_in_schema=False)
-async def get_task_agent_capabilities(
-    task_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
-    response: Response,
-    refresh: bool = Query(
-        False,
-        description=(
-            "Discard the stored analysis and generate a new one. Costs an "
-            "LLM call, so it needs the same scope as an analysis rerun."
-        ),
-    ),
-    version: int | None = Query(
-        None,
-        description=(
-            "Compare this task version instead of the current one. The overview "
-            "scopes its other sections to the selected version, so without this "
-            "an older version would show the current version's comparison."
-        ),
-    ),
-) -> dict:
-    """Successful-vs-failing comparison for a task version.
-
-    404 when the task has too few classified trials to compare.
-    """
-    auth.require_scope(APIKeyScope.READ)
-    if refresh:
-        auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
-    async with get_session() as session:
-        # This router has no _get_authorized_task helper; task-scoped routes
-        # authorize by filtering on auth.org_id (see the READ routes above).
-        task = (
-            await session.execute(
-                select(TaskModel).where(
-                    TaskModel.id == task_id,
-                    TaskModel.org_id == auth.org_id,
-                )
-            )
-        ).scalar_one_or_none()
-        if task is None or not task.current_version_id:
-            raise HTTPException(status_code=404, detail="Task not found")
-        version_id = task.current_version_id
-        if version is not None:
-            # Imported here to match this module's convention: TaskVersionModel
-            # is pulled in per-function rather than at module scope.
-            from oddish.db.models import TaskVersionModel
-
-            version_id = (
-                await session.execute(
-                    select(TaskVersionModel.id).where(
-                        TaskVersionModel.task_id == task.id,
-                        TaskVersionModel.version == version,
-                    )
-                )
-            ).scalar_one_or_none()
-            if version_id is None:
-                raise HTTPException(status_code=404, detail="Task version not found")
-        from api.services.agent_capabilities import (
-            analysis_is_eligible,
-            enqueue_analysis,
-            load_stored_analysis,
-        )
-        from oddish.db.models import TaskVersionModel
-
-        result = None if refresh else await load_stored_analysis(
-            session, version_id, task_id=task.id
-        )
-        if result is None:
-            if not await analysis_is_eligible(session, version_id):
-                raise HTTPException(
-                    status_code=404,
-                    detail="Not enough classified trials to compare",
-                )
-            # Serialize cache misses for this version across API containers.
-            await session.execute(
-                select(TaskVersionModel.id)
-                .where(TaskVersionModel.id == version_id)
-                .with_for_update()
-            )
-            await enqueue_analysis(
-                session,
-                task_id=task.id,
-                task_version_id=version_id,
-                task_name=task.name,
-                org_id=task.org_id,
-                triggered_by_user_id=auth.user_id,
-            )
-            response.status_code = status.HTTP_202_ACCEPTED
-            return {"status": "queued", "task_version_id": version_id}
-    # Stamped at serve time rather than stored in the block's output: the
-    # version is what the comparison covers, so every response carries it
-    # whether it was generated or read from cache. The UI needs it because
-    # the task page addresses a version by id (`?version=`), while this
-    # endpoint takes the version number.
-    return {**result, "task_version_id": version_id}
 
 
 # =============================================================================

@@ -140,8 +140,38 @@ _GEMINI_RUNTIME_ENV_KEYS = (*GEMINI_BASE_URL_KEYS, *GEMINI_OAUTH_ENV_KEYS)
 # file path -- its secret is the file's contents, outside this exact-value map.
 _GEMINI_RUNTIME_SECRET_KEYS = (
     "GEMINI_API_KEY",
+    "GOOGLE_GENERATIVE_AI_API_KEY",
     "GOOGLE_API_KEY",
 )
+# The name the Vercel AI SDK's google provider reads, and therefore the name
+# opencode authenticates with. The platform publishes its Google key as
+# GEMINI_API_KEY (what gemini-cli reads), so the two have to be bridged.
+_AI_SDK_GOOGLE_KEY = "GOOGLE_GENERATIVE_AI_API_KEY"
+# The ambient names that hold the platform Google credential, best first.
+_GOOGLE_KEY_SOURCES = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
+
+
+def _gemini_ai_sdk_alias_env(model: str | None) -> dict[str, str]:
+    """Mirror the ambient Google key onto the AI SDK's env var name.
+
+    Returns ``{}`` unless this is a Google-provider trial whose credential is
+    ambient under a different name. Never overwrites an explicitly-set
+    ``GOOGLE_GENERATIVE_AI_API_KEY``, so a deployment that configures the AI SDK
+    name directly stays authoritative.
+
+    This has to happen in the worker's os.environ rather than the agent env:
+    Harbor's opencode agent selects the provider keys it forwards with a raw
+    ``if key in os.environ`` test, bypassing the extra_env-aware accessor, so a
+    value injected only through the agent env is invisible to it.
+    """
+    if infer_model_provider_prefix(model) != "gemini":
+        return {}
+    if os.environ.get(_AI_SDK_GOOGLE_KEY):
+        return {}
+    for source in _GOOGLE_KEY_SOURCES:
+        if value := os.environ.get(source):
+            return {_AI_SDK_GOOGLE_KEY: value}
+    return {}
 # Ambient claude-code platform credentials must fold into the redaction map for
 # the same reason: when job-scoped injection is off, the direct/OAuth Anthropic
 # credential or the Bedrock credential chain the stock agent forwards is only in
@@ -217,10 +247,15 @@ _PROVIDER_RUNTIME_SECRET_KEYS: dict[str, tuple[str, ...]] = {
         "AWS_SECRET_ACCESS_KEY",
         "AWS_SESSION_TOKEN",
     ),
-    "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    # GOOGLE_GENERATIVE_AI_API_KEY is the name the AI SDK's google provider
+    # reads, so it is what opencode authenticates with on a ``google/`` model.
+    # It is a credential value like the other two -- listed for redaction
+    # coverage, never a base URL, so it cannot affect transport-host selection.
+    "gemini": ("GEMINI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "GOOGLE_API_KEY"),
     "xai": ("XAI_API_KEY", "XAI_API_KEYS"),
     "meta": ("META_API_KEY", "OPENAI_API_KEY"),
     "fireworks": ("FIREWORKS_API_KEY",),
+    "deepseek": ("DEEPSEEK_API_KEY",),
     "zai": ("ZAI_API_KEY",),
     "minimax": ("MINIMAX_API_KEY",),
     "moonshot": ("MOONSHOT_API_KEY",),
@@ -1465,9 +1500,12 @@ async def _run_harbor_trial_async_impl(
             environment_build_timeout_multiplier=env_build_multiplier,
         )
 
-    # Probes attach to an existing task and inherit its task.toml, which may
-    # predate the timeout requirement. Rather than hard-fail, skip strict
-    # validation and hand the probe a capped default agent timeout below.
+    # Probes and analysis trials attach to an existing task and inherit its
+    # task.toml, which may predate the timeout requirement. Rather than
+    # hard-fail, skip strict validation and cap the agent timeout below.
+    from oddish.workers.analysis_trials import is_analysis_kind
+
+    is_probe = raw.get("mode") == "probe" or is_analysis_kind(raw.get("mode"))
     if not is_probe:
         validate_task_timeout_config(task_path)
 
@@ -1752,6 +1790,16 @@ async def _run_harbor_trial_async_impl(
         # Keep the BYOK key ambient for Job.create/run too, so Harbor's own
         # os.environ-based Bedrock-mode check agrees with the direct model id.
         runtime_env.update(byok_anthropic_env)
+        # Same idea for Google: the platform key is published as GEMINI_API_KEY
+        # (what gemini-cli reads), but agents built on the Vercel AI SDK read
+        # GOOGLE_GENERATIVE_AI_API_KEY. Harbor's opencode agent forwards the
+        # provider's key names it finds in *os.environ* -- a raw membership
+        # test, not the extra_env-aware helper -- so a value that arrives only
+        # through the agent env never reaches it, and the CLI exits before its
+        # first model call with no credential it recognises. Mirroring the one
+        # platform key onto the AI SDK name here puts it on the exact surface
+        # that forwarding reads, for the whole Job.create/run scope.
+        runtime_env.update(_gemini_ai_sdk_alias_env(model))
         is_claude_code = "claude-code" in (agent or "").strip().lower()
         if is_claude_code and (
             byok_anthropic_env or _claude_code_forces_direct_api(is_probe)

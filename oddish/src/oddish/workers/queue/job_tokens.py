@@ -117,7 +117,18 @@ def scoped_model_env(*, agent: str, model: str | None, settings: Any) -> dict[st
         return {"CLAUDE_CODE_USE_BEDROCK": "1"}
     if provider == "gemini":
         key = getattr(settings, "gemini_api_key", None)
-        return {"GEMINI_API_KEY": key} if key else {}
+        # Publish the one platform Google key under BOTH names the agents read.
+        # gemini-cli reads GEMINI_API_KEY; opencode is built on the AI SDK, whose
+        # google provider reads GOOGLE_GENERATIVE_AI_API_KEY -- and Harbor's
+        # opencode agent only forwards a var it finds in os.environ, so a bundle
+        # carrying just GEMINI_API_KEY leaves opencode with no credential and it
+        # exits before the first model call ("agent not started", 0 tokens).
+        # Same value, two names: no second Modal secret, no new key to rotate.
+        return (
+            {"GEMINI_API_KEY": key, "GOOGLE_GENERATIVE_AI_API_KEY": key}
+            if key
+            else {}
+        )
     if provider == "meta":
         key = getattr(settings, "meta_api_key", None)
         return {"META_API_KEY": key, "MSWEA_API_KEY": key} if key else {}

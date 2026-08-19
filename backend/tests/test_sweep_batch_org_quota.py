@@ -35,7 +35,7 @@ from auth import require_auth
 from auth.types import AuthContext, AuthMethod
 from models import UserModel, UserRole
 from oddish.config import QuotaMode, settings
-from oddish.core.endpoints import create_task_sweep_batch_core
+from oddish.core.endpoints import SweepAttribution, create_task_sweep_batch_core
 from oddish.db import TrialModel
 from oddish.db.models import Base
 from oddish.schemas import AgentModelPair, TaskSweepSubmission
@@ -145,15 +145,15 @@ async def test_batch_item_tipping_org_cap_fails_402_and_siblings_persist(
             _append_submission("t-oq-c", n_trials=1),
         ]
 
-        async def resolve(session, submission):
-            return BILLED_USER
+        async def prepare(session, submission):
+            return None, SweepAttribution(billed_user_id=BILLED_USER)
 
         async with maker() as session:
             results = await create_task_sweep_batch_core(
                 session,
                 submissions=submissions,
                 org_id=ORG_ID,
-                resolve_billed_user_id=resolve,
+                prepare=prepare,
             )
             await session.commit()
 

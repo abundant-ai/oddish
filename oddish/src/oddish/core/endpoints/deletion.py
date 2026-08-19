@@ -15,6 +15,7 @@ from oddish.core.endpoints._common import (
 )
 from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.db import (
+    AGENT_TRIAL_KIND,
     AnalysisStatus,
     ExperimentModel,
     TaskModel,
@@ -22,6 +23,7 @@ from oddish.db import (
     TrialModel,
     TrialStatus,
     VerdictStatus,
+    task_experiments,
     utcnow,
 )
 from oddish.schemas import ExperimentCombineResponse
@@ -227,37 +229,17 @@ async def delete_task_core(
         .values(deleted_at=utcnow())
     )
 
-    # If the task has no remaining live trials and no other experiment
-    # links, tombstone it too. Live = ``deleted_at IS NULL`` (the
-    # session-level filter handles this transparently for ORM queries).
-    remaining_trials = int(
-        await session.scalar(
-            select(func.count(TrialModel.id)).where(
-                TrialModel.task_id == resolved_task_id
-            )
-        )
-        or 0
-    )
-    remaining_links = int(
-        await session.scalar(
-            select(func.count())
-            .select_from(task_experiments)
-            .where(
-                task_experiments.c.task_id == resolved_task_id,
-                task_experiments.c.deleted_at.is_(None),
-            )
-        )
-        or 0
-    )
-
+    # If the task has no remaining live agent trials and no membership in
+    # a real (non-shadow) experiment, tombstone it too.
     task_removed = False
-    if remaining_trials == 0 and remaining_links == 0:
+    if await _task_is_orphaned(session, resolved_task_id):
         await _cancel_worker_jobs_for_task(
             session,
             task_id=resolved_task_id,
             reason="Task deleted by user",
             harvest=harvest,
         )
+        await _tombstone_task_analysis_leftovers(session, resolved_task_id)
         await session.execute(
             update(TaskModel)
             .where(TaskModel.id == resolved_task_id)
@@ -533,6 +515,89 @@ async def _cancel_worker_jobs_for_trials(
     harvest.add(rows)
 
 
+async def _task_is_orphaned(session: AsyncSession, task_id: str) -> bool:
+    """Whether nothing user-owned keeps this task alive.
+
+    Counts live AGENT trials and live memberships in real (non-shadow)
+    experiments only. Analysis trials and the qa-report shadow membership
+    exist in service of the task -- counting either would keep every task
+    that ever ran QA alive forever, so tombstoning would never fire.
+    """
+    remaining_trials = int(
+        await session.scalar(
+            select(func.count(TrialModel.id)).where(
+                TrialModel.task_id == task_id,
+                TrialModel.kind == AGENT_TRIAL_KIND,
+            )
+        )
+        or 0
+    )
+    if remaining_trials:
+        return False
+    remaining_links = int(
+        await session.scalar(
+            select(func.count())
+            .select_from(task_experiments)
+            .join(
+                ExperimentModel,
+                ExperimentModel.id == task_experiments.c.experiment_id,
+            )
+            .where(
+                task_experiments.c.task_id == task_id,
+                task_experiments.c.deleted_at.is_(None),
+                ExperimentModel.shadow_of.is_(None),
+            )
+        )
+        or 0
+    )
+    return remaining_links == 0
+
+
+async def _tombstone_task_analysis_leftovers(
+    session: AsyncSession, task_id: str
+) -> None:
+    """Retire a tombstoned task's analysis trials and their jobs.
+
+    ``_cancel_worker_jobs_for_task`` only reaches jobs whose subject is the
+    task row; an analysis trial's TRIAL job subjects the trial. Cancel those
+    and soft-delete the trial rows so nothing live points at a dead task
+    (the claim SQL skips jobs of soft-deleted trials either way).
+    """
+    await session.execute(
+        text(
+            """
+            UPDATE worker_jobs
+            SET    status = 'CANCELLED',
+                   finished_at = NOW(),
+                   error_message = 'Task deleted by user',
+                   current_worker_id = NULL,
+                   current_queue_slot = NULL,
+                   modal_function_call_id = NULL
+            WHERE  kind::text = 'TRIAL'
+              AND  subject_table = 'trials'
+              AND  subject_id IN (
+                  SELECT id FROM trials
+                  WHERE task_id = :task_id AND kind != 'agent'
+                    AND deleted_at IS NULL
+              )
+              AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+            """
+        ),
+        {"task_id": task_id},
+    )
+    await session.execute(
+        text(
+            """
+            UPDATE trials
+            SET    deleted_at = NOW()
+            WHERE  task_id = :task_id AND kind != 'agent'
+              AND  deleted_at IS NULL
+            """
+        ),
+        {"task_id": task_id},
+    )
+
+
 async def _cancel_worker_jobs_for_task(
     session: AsyncSession,
     *,
@@ -686,30 +751,14 @@ async def delete_experiment_core(
     deleted_tasks = 0
 
     for tid in linked_task_ids:
-        remaining_trials = int(
-            await session.scalar(
-                select(func.count(TrialModel.id)).where(TrialModel.task_id == tid)
-            )
-            or 0
-        )
-        remaining_links = int(
-            await session.scalar(
-                select(func.count())
-                .select_from(task_experiments)
-                .where(
-                    task_experiments.c.task_id == tid,
-                    task_experiments.c.deleted_at.is_(None),
-                )
-            )
-            or 0
-        )
-        if remaining_trials == 0 and remaining_links == 0:
+        if await _task_is_orphaned(session, tid):
             await _cancel_worker_jobs_for_task(
                 session,
                 task_id=tid,
                 reason="Experiment deleted by user",
                 harvest=harvest,
             )
+            await _tombstone_task_analysis_leftovers(session, tid)
             task_upd_result = await session.execute(
                 update(TaskModel)
                 .where(TaskModel.id == tid)
@@ -755,6 +804,7 @@ _COMBINE_TRIAL_RESULT_FIELDS = (
     "environment",
     "harbor_config",
     "is_probe",
+    "kind",
     "status",
     "origin",
     "attempts",
@@ -800,6 +850,7 @@ async def combine_experiments_core(
     name: str | None = None,
     org_id: str | None = None,
     copy_artifacts: bool = True,
+    owner_user_id: str | None = None,
 ) -> ExperimentCombineResponse:
     """Create a new experiment that merges the data of several others.
 
@@ -871,6 +922,7 @@ async def combine_experiments_core(
     result = ExperimentModel(
         name=result_name,
         org_id=org_id,
+        owner_user_id=owner_user_id,
         last_activity_at=utcnow(),
     )
     session.add(result)

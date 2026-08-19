@@ -76,15 +76,15 @@ IDENTITY_SQL = text(
 AGGREGATE_SQL = text(
     """
     WITH qa_rows AS (
-      SELECT ac.id, COALESCE(ac.cost_usd, 0.0) AS cost
-      FROM analysis_costs ac
-      WHERE ac.deleted_at IS NULL AND ac.task_id = :task_id
-        AND (CAST(:org_id AS text) IS NULL OR ac.org_id = :org_id)
-      UNION
-      SELECT ac.id, COALESCE(ac.cost_usd, 0.0) AS cost
-      FROM analysis_costs ac JOIN trials qat ON qat.id = ac.trial_id
-      WHERE ac.deleted_at IS NULL AND qat.task_id = :task_id
-        AND (CAST(:org_id AS text) IS NULL OR ac.org_id = :org_id)
+      -- The analysis_spend view: frozen analysis_costs ledger UNION ALL
+      -- QA/audit trial spend. The trial join recovers ledger rows the old
+      -- per-trial classifier stamped with trial_id but no task_id; OR is
+      -- row-level, so a row carrying both never counts twice.
+      SELECT COALESCE(a.cost_usd, 0.0) AS cost
+      FROM analysis_spend a
+      LEFT JOIN trials qat ON qat.id = a.trial_id
+      WHERE (a.task_id = :task_id OR qat.task_id = :task_id)
+        AND (CAST(:org_id AS text) IS NULL OR a.org_id = :org_id)
     ), eligible AS (
       SELECT tr.task_version_id, tr.billed_user_id, tr.is_probe,
         tr.agent, tr.provider, tr.model, tr.status, tr.reward,
@@ -96,6 +96,7 @@ AGGREGATE_SQL = text(
           OR COALESCE(tr.cache_write_tokens, 0) > 0)) AS has_estimatable_tokens
       FROM trials tr
       WHERE tr.task_id = :task_id AND tr.deleted_at IS NULL
+        AND tr.kind = 'agent'
         AND tr.superseded_by_trial_id IS NULL
         AND (tr.idempotency_key IS NULL OR tr.idempotency_key NOT LIKE 'combine:%')
         AND (CAST(:org_id AS text) IS NULL OR tr.org_id = :org_id OR tr.org_id IS NULL)

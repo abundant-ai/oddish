@@ -73,8 +73,8 @@ it carries unpromoted commits. Never cherry-pick the fix into `staging`: the
 copy gets a different commit id, so the branches stay diverged.
 
 Not every change has to be releasable to merge. Land unfinished work behind a
-flag that is off by default (as `ODDISH_GKE_ENABLED` and
-`ODDISH_PRE_TRIAL_ENABLED` do), or promote only part of `staging` by giving
+flag that is off by default (as `ODDISH_GKE_ENABLED` does), or promote only
+part of `staging` by giving
 the promotion workflow the commit to stop at (the `target_sha` input on
 Promotion Preflight, `/promote <sha>` on the promotion pull request, or the
 `promotion-target` pin in its body).

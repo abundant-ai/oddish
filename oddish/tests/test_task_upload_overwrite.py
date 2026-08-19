@@ -73,7 +73,7 @@ def _session_context(session):
 def _stub_source_change_invalidation(monkeypatch):
     calls = []
 
-    async def fake_invalidate(_session, task):
+    async def fake_invalidate(_session, task, overwritten_version_id=None):
         calls.append(task.id)
 
     monkeypatch.setattr(

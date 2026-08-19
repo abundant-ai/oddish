@@ -7,7 +7,7 @@ Backfill is deliberately NOT done here -- the table is inert until
 migration fast on a hot ``trials`` table.
 
 Revision ID: tvm_metrics_001
-Revises: agentcap01
+Revises: dropblocks01
 """
 
 from typing import Sequence, Union
@@ -16,7 +16,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "tvm_metrics_001"
-down_revision: Union[str, Sequence[str], None] = "agentcap01"
+down_revision: Union[str, Sequence[str], None] = "dropblocks01"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
