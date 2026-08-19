@@ -30,6 +30,31 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+def _recover_invalid_index(index_name: str) -> None:
+    """An interrupted ``CREATE INDEX CONCURRENTLY`` leaves a same-name INVALID
+    index behind (``pg_index.indisvalid = false``). ``IF NOT EXISTS`` sees that
+    relation and skips the CREATE, so a retried migration would complete with
+    an index that serves no queries. Drop the invalid leftover (concurrently,
+    we are in the autocommit block) so the CREATE below rebuilds it."""
+    result = op.get_bind().execute(
+        sa.text(
+            """
+            SELECT 1
+            FROM pg_index i
+            JOIN pg_class c ON c.oid = i.indexrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE c.relname = :index_name
+              AND n.nspname = current_schema()
+              AND NOT i.indisvalid
+            """
+        ),
+        {"index_name": index_name},
+    )
+    invalid = result.first()
+    if invalid is not None:
+        op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {index_name}")
+
+
 def upgrade() -> None:
     # Bound the ALTER's brief ACCESS EXCLUSIVE lock: without a timeout it
     # queues behind any long-running query, and all traffic queues behind it.
@@ -47,6 +72,7 @@ def upgrade() -> None:
     # Index name matches the model's ``__table_args__`` declaration so the
     # create_all() index and this one are the same object.
     with op.get_context().autocommit_block():
+        _recover_invalid_index("ix_trials_kind_non_agent")
         op.execute(
             "CREATE INDEX CONCURRENTLY IF NOT EXISTS "
             "ix_trials_kind_non_agent ON trials (kind) WHERE kind != 'agent'"
