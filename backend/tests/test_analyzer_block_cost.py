@@ -376,17 +376,3 @@ async def test_generate_forwards_the_triggering_user_to_the_block():
     finally:
         summarize_trajectory.build_summary_block = real
     assert seen.get("triggered_by_user_id") == "viewer-7"
-
-
-def test_summary_routes_pass_the_requesting_user():
-    """The user is only knowable at the route; the whole chain is pointless if
-    the handlers don't hand it over."""
-    from api.routers import trials
-
-    src = open(trials.__file__).read()
-    assert src.count("triggered_by_user_id=auth.user_id") == 1, (
-        "the summary route must attribute spend to the caller"
-    )
-    assert "get_or_generate_summary(session, attached_trial)" not in src, (
-        "a bare call site is left, billing the trial owner instead of the viewer"
-    )

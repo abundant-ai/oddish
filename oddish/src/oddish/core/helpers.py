@@ -454,6 +454,7 @@ def build_trial_response(
         harbor_sha=trial.harbor_sha,
         harbor_source=(trial.harbor_config or {}).get("source"),
         is_probe=trial.is_probe,
+        kind=trial.kind or "agent",
         input_tokens=trial.input_tokens,
         cache_tokens=trial.cache_tokens,
         output_tokens=trial.output_tokens,
@@ -534,6 +535,7 @@ def build_compact_trial_response(
         harbor_sha=trial.harbor_sha,
         harbor_source=(trial.harbor_config or {}).get("source"),
         is_probe=trial.is_probe,
+        kind=trial.kind or "agent",
         input_tokens=trial.input_tokens,
         cache_tokens=trial.cache_tokens,
         output_tokens=trial.output_tokens,
@@ -791,12 +793,10 @@ def _primary_experiment_for_task(
     to several experiments at once. Response shapes that still expose a
     single ``experiment_id``/``experiment_name`` need to pick one:
 
-    - If ``preferred_experiment_id`` is in the task's set, use it (lets
-      experiment-scoped list endpoints return the experiment the caller
-      is actually looking at).
-    - Otherwise fall back to the first linked experiment (stable ordering
-      comes from SQLAlchemy's relationship load, which in turn respects
-      the association table's ``created_at`` insertion order).
+    - If ``preferred_experiment_id`` is in the task's set, use it.
+    - Otherwise the first non-shadow experiment. A shadow (qa report) wins
+      only when it is all the task has: the eager audit can link it before
+      the agent trials link the real one.
     """
     experiments = list(task.experiments or [])
     if not experiments:
@@ -805,7 +805,8 @@ def _primary_experiment_for_task(
         for exp in experiments:
             if exp.id == preferred_experiment_id:
                 return exp
-    return experiments[0]
+    non_shadow = [exp for exp in experiments if exp.shadow_of is None]
+    return (non_shadow or experiments)[0]
 
 
 TASK_STATUS_RESPONSE_COLUMNS = (
@@ -895,12 +896,13 @@ def _build_task_status_response(
         experiment_created_at=experiment_created_at,
         experiment_owner=experiment_owner,
         experiment_link=experiment_link,
-        # Sorted (name, id) to match the browse chips and because the ORM
-        # relationship has no order_by -- DB return order is not stable.
+        # Sorted (name, id): the ORM relationship has no order_by. Shadow
+        # (qa report) experiments stay out of the chips.
         experiments=[
             TaskBrowseExperiment(id=exp.id, name=exp.name)
             for exp in sorted(
-                task.experiments or [], key=lambda exp: (exp.name, exp.id)
+                (e for e in task.experiments or [] if e.shadow_of is None),
+                key=lambda exp: (exp.name, exp.id),
             )
         ],
         current_version=current_version,
@@ -1112,6 +1114,7 @@ SLIM_TRIAL_RESPONSE_COLUMNS = (
     TrialModel.reward,
     TrialModel.error_message,
     TrialModel.is_probe,
+    TrialModel.kind,
     TrialModel.analysis,
     TrialModel.analysis_status,
     TrialModel.analysis_started_at,
@@ -1169,6 +1172,7 @@ def build_slim_trial_response(
         error_message=trial.error_message,
         result=None,
         is_probe=trial.is_probe,
+        kind=trial.kind or "agent",
         input_tokens=trial.input_tokens,
         output_tokens=trial.output_tokens,
         cost_usd=cost_usd,
@@ -1317,6 +1321,9 @@ async def build_task_status_responses_from_counts(
         TrialModel.superseded_by_trial_id.is_(None),
     ]
     if experiment_context_id is not None:
+        # Membership already separates kinds: agent trials belong to the
+        # experiment they ran in, analysis trials to its shadow. No kind
+        # filter, or a shadow page would count zero trials.
         from oddish.core.experiment_membership import trial_in_experiment
 
         stats_filters.extend(
@@ -1325,6 +1332,8 @@ async def build_task_status_responses_from_counts(
                 TrialModel.is_probe.is_(False),
             ]
         )
+    else:
+        stats_filters.append(TrialModel.kind == "agent")
     if effective_map:
         # Match (task_id, task_version_id) pairs so we only count trials at
         # each task's effective version.  Tasks without an effective version

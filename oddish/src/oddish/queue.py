@@ -14,7 +14,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oddish.config import (
     ANALYSIS_PIPELINE_QUEUE_KEY,
     NOP_ORACLE_QUEUE_KEY,
-    ORPHANED_ANALYSIS_ERROR_PREFIX,
     VERDICT_PIPELINE_QUEUE_KEY,
     is_nop_oracle_agent,
     settings,
@@ -40,6 +39,7 @@ from oddish.core.verdict_state import (
     reset_verdict,
 )
 from oddish.db import (
+    AGENT_TRIAL_KIND,
     AnalysisStatus,
     ExperimentModel,
     TaskModel,
@@ -80,9 +80,7 @@ class TaskQAStageAdmission:
     """Current-version QA admission result produced under the task row lock."""
 
     advanced: bool = False
-    reuse_worker: bool = False
     task_version_id: str | None = None
-    task_version_content_hash: str | None = None
 
 
 ACTIVE_TRIAL_STATUSES = (
@@ -413,6 +411,7 @@ async def get_or_create_experiment(
         )
     else:
         query = select(ExperimentModel).where(ExperimentModel.name == name)
+    query = query.where(ExperimentModel.shadow_of.is_(None))
 
     result = await session.execute(
         query.order_by(ExperimentModel.created_at.desc()).limit(1)
@@ -452,7 +451,10 @@ async def get_experiment_by_id_or_name(
     if experiment:
         return experiment
 
-    query = select(ExperimentModel).where(ExperimentModel.name == experiment_id_or_name)
+    query = select(ExperimentModel).where(
+        ExperimentModel.name == experiment_id_or_name,
+        ExperimentModel.shadow_of.is_(None),
+    )
     if org_id:
         query = query.where(ExperimentModel.org_id == org_id)
     result = await session.execute(
@@ -493,10 +495,7 @@ def _derive_task_name(task_path: str, task_id: str | None = None) -> str:
 # Every domain-row insertion or stage transition that schedules compute
 # work has a sibling ``worker_jobs`` row in the same transaction. The
 # dispatcher claims from ``worker_jobs`` only; these helpers are the
-# single enqueue surface for the TRIAL and (task-level) QA kinds.
-#
-# Trajectory analysis is task-scoped: a single QA worker job classifies
-# every trial in the task and then synthesizes the task verdict.
+# single enqueue surface for the TRIAL and TASK_EXPAND kinds.
 
 
 def _encrypt_submission_registry_auth(submission: TaskSubmission) -> str | None:
@@ -528,6 +527,7 @@ async def enqueue_trial_worker_job(
     queue_key: str,
     org_id: str | None,
     max_attempts: int,
+    priority: int = 0,
     parent_job_id: str | None = None,
     harbor_variant_id: str = "default",
     registry_auth_enc: str | None = None,
@@ -538,6 +538,7 @@ async def enqueue_trial_worker_job(
         EnqueueRequest(
             kind=WorkerJobKind.TRIAL,
             queue_key=queue_key,
+            priority=priority,
             payload=_trial_job_payload(trial_id, registry_auth_enc),
             subject_table="trials",
             subject_id=trial_id,
@@ -546,150 +547,6 @@ async def enqueue_trial_worker_job(
             parent_job_id=parent_job_id,
             harbor_variant_id=harbor_variant_id,
             execution_lane=execution_lane,
-        ),
-    )
-
-
-async def requeue_inflight_trial_analysis(
-    session: AsyncSession, *, task_id: str
-) -> None:
-    """Reopen analyses a dead or cancelled QA attempt left behind.
-
-    RUNNING rows go back to QUEUED (the next QA pass re-classifies anything
-    non-terminal), and FAILED rows stamped with the orphaned-analysis sentinel
-    (finalized by cleanup while no QA attempt existed) are reopened too --
-    they mean "never classified", not "classification ran and failed", so a
-    resurrected task must not carry them into its verdict as permanent gaps.
-
-    Rows a QA pass would never classify (superseded, bulk-imported, SKIPPED,
-    gate-skipped) are left alone so the orphan sweep's FAILED finalization
-    doesn't oscillate with this reset. The id-selection takes its row locks
-    with SKIP LOCKED so this never *waits* on a trial row another writer
-    holds -- callers may hold the task row lock, and blocking here inverts
-    the trials-then-task order ``cancel_tasks_runs`` documents (deadlock).
-    Contended rows are healed by the next sweep instead. Raw SQL: the
-    soft-delete filter is explicit.
-    """
-    await session.execute(
-        text(
-            """
-            UPDATE trials
-            SET    analysis_status = 'QUEUED',
-                   analysis_error = NULL,
-                   analysis_finished_at = NULL
-            WHERE  id IN (
-                SELECT id
-                FROM   trials
-                WHERE  task_id = :task_id
-                  AND  deleted_at IS NULL
-                  AND  superseded_by_trial_id IS NULL
-                  AND  imported_at IS NULL
-                  AND  status <> 'SKIPPED'
-                  AND  COALESCE(error_message, '') NOT LIKE :gate_skip_pattern
-                  AND  (
-                      analysis_status = 'RUNNING'
-                      OR (
-                          analysis_status = 'FAILED'
-                          AND analysis_error LIKE :orphan_pattern
-                      )
-                  )
-                FOR UPDATE SKIP LOCKED
-            )
-            """
-        ),
-        {
-            "task_id": task_id,
-            "gate_skip_pattern": f"{GATE_SKIP_PREFIX}%",
-            "orphan_pattern": f"{ORPHANED_ANALYSIS_ERROR_PREFIX}%",
-        },
-    )
-
-
-async def enqueue_qa_worker_job(
-    session: AsyncSession,
-    *,
-    task_id: str,
-    task_version_id: str | None,
-    task_version_content_hash: str | None,
-    org_id: str | None,
-) -> WorkerJobModel:
-    """Enqueue the single task-level QA job for a task.
-
-    One job per task: it classifies every live trial's trajectory and then
-    synthesizes the task verdict.
-    """
-    return await enqueue_worker_job(
-        session,
-        EnqueueRequest(
-            kind=WorkerJobKind.QA,
-            queue_key=settings.get_qa_queue_key(),
-            payload={
-                "task_id": task_id,
-                "task_version_id": task_version_id,
-                "task_version_content_hash": task_version_content_hash,
-            },
-            subject_table="tasks",
-            subject_id=task_id,
-            org_id=org_id,
-        ),
-    )
-
-
-async def enqueue_trial_analysis_worker_job(
-    session: AsyncSession,
-    *,
-    trial_id: str,
-    org_id: str | None,
-) -> WorkerJobModel:
-    """Enqueue analysis for one trial.
-
-    The job classifies this trial only. It does not touch other trials,
-    the task verdict, or the pre-trial audit. It shares the QA queue key,
-    so QA workers pick it up.
-    """
-    return await enqueue_worker_job(
-        session,
-        EnqueueRequest(
-            kind=WorkerJobKind.ANALYSIS,
-            queue_key=settings.get_qa_queue_key(),
-            payload={"trial_id": trial_id},
-            subject_table="trials",
-            subject_id=trial_id,
-            org_id=org_id,
-        ),
-    )
-
-
-async def enqueue_pre_trial_worker_job(
-    session: AsyncSession,
-    *,
-    task_id: str,
-    task_version_id: str,
-    task_version_content_hash: str | None,
-    org_id: str | None,
-) -> WorkerJobModel:
-    """Enqueue the pre-trial audit for one task version.
-
-    The job runs the audit only. It does not classify trials and it does
-    not synthesize the verdict. The ``mode`` field tells ``QaJobHandler``
-    to take the audit-only path. The version id pins the job to the
-    version the request marked QUEUED: resolving the current version at
-    run time would audit the wrong version after a re-upload.
-    """
-    return await enqueue_worker_job(
-        session,
-        EnqueueRequest(
-            kind=WorkerJobKind.QA,
-            queue_key=settings.get_qa_queue_key(),
-            payload={
-                "task_id": task_id,
-                "task_version_id": task_version_id,
-                "task_version_content_hash": task_version_content_hash,
-                "mode": "pre_trial",
-            },
-            subject_table="tasks",
-            subject_id=task_id,
-            org_id=org_id,
         ),
     )
 
@@ -992,7 +849,7 @@ async def create_task(
         task_path=submission.task_path,
         task_s3_key=task_s3_key,
         tags=submission.tags,
-        run_analysis=submission.run_analysis,
+        run_analysis=True,
         run_probe=submission.run_probe,
         link=submission.link,
     )
@@ -1120,6 +977,12 @@ async def create_task(
     await _bulk_insert_trials(session, trial_rows)
     await bulk_enqueue_worker_jobs(session, worker_job_requests)
     await refresh_task_browse_summaries(session, [version_id])
+
+    from oddish.workers.analysis_trials import maybe_enqueue_audit_trial
+
+    await maybe_enqueue_audit_trial(
+        session, task=task, task_version_id=task.current_version_id
+    )
 
     await session.refresh(task, attribute_names=["trials"])
     await bump_experiment_last_activity(session, experiment_ids=experiment.id)
@@ -1310,8 +1173,14 @@ async def append_trials_to_task(
 
     # Pick the target experiment: explicit argument wins, otherwise fall back
     # to the first linked experiment (the task's "primary" association).
+    # Never a qa-report shadow: once the audit trial has linked the task into
+    # its shadow, picking it here would home new agent trials there.
     if experiment_id is None:
-        primary = list(await task.awaitable_attrs.experiments or [])
+        primary = [
+            e
+            for e in (await task.awaitable_attrs.experiments or [])
+            if e.shadow_of is None
+        ]
         if not primary:
             raise ValueError(
                 f"Task {task.id} has no linked experiments; cannot append trials"
@@ -1383,6 +1252,12 @@ async def append_trials_to_task(
     await _bulk_insert_trials(session, new_trial_rows)
     await bulk_enqueue_worker_jobs(session, worker_job_requests)
 
+    from oddish.workers.analysis_trials import maybe_enqueue_audit_trial
+
+    await maybe_enqueue_audit_trial(
+        session, task=task, task_version_id=task.current_version_id
+    )
+
     # The replacement rows must exist before the self-referential FK can point
     # old attempts at them. Only live FAILED rows are eligible: if another
     # retry won a race, fail the transaction instead of overwriting its chain.
@@ -1421,39 +1296,20 @@ async def append_trials_to_task(
         task.status = TaskStatus.RUNNING
         task.finished_at = None
 
-    if new_trials and task.run_analysis:
+    if new_trials:
+        # A kept verdict survives until the new QA pass replaces it. Cancel
+        # any in-flight QA trial so its late import can't overwrite the new
+        # set's verdict; a fresh one is created once the new set settles.
         abandon_verdict(task)
-        # Cancel any in-flight QA worker_job for this task so a worker
-        # that's already claimed (or about to claim) the old row doesn't
-        # overwrite the new verdict with stale data. The dispatcher
-        # re-enqueues a fresh QA row once all trials for the new set
-        # complete.
-        await session.execute(
-            text(
-                """
-                UPDATE worker_jobs
-                SET    status = 'CANCELLED',
-                       finished_at = NOW(),
-                       error_message = 'Superseded by appended trials',
-                       current_worker_id = NULL,
-                       current_queue_slot = NULL,
-                       modal_function_call_id = NULL
-                WHERE  kind::text = 'QA'
-                  AND  subject_table = 'tasks'
-                  AND  subject_id = :task_id
-                  AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
-                """
-            ),
-            {"task_id": task.id},
+        cancelled = await cancel_live_qa_trials(
+            session, task_id=task.id, reason="Superseded by appended trials"
         )
-        # A classification the cancelled job had mid-flight skips its store
-        # (``should_store`` sees the job is no longer RUNNING), which would
-        # leave that trial's ``analysis_status`` stuck on RUNNING until the
-        # replacement QA job re-claims it. Requeue it now -- and reopen any
-        # orphan-finalized FAILED rows, since this append resurrects the task
-        # and the fresh QA pass must classify them rather than inherit a
-        # permanent gap.
-        await requeue_inflight_trial_analysis(session, task_id=task.id)
+        if cancelled:
+            logger.info(
+                "task %s: cancelled %d in-flight qa trial(s), superseded by append",
+                task.id,
+                cancelled,
+            )
 
     # Gate the appended LLM trials on this scope's baselines (the just-added
     # ones and any that already exist), blocking/releasing/cancelling under the
@@ -1486,16 +1342,15 @@ async def append_trials_to_task(
 # =============================================================================
 
 
-async def invalidate_task_qa_for_source_change(
-    session: AsyncSession, task: TaskModel
-) -> TaskQAStageAdmission:
-    """Invalidate old-source QA and admit the newly selected source safely.
+async def cancel_live_qa_trials(
+    session: AsyncSession, *, task_id: str, reason: str
+) -> int:
+    """Cancel a task's in-flight QA trials and their TRIAL worker jobs.
 
-    The caller must hold ``task``'s row lock and must already have updated the
-    current-version pointer or immutable source metadata. Cancelling the old QA,
-    clearing its published verdict, and re-entering admission in the same
-    transaction prevents a result committed just before this mutation from
-    remaining authoritative for different source bytes.
+    The worker_jobs cancel comes first so a worker that already claimed (or is
+    about to claim) the row stops driving the trial; the trial rows are then
+    failed with ``harbor_stage='cancelled'``, which both the settlement hooks
+    and the importer skip. Returns the number of trials cancelled.
     """
     await session.execute(
         text(
@@ -1503,51 +1358,238 @@ async def invalidate_task_qa_for_source_change(
             UPDATE worker_jobs
             SET    status = 'CANCELLED',
                    finished_at = NOW(),
-                   error_message = 'Superseded by task source change',
+                   error_message = :reason,
                    current_worker_id = NULL,
                    current_queue_slot = NULL,
                    modal_function_call_id = NULL
-            WHERE  kind::text IN ('QA', 'VERDICT')
-              AND  subject_table = 'tasks'
-              AND  subject_id = :task_id
-              AND  COALESCE(payload->>'mode', '') <> 'pre_trial'
+            WHERE  kind::text = 'TRIAL'
+              AND  subject_table = 'trials'
+              AND  subject_id IN (
+                  SELECT id FROM trials
+                  WHERE task_id = :task_id AND kind = 'qa'
+                    AND deleted_at IS NULL
+                    AND status::text NOT IN ('SUCCESS', 'FAILED', 'SKIPPED')
+              )
               AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
             """
         ),
-        {"task_id": task.id},
+        {"task_id": task_id, "reason": reason},
     )
+    cancelled = await session.execute(
+        text(
+            """
+            UPDATE trials
+            SET    status = 'FAILED',
+                   harbor_stage = 'cancelled',
+                   error_message = :reason,
+                   finished_at = COALESCE(finished_at, NOW())
+            WHERE  task_id = :task_id AND kind = 'qa'
+              AND  deleted_at IS NULL
+              AND  status::text NOT IN ('SUCCESS', 'FAILED', 'SKIPPED')
+            """
+        ),
+        {"task_id": task_id, "reason": reason},
+    )
+    return int(getattr(cancelled, "rowcount", 0) or 0)
+
+
+async def cancel_live_audit_trials(
+    session: AsyncSession, *, task_id: str, task_version_id: str, reason: str
+) -> int:
+    """Cancel one version's in-flight audit trials and their TRIAL jobs.
+
+    Version-scoped, unlike :func:`cancel_live_qa_trials`: an audit belongs to
+    its version's source bytes, so only the version whose bytes are being
+    replaced (in-place overwrite) invalidates it -- switching the default
+    version leaves another version's audit meaningful. Same two-step order as
+    the QA cancel: jobs first, then the trial rows are failed with
+    ``harbor_stage='cancelled'`` so settlement hooks and the importer skip
+    them.
+    """
+    await session.execute(
+        text(
+            """
+            UPDATE worker_jobs
+            SET    status = 'CANCELLED',
+                   finished_at = NOW(),
+                   error_message = :reason,
+                   current_worker_id = NULL,
+                   current_queue_slot = NULL,
+                   modal_function_call_id = NULL
+            WHERE  kind::text = 'TRIAL'
+              AND  subject_table = 'trials'
+              AND  subject_id IN (
+                  SELECT id FROM trials
+                  WHERE task_id = :task_id AND kind = 'audit'
+                    AND task_version_id = :task_version_id
+                    AND deleted_at IS NULL
+                    AND status::text NOT IN ('SUCCESS', 'FAILED', 'SKIPPED')
+              )
+              AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+            """
+        ),
+        {"task_id": task_id, "task_version_id": task_version_id, "reason": reason},
+    )
+    cancelled = await session.execute(
+        text(
+            """
+            UPDATE trials
+            SET    status = 'FAILED',
+                   harbor_stage = 'cancelled',
+                   error_message = :reason,
+                   finished_at = COALESCE(finished_at, NOW())
+            WHERE  task_id = :task_id AND kind = 'audit'
+              AND  task_version_id = :task_version_id
+              AND  deleted_at IS NULL
+              AND  status::text NOT IN ('SUCCESS', 'FAILED', 'SKIPPED')
+            """
+        ),
+        {"task_id": task_id, "task_version_id": task_version_id, "reason": reason},
+    )
+    return int(getattr(cancelled, "rowcount", 0) or 0)
+
+
+async def invalidate_task_qa_for_source_change(
+    session: AsyncSession,
+    task: TaskModel,
+    overwritten_version_id: str | None = None,
+) -> TaskQAStageAdmission:
+    """Invalidate old-source QA and admit the newly selected source safely.
+
+    The caller must hold ``task``'s row lock and must already have updated the
+    current-version pointer or immutable source metadata. Cancelling the old
+    QA trial, clearing its published verdict, and re-entering admission in the
+    same transaction prevents a result committed just before this mutation
+    from remaining authoritative for different source bytes.
+
+    ``overwritten_version_id`` is set only by in-place overwrite: the version
+    id survives with new bytes, so an audit still running against the old
+    archive must be cancelled too, or its late import would write old-source
+    findings into the overwritten version. A version *switch* passes None --
+    the old version keeps its bytes, so its audit stays meaningful.
+    """
+    await cancel_live_qa_trials(
+        session, task_id=task.id, reason="Superseded by task source change"
+    )
+    if overwritten_version_id is not None:
+        await cancel_live_audit_trials(
+            session,
+            task_id=task.id,
+            task_version_id=overwritten_version_id,
+            reason="Superseded by in-place source overwrite",
+        )
     reset_verdict(task)
     task.status = TaskStatus.RUNNING
     task.finished_at = None
-    await requeue_inflight_trial_analysis(session, task_id=task.id)
     return await maybe_start_task_qa_stage(session, task.id)
+
+
+async def qa_eligible_trial_ids(
+    session: AsyncSession, task_id: str, *, task_version_id: str | None
+) -> list[str]:
+    """Live agent trials a QA trial should classify, scoped to one version.
+
+    Excludes bulk-migrated imports, cancelled/skipped/gate-skipped trials,
+    and deterministic baselines. ``task_version_id`` pins the set to the
+    version being graded (None only for legacy tasks with no version rows).
+    """
+    conditions = [
+        TrialModel.task_id == task_id,
+        TrialModel.kind == AGENT_TRIAL_KIND,
+        TrialModel.superseded_by_trial_id.is_(None),
+        TrialModel.imported_at.is_(None),
+        func.coalesce(TrialModel.harbor_stage, "") != CANCELLED_HARBOR_STAGE,
+        TrialModel.status != TrialStatus.SKIPPED,
+        func.coalesce(TrialModel.error_message, "").notlike(f"{GATE_SKIP_PREFIX}%"),
+        not_(baseline_agent_clause(TrialModel.agent)),
+    ]
+    if task_version_id is not None:
+        conditions.append(TrialModel.task_version_id == task_version_id)
+    return [
+        str(tid)
+        for tid in (
+            await session.scalars(select(TrialModel.id).where(and_(*conditions)))
+        ).all()
+    ]
+
+
+async def start_qa_for_task(session: AsyncSession, task: TaskModel) -> bool:
+    """Move a settled task into its QA stage, or complete it.
+
+    With QA-eligible current-version trials: queue the verdict bookkeeping,
+    create the QA trial (the verdict is only requested above the evidence
+    bar), and put the task in VERDICT_PENDING. With none -- every live trial
+    is a bulk-migrated import, was skipped/cancelled, or is a nop/oracle
+    baseline -- complete the task; a previously published verdict is
+    restored, anything queued or running is cleared.
+
+    The caller must hold the task row lock. Returns True when a QA trial was
+    created.
+    """
+    from oddish.workers.analysis_trials import create_qa_trial, has_verdict_evidence
+
+    eligible = await qa_eligible_trial_ids(
+        session, task.id, task_version_id=task.current_version_id
+    )
+    if not eligible:
+        task.status = TaskStatus.COMPLETED
+        task.finished_at = task.finished_at or utcnow()
+        abandon_verdict(task)
+        return False
+
+    with_verdict = await has_verdict_evidence(session, eligible)
+    task.status = TaskStatus.VERDICT_PENDING
+    queue_verdict(task)
+    await create_qa_trial(
+        session,
+        task=task,
+        eligible_trial_ids=eligible,
+        with_verdict=with_verdict,
+    )
+    logger.info(
+        "task %s: qa covers %d trials (verdict=%s)",
+        task.id,
+        len(eligible),
+        with_verdict,
+    )
+    return True
+
+
+async def live_analysis_trial_id(
+    session: AsyncSession, task_id: str, *, kind: str
+) -> str | None:
+    """Id of a live (pending/queued/running/retrying) non-superseded trial
+    of ``kind`` for this task, or None. The live row itself is the
+    in-progress marker for analysis stages: status flags can be stale after
+    a crash, the trial row cannot."""
+    return await session.scalar(
+        select(TrialModel.id)
+        .where(
+            TrialModel.task_id == task_id,
+            TrialModel.kind == kind,
+            TrialModel.deleted_at.is_(None),
+            TrialModel.superseded_by_trial_id.is_(None),
+            TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
+        )
+        .limit(1)
+    )
 
 
 async def maybe_start_task_qa_stage(
     session: AsyncSession,
     task_id: str,
-    *,
-    reuse_worker: bool = False,
 ) -> TaskQAStageAdmission:
-    """Check if a task's current-version trials are done and transition it.
+    """Check if a task's current-version agent trials are done; transition it.
 
-    If run_analysis (the QA opt-in) is enabled -> enqueue the single
-    task-level QA job (which classifies every trial then synthesizes the
-    verdict) and move the task to VERDICT_PENDING.
-    If it is disabled -> status becomes COMPLETED.
-
-    There is only one QA job: it handles both per-trial classification and
-    the task verdict, so a task goes straight from RUNNING to
-    VERDICT_PENDING (the "QA running" status) rather than passing through a
+    With QA-eligible trials -> create the task-level QA trial (classify every
+    eligible trial; synthesize the verdict only above the evidence bar) and
+    move the task to VERDICT_PENDING. Otherwise -> COMPLETED. A task goes
+    straight from RUNNING to VERDICT_PENDING rather than passing through a
     separate ANALYZING stage.
 
     Uses SELECT FOR UPDATE to prevent race conditions. Unlike the trial-facing
     wrapper, this entry point also works when the current version has no trial
-    rows. Superseded QA jobs use it while retaining their worker retry owner so
-    the replacement version cannot be stranded without a later trial event.
-    ``reuse_worker`` is for a still-running obsolete QA worker: an eligible
-    replacement is admitted and returned to that worker instead of enqueuing a
-    competing row. Admission exceptions therefore keep a retry owner.
+    rows.
     """
     result = await session.execute(
         select(TaskModel).where(TaskModel.id == task_id).with_for_update()
@@ -1569,6 +1611,7 @@ async def maybe_start_task_qa_stage(
                     if task.current_version_id is not None
                     else True
                 ),
+                TrialModel.kind == AGENT_TRIAL_KIND,
                 TrialModel.superseded_by_trial_id.is_(None),
                 TrialModel.status.in_(
                     [
@@ -1585,79 +1628,25 @@ async def maybe_start_task_qa_stage(
     if pending_count > 0:
         return TaskQAStageAdmission()
 
-    # Only enqueue QA when there is actually something to classify. A task can
-    # have run_analysis=true yet zero QA-eligible live trials -- e.g. every live
-    # trial is a bulk-migrated Sauron import (excluded on cost), was skipped by
-    # the baseline gate (never ran, no logs), or is a nop/oracle baseline (fixed
-    # scaffolding, never classified). Enqueueing then produces a job that
-    # can only no-op: run_task_qa_job would leave a non-terminal verdict, which
-    # QaJobHandler reads back as a retryable failure -> the job burns all its
-    # attempts and lands FAILED for what is not an error. Complete the task
-    # instead. Filters MUST mirror qa_handler._load_live_trials_for_classification.
-    qa_eligible = 0
-    if task.run_analysis:
-        qa_eligible = await session.scalar(
-            select(func.count(TrialModel.id)).where(
-                and_(
-                    TrialModel.task_id == task_id,
-                    (
-                        TrialModel.task_version_id == task.current_version_id
-                        if task.current_version_id is not None
-                        else True
-                    ),
-                    TrialModel.superseded_by_trial_id.is_(None),
-                    TrialModel.imported_at.is_(None),
-                    func.coalesce(TrialModel.harbor_stage, "")
-                    != CANCELLED_HARBOR_STAGE,
-                    TrialModel.status != TrialStatus.SKIPPED,
-                    func.coalesce(TrialModel.error_message, "").notlike(
-                        f"{GATE_SKIP_PREFIX}%"
-                    ),
-                    not_(baseline_agent_clause(TrialModel.agent)),
-                )
-            )
+    # The QA brief snapshots the pre-trial audit findings at creation, and a
+    # created QA trial is never rebuilt when the audit lands later: starting
+    # now would permanently bake "(none recorded)" into the brief. Defer
+    # while an audit trial is live -- the same gate the manual QA endpoint
+    # applies -- but only when a QA trial would actually be created: with
+    # nothing eligible the task just completes (no brief exists to poison),
+    # and the audit's later import writes onto the version regardless of
+    # task status. The audit's own settlement re-enters this admission
+    # (handle_analysis_trial_settled), so deferring cannot strand the task.
+    if await live_analysis_trial_id(session, task_id, kind="audit") is not None:
+        eligible = await qa_eligible_trial_ids(
+            session, task_id, task_version_id=task.current_version_id
         )
+        if eligible:
+            return TaskQAStageAdmission()
 
-    if task.run_analysis and qa_eligible:
-        task_version_content_hash = (
-            await session.scalar(
-                select(TaskVersionModel.content_hash).where(
-                    TaskVersionModel.id == task.current_version_id
-                )
-            )
-            if task.current_version_id is not None
-            else None
-        )
-        task.status = TaskStatus.VERDICT_PENDING
-        queue_verdict(task)
-        if reuse_worker:
-            admission = TaskQAStageAdmission(
-                advanced=True,
-                reuse_worker=True,
-                task_version_id=task.current_version_id,
-                task_version_content_hash=task_version_content_hash,
-            )
-        else:
-            await enqueue_qa_worker_job(
-                session,
-                task_id=task_id,
-                task_version_id=task.current_version_id,
-                task_version_content_hash=task_version_content_hash,
-                org_id=task.org_id,
-            )
-            admission = TaskQAStageAdmission(advanced=True)
-    else:
-        task.status = TaskStatus.COMPLETED
-        task.finished_at = utcnow()
-        # No QA job will run, so clear queued or running verdict bookkeeping
-        # -- otherwise the task ends COMPLETED while verdict_status still
-        # reads QUEUED. A finished verdict stays, together with its payload.
-        abandon_verdict(task)
-        admission = TaskQAStageAdmission(advanced=True)
-
+    await start_qa_for_task(session, task)
     await session.flush()
-    return admission
-
+    return TaskQAStageAdmission(advanced=True, task_version_id=task.current_version_id)
 
 async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
     """Advance the owning task after one of its trials becomes terminal."""
@@ -2045,8 +2034,8 @@ async def maybe_advance_legacy_analyzing_task(
 
     New tasks never enter ANALYZING (they go RUNNING -> VERDICT_PENDING via
     :func:`maybe_start_qa_stage`). This only fires from the cleanup sweep for
-    tasks left in ANALYZING by the pre-QA-refactor code: once every live
-    trial's per-trial classification is terminal, enqueue the single QA job.
+    tasks left in ANALYZING by the pre-QA-refactor code: once every agent
+    trial is terminal, start the QA stage.
 
     Uses SELECT FOR UPDATE to prevent race conditions.
     """
@@ -2071,20 +2060,15 @@ async def maybe_advance_legacy_analyzing_task(
         select(func.count(TrialModel.id)).where(
             and_(
                 TrialModel.task_id == task_id,
+                TrialModel.kind == "agent",
                 TrialModel.superseded_by_trial_id.is_(None),
-                # SKIPPED trials are never analyzed (analysis_status stays NULL),
-                # so they must not count as pending or the task would never
-                # advance out of ANALYZING.
-                TrialModel.status != TrialStatus.SKIPPED,
-                or_(
-                    TrialModel.analysis_status.is_(None),
-                    TrialModel.analysis_status.in_(
-                        [
-                            AnalysisStatus.PENDING,
-                            AnalysisStatus.QUEUED,
-                            AnalysisStatus.RUNNING,
-                        ]
-                    ),
+                TrialModel.status.in_(
+                    [
+                        TrialStatus.PENDING,
+                        TrialStatus.QUEUED,
+                        TrialStatus.RUNNING,
+                        TrialStatus.RETRYING,
+                    ]
                 ),
             )
         )
@@ -2093,26 +2077,8 @@ async def maybe_advance_legacy_analyzing_task(
     if pending_count > 0:
         return False
 
-    task.status = TaskStatus.VERDICT_PENDING
-    queue_verdict(task)
-    task_version_content_hash = (
-        await session.scalar(
-            select(TaskVersionModel.content_hash).where(
-                TaskVersionModel.id == task.current_version_id
-            )
-        )
-        if task.current_version_id is not None
-        else None
-    )
-    await enqueue_qa_worker_job(
-        session,
-        task_id=task_id,
-        task_version_id=task.current_version_id,
-        task_version_content_hash=task_version_content_hash,
-        org_id=task.org_id,
-    )
+    await start_qa_for_task(session, task)
     await session.flush()
-
     return True
 
 
@@ -2186,9 +2152,9 @@ def _assemble_queue_and_pipeline(
     for queue_key in sorted(queue_keys):
         provider_stats = stats.get(queue_key, _empty_queue_counts())
         if queue_key in (ANALYSIS_PIPELINE_QUEUE_KEY, VERDICT_PIPELINE_QUEUE_KEY):
-            # The pipeline buckets are not their own concurrency gates: both
-            # classification and the verdict run inside the task-level QA
-            # worker job, whose bucket is the analysis model's queue key.
+            # The pipeline buckets are not their own concurrency gates: QA
+            # and audit trials lease slots from the analysis model's queue
+            # key, so report that bucket's concurrency here.
             concurrency = settings.get_model_concurrency(settings.get_qa_queue_key())
         else:
             concurrency = settings.get_model_concurrency(queue_key)
@@ -2247,6 +2213,7 @@ async def get_queue_stats(session: AsyncSession, org_id: str | None = None) -> d
                 FROM trials
                 WHERE org_id = :org_id
                   AND deleted_at IS NULL
+                  AND kind = 'agent'
                 GROUP BY COALESCE(queue_key, provider), status
                 """
             ),
@@ -2259,6 +2226,7 @@ async def get_queue_stats(session: AsyncSession, org_id: str | None = None) -> d
                 SELECT COALESCE(queue_key, provider) AS queue_key, status::text AS status, COUNT(*) AS count
                 FROM trials
                 WHERE deleted_at IS NULL
+                  AND kind = 'agent'
                 GROUP BY COALESCE(queue_key, provider), status
                 """
             )
@@ -2321,6 +2289,7 @@ async def get_queue_stats_by_org(
             FROM trials
             WHERE deleted_at IS NULL
               AND org_id IS NOT NULL
+              AND kind = 'agent'
             GROUP BY org_id, COALESCE(queue_key, provider), status
             """
         )

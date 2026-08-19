@@ -96,6 +96,16 @@ const TrialDetailPanel = dynamic(
   }
 );
 
+// Human labels for non-agent trial kinds. Raw kind strings ("qa",
+// "audit") read as jargon next to a section header; unknown kinds fall
+// back to the raw string so new kinds are never hidden.
+const QA_TRIAL_KIND_LABELS: Record<string, string> = {
+  qa: "QA run",
+  audit: "Pre-trial audit",
+  analyzer_map: "Analyzer (map)",
+  analyzer_reduce: "Analyzer (reduce)",
+};
+
 function DrawerContentLoading({ label }: { label: string }) {
   return (
     <div className="text-muted-foreground flex h-full min-h-[180px] items-center justify-center gap-2 text-sm">
@@ -653,6 +663,7 @@ export function TaskDetailClient({
 }: TaskDetailClientProps) {
   const {
     agentCards,
+    analysisTrialsForVersion,
     defaultVersionError,
     defaultVersionId,
     error,
@@ -1348,6 +1359,21 @@ export function TaskDetailClient({
                 onTrialSelect={handleSelectTrial}
               />
             ))
+          )}
+          {analysisTrialsForVersion.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              <span className="text-[11px] uppercase tracking-wide text-[color:var(--paper-ink-3)]">
+                QA
+              </span>
+              {analysisTrialsForVersion.map((t) => (
+                <div key={t.id} className="flex items-center gap-1">
+                  <span className="text-[11px] text-[color:var(--paper-ink-3)]">
+                    {QA_TRIAL_KIND_LABELS[t.kind ?? ""] ?? t.kind}
+                  </span>
+                  <TrialChip trial={t} onClick={() => handleSelectTrial(t)} />
+                </div>
+              ))}
+            </div>
           )}
         </div>
 

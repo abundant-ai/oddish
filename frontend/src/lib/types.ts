@@ -21,6 +21,10 @@ type TrialStatus =
 // VARCHAR and historical rows may carry retired kinds.
 export type TrialKind = "agent" | "qa" | "audit" | (string & {});
 
+export function isAgentTrial(t: { kind?: TrialKind }): boolean {
+  return (t.kind ?? "agent") === "agent";
+}
+
 export type JobStatus = "pending" | "queued" | "running" | "success" | "failed";
 
 type VisibleJobKind = "trial" | "qa" | "analysis";
@@ -108,6 +112,8 @@ interface TrialExploitation {
 }
 
 interface TrialAnalysis {
+  /** Id of the QA trial that wrote this analysis. */
+  _graded_by?: string;
   trial_name?: string;
   classification: AnalysisClassification;
   subtype: string;
@@ -183,6 +189,7 @@ export interface Trial {
   is_billed?: boolean;
   has_trajectory?: boolean;
   is_probe?: boolean;
+  kind?: TrialKind;
   created_at: string;
   started_at?: string | null;
   finished_at?: string | null;
@@ -713,6 +720,7 @@ export interface DashboardExperiment {
   last_pr_url: string | null;
   last_pr_title: string | null;
   last_pr_number: string | null;
+  qa_report_experiment_id?: string | null;
 }
 
 export interface DashboardResponse {
@@ -1237,56 +1245,8 @@ export interface ExperimentShareInfo {
   is_public: boolean;
   public_token: string | null;
   description: string | null;
-}
-
-export type ReportStatus =
-  | "pending"
-  | "queued"
-  | "running"
-  | "success"
-  | "failed";
-
-export interface ModelDenominators {
-  trials: number;
-  scored: number;
-  solved: number;
-  mean_reward: number | null;
-  analyzed: number;
-  bad: number;
-  good: number;
-}
-
-export interface ByModelEntry {
-  model: string;
-  bucket: "bad" | "good" | "all";
-  narrative: string;
-  relative_strengths: string;
-  relative_weaknesses: string;
-  distinctive_failures: string[];
-}
-
-export interface ByModel {
-  version: number;
-  comparison: string;
-  denominators: Record<string, ModelDenominators>;
-  models: ByModelEntry[];
-}
-
-export interface Report {
-  id: string;
-  name: string;
-  status: ReportStatus;
-  error?: string | null;
-  bad_failure_content?: string | null;
-  good_failure_content?: string | null;
-  universal_capabilities_content?: string | null;
-  headroom_analysis?: string | null;
-  num_trials?: number | null;
-  num_bad_failures?: number | null;
-  num_good_failures?: number | null;
-  breakdown?: Record<string, number> | null;
-  by_model?: ByModel | null;
-  experiment_ids: string[];
-  created_at?: string | null;
-  finished_at?: string | null;
+  // QA-report linkage: a shadow experiment points at the experiment it
+  // grades; a graded experiment points at its shadow.
+  shadow_of?: string | null;
+  qa_report_experiment_id?: string | null;
 }

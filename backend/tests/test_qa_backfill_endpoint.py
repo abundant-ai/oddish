@@ -32,13 +32,12 @@ async def _fake_get_session():
 async def test_backfill_route_passes_body_to_core(monkeypatch):
     captured = {}
 
-    async def fake_core(session, *, task_id, org_id, trial_ids, force, enable_analysis):
+    async def fake_core(session, *, task_id, org_id, trial_ids, force):
         captured.update(
             task_id=task_id,
             org_id=org_id,
             trial_ids=trial_ids,
             force=force,
-            enable_analysis=enable_analysis,
         )
         return {
             "status": "queued",
@@ -50,7 +49,7 @@ async def test_backfill_route_passes_body_to_core(monkeypatch):
     monkeypatch.setattr(tasks_router, "backfill_task_analysis_core", fake_core)
     monkeypatch.setattr(tasks_router, "get_session", _fake_get_session)
 
-    body = BackfillQARequest(force=True, enable_analysis=False, trial_ids=["tsk-1"])
+    body = BackfillQARequest(force=True, trial_ids=["tsk-1"])
     result = await tasks_router.backfill_task_qa("tsk", body, _fake_auth())  # type: ignore[arg-type]
 
     assert result["status"] == "queued"
@@ -59,7 +58,6 @@ async def test_backfill_route_passes_body_to_core(monkeypatch):
         "org_id": "org-1",
         "trial_ids": ["tsk-1"],
         "force": True,
-        "enable_analysis": False,
     }
 
 

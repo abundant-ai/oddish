@@ -42,6 +42,7 @@ import type {
   TaskVersionSummary,
   Trial,
 } from "@/lib/types";
+import { isAgentTrial } from "@/lib/types";
 import {
   isBrowseTaskDetail,
   taskDetailKey,
@@ -56,6 +57,7 @@ import {
   taskHasActiveTrials,
   taskHasActiveVerdict,
   taskHasCancellableWork,
+  taskHasLiveAnalysisTrial,
 } from "@/lib/job-status";
 
 interface TaskFile {
@@ -470,10 +472,7 @@ export function TaskFilesPanel({
         pickChecksVersion(detail, taskVersion)?.pre_trial_status ===
           "running" ||
         pickChecksVersion(detail, taskVersion)?.pre_trial_status === "queued";
-      const qaLive =
-        detail?.task?.verdict_status === "queued" ||
-        detail?.task?.verdict_status === "running";
-      if (checksLive || qaLive) return 5000;
+      if (checksLive || taskHasActiveVerdict(detail?.task)) return 5000;
       return isOpen ? 30000 : 0;
     },
   });
@@ -518,9 +517,7 @@ export function TaskFilesPanel({
       ? "Unable to load the static checks state."
       : null;
   const checksFindings = checksVersion?.pre_trial_findings ?? [];
-  const taskQaActive =
-    checksDetail?.task?.verdict_status === "queued" ||
-    checksDetail?.task?.verdict_status === "running";
+  const taskQaActive = taskHasActiveVerdict(checksDetail?.task);
   const resolvedFilesUrl = filesUrl ?? `${baseUrl}/tasks/${taskId}/files`;
   // Trial file routes stream the file itself; task file routes answer with a
   // JSON envelope ({path, content, key}, or {url} when presigning). Read that
@@ -731,8 +728,13 @@ export function TaskFilesPanel({
 
   const retryableTrials = useMemo(() => {
     if (!task?.trials) return [];
+    // Agent trials only: task.trials now carries qa/audit rows too, and
+    // "Rerun trials" must never replay an analysis brief through the
+    // generic retry endpoint (it also refuses them server-side).
     return task.trials.filter(
-      (trial) => trial.status === "failed" || trial.status === "success"
+      (trial) =>
+        isAgentTrial(trial) &&
+        (trial.status === "failed" || trial.status === "success")
     );
   }, [task]);
 
@@ -821,14 +823,17 @@ export function TaskFilesPanel({
         task_ids: id ? [id] : [],
         ...(cancelExperimentId ? { experiment_id: cancelExperimentId } : {}),
       });
-      // No active trials but QA in flight -> cancel just the task QA job.
+      // No active trials but analysis in flight (QA or the source audit --
+      // qa/cancel covers both kinds) -> cancel just the task QA job.
       // Experiment-scoped cancel leaves shared QA alone unless the caller is
       // on the dedicated cancel-QA path.
       if (
         id &&
         !cancelExperimentId &&
         !taskHasActiveTrials(task) &&
-        (taskHasActiveVerdict(task) || taskHasActiveAnalysis(task))
+        (taskHasActiveVerdict(task) ||
+          taskHasActiveAnalysis(task) ||
+          taskHasLiveAnalysisTrial(task))
       ) {
         path = `${baseUrl}/tasks/${id}/qa/cancel`;
         body = undefined;
@@ -1616,7 +1621,6 @@ export function TaskFilesPanel({
                   checksFindings={checksFindings}
                   checksStatus={checksVersion?.pre_trial_status}
                   checksError={checksVersion?.pre_trial_error}
-                  checksCostUsd={checksVersion?.pre_trial_cost_usd}
                   onRerunChecks={handleRerunChecks}
                   checksRerunning={checksRerunning}
                   checksQueueError={checksQueueError}

@@ -43,6 +43,95 @@ def stage_query_cli(work_task_dir: Path) -> None:
     dest.chmod(0o755)
 
 
+# The analysis verifier. Harbor only collects the agent/ and verifier/
+# subtrees, so this stages the artifact into the verifier dir and validates
+# it against the contract the host pinned at trial creation (expected.json,
+# checked by the staged copy of oddish.worker.analysis_result_check) -- a
+# nonzero exit fails the verifier and lets normal trial retries re-run the
+# agent. The importer runs the same validator with the same payload, so an
+# artifact the verifier passed cannot be refused as malformed later, and an
+# incomplete one never earns reward 1.0 here.
+_ANALYSIS_TEST_SH = """#!/bin/sh
+OUT="${{HARBOR_VERIFIER_LOG_DIR:-/logs/verifier}}"
+mkdir -p "$OUT"
+SRC="/logs/{artifact}"
+TESTS_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ ! -s "$SRC" ]; then
+  echo "the agent did not write /logs/{artifact}" | tee "$OUT/error.txt" >&2
+  exit 1
+fi
+cp "$SRC" "$OUT/{artifact}"
+python3 "$TESTS_DIR/analysis_result_check.py" "$SRC" "$TESTS_DIR/expected.json" 2>"$OUT/error.txt" || exit 1
+echo "1.0" > "$OUT/reward.txt"
+exit 0
+"""
+
+
+# An analysis trial runs on OUR task image, not the audited one: that image
+# is an unknown (may lack python/node/network) and its verifier grades
+# task-solving. The agent reads the audited task via the oddish-query CLI.
+_ANALYSIS_DOCKERFILE = """FROM python:3.13-slim
+RUN apt-get update \\
+    && apt-get install -y --no-install-recommends nodejs curl procps ca-certificates \\
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+"""
+
+_ANALYSIS_TASK_TOML = """[metadata]
+name = "oddish-analysis"
+
+[agent]
+timeout_sec = 3600
+
+[environment]
+build_timeout_sec = 1200
+
+[verifier]
+timeout_sec = 60
+"""
+
+
+def apply_analysis_overlay(
+    work_task_dir: Path, *, brief: str, artifact: str, check_payload: dict
+) -> None:
+    """Replace the staged task with the analysis task: the brief as the
+    instruction, our image, and the artifact verifier as the tests. Nothing
+    of the audited task remains -- its trials, logs, and files reach the
+    agent through the oddish-query CLI, the same way the gold harness
+    audits from artifacts.
+
+    ``check_payload`` is the artifact contract for this trial
+    (``analysis_check_payload``): it is staged as ``tests/expected.json``
+    beside a copy of the shared validator so the verifier enforces exactly
+    what the host importer will require."""
+    import inspect
+    import json
+    import shutil
+
+    from oddish.worker import analysis_result_check
+
+    for child in list(work_task_dir.iterdir()):
+        if child.is_dir():
+            shutil.rmtree(child, ignore_errors=True)
+        else:
+            child.unlink(missing_ok=True)
+
+    (work_task_dir / "instruction.md").write_text(brief)
+    (work_task_dir / "task.toml").write_text(_ANALYSIS_TASK_TOML)
+    env_dir = work_task_dir / "environment"
+    env_dir.mkdir(parents=True)
+    (env_dir / "Dockerfile").write_text(_ANALYSIS_DOCKERFILE)
+    tests_dir = work_task_dir / "tests"
+    tests_dir.mkdir(parents=True)
+    (tests_dir / "expected.json").write_text(json.dumps(check_payload, indent=1))
+    (tests_dir / "analysis_result_check.py").write_text(
+        inspect.getsource(analysis_result_check)
+    )
+    test_sh = tests_dir / "test.sh"
+    test_sh.write_text(_ANALYSIS_TEST_SH.format(artifact=artifact))
+    test_sh.chmod(0o755)
+
+
 def stage_cli_mount(harness_dir: Path) -> None:
     """Write ONLY the oddish-query CLI into ``harness_dir`` (the /probe-harness
     mount). Everything else probe-only goes to the hidden stage, so this mount is
