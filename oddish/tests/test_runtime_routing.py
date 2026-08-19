@@ -38,9 +38,9 @@ class _StubTpuBackend:
         )
 
 
-def test_allowed_cloud_environments_is_modal_and_daytona() -> None:
+def test_allowed_cloud_environments_includes_archil() -> None:
     assert allowed_cloud_environments() == frozenset(
-        {EnvironmentType.MODAL, EnvironmentType.DAYTONA}
+        {EnvironmentType.MODAL, EnvironmentType.DAYTONA, EnvironmentType.ARCHIL}
     )
 
 
@@ -95,8 +95,8 @@ def test_tpu_support_is_frozen() -> None:
 
 
 def test_requires_tpu_skips_non_tpu_backends(monkeypatch) -> None:
-    # The default backends (Daytona, Modal) have no TPU support, so a TPU
-    # requirement finds nothing eligible rather than falling back to CPU/GPU.
+    # Non-TPU backends must not satisfy a TPU requirement by falling back to
+    # CPU or GPU.
     import oddish.runtime.routing as routing
     from oddish.runtime.backends.daytona import DaytonaBackend
     from oddish.runtime.backends.modal import ModalBackend

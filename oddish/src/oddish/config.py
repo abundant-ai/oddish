@@ -142,10 +142,7 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 # trials run a heavier GKE-enabled Harbor on a dedicated blessed-variant image
 # (see HARBOR_VARIANTS in oddish.core.harbor_source), never this default.
 HARBOR_DEFAULT_SOURCE = "https://github.com/abundant-ai/harbor"
-# Exact abundant-ai/harbor revision resolved into both uv.lock files. Harbor
-# PR #24 recovers Claude Code ATIF from the streamed transcript after timeouts,
-# on top of PR #25's subagent attribution and PR #26's lifecycle setup hooks.
-HARBOR_DEFAULT_SHA = "ca4fda6aa75180487c2c7c07fabaaf03d01b2e8d"
+HARBOR_DEFAULT_SHA = "76ec84ea873068732793dc0f0fd8212facc894de"
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
@@ -1160,6 +1157,10 @@ class Settings(BaseSettings):
 
     pending_trial_reservation_usd: Decimal = Decimal("1.00")
     default_daily_quota_usd: Decimal = Decimal("200.00")
+    quota_pause_remaining_percent: Decimal = Field(Decimal("5"), ge=0, le=100)
+    quota_pause_remaining_usd: Decimal | None = Field(None, ge=0)
+    quota_pause_poll_seconds: float = Field(1.0, gt=0)
+    quota_pause_refresh_seconds: float = Field(30.0, gt=0)
     # Org-wide aggregate CALENDAR-MONTH (UTC) cap, layered on top of the
     # per-user rolling-24h cap. ``None`` means no org cap unless an
     # ``org_quotas`` override row exists for the org (ships inert).

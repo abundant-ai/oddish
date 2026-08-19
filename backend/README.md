@@ -462,6 +462,16 @@ force `off`) instead. Under `shadow` it always degrades rather than failing —
 nothing is relying on enforcement. Tune `ODDISH_DEFAULT_DAILY_QUOTA_USD` and
 `ODDISH_PENDING_TRIAL_RESERVATION_USD` without a code change.
 
+Oddish pauses live Harbor jobs before the hard cap. The default reserve is 5%
+of the effective user or organization quota; set
+`ODDISH_QUOTA_PAUSE_REMAINING_PERCENT=0` to disable it. An optional
+`ODDISH_QUOTA_PAUSE_REMAINING_USD` reserve can be used instead or alongside it;
+when both are set, the larger reserve wins. The soft check counts settled spend
+plus cost already reported by running trials, while the existing hard cap
+remains the cancellation backstop. A paused trial stays `RUNNING`, keeps its
+queue slot and heartbeat, and resumes after rolling spend expires or its quota
+is raised.
+
 **Temporary quota bumps.** `POST /quotas/{user_id}/bumps` grants `+amount_usd`
 for `duration_hours`, with expiry computed on the DB clock (immune to client
 clock skew); `DELETE /quotas/{user_id}/bumps` revokes a member's live

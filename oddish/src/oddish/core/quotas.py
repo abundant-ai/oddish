@@ -539,6 +539,46 @@ async def org_inflight_reserved_usd(
     return await _sum_inflight_reserved_usd(session, _org_inflight_predicates(org_id))
 
 
+async def _sum_inflight_reported_usd(
+    session: AsyncSession, predicates: list
+) -> Decimal:
+    return to_money_decimal(
+        await session.scalar(
+            select(func.coalesce(func.sum(func.coalesce(TrialModel.cost_usd, 0)), 0))
+            .select_from(TrialModel)
+            .where(*predicates)
+        )
+    )
+
+
+async def inflight_reported_usd(
+    session: AsyncSession, org_id: str | None, billed_user_id: str
+) -> Decimal:
+    return await _sum_inflight_reported_usd(
+        session, _inflight_predicates(org_id, billed_user_id)
+    )
+
+
+async def org_inflight_reported_usd(
+    session: AsyncSession, org_id: str | None
+) -> Decimal:
+    return await _sum_inflight_reported_usd(session, _org_inflight_predicates(org_id))
+
+
+def quota_pause_limit_usd(hard_limit_usd: Decimal | None) -> Decimal | None:
+    if hard_limit_usd is None:
+        return None
+    reserves = [
+        hard_limit_usd * settings.quota_pause_remaining_percent / Decimal(100)
+    ]
+    if settings.quota_pause_remaining_usd is not None:
+        reserves.append(settings.quota_pause_remaining_usd)
+    reserve = max(reserves)
+    if reserve == 0:
+        return None
+    return max(Decimal(0), hard_limit_usd - reserve)
+
+
 # An org's UNATTRIBUTED spend, pooled. A trial whose payer could not be resolved
 # has no per-user cap to charge, so admission would otherwise wave it through on
 # the retry path; these two give that pool its own ceiling. Trial-only on
