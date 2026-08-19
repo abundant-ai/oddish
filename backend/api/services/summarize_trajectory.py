@@ -93,14 +93,57 @@ def load_summary_prompt_template() -> str:
 # schema, not this number.
 SUMMARY_MAX_TOKENS = 16384
 
-# ``preprocess`` bounds each text field but nothing bounds the step *count*, so
-# a long agent run still serializes past the model's input limit -- prod has
-# seen 11.2M tokens against a 1M cap. Character count is not a usable preflight
-# (a 588k-char prompt overflowed while a 2.17M-char one fit), so the API is the
-# oracle: send it, and halve the step budget on each "prompt is too long" 400.
-# A rejected request bills no tokens and returns in well under a second, so the
-# ~96% of summaries that already fit pay nothing for this.
-MAX_OVERFLOW_ATTEMPTS = 5
+# ...but a fixed cap is sized for a fixed number of citable steps, and shrinking
+# text instead of dropping steps changes that number by 4x. Every step the model
+# can cite has to be enumerated in some component's ``step_ids``, so the ids
+# alone cost roughly ``PER_STEP_ID_TOKENS`` each before a word of prose: 1377
+# steps is ~8k output tokens of pure ids, against a cap that was comfortable
+# when the clip handed the model 344. Overflowing it truncates the JSON
+# mid-structure and the parse fails -- strictly worse than the partial summary
+# it replaced, because a partial summary at least serves. So the cap scales with
+# what the payload actually offers.
+#
+# Raising it is close to free: ``max_tokens`` is a ceiling, not a target, and
+# billing is on tokens generated. The block streams (``messages.stream``), which
+# is what makes a cap this large safe against HTTP timeouts.
+# 16384 was proven comfortable against a payload of CAP_BASE_STEPS, the clip the
+# old ladder bottomed out at, so headroom is only owed for steps beyond it --
+# which keeps the ~96% of summaries that never overflowed byte-identical.
+PER_STEP_ID_TOKENS = 6
+CAP_BASE_STEPS = 344
+MAX_OUTPUT_TOKENS = 128_000
+
+
+def summary_max_tokens(n_steps: int) -> int:
+    """Output cap for a payload offering ``n_steps`` citable steps."""
+    extra = max(0, n_steps - CAP_BASE_STEPS) * PER_STEP_ID_TOKENS
+    return min(MAX_OUTPUT_TOKENS, SUMMARY_MAX_TOKENS + extra)
+
+# ``preprocess`` bounds each text field but nothing bounds the step *count* or
+# a step's total text, so a long agent run still serializes past the model's
+# input limit -- prod has seen 11.2M tokens against a 1M cap. Character count is
+# not a usable preflight (a 588k-char prompt overflowed while a 2.17M-char one
+# fit), so the API is the oracle: send it, and shrink on each "prompt is too
+# long" 400. A rejected request bills no tokens and returns in well under a
+# second, so the ~96% of summaries that already fit pay nothing for this.
+#
+# Text shrinks before steps drop. Dropping steps is not free the way truncating
+# text is: ``clip_trajectory_steps`` replaces the middle with a marker that has
+# no ``step_id``, and the model can only cite steps that survive into
+# ``_valid_step_ids`` -- so every dropped step lands in no component and the UI
+# files it under "Other". Trial kubernetes-rust-rewrite-bae0f616-417 measured
+# the cost: 2,670,311 tokens over 1377 steps (~1.9k tokens/step) halved twice to
+# 344 steps, of which the model labelled 343. Coverage was 24.9% not because the
+# model gave up but because it was shown a quarter of the run.
+#
+# At ~1.9k tokens/step the text is the whole weight, so shrinking it buys back
+# steps directly. Measured on that step shape, the ceiling under a 1M cap goes
+# 495 steps unshrunk -> 1,785 / 3,847 / 5,884 across the three rungs. The 1377
+# steps fit whole on the first rung at 766k tokens. Prod's largest recorded
+# overflow, 11.2M tokens, is ~5.5k steps at that density and lands inside the
+# last rung -- narrowly, so clipping stays wired up behind it.
+TEXT_SHRINK_RUNGS: tuple[tuple[int, int], ...] = ((600, 2400), (200, 800), (80, 320))
+MAX_OVERFLOW_ATTEMPTS = 8
 STEP_OMISSION_MARKER = "[{n} steps omitted to fit the context window]"
 _CONTEXT_OVERFLOW_MARKERS = (
     "prompt is too long",
@@ -112,6 +155,26 @@ _CONTEXT_OVERFLOW_MARKERS = (
 def _is_context_overflow(exc: BaseException) -> bool:
     text = str(exc).lower()
     return any(marker in text for marker in _CONTEXT_OVERFLOW_MARKERS)
+
+
+def _shrink_ladder(
+    total_steps: int,
+) -> list[tuple[tuple[int, int] | None, int | None]]:
+    """``(text_rung, step_budget)`` per overflow attempt, widest first.
+
+    The step rungs carry the tightest text rung with them: once steps are being
+    dropped, every character saved buys back another step the model can cite.
+    Halving stops at 1 -- still overflowing there means the steps are not what
+    is oversized (a huge instruction or verifier log), so further rungs would
+    only burn attempts.
+    """
+    ladder: list[tuple[tuple[int, int] | None, int | None]] = [(None, None)]
+    ladder += [(rung, None) for rung in TEXT_SHRINK_RUNGS]
+    budget = total_steps
+    while len(ladder) < MAX_OVERFLOW_ATTEMPTS and budget > 1:
+        budget = max(1, budget // 2)
+        ladder.append((TEXT_SHRINK_RUNGS[-1], budget))
+    return ladder
 
 
 def clip_trajectory_steps(trajectory: dict, max_steps: int) -> dict:
@@ -153,16 +216,18 @@ def clip_trajectory_steps(trajectory: dict, max_steps: int) -> dict:
     return out
 
 
-def _truncate(text: str) -> str:
-    if len(text) <= MAX_TEXT_CHARS:
+def _truncate(text: str, budget: int = MAX_TEXT_CHARS) -> str:
+    if len(text) <= budget:
         return text
-    head = text[:TRUNCATE_HEAD]
-    tail = text[-TRUNCATE_TAIL:]
-    omitted = len(text) - TRUNCATE_HEAD - TRUNCATE_TAIL
-    return head + TRUNCATION_MARKER.format(n=omitted) + tail
+    # Head/tail scale with the budget so a tighter rung keeps the same 2:1
+    # opening-to-ending shape the default 800/400 split has.
+    head = max(1, budget * TRUNCATE_HEAD // MAX_TEXT_CHARS)
+    tail = max(1, budget * TRUNCATE_TAIL // MAX_TEXT_CHARS)
+    omitted = len(text) - head - tail
+    return text[:head] + TRUNCATION_MARKER.format(n=omitted) + text[-tail:]
 
 
-def _strip_images(parts: list[dict]) -> list[dict]:
+def _strip_images(parts: list[dict], budget: int) -> list[dict]:
     """Replace image parts with a single placeholder text part."""
     out: list[dict] = []
     skipped = 0
@@ -172,7 +237,7 @@ def _strip_images(parts: list[dict]) -> list[dict]:
             continue
         if isinstance(part, dict) and part.get("type") == "text":
             text = part.get("text") or ""
-            out.append({"type": "text", "text": _truncate(text)})
+            out.append({"type": "text", "text": _truncate(text, budget)})
         else:
             out.append(part)
     if skipped:
@@ -180,18 +245,20 @@ def _strip_images(parts: list[dict]) -> list[dict]:
     return out
 
 
-def _process_content(value: Any) -> Any:
+def _process_content(value: Any, budget: int = MAX_TEXT_CHARS) -> Any:
     """Process MessageContent / ObservationContent (string | list[ContentPart] | None)."""
     if value is None:
         return None
     if isinstance(value, str):
-        return _truncate(value)
+        return _truncate(value, budget)
     if isinstance(value, list):
-        return _strip_images(value)
+        return _strip_images(value, budget)
     return value
 
 
-def _process_tool_calls(tool_calls: list[dict] | None) -> list[dict] | None:
+def _process_tool_calls(
+    tool_calls: list[dict] | None, budget: int = MAX_TEXT_CHARS
+) -> list[dict] | None:
     if not tool_calls:
         return tool_calls
     out = []
@@ -200,20 +267,23 @@ def _process_tool_calls(tool_calls: list[dict] | None) -> list[dict] | None:
         args = new_call.get("arguments")
         if isinstance(args, dict):
             new_call["arguments"] = {
-                k: _truncate(v) if isinstance(v, str) else v for k, v in args.items()
+                k: _truncate(v, budget) if isinstance(v, str) else v
+                for k, v in args.items()
             }
         out.append(new_call)
     return out
 
 
-def _process_observation(obs: dict | None) -> dict | None:
+def _process_observation(
+    obs: dict | None, budget: int = MAX_TEXT_CHARS
+) -> dict | None:
     if obs is None:
         return None
     new_obs = dict(obs)
     new_results = []
     for result in obs.get("results") or []:
         new_result = dict(result)
-        new_result["content"] = _process_content(result.get("content"))
+        new_result["content"] = _process_content(result.get("content"), budget)
         new_results.append(new_result)
     new_obs["results"] = new_results
     return new_obs
@@ -297,18 +367,75 @@ def drop_inert_steps(trajectory: dict) -> dict:
     return out
 
 
-def preprocess(trajectory: dict) -> dict:
-    """Return a copy of ``trajectory`` with images stripped and long text truncated."""
+# A per-field share below this stops being a summary and starts being noise,
+# so a step with very many fields may exceed ``max_step_chars`` rather than
+# shred every one of them.
+MIN_FIELD_CHARS = 80
+
+
+def _process_step(step: dict, budget: int) -> dict:
+    new_step = dict(step)
+    new_step["message"] = _process_content(step.get("message"), budget)
+    rc = step.get("reasoning_content")
+    if isinstance(rc, str):
+        new_step["reasoning_content"] = _truncate(rc, budget)
+    new_step["tool_calls"] = _process_tool_calls(step.get("tool_calls"), budget)
+    new_step["observation"] = _process_observation(step.get("observation"), budget)
+    return new_step
+
+
+def _text_field_lengths(step: dict) -> list[int]:
+    """Lengths of every independently-truncatable text field on a step."""
+    lengths: list[int] = []
+
+    def add(value: Any) -> None:
+        if isinstance(value, str):
+            lengths.append(len(value))
+        elif isinstance(value, list):
+            lengths.extend(
+                len(part.get("text") or "")
+                for part in value
+                if isinstance(part, dict) and part.get("type") == "text"
+            )
+
+    add(step.get("message"))
+    add(step.get("reasoning_content"))
+    for call in step.get("tool_calls") or []:
+        args = call.get("arguments") if isinstance(call, dict) else None
+        if isinstance(args, dict):
+            lengths.extend(len(v) for v in args.values() if isinstance(v, str))
+    obs = step.get("observation")
+    if isinstance(obs, dict):
+        for result in obs.get("results") or []:
+            if isinstance(result, dict):
+                add(result.get("content"))
+    return lengths
+
+
+def preprocess(
+    trajectory: dict,
+    *,
+    max_text_chars: int = MAX_TEXT_CHARS,
+    max_step_chars: int | None = None,
+) -> dict:
+    """Return a copy of ``trajectory`` with images stripped and long text truncated.
+
+    ``max_step_chars`` bounds what one *step* carries. A per-field budget alone
+    does not: a step with a dozen tool-call arguments and a dozen observation
+    results pays the field budget a dozen times over, and that skew is what puts
+    a long run at ~1.9k tokens/step. Fields over quota are re-truncated to an
+    even share of the step budget rather than proportionally, so one runaway
+    field cannot crowd out the rest of the step.
+    """
     out = deepcopy(trajectory)
     new_steps = []
     for step in out.get("steps") or []:
-        new_step = dict(step)
-        new_step["message"] = _process_content(step.get("message"))
-        rc = step.get("reasoning_content")
-        if isinstance(rc, str):
-            new_step["reasoning_content"] = _truncate(rc)
-        new_step["tool_calls"] = _process_tool_calls(step.get("tool_calls"))
-        new_step["observation"] = _process_observation(step.get("observation"))
+        new_step = _process_step(step, max_text_chars)
+        if max_step_chars is not None:
+            lengths = _text_field_lengths(new_step)
+            if sum(lengths) > max_step_chars:
+                share = max(MIN_FIELD_CHARS, max_step_chars // max(len(lengths), 1))
+                new_step = _process_step(step, share)
         new_steps.append(new_step)
     out["steps"] = new_steps
     return out
@@ -383,7 +510,7 @@ def build_summary_block(
         },
         output_transform=lambda raw: tb.to_summary(raw, model=model),
         model=model,
-        max_tokens=SUMMARY_MAX_TOKENS,
+        max_tokens=summary_max_tokens(len(trajectory.get("steps") or [])),
         response_format=tb.output_schema,
         output_schema=tb.output_schema.model_json_schema(),
         triggered_by_user_id=triggered_by_user_id,
@@ -405,9 +532,10 @@ async def generate(
     S3 -- and returns the parsed ``schema_version=5`` summary. Raises
     ``SummaryGenerationError`` on any generation/parse failure.
 
-    A trajectory that overflows the model's input limit is retried with half
-    the steps, up to ``MAX_OVERFLOW_ATTEMPTS`` times. Every attempt persists its
-    own ``analyzer_blocks`` row, so the shrink sequence stays auditable.
+    A trajectory that overflows the model's input limit walks the shrink ladder
+    from ``_shrink_ladder``: text budgets first, then step clipping, capped at
+    ``MAX_OVERFLOW_ATTEMPTS`` rungs. Every attempt persists its own
+    ``analyzer_blocks`` row, so the shrink sequence stays auditable.
     """
     model = resolve_summary_model()
     if prompt_template is None:
@@ -418,13 +546,18 @@ async def generate(
             prompt_template = load_summary_prompt_template()
         except OSError as e:
             raise SummaryGenerationError(f"summary template unavailable: {e}") from e
-    total_steps = len(trajectory.get("steps") or [])
-    budget: int | None = None
+    ladder = _shrink_ladder(len(trajectory.get("steps") or []))
+    last_prompt: str | None = None
+    last_error: Exception | None = None
 
-    for attempt in range(MAX_OVERFLOW_ATTEMPTS):
-        payload = (
-            trajectory if budget is None else clip_trajectory_steps(trajectory, budget)
-        )
+    for index, (text_rung, step_budget) in enumerate(ladder):
+        payload = trajectory
+        if text_rung is not None:
+            payload = preprocess(
+                payload, max_text_chars=text_rung[0], max_step_chars=text_rung[1]
+            )
+        if step_budget is not None:
+            payload = clip_trajectory_steps(payload, step_budget)
         block = build_summary_block(
             payload,
             task_context,
@@ -433,29 +566,32 @@ async def generate(
             triggered_by_user_id=triggered_by_user_id,
             prompt_template=prompt_template,
         )
+        # A text rung that shrinks nothing -- short steps, where the step
+        # *count* is what overflows -- builds a byte-identical prompt. Skipping
+        # it spends no round trip and leaves the step rungs their full depth.
+        if block.prompt == last_prompt:
+            continue
+        last_prompt = block.prompt
         try:
             out = await block.run()
         except Exception as e:
-            next_budget = max(1, (total_steps if budget is None else budget) // 2)
-            # budget == 1 and still overflowing means the steps are not what is
-            # oversized (a huge instruction or verifier log), so halving again
-            # only burns attempts.
-            exhausted = attempt == MAX_OVERFLOW_ATTEMPTS - 1 or budget == 1
-            if not _is_context_overflow(e) or exhausted:
+            last_error = e
+            if not _is_context_overflow(e) or index == len(ladder) - 1:
                 raise SummaryGenerationError(f"summary block failed: {e}") from e
             logger.warning(
-                "trajectory summary overflowed for analyzer_id=%s; retrying with "
-                "%d of %d steps (attempt %d)",
+                "trajectory summary overflowed for analyzer_id=%s; retrying at "
+                "rung %d of %d (text budget %s, %s steps)",
                 analyzer_id,
-                next_budget,
-                total_steps,
-                attempt + 2,
+                index + 2,
+                len(ladder),
+                ladder[index + 1][0],
+                ladder[index + 1][1] or "all",
             )
-            budget = next_budget
             continue
         return out.output
 
-    raise AssertionError("unreachable: the loop returns or raises")  # pragma: no cover
+    # Reachable only if every remaining rung built a prompt already sent.
+    raise SummaryGenerationError(f"summary block failed: {last_error}")
 
 
 # ---------------------------------------------------------------------------

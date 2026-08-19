@@ -16,6 +16,7 @@ from api.services.summarize_trajectory import (
     TaskContext,
     TRUNCATE_HEAD,
     TRUNCATE_TAIL,
+    TRUNCATION_MARKER,
     build_task_context,
     drop_inert_steps,
     get_or_generate_summary,
@@ -1120,3 +1121,215 @@ async def test_generate_gives_up_after_the_attempt_ceiling(monkeypatch):
         )
     assert "prompt is too long" in str(excinfo.value)
     assert len(prompts) <= MAX_OVERFLOW_ATTEMPTS
+
+
+# ---------------------------------------------------------------------------
+# text shrinking (rungs that precede step clipping)
+#
+# Prod trial kubernetes-rust-rewrite-bae0f616-417: the full 1377-step
+# trajectory weighed 2,670,311 tokens (~1.9k tokens/step) against a 1M cap, so
+# the step-halving ladder landed on 344 steps and covered 24.9% of the run.
+# Shrinking per-step text first keeps every step_id citable.
+# ---------------------------------------------------------------------------
+
+
+def _step_ids_in_prompt(prompt: str) -> set[int]:
+    import re
+
+    return {int(m) for m in re.findall(r'"step_id": (\d+)', prompt)}
+
+
+class _TokenLimitedFakeLLM:
+    """Fake client that rejects oversized prompts the way the API does."""
+
+    CHARS_PER_TOKEN = 4
+
+    def __init__(self, prompts: list[str], payload: str, max_tokens: int):
+        self._prompts = prompts
+        self._payload = payload
+        self._max_tokens = max_tokens
+        self.last_system_prompt = None
+        self.last_usage = None
+
+    async def stream(self, prompt: str, *, system_prompt: str | None = None):
+        self._prompts.append(prompt)
+        tokens = len(prompt) // self.CHARS_PER_TOKEN
+        if tokens > self._max_tokens:
+            raise Exception(
+                "Error code: 400 - {'type': 'error', 'error': {'type': "
+                "'invalid_request_error', 'message': 'prompt is too long: "
+                f"{tokens} tokens > {self._max_tokens} maximum'}}}}"
+            )
+        yield self._payload
+
+    async def aclose(self) -> None:
+        return None
+
+
+def _install_token_limited_llm(monkeypatch, payload: str, max_tokens: int) -> list[str]:
+    prompts: list[str] = []
+
+    async def create(*args, **kwargs):
+        return _TokenLimitedFakeLLM(prompts, payload, max_tokens)
+
+    monkeypatch.setattr(
+        "oddish.blocks.analyzer.analyzer_block.create_llm_client", create
+    )
+    return prompts
+
+
+def test_preprocess_honours_a_tighter_text_budget():
+    huge = "X" * 10_000
+    out = preprocess({"steps": [_make_step(1, message=huge)]}, max_text_chars=200)
+    message = out["steps"][0]["message"]
+    assert len(message) < 300, message[:80]
+    assert message.startswith("X" * 80)
+    assert "truncated" in message
+
+
+def test_preprocess_caps_the_total_text_a_single_step_carries():
+    """Per-field budgets do not bound a step with many fields."""
+    step = _make_step(
+        1,
+        message="A" * 5_000,
+        reasoning_content="B" * 5_000,
+        tool_calls=[{"arguments": {f"arg{i}": "C" * 5_000 for i in range(8)}}],
+    )
+    out = preprocess({"steps": [step]}, max_text_chars=2000, max_step_chars=1500)
+    kept = (
+        len(out["steps"][0]["message"])
+        + len(out["steps"][0]["reasoning_content"])
+        + sum(
+            len(v) for v in out["steps"][0]["tool_calls"][0]["arguments"].values()
+        )
+    )
+    # Truncation markers add a fixed per-field overhead on top of the budget.
+    assert kept < 1500 + 10 * len(TRUNCATION_MARKER.format(n=99999)), kept
+
+
+@pytest.mark.asyncio
+async def test_generate_shrinks_text_before_dropping_any_step(monkeypatch):
+    from api.services.summarize_trajectory import generate
+
+    _patch_block_persistence(monkeypatch)
+    payload = json.dumps({"summary": "ok", "highlights": [], "components": []})
+    prompts = _install_recording_llm(monkeypatch, payload, [_OVERFLOW])
+
+    trajectory = {
+        "steps": [_make_step(i, message="M" * 6000) for i in range(1, 41)]
+    }
+    result = await generate(trajectory, _minimal_ctx(), **_PROMPT_KWARGS)
+
+    assert result["summary"] == "ok"
+    assert len(prompts) == 2
+    assert len(prompts[1]) < len(prompts[0]), "the retry must send a smaller prompt"
+    assert "steps omitted" not in prompts[1], "no step may be dropped on rung 1"
+    assert _step_ids_in_prompt(prompts[1]) == set(range(1, 41))
+
+
+@pytest.mark.asyncio
+async def test_generate_falls_back_to_clipping_once_text_rungs_are_spent(monkeypatch):
+    from api.services.summarize_trajectory import (
+        MAX_OVERFLOW_ATTEMPTS,
+        SummaryGenerationError,
+        generate,
+    )
+
+    _patch_block_persistence(monkeypatch)
+    payload = json.dumps({"summary": "ok", "highlights": [], "components": []})
+    prompts = _install_recording_llm(
+        monkeypatch, payload, [_OVERFLOW] * (MAX_OVERFLOW_ATTEMPTS + 3)
+    )
+
+    with pytest.raises(SummaryGenerationError):
+        await generate(
+            {"steps": [_make_step(i, message="M" * 6000) for i in range(1, 41)]},
+            _minimal_ctx(),
+            **_PROMPT_KWARGS,
+        )
+
+    clipped = [p for p in prompts if "steps omitted" in p]
+    assert clipped, "clipping must remain the last resort, not be removed"
+    assert "steps omitted" not in prompts[1], "text rungs come first"
+
+
+@pytest.mark.asyncio
+async def test_long_trajectory_keeps_nearly_every_step_under_a_token_cap(monkeypatch):
+    """The prod shape: 1377 steps at ~1.9k tokens each against a 1M cap.
+
+    Step halving covered 343 of 1377 steps (24.9%). Text shrinking must keep
+    essentially all of them citable.
+    """
+    from api.services.summarize_trajectory import generate
+
+    _patch_block_persistence(monkeypatch)
+    payload = json.dumps({"summary": "ok", "highlights": [], "components": []})
+    prompts = _install_token_limited_llm(monkeypatch, payload, 1_000_000)
+
+    # ~7.8k chars/step across five text fields == ~1.9k tokens/step.
+    steps = [
+        _make_step(
+            i,
+            message="M" * 2000,
+            reasoning_content="R" * 2000,
+            tool_calls=[{"arguments": {"a": "A" * 1500, "b": "B" * 1500}}],
+            observation={"results": [{"content": "O" * 800}]},
+        )
+        for i in range(1, 1378)
+    ]
+
+    result = await generate({"steps": steps}, _minimal_ctx(), **_PROMPT_KWARGS)
+
+    assert result["summary"] == "ok"
+    assert len(prompts[0]) // 4 > 2_000_000, "the baseline must really overflow"
+    covered = len(_step_ids_in_prompt(prompts[-1]))
+    assert covered / 1377 > 0.95, f"only {covered} of 1377 steps reached the model"
+
+
+def test_preprocess_then_clip_keeps_the_marker_timestamp():
+    """Text shrinking runs before clipping, so it must preserve timestamps.
+
+    ``to_summary`` derives duration from the predecessor step, and the omission
+    marker inherits the last dropped step's timestamp -- a preprocess pass that
+    rebuilt steps from their content fields alone would silently zero it.
+    """
+    from api.services.summarize_trajectory import clip_trajectory_steps
+
+    steps = [
+        _make_step(i, timestamp=f"2026-04-30T12:{i:02d}:00Z", message="M" * 6000)
+        for i in range(1, 21)
+    ]
+    shrunk = preprocess({"steps": steps}, max_text_chars=80, max_step_chars=320)
+    clipped = clip_trajectory_steps(shrunk, 6)
+
+    marker = next(s for s in clipped["steps"] if s.get("step_id") is None)
+    assert marker["timestamp"] == "2026-04-30T12:17:00Z"
+    assert [s["timestamp"] for s in clipped["steps"][:3]] == [
+        "2026-04-30T12:01:00Z",
+        "2026-04-30T12:02:00Z",
+        "2026-04-30T12:03:00Z",
+    ]
+
+
+def test_output_cap_scales_with_the_number_of_citable_steps():
+    """A 1377-step trajectory needs room to enumerate 1377 ids, not 344.
+
+    Shrinking text before dropping steps hands the model every step id, and the
+    ids alone cost several thousand output tokens before any prose. A fixed cap
+    sized for a 344-step clip truncates that JSON mid-structure, which parses as
+    a failure -- strictly worse than the partial summary it replaced.
+    """
+    from api.services.summarize_trajectory import (
+        SUMMARY_MAX_TOKENS,
+        summary_max_tokens,
+    )
+
+    assert summary_max_tokens(40) == SUMMARY_MAX_TOKENS, "short runs are unchanged"
+
+    wide = summary_max_tokens(1377)
+    assert wide > SUMMARY_MAX_TOKENS
+    # 1377 ids at ~6 tokens each, on top of the prose the old cap already held.
+    assert wide - SUMMARY_MAX_TOKENS >= 1377 * 4, wide
+
+    # Never past what the model will accept as max_tokens.
+    assert summary_max_tokens(10**6) <= 128_000
