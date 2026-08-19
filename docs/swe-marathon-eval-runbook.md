@@ -79,6 +79,7 @@ oddish run -p <task-dir> --agent <agent> --model <provider/model> \
   API host and disables server-side web tools for restricted agent phases.
   Optional overrides still exist (`--allow-agent-host`, `--disable-web-tools`)
   if you need an extra host or want to force the web-tool disable.
+- DO NOT RUN QA. DO NOT USE THE QA FLAG.
 
 ## 3. Load-bearing gotchas (each cost real debugging time)
 
