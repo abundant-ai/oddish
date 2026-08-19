@@ -190,14 +190,13 @@ High-level flow:
    `oddish.filters.trial_predicates.build_trial_metric_predicate` with an
    injected `EligibleTrialScope` rather than reimplementing Any/All logic.
 
-Agent capability analysis is lazy and task-version scoped. An authenticated or
-public-share cache miss enqueues one idempotent `ANALYZER` worker job with
-`payload.mode = "agent_capabilities"`; the HTTP request returns 202 and clients
-poll until the analyzer block is stored. Capability generation must not run
-inline in an API request. Public requests remain bounded to the task versions
-published by their share token, and repeated views coalesce onto the same active
-job. The public share UI does not request or offer the capability pane; those
-routes remain available for bounded API consumers and existing evidence links.
+Agent capability analysis (the successful-vs-failing cohort comparison) has
+been removed: its endpoints, cohort blocks, and UI pane are gone, and a queued
+`ANALYZER` job with `payload.mode = "agent_capabilities"` now fails
+permanently. The output schema (`AgentCapabilitiesOutput` and sub-models) is
+preserved in `oddish.analyze.models`, and
+`oddish/src/oddish/analyze/prompts/agent_capabilities.txt` is kept, so the
+feature can return as a `'capabilities'` analysis trial.
 Shared trial drawers open on Summary and fetch a trajectory only after explicit
 user or URL intent. Collapsed trajectory steps must not mount their message,
 reasoning, tool, or observation bodies; those potentially large bodies mount
@@ -207,17 +206,9 @@ enqueues one trial-scoped
 summary schema. Its endpoint returns explicit queued/running/retrying state and
 the client polls until the summary is stored. Terminal failures are returned,
 not re-enqueued by anonymous refreshes; a schema bump creates the next valid
-idempotency key. Public capability jobs, cache entries, summary warmup, and
-cohort queries are keyed by the published experiment as well as task version;
-they must never include trials from another experiment on the same version. Any
-completed, fetchable trajectory is enough to queue analysis; cohort size is
-reported as evidence strength, not used as an
-eligibility gate. The worker generates missing trajectory summaries before
-analysis. QA enriches the input but is optional: `GOOD_*`, `BAD_*`, and
-`HARNESS_ERROR` classifications
-are all retained, while trials without QA fall back to verifier reward for
-provisional successful/failing placement. A later QA classification that moves
-a trial between outcome cohorts invalidates and rebuilds provisional output.
+idempotency key. Summary warmup and cache entries are keyed by the published
+experiment as well as task version; they must never include trials from
+another experiment on the same version.
 
 Trajectory summaries use schema v5. Each taxonomy-valued `components` entry
 contains its `step_ids`, summary, and deterministic `tool_count` and
@@ -229,8 +220,7 @@ step; the first step and steps without two usable timestamps contribute zero.
 The frontend derives the same values for older summaries that lack the fields.
 Every summary consumer and warmup path must compare the stored
 `schema_version` with the packaged schema version; truthiness of
-`trials.trajectory_summary` is not a freshness check. Capability cohort reads
-ignore stale mirrors and fall back only to current-schema successful blocks.
+`trials.trajectory_summary` is not a freshness check.
 
 QA analyzer prompts are **not** stored in the database. They ship as packaged
 files under `oddish/src/oddish/analyze/`: `prompts/pre_trial_qa.txt` drives the
@@ -245,10 +235,10 @@ block. Editing a prompt is a code change that ships with a deploy.
 `WorkerJobKind` (in `oddish.db.models`):
 
 - **Active**: `TRIAL` (Harbor trial execution), `QA` (task-level classify-all-trials +
-  verdict), `ANALYZER` (agent capabilities and trial-scoped public trajectory
-  summaries selected by payload mode; the cross-experiment report mode was
-  removed with the reports feature), `TASK_EXPAND` (sweep expansion),
-  `TAG_PROJECT` (tag recompute).
+  verdict), `ANALYZER` (trial-scoped public trajectory summaries; the
+  cross-experiment report mode was removed with the reports feature and the
+  agent-capabilities mode with the capabilities feature), `TASK_EXPAND`
+  (sweep expansion), `TAG_PROJECT` (tag recompute).
 - **Legacy, drain-only**: `ANALYSIS` (per-trial classification; `AnalysisJobHandler`
   is kept only so in-flight rows survive a deploy), `VERDICT` (enum value only,
   no handler), and `ANALYZER_BLOCK` (executed rows of the removed
