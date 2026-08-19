@@ -454,6 +454,75 @@ async def test_generic_retry_refuses_analysis_trials():
 
 
 @pytest.mark.asyncio
+async def test_historical_trials_do_not_block_the_qa_import():
+    """Needs a database. QA admission is version-scoped, so the import
+    staleness check must be too: a still-live trial on an old version must
+    not defer the current version's settled QA result forever, while a
+    live trial on the graded version still must."""
+    if not URL:
+        pytest.skip("ODDISH_DATABASE_URL not set")
+    from oddish.db import TaskStatus, TrialStatus, get_session, init_db
+    from oddish.db.models import ExperimentModel, TaskModel, TaskVersionModel
+    from oddish.workers.analysis_trials import _qa_import_still_current
+
+    await init_db()
+    run = uuid.uuid4().hex[:8]
+    task_id = f"qa-version-scope-{run}"
+    v1, v2 = f"{task_id}-v1", f"{task_id}-v2"
+    async with get_session() as session:
+        experiment = ExperimentModel(name=f"exp-{run}")
+        session.add(experiment)
+        session.add(
+            TaskModel(
+                id=task_id,
+                name=task_id,
+                user="u",
+                task_path="p",
+                status=TaskStatus.VERDICT_PENDING,
+                run_analysis=True,
+            )
+        )
+        await session.flush()
+        for version_id, version in ((v1, 1), (v2, 2)):
+            session.add(
+                TaskVersionModel(
+                    id=version_id, task_id=task_id, version=version, task_path="p"
+                )
+            )
+        await session.flush()
+        task = await session.get(TaskModel, task_id)
+        task.current_version_id = v2
+        for index, (version_id, status) in enumerate(
+            ((v1, TrialStatus.RUNNING), (v2, TrialStatus.SUCCESS)), start=1
+        ):
+            session.add(
+                TrialModel(
+                    id=f"{task_id}-{index}",
+                    name=f"{task_id}-{index}",
+                    task_id=task_id,
+                    task_version_id=version_id,
+                    experiment_id=experiment.id,
+                    agent="claude-code",
+                    provider="local",
+                    queue_key="q",
+                    status=status,
+                    attempts=1,
+                    max_attempts=3,
+                )
+            )
+        await session.commit()
+
+    async with get_session() as session:
+        # The v1 trial is live, but v2 is the graded version: import may land.
+        assert await _qa_import_still_current(session, task_id, v2) is True
+        # A live trial on the graded version itself still defers.
+        trial = await session.get(TrialModel, f"{task_id}-2")
+        trial.status = TrialStatus.RUNNING
+        await session.flush()
+        assert await _qa_import_still_current(session, task_id, v2) is False
+
+
+@pytest.mark.asyncio
 async def test_the_verdict_needs_enough_evidence():
     """Below 5 trials or 3 distinct agents the QA trial is created without a
     verdict request; at the bar it is asked for one."""

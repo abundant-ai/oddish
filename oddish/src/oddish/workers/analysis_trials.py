@@ -620,23 +620,26 @@ async def _qa_import_still_current(
         )
         if current_version_id is not None and current_version_id != graded_version_id:
             return False
-    pending = await session.scalar(
-        select(TrialModel.id)
-        .where(
-            TrialModel.task_id == task_id,
-            TrialModel.kind == "agent",
-            TrialModel.superseded_by_trial_id.is_(None),
-            TrialModel.status.in_(
-                [
-                    TrialStatus.PENDING,
-                    TrialStatus.QUEUED,
-                    TrialStatus.RUNNING,
-                    TrialStatus.RETRYING,
-                ]
-            ),
-        )
-        .limit(1)
-    )
+    # Scope the pending check to the graded version, matching QA admission:
+    # a historical version's still-live trial must not defer this import
+    # forever (the healer would re-run it against the same live row on
+    # every sweep until that unrelated trial ends).
+    conditions = [
+        TrialModel.task_id == task_id,
+        TrialModel.kind == "agent",
+        TrialModel.superseded_by_trial_id.is_(None),
+        TrialModel.status.in_(
+            [
+                TrialStatus.PENDING,
+                TrialStatus.QUEUED,
+                TrialStatus.RUNNING,
+                TrialStatus.RETRYING,
+            ]
+        ),
+    ]
+    if graded_version_id is not None:
+        conditions.append(TrialModel.task_version_id == graded_version_id)
+    pending = await session.scalar(select(TrialModel.id).where(*conditions).limit(1))
     return pending is None
 
 
