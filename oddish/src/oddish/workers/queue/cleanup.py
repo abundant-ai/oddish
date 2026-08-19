@@ -1385,74 +1385,92 @@ async def _heal_stale_verdict_pending(session) -> int:
     verdict_pending_completed = 0
     reimport_trial_ids: list[str] = []
     for (task_id,) in stale_verdict_pending:
-        task = (
-            await session.execute(
-                select(TaskModel).where(TaskModel.id == str(task_id)).with_for_update()
+        # Savepoint per task: one unrepairable task (e.g. its experiment
+        # memberships are gone, so QA creation raises) must not abort the
+        # step and starve every task behind it in the updated_at ordering.
+        try:
+            async with session.begin_nested():
+                task = (
+                    await session.execute(
+                        select(TaskModel)
+                        .where(TaskModel.id == str(task_id))
+                        .with_for_update()
+                    )
+                ).scalar_one_or_none()
+                if not task or task.status != TaskStatus.VERDICT_PENDING:
+                    continue
+                # The candidate scan precedes the row lock. A trial
+                # settlement may have created a fresh QA trial while cleanup
+                # waited, so recheck after locking before repairing state or
+                # creating a duplicate.
+                active_qa = await session.scalar(
+                    text(
+                        """
+                        SELECT 1 FROM trials
+                        WHERE task_id = :task_id AND kind = 'qa'
+                          AND deleted_at IS NULL
+                          AND superseded_by_trial_id IS NULL
+                          AND status::text NOT IN ('SUCCESS', 'FAILED', 'SKIPPED')
+                        LIMIT 1
+                        """
+                    ),
+                    {"task_id": task.id},
+                )
+                if active_qa is not None:
+                    continue
+                if task.verdict_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
+                    task.status = TaskStatus.COMPLETED
+                    task.finished_at = task.finished_at or utcnow()
+                    verdict_pending_completed += 1
+                    continue
+                # A terminal QA trial with a non-terminal verdict means the
+                # import never landed (worker died between settle and
+                # import). Re-import after this transaction; only create a
+                # fresh QA trial when none exists.
+                settled_qa = await session.scalar(
+                    text(
+                        """
+                        SELECT tr.id FROM trials tr
+                        WHERE tr.task_id = :task_id AND tr.kind = 'qa'
+                          AND tr.deleted_at IS NULL
+                          AND tr.superseded_by_trial_id IS NULL
+                          AND tr.status::text IN ('SUCCESS', 'FAILED')
+                        ORDER BY tr.created_at DESC LIMIT 1
+                        """
+                    ),
+                    {"task_id": task.id},
+                )
+                if settled_qa is not None:
+                    logger.info(
+                        "healer: task %s has settled qa trial %s with no "
+                        "verdict, re-importing",
+                        task.id,
+                        settled_qa,
+                    )
+                    reimport_trial_ids.append(str(settled_qa))
+                    continue
+                # start_qa_for_task itself has no audit gate; creating a QA
+                # trial while an audit is live would bake "(none recorded)"
+                # findings into its brief. Skip for now: the audit's
+                # settlement re-enters admission, and the next sweep retries
+                # regardless.
+                if (
+                    await live_analysis_trial_id(session, task.id, kind="audit")
+                    is not None
+                ):
+                    continue
+                if await start_qa_for_task(session, task):
+                    logger.info(
+                        "healer: task %s was wedged in VERDICT_PENDING "
+                        "with no qa trial",
+                        task.id,
+                    )
+                else:
+                    verdict_pending_completed += 1
+        except Exception:  # noqa: BLE001 -- log and move to the next task
+            logger.exception(
+                "healer: verdict-pending repair failed for task %s", task_id
             )
-        ).scalar_one_or_none()
-        if not task or task.status != TaskStatus.VERDICT_PENDING:
-            continue
-        # The candidate scan precedes the row lock. A trial settlement may
-        # have created a fresh QA trial while cleanup waited, so recheck
-        # after locking before repairing state or creating a duplicate.
-        active_qa = await session.scalar(
-            text(
-                """
-                SELECT 1 FROM trials
-                WHERE task_id = :task_id AND kind = 'qa'
-                  AND deleted_at IS NULL
-                  AND superseded_by_trial_id IS NULL
-                  AND status::text NOT IN ('SUCCESS', 'FAILED', 'SKIPPED')
-                LIMIT 1
-                """
-            ),
-            {"task_id": task.id},
-        )
-        if active_qa is not None:
-            continue
-        if task.verdict_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
-            task.status = TaskStatus.COMPLETED
-            task.finished_at = task.finished_at or utcnow()
-            verdict_pending_completed += 1
-            continue
-        # A terminal QA trial with a non-terminal verdict means the import
-        # never landed (worker died between settle and import). Re-import
-        # after this transaction; only create a fresh QA trial when none
-        # exists.
-        settled_qa = await session.scalar(
-            text(
-                """
-                SELECT tr.id FROM trials tr
-                WHERE tr.task_id = :task_id AND tr.kind = 'qa'
-                  AND tr.deleted_at IS NULL
-                  AND tr.superseded_by_trial_id IS NULL
-                  AND tr.status::text IN ('SUCCESS', 'FAILED')
-                ORDER BY tr.created_at DESC LIMIT 1
-                """
-            ),
-            {"task_id": task.id},
-        )
-        if settled_qa is not None:
-            logger.info(
-                "healer: task %s has settled qa trial %s with no verdict, re-importing",
-                task.id,
-                settled_qa,
-            )
-            reimport_trial_ids.append(str(settled_qa))
-            continue
-        # start_qa_for_task itself has no audit gate; creating a QA trial
-        # while an audit is live would bake "(none recorded)" findings into
-        # its brief. Skip for now: the audit's settlement re-enters
-        # admission, and the next sweep retries regardless.
-        if await live_analysis_trial_id(session, task.id, kind="audit") is not None:
-            continue
-        if await start_qa_for_task(session, task):
-            logger.info(
-                "healer: task %s was wedged in VERDICT_PENDING with no qa trial",
-                task.id,
-            )
-        else:
-            verdict_pending_completed += 1
 
     for trial_id in reimport_trial_ids:
         try:

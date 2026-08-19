@@ -520,6 +520,12 @@ async def test_historical_trials_do_not_block_the_qa_import():
         trial.status = TrialStatus.RUNNING
         await session.flush()
         assert await _qa_import_still_current(session, task_id, v2) is False
+        # Leave nothing for the sweep healer: this task has no experiment
+        # membership, so a later test running the real cleanup sweep would
+        # otherwise try (and fail) to create a QA trial for it.
+        task = await session.get(TaskModel, task_id)
+        task.status = TaskStatus.COMPLETED
+        await session.commit()
 
 
 @pytest.mark.asyncio

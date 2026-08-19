@@ -1632,10 +1632,17 @@ async def maybe_start_task_qa_stage(
     # created QA trial is never rebuilt when the audit lands later: starting
     # now would permanently bake "(none recorded)" into the brief. Defer
     # while an audit trial is live -- the same gate the manual QA endpoint
-    # applies. The audit's own settlement re-enters this admission
+    # applies -- but only when a QA trial would actually be created: with
+    # nothing eligible the task just completes (no brief exists to poison),
+    # and the audit's later import writes onto the version regardless of
+    # task status. The audit's own settlement re-enters this admission
     # (handle_analysis_trial_settled), so deferring cannot strand the task.
     if await live_analysis_trial_id(session, task_id, kind="audit") is not None:
-        return TaskQAStageAdmission()
+        eligible = await qa_eligible_trial_ids(
+            session, task_id, task_version_id=task.current_version_id
+        )
+        if eligible:
+            return TaskQAStageAdmission()
 
     await start_qa_for_task(session, task)
     await session.flush()
