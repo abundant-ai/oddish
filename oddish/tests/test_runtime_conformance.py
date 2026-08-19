@@ -13,6 +13,7 @@ from oddish.runtime.ports import (
     GpuSupport,
     TpuSupport,
 )
+from oddish.runtime.backends.archil import ArchilBackend
 from oddish.runtime.backends.daytona import DaytonaBackend
 from oddish.runtime.backends.fake import FakeBackend
 from oddish.runtime.backends.gke import GkeBackend
@@ -23,6 +24,7 @@ CONFORMANCE_BACKENDS: list[ExecutionBackend] = [
     FakeBackend(),
     ModalBackend(),
     DaytonaBackend(),
+    ArchilBackend(),
     GkeBackend(),
 ]
 
