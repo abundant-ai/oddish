@@ -230,6 +230,7 @@ def test_gemini_ambient_credentials_enter_redaction_map(monkeypatch):
     # fold into the trial transport env so their raw values are redacted from
     # live-tail / lifecycle / scrubbed artifacts, the same way OpenAI secrets do.
     monkeypatch.setenv("GEMINI_API_KEY", "gm-secret-123")
+    monkeypatch.setenv("GOOGLE_GENERATIVE_AI_API_KEY", "gsdk-secret-789")
     monkeypatch.setenv("GOOGLE_API_KEY", "goog-secret-456")
     agent_config = HarborAgentConfig(name="gemini-cli", model_name="google/gemini-x")
 
@@ -237,11 +238,75 @@ def test_gemini_ambient_credentials_enter_redaction_map(monkeypatch):
         {}, agent_config=agent_config
     )
     assert runtime_env.get("GEMINI_API_KEY") == "gm-secret-123"
+    assert runtime_env.get("GOOGLE_GENERATIVE_AI_API_KEY") == "gsdk-secret-789"
     assert runtime_env.get("GOOGLE_API_KEY") == "goog-secret-456"
 
     replacements = harbor_runner._runtime_transport_redactions(runtime_env)
     assert replacements["gm-secret-123"] == "[REDACTED]"
+    assert replacements["gsdk-secret-789"] == "[REDACTED]"
     assert replacements["goog-secret-456"] == "[REDACTED]"
+
+
+def test_opencode_google_model_folds_ai_sdk_credential(monkeypatch):
+    # opencode has no agent-specific branch: it authenticates through the
+    # general provider-driven fold, keyed on the model's canonical provider
+    # (``google/`` -> ``gemini``). The AI SDK name must be in that provider's
+    # key set, or an opencode google trial reaches the container with no
+    # credential the CLI recognises and dies before its first model call.
+    monkeypatch.setenv("GOOGLE_GENERATIVE_AI_API_KEY", "gsdk-secret-789")
+    agent_config = HarborAgentConfig(
+        name="opencode", model_name="google/gemini-3.7-flash"
+    )
+
+    runtime_env = harbor_runner._resolved_runtime_transport_env(
+        {}, agent_config=agent_config
+    )
+    assert runtime_env.get("GOOGLE_GENERATIVE_AI_API_KEY") == "gsdk-secret-789"
+    replacements = harbor_runner._runtime_transport_redactions(runtime_env)
+    assert replacements["gsdk-secret-789"] == "[REDACTED]"
+
+
+def test_gemini_ai_sdk_alias_mirrors_ambient_google_key(monkeypatch):
+    # opencode authenticates with GOOGLE_GENERATIVE_AI_API_KEY (the AI SDK
+    # name), but the platform publishes its Google key as GEMINI_API_KEY (what
+    # gemini-cli reads). Without the mirror the CLI finds no credential it
+    # recognises and exits before its first model call.
+    monkeypatch.delenv("GOOGLE_GENERATIVE_AI_API_KEY", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "gm-secret-123")
+    assert harbor_runner._gemini_ai_sdk_alias_env("google/gemini-3.7-flash") == {
+        "GOOGLE_GENERATIVE_AI_API_KEY": "gm-secret-123"
+    }
+
+
+def test_gemini_ai_sdk_alias_falls_back_to_google_api_key(monkeypatch):
+    monkeypatch.delenv("GOOGLE_GENERATIVE_AI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("GOOGLE_API_KEY", "goog-secret-456")
+    assert harbor_runner._gemini_ai_sdk_alias_env("google/gemini-3.7-flash") == {
+        "GOOGLE_GENERATIVE_AI_API_KEY": "goog-secret-456"
+    }
+
+
+def test_gemini_ai_sdk_alias_never_overwrites_an_explicit_value(monkeypatch):
+    # A deployment that configures the AI SDK name directly stays authoritative.
+    monkeypatch.setenv("GOOGLE_GENERATIVE_AI_API_KEY", "explicit-789")
+    monkeypatch.setenv("GEMINI_API_KEY", "gm-secret-123")
+    assert harbor_runner._gemini_ai_sdk_alias_env("google/gemini-3.7-flash") == {}
+
+
+def test_gemini_ai_sdk_alias_skips_non_google_providers(monkeypatch):
+    # Least privilege: an OpenAI or Anthropic trial must not carry a Google key.
+    monkeypatch.delenv("GOOGLE_GENERATIVE_AI_API_KEY", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "gm-secret-123")
+    assert harbor_runner._gemini_ai_sdk_alias_env("openai/gpt-5") == {}
+    assert harbor_runner._gemini_ai_sdk_alias_env("anthropic/claude-sonnet-4-5") == {}
+    assert harbor_runner._gemini_ai_sdk_alias_env(None) == {}
+
+
+def test_gemini_ai_sdk_alias_noop_without_any_google_key(monkeypatch):
+    for var in ("GOOGLE_GENERATIVE_AI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    assert harbor_runner._gemini_ai_sdk_alias_env("google/gemini-3.7-flash") == {}
 
 
 def test_claude_code_ambient_credentials_enter_redaction_map(monkeypatch):
@@ -1236,6 +1301,7 @@ def test_format_exception_message_includes_exception_group_children():
 
 def test_store_trial_results_marks_modal_image_build_failed_permanent(monkeypatch):
     trial = SimpleNamespace(
+        kind="agent",
         id="trial-1",
         task_id="task-1",
         model="gpt-5",
@@ -1307,6 +1373,7 @@ def test_store_trial_results_marks_modal_image_build_failed_permanent(monkeypatc
 
 def test_store_trial_results_persists_total_steps(monkeypatch):
     trial = SimpleNamespace(
+        kind="agent",
         id="trial-1",
         task_id="task-1",
         model="gpt-5",
@@ -1394,6 +1461,7 @@ def test_store_trial_results_persists_total_steps(monkeypatch):
 
 def test_store_trial_results_overrides_runtime_cancelled_for_image_build(monkeypatch):
     trial = SimpleNamespace(
+        kind="agent",
         id="trial-1",
         task_id="task-1",
         model="gpt-5",
@@ -1468,6 +1536,7 @@ def test_store_trial_results_overrides_runtime_cancelled_for_image_build(monkeyp
 
 def test_store_trial_results_preserves_user_cancel_for_image_build(monkeypatch):
     trial = SimpleNamespace(
+        kind="agent",
         id="trial-1",
         task_id="task-1",
         model="gpt-5",
@@ -1543,6 +1612,7 @@ def test_store_trial_results_settles_metering_after_quota_cancel(monkeypatch):
     cancelled_result = {"state": "cancelled"}
     cancelled_analysis = {"state": "cancelled"}
     trial = SimpleNamespace(
+        kind="agent",
         id="trial-1",
         task_id="task-1",
         model="gpt-5",
@@ -1632,6 +1702,7 @@ def test_store_trial_results_settles_metering_after_quota_cancel(monkeypatch):
 
 def test_store_trial_results_ignores_stale_cancelled_attempt(monkeypatch):
     trial = SimpleNamespace(
+        kind="agent",
         id="trial-1",
         attempts=2,
         finished_at=object(),
@@ -1678,6 +1749,7 @@ def test_store_trial_results_ignores_stale_cancelled_attempt(monkeypatch):
 @pytest.mark.asyncio
 async def test_post_trial_hooks_skip_cancelled_trial(monkeypatch):
     trial = SimpleNamespace(
+        kind="agent",
         id="trial-1",
         task_id="task-1",
         status=trial_handler.TrialStatus.FAILED,
@@ -1715,6 +1787,7 @@ async def test_post_trial_hooks_skip_cancelled_trial(monkeypatch):
 @pytest.mark.asyncio
 async def test_post_trial_hooks_run_for_completed_trial(monkeypatch):
     trial = SimpleNamespace(
+        kind="agent",
         id="trial-1",
         task_id="task-1",
         experiment_id="exp-1",

@@ -7,7 +7,7 @@ from sqlalchemy import and_, case, func, or_
 
 from oddish.config import settings
 from oddish.core.cost_basis import not_combine_copy_filter
-from oddish.db import TrialModel, TrialStatus
+from oddish.db import AGENT_TRIAL_KIND, TrialModel, TrialStatus
 from oddish.model_pricing import estimate_cost_usd
 
 _AGENT_TIMEOUT_LIKE = ("%AgentTimeoutError%", "%Agent execution timed out%")
@@ -19,6 +19,7 @@ def browse_trial_scope() -> tuple[Any, ...]:
         TrialModel.deleted_at.is_(None),
         TrialModel.superseded_by_trial_id.is_(None),
         TrialModel.is_probe.isnot(True),
+        TrialModel.kind == AGENT_TRIAL_KIND,
         not_combine_copy_filter(),
     )
 

@@ -24,7 +24,7 @@ from api.app import create_app
 from api.routers.task_submission import (
     _lookup_user_by_github_id,
     require_connected_github_user,
-    resolve_experiment_owner_user_id,
+    resolve_sweep_attribution,
 )
 from models import APIKeyScope, OrganizationModel, SubmissionIdempotency, UserModel
 from oddish.core.api_keys import create_api_key
@@ -48,7 +48,7 @@ requires_db = pytest.mark.skipif(not DB_URL, reason="ODDISH_DATABASE_URL not set
 
 
 def _auth(org_id: str, *, user_id: str | None = None) -> SimpleNamespace:
-    # resolve_experiment_owner_user_id reads org_id / user_id / api_key_id / api_key.
+    # resolve_sweep_attribution reads org_id / user_id / api_key_id / api_key.
     return SimpleNamespace(org_id=org_id, user_id=user_id, api_key_id=None, api_key=None)
 
 
@@ -308,9 +308,10 @@ async def _resolve(
     org_id: str, handle: str | None, *, github_id: str | None = None
 ) -> str | None:
     async with get_session() as session:
-        return await resolve_experiment_owner_user_id(
+        attribution = await resolve_sweep_attribution(
             session, _submission(handle, github_id=github_id), _auth(org_id)
         )
+        return attribution.experiment_owner_user_id
 
 
 async def _linkage(
@@ -854,13 +855,13 @@ async def test_gate_resolved_user_is_reused_for_owner_stamping(org_with_users):
     org_id, add = org_with_users
     alice = await add("alice")
     async with get_session() as session:
-        owner = await resolve_experiment_owner_user_id(
+        attribution = await resolve_sweep_attribution(
             session,
             _submission("alice", github_id="gid_nonexistent"),
             _auth(org_id),
             connected_user=alice,
         )
-    assert owner == alice.id
+    assert attribution.experiment_owner_user_id == alice.id
 
 
 @requires_db

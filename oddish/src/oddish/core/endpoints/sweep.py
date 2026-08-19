@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from collections.abc import Awaitable, Callable, Collection, Sequence
+from dataclasses import dataclass
 
 from fastapi import HTTPException
 from harbor.models.environment_type import EnvironmentType
@@ -41,6 +42,16 @@ from oddish.schemas import (
     TaskSweepSubmission,
     TrialSpec,
 )
+
+
+@dataclass(frozen=True)
+class SweepAttribution:
+    """Hosted identity resolved once before a sweep creates domain rows."""
+
+    experiment_owner_user_id: str | None = None
+    task_created_by_user_id: str | None = None
+    billed_user_id: str | None = None
+    api_key_id: str | None = None
 
 
 async def _plan_append_trials(
@@ -182,28 +193,6 @@ async def replay_has_retryable_failed_trials(
                 return True
 
     return False
-
-
-def _stamp_experiment_provenance(
-    experiment: ExperimentModel | None,
-    submission: TaskSweepSubmission,
-) -> None:
-    """Record the creating run's owner + PR link on the experiment (set-once).
-
-    ``submission.github_username`` / ``submission.user`` identify whoever
-    launched the run (resolved to the authenticated actor upstream), and
-    ``submission.link`` is the PR/run URL. We only set each field when it is
-    still empty, so the experiment reflects the run that *created* it and a
-    later run of a shared task never overwrites it. Tasks keep their own
-    (mutable) ``link``; this is the durable per-experiment copy.
-    """
-    if experiment is None:
-        return
-    owner = submission.github_username or submission.user
-    if not experiment.owner and owner:
-        experiment.owner = owner
-    if not experiment.link and submission.link:
-        experiment.link = submission.link
 
 
 async def _finalize_sweep(
@@ -395,7 +384,7 @@ async def create_task_sweep_core(
     *,
     submission: TaskSweepSubmission,
     org_id: str | None = None,
-    billed_user_id: str | None = None,
+    attribution: SweepAttribution | None = None,
     default_environment: EnvironmentType | None = None,
     allowed_environments: Collection[EnvironmentType] | None = None,
     idempotency_key: str | None = None,
@@ -437,6 +426,8 @@ async def create_task_sweep_core(
         get_or_create_experiment,
     )
     from oddish.task_timeouts import TaskTimeoutValidationError
+
+    attribution = attribution or SweepAttribution()
 
     reservation: Reservation | None = None
     if idempotency_store is not None and idempotency_key and org_id:
@@ -536,7 +527,6 @@ async def create_task_sweep_core(
         )
         # Read-only intent from the unlocked snapshot. Applied under FOR UPDATE
         # after the quota lock (idempotent flips).
-        want_run_analysis = bool(task.run_analysis or submission.run_analysis)
         want_run_probe = bool(task.run_probe or submission.run_probe)
 
         new_experiment_id: str | None = None
@@ -552,7 +542,12 @@ async def create_task_sweep_core(
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
             if not experiment:
                 experiment = await get_or_create_experiment(
-                    session, submission.experiment_id, org_id
+                    session,
+                    submission.experiment_id,
+                    org_id,
+                    owner_user_id=attribution.experiment_owner_user_id,
+                    owner=submission.github_username or submission.user,
+                    link=submission.link,
                 )
             new_experiment_id = experiment.id
         elif primary_experiment is not None:
@@ -568,12 +563,14 @@ async def create_task_sweep_core(
             from oddish.experiment import generate_experiment_name
 
             experiment = await get_or_create_experiment(
-                session, generate_experiment_name(), org_id
+                session,
+                generate_experiment_name(),
+                org_id,
+                owner_user_id=attribution.experiment_owner_user_id,
+                owner=submission.github_username or submission.user,
+                link=submission.link,
             )
             new_experiment_id = experiment.id
-
-        # Stamp the run's owner + PR link onto the experiment (set-once).
-        _stamp_experiment_provenance(experiment, submission)
 
         # ``effective_default_env`` (this task's inherited environment, else the
         # caller default) was resolved before the harbor gate so the stamp and
@@ -583,15 +580,9 @@ async def create_task_sweep_core(
             primary_experiment.id if primary_experiment else None
         )
         await session.refresh(task, with_for_update=True)
-        # Allow flipping task.run_analysis from False to True on append.
-        # ``run_analysis`` runs at trial-completion time, so updating the
-        # task-level flag does not retroactively analyze pre-existing
-        # trials, but new trials submitted with ``--run-analysis`` will be
-        # analyzed as the caller requested. This matches the documented
-        # purpose of ``--force-new-version`` (see ``TaskUploadInitRequest``)
-        # and lets a task that was first registered without analysis later
-        # opt in without manual intervention.
-        if want_run_analysis and not task.run_analysis:
+        # Analysis is unconditional now; keep the stored flag true so old
+        # readers of the column agree.
+        if not task.run_analysis:
             task.run_analysis = True
         # Same opt-in flip for auto-probe: a task first run without probes can
         # later opt in on append. Off by default (probes are opt-in).
@@ -620,7 +611,9 @@ async def create_task_sweep_core(
             allowed_environments=allowed_environments,
         )
         # Authoritative count only (no-op when the locked plan is empty).
-        await admit_trials(session, org_id, billed_user_id, count=len(trials))
+        await admit_trials(
+            session, org_id, attribution.billed_user_id, count=len(trials)
+        )
 
         append_submission = submission.model_copy(
             update={
@@ -628,7 +621,6 @@ async def create_task_sweep_core(
                 "priority": task.priority,
                 "experiment_id": target_experiment_id,
                 "tags": task.tags or {},
-                "run_analysis": want_run_analysis,
                 "run_probe": want_run_probe,
                 "user": task.user,
             }
@@ -642,7 +634,7 @@ async def create_task_sweep_core(
                 task=task,
                 submission=expanded,
                 experiment_id=new_experiment_id,
-                billed_user_id=billed_user_id,
+                billed_user_id=attribution.billed_user_id,
                 supersede_failed_trial_ids=supersede_by_spec,
             )
         except TrialSupersedeConflict as exc:
@@ -655,7 +647,7 @@ async def create_task_sweep_core(
             experiment=experiment,
             is_append=True,
             org_id=org_id,
-            billed_user_id=billed_user_id,
+            billed_user_id=attribution.billed_user_id,
             registry_auth=submission.registry_auth,
             reservation=reservation,
             idempotency_store=idempotency_store,
@@ -683,7 +675,9 @@ async def create_task_sweep_core(
         submission, task_path=task_path, trials=trials
     )
 
-    await admit_trials(session, org_id, billed_user_id, count=len(expanded.trials))
+    await admit_trials(
+        session, org_id, attribution.billed_user_id, count=len(expanded.trials)
+    )
 
     try:
         task = await create_task(
@@ -691,7 +685,10 @@ async def create_task_sweep_core(
             expanded,
             task_id=submission.task_id,
             org_id=org_id,
-            billed_user_id=billed_user_id,
+            billed_user_id=attribution.billed_user_id,
+            experiment_owner_user_id=attribution.experiment_owner_user_id,
+            task_created_by_user_id=attribution.task_created_by_user_id,
+            api_key_id=attribution.api_key_id,
         )
     except TaskTimeoutValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -703,9 +700,6 @@ async def create_task_sweep_core(
 
     experiment = await _primary_experiment_for_task_model(task)
 
-    # Stamp the run's owner + PR link onto the experiment (set-once).
-    _stamp_experiment_provenance(experiment, submission)
-
     new_trials = list(task.trials)
 
     await _finalize_sweep(
@@ -715,7 +709,7 @@ async def create_task_sweep_core(
         experiment=experiment,
         is_append=False,
         org_id=org_id,
-        billed_user_id=billed_user_id,
+        billed_user_id=attribution.billed_user_id,
         registry_auth=submission.registry_auth,
         reservation=reservation,
         idempotency_store=idempotency_store,
@@ -731,7 +725,10 @@ async def create_task_sweep_batch_core(
     default_environment: EnvironmentType | None = None,
     allowed_environments: Collection[EnvironmentType] | None = None,
     prepare: (
-        Callable[[AsyncSession, TaskSweepSubmission], Awaitable[EnvironmentType | None]]
+        Callable[
+            [AsyncSession, TaskSweepSubmission],
+            Awaitable[tuple[EnvironmentType | None, SweepAttribution]],
+        ]
         | None
     ) = None,
     finalize: (
@@ -747,15 +744,12 @@ async def create_task_sweep_batch_core(
         ]
         | None
     ) = None,
-    resolve_billed_user_id: (
-        Callable[[AsyncSession, TaskSweepSubmission], Awaitable[str | None]] | None
-    ) = None,
 ) -> list[TaskSweepBatchItemResult]:
     """Create several task sweeps in one transaction, best-effort.
 
     Each submission runs inside its own SAVEPOINT, so a failing item rolls back
     alone. A read-only pre-loop resolves each item's environment and billed
-    user; a failure there becomes that item's result. Per-item creation reuses
+    attribution; a failure there becomes that item's result. Per-item creation reuses
     ``create_task_sweep_core`` without idempotency arguments, so batch items are
     not deduplicated the way the single route is.
     """
@@ -778,13 +772,11 @@ async def create_task_sweep_batch_core(
 
     pre_failures: dict[int, TaskSweepBatchItemResult] = {}
     item_envs: list[EnvironmentType | None] = [default_environment] * len(submissions)
-    billed_user_ids: list[str | None] = [None] * len(submissions)
+    attributions = [SweepAttribution() for _ in submissions]
     for index, submission in enumerate(submissions):
         try:
             if prepare is not None:
-                item_envs[index] = await prepare(session, submission)
-            if resolve_billed_user_id is not None:
-                billed_user_ids[index] = await resolve_billed_user_id(
+                item_envs[index], attributions[index] = await prepare(
                     session, submission
                 )
         except Exception as exc:  # noqa: BLE001 - per-item isolation is the contract
@@ -802,7 +794,7 @@ async def create_task_sweep_batch_core(
                     session,
                     submission=submission,
                     org_id=org_id,
-                    billed_user_id=billed_user_ids[index],
+                    attribution=attributions[index],
                     default_environment=item_envs[index],
                     allowed_environments=allowed_environments,
                 )

@@ -93,6 +93,7 @@ async def _resolve_experiment_for_import(
     *,
     experiment_id_or_name: str | None,
     org_id: str | None,
+    owner_user_id: str | None,
 ) -> ExperimentModel:
     """Pick or create the experiment to attach imported trials to.
 
@@ -118,9 +119,19 @@ async def _resolve_experiment_for_import(
         # Treat the string as a *name* and create it. This keeps the
         # "pin to a specific experiment" UX symmetrical between imports
         # into new and existing experiments.
-        return await get_or_create_experiment(session, experiment_id_or_name, org_id)
+        return await get_or_create_experiment(
+            session,
+            experiment_id_or_name,
+            org_id,
+            owner_user_id=owner_user_id,
+        )
 
-    return await get_or_create_experiment(session, generate_experiment_name(), org_id)
+    return await get_or_create_experiment(
+        session,
+        generate_experiment_name(),
+        org_id,
+        owner_user_id=owner_user_id,
+    )
 
 
 def _next_trial_index(existing_trial_ids: list[str], task_id: str) -> int:
@@ -176,6 +187,7 @@ async def initialize_trial_import(
     trial_spec: ImportedTrialSpec,
     upload_artifacts: bool,
     org_id: str | None = None,
+    owner_user_id: str | None = None,
 ) -> TrialImportInitResponse:
     """Create an imported trial row and return a presigned artifact URL.
 
@@ -194,6 +206,7 @@ async def initialize_trial_import(
             session,
             experiment_id_or_name=experiment_id_or_name,
             org_id=org_id,
+            owner_user_id=owner_user_id,
         )
 
         # Load existing trial IDs for this task under the row lock so

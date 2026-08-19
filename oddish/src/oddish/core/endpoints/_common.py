@@ -24,6 +24,11 @@ async def _primary_experiment_for_task_model(
     access even when it hasn't been eagerly loaded on ``task``.
     """
     experiments = list(await task.awaitable_attrs.experiments or [])
+    # A shadow (qa report) experiment must never become the task's face.
+    non_shadow = [
+        e for e in experiments if getattr(e, "shadow_of", None) is None
+    ]
+    experiments = non_shadow or experiments
     return experiments[0] if experiments else None
 
 

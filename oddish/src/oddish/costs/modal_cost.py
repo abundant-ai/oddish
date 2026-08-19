@@ -1,8 +1,8 @@
 """Pure pricing helpers for Modal compute-cost estimation.
 
-No DB or network IO here so the logic is unit-testable in isolation (mirrors
-:mod:`oddish.analyze.analysis_cost`): plain values and dataclasses in, an
-unpersisted ORM row out. Sessions and transactions belong to the caller.
+No DB or network IO here so the logic is unit-testable in isolation: plain
+values and dataclasses in, an unpersisted ORM row out. Sessions and
+transactions belong to the caller.
 
 Estimation model — gross list price, deliberately a floor::
 

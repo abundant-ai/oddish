@@ -210,6 +210,7 @@ async def list_tasks_core(
                 TrialModel.harbor_config,
                 TrialModel.harbor_sha,
                 TrialModel.is_probe,
+                TrialModel.kind,
                 TrialModel.has_trajectory,
                 TrialModel.phase_timing,
                 TrialModel.analysis_status,
@@ -238,6 +239,9 @@ async def list_tasks_core(
                 ExperimentModel.created_at,
                 ExperimentModel.owner,
                 ExperimentModel.link,
+                # Read by the shadow-exclusion picker; eager-load it or the
+                # read lazy-loads outside the greenlet and 500s /tasks.
+                ExperimentModel.shadow_of,
             )
             query = query.options(
                 load_only(*TASK_STATUS_RESPONSE_COLUMNS),
@@ -1361,6 +1365,7 @@ async def browse_tasks_core(
             TrialModel.task_id == TaskModel.id,
             TrialModel.task_version_id == TaskModel.current_version_id,
             TrialModel.superseded_by_trial_id.is_(None),
+            TrialModel.kind == "agent",
         ]
         if not include_probes:
             conds.append(TrialModel.is_probe.isnot(True))
@@ -2045,6 +2050,8 @@ async def browse_tasks_core(
         exp_where = [
             task_experiments.c.task_id.in_(task_ids),
             task_experiments.c.deleted_at.is_(None),
+            # Shadow (qa report) experiments stay out of browse chips.
+            ExperimentModel.shadow_of.is_(None),
         ]
         if org_id is not None:
             exp_where.append(ExperimentModel.org_id == org_id)
@@ -2153,6 +2160,7 @@ async def browse_tasks_core(
                       AND t.deleted_at IS NULL
                       AND t.superseded_by_trial_id IS NULL
                       AND t.is_probe IS NOT TRUE
+                      AND t.kind = 'agent'
                       AND (
                           t.idempotency_key IS NULL
                           OR t.idempotency_key NOT LIKE 'combine:%'

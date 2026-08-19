@@ -70,6 +70,22 @@ def test_scoped_model_env_anthropic_excludes_other_providers() -> None:
     assert "GEMINI_API_KEY" not in env
 
 
+def test_scoped_model_env_gemini_publishes_both_google_key_names() -> None:
+    # One platform Google key, two names: gemini-cli reads GEMINI_API_KEY, while
+    # opencode (AI SDK google provider) reads GOOGLE_GENERATIVE_AI_API_KEY.
+    # Harbor's opencode agent forwards only vars it finds set, so omitting the
+    # AI SDK name leaves the agent unauthenticated and it exits before the first
+    # model call.
+    settings = _fake_settings(gemini_api_key="g-key", anthropic_api_key="sk-ant")
+    env = job_tokens.scoped_model_env(
+        agent="opencode", model="google/gemini-3.7-flash", settings=settings
+    )
+    assert env.get("GEMINI_API_KEY") == "g-key"
+    assert env.get("GOOGLE_GENERATIVE_AI_API_KEY") == "g-key"
+    # Least privilege still holds: no other provider's key rides along.
+    assert "ANTHROPIC_API_KEY" not in env
+
+
 def test_scoped_model_env_anthropic_hdo_uses_hdo_key_not_platform() -> None:
     settings = _fake_settings(
         anthropic_api_key="sk-platform",

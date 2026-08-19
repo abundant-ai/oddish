@@ -22,7 +22,7 @@ from oddish.db import (  # noqa: E402
     WorkerJobModel,
     get_session,
 )
-from oddish.queue import create_task  # noqa: E402
+from oddish.queue import create_task, reserve_next_trial_index  # noqa: E402
 from oddish.schemas import TaskSubmission, TrialSpec  # noqa: E402
 
 
@@ -37,6 +37,31 @@ async def cleanup_task_ids():
                     WorkerJobModel.subject_id.like(f"{task_id}%")
                 )
             )
+            await session.execute(
+                TrialModel.__table__.delete().where(TrialModel.task_id == task_id)
+            )
+            experiment_ids = [
+                row[0]
+                for row in await session.execute(
+                    text(
+                        "SELECT experiment_id FROM task_experiments"
+                        " WHERE task_id = :task_id"
+                    ),
+                    {"task_id": task_id},
+                )
+            ]
+            await session.execute(
+                text("DELETE FROM task_experiments WHERE task_id = :task_id"),
+                {"task_id": task_id},
+            )
+            if experiment_ids:
+                await session.execute(
+                    text(
+                        "DELETE FROM experiments WHERE id = ANY(:ids)"
+                        " OR shadow_of = ANY(:ids)"
+                    ),
+                    {"ids": experiment_ids},
+                )
             await session.execute(
                 TaskModel.__table__.delete().where(TaskModel.id == task_id)
             )
@@ -62,12 +87,18 @@ async def test_retry_waits_for_the_task_row_lock(cleanup_task_ids):
         trial = await session.get(TrialModel, f"{task_id}-0")
         trial.status = TrialStatus.FAILED
         trial.finished_at = datetime.now(timezone.utc)
+        # create_task mints more than the one agent trial (the pre-trial
+        # audit takes an index too), so compute the next free index instead
+        # of assuming it is 1.
+        next_index = await reserve_next_trial_index(session, task_id=task_id)
+    appended_id = f"{task_id}-{next_index}"
 
     holder_has_lock = asyncio.Event()
     release_holder = asyncio.Event()
 
     async def append_under_task_lock():
-        # Mimic a sweep append: task row FOR UPDATE, then insert {task_id}-1.
+        # Mimic a sweep append: task row FOR UPDATE, then insert the next
+        # free index.
         async with get_session() as session:
             await session.get(TaskModel, task_id, with_for_update=True)
             await session.execute(
@@ -87,7 +118,7 @@ async def test_retry_waits_for_the_task_row_lock(cleanup_task_ids):
                     FROM trials WHERE id = :src_id
                     """
                 ),
-                {"new_id": f"{task_id}-1", "src_id": f"{task_id}-0"},
+                {"new_id": appended_id, "src_id": f"{task_id}-0"},
             )
             holder_has_lock.set()
             await release_holder.wait()
@@ -105,7 +136,8 @@ async def test_retry_waits_for_the_task_row_lock(cleanup_task_ids):
     release_holder.set()
     await holder
 
-    # An unlocked retry computes index 1 before the append commits and dies
-    # on the duplicate key; under the task lock it waits and mints index 2.
+    # An unlocked retry computes the appended index before the append
+    # commits and dies on the duplicate key; under the task lock it waits
+    # and mints the index after it.
     result = await retrying
-    assert result["trial_id"] == f"{task_id}-2"
+    assert result["trial_id"] == f"{task_id}-{next_index + 1}"

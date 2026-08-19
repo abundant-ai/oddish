@@ -10,7 +10,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Activity, ImageDown, Star } from "lucide-react";
-import type { TrajectoryStep } from "@/lib/types";
+import type { TrajectoryStep, TrajectorySummary } from "@/lib/types";
 import {
   downloadActivityImage,
   type ActivityImageFormat,
@@ -21,12 +21,11 @@ import {
   TIMELINE_CAPTION,
   TOKEN_BAND_TITLE,
 } from "@/lib/activity-view-model";
-import { useTrajectorySummary } from "@/lib/use-trajectory-summary";
 
 interface TrajectoryActivityProps {
   trialId: string;
   steps: TrajectoryStep[];
-  apiBaseUrl?: string;
+  summary: TrajectorySummary | null;
   stepIdToIndex: (stepId: number) => number;
   onStepSelect: (index: number) => void;
   initialScrollToTokenBand?: boolean;
@@ -35,18 +34,17 @@ interface TrajectoryActivityProps {
 export function TrajectoryActivity({
   trialId,
   steps,
-  apiBaseUrl = "/api",
+  summary,
   stepIdToIndex,
   onStepSelect,
   initialScrollToTokenBand = false,
 }: TrajectoryActivityProps) {
-  const { data } = useTrajectorySummary(trialId, apiBaseUrl);
   const cardRef = useRef<HTMLDivElement>(null);
   const tokenBandRef = useRef<HTMLDivElement>(null);
   const scrolledTrialRef = useRef<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
 
-  const model = buildActivityViewModel(steps, data);
+  const model = buildActivityViewModel(steps, summary);
 
   useEffect(() => {
     if (
