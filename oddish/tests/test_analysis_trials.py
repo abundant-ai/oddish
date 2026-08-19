@@ -523,6 +523,194 @@ async def test_historical_trials_do_not_block_the_qa_import():
 
 
 @pytest.mark.asyncio
+async def test_inplace_overwrite_cancels_the_overwritten_versions_audit():
+    """Needs a database. In-place overwrite keeps the version id but
+    replaces its bytes: the invalidator must cancel that version's live
+    audit (or it keeps running against bytes that no longer exist) while
+    leaving another version's audit alone."""
+    if not URL:
+        pytest.skip("ODDISH_DATABASE_URL not set")
+    from sqlalchemy import select
+
+    from oddish.db import TaskStatus, TrialStatus, get_session, init_db
+    from oddish.db.models import ExperimentModel, TaskModel, TaskVersionModel
+    from oddish.queue import invalidate_task_qa_for_source_change
+
+    await init_db()
+    run = uuid.uuid4().hex[:8]
+    task_id = f"qa-overwrite-{run}"
+    v1, v2 = f"{task_id}-v1", f"{task_id}-v2"
+    async with get_session() as session:
+        experiment = ExperimentModel(name=f"exp-{run}")
+        session.add(experiment)
+        session.add(
+            TaskModel(
+                id=task_id,
+                name=task_id,
+                user="u",
+                task_path="p",
+                status=TaskStatus.RUNNING,
+                run_analysis=True,
+            )
+        )
+        await session.flush()
+        for version_id, version in ((v1, 1), (v2, 2)):
+            session.add(
+                TaskVersionModel(
+                    id=version_id, task_id=task_id, version=version, task_path="p"
+                )
+            )
+        await session.flush()
+        task = await session.get(TaskModel, task_id)
+        task.current_version_id = v1
+        for index, (version_id, kind) in enumerate(
+            ((v1, "audit"), (v2, "audit"), (v1, "qa")), start=1
+        ):
+            session.add(
+                TrialModel(
+                    id=f"{task_id}-{index}",
+                    name=f"{task_id}-{index}",
+                    task_id=task_id,
+                    task_version_id=version_id,
+                    experiment_id=experiment.id,
+                    agent="claude-code",
+                    provider="local",
+                    queue_key="q",
+                    kind=kind,
+                    status=TrialStatus.RUNNING,
+                    attempts=1,
+                    max_attempts=3,
+                )
+            )
+        await session.commit()
+
+    async with get_session() as session:
+        task = (
+            await session.execute(
+                select(TaskModel).where(TaskModel.id == task_id).with_for_update()
+            )
+        ).scalar_one()
+        await invalidate_task_qa_for_source_change(
+            session, task, overwritten_version_id=v1
+        )
+        await session.commit()
+
+    async with get_session() as session:
+        overwritten_audit = await session.get(TrialModel, f"{task_id}-1")
+        assert overwritten_audit.status == TrialStatus.FAILED
+        assert overwritten_audit.harbor_stage == "cancelled"
+        other_versions_audit = await session.get(TrialModel, f"{task_id}-2")
+        assert other_versions_audit.status == TrialStatus.RUNNING
+        qa = await session.get(TrialModel, f"{task_id}-3")
+        assert qa.status == TrialStatus.FAILED
+        assert qa.harbor_stage == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_a_stale_audit_never_imports_into_overwritten_bytes(monkeypatch):
+    """Needs a database. The audit trial pins its version's content hash at
+    creation; when the version's bytes changed underneath it (in-place
+    overwrite racing a live audit), the import drops the findings instead
+    of writing old-source results onto the new source."""
+    if not URL:
+        pytest.skip("ODDISH_DATABASE_URL not set")
+    from sqlalchemy import select, text
+
+    from oddish.db import TaskStatus, TrialStatus, VerdictStatus, get_session, init_db
+    from oddish.db.models import ExperimentModel, TaskModel, TaskVersionModel
+    from oddish.workers import analysis_trials
+    from oddish.workers.analysis_trials import (
+        _import_audit_result,
+        maybe_enqueue_audit_trial,
+    )
+
+    await init_db()
+    run = uuid.uuid4().hex[:8]
+    task_id = f"qa-audit-hash-{run}"
+    version_id = f"{task_id}-v1"
+    async with get_session() as session:
+        experiment = ExperimentModel(name=f"exp-{run}")
+        session.add(experiment)
+        session.add(
+            TaskModel(
+                id=task_id,
+                name=task_id,
+                user="u",
+                task_path="p",
+                status=TaskStatus.RUNNING,
+                run_analysis=True,
+            )
+        )
+        await session.flush()
+        await session.execute(
+            text(
+                "INSERT INTO task_experiments (task_id, experiment_id, created_at) "
+                "VALUES (:t, :e, NOW())"
+            ),
+            {"t": task_id, "e": experiment.id},
+        )
+        session.add(
+            TaskVersionModel(
+                id=version_id,
+                task_id=task_id,
+                version=1,
+                task_path="p",
+                content_hash="original-bytes",
+            )
+        )
+        await session.flush()
+        task = await session.get(TaskModel, task_id)
+        task.current_version_id = version_id
+        assert await maybe_enqueue_audit_trial(
+            session, task=task, task_version_id=version_id
+        )
+        await session.commit()
+
+    async with get_session() as session:
+        audit = (
+            await session.execute(
+                select(TrialModel).where(
+                    TrialModel.task_id == task_id, TrialModel.kind == "audit"
+                )
+            )
+        ).scalar_one()
+        # Creation pinned the bytes it audits.
+        pinned = audit.harbor_config["analysis_payload"]["task_version_content_hash"]
+        assert pinned == "original-bytes"
+        audit.status = TrialStatus.SUCCESS
+        # Overwrite the version's bytes underneath the settled audit.
+        version = await session.get(TaskVersionModel, version_id)
+        version.content_hash = "overwritten-bytes"
+        await session.commit()
+
+    async def unexpected_read(trial, filename):
+        raise AssertionError("a stale audit must not even read its artifact")
+
+    monkeypatch.setattr(analysis_trials, "read_analysis_artifact", unexpected_read)
+    await _import_audit_result(audit)
+    async with get_session() as session:
+        version = await session.get(TaskVersionModel, version_id)
+        assert version.pre_trial is None
+        assert version.pre_trial_status == VerdictStatus.QUEUED
+
+    # With matching bytes the same import lands.
+    async with get_session() as session:
+        version = await session.get(TaskVersionModel, version_id)
+        version.content_hash = "original-bytes"
+        await session.commit()
+
+    async def read_clean(trial, filename):
+        return {"items": []}
+
+    monkeypatch.setattr(analysis_trials, "read_analysis_artifact", read_clean)
+    await _import_audit_result(audit)
+    async with get_session() as session:
+        version = await session.get(TaskVersionModel, version_id)
+        assert version.pre_trial_status == VerdictStatus.SUCCESS
+        assert version.pre_trial is not None
+
+
+@pytest.mark.asyncio
 async def test_the_verdict_needs_enough_evidence():
     """Below 5 trials or 3 distinct agents the QA trial is created without a
     verdict request; at the bar it is asked for one."""

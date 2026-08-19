@@ -1393,8 +1393,66 @@ async def cancel_live_qa_trials(
     return int(getattr(cancelled, "rowcount", 0) or 0)
 
 
+async def cancel_live_audit_trials(
+    session: AsyncSession, *, task_id: str, task_version_id: str, reason: str
+) -> int:
+    """Cancel one version's in-flight audit trials and their TRIAL jobs.
+
+    Version-scoped, unlike :func:`cancel_live_qa_trials`: an audit belongs to
+    its version's source bytes, so only the version whose bytes are being
+    replaced (in-place overwrite) invalidates it -- switching the default
+    version leaves another version's audit meaningful. Same two-step order as
+    the QA cancel: jobs first, then the trial rows are failed with
+    ``harbor_stage='cancelled'`` so settlement hooks and the importer skip
+    them.
+    """
+    await session.execute(
+        text(
+            """
+            UPDATE worker_jobs
+            SET    status = 'CANCELLED',
+                   finished_at = NOW(),
+                   error_message = :reason,
+                   current_worker_id = NULL,
+                   current_queue_slot = NULL,
+                   modal_function_call_id = NULL
+            WHERE  kind::text = 'TRIAL'
+              AND  subject_table = 'trials'
+              AND  subject_id IN (
+                  SELECT id FROM trials
+                  WHERE task_id = :task_id AND kind = 'audit'
+                    AND task_version_id = :task_version_id
+                    AND deleted_at IS NULL
+                    AND status::text NOT IN ('SUCCESS', 'FAILED', 'SKIPPED')
+              )
+              AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+            """
+        ),
+        {"task_id": task_id, "task_version_id": task_version_id, "reason": reason},
+    )
+    cancelled = await session.execute(
+        text(
+            """
+            UPDATE trials
+            SET    status = 'FAILED',
+                   harbor_stage = 'cancelled',
+                   error_message = :reason,
+                   finished_at = COALESCE(finished_at, NOW())
+            WHERE  task_id = :task_id AND kind = 'audit'
+              AND  task_version_id = :task_version_id
+              AND  deleted_at IS NULL
+              AND  status::text NOT IN ('SUCCESS', 'FAILED', 'SKIPPED')
+            """
+        ),
+        {"task_id": task_id, "task_version_id": task_version_id, "reason": reason},
+    )
+    return int(getattr(cancelled, "rowcount", 0) or 0)
+
+
 async def invalidate_task_qa_for_source_change(
-    session: AsyncSession, task: TaskModel
+    session: AsyncSession,
+    task: TaskModel,
+    overwritten_version_id: str | None = None,
 ) -> TaskQAStageAdmission:
     """Invalidate old-source QA and admit the newly selected source safely.
 
@@ -1403,10 +1461,23 @@ async def invalidate_task_qa_for_source_change(
     QA trial, clearing its published verdict, and re-entering admission in the
     same transaction prevents a result committed just before this mutation
     from remaining authoritative for different source bytes.
+
+    ``overwritten_version_id`` is set only by in-place overwrite: the version
+    id survives with new bytes, so an audit still running against the old
+    archive must be cancelled too, or its late import would write old-source
+    findings into the overwritten version. A version *switch* passes None --
+    the old version keeps its bytes, so its audit stays meaningful.
     """
     await cancel_live_qa_trials(
         session, task_id=task.id, reason="Superseded by task source change"
     )
+    if overwritten_version_id is not None:
+        await cancel_live_audit_trials(
+            session,
+            task_id=task.id,
+            task_version_id=overwritten_version_id,
+            reason="Superseded by in-place source overwrite",
+        )
     reset_verdict(task)
     task.status = TaskStatus.RUNNING
     task.finished_at = None

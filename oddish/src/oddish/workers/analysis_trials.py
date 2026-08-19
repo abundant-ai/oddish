@@ -235,6 +235,7 @@ async def create_analysis_trial(
             f"refusing to create a {kind} trial for deleted task {task.id}"
         )
     version_to_pin = task_version_id or task.current_version_id
+    version = None
     if version_to_pin is not None:
         version = await session.get(TaskVersionModel, version_to_pin)
         if version is None:
@@ -248,6 +249,14 @@ async def create_analysis_trial(
     next_index = await reserve_next_trial_index(session, task_id=task.id)
     trial_id = f"{task.id}-{next_index}"
     harbor_config: dict = {"mode": kind, "extra_instructions": brief}
+    if kind == "audit" and version is not None and version.content_hash:
+        # Pin the audited bytes. An in-place overwrite keeps the version id
+        # while replacing its content, so the importer needs more than the
+        # id to tell a stale audit from a current one.
+        payload = {
+            **(payload or {}),
+            "task_version_content_hash": version.content_hash,
+        }
     if payload:
         harbor_config["analysis_payload"] = payload
     # Same normalize/provider/queue trio as agent-trial creation. The worker
@@ -817,6 +826,28 @@ async def _import_audit_result(trial: TrialModel) -> None:
     version_id = trial.task_version_id
     if version_id is None:
         return
+    # An in-place overwrite keeps the version id but replaces its bytes (and
+    # cancels live audits); this pin catches the race where the audit
+    # settled first or was already importing. Old-bytes findings must never
+    # land on the overwritten version.
+    pinned_hash = ((trial.harbor_config or {}).get("analysis_payload") or {}).get(
+        "task_version_content_hash"
+    )
+    if pinned_hash:
+        async with get_session() as session:
+            current_hash = await session.scalar(
+                select(TaskVersionModel.content_hash).where(
+                    TaskVersionModel.id == version_id
+                )
+            )
+        if current_hash is not None and current_hash != pinned_hash:
+            logger.warning(
+                "audit trial %s: version %s content changed since the audit "
+                "started (in-place overwrite); dropping its findings",
+                trial.id,
+                version_id,
+            )
+            return
     artifact = None
     if trial.status == TrialStatus.SUCCESS:
         artifact = await read_analysis_artifact(trial, AUDIT_RESULT_FILENAME)

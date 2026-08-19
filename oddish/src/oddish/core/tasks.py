@@ -499,7 +499,16 @@ async def complete_task_upload(
         if source_changed:
             from oddish.queue import invalidate_task_qa_for_source_change
 
-            await invalidate_task_qa_for_source_change(session, existing_task)
+            # In-place overwrite keeps the version id but replaces its bytes,
+            # so a live audit of that version is auditing bytes that no
+            # longer exist -- name it so the invalidator cancels it.
+            await invalidate_task_qa_for_source_change(
+                session,
+                existing_task,
+                overwritten_version_id=(
+                    version_id if overwrite_current_version else None
+                ),
+            )
 
         if settings.tasks_expand_archive:
             # Kick off the per-file expansion so the task-files drawer
