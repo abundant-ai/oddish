@@ -76,6 +76,7 @@ import {
   taskHasActiveAnalysis,
   taskHasActiveVerdict,
   taskHasCancellableWork,
+  taskHasLiveAnalysisTrial,
 } from "@/lib/job-status";
 import {
   formatPartialRewardBadgeValue,
@@ -1026,12 +1027,16 @@ export function ExperimentTrialsTable({
     [selectedTaskList]
   );
 
-  // Tasks whose single task-level QA job is in flight (classifying trials or
-  // synthesizing the verdict) and can therefore be cancelled.
+  // Tasks whose task-level analysis is in flight (classifying trials,
+  // synthesizing the verdict, or running the source audit -- qa/cancel
+  // covers both trial kinds) and can therefore be cancelled.
   const selectedQACancellableTasks = useMemo(
     () =>
       selectedTaskList.filter(
-        (task) => taskHasActiveAnalysis(task) || taskHasActiveVerdict(task)
+        (task) =>
+          taskHasActiveAnalysis(task) ||
+          taskHasActiveVerdict(task) ||
+          taskHasLiveAnalysisTrial(task)
       ),
     [selectedTaskList]
   );

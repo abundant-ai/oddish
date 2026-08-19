@@ -711,6 +711,94 @@ async def test_a_stale_audit_never_imports_into_overwritten_bytes(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_cleanup_reimports_a_settled_audit(monkeypatch):
+    """Needs a database. A settled audit whose importer died mid-write
+    leaves its version stuck queued/running forever -- the settlement path
+    promises the cleanup sweep re-runs importers, and this healer pass is
+    what makes that true for audits (the QA healer only scans
+    VERDICT_PENDING tasks)."""
+    if not URL:
+        pytest.skip("ODDISH_DATABASE_URL not set")
+    from sqlalchemy import select, text
+
+    from oddish.db import TaskStatus, TrialStatus, VerdictStatus, get_session, init_db
+    from oddish.db.models import ExperimentModel, TaskModel, TaskVersionModel
+    from oddish.workers import analysis_trials
+    from oddish.workers.analysis_trials import maybe_enqueue_audit_trial
+    from oddish.workers.queue.cleanup import _heal_stale_audit_imports
+
+    await init_db()
+    run = uuid.uuid4().hex[:8]
+    task_id = f"qa-audit-heal-{run}"
+    version_id = f"{task_id}-v1"
+    async with get_session() as session:
+        experiment = ExperimentModel(name=f"exp-{run}")
+        session.add(experiment)
+        session.add(
+            TaskModel(
+                id=task_id,
+                name=task_id,
+                user="u",
+                task_path="p",
+                status=TaskStatus.RUNNING,
+                run_analysis=True,
+            )
+        )
+        await session.flush()
+        await session.execute(
+            text(
+                "INSERT INTO task_experiments (task_id, experiment_id, created_at) "
+                "VALUES (:t, :e, NOW())"
+            ),
+            {"t": task_id, "e": experiment.id},
+        )
+        session.add(
+            TaskVersionModel(
+                id=version_id,
+                task_id=task_id,
+                version=1,
+                task_path="p",
+                content_hash="bytes",
+            )
+        )
+        await session.flush()
+        task = await session.get(TaskModel, task_id)
+        task.current_version_id = version_id
+        assert await maybe_enqueue_audit_trial(
+            session, task=task, task_version_id=version_id
+        )
+        await session.commit()
+
+    # The audit settles, but no import ever lands: the wedged state.
+    async with get_session() as session:
+        audit = (
+            await session.execute(
+                select(TrialModel).where(
+                    TrialModel.task_id == task_id, TrialModel.kind == "audit"
+                )
+            )
+        ).scalar_one()
+        audit.status = TrialStatus.SUCCESS
+        await session.commit()
+    async with get_session() as session:
+        version = await session.get(TaskVersionModel, version_id)
+        assert version.pre_trial_status == VerdictStatus.QUEUED
+
+    async def read_clean(trial, filename):
+        return {"items": []}
+
+    monkeypatch.setattr(analysis_trials, "read_analysis_artifact", read_clean)
+    async with get_session() as session:
+        healed = await _heal_stale_audit_imports(session)
+    assert healed >= 1
+
+    async with get_session() as session:
+        version = await session.get(TaskVersionModel, version_id)
+        assert version.pre_trial_status == VerdictStatus.SUCCESS
+        assert version.pre_trial is not None
+
+
+@pytest.mark.asyncio
 async def test_the_verdict_needs_enough_evidence():
     """Below 5 trials or 3 distinct agents the QA trial is created without a
     verdict request; at the bar it is asked for one."""

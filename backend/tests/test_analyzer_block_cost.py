@@ -376,4 +376,3 @@ async def test_generate_forwards_the_triggering_user_to_the_block():
     finally:
         summarize_trajectory.build_summary_block = real
     assert seen.get("triggered_by_user_id") == "viewer-7"
-

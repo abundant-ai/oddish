@@ -57,6 +57,7 @@ import {
   taskHasActiveTrials,
   taskHasActiveVerdict,
   taskHasCancellableWork,
+  taskHasLiveAnalysisTrial,
 } from "@/lib/job-status";
 
 interface TaskFile {
@@ -822,14 +823,17 @@ export function TaskFilesPanel({
         task_ids: id ? [id] : [],
         ...(cancelExperimentId ? { experiment_id: cancelExperimentId } : {}),
       });
-      // No active trials but QA in flight -> cancel just the task QA job.
+      // No active trials but analysis in flight (QA or the source audit --
+      // qa/cancel covers both kinds) -> cancel just the task QA job.
       // Experiment-scoped cancel leaves shared QA alone unless the caller is
       // on the dedicated cancel-QA path.
       if (
         id &&
         !cancelExperimentId &&
         !taskHasActiveTrials(task) &&
-        (taskHasActiveVerdict(task) || taskHasActiveAnalysis(task))
+        (taskHasActiveVerdict(task) ||
+          taskHasActiveAnalysis(task) ||
+          taskHasLiveAnalysisTrial(task))
       ) {
         path = `${baseUrl}/tasks/${id}/qa/cancel`;
         body = undefined;
