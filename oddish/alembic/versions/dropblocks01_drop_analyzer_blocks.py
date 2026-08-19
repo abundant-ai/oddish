@@ -30,6 +30,25 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     op.execute("SET lock_timeout = '8s'")
+    # Between the cutover deploy (whose retirejobs01 cancelled the retired
+    # kinds then in flight) and THIS deploy, the public summary route kept
+    # enqueueing ANALYZER rows on every share-page summary miss. No handler
+    # claims the kind, but a QUEUED row keeps its queue "active" to the
+    # dispatcher's discovery query forever, spawning workers that claim
+    # nothing and exit. Same terminal write retirejobs01 models.
+    op.execute(
+        """
+        UPDATE worker_jobs
+        SET    status = 'CANCELLED',
+               finished_at = NOW(),
+               error_message = 'block pipeline removed: summaries are read from trials.trajectory_summary',
+               current_worker_id = NULL,
+               current_queue_slot = NULL,
+               modal_function_call_id = NULL
+        WHERE  kind::text = 'ANALYZER'
+          AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+        """
+    )
     result = op.get_bind().execute(
         sa.text("SELECT to_regclass('analyzer_blocks') IS NOT NULL")
     )
@@ -44,8 +63,9 @@ def upgrade() -> None:
                 WHERE type = 'trajectory_summary'
                   AND status::text = 'SUCCESS'
                   AND output IS NOT NULL
+                  AND output != 'null'::jsonb
                   AND deleted_at IS NULL
-                ORDER BY analyzer_id, created_at DESC
+                ORDER BY analyzer_id, created_at DESC, id
             ) b
             WHERE t.id = b.analyzer_id
               AND t.trajectory_summary IS NULL

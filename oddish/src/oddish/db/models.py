@@ -191,9 +191,9 @@ class WorkerJobKind(str, Enum):
     TAG_PROJECT = "TAG_PROJECT"
     # Retired analyzer kind. No handler claims it (workers claim only
     # registered kinds); the member stays so the native ``worker_job_kind``
-    # Postgres type keeps the values historical rows reference. The
-    # agent-capabilities service still enqueues rows of this kind until PR B
-    # removes it; they sit QUEUED and are cancelled by ``retirejobs01``.
+    # Postgres type keeps the values historical rows reference. Nothing
+    # enqueues it anymore; stragglers were cancelled by ``retirejobs01``
+    # and ``dropblocks01``.
     ANALYZER = "ANALYZER"
     ANALYZER_BLOCK = "ANALYZER_BLOCK"
 

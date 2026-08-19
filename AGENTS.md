@@ -209,15 +209,10 @@ feature can return as a `'capabilities'` analysis trial.
 Shared trial drawers open on Summary and fetch a trajectory only after explicit
 user or URL intent. Collapsed trajectory steps must not mount their message,
 reasoning, tool, or observation bodies; those potentially large bodies mount
-only while the step is expanded. A public trajectory-summary cache miss instead
-enqueues one trial-scoped
-`ANALYZER` job with `payload.mode = "trajectory_summary"`, keyed by trial and
-summary schema. Its endpoint returns explicit queued/running/retrying state and
-the client polls until the summary is stored. Terminal failures are returned,
-not re-enqueued by anonymous refreshes; a schema bump creates the next valid
-idempotency key. Summary warmup and cache entries are keyed by the published
-experiment as well as task version; they must never include trials from
-another experiment on the same version.
+only while the step is expanded. Trajectory summaries are written onto
+`trials.trajectory_summary` by the task's QA trial import; both the public and
+authenticated summary routes are plain column reads (200 with the stored
+summary, 404 on a miss) with no on-demand generation.
 
 Trajectory summaries use schema v5. Each taxonomy-valued `components` entry
 contains its `step_ids`, summary, and deterministic `tool_count` and
@@ -284,11 +279,12 @@ a code change that ships with a deploy.
 - soft-delete semantics on domain rows via the `deleted_at` column and
   a session-level filter (`oddish.db.soft_delete`)
 
-`oddish/src/oddish/blocks/` still holds the analyzer-block primitive and its
-API/OpenAI backends, but nothing on the analysis pipeline calls it anymore —
-its last consumer is the agent-capabilities service, and both go away with
-that feature's removal. Trial-level trajectory analysis and the task verdict
-are the QA trial's job (above); there is no separate report machinery.
+The analyzer-block machinery (`oddish/src/oddish/blocks/`, the backend
+`api/services/blocks/` tree, `summarize_trajectory`) is deleted; the
+`analyzer_blocks` table is dropped, with each trial's newest stored summary
+backfilled onto `trials.trajectory_summary` first. Trial-level trajectory
+analysis and the task verdict are the QA trial's job (above); there is no
+separate report machinery.
 
 `oddish` must not import from `backend/`, `backend.auth`, `backend.models`,
 `cloud_policy`, `idempotency_store`, Clerk, or Modal app/deployment modules.
