@@ -66,6 +66,7 @@ import { QaAssessmentReport } from "@/components/qa-report/qa-assessment-report"
 import { TimingBreakdownBar } from "@/components/timing-breakdown-bar";
 import { CodeBlock } from "@/components/code-block";
 import type { Trial, Task } from "@/lib/types";
+import { isAgentTrial } from "@/lib/types";
 import {
   costEstimateMarks,
   formatCostUsd,
@@ -1068,8 +1069,12 @@ export function TrialDetailPanel({
     artifactsLines,
   ]);
 
+  // Agent rows only: the generic retry endpoint refuses qa/audit kinds, so
+  // offering the button on their drawers would only ever render its 400.
   const showRetry =
-    allowRetry && (trial?.status === "failed" || trial?.status === "success");
+    allowRetry &&
+    Boolean(trial && isAgentTrial(trial)) &&
+    (trial?.status === "failed" || trial?.status === "success");
   const canRetry = actionsReady && showRetry;
   const showDelete = allowDelete && Boolean(onDelete) && Boolean(trial);
   const canDelete = actionsReady && showDelete;

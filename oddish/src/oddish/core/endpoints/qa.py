@@ -186,6 +186,21 @@ async def cancel_task_qa_core(
                 else TaskStatus.FAILED
             )
             task.finished_at = now_value
+        elif task.status == TaskStatus.RUNNING and not await _count_active_trials(
+            session, task_id=task.id, task_version_id=task.current_version_id
+        ):
+            # QA admission holds a task in RUNNING with every agent trial
+            # settled while its audit runs. Cancelling that audit must
+            # settle the task too: left RUNNING, the sweep's advance
+            # backstop re-enters admission minutes later and starts a QA
+            # run the user just cancelled -- against a brief whose audit
+            # findings this cancel wiped.
+            task.status = (
+                TaskStatus.COMPLETED
+                if task.verdict_status == VerdictStatus.SUCCESS
+                else TaskStatus.FAILED
+            )
+            task.finished_at = now_value
     # A pre-trial status left QUEUED/RUNNING with nothing behind it would
     # keep the card in a running state forever, so cancel always clears it.
     # An audit trial pins the version it audits, and that version can be

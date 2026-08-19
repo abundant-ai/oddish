@@ -150,21 +150,40 @@ async def sync_pre_trial_to_task_version(
     *,
     payload: dict | None,
     error: BaseException | str | None,
+    expected_content_hash: str | None = None,
 ) -> str | None:
     """Write the pre-trial columns on the audited task version. Unlike
     :func:`sync_verdict_to_task`, this never completes the task and never
     touches a verdict column -- pre-trial is a per-version source audit that
     runs independently of trial classification.
 
+    ``expected_content_hash`` pins the source bytes the audit actually read:
+    the check runs here, under the version row lock, because an in-place
+    overwrite can replace the bytes between any earlier unlocked check and
+    this write. On a mismatch nothing is written -- the overwrite already
+    reset the pre-trial state, so a fresh audit of the new bytes can still
+    be enqueued.
+
     Returns the terminal ``VerdictStatus`` value written, or ``None`` when
-    the write was skipped (version gone) so the caller can release its claim
-    on the version.
+    the write was skipped (version gone, or overwritten bytes) so the caller
+    can release its claim on the version.
     """
     async with get_session() as session:
         version = await session.get(
             TaskVersionModel, task_version_id, with_for_update=True
         )
         if version is None:
+            return None
+        if (
+            expected_content_hash is not None
+            and version.content_hash is not None
+            and version.content_hash != expected_content_hash
+        ):
+            logger.warning(
+                "pre-trial write for version %s skipped: content hash changed "
+                "since the audit started (in-place overwrite)",
+                task_version_id,
+            )
             return None
 
         if error is None:

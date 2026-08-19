@@ -67,6 +67,21 @@ def test_the_audit_brief_names_its_output_file():
     assert "Do not solve the task" in brief
 
 
+def test_the_no_verdict_brief_does_not_contradict_itself():
+    """with_verdict=False must not show the verdict-object template or its
+    schema: the strict verifier requires null there, and a template
+    contradicting the prose would burn every retry attempt."""
+    brief = build_qa_brief(
+        task_name="demo",
+        trial_ids=["t-1"],
+        pre_trial_items=None,
+        with_verdict=False,
+    )
+    assert '"verdict": null' in brief
+    assert "Verdict JSON schema" not in brief
+    assert "<object matching this JSON schema>" not in brief
+
+
 def _qa_check_payload(trial_ids: list[str], *, with_verdict: bool = False) -> dict:
     from oddish.workers.analysis_trials import analysis_check_payload
 
@@ -717,6 +732,131 @@ async def test_a_stale_audit_never_imports_into_overwritten_bytes(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_pre_trial_write_rechecks_the_hash_under_the_lock():
+    """Needs a database. The audit import's early hash check runs unlocked,
+    so an in-place overwrite can commit between it and the write. The write
+    itself must re-check the pin under the version row lock and skip -- or
+    old-bytes findings land as SUCCESS on the new bytes and block the
+    None->QUEUED CAS that would audit them."""
+    if not URL:
+        pytest.skip("ODDISH_DATABASE_URL not set")
+    from oddish.core.verdict_sync import sync_pre_trial_to_task_version
+    from oddish.db import VerdictStatus, get_session, init_db
+    from oddish.db.models import TaskModel, TaskVersionModel
+
+    await init_db()
+    run = uuid.uuid4().hex[:8]
+    task_id = f"qa-hash-lock-{run}"
+    version_id = f"{task_id}-v1"
+    async with get_session() as session:
+        session.add(
+            TaskModel(
+                id=task_id, name=task_id, user="u", task_path="p", run_analysis=True
+            )
+        )
+        await session.flush()
+        session.add(
+            TaskVersionModel(
+                id=version_id,
+                task_id=task_id,
+                version=1,
+                task_path="p",
+                content_hash="new-bytes",
+            )
+        )
+        await session.commit()
+
+    stale = await sync_pre_trial_to_task_version(
+        version_id,
+        payload={"items": []},
+        error=None,
+        expected_content_hash="old-bytes",
+    )
+    assert stale is None
+    async with get_session() as session:
+        version = await session.get(TaskVersionModel, version_id)
+        assert version.pre_trial is None
+        assert version.pre_trial_status is None
+
+    current = await sync_pre_trial_to_task_version(
+        version_id,
+        payload={"items": []},
+        error=None,
+        expected_content_hash="new-bytes",
+    )
+    assert current == VerdictStatus.SUCCESS.value
+    async with get_session() as session:
+        version = await session.get(TaskVersionModel, version_id)
+        assert version.pre_trial_status == VerdictStatus.SUCCESS
+
+
+@pytest.mark.asyncio
+async def test_cancelling_qa_in_the_deferral_window_settles_the_task():
+    """Needs a database. With every agent trial settled and the audit still
+    live, admission holds the task in RUNNING. Cancelling QA there must
+    settle the task too: left RUNNING, the sweep's advance backstop would
+    re-enter admission minutes later and start a QA run the user just
+    cancelled, against a brief whose audit findings the cancel wiped."""
+    if not URL:
+        pytest.skip("ODDISH_DATABASE_URL not set")
+    from oddish.core.endpoints.qa import cancel_task_qa_core
+    from oddish.db import TaskStatus, TrialStatus, get_session, init_db
+    from oddish.db.models import ExperimentModel, TaskModel
+
+    await init_db()
+    run = uuid.uuid4().hex[:8]
+    task_id = f"qa-cancel-window-{run}"
+    agent_id = f"{task_id}-1"
+    audit_id = f"{task_id}-2"
+    async with get_session() as session:
+        experiment = ExperimentModel(name=f"exp-{run}")
+        session.add(experiment)
+        session.add(
+            TaskModel(
+                id=task_id,
+                name=task_id,
+                user="u",
+                task_path="p",
+                status=TaskStatus.RUNNING,
+                run_analysis=True,
+            )
+        )
+        await session.flush()
+        for trial_id, kind, status in (
+            (agent_id, "agent", TrialStatus.SUCCESS),
+            (audit_id, "audit", TrialStatus.RUNNING),
+        ):
+            session.add(
+                TrialModel(
+                    id=trial_id,
+                    name=trial_id,
+                    task_id=task_id,
+                    experiment_id=experiment.id,
+                    agent="claude-code",
+                    provider="local",
+                    queue_key="q",
+                    kind=kind,
+                    status=status,
+                    attempts=1,
+                    max_attempts=3,
+                )
+            )
+        await session.commit()
+
+    async with get_session() as session:
+        await cancel_task_qa_core(session, task_id=task_id)
+        await session.commit()
+
+    async with get_session() as session:
+        audit = await session.get(TrialModel, audit_id)
+        assert audit.status == TrialStatus.FAILED
+        assert audit.harbor_stage == "cancelled"
+        task = await session.get(TaskModel, task_id)
+        assert task.status == TaskStatus.FAILED
+        assert task.finished_at is not None
+
+
+@pytest.mark.asyncio
 async def test_cleanup_reimports_a_settled_audit(monkeypatch):
     """Needs a database. A settled audit whose importer died mid-write
     leaves its version stuck queued/running forever -- the settlement path
@@ -1031,6 +1171,29 @@ def test_the_validator_holds_audit_items_to_the_prompt_schema():
         broken = {k: v for k, v in item.items() if k != key}
         assert check_analysis_result({"items": [broken]}, expected), key
     assert check_analysis_result({"items": {}}, expected)
+
+    # Optional fields the importer's parser still type-checks: a wrong type
+    # must fail here, in the sandbox where failing buys a retry, not at
+    # import where refusal is terminal.
+    for key, bad in (
+        ("id", 1),
+        ("links_to", 7),
+        ("exploited", "yes"),
+        ("causal", "no"),
+        ("exploit_evidence", 3),
+    ):
+        typed = dict(item)
+        typed[key] = bad
+        assert check_analysis_result({"items": [typed]}, expected), key
+    optional_ok = dict(
+        item,
+        id=None,
+        links_to="a1",
+        exploited=True,
+        causal=False,
+        exploit_evidence=None,
+    )
+    assert check_analysis_result({"items": [optional_ok]}, expected) == []
 
 
 @pytest.mark.asyncio

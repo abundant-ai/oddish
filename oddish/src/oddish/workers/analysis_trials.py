@@ -351,6 +351,16 @@ def build_qa_brief(
         if with_verdict
         else '== TASK VERDICT ==\nDo NOT produce a verdict for this task: there are too few trials to judge it. Set "verdict": null in the output.\n'
     )
+    # The output template must agree with the section above: showing the
+    # verdict object shape while the prose says null would make the model
+    # fail the (strict) verifier on every attempt.
+    verdict_value = "<object matching this JSON schema>" if with_verdict else "null"
+    verdict_schema = (
+        "Verdict JSON schema:\n"
+        f"{json.dumps(TaskVerdictModel.model_json_schema(), indent=1)}\n\n"
+        if with_verdict
+        else ""
+    )
     return f"""You are the QA auditor for the task `{task_name}`. You are in a clean analysis sandbox, not the task's own environment. The task source, each trial's logs, and each trial's trajectory come from the oddish-query CLI. Do not solve the task.
 
 Audit these trials:
@@ -389,13 +399,10 @@ Write exactly one file: /logs/{QA_RESULT_FILENAME}
       "trajectory_summary": <object with the exact shape given in the trajectory summary section>
     }}
   ],
-  "verdict": <object matching this JSON schema>
+  "verdict": {verdict_value}
 }}
 
-Verdict JSON schema:
-{json.dumps(TaskVerdictModel.model_json_schema(), indent=1)}
-
-Every trial listed above must appear in "trials". The file must be valid JSON. Do not write anything else to /logs."""
+{verdict_schema}Every trial listed above must appear in "trials". The file must be valid JSON. Do not write anything else to /logs."""
 
 
 def build_audit_brief(*, task_name: str) -> str:
@@ -877,6 +884,7 @@ async def _import_audit_result(trial: TrialModel) -> None:
             version_id,
             payload=None,
             error=RuntimeError(error),
+            expected_content_hash=pinned_hash,
         )
         return
     items: list[ActionItem] = []
@@ -892,15 +900,22 @@ async def _import_audit_result(trial: TrialModel) -> None:
             )
             logger.warning("audit import for version %s failed: %s", version_id, error)
             await sync_pre_trial_to_task_version(
-                version_id, payload=None, error=RuntimeError(error)
+                version_id,
+                payload=None,
+                error=RuntimeError(error),
+                expected_content_hash=pinned_hash,
             )
             return
+    # The early check above spared the artifact read, but only this locked
+    # re-check (inside sync) closes the race with an in-place overwrite
+    # committing between that check and this write.
     await sync_pre_trial_to_task_version(
         version_id,
         payload=build_pre_trial_payload(
             items, cost_usd=trial.cost_usd, block_id=trial.id
         ),
         error=None,
+        expected_content_hash=pinned_hash,
     )
     logger.info(
         "audit trial %s: stored %d findings for version %s",

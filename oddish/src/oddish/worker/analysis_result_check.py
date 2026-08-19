@@ -71,6 +71,14 @@ def _check_action_item(item: object, expected: dict, where: str) -> list[str]:
     for key in ("title", "detail", "recommendation"):
         if _missing(item.get(key)):
             errors.append(f"{where}.{key} must be a non-empty string")
+    # Optional fields still fail the importer's parser when wrong-typed, so
+    # they must fail here first, where failing buys a retry.
+    for key in ("id", "links_to", "exploit_evidence"):
+        if key in item and item[key] is not None and not isinstance(item[key], str):
+            errors.append(f"{where}.{key} must be a string or null")
+    for key in ("exploited", "causal"):
+        if key in item and not isinstance(item[key], bool):
+            errors.append(f"{where}.{key} must be a boolean")
     return errors
 
 
