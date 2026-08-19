@@ -42,6 +42,7 @@ import type {
   TaskVersionSummary,
   Trial,
 } from "@/lib/types";
+import { isAgentTrial } from "@/lib/types";
 import {
   isBrowseTaskDetail,
   taskDetailKey,
@@ -726,8 +727,13 @@ export function TaskFilesPanel({
 
   const retryableTrials = useMemo(() => {
     if (!task?.trials) return [];
+    // Agent trials only: task.trials now carries qa/audit rows too, and
+    // "Rerun trials" must never replay an analysis brief through the
+    // generic retry endpoint (it also refuses them server-side).
     return task.trials.filter(
-      (trial) => trial.status === "failed" || trial.status === "success"
+      (trial) =>
+        isAgentTrial(trial) &&
+        (trial.status === "failed" || trial.status === "success")
     );
   }, [task]);
 

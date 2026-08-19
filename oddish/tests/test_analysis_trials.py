@@ -397,6 +397,63 @@ async def test_qa_admission_waits_for_the_audit():
 
 
 @pytest.mark.asyncio
+async def test_generic_retry_refuses_analysis_trials():
+    """Needs a database. "Rerun trials" hits the generic retry endpoint;
+    a qa/audit row must be refused there. Retrying one would copy its kind
+    and stale brief into a new trial, knock the task back to RUNNING, and
+    discard a published verdict -- the task-level QA endpoints are the
+    rerun path for analysis."""
+    if not URL:
+        pytest.skip("ODDISH_DATABASE_URL not set")
+    from fastapi import HTTPException
+
+    from oddish.core.endpoints.trials import retry_trial_core
+    from oddish.db import TaskStatus, TrialStatus, get_session, init_db
+    from oddish.db.models import ExperimentModel, TaskModel
+
+    await init_db()
+    run = uuid.uuid4().hex[:8]
+    task_id = f"qa-retry-guard-{run}"
+    qa_id = f"{task_id}-1"
+    async with get_session() as session:
+        experiment = ExperimentModel(name=f"exp-{run}")
+        session.add(experiment)
+        session.add(
+            TaskModel(
+                id=task_id,
+                name=task_id,
+                user="u",
+                task_path="p",
+                status=TaskStatus.COMPLETED,
+                run_analysis=True,
+            )
+        )
+        await session.flush()
+        session.add(
+            TrialModel(
+                id=qa_id,
+                name=qa_id,
+                task_id=task_id,
+                experiment_id=experiment.id,
+                agent="claude-code",
+                provider="local",
+                queue_key="q",
+                kind="qa",
+                status=TrialStatus.SUCCESS,
+                attempts=1,
+                max_attempts=3,
+            )
+        )
+        await session.commit()
+
+    async with get_session() as session:
+        with pytest.raises(HTTPException) as raised:
+            await retry_trial_core(session, trial_id=qa_id)
+        assert raised.value.status_code == 400
+        assert "agent trials" in raised.value.detail
+
+
+@pytest.mark.asyncio
 async def test_the_verdict_needs_enough_evidence():
     """Below 5 trials or 3 distinct agents the QA trial is created without a
     verdict request; at the bar it is asked for one."""

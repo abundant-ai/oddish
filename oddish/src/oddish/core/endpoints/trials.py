@@ -301,6 +301,21 @@ async def retry_trial_core(
             ),
         )
 
+    # Retrying a qa/audit row here would copy its kind and brief into a new
+    # trial, move the task back to RUNNING, and discard a published verdict
+    # -- from a button that promises to rerun agent work. Analysis reruns
+    # have their own task-level endpoints (/tasks/{id}/qa and
+    # /tasks/{id}/qa/audit), which rebuild the brief instead of replaying a
+    # stale one.
+    if (old_trial.kind or "agent") != "agent":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Only agent trials can be retried here; rerun the task's "
+                f"{old_trial.kind} from its QA controls instead"
+            ),
+        )
+
     terminal_states = {
         TrialStatus.FAILED,
         TrialStatus.SUCCESS,

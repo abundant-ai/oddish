@@ -58,6 +58,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { mutate } from "swr";
 import type { Task, Trial, AnalysisClassification } from "@/lib/types";
+import { isAgentTrial } from "@/lib/types";
 import {
   costEstimateMarks,
   formatCostUsd,
@@ -1004,7 +1005,11 @@ export function ExperimentTrialsTable({
     const retryable: Trial[] = [];
     for (const task of selectedTaskList) {
       for (const trial of task.trials ?? []) {
+        // Agent trials only: task.trials carries qa/audit rows too, and
+        // bulk retry must never replay an analysis brief through the
+        // generic retry endpoint (it also refuses them server-side).
         if (
+          isAgentTrial(trial) &&
           (trial.status === "failed" || trial.status === "success") &&
           !seen.has(trial.id)
         ) {
