@@ -46,6 +46,38 @@ def test_not_stale_when_all_match():
     )
 
 
+def test_is_stale_when_experiment_changed():
+    block_meta = {
+        "cohort_hash": "aaa",
+        "schema_version": 1,
+        "task_version_id": "v1",
+        "experiment_id": "exp-1",
+    }
+    assert is_stale(
+        block_meta,
+        current_hash="aaa",
+        schema_version=1,
+        task_version_id="v1",
+        experiment_id="exp-2",
+    )
+
+
+def test_not_stale_when_experiment_matches():
+    block_meta = {
+        "cohort_hash": "aaa",
+        "schema_version": 1,
+        "task_version_id": "v1",
+        "experiment_id": "exp-1",
+    }
+    assert not is_stale(
+        block_meta,
+        current_hash="aaa",
+        schema_version=1,
+        task_version_id="v1",
+        experiment_id="exp-1",
+    )
+
+
 def test_missing_metadata_is_stale():
     assert (
         is_stale(None, current_hash="aaa", schema_version=1, task_version_id="v1")
