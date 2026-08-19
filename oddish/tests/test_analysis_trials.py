@@ -416,6 +416,24 @@ async def test_no_analysis_trial_is_created_for_a_deleted_task():
             )
 
 
+def test_only_probe_trials_get_the_inline_probe_summary():
+    """qa/audit trials carry extra_instructions (their brief) exactly like
+    probes do, but their analysis IS the trial: the direct probe analyzer
+    must not also run for them. It would be a second, unintended LLM call
+    per analysis run, and it would stamp probe-style analysis fields onto
+    the qa/audit row."""
+    from oddish.workers.queue.trial_handler import (
+        should_generate_inline_probe_summary,
+    )
+
+    for mode in ("qa", "audit"):
+        assert should_generate_inline_probe_summary(mode, "the brief") is False
+    assert should_generate_inline_probe_summary(None, "probe instructions") is True
+    assert should_generate_inline_probe_summary("probe", "probe instructions") is True
+    assert should_generate_inline_probe_summary(None, None) is False
+    assert should_generate_inline_probe_summary(None, "") is False
+
+
 def test_the_view_definition_cannot_drift_between_fresh_and_migrated_dbs():
     """The analysis_spend view is created two ways: migration
     ``analysisspend01`` on migrated databases, the models' ``after_create``

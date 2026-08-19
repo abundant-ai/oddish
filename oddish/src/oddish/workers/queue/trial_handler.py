@@ -609,6 +609,17 @@ async def _prepare_trial_run(
         )
 
 
+def should_generate_inline_probe_summary(
+    trial_mode: str | None, extra_instructions: str | None
+) -> bool:
+    """Only probe trials get the inline probe-summary call. QA/audit trials
+    also carry ``extra_instructions`` (their brief), but their analysis IS the
+    trial itself: running the direct probe analyzer for them would burn a
+    second, unintended LLM call per analysis run and stamp probe-style
+    analysis fields onto the qa/audit row."""
+    return bool(extra_instructions) and not is_analysis_kind(trial_mode)
+
+
 async def _generate_probe_summary_inline(
     *,
     trial_id: str,
@@ -1810,9 +1821,15 @@ async def run_trial_job(
         # while the local Harbor artifacts still exist on disk -- mirroring
         # the local runner. Probes are excluded from task-level QA, so this
         # is the only place their summary is produced in the cloud. Must run
-        # before the cleanup below prunes job_dir.
+        # before the cleanup below prunes job_dir. QA/audit trials also carry
+        # extra_instructions but must never take this path (see
+        # should_generate_inline_probe_summary).
         probe_analysis = None
-        if probe_extra_instructions and execution.outcome and execution.outcome.job_dir:
+        if (
+            should_generate_inline_probe_summary(trial_mode, probe_extra_instructions)
+            and execution.outcome
+            and execution.outcome.job_dir
+        ):
             probe_analysis = await _generate_probe_summary_inline(
                 trial_id=trial_id,
                 job_dir=execution.outcome.job_dir,
