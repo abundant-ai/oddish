@@ -67,12 +67,43 @@ def test_the_audit_brief_names_its_output_file():
     assert "Do not solve the task" in brief
 
 
+def _qa_check_payload(trial_ids: list[str], *, with_verdict: bool = False) -> dict:
+    from oddish.workers.analysis_trials import analysis_check_payload
+
+    return analysis_check_payload(
+        "qa",
+        {"analysis_payload": {"trial_ids": trial_ids, "with_verdict": with_verdict}},
+    )
+
+
+def _good_qa_entry(trial_id: str) -> dict:
+    return {
+        "trial_id": trial_id,
+        "analysis": dict(GOOD_ANALYSIS, trial_name=trial_id),
+        "trajectory_summary": {
+            "summary": "The agent edited the file and the verifier agreed.",
+            "highlights": [{"step_id": 1, "title": "edit", "why": "it landed"}],
+            "components": [
+                {
+                    "step_ids": [1],
+                    "trajectory_component": "implementing",
+                    "action": "edit",
+                    "purpose": "build",
+                    "summary": "One edit.",
+                }
+            ],
+        },
+    }
+
+
 def test_the_overlay_replaces_the_whole_task(tmp_path):
     """An analysis trial is a regular trial on our own task. Nothing of the
     audited task survives into the sandbox: not its image, not its verifier,
-    not its hidden files. Our verifier stages /logs/<artifact> and fails
-    when the file is missing or wrong-shaped, so trial retries re-run the
-    agent."""
+    not its hidden files. Our verifier stages /logs/<artifact> and validates
+    it against the contract pinned at trial creation, so a missing or
+    malformed artifact fails the trial and retries re-run the agent."""
+    import json
+
     from oddish.worker.probe_staging import apply_analysis_overlay
 
     (tmp_path / "tests").mkdir()
@@ -82,7 +113,10 @@ def test_the_overlay_replaces_the_whole_task(tmp_path):
     (tmp_path / "environment").mkdir()
     (tmp_path / "environment" / "Dockerfile").write_text("FROM giant-java-image")
     (tmp_path / "instruction.md").write_text("original")
-    apply_analysis_overlay(tmp_path, brief="the brief", artifact="qa_result.json")
+    payload = _qa_check_payload(["t-1"])
+    apply_analysis_overlay(
+        tmp_path, brief="the brief", artifact="qa_result.json", check_payload=payload
+    )
 
     assert (tmp_path / "instruction.md").read_text() == "the brief"
     assert not (tmp_path / "tests" / "expensive_llm_judge.py").exists()
@@ -95,9 +129,13 @@ def test_the_overlay_replaces_the_whole_task(tmp_path):
     assert "/logs/qa_result.json" in test_sh
     assert "exit 1" in test_sh
     assert 'cp "$SRC" "$OUT/qa_result.json"' in test_sh
-    # An empty JSON object must not earn reward: the verifier requires the
-    # keys the importer reads.
-    assert 'KEYS="trials verdict"' in test_sh
+    # The verifier enforces the pinned contract with the same validator the
+    # importer runs: both files must be staged beside test.sh.
+    assert "analysis_result_check.py" in test_sh
+    staged_expected = json.loads((tmp_path / "tests" / "expected.json").read_text())
+    assert staged_expected == payload
+    validator = (tmp_path / "tests" / "analysis_result_check.py").read_text()
+    assert "def check_analysis_result" in validator
 
 
 def test_a_correct_analysis_is_accepted():
@@ -181,9 +219,7 @@ async def test_a_task_gets_exactly_one_qa_trial():
             ),
             {"t": task_id, "e": experiment.id},
         )
-        for i, status in enumerate(
-            (TrialStatus.SUCCESS, TrialStatus.RUNNING), start=1
-        ):
+        for i, status in enumerate((TrialStatus.SUCCESS, TrialStatus.RUNNING), start=1):
             session.add(
                 TrialModel(
                     id=f"{task_id}-{i}",
@@ -274,25 +310,33 @@ async def test_the_verdict_needs_enough_evidence():
 
     five_three_agents = [f"t{i}" for i in range(5)]
     assert (
-        await has_verdict_evidence(_Session(["a", "b", "c", "a", "b"]), five_three_agents)
+        await has_verdict_evidence(
+            _Session(["a", "b", "c", "a", "b"]), five_three_agents
+        )
         is True
     )
 
 
 def test_the_verifier_actually_grades_the_artifact(tmp_path):
-    """Run the generated tests/test.sh for real: a good artifact earns
-    reward 1.0, an empty JSON object fails, a missing file fails. This is
-    the whole retry mechanism, so it must work as a shell script, not just
-    read well."""
+    """Run the generated tests/test.sh for real: only an artifact that
+    covers exactly the requested trials with valid analyses earns reward
+    1.0. An empty trials list, a subset, a missing file, or a missing
+    verdict all fail. This is the whole retry mechanism, so it must work
+    as a shell script, not just read well."""
     import json
     import subprocess
 
     from oddish.worker.probe_staging import apply_analysis_overlay
 
-    apply_analysis_overlay(tmp_path, brief="b", artifact="qa_result.json")
+    apply_analysis_overlay(
+        tmp_path,
+        brief="b",
+        artifact="qa_result.json",
+        check_payload=_qa_check_payload(["t-1", "t-2"]),
+    )
     test_sh = tmp_path / "tests" / "test.sh"
 
-    def run(payload: str | None) -> tuple[int, str]:
+    def run(payload: str | None) -> int:
         logs = tmp_path / "logs"
         if logs.exists():
             import shutil
@@ -309,25 +353,282 @@ def test_the_verifier_actually_grades_the_artifact(tmp_path):
             text=True,
             cwd=tmp_path,
         )
-        # The script reads the fixed path /logs/<artifact>; symlinking that
-        # is not possible in a test, so rewrite the SRC line to the temp dir.
-        return result.returncode, str(out)
+        return result.returncode
 
-    # Point the script at the temp logs dir instead of /logs.
+    # The script reads the fixed path /logs/<artifact>; symlinking that
+    # is not possible in a test, so rewrite the SRC line to the temp dir.
     test_sh.write_text(
-        test_sh.read_text().replace("/logs/qa_result.json", str(tmp_path / "logs" / "qa_result.json"))
+        test_sh.read_text().replace(
+            "/logs/qa_result.json", str(tmp_path / "logs" / "qa_result.json")
+        )
     )
 
-    code, out = run(json.dumps({"trials": [], "verdict": None}))
+    good = {"trials": [_good_qa_entry("t-1"), _good_qa_entry("t-2")], "verdict": None}
+    code = run(json.dumps(good))
     assert code == 0
     assert (tmp_path / "logs" / "verifier" / "reward.txt").read_text().strip() == "1.0"
     assert (tmp_path / "logs" / "verifier" / "qa_result.json").exists()
 
-    code, _ = run(json.dumps({}))
+    # An empty result must NOT earn reward: the requested trials are absent.
+    code = run(json.dumps({"trials": [], "verdict": None}))
     assert code == 1
 
-    code, _ = run(None)
+    # A subset must not earn reward either.
+    code = run(json.dumps({"trials": [_good_qa_entry("t-1")], "verdict": None}))
     assert code == 1
+
+    code = run(json.dumps({}))
+    assert code == 1
+
+    code = run("not json")
+    assert code == 1
+
+    code = run(None)
+    assert code == 1
+
+
+def test_the_validator_requires_the_exact_trial_set():
+    """Each requested trial exactly once: an empty, subset, padded, or
+    duplicated artifact is invalid. This is what stops a partial result
+    from publishing an incomplete verdict."""
+    from oddish.worker.analysis_result_check import check_analysis_result
+
+    expected = _qa_check_payload(["t-1", "t-2"])
+    good = {"trials": [_good_qa_entry("t-1"), _good_qa_entry("t-2")], "verdict": None}
+    assert check_analysis_result(good, expected) == []
+
+    empty = {"trials": [], "verdict": None}
+    assert any("missing entries" in e for e in check_analysis_result(empty, expected))
+    subset = {"trials": [_good_qa_entry("t-1")], "verdict": None}
+    assert any("missing entries" in e for e in check_analysis_result(subset, expected))
+    padded = {
+        "trials": [_good_qa_entry(t) for t in ("t-1", "t-2", "t-3")],
+        "verdict": None,
+    }
+    assert any("unrequested" in e for e in check_analysis_result(padded, expected))
+    doubled = {
+        "trials": [_good_qa_entry(t) for t in ("t-1", "t-1", "t-2")],
+        "verdict": None,
+    }
+    assert any("duplicate" in e for e in check_analysis_result(doubled, expected))
+    assert check_analysis_result([], expected) == ["the artifact is not a JSON object"]
+
+
+def test_the_validator_rejects_invalid_analyses_and_summaries():
+    """A classification outside the taxonomy or a missing/empty trajectory
+    summary must fail validation -- these were previously dropped or stored
+    empty without failing anything."""
+    from oddish.worker.analysis_result_check import check_analysis_result
+
+    expected = _qa_check_payload(["t-1"])
+
+    bad_label = _good_qa_entry("t-1")
+    bad_label["analysis"] = dict(bad_label["analysis"], classification="NOT_A_LABEL")
+    errors = check_analysis_result({"trials": [bad_label], "verdict": None}, expected)
+    assert any("classification" in e for e in errors)
+
+    no_summary = dict(_good_qa_entry("t-1"))
+    del no_summary["trajectory_summary"]
+    errors = check_analysis_result({"trials": [no_summary], "verdict": None}, expected)
+    assert any("trajectory_summary" in e for e in errors)
+
+    hollow = _good_qa_entry("t-1")
+    hollow["trajectory_summary"] = dict(hollow["trajectory_summary"], components=[])
+    errors = check_analysis_result({"trials": [hollow], "verdict": None}, expected)
+    assert any("components" in e for e in errors)
+
+
+def test_the_validator_enforces_the_verdict_contract():
+    """A requested verdict must be a valid object; an unrequested one must
+    be null, exactly as the brief instructs."""
+    from oddish.worker.analysis_result_check import check_analysis_result
+
+    with_verdict = _qa_check_payload(["t-1"], with_verdict=True)
+    entry = _good_qa_entry("t-1")
+
+    missing = {"trials": [entry], "verdict": None}
+    assert any("verdict" in e for e in check_analysis_result(missing, with_verdict))
+    valid = {
+        "trials": [entry],
+        "verdict": {"verdict": "accept", "confidence": "high"},
+    }
+    assert check_analysis_result(valid, with_verdict) == []
+    wrong = {
+        "trials": [entry],
+        "verdict": {"verdict": "maybe", "confidence": "high"},
+    }
+    assert any("verdict" in e for e in check_analysis_result(wrong, with_verdict))
+
+    without_verdict = _qa_check_payload(["t-1"])
+    unasked = {
+        "trials": [entry],
+        "verdict": {"verdict": "accept", "confidence": "high"},
+    }
+    assert any("null" in e for e in check_analysis_result(unasked, without_verdict))
+
+
+def test_the_validator_holds_audit_items_to_the_prompt_schema():
+    """Every audit finding needs the ten keys with the exact values the
+    prompt defines; the importer's tolerated alternate spellings (severity
+    for tier, heading spellings for dimension) must pass too, so the
+    verifier is never stricter than the importer."""
+    from oddish.workers.analysis_trials import analysis_check_payload
+    from oddish.worker.analysis_result_check import check_analysis_result
+
+    expected = analysis_check_payload("audit", None)
+    item = {
+        "source": "pre_trial",
+        "problem_type": "incompleteness",
+        "dimension": "verifier",
+        "file": "tests/verify.py",
+        "line_start": 4,
+        "line_end": 6,
+        "title": "The verifier ignores the exit code",
+        "detail": "It never asserts returncode.",
+        "recommendation": "Assert returncode == 0.",
+        "tier": "must_fix",
+    }
+    assert check_analysis_result({"items": []}, expected) == []
+    assert check_analysis_result({"items": [item]}, expected) == []
+
+    spelled = dict(item)
+    spelled.pop("tier")
+    spelled["severity"] = "must_fix"
+    spelled["dimension"] = "verifier_completeness"
+    assert check_analysis_result({"items": [spelled]}, expected) == []
+
+    for key in ("source", "file", "line_start", "title", "detail"):
+        broken = {k: v for k, v in item.items() if k != key}
+        assert check_analysis_result({"items": [broken]}, expected), key
+    assert check_analysis_result({"items": {}}, expected)
+
+
+@pytest.mark.asyncio
+async def test_the_qa_import_is_all_or_nothing(monkeypatch):
+    """Needs a database. An artifact that fails the shared validator (here:
+    grading only a subset of the requested trials) must import nothing --
+    no per-trial grades, a recorded verdict error -- while a valid artifact
+    grades every row."""
+    if not URL:
+        pytest.skip("ODDISH_DATABASE_URL not set")
+    from oddish.db import (
+        AnalysisStatus,
+        TaskStatus,
+        TrialStatus,
+        VerdictStatus,
+        get_session,
+        init_db,
+    )
+    from oddish.db.models import ExperimentModel, TaskModel
+    from oddish.workers import analysis_trials
+    from oddish.workers.analysis_trials import _import_qa_result
+
+    await init_db()
+    run = uuid.uuid4().hex[:8]
+    task_id = f"qa-atomic-{run}"
+    graded_ids = [f"{task_id}-1", f"{task_id}-2"]
+    qa_id = f"{task_id}-3"
+    async with get_session() as session:
+        experiment = ExperimentModel(name=f"exp-{run}")
+        session.add(experiment)
+        session.add(
+            TaskModel(
+                id=task_id,
+                name=task_id,
+                user="u",
+                task_path="p",
+                status=TaskStatus.VERDICT_PENDING,
+                run_analysis=True,
+            )
+        )
+        await session.flush()
+        for trial_id in graded_ids:
+            session.add(
+                TrialModel(
+                    id=trial_id,
+                    name=trial_id,
+                    task_id=task_id,
+                    experiment_id=experiment.id,
+                    agent="claude-code",
+                    provider="local",
+                    queue_key="q",
+                    status=TrialStatus.SUCCESS,
+                    attempts=1,
+                    max_attempts=3,
+                )
+            )
+        session.add(
+            TrialModel(
+                id=qa_id,
+                name=qa_id,
+                task_id=task_id,
+                experiment_id=experiment.id,
+                agent="claude-code",
+                provider="local",
+                queue_key="q",
+                kind="qa",
+                status=TrialStatus.SUCCESS,
+                attempts=1,
+                max_attempts=3,
+                harbor_config={
+                    "mode": "qa",
+                    "analysis_payload": {
+                        "trial_ids": graded_ids,
+                        "with_verdict": False,
+                    },
+                },
+            )
+        )
+        await session.commit()
+
+    async def no_trajectory(row):
+        return None
+
+    monkeypatch.setattr("oddish.core.trial_io.read_trial_trajectory", no_trajectory)
+
+    subset = {"trials": [_good_qa_entry(graded_ids[0])], "verdict": None}
+
+    async def read_subset(trial, filename):
+        return subset
+
+    monkeypatch.setattr(analysis_trials, "read_analysis_artifact", read_subset)
+    async with get_session() as session:
+        qa_trial = await session.get(TrialModel, qa_id)
+    await _import_qa_result(qa_trial)
+
+    async with get_session() as session:
+        for trial_id in graded_ids:
+            row = await session.get(TrialModel, trial_id)
+            assert row.analysis is None, "a partial artifact must store nothing"
+        task = await session.get(TaskModel, task_id)
+        assert task.verdict_status == VerdictStatus.FAILED
+        assert "violates the QA contract" in (task.verdict_error or "")
+        # Re-arm so the second import may store its state.
+        task.status = TaskStatus.VERDICT_PENDING
+        task.verdict_status = VerdictStatus.QUEUED
+        task.verdict_error = None
+        await session.commit()
+
+    complete = {
+        "trials": [_good_qa_entry(t) for t in graded_ids],
+        "verdict": None,
+    }
+
+    async def read_complete(trial, filename):
+        return complete
+
+    monkeypatch.setattr(analysis_trials, "read_analysis_artifact", read_complete)
+    await _import_qa_result(qa_trial)
+
+    async with get_session() as session:
+        for trial_id in graded_ids:
+            row = await session.get(TrialModel, trial_id)
+            assert row.analysis is not None
+            assert row.analysis["_graded_by"] == qa_id
+            assert row.analysis_status == AnalysisStatus.SUCCESS
+            assert row.trajectory_summary["components"], trial_id
+        task = await session.get(TaskModel, task_id)
+        assert task.status == TaskStatus.COMPLETED
 
 
 def test_the_importer_stamps_derived_facts_onto_the_summary():
@@ -411,9 +712,7 @@ async def test_no_analysis_trial_is_created_for_a_deleted_task():
             TaskModel, task_id, execution_options={"include_deleted": True}
         )
         with pytest.raises(RuntimeError, match="deleted task"):
-            await create_analysis_trial(
-                session, task=task, kind="audit", brief="b"
-            )
+            await create_analysis_trial(session, task=task, kind="audit", brief="b")
 
 
 def test_only_probe_trials_get_the_inline_probe_summary():

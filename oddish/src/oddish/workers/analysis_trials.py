@@ -19,7 +19,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.analyze import Classification, TrialClassification
-from oddish.analyze.models import ActionItem, ExploitationAssessment, TaskVerdictModel
+from oddish.analyze.models import (
+    _DIMENSION_HEADING_SPELLINGS,
+    ActionItem,
+    ActionItemSource,
+    ActionTier,
+    Dimension,
+    ExploitationAssessment,
+    ProblemType,
+    TaskVerdictModel,
+)
 from oddish.analyze.trajectory_delegation import (
     delegation_facts,
     subagent_dispatches_in,
@@ -50,6 +59,7 @@ from oddish.db import (
     utcnow,
 )
 from oddish.db.storage import get_storage_client, resolve_trial_s3_prefix
+from oddish.worker.analysis_result_check import check_analysis_result
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +80,44 @@ ANALYSIS_TRIAL_TIMEOUT_MINUTES = 60
 
 def is_analysis_kind(kind: str | None) -> bool:
     return kind in ANALYSIS_TRIAL_KINDS
+
+
+def analysis_check_payload(kind: str, harbor_config: dict | None) -> dict:
+    """The machine-checkable artifact contract for one analysis trial.
+
+    Staged into the sandbox as ``expected.json`` for the generated verifier
+    and passed verbatim to ``check_analysis_result`` by the importer -- one
+    validator, two enforcement points. The value vocabularies are derived
+    from the real enums and models here so the sandbox copy cannot drift
+    from what the importers' parsers accept.
+    """
+    from typing import get_args
+
+    item_vocabulary = {
+        "sources": [s.value for s in ActionItemSource],
+        "problem_types": [p.value for p in ProblemType],
+        "dimensions": [d.value for d in Dimension],
+        # The ActionItem model accepts the prompt's own heading spellings
+        # for the dimension field; the validator must not be stricter.
+        "dimension_spellings": sorted(_DIMENSION_HEADING_SPELLINGS),
+        "tiers": [t.value for t in ActionTier],
+    }
+    if kind == "qa":
+        payload = (harbor_config or {}).get("analysis_payload") or {}
+        return {
+            "kind": "qa",
+            "trial_ids": [str(t) for t in payload.get("trial_ids") or []],
+            "verdict_expected": bool(payload.get("with_verdict", True)),
+            "classifications": [c.value for c in Classification],
+            "verdicts": list(
+                get_args(TaskVerdictModel.model_fields["verdict"].annotation)
+            ),
+            "confidences": list(
+                get_args(TaskVerdictModel.model_fields["confidence"].annotation)
+            ),
+            **item_vocabulary,
+        }
+    return {"kind": "audit", **item_vocabulary}
 
 
 # Fired after a QA import writes the task verdict (hosted GitHub PR refresh).
@@ -144,9 +192,7 @@ async def resolve_analysis_experiment_id(session: AsyncSession, task_id: str) ->
         },
     )
     if getattr(inserted, "rowcount", 0):
-        logger.info(
-            "created qa report experiment for %s (%s)", parent.id, parent.name
-        )
+        logger.info("created qa report experiment for %s (%s)", parent.id, parent.name)
     shadow_id = await session.scalar(
         sql_text(
             "SELECT id FROM experiments "
@@ -260,9 +306,7 @@ MIN_VERDICT_TRIALS = 5
 MIN_VERDICT_AGENTS = 3
 
 
-async def has_verdict_evidence(
-    session: AsyncSession, trial_ids: list[str]
-) -> bool:
+async def has_verdict_evidence(session: AsyncSession, trial_ids: list[str]) -> bool:
     """Whether the eligible set can support a task verdict.
 
     ``trial_ids`` is the QA-eligible set, which already excludes baselines,
@@ -296,7 +340,7 @@ def build_qa_brief(
     verdict_section = (
         f"== TASK VERDICT ==\nAfter classifying every trial, synthesize one task verdict:\n{verdict}\n"
         if with_verdict
-        else "== TASK VERDICT ==\nDo NOT produce a verdict for this task: there are too few trials to judge it. Set \"verdict\": null in the output.\n"
+        else '== TASK VERDICT ==\nDo NOT produce a verdict for this task: there are too few trials to judge it. Set "verdict": null in the output.\n'
     )
     return f"""You are the QA auditor for the task `{task_name}`. You are in a clean analysis sandbox, not the task's own environment. The task source, each trial's logs, and each trial's trajectory come from the oddish-query CLI. Do not solve the task.
 
@@ -353,8 +397,7 @@ def build_audit_brief(*, task_name: str) -> str:
 
 == OUTPUT ==
 Write exactly one file: /logs/{AUDIT_RESULT_FILENAME}
-{{"items": [{{"id": "...", "file": "...", "severity": "...", "description": "...", "suggestion": "..."}}]}}
-An empty "items" list means the source is clean. The file must be valid JSON."""
+It must hold the JSON object described in the OUTPUT section above: {{"items": [...]}} where every item carries the ten keys with the exact values that section defines. An empty "items" list means the source is clean. The file must be valid JSON. Do not write anything else to /logs."""
 
 
 async def maybe_enqueue_audit_trial(
@@ -378,7 +421,6 @@ async def maybe_enqueue_audit_trial(
         task_version_id=version_id,
     )
     return True
-
 
 
 async def create_qa_trial(
@@ -512,8 +554,7 @@ def enrich_trajectory_summary(
             return None
         try:
             return (
-                datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
-                * 1000
+                datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1000
             )
         except ValueError:
             return None
@@ -605,82 +646,105 @@ async def _import_qa_result(trial: TrialModel) -> None:
     artifact = None
     if trial.status == TrialStatus.SUCCESS:
         artifact = await read_analysis_artifact(trial, QA_RESULT_FILENAME)
-    payload_cfg = (trial.harbor_config or {}).get("analysis_payload", {})
+    expected = analysis_check_payload("qa", trial.harbor_config)
     # A run below the evidence bar was told not to produce a verdict, so a
     # missing one is the expected outcome, not an import failure.
-    verdict_expected = payload_cfg.get("with_verdict", True)
-    if artifact is None or (
-        verdict_expected and not isinstance(artifact.get("verdict"), dict)
-    ):
-        error = f"QA trial {trial.id} " + (
-            "produced no valid qa_result.json"
-            if trial.status == TrialStatus.SUCCESS
-            else f"finished {trial.status.value}: {trial.error_message or 'no error recorded'}"
-        )
+    verdict_expected = expected["verdict_expected"]
+    # The same validator the in-sandbox verifier ran. Import is
+    # all-or-nothing: a partial or malformed artifact must never publish a
+    # subset of grades or a verdict built on one.
+    violations = (
+        check_analysis_result(artifact, expected) if artifact is not None else None
+    )
+    if artifact is None or violations:
+        if trial.status != TrialStatus.SUCCESS:
+            detail = (
+                f"finished {trial.status.value}: "
+                f"{trial.error_message or 'no error recorded'}"
+            )
+        elif artifact is None:
+            detail = "produced no valid qa_result.json"
+        else:
+            detail = "artifact violates the QA contract: " + "; ".join(violations[:5])
+        error = f"QA trial {trial.id} {detail}"
         logger.warning("qa import for task %s failed: %s", task_id, error)
         await sync_verdict_to_task(
             task_id,
             payload=None,
-            should_store=lambda s: _qa_import_still_current(s, task_id, graded_version_id),
+            should_store=lambda s: _qa_import_still_current(
+                s, task_id, graded_version_id
+            ),
             error=error,
         )
         return
 
-    expected = set(payload_cfg.get("trial_ids", []))
+    contract_drift: str | None = None
     classifications: list[TrialClassification] = []
     async with get_session() as session:
-        for entry in artifact.get("trials", []):
-            if not isinstance(entry, dict):
-                continue
-            trial_id = entry.get("trial_id")
-            analysis = entry.get("analysis")
-            if not trial_id or not isinstance(analysis, dict):
-                continue
-            if expected and trial_id not in expected:
-                continue
-            parsed = _classification_from_analysis(analysis)
+        for entry in artifact["trials"]:
+            trial_id = entry["trial_id"]
+            parsed = _classification_from_analysis(entry["analysis"])
             if parsed is None:
-                logger.warning(
-                    "qa trial %s: malformed analysis for %s rejected",
-                    trial.id,
-                    trial_id,
+                # The shared validator accepted this artifact, so a parse
+                # failure here is validator/importer drift. Refuse the whole
+                # import (nothing committed) rather than storing a subset.
+                contract_drift = (
+                    f"analysis for {trial_id} failed to parse after passing validation"
                 )
-                continue
+                break
             row = await session.get(TrialModel, trial_id)
             if row is None or row.task_id != task_id:
+                # The graded row was deleted after the QA trial was staged;
+                # that is not an artifact defect, so grade the rest.
                 logger.warning(
-                    "qa trial %s: analysis for unknown trial %s dropped",
+                    "qa trial %s: graded trial %s no longer exists; skipping",
                     trial.id,
                     trial_id,
                 )
                 continue
-            row.analysis = {**analysis, "_graded_by": trial.id}
+            row.analysis = {**entry["analysis"], "_graded_by": trial.id}
             row.analysis_status = AnalysisStatus.SUCCESS
             row.analysis_finished_at = utcnow()
-            summary = entry.get("trajectory_summary")
-            if isinstance(summary, dict):
-                # Enrichment reads the graded trial's own trajectory from
-                # storage; a read failure must not lose the summary itself.
-                trajectory = None
-                try:
-                    from oddish.core.trial_io import read_trial_trajectory
+            # Enrichment reads the graded trial's own trajectory from
+            # storage; a read failure must not lose the summary itself.
+            trajectory = None
+            try:
+                from oddish.core.trial_io import read_trial_trajectory
 
-                    trajectory = await read_trial_trajectory(row)
-                except Exception:  # noqa: BLE001
-                    logger.exception(
-                        "qa trial %s: trajectory read for %s failed; "
-                        "storing summary without derived facts",
-                        trial.id,
-                        trial_id,
-                    )
-                row.trajectory_summary = enrich_trajectory_summary(
-                    summary,
-                    trajectory=trajectory,
-                    model=trial.model,
-                    graded_by=trial.id,
+                trajectory = await read_trial_trajectory(row)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "qa trial %s: trajectory read for %s failed; "
+                    "storing summary without derived facts",
+                    trial.id,
+                    trial_id,
                 )
+            row.trajectory_summary = enrich_trajectory_summary(
+                entry["trajectory_summary"],
+                trajectory=trajectory,
+                model=trial.model,
+                graded_by=trial.id,
+            )
             classifications.append(parsed)
-        await session.commit()
+        if contract_drift is None:
+            await session.commit()
+        else:
+            # get_session commits on clean context exit; the rows written
+            # before the drift was noticed must not land.
+            await session.rollback()
+
+    if contract_drift is not None:
+        error = f"QA trial {trial.id}: {contract_drift}"
+        logger.warning("qa import for task %s failed: %s", task_id, error)
+        await sync_verdict_to_task(
+            task_id,
+            payload=None,
+            should_store=lambda s: _qa_import_still_current(
+                s, task_id, graded_version_id
+            ),
+            error=error,
+        )
+        return
 
     try:
         await aggregate_exploited_into_pre_trial(task_id)
@@ -696,7 +760,9 @@ async def _import_qa_result(trial: TrialModel) -> None:
         await sync_verdict_to_task(
             task_id,
             payload=None,
-            should_store=lambda s: _qa_import_still_current(s, task_id, graded_version_id),
+            should_store=lambda s: _qa_import_still_current(
+                s, task_id, graded_version_id
+            ),
             error=f"QA trial {trial.id} artifact contained no valid classifications",
         )
         return
@@ -705,7 +771,9 @@ async def _import_qa_result(trial: TrialModel) -> None:
         # The caller fires the qa-imported hook after this returns.
         await complete_task_without_verdict(
             task_id,
-            should_store=lambda s: _qa_import_still_current(s, task_id, graded_version_id),
+            should_store=lambda s: _qa_import_still_current(
+                s, task_id, graded_version_id
+            ),
         )
         return
     try:
@@ -720,7 +788,9 @@ async def _import_qa_result(trial: TrialModel) -> None:
         await sync_verdict_to_task(
             task_id,
             payload=None,
-            should_store=lambda s: _qa_import_still_current(s, task_id, graded_version_id),
+            should_store=lambda s: _qa_import_still_current(
+                s, task_id, graded_version_id
+            ),
             error=f"QA trial {trial.id} verdict failed validation: {exc}",
         )
         return
@@ -747,12 +817,27 @@ async def _import_audit_result(trial: TrialModel) -> None:
     artifact = None
     if trial.status == TrialStatus.SUCCESS:
         artifact = await read_analysis_artifact(trial, AUDIT_RESULT_FILENAME)
-    if artifact is None or not isinstance(artifact.get("items"), list):
-        error = f"audit trial {trial.id} " + (
-            "produced no valid audit_result.json"
-            if trial.status == TrialStatus.SUCCESS
-            else f"finished {trial.status.value}"
+    # The same validator the in-sandbox verifier ran: a malformed artifact
+    # fails there and retries the agent, so reaching import with violations
+    # means drift (or an old-format artifact) -- record the failure rather
+    # than silently keeping a subset of findings.
+    violations = (
+        check_analysis_result(
+            artifact, analysis_check_payload("audit", trial.harbor_config)
         )
+        if artifact is not None
+        else None
+    )
+    if artifact is None or violations:
+        if trial.status != TrialStatus.SUCCESS:
+            detail = f"finished {trial.status.value}"
+        elif artifact is None:
+            detail = "produced no valid audit_result.json"
+        else:
+            detail = "artifact violates the audit contract: " + "; ".join(
+                violations[:5]
+            )
+        error = f"audit trial {trial.id} {detail}"
         logger.warning("audit import for version %s failed: %s", version_id, error)
         await sync_pre_trial_to_task_version(
             version_id,
@@ -764,11 +849,18 @@ async def _import_audit_result(trial: TrialModel) -> None:
     for raw in artifact["items"]:
         try:
             items.append(ActionItem.model_validate(raw))
-        except Exception:  # noqa: BLE001
-            logger.warning(
-                "audit trial %s: malformed finding rejected: %r", trial.id, raw
+        except Exception as exc:  # noqa: BLE001
+            # The validator accepted this item, so a parse failure is
+            # validator/importer drift: refuse the import whole.
+            error = (
+                f"audit trial {trial.id}: finding failed to parse after "
+                f"passing validation: {exc}"
             )
-            continue
+            logger.warning("audit import for version %s failed: %s", version_id, error)
+            await sync_pre_trial_to_task_version(
+                version_id, payload=None, error=RuntimeError(error)
+            )
+            return
     await sync_pre_trial_to_task_version(
         version_id,
         payload=build_pre_trial_payload(
