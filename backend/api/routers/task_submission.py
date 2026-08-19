@@ -9,9 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import APIKeyScope, AuthContext
 from models import APIKeyModel, UserModel
-from oddish.core.dashboard import EXPERIMENTS_UNATTRIBUTED_OWNER
+from oddish.core.endpoints import SweepAttribution
 from oddish.core.sharing.helpers import ensure_experiment_public
-from oddish.db import ExperimentModel, TaskModel
+from oddish.db import TaskModel
 from oddish.schemas import TaskSweepSubmission
 
 logger = logging.getLogger(__name__)
@@ -226,65 +226,44 @@ async def require_connected_github_user(
     return user
 
 
-async def resolve_created_by_user_id(
+async def resolve_sweep_attribution(
     session: AsyncSession,
     submission: TaskSweepSubmission,
     auth: AuthContext,
     connected_user: UserModel | None = None,
-) -> str | None:
-    """Who submitted the task. API key owner wins for CI/service accounts."""
+) -> SweepAttribution:
+    """Resolve immutable provenance and billing once at the hosted boundary."""
+    api_key_creator_id: str | None = None
     if auth.api_key_id:
-        api_key = auth.api_key
-        if api_key is None:
-            api_key = await session.get(APIKeyModel, auth.api_key_id)
-        if api_key and api_key.created_by_user_id:
-            return api_key.created_by_user_id
+        api_key = auth.api_key or await session.get(APIKeyModel, auth.api_key_id)
+        if api_key is not None:
+            api_key_creator_id = api_key.created_by_user_id
 
     if submission.github_id is not None or submission.github_username:
-        user = connected_user or await resolve_connected_user(
+        connected_user = connected_user or await resolve_connected_user(
             session,
             org_id=auth.org_id,
             github_id=submission.github_id,
             github_username=submission.github_username,
         )
-        if user:
-            return user.id
 
-    if auth.user_id:
-        return auth.user_id
-
-    return None
-
-
-async def resolve_experiment_owner_user_id(
-    session: AsyncSession,
-    submission: TaskSweepSubmission,
-    auth: AuthContext,
-    connected_user: UserModel | None = None,
-) -> str | None:
-    """Primary experiment owner for dashboard Mine. GitHub author beats submitter."""
-    if submission.github_id is not None or submission.github_username:
-        user = connected_user or await resolve_connected_user(
-            session,
-            org_id=auth.org_id,
-            github_id=submission.github_id,
-            github_username=submission.github_username,
+    connected_user_id = connected_user.id if connected_user is not None else None
+    experiment_owner_user_id = connected_user_id or auth.user_id or api_key_creator_id
+    task_created_by_user_id = api_key_creator_id or connected_user_id or auth.user_id
+    billed_user_id = await _active_user_id(
+        session, experiment_owner_user_id, auth.org_id
+    )
+    if billed_user_id is None and task_created_by_user_id != experiment_owner_user_id:
+        billed_user_id = await _active_user_id(
+            session, task_created_by_user_id, auth.org_id
         )
-        if user:
-            return user.id
-        return None
 
-    if auth.user_id:
-        return auth.user_id
-
-    if auth.api_key_id:
-        api_key = auth.api_key
-        if api_key is None:
-            api_key = await session.get(APIKeyModel, auth.api_key_id)
-        if api_key and api_key.created_by_user_id:
-            return api_key.created_by_user_id
-
-    return None
+    return SweepAttribution(
+        experiment_owner_user_id=experiment_owner_user_id,
+        task_created_by_user_id=task_created_by_user_id,
+        billed_user_id=billed_user_id,
+        api_key_id=auth.api_key_id,
+    )
 
 
 async def _active_user_id(
@@ -309,48 +288,6 @@ async def _active_user_id(
     if user.is_active and user.deleted_at is None:
         return user.id
     return None
-
-
-async def resolve_billed_user_id(
-    session: AsyncSession,
-    submission: TaskSweepSubmission,
-    auth: AuthContext,
-    owner_user_id: str | None = None,
-) -> str | None:
-    # The payer must be ACTIVE or None: unlike created_by (provenance, which
-    # keeps the real author even once offboarded), a tombstoned billed_user_id
-    # is invisible to the active-scoped admin quota list and un-overridable. The
-    # owner/created-by rungs still fall through raw ``auth.user_id`` (= an API
-    # key's offboarded creator), so re-check here; None → Unattributed 403 under
-    # enforce (correct fail-closed — never bill someone who no longer enforces).
-    if owner_user_id is None:
-        owner_user_id = await resolve_experiment_owner_user_id(
-            session, submission, auth
-        )
-    billed = (
-        owner_user_id
-        if owner_user_id is not None
-        else await resolve_created_by_user_id(session, submission, auth)
-    )
-    return await _active_user_id(session, billed, auth.org_id)
-
-
-def stamp_experiment_owner(
-    experiment: ExperimentModel | None,
-    owner_user_id: str | None,
-    *,
-    claim_unowned: bool = True,
-) -> None:
-    """Stamp the dashboard Mine owner on an experiment."""
-    if experiment is None or not owner_user_id:
-        return
-    claimable = (
-        (None, EXPERIMENTS_UNATTRIBUTED_OWNER)
-        if claim_unowned
-        else (EXPERIMENTS_UNATTRIBUTED_OWNER,)
-    )
-    if experiment.owner_user_id in claimable:
-        experiment.owner_user_id = owner_user_id
 
 
 def require_experiment_publish_scope(auth: AuthContext) -> None:
@@ -378,6 +315,6 @@ async def maybe_publish_experiment(
         return
 
     require_experiment_publish_scope(auth)
-    experiments = list(task.experiments or [])
+    experiments = list(await task.awaitable_attrs.experiments or [])
     for experiment in experiments:
         await ensure_experiment_public(session, experiment)

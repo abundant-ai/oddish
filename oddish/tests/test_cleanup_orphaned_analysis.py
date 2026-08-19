@@ -170,6 +170,7 @@ async def test_qa_reap_retrying_requeues_running_trial_analyses() -> None:
 async def test_qa_reap_failed_finalizes_nonterminal_trial_analyses() -> None:
     task = SimpleNamespace(
         id="task-1",
+        verdict={"verdict": "accept", "is_good": True},
         verdict_status=None,
         verdict_error=None,
         verdict_finished_at=None,
@@ -179,6 +180,8 @@ async def test_qa_reap_failed_finalizes_nonterminal_trial_analyses() -> None:
     await cleanup._mirror_stale_job_to_domain_row(session, _qa_row("FAILED"))
 
     assert task.verdict_status == VerdictStatus.FAILED
+    assert task.verdict is None
+    assert task.verdict_error == "Worker heartbeat stalled for over 15 minutes."
     fails = session.updates("analysis_status = 'FAILED'")
     assert len(fails) == 1
     sql, params = fails[0]

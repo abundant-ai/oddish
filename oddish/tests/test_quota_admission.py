@@ -77,25 +77,23 @@ async def _make_billed_task(cleanup_task_ids, *, n_trials, billed_user, org_id):
 
 
 @pytest.mark.asyncio
-async def test_enforced_admission_acquires_shared_quota_locks(monkeypatch):
+async def test_enforced_admission_takes_no_quota_locks(monkeypatch):
+    """Admission runs no SQL of its own: the bare session would raise if it did."""
     from oddish.core import quota_admission
 
-    calls = []
+    checks = []
 
-    async def record_locks(session, org_id, billed_user_id):
-        calls.append((session, org_id, billed_user_id))
-
-    async def no_op(*_args, **_kwargs):
-        return None
+    async def record_check(*args, **_kwargs):
+        checks.append(args)
 
     fake_session = object()
-    monkeypatch.setattr(quota_admission, "acquire_quota_locks", record_locks)
-    monkeypatch.setattr(quota_admission, "_check_user_quota", no_op)
-    monkeypatch.setattr(quota_admission, "_check_org_quota", no_op)
+    monkeypatch.setattr(quota_admission, "_check_user_quota", record_check)
+    monkeypatch.setattr(quota_admission, "_check_org_quota", record_check)
 
     await admit_trials(fake_session, "org-lock", "user-lock", count=1)
 
-    assert calls == [(fake_session, "org-lock", "user-lock")]
+    assert not hasattr(quota_admission, "acquire_quota_locks")
+    assert len(checks) == 2
 
 
 async def _settle(task_id, index, cost_usd, *, now=None):

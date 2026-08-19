@@ -1,0 +1,29 @@
+name: Branch Sync Guard
+on:
+  # Either side can break the invariant: a commit landing on main, or a
+  # rewrite of staging that drops main's ancestry. Check on a push to either,
+  # for an immediate signal that stays silent when nothing is wrong. The daily
+  # run is a backstop for the window where this file is not yet on a branch (a
+  # push trigger only fires for a workflow that exists on the pushed branch).
+  push:
+    branches: [main, staging]
+  schedule:
+    - cron: "23 7 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Assert main is an ancestor of staging
+        run: |
+          set -euo pipefail
+          git fetch origin main staging
+          git merge-base --is-ancestor origin/main origin/staging \
+            || { echo "::error::main has commits not on staging — FF invariant broken. Recovery: rebuild staging on main so main-only commits survive — run the Sync Preflight workflow for the exact commands. Never force-push main."; exit 1; }
+          echo "invariant holds"

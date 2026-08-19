@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import base64
+from collections.abc import Awaitable, Callable
+from contextvars import ContextVar, Token
+from functools import partial
 import importlib
 import inspect
 import json
@@ -11,12 +14,21 @@ import os
 import re
 import shlex
 import tempfile
-from functools import partial
-from typing import Any, Awaitable, Callable
+from types import SimpleNamespace
+from typing import Any, cast
+from weakref import WeakSet
 
 logger = logging.getLogger(__name__)
 
 _PATCHED = False
+_EC2_PATCHED_CLASSES: WeakSet[type[Any]] = WeakSet()
+_Ec2ProvisionedCallback = Callable[[Any], Awaitable[None]]
+_EC2_PROVISIONED_CALLBACK: ContextVar[_Ec2ProvisionedCallback | None] = ContextVar(
+    "oddish_ec2_provisioned_callback", default=None
+)
+
+_EC2_MANAGED_TAG_KEY = "oddish:managed"
+_EC2_AWS_ACCOUNT_ID_TAG_KEY = "oddish:aws-account-id"
 
 _MIRROR_URL = "https://mirror.gcr.io"
 _MIRROR_HOST = "mirror.gcr.io"
@@ -44,15 +56,28 @@ rm -f "$staged"
 _LOGGED_IN_ATTR = "_oddish_registry_logged_in"
 
 
-def apply_harbor_patches() -> None:
+def set_ec2_provisioned_callback(
+    callback: _Ec2ProvisionedCallback,
+) -> Token[_Ec2ProvisionedCallback | None]:
+    """Bridge legacy Harbor EC2 launches into Oddish's lifecycle hook."""
+    return _EC2_PROVISIONED_CALLBACK.set(callback)
+
+
+def reset_ec2_provisioned_callback(
+    token: Token[_Ec2ProvisionedCallback | None],
+) -> None:
+    _EC2_PROVISIONED_CALLBACK.reset(token)
+
+
+def apply_harbor_patches(*, require_ec2: bool = False) -> None:
     """Install Harbor patches once."""
     global _PATCHED
-    if _PATCHED:
-        return
-    _patch_restricted_network_runtime_fields()
-    _patch_daytona_dind()
-    _patch_modal_dind()
-    _PATCHED = True
+    if not _PATCHED:
+        _patch_restricted_network_runtime_fields()
+        _patch_daytona_dind()
+        _patch_modal_dind()
+        _PATCHED = True
+    _patch_ec2_lifecycle(require_ec2=require_ec2)
 
 
 def _patch_restricted_network_runtime_fields() -> None:
@@ -139,6 +164,15 @@ def _patch_restricted_network_runtime_fields() -> None:
 
         AgentFactory.create_agent_from_config = classmethod(create_agent_from_config)
         AgentFactory._oddish_runtime_fields_wrapped = True
+
+
+def _ec2_enabled() -> bool:
+    return os.environ.get("ODDISH_EC2_ENABLED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 async def _collect_dockerd_diagnostics(strategy: Any) -> str:
@@ -448,3 +482,119 @@ def _patch_modal_dind() -> None:
         marker="_oddish_wrapped",
         label="registry-mirror+registry-login",
     )
+
+
+def _patch_ec2_lifecycle(*, require_ec2: bool = False) -> None:
+    try:
+        module = importlib.import_module("harbor.environments.ec2")
+    except Exception as exc:
+        if require_ec2:
+            raise RuntimeError(
+                "EC2 trial requires Harbor's EC2 environment, but it is unavailable"
+            ) from exc
+        logger.debug("Harbor EC2 environment unavailable; skipping EC2 lifecycle patch")
+        return
+    cls = getattr(module, "EC2Environment", None)
+    if cls is None:
+        if require_ec2:
+            raise RuntimeError("EC2 trial requires Harbor to expose EC2Environment")
+        logger.warning("Harbor EC2Environment not found; EC2 lifecycle patch skipped")
+        return
+    original_run_instances_kwargs = getattr(cls, "_run_instances_kwargs", None)
+    if original_run_instances_kwargs is None:
+        if require_ec2:
+            raise RuntimeError(
+                "EC2 trial requires Harbor EC2Environment to expose "
+                "_run_instances_kwargs"
+            )
+        logger.warning(
+            "Harbor EC2Environment._run_instances_kwargs not found; EC2 launch patch skipped"
+        )
+        return
+    original_launch_instance = getattr(cls, "_launch_instance", None)
+    if original_launch_instance is None:
+        if require_ec2:
+            raise RuntimeError(
+                "EC2 trial requires Harbor EC2Environment to expose _launch_instance"
+            )
+        logger.warning(
+            "Harbor EC2Environment._launch_instance not found; "
+            "EC2 identity patch skipped"
+        )
+        return
+    if cls in _EC2_PATCHED_CLASSES:
+        return
+
+    def get_sandbox_id(self: Any) -> str | None:
+        instance_id = getattr(self, "instance_id", None)
+        user_tags = getattr(self, "user_tags", None)
+        if (
+            not isinstance(user_tags, dict)
+            or user_tags.get(_EC2_MANAGED_TAG_KEY) != "true"
+        ):
+            return instance_id
+        if instance_id is None:
+            return None
+        account_id = user_tags.get(_EC2_AWS_ACCOUNT_ID_TAG_KEY)
+        region = getattr(self, "region", None)
+        if not all(
+            isinstance(value, str) and value
+            for value in (account_id, region, instance_id)
+        ):
+            raise RuntimeError(
+                "Oddish-managed EC2 environment is missing account, region, "
+                "or instance identity"
+            )
+        return f"ec2://{account_id}/{region}/{instance_id}"
+
+    def run_instances_kwargs(self: Any) -> dict[str, Any]:
+        kwargs = cast(dict[str, Any], original_run_instances_kwargs(self))
+        if kwargs.get("IamInstanceProfile"):
+            kwargs["MetadataOptions"] = {
+                "HttpEndpoint": "enabled",
+                "HttpTokens": "required",
+                "HttpPutResponseHopLimit": 2,
+            }
+        else:
+            kwargs["MetadataOptions"] = {
+                "HttpEndpoint": "enabled",
+                "HttpTokens": "required",
+                "HttpPutResponseHopLimit": 1,
+            }
+        return kwargs
+
+    async def launch_instance(self: Any, *args: Any, **kwargs: Any) -> Any:
+        launched = original_launch_instance(self, *args, **kwargs)
+        if inspect.isawaitable(launched):
+            launched = await launched
+
+        callback = _EC2_PROVISIONED_CALLBACK.get()
+        if callback is not None:
+            if (
+                getattr(self, "instance_id", None) is None
+                and isinstance(launched, str)
+            ):
+                self.instance_id = launched
+            external_id = get_sandbox_id(self)
+            if not external_id or not external_id.startswith("ec2://"):
+                raise RuntimeError(
+                    "Oddish-managed EC2 launch completed without a durable "
+                    "account/region/instance identity"
+                )
+            await callback(
+                SimpleNamespace(
+                    event="environment-provisioned",
+                    trial_id=None,
+                    environment=self,
+                    environment_provider="ec2",
+                    environment_external_id=external_id,
+                    result=None,
+                )
+            )
+        return launched
+
+    cls.provider_name = "ec2"
+    cls.get_sandbox_id = get_sandbox_id
+    cls._run_instances_kwargs = run_instances_kwargs
+    cls._launch_instance = launch_instance
+    _EC2_PATCHED_CLASSES.add(cls)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -34,6 +34,7 @@ from oddish.db import (
     VerdictStatus,
 )
 from oddish.registry_auth import normalize_registry_host
+from oddish.runtime.ec2_policy import validate_ec2_environment_config
 
 
 # =============================================================================
@@ -308,6 +309,7 @@ class TaskSubmission(BaseModel):
         _reject_gpu_tpu_conflict(self.harbor)
         for trial in self.trials:
             _reject_tpu_on_non_gke_environment(self.harbor, trial.environment)
+            _reject_unsupported_ec2_configuration(self.harbor, trial.environment)
         return self
 
     content_hash: str | None = Field(
@@ -510,7 +512,10 @@ class TaskSweepSubmission(BaseModel):
     @model_validator(mode="after")
     def _no_gpu_tpu_conflict(self) -> "TaskSweepSubmission":
         _reject_gpu_tpu_conflict(self.harbor)
-        _reject_tpu_on_non_gke_environment(self.harbor, self.environment)
+        for config in self.configs:
+            resolved_environment = config.environment or self.environment
+            _reject_tpu_on_non_gke_environment(self.harbor, resolved_environment)
+            _reject_unsupported_ec2_configuration(self.harbor, resolved_environment)
         return self
 
     content_hash: str | None = Field(
@@ -777,6 +782,19 @@ class TaskUploadInitRequest(BaseModel):
     )
     task_metadata: TaskMetadata | None = None
     provenance: TaskProvenance | None = None
+    overwrite_current_version: bool = Field(
+        False,
+        description=(
+            "Replace the selected current version in place; trials pinned to "
+            "that version will resolve to the replacement content."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_version_mode(self) -> "TaskUploadInitRequest":
+        if self.force_new_version and self.overwrite_current_version:
+            raise ValueError("version upload modes are mutually exclusive")
+        return self
 
 
 class TaskUploadCompleteRequest(BaseModel):
@@ -791,6 +809,35 @@ class TaskUploadCompleteRequest(BaseModel):
     message: str | None = Field(
         None, description="Optional description of what changed in this version"
     )
+    overwrite_current_version: bool = Field(
+        False,
+        description="Finalize an in-place current-version replacement.",
+    )
+    staging_key: str | None = Field(
+        None,
+        description="Server-issued staging object for an in-place replacement.",
+    )
+    overwrite_base_content_hash: str | None = Field(
+        None,
+        description=(
+            "Content hash observed when an in-place replacement was initialized; "
+            "used to reject stale completions."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_overwrite_staging_key(self) -> "TaskUploadCompleteRequest":
+        if self.overwrite_current_version and not self.staging_key:
+            raise ValueError("staging_key is required for an in-place replacement")
+        if (
+            self.overwrite_current_version
+            and "overwrite_base_content_hash" not in self.model_fields_set
+        ):
+            raise ValueError(
+                "overwrite_base_content_hash is required for an in-place replacement"
+            )
+        return self
+
     register_task: bool = Field(
         False,
         description=(
@@ -840,6 +887,8 @@ class TaskUploadInitResponse(UploadResponse):
     upload_method: str | None = None
     upload_headers: dict[str, str] = Field(default_factory=dict)
     requires_completion: bool = False
+    staging_key: str | None = None
+    overwrite_base_content_hash: str | None = None
 
 
 class TrialQueueInfo(BaseModel):
@@ -887,8 +936,8 @@ class TaskVersionResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class TaskVersionSummary(BaseModel):
-    """Per-version aggregates used by the task detail view."""
+class TaskVersionRollup(BaseModel):
+    """Aggregate fields shared by bounded and detailed version responses."""
 
     id: str
     version: int
@@ -914,6 +963,12 @@ class TaskVersionSummary(BaseModel):
     billed_has_estimated: bool = False
     billed_has_native: bool = False
     last_run_at: datetime | None = None
+
+
+class TaskVersionSummary(TaskVersionRollup):
+    """Per-version aggregates and audit metadata for the detail resource."""
+
+    content_hash: str | None = None
     # Pre-trial source audit for this version, flattened to the items the task
     # page renders. Empty list + null status means never audited; empty list +
     # SUCCESS means audited and clean.
@@ -1243,6 +1298,13 @@ class TaskBatchCancelRequest(BaseModel):
         default_factory=list,
         description="Task IDs to cancel in one request",
     )
+    experiment_id: str | None = Field(
+        default=None,
+        description=(
+            "When set, only cancel trials that belong to this experiment. "
+            "Omitting it cancels every in-flight trial for the listed tasks."
+        ),
+    )
 
 
 class BackfillQARequest(BaseModel):
@@ -1280,6 +1342,14 @@ def _reject_tpu_on_non_gke_environment(
             f"'{environment.value}'. Drop override_tpu or submit with "
             f"environment=gke."
         )
+
+
+def _reject_unsupported_ec2_configuration(
+    harbor: HarborConfig, environment: "EnvironmentType | None"
+) -> None:
+    if environment != EnvironmentType.EC2:
+        return
+    validate_ec2_environment_config(harbor.environment)
 
 
 class TaskSweepBatchRequest(BaseModel):
@@ -1427,6 +1497,12 @@ class TaskBrowseItem(BaseModel):
     reward_success: int
     reward_sum: float
     reward_total: int
+    pass_count: int = 0
+    partial_count: int = 0
+    fail_count: int = 0
+    harness_count: int = 0
+    skipped_count: int = 0
+    pending_count: int = 0
     last_run_at: datetime | None = None
     link: str | None = None
     github_meta: dict[str, str] | None = None
@@ -1444,6 +1520,7 @@ class TaskBrowseItem(BaseModel):
     # because ``analysis_costs.task_id`` is NULL on trial-scoped QA rows.
     qa_cost_usd: float = 0.0
     latest_trials: list[TaskBrowseTrial] = Field(default_factory=list)
+    latest_trials_truncated: bool = False
     experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
     user_tags: list[UserTagRef] = Field(default_factory=list)
 
@@ -1469,6 +1546,11 @@ class TaskBrowseFacets(BaseModel):
     Trial-derived facets are scoped to the org's non-probe, non-superseded
     trials. Enum-valued filters (task status, priority, trial status, origin)
     are static and supplied client-side, so they are not returned here.
+
+    ``experiments`` is deprecated and always empty; it used to carry every org
+    experiment (7.7MB at 126k experiments). Experiment filter options are
+    served by ``GET /tasks/browse/experiment-options`` instead. The field is
+    kept so the response shape does not break existing consumers.
     """
 
     agents: list[str] = Field(default_factory=list)
@@ -1478,6 +1560,7 @@ class TaskBrowseFacets(BaseModel):
     environments: list[str] = Field(default_factory=list)
     harbor_stages: list[str] = Field(default_factory=list)
     analysis_classifications: list[str] = Field(default_factory=list)
+    # Deprecated: always empty — see the class docstring.
     experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
 
 
@@ -1540,6 +1623,120 @@ class TaskStatusResponse(BaseModel):
     finished_at: datetime | None
 
     model_config = {"from_attributes": True}
+
+
+class TaskOpenVersionRef(BaseModel):
+    id: str
+    version: int
+    message: str | None = None
+    created_at: datetime
+    is_current: bool = False
+
+
+class TaskOpenVerdict(BaseModel):
+    """Presentation-only verdict fields needed by the task page."""
+
+    is_good: bool | None = None
+    confidence: str | None = None
+    primary_issue: str | None = None
+    reasoning: str | None = None
+    recommendations: list[str] = Field(default_factory=list)
+
+
+class TaskOpenAgentModelSummary(BaseModel):
+    """Exact selected-version rollup for one task-page agent/model card."""
+
+    agent: str
+    model: str | None = None
+    providers: list[str] = Field(default_factory=list)
+    is_probe: bool = False
+    trial_count: int = 0
+    completed_count: int = 0
+    failed_count: int = 0
+    skipped_count: int = 0
+    pending_count: int = 0
+    pass_count: int = 0
+    partial_count: int = 0
+    fail_count: int = 0
+    reward_sum: float = 0.0
+    reward_total: int = 0
+    cost_usd: float = 0.0
+    cost_trial_count: int = 0
+    cost_has_estimated: bool = False
+    cost_has_native: bool = False
+    billed_cost_usd: float = 0.0
+    billed_trial_count: int = 0
+    billed_has_estimated: bool = False
+    billed_has_native: bool = False
+    last_run_at: datetime | None = None
+    duration_sum_seconds: float = 0.0
+    duration_trial_count: int = 0
+
+
+class TaskOpenVersionSummary(TaskVersionRollup):
+    """Selected-version fields owned by the bounded task-open resource."""
+
+    user_tags: list[UserTagRef] = Field(default_factory=list)
+    experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
+    agent_models: list[TaskOpenAgentModelSummary] = Field(default_factory=list)
+
+
+class TaskOpenTask(BaseModel):
+    id: str
+    name: str
+    status: TaskStatus
+    priority: Priority
+    user: str
+    github_username: str | None = None
+    github_meta: dict[str, str] | None = None
+    link: str | None = None
+    task_path: str
+    experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
+    current_version: int | None = None
+    current_version_id: str | None = None
+    user_tags: list[UserTagRef] = Field(default_factory=list)
+    run_analysis: bool = False
+    verdict_status: VerdictStatus | None = None
+    verdict: TaskOpenVerdict | None = None
+    verdict_error: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class TaskOpenTotals(TaskCostTotals):
+    token_count: int = 0
+    token_trial_count: int = 0
+
+
+class TaskOpenTrialRef(BaseModel):
+    id: str
+    name: str
+    experiment_id: str | None = None
+    task_version_id: str | None = None
+    agent: str
+    provider: str
+    model: str | None = None
+    status: TrialStatus
+    reward: float | None = None
+    error_kind: str | None = None
+    is_probe: bool = False
+    cost_usd: float | None = None
+    cost_is_estimated: bool | None = None
+    is_billed: bool = False
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+class TaskOpenResponse(BaseModel):
+    """Bounded first-paint resource for ``GET /tasks/{task_id}/open``."""
+
+    task: TaskOpenTask
+    default_version: TaskOpenVersionRef | None = None
+    selected_version: TaskOpenVersionSummary | None = None
+    totals: TaskOpenTotals = Field(default_factory=TaskOpenTotals)
+    trials: list[TaskOpenTrialRef] = Field(default_factory=list)
+    trials_has_more: bool = False
 
 
 # =============================================================================
@@ -2025,6 +2222,17 @@ class ExperimentOption(BaseModel):
     name: str
 
 
+class ExperimentOptionsResponse(BaseModel):
+    """Typeahead options for the task-browser experiment filter.
+
+    Served by ``GET /tasks/browse/experiment-options``. Replaces the retired
+    ``TaskBrowseFacets.experiments`` all-org list with a bounded, searchable
+    page, reusing the adjacent ``ExperimentOption`` item shape.
+    """
+
+    items: list[ExperimentOption] = Field(default_factory=list)
+
+
 class ReportResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -2044,91 +2252,6 @@ class ReportResponse(BaseModel):
     experiment_ids: list[str] = []
     created_at: datetime | None = None
     finished_at: datetime | None = None
-
-
-class QAPromptVariant(BaseModel):
-    kind: str = Field(min_length=1, max_length=128)
-    version: int | None = Field(default=None, ge=1)
-
-
-class CustomQARunRequest(BaseModel):
-    scope_type: Literal["experiment", "task", "trial"]
-    scope_id: str = Field(min_length=1, max_length=64)
-    variants: list[QAPromptVariant] = Field(min_length=1)
-    model: str = "claude-sonnet-4-6"
-    reasoning_effort: Literal["low", "medium", "high"] | None = None
-    backend: Literal["api", "sandbox"] = "sandbox"
-    allow_oddish_cli: bool = False
-
-
-class CustomQARunResponse(BaseModel):
-    id: str
-    prompt_kind: str
-    prompt_version: int
-    prompt_version_id: str
-    analyzer_block_id: str
-    scope_type: str
-    scope_id: str
-    model: str
-    reasoning_effort: str | None
-    backend: str
-    status: str
-    output: Any | None = None
-    error: str | None = None
-    run_config: dict
-
-
-class QAJobAssignRequest(BaseModel):
-    """Create or update one QA job assignment at a scope.
-
-    ``model`` and ``backend`` are optional because they have per-stage
-    deployment defaults (``settings.pre_trial_model`` / ``analysis_model``),
-    which is also what makes a bare ``qa-jobs disable`` possible -- a
-    suppression row still has to satisfy the NOT NULL columns.
-    """
-
-    prompt: str = Field(min_length=1, description="Prompt kind, or prompt id.")
-    stage: Literal["pre_trial", "post_trial"]
-    prompt_version: int | None = Field(default=None, ge=1)
-    model: str | None = None
-    reasoning_effort: Literal["low", "medium", "high"] | None = None
-    backend: Literal["api", "sandbox"] | None = None
-    # None (field omitted) means "don't touch runner config" on an update, as a
-    # bare `qa-jobs disable` does; a create still lands False.
-    allow_oddish_cli: bool | None = None
-    enabled: bool = True
-
-
-class QAJobResponse(BaseModel):
-    id: str
-    stage: str
-    prompt_id: str
-    prompt_kind: str
-    prompt_version: int | None = None  # pinned version, NULL = latest-wins
-    effective_version: int | None = None  # what would actually run
-    scope_type: str
-    scope_id: str
-    org_id: str | None = None
-    model: str
-    reasoning_effort: str | None = None
-    backend: str
-    allow_oddish_cli: bool
-    enabled: bool
-    inherited_from: str
-
-
-class QAJobStatusRow(BaseModel):
-    assignment_id: str
-    stage: str
-    prompt_kind: str
-    inherited_from: str
-    total: int
-    counts: dict[str, int] = {}
-
-
-class QAJobStatusResponse(BaseModel):
-    scope: str
-    jobs: list[QAJobStatusRow] = []
 
 
 # ---------------------------------------------------------------------------
@@ -2194,44 +2317,3 @@ class DocumentResponse(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
-
-
-class PromptVersionResponse(BaseModel):
-    version: int
-    content: str
-    created_at: datetime
-    created_by: str | None = None
-    model_config = {"from_attributes": True}
-
-
-class PromptUsageVersion(BaseModel):
-    version: int | None = None
-    count: int
-    last_used_at: datetime
-
-
-class PromptUsage(BaseModel):
-    total: int
-    last_used_at: datetime | None = None
-    by_version: list[PromptUsageVersion] = []
-
-
-class PromptResponse(BaseModel):
-    id: str
-    kind: str
-    description: str
-    scope_type: str | None = None
-    scope_id: str | None = None
-    org_id: str | None = None
-    latest_version: int | None = None  # populated by the router, not the ORM
-    version: int | None = None  # the resolved version content belongs to
-    created_at: datetime
-    updated_at: datetime
-    content: str | None = None  # resolved latest/selected version content
-    usage: PromptUsage | None = None  # populated on single-get only
-    model_config = {"from_attributes": True}
-
-
-class PromptSetRequest(BaseModel):
-    content: str
-    description: str | None = None

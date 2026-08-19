@@ -315,9 +315,9 @@ _sandbox_client_factory: SandboxClientFactory | None = None
 def register_sandbox_client_factory(factory: SandboxClientFactory) -> None:
     """Install the Daytona-sandbox backend from the hosted layer.
 
-    The sandbox client needs cc_chat's provisioner, which core must not import;
-    ``backend.api.services.blocks.analyzer.sandbox_llm_client`` registers itself
-    here on import. Unregistered, only the SANDBOX branch is unavailable."""
+    The sandbox client needs the hosted sandbox provisioner, which core must not
+    import; ``backend.api.services.blocks.analyzer.sandbox_llm_client`` registers
+    itself here on import. Unregistered, only the SANDBOX branch is unavailable."""
     global _sandbox_client_factory
     _sandbox_client_factory = factory
 

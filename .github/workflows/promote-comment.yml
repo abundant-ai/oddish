@@ -1,0 +1,158 @@
+name: Promote on comment
+# Comment `/promote` on the staging -> main pull request to promote the sha
+# pinned in its body's `promotion-target` marker (the staging tip when no pin
+# exists), or `/promote <sha>` to override the pin
+# (the same target rule as the Promotion Preflight `target_sha` input).
+#
+# For an organization member with write access, the job always runs the
+# promotion checks and reports them back on the pull request; anyone else gets
+# a failed run and no reply. It performs the fast-forward push only when the
+# repository holds a PROMOTE_TOKEN secret: a fine-grained personal access
+# token (Contents: Read and write) belonging to a user who is a bypass actor
+# on the main ruleset.
+# The built-in GITHUB_TOKEN cannot do this — `github-actions[bot]` is not
+# selectable as a bypass actor — and deploy keys are disabled for this
+# organization, so a user token is the remaining option. Without the secret
+# the job still verifies everything and prints the command to run by hand.
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  promote:
+    # The command is the first line of the comment, so a maintainer can write
+    # `/promote` and explain the release underneath. Expression string literals
+    # have no escape sequences, so `fromJSON` is the only way to write the line
+    # break; GitHub sends CRLF, and the bare CR clause covers it.
+    if: >-
+      github.event.issue.pull_request &&
+      (github.event.comment.body == '/promote' ||
+      startsWith(github.event.comment.body, '/promote ') ||
+      startsWith(github.event.comment.body, fromJSON('"/promote\n"')) ||
+      startsWith(github.event.comment.body, fromJSON('"/promote\r"')))
+    runs-on: ubuntu-latest
+    # Job level, not workflow level: a workflow-level group is joined by every
+    # comment in the repository, and a newly queued run replaces the pending
+    # one. A job skipped by the `if` above never queues, so only real
+    # promotions serialize here.
+    concurrency:
+      group: promote-main
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: write
+      actions: read
+    env:
+      # A step `if:` cannot use the secrets context; expressions in env can,
+      # so the optional-token gate reads this value instead.
+      HAS_PROMOTE_TOKEN: ${{ secrets.PROMOTE_TOKEN != '' }}
+    steps:
+      - name: Check that the commenter is an organization member with write access
+        id: auth
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.event.comment.user.login }}
+          AUTHOR_ASSOCIATION: ${{ github.event.comment.author_association }}
+        run: |
+          set -euo pipefail
+          case "$AUTHOR_ASSOCIATION" in
+            OWNER|MEMBER) echo "$ACTOR is an organization member" ;;
+            *) echo "::error::$ACTOR is not an organization member"; exit 1 ;;
+          esac
+          level=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$ACTOR/permission" --jq '.permission')
+          case "$level" in
+            admin|write|maintain) echo "$ACTOR has $level access" ;;
+            *) echo "::error::$ACTOR has '$level' access and cannot promote"; exit 1 ;;
+          esac
+
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          # The persisted workflow token would override the PROMOTE_TOKEN in
+          # the remote URL during the push below.
+          persist-credentials: false
+
+      - name: Verify promotion preconditions
+        id: checks
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.issue.number }}
+          COMMENT: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          read -r base head state < <(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" \
+            --json baseRefName,headRefName,state --jq '"\(.baseRefName) \(.headRefName) \(.state)"')
+          [ "$state" = "OPEN" ] || { echo "::error::pull request #$PR is $state"; exit 1; }
+          [ "$base" = "main" ] || { echo "::error::#$PR targets '$base'; promotion targets main"; exit 1; }
+          [ "$head" = "staging" ] || { echo "::error::#$PR comes from '$head'; promotion comes from staging"; exit 1; }
+          cross=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json isCrossRepository -q .isCrossRepository)
+          [ "$cross" = "false" ] || { echo "::error::#$PR comes from a fork; promotion uses the repository's own staging branch"; exit 1; }
+
+          # The word after `/promote` on the command line is the target;
+          # bare `/promote` promotes the sha pinned in the pull request body
+          # (the script falls back to the staging tip when there is no pin).
+          TARGET_SHA=$(printf '%s' "$COMMENT" | head -n1 | tr -d '\r' | awk '{print $2}')
+          PR_BODY=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body -q .body)
+          export TARGET_SHA PR_BODY
+          .github/scripts/promote/verify_promotion_target.sh
+
+      - name: Fast-forward main
+        id: push
+        if: success() && env.HAS_PROMOTE_TOKEN == 'true'
+        shell: bash
+        env:
+          PROMOTE_TOKEN: ${{ secrets.PROMOTE_TOKEN }}
+          SHA: ${{ steps.checks.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git remote set-url origin \
+            "https://x-access-token:${PROMOTE_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          # A plain push is fast-forward only; git itself rejects anything else.
+          # `:?` because an empty source refspec deletes the branch.
+          git push origin "${SHA:?}:refs/heads/main"
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$SHA"
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+          echo "origin/main == $SHA"
+
+      - name: Report back on the pull request
+        # Only reply to an organization member who passed the write-access
+        # check. Anyone can comment on a public pull request, so an ungated
+        # reply lets a stranger post bot comments. The failed run stays
+        # visible to maintainers.
+        if: always() && steps.auth.outcome == 'success'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.issue.number }}
+          SHA: ${{ steps.checks.outputs.sha }}
+          PUSH_OUTCOME: ${{ steps.push.outcome }}
+          CHECKS: ${{ steps.checks.outcome }}
+        run: |
+          set -euo pipefail
+          if [ "$CHECKS" != "success" ]; then
+            body="Promotion checks failed. See the run for the reason: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          elif [ "$PUSH_OUTCOME" = "success" ]; then
+            left=$(git rev-list --count "${SHA}..origin/staging")
+            if [ "$left" -eq 0 ]; then
+              body="Promoted. main now points at \`${SHA}\`, the same commit as staging."
+            else
+              body="Promoted. main now points at \`${SHA}\`; staging still carries ${left} unpromoted commit(s)."
+            fi
+          elif [ "$PUSH_OUTCOME" = "failure" ]; then
+            body="Promotion checks passed but the push failed. See the run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          else
+            body=$(printf '%s\n' \
+              "Promotion checks passed for \`${SHA}\`." \
+              "" \
+              "This repository has no PROMOTE_TOKEN secret, so the push did not run." \
+              "A maintainer completes the promotion with:" \
+              "" \
+              '```bash' \
+              "git fetch origin staging" \
+              "git push origin ${SHA}:refs/heads/main" \
+              '```')
+          fi
+          gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "$body"

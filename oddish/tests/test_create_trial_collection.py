@@ -60,7 +60,11 @@ async def test_creates_collection_links_trials_and_tasks(session):
     await session.flush()
 
     resp = await create_trial_collection_core(
-        session, name="my collection", trial_ids=[t1.id, t2.id], org_id="org1"
+        session,
+        name="my collection",
+        trial_ids=[t1.id, t2.id],
+        org_id="org1",
+        owner_user_id="user-1",
     )
     await session.flush()
 
@@ -71,6 +75,7 @@ async def test_creates_collection_links_trials_and_tasks(session):
     ).scalar_one()
     assert exp.is_collection is True
     assert exp.org_id == "org1"
+    assert exp.owner_user_id == "user-1"
 
     linked = (
         (
@@ -194,7 +199,9 @@ async def test_task_mode_links_only_current_version_terminal_trials(session):
     pending = _ver_trial(task, home, v2.id, status=TrialStatus.PENDING)  # not terminal
     probe = _ver_trial(task, home, v2.id, is_probe=True)  # probe
     sup = _ver_trial(task, home, v2.id, superseded=keep_a.id)  # superseded
-    session.add_all([keep_a, keep_b, old, pending, probe, sup])
+    copy = _ver_trial(task, home, v2.id)
+    copy.idempotency_key = f"combine:result:{keep_a.id}"
+    session.add_all([keep_a, keep_b, old, pending, probe, sup, copy])
     await session.flush()
 
     resp = await create_trial_collection_core(

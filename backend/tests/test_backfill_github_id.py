@@ -40,7 +40,7 @@ def _mock_clerk_http(monkeypatch, handler) -> None:
         return real_client(**kwargs)
 
     monkeypatch.setattr(prov, "CLERK_SECRET_KEY", "sk_test")
-    monkeypatch.setattr(prov.httpx, "AsyncClient", _factory)
+    monkeypatch.setattr(prov, "RequestTimedAsyncClient", _factory)
     monkeypatch.setattr(
         job, "fetch_github_identity_from_clerk", prov.fetch_github_identity_from_clerk
     )

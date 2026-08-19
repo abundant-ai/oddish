@@ -24,7 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 ODDISH_DIR = REPO_ROOT / "oddish"
 BACKEND_DIR = REPO_ROOT / "backend"
 SCRIPT_DIR = Path(__file__).resolve().parent
-# Prod migration order: oddish first, then backend (supabase-db-migrations.yml).
+# Prod migration order: oddish first, then backend (modal-deploy.yml).
 STACKS = (ODDISH_DIR, BACKEND_DIR)
 ALEMBIC_VERSION_TABLES = ("alembic_version_oddish", "alembic_version_backend")
 

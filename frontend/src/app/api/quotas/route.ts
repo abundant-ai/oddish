@@ -1,5 +1,5 @@
 import { proxyBackendJson } from "@/lib/backend-response";
 
-export async function GET() {
-  return proxyBackendJson({ path: "quotas" });
+export async function GET(request: Request) {
+  return proxyBackendJson({ request, path: "quotas" });
 }

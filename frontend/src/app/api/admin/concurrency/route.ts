@@ -8,5 +8,10 @@ export async function PUT(request: NextRequest) {
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
-  return proxyBackendJson({ path: "admin/concurrency", method: "PUT", body });
+  return proxyBackendJson({
+    request,
+    path: "admin/concurrency",
+    method: "PUT",
+    body,
+  });
 }

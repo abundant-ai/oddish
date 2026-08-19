@@ -1,0 +1,58 @@
+name: Promotion Preflight
+# Read-only: verifies that staging is safe to promote and prints the exact
+# command a maintainer runs. No credential in this repo can push main —
+# promotion is always a human action by a ruleset-bypass maintainer with push access to main.
+on:
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: "Staging commit to promote (default: the promotion PR's pinned target, else the staging tip)"
+        required: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Verify promotion preconditions
+        id: checks
+        shell: bash
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: |
+          set -euo pipefail
+          pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --base main --head staging --state open --json number -q '.[0].number')
+          [ -n "$pr" ] || { echo "::error::no open staging->main promotion PR"; exit 1; }
+          PR_BODY=$(gh pr view "$pr" --repo "$GITHUB_REPOSITORY" --json body -q .body)
+          export PR_BODY
+          .github/scripts/promote/verify_promotion_target.sh
+
+      - name: Print the push command
+        shell: bash
+        env:
+          TARGET: ${{ steps.checks.outputs.sha }}
+        run: |
+          set -euo pipefail
+          target="$TARGET"
+          {
+            echo "## Promotion preflight PASSED"
+            echo
+            echo "Release manager: run this to promote (fast-forward only):"
+            echo
+            echo '```'
+            echo "git fetch origin staging"
+            echo "git push origin ${target}:refs/heads/main"
+            echo '```'
+            echo
+            echo "Then verify: git fetch origin main && git rev-parse origin/main  # must print ${target}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "PREFLIGHT PASSED for $target — push command in the step summary."

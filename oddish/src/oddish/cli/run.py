@@ -56,11 +56,12 @@ from oddish import __version__
 console = Console()
 
 # Environments the hosted (Modal-backed) API dispatches directly; any other
-# ``--env`` on that path is coerced to Modal. GKE joins Modal and Daytona so
-# TPU trials reach the GKE backend instead of being forced onto Modal.
+# ``--env`` on that path is coerced to Modal. EC2 and GKE join Modal and Daytona
+# so explicitly selected cloud backends reach the hosted API unchanged.
 _HOSTED_PASSTHROUGH_ENVIRONMENTS = {
     EnvironmentType.MODAL,
     EnvironmentType.DAYTONA,
+    EnvironmentType.EC2,
     EnvironmentType.GKE,
 }
 
@@ -327,7 +328,8 @@ def run(
             "--env",
             "-e",
             help=(
-                "Execution environment (docker, daytona, e2b, modal, runloop, gke). "
+                "Execution environment (docker, daytona, ec2, e2b, modal, runloop, "
+                "gke). "
                 "Defaults: daytona for CPU-only hosted tasks, modal for GPU hosted "
                 "tasks, docker otherwise."
             ),
@@ -504,6 +506,16 @@ def run(
                 "Allocate a new task version even when the local content is "
                 "unchanged from the latest existing version. Useful when "
                 "appending trials with a different run_analysis setting."
+            ),
+        ),
+    ] = False,
+    overwrite_current_version: Annotated[
+        bool,
+        typer.Option(
+            "--overwrite-current-version",
+            help=(
+                "Replace the selected current version in place; pinned trials "
+                "will use the replacement content."
             ),
         ),
     ] = False,
@@ -706,6 +718,12 @@ def run(
     require_api_key(api_url)
     is_modal_api = is_modal_api_url(api_url)
 
+    if force_new_version and overwrite_current_version:
+        error_console.print(
+            "[red]--force-new-version and --overwrite-current-version cannot be used together.[/red]"
+        )
+        raise typer.Exit(1)
+
     import os as _os
 
     from oddish.registry_auth import parse_registry_login
@@ -847,6 +865,11 @@ def run(
                 "[red]--task does not support task filtering flags.[/red]"
             )
             raise typer.Exit(1)
+        if overwrite_current_version:
+            error_console.print(
+                "[red]--overwrite-current-version requires a local task path to upload.[/red]"
+            )
+            raise typer.Exit(1)
         # --experiment is allowed with --task: tasks can belong to multiple
         # experiments (see `task_experiments` M2M in `oddish/db/models.py`),
         # and the server will file the new trials under the provided
@@ -889,8 +912,8 @@ def run(
         and environment not in _HOSTED_PASSTHROUGH_ENVIRONMENTS
     ):
         console.print(
-            "[yellow]Oddish Cloud supports --env modal, --env daytona, and "
-            "--env gke; forcing --env modal[/yellow]"
+            "[yellow]Oddish Cloud supports --env modal, --env daytona, --env ec2, "
+            "and --env gke; forcing --env modal[/yellow]"
         )
         environment = EnvironmentType.MODAL
 
@@ -1005,6 +1028,7 @@ def run(
             json_output=json_output,
             progress_label="Uploading",
             force_new_version=force_new_version,
+            overwrite_current_version=overwrite_current_version,
             limiter=submit_limiter,
         )
         for task_path, result in zip(task_paths, upload_results):
@@ -1016,8 +1040,9 @@ def run(
                         f"[dim]Task '{task_path.name}' unchanged, reusing version {ver}[/dim]"
                     )
                 else:
+                    action = "overwrote" if overwrite_current_version else "created"
                     console.print(
-                        f"[dim]Task '{task_path.name}' updated, created version {ver}[/dim]"
+                        f"[dim]Task '{task_path.name}' updated, {action} version {ver}[/dim]"
                     )
             submit_targets.append(
                 (

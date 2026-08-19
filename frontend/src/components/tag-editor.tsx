@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Tag, X } from "lucide-react";
+import { mutate } from "swr";
 
 import { TagChip } from "@/components/tag-chip";
 import { TagChipEditor } from "@/components/tag-chip-editor";
@@ -53,11 +54,11 @@ export function TagEditor({
         .map(
           (t) =>
             `${t.tag_id}:${t.key}:${t.value ?? ""}:${t.color ?? ""}:` +
-            `${t.visibility}:${t.current}:${t.older}`,
+            `${t.visibility}:${t.current}:${t.older}`
         )
         .sort()
         .join("|"),
-    [initialTags],
+    [initialTags]
   );
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => setTags(initialTags), [initialKey]);
@@ -79,6 +80,10 @@ export function TagEditor({
         mode: scope === "EXPERIMENT" ? experimentMode : undefined,
       }),
     });
+    // Writers invalidate: the shared "/api/tags" list (definitions and
+    // per-tag counts) is cached without stale revalidation, so every
+    // successful write here must refresh it.
+    if (res.ok) void mutate("/api/tags");
     return res.ok;
   }
 
@@ -93,7 +98,7 @@ export function TagEditor({
       older: false,
     };
     setTags((prev) =>
-      prev.some((t) => t.tag_id === item.id) ? prev : [...prev, optimistic],
+      prev.some((t) => t.tag_id === item.id) ? prev : [...prev, optimistic]
     );
     if (!(await assign(item.id))) {
       setTags((prev) => prev.filter((t) => t.tag_id !== item.id));
@@ -115,7 +120,7 @@ export function TagEditor({
       older: false,
     };
     setTags((prev) =>
-      prev.some((t) => t.tag_id === pendingId) ? prev : [...prev, pending],
+      prev.some((t) => t.tag_id === pendingId) ? prev : [...prev, pending]
     );
 
     const res = await fetch("/api/tags", {
@@ -124,19 +129,21 @@ export function TagEditor({
       body: JSON.stringify({ key: rawKey, color, visibility: "PRIVATE" }),
     });
     const body = (await res.json().catch(() => null)) as
-      (TagPickerItem & { detail?: string; error?: string }) | null;
+      | (TagPickerItem & { detail?: string; error?: string })
+      | null;
     if (!res.ok || !body?.id) {
       setTags((prev) => prev.filter((t) => t.tag_id !== pendingId));
       flashError(body?.detail ?? body?.error ?? `Could not create ${rawKey}.`);
       return;
     }
+    void mutate("/api/tags");
     // Swap the pending chip for the canonical row, then attach it.
     setTags((prev) =>
       prev.map((t) =>
         t.tag_id === pendingId
           ? { ...t, tag_id: body.id, key: body.key, color: body.color }
-          : t,
-      ),
+          : t
+      )
     );
     if (!(await assign(body.id))) {
       setTags((prev) => prev.filter((t) => t.tag_id !== body.id));
@@ -162,20 +169,21 @@ export function TagEditor({
     });
     if (!res.ok && removed) {
       setTags((prev) =>
-        prev.some((t) => t.tag_id === tagId) ? prev : [...prev, removed],
+        prev.some((t) => t.tag_id === tagId) ? prev : [...prev, removed]
       );
       flashError(`Could not remove ${removed.key}.`);
       return;
     }
+    void mutate("/api/tags");
     onMutate();
   }
 
   function handleEdited(
     tagId: string,
-    patch: Pick<UserTagRef, "key" | "color">,
+    patch: Pick<UserTagRef, "key" | "color">
   ) {
     setTags((prev) =>
-      prev.map((t) => (t.tag_id === tagId ? { ...t, ...patch } : t)),
+      prev.map((t) => (t.tag_id === tagId ? { ...t, ...patch } : t))
     );
   }
 
@@ -202,7 +210,7 @@ export function TagEditor({
             )}
             <button
               type="button"
-              className="ml-0.5 rounded-full p-0.5 text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
+              className="text-muted-foreground hover:bg-destructive/15 hover:text-destructive ml-0.5 rounded-full p-0.5 transition-colors"
               onClick={() => removeTag(t.tag_id)}
               aria-label={`Remove ${t.key}`}
               title={`Remove ${t.key}`}
@@ -226,7 +234,7 @@ export function TagEditor({
           <Button
             variant="ghost"
             size="icon"
-            className="h-6 w-6 text-muted-foreground hover:text-foreground"
+            className="text-muted-foreground hover:text-foreground h-6 w-6"
             aria-label="Add tag"
             title="Add tag"
           >
@@ -234,7 +242,7 @@ export function TagEditor({
           </Button>
         }
       />
-      {error ? <span className="text-xs text-destructive">{error}</span> : null}
+      {error ? <span className="text-destructive text-xs">{error}</span> : null}
     </div>
   );
 }

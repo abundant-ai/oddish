@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import json
 import secrets
+from collections.abc import AsyncIterator
 
 from fastapi import HTTPException
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import StreamingResponse
 from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -14,11 +18,17 @@ from oddish.core.helpers import (
     build_trial_response,
     fetch_trial_queue_info,
 )
+from oddish.core.model_display_names import (
+    apply_model_display_names,
+    load_model_display_names,
+)
 from oddish.db import (
     ExperimentModel,
     TaskModel,
+    TaskVersionModel,
     TrialModel,
     experiment_trials,
+    get_session,
     get_storage_client,
     task_experiments,
 )
@@ -154,7 +164,13 @@ async def get_task_status_counts(
     join_experiment: bool = False,
 ) -> TaskStatusResponse:
     """Get task status with aggregated trial counts."""
-    query = select(TaskModel).where(TaskModel.id == task_id)
+    # ``build_task_status_responses_from_counts`` aggregates trials in SQL
+    # but its response builder still reads ``task.experiments``.
+    query = (
+        select(TaskModel)
+        .options(selectinload(TaskModel.experiments))
+        .where(TaskModel.id == task_id)
+    )
     if join_experiment:
         query = query.join(
             task_experiments, task_experiments.c.task_id == TaskModel.id
@@ -206,7 +222,11 @@ async def list_experiment_trials_for_org(
 
 
 async def list_task_trials_for_task(
-    session: AsyncSession, task_id: str, *, probe: bool | None = None
+    session: AsyncSession,
+    task_id: str,
+    *,
+    probe: bool | None = None,
+    version: int | None = None,
 ) -> list[TrialResponse]:
     """List all trials for a task with their responses.
 
@@ -217,6 +237,13 @@ async def list_task_trials_for_task(
 
     ``probe`` filters by trial kind: True -> only probe trials, False ->
     only real attempts, None -> all.
+
+    ``version`` scopes to trials of one task version. A task can carry
+    trials across many versions and experiments, each row with its full
+    analysis payload, so version-scoped callers (the task overview) must
+    filter here rather than shipping everything to the client. The inner
+    join deliberately drops unversioned trials — they belong to no
+    version, so no version-scoped view should include them.
     """
     conditions = [
         TrialModel.task_id == task_id,
@@ -224,11 +251,16 @@ async def list_task_trials_for_task(
     ]
     if probe is not None:
         conditions.append(TrialModel.is_probe == probe)
+    query = select(TrialModel, TaskModel.task_path).join(
+        TaskModel, TaskModel.id == TrialModel.task_id
+    )
+    if version is not None:
+        query = query.join(
+            TaskVersionModel, TaskVersionModel.id == TrialModel.task_version_id
+        )
+        conditions.append(TaskVersionModel.version == version)
     result = await session.execute(
-        select(TrialModel, TaskModel.task_path)
-        .join(TaskModel, TaskModel.id == TrialModel.task_id)
-        .where(*conditions)
-        .order_by(TrialModel.created_at.asc())
+        query.where(*conditions).order_by(TrialModel.created_at.asc())
     )
     rows = result.all()
     trials = [trial for trial, _ in rows]
@@ -265,7 +297,7 @@ async def list_task_trials_for_public_experiment(
     rows = result.all()
     trials = [trial for trial, _ in rows]
     queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=trials)
-    return [
+    responses = [
         build_trial_response(
             trial,
             task_path,
@@ -273,11 +305,27 @@ async def list_task_trials_for_public_experiment(
         )
         for trial, task_path in rows
     ]
+    apply_model_display_names(responses, await load_model_display_names(session))
+    return responses
 
 
 # =============================================================================
 # S3 File Operations
 # =============================================================================
+
+
+async def _task_version_s3_prefix(task_id: str, version: int | None) -> str | None:
+    """Resolve the DB-selected source prefix for a task version."""
+    if version is None:
+        return None
+    async with get_session() as session:
+        row = await session.scalar(
+            select(TaskVersionModel.task_s3_key).where(
+                TaskVersionModel.task_id == task_id,
+                TaskVersionModel.version == version,
+            )
+        )
+    return str(row) if row else None
 
 
 async def list_task_files_s3(
@@ -288,11 +336,13 @@ async def list_task_files_s3(
     cursor: str | None,
     presign: bool,
     version: int | None = None,
+    inline: bool = True,
 ) -> dict:
     """List files in a task's S3 directory."""
     storage = get_storage_client()
 
     try:
+        task_s3_prefix = await _task_version_s3_prefix(task_id, version)
         return await storage.list_task_files(
             task_id=task_id,
             prefix=prefix,
@@ -301,6 +351,8 @@ async def list_task_files_s3(
             cursor=cursor,
             presign=presign,
             version=version,
+            task_s3_prefix=task_s3_prefix,
+            inline=inline,
         )
     except HTTPException:
         raise
@@ -308,21 +360,97 @@ async def list_task_files_s3(
         raise HTTPException(status_code=500, detail="Failed to list files")
 
 
+async def stream_task_files_s3(
+    task_id: str,
+    prefix: str | None,
+    recursive: bool,
+    limit: int,
+    cursor: str | None,
+    presign: bool,
+    version: int | None = None,
+):
+    """Stream a task file listing chunk-by-chunk (tree first, then contents).
+
+    Errors before the first chunk surface as HTTP errors; a failure
+    mid-stream just ends the stream — the client already has the tree and
+    falls back to per-file fetches for missing bodies.
+    """
+    storage = get_storage_client()
+    task_s3_prefix = await _task_version_s3_prefix(task_id, version)
+
+    stream = storage.stream_task_files(
+        task_id=task_id,
+        prefix=prefix,
+        recursive=recursive,
+        limit=limit,
+        cursor=cursor,
+        presign=presign,
+        version=version,
+        task_s3_prefix=task_s3_prefix,
+    )
+    started = False
+    try:
+        async for chunk in stream:
+            started = True
+            yield chunk
+    except HTTPException:
+        if not started:
+            raise
+    except Exception:
+        if not started:
+            raise HTTPException(status_code=500, detail="Failed to list files")
+
+
+def _ndjson_line(chunk: dict) -> str:
+    return json.dumps(jsonable_encoder(chunk), separators=(",", ":")) + "\n"
+
+
+async def make_task_files_ndjson_response(
+    stream: AsyncIterator[dict],
+) -> StreamingResponse:
+    """Wrap a task-files chunk stream as an NDJSON streaming response.
+
+    The first chunk (the listing) is awaited eagerly, before the response
+    starts, so failures during listing — task not found, storage errors —
+    propagate as real HTTP error responses. Once the body iterator is
+    running Starlette has already sent a 200, so only mid-stream failures
+    end up truncating the stream (the client keeps the tree and falls back
+    to per-file fetches for missing bodies).
+    """
+    try:
+        first = await anext(stream)
+    except StopAsyncIteration:
+        first = None
+
+    async def ndjson() -> AsyncIterator[str]:
+        if first is None:
+            return
+        yield _ndjson_line(first)
+        async for chunk in stream:
+            yield _ndjson_line(chunk)
+
+    return StreamingResponse(ndjson(), media_type="application/x-ndjson")
+
+
 async def get_task_file_content_s3(
     task_id: str,
     file_path: str,
     presign: bool,
     version: int | None = None,
+    max_bytes: int | None = None,
 ) -> dict:
     """Get content of a specific task file from S3."""
     storage = get_storage_client()
 
     try:
+        task_s3_prefix = await _task_version_s3_prefix(task_id, version)
         return await storage.get_task_file_content(
             task_id=task_id,
             file_path=file_path,
             presign=presign,
             version=version,
+            task_s3_prefix=task_s3_prefix,
+            max_bytes=max_bytes,
         )
     except HTTPException:
         raise

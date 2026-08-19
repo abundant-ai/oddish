@@ -16,9 +16,17 @@ export async function GET(
 
     const { task_id } = await params;
 
-    const probe = new URL(request.url).searchParams.get("probe");
-    const queryParams = probe !== null ? { probe } : undefined;
-    const url = getBackendUrl("tasks", `/${task_id}/trials`, queryParams);
+    const incoming = new URL(request.url).searchParams;
+    const probe = incoming.get("probe");
+    const version = incoming.get("version");
+    const queryParams: Record<string, string> = {};
+    if (probe !== null) queryParams.probe = probe;
+    if (version !== null) queryParams.version = version;
+    const url = getBackendUrl(
+      "tasks",
+      `/${task_id}/trials`,
+      Object.keys(queryParams).length > 0 ? queryParams : undefined,
+    );
     const res = await fetch(url, {
       cache: "no-store",
       headers: getAuthHeaders(token),

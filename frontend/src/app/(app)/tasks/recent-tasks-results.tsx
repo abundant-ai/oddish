@@ -1,116 +1,14 @@
+"use client";
+
 import Link from "next/link";
-import { auth } from "@clerk/nextjs/server";
+import { useSearchParams } from "next/navigation";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import {
-  getAuthHeaders,
-  getBackendUrl,
-  getClerkToken,
-} from "@/lib/backend-config";
-import { parseTaskSearch } from "@/lib/tag-query";
-import {
-  BROWSE_FORWARD_KEYS,
-  PRESET_MS,
-  TASKS_PAGE_SIZE,
-} from "@/lib/tasks-filters";
+import { TASKS_PAGE_SIZE } from "@/lib/tasks-filters";
+import { useTaskBrowse } from "@/lib/use-task-browse";
 import { cn } from "@/lib/utils";
-import type { TaskBrowseResponse } from "@/lib/types";
 import { TaskCard } from "./task-card";
-
-type RawSearchParams = Record<string, string | string[] | undefined>;
-
-function toUrlParams(searchParams: RawSearchParams): URLSearchParams {
-  const params = new URLSearchParams();
-  for (const [key, value] of Object.entries(searchParams)) {
-    if (typeof value === "string") params.set(key, value);
-    else if (Array.isArray(value) && value.length > 0)
-      params.set(key, value[0]);
-  }
-  return params;
-}
-
-async function fetchBrowse(
-  sp: URLSearchParams,
-  offset: number,
-): Promise<TaskBrowseResponse | null> {
-  try {
-    const authObj = await auth();
-    if (!authObj?.userId) return null;
-    const token = await getClerkToken(authObj.getToken);
-    if (!token) return null;
-
-    const query: Record<string, string> = {
-      limit: String(TASKS_PAGE_SIZE),
-      offset: String(offset),
-    };
-    // Tags are a structured filter (tags/tags_any/tags_none params), so only
-    // free text + author are taken from the search box. `query` is the legacy
-    // search param (e.g. worker-job deep links); `q` is the current one.
-    const parsed = parseTaskSearch(sp.get("q") ?? sp.get("query") ?? "");
-    if (parsed.text) query.query = parsed.text;
-    if (parsed.authors.length) query.author = parsed.authors.join(",");
-
-    // Rolling "Created" preset: resolve the token to (now - window) at query
-    // time so the window is always relative to this request, not when it was
-    // picked. Resolved here — `created_within` is not a backend param.
-    const within = sp.get("created_within");
-    const presetActive = !!(within && within in PRESET_MS);
-    if (presetActive) {
-      const ms = PRESET_MS[within as keyof typeof PRESET_MS];
-      query.created_after = new Date(Date.now() - ms).toISOString();
-    }
-    const trialFinishedWithin = sp.get("trial_finished_within");
-    const trialFinishedPresetActive = Boolean(
-      trialFinishedWithin && trialFinishedWithin in PRESET_MS,
-    );
-    if (trialFinishedPresetActive) {
-      const ms =
-        PRESET_MS[trialFinishedWithin as keyof typeof PRESET_MS];
-      query.trial_finished_after = new Date(Date.now() - ms).toISOString();
-    }
-
-    for (const key of BROWSE_FORWARD_KEYS) {
-      if (key === "created_within" || key === "trial_finished_within") continue;
-      // A live preset owns created_after; don't let a stale absolute bound in
-      // the URL / saved filter clobber the rolling window.
-      if (key === "created_after" && presetActive) continue;
-      if (
-        key === "trial_finished_after" &&
-        trialFinishedPresetActive
-      )
-        continue;
-      const value = sp.get(key);
-      if (value) query[key] = value;
-    }
-
-    // `tag:` tokens typed in the search box are parsed out of `q` above, so they
-    // must be forwarded too (unioned with the structured Tags-filter params).
-    // Without this they were stripped from the free text AND dropped, so shared
-    // URLs / saved searches with tag tokens filtered nothing. Mirrors the
-    // dashboard page, which forwards the same parsed tag buckets.
-    const mergeTags = (param: string, extra: string[]) => {
-      if (!extra.length) return;
-      const existing = query[param] ? query[param].split(",") : [];
-      query[param] = Array.from(new Set([...existing, ...extra])).join(",");
-    };
-    mergeTags("tags", parsed.all);
-    mergeTags("tags_any", parsed.any);
-    mergeTags("tags_none", parsed.none);
-
-    const res = await fetch(getBackendUrl("tasks/browse", "", query), {
-      cache: "no-store",
-      headers: getAuthHeaders(token),
-    });
-    if (!res.ok) {
-      console.error(`[tasks/results] Backend error: ${res.status}`);
-      return null;
-    }
-    return (await res.json()) as TaskBrowseResponse;
-  } catch (error) {
-    console.error("[tasks/results] fetch failed", error);
-    return null;
-  }
-}
+import { TasksGridSkeleton } from "./tasks-grid-skeleton";
 
 function pageHref(sp: URLSearchParams, offset: number): string {
   const params = new URLSearchParams(sp.toString());
@@ -123,39 +21,92 @@ function pageHref(sp: URLSearchParams, offset: number): string {
 const pagerClass =
   "inline-flex h-8 items-center gap-1 rounded-md border border-[#6f88b4]/30 px-3 text-[11px] transition-colors";
 
-export async function RecentTasksResults({
-  searchParams,
-}: {
-  searchParams: RawSearchParams;
-}) {
-  const sp = toUrlParams(searchParams);
+// The browse fetch happens here, on the client, through useTaskBrowse — the
+// document streams without waiting for it, and a return visit paints from
+// the SWR cache and revalidates in the background. The URL stays the source
+// of truth: sidebar writes and the pager links change searchParams, which
+// changes the SWR key.
+export function RecentTasksResults() {
+  const searchParams = useSearchParams();
+  const sp = new URLSearchParams(searchParams.toString());
   const offset = Math.max(Number(sp.get("offset") ?? "0") || 0, 0);
-  const data = await fetchBrowse(sp, offset);
+  const { data, error, isLoading, mutate } = useTaskBrowse(sp);
 
   if (!data) {
-    return (
-      <Alert variant="destructive">
-        <AlertTitle>Failed to load tasks</AlertTitle>
-        <AlertDescription>
-          Check the API connection and try again.
-        </AlertDescription>
-      </Alert>
-    );
+    if (error) {
+      return (
+        <Alert variant="destructive">
+          <AlertTitle>Failed to load tasks</AlertTitle>
+          <AlertDescription>
+            Check the API connection and try again.{" "}
+            <button
+              type="button"
+              onClick={() => void mutate()}
+              className="font-medium underline underline-offset-2"
+            >
+              Retry
+            </button>
+          </AlertDescription>
+        </Alert>
+      );
+    }
+    return <TasksGridSkeleton />;
   }
 
   const items = data.items ?? [];
   const hasMore = data.has_more ?? false;
+  // The shown-range label and the pager both describe the rows actually on
+  // screen, so their offset comes from the response — during a pager
+  // transition (and after a failed one) the URL already points at the next
+  // page, and pager targets computed from it would let a second click skip
+  // a page keepPreviousData never showed.
+  const shownOffset = data.offset ?? offset;
+
+  // isLoading while data is present = a different key (filter/pager change)
+  // is in flight and keepPreviousData is showing the previous state, dimmed.
+  // Background revalidation of the current key never dims.
+  //
+  // A failed fetch also keeps the previous state on screen — and it may
+  // belong to the previous filter — so it must never pass as current
+  // silently: the banner says so and offers a retry. Cold-load failures
+  // render the full alert above instead.
+  const errorBanner = error ? (
+    <Alert variant="destructive">
+      <AlertTitle>Failed to update tasks</AlertTitle>
+      <AlertDescription>
+        Showing the last loaded results.{" "}
+        <button
+          type="button"
+          onClick={() => void mutate()}
+          className="font-medium underline underline-offset-2"
+        >
+          Retry
+        </button>
+      </AlertDescription>
+    </Alert>
+  ) : null;
 
   if (items.length === 0) {
     return (
-      <div className="bg-card/60 text-muted-foreground rounded-lg border border-dashed border-[#6f88b4]/30 px-6 py-10 text-center text-sm">
-        No tasks match the current filters.
+      <div className="space-y-4">
+        {errorBanner}
+        <div
+          className={cn(
+            "bg-card/60 text-muted-foreground rounded-lg border border-dashed border-[#6f88b4]/30 px-6 py-10 text-center text-sm transition-opacity",
+            isLoading && "opacity-60"
+          )}
+        >
+          No tasks match the current filters.
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="space-y-4">
+    <div
+      className={cn("space-y-4 transition-opacity", isLoading && "opacity-60")}
+    >
+      {errorBanner}
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {items.map((task) => (
           <TaskCard key={task.id} task={task} />
@@ -164,14 +115,14 @@ export async function RecentTasksResults({
 
       <div className="flex items-center justify-between gap-2">
         <div className="text-muted-foreground text-xs">
-          {offset + 1}-{offset + items.length} shown
+          {shownOffset + 1}-{shownOffset + items.length} shown
         </div>
         <div className="flex items-center gap-2">
-          {offset === 0 ? (
+          {shownOffset === 0 ? (
             <span
               className={cn(
                 pagerClass,
-                "text-muted-foreground/50 cursor-not-allowed",
+                "text-muted-foreground/50 cursor-not-allowed"
               )}
               aria-disabled
             >
@@ -180,7 +131,7 @@ export async function RecentTasksResults({
             </span>
           ) : (
             <Link
-              href={pageHref(sp, offset - TASKS_PAGE_SIZE)}
+              href={pageHref(sp, shownOffset - TASKS_PAGE_SIZE)}
               scroll={false}
               className={cn(pagerClass, "hover:bg-muted")}
             >
@@ -190,7 +141,7 @@ export async function RecentTasksResults({
           )}
           {hasMore ? (
             <Link
-              href={pageHref(sp, offset + TASKS_PAGE_SIZE)}
+              href={pageHref(sp, shownOffset + TASKS_PAGE_SIZE)}
               scroll={false}
               className={cn(pagerClass, "hover:bg-muted")}
             >
@@ -201,7 +152,7 @@ export async function RecentTasksResults({
             <span
               className={cn(
                 pagerClass,
-                "text-muted-foreground/50 cursor-not-allowed",
+                "text-muted-foreground/50 cursor-not-allowed"
               )}
               aria-disabled
             >

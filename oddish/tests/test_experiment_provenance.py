@@ -22,7 +22,7 @@ from sqlalchemy import select
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.schemas import TaskSweepSubmission, AgentModelPair  # noqa: E402
-from oddish.core.endpoints import create_task_sweep_core  # noqa: E402
+from oddish.core.endpoints import SweepAttribution, create_task_sweep_core  # noqa: E402
 from oddish.db import (  # noqa: E402
     ExperimentModel,
     TaskModel,
@@ -169,3 +169,35 @@ async def test_owner_falls_back_to_user_without_github(monkeypatch, seeded_task_
     e1 = await _experiment(E1)
     assert e1.owner == "plain-user"  # falls back to user when no github handle
     assert e1.link is None  # link-less run leaves it empty
+
+
+@pytest.mark.asyncio
+async def test_existing_task_new_experiment_gets_creation_attribution(
+    monkeypatch, seeded_task_id
+):
+    monkeypatch.setenv("ODDISH_LOCAL_MODE", "1")
+    import oddish.config as cfg_mod
+
+    monkeypatch.setattr(cfg_mod, "settings", cfg_mod.Settings())
+    monkeypatch.setattr("oddish.worker.local_runner.run_trial_locally", AsyncMock())
+
+    async with get_session() as s:
+        await create_task_sweep_core(
+            s,
+            submission=_submission(
+                seeded_task_id,
+                E1,
+                PR_A,
+                user="owner@example.com",
+                github_username="owner-handle",
+            ),
+            attribution=SweepAttribution(
+                experiment_owner_user_id="user-owner",
+                billed_user_id="user-owner",
+            ),
+        )
+
+    experiment = await _experiment(E1)
+    assert experiment.owner_user_id == "user-owner"
+    assert experiment.owner == "owner-handle"
+    assert experiment.link == PR_A

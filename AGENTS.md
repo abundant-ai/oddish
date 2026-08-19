@@ -53,9 +53,9 @@ backend/                        # Hosted cloud layer (Modal deployment)
 ├── api/
 │   ├── app.py                  # FastAPI app factory and lifespan wiring
 │   ├── schemas.py              # Pydantic models for org/auth/share responses
-│   ├── services/               # hosted services, including cc_chat
+│   ├── services/               # hosted services (sandbox runtime, analyzer blocks, …)
 │   └── routers/                # tasks, trials, dashboard, documents, tags, skills,
-│                               # admin, orgs, api_keys, imports, load, cc_chat, webhooks
+│                               # admin, orgs, api_keys, imports, load, webhooks
 ├── auth/                       # header parsing (auth/__init__.py), API key + Clerk JWT
 │                               # verification (auth/verification.py), provisioning, types
 ├── worker/                     # Modal dispatcher and single-job worker orchestration
@@ -64,6 +64,7 @@ backend/                        # Hosted cloud layer (Modal deployment)
 ├── endpoints.py                # Modal ASGI app function with concurrency/volume wiring
 ├── serve.py                    # Railway/uvicorn entrypoint for non-Modal deployment
 ├── cloud_policy.py             # Hosted-only environment policy
+├── carl.py / carl_agent.py     # Existing Slack app mention dispatch + read-only agent
 ├── models.py                   # Cloud auth models (orgs/users/api keys)
 ├── dashboard_cache.py          # cached dashboard aggregation (+ attribution/backfill)
 ├── idempotency_store.py        # DB-backed idempotency for task submission
@@ -125,23 +126,19 @@ High-level flow:
    rows and the old attempts point to those replacements through
    `superseded_by_trial_id`. This preserves retry history without leaving the
    failed attempts in normal UI/API trial sets.
+   Hosted sweep identity is resolved once into `SweepAttribution` before the
+   core call. New tasks and experiments receive their creator, API-key, owner,
+   display-owner, and link provenance in their constructors; returning an
+   existing experiment never claims or rewrites that provenance. Trial imports,
+   collections, and combined experiments follow the same create-only owner rule.
 3. Workers claim one `worker_jobs` row at a time, dispatch to the registered
    handler for its kind, write heartbeats, and exit.
-4. Scoped QA assignments enqueue independent `ANALYZER_BLOCK` jobs through
-   `oddish.core.qa_assignments.enqueue_qa_assignment_runs_core`. `pre_trial`
-   fires once per assignment and task version during sweep submission;
-   `post_trial` fires once per assignment and final terminal trial. The
-   `(qa_assignment_id, stage_event_key)` partial unique index makes lifecycle
-   retries idempotent. These jobs are additive and non-blocking: their failure
-   does not change trial state or the built-in task verdict pipeline. API
-   assignments are prompt-only; sandbox assignments may request an
-   authenticated short-lived Oddish CLI.
-5. Trajectory analysis is **task-scoped**: when every trial of a
+4. Trajectory analysis is **task-scoped**: when every trial of a
    `run_analysis` task is terminal, a single `QA` job is enqueued. That one
    job classifies every live trial's trajectory (written to `trials.analysis`)
    and then synthesizes the task verdict (`tasks.verdict`). A sweep of `T`
    tasks × `N` trials therefore enqueues `T` QA jobs, not `T × (N + 1)`.
-6. While a trial runs, a worker-side tailer (`oddish.workers.harbor.live_tail`,
+5. While a trial runs, a worker-side tailer (`oddish.workers.harbor.live_tail`,
    on by default via `live_tail_enabled` / `live_tail_interval_sec`) polls the
    agent's log file inside the sandbox for supported agents (claude-code,
    codex, cursor-cli, mini-swe-agent), folds token usage, checkpoints live
@@ -165,8 +162,16 @@ High-level flow:
    nonterminal trial in the org. Final result settlement performs the same
    check for agents without live usage. Cancellation retires queued, running,
    blocked, and retrying worker jobs in the database before terminating remote
-   handles; a task is failed only when no other live trial remains.
-7. Trial completion persists queryable execution metrics on the trial row:
+   handles; a task is failed only when no other live trial remains. If quota
+   cancellation interrupts a replacement QA pass, the last successful verdict
+   is restored through `cancel_verdict`; a terminal QA failure instead clears
+   that preserved payload through `fail_verdict`. All task verdict-column
+   mutations go through `oddish.core.verdict_state`: a published payload may
+   coexist with QUEUED/RUNNING while its replacement is active, but it must
+   return to SUCCESS if that pass is abandoned. The
+   `ck_tasks_published_verdict_status` database constraint rejects a published
+   payload with a missing or FAILED status.
+6. Trial completion persists queryable execution metrics on the trial row:
    input/cache/output tokens, total trajectory steps, native runtime cost when
    reported, phase timing, trajectory availability, arbitrary verifier
    `metrics.json`, and a compact `_verifier` summary when the verifier emits a
@@ -185,6 +190,35 @@ High-level flow:
    `oddish.filters.trial_predicates.build_trial_metric_predicate` with an
    injected `EligibleTrialScope` rather than reimplementing Any/All logic.
 
+Agent capability analysis is lazy and task-version scoped. An authenticated or
+public-share cache miss enqueues one idempotent `ANALYZER` worker job with
+`payload.mode = "agent_capabilities"`; the HTTP request returns 202 and clients
+poll until the analyzer block is stored. Capability generation must not run
+inline in an API request. Public requests remain bounded to the task versions
+published by their share token, and repeated views coalesce onto the same active
+job. The public share UI does not request or offer the capability pane; those
+routes remain available for bounded API consumers and existing evidence links.
+Shared trial drawers open on Summary and fetch a trajectory only after explicit
+user or URL intent. Collapsed trajectory steps must not mount their message,
+reasoning, tool, or observation bodies; those potentially large bodies mount
+only while the step is expanded. A public trajectory-summary cache miss instead
+enqueues one trial-scoped
+`ANALYZER` job with `payload.mode = "trajectory_summary"`, keyed by trial and
+summary schema. Its endpoint returns explicit queued/running/retrying state and
+the client polls until the summary is stored. Terminal failures are returned,
+not re-enqueued by anonymous refreshes; a schema bump creates the next valid
+idempotency key. Public capability jobs, cache entries, summary warmup, and
+cohort queries are keyed by the published experiment as well as task version;
+they must never include trials from another experiment on the same version. Any
+completed, fetchable trajectory is enough to queue analysis; cohort size is
+reported as evidence strength, not used as an
+eligibility gate. The worker generates missing trajectory summaries before
+analysis. QA enriches the input but is optional: `GOOD_*`, `BAD_*`, and
+`HARNESS_ERROR` classifications
+are all retained, while trials without QA fall back to verifier reward for
+provisional successful/failing placement. A later QA classification that moves
+a trial between outcome cohorts invalidates and rebuilds provisional output.
+
 Trajectory summaries use schema v5. Each taxonomy-valued `components` entry
 contains its `step_ids`, summary, and deterministic `tool_count` and
 `duration_ms` metadata. Step count is the length of `step_ids`; the other
@@ -193,58 +227,33 @@ trajectory after LLM parsing (not generated by the model). Component duration is
 the sum of each included step's elapsed time since the preceding trajectory
 step; the first step and steps without two usable timestamps contribute zero.
 The frontend derives the same values for older summaries that lack the fields.
+Every summary consumer and warmup path must compare the stored
+`schema_version` with the packaged schema version; truthiness of
+`trials.trajectory_summary` is not a freshness check. Capability cohort reads
+ignore stale mirrors and fall back only to current-schema successful blocks.
 
-QA analyzer prompts are stored in the versioned `prompts` / `prompt_versions`
-registry. `PromptKind.QA_PRE_TRIAL` drives the source audit,
-`PromptKind.QA_POST_TRIAL` drives the existing per-trial log classifier, and
-`PromptKind.TRAJECTORY_SUMMARY` drives schema-v5 trajectory summaries; its
-template must retain the `{{taxonomy}}` placeholder rendered by the block.
-Prompt updates append immutable versions and the highest version always runs. Workers
-seed missing built-in kinds at startup without overwriting operator edits. A
-trial classification records the post-trial prompt kind and version in
-`trials.analysis`; local/library classification without a registry row falls
-back to the packaged `analyze/classify_prompt.txt`.
-
-Hosted prompt overrides may be scoped to an org, user, experiment, task, or
-trial. Resolution is trial → task → experiment → user → org → global, and every
-domain-scoped read must first verify that the target belongs to the active org.
-Scoped prompt identity includes `org_id`; in particular, the same user may have
-independent overrides for the same kind in multiple organizations.
+QA analyzer prompts are **not** stored in the database. They ship as packaged
+files under `oddish/src/oddish/analyze/`: `prompts/pre_trial_qa.txt` drives the
+source audit, `classify_prompt.txt` drives the per-trial log classifier,
+`verdict_prompt.txt` drives verdict synthesis, and
+`prompts/trajectory_summary.txt` drives schema-v5 trajectory summaries; the
+summary template must retain the `{{taxonomy}}` placeholder rendered by the
+block. Editing a prompt is a code change that ships with a deploy.
 
 ### Worker job kinds
 
 `WorkerJobKind` (in `oddish.db.models`):
 
 - **Active**: `TRIAL` (Harbor trial execution), `QA` (task-level classify-all-trials +
-  verdict), `ANALYZER` (cross-experiment report orchestration),
-  `ANALYZER_BLOCK` (one declarative `analyzer_runs` execution),
+  verdict), `ANALYZER` (cross-experiment reports, agent capabilities, and
+  trial-scoped public trajectory summaries selected by payload mode),
   `TASK_EXPAND` (sweep expansion), `TAG_PROJECT` (tag recompute).
 - **Legacy, drain-only**: `ANALYSIS` (per-trial classification; `AnalysisJobHandler`
-  is kept only so in-flight rows survive a deploy) and `VERDICT` (enum value only,
-  no handler). Nothing enqueues either anymore.
+  is kept only so in-flight rows survive a deploy), `VERDICT` (enum value only,
+  no handler), and `ANALYZER_BLOCK` (executed rows of the removed
+  `analyzer_runs` table; enum value only, no handler). Nothing enqueues any
+  of them anymore.
 - **Reserved**: `QA_REVIEW` (enum value, no handler yet).
-
-### Custom QA runs
-
-`POST /qa/runs` (hosted backend) creates one `analyzer_runs` row and one
-`ANALYZER_BLOCK` worker job per registered prompt variant, then returns the
-queued runs. `GET /qa/runs/{id}` and the `/prompts` endpoints expose durable
-lineage. The shared `prompts` registry is kind-addressed — built-in UPPERCASE
-kinds (`QA_PRE_TRIAL`, `QA_POST_TRIAL`) plus lowercase-slug custom kinds for
-saved QA variants — `prompt_versions` stores immutable numbered content, and
-`analyzer_runs` records the exact version, scope (`experiment` / `task` /
-`trial`), model, reasoning effort, backend, resolved config/command,
-`analyzer_blocks` ID, status, and output. Every prompt edit appends an
-immutable version and the highest version is always the one that runs (no
-activation pointer).
-
-`oddish prompt` manages registry versions. `oddish qa ... --variant KIND` uses
-the latest version and `--variant KIND@N` pins a historical version. Variants in
-one request run concurrently for A/B comparison. The hosted `sandbox` backend
-installs the Oddish CLI only with explicit `--allow-oddish-cli`. At worker
-execution time its client factory mints a short-lived internal TASKS-scoped
-key and revokes it during cleanup; the caller's credential is never forwarded
-or persisted. The `api` backend is prompt-only and rejects CLI access.
 
 ## Package Boundaries
 
@@ -256,6 +265,9 @@ or persisted. The `api` backend is prompt-only and rejects CLI access.
   `TagProjectJobHandler`, plus the legacy `AnalysisJobHandler`)
 - the task-level QA job (`run_task_qa_job`): classify every live trial via
   the shared `classify_trial_and_store`, then synthesize the task verdict
+- the verdict state machine (`oddish.core.verdict_state`), which is the only
+  writer for `tasks.verdict*` lifecycle columns and preserves the last
+  published result until a replacement succeeds or terminally fails
 - post-trial classification runs through `AnalyzerBlock`. It reads two
   already-downloaded directories and executes nothing, so `resolve_substrate`
   keeps it on the worker-local Claude Code client (`CLAUDE_CLI`) everywhere;
@@ -282,7 +294,9 @@ or persisted. The `api` backend is prompt-only and rejects CLI access.
 `oddish/src/oddish/blocks/` holds the analyzer-block primitive (prompt
 building, streaming, `analyzer_blocks` + S3 persistence) and its API/OpenAI
 backends, so verdict synthesis runs in a backend-free worker. The Daytona
-sandbox backend needs cc_chat and stays in
+sandbox backend needs the hosted sandbox runtime
+(`backend/api/services/sandbox/` — Daytona client, provisioner, Claude Code
+runtime) and stays in
 `backend/api/services/blocks/analyzer/sandbox_llm_client.py`, which registers
 itself into core's client factory on import. `AnalyzerBlock` owns a
 self-provisioned client's complete lifecycle, including sandbox file downloads
@@ -292,7 +306,7 @@ key minting, and key/sandbox cleanup. Callers must not provision and inject a
 one-off sandbox client for those capabilities.
 
 Hosted failure analysis uses
-`backend/api/services/cc_chat/analyzer_block_runner.py`: it partitions a bucket
+`backend/api/services/blocks/analyzer/analyzer_block_runner.py`: it partitions a bucket
 into map batches, runs independent sandbox-backed `AnalyzerBlock`s concurrently
 up to `AnalyzerEvalConfig.map_concurrency`, collects their findings artifacts
 host-side, and supplies those artifacts declaratively to a separate reduce
@@ -348,6 +362,22 @@ by model (`series_qa_by_model`) and by analyzer job kind
 
 ### Task Identity
 
+`GET /tasks/{task_id}/open` is the bounded first-paint contract for the task
+page. It resolves one org-scoped task plus the requested/default version before
+running aggregate work. Top-level task status always uses the default version
+from `tasks.current_version_id`; selected-version counters, direct version tags,
+experiments, and exact agent/model summaries use the requested version. Its
+experiment list is derived from that version's live, non-probe, non-superseded,
+non-combine trial population, matching `/detail`. Pre-trial audit metadata stays
+on `/detail` and is not serialized with the bounded version summary. The
+response also carries compact QA verdict
+presentation/control fields and caps the selected-version trial preview at 20
+lightweight refs. The handler uses at most three SQL statements, stays below the
+50 KB response budget, and must not select trial `result`, `analysis`,
+`error_message`, jobs, or ORM relationships. `GET /tasks/{task_id}/detail`
+remains the compatibility bundle for CLI and drawer consumers during the soak;
+do not point the task route back at it.
+
 `tasks.name` is the human-readable lookup key within an org. Live task names
 must stay unique and indexed (`idx_tasks_unique_org_name`) so an upload of the
 same task name resolves to the existing task and creates a new `task_versions`
@@ -371,10 +401,44 @@ otherwise it falls back to the highest version represented by such trials. The
 so progressive loading cannot change the files/counts pivot or mix one
 version's trials with another's artifacts.
 
+`overwrite_current_version` replaces the archive and metadata for
+`tasks.current_version_id` without changing its ID or version number. Uploads
+land at a unique staging key, copy to an immutable
+`tasks/<id>/v<N>-revisions/<token>/` source, and become visible only when the
+version row atomically switches `task_s3_key`. Expanded-file readers accept a
+manifest only when its `archive_key` matches that selected source, so failed
+cleanup cannot expose the prior expansion. The replacement clears derived-file
+bookkeeping and pre-trial audit state before re-enqueuing expansion. Existing
+trials pinned to that version resolve to the replacement content.
+
 `GET /experiments/{experiment_id}/cost-totals` reports both cost and token
 usage across every trial owned by the experiment, including older versions,
 superseded retries, probes, and soft-deleted trials. Its `billed_*` cost and
 token fields are the billed-user subset used by the frontend's New spend tile.
+
+### Task Browser Summary
+
+The default `GET /tasks/browse` path selects and paginates tasks before card
+enrichment. Ordering and exact card counters come from the selected
+`tasks.current_version_id` row in `task_version_browse_summaries`; there is no
+fallback scan over organization trial history when a summary row is missing.
+The visible cards then fetch at most 24 current-version trials per task through
+a lateral query. `latest_trials_truncated` tells the frontend that the preview
+is shorter than the exact `total_trials`.
+
+Summary scope matches normal task cards: exclude probes, superseded attempts,
+soft-deleted trials, and `combine:` copies. Any mutation that changes that
+population or its metrics must call
+`refresh_task_browse_summaries` inside the same transaction. This includes
+trial create/import, start/reset, completion, cancellation, retry/supersede,
+scoped deletion, and default-version selection. Advanced aggregate filters,
+comparisons, and non-default aggregate sorts intentionally retain their
+on-demand trial aggregation path.
+
+Refreshes serialize per version with sorted transaction-scoped PostgreSQL
+advisory locks; do not replace those locks with `FOR UPDATE` on
+`task_versions`, because concurrent trial inserts already hold foreign-key
+`KEY SHARE` locks and lock upgrades can deadlock.
 
 ---
 
@@ -511,11 +575,11 @@ extensions) — see `backend/README.md`.
 | Task upload | `POST /tasks/upload/init` (returns presigned PUT URL), `POST /tasks/upload/complete` |
 | Trial import | `POST /trials/import/init`, `POST /trials/import/complete` |
 | Sweeps | `POST /tasks/sweep`, `POST /tasks/sweep/batch` |
-| Tasks | `GET /tasks`, `GET /tasks/browse`, `GET /tasks/{task_id}`, `GET /tasks/{task_id}/detail`, `GET /tasks/{task_id}/versions[/{version}]`, `PUT /tasks/{task_id}/versions/{version}/default`, `POST /tasks/cancel` |
+| Tasks | `GET /tasks`, `GET /tasks/browse`, `GET /tasks/browse/experiment-options` (typeahead for the experiment filter; `facets.experiments` is deprecated/always empty; the other facet lists are served from the `trial_facets` vocabulary — write-through on trial creation plus a periodic rebuild sweep, see `oddish/src/oddish/core/trial_facets.py`), `GET /tasks/{task_id}`, `GET /tasks/{task_id}/open`, `GET /tasks/{task_id}/detail`, `GET /tasks/{task_id}/versions[/{version}]`, `PUT /tasks/{task_id}/versions/{version}/default`, `POST /tasks/cancel` (optional `experiment_id` scopes the cancel to that experiment's trials so shared tasks keep running elsewhere) |
 | Task QA | `POST /tasks/{task_id}/qa/retry`, `POST /tasks/{task_id}/qa/cancel`, `POST /tasks/{task_id}/qa/backfill` |
 | Experiments | `POST /experiments/combine`, `PATCH /experiments/{experiment_id}` |
 | Trials | `GET /tasks/{task_id}/trials/{index}`, `POST /trials/{trial_id}/retry` (optional `registry_auth` body), `GET /trials/{trial_id}/live` ((attempt, seq)-cursor live transcript), `GET /trials/{trial_id}/logs[/structured]`, `GET /trials/{trial_id}/trajectory`, `GET /trials/{trial_id}/result` |
-| Files | `GET /tasks/{task_id}/files[/{path}]`, `GET /trials/{trial_id}/files[/{path}]`, `GET /trials/{trial_id}/debug-files` |
+| Files | `GET /tasks/{task_id}/files[/{path}]` (`inline=false` omits listing bodies; `presign=false` omits URLs; `max_bytes=N` caps archive-backed file reads), `GET /trials/{trial_id}/files[/{path}]`, `GET /trials/{trial_id}/debug-files` |
 | Admin diagnostics | `GET /admin/slots`, `GET /admin/queue-status`, `GET /admin/orphaned-state`, `GET /admin/queue-health` |
 | Public sharing | `/public/experiments...` router from `oddish.core.sharing.public` |
 
@@ -526,11 +590,15 @@ call the shared `oddish.core.endpoints.deletion` helpers.
 
 Public share links use 256-bit `public_token` values and are access-by-link, not
 enumerable. The unauthenticated `/public/experiments` list intentionally returns
-no share tokens. Public task/trial/file routes must stay scoped under
+no share tokens. Public task/trial/live/file routes must stay scoped under
 `/public/experiments/{public_token}/...` and verify membership in that shared
 experiment; do not reintroduce `/public/tasks/{task_id}` or
 `/public/trials/{trial_id}` ID-only access. Unpublishing an experiment clears
 `public_token`, so republishing mints a fresh link and old URLs stay revoked.
+Capability evidence links on a share page must remain inside `/share/{token}`;
+they select the shared task and trial, open the trajectory tab, and retain the
+cited step anchor. They must never point signed-out readers at authenticated
+`/tasks/...` routes.
 
 ### Configuration and model routing
 
@@ -539,6 +607,60 @@ Settings are loaded from `oddish/.env`; see `oddish/env.example`,
 Keep these routing rules in sync with `oddish/src/oddish/config.py` and
 `oddish/src/oddish/workers/harbor/runner.py`:
 
+- EC2 is an explicit, opt-in Harbor backend: `ODDISH_EC2_ENABLED=true` registers
+  it and permits hosted `environment=ec2`, but capability ordering keeps Daytona
+  as the CPU default. V1 launches one ephemeral CPU instance per trial and uses
+  public-IP, key-only SSH. It does not support accelerators, attach/retain mode,
+  private networking, Spot, or AWS infrastructure provisioning.
+- An EC2 deployment must provide an existing Ubuntu-compatible AMI, subnet,
+  security group, EC2 key pair/private key, region, and instance type. The
+  security group must allow TCP/22 from the Modal worker network path. Keep
+  `ODDISH_EC2_SSH_PRIVATE_KEY` in the dedicated worker secret, materialize it
+  mode `0600`, and never bake it into an image or attach it to API, dispatcher,
+  or reconciler functions.
+- EC2 control credentials must be least privilege: workers need
+  `sts:GetCallerIdentity` plus launch, describe, image lookup, tagging, and
+  termination actions; reconciliation needs `sts:GetCallerIdentity`, describe,
+  and tag-scoped termination. Store them under the namespaced
+  `ODDISH_EC2_AWS_*` settings; workers materialize a mode-`0600` AWS profile and
+  scrub the raw values before starting Harbor. API cancellation delegates to a
+  dedicated Modal teardown function, so API and dispatcher containers receive
+  neither EC2 control nor SSH secrets. An optional platform-owned
+  `ODDISH_EC2_INSTANCE_PROFILE` may be attached; it is visible to tenant code,
+  so keep it task-scoped and grant the control identity `iam:PassRole` only for
+  that role. Oddish always requires IMDSv2 so cloud-init can retrieve the EC2
+  launch key: the response hop limit is one without an instance profile and two
+  when a profile is explicitly exposed to Docker containers.
+- Oddish does not create the VPC, subnet, security group, AMI, key pair, or IAM
+  policy. Every instance and root volume must carry protected Oddish ownership,
+  deployment, task/trial, worker-job, worker-attempt, sandbox-run, unguessable
+  launch-token, and Harbor-session tags. A durable `sandbox_runs` row is created
+  before launch; Harbor's `environment-provisioned` event binds the structured
+  handle before SSH/bootstrap. The locked Harbor exposes that event natively;
+  ephemeral pins that predate it are bridged by wrapping
+  `EC2Environment._launch_instance` and emitting the same identity immediately
+  after launch. A pin whose EC2 environment does not expose the required launch
+  seam fails before `Job.run()` rather than launching untracked provider state.
+  Normal teardown, cancellation, stale-heartbeat cleanup, and reconciliation
+  terminate only after the full ledger/tag tuple agrees.
+- EC2 orphan reconciliation snapshots deployment-tagged instances before the
+  shared cleanup transaction, evaluates worker liveness using the database clock,
+  and terminates only after the transaction commits. It preserves live linked
+  jobs and conservatively preserves unlinked trial startup for 30 minutes, then
+  reaps terminal and stale owners with an exact ledger match; missing or
+  mismatched ledgers are ownership refusals, never destructive guesses. The
+  protected 14-hour hard maximum age overrides worker liveness only for exactly
+  owned instances. `ODDISH_EC2_MAX_CONCURRENT_INSTANCES` is enforced globally
+  with heartbeat-renewed `sandbox_capacity_leases`, independent of model/variant
+  queue slots. The dispatcher budgets against live EC2 leases before spawning,
+  while each worker still acquires the lease atomically before claiming a job.
+  A successful inventory snapshot also closes `PROVISIONING` / `TERMINATING`
+  ledger rows that have no provider identity, no running owner, no matching
+  inventory tags, and are older than the 30-minute launch-race grace. Capacity
+  cleanup reruns after that transaction commits so those rows cannot reserve
+  slots forever; an inventory failure never authorizes this finalization.
+  Inventory and termination failures stay visible in logs/metrics while the rest
+  of queue cleanup continues.
 - Claude trials run through AWS Bedrock by default. `CLAUDE_CODE_USE_BEDROCK=1` is
   baked into the Modal image, and Claude model aliases must normalize to an
   invokable inference profile (`global.` / `us.` / ARN) via
@@ -589,9 +711,33 @@ Storage defaults:
 - S3-compatible storage is **required**. Clients PUT task bundles directly
   to a presigned URL returned by `/tasks/upload/init` and then call
   `/tasks/upload/complete`.
-- uploaded task bundles: `tasks/<task_id>/.oddish-task.tar.gz`
+- uploaded task bundles: normally `tasks/<task_id>/v<N>/.oddish-task.tar.gz`;
+  in-place replacements use immutable
+  `tasks/<task_id>/v<N>-revisions/<token>/.oddish-task.tar.gz` sources selected
+  by `task_versions.task_s3_key` (legacy unversioned bundles remain readable)
 - Harbor job outputs: `/tmp/harbor-jobs`
 - Modal workers also check `/mnt/oddish-tasks` before falling back to the S3 download path
+
+EC2 canary procedure:
+
+1. In a non-production AWS account, create the Ubuntu-compatible AMI, subnet,
+   public-IP route, SSH security group, key pair, and least-privilege worker IAM
+   credentials. Enable the backend with the `ODDISH_EC2_*` settings documented
+   in `backend/.env.example`.
+2. Submit a small CPU-only task with `oddish run <task> --env ec2 --background`.
+   Confirm the trial records provider `ec2` and an external instance handle, and
+   confirm the instance and root volume have the protected Oddish tags.
+3. Verify SSH/bootstrap, Docker Compose execution, result/artifact collection,
+   and terminal instance state. Confirm the instance has the configured IAM
+   profile (or none), and that metadata is IMDSv2-only with response hop limit
+   one without a profile or two with a profile.
+4. Start a longer canary, cancel it with `oddish cancel <trial-or-task-id>`, and
+   confirm the tagged instance terminates exactly once.
+5. In the non-production deployment only, deliberately interrupt a worker after
+   launch. Confirm stale-heartbeat/orphan reconciliation preserves it during the
+   grace window and terminates it afterward. Also verify the hard maximum-age
+   path. Review logs/metrics for the candidate, ownership decision, and terminate
+   result before enabling production traffic.
 
 ### Using as a Library
 
@@ -945,6 +1091,12 @@ uv run alembic upgrade head
 uv run alembic upgrade head
 ```
 
+In hosted environments both stacks run in that order *before* the code deploy,
+because the backend can hard-require new schema on its hot paths.
+`.github/workflows/staging-deploy.yml` sequences migrations then the Modal
+deploy; `modal-deploy.yml` (production) additionally orders the Vercel frontend
+after the backend, so a new frontend never reaches an old backend.
+
 ### Key Files
 
 | Path | Purpose |
@@ -968,6 +1120,22 @@ uv run alembic upgrade head
 | `worker/runtime.py` | Modal runtime patching and storage setup |
 | `worker/github.py` | GitHub notification hooks used as post-success actions |
 
+Every hosted HTTP response carries a fixed backend `Server-Timing` phase set:
+`auth_verify`, `auth_cache`, `auth_total`, `db_checkout`, `db_sql`,
+`external_http`, `db_commit`, `handler_db`, `handler_total`, and
+`backend_total`. Missing work is represented as zero rather than omitting the
+phase, so cold, warm, and concurrent traces are comparable. The
+`backend.request.phases` span records per-request SQL counts and transmitted
+response-body bytes. `backend_total` and `handler_total` stop at response start
+because they ship in the response headers; the trace-only
+`backend_complete.duration_ms` observation ends after the final ASGI body chunk
+and includes streaming time, but not response background tasks. Production
+entrypoints must use `create_asgi_app()` so timing wraps FastAPI's complete
+middleware stack, including unhandled-error and capacity responses. Hosted and
+core code must use `RequestTimedAsyncClient` for outbound HTTPX calls so the
+request-wide `external_http` phase cannot depend on route-local wrappers. Never
+attach response bodies, request payloads, credentials, or SQL parameter values.
+
 ---
 
 ## `frontend/` — Next.js Dashboard
@@ -977,12 +1145,18 @@ The frontend is a Next.js 16 / React 19 App Router app. Browser code calls
 `NEXT_PUBLIC_API_URL` and preserve auth. Public routes are `/`, `/share/*`,
 `/datasets/*`, and `/api/public/*`; everything else is Clerk-protected.
 
+Authenticated proxy routes forward incoming `traceparent`, `tracestate`, and
+`baggage` headers to the backend and join the backend's `Server-Timing` value
+onto the Next response on success, upstream error, and streamed passthrough
+responses. Keep this behavior in `frontend/src/lib/proxy-headers.ts`; the
+generic JSON proxy requires its incoming request, and bespoke hot routes must
+use the same helpers instead of replacing an existing timing value.
+
 The trial drawer surfaces verifier test counts only as a small passed/total
 row in the Summary tab (shown on public share views too); trials without test
-counts show no row. `_verifier` CTRF counts take precedence, and historical
-trials without a persisted `_verifier` summary lazily discover and parse their
-`verifier/ctrf.json` artifact through the already-scoped trial files API; do
-not add an unscoped artifact lookup for this fallback.
+counts show no row. Persisted `_verifier` CTRF counts are the sole source.
+Historical trials without that summary show no count; opening a trial must not
+list or read its artifacts to reconstruct one.
 
 On an experiment page, removing a task always calls the scoped
 `DELETE /experiments/{experiment_id}/tasks/{task_id}` proxy. It unlinks that

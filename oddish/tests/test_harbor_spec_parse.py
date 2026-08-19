@@ -66,18 +66,13 @@ def test_probe_harbor_ref_matches_pyproject_pin():
     # The probe fetches harbor at ``harbor_source_ref``; it must resolve to the
     # exact code the worker image runs, or probe trials inspect different harbor
     # code than the trials being probed. Assert it against HARBOR_DEFAULT_SHA --
-    # the commit recorded in uv.lock -- rather than against the pyproject source.
-    # The dependency legitimately tracks the ``main`` BRANCH (uv.lock records the
-    # commit), so comparing the two strings would only prove the probe floats
-    # with main, which is the drift this guards against: the moment main moves
-    # past the lock, a branch-pinned probe reads code the worker never ran.
+    # the commit recorded in uv.lock and pinned in pyproject.
     assert Settings().harbor_source_ref == HARBOR_DEFAULT_SHA
 
-    # The source repo must still agree with the dependency pin, and that pin
-    # stays a branch (the lockfile is what freezes the commit).
+    # The source repo and exact revision must agree with the dependency pin.
     with open("pyproject.toml", "rb") as fh:
         harbor_pin = tomllib.load(fh)["tool"]["uv"]["sources"]["harbor"]
-    assert harbor_pin["branch"] == "main"
+    assert harbor_pin["rev"] == HARBOR_DEFAULT_SHA
     assert harbor_pin["git"].endswith(Settings().harbor_source_repo)
 
 
@@ -89,6 +84,16 @@ def test_pyproject_default_source_matches_config():
     with open("pyproject.toml", "rb") as fh:
         harbor_pin = tomllib.load(fh)["tool"]["uv"]["sources"]["harbor"]
     assert harbor_pin["git"] == HARBOR_DEFAULT_SOURCE
+
+
+def test_backend_pyproject_harbor_pin_matches_default():
+    # The production worker image is built from backend/pyproject.toml. Keep its
+    # direct dependency aligned with the server-side default provenance stamp,
+    # not merely with the generated backend lock file.
+    with open("../backend/pyproject.toml", "rb") as fh:
+        harbor_pin = tomllib.load(fh)["tool"]["uv"]["sources"]["harbor"]
+    assert harbor_pin["git"] == HARBOR_DEFAULT_SOURCE
+    assert harbor_pin["rev"] == HARBOR_DEFAULT_SHA
 
 
 def test_r1_url_with_userinfo_does_not_split_ref_on_userinfo_at():

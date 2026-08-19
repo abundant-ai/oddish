@@ -90,12 +90,16 @@ export function TagFilterDropdown({
   countField: "task_count" | "experiment_count";
   className?: string;
 }) {
+  // revalidateIfStale off: the shared "/api/tags" key is asked once per
+  // session across this dropdown and the tasks sidebar; tag mutations and
+  // the open-gated pickers revalidate it explicitly.
   const { data } = useSWR<TagListResponse>("/api/tags", fetcher, {
     revalidateOnFocus: false,
+    revalidateIfStale: false,
   });
   const tags = useMemo(
     () => (data?.items ?? []).filter((t) => t.state === "ACTIVE"),
-    [data],
+    [data]
   );
   const CountIcon = countField === "task_count" ? FileText : FlaskConical;
 
@@ -124,7 +128,7 @@ export function TagFilterDropdown({
   function clear() {
     const p = parseTaskSearch(query);
     onQueryChange(
-      serializeTaskSearch({ ...p, all: [], any: [], none: [] }).trim(),
+      serializeTaskSearch({ ...p, all: [], any: [], none: [] }).trim()
     );
   }
 
@@ -138,7 +142,7 @@ export function TagFilterDropdown({
           size="sm"
           className={cn(
             "h-8 justify-between gap-1.5 border-[#6f88b4]/20",
-            className,
+            className
           )}
         >
           <span className="flex items-center gap-1.5">
@@ -170,7 +174,7 @@ export function TagFilterDropdown({
                           "flex h-4 w-4 shrink-0 items-center justify-center rounded-sm border",
                           isSelected
                             ? "border-primary bg-primary text-primary-foreground"
-                            : "border-input",
+                            : "border-input"
                         )}
                       >
                         {isSelected ? <Check className="h-3 w-3" /> : null}

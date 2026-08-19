@@ -10,12 +10,14 @@ import pytest
 
 import types
 
+from oddish.core import model_concurrency
 from oddish.dispatch.backends.docker import DockerPoolDispatcher
 from oddish.dispatch.backends.fake import FakeDispatcher
 from oddish.dispatch.backends.inprocess import InProcessDispatcher
 from oddish.dispatch.backends.k8s import K8sJobDispatcher
 from oddish.dispatch.backends.modal import ModalDispatcher
 from oddish.dispatch.ports import Dispatcher, WorkerHandle
+from oddish.workers.queue import sandbox_capacity
 
 
 class _FakeBatchApi:
@@ -113,6 +115,70 @@ def _noop_dispatchers() -> list[Dispatcher]:
         DockerPoolDispatcher(image="oddish-worker:test", run_command=_FakeDockerCLI()),
         K8sJobDispatcher(image="oddish-worker:test", batch_api=_FakeBatchApi()),
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("cancelled", "expected_events"),
+    [(False, ["queue-release", "capacity-release"]), (True, ["queue-release"])],
+)
+async def test_inprocess_ec2_capacity_release_matches_outcome(
+    monkeypatch, cancelled: bool, expected_events: list[str]
+) -> None:
+    events: list[str] = []
+
+    async def _run_job(*args, **kwargs):
+        if cancelled:
+            raise asyncio.CancelledError
+        return True
+
+    async def _acquire_queue_slot(**kwargs):
+        return 2
+
+    async def _release_queue_slot(**kwargs):
+        events.append("queue-release")
+
+    async def _acquire_capacity(**kwargs):
+        return 4
+
+    async def _release_capacity(**kwargs):
+        events.append("capacity-release")
+
+    async def _load_limit(_queue_key):
+        return 3
+
+    monkeypatch.setattr(
+        sandbox_capacity, "acquire_sandbox_capacity_lease", _acquire_capacity
+    )
+    monkeypatch.setattr(
+        sandbox_capacity, "release_sandbox_capacity_lease", _release_capacity
+    )
+    monkeypatch.setattr(
+        model_concurrency, "load_effective_model_concurrency_limit", _load_limit
+    )
+    dispatcher = InProcessDispatcher(
+        run_job=_run_job,
+        acquire_slot=_acquire_queue_slot,
+        release_slot=_release_queue_slot,
+    )
+
+    if cancelled:
+        with pytest.raises(asyncio.CancelledError):
+            await dispatcher._safe_run(
+                "fireworks/glm-5p2",
+                "worker-1",
+                harbor_variant_id="default",
+                execution_lane="ec2_trial",
+            )
+    else:
+        await dispatcher._safe_run(
+            "fireworks/glm-5p2",
+            "worker-1",
+            harbor_variant_id="default",
+            execution_lane="ec2_trial",
+        )
+
+    assert events == expected_events
 
 
 @pytest.mark.parametrize("dispatcher", _noop_dispatchers(), ids=lambda d: d.name)

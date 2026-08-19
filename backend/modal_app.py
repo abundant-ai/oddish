@@ -1,10 +1,20 @@
+import json
 import os
+import shlex
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 import modal
 from dotenv import dotenv_values
 
+from modal_runtime import (
+    MODAL_APP_NAME,
+    MODAL_SECRET_ENVIRONMENT,
+    RUNTIME_SECRET_NAME,
+    runtime_secret,
+)
+from modal_runtime import app as app
 from oddish.core.harbor_source import (
     HARBOR_VARIANTS,
     HarborVariant,
@@ -33,13 +43,10 @@ def _env_float(name: str, default: float) -> float:
     return float(value)
 
 
-MODAL_APP_NAME = os.environ.get("MODAL_APP_NAME", "oddish")
-MODAL_SECRET_ENVIRONMENT = os.environ.get("MODAL_SECRET_ENVIRONMENT", "main")
 SLACK_EXPENSE_SECRET_NAME = os.environ.get("ODDISH_SLACK_EXPENSE_SECRET_NAME", "")
 SLACK_EXPENSE_SECRET_ENVIRONMENT = os.environ.get(
     "ODDISH_SLACK_EXPENSE_SECRET_ENVIRONMENT", MODAL_SECRET_ENVIRONMENT
 )
-RUNTIME_SECRET_NAME = "oddish-prod"
 # Per-app webhook label so PR previews don't collide on the shared
 # `{workspace}-{environment}--{label}.modal.run` subdomain. Production keeps
 # the historical "api" label; previews derive a unique one from the app name.
@@ -48,6 +55,7 @@ ENABLE_BACKGROUND_WORKERS = _env_flag("ODDISH_ENABLE_MODAL_WORKERS", True)
 ENABLE_SLACK_EXPENSE_NOTIFICATIONS = _env_flag(
     "ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS", MODAL_APP_NAME == "oddish"
 )
+ENABLE_CARL_AGENT = _env_flag("ODDISH_ENABLE_CARL_AGENT", MODAL_APP_NAME == "oddish")
 API_MIN_CONTAINERS = _env_int("ODDISH_MODAL_API_MIN_CONTAINERS", 1)
 API_BUFFER_CONTAINERS = _env_int("ODDISH_MODAL_API_BUFFER_CONTAINERS", 16)
 # Per-container request concurrency bounds the OOM *blast radius* -- it is
@@ -80,14 +88,19 @@ API_CONCURRENCY_MAX = _env_int("ODDISH_MODAL_API_CONCURRENCY_MAX", 3)
 # the most headroom since it is the most concurrent, latency-sensitive surface.
 API_CPU = _env_float("ODDISH_MODAL_API_CPU", 2.0)
 API_MEMORY_MB = _env_int("ODDISH_MODAL_API_MEMORY_MB", 4096)
+# Wall clock a single API request gets before Modal kills the container. Named
+# rather than inlined on the function because in-request generation has to fit
+# inside it: a subprocess budget larger than this can never be honoured, since
+# the platform kills the request first and whatever it had done is lost. See
+# ANALYSIS_TIMEOUT in api/services/agent_capabilities.py, and the test that
+# holds the two in step.
+API_TIMEOUT_SECONDS = _env_int("ODDISH_MODAL_API_TIMEOUT", 600)
 LOCAL_DOTENV_PATH = Path(__file__).with_name(".env")
 LOCAL_DOTENV_VARS = {
     key: value
     for key, value in dotenv_values(LOCAL_DOTENV_PATH).items()
     if value is not None
 }
-
-app = modal.App(MODAL_APP_NAME)
 
 # No shared Modal Volume: each container uses its own ephemeral ``/tmp`` for
 # Harbor scratch (see ``oddish.config.Settings.harbor_jobs_dir`` default of
@@ -125,6 +138,17 @@ DASHBOARD_PRECOMPUTE_INTERVAL_SECONDS = _env_int(
 )
 DASHBOARD_PRECOMPUTE_TIMEOUT_SECONDS = _env_int(
     "ODDISH_MODAL_DASHBOARD_PRECOMPUTE_TIMEOUT_SECONDS", 120
+)
+# Facet-vocabulary rebuild (``worker.refresh_trial_facets``): one grouped scan
+# over live trials per interval keeps the task-browser dropdowns exact
+# (removals and stage/classification additions converge here; spec additions
+# are instant via write-through). The timeout bounds one scan; with
+# max_containers=1 it also guards against overlapping runs.
+TRIAL_FACETS_REFRESH_INTERVAL_SECONDS = _env_int(
+    "ODDISH_MODAL_TRIAL_FACETS_REFRESH_INTERVAL_SECONDS", 600
+)
+TRIAL_FACETS_REFRESH_TIMEOUT_SECONDS = _env_int(
+    "ODDISH_MODAL_TRIAL_FACETS_REFRESH_TIMEOUT_SECONDS", 300
 )
 # Allow ~12 hour trials.
 WORKER_TIMEOUT_SECONDS = _env_int("ODDISH_MODAL_WORKER_TIMEOUT_SECONDS", 43200)
@@ -219,6 +243,19 @@ _GKE_ENABLED_ENV = "ODDISH_GKE_ENABLED"
 # (e.g. one carrying ODDISH_GKE_*) cannot pollute into a dependency-count drift.
 # See _resolve_gke_secret_plan and _build_worker_image. Not operator-facing.
 _GKE_PLAN_FILE = "/opt/oddish/gke_secret_plan"
+
+_EC2_ENABLED_ENV = "ODDISH_EC2_ENABLED"
+_EC2_CONTROL_SECRET_NAME_ENV = "ODDISH_EC2_CONTROL_SECRET_NAME"
+_EC2_SSH_SECRET_NAME_ENV = "ODDISH_EC2_SSH_SECRET_NAME"
+_EC2_PLAN_FILE = "/opt/oddish/ec2_secret_plan.json"
+_EC2_RAW_SECRET_ENV_NAMES = frozenset(
+    {
+        "ODDISH_EC2_SSH_PRIVATE_KEY",
+        "ODDISH_EC2_AWS_ACCESS_KEY_ID",
+        "ODDISH_EC2_AWS_SECRET_ACCESS_KEY",
+        "ODDISH_EC2_AWS_SESSION_TOKEN",
+    }
+)
 
 
 def _is_truthy(value: str | None) -> bool:
@@ -323,9 +360,156 @@ def _resolve_gke_secret_plan(
     return [name for name in baked.split(",") if name]
 
 
-runtime_secret = modal.Secret.from_name(
-    RUNTIME_SECRET_NAME, environment_name=MODAL_SECRET_ENVIRONMENT
-)
+@dataclass(frozen=True)
+class Ec2SecretPlan:
+    """Deploy-time EC2 secret dependencies, split by least-privilege role."""
+
+    control_name: str | None = None
+    ssh_name: str | None = None
+
+    @property
+    def worker_names(self) -> tuple[str, ...]:
+        return tuple(name for name in (self.control_name, self.ssh_name) if name)
+
+
+def _deploy_value(
+    name: str,
+    environ: Mapping[str, str],
+    dotenv_vars: Mapping[str, str],
+) -> str | None:
+    """Read deploy config with explicit process values winning, even falsy."""
+
+    if name in environ:
+        return environ[name]
+    return dotenv_vars.get(name)
+
+
+def _ec2_secret_plan(
+    environ: Mapping[str, str], dotenv_vars: Mapping[str, str]
+) -> Ec2SecretPlan:
+    """Resolve EC2's control and worker-only SSH secret names at deploy time."""
+
+    if not _is_truthy(_deploy_value(_EC2_ENABLED_ENV, environ, dotenv_vars)):
+        return Ec2SecretPlan()
+
+    control_name = (
+        _deploy_value(_EC2_CONTROL_SECRET_NAME_ENV, environ, dotenv_vars) or ""
+    ).strip()
+    ssh_name = (
+        _deploy_value(_EC2_SSH_SECRET_NAME_ENV, environ, dotenv_vars) or ""
+    ).strip()
+    missing = []
+    if not control_name:
+        missing.append(_EC2_CONTROL_SECRET_NAME_ENV)
+    if not ssh_name:
+        missing.append(_EC2_SSH_SECRET_NAME_ENV)
+    if missing:
+        raise RuntimeError(
+            "EC2 is enabled but required Modal secret names are missing: "
+            + ", ".join(missing)
+        )
+    if control_name == ssh_name:
+        raise RuntimeError(
+            "EC2 control credentials and the SSH private key require separate "
+            "Modal secrets"
+        )
+    return Ec2SecretPlan(
+        control_name=control_name,
+        ssh_name=ssh_name,
+    )
+
+
+def _decode_ec2_secret_plan(raw: str) -> Ec2SecretPlan:
+    try:
+        payload = json.loads(raw)
+        control_name = payload["control_name"]
+        ssh_name = payload["ssh_name"]
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Invalid baked EC2 secret plan") from exc
+    names = (control_name, ssh_name)
+    if not all(
+        name is None or (isinstance(name, str) and name.strip()) for name in names
+    ):
+        raise RuntimeError("Invalid baked EC2 secret plan names")
+    if (control_name is None) != (ssh_name is None):
+        raise RuntimeError("Baked EC2 secret plan must contain both secret names")
+    if control_name is not None and control_name == ssh_name:
+        raise RuntimeError(
+            "Baked EC2 control and SSH secret plans must remain separate"
+        )
+    return Ec2SecretPlan(control_name=control_name, ssh_name=ssh_name)
+
+
+def _resolve_ec2_secret_plan(
+    environ: Mapping[str, str], dotenv_vars: Mapping[str, str]
+) -> Ec2SecretPlan:
+    """Return the immutable deploy plan both locally and inside containers."""
+
+    if modal.is_local():
+        plan = _ec2_secret_plan(environ, dotenv_vars)
+        runtime_enabled = _is_truthy(
+            _deploy_value(_EC2_ENABLED_ENV, environ, dotenv_vars)
+        )
+        _validate_ec2_plan_enabledness(
+            plan,
+            runtime_enabled=runtime_enabled,
+            source="effective deploy configuration",
+        )
+        return plan
+    try:
+        baked = Path(_EC2_PLAN_FILE).read_text()
+    except OSError as exc:
+        raise RuntimeError(
+            f"Baked EC2 secret plan is missing at {_EC2_PLAN_FILE}"
+        ) from exc
+    plan = _decode_ec2_secret_plan(baked)
+    _validate_ec2_plan_enabledness(
+        plan,
+        runtime_enabled=_is_truthy(environ.get(_EC2_ENABLED_ENV)),
+        source="container runtime ODDISH_EC2_ENABLED",
+    )
+    return plan
+
+
+def _validate_ec2_plan_enabledness(
+    plan: Ec2SecretPlan,
+    *,
+    runtime_enabled: bool,
+    source: str,
+) -> None:
+    plan_enabled = bool(plan.worker_names)
+    if plan_enabled != runtime_enabled:
+        raise RuntimeError(
+            "EC2 secret-plan enabledness disagrees with "
+            f"{source}: baked_plan_enabled={plan_enabled}, "
+            f"runtime_enabled={runtime_enabled}"
+        )
+
+
+def _validate_ec2_dotenv_secret_isolation(
+    dotenv_vars: Mapping[str, str],
+) -> None:
+    leaked_names = sorted(_EC2_RAW_SECRET_ENV_NAMES.intersection(dotenv_vars))
+    if leaked_names:
+        raise RuntimeError(
+            "backend/.env must not contain raw EC2 secret values because its "
+            "contents are attached to broad API and dispatcher functions; move "
+            "these values to the dedicated Modal secrets: " + ", ".join(leaked_names)
+        )
+
+
+def _validate_ec2_secret_isolation(
+    plan: Ec2SecretPlan, broad_runtime_names: set[str]
+) -> None:
+    collisions = sorted(set(plan.worker_names).intersection(broad_runtime_names))
+    if collisions:
+        raise RuntimeError(
+            "EC2 secrets must be dedicated and cannot alias a broad runtime "
+            "secret: " + ", ".join(collisions)
+        )
+
+
+_validate_ec2_dotenv_secret_isolation(LOCAL_DOTENV_VARS)
 runtime_secrets = [runtime_secret]
 
 # AWS credentials for the sauron S3 mirror. Kept in a separate Modal
@@ -355,6 +539,48 @@ for _gke_secret_name in GKE_SECRET_PLAN:
             _gke_secret_name, environment_name=MODAL_SECRET_ENVIRONMENT
         )
     )
+
+# EC2 secrets intentionally do not join ``runtime_secrets``. That base list is
+# attached to the API, dispatcher, and unrelated scheduled functions. EC2's AWS
+# control secret goes only to trial workers and the reconciler; its SSH private
+# key secret goes only to trial workers. The names are an immutable deploy-time
+# plan so runtime-secret env injection cannot change Modal dependency counts.
+EC2_SECRET_PLAN = _resolve_ec2_secret_plan(os.environ, LOCAL_DOTENV_VARS)
+_broad_runtime_secret_names = {
+    RUNTIME_SECRET_NAME,
+    *GKE_SECRET_PLAN,
+}
+if SAURON_AWS_SECRET_NAME:
+    _broad_runtime_secret_names.add(SAURON_AWS_SECRET_NAME)
+if SLACK_EXPENSE_SECRET_NAME:
+    _broad_runtime_secret_names.add(SLACK_EXPENSE_SECRET_NAME)
+if MODAL_APP_NAME.startswith("oddish-pr-"):
+    _broad_runtime_secret_names.add(f"{MODAL_APP_NAME}-db")
+_validate_ec2_secret_isolation(
+    EC2_SECRET_PLAN,
+    _broad_runtime_secret_names,
+)
+ec2_control_secrets = (
+    [
+        modal.Secret.from_name(
+            EC2_SECRET_PLAN.control_name,
+            environment_name=MODAL_SECRET_ENVIRONMENT,
+        )
+    ]
+    if EC2_SECRET_PLAN.control_name
+    else []
+)
+ec2_ssh_secrets = (
+    [
+        modal.Secret.from_name(
+            EC2_SECRET_PLAN.ssh_name,
+            environment_name=MODAL_SECRET_ENVIRONMENT,
+        )
+    ]
+    if EC2_SECRET_PLAN.ssh_name
+    else []
+)
+ec2_worker_secrets = [*ec2_control_secrets, *ec2_ssh_secrets]
 
 
 def assert_gke_cluster_exists() -> None:
@@ -450,7 +676,9 @@ runtime_secrets.append(modal.Secret.from_dict(LOCAL_DOTENV_VARS))
 # Per-PR DB override created by the modal-preview workflow. Gating on
 # MODAL_APP_NAME (baked into the image) keeps the secret list identical
 # at deploy and container init.
-if MODAL_APP_NAME.startswith("oddish-pr-"):
+# Per-app DB override: per-PR previews and the persistent staging app both
+# borrow every other secret from env "main" and rebind only the database.
+if MODAL_APP_NAME.startswith("oddish-pr-") or MODAL_APP_NAME == "oddish-staging":
     runtime_secrets.append(
         modal.Secret.from_name(
             f"{MODAL_APP_NAME}-db",
@@ -490,6 +718,22 @@ MODEL_CONCURRENCY_OVERRIDES = os.environ.get(
 # hardcoded default can be asserted in tests independently of the deploy env.
 DEFAULT_OPERATOR_ORG_ID = "8ebde5d0"
 
+_EC2_PUBLIC_ENV_NAMES = {
+    "ODDISH_EC2_ENABLED",
+    "ODDISH_EC2_REGION",
+    "ODDISH_EC2_AMI_ID",
+    "ODDISH_EC2_INSTANCE_TYPE",
+    "ODDISH_EC2_SUBNET_ID",
+    "ODDISH_EC2_SECURITY_GROUP_IDS",
+    "ODDISH_EC2_KEY_NAME",
+    "ODDISH_EC2_SSH_USER",
+    "ODDISH_EC2_INSTANCE_PROFILE",
+    "ODDISH_EC2_ROOT_VOLUME_SIZE_GB",
+    "ODDISH_EC2_USE_PUBLIC_IP",
+    "ODDISH_EC2_BOOTSTRAP_DOCKER",
+    "ODDISH_EC2_MAX_CONCURRENT_INSTANCES",
+}
+
 ENV_VARS = {
     "UV_LINK_MODE": "copy",
     # Claude CLI refuses --dangerously-skip-permissions when running as root (Modal default).
@@ -504,6 +748,7 @@ ENV_VARS = {
     "MODAL_ENVIRONMENT": os.environ.get("MODAL_ENVIRONMENT", "main"),
     "ODDISH_SLACK_EXPENSE_SECRET_NAME": SLACK_EXPENSE_SECRET_NAME,
     "ODDISH_SLACK_EXPENSE_SECRET_ENVIRONMENT": SLACK_EXPENSE_SECRET_ENVIRONMENT,
+    "ODDISH_ENABLE_CARL_AGENT": str(ENABLE_CARL_AGENT).lower(),
     # Oddish cloud settings — configures pydantic-settings fields in
     # oddish.config.Settings via ODDISH_* env vars.  Per-function DB pool
     # sizes are set in the entry modules (endpoints.py, worker/functions.py).
@@ -556,6 +801,11 @@ ENV_VARS = {
         k: v
         for k, v in {**LOCAL_DOTENV_VARS, **os.environ}.items()
         if k.startswith("ODDISH_GKE_")
+    },
+    **{
+        k: v
+        for k, v in {**LOCAL_DOTENV_VARS, **os.environ}.items()
+        if k in _EC2_PUBLIC_ENV_NAMES
     },
 }
 
@@ -648,6 +898,7 @@ def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal
         .apt_install(
             "git",
             "curl",
+            "openssh-client",
         )
         # Install Claude Code for trial analysis jobs that shell out to `claude -p`.
         .run_commands(
@@ -678,9 +929,17 @@ def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal
     # content rather than os.environ (which a runtime secret could pollute). The
     # values are internal secret names -- safe to inline. See
     # _resolve_gke_secret_plan.
+    ec2_plan_json = json.dumps(
+        {
+            "control_name": EC2_SECRET_PLAN.control_name,
+            "ssh_name": EC2_SECRET_PLAN.ssh_name,
+        },
+        separators=(",", ":"),
+    )
     img = img.run_commands(
         f"mkdir -p {os.path.dirname(_GKE_PLAN_FILE)} && "
-        f"printf '%s' '{','.join(GKE_SECRET_PLAN)}' > {_GKE_PLAN_FILE}"
+        f"printf '%s' '{','.join(GKE_SECRET_PLAN)}' > {_GKE_PLAN_FILE}",
+        f"printf %s {shlex.quote(ec2_plan_json)} > {shlex.quote(_EC2_PLAN_FILE)}",
     )
     if harbor_override is not None:
         # Swap the variant's Harbor into the synced venv AFTER uv_sync. The sync
@@ -706,6 +965,7 @@ def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal
             "api",
             "auth",
             "backfill_github_id",
+            "carl",
             "cloud_policy",
             "crypto",
             "dashboard_attribution",
@@ -714,6 +974,7 @@ def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal
             "endpoints",
             "idempotency_store",
             "modal_app",
+            "modal_runtime",
             "models",
             "observability",
             "pg_errors",
@@ -728,6 +989,10 @@ def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal
 
 
 image = _build_worker_image()
+_HARBOR_VARIANT_IMAGES = {
+    variant.variant_id: _build_worker_image(variant)
+    for variant in HARBOR_VARIANTS.values()
+}
 
 
 def harbor_variant_images() -> dict[str, modal.Image]:
@@ -737,4 +1002,4 @@ def harbor_variant_images() -> dict[str, modal.Image]:
     pin classified to ``<id>`` onto the matching ``process_single_job__<id>``
     Function bound to this image.
     """
-    return {v.variant_id: _build_worker_image(v) for v in HARBOR_VARIANTS.values()}
+    return dict(_HARBOR_VARIANT_IMAGES)

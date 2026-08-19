@@ -10,7 +10,13 @@ from sqlalchemy.orm import selectinload
 
 from oddish.core.experiment_membership import gathered_trial_ids_select
 from oddish.core.helpers import build_task_status_response, fetch_trial_queue_info
+from oddish.core.model_display_names import (
+    apply_model_display_names,
+    load_model_display_names,
+    mask_trajectory_model_names,
+)
 from oddish.core.tags.projection import list_effective_user_tags_for_task_versions
+from oddish.core.trial_live import read_trial_live
 from oddish.core.trial_io import (
     read_trial_agent_file,
     read_trial_logs,
@@ -27,6 +33,8 @@ from .helpers import (
     list_task_trials_for_public_experiment,
     list_task_files_s3,
     list_trial_files_s3,
+    make_task_files_ndjson_response,
+    stream_task_files_s3,
 )
 from oddish.db import (
     ExperimentModel,
@@ -83,6 +91,22 @@ async def _get_detached_public_trial(public_token: str, trial_id: str) -> TrialM
             raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
         session.expunge(trial)
         return trial
+
+
+async def _detached_public_trial_with_display_names(
+    public_token: str, trial_id: str
+) -> tuple[TrialModel, dict[str, str]]:
+    """A public trial plus the alias table, both read before artifact I/O.
+
+    One session for the pair, released before the S3 read for the same reason
+    :func:`_get_detached_public_trial` releases it.
+    """
+    async with get_session() as session:
+        trial = await get_public_trial_for_experiment(session, public_token, trial_id)
+        if not trial:
+            raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
+        session.expunge(trial)
+        return trial, await load_model_display_names(session)
 
 
 @router.get(
@@ -272,6 +296,10 @@ async def list_public_experiment_tasks(
             _apply_public_experiments(
                 resp, public_exps.get(task.id, []), preferred_id=exp_id
             )
+        apply_model_display_names(
+            [trial for resp in responses for trial in (resp.trials or [])],
+            await load_model_display_names(session),
+        )
         return responses
 
 
@@ -307,6 +335,9 @@ async def get_public_task_status(
         _apply_public_experiments(
             response, public_exps.get(task.id, []), preferred_id=exp.id
         )
+        apply_model_display_names(
+            response.trials or [], await load_model_display_names(session)
+        )
         return response
 
 
@@ -338,6 +369,22 @@ async def get_public_trial_logs(public_token: str, trial_id: str) -> dict:
     return await read_trial_logs(trial)
 
 
+@router.get("/public/experiments/{public_token}/trials/{trial_id}/live")
+async def get_public_trial_live(
+    public_token: str,
+    trial_id: str,
+    attempt: int | None = Query(None),
+    after_seq: int = Query(0),
+) -> dict:
+    async with get_session() as session:
+        trial = await get_public_trial_for_experiment(session, public_token, trial_id)
+        if not trial:
+            raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
+        return await read_trial_live(
+            session, trial, attempt=attempt, after_seq=after_seq
+        )
+
+
 @router.get("/public/experiments/{public_token}/trials/{trial_id}/logs/structured")
 async def get_public_trial_logs_structured(public_token: str, trial_id: str) -> dict:
     """Get structured logs for a public trial."""
@@ -347,9 +394,24 @@ async def get_public_trial_logs_structured(public_token: str, trial_id: str) -> 
 
 @router.get("/public/experiments/{public_token}/trials/{trial_id}/trajectory")
 async def get_public_trial_trajectory(public_token: str, trial_id: str) -> dict | None:
-    """Get ATIF trajectory.json for a public trial."""
-    trial = await _get_detached_public_trial(public_token, trial_id)
-    return await read_trial_trajectory(trial)
+    """Get ATIF trajectory.json for a public trial.
+
+    Masked: the step headers render the trajectory's own ``model_name``, so an
+    unmasked payload prints the real id right under the aliased one the trial
+    grid shows.
+
+    This closes one hole, not the class. An alias is a display convenience, NOT
+    a boundary: the same drawer's Files tab serves ``config.json`` -- which
+    ``ConfigJsonRenderer`` prints under a literal "Model" label -- and
+    ``agent/trajectory.json``, the very bytes this route rewrites, both with
+    the real id. Masking those means rewriting a run's recorded output, which
+    is a bigger call than this route. Don't read the admin UI's promise as
+    airtight until they're covered.
+    """
+    trial, names = await _detached_public_trial_with_display_names(
+        public_token, trial_id
+    )
+    return mask_trajectory_model_names(await read_trial_trajectory(trial), names)
 
 
 @router.get("/public/experiments/{public_token}/trials/{trial_id}/files")
@@ -408,7 +470,11 @@ async def list_public_task_files(
     cursor: str | None = Query(None),
     presign: bool = Query(True),
     version: int | None = Query(None, description="Task version number"),
-) -> dict:
+    stream: bool = Query(
+        False,
+        description="Stream NDJSON: the file tree first, then file contents",
+    ),
+):
     """List all files in a public task's S3 directory."""
     async with get_session() as session:
         resolved = await get_public_task_for_experiment(
@@ -419,6 +485,19 @@ async def list_public_task_files(
         _, task, _ = resolved
         if version is None and task.current_version:
             version = task.current_version.version
+
+    if stream:
+        return await make_task_files_ndjson_response(
+            stream_task_files_s3(
+                task_id=task_id,
+                prefix=prefix,
+                recursive=recursive,
+                limit=limit,
+                cursor=cursor,
+                presign=presign,
+                version=version,
+            )
+        )
 
     return await list_task_files_s3(
         task_id=task_id,

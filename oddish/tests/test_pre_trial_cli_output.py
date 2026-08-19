@@ -60,6 +60,26 @@ def test_cli_transform_handles_code_fenced_result():
     assert len(out["items"]) == 1
 
 
+def test_cli_transform_recovers_a_prose_wrapped_result():
+    # The production failure shape: the model writes a sentence before its
+    # fence, so the envelope's `result` string is prose. This path never
+    # reaches Block.parse_json on its own -- extract_claude_result has to
+    # recover, or the whole audit is discarded on packaging.
+    raw = _envelope(
+        "Based on my audit of the Harbor task source, I found:\n\n```json\n"
+        + json.dumps({"items": [_ITEM]})
+        + "\n```\n"
+    )
+    out = _block().to_action_items_from_cli(raw)
+    assert [i["title"] for i in out["items"]] == ["stderr ignored"]
+
+
+def test_cli_transform_recovers_a_bare_object_after_a_preamble():
+    raw = _envelope("Here are the findings:\n\n" + json.dumps({"items": [_ITEM]}))
+    out = _block().to_action_items_from_cli(raw)
+    assert len(out["items"]) == 1
+
+
 def test_naive_transform_would_silently_drop_findings():
     # The regression the CLI transform exists to prevent: feeding the envelope
     # straight to to_action_items validates (extra keys ignored) and yields zero

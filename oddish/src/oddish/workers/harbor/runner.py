@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+import contextlib
+from collections.abc import Awaitable, Callable, Mapping
 import math
 import os
 import shutil
@@ -11,7 +12,7 @@ import uuid
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, cast
 from urllib.parse import urlparse
 
 from harbor import Job, JobConfig  # type: ignore[attr-defined]
@@ -44,6 +45,15 @@ from oddish.costs.modal_cost import (
     normalize_gpu_type,
     provider_default_request,
 )
+from oddish.runtime.ec2_policy import (
+    LAUNCH_TOKEN_TAG_KEY,
+    SANDBOX_RUN_ID_TAG_KEY,
+    TRIAL_ID_TAG_KEY,
+    WORKER_ATTEMPT_TAG_KEY,
+    WORKER_JOB_ID_TAG_KEY,
+    validate_ec2_environment_config,
+)
+from oddish.runtime.sandbox_lifecycle import SandboxLaunchContext
 from oddish.runtime.registry import get_backend
 from oddish.schemas import HarborConfig
 from oddish.task_timeouts import validate_task_timeout_config
@@ -61,6 +71,7 @@ from .agent_config import (
 from .model_hosts import (
     GEMINI_BASE_URL_KEYS,
     GEMINI_OAUTH_ENV_KEYS,
+    OPENCODE_INSTALL_HOSTS,
     agent_runtime_hosts,
     outbound_hosts_for_model,
 )
@@ -129,8 +140,38 @@ _GEMINI_RUNTIME_ENV_KEYS = (*GEMINI_BASE_URL_KEYS, *GEMINI_OAUTH_ENV_KEYS)
 # file path -- its secret is the file's contents, outside this exact-value map.
 _GEMINI_RUNTIME_SECRET_KEYS = (
     "GEMINI_API_KEY",
+    "GOOGLE_GENERATIVE_AI_API_KEY",
     "GOOGLE_API_KEY",
 )
+# The name the Vercel AI SDK's google provider reads, and therefore the name
+# opencode authenticates with. The platform publishes its Google key as
+# GEMINI_API_KEY (what gemini-cli reads), so the two have to be bridged.
+_AI_SDK_GOOGLE_KEY = "GOOGLE_GENERATIVE_AI_API_KEY"
+# The ambient names that hold the platform Google credential, best first.
+_GOOGLE_KEY_SOURCES = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
+
+
+def _gemini_ai_sdk_alias_env(model: str | None) -> dict[str, str]:
+    """Mirror the ambient Google key onto the AI SDK's env var name.
+
+    Returns ``{}`` unless this is a Google-provider trial whose credential is
+    ambient under a different name. Never overwrites an explicitly-set
+    ``GOOGLE_GENERATIVE_AI_API_KEY``, so a deployment that configures the AI SDK
+    name directly stays authoritative.
+
+    This has to happen in the worker's os.environ rather than the agent env:
+    Harbor's opencode agent selects the provider keys it forwards with a raw
+    ``if key in os.environ`` test, bypassing the extra_env-aware accessor, so a
+    value injected only through the agent env is invisible to it.
+    """
+    if infer_model_provider_prefix(model) != "gemini":
+        return {}
+    if os.environ.get(_AI_SDK_GOOGLE_KEY):
+        return {}
+    for source in _GOOGLE_KEY_SOURCES:
+        if value := os.environ.get(source):
+            return {_AI_SDK_GOOGLE_KEY: value}
+    return {}
 # Ambient claude-code platform credentials must fold into the redaction map for
 # the same reason: when job-scoped injection is off, the direct/OAuth Anthropic
 # credential or the Bedrock credential chain the stock agent forwards is only in
@@ -206,10 +247,15 @@ _PROVIDER_RUNTIME_SECRET_KEYS: dict[str, tuple[str, ...]] = {
         "AWS_SECRET_ACCESS_KEY",
         "AWS_SESSION_TOKEN",
     ),
-    "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    # GOOGLE_GENERATIVE_AI_API_KEY is the name the AI SDK's google provider
+    # reads, so it is what opencode authenticates with on a ``google/`` model.
+    # It is a credential value like the other two -- listed for redaction
+    # coverage, never a base URL, so it cannot affect transport-host selection.
+    "gemini": ("GEMINI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "GOOGLE_API_KEY"),
     "xai": ("XAI_API_KEY", "XAI_API_KEYS"),
     "meta": ("META_API_KEY", "OPENAI_API_KEY"),
     "fireworks": ("FIREWORKS_API_KEY",),
+    "deepseek": ("DEEPSEEK_API_KEY",),
     "zai": ("ZAI_API_KEY",),
     "minimax": ("MINIMAX_API_KEY",),
     "moonshot": ("MOONSHOT_API_KEY",),
@@ -710,6 +756,12 @@ def capture_live_sandbox_resources(
             )
         )
         pinned = any(value is not None for value in (env.cpus, env.memory_mb, env.gpus))
+        if has_override:
+            spec_source = "override"
+        elif pinned:
+            spec_source = "pinned"
+        else:
+            spec_source = "provider_default"
         return SpanResources(
             cpu_request=cpu_request,
             cpu_limit=cpu_limit,
@@ -719,13 +771,7 @@ def capture_live_sandbox_resources(
             gpu_count=env.gpus or 0,
             price_multiplier=Decimal(1),
             container_class="sandbox",
-            spec_source=(
-                "override"
-                if has_override
-                else "pinned"
-                if pinned
-                else "provider_default"
-            ),
+            spec_source=spec_source,
             cpu_enforcement_mode=cpu_mode.value,
             mem_enforcement_mode=mem_mode.value,
         )
@@ -1071,6 +1117,27 @@ def _apply_restricted_agent_network_defaults(
     return None
 
 
+def _ensure_web_tool_wrapper_when_disabling(agent_config: HarborAgentConfig) -> None:
+    """Use the oddish agent wrapper whenever a trial disables web tools.
+
+    disable_web_tools is honored only by ``OddishCursorCli`` / ``OddishGeminiCli``.
+    The restricted-Compose profile swaps those in, but public / non-Compose trials
+    (e.g. closed-book tasks hardened at the container level, not via network_mode)
+    otherwise keep the stock Harbor class, which SILENTLY IGNORES the switch -- so
+    a run with ``--disable-web-tools`` still leaks through the agent's provider-side
+    web tools (cursor's webFetch is served by Cursor's cloud, unreachable by any
+    container network policy; the fix is a permissions deny the wrapper writes).
+
+    Gated on the switch, and the wrappers are idempotent no-ops without it, so this
+    changes nothing for normal trials or for trials the Compose profile already
+    wrapped.
+    """
+    if not (agent_config.kwargs or {}).get("disable_web_tools"):
+        return
+    _apply_gemini_cli_oddish_wrapper(agent_config)
+    _apply_cursor_cli_oddish_wrapper(agent_config)
+
+
 def _claude_code_environment_hosts(agent_config: HarborAgentConfig) -> list[str]:
     """Hosts the claude-code CLI needs across install *and* run.
 
@@ -1082,6 +1149,26 @@ def _claude_code_environment_hosts(agent_config: HarborAgentConfig) -> list[str]
     """
     return [
         *_CLAUDE_CODE_INSTALLER_HOSTS,
+        *outbound_hosts_for_model(agent_config.model_name, agent_env=agent_config.env),
+    ]
+
+
+def _opencode_environment_hosts(agent_config: HarborAgentConfig) -> list[str]:
+    """Hosts the opencode CLI needs across install *and* run.
+
+    opencode self-installs (nvm, a Node runtime, the ``opencode-ai`` npm
+    package) during agent SETUP, which runs under the ENVIRONMENT baseline --
+    the agent-phase allowlist (``extra_allowed_hosts`` / runtime-host merges)
+    only takes effect around ``agent.run()``. Install hosts must therefore ride
+    the environment baseline, exactly like the claude-code arm above. On a
+    legacy closed task (``[environment] allow_internet=false`` -> a no-network
+    baseline for every phase, no dynamic restricted agent phase) this is also
+    the only channel that grants the model transport host, so resolve it here
+    too (``outbound_hosts_for_model`` maps ``openrouter/<model>`` ->
+    ``openrouter.ai`` alongside every other routed provider).
+    """
+    return [
+        *OPENCODE_INSTALL_HOSTS,
         *outbound_hosts_for_model(agent_config.model_name, agent_env=agent_config.env),
     ]
 
@@ -1192,6 +1279,59 @@ def _assert_tpu_backend(environment, backend, override_tpu) -> None:
     )
 
 
+def _resolve_provider_environment_config(
+    *,
+    hc: HarborConfig,
+    environment: EnvironmentType,
+    backend: Any,
+    is_probe: bool,
+    trial_id: str | None,
+    worker_job_id: str | None,
+    sandbox_launch: SandboxLaunchContext | None,
+) -> HarborEnvironmentConfig:
+    environment_config = hc.environment.model_copy(deep=True)
+    environment_config.type = environment
+    if backend is not None:
+        environment_config.kwargs = backend.harbor_env_kwargs(
+            dict(environment_config.kwargs)
+        )
+    probe_modal = _probe_modal_kwargs(is_probe, environment)
+    if probe_modal:
+        environment_config.kwargs = {
+            **probe_modal,
+            **environment_config.kwargs,
+        }
+    if environment == EnvironmentType.EC2:
+        if sandbox_launch is None:
+            raise RuntimeError("EC2 trial is missing its durable sandbox run")
+        missing_identity = [
+            name
+            for name, value in (
+                ("trial_id", trial_id),
+                ("worker_job_id", worker_job_id),
+            )
+            if not value
+        ]
+        if missing_identity:
+            raise RuntimeError(
+                "EC2 trial is missing required ownership identity: "
+                + ", ".join(missing_identity)
+            )
+        tags = dict(environment_config.kwargs.get("tags") or {})
+        tags[TRIAL_ID_TAG_KEY] = trial_id
+        tags[WORKER_JOB_ID_TAG_KEY] = worker_job_id
+        tags[SANDBOX_RUN_ID_TAG_KEY] = sandbox_launch.sandbox_run_id
+        tags[WORKER_ATTEMPT_TAG_KEY] = str(sandbox_launch.worker_job_attempt)
+        tags[LAUNCH_TOKEN_TAG_KEY] = sandbox_launch.launch_token
+        environment_config.kwargs = {
+            **environment_config.kwargs,
+            "tags": tags,
+        }
+    return HarborEnvironmentConfig.model_validate(
+        environment_config.model_dump(mode="python")
+    )
+
+
 async def run_harbor_trial_async(
     task_path: Path,
     agent: str,
@@ -1200,9 +1340,11 @@ async def run_harbor_trial_async(
     environment: EnvironmentType = EnvironmentType.DOCKER,
     hook_callback: HookCallback | None = None,
     trial_id: str | None = None,
+    worker_job_id: str | None = None,
     harbor_config: dict[str, Any] | None = None,
     org_id: str | None = None,
     extra_agent_env: dict[str, str] | None = None,
+    sandbox_launch: SandboxLaunchContext | None = None,
 ) -> HarborOutcome:
     """
     Execute a Harbor trial using Harbor's Python API with lifecycle hooks.
@@ -1213,11 +1355,59 @@ async def run_harbor_trial_async(
     Returns a HarborOutcome with reward, error, tokens, cost, timing,
     trajectory presence, and artifact paths.
     """
-    apply_harbor_patches()
-
+    apply_harbor_patches(require_ec2=environment == EnvironmentType.EC2)
     raw = harbor_config or {}
     hc = HarborConfig.model_validate(raw)
+    if environment == EnvironmentType.EC2:
+        validate_ec2_environment_config(hc.environment)
+    backend = get_backend(environment.value)
+    if environment == EnvironmentType.EC2 and backend is None:
+        raise RuntimeError(
+            "EC2 environment requested but the EC2 backend is not enabled or "
+            "registered; set ODDISH_EC2_ENABLED=true with complete EC2 settings"
+        )
+    credential_scope = (
+        cast(Any, backend).worker_credentials(include_ssh=True)
+        if environment == EnvironmentType.EC2
+        else contextlib.nullcontext()
+    )
+    with credential_scope:
+        return await _run_harbor_trial_async_impl(
+            task_path=task_path,
+            agent=agent,
+            jobs_dir=jobs_dir,
+            model=model,
+            environment=environment,
+            hook_callback=hook_callback,
+            trial_id=trial_id,
+            worker_job_id=worker_job_id,
+            harbor_config=harbor_config,
+            org_id=org_id,
+            extra_agent_env=extra_agent_env,
+            sandbox_launch=sandbox_launch,
+            raw=raw,
+            hc=hc,
+            backend=backend,
+        )
 
+
+async def _run_harbor_trial_async_impl(
+    task_path: Path,
+    agent: str,
+    jobs_dir: Path,
+    model: str | None,
+    environment: EnvironmentType,
+    hook_callback: HookCallback | None,
+    trial_id: str | None,
+    worker_job_id: str | None,
+    harbor_config: dict[str, Any] | None,
+    org_id: str | None,
+    extra_agent_env: dict[str, str] | None,
+    raw: dict[str, Any],
+    hc: HarborConfig,
+    backend: Any,
+    sandbox_launch: SandboxLaunchContext | None,
+) -> HarborOutcome:
     # Size the environment-build timeout multiplier BEFORE the dispatch fork so
     # EVERY path that runs a GKE environment carries it -- the in-process blessed
     # variant AND the out-of-process ephemeral child. pod_ready is read from the
@@ -1240,10 +1430,11 @@ async def run_harbor_trial_async(
     # backend would otherwise skip it entirely.
     _assert_tpu_backend(
         environment,
-        get_backend(environment.value),
+        backend,
         getattr(hc.environment, "override_tpu", None),
     )
 
+    is_probe = raw.get("mode") == "probe"
     dispatch_env_config = hc.environment.model_copy()
     dispatch_env_config.type = environment
     try:
@@ -1264,6 +1455,16 @@ async def run_harbor_trial_async(
             job_dir=None,
             exception_type="RestrictedNetworkProfileError",
         )
+
+    resolved_environment_config = _resolve_provider_environment_config(
+        hc=hc,
+        environment=environment,
+        backend=backend,
+        is_probe=is_probe,
+        trial_id=trial_id,
+        worker_job_id=worker_job_id,
+        sandbox_launch=sandbox_launch,
+    )
 
     # An allowlisted override that is neither the locked default nor a blessed
     # image variant runs out-of-process against its own Harbor: a different
@@ -1291,11 +1492,10 @@ async def run_harbor_trial_async(
             agent=agent,
             jobs_dir=jobs_dir,
             model=model,
-            environment=environment,
             hook_callback=hook_callback,
             trial_id=trial_id,
+            environment_config=resolved_environment_config,
             harbor_config=harbor_config,
-            org_id=org_id,
             extra_agent_env=extra_agent_env,
             environment_build_timeout_multiplier=env_build_multiplier,
         )
@@ -1303,7 +1503,6 @@ async def run_harbor_trial_async(
     # Probes attach to an existing task and inherit its task.toml, which may
     # predate the timeout requirement. Rather than hard-fail, skip strict
     # validation and hand the probe a capped default agent timeout below.
-    is_probe = raw.get("mode") == "probe"
     if not is_probe:
         validate_task_timeout_config(task_path)
 
@@ -1353,15 +1552,7 @@ async def run_harbor_trial_async(
         # shape -- static (nop/oracle) trials must not widen egress either.
         if restricted_compose_kind in ("dynamic", "static"):
             reject_submitted_restricted_routes(raw)
-        env_config = hc.environment.model_copy()
-        env_config.type = environment
-
-        backend = get_backend(environment.value)
-        if backend is not None:
-            env_config.kwargs = backend.harbor_env_kwargs(env_config.kwargs)
-        probe_modal = _probe_modal_kwargs(is_probe, environment)
-        if probe_modal:
-            env_config.kwargs = {**probe_modal, **env_config.kwargs}
+        env_config = resolved_environment_config.model_copy(deep=True)
         uses_openai_provider = _trial_uses_openai_provider(
             agent=agent,
             model=model,
@@ -1495,6 +1686,11 @@ async def run_harbor_trial_async(
                     **(extra_agent_env or {}),
                 },
             )
+            # Public / non-Compose trials keep the stock agent class above, which
+            # ignores disable_web_tools; swap in the oddish wrapper (idempotent,
+            # no-op unless disabling) so --disable-web-tools actually reaches the
+            # agent's provider-side web tools on those paths too.
+            _ensure_web_tool_wrapper_when_disabling(agent_config)
             # Neither restricted kind serializes extra_allowed_hosts: the
             # dynamic Compose profile grants hosts via the runtime-only
             # attribute (runtime_only_hosts=True), and static (nop/oracle)
@@ -1520,6 +1716,25 @@ async def run_harbor_trial_async(
             )
         ):
             hosts = _claude_code_environment_hosts(agent_config)
+            env_config.extra_allowed_hosts = [
+                *env_config.extra_allowed_hosts,
+                *[h for h in hosts if h not in env_config.extra_allowed_hosts],
+            ]
+
+        # opencode self-installs (nvm/Node/opencode-ai) at agent-setup, which
+        # runs under the environment baseline -- same lifecycle problem as the
+        # claude-code arm above, same solution: allow install + model hosts via
+        # the environment baseline, which spans install and run. On a public
+        # baseline the merge is a no-op (harbor ignores extras there), so
+        # modern swe-marathon-shaped tasks (public setup -> restricted agent)
+        # keep their agent phase free of the install hosts.
+        if (agent or "").strip().lower() == "opencode" and not (
+            _supports_daytona_compose_restricted_agent_network(
+                task_path=effective_task_path,
+                environment_config=env_config,
+            )
+        ):
+            hosts = _opencode_environment_hosts(agent_config)
             env_config.extra_allowed_hosts = [
                 *env_config.extra_allowed_hosts,
                 *[h for h in hosts if h not in env_config.extra_allowed_hosts],
@@ -1572,6 +1787,16 @@ async def run_harbor_trial_async(
         # Keep the BYOK key ambient for Job.create/run too, so Harbor's own
         # os.environ-based Bedrock-mode check agrees with the direct model id.
         runtime_env.update(byok_anthropic_env)
+        # Same idea for Google: the platform key is published as GEMINI_API_KEY
+        # (what gemini-cli reads), but agents built on the Vercel AI SDK read
+        # GOOGLE_GENERATIVE_AI_API_KEY. Harbor's opencode agent forwards the
+        # provider's key names it finds in *os.environ* -- a raw membership
+        # test, not the extra_env-aware helper -- so a value that arrives only
+        # through the agent env never reaches it, and the CLI exits before its
+        # first model call with no credential it recognises. Mirroring the one
+        # platform key onto the AI SDK name here puts it on the exact surface
+        # that forwarding reads, for the whole Job.create/run scope.
+        runtime_env.update(_gemini_ai_sdk_alias_env(model))
         is_claude_code = "claude-code" in (agent or "").strip().lower()
         if is_claude_code and (
             byok_anthropic_env or _claude_code_forces_direct_api(is_probe)
@@ -1600,8 +1825,16 @@ async def run_harbor_trial_async(
                     redaction_trial_id, runtime_transport_replacements
                 )
             try:
+                provisioned_hook = getattr(job, "on_environment_provisioned", None)
+                if environment == EnvironmentType.EC2 and provisioned_hook is None:
+                    raise RuntimeError(
+                        "Pinned Harbor lacks the required "
+                        "environment-provisioned lifecycle hook"
+                    )
                 if safe_hook_callback:
                     job.on_trial_started(safe_hook_callback)
+                    if provisioned_hook is not None:
+                        provisioned_hook(safe_hook_callback)
                     job.on_environment_started(safe_hook_callback)
                     job.on_agent_started(safe_hook_callback)
                     job.on_agent_ended(safe_hook_callback)

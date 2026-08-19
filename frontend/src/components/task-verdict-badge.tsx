@@ -69,14 +69,14 @@ function presentVerdict(
     icon = (
       <CheckCircle2 className={`${iconSizeClass} shrink-0 text-emerald-500`} />
     );
-    title = "Task is good";
+    title = "Accepted";
     toneCard = "border-emerald-500/30 bg-emerald-500/5";
     toneInline = "border-emerald-500/40 bg-emerald-500/[0.04]";
   } else if (isGood === false) {
     icon = (
       <AlertTriangle className={`${iconSizeClass} shrink-0 text-amber-500`} />
     );
-    title = "Needs review";
+    title = "Rejected";
     toneCard = "border-amber-500/30 bg-amber-500/5";
     toneInline = "border-amber-500/40 bg-amber-500/[0.04]";
   } else {
@@ -88,12 +88,14 @@ function presentVerdict(
     toneInline = "border-[color:var(--paper-line)]";
   }
 
+  // While a replacement QA run is pending, the kept payload belongs to the
+  // previous verdict -- show only the in-progress state.
   let detail: string | null = null;
   if (failed && task.verdict_error) {
     detail = task.verdict_error;
-  } else if (isGood === true) {
+  } else if (!pending && isGood === true) {
     detail = verdict?.reasoning?.trim() || null;
-  } else if (isGood === false) {
+  } else if (!pending && isGood === false) {
     detail = verdict?.primary_issue ?? verdict?.reasoning ?? null;
   }
 
@@ -126,10 +128,10 @@ export function TaskVerdictBadge({
   const iconSize = variant === "card" ? "h-5 w-5 mt-0.5" : "h-4 w-4";
   const p = presentVerdict(task, iconSize);
   const verdict = task.verdict ?? null;
-  const showRunButton =
-    onRunJudge != null && !p.pending && !isRunning && verdict?.is_good == null;
+  const showRunButton = onRunJudge != null && !p.pending && !isRunning;
   const showCancelButton = onCancelJudge != null && p.pending;
-  const runLabel = task.verdict_status || task.verdict ? "Rerun QA" : "Run QA";
+  const runLabel =
+    task.verdict_status || task.verdict ? "Rerun verdict" : "Run QA";
 
   if (variant === "inline") {
     return (
@@ -146,7 +148,7 @@ export function TaskVerdictBadge({
             <span className="font-mono text-[12px] font-semibold text-[color:var(--paper-ink)]">
               {isRunning ? "Queuing QA..." : p.title}
             </span>
-            {verdict?.confidence ? (
+            {!p.pending && verdict?.confidence ? (
               <span className="font-mono text-[10.5px] text-[color:var(--paper-ink-3)]">
                 · {verdict.confidence} confidence
               </span>
@@ -156,6 +158,28 @@ export function TaskVerdictBadge({
             <p className="mt-0.5 font-mono text-[11px] leading-snug text-[color:var(--paper-ink-2)]">
               {p.detail}
             </p>
+          ) : null}
+          {/* A rejected task's fixes are the actionable half of the verdict.
+              They rendered only in the card variant, so the panes that moved
+              from the pinned card to this badge kept the rejection and lost
+              what to do about it. */}
+          {!p.pending &&
+          verdict?.recommendations &&
+          verdict.recommendations.length > 0 ? (
+            <div className="mt-1.5 border-l-2 border-amber-500/50 pl-2">
+              <span className="font-mono text-[10px] font-semibold tracking-wider text-[color:var(--paper-ink-3)] uppercase">
+                Fixes ({verdict.recommendations.length})
+              </span>
+              <div className="mt-0.5 space-y-0.5">
+                {verdict.recommendations.map((rec, idx) => (
+                  <AnalysisProse
+                    key={idx}
+                    text={rec}
+                    className="font-mono text-[11px] leading-snug text-[color:var(--paper-ink-2)]"
+                  />
+                ))}
+              </div>
+            </div>
           ) : null}
           {error ? (
             <p className="mt-0.5 font-mono text-[11px] leading-snug text-red-500">
@@ -207,7 +231,7 @@ export function TaskVerdictBadge({
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <span className="font-mono text-sm font-bold">{p.title}</span>
-              {verdict?.confidence ? (
+              {!p.pending && verdict?.confidence ? (
                 <span className="text-muted-foreground text-xs">
                   · {verdict.confidence} confidence
                 </span>
@@ -216,7 +240,9 @@ export function TaskVerdictBadge({
             {p.detail ? (
               <AnalysisProse text={p.detail} className="text-muted-foreground mt-1" />
             ) : null}
-            {verdict?.recommendations && verdict.recommendations.length > 0 ? (
+            {!p.pending &&
+            verdict?.recommendations &&
+            verdict.recommendations.length > 0 ? (
               <div className="border-border/60 bg-muted/30 mt-2 rounded-md border border-l-2 border-l-amber-500/60 p-2.5">
                 <span className="text-foreground/80 font-mono text-[10px] font-semibold tracking-wider uppercase">
                   Fixes ({verdict.recommendations.length})

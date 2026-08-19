@@ -289,3 +289,61 @@ def test_composer_link_event_is_enqueued_for_unfurl(monkeypatch):
     assert len(background_tasks.tasks) == 1
     assert background_tasks.tasks[0].func is slack_router.process_link_shared_event
     assert background_tasks.tasks[0].args == (payload,)
+
+
+def test_app_mention_is_enqueued_for_carl_without_breaking_unfurls(monkeypatch):
+    secret = "signing-secret"
+    payload = {
+        "type": "event_callback",
+        "team_id": "T123",
+        "event": {
+            "type": "app_mention",
+            "channel": "C123",
+            "user": "U123",
+            "ts": "100.1",
+            "text": "<@UCARL> what is queue health?",
+        },
+    }
+    body = json.dumps(payload).encode()
+    timestamp = str(int(time.time()))
+    signature = (
+        "v0="
+        + hmac.new(
+            secret.encode(),
+            b"v0:" + timestamp.encode() + b":" + body,
+            hashlib.sha256,
+        ).hexdigest()
+    )
+    config = SlackUnfurlConfig(
+        enabled=True,
+        signing_secret=secret,
+        bot_token="xoxb-token",
+        org_id="org-1",
+        team_id="T123",
+        allowed_channels=frozenset(),
+        dashboard_url="https://www.oddish.app",
+    )
+    monkeypatch.setattr(slack_router, "load_slack_unfurl_config", lambda: config)
+    monkeypatch.setenv("ODDISH_ENABLE_CARL_AGENT", "true")
+
+    async def receive():
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    request = Request(
+        {
+            "type": "http",
+            "headers": [
+                (b"x-slack-request-timestamp", timestamp.encode()),
+                (b"x-slack-signature", signature.encode()),
+            ],
+        },
+        receive,
+    )
+    background_tasks = BackgroundTasks()
+
+    assert asyncio.run(slack_events(request, background_tasks)) == {"ok": True}
+    assert len(background_tasks.tasks) == 1
+    from carl import dispatch_app_mention
+
+    assert background_tasks.tasks[0].func is dispatch_app_mention
+    assert background_tasks.tasks[0].args == (payload,)

@@ -3,44 +3,60 @@
 import { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import { Loader2 } from "lucide-react";
-import { getLanguageFromFilename } from "@/components/code-block";
 import { ImageRenderer } from "./image-renderer";
 import { VideoRenderer } from "./video-renderer";
 import { AudioRenderer } from "./audio-renderer";
 import { PdfRenderer } from "./pdf-renderer";
 import { BinaryRenderer } from "./binary-renderer";
-import { JsonRenderer } from "./json-renderer";
-import { LogRenderer } from "./log-renderer";
 import { CsvRenderer } from "./csv-renderer";
-import { CodeRenderer } from "./code-renderer";
-import { TextRenderer } from "./text-renderer";
 import { ConfigJsonRenderer } from "./config-json-renderer";
-import { RawRenderer } from "./raw-renderer";
+import type { LineRange } from "@/lib/line-range";
 
 // Heavy renderers are code-split so they don't inflate the main bundle.
 const MarkdownRenderer = dynamic(
   () => import("./markdown-renderer").then((m) => m.MarkdownRenderer),
-  { ssr: false, loading: () => <LoadingStub label="Rendering markdown..." /> },
+  { ssr: false, loading: () => <LoadingStub label="Rendering markdown..." /> }
 );
 
 const NotebookRenderer = dynamic(
   () => import("./notebook-renderer").then((m) => m.NotebookRenderer),
-  { ssr: false, loading: () => <LoadingStub label="Rendering notebook..." /> },
+  { ssr: false, loading: () => <LoadingStub label="Rendering notebook..." /> }
 );
 
 const XlsxRenderer = dynamic(
   () => import("./xlsx-renderer").then((m) => m.XlsxRenderer),
-  { ssr: false, loading: () => <LoadingStub label="Loading spreadsheet..." /> },
+  { ssr: false, loading: () => <LoadingStub label="Loading spreadsheet..." /> }
 );
 
 const DocxRenderer = dynamic(
   () => import("./docx-renderer").then((m) => m.DocxRenderer),
-  { ssr: false, loading: () => <LoadingStub label="Converting document..." /> },
+  { ssr: false, loading: () => <LoadingStub label="Converting document..." /> }
+);
+
+const ResultJsonRenderer = dynamic(
+  () => import("./result-json-renderer").then((m) => m.ResultJsonRenderer),
+  { ssr: false, loading: () => <LoadingStub label="Rendering result..." /> }
+);
+
+// Pierre (@pierre/diffs) bundles shiki, so both stay code-split.
+const CodeRenderer = dynamic(
+  () => import("./code-renderer").then((m) => m.CodeRenderer),
+  { ssr: false, loading: () => <LoadingStub label="Highlighting code..." /> }
+);
+
+const DiffRenderer = dynamic(
+  () => import("./diff-renderer").then((m) => m.DiffRenderer),
+  { ssr: false, loading: () => <LoadingStub label="Rendering diff..." /> }
+);
+
+const JsonRenderer = dynamic(
+  () => import("./json-renderer").then((m) => m.JsonRenderer),
+  { ssr: false, loading: () => <LoadingStub label="Rendering JSON..." /> }
 );
 
 function LoadingStub({ label }: { label: string }) {
   return (
-    <div className="flex h-full items-center justify-center gap-2 p-8 text-muted-foreground">
+    <div className="text-muted-foreground flex h-full items-center justify-center gap-2 p-8">
       <Loader2 className="h-5 w-5 animate-spin" />
       <span>{label}</span>
     </div>
@@ -58,6 +74,8 @@ type FileRendererKind =
   | "notebook"
   | "json"
   | "config-json"
+  | "result-json"
+  | "diff"
   | "csv"
   | "log"
   | "code"
@@ -134,7 +152,11 @@ function getFileRendererKind(fileName: string): FileRendererKind {
   if (lower.endsWith("/config.json") || lower === "config.json") {
     return "config-json";
   }
+  if (lower.endsWith("/result.json") || lower === "result.json") {
+    return "result-json";
+  }
   if (ext === "json") return "json";
+  if (ext === "diff" || ext === "patch") return "diff";
 
   if (ext === "csv" || ext === "tsv") return "csv";
   if (ext === "log") return "log";
@@ -165,6 +187,13 @@ interface FileRendererProps {
    * types ignore this and always render normally.
    */
   viewMode?: "rendered" | "raw";
+  /**
+   * Line range to highlight and scroll to (the ``?lines=L12-L20`` anchor).
+   * Only honored by line-oriented renderers (code, log, text).
+   */
+  selectedLines?: LineRange | null;
+  /** Selection changes from the line-oriented renderers, for URL sync. */
+  onSelectLines?: (range: LineRange | null) => void;
 }
 
 /**
@@ -179,11 +208,21 @@ export function FileRenderer({
   fileSize,
   kind,
   viewMode = "rendered",
+  selectedLines,
+  onSelectLines,
 }: FileRendererProps) {
   const resolvedKind = kind ?? getFileRendererKind(fileName);
 
   if (viewMode === "raw" && !URL_BASED_KINDS.has(resolvedKind)) {
-    return <RawRenderer content={content ?? ""} />;
+    return (
+      <CodeRenderer
+        content={content ?? ""}
+        fileName={fileName}
+        plainText
+        selectedLines={selectedLines}
+        onSelectLines={onSelectLines}
+      />
+    );
   }
 
   switch (resolvedKind) {
@@ -214,27 +253,41 @@ export function FileRenderer({
         />
       );
     case "markdown":
-      return <MarkdownRenderer content={content ?? ""} />;
+      return (
+        <MarkdownRenderer
+          content={content ?? ""}
+          fileName={fileName}
+          selectedLines={selectedLines}
+          onSelectLines={onSelectLines}
+        />
+      );
     case "notebook":
       return <NotebookRenderer content={content ?? ""} />;
     case "json":
       return <JsonRenderer content={content ?? ""} />;
     case "config-json":
       return <ConfigJsonRenderer content={content ?? ""} />;
+    case "result-json":
+      return <ResultJsonRenderer content={content ?? ""} />;
+    case "diff":
+      return <DiffRenderer content={content ?? ""} fileName={fileName} />;
     case "csv": {
       const delimiter = fileName.toLowerCase().endsWith(".tsv") ? "\t" : ",";
       return <CsvRenderer content={content ?? ""} delimiter={delimiter} />;
     }
     case "log":
-      return <LogRenderer content={content ?? ""} />;
     case "text":
-      return <TextRenderer content={content ?? ""} />;
     case "code":
     default:
+      // Logs render through the same pierre view — shiki ships a ``log``
+      // grammar, so levels and timestamps highlight properly.
       return (
         <CodeRenderer
           content={content ?? ""}
-          language={getLanguageFromFilename(fileName)}
+          fileName={fileName}
+          plainText={resolvedKind === "text"}
+          selectedLines={selectedLines}
+          onSelectLines={onSelectLines}
         />
       );
   }
@@ -242,7 +295,7 @@ export function FileRenderer({
 
 function MissingUrl({ fileName }: { fileName: string }) {
   return (
-    <div className="flex h-full items-center justify-center p-8 text-sm text-muted-foreground">
+    <div className="text-muted-foreground flex h-full items-center justify-center p-8 text-sm">
       Cannot preview {fileName}: no URL available
     </div>
   );
@@ -285,7 +338,7 @@ function ArrayBufferWrapper({
 
   if (error) {
     return (
-      <div className="p-4 text-sm text-destructive">
+      <div className="text-destructive p-4 text-sm">
         Failed to load {fileName}: {error}
       </div>
     );

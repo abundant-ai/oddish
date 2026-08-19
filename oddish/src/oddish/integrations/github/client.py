@@ -13,6 +13,8 @@ from typing import Any
 
 import httpx
 
+from oddish.timing import RequestTimedAsyncClient
+
 logger = logging.getLogger(__name__)
 
 GITHUB_API_BASE = "https://api.github.com"
@@ -77,9 +79,9 @@ class GitHubClient:
 
     def __init__(self, token: str | None = None):
         self.token = token or os.getenv("GITHUB_TOKEN", "")
-        self._client: httpx.AsyncClient | None = None
+        self._client: RequestTimedAsyncClient | None = None
 
-    async def _get_client(self) -> httpx.AsyncClient:
+    async def _get_client(self) -> RequestTimedAsyncClient:
         if self._client is None:
             headers = {
                 "Accept": "application/vnd.github.v3+json",
@@ -87,7 +89,7 @@ class GitHubClient:
             }
             if self.token:
                 headers["Authorization"] = f"Bearer {self.token}"
-            self._client = httpx.AsyncClient(
+            self._client = RequestTimedAsyncClient(
                 base_url=GITHUB_API_BASE,
                 headers=headers,
                 timeout=30.0,

@@ -8,6 +8,7 @@ from rich.console import Console
 
 from oddish.cli.api import get_experiment_tasks, get_task_summary
 from oddish.cli.config import get_auth_headers, print_json
+from oddish.cli.detail import get_trial_detail
 
 console = Console()
 error_console = Console(stderr=True)
@@ -64,6 +65,8 @@ def _resolve_target(
     if parent_task_id:
         task = get_task_summary(api_url, parent_task_id)
         if task and any(t.get("id") == target for t in task.get("trials", []) or []):
+            return "trial", target
+        if get_trial_detail(api_url, target, json_output=False) is not None:
             return "trial", target
 
     if get_task_summary(api_url, target) is not None:

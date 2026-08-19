@@ -29,6 +29,16 @@ export async function POST(request: Request) {
       );
     }
 
+    const payload: { task_ids: string[]; experiment_id?: string } = {
+      task_ids: body.task_ids,
+    };
+    if (
+      typeof body.experiment_id === "string" &&
+      body.experiment_id.trim().length > 0
+    ) {
+      payload.experiment_id = body.experiment_id;
+    }
+
     const url = getBackendUrl("tasks", "/cancel");
     const res = await fetch(url, {
       method: "POST",
@@ -37,7 +47,7 @@ export async function POST(request: Request) {
         "Content-Type": "application/json",
         ...getAuthHeaders(token),
       },
-      body: JSON.stringify({ task_ids: body.task_ids }),
+      body: JSON.stringify(payload),
     });
 
     const text = await res.text();

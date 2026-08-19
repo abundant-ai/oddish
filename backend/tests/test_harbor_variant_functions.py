@@ -12,6 +12,20 @@ from __future__ import annotations
 import pytest
 
 
+def test_harbor_variant_images_reuse_built_image_objects():
+    import modal_app
+
+    first = modal_app.harbor_variant_images()
+    second = modal_app.harbor_variant_images()
+
+    assert first is not second
+    assert first.keys() == second.keys()
+    assert all(first[variant_id] is second[variant_id] for variant_id in first)
+
+    first.clear()
+    assert modal_app.harbor_variant_images().keys() == second.keys()
+
+
 @pytest.mark.skip(reason="requires Modal runner")
 def test_blessed_variant_builds_named_function_and_image(monkeypatch):
     """A populated HARBOR_VARIANTS yields a process_single_job__<id> Function.

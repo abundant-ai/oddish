@@ -14,6 +14,7 @@ from oddish.core.helpers import (
     fetch_trial_queue_info,
     fetch_visible_worker_jobs,
 )
+from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.core.tags.projection import (
     list_direct_version_tags,
     list_effective_user_tags_for_task_versions,
@@ -87,7 +88,12 @@ async def set_task_default_version_core(
     ``TaskModel`` keeps the selected version's storage fields mirrored for
     legacy callers that do not resolve ``current_version_id`` themselves.
     """
-    task = await get_task_for_org_core(session, task_id=task_id, org_id=org_id)
+    task = await get_task_for_org_core(
+        session,
+        task_id=task_id,
+        org_id=org_id,
+        with_for_update=True,
+    )
     result = await session.execute(
         select(TaskVersionModel).where(
             TaskVersionModel.task_id == task.id,
@@ -101,6 +107,7 @@ async def set_task_default_version_core(
             detail=f"Version {version} not found for task {task_id}",
         )
 
+    source_changed = task.current_version_id != version_row.id
     task.current_version_id = version_row.id
     task.task_path = version_row.task_path
     task.task_s3_key = version_row.task_s3_key
@@ -109,7 +116,12 @@ async def set_task_default_version_core(
     # recomputing because the projection reads ``current_version_id`` through
     # raw SQL in the same transaction.
     await session.flush()
+    if source_changed:
+        from oddish.queue import invalidate_task_qa_for_source_change
+
+        await invalidate_task_qa_for_source_change(session, task)
     await recompute_task_browse_projection(session, task_id=task.id)
+    await refresh_task_browse_summaries(session, [version_row.id])
     return TaskVersionResponse.model_validate(version_row)
 
 
@@ -182,9 +194,7 @@ async def get_task_detail_core(
         version_rows=version_rows,
         current_version_id=task_status.current_version_id,
         billed_trial_ids=billed_trial_ids,
-        qa_cost_usd=(
-            qa_by_task[task_id].qa_cost_usd if task_id in qa_by_task else 0.0
-        ),
+        qa_cost_usd=(qa_by_task[task_id].qa_cost_usd if task_id in qa_by_task else 0.0),
     )
 
     # Version-scoped experiments: which experiments ran non-probe trials
@@ -300,6 +310,7 @@ def _aggregate_task_detail_rollups(
         v.id: TaskVersionSummary(
             id=v.id,
             version=v.version,
+            content_hash=v.content_hash,
             message=v.message,
             created_at=v.created_at,
             is_current=(v.id == current_version_id),

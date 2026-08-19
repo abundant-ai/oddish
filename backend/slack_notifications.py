@@ -9,7 +9,6 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from urllib.parse import quote
 
-import httpx
 import modal
 from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
@@ -34,6 +33,7 @@ from oddish.db import (
     get_session,
 )
 from oddish.model_pricing import has_pricing
+from oddish.timing import RequestTimedAsyncClient
 from slack_alert_settings import AlertSettings, read_alert_settings
 from user_alert_prefs import (
     DEFAULT_EXPERIMENT_MILESTONE_USD,
@@ -1176,13 +1176,13 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
 
 
 async def _post(webhook_url: str, text: str) -> None:
-    async with httpx.AsyncClient(timeout=_SLACK_TIMEOUT_SECONDS) as client:
+    async with RequestTimedAsyncClient(timeout=_SLACK_TIMEOUT_SECONDS) as client:
         response = await client.post(webhook_url, json={"text": text})
         response.raise_for_status()
 
 
 async def _lookup_slack_user(bot_token: str, email: str) -> str | None:
-    async with httpx.AsyncClient(timeout=_SLACK_TIMEOUT_SECONDS) as client:
+    async with RequestTimedAsyncClient(timeout=_SLACK_TIMEOUT_SECONDS) as client:
         response = await client.get(
             "https://slack.com/api/users.lookupByEmail",
             params={"email": email},
@@ -1219,7 +1219,7 @@ async def _resolve_dm_slack_id(
 
 
 async def _post_dm(bot_token: str, slack_user_id: str, text: str) -> None:
-    async with httpx.AsyncClient(timeout=_SLACK_TIMEOUT_SECONDS) as client:
+    async with RequestTimedAsyncClient(timeout=_SLACK_TIMEOUT_SECONDS) as client:
         open_response = await client.post(
             "https://slack.com/api/conversations.open",
             headers={"Authorization": f"Bearer {bot_token}"},
@@ -1283,19 +1283,6 @@ async def _mark_alert_sent(*alert_keys: str) -> None:
             .where(SlackExpenseAlertModel.alert_key.in_(alert_keys))
             .values(notified_at=datetime.now(timezone.utc))
         )
-
-
-async def _rearm_user_spend_alerts(active_keys: set[str]) -> None:
-    statement = SlackExpenseAlertModel.__table__.delete().where(
-        SlackExpenseAlertModel.alert_key.like("user-daily-overage:%"),
-        SlackExpenseAlertModel.notified_at.isnot(None),
-    )
-    if active_keys:
-        statement = statement.where(
-            SlackExpenseAlertModel.alert_key.not_in(active_keys)
-        )
-    async with get_session() as session:
-        await session.execute(statement)
 
 
 async def record_alerts(
@@ -1434,14 +1421,6 @@ async def send_slack_expense_notifications() -> None:
         return
     try:
         alerts = await load_alerts()
-        if webhook_url:
-            await _rearm_user_spend_alerts(
-                {
-                    alert.key
-                    for alert in alerts
-                    if alert.key.startswith("user-daily-overage:")
-                }
-            )
         await record_alerts(alerts, channel=bool(webhook_url), dms=bool(bot_token))
         await deliver_pending_alerts(webhook_url, bot_token)
     finally:

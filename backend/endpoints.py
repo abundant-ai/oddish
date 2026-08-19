@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from oddish.config import Settings
 
 # API containers are warm and long-lived (min_containers >= 1).  Reuse pooled
@@ -33,9 +35,9 @@ Settings.db_use_null_pool = False
 Settings.db_pool_size = 2
 Settings.db_pool_max_overflow = 1
 
-import modal
+import modal  # noqa: E402
 
-from modal_app import (
+from modal_app import (  # noqa: E402
     API_BUFFER_CONTAINERS,
     API_CONCURRENCY_MAX,
     API_CONCURRENCY_TARGET,
@@ -43,22 +45,36 @@ from modal_app import (
     API_MAX_CONTAINERS,
     API_MEMORY_MB,
     API_MIN_CONTAINERS,
+    API_TIMEOUT_SECONDS,
     API_WEBHOOK_LABEL,
     api_volumes,
     app,
     image,
     runtime_secrets,
 )
-from api.app import create_app
+from api.app import create_asgi_app  # noqa: E402
+from oddish.core.helpers import register_provider_teardown_delegate
 
-api = create_app()
+
+async def _teardown_ec2_sandbox(external_id: str) -> bool:
+    function = modal.Function.from_name(
+        os.environ.get("MODAL_APP_NAME", "oddish"),
+        "teardown_ec2_sandbox",
+        environment_name=os.environ.get("MODAL_ENVIRONMENT") or None,
+    )
+    return bool(await function.remote.aio(external_id))
+
+
+register_provider_teardown_delegate("ec2", _teardown_ec2_sandbox)
+
+api = create_asgi_app()
 
 
 @app.function(
     image=image,
     volumes=api_volumes,
     secrets=runtime_secrets,
-    timeout=600,
+    timeout=API_TIMEOUT_SECONDS,
     cpu=API_CPU,
     memory=API_MEMORY_MB,
     min_containers=API_MIN_CONTAINERS,
