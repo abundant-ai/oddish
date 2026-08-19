@@ -28,7 +28,6 @@ from oddish.db.models import (
     # ORM Models
     AnalysisCostModel,
     analysis_spend_view,
-    AnalyzerBlockModel,
     CostExcludedLlmKeyModel,
     DocumentModel,
     ExperimentModel,
@@ -120,7 +119,6 @@ __all__ = [
     # ORM Models
     "AnalysisCostModel",
     "analysis_spend_view",
-    "AnalyzerBlockModel",
     "CostExcludedLlmKeyModel",
     "ExperimentModel",
     "DocumentModel",

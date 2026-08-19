@@ -33,7 +33,6 @@ from sqlalchemy import column as sql_column
 from sqlalchemy import event as sa_event
 from sqlalchemy import table as sql_table
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
-from sqlalchemy.dialects.postgresql import ENUM as PGEnum
 from sqlalchemy.ext.asyncio import AsyncAttrs  # type: ignore[attr-defined]
 from sqlalchemy.orm import Mapped, relationship
 from sqlalchemy.orm import DeclarativeBase, mapped_column  # type: ignore[attr-defined]
@@ -192,9 +191,9 @@ class WorkerJobKind(str, Enum):
     TAG_PROJECT = "TAG_PROJECT"
     # Retired analyzer kind. No handler claims it (workers claim only
     # registered kinds); the member stays so the native ``worker_job_kind``
-    # Postgres type keeps the values historical rows reference. The
-    # agent-capabilities service still enqueues rows of this kind until PR B
-    # removes it; they sit QUEUED and are cancelled by ``retirejobs01``.
+    # Postgres type keeps the values historical rows reference. Nothing
+    # enqueues it anymore; stragglers were cancelled by ``retirejobs01``
+    # and ``dropblocks01``.
     ANALYZER = "ANALYZER"
     ANALYZER_BLOCK = "ANALYZER_BLOCK"
 
@@ -530,70 +529,6 @@ class ExperimentModel(TimestampedMixin, Base):
         secondaryjoin=lambda: TaskModel.id == task_experiments.c.task_id,
         back_populates="experiments",
         passive_deletes=True,
-    )
-
-
-class AnalyzerBlockModel(TimestampedMixin, Base):
-    """One run of a single composable analyzer block.
-
-    Standalone primitive: many blocks chain arbitrarily in test scripts.
-    ``type`` / ``llm_client_type`` are
-    the ``.value`` of the ``AnalyzerType`` / ``LLMClientType`` enums defined in
-    ``backend/api/services`` -- stored as plain strings so this module stays free
-    of any backend-package dependency. Raw streamed output lives in S3 at
-    ``{key_prefix}/{id}``; ``output`` here is the accumulated/parsed result.
-    """
-
-    __tablename__ = "analyzer_blocks"
-    __table_args__ = (
-        Index(
-            "idx_analyzer_blocks_analyzer_id_live",
-            "analyzer_id",
-            postgresql_where=text("deleted_at IS NULL"),
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
-    analyzer_id: Mapped[str | None] = mapped_column(
-        String(64), nullable=True, index=True
-    )
-    # Task-level QA blocks use this explicit subject link. ``analyzer_id`` held
-    # the report association for the removed reports feature; historical rows
-    # keep their ids (the ``analyzers`` table itself is dropped).
-    task_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
-    type: Mapped[str] = mapped_column(String(64), nullable=False)
-    key_prefix: Mapped[str] = mapped_column(Text, nullable=False)
-    llm_client_type: Mapped[str] = mapped_column(String(64), nullable=False)
-
-    prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Unwritten since the DB prompt registry was dropped; historical rows
-    # keep their stamps.
-    prompt_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    prompt_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    prompt_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
-    # input/output are arbitrary JSON (the block's I/O are typed ``any``).
-    input: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
-    output: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
-
-    status: Mapped[JobStatus] = mapped_column(
-        PGEnum(JobStatus, name="jobstatus", create_type=False),
-        default=JobStatus.PENDING,
-        nullable=False,
-    )
-    error: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    job_started_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    job_ended_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    job_duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
-
-    # ``metadata`` is reserved on the declarative Base, so the attribute is
-    # ``block_metadata`` while the DB column is literally named ``metadata``.
-    block_metadata: Mapped[dict | None] = mapped_column(
-        "metadata", JSONB, nullable=True
     )
 
 
@@ -2587,7 +2522,6 @@ from oddish.db.soft_delete import register_soft_delete_models
 
 register_soft_delete_models(
     ExperimentModel,
-    AnalyzerBlockModel,
     TaskModel,
     TrialModel,
     TagModel,
