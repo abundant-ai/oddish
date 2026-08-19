@@ -281,6 +281,122 @@ async def test_a_task_gets_exactly_one_qa_trial():
 
 
 @pytest.mark.asyncio
+async def test_qa_admission_waits_for_the_audit():
+    """Needs a database. The QA brief snapshots the audit findings at
+    creation and is never rebuilt, so automatic admission must defer while
+    an audit trial is live -- and the audit's own settlement must then
+    start QA, or a task whose last agent trial settled mid-audit would
+    never get one."""
+    if not URL:
+        pytest.skip("ODDISH_DATABASE_URL not set")
+    from sqlalchemy import select, text
+
+    from oddish.db import TaskStatus, TrialStatus, get_session, init_db
+    from oddish.db.models import ExperimentModel, TaskModel
+    from oddish.queue import maybe_start_qa_stage
+    from oddish.workers.analysis_trials import handle_analysis_trial_settled
+
+    await init_db()
+    run = uuid.uuid4().hex[:8]
+    task_id = f"qa-audit-gate-{run}"
+    agent_id = f"{task_id}-1"
+    audit_id = f"{task_id}-2"
+    async with get_session() as session:
+        experiment = ExperimentModel(name=f"exp-{run}")
+        session.add(experiment)
+        session.add(
+            TaskModel(
+                id=task_id,
+                name=task_id,
+                user="u",
+                task_path="p",
+                status=TaskStatus.RUNNING,
+                run_analysis=True,
+            )
+        )
+        await session.flush()
+        await session.execute(
+            text(
+                "INSERT INTO task_experiments (task_id, experiment_id, created_at) "
+                "VALUES (:t, :e, NOW())"
+            ),
+            {"t": task_id, "e": experiment.id},
+        )
+        session.add(
+            TrialModel(
+                id=agent_id,
+                name=agent_id,
+                task_id=task_id,
+                experiment_id=experiment.id,
+                agent="claude-code",
+                provider="local",
+                queue_key="q",
+                status=TrialStatus.SUCCESS,
+                attempts=1,
+                max_attempts=3,
+            )
+        )
+        session.add(
+            TrialModel(
+                id=audit_id,
+                name=audit_id,
+                task_id=task_id,
+                experiment_id=experiment.id,
+                agent="claude-code",
+                provider="local",
+                queue_key="q",
+                kind="audit",
+                status=TrialStatus.RUNNING,
+                attempts=1,
+                max_attempts=3,
+            )
+        )
+        await session.commit()
+
+    # All agent trials are done, but the audit is live: admission defers.
+    async with get_session() as session:
+        assert await maybe_start_qa_stage(session, agent_id) is False
+    async with get_session() as session:
+        task = await session.get(TaskModel, task_id)
+        assert task.status == TaskStatus.RUNNING
+        qa_count = len(
+            (
+                await session.execute(
+                    select(TrialModel).where(
+                        TrialModel.task_id == task_id, TrialModel.kind == "qa"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert qa_count == 0
+
+    # The audit settles; its settlement re-enters admission and starts QA.
+    async with get_session() as session:
+        audit = await session.get(TrialModel, audit_id)
+        audit.status = TrialStatus.FAILED
+        await session.commit()
+    await handle_analysis_trial_settled(audit_id)
+
+    async with get_session() as session:
+        task = await session.get(TaskModel, task_id)
+        assert task.status == TaskStatus.VERDICT_PENDING
+        qa_trials = (
+            (
+                await session.execute(
+                    select(TrialModel).where(
+                        TrialModel.task_id == task_id, TrialModel.kind == "qa"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(qa_trials) == 1
+
+
+@pytest.mark.asyncio
 async def test_the_verdict_needs_enough_evidence():
     """Below 5 trials or 3 distinct agents the QA trial is created without a
     verdict request; at the bar it is asked for one."""

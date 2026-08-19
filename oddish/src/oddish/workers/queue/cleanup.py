@@ -1352,7 +1352,7 @@ async def _heal_stale_verdict_pending(session) -> int:
     re-import it; otherwise create a fresh QA trial (or complete the task
     when nothing is eligible). Returns the count completed without QA.
     """
-    from oddish.queue import start_qa_for_task
+    from oddish.queue import live_analysis_trial_id, start_qa_for_task
     from oddish.workers.analysis_trials import handle_analysis_trial_settled
 
     stale_verdict_pending = (
@@ -1436,6 +1436,12 @@ async def _heal_stale_verdict_pending(session) -> int:
                 settled_qa,
             )
             reimport_trial_ids.append(str(settled_qa))
+            continue
+        # start_qa_for_task itself has no audit gate; creating a QA trial
+        # while an audit is live would bake "(none recorded)" findings into
+        # its brief. Skip for now: the audit's settlement re-enters
+        # admission, and the next sweep retries regardless.
+        if await live_analysis_trial_id(session, task.id, kind="audit") is not None:
             continue
         if await start_qa_for_task(session, task):
             logger.info(

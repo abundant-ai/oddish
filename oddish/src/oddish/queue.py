@@ -1484,6 +1484,26 @@ async def start_qa_for_task(session: AsyncSession, task: TaskModel) -> bool:
     return True
 
 
+async def live_analysis_trial_id(
+    session: AsyncSession, task_id: str, *, kind: str
+) -> str | None:
+    """Id of a live (pending/queued/running/retrying) non-superseded trial
+    of ``kind`` for this task, or None. The live row itself is the
+    in-progress marker for analysis stages: status flags can be stale after
+    a crash, the trial row cannot."""
+    return await session.scalar(
+        select(TrialModel.id)
+        .where(
+            TrialModel.task_id == task_id,
+            TrialModel.kind == kind,
+            TrialModel.deleted_at.is_(None),
+            TrialModel.superseded_by_trial_id.is_(None),
+            TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
+        )
+        .limit(1)
+    )
+
+
 async def maybe_start_task_qa_stage(
     session: AsyncSession,
     task_id: str,
@@ -1535,6 +1555,15 @@ async def maybe_start_task_qa_stage(
     )
 
     if pending_count > 0:
+        return TaskQAStageAdmission()
+
+    # The QA brief snapshots the pre-trial audit findings at creation, and a
+    # created QA trial is never rebuilt when the audit lands later: starting
+    # now would permanently bake "(none recorded)" into the brief. Defer
+    # while an audit trial is live -- the same gate the manual QA endpoint
+    # applies. The audit's own settlement re-enters this admission
+    # (handle_analysis_trial_settled), so deferring cannot strand the task.
+    if await live_analysis_trial_id(session, task_id, kind="audit") is not None:
         return TaskQAStageAdmission()
 
     await start_qa_for_task(session, task)

@@ -898,3 +898,11 @@ async def handle_analysis_trial_settled(trial_id: str) -> None:
         await _fire_qa_imported(trial.task_id)
     elif kind == "audit":
         await _import_audit_result(trial)
+        # QA admission defers while this audit is live (the QA brief embeds
+        # the audit findings at creation). This settlement is what unblocks
+        # it: without the re-entry, a task whose last agent trial settled
+        # mid-audit would never start QA.
+        from oddish.queue import maybe_start_task_qa_stage
+
+        async with get_session() as session:
+            await maybe_start_task_qa_stage(session, trial.task_id)

@@ -28,23 +28,12 @@ from oddish.db import (
 async def _live_analysis_trial_id(
     session: AsyncSession, task_id: str, *, kind: str
 ) -> str | None:
-    return await session.scalar(
-        select(TrialModel.id)
-        .where(
-            TrialModel.task_id == task_id,
-            TrialModel.kind == kind,
-            TrialModel.superseded_by_trial_id.is_(None),
-            TrialModel.status.in_(
-                [
-                    TrialStatus.PENDING,
-                    TrialStatus.QUEUED,
-                    TrialStatus.RUNNING,
-                    TrialStatus.RETRYING,
-                ]
-            ),
-        )
-        .limit(1)
-    )
+    # One definition of "an analysis stage is in progress": the automatic
+    # QA admission (maybe_start_task_qa_stage) defers on the same predicate
+    # these endpoints guard with, so the two paths cannot disagree.
+    from oddish.queue import live_analysis_trial_id
+
+    return await live_analysis_trial_id(session, task_id, kind=kind)
 
 
 def _collect_cancel_metadata(rows: Collection[object]) -> dict[str, list[str]]:
