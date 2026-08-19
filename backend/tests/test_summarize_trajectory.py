@@ -1309,3 +1309,27 @@ def test_preprocess_then_clip_keeps_the_marker_timestamp():
         "2026-04-30T12:02:00Z",
         "2026-04-30T12:03:00Z",
     ]
+
+
+def test_output_cap_scales_with_the_number_of_citable_steps():
+    """A 1377-step trajectory needs room to enumerate 1377 ids, not 344.
+
+    Shrinking text before dropping steps hands the model every step id, and the
+    ids alone cost several thousand output tokens before any prose. A fixed cap
+    sized for a 344-step clip truncates that JSON mid-structure, which parses as
+    a failure -- strictly worse than the partial summary it replaced.
+    """
+    from api.services.summarize_trajectory import (
+        SUMMARY_MAX_TOKENS,
+        summary_max_tokens,
+    )
+
+    assert summary_max_tokens(40) == SUMMARY_MAX_TOKENS, "short runs are unchanged"
+
+    wide = summary_max_tokens(1377)
+    assert wide > SUMMARY_MAX_TOKENS
+    # 1377 ids at ~6 tokens each, on top of the prose the old cap already held.
+    assert wide - SUMMARY_MAX_TOKENS >= 1377 * 4, wide
+
+    # Never past what the model will accept as max_tokens.
+    assert summary_max_tokens(10**6) <= 128_000

@@ -93,6 +93,32 @@ def load_summary_prompt_template() -> str:
 # schema, not this number.
 SUMMARY_MAX_TOKENS = 16384
 
+# ...but a fixed cap is sized for a fixed number of citable steps, and shrinking
+# text instead of dropping steps changes that number by 4x. Every step the model
+# can cite has to be enumerated in some component's ``step_ids``, so the ids
+# alone cost roughly ``PER_STEP_ID_TOKENS`` each before a word of prose: 1377
+# steps is ~8k output tokens of pure ids, against a cap that was comfortable
+# when the clip handed the model 344. Overflowing it truncates the JSON
+# mid-structure and the parse fails -- strictly worse than the partial summary
+# it replaced, because a partial summary at least serves. So the cap scales with
+# what the payload actually offers.
+#
+# Raising it is close to free: ``max_tokens`` is a ceiling, not a target, and
+# billing is on tokens generated. The block streams (``messages.stream``), which
+# is what makes a cap this large safe against HTTP timeouts.
+# 16384 was proven comfortable against a payload of CAP_BASE_STEPS, the clip the
+# old ladder bottomed out at, so headroom is only owed for steps beyond it --
+# which keeps the ~96% of summaries that never overflowed byte-identical.
+PER_STEP_ID_TOKENS = 6
+CAP_BASE_STEPS = 344
+MAX_OUTPUT_TOKENS = 128_000
+
+
+def summary_max_tokens(n_steps: int) -> int:
+    """Output cap for a payload offering ``n_steps`` citable steps."""
+    extra = max(0, n_steps - CAP_BASE_STEPS) * PER_STEP_ID_TOKENS
+    return min(MAX_OUTPUT_TOKENS, SUMMARY_MAX_TOKENS + extra)
+
 # ``preprocess`` bounds each text field but nothing bounds the step *count* or
 # a step's total text, so a long agent run still serializes past the model's
 # input limit -- prod has seen 11.2M tokens against a 1M cap. Character count is
@@ -484,7 +510,7 @@ def build_summary_block(
         },
         output_transform=lambda raw: tb.to_summary(raw, model=model),
         model=model,
-        max_tokens=SUMMARY_MAX_TOKENS,
+        max_tokens=summary_max_tokens(len(trajectory.get("steps") or [])),
         response_format=tb.output_schema,
         output_schema=tb.output_schema.model_json_schema(),
         triggered_by_user_id=triggered_by_user_id,
