@@ -15,6 +15,12 @@ type TrialStatus =
   | "retrying"
   | "skipped";
 
+// trials.kind: "agent" is a normal evaluation run; "qa" and "audit" are the
+// platform's analysis agents (arriving with the analysis-trial pipeline).
+// The union is open (`| (string & {})`) because the column is a plain
+// VARCHAR and historical rows may carry retired kinds.
+export type TrialKind = "agent" | "qa" | "audit" | (string & {});
+
 export type JobStatus = "pending" | "queued" | "running" | "success" | "failed";
 
 type VisibleJobKind = "trial" | "qa" | "analysis";

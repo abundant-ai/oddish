@@ -1,4 +1,5 @@
 from oddish.db.models import (
+    AGENT_TRIAL_KIND,
     AnalysisStatus,
     Base,
     JobStatus,
@@ -89,6 +90,8 @@ from oddish.db.soft_delete import (
 __all__ = [
     # Base
     "Base",
+    # Constants
+    "AGENT_TRIAL_KIND",
     # Enums
     "TaskStatus",
     "JobStatus",

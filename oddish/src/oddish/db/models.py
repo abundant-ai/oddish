@@ -434,6 +434,16 @@ class ExperimentModel(TimestampedMixin, Base):
         # soft-deleted experiment doesn't take its name slot with it.
         # Experiments don't currently have a name uniqueness constraint,
         # but new code that adds one should follow the same convention.
+        #
+        # One *live* shadow experiment per live experiment: the partial
+        # unique lets the shadow creator use INSERT .. ON CONFLICT for a
+        # race-safe get-or-create, and a soft-deleted shadow frees the slot.
+        Index(
+            "uq_experiments_shadow_of_live",
+            "shadow_of",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
     )
 
     # Override id to add auto-generation
@@ -482,6 +492,13 @@ class ExperimentModel(TimestampedMixin, Base):
     # User-authored markdown description shown in the experiment header.
     # Nullable; ``None``/blank means "no description".
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # NULL for normal experiments. Set to another experiment's id on the
+    # hidden "shadow" experiment that will home that experiment's analysis
+    # trials (qa/audit) once the analysis-trial pipeline lands. Nothing
+    # writes it yet; the column and its unique index land first so the
+    # get-or-create can be race-safe from its first caller.
+    shadow_of: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Migration markers (Sauron->Oddish import). NULL for normal rows.
     # ``imported_at`` = when this row was created by the legacy importer ->
@@ -885,6 +902,13 @@ class TaskBrowseSummaryModel(Base):
     )
 
 
+# The ``trials.kind`` value of a normal evaluation run. Every other value
+# marks a platform analysis agent run; filters are written as
+# ``kind == AGENT_TRIAL_KIND`` / ``kind != AGENT_TRIAL_KIND`` (never an
+# enumeration of analysis kinds) so new analysis kinds inherit the exclusions.
+AGENT_TRIAL_KIND = "agent"
+
+
 class TrialModel(TimestampedMixin, Base):
     """Trial database model."""
 
@@ -941,6 +965,18 @@ class TrialModel(TimestampedMixin, Base):
     # harbor_config; this is set at trial creation in queue.py.
     is_probe: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false"), index=True
+    )
+
+    # What kind of run this row is: ``'agent'`` (the default) is a normal
+    # evaluation run; any other value is a platform analysis agent run
+    # (``'qa'`` / ``'audit'`` arrive with the analysis-trial pipeline).
+    # Nothing writes a non-agent value yet -- the column and its filters land
+    # first so every counter/summer is kind-aware before the writers exist.
+    kind: Mapped[str] = mapped_column(
+        String(32),
+        default=AGENT_TRIAL_KIND,
+        nullable=False,
+        server_default=AGENT_TRIAL_KIND,
     )
 
     # Status
@@ -1161,6 +1197,14 @@ class TrialModel(TimestampedMixin, Base):
             "created_at",
             "model",
             "provider",
+        ),
+        # Partial: almost every trial is 'agent', so only the analysis rows
+        # are indexed. Serves the user-facing surfaces' kind exclusions and
+        # the QA-cost surfaces' ``kind != 'agent'`` selections.
+        Index(
+            "ix_trials_kind_non_agent",
+            "kind",
+            postgresql_where=text("kind != 'agent'"),
         ),
         # Partial index that supports the default "non-superseded only"
         # filter on hot list/aggregation paths without indexing every
