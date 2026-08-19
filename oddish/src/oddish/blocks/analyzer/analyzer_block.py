@@ -15,7 +15,6 @@ from oddish.analyze.analysis_cost import AnalysisUsage, build_analysis_cost_row
 from oddish.db import generate_id, get_session
 from oddish.db.models import (
     AnalyzerBlockModel,
-    AnalyzerModel,
     JobStatus,
     TaskModel,
     TrialModel,
@@ -42,7 +41,8 @@ class AnalyzerType(str, enum.Enum):
     PRE_TRIAL = "pre_trial"
     POST_TRIAL = "post_trial"
     CUSTOM_QA = "custom_qa"
-    AGENT_CAPABILITIES = "agent_capabilities"
+    # "agent_capabilities" was a member until the feature's execution path was
+    # removed; stored analyzer_blocks rows may still carry the string.
 
 
 # The backend each analyzer needs, keyed by what the analyzer is permitted to
@@ -275,8 +275,8 @@ class AnalyzerBlock(Block):
         1. An explicit ``subject_type``/``subject_id`` (trial, task, or
            experiment). This is what callers that know their subject pass.
         2. The legacy paths: an explicit ``task_id``, or ``analyzer_id`` used
-           as an overloaded association id (a trial id, else an AnalyzerModel
-           id).
+           as an overloaded association id (a trial id; report ids died with
+           the reports feature).
 
         ``attribution_org_id`` OVERRIDES the resolved org. It must not
         short-circuit resolution -- doing so is what left every custom-QA cost
@@ -321,27 +321,14 @@ class AnalyzerBlock(Block):
         if not self.analyzer_id:
             return blank
 
-        # ``analyzer_id`` is an overloaded association id: a trial id on the
-        # trial path, an AnalyzerModel id on the cohort path.
+        # ``analyzer_id`` was an overloaded association id: a trial id on the
+        # trial path, a report id on the (removed) cohort path. Only the trial
+        # resolution remains; a miss resolves to a NULL subject, like cohort
+        # blocks that deliberately span many trials.
         by_trial = await self._attribute_to_trial(session, blank, self.analyzer_id)
         if by_trial["trial_id"] is not None:
             return by_trial
-
-        analyzer = (
-            await session.execute(
-                select(AnalyzerModel.org_id, AnalyzerModel.owner_user_id).where(
-                    AnalyzerModel.id == self.analyzer_id
-                )
-            )
-        ).first()
-        if analyzer is None:
-            return blank
-        return {
-            **blank,
-            "org_id": analyzer.org_id,
-            "billed_user_id": self.triggered_by_user_id or analyzer.owner_user_id,
-            "analyzer_id": self.analyzer_id,
-        }
+        return blank
 
     async def _attribute_to_trial(
         self, session, blank: dict[str, str | None], trial_id: str

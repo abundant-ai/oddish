@@ -313,11 +313,12 @@ _sandbox_client_factory: SandboxClientFactory | None = None
 
 
 def register_sandbox_client_factory(factory: SandboxClientFactory) -> None:
-    """Install the Daytona-sandbox backend from the hosted layer.
+    """Install a sandbox backend from the hosted layer.
 
-    The sandbox client needs the hosted sandbox provisioner, which core must not
-    import; ``backend.api.services.blocks.analyzer.sandbox_llm_client`` registers
-    itself here on import. Unregistered, only the SANDBOX branch is unavailable."""
+    No backend registers itself anymore: the Daytona sandbox stack was removed
+    with the reports feature. The hook stays so ``LLMClientType.SANDBOX``
+    resolves with a clear error instead of an import failure; unregistered,
+    only the SANDBOX branch is unavailable."""
     global _sandbox_client_factory
     _sandbox_client_factory = factory
 
@@ -352,8 +353,8 @@ async def create_llm_client(
     if llm_client_type == LLMClientType.SANDBOX:
         if _sandbox_client_factory is None:
             raise RuntimeError(
-                "SANDBOX llm_client_type needs the hosted sandbox backend; import "
-                "api.services.blocks.analyzer.sandbox_llm_client to register it"
+                "SANDBOX llm_client_type has no backend: the hosted sandbox "
+                "stack was removed with the reports feature"
             )
         config = sandbox_config or SandboxConfig()
         return await _sandbox_client_factory(

@@ -317,4 +317,8 @@ async def maybe_publish_experiment(
     require_experiment_publish_scope(auth)
     experiments = list(await task.awaitable_attrs.experiments or [])
     for experiment in experiments:
+        # A qa-report shadow experiment is internal; auto-publish must not
+        # expose it.
+        if experiment.shadow_of is not None:
+            continue
         await ensure_experiment_public(session, experiment)

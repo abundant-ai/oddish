@@ -42,6 +42,7 @@ import type {
   TaskVersionSummary,
   Trial,
 } from "@/lib/types";
+import { isAgentTrial } from "@/lib/types";
 import {
   isBrowseTaskDetail,
   taskDetailKey,
@@ -49,7 +50,6 @@ import {
   type TaskDetailResource,
 } from "@/lib/task-detail-resource";
 import { TaskOverviewPanel } from "@/components/task-overview-panel";
-import { AgentCapabilitiesSection } from "@/components/agent-capabilities-section";
 import {
   getCancelActionLabel,
   isActivePipelineStatus,
@@ -57,6 +57,7 @@ import {
   taskHasActiveTrials,
   taskHasActiveVerdict,
   taskHasCancellableWork,
+  taskHasLiveAnalysisTrial,
 } from "@/lib/job-status";
 
 interface TaskFile {
@@ -144,7 +145,6 @@ interface TaskFilesPanelProps {
    */
   showAnalysis?: boolean;
   /** Whether the task drawer offers and may fetch the capability analysis. */
-  showCapabilities?: boolean;
   /** The route host owns this because the drawer can mount two task panes. */
   activePane: TaskPane;
   onActivePaneChange?: (pane: TaskPane) => void;
@@ -204,7 +204,7 @@ interface TaskFilesPanelProps {
   onSelectedFileChange?: (path: string) => void;
 }
 
-export type TaskPane = "overview" | "capabilities" | "file";
+export type TaskPane = "overview" | "file";
 
 function getNodeName(path: string): string {
   const parts = path.split("/").filter(Boolean);
@@ -425,7 +425,6 @@ export function TaskFilesPanel({
   cancelExperimentId,
   allowRetry = true,
   showAnalysis = true,
-  showCapabilities = true,
   activePane,
   onActivePaneChange,
   onRetryComplete,
@@ -473,10 +472,7 @@ export function TaskFilesPanel({
         pickChecksVersion(detail, taskVersion)?.pre_trial_status ===
           "running" ||
         pickChecksVersion(detail, taskVersion)?.pre_trial_status === "queued";
-      const qaLive =
-        detail?.task?.verdict_status === "queued" ||
-        detail?.task?.verdict_status === "running";
-      if (checksLive || qaLive) return 5000;
+      if (checksLive || taskHasActiveVerdict(detail?.task)) return 5000;
       return isOpen ? 30000 : 0;
     },
   });
@@ -504,9 +500,7 @@ export function TaskFilesPanel({
           : undefined;
   const overviewAvailable =
     effectiveChecksTaskId !== null && showAnalysis !== false;
-  const capabilitiesAvailable =
-    showCapabilities && effectiveChecksTaskId !== null;
-  const taskPaneExists = overviewAvailable || capabilitiesAvailable;
+  const taskPaneExists = overviewAvailable;
   // Until /detail answers, the checks state is unknown, not "unaudited":
   // an enabled Run button on the misread queues an audit that wipes findings.
   // Never on public shares: `checksKey` is null there, so /detail is not
@@ -523,9 +517,7 @@ export function TaskFilesPanel({
       ? "Unable to load the static checks state."
       : null;
   const checksFindings = checksVersion?.pre_trial_findings ?? [];
-  const taskQaActive =
-    checksDetail?.task?.verdict_status === "queued" ||
-    checksDetail?.task?.verdict_status === "running";
+  const taskQaActive = taskHasActiveVerdict(checksDetail?.task);
   const resolvedFilesUrl = filesUrl ?? `${baseUrl}/tasks/${taskId}/files`;
   // Trial file routes stream the file itself; task file routes answer with a
   // JSON envelope ({path, content, key}, or {url} when presigning). Read that
@@ -736,8 +728,13 @@ export function TaskFilesPanel({
 
   const retryableTrials = useMemo(() => {
     if (!task?.trials) return [];
+    // Agent trials only: task.trials now carries qa/audit rows too, and
+    // "Rerun trials" must never replay an analysis brief through the
+    // generic retry endpoint (it also refuses them server-side).
     return task.trials.filter(
-      (trial) => trial.status === "failed" || trial.status === "success"
+      (trial) =>
+        isAgentTrial(trial) &&
+        (trial.status === "failed" || trial.status === "success")
     );
   }, [task]);
 
@@ -826,14 +823,17 @@ export function TaskFilesPanel({
         task_ids: id ? [id] : [],
         ...(cancelExperimentId ? { experiment_id: cancelExperimentId } : {}),
       });
-      // No active trials but QA in flight -> cancel just the task QA job.
+      // No active trials but analysis in flight (QA or the source audit --
+      // qa/cancel covers both kinds) -> cancel just the task QA job.
       // Experiment-scoped cancel leaves shared QA alone unless the caller is
       // on the dedicated cancel-QA path.
       if (
         id &&
         !cancelExperimentId &&
         !taskHasActiveTrials(task) &&
-        (taskHasActiveVerdict(task) || taskHasActiveAnalysis(task))
+        (taskHasActiveVerdict(task) ||
+          taskHasActiveAnalysis(task) ||
+          taskHasLiveAnalysisTrial(task))
       ) {
         path = `${baseUrl}/tasks/${id}/qa/cancel`;
         body = undefined;
@@ -1513,27 +1513,6 @@ export function TaskFilesPanel({
                       </span>
                     </button>
                   ) : null}
-                  {capabilitiesAvailable ? (
-                    <button
-                      type="button"
-                      onClick={() => onActivePaneChange?.("capabilities")}
-                      aria-current={
-                        activePane === "capabilities" ? "page" : undefined
-                      }
-                      className={`flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-sm ${
-                        activePane === "capabilities"
-                          ? "bg-primary/20 text-primary"
-                          : "hover:bg-muted/50 cursor-pointer"
-                      }`}
-                      title="Analyze agent behavior across the task's trials"
-                    >
-                      <Microscope
-                        className="h-3.5 w-3.5 shrink-0"
-                        aria-hidden="true"
-                      />
-                      <span className="truncate">Capabilities</span>
-                    </button>
-                  ) : null}
                   <button
                     type="button"
                     onClick={() => onActivePaneChange?.("file")}
@@ -1622,27 +1601,7 @@ export function TaskFilesPanel({
               </div>
             )}
             <div ref={contentRef} className="bg-card flex-1 overflow-auto">
-              {activePane === "capabilities" ? (
-                effectiveChecksTaskId && typeof overviewVersion === "number" ? (
-                  <AgentCapabilitiesSection
-                    taskId={effectiveChecksTaskId}
-                    apiBaseUrl={baseUrl}
-                    version={overviewVersion}
-                    linkEvidence
-                    shareToken={shareToken}
-                  />
-                ) : overviewVersion === undefined ? (
-                  <div className="space-y-3 p-4">
-                    <Skeleton className="h-4 w-48" />
-                    <Skeleton className="h-24 w-full" />
-                    <Skeleton className="h-24 w-full" />
-                  </div>
-                ) : (
-                  <div className="text-muted-foreground flex h-full items-center justify-center p-6 text-sm">
-                    No capability analysis is available for this task version.
-                  </div>
-                )
-              ) : activePane === "overview" && overviewAvailable ? (
+              {activePane === "overview" && overviewAvailable ? (
                 <TaskOverviewPanel
                   taskId={effectiveChecksTaskId}
                   apiBaseUrl={baseUrl}
@@ -1662,7 +1621,6 @@ export function TaskFilesPanel({
                   checksFindings={checksFindings}
                   checksStatus={checksVersion?.pre_trial_status}
                   checksError={checksVersion?.pre_trial_error}
-                  checksCostUsd={checksVersion?.pre_trial_cost_usd}
                   onRerunChecks={handleRerunChecks}
                   checksRerunning={checksRerunning}
                   checksQueueError={checksQueueError}

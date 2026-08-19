@@ -109,8 +109,8 @@ class TrajectoryComponentOutput(BaseModel):
     """One taxonomy-labelled segment in a trajectory summary.
 
     ``action`` and ``purpose`` are additive, not a replacement: the flat
-    ``trajectory_component`` is read by the frontend segment bar, the cohort
-    blocks, and agent_capabilities, so it stays. They exist because the flat
+    ``trajectory_component`` is read by the frontend segment bar, so it
+    stays. They exist because the flat
     vocabulary forces one label onto a step that is genuinely two things --
     grepping a file to chase a stack trace is `reading_files` by action and
     `debugging` by purpose, and picking one made 17.9% of steps change side of

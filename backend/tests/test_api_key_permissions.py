@@ -229,7 +229,9 @@ def _publish_probe(monkeypatch):
         api_key_created_by_role=UserRole.ADMIN.value,
         scope=APIKeyScope.TASKS,
     )
-    task = SimpleNamespace(experiments=[SimpleNamespace(id="exp-1")])
+    task = SimpleNamespace(
+        experiments=[SimpleNamespace(id="exp-1", shadow_of=None)]
+    )
 
     class _FakeAwaitableAttrs:
         # Mirrors SQLAlchemy's ``awaitable_attrs``, which

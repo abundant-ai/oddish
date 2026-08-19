@@ -166,27 +166,6 @@ async def test_no_usage_writes_nothing(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_cohort_block_is_attributed_via_the_analyzers_table(monkeypatch):
-    """Cohort blocks carry an analyzers-row id, not a trial id. Spend must be
-    charged to the org/user who triggered the report, not left unattributed --
-    but no trial_id may be invented, since the block spans many trials."""
-    added: list = []
-    _session(monkeypatch, added, trial_row=None, analyzer_row=ANALYZER_ROW)
-    b = _make_block(
-        analyzer_type=AnalyzerType.TRAJECTORY_FAILURE_ANALYSIS,
-        analyzer_id="report-9",
-    )
-    b.usage = USAGE
-    await b.record_cost()
-    row = added[0]
-    assert row.job_kind == "trajectory_failure_analysis"
-    assert row.org_id == "org-9"
-    assert row.billed_user_id == "user-9"
-    assert row.trial_id is None
-    assert row.analyzer_id == "report-9"
-
-
-@pytest.mark.asyncio
 async def test_task_qa_block_is_attributed_via_the_tasks_table(monkeypatch):
     added: list = []
     _session(monkeypatch, added, trial_row=None, task_row=TASK_ROW)
@@ -262,18 +241,6 @@ async def test_trial_owner_used_when_no_triggering_user(monkeypatch):
     b.usage = USAGE
     await b.record_cost()
     assert added[0].billed_user_id == "user-1"
-
-
-@pytest.mark.asyncio
-async def test_triggering_user_outranks_the_analyzer_owner(monkeypatch):
-    added: list = []
-    _session(monkeypatch, added, trial_row=None, analyzer_row=ANALYZER_ROW)
-    b = _make_block(analyzer_id="report-9", triggered_by_user_id="viewer-7")
-    b.usage = USAGE
-    await b.record_cost()
-    row = added[0]
-    assert row.billed_user_id == "viewer-7"
-    assert row.org_id == "org-9"
 
 
 @pytest.mark.asyncio
@@ -409,17 +376,3 @@ async def test_generate_forwards_the_triggering_user_to_the_block():
     finally:
         summarize_trajectory.build_summary_block = real
     assert seen.get("triggered_by_user_id") == "viewer-7"
-
-
-def test_summary_routes_pass_the_requesting_user():
-    """The user is only knowable at the route; the whole chain is pointless if
-    the handlers don't hand it over."""
-    from api.routers import trials
-
-    src = open(trials.__file__).read()
-    assert src.count("triggered_by_user_id=auth.user_id") == 1, (
-        "the summary route must attribute spend to the caller"
-    )
-    assert "get_or_generate_summary(session, attached_trial)" not in src, (
-        "a bare call site is left, billing the trial owner instead of the viewer"
-    )
