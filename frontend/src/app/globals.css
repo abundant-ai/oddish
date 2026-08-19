@@ -114,6 +114,16 @@
 @layer base {
   :root {
     --preview-banner-h: 0px;
+
+    /*
+     * The app's theme as a `color-scheme` keyword, for components that resolve
+     * their own colors with `light-dark()`. Pierre's shadow-root components
+     * (see `pierre-options.ts`) would otherwise follow the OS preference
+     * instead of the `.dark` class. Deliberately not applied to `:root`
+     * itself — that would restyle native scrollbars and form controls
+     * app-wide.
+     */
+    --app-color-scheme: light;
   }
 
   :root[data-preview="true"] {
@@ -246,6 +256,8 @@
   }
 
   .dark {
+    --app-color-scheme: dark;
+
     --paper-bg: oklch(18% 0.012 70);
     --paper-bg-2: oklch(21% 0.012 70);
     --paper-surface: oklch(22% 0.013 70);

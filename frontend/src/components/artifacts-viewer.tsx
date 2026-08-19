@@ -1,30 +1,12 @@
 "use client";
 
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  ChevronDown,
-  ChevronRight,
-  Code,
-  Eye,
-  File,
-  FileCode,
-  FileText,
-  Folder,
-  FolderOpen,
-  Loader2,
-  Package,
-} from "lucide-react";
+import { Code, Eye, Loader2, Package } from "lucide-react";
+import { FileTreePane, firstFilePath } from "@/components/file-tree-pane";
 import {
   FileRenderer,
   isBinaryRendererFile,
@@ -48,19 +30,19 @@ interface ArtifactsListing {
   files?: ArtifactFile[];
 }
 
-interface TreeNode {
+interface ArtifactEntry {
+  // File name, i.e. the last segment of `path`.
   name: string;
-  // Relative path inside the synthetic artifact root. Used as the React key
-  // and for selection state — stripped of the Harbor `<trial_name>/` (and
-  // `steps/<step>/`) wrapper dirs so the tree reads like a normal filesystem.
+  // Relative path inside the synthetic artifact root. Identifies the row in
+  // the tree and drives selection state — stripped of the Harbor
+  // `<trial_name>/` (and `steps/<step>/`) wrapper dirs so the tree reads like
+  // a normal filesystem.
   path: string;
   // Original S3-relative path returned by /trials/{id}/files. Used to build
   // the backend proxy URL for content fetches.
-  fullPath?: string;
-  type: "file" | "dir";
+  fullPath: string;
   size?: number;
   url?: string;
-  children?: TreeNode[];
 }
 
 // Harbor writes artifacts inside the per-trial subdirectory of the job dir,
@@ -92,117 +74,36 @@ function relativizeArtifactPath(path: string): string {
   return inside;
 }
 
-function getFileIcon(name: string) {
-  const ext = name.split(".").pop()?.toLowerCase();
-  switch (ext) {
-    case "md":
-    case "txt":
-    case "log":
-      return FileText;
-    case "ts":
-    case "tsx":
-    case "js":
-    case "jsx":
-    case "py":
-    case "toml":
-    case "yaml":
-    case "yml":
-    case "sh":
-    case "json":
-      return FileCode;
-    default:
-      return File;
-  }
-}
-
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function buildArtifactTree(files: ArtifactFile[]): TreeNode[] {
-  const dirIndex = new Map<string, TreeNode>();
-  const roots: TreeNode[] = [];
-
-  function ensureDir(parts: string[]): TreeNode | null {
-    if (parts.length === 0) return null;
-    const dirPath = parts.join("/");
-    const existing = dirIndex.get(dirPath);
-    if (existing) return existing;
-    const parent = ensureDir(parts.slice(0, -1));
-    const node: TreeNode = {
-      name: parts[parts.length - 1],
-      path: dirPath,
-      type: "dir",
-      children: [],
-    };
-    dirIndex.set(dirPath, node);
-    if (parent) parent.children!.push(node);
-    else roots.push(node);
-    return node;
-  }
-
+/**
+ * Flattens the listing into one entry per artifact file. Directory rows are
+ * inferred from the path segments by @pierre/trees, so only leaves are built
+ * here — and `path` is the tree's identity, so colliding relativized paths
+ * (a multi-step and a single-step artifact reducing to the same name) keep
+ * the first entry rather than producing a duplicate row.
+ */
+function buildArtifactEntries(files: ArtifactFile[]): ArtifactEntry[] {
+  const entries: ArtifactEntry[] = [];
+  const seen = new Set<string>();
   for (const file of files) {
-    const rel = relativizeArtifactPath(file.path);
-    const parts = rel.split("/").filter(Boolean);
-    if (parts.length === 0) continue;
-    const fileName = parts[parts.length - 1];
-    const parentDir = parts.length > 1 ? ensureDir(parts.slice(0, -1)) : null;
-    const fileNode: TreeNode = {
-      name: fileName,
-      path: rel,
+    const path = relativizeArtifactPath(file.path);
+    const name = path.split("/").pop();
+    if (!name || seen.has(path)) continue;
+    seen.add(path);
+    entries.push({
+      name,
+      path,
       fullPath: file.path,
-      type: "file",
       size: file.size,
       url: file.url,
-    };
-    if (parentDir) parentDir.children!.push(fileNode);
-    else roots.push(fileNode);
-  }
-
-  function sortChildren(nodes: TreeNode[]) {
-    nodes.sort((a, b) => {
-      if (a.type !== b.type) return a.type === "dir" ? -1 : 1;
-      return a.name.localeCompare(b.name);
     });
-    for (const node of nodes) {
-      if (node.children) sortChildren(node.children);
-    }
   }
-  sortChildren(roots);
-  return roots;
-}
-
-function findFirstFile(nodes: TreeNode[]): TreeNode | null {
-  for (const node of nodes) {
-    if (node.type === "file") return node;
-    if (node.type === "dir" && node.children) {
-      const found = findFirstFile(node.children);
-      if (found) return found;
-    }
-  }
-  return null;
-}
-
-function collectDirPaths(nodes: TreeNode[]): string[] {
-  const paths: string[] = [];
-  for (const node of nodes) {
-    if (node.type === "dir") {
-      paths.push(node.path);
-      if (node.children) paths.push(...collectDirPaths(node.children));
-    }
-  }
-  return paths;
-}
-
-function collectFiles(nodes: TreeNode[]): TreeNode[] {
-  const out: TreeNode[] = [];
-  for (const node of nodes) {
-    if (node.type === "file") out.push(node);
-    else if (node.children) out.push(...collectFiles(node.children));
-  }
-  return out;
+  return entries;
 }
 
 interface ArtifactsViewerProps {
@@ -239,17 +140,20 @@ export function ArtifactsViewer({
     { revalidateOnFocus: false },
   );
 
-  const tree = useMemo(() => {
-    const artifactFiles = (data?.files ?? []).filter((f) =>
-      isArtifactPath(f.path),
-    );
-    return buildArtifactTree(artifactFiles);
-  }, [data]);
+  const allFiles = useMemo(
+    () =>
+      buildArtifactEntries(
+        (data?.files ?? []).filter((f) => isArtifactPath(f.path)),
+      ),
+    [data],
+  );
 
-  const allFiles = useMemo(() => collectFiles(tree), [tree]);
+  // The tree takes a flat path list and infers the directories. Memoized so
+  // its identity only changes when the listing does — FileTreePane rebuilds
+  // (and re-expands) the tree on every new array.
+  const treePaths = useMemo(() => allFiles.map((f) => f.path), [allFiles]);
 
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
-  const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
   const [viewMode, setViewMode] = useState<"rendered" | "raw">("rendered");
 
   // A deep-linked path owns the first selection; read through a ref so the
@@ -259,18 +163,16 @@ export function ArtifactsViewer({
     initialFilePathRef.current = initialFilePath;
   });
 
-  // First load: expand every dir and select the deep-linked file if one is
-  // addressed (exact path or suffix), else the first file. We also re-run
-  // this if the file set changes (e.g. trial finishes producing artifacts
-  // while the drawer is open) but only fall back to a fresh selection when
-  // the previously selected path no longer exists.
+  // First load: select the deep-linked file if one is addressed (exact path
+  // or suffix), else the first file. We also re-run this if the file set
+  // changes (e.g. trial finishes producing artifacts while the drawer is
+  // open) but only fall back to a fresh selection when the previously
+  // selected path no longer exists.
   useEffect(() => {
-    if (!tree.length) {
+    if (!allFiles.length) {
       setSelectedPath(null);
-      setExpandedDirs(new Set());
       return;
     }
-    setExpandedDirs(new Set(collectDirPaths(tree)));
     setSelectedPath((prev) => {
       if (prev && allFiles.some((f) => f.path === prev)) return prev;
       const wanted = initialFilePathRef.current;
@@ -283,9 +185,7 @@ export function ArtifactsViewer({
           allFiles.find((f) => f.path === wanted) ??
           allFiles.find((f) => f.fullPath === wanted) ??
           allFiles.find((f) => sameFilePath(f.path, wanted)) ??
-          allFiles.find(
-            (f) => f.fullPath != null && sameFilePath(f.fullPath, wanted),
-          );
+          allFiles.find((f) => sameFilePath(f.fullPath, wanted));
         // An unresolved deep link keeps the selection empty instead of
         // falling through to the first file: reporting that fallback
         // would wipe the ?file= / ?lines= address it couldn't resolve.
@@ -293,10 +193,9 @@ export function ArtifactsViewer({
         // artifact still resolves.
         return match?.path ?? null;
       }
-      const first = findFirstFile(tree);
-      return first?.path ?? null;
+      return firstFilePath(treePaths);
     });
-  }, [tree, allFiles]);
+  }, [allFiles, treePaths]);
 
   // Report file selections upward for URL sync. Nulls (transient resets)
   // are never reported — they would wipe a live ?file= anchor.
@@ -316,70 +215,6 @@ export function ArtifactsViewer({
     () => allFiles.find((f) => f.path === selectedPath) ?? null,
     [allFiles, selectedPath],
   );
-
-  const toggleDir = useCallback((path: string) => {
-    setExpandedDirs((prev) => {
-      const next = new Set(prev);
-      if (next.has(path)) next.delete(path);
-      else next.add(path);
-      return next;
-    });
-  }, []);
-
-  const renderTree = (nodes: TreeNode[], depth = 0): ReactNode => {
-    return nodes.map((node) => {
-      const isExpanded = expandedDirs.has(node.path);
-      const isSelected = selectedFile?.path === node.path;
-      const Icon =
-        node.type === "dir"
-          ? isExpanded
-            ? FolderOpen
-            : Folder
-          : getFileIcon(node.name);
-      return (
-        <div key={node.path}>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={() => {
-              if (node.type === "dir") toggleDir(node.path);
-              else setSelectedPath(node.path);
-            }}
-            className={`h-auto w-full justify-start gap-1.5 rounded px-2 py-1 text-left font-mono text-xs transition-colors ${
-              isSelected
-                ? "bg-primary/20 text-primary hover:bg-primary/20"
-                : "text-foreground hover:bg-muted"
-            }`}
-            style={{ paddingLeft: `${depth * 12 + 8}px` }}
-          >
-            {node.type === "dir" ? (
-              <span className="flex h-3 w-3 items-center justify-center">
-                {isExpanded ? (
-                  <ChevronDown className="text-muted-foreground h-3 w-3" />
-                ) : (
-                  <ChevronRight className="text-muted-foreground h-3 w-3" />
-                )}
-              </span>
-            ) : (
-              <span className="w-3" />
-            )}
-            <Icon
-              className={`h-4 w-4 shrink-0 ${
-                node.type === "dir"
-                  ? "text-yellow-500"
-                  : "text-muted-foreground"
-              }`}
-            />
-            <span className="truncate">{node.name}</span>
-          </Button>
-          {node.type === "dir" && isExpanded && node.children && (
-            <div>{renderTree(node.children, depth + 1)}</div>
-          )}
-        </div>
-      );
-    });
-  };
 
   if (isLoading) {
     return (
@@ -416,16 +251,21 @@ export function ArtifactsViewer({
 
   return (
     <div className="flex h-full flex-col overflow-hidden md:flex-row">
-      <div className="border-border bg-muted/30 max-h-[30vh] w-full overflow-auto border-b md:max-h-none md:w-56 md:border-r md:border-b-0 lg:w-64">
-        <div className="p-2">
-          <div className="text-muted-foreground flex items-center justify-between gap-2 px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
-            <span>Artifacts</span>
-            <span className="text-muted-foreground/70 font-sans text-[10px] font-normal normal-case">
-              {fileCountLabel}
-            </span>
-          </div>
-          {renderTree(tree)}
+      <div className="border-border bg-muted/30 flex max-h-[30vh] w-full flex-col overflow-hidden border-b p-2 md:max-h-none md:w-56 md:border-r md:border-b-0 lg:w-64">
+        <div className="text-muted-foreground flex items-center justify-between gap-2 px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
+          <span>Artifacts</span>
+          <span className="text-muted-foreground/70 font-sans text-[10px] font-normal normal-case">
+            {fileCountLabel}
+          </span>
         </div>
+        {/* The tree virtualizes its own rows, so it scrolls internally and
+            needs a bounded height rather than an `overflow-auto` parent. */}
+        <FileTreePane
+          className="min-h-0 flex-1"
+          onSelectPath={setSelectedPath}
+          paths={treePaths}
+          selectedPath={selectedPath}
+        />
       </div>
       <ArtifactContentPane
         filesUrl={filesUrl}
@@ -441,7 +281,7 @@ export function ArtifactsViewer({
 
 interface ArtifactContentPaneProps {
   filesUrl: string;
-  selectedFile: TreeNode | null;
+  selectedFile: ArtifactEntry | null;
   viewMode: "rendered" | "raw";
   onViewModeChange: (mode: "rendered" | "raw") => void;
   selectedLines?: LineRange | null;
