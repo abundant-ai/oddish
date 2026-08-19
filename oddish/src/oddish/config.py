@@ -1455,11 +1455,6 @@ class Settings(BaseSettings):
 
     # API keys (read from env without ODDISH_ prefix)
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
-    # Optional separate Anthropic key for analyzer blocks (summary + trajectory
-    # analysis). When unset, analyzer blocks fall back to anthropic_api_key.
-    analyzer_anthropic_api_key: str | None = Field(
-        default=None, alias="ANALYZER_ANTHROPIC_API_KEY"
-    )
     # Separate Anthropic key for ``anthropic-hdo/<model>`` trials. Injected as
     # ``ANTHROPIC_API_KEY`` (overwriting the platform key) so Claude Code talks
     # to the direct Anthropic API with this credential instead of Bedrock /
