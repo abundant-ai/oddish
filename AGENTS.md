@@ -962,6 +962,11 @@ silently breaks throughput or correctness — read before touching
    open session spanning the run: it pins one idle connection per running trial
    and exhausts the Supavisor/PgBouncer cap. (The API keeps a warm `QueuePool`
    only because it's short-lived — that reasoning doesn't transfer to workers.)
+   Quota pause signals come from live cost checkpoints. The owning worker calls
+   Harbor `Job.pause()` / `Job.resume()` without holding a database session; a
+   paused trial stays `RUNNING`, retains its queue slot, and keeps heartbeating.
+   Only paused jobs periodically open a short session to check whether rolling
+   spend or a raised quota allows them to resume.
 
 2. **`queue_slots` is the real concurrency gate.** Per-queue-key concurrency is
    enforced by leasing a `queue_slots` row (`acquire_queue_slot`, `FOR UPDATE

@@ -1171,11 +1171,17 @@ class LiveTailer:
         if checkpoint_ack is not None:
             if self.org_id is not None:
                 from oddish.core.quota_enforcement import enforce_trial_quotas
+                from oddish.workers.harbor.quota_control import (
+                    set_quota_pause_requested,
+                )
 
                 cancelled = await enforce_trial_quotas(
                     org_id=self.org_id,
                     billed_user_id=self.billed_user_id,
                     caller_trial_id=self.trial_id,
+                    quota_pause_callback=lambda requested: set_quota_pause_requested(
+                        self.trial_id, requested
+                    ),
                 )
                 if cancelled is None:
                     return

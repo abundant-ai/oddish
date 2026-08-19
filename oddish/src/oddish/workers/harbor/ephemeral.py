@@ -48,6 +48,7 @@ _PARENT_SITE_PACKAGES_ENV = "ODDISH_PARENT_SITE_PACKAGES"
 logger = logging.getLogger(__name__)
 _ENVIRONMENT_HARBOR_EXTRAS: dict[EnvironmentType, str] = {
     EnvironmentType.DAYTONA: "daytona",
+    EnvironmentType.ARCHIL: "archil",
     EnvironmentType.MODAL: "modal",
     EnvironmentType.E2B: "e2b",
     EnvironmentType.RUNLOOP: "runloop",

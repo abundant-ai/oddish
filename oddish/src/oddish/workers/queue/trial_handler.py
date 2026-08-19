@@ -1398,6 +1398,7 @@ async def _execute_trial(
             worker_job_id=worker_job_id,
             harbor_config=prepared_trial.trial_harbor_config,
             org_id=prepared_trial.org_id,
+            billed_user_id=prepared_trial.billed_user_id,
             extra_agent_env=extra_agent_env,
             sandbox_launch=sandbox_launch,
         )

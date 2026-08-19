@@ -414,7 +414,9 @@ async def enforce_trial_quotas(
     caller_trial_id: str | None = None,
     after_check: Callable[[], Awaitable[None]] | None = None,
     after_gate_release: Callable[[list[str]], Awaitable[None]] | None = None,
+    quota_pause_callback: Callable[[bool], None] | None = None,
 ) -> int | None:
+    pause_requested = False
     try:
         async with get_session() as session:
             result = await cancel_trials_if_quota_reached(
@@ -423,6 +425,14 @@ async def enforce_trial_quotas(
                 billed_user_id=billed_user_id,
                 caller_trial_id=caller_trial_id,
             )
+            if not result["trials_cancelled"]:
+                from oddish.core.quota_pause import quota_pause_requested
+
+                pause_requested = await quota_pause_requested(
+                    session,
+                    org_id=org_id,
+                    billed_user_id=billed_user_id,
+                )
     except QuotaLockBusy:
         # Incomplete check: do not run settlement hooks / ack live-tail cost.
         # ``enforce_trial_quotas_until_checked`` and live-tail both retry on None.
@@ -442,6 +452,8 @@ async def enforce_trial_quotas(
         return None
 
     try:
+        if quota_pause_callback is not None:
+            quota_pause_callback(pause_requested)
         if after_gate_release is not None:
             await after_gate_release(list(result["released_trial_ids"]))
         if after_check is not None:
