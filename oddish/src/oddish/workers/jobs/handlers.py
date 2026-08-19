@@ -12,7 +12,6 @@ the queue execution code.
 
 from __future__ import annotations
 
-from typing import Awaitable, Callable
 
 from oddish.db import (
     TrialModel,
