@@ -53,7 +53,7 @@ backend/                        # Hosted cloud layer (Modal deployment)
 ├── api/
 │   ├── app.py                  # FastAPI app factory and lifespan wiring
 │   ├── schemas.py              # Pydantic models for org/auth/share responses
-│   ├── services/               # hosted services (sandbox runtime, analyzer blocks, …)
+│   ├── services/               # hosted services (analyzer blocks, summaries, …)
 │   └── routers/                # tasks, trials, dashboard, documents, tags, skills,
 │                               # admin, orgs, api_keys, imports, load, webhooks
 ├── auth/                       # header parsing (auth/__init__.py), API key + Clerk JWT
@@ -245,9 +245,10 @@ block. Editing a prompt is a code change that ships with a deploy.
 `WorkerJobKind` (in `oddish.db.models`):
 
 - **Active**: `TRIAL` (Harbor trial execution), `QA` (task-level classify-all-trials +
-  verdict), `ANALYZER` (cross-experiment reports, agent capabilities, and
-  trial-scoped public trajectory summaries selected by payload mode),
-  `TASK_EXPAND` (sweep expansion), `TAG_PROJECT` (tag recompute).
+  verdict), `ANALYZER` (agent capabilities and trial-scoped public trajectory
+  summaries selected by payload mode; the cross-experiment report mode was
+  removed with the reports feature), `TASK_EXPAND` (sweep expansion),
+  `TAG_PROJECT` (tag recompute).
 - **Legacy, drain-only**: `ANALYSIS` (per-trial classification; `AnalysisJobHandler`
   is kept only so in-flight rows survive a deploy), `VERDICT` (enum value only,
   no handler), and `ANALYZER_BLOCK` (executed rows of the removed
@@ -270,10 +271,10 @@ block. Editing a prompt is a code change that ships with a deploy.
   published result until a replacement succeeds or terminally fails
 - post-trial classification runs through `AnalyzerBlock`. It reads two
   already-downloaded directories and executes nothing, so `resolve_substrate`
-  keeps it on the worker-local Claude Code client (`CLAUDE_CLI`) everywhere;
-  `post_trial_sandbox_enabled` is the operator opt-in that lifts it into a
-  Daytona `SANDBOX`, which restores the task/trial snapshot at the worker's own
-  absolute paths so no prompt rewriting is involved. Its costs use the
+  keeps it on the worker-local Claude Code client (`CLAUDE_CLI`) everywhere.
+  (`post_trial_sandbox_enabled` still exists but must stay `false`: the Daytona
+  `SANDBOX` backend it opted into was removed with the reports feature, and
+  requesting a sandbox client now raises.) Its costs use the
   `post_trial` job kind; the legacy `trial_classifier` cost bucket is retired at
   this cutover, and every block row carries `block_metadata.cost_status`
   (`recorded` | `no_usage` | `failed`) so lost spend is queryable.
@@ -293,24 +294,10 @@ block. Editing a prompt is a code change that ships with a deploy.
 
 `oddish/src/oddish/blocks/` holds the analyzer-block primitive (prompt
 building, streaming, `analyzer_blocks` + S3 persistence) and its API/OpenAI
-backends, so verdict synthesis runs in a backend-free worker. The Daytona
-sandbox backend needs the hosted sandbox runtime
-(`backend/api/services/sandbox/` — Daytona client, provisioner, Claude Code
-runtime) and stays in
-`backend/api/services/blocks/analyzer/sandbox_llm_client.py`, which registers
-itself into core's client factory on import. `AnalyzerBlock` owns a
-self-provisioned client's complete lifecycle, including sandbox file downloads
-before close. Hosted callers request sandbox capabilities declaratively; the
-registered Daytona factory owns runtime/CLI installation, short-lived internal
-key minting, and key/sandbox cleanup. Callers must not provision and inject a
-one-off sandbox client for those capabilities.
-
-Hosted failure analysis uses
-`backend/api/services/blocks/analyzer/analyzer_block_runner.py`: it partitions a bucket
-into map batches, runs independent sandbox-backed `AnalyzerBlock`s concurrently
-up to `AnalyzerEvalConfig.map_concurrency`, collects their findings artifacts
-host-side, and supplies those artifacts declaratively to a separate reduce
-block. Map/reduce blocks never share or receive a live runtime/client.
+backends, so verdict synthesis runs in a backend-free worker. (The Daytona
+sandbox backend and the map/reduce block runner were removed with the reports
+feature; `LLMClientType.SANDBOX` remains an enum value for historical rows,
+with no registered factory.)
 
 `oddish` must not import from `backend/`, `backend.auth`, `backend.models`,
 `cloud_policy`, `idempotency_store`, Clerk, or Modal app/deployment modules.

@@ -153,20 +153,6 @@ from .byok_resolver import install_byok_resolver
 
 install_byok_resolver()
 
-# Swap the core ANALYZER handler for the multi-block sandbox runner. Each map
-# batch gets an independent AnalyzerBlock/sandbox, bounded by map_concurrency,
-# followed by a reduce block.
-from .analyzer_sandbox import install_sandbox_analyzer_handler
-
-if install_sandbox_analyzer_handler():
-    console.print("[dim]analyzer: multi-block sandbox handler registered[/dim]")
-
-# Register the Daytona-sandbox analyzer backend into core's client factory.
-# Import for the side effect; core runs every non-sandbox block without it.
-from api.services.blocks.analyzer import (
-    sandbox_llm_client as _sandbox_llm_client,  # noqa: F401
-)
-
 # Register the hosted pre-trial synth hook (invoked by qa_handler only when
 # settings.pre_trial_enabled). Import for the side effect.
 from . import pre_trial_synth as _pre_trial_synth  # noqa: F401

@@ -181,7 +181,6 @@ async def test_api_client_aclose_closes_inner(monkeypatch):
     assert closed["n"] == 1
 
 
-from api.services.blocks.analyzer.sandbox_llm_client import SandboxAnalyzerLLMClient
 from oddish.blocks.analyzer.analyzer_llm_client import create_llm_client
 
 
@@ -247,59 +246,6 @@ async def test_create_llm_client_api_passes_api_key(monkeypatch):
     monkeypatch.setattr(_settings, "anthropic_api_key", "sk-global")
     await create_llm_client(LLMClientType.API, api_key="sk-passed")
     assert _RecordingAnthropic.last_api_key == "sk-passed"
-
-
-@pytest.mark.asyncio
-async def test_sandbox_client_streams_json_lines_and_closes():
-    sent = {}
-
-    class _FakeSandbox:
-        id = "sbx-1"
-
-    class _FakeRuntime:
-        async def stream_chat(
-            self,
-            client,
-            sandbox,
-            *,
-            content,
-            claude_session_id,
-            daytona_session_id="cc",
-            system_prompt=None,
-            json_schema=None,
-            add_dirs=(),
-        ):
-            sent["content"] = content
-            sent["add_dirs"] = add_dirs
-            for d in [{"type": "text", "text": "one"}, {"type": "text", "text": "two"}]:
-                yield d
-
-    class _FakeDaytona:
-        def __init__(self):
-            self.deleted = False
-
-        async def delete_sandbox(self, sandbox):
-            self.deleted = True
-
-    daytona = _FakeDaytona()
-    client = SandboxAnalyzerLLMClient(
-        sandbox=_FakeSandbox(),
-        daytona_client=daytona,
-        runtime=_FakeRuntime(),
-        add_dirs=("/tmp/task", "/tmp/trial"),
-        daytona_session_id="analyzer",
-    )
-    out = []
-    async for chunk in client.stream("my prompt"):
-        out.append(chunk)
-    assert sent["content"] == "my prompt"
-    assert sent["add_dirs"] == ("/tmp/task", "/tmp/trial")
-    assert [__import__("json").loads(c) for c in out] == [
-        {"type": "text", "text": "one"},
-        {"type": "text", "text": "two"},
-    ]
-    await client.aclose()
-    assert daytona.deleted is True
 
 
 @pytest.mark.asyncio

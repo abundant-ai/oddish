@@ -30,7 +30,6 @@ from oddish.db import (
     WorkerJobStatus,
     get_session,
 )
-from oddish.db.models import AnalyzerModel, JobStatus
 from oddish.registry_auth import (
     RegistryAuthDecryptError,
     current_registry_credentials,
@@ -38,10 +37,6 @@ from oddish.registry_auth import (
 )
 from oddish.workers.jobs.registry import JobOutcome
 from oddish.workers.queue.analysis_handler import run_analysis_job
-from oddish.workers.queue.analyzer_handler import (
-    default_eval_rows,
-    run_analyzer_generation_job,
-)
 from oddish.workers.queue.provider_failures import is_permanent_provider_failure
 from oddish.workers.queue.qa_handler import run_task_qa_job
 from oddish.workers.queue.task_expand_handler import run_task_expand_job
@@ -489,9 +484,6 @@ class TagProjectJobHandler:
 
 class AnalyzerJobHandler:
     kind = WorkerJobKind.ANALYZER
-    # Swapped by the hosted backend's sandbox subclass; staticmethod so the
-    # attribute stays a plain function rather than binding as a method.
-    eval_rows_fn = staticmethod(default_eval_rows)
 
     def default_queue_key(self, job) -> str:
         return job.queue_key or "qa"
@@ -533,42 +525,10 @@ class AnalyzerJobHandler:
                 return _fail_permanent("Not enough classified trials to analyze")
             return JobOutcome.ok({"task_version_id": payload.get("task_version_id")})
 
-        analyzer_id = job.subject_id or (job.payload or {}).get("analyzer_id")
-        if not analyzer_id:
-            raise ValueError(
-                "ANALYZER worker_job missing subject_id / payload.analyzer_id"
-            )
-        # A retryable failure re-dispatches this handler, but
-        # run_analyzer_generation_job early-exits on a terminal analyzer status.
-        # Clear a prior terminal state so the retry actually re-runs instead of
-        # no-op'ing and reporting the same failure forever (mirrors QaJobHandler).
-        async with get_session() as session:
-            analyzer = await session.get(
-                AnalyzerModel, analyzer_id, with_for_update=True
-            )
-            if analyzer is None:
-                return JobOutcome.fail(
-                    "Analyzer vanished before generation", retryable=False
-                )
-            if analyzer.status in (JobStatus.SUCCESS, JobStatus.FAILED):
-                analyzer.status = JobStatus.QUEUED
-                analyzer.error = None
-                analyzer.finished_at = None
-        await run_analyzer_generation_job(
-            analyzer_id, worker_job_id=job.id, eval_rows_fn=self.eval_rows_fn
-        )
-        async with get_session() as session:
-            analyzer = await session.get(AnalyzerModel, analyzer_id)
-            if analyzer is None:
-                return JobOutcome.fail(
-                    "Analyzer vanished mid-generation", retryable=False
-                )
-            if analyzer.status == JobStatus.SUCCESS:
-                return JobOutcome.ok()
-            return JobOutcome.fail(
-                analyzer.error or f"Analyzer {analyzer_id} left in {analyzer.status}",
-                retryable=True,
-            )
+        # Any other mode was a cross-experiment report job; the reports feature
+        # was removed, so surviving queued rows fail terminally instead of
+        # retrying against a handler arm that no longer exists.
+        return _fail_permanent("reports feature removed; report ANALYZER jobs no longer run")
 
 
 __all__ = [

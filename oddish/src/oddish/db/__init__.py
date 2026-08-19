@@ -26,7 +26,6 @@ from oddish.db.models import (
     TagPolicyProfanityMode,
     # ORM Models
     AnalysisCostModel,
-    AnalyzerModel,
     AnalyzerBlockModel,
     CostExcludedLlmKeyModel,
     DocumentModel,
@@ -116,7 +115,6 @@ __all__ = [
     "TagPolicyProfanityMode",
     # ORM Models
     "AnalysisCostModel",
-    "AnalyzerModel",
     "AnalyzerBlockModel",
     "CostExcludedLlmKeyModel",
     "ExperimentModel",

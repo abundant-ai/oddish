@@ -1,2 +1,0 @@
-- good_failure_content: genuine model-capability failures — what the model failed at.
-Cover only what holds across models; put single-model observations in that model's by_model entry.

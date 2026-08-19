@@ -40,7 +40,6 @@ from oddish.core.verdict_state import abandon_verdict, fail_verdict, queue_verdi
 from oddish.costs.recorder import reconcile_compute_cost_spans
 from oddish.db import (
     AnalysisStatus,
-    JobStatus,
     TaskModel,
     TaskStatus,
     TaskVersionModel,
@@ -50,7 +49,6 @@ from oddish.db import (
     get_session,
     utcnow,
 )
-from oddish.db.models import AnalyzerModel
 from oddish.runtime.ec2_orphans import (
     Ec2InstanceSnapshot,
     Ec2InventorySnapshot,
@@ -521,19 +519,10 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
             await requeue_inflight_trial_analysis(session, task_id=task.id)
         return None
 
-    if kind == "ANALYZER":
-        analyzer = await _locked_or_missing(session, AnalyzerModel, str(subject_id))
-        if analyzer is None:
-            return None
-        if row["new_status"] == "FAILED":
-            analyzer.status = JobStatus.FAILED
-            analyzer.error = row["error_message"]
-            analyzer.finished_at = utcnow()
-        else:
-            analyzer.status = JobStatus.QUEUED
-            analyzer.error = row["error_message"]
-        return None
-
+    # ANALYZER jobs (trajectory summaries, agent capabilities) have no domain
+    # row to mirror into: the reports feature that owned the ``analyzers``
+    # table was removed, and the surviving modes track state in their own
+    # columns via their providers.
     return None
 
 
