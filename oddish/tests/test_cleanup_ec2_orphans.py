@@ -242,7 +242,14 @@ def _patch_unrelated_cleanup_phases(
     monkeypatch.setattr(cleanup, "_reap_stale_worker_jobs", reap)
     monkeypatch.setattr(cleanup, "_advance_running_tasks_to_analysis", zero)
     monkeypatch.setattr(cleanup, "_advance_legacy_analyzing_tasks", zero)
-    monkeypatch.setattr(cleanup, "_heal_stale_verdict_pending", zero)
+    async def heal_nothing(*_args, **_kwargs):
+        return 0, []
+
+    async def no_reimports(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(cleanup, "_heal_stale_verdict_pending", heal_nothing)
+    monkeypatch.setattr(cleanup, "_heal_stale_audit_imports", no_reimports)
     monkeypatch.setattr(cleanup, "_unwedge_stuck_analyzing", unwedge)
     monkeypatch.setattr(cleanup, "_release_orphaned_slots", zero)
     monkeypatch.setattr(cleanup, "_reconcile_experiment_last_activity", zero)

@@ -794,9 +794,15 @@ async def test_cleanup_reimports_a_settled_audit(monkeypatch):
         return {"items": []}
 
     monkeypatch.setattr(analysis_trials, "read_analysis_artifact", read_clean)
+    # The sweep composes these two: the scan runs inside the sweep
+    # transaction, the re-imports after it commits (the importer takes its
+    # own locks).
     async with get_session() as session:
-        healed = await _heal_stale_audit_imports(session)
-    assert healed >= 1
+        stale = await _heal_stale_audit_imports(session)
+    assert audit.id in stale
+    from oddish.workers.analysis_trials import handle_analysis_trial_settled
+
+    await handle_analysis_trial_settled(audit.id)
 
     async with get_session() as session:
         version = await session.get(TaskVersionModel, version_id)

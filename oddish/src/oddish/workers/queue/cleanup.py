@@ -572,9 +572,12 @@ async def cleanup_orphaned_queue_state(
 
         tasks_progressed_to_verdict = await _advance_legacy_analyzing_tasks(session)
 
-        verdict_pending_completed = await _heal_stale_verdict_pending(session)
+        (
+            verdict_pending_completed,
+            analysis_reimport_trial_ids,
+        ) = await _heal_stale_verdict_pending(session)
 
-        stale_audit_imports_healed = await _heal_stale_audit_imports(session)
+        analysis_reimport_trial_ids += await _heal_stale_audit_imports(session)
 
         (
             stuck_analyzing_advanced,
@@ -590,6 +593,28 @@ async def cleanup_orphaned_queue_state(
 
         tag_projections_reconciled = await _maybe_reconcile_tag_projections(session)
         tag_owners_reassigned = await sweep_orphaned_tag_owners(session)
+
+    # Analysis re-imports run AFTER the outer commit: the importers take
+    # their own task/version row locks on fresh connections
+    # (sync_verdict_to_task, the QA admission nudge on audit settlement),
+    # while the healers above may still hold FOR UPDATE locks on those same
+    # task rows until this transaction ends -- re-importing inside it can
+    # block on our own uncommitted locks. Importers are idempotent, so a
+    # sweep that commits and then dies before this point just retries next
+    # sweep.
+    stale_analysis_imports_healed = 0
+    if analysis_reimport_trial_ids:
+        from oddish.workers.analysis_trials import handle_analysis_trial_settled
+
+        for reimport_trial_id in analysis_reimport_trial_ids:
+            try:
+                await handle_analysis_trial_settled(reimport_trial_id)
+                stale_analysis_imports_healed += 1
+            except Exception:  # noqa: BLE001 -- next sweep retries
+                logger.exception(
+                    "healer: analysis re-import of trial %s failed",
+                    reimport_trial_id,
+                )
 
     # Re-run after the ledger transaction commits only when it closed rows. They
     # no longer protect their capacity leases, so the same reconciliation cycle
@@ -629,7 +654,7 @@ async def cleanup_orphaned_queue_state(
         "tasks_progressed_to_analysis": tasks_progressed_to_analysis,
         "tasks_progressed_to_verdict": tasks_progressed_to_verdict,
         "verdict_pending_completed": verdict_pending_completed,
-        "stale_audit_imports_healed": stale_audit_imports_healed,
+        "stale_analysis_imports_healed": stale_analysis_imports_healed,
         "stuck_analyzing_advanced": stuck_analyzing_advanced,
         "stuck_analyzing_finalized": stuck_analyzing_finalized,
         "stuck_analysis_nulls_failed": stuck_analysis_nulls_failed,
@@ -1346,17 +1371,19 @@ async def _advance_legacy_analyzing_tasks(session) -> int:
     return progressed
 
 
-async def _heal_stale_verdict_pending(session) -> int:
+async def _heal_stale_verdict_pending(session) -> tuple[int, list[str]]:
     """Step 4 -- VERDICT_PENDING tasks with no live QA trial.
 
     Three repairs, in order: a terminal ``verdict_status`` just needs the
     task completed; a settled QA trial with a non-terminal verdict means
-    the import never landed (worker died between settle and import), so
-    re-import it; otherwise create a fresh QA trial (or complete the task
-    when nothing is eligible). Returns the count completed without QA.
+    the import never landed (worker died between settle and import), so it
+    is returned for re-import; otherwise create a fresh QA trial (or
+    complete the task when nothing is eligible). Returns the count
+    completed without QA and the settled QA trial ids to re-import -- the
+    caller runs those AFTER this transaction commits, because the importer
+    locks the same task rows this healer may still hold FOR UPDATE.
     """
     from oddish.queue import live_analysis_trial_id, start_qa_for_task
-    from oddish.workers.analysis_trials import handle_analysis_trial_settled
 
     stale_verdict_pending = (
         await session.execute(
@@ -1472,27 +1499,22 @@ async def _heal_stale_verdict_pending(session) -> int:
                 "healer: verdict-pending repair failed for task %s", task_id
             )
 
-    for trial_id in reimport_trial_ids:
-        try:
-            await handle_analysis_trial_settled(trial_id)
-        except Exception:  # noqa: BLE001 -- next sweep retries
-            logger.exception("healer: re-import of qa trial %s failed", trial_id)
-    return verdict_pending_completed
+    return verdict_pending_completed, reimport_trial_ids
 
 
-async def _heal_stale_audit_imports(session) -> int:
+async def _heal_stale_audit_imports(session) -> list[str]:
     """Step 4b -- task versions stuck with a queued/running pre-trial audit
     whose audit trial already settled: the importer died between settle and
-    import (transient exception, worker crash). Re-run the importer for the
-    newest settled audit; importers are idempotent, so racing a normal
+    import (transient exception, worker crash). Returns the newest settled
+    audit trial id per stuck version for the caller to re-import AFTER this
+    transaction commits (the importer and its QA-admission nudge take their
+    own task/version locks); importers are idempotent, so racing a normal
     settlement import is harmless. Versions with a live audit are skipped --
     that trial imports on its own settlement. This is the audit counterpart
     of the QA re-import above, and what makes the settlement path's
     "the cleanup sweep re-runs importers" recovery promise true for both
-    kinds. Returns the number of re-imports attempted.
+    kinds.
     """
-    from oddish.workers.analysis_trials import handle_analysis_trial_settled
-
     stale = (
         await session.execute(
             text(
@@ -1526,18 +1548,12 @@ async def _heal_stale_audit_imports(session) -> int:
         )
     ).all()
 
-    healed = 0
     for (trial_id,) in stale:
         logger.info(
-            "healer: settled audit trial %s never imported, re-importing",
+            "healer: settled audit trial %s never imported, queuing re-import",
             trial_id,
         )
-        try:
-            await handle_analysis_trial_settled(str(trial_id))
-            healed += 1
-        except Exception:  # noqa: BLE001 -- next sweep retries
-            logger.exception("healer: audit re-import of trial %s failed", trial_id)
-    return healed
+    return [str(trial_id) for (trial_id,) in stale]
 
 
 async def _unwedge_stuck_analyzing(session) -> tuple[int, int, int]:
