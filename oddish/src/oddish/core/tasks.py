@@ -9,7 +9,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
 from oddish.core.tags.enqueue import enqueue_tag_project_worker_job
-from oddish.db import Priority, TaskModel, TaskVersionModel, TrialModel, get_session
+from oddish.db import (
+    AGENT_TRIAL_KIND,
+    Priority,
+    TaskModel,
+    TaskVersionModel,
+    TrialModel,
+    get_session,
+)
 from oddish.db.storage import StorageClient, get_storage_client
 from oddish.schemas import TaskUploadInitResponse, UploadResponse
 
@@ -418,10 +425,14 @@ async def complete_task_upload(
                         "start the in-place upload again"
                     ),
                 )
+            # Agent trials only: the pre-trial audit is created concurrently
+            # at task creation, so counting analysis trials here would make
+            # every version refuse in-place overwrite immediately.
             existing_trial_count = await session.scalar(
                 select(func.count(TrialModel.id)).where(
                     TrialModel.task_id == task_id,
                     TrialModel.task_version_id == version_id,
+                    TrialModel.kind == AGENT_TRIAL_KIND,
                 )
             )
             if existing_trial_count or any(

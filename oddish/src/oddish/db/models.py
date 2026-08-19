@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from datetime import datetime, timezone
 from decimal import Decimal
 from enum import Enum
@@ -25,7 +27,11 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
+from sqlalchemy import DDL
 from sqlalchemy import Enum as SQLEnum
+from sqlalchemy import column as sql_column
+from sqlalchemy import event as sa_event
+from sqlalchemy import table as sql_table
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.dialects.postgresql import ENUM as PGEnum
 from sqlalchemy.ext.asyncio import AsyncAttrs  # type: ignore[attr-defined]
@@ -166,16 +172,10 @@ class WorkerJobKind(str, Enum):
     """
 
     TRIAL = "TRIAL"
-    # The single task-level trajectory-analysis (QA) job: it classifies every
-    # trial's trajectory and then synthesizes the task verdict in one job.
+    # Legacy kinds: QA runs as a ``qa``-kind TRIAL now and nothing enqueues
+    # or handles these. Kept as enum members so the native
+    # ``worker_job_kind`` Postgres type still carries the historical values.
     QA = "QA"
-    # Legacy kinds. Trajectory analysis used to be a per-trial ``ANALYSIS`` job
-    # plus a separate per-task ``VERDICT`` job; both collapsed into ``QA``.
-    # Nothing enqueues these anymore. They are kept as enum members so the
-    # native ``worker_job_kind`` Postgres type (created from this enum) still
-    # carries the values that historical migrations / rows reference, and so
-    # any row in flight across the deploy can drain. ``qa02`` repoints existing
-    # ``VERDICT`` rows to ``QA``.
     VERDICT = "VERDICT"
     ANALYSIS = "ANALYSIS"
     QA_REVIEW = "QA_REVIEW"
@@ -190,12 +190,12 @@ class WorkerJobKind(str, Enum):
     # rebuilds from source rather than applying a delta. Sibling-enqueued
     # by every tag write in the same transaction.
     TAG_PROJECT = "TAG_PROJECT"
-    # Hosted analyzer work. Payload mode selects agent capabilities or one
-    # trial's trajectory summary (the report mode was removed with the reports
-    # feature). Runs on the QA queue; handled by AnalyzerJobHandler.
+    # Retired analyzer kind. No handler claims it (workers claim only
+    # registered kinds); the member stays so the native ``worker_job_kind``
+    # Postgres type keeps the values historical rows reference. The
+    # agent-capabilities service still enqueues rows of this kind until PR B
+    # removes it; they sit QUEUED and are cancelled by ``retirejobs01``.
     ANALYZER = "ANALYZER"
-    # Legacy: executed one row of the dropped ``analyzer_runs`` table.
-    # Enum value only, no handler; nothing enqueues it anymore.
     ANALYZER_BLOCK = "ANALYZER_BLOCK"
 
 
@@ -488,6 +488,11 @@ class ExperimentModel(TimestampedMixin, Base):
     is_collection: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False, server_default="false"
     )
+
+    # QA-report shadow: the id of the experiment this one grades. A shadow
+    # holds the analysis trials (qa, audit) for its parent's tasks. Shadows
+    # are hidden from experiment lists; the parent links to its shadow.
+    shadow_of: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # User-authored markdown description shown in the experiment header.
     # Nullable; ``None``/blank means "no description".
@@ -1321,6 +1326,74 @@ class AnalysisCostModel(TimestampedMixin, Base):
     # "native" = harness-reported (CLI total_cost_usd); "estimated" = priced
     # via model_pricing. Job A is always "native".
     cost_source: Mapped[str] = mapped_column(String(16), nullable=False)
+
+
+# The ``analysis_spend`` VIEW: the frozen ``analysis_costs`` ledger unioned
+# with QA/audit trial spend -- the single home of the analysis-cost cutover
+# seam. Created by migration ``analysisspend01`` on migrated databases and by
+# the ``after_create`` listener below on ``create_all`` databases (000_initial
+# and test harnesses); ``create_all`` never creates views on its own, and the
+# two definitions are pinned identical by a test. CREATE OR REPLACE keeps
+# both paths idempotent.
+ANALYSIS_SPEND_VIEW_SQL = """
+CREATE OR REPLACE VIEW analysis_spend AS
+  SELECT created_at              AS occurred_at,
+         org_id,
+         task_id,
+         trial_id,
+         billed_user_id,
+         job_kind                AS kind,
+         model,
+         cost_usd,
+         'analysis_costs'::text  AS source
+    FROM analysis_costs
+   WHERE deleted_at IS NULL
+UNION ALL
+  SELECT COALESCE(t.finished_at, t.updated_at) AS occurred_at,
+         t.org_id,
+         t.task_id,
+         t.id                    AS trial_id,
+         t.billed_user_id,
+         t.kind,
+         t.model,
+         t.cost_usd,
+         'trials'::text          AS source
+    FROM trials t
+   WHERE t.kind != 'agent'
+     AND t.cost_usd IS NOT NULL
+     AND t.deleted_at IS NULL
+"""
+
+sa_event.listen(
+    Base.metadata,
+    "after_create",
+    DDL(ANALYSIS_SPEND_VIEW_SQL).execute_if(
+        # Never during an alembic run: 000_initial's create_all would create
+        # the view before the historical column ALTERs later in the chain,
+        # and Postgres refuses to alter a column a view depends on. The
+        # chain creates the view itself at analysisspend01.
+        callable_=lambda ddl, target, bind, **kw: not os.environ.get(
+            "ODDISH_ALEMBIC_RUNNING"
+        )
+    ),
+)
+
+# Read-only query handle for the view. Built with the lightweight ``table()``
+# constructor, NOT on ``Base.metadata`` -- a metadata Table would make
+# ``create_all`` materialize a real table under the view's name, and the
+# migration's CREATE OR REPLACE VIEW would then fail.
+analysis_spend_view = sql_table(
+    "analysis_spend",
+    sql_column("occurred_at"),
+    sql_column("org_id"),
+    sql_column("task_id"),
+    sql_column("trial_id"),
+    sql_column("billed_user_id"),
+    sql_column("kind"),
+    sql_column("model"),
+    sql_column("cost_usd"),
+    sql_column("source"),
+)
 
 
 class ModalCostSpanModel(TimestampedMixin, Base):

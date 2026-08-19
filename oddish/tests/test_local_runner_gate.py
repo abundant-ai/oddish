@@ -96,7 +96,11 @@ async def _trial_id(task_id: str, agent: str) -> str:
         return (
             await session.execute(
                 select(TrialModel.id).where(
-                    TrialModel.task_id == task_id, TrialModel.agent == agent
+                    TrialModel.task_id == task_id,
+                    TrialModel.agent == agent,
+                    # The always-on pre-trial audit is a claude-code trial
+                    # too; only the agent-kind trial is wanted here.
+                    TrialModel.kind == "agent",
                 )
             )
         ).scalar_one()

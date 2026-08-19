@@ -43,6 +43,95 @@ def stage_query_cli(work_task_dir: Path) -> None:
     dest.chmod(0o755)
 
 
+# The analysis verifier. Harbor only collects the agent/ and verifier/
+# subtrees, so this stages the artifact into the verifier dir and grades that
+# it exists, parses, and has the required keys -- a nonzero exit fails the
+# verifier and lets normal trial retries re-run the agent. Full schema
+# validation stays host-side in the importer.
+_ANALYSIS_TEST_SH = """#!/bin/sh
+OUT="${{HARBOR_VERIFIER_LOG_DIR:-/logs/verifier}}"
+mkdir -p "$OUT"
+SRC="/logs/{artifact}"
+KEYS="{required_keys}"
+if [ ! -s "$SRC" ]; then
+  echo "the agent did not write /logs/{artifact}" | tee "$OUT/error.txt" >&2
+  exit 1
+fi
+cp "$SRC" "$OUT/{artifact}"
+python3 -c 'import json,sys
+data = json.load(open(sys.argv[1]))
+missing = [k for k in sys.argv[2].split() if k not in data]
+if missing:
+    raise SystemExit("missing required keys: %s" % " ".join(missing))
+' "$SRC" "$KEYS" 2>"$OUT/error.txt" || exit 1
+echo "1.0" > "$OUT/reward.txt"
+exit 0
+"""
+
+# Top-level keys the artifact must carry to be worth importing. Kept
+# minimal on purpose: the importer's Pydantic models are the authority,
+# this only stops an empty or wrong-shaped file from earning reward 1.0.
+_REQUIRED_KEYS = {
+    "qa_result.json": "trials verdict",
+    "audit_result.json": "items",
+}
+
+
+# An analysis trial runs on OUR task image, not the audited one: that image
+# is an unknown (may lack python/node/network) and its verifier grades
+# task-solving. The agent reads the audited task via the oddish-query CLI.
+_ANALYSIS_DOCKERFILE = """FROM python:3.13-slim
+RUN apt-get update \\
+    && apt-get install -y --no-install-recommends nodejs curl procps ca-certificates \\
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+"""
+
+_ANALYSIS_TASK_TOML = """[metadata]
+name = "oddish-analysis"
+
+[agent]
+timeout_sec = 3600
+
+[environment]
+build_timeout_sec = 1200
+
+[verifier]
+timeout_sec = 60
+"""
+
+
+def apply_analysis_overlay(work_task_dir: Path, *, brief: str, artifact: str) -> None:
+    """Replace the staged task with the analysis task: the brief as the
+    instruction, our image, and the artifact verifier as the tests. Nothing
+    of the audited task remains -- its trials, logs, and files reach the
+    agent through the oddish-query CLI, the same way the gold harness
+    audits from artifacts."""
+    import shutil
+
+    for child in list(work_task_dir.iterdir()):
+        if child.is_dir():
+            shutil.rmtree(child, ignore_errors=True)
+        else:
+            child.unlink(missing_ok=True)
+
+    (work_task_dir / "instruction.md").write_text(brief)
+    (work_task_dir / "task.toml").write_text(_ANALYSIS_TASK_TOML)
+    env_dir = work_task_dir / "environment"
+    env_dir.mkdir(parents=True)
+    (env_dir / "Dockerfile").write_text(_ANALYSIS_DOCKERFILE)
+    tests_dir = work_task_dir / "tests"
+    tests_dir.mkdir(parents=True)
+    test_sh = tests_dir / "test.sh"
+    test_sh.write_text(
+        _ANALYSIS_TEST_SH.format(
+            artifact=artifact,
+            required_keys=_REQUIRED_KEYS[artifact],
+        )
+    )
+    test_sh.chmod(0o755)
+
+
 def stage_cli_mount(harness_dir: Path) -> None:
     """Write ONLY the oddish-query CLI into ``harness_dir`` (the /probe-harness
     mount). Everything else probe-only goes to the hidden stage, so this mount is

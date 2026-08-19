@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import sys
 import uuid
-from contextlib import asynccontextmanager
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -20,61 +18,6 @@ from oddish.db import (  # noqa: E402
     TrialStatus,
 )
 from oddish.workers.queue import cleanup  # noqa: E402
-
-
-def _billable_trial(**overrides):
-    default_trial_fields = dict(
-        id="trial-1",
-        name="trial-1",
-        task_id="task-1",
-        task_version_id="task-1-v1",
-        experiment_id="exp-1",
-        org_id="org-1",
-        billed_user_id=None,
-        agent="codex",
-        model="gpt-5",
-        provider="openai",
-        queue_key="openai/gpt-5",
-        timeout_minutes=None,
-        environment=None,
-        is_probe=False,
-        harbor_config=None,
-        status=TrialStatus.RUNNING,
-        error_message=None,
-        harbor_stage=None,
-        finished_at=None,
-        started_at=None,
-        max_attempts=6,
-        attempts=1,
-        reward=None,
-        harbor_result_path=None,
-        trial_s3_key=None,
-        input_tokens=None,
-        cache_tokens=None,
-        cache_write_tokens=None,
-        output_tokens=None,
-        total_steps=None,
-        cost_usd=None,
-        phase_timing=None,
-        has_trajectory=False,
-        current_worker_id="w-1",
-        current_queue_slot=0,
-        heartbeat_at=None,
-        stale_reaped_at=None,
-        next_retry_at=None,
-        superseded_by_trial_id=None,
-        deleted_at=None,
-        result=None,
-        idempotency_key="idem-1",
-        claimed_at=None,
-        analysis=None,
-        analysis_status=None,
-        analysis_error=None,
-        analysis_started_at=None,
-        analysis_finished_at=None,
-    )
-    default_trial_fields.update(overrides)
-    return SimpleNamespace(**default_trial_fields)
 
 
 async def _seed_retryable_trial(
@@ -125,25 +68,6 @@ async def _seed_retryable_trial(
     await session.flush()
     await session.commit()
     return task_id, old_trial_id, experiment_id
-
-
-@pytest.mark.asyncio
-async def test_classifier_skips_deleted_trial(monkeypatch):
-    """The analysis claim must not burn LLM spend on a tombstoned trial."""
-    import oddish.workers.queue.analysis_handler as analysis_handler
-
-    deleted_trial = _billable_trial(deleted_at="2026-07-02", analysis_status=None)
-
-    @asynccontextmanager
-    async def fake_trial_session(
-        trial_id, *, allow_missing=False, with_for_update=False
-    ):
-        yield object(), deleted_trial
-
-    monkeypatch.setattr(analysis_handler, "_trial_session", fake_trial_session)
-
-    assert await analysis_handler.classify_trial_and_store("trial-1") is None
-    assert deleted_trial.analysis_status is None  # never marked RUNNING
 
 
 # --- M3: retry x deletion races must not strand an unclaimable reservation -----

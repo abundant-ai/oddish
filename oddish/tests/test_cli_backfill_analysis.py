@@ -67,7 +67,7 @@ def test_task_scope_posts_once(monkeypatch):
     assert posted == [
         (
             "http://api.test/tasks/tsk/qa/backfill",
-            {"force": False, "enable_analysis": False, "trial_ids": None},
+            {"force": False, "trial_ids": None},
         )
     ]
 
@@ -102,7 +102,7 @@ def test_trial_scope_resolves_task_and_sends_trial_ids(monkeypatch):
     assert posted == [
         (
             "http://api.test/tasks/tsk/qa/backfill",
-            {"force": True, "enable_analysis": False, "trial_ids": ["tsk-2"]},
+            {"force": True, "trial_ids": ["tsk-2"]},
         )
     ]
 

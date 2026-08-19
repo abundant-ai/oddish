@@ -1133,11 +1133,21 @@ async def get_experiment_share(
         if not experiment:
             raise HTTPException(status_code=404, detail="Experiment not found")
 
+        qa_report_experiment_id = None
+        if experiment.shadow_of is None:
+            qa_report_experiment_id = await session.scalar(
+                select(ExperimentModel.id).where(
+                    ExperimentModel.shadow_of == experiment.id
+                )
+            )
+
         return ExperimentShareResponse(
             name=experiment.name,
             is_public=bool(experiment.is_public),
             public_token=experiment.public_token,
             description=experiment.description,
+            shadow_of=experiment.shadow_of,
+            qa_report_experiment_id=qa_report_experiment_id,
         )
 
 
@@ -1453,8 +1463,7 @@ async def backfill_task_qa(
     """Backfill trial analysis for a task: fill trials with no successful analysis yet.
 
     Default fills only missing/never-analyzed trials; ``force`` re-runs
-    (optionally only ``trial_ids``); ``enable_analysis`` also opts the task
-    into analysis going forward.
+    (optionally only ``trial_ids``).
     """
     auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
 
@@ -1465,7 +1474,6 @@ async def backfill_task_qa(
             org_id=auth.org_id,
             trial_ids=body.trial_ids,
             force=body.force,
-            enable_analysis=body.enable_analysis,
         )
 
 

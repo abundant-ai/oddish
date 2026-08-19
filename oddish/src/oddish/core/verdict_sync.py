@@ -6,7 +6,11 @@ from typing import Any, Awaitable, Callable
 from sqlalchemy import select
 
 from oddish.analyze import Classification, TrialClassification
-from oddish.core.verdict_state import complete_verdict, fail_verdict
+from oddish.core.verdict_state import (
+    complete_verdict,
+    complete_verdict_without_result,
+    fail_verdict,
+)
 from oddish.db import (
     TaskModel,
     TaskStatus,
@@ -28,8 +32,6 @@ def build_verdict_payload(
 
     ``verdict`` supplies only the model's judgment; the four counts are always
     recomputed from ``classifications`` so no model output can inflate them.
-    Accepts both ``TaskVerdict`` and ``TaskVerdictModel`` by duck typing, which
-    is what lets the legacy and AnalyzerBlock paths share one writer.
     """
     return {
         "verdict": "accept" if verdict.is_good else "reject",
@@ -67,7 +69,7 @@ async def sync_verdict_to_task(
     should_store: Callable[[Any], Awaitable[bool]] | None = None,
 ) -> str | None:
     """Write verdict state and complete the task. The only writer of a
-    *synthesized* verdict, so the legacy and block paths cannot diverge.
+    synthesized verdict.
 
     Returns the terminal ``VerdictStatus`` value written, or ``None`` when the
     write was skipped (task gone, or the job was cancelled).
@@ -91,6 +93,29 @@ async def sync_verdict_to_task(
         task.status = TaskStatus.COMPLETED
         task.finished_at = utcnow()
         return terminal_status.value
+
+
+async def complete_task_without_verdict(
+    task_id: str,
+    *,
+    should_store: Callable[[Any], Awaitable[bool]] | None = None,
+) -> str | None:
+    """Finish a QA pass that was not asked for a verdict (too few trials).
+
+    Per-trial analysis is already stored; this only clears the in-flight
+    verdict state and completes the task. A previously published verdict is
+    restored rather than dropped.
+    """
+    async with get_session() as session:
+        task = await session.get(TaskModel, task_id, with_for_update=True)
+        if not task:
+            return None
+        if should_store is not None and not await should_store(session):
+            return None
+        complete_verdict_without_result(task, now=utcnow())
+        task.status = TaskStatus.COMPLETED
+        task.finished_at = utcnow()
+        return VerdictStatus.SUCCESS.value
 
 
 def build_pre_trial_payload(
@@ -125,7 +150,6 @@ async def sync_pre_trial_to_task_version(
     *,
     payload: dict | None,
     error: BaseException | str | None,
-    should_store: Callable[[Any], Awaitable[bool]] | None = None,
 ) -> str | None:
     """Write the pre-trial columns on the audited task version. Unlike
     :func:`sync_verdict_to_task`, this never completes the task and never
@@ -133,17 +157,14 @@ async def sync_pre_trial_to_task_version(
     runs independently of trial classification.
 
     Returns the terminal ``VerdictStatus`` value written, or ``None`` when
-    the write was skipped (version gone, or ``should_store`` vetoed it) so
-    the caller can release its claim on the version.
+    the write was skipped (version gone) so the caller can release its claim
+    on the version.
     """
     async with get_session() as session:
         version = await session.get(
             TaskVersionModel, task_version_id, with_for_update=True
         )
         if version is None:
-            return None
-
-        if should_store is not None and not await should_store(session):
             return None
 
         if error is None:

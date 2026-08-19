@@ -26,6 +26,8 @@ class EligibleTrialScope:
 
     def clauses(self) -> list[Any]:
         clauses = list(self.membership)
+        if not self.include_non_agent_kinds:
+            clauses.append(TrialModel.kind == "agent")
         if not self.include_probes:
             clauses.append(TrialModel.is_probe.isnot(True))
         if not self.include_superseded:

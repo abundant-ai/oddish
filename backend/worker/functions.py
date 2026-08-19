@@ -113,7 +113,9 @@ from oddish.runtime.sandbox_lifecycle import (
     EC2_TRIAL_EXECUTION_LANE,
 )
 
-from .github import notify_github_analysis, notify_github_qa, notify_github_trial
+from oddish.workers.analysis_trials import register_qa_imported_hook
+
+from .github import notify_github_qa, notify_github_trial
 from .runtime import configure_storage_paths, console
 
 # Generic workers must never receive EC2 launch credentials or the SSH key.
@@ -137,7 +139,7 @@ async def teardown_ec2_sandbox(external_id: str) -> bool:
     return await backend.teardown(external_id)
 
 
-# Register TRIAL / ANALYSIS / VERDICT handlers against the unified
+# Register TRIAL / TASK_EXPAND / TAG_PROJECT handlers against the unified
 # registry as soon as this module loads in a worker container. The
 # dispatcher and single-job runner also call this defensively, but
 # doing it here makes the startup order explicit for readers.
@@ -150,25 +152,14 @@ from .byok_resolver import install_byok_resolver
 
 install_byok_resolver()
 
-# Register the hosted pre-trial synth hook (invoked by qa_handler only when
-# settings.pre_trial_enabled). Import for the side effect.
-from . import pre_trial_synth as _pre_trial_synth  # noqa: F401
-
-# Register the hosted trajectory-summary provider so post-trial classification
-# can feed a component map to the classifier. Import for the side effect.
-from . import trajectory_summary_provider as _trajectory_summary_provider  # noqa: F401
-
+# QA import writes the verdict; the hook refreshes the whole PR comment.
+register_qa_imported_hook(notify_github_qa)
 
 # Post-success hooks: fired after the worker_jobs row is in SUCCESS state.
-# The QA hook refreshes the whole PR comment (per-trial classifications +
-# task verdict) in one update. ``ANALYSIS`` is transitional -- it only fires
-# for legacy per-trial rows draining across a deploy. Hook exceptions are
-# swallowed by the runner so a GitHub API hiccup never corrupts scheduling
-# state.
+# Hook exceptions are swallowed by the runner so a GitHub API hiccup never
+# corrupts scheduling state.
 _POST_SUCCESS_HOOKS: PostSuccessHooks = {
     WorkerJobKind.TRIAL: notify_github_trial,
-    WorkerJobKind.QA: notify_github_qa,
-    WorkerJobKind.ANALYSIS: notify_github_analysis,
 }
 
 
