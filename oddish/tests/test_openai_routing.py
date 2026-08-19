@@ -105,9 +105,10 @@ def test_azure_compat_codex_allowlists_azure_endpoint(monkeypatch):
     assert _AZURE_HOST in domains
 
 
-def test_outbound_hosts_for_model_includes_azure_when_configured(monkeypatch):
+def test_outbound_hosts_for_model_follow_the_prefix_transport(monkeypatch):
     """Oddish host injection must allowlist the Azure OpenAI endpoint for
-    openai/* models when the Azure provider is configured."""
+    azure/* models — the transport an explicit azure id names — while
+    openai/* ids get only the public platform hosts they actually call."""
     from oddish.config import OPENAI_PROVIDER_AZURE
     from oddish.config import settings as oddish_settings
     from oddish.workers.harbor.model_hosts import outbound_hosts_for_model
@@ -115,9 +116,12 @@ def test_outbound_hosts_for_model_includes_azure_when_configured(monkeypatch):
     monkeypatch.setattr(oddish_settings, "azure_openai_endpoint", _AZURE_ENDPOINT)
     monkeypatch.setattr(oddish_settings, "openai_provider", OPENAI_PROVIDER_AZURE)
 
-    hosts = outbound_hosts_for_model("openai/gpt-5.5")
+    azure_hosts = outbound_hosts_for_model("azure/gpt-5.5")
+    assert _AZURE_HOST in azure_hosts
 
-    assert _AZURE_HOST in hosts
+    platform_hosts = outbound_hosts_for_model("openai/gpt-5.5")
+    assert "api.openai.com" in platform_hosts
+    assert _AZURE_HOST not in platform_hosts
 
 
 def test_azure_compat_codex_allowlists_per_trial_openai_base_url():

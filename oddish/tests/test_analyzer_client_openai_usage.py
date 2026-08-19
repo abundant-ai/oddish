@@ -164,3 +164,59 @@ async def test_usage_recorded_even_when_finalization_raises(monkeypatch):
     assert client.last_usage.input_tokens == 1000
     assert client.last_usage.output_tokens == 200
     assert client.last_usage.cost_usd > 0
+
+
+def test_explicit_openai_prefix_strips_wire_model_and_stays_quiet(monkeypatch):
+    import warnings as _warnings
+
+    from oddish.blocks.analyzer import analyzer_llm_client as mod
+    from oddish.config import settings
+
+    monkeypatch.setattr(settings, "openai_provider", "azure")
+    monkeypatch.setattr(settings, "openai_api_key", "sk-public")
+
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("error")  # any warning fails the test
+        _, wire = mod._build_openai_client(model="openai/gpt-5.2")
+    assert wire == "gpt-5.2"
+
+
+def test_bare_id_on_public_default_still_warns(monkeypatch):
+    import pytest as _pytest
+
+    from oddish.blocks.analyzer import analyzer_llm_client as mod
+    from oddish.config import settings
+
+    monkeypatch.setattr(settings, "openai_provider", "openai")
+    monkeypatch.setattr(settings, "openai_api_key", "sk-public")
+
+    with _pytest.warns(UserWarning, match="public OpenAI"):
+        _, wire = mod._build_openai_client(model="gpt-5.2")
+    assert wire == "gpt-5.2"
+
+    # An explicit prefix stays quiet even when the default is also public.
+    import warnings as _warnings
+
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("error")
+        _, wire = mod._build_openai_client(model="openai/gpt-5.2")
+    assert wire == "gpt-5.2"
+
+
+def test_anthropic_path_normalizes_wire_model():
+    from oddish.blocks.analyzer.analyzer_llm_client import ApiAnalyzerLLMClient
+
+    # The Anthropic SDK only accepts plain API ids: the transport prefix and
+    # Bedrock-shaped ids both normalize at construction.
+    client = ApiAnalyzerLLMClient(model="anthropic/claude-haiku-4-5")
+    assert client._model == "claude-haiku-4-5"
+
+    client = ApiAnalyzerLLMClient(
+        model="global.anthropic.claude-haiku-4-5-20251001-v1:0"
+    )
+    assert client._model == "claude-haiku-4-5"
+
+    # The dotted marketing spelling is an accepted alias wherever a trial names
+    # a model, so the analyzer resolves it to the dashed API id as well.
+    client = ApiAnalyzerLLMClient(model="anthropic/claude-opus-4.8")
+    assert client._model == "claude-opus-4-8"

@@ -47,7 +47,7 @@ async def test_effective_limits_prefer_database_override():
 
 @pytest.mark.asyncio
 async def test_effective_limits_are_keyed_by_the_callers_queue_key():
-    raw = "anthropic/claude-haiku-4-5-20251001"
+    raw = "claude-haiku-4-5-20251001"
     assert settings.normalize_queue_key(raw) != raw, "picked a key that isn't rewritten"
 
     limits = await get_effective_model_concurrency_limits(_Session(), (raw,))

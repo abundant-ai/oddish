@@ -187,3 +187,40 @@ def test_no_byok_overlay_falls_back_to_platform_key(monkeypatch):
     # An overlay with no model key for this provider (e.g. probe-only creds)
     # does not shadow the platform stamp.
     assert trial_llm_key_hash("xai", {"ODDISH_PROBE_TASK_ID": "t1"}) == platform
+
+
+def test_anthropic_platform_prefix_ignores_byok_overlay(monkeypatch):
+    # anthropic/<model> pins the platform key in the runner (the prefix wins
+    # over BYOK, exactly like anthropic-hdo/), so the stamp must be the
+    # platform key even when a resolved overlay carries the user's
+    # ANTHROPIC_API_KEY.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-platform")
+    assert trial_llm_key_hash(
+        "anthropic",
+        {"ANTHROPIC_API_KEY": "sk-ant-user"},
+        model="anthropic/claude-haiku-4-5",
+    ) == hash_llm_key("sk-ant-platform")
+    # A Bedrock-canonicalized model (bare claude submission) keeps BYOK
+    # attribution: the rerouted trial genuinely runs on the user key.
+    assert trial_llm_key_hash(
+        "bedrock",
+        {"ANTHROPIC_API_KEY": "sk-ant-user"},
+        model="global.anthropic.claude-haiku-4-5-20251001-v1:0",
+    ) == hash_llm_key("sk-ant-user")
+
+
+def test_azure_openai_spelling_stamps_the_azure_key(monkeypatch):
+    # Both spellings of the Azure transport stamp the credential that funds
+    # Azure runs -- settings first, worker env as the fallback.
+    from oddish.config import settings
+
+    monkeypatch.setattr(settings, "azure_openai_api_key", "azure-platform-key")
+    assert platform_key_hash_for_provider("azure_openai") == hash_llm_key(
+        "azure-platform-key"
+    )
+
+    monkeypatch.setattr(settings, "azure_openai_api_key", None)
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "azure-env-key")
+    assert platform_key_hash_for_provider("azure_openai") == hash_llm_key(
+        "azure-env-key"
+    )

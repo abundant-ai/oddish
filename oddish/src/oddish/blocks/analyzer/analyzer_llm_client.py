@@ -14,7 +14,13 @@ from oddish.analyze.analysis_cost import (
     usage_from_openai_completion,
 )
 from oddish.blocks.analyzer.claude_cli_client import ClaudeCliClient, CliConfig
-from oddish.config import OPENAI_PROVIDER_OPENAI, _infer_provider_prefix, settings
+from oddish.config import (
+    OPENAI_PROVIDER_OPENAI,
+    _infer_provider_prefix,
+    is_openai_platform_prefixed,
+    settings,
+    to_anthropic_api_model_id,
+)
 
 _DEFAULT_MODEL = "claude-opus-4-8"
 
@@ -142,13 +148,27 @@ def _build_openai_client(
     *, model: str, api_key: str | None = None
 ) -> tuple[AsyncOpenAI, str]:
     """Resolve public-OpenAI vs Azure and return (client, runtime model id).
+
+    Routed per model id (``get_openai_route_for_model``): an explicit
+    ``openai/`` id runs on the public platform, ``azure/`` on Azure, and the
+    bare analyzer/verdict defaults follow ODDISH_OPENAI_PROVIDER as before.
     A module-level seam: tests patch this instead of the class, so construction
     never needs live credentials."""
-    provider = settings.get_openai_provider()
+    provider = settings.get_openai_route_for_model(model)
     if provider == OPENAI_PROVIDER_OPENAI:
-        warnings.warn(settings.get_public_openai_warning(), stacklevel=2)
+        # Warn only when the GLOBAL default drives a bare id to the public
+        # route; an explicit ``openai/`` id is an intentional per-model choice
+        # and stays quiet (same gate as the Harbor agent path).
+        if settings.get_openai_provider() == OPENAI_PROVIDER_OPENAI and (
+            not is_openai_platform_prefixed(model)
+        ):
+            warnings.warn(settings.get_public_openai_warning(), stacklevel=2)
         public = settings.require_public_openai_config(api_key=api_key)
-        return AsyncOpenAI(api_key=public["api_key"]), model
+        # The platform API only knows bare slugs -- strip the transport
+        # prefix from the wire model (Harbor agents do their own stripping;
+        # the Azure branch resolves a deployment instead).
+        wire_model = model.split("/", 1)[1] if is_openai_platform_prefixed(model) else model
+        return AsyncOpenAI(api_key=public["api_key"]), wire_model
 
     azure = settings.require_azure_openai_config()
     deployment = settings.resolve_azure_openai_deployment(model)
@@ -209,6 +229,11 @@ class ApiAnalyzerLLMClient:
             # When set, the response is constrained to this JSON schema during
             # generation instead of being hand-written into free text.
             self._output_schema = output_schema
+            # The Anthropic SDK only accepts plain API ids: strip an
+            # ``anthropic/``/``claude/`` transport prefix and map
+            # Bedrock-shaped ids to their dateless API id (the same
+            # normalization the CLI analyzer path applies).
+            self._model = to_anthropic_api_model_id(model) or model
             key = resolve_analyzer_api_key(api_key)
             self._anthropic = AsyncAnthropic(api_key=key) if key else AsyncAnthropic()
             self._openai = None
