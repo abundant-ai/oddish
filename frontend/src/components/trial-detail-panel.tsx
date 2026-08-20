@@ -204,12 +204,6 @@ const OUTCOME_CARD_TONE: Record<MatrixStatus, string> = {
   running: "border-blue-500/30 bg-blue-500/10",
 };
 
-type AnalysisLogState =
-  | { status: "idle" | "loading" | "error"; text: null }
-  | { status: "ready"; text: string | null };
-
-const EMPTY_ANALYSIS_LOG: AnalysisLogState = { status: "idle", text: null };
-
 // The QA assessment card. It renders before any analysis exists, so the
 // run button is reachable. It shows queued/running state with elapsed
 // time. While analysis is active it polls the trial, so the result
@@ -237,11 +231,6 @@ function TrialAnalysisCard({
   const [queuing, setQueuing] = useState(false);
   const [queueError, setQueueError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
-  const [analysisLog, setAnalysisLog] =
-    useState<AnalysisLogState>(EMPTY_ANALYSIS_LOG);
-  const [logOpen, setLogOpen] = useState(false);
-  const [queuePosition, setQueuePosition] = useState<number | null>(null);
-  const logRef = useRef<HTMLPreElement | null>(null);
   // Guards async completions: a response that lands after a trial switch
   // must not write another trial's state onto the open card.
   const trialIdRef = useRef(trialProp.id);
@@ -253,16 +242,12 @@ function TrialAnalysisCard({
     onQueuedRef.current = onQueued;
   }, [onQueued]);
 
-  // When the user switches to a different trial, the re-run button state
-  // and the fetched log are cleared because they describe the previous
-  // trial. The trial data itself does not need clearing, because the
-  // cache stores it under each trial's id.
+  // When the user switches to a different trial, clear local action state.
+  // The trial data itself does not need clearing, because the cache stores it
+  // under each trial's id.
   useEffect(() => {
     trialIdRef.current = trialProp.id;
     setQueuing(false);
-    setAnalysisLog(EMPTY_ANALYSIS_LOG);
-    setLogOpen(false);
-    setQueuePosition(null);
     setQueueError(null);
   }, [trialProp.id]);
 
@@ -308,61 +293,6 @@ function TrialAnalysisCard({
     if (!inProgress) return;
     const id = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(id);
-  }, [inProgress]);
-
-  // Active analysis needs its queue position and live log. A terminal log is
-  // cold until the user expands its disclosure.
-  const shouldLoadAnalysisLog = inProgress || logOpen;
-  useEffect(() => {
-    if (!shouldLoadAnalysisLog) return;
-    let cancelled = false;
-    const fetchLog = async () => {
-      setAnalysisLog((current) =>
-        current.status === "ready" ? current : { status: "loading", text: null }
-      );
-      try {
-        const res = await fetch(
-          `${apiBaseUrl}/trials/${trialProp.id}/analysis-log`,
-          { cache: "no-store" }
-        );
-        if (!res.ok) throw new Error("Failed to load analysis log");
-        if (cancelled) return;
-        const data = (await res.json()) as {
-          log?: string | null;
-          queue_position?: number | null;
-        };
-        if (!cancelled) {
-          setAnalysisLog({ status: "ready", text: data.log ?? null });
-          setQueuePosition(data.queue_position ?? null);
-        }
-      } catch {
-        if (!cancelled) {
-          setAnalysisLog((current) =>
-            current.status === "ready"
-              ? current
-              : { status: "error", text: null }
-          );
-        }
-      }
-    };
-    void fetchLog();
-    const id = inProgress ? window.setInterval(fetchLog, 5000) : null;
-    return () => {
-      cancelled = true;
-      if (id !== null) window.clearInterval(id);
-    };
-  }, [apiBaseUrl, trialProp.id, inProgress, shouldLoadAnalysisLog]);
-
-  // Keep the newest log lines in view while the analysis runs.
-  useEffect(() => {
-    const el = logRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [analysisLog.text]);
-
-  // Open the log panel when a run starts. The user can close and reopen it
-  // at any time; renders never force it shut.
-  useEffect(() => {
-    if (inProgress) setLogOpen(true);
   }, [inProgress]);
 
   const hasAnalysis =
@@ -441,12 +371,6 @@ function TrialAnalysisCard({
         { revalidate: true }
       );
       if (trialIdRef.current !== requestTrialId) return;
-      // The old run's log is cleared server-side; clear it here too. Open
-      // the log directly: a re-run over a stale RUNNING analysis keeps
-      // inProgress true, so the open-on-start effect does not fire again.
-      setAnalysisLog(EMPTY_ANALYSIS_LOG);
-      setLogOpen(true);
-      setQueuePosition(null);
     } catch (err) {
       if (trialIdRef.current === requestTrialId) {
         setQueueError(
@@ -460,8 +384,7 @@ function TrialAnalysisCard({
     }
   };
 
-  // Progress line: elapsed time while running, queue position while queued.
-  // No narration — the log below shows what the analyzer is doing.
+  // Progress line: elapsed time while running, waiting state while queued.
   let progressLine: string | null = null;
   if (inProgress) {
     if (trial.analysis_status === "running") {
@@ -475,10 +398,7 @@ function TrialAnalysisCard({
         progressLine = `Running for ${Math.floor(secs / 60)}m ${secs % 60}s.`;
       }
     } else {
-      progressLine =
-        queuePosition !== null
-          ? `Position ${queuePosition} in the QA queue.`
-          : "Waiting for a QA worker.";
+      progressLine = "Waiting for a QA worker.";
     }
   }
 
@@ -565,10 +485,6 @@ function TrialAnalysisCard({
                   : null
               }
               actionItems={trial.analysis?.action_items}
-              log={analysisLog.text}
-              logStatus={analysisLog.status}
-              logOpen={logOpen}
-              onLogToggle={setLogOpen}
               duration={analysisDuration}
               raw={trial.analysis}
             />
@@ -660,35 +576,6 @@ function TrialAnalysisCard({
               )}
             </div>
           </div>
-        )}
-        {hasAnalysis && !showReport && (
-          <details
-            className="mt-3"
-            open={logOpen}
-            onToggle={(event) =>
-              setLogOpen((event.target as HTMLDetailsElement).open)
-            }
-          >
-            <summary className="text-muted-foreground cursor-pointer text-[11px] font-medium select-none">
-              Analysis log
-            </summary>
-            {analysisLog.text ? (
-              <pre
-                ref={logRef}
-                className="bg-muted/40 mt-1 max-h-48 overflow-auto rounded p-2 font-mono text-[10.5px] leading-relaxed whitespace-pre-wrap"
-              >
-                {analysisLog.text}
-              </pre>
-            ) : logOpen ? (
-              <p className="text-muted-foreground mt-1 text-[11px]">
-                {analysisLog.status === "error"
-                  ? "Unable to load the analysis log."
-                  : analysisLog.status === "ready"
-                    ? "No log output."
-                    : "Loading analysis log…"}
-              </p>
-            ) : null}
-          </details>
         )}
       </CardContent>
     </Card>

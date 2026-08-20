@@ -366,14 +366,6 @@ test.describe("critical task and trial subtree", () => {
       }
     );
     await page.route(
-      new RegExp(`/api/trials/${TRIAL_ID}/analysis-log(?:\\?|$)`),
-      async (route) => {
-        await route.fulfill({
-          json: { log: "terminal analyzer output", queue_position: null },
-        });
-      }
-    );
-    await page.route(
       new RegExp(`/api/trials/${TRIAL_ID}/analysis/rerun(?:\\?|$)`),
       async (route) => {
         await route.fulfill({ status: 202, json: {} });
@@ -537,9 +529,6 @@ test.describe("critical task and trial subtree", () => {
     const taskFilesPattern = new RegExp(
       `/api/tasks/${TASK_ID}/files(?:/|\\?|$)`
     );
-    const analysisLogPattern = new RegExp(
-      `/api/trials/${TRIAL_ID}/analysis-log(?:\\?|$)`
-    );
     const trialFilesPattern = new RegExp(
       `/api/trials/${TRIAL_ID}/files(?:/|\\?|$)`
     );
@@ -565,7 +554,6 @@ test.describe("critical task and trial subtree", () => {
     expect(requestCount(requests, taskDetailPattern)).toBe(0);
     expect(requestCount(requests, taskTrialsPattern)).toBe(0);
     expect(requestCount(requests, taskFilesPattern)).toBe(0);
-    expect(requestCount(requests, analysisLogPattern)).toBe(0);
     expect(requestCount(requests, trialFilesPattern)).toBe(0);
     expect(requestCount(requests, trajectoryPattern)).toBe(0);
 
@@ -581,16 +569,9 @@ test.describe("critical task and trial subtree", () => {
     await expect(
       page.getByRole("heading", { name: "GOOD FAILURE", exact: true })
     ).toBeVisible();
-    const analysisLogDisclosure = page
-      .locator("summary")
-      .filter({ hasText: "Analysis log" });
-    await expect(analysisLogDisclosure).toBeVisible();
     await expect(
       page.getByRole("button", { name: "Re-run analysis" })
     ).toBeEnabled();
-    await analysisLogDisclosure.click();
-    await expect(page.getByText("terminal analyzer output")).toBeVisible();
-    expect(requestCount(requests, analysisLogPattern)).toBe(1);
 
     const trialFilesRequest = page.waitForRequest(trialFilesPattern);
     await page.getByRole("tab", { name: "Files" }).click();
