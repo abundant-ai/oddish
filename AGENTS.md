@@ -265,7 +265,14 @@ transaction, so a delayed older importer cannot replace a newer result. The
 cleanup sweep selects at most 200 non-null pointers whose summarize trial is
 SUCCESS and retries those imports after the cleanup transaction commits. A
 worker that dies between trial settlement and import therefore leaves durable,
-bounded recovery work instead of a permanently stale summary.
+bounded recovery work instead of a permanently stale summary. In an S3-backed
+run, a QA/audit/summarize trial cannot settle SUCCESS until its Harbor artifact
+directory uploads successfully; an upload failure uses the trial's normal retry
+budget. Storage list/download errors during import propagate so cleanup retries
+them. A successfully settled summarize trial whose stored artifact is absent or
+violates the pinned contract becomes FAILED while the target pointer remains,
+so GET reports 409 and the next POST replaces it instead of adopting a SUCCESS
+trial that can never publish.
 
 Trajectory summaries use schema v5. Each taxonomy-valued `components` entry
 contains its `step_ids`, summary, and deterministic `tool_count` and

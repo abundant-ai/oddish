@@ -579,11 +579,10 @@ async def read_artifact_bytes(trial: TrialModel, filename: str) -> bytes | None:
     the newest when retries left several attempts behind."""
     prefix = resolve_trial_s3_prefix(trial.id, trial_s3_key=trial.trial_s3_key)
     storage = get_storage_client()
-    try:
-        objects = await storage.list_objects_all(prefix)
-    except Exception:  # noqa: BLE001
-        logger.exception("trial %s: listing %s failed", trial.id, prefix)
-        return None
+    # Storage failures are retryable importer failures. Let them propagate to
+    # the post-trial hook, whose cleanup backstop will retry the import, instead
+    # of collapsing them into the permanent "artifact is absent" case.
+    objects = await storage.list_objects_all(prefix)
     staged = [
         o for o in objects if str(o.get("key", "")).endswith(f"/verifier/{filename}")
     ]
@@ -595,11 +594,7 @@ async def read_artifact_bytes(trial: TrialModel, filename: str) -> bytes | None:
         candidates,
         key=lambda o: (str(o.get("last_modified") or ""), str(o.get("key"))),
     )
-    try:
-        return await storage.download_bytes(str(newest["key"]))
-    except Exception:  # noqa: BLE001
-        logger.exception("trial %s: download %s failed", trial.id, newest["key"])
-        return None
+    return await storage.download_bytes(str(newest["key"]))
 
 
 async def read_analysis_artifact(trial: TrialModel, filename: str) -> dict | None:
@@ -1137,32 +1132,53 @@ async def _import_summarize_result(trial: TrialModel) -> None:
         if artifact is not None
         else None
     )
-    if not target_id or artifact is None or violations:
-        if not target_id:
-            detail = "carries no target_trial_id"
-        elif trial.status != TrialStatus.SUCCESS:
-            detail = f"finished {trial.status.value}"
-        elif artifact is None:
-            detail = f"produced no valid {SUMMARIZE_RESULT_FILENAME}"
-        else:
-            detail = "artifact violates the summarize contract: " + "; ".join(
-                violations[:5]
-            )
-        logger.warning("summarize trial %s import skipped: %s", trial.id, detail)
-        return
-    async with get_session() as session:
-        target = await session.scalar(
-            select(TrialModel).where(TrialModel.id == target_id).with_for_update()
+    import_error = None
+    if not target_id:
+        import_error = "carries no target_trial_id"
+    elif trial.status != TrialStatus.SUCCESS:
+        import_error = f"finished {trial.status.value}"
+    elif artifact is None:
+        import_error = f"produced no valid {SUMMARIZE_RESULT_FILENAME}"
+    elif violations:
+        import_error = "artifact violates the summarize contract: " + "; ".join(
+            violations[:5]
         )
-        if target is None or target.kind != "agent" or target.task_id != trial.task_id:
+
+    async with get_session() as session:
+        target = None
+        if target_id:
+            target = await session.scalar(
+                select(TrialModel).where(TrialModel.id == target_id).with_for_update()
+            )
+        stored_trial = await session.get(TrialModel, trial.id)
+
+        if import_error is None and (
+            target is None
+            or target.kind != "agent"
+            or target.task_id != trial.task_id
+        ):
+            import_error = (
+                f"target {target_id} is not an agent trial on task {trial.task_id}"
+            )
+
+        if import_error:
+            # A SUCCESS row means execution is over, so an absent or invalid
+            # stored artifact cannot heal by re-running this importer. Make the
+            # existing refresh pointer report FAILED; POST can then replace it.
+            # Storage transport errors never reach here because the reader lets
+            # them propagate for cleanup to retry.
+            if stored_trial is not None and stored_trial.status == TrialStatus.SUCCESS:
+                stored_trial.status = TrialStatus.FAILED
+                stored_trial.reward = None
+                stored_trial.error_message = (
+                    f"Trajectory summary import failed: {import_error}"
+                )
             logger.warning(
-                "summarize trial %s: target %s is not an agent trial on task %s; "
-                "dropping its summary",
-                trial.id,
-                target_id,
-                trial.task_id,
+                "summarize trial %s import failed: %s", trial.id, import_error
             )
             return
+
+        assert target is not None
         if target.trajectory_summary_refresh_trial_id != trial.id:
             logger.info(
                 "summarize trial %s: target %s now points to %s; skipping stale import",
@@ -1171,6 +1187,7 @@ async def _import_summarize_result(trial: TrialModel) -> None:
                 target.trajectory_summary_refresh_trial_id,
             )
             return
+
         # Enrichment reads the target's trajectory for the counted facts; a
         # read failure must not lose the summary itself (same rule as the QA
         # importer).

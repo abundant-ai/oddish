@@ -772,6 +772,7 @@ async def _store_trial_results(
     outcome: HarborOutcome | None,
     trial_s3_key: str | None,
     execution_error: str | None,
+    artifact_upload_error: str | None = None,
     probe_analysis: dict | None = None,
     worker_id: str | None = None,
     worker_job_id: str | None = None,
@@ -836,8 +837,12 @@ async def _store_trial_results(
 
         if outcome:
             is_timeout = _is_agent_timeout_error_message(outcome.error)
-            derived_reward = outcome.reward
-            if derived_reward is None and is_timeout:
+            # Analysis importers read their required result from durable storage.
+            # A verifier reward is not a successful analysis run when that
+            # artifact never reached storage: keep the trial on the normal retry
+            # path instead of publishing an unrecoverable SUCCESS row.
+            derived_reward = None if artifact_upload_error else outcome.reward
+            if derived_reward is None and is_timeout and not artifact_upload_error:
                 verifier_ran = _verifier_ran_from_job_result(
                     str(outcome.job_result_path) if outcome.job_result_path else None
                 )
@@ -848,7 +853,9 @@ async def _store_trial_results(
                     )
 
             trial.reward = derived_reward
-            if outcome.error:
+            if artifact_upload_error:
+                trial.error_message = artifact_upload_error
+            elif outcome.error:
                 trial.error_message = outcome.error
             elif derived_reward is not None:
                 trial.error_message = None
@@ -1778,6 +1785,7 @@ async def run_trial_job(
         # Upload trial results to S3.
         trial_s3_key = None
         oddish_uploaded = False
+        artifact_upload_error = None
         if should_upload_to_s3 and execution.outcome and execution.outcome.job_dir:
             try:
                 storage = get_storage_client()
@@ -1795,9 +1803,21 @@ async def run_trial_job(
                 )
                 oddish_uploaded = True
             except Exception as e:
-                console.print(
-                    f"[yellow]Failed to upload trial results to S3: {e}[/yellow]"
-                )
+                message = f"Failed to upload trial results to S3: {type(e).__name__}: {e}"
+                console.print(f"[yellow]{message}[/yellow]")
+                if is_analysis_kind(trial_mode):
+                    artifact_upload_error = message
+        if (
+            should_upload_to_s3
+            and is_analysis_kind(trial_mode)
+            and execution.outcome
+            and not oddish_uploaded
+            and artifact_upload_error is None
+        ):
+            artifact_upload_error = (
+                "Failed to upload trial results to S3: Harbor produced no job "
+                "directory to upload"
+            )
 
         # Mirror to sauron's AWS S3 (best-effort). This targets sauron's own
         # observability bucket (settings.sauron_s3_bucket) with its own prefix
@@ -1859,6 +1879,7 @@ async def run_trial_job(
                 outcome=execution.outcome,
                 trial_s3_key=trial_s3_key,
                 execution_error=execution.execution_error,
+                artifact_upload_error=artifact_upload_error,
                 probe_analysis=probe_analysis,
                 worker_id=worker_id,
                 worker_job_id=worker_job_id,

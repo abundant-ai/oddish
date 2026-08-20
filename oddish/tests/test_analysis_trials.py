@@ -1561,6 +1561,28 @@ def test_the_validator_enforces_the_summarize_contract():
     )
 
 
+@pytest.mark.asyncio
+async def test_analysis_artifact_storage_errors_remain_retryable(monkeypatch):
+    """A storage outage must reach the cleanup retry path, not look absent."""
+    from types import SimpleNamespace
+
+    from oddish.workers import analysis_trials
+
+    class UnavailableStorage:
+        async def list_objects_all(self, _prefix):
+            raise TimeoutError("storage timed out")
+
+    monkeypatch.setattr(
+        analysis_trials, "get_storage_client", lambda: UnavailableStorage()
+    )
+
+    with pytest.raises(TimeoutError, match="storage timed out"):
+        await analysis_trials.read_analysis_artifact(
+            SimpleNamespace(id="task-1-9", trial_s3_key="trials/task-1-9/"),
+            "summary_result.json",
+        )
+
+
 async def _seed_summarize_targets(
     prefix: str, specs: list[tuple[str, str, bool]]
 ) -> tuple[str, dict[str, str]]:
@@ -1684,6 +1706,64 @@ async def test_summarize_creation_accepts_only_agent_targets_and_imports_only_su
         for label in ("qa", "audit", "summarize"):
             row = await session.get(TrialModel, ids[label])
             assert row.trajectory_summary is None
+
+
+@pytest.mark.asyncio
+async def test_missing_summarize_artifact_fails_refresh_and_allows_replacement(
+    monkeypatch,
+):
+    """Needs PostgreSQL. A permanently absent artifact must not stay settling."""
+    if not URL:
+        pytest.skip("ODDISH_DATABASE_URL not set")
+    from oddish.db import TrialStatus, get_session, init_db
+    from oddish.workers import analysis_trials
+    from oddish.workers.analysis_trials import (
+        get_or_create_summarize_trial,
+        handle_analysis_trial_settled,
+    )
+
+    await init_db()
+    _, ids = await _seed_summarize_targets(
+        "summarize-missing-artifact", [("agent", "agent", True)]
+    )
+    target_id = ids["agent"]
+    async with get_session() as session:
+        summarize = await get_or_create_summarize_trial(
+            session, target_trial_id=target_id
+        )
+        assert summarize is not None
+        summarize_id = summarize.id
+    async with get_session() as session:
+        summarize = await session.get(TrialModel, summarize_id)
+        summarize.status = TrialStatus.SUCCESS
+        summarize.reward = 1.0
+
+    async def missing_artifact(_trial, _filename):
+        return None
+
+    monkeypatch.setattr(
+        analysis_trials, "read_analysis_artifact", missing_artifact
+    )
+    await handle_analysis_trial_settled(summarize_id)
+
+    async with get_session() as session:
+        target = await session.get(TrialModel, target_id)
+        failed = await session.get(TrialModel, summarize_id)
+        assert target.trajectory_summary_refresh_trial_id == summarize_id
+        assert failed.status == TrialStatus.FAILED
+        assert failed.reward is None
+        assert failed.error_message == (
+            "Trajectory summary import failed: produced no valid summary_result.json"
+        )
+
+    async with get_session() as session:
+        replacement = await get_or_create_summarize_trial(
+            session, target_trial_id=target_id
+        )
+        assert replacement is not None
+        assert replacement.id != summarize_id
+        target = await session.get(TrialModel, target_id)
+        assert target.trajectory_summary_refresh_trial_id == replacement.id
 
 
 @pytest.mark.asyncio
