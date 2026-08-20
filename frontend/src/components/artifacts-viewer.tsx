@@ -233,33 +233,34 @@ export function ArtifactsViewer({
   }`;
 
   return (
-    <div className="flex h-full flex-col overflow-hidden md:flex-row">
-      {/* Stacked layout needs a DEFINITE height (h-[30vh], not max-h): the
-          tree virtualizes against this viewport, and a flex-1 child inside
-          an auto-height column measures ~0 and renders blank. On md+ the
-          row layout stretches the pane to the container's full height. */}
-      <div className="border-border bg-muted/30 flex h-[30vh] w-full flex-col overflow-hidden border-b p-2 md:h-auto md:w-56 md:border-r md:border-b-0 lg:w-64">
-        <div className="text-muted-foreground flex items-center justify-between gap-2 px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
-          <span>Artifacts</span>
-          <span className="text-muted-foreground/70 font-sans text-[10px] font-normal normal-case">
-            {fileCountLabel}
-          </span>
+    <div className="@container/file-browser flex h-full min-h-0 min-w-0 overflow-hidden">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden @2xl/file-browser:flex-row">
+        {/* Stacked layout needs a definite height: FileTreePane virtualizes
+            against this viewport. Once the viewer's own container is wide
+            enough for a row, the tree stretches to the full pane height. */}
+        <div className="border-border bg-muted/30 flex h-[30vh] w-full flex-col overflow-hidden border-b p-2 @2xl/file-browser:h-auto @2xl/file-browser:w-56 @2xl/file-browser:shrink-0 @2xl/file-browser:border-r @2xl/file-browser:border-b-0 @3xl/file-browser:w-64">
+          <div className="text-muted-foreground flex items-center justify-between gap-2 px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
+            <span>Artifacts</span>
+            <span className="text-muted-foreground/70 font-sans text-[10px] font-normal normal-case">
+              {fileCountLabel}
+            </span>
+          </div>
+          <FileTreePane
+            className="min-h-0 flex-1"
+            onSelectPath={setSelectedPath}
+            paths={treePaths}
+            selectedPath={selectedPath}
+          />
         </div>
-        <FileTreePane
-          className="min-h-0 flex-1"
-          onSelectPath={setSelectedPath}
-          paths={treePaths}
-          selectedPath={selectedPath}
+        <ArtifactContentPane
+          filesUrl={filesUrl}
+          selectedFile={selectedFile}
+          viewMode={viewMode}
+          onViewModeChange={setViewMode}
+          selectedLines={selectedLines}
+          onSelectLinesChange={onSelectLinesChange}
         />
       </div>
-      <ArtifactContentPane
-        filesUrl={filesUrl}
-        selectedFile={selectedFile}
-        viewMode={viewMode}
-        onViewModeChange={setViewMode}
-        selectedLines={selectedLines}
-        onSelectLinesChange={onSelectLinesChange}
-      />
     </div>
   );
 }
@@ -423,7 +424,7 @@ function ArtifactContentPane({
   const renderUrl = presignedUrl || proxyUrl || null;
 
   return (
-    <div className="flex flex-1 flex-col overflow-hidden">
+    <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
       <div className="border-border bg-muted/30 flex items-center justify-between gap-2 border-b px-3 py-2 sm:px-4">
         <div className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[10px] sm:text-xs">
           {selectedFile.path}
