@@ -1,4 +1,4 @@
-"""Operator model aliases on the published share path.
+"""Per-experiment operator model aliases on the published share path.
 
 Two things must hold at once: an aliased model reads as its display name on
 the public endpoints, and nothing derived from the real model id (cost, most
@@ -11,15 +11,14 @@ from datetime import datetime, timezone
 import uuid
 
 import pytest
-from sqlalchemy.exc import ProgrammingError
 
 from oddish.core.helpers import build_trial_response
 from oddish.core.model_display_names import (
     apply_model_display_names,
     canonical_model_key,
     display_model_name,
+    experiment_display_names,
     mask_trajectory_model_names,
-    load_model_display_names,
 )
 from oddish.core.sharing.helpers import (
     ensure_experiment_public,
@@ -29,7 +28,6 @@ from oddish.core.sharing.helpers import (
 from oddish.core.sharing.public import get_public_task_status
 from oddish.db import (
     ExperimentModel,
-    ModelDisplayNameModel,
     TaskModel,
     TrialModel,
     generate_id,
@@ -41,6 +39,13 @@ from oddish.schemas import TrialOrigin, TrialStatus
 
 def _unique(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
+
+
+class _Exp:
+    """Anything ``experiment_display_names`` reads: a ``public_model_renames``."""
+
+    def __init__(self, renames):
+        self.public_model_renames = renames
 
 
 def _trial_response(
@@ -65,6 +70,26 @@ def _trial_response(
         cache_tokens=0,
     )
     return build_trial_response(trial, "s3://tasks/t")
+
+
+async def _cleanup_task_and_experiment(
+    task_id: str | None, exp_id: str | None
+) -> None:
+    async with get_session() as cleanup:
+        if task_id:
+            await cleanup.execute(
+                TrialModel.__table__.delete().where(TrialModel.task_id == task_id)
+            )
+            await cleanup.execute(
+                task_experiments.delete().where(task_experiments.c.task_id == task_id)
+            )
+            await cleanup.execute(
+                TaskModel.__table__.delete().where(TaskModel.id == task_id)
+            )
+        if exp_id:
+            await cleanup.execute(
+                ExperimentModel.__table__.delete().where(ExperimentModel.id == exp_id)
+            )
 
 
 def test_alias_replaces_model_and_matching_queue_key():
@@ -125,54 +150,21 @@ def test_alias_does_not_change_resolved_cost():
     "typed", ["Spiffy-Balloon", "spiffy-balloon", "  SPIFFY  BALLOON  "]
 )
 def test_writers_canonicalize_to_one_key(typed):
-    """Case/whitespace variants collapse so the live UNIQUE index sees one row,
-    and the collapsed key is one the read side looks up."""
+    """Case/whitespace variants collapse to one stored key, and that key is one
+    the read side looks up."""
     assert canonical_model_key(typed) == "spiffy-balloon"
 
 
-class _MissingTableSession:
-    """Session whose only query raises Postgres' undefined-table error."""
-
-    def __init__(self, exc):
-        self._exc = exc
-
-    def begin_nested(self):
-        exc = self._exc
-
-        class _Savepoint:
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *_):
-                return False
-
-        return _Savepoint()
-
-    async def scalars(self, *_args, **_kwargs):
-        raise self._exc
+def test_experiment_display_names_expands_stored_keys():
+    """A stored canonical key resolves under whatever spelling a trial carries."""
+    exp = _Exp({canonical_model_key("Spiffy Balloon"): "bananas"})
+    assert experiment_display_names(exp).get("spiffy-balloon") == "bananas"
 
 
-def _programming_error(sqlstate: str) -> ProgrammingError:
-    orig = Exception("boom")
-    orig.sqlstate = sqlstate
-    return ProgrammingError("SELECT 1", {}, orig)
-
-
-@pytest.mark.asyncio
-async def test_missing_table_degrades_to_real_model_ids():
-    """Deploy-before-migrate must not 500 a share page that worked before."""
-    session = _MissingTableSession(_programming_error("42P01"))
-
-    assert await load_model_display_names(session) == {}
-
-
-@pytest.mark.asyncio
-async def test_other_sql_faults_still_surface():
-    """A broken query must not hide behind the missing-table fallback."""
-    session = _MissingTableSession(_programming_error("42703"))
-
-    with pytest.raises(ProgrammingError):
-        await load_model_display_names(session)
+def test_experiment_display_names_empty_when_unset_or_blank():
+    assert experiment_display_names(_Exp(None)) == {}
+    assert experiment_display_names(_Exp({})) == {}
+    assert experiment_display_names(_Exp({"spiffy-balloon": ""})) == {}
 
 
 @pytest.mark.asyncio
@@ -180,7 +172,6 @@ async def test_public_share_renders_the_alias_and_org_export_does_not():
     model = _unique("spiffy-balloon")
     task_id: str | None = None
     exp_id: str | None = None
-    alias_id: str | None = None
     try:
         async with get_session() as setup:
             task = TaskModel(
@@ -193,7 +184,11 @@ async def test_public_share_renders_the_alias_and_org_export_does_not():
             await setup.flush()
             task_id = task.id
 
-            exp = ExperimentModel(name=_unique("alias-exp"), org_id="org1")
+            exp = ExperimentModel(
+                name=_unique("alias-exp"),
+                org_id="org1",
+                public_model_renames={canonical_model_key(model): "bananas"},
+            )
             setup.add(exp)
             await setup.flush()
             exp_id = exp.id
@@ -217,13 +212,6 @@ async def test_public_share_renders_the_alias_and_org_export_does_not():
                 )
             )
 
-            alias = ModelDisplayNameModel(
-                model_name=model, display_name="bananas", created_by_user_id="tester"
-            )
-            setup.add(alias)
-            await setup.flush()
-            alias_id = alias.id
-
             await ensure_experiment_public(setup, exp)
             await setup.flush()
             token = exp.public_token
@@ -242,69 +230,66 @@ async def test_public_share_renders_the_alias_and_org_export_does_not():
             org_trials = await list_experiment_trials_for_org(session, exp_id, "org1")
         assert [t.model for t in org_trials] == [model]
     finally:
-        async with get_session() as cleanup:
-            if alias_id:
-                await cleanup.execute(
-                    ModelDisplayNameModel.__table__.delete().where(
-                        ModelDisplayNameModel.id == alias_id
-                    )
-                )
-            if task_id:
-                await cleanup.execute(
-                    TrialModel.__table__.delete().where(TrialModel.task_id == task_id)
-                )
-                await cleanup.execute(
-                    task_experiments.delete().where(
-                        task_experiments.c.task_id == task_id
-                    )
-                )
-                await cleanup.execute(
-                    TaskModel.__table__.delete().where(TaskModel.id == task_id)
-                )
-            if exp_id:
-                await cleanup.execute(
-                    ExperimentModel.__table__.delete().where(
-                        ExperimentModel.id == exp_id
-                    )
-                )
+        await _cleanup_task_and_experiment(task_id, exp_id)
 
 
 @pytest.mark.asyncio
-async def test_removed_alias_stops_renaming():
-    model = _unique("retired-model")
-    alias_id: str | None = None
+async def test_experiment_without_a_map_shows_real_model_ids():
+    """No renames set is not "hide it" -- the real id is what the share shows."""
+    model = _unique("plain-model")
+    task_id: str | None = None
+    exp_id: str | None = None
     try:
         async with get_session() as setup:
-            alias = ModelDisplayNameModel(model_name=model, display_name="bananas")
-            setup.add(alias)
+            task = TaskModel(
+                name=_unique("plain-task"),
+                org_id="org1",
+                user="tester",
+                task_path="s3://tasks/plain",
+            )
+            setup.add(task)
             await setup.flush()
-            alias_id = alias.id
+            task_id = task.id
 
-        async with get_session() as session:
-            assert (await load_model_display_names(session)).get(model) == "bananas"
+            exp = ExperimentModel(name=_unique("plain-exp"), org_id="org1")
+            setup.add(exp)
+            await setup.flush()
+            exp_id = exp.id
+            await setup.execute(
+                task_experiments.insert(),
+                {"task_id": task.id, "experiment_id": exp.id},
+            )
 
-        async with get_session() as session:
-            row = await session.get(ModelDisplayNameModel, alias_id)
-            from oddish.db import utcnow
-
-            row.deleted_at = utcnow()
-
-        async with get_session() as session:
-            assert model not in await load_model_display_names(session)
-    finally:
-        if alias_id:
-            async with get_session() as cleanup:
-                await cleanup.execute(
-                    ModelDisplayNameModel.__table__.delete().where(
-                        ModelDisplayNameModel.id == alias_id
-                    )
+            trial_id = generate_id()
+            setup.add(
+                TrialModel(
+                    id=trial_id,
+                    name=trial_id,
+                    task_id=task.id,
+                    experiment_id=exp.id,
+                    org_id="org1",
+                    agent="codex",
+                    provider="openai",
+                    queue_key=model,
+                    model=model,
                 )
+            )
+
+            await ensure_experiment_public(setup, exp)
+            await setup.flush()
+            token = exp.public_token
+            assert token
+
+        status = await get_public_task_status(token, task_id)
+        assert [t.model for t in status.trials] == [model]
+    finally:
+        await _cleanup_task_and_experiment(task_id, exp_id)
 
 
 def test_display_model_name_masks_through_the_same_keys():
-    """The cohort comparison carries model ids outside a TrialResponse. They
-    have to resolve through the same lookup, or a share page masks the id in
-    the trial grid and prints it in the analysis below."""
+    """A model id carried outside a TrialResponse resolves through the same
+    lookup, so a share page never masks the id in one place and prints it in
+    another."""
     names = {canonical_model_key("anthropic/claude-opus-4-8"): "Model A"}
     assert display_model_name("anthropic/claude-opus-4-8", names) == "Model A"
     # Same spelling rules the trial path gets: case and surrounding whitespace
@@ -355,7 +340,7 @@ def test_mask_trajectory_model_names_leaves_the_cached_document_alone():
 
 
 def test_mask_trajectory_model_names_no_aliases_is_a_passthrough():
-    """The common case pays nothing: no table rows, same object back."""
+    """The common case pays nothing: no renames, same object back."""
     trajectory = {"agent": {"model_name": "openai/gpt-5.4"}, "steps": []}
     assert mask_trajectory_model_names(trajectory, {}) is trajectory
     assert mask_trajectory_model_names(None, {"a": "b"}) is None

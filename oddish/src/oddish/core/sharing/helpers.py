@@ -20,7 +20,7 @@ from oddish.core.helpers import (
 )
 from oddish.core.model_display_names import (
     apply_model_display_names,
-    load_model_display_names,
+    experiment_display_names,
 )
 from oddish.db import (
     ExperimentModel,
@@ -310,7 +310,7 @@ async def list_task_trials_for_public_experiment(
         )
         for trial, task_path in rows
     ]
-    apply_model_display_names(responses, await load_model_display_names(session))
+    apply_model_display_names(responses, experiment_display_names(experiment))
     return responses
 
 

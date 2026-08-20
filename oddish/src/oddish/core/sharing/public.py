@@ -12,7 +12,7 @@ from oddish.core.experiment_membership import gathered_trial_ids_select
 from oddish.core.helpers import build_task_status_response, fetch_trial_queue_info
 from oddish.core.model_display_names import (
     apply_model_display_names,
-    load_model_display_names,
+    experiment_display_names,
     mask_trajectory_model_names,
 )
 from oddish.core.tags.projection import list_effective_user_tags_for_task_versions
@@ -96,17 +96,18 @@ async def _get_detached_public_trial(public_token: str, trial_id: str) -> TrialM
 async def _detached_public_trial_with_display_names(
     public_token: str, trial_id: str
 ) -> tuple[TrialModel, dict[str, str]]:
-    """A public trial plus the alias table, both read before artifact I/O.
+    """A public trial plus this experiment's alias table, both read before I/O.
 
     One session for the pair, released before the S3 read for the same reason
     :func:`_get_detached_public_trial` releases it.
     """
     async with get_session() as session:
+        experiment = await get_public_experiment(session, public_token)
         trial = await get_public_trial_for_experiment(session, public_token, trial_id)
         if not trial:
             raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
         session.expunge(trial)
-        return trial, await load_model_display_names(session)
+        return trial, experiment_display_names(experiment)
 
 
 @router.get(
@@ -299,7 +300,7 @@ async def list_public_experiment_tasks(
             )
         apply_model_display_names(
             [trial for resp in responses for trial in (resp.trials or [])],
-            await load_model_display_names(session),
+            experiment_display_names(experiment),
         )
         return responses
 
@@ -337,7 +338,7 @@ async def get_public_task_status(
             response, public_exps.get(task.id, []), preferred_id=exp.id
         )
         apply_model_display_names(
-            response.trials or [], await load_model_display_names(session)
+            response.trials or [], experiment_display_names(exp)
         )
         return response
 

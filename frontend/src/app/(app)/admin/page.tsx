@@ -38,7 +38,6 @@ import { UsagePanel } from "@/components/usage-panel";
 import { QueueHealthOverviewCard } from "@/components/queue-health-overview-card";
 import { CostBreakdownCard } from "@/components/cost-breakdown-card";
 import { CostExcludedKeysCard } from "@/components/cost-excluded-keys-card";
-import { ModelDisplayNamesCard } from "@/components/model-display-names-card";
 import { SlackAlertSettingsForm } from "@/components/slack-alert-settings-form";
 import { RefreshCw, Server, Clock, AlertCircle } from "lucide-react";
 
@@ -662,13 +661,11 @@ const ADMIN_TABS = [
   "concurrency",
   "tags",
   "quotas",
-  "model-names",
 ] as const;
 
 // Platform-wide config: hidden unless the caller is in the operator org.
 const OPERATOR_ONLY_TABS: ReadonlySet<(typeof ADMIN_TABS)[number]> = new Set([
   "concurrency",
-  "model-names",
 ]);
 
 function AdminPageContent() {
@@ -747,9 +744,6 @@ function AdminPageContent() {
           )}
           <TabsTrigger value="tags">Tag Policy</TabsTrigger>
           <TabsTrigger value="quotas">Quotas</TabsTrigger>
-          {canManagePlatform && (
-            <TabsTrigger value="model-names">Model Names</TabsTrigger>
-          )}
         </TabsList>
 
         <TabsContent value="overview" className="space-y-4">
@@ -812,12 +806,6 @@ function AdminPageContent() {
             </CardContent>
           </Card>
         </TabsContent>
-
-        {canManagePlatform && (
-          <TabsContent value="model-names" className="space-y-4">
-            <ModelDisplayNamesCard />
-          </TabsContent>
-        )}
       </Tabs>
     </div>
   );

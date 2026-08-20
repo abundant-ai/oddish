@@ -482,6 +482,12 @@ class ExperimentModel(TimestampedMixin, Base):
     is_public: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     public_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
+    # Operator aliases from a real model id to the name rendered on THIS
+    # experiment's published share pages. Display-only: cost accounting and
+    # queue routing keep reading ``trials.model``. Keys are canonicalized
+    # (``canonical_model_key``); NULL/empty means no aliasing.
+    public_model_renames: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
     # Read-only "collection" experiment: gathers existing trials from other
     # experiments for dashboard viewing (see ``experiment_trials``).
     is_collection: Mapped[bool] = mapped_column(
@@ -2501,23 +2507,6 @@ class CostExcludedLlmKeyModel(TimestampedMixin, Base):
     created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
-class ModelDisplayNameModel(TimestampedMixin, Base):
-    __tablename__ = "model_display_names"
-    __table_args__ = (
-        Index(
-            "idx_model_display_names_model_live",
-            "model_name",
-            unique=True,
-            postgresql_where=text("deleted_at IS NULL"),
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
-    model_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-
-
 from oddish.db.soft_delete import register_soft_delete_models
 
 register_soft_delete_models(
@@ -2532,5 +2521,4 @@ register_soft_delete_models(
     SkillModel,
     DocumentModel,
     CostExcludedLlmKeyModel,
-    ModelDisplayNameModel,
 )
