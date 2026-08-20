@@ -228,6 +228,7 @@ async def _capture_preserved_rows(url: str) -> None:
     never block the rebuild.
     """
     engine = None
+    print("bootstrap_preview_db: capture starting", file=sys.stderr)
     try:
         # Inside the guard: a malformed URL or a missing driver must degrade to
         # "nothing preserved", never abort the rebuild.
@@ -249,6 +250,11 @@ async def _capture_preserved_rows(url: str) -> None:
                     text("SELECT to_regclass(:qualified) IS NOT NULL"),
                     {"qualified": f"public.{table}"},
                 )
+                print(
+                    f"bootstrap_preview_db: capture public.{table} "
+                    f"present={bool(present)}",
+                    file=sys.stderr,
+                )
                 if not present:
                     continue
                 stashed = await conn.scalar(
@@ -266,11 +272,10 @@ async def _capture_preserved_rows(url: str) -> None:
                     ),
                     {"t": table},
                 )
-                if stashed:
-                    print(
-                        f"bootstrap_preview_db: stashed {stashed} {table} row(s)",
-                        file=sys.stderr,
-                    )
+                print(
+                    f"bootstrap_preview_db: stashed {stashed} {table} row(s)",
+                    file=sys.stderr,
+                )
     except Exception as exc:  # noqa: BLE001 - never block the rebuild
         print(
             f"bootstrap_preview_db: could not stash preserved rows ({exc}); "
@@ -297,12 +302,17 @@ async def _restore_preserved_rows(url: str) -> None:
     run cancelled before this point can still be recovered by the next one.
     """
     engine = None
+    print("bootstrap_preview_db: restore starting", file=sys.stderr)
     try:
         engine = _engine(url)
         async with engine.begin() as conn:
             present = await conn.scalar(
                 text("SELECT to_regclass(:qualified) IS NOT NULL"),
                 {"qualified": _PRESERVE_TABLE},
+            )
+            print(
+                f"bootstrap_preview_db: restore stash present={bool(present)}",
+                file=sys.stderr,
             )
             if not present:
                 return
@@ -328,12 +338,11 @@ async def _restore_preserved_rows(url: str) -> None:
                     ),
                     {"t": table},
                 )
-                if restored:
-                    print(
-                        f"bootstrap_preview_db: restored {restored} {table} "
-                        "row(s) preserved across the rebuild",
-                        file=sys.stderr,
-                    )
+                print(
+                    f"bootstrap_preview_db: restored {restored} {table} "
+                    "row(s) preserved across the rebuild",
+                    file=sys.stderr,
+                )
     except Exception as exc:  # noqa: BLE001 - a failed restore must not fail the deploy
         print(
             f"bootstrap_preview_db: could not restore preserved rows ({exc}); "
