@@ -304,6 +304,36 @@ class TestRestoreSurvivesBadRows:
         assert keys[0]["created_by_user_id"] is None
         await engine.dispose()
 
+    async def test_new_column_with_a_default_still_restores(self):
+        """A migration that adds a NOT NULL column WITH a default must not
+        strand the stash.
+
+        The statement names only the columns the payload carries, so the new
+        column is left out and its server default applies. Expanding the whole
+        record would write SQL NULL into it and fail. That failure would repeat
+        on every later push, because the stash is kept and the schema is left
+        untrusted -- a permanent rebuild loop rather than a one-off.
+        """
+        from sqlalchemy import text
+
+        mod = _load_bootstrap()
+        engine = await self._seeded()
+        await mod._capture_preserved_rows(URL)
+        await _fresh_public(engine)
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "ALTER TABLE public.api_keys"
+                    " ADD COLUMN tier varchar(16) NOT NULL DEFAULT 'standard'"
+                )
+            )
+
+        assert await mod._restore_preserved_rows(URL) is True
+        keys = await _read(engine, "api_keys")
+        assert len(keys) == 1
+        assert keys[0]["tier"] == "standard", "the server default must apply"
+        await engine.dispose()
+
     async def test_unrestorable_row_leaves_the_schema_untrusted(self):
         """A NOT NULL column added after the payload was stashed.
 
