@@ -1112,6 +1112,13 @@ class TrialModel(TimestampedMixin, Base):
     # column; a plain read never starts generation. Replaces the prior S3-cached
     # `agent/trajectory_summary.json` sibling file.
     trajectory_summary: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Summarize trial responsible for the next published summary. The pointed
+    # trial owns execution status; this pointer owns which completed writer is
+    # still current. It deliberately has no foreign key or ORM relationship so
+    # trial cleanup cannot erase the publication/recovery evidence implicitly.
+    trajectory_summary_refresh_trial_id: Mapped[str | None] = mapped_column(
+        String(160), nullable=True
+    )
 
     # Analysis data (LLM analysis of this trial)
     analysis: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
@@ -1225,6 +1232,14 @@ class TrialModel(TimestampedMixin, Base):
             "ix_trials_kind_non_agent",
             "kind",
             postgresql_where=text("kind != 'agent'"),
+        ),
+        # Cleanup only needs targets with an unfinished publication. Almost
+        # every trial has NULL here, so keep the index limited to active
+        # refresh pointers.
+        Index(
+            "ix_trials_trajectory_summary_refresh_trial_id",
+            "trajectory_summary_refresh_trial_id",
+            postgresql_where=text("trajectory_summary_refresh_trial_id IS NOT NULL"),
         ),
         # Partial index that supports the default "non-superseded only"
         # filter on hot list/aggregation paths without indexing every

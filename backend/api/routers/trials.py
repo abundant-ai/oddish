@@ -35,10 +35,7 @@ from oddish.core.sharing.helpers import (
     list_trial_files_s3,
 )
 from oddish.db.storage import delete_s3_prefixes
-from oddish.workers.analysis_trials import (
-    find_live_summarize_trial,
-    get_or_create_summarize_trial,
-)
+from oddish.workers.analysis_trials import get_or_create_summarize_trial
 from auth import APIKeyScope, AuthContext, require_admin, require_auth
 from oddish.db import (
     TrialModel,
@@ -404,19 +401,33 @@ _SUMMARY_PENDING_STATUS = {
     "queued": "queued",
     "running": "running",
     "retrying": "retrying",
+    "success": "settling",
 }
 
 
-def _summary_pending_response(summarize_trial: TrialModel) -> JSONResponse:
-    # Direct indexing on purpose: find_live_summarize_trial selects exactly
-    # the four statuses this map covers, so a miss is drift worth crashing on.
-    return JSONResponse(
-        status_code=202,
-        content={
-            "status": _SUMMARY_PENDING_STATUS[summarize_trial.status.value],
-            "job_id": summarize_trial.id,
-            "retry_after_ms": 3000,
-        },
+def _summary_refresh_response(summarize_trial: TrialModel) -> JSONResponse:
+    """Translate the durable summarize-trial state into the GET/POST contract."""
+    status = summarize_trial.status.value
+    if status in {"failed", "skipped"} or summarize_trial.harbor_stage == "cancelled":
+        return JSONResponse(
+            status_code=409,
+            content={
+                "status": "failed",
+                "job_id": summarize_trial.id,
+                "detail": "Trajectory summary refresh failed; start a new refresh to retry",
+            },
+        )
+    if status in _SUMMARY_PENDING_STATUS:
+        return JSONResponse(
+            status_code=202,
+            content={
+                "status": _SUMMARY_PENDING_STATUS[status],
+                "job_id": summarize_trial.id,
+                "retry_after_ms": 3000,
+            },
+        )
+    raise RuntimeError(
+        f"summary refresh trial {summarize_trial.id} has unsupported status {status}"
     )
 
 
@@ -424,47 +435,52 @@ def _summary_pending_response(summarize_trial: TrialModel) -> JSONResponse:
 async def get_trial_trajectory_summary(
     trial_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
-    refresh: bool = Query(
-        False,
-        description=(
-            "Enqueue a summarize trial that regenerates the stored summary. "
-            "Costs an analysis-model sandbox run, so it needs the same scope "
-            "as an analysis rerun."
-        ),
-    ),
 ) -> dict:
-    """Return the stored trajectory summary. Summaries are written by the
-    task's QA trial import or by a summarize trial's import; the read path
-    never generates. ``refresh=true`` enqueues a summarize trial and returns
-    202; polls answer 202 while it runs and 200 once its import lands."""
+    """Read the published summary or report the current refresh lifecycle."""
     auth.require_scope(APIKeyScope.READ)
-    if refresh:
-        auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
     trial = await _get_authorized_trial(trial_id, auth)
-    if refresh:
+    if trial.trajectory_summary_refresh_trial_id:
         async with get_session() as session:
-            live = await get_or_create_summarize_trial(
-                session, target_trial_id=trial.id
+            refresh_trial = await session.get(
+                TrialModel, trial.trajectory_summary_refresh_trial_id
             )
-        if live is None:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "This trial cannot be summarized: only agent trials with "
-                    "a recorded trajectory are eligible"
-                ),
+        if (
+            refresh_trial is None
+            or refresh_trial.kind != "summarize"
+            or refresh_trial.task_id != trial.task_id
+        ):
+            raise RuntimeError(
+                f"trial {trial.id} points to invalid summary refresh "
+                f"{trial.trajectory_summary_refresh_trial_id}"
             )
-        return _summary_pending_response(live)
+        return _summary_refresh_response(refresh_trial)
     summary = trial.trajectory_summary
-    if summary:
+    if summary is not None:
         return summary
-    # A live summarize trial means the summary is on its way; report pending
-    # so pollers keep waiting instead of treating the miss as final.
-    async with get_session() as session:
-        live = await find_live_summarize_trial(session, trial.id)
-    if live is not None:
-        return _summary_pending_response(live)
     raise HTTPException(status_code=404, detail="No trajectory summary for this trial")
+
+
+@router.post("/trials/{trial_id}/trajectory/summary")
+async def regenerate_trial_trajectory_summary(
+    trial_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> dict:
+    """Start or adopt the paid summarize trial for one agent trajectory."""
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
+    trial = await _get_authorized_trial(trial_id, auth)
+    async with get_session() as session:
+        refresh_trial = await get_or_create_summarize_trial(
+            session, target_trial_id=trial.id
+        )
+    if refresh_trial is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This trial cannot be summarized: only agent trials with "
+                "a recorded trajectory are eligible"
+            ),
+        )
+    return _summary_refresh_response(refresh_trial)
 
 
 @router.get("/trials/{trial_id}/result")

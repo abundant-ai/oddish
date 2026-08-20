@@ -212,13 +212,17 @@ reasoning, tool, or observation bodies; those potentially large bodies mount
 only while the step is expanded. Trajectory summaries are written onto
 `trials.trajectory_summary` by the task's QA trial import or by a
 `summarize`-kind trial's import; the read path never generates. The public
-summary route stays a plain column read. The authenticated route additionally
-accepts `refresh=true` (TASKS scope, member-created keys refused — the same
-gate as an analysis rerun), which enqueues or adopts one summarize trial via
-`get_or_create_summarize_trial` and answers 202
-`{status, job_id, retry_after_ms}`; a plain read whose summary is missing but
-whose summarize trial is in flight also answers 202, so pollers keep waiting.
-The frontend's summary hook already implements this 202-polling contract.
+summary route stays a plain column read. The authenticated routes split reads
+from paid mutation: `GET /trials/{id}/trajectory/summary` returns the published
+summary when no refresh is current, while
+`POST /trials/{id}/trajectory/summary` (TASKS scope, member-created keys
+refused, matching an analysis rerun) creates or adopts the current summarize
+trial. Both authenticated methods answer 202
+`{status, job_id, retry_after_ms}` while that trial is queued, running,
+retrying, or successfully awaiting import (`status = "settling"`). GET answers
+409 when the current refresh failed, and 404 only when there is neither a
+published summary nor a current refresh. The frontend's one summary hook owns
+POST, the immediate 202 cache transition, and GET polling.
 
 A QA/audit/summarize trial's **own** summary is deterministic, never an LLM call:
 settlement (`handle_analysis_trial_settled`) counts one from the run's tool
@@ -247,10 +251,21 @@ validated in-sandbox and at import by the shared checker), and its importer
 overwrites only the target's `trials.trajectory_summary` — no verdict, task,
 or analysis state. Only `kind = 'agent'` trials with `has_trajectory` can be
 summarize targets; QA, audit, and summarize runs keep their deterministic own
-summaries. `get_or_create_summarize_trial` locks the target trial row before it
-checks for an existing live summarize trial and enqueues work. Concurrent
-refresh requests therefore return the same summarize trial id and create one
-`worker_jobs` row for the paid sandbox run.
+summaries. The target's nullable
+`trials.trajectory_summary_refresh_trial_id` is the durable identity of the
+summarize trial responsible for its next published summary; `harbor_config`'s
+`target_trial_id` remains an artifact-validation boundary, not job discovery.
+Creation locks Task then target Trial, sets the pointer in the same transaction
+as the summarize Trial and WorkerJob, and adopts a live or successfully settled
+pointed trial. `reserve_next_trial_index` takes the Task lock itself, so two
+different targets on one task cannot allocate the same `{task_id}-{N}` id.
+Import locks the target and writes only when its pointer still equals the
+summarize trial id; it writes `trajectory_summary` and clears the pointer in one
+transaction, so a delayed older importer cannot replace a newer result. The
+cleanup sweep selects at most 200 non-null pointers whose summarize trial is
+SUCCESS and retries those imports after the cleanup transaction commits. A
+worker that dies between trial settlement and import therefore leaves durable,
+bounded recovery work instead of a permanently stale summary.
 
 Trajectory summaries use schema v5. Each taxonomy-valued `components` entry
 contains its `step_ids`, summary, and deterministic `tool_count` and

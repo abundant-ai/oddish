@@ -458,48 +458,56 @@ _LIVE_TRIAL_STATUSES = (
     TrialStatus.RUNNING,
     TrialStatus.RETRYING,
 )
-
-
-async def find_live_summarize_trial(
-    session: AsyncSession, target_trial_id: str
-) -> TrialModel | None:
-    """The in-flight summarize trial targeting this trial, if one exists."""
-    return await session.scalar(
-        select(TrialModel)
-        .where(
-            TrialModel.kind == "summarize",
-            TrialModel.superseded_by_trial_id.is_(None),
-            TrialModel.status.in_(_LIVE_TRIAL_STATUSES),
-            TrialModel.harbor_config["analysis_payload"]["target_trial_id"].astext
-            == target_trial_id,
-        )
-        .limit(1)
-    )
+_ADOPTABLE_SUMMARIZE_STATUSES = (*_LIVE_TRIAL_STATUSES, TrialStatus.SUCCESS)
 
 
 async def get_or_create_summarize_trial(
     session: AsyncSession, *, target_trial_id: str
 ) -> TrialModel | None:
-    """Return the live summarize trial for an eligible agent target.
+    """Return the current summarize trial for an eligible agent target.
 
-    Locking the target row serializes concurrent paid refresh requests. The
-    first transaction creates the summarize trial and worker job; the next
-    transaction sees and returns that same live trial after the lock releases.
-    ``None`` means the target is missing, is not an agent trial, has no
-    recorded trajectory, or belongs to a missing task.
+    The lock order is Task then target Trial. The task lock serializes trial-id
+    allocation across every target on that task; the target lock serializes
+    refresh ownership for this trajectory. A live run or a successful run
+    awaiting import is adopted. A terminal failed run is replaced and the
+    target pointer changes in the same transaction that creates the new trial
+    and worker job.
     """
+    task_id = await session.scalar(
+        select(TrialModel.task_id).where(TrialModel.id == target_trial_id)
+    )
+    if task_id is None:
+        return None
+    task = await session.scalar(
+        select(TaskModel).where(TaskModel.id == task_id).with_for_update()
+    )
+    if task is None:
+        return None
     target = await session.scalar(
         select(TrialModel).where(TrialModel.id == target_trial_id).with_for_update()
     )
-    if target is None or target.kind != "agent" or not target.has_trajectory:
+    if (
+        target is None
+        or target.task_id != task.id
+        or target.kind != "agent"
+        or not target.has_trajectory
+    ):
         return None
-    live = await find_live_summarize_trial(session, target.id)
-    if live is not None:
-        return live
-    task = await session.get(TaskModel, target.task_id)
-    if task is None:
-        return None
-    return await create_analysis_trial(
+    if target.trajectory_summary_refresh_trial_id:
+        current = await session.get(
+            TrialModel, target.trajectory_summary_refresh_trial_id
+        )
+        if (
+            current is not None
+            and current.kind == "summarize"
+            and current.task_id == target.task_id
+            and current.superseded_by_trial_id is None
+            and current.harbor_stage != "cancelled"
+            and current.status in _ADOPTABLE_SUMMARIZE_STATUSES
+        ):
+            return current
+
+    created = await create_analysis_trial(
         session,
         task=task,
         kind="summarize",
@@ -507,6 +515,8 @@ async def get_or_create_summarize_trial(
         task_version_id=target.task_version_id,
         payload={"target_trial_id": target.id},
     )
+    target.trajectory_summary_refresh_trial_id = created.id
+    return created
 
 
 async def maybe_enqueue_audit_trial(
@@ -1111,9 +1121,9 @@ async def _import_audit_result(trial: TrialModel) -> None:
 async def _import_summarize_result(trial: TrialModel) -> None:
     """Store a settled summarize trial's artifact onto its target trial.
 
-    Touches nothing but the target's ``trajectory_summary``: no verdict, no
-    task status, no analysis columns — so a failed or stale summarize trial
-    needs no repair path beyond its own trial row recording the failure.
+    Touches only the target's summary and refresh pointer: no verdict, task
+    status, or analysis columns. Publication compares the pointer under the
+    target lock, then writes the summary and clears that pointer atomically.
     """
     payload = (trial.harbor_config or {}).get("analysis_payload") or {}
     target_id = str(payload.get("target_trial_id") or "")
@@ -1141,7 +1151,9 @@ async def _import_summarize_result(trial: TrialModel) -> None:
         logger.warning("summarize trial %s import skipped: %s", trial.id, detail)
         return
     async with get_session() as session:
-        target = await session.get(TrialModel, target_id)
+        target = await session.scalar(
+            select(TrialModel).where(TrialModel.id == target_id).with_for_update()
+        )
         if target is None or target.kind != "agent" or target.task_id != trial.task_id:
             logger.warning(
                 "summarize trial %s: target %s is not an agent trial on task %s; "
@@ -1149,6 +1161,14 @@ async def _import_summarize_result(trial: TrialModel) -> None:
                 trial.id,
                 target_id,
                 trial.task_id,
+            )
+            return
+        if target.trajectory_summary_refresh_trial_id != trial.id:
+            logger.info(
+                "summarize trial %s: target %s now points to %s; skipping stale import",
+                trial.id,
+                target_id,
+                target.trajectory_summary_refresh_trial_id,
             )
             return
         # Enrichment reads the target's trajectory for the counted facts; a
@@ -1172,13 +1192,14 @@ async def _import_summarize_result(trial: TrialModel) -> None:
             model=trial.model,
             graded_by=trial.id,
         )
+        target.trajectory_summary_refresh_trial_id = None
     logger.info("summarize trial %s: stored summary for trial %s", trial.id, target_id)
 
 
 async def handle_analysis_trial_settled(trial_id: str) -> None:
     """Importer dispatch. Runs after a non-'agent' trial reaches a terminal
-    status. Idempotent per kind: each importer's writers CAS or overwrite the
-    same columns, so a double-fire re-imports the same artifact."""
+    status. Idempotent per kind: each importer either checks current ownership
+    or overwrites the same columns, so a double-fire is harmless."""
     async with get_session() as session:
         trial = await session.get(TrialModel, trial_id)
         if (
