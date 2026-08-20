@@ -300,12 +300,23 @@ async def _capture_preserved_rows(url: str) -> None:
                     f"bootstrap_preview_db: stashed {stashed} {table} row(s)",
                     file=sys.stderr,
                 )
-    except Exception as exc:  # noqa: BLE001 - never block the rebuild
+    except Exception:
+        # Deliberately NOT swallowed. Capture is the only thing standing
+        # between a live API key and DROP SCHEMA, so continuing past an
+        # unexpected failure guarantees the loss it exists to prevent -- and a
+        # later run could then restore an older stash "successfully" and mark
+        # the schema trusted, making that loss permanent.
+        #
+        # Failing here costs one run, which the next push retries. The
+        # expected case, a fresh branch with no such table yet, is handled
+        # above by skipping the table and is not an error.
         print(
-            f"bootstrap_preview_db: could not stash preserved rows ({exc}); "
-            "the rebuild continues and existing preview API keys will be lost",
+            "bootstrap_preview_db: could not stash preserved rows; refusing to "
+            "drop the schema, because that would destroy keys this run cannot "
+            "put back. The next push retries.",
             file=sys.stderr,
         )
+        raise
     finally:
         if engine is not None:
             await engine.dispose()
@@ -410,14 +421,40 @@ async def _restore_one(conn, table: str, payload: dict) -> bool:
             )
             return False
 
+    live = {
+        row[0]
+        for row in await conn.execute(
+            text(
+                "SELECT column_name FROM information_schema.columns"
+                " WHERE table_schema = 'public' AND table_name = :t"
+            ),
+            {"t": table},
+        )
+    }
+
     for attempt, body in enumerate(_restore_attempts(table, payload)):
+        # Name only the columns the payload actually carries. A column a
+        # migration added after this payload was stashed is then left out of
+        # the statement entirely, so its server default applies. Expanding the
+        # whole record instead would write SQL NULL into it and fail any NOT
+        # NULL column -- and because the stash is kept and the schema is left
+        # untrusted, that row would fail the same way on every later push.
+        columns = [c for c in body if c in live]
+        if not columns:
+            return False
+        column_list = ", ".join(f'"{c}"' for c in columns)
+        # (source.rec)."col" -- the parentheses are required: without them
+        # Postgres reads `rec` as a table alias rather than a composite value.
+        value_list = ", ".join(f'(source.rec)."{c}"' for c in columns)
         try:
             async with conn.begin_nested():
                 await conn.execute(
                     text(
-                        f'INSERT INTO public."{table}"'
-                        f"  SELECT (jsonb_populate_record("
-                        f'    NULL::public."{table}", CAST(:payload AS jsonb))).*'
+                        f'INSERT INTO public."{table}" ({column_list})'
+                        f"  SELECT {value_list} FROM ("
+                        f"    SELECT jsonb_populate_record("
+                        f'      NULL::public."{table}",'
+                        f"      CAST(:payload AS jsonb)) AS rec) AS source"
                         f"  ON CONFLICT DO NOTHING"
                     ),
                     {"payload": json.dumps(body, default=str)},
