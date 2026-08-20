@@ -26,6 +26,7 @@ export ODDISH_API_KEY="ok_..."
 - `oddish cancel` - stop in-flight task runs or task-level QA jobs
 - `oddish backfill-analysis` - (re)run trial analysis for a trial, task, or experiment
 - `oddish costs` - view billable-spend accounting (org-wide, or per-user with `--user`)
+- `oddish cost-exclusions` - hide spend for models and experiments that were never really paid for
 - `oddish pull` - download logs and artifacts
 - `oddish combine` - merge several experiments into a new one
 - `oddish collect` - gather trials from tasks/trial IDs into a shareable read-only collection
@@ -431,6 +432,51 @@ Options
 - `--window-days INTEGER` - Trailing window in days; `0` = all-time (default 7)
 - `--api TEXT` - Override the API URL
 - `--json` - Emit the raw cost breakdown JSON
+
+## Remove Spend Tracking
+
+Hide spend that was never really paid for - sponsored capacity, free preview
+tiers, vendor credits, a comped run. Excluded spend drops off the admin cost
+dashboards and stops counting against quotas. It is still shown on experiment,
+task, and trial pages, marked as not real, so the two never disagree silently.
+
+- **Models** - every trial that used the model stops counting, including the
+  same model name through another provider.
+- **Experiments** - trials the experiment ran itself stop counting. Trials it
+  gathered from elsewhere keep counting on the experiment that ran them.
+
+Both lists are deployment-wide and retroactive: adding an entry removes spend
+already recorded, removing one puts every dollar back. Operator-only on hosted
+Oddish (a full-scope API key in the operator org); not available on a
+self-hosted core server. Also editable in the admin dashboard under
+Costs -> Remove Spend Tracking.
+
+```bash
+# What currently doesn't count
+oddish cost-exclusions list
+oddish cost-exclusions list --kind model --json
+
+# Stop counting a free model, and a comped experiment
+oddish cost-exclusions add model kimi-k2 --label "sponsored"
+oddish cost-exclusions add experiment "glm sweep" --label "comped"
+
+# Put the spend back (by row id, model name, or experiment name/id)
+oddish cost-exclusions remove model kimi-k2
+oddish cost-exclusions remove experiment exp_01j...
+```
+
+Options
+
+- `--kind TEXT` - On `list`, limit to one axis: `model` or `experiment`
+- `--label TEXT` - On `add`, why it doesn't count (e.g. `sponsored`)
+- `--api TEXT` - Override the API URL
+- `--json` - Emit raw JSON
+
+`add model` matches what trials actually store, so `kimi-k2` finds trials saved
+as `moonshot/kimi-k2`. A model no trial has ever used is rejected rather than
+saved as an entry that matches nothing. Experiments take a name or an id;
+ambiguous names are rejected, and a collection is rejected because it runs no
+trials of its own.
 
 ## Download Outputs
 
