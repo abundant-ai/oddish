@@ -9,7 +9,6 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from urllib.parse import quote
 
-import httpx
 import modal
 from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
@@ -34,6 +33,7 @@ from oddish.db import (
     get_session,
 )
 from oddish.model_pricing import has_pricing
+from oddish.timing import RequestTimedAsyncClient
 from slack_alert_settings import AlertSettings, read_alert_settings
 from user_alert_prefs import (
     DEFAULT_EXPERIMENT_MILESTONE_USD,
@@ -644,6 +644,9 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                 .join(TrialModel, TrialModel.experiment_id == ExperimentModel.id)
                 .where(
                     ExperimentModel.is_collection.is_(False),
+                    # QA-report shadow experiments never make the digest;
+                    # their spend is analysis spend, not the owner's runs.
+                    ExperimentModel.shadow_of.is_(None),
                     ExperimentModel.deleted_at.is_(None),
                     _real_spend_filter(),
                     or_(
@@ -813,6 +816,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
 
         current_trial = and_(
             TrialModel.deleted_at.is_(None),
+            TrialModel.kind == "agent",
             TrialModel.superseded_by_trial_id.is_(None),
             or_(
                 func.coalesce(TrialModel.harbor_stage, "") != CANCELLED_HARBOR_STAGE,
@@ -1176,13 +1180,13 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
 
 
 async def _post(webhook_url: str, text: str) -> None:
-    async with httpx.AsyncClient(timeout=_SLACK_TIMEOUT_SECONDS) as client:
+    async with RequestTimedAsyncClient(timeout=_SLACK_TIMEOUT_SECONDS) as client:
         response = await client.post(webhook_url, json={"text": text})
         response.raise_for_status()
 
 
 async def _lookup_slack_user(bot_token: str, email: str) -> str | None:
-    async with httpx.AsyncClient(timeout=_SLACK_TIMEOUT_SECONDS) as client:
+    async with RequestTimedAsyncClient(timeout=_SLACK_TIMEOUT_SECONDS) as client:
         response = await client.get(
             "https://slack.com/api/users.lookupByEmail",
             params={"email": email},
@@ -1219,7 +1223,7 @@ async def _resolve_dm_slack_id(
 
 
 async def _post_dm(bot_token: str, slack_user_id: str, text: str) -> None:
-    async with httpx.AsyncClient(timeout=_SLACK_TIMEOUT_SECONDS) as client:
+    async with RequestTimedAsyncClient(timeout=_SLACK_TIMEOUT_SECONDS) as client:
         open_response = await client.post(
             "https://slack.com/api/conversations.open",
             headers={"Authorization": f"Bearer {bot_token}"},

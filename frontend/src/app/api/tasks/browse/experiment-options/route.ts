@@ -13,6 +13,7 @@ export async function GET(request: NextRequest) {
   }
   const query = params.toString();
   return proxyBackendJson({
+    request,
     path: `tasks/browse/experiment-options${query ? `?${query}` : ""}`,
   });
 }

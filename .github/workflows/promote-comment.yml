@@ -1,11 +1,15 @@
 name: Promote on comment
-# Comment `/promote` on the staging -> main pull request.
+# Comment `/promote` on the staging -> main pull request to promote the sha
+# pinned in its body's `promotion-target` marker (the staging tip when no pin
+# exists), or `/promote <sha>` to override the pin
+# (the same target rule as the Promotion Preflight `target_sha` input).
 #
-# For a commenter with write access, the job always runs the promotion checks
-# and reports them back on the pull request; anyone else gets a failed run
-# and no reply. It performs the fast-forward push only when the repository holds a
-# PROMOTE_TOKEN secret: a fine-grained personal access token (Contents: Read
-# and write) belonging to a user who is a bypass actor on the main ruleset.
+# For an organization member with write access, the job always runs the
+# promotion checks and reports them back on the pull request; anyone else gets
+# a failed run and no reply. It performs the fast-forward push only when the
+# repository holds a PROMOTE_TOKEN secret: a fine-grained personal access
+# token (Contents: Read and write) belonging to a user who is a bypass actor
+# on the main ruleset.
 # The built-in GITHUB_TOKEN cannot do this — `github-actions[bot]` is not
 # selectable as a bypass actor — and deploy keys are disabled for this
 # organization, so a user token is the remaining option. Without the secret
@@ -43,20 +47,24 @@ jobs:
       # so the optional-token gate reads this value instead.
       HAS_PROMOTE_TOKEN: ${{ secrets.PROMOTE_TOKEN != '' }}
     steps:
-      - name: Check that the commenter can write to the repository
+      - name: Check that the commenter is an organization member with write access
         id: auth
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           ACTOR: ${{ github.event.comment.user.login }}
+          AUTHOR_ASSOCIATION: ${{ github.event.comment.author_association }}
         run: |
           set -euo pipefail
+          case "$AUTHOR_ASSOCIATION" in
+            OWNER|MEMBER) echo "$ACTOR is an organization member" ;;
+            *) echo "::error::$ACTOR is not an organization member"; exit 1 ;;
+          esac
           level=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$ACTOR/permission" --jq '.permission')
           case "$level" in
             admin|write|maintain) echo "$ACTOR has $level access" ;;
             *) echo "::error::$ACTOR has '$level' access and cannot promote"; exit 1 ;;
           esac
-          echo "level=$level" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v5
         with:
@@ -71,7 +79,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.issue.number }}
-          COMMENTER_LEVEL: ${{ steps.auth.outputs.level }}
+          COMMENT: ${{ github.event.comment.body }}
         run: |
           set -euo pipefail
           read -r base head state < <(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" \
@@ -82,31 +90,13 @@ jobs:
           cross=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json isCrossRepository -q .isCrossRepository)
           [ "$cross" = "false" ] || { echo "::error::#$PR comes from a fork; promotion uses the repository's own staging branch"; exit 1; }
 
-          git fetch origin main staging
-          target=$(git rev-parse origin/staging)
-          git merge-base --is-ancestor origin/main "$target" \
-            || { echo "::error::main is not an ancestor of $target — run Sync Preflight for the repair steps"; exit 1; }
-
-          # Approval is policy; an admin's bypass standing waives it, the same
-          # way the ruleset lets an admin push main directly. The direction,
-          # ancestry, and deploy checks below hold for everyone.
-          decision=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json reviewDecision -q .reviewDecision)
-          if [ "$decision" != "APPROVED" ]; then
-            if [ "$COMMENTER_LEVEL" = "admin" ]; then
-              echo "::warning::#$PR has no code-owner approval; the commenter's admin standing waives it"
-              echo "approval=waived" >> "$GITHUB_OUTPUT"
-            else
-              echo "::error::#$PR is not approved by a code owner"; exit 1
-            fi
-          fi
-
-          gh run list --repo "$GITHUB_REPOSITORY" --workflow "Staging Deploy" \
-              --branch staging --commit "$target" --json conclusion -q '.[0].conclusion' \
-            | grep -qx success \
-            || { echo "::error::Staging Deploy is not green on $target"; exit 1; }
-
-          echo "sha=$target" >> "$GITHUB_OUTPUT"
-          echo "checks passed for $target"
+          # The word after `/promote` on the command line is the target;
+          # bare `/promote` promotes the sha pinned in the pull request body
+          # (the script falls back to the staging tip when there is no pin).
+          TARGET_SHA=$(printf '%s' "$COMMENT" | head -n1 | tr -d '\r' | awk '{print $2}')
+          PR_BODY=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body -q .body)
+          export TARGET_SHA PR_BODY
+          .github/scripts/promote/verify_promotion_target.sh
 
       - name: Fast-forward main
         id: push
@@ -128,10 +118,10 @@ jobs:
           echo "origin/main == $SHA"
 
       - name: Report back on the pull request
-        # Only reply to a commenter who passed the write-access check. Anyone
-        # can comment on a public pull request, so an ungated reply lets a
-        # stranger post bot comments. The failed run stays visible to
-        # maintainers.
+        # Only reply to an organization member who passed the write-access
+        # check. Anyone can comment on a public pull request, so an ungated
+        # reply lets a stranger post bot comments. The failed run stays
+        # visible to maintainers.
         if: always() && steps.auth.outcome == 'success'
         shell: bash
         env:
@@ -140,13 +130,17 @@ jobs:
           SHA: ${{ steps.checks.outputs.sha }}
           PUSH_OUTCOME: ${{ steps.push.outcome }}
           CHECKS: ${{ steps.checks.outcome }}
-          APPROVAL: ${{ steps.checks.outputs.approval }}
         run: |
           set -euo pipefail
           if [ "$CHECKS" != "success" ]; then
             body="Promotion checks failed. See the run for the reason: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           elif [ "$PUSH_OUTCOME" = "success" ]; then
-            body="Promoted. main now points at \`${SHA}\`, the same commit as staging."
+            left=$(git rev-list --count "${SHA}..origin/staging")
+            if [ "$left" -eq 0 ]; then
+              body="Promoted. main now points at \`${SHA}\`, the same commit as staging."
+            else
+              body="Promoted. main now points at \`${SHA}\`; staging still carries ${left} unpromoted commit(s)."
+            fi
           elif [ "$PUSH_OUTCOME" = "failure" ]; then
             body="Promotion checks passed but the push failed. See the run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           else
@@ -160,11 +154,5 @@ jobs:
               "git fetch origin staging" \
               "git push origin ${SHA}:refs/heads/main" \
               '```')
-          fi
-          # The pull request thread is where the waiver has to be visible; the
-          # run log holds the warning but nobody reviewing the promotion reads
-          # it. A failed check promoted nothing, so it needs no such notice.
-          if [ "$CHECKS" = "success" ] && [ "$APPROVAL" = "waived" ]; then
-            body="$body"$'\n\n'"The admin standing of the commenter waived the missing approval."
           fi
           gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "$body"

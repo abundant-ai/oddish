@@ -1,5 +1,12 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import { clerk, setupClerkTestingToken } from "@clerk/testing/playwright";
+
+import {
+  countSince,
+  holdCountedResponses,
+  recordRequests,
+  STRICT_MODE_ABORT_MS,
+} from "./network-log";
 
 /**
  * Each test here checks the number and kind of network requests the
@@ -22,6 +29,11 @@ import { clerk, setupClerkTestingToken } from "@clerk/testing/playwright";
  * credentials, and it skips when they are missing. The experiment needs
  * at least one non-probe trial; set E2E_EXPERIMENT_ID to choose one,
  * otherwise the first experiment on the dashboard is used.
+ *
+ * Counting is race-hardened by the rules in network-log.ts: only finished
+ * requests issued after recording started count, requests are attributed
+ * to their issue time, and every counted endpoint's response is held
+ * briefly so StrictMode's aborted duplicate can never finish first.
  */
 
 const CLERK_EMAIL = process.env.E2E_CLERK_EMAIL;
@@ -38,36 +50,11 @@ const TASK_SHELLS_RE = /\/api\/experiments\/[^/]+\/task-shells/;
 const TRIAL_DETAIL_RE = /\/api\/trials\/[^/?]+(\?.*)?$/;
 const TASK_FILES_RE = /\/api\/tasks\/[^/]+\/files\?/;
 const TASK_FILES_STREAM_RE = /\/api\/tasks\/[^/]+\/files\?[^#]*\bstream=1\b/;
-// Requests with stream=1 return every file's contents. Plain listings are
-// small and are allowed at any time; for example, the verifier badge
-// reads one when a trial opens. Only the stream form has to wait until a
-// file view is on screen.
+// Requests with stream=1 return every file's contents. The visible task pane
+// may request its plain tree, but trial-file requests wait for the Files or
+// Artifacts tab (covered strictly by critical-react-subtree.spec.ts).
 const ANY_FILES_STREAM_RE = /\/files\?[^#]*\bstream=1\b/;
 const TRIAL_FILES_STREAM_RE = /\/api\/trials\/[^/]+\/files\?[^#]*\bstream=1\b/;
-
-type LoggedRequest = { url: string; method: string };
-
-function recordRequests(page: Page): LoggedRequest[] {
-  const log: LoggedRequest[] = [];
-  // Only finished requests are counted. In development, React StrictMode
-  // runs every effect twice and the first run's fetch gets aborted. Those
-  // aborted requests are not real duplicates, so they must not count.
-  page.on("requestfinished", (request) =>
-    log.push({ url: request.url(), method: request.method() }),
-  );
-  return log;
-}
-
-function countSince(
-  log: LoggedRequest[],
-  from: number,
-  re: RegExp,
-  method = "GET",
-): number {
-  return log
-    .slice(from)
-    .filter((r) => r.method === method && re.test(r.url)).length;
-}
 
 test.describe("experiment page network shape", () => {
   test.skip(
@@ -84,6 +71,14 @@ test.describe("experiment page network shape", () => {
     await page.goto("/");
     await clerk.signIn({ page, emailAddress: CLERK_EMAIL! });
 
+    // The trial-detail endpoint is not in this list: its analysis-status
+    // override route below fulfills directly (no fallback), so it applies
+    // the hold itself.
+    await holdCountedResponses(page, [
+      TASK_SHELLS_RE,
+      TASK_FILES_RE,
+      TRIAL_FILES_STREAM_RE,
+    ]);
     const log = recordRequests(page);
 
     // This rewrites the fetched trial's analysis_status to "running" so
@@ -95,6 +90,9 @@ test.describe("experiment page network shape", () => {
     await page.route("**/api/trials/*", async (route) => {
       if (route.request().method() !== "GET" || analysisStatusOverride === null)
         return route.fallback();
+      // Same hold as holdCountedResponses, applied here because this
+      // handler fulfills instead of falling back.
+      await new Promise((resolve) => setTimeout(resolve, STRICT_MODE_ABORT_MS));
       const response = await route.fetch();
       const body = (await response.json()) as Record<string, unknown>;
       await route.fulfill({
@@ -154,7 +152,7 @@ test.describe("experiment page network shape", () => {
     // Phase 2 — open a trial. Exactly one detail fetch happens, shared by
     // the drawer and the analysis card. The visible task pane fetches its
     // plain tree listing, and nothing downloads file contents.
-    const openMark = log.length;
+    const openMark = Date.now();
     await trialCell.click();
     await expect(page.getByRole("tab", { name: "Summary" })).toBeVisible({
       timeout: 15_000,
@@ -178,7 +176,7 @@ test.describe("experiment page network shape", () => {
 
     // Phase 3 — the analysis reads as active, so the trial must be
     // refetched on an interval.
-    const pollMark = log.length;
+    const pollMark = Date.now();
     await expect
       .poll(() => countSince(log, pollMark, TRIAL_DETAIL_RE), {
         timeout: 8_000,
@@ -189,13 +187,13 @@ test.describe("experiment page network shape", () => {
     // it, and after that no detail request may appear for a full refetch
     // interval.
     analysisStatusOverride = "success";
-    const terminalMark = log.length;
+    const terminalMark = Date.now();
     await expect
       .poll(() => countSince(log, terminalMark, TRIAL_DETAIL_RE), {
         timeout: 8_000,
       })
       .toBeGreaterThanOrEqual(1);
-    const quietMark = log.length;
+    const quietMark = Date.now();
     await page.waitForTimeout(6_500);
     expect(countSince(log, quietMark, TRIAL_DETAIL_RE)).toBe(0);
 
@@ -203,7 +201,7 @@ test.describe("experiment page network shape", () => {
     // actually shown. The panel sends this listing with stream=1, and the
     // trial-files endpoint ignores that parameter and answers with a
     // plain listing.
-    const filesMark = log.length;
+    const filesMark = Date.now();
     await page.getByRole("tab", { name: "Files" }).click();
     await expect
       .poll(() => countSince(log, filesMark, TRIAL_FILES_STREAM_RE), {

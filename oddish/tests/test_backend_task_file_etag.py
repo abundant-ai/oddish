@@ -71,3 +71,16 @@ def test_etag_output_has_exactly_three_double_quotes(etag):
     assert output.count('"') == 2
     assert output.startswith('W/"')
     assert output.endswith('"')
+
+
+def test_task_file_cache_revalidates_overwritable_versions():
+    router_path = (
+        Path(__file__).resolve().parents[2] / "backend" / "api" / "routers" / "tasks.py"
+    )
+    source = router_path.read_text(encoding="utf-8")
+    start = source.index("async def get_task_file_content(")
+    route = source[start:]
+
+    assert '"Cache-Control": "private, no-cache"' in route
+    assert 'response.headers["Cache-Control"] = "private, no-cache"' in route
+    assert "max-age=86400, immutable" not in route

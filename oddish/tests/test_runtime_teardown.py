@@ -8,7 +8,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 
-from oddish.core.helpers import cancel_job_by_worker
+from oddish.core.helpers import (
+    cancel_job_by_worker,
+    register_provider_teardown_delegate,
+    unregister_provider_teardown_delegate,
+)
 from oddish.runtime.backends.daytona import DaytonaBackend
 from oddish.runtime.backends.modal import ModalBackend
 
@@ -73,6 +77,29 @@ def test_daytona_teardown_gets_and_deletes_then_closes(monkeypatch) -> None:
     assert calls["closed"] is True
 
 
+def test_daytona_teardown_treats_missing_sandbox_as_done(monkeypatch) -> None:
+    from daytona.common.errors import DaytonaNotFoundError
+
+    calls: dict[str, object] = {}
+
+    class _FakeClient:
+        async def get(self, external_id: str):
+            raise DaytonaNotFoundError(
+                f"Sandbox with ID or name {external_id} not found",
+                status_code=404,
+            )
+
+        async def close(self):
+            calls["closed"] = True
+
+    fake_daytona = types.ModuleType("daytona")
+    fake_daytona.AsyncDaytona = lambda: _FakeClient()
+    monkeypatch.setitem(sys.modules, "daytona", fake_daytona)
+
+    assert asyncio.run(DaytonaBackend().teardown("dt-gone")) is True
+    assert calls["closed"] is True
+
+
 def test_cancel_job_by_worker_delegates_to_modal(monkeypatch) -> None:
     seen: dict[str, str] = {}
 
@@ -89,3 +116,19 @@ def test_cancel_job_by_worker_unknown_provider_returns_false() -> None:
     assert asyncio.run(cancel_job_by_worker("docker", "x")) is False
     assert asyncio.run(cancel_job_by_worker(None, "x")) is False
     assert asyncio.run(cancel_job_by_worker("modal", None)) is False
+
+
+def test_cancel_job_by_worker_uses_registered_provider_delegate_exactly_once() -> None:
+    seen: list[str] = []
+
+    async def delegate(external_id: str) -> bool:
+        seen.append(external_id)
+        return True
+
+    register_provider_teardown_delegate("ec2", delegate)
+    try:
+        assert asyncio.run(cancel_job_by_worker("ec2", "ec2://handle")) is True
+    finally:
+        unregister_provider_teardown_delegate("ec2")
+
+    assert seen == ["ec2://handle"]

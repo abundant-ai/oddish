@@ -15,6 +15,16 @@ type TrialStatus =
   | "retrying"
   | "skipped";
 
+// trials.kind: "agent" is a normal evaluation run; "qa" and "audit" are the
+// platform's analysis agents (arriving with the analysis-trial pipeline).
+// The union is open (`| (string & {})`) because the column is a plain
+// VARCHAR and historical rows may carry retired kinds.
+export type TrialKind = "agent" | "qa" | "audit" | (string & {});
+
+export function isAgentTrial(t: { kind?: TrialKind }): boolean {
+  return (t.kind ?? "agent") === "agent";
+}
+
 export type JobStatus = "pending" | "queued" | "running" | "success" | "failed";
 
 type VisibleJobKind = "trial" | "qa" | "analysis";
@@ -102,6 +112,11 @@ interface TrialExploitation {
 }
 
 interface TrialAnalysis {
+  /** Id of the QA trial that wrote this analysis. */
+  _graded_by?: string;
+  /** Steps of the QA run whose tool calls named this trial, scanned by the
+      importer — anchors for jumping into the grader's trajectory. */
+  _graded_at_steps?: number[];
   trial_name?: string;
   classification: AnalysisClassification;
   subtype: string;
@@ -113,11 +128,6 @@ interface TrialAnalysis {
   /** Per pre-trial finding assessments — the trial↔audit finding join. */
   exploitation?: TrialExploitation[];
   reward?: number | null;
-  prompt_kind?: string;
-  prompt_version?: number;
-  prompt_id?: string;
-  prompt_scope?: "global" | "org" | "user" | "experiment" | "task" | "trial";
-  prompt_scope_id?: string | null;
 }
 
 interface TrialQueueInfo {
@@ -182,6 +192,7 @@ export interface Trial {
   is_billed?: boolean;
   has_trajectory?: boolean;
   is_probe?: boolean;
+  kind?: TrialKind;
   created_at: string;
   started_at?: string | null;
   finished_at?: string | null;
@@ -209,9 +220,11 @@ export interface Trial {
   } | null;
 }
 
-interface TaskVerdict {
-  is_good: boolean;
-  confidence: "high" | "medium" | "low";
+export interface TaskVerdict {
+  /** Absent on rows stored before the accept/reject label existed. */
+  verdict?: "accept" | "reject";
+  is_good: boolean | null;
+  confidence: "high" | "medium" | "low" | string | null;
   primary_issue?: string | null;
   reasoning?: string | null;
   recommendations?: string[];
@@ -291,6 +304,12 @@ export interface TaskBrowseItem {
   reward_success: number;
   reward_sum: number;
   reward_total: number;
+  pass_count: number;
+  partial_count: number;
+  fail_count: number;
+  harness_count: number;
+  skipped_count: number;
+  pending_count: number;
   last_run_at?: string | null;
   link?: string | null;
   github_meta?: Record<string, string> | null;
@@ -304,6 +323,7 @@ export interface TaskBrowseItem {
   billed_has_native: boolean;
   qa_cost_usd?: number;
   latest_trials: TaskBrowseTrial[];
+  latest_trials_truncated: boolean;
   experiments: TaskBrowseExperiment[];
   user_tags: UserTagRef[];
 }
@@ -342,6 +362,7 @@ export interface ExperimentOptionsResponse {
 export interface TaskVersionSummary {
   id: string;
   version: number;
+  content_hash?: string | null;
   message?: string | null;
   created_at: string;
   is_current: boolean;
@@ -374,6 +395,110 @@ export interface TaskVersionSummary {
   pre_trial_cost_usd?: number | null;
   user_tags?: UserTagRef[];
   experiments?: { id: string; name: string }[];
+}
+
+export interface TaskOpenVersionRef {
+  id: string;
+  version: number;
+  message?: string | null;
+  created_at: string;
+  is_current: boolean;
+}
+
+export interface TaskOpenVerdict {
+  is_good: boolean | null;
+  confidence?: string | null;
+  primary_issue?: string | null;
+  reasoning?: string | null;
+  recommendations: string[];
+}
+
+export interface TaskOpenAgentModelSummary {
+  agent: string;
+  model: string | null;
+  providers: string[];
+  is_probe: boolean;
+  trial_count: number;
+  completed_count: number;
+  failed_count: number;
+  skipped_count: number;
+  pending_count: number;
+  pass_count: number;
+  partial_count: number;
+  fail_count: number;
+  reward_sum: number;
+  reward_total: number;
+  cost_usd: number;
+  cost_trial_count: number;
+  cost_has_estimated: boolean;
+  cost_has_native: boolean;
+  billed_cost_usd: number;
+  billed_trial_count: number;
+  billed_has_estimated: boolean;
+  billed_has_native: boolean;
+  last_run_at?: string | null;
+  duration_sum_seconds: number;
+  duration_trial_count: number;
+}
+
+export interface TaskOpenVersionSummary extends TaskVersionSummary {
+  agent_models: TaskOpenAgentModelSummary[];
+}
+
+export interface TaskOpenTask {
+  id: string;
+  name: string;
+  status: TaskStatus;
+  priority: Priority;
+  user: string;
+  github_username?: string | null;
+  github_meta?: Record<string, string> | null;
+  link?: string | null;
+  task_path: string;
+  experiments: TaskBrowseExperiment[];
+  current_version?: number | null;
+  current_version_id?: string | null;
+  user_tags: UserTagRef[];
+  run_analysis: boolean;
+  verdict_status?: JobStatus | null;
+  verdict?: TaskOpenVerdict | null;
+  verdict_error?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TaskOpenTrialRef {
+  id: string;
+  name: string;
+  experiment_id?: string | null;
+  task_version_id?: string | null;
+  agent: string;
+  provider: string;
+  model: string | null;
+  status: TrialStatus;
+  reward: number | null;
+  error_kind?: string | null;
+  is_probe: boolean;
+  cost_usd?: number | null;
+  cost_is_estimated?: boolean | null;
+  is_billed: boolean;
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+}
+
+export interface TaskOpenTotals extends TaskCostTotals {
+  token_count: number;
+  token_trial_count: number;
+}
+
+export interface TaskOpenResponse {
+  task: TaskOpenTask;
+  default_version?: TaskOpenVersionRef | null;
+  selected_version?: TaskOpenVersionSummary | null;
+  totals: TaskOpenTotals;
+  trials: TaskOpenTrialRef[];
+  trials_has_more: boolean;
 }
 
 /** One defect the pre-trial source audit found in a task version. */
@@ -598,6 +723,7 @@ export interface DashboardExperiment {
   last_pr_url: string | null;
   last_pr_title: string | null;
   last_pr_number: string | null;
+  qa_report_experiment_id?: string | null;
 }
 
 export interface DashboardResponse {
@@ -706,7 +832,8 @@ export type TrajectoryComponentKind =
   | "thinking_recall"
   | "thinking_understand"
   | "thinking_hypothesize"
-  | "thinking_correction"
+  | "writing_plan"
+  | "plan_correction"
   | "implementing"
   | "implementing_correction"
   | "writing_tests"
@@ -714,7 +841,9 @@ export type TrajectoryComponentKind =
   | "testing_custom"
   | "testing_edge_cases"
   | "debugging"
+  | "writing_report"
   // Retired from the backend enum, but stored summaries still carry them.
+  | "thinking_correction"
   | "thinking_diagnose"
   | "testing_custom_edge_cases";
 
@@ -1119,56 +1248,8 @@ export interface ExperimentShareInfo {
   is_public: boolean;
   public_token: string | null;
   description: string | null;
-}
-
-export type ReportStatus =
-  | "pending"
-  | "queued"
-  | "running"
-  | "success"
-  | "failed";
-
-export interface ModelDenominators {
-  trials: number;
-  scored: number;
-  solved: number;
-  mean_reward: number | null;
-  analyzed: number;
-  bad: number;
-  good: number;
-}
-
-export interface ByModelEntry {
-  model: string;
-  bucket: "bad" | "good" | "all";
-  narrative: string;
-  relative_strengths: string;
-  relative_weaknesses: string;
-  distinctive_failures: string[];
-}
-
-export interface ByModel {
-  version: number;
-  comparison: string;
-  denominators: Record<string, ModelDenominators>;
-  models: ByModelEntry[];
-}
-
-export interface Report {
-  id: string;
-  name: string;
-  status: ReportStatus;
-  error?: string | null;
-  bad_failure_content?: string | null;
-  good_failure_content?: string | null;
-  universal_capabilities_content?: string | null;
-  headroom_analysis?: string | null;
-  num_trials?: number | null;
-  num_bad_failures?: number | null;
-  num_good_failures?: number | null;
-  breakdown?: Record<string, number> | null;
-  by_model?: ByModel | null;
-  experiment_ids: string[];
-  created_at?: string | null;
-  finished_at?: string | null;
+  // QA-report linkage: a shadow experiment points at the experiment it
+  // grades; a graded experiment points at its shadow.
+  shadow_of?: string | null;
+  qa_report_experiment_id?: string | null;
 }

@@ -11,6 +11,8 @@ import {
 import useSWR from "swr";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useAuth } from "@clerk/nextjs";
+import { isOrgAdminRole } from "@/lib/org-roles";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -102,7 +104,7 @@ const STATUS_FILTER_OPTIONS = [
   { value: "active", label: "Active trials" },
   { value: "retrying", label: "Retrying trials" },
   { value: "completed", label: "Completed" },
-  { value: "needs-review", label: "Needs review" },
+  { value: "needs-review", label: "Rejected tasks" },
   { value: "pending-verdict", label: "QA pending" },
   { value: "failed", label: "Failures" },
 ] as const;
@@ -273,6 +275,9 @@ function ExperimentsTableBody({
   onViewOrgExperiments: () => void;
 }) {
   const { experiments, hasMore, ok } = use(promise);
+  // The qa-report experiment is a debug surface; verdicts live inline on the
+  // experiment page. Only admins get a pointer to the machinery.
+  const canSeeQaReport = isOrgAdminRole(useAuth().orgRole);
 
   const [deleteTarget, setDeleteTarget] = useState<{
     id: string;
@@ -395,6 +400,17 @@ function ExperimentsTableBody({
                             className="text-muted-foreground h-3.5 w-3.5"
                             aria-label="Published experiment"
                           />
+                        )}
+                        {experiment.qa_report_experiment_id && canSeeQaReport && (
+                          <Link
+                            href={`/experiments/${encodeExperimentRouteParam(
+                              experiment.qa_report_experiment_id
+                            )}`}
+                            className="text-muted-foreground rounded border border-amber-500/30 px-1 py-px text-[10px] leading-none whitespace-nowrap hover:border-amber-500/60 hover:underline"
+                            title="Open this experiment's QA report"
+                          >
+                            qa report
+                          </Link>
                         )}
                       </div>
                       {(experiment.user_tags?.length ?? 0) > 0 && (
@@ -652,7 +668,7 @@ function RecentTasksCard({
     STATUS_FILTER_OPTIONS.find((option) => option.value === statusFilter)
       ?.label ?? "Filter status";
   const selectedMember = isMemberSelected
-    ? members.find((member) => member.email === authorFilter)
+    ? members.find((member) => member.id === authorFilter)
     : undefined;
   const memberFilterLabel = selectedMember
     ? memberDisplayName(selectedMember)
@@ -713,7 +729,7 @@ function RecentTasksCard({
                   onValueChange={onAuthorFilterChange}
                 >
                   {members.map((member) => (
-                    <DropdownMenuRadioItem key={member.id} value={member.email}>
+                    <DropdownMenuRadioItem key={member.id} value={member.id}>
                       <span className="flex min-w-0 flex-col">
                         <span className="truncate">
                           {memberDisplayName(member)}

@@ -13,13 +13,9 @@ from oddish.cli.link import link_app
 from oddish.cli.logs import logs
 from oddish.cli.ls import ls
 from oddish.cli.publish import publish, unpublish
-from oddish.cli.prompt import prompt_app
-from oddish.cli.qa import qa
-from oddish.cli.qa_jobs import qa_jobs_app
 from oddish.cli.probe import probe_app
 from oddish.cli.pull import pull
 from oddish.cli.preflight import preflight
-from oddish.cli.report import report_app
 from oddish.cli.run import run
 from oddish.cli.status import status
 from oddish.cli.upload import upload
@@ -41,14 +37,10 @@ app.command()(cancel)
 app.command()(combine)
 app.command()(costs)
 app.command()(collect)
-app.command()(qa)
 app.command()(delete)
 app.add_typer(admin_app, name="admin")
 app.add_typer(experiment_app, name="experiment")
 app.add_typer(link_app, name="link")
-app.add_typer(report_app, name="report")
-app.add_typer(prompt_app, name="prompt")
-app.add_typer(qa_jobs_app, name="qa-jobs")
 app.command()(pull)
 app.command()(publish)
 app.command()(unpublish)

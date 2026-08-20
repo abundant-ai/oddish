@@ -13,7 +13,9 @@ from oddish.core.endpoints._common import (
     get_trial_for_org_core,
     _reset_task_verdict,
 )
+from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.db import (
+    AGENT_TRIAL_KIND,
     AnalysisStatus,
     ExperimentModel,
     TaskModel,
@@ -21,6 +23,7 @@ from oddish.db import (
     TrialModel,
     TrialStatus,
     VerdictStatus,
+    task_experiments,
     utcnow,
 )
 from oddish.schemas import ExperimentCombineResponse
@@ -168,13 +171,18 @@ async def delete_task_core(
     # Scoped delete: only this experiment's trials + the join row.
     scoped_trial_rows = (
         await session.execute(
-            select(TrialModel.id, TrialModel.trial_s3_key).where(
+            select(
+                TrialModel.id,
+                TrialModel.trial_s3_key,
+                TrialModel.task_version_id,
+            ).where(
                 TrialModel.task_id == resolved_task_id,
                 TrialModel.experiment_id == experiment_id,
             )
         )
     ).all()
     scoped_trial_ids = [row[0] for row in scoped_trial_rows]
+    scoped_version_ids = {row[2] for row in scoped_trial_rows if row[2]}
 
     # Check that this task really belongs to the given experiment.
     link_exists = await session.scalar(
@@ -221,37 +229,17 @@ async def delete_task_core(
         .values(deleted_at=utcnow())
     )
 
-    # If the task has no remaining live trials and no other experiment
-    # links, tombstone it too. Live = ``deleted_at IS NULL`` (the
-    # session-level filter handles this transparently for ORM queries).
-    remaining_trials = int(
-        await session.scalar(
-            select(func.count(TrialModel.id)).where(
-                TrialModel.task_id == resolved_task_id
-            )
-        )
-        or 0
-    )
-    remaining_links = int(
-        await session.scalar(
-            select(func.count())
-            .select_from(task_experiments)
-            .where(
-                task_experiments.c.task_id == resolved_task_id,
-                task_experiments.c.deleted_at.is_(None),
-            )
-        )
-        or 0
-    )
-
+    # If the task has no remaining live agent trials and no membership in
+    # a real (non-shadow) experiment, tombstone it too.
     task_removed = False
-    if remaining_trials == 0 and remaining_links == 0:
+    if await _task_is_orphaned(session, resolved_task_id):
         await _cancel_worker_jobs_for_task(
             session,
             task_id=resolved_task_id,
             reason="Task deleted by user",
             harvest=harvest,
         )
+        await _tombstone_task_analysis_leftovers(session, resolved_task_id)
         await session.execute(
             update(TaskModel)
             .where(TaskModel.id == resolved_task_id)
@@ -264,6 +252,7 @@ async def delete_task_core(
         if task is not None:
             _reset_task_verdict(task)
 
+    await refresh_task_browse_summaries(session, scoped_version_ids)
     return {
         "s3_prefixes": [],
         "deleted": {
@@ -349,17 +338,16 @@ async def unlink_task_from_experiment_core(
 
     # Tombstone this experiment's trials for the task (cancel their live
     # worker_jobs first so workers stop heart-beating and release slots).
-    scoped_trial_ids = [
-        row[0]
-        for row in (
-            await session.execute(
-                select(TrialModel.id).where(
-                    TrialModel.task_id == resolved_task_id,
-                    TrialModel.experiment_id == experiment_id,
-                )
+    scoped_trial_rows = (
+        await session.execute(
+            select(TrialModel.id, TrialModel.task_version_id).where(
+                TrialModel.task_id == resolved_task_id,
+                TrialModel.experiment_id == experiment_id,
             )
-        ).all()
-    ]
+        )
+    ).all()
+    scoped_trial_ids = [row[0] for row in scoped_trial_rows]
+    scoped_version_ids = {row[1] for row in scoped_trial_rows if row[1]}
     harvest = _CancelHarvest()
     if scoped_trial_ids:
         await _cancel_worker_jobs_for_trials(
@@ -435,6 +423,7 @@ async def unlink_task_from_experiment_core(
         org_id=task_org_id,
     )
 
+    await refresh_task_browse_summaries(session, scoped_version_ids)
     return {
         "s3_prefixes": [],
         "deleted": {
@@ -524,6 +513,89 @@ async def _cancel_worker_jobs_for_trials(
         {"trial_ids": list(trial_ids), "reason": reason},
     )
     harvest.add(rows)
+
+
+async def _task_is_orphaned(session: AsyncSession, task_id: str) -> bool:
+    """Whether nothing user-owned keeps this task alive.
+
+    Counts live AGENT trials and live memberships in real (non-shadow)
+    experiments only. Analysis trials and the qa-report shadow membership
+    exist in service of the task -- counting either would keep every task
+    that ever ran QA alive forever, so tombstoning would never fire.
+    """
+    remaining_trials = int(
+        await session.scalar(
+            select(func.count(TrialModel.id)).where(
+                TrialModel.task_id == task_id,
+                TrialModel.kind == AGENT_TRIAL_KIND,
+            )
+        )
+        or 0
+    )
+    if remaining_trials:
+        return False
+    remaining_links = int(
+        await session.scalar(
+            select(func.count())
+            .select_from(task_experiments)
+            .join(
+                ExperimentModel,
+                ExperimentModel.id == task_experiments.c.experiment_id,
+            )
+            .where(
+                task_experiments.c.task_id == task_id,
+                task_experiments.c.deleted_at.is_(None),
+                ExperimentModel.shadow_of.is_(None),
+            )
+        )
+        or 0
+    )
+    return remaining_links == 0
+
+
+async def _tombstone_task_analysis_leftovers(
+    session: AsyncSession, task_id: str
+) -> None:
+    """Retire a tombstoned task's analysis trials and their jobs.
+
+    ``_cancel_worker_jobs_for_task`` only reaches jobs whose subject is the
+    task row; an analysis trial's TRIAL job subjects the trial. Cancel those
+    and soft-delete the trial rows so nothing live points at a dead task
+    (the claim SQL skips jobs of soft-deleted trials either way).
+    """
+    await session.execute(
+        text(
+            """
+            UPDATE worker_jobs
+            SET    status = 'CANCELLED',
+                   finished_at = NOW(),
+                   error_message = 'Task deleted by user',
+                   current_worker_id = NULL,
+                   current_queue_slot = NULL,
+                   modal_function_call_id = NULL
+            WHERE  kind::text = 'TRIAL'
+              AND  subject_table = 'trials'
+              AND  subject_id IN (
+                  SELECT id FROM trials
+                  WHERE task_id = :task_id AND kind != 'agent'
+                    AND deleted_at IS NULL
+              )
+              AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+            """
+        ),
+        {"task_id": task_id},
+    )
+    await session.execute(
+        text(
+            """
+            UPDATE trials
+            SET    deleted_at = NOW()
+            WHERE  task_id = :task_id AND kind != 'agent'
+              AND  deleted_at IS NULL
+            """
+        ),
+        {"task_id": task_id},
+    )
 
 
 async def _cancel_worker_jobs_for_task(
@@ -620,12 +692,13 @@ async def delete_experiment_core(
             or_(TrialModel.org_id == org_id, TrialModel.org_id.is_(None))
         )
 
-    scoped_trial_ids = [
-        row[0]
-        for row in (
-            await session.execute(select(TrialModel.id).where(*trial_where))
-        ).all()
-    ]
+    scoped_trial_rows = (
+        await session.execute(
+            select(TrialModel.id, TrialModel.task_version_id).where(*trial_where)
+        )
+    ).all()
+    scoped_trial_ids = [row[0] for row in scoped_trial_rows]
+    scoped_version_ids = {row[1] for row in scoped_trial_rows if row[1]}
 
     # Task-level QA/VERDICT jobs are cancelled in the survival loop below,
     # ONLY for tasks that actually die with this experiment -- a task alive
@@ -678,30 +751,14 @@ async def delete_experiment_core(
     deleted_tasks = 0
 
     for tid in linked_task_ids:
-        remaining_trials = int(
-            await session.scalar(
-                select(func.count(TrialModel.id)).where(TrialModel.task_id == tid)
-            )
-            or 0
-        )
-        remaining_links = int(
-            await session.scalar(
-                select(func.count())
-                .select_from(task_experiments)
-                .where(
-                    task_experiments.c.task_id == tid,
-                    task_experiments.c.deleted_at.is_(None),
-                )
-            )
-            or 0
-        )
-        if remaining_trials == 0 and remaining_links == 0:
+        if await _task_is_orphaned(session, tid):
             await _cancel_worker_jobs_for_task(
                 session,
                 task_id=tid,
                 reason="Experiment deleted by user",
                 harvest=harvest,
             )
+            await _tombstone_task_analysis_leftovers(session, tid)
             task_upd_result = await session.execute(
                 update(TaskModel)
                 .where(TaskModel.id == tid)
@@ -720,6 +777,9 @@ async def delete_experiment_core(
                 _reset_task_verdict(task)
                 _clear_stale_task_pipeline_status(task)
 
+    # Tasks that survive via other experiments keep their cards; their
+    # summaries must drop the trials this delete just tombstoned.
+    await refresh_task_browse_summaries(session, scoped_version_ids)
     return {
         "s3_prefixes": [],
         "deleted": {
@@ -744,6 +804,7 @@ _COMBINE_TRIAL_RESULT_FIELDS = (
     "environment",
     "harbor_config",
     "is_probe",
+    "kind",
     "status",
     "origin",
     "attempts",
@@ -789,6 +850,7 @@ async def combine_experiments_core(
     name: str | None = None,
     org_id: str | None = None,
     copy_artifacts: bool = True,
+    owner_user_id: str | None = None,
 ) -> ExperimentCombineResponse:
     """Create a new experiment that merges the data of several others.
 
@@ -860,6 +922,7 @@ async def combine_experiments_core(
     result = ExperimentModel(
         name=result_name,
         org_id=org_id,
+        owner_user_id=owner_user_id,
         last_activity_at=utcnow(),
     )
     session.add(result)
@@ -1055,6 +1118,7 @@ async def delete_trial_core(
         .values(deleted_at=utcnow())
         .execution_options(synchronize_session=False)
     )
+    await refresh_task_browse_summaries(session, [trial.task_version_id])
 
     # Task aggregates (total/completed/failed) are derived from the
     # remaining trials -- the soft-delete filter excludes this one

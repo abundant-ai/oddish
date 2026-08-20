@@ -7,6 +7,7 @@ Schema is built with ``Base.metadata.create_all`` on an empty Postgres
 - the free-text grammar: terms AND in any order, "quoted phrase", -exclusion
 """
 
+import asyncio
 import os
 
 import pytest
@@ -18,6 +19,9 @@ from sqlalchemy.ext.asyncio import (  # type: ignore[attr-defined]
 
 import models  # noqa: F401  registers cloud tables on the shared Base
 from oddish.core.endpoints import browse_tasks_core
+from oddish.core.endpoints.deletion import delete_experiment_core
+from oddish.core.endpoints.task_detail import set_task_default_version_core
+from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.db.models import Base
 
 URL = os.environ.get("ODDISH_DATABASE_URL")
@@ -59,6 +63,9 @@ async def _setup(engine):
         for stmt in stmts.split(";"):
             if stmt.strip():
                 await c.execute(text(stmt))
+    async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+        await refresh_task_browse_summaries(session, ["v-old", "v-new"])
+        await session.commit()
 
 
 async def test_probe_runs_do_not_pollute_browse():
@@ -118,6 +125,9 @@ async def _setup_combine(engine):
         for stmt in stmts.split(";"):
             if stmt.strip():
                 await c.execute(text(stmt))
+    async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+        await refresh_task_browse_summaries(session, ["v-c"])
+        await session.commit()
 
 
 async def test_combine_copies_excluded_from_browse():
@@ -135,6 +145,224 @@ async def test_combine_copies_excluded_from_browse():
         assert [t.id for t in item.latest_trials] == ["tr-src"]
         assert item.latest_trials[0].agent == "claude"
         assert item.latest_trials[0].model == "sonnet"
+    finally:
+        await engine.dispose()
+
+
+async def test_default_browse_preview_is_bounded_but_totals_are_exact():
+    engine = create_async_engine(URL)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        await _setup_combine(engine)
+        async with maker() as session:
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO trials (
+                        id, name, task_id, task_version_id, experiment_id, org_id,
+                        agent, model, provider, queue_key, timeout_minutes,
+                        environment, harbor_config, status, origin, is_probe,
+                        reward, cost_usd, billed_user_id, finished_at, attempts,
+                        max_attempts, heartbeat_failure_count, has_trajectory,
+                        created_at, updated_at
+                    )
+                    SELECT 'tr-extra-' || n, 'tr-extra-' || n, 't-c', 'v-c',
+                           'exp-a', 'org1', 'claude', 'sonnet', 'anthropic', 'q',
+                           30, 'modal', '{}'::jsonb, 'SUCCESS', 'oddish', false,
+                           1.0, 1.0,
+                           CASE WHEN n % 2 = 0 THEN 'user-billed' END,
+                           NOW() + n * interval '1 second', 1, 6, 0,
+                           false, NOW() + n * interval '1 second', NOW()
+                    FROM generate_series(1, 30) AS n
+                    """
+                )
+            )
+            await refresh_task_browse_summaries(session, ["v-c"])
+            await session.commit()
+            response = await browse_tasks_core(session, org_id=ORG, limit=10, offset=0)
+            standalone = await browse_tasks_core(
+                session, org_id=None, limit=10, offset=0
+            )
+
+        item = response.items[0]
+        assert item.total_trials == 31
+        assert item.completed_trials == 31
+        assert item.pass_count == 31
+        assert item.cost_usd == 30.0
+        assert item.cost_trial_count == 30
+        # Billed trials exercise the summary cost path's "billed" rollup; the
+        # first landing of #1152 crashed here (KeyError: 'billed_usd') because
+        # no fixture seeded a billed_user_id.
+        assert item.billed_cost_usd == 15.0
+        assert item.billed_trial_count == 15
+        assert item.billed_has_native is True
+        assert len(item.latest_trials) == 24
+        assert item.latest_trials_truncated is True
+        standalone_item = standalone.items[0]
+        assert standalone_item.total_trials == item.total_trials
+        assert standalone_item.cost_usd == item.cost_usd
+        assert [trial.id for trial in standalone_item.latest_trials] == [
+            trial.id for trial in item.latest_trials
+        ]
+    finally:
+        await engine.dispose()
+
+
+async def test_experiment_delete_refreshes_surviving_task_summaries():
+    engine = create_async_engine(URL)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        await _setup_combine(engine)
+        async with maker() as session:
+            # A real (non-combine) exp-b trial so t-c outlives exp-a's delete.
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO trials (
+                        id, name, task_id, task_version_id, experiment_id, org_id,
+                        agent, model, provider, queue_key, timeout_minutes,
+                        environment, harbor_config, status, origin, is_probe,
+                        reward, finished_at, attempts, max_attempts,
+                        heartbeat_failure_count, has_trajectory, created_at, updated_at
+                    ) VALUES (
+                        'tr-b', 'tr-b', 't-c', 'v-c', 'exp-b', 'org1',
+                        'claude', 'sonnet', 'anthropic', 'q', 30, 'modal',
+                        '{}'::jsonb, 'SUCCESS', 'oddish', false, 1.0, NOW(),
+                        1, 6, 0, false, NOW(), NOW()
+                    )
+                    """
+                )
+            )
+            await refresh_task_browse_summaries(session, ["v-c"])
+            await session.commit()
+            summary_row = text(
+                """
+                SELECT total_trials, completed_trials
+                FROM task_version_browse_summaries
+                WHERE task_version_id = 'v-c'
+                """
+            )
+            before = (await session.execute(summary_row)).one()
+            assert before == (2, 2)  # tr-src + tr-b; the combine copy excluded
+
+            await delete_experiment_core(
+                session, experiment_id="exp-a", org_id=ORG
+            )
+            await session.commit()
+            after = (await session.execute(summary_row)).one()
+
+        # The surviving task's summary must drop exp-a's tombstoned trial in
+        # the delete transaction itself, and exp-b's combine copy must stay
+        # excluded.
+        assert after == (1, 1)
+    finally:
+        await engine.dispose()
+
+
+async def test_summary_refresh_serializes_concurrent_settlements():
+    engine = create_async_engine(URL)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        await _setup_combine(engine)
+        async with maker() as first, maker() as second:
+            insert_trial = text(
+                """
+                INSERT INTO trials (
+                    id, name, task_id, task_version_id, experiment_id, org_id,
+                    agent, model, provider, queue_key, timeout_minutes,
+                    environment, harbor_config, status, origin, is_probe,
+                    reward, finished_at, attempts, max_attempts,
+                    heartbeat_failure_count, has_trajectory, created_at, updated_at
+                ) VALUES (
+                    :trial_id, :trial_id, 't-c', 'v-c', 'exp-a', 'org1',
+                    'claude', 'sonnet', 'anthropic', 'q', 30, 'modal',
+                    '{}'::jsonb, 'SUCCESS', 'oddish', false, 1, NOW(),
+                    1, 6, 0, false, NOW(), NOW()
+                )
+                """
+            )
+            # Both inserts hold a KEY SHARE FK lock on v-c. Summary
+            # serialization must not try to upgrade either lock to FOR UPDATE.
+            await first.execute(insert_trial, {"trial_id": "tr-concurrent-a"})
+            await second.execute(insert_trial, {"trial_id": "tr-concurrent-b"})
+            # Generous budget: this only has to prove the holder does not
+            # BLOCK (a lock-ordering bug hangs it forever); a tight budget
+            # would flake on slow CI runners.
+            await asyncio.wait_for(
+                refresh_task_browse_summaries(first, ["v-c"]), timeout=5.0
+            )
+
+            second_refresh = asyncio.create_task(
+                refresh_task_browse_summaries(second, ["v-c"])
+            )
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(asyncio.shield(second_refresh), timeout=0.1)
+
+            await first.commit()
+            await second_refresh
+            await second.commit()
+
+        async with maker() as check:
+            row = (
+                await check.execute(
+                    text(
+                        """
+                        SELECT total_trials, completed_trials
+                        FROM task_version_browse_summaries
+                        WHERE task_version_id = 'v-c'
+                        """
+                    )
+                )
+            ).one()
+        assert row == (3, 3)
+    finally:
+        await engine.dispose()
+
+
+async def test_selected_default_version_changes_card_immediately():
+    engine = create_async_engine(URL)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        await _setup_combine(engine)
+        async with maker() as session:
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO task_versions (
+                        id, task_id, version, task_path, created_at, updated_at
+                    ) VALUES ('v-c-2', 't-c', 2, 'p2', NOW(), NOW())
+                    """
+                )
+            )
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO trials (
+                        id, name, task_id, task_version_id, experiment_id, org_id,
+                        agent, model, provider, queue_key, timeout_minutes,
+                        environment, harbor_config, status, origin, is_probe,
+                        reward, finished_at, attempts, max_attempts,
+                        heartbeat_failure_count, has_trajectory, created_at, updated_at
+                    ) VALUES (
+                        'tr-v2', 'tr-v2', 't-c', 'v-c-2', 'exp-a', 'org1',
+                        'claude', 'sonnet', 'anthropic', 'q', 30, 'modal',
+                        '{}'::jsonb, 'SUCCESS', 'oddish', false, 0.0, NOW(),
+                        1, 6, 0, false, NOW(), NOW()
+                    )
+                    """
+                )
+            )
+            await set_task_default_version_core(
+                session, task_id="t-c", version=2, org_id=ORG
+            )
+            response = await browse_tasks_core(session, org_id=ORG, limit=10, offset=0)
+
+        item = response.items[0]
+        assert item.current_version == 2
+        assert item.current_version_id == "v-c-2"
+        assert item.version_count == 2
+        assert item.total_trials == 1
+        assert [trial.id for trial in item.latest_trials] == ["tr-v2"]
     finally:
         await engine.dispose()
 

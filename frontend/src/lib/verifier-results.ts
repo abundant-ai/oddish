@@ -45,9 +45,3 @@ export function embeddedCtrfSummary(
 ): CtrfSummary | null {
   return parseCtrfSummary(result?._verifier);
 }
-
-export function parseCtrfReport(value: unknown): CtrfSummary | null {
-  if (!isRecord(value) || !isRecord(value.results)) return null;
-  if (!isRecord(value.results.summary)) return null;
-  return parseCtrfSummary({ format: "ctrf", ...value.results.summary });
-}

@@ -42,7 +42,8 @@ Scheduled functions
        - Dispatches to the registered handler
        - Writes heartbeats, records outcome, exits
   ▼
-Modal sandboxes (Harbor execution, logs/artifacts to S3)
+Harbor execution on Modal, Daytona, or opt-in ephemeral EC2
+  - logs/artifacts persisted to S3
 ```
 
 ### Worker architecture
@@ -186,6 +187,7 @@ Common optional settings:
 - GitHub notifier settings such as `GITHUB_TOKEN` and `ODDISH_DASHBOARD_URL`
 - `SLACK_ALERT_BOT_TOKEN` (scopes `chat:write`, `im:write`, `users:read.email`) for deterministic cost alerts, which DM an experiment's owner: a milestone for each $1,000 spent in the past 24 hours, and any trial over $200 that finished in that window. The same token delivers the other DM-only alerts -- trial failed, QA failed, experiment failed -- and resolves in-channel mentions by account email. The email delivery channel has been removed entirely. `SLACK_EXPENSE_WEBHOOK_URL` carries what is left in-channel: unpriceable-model alerts from the past 24 hours; an escalation when a running or retrying trial's live cost rises above the configured floor, which `<@...>`-mentions its owner plus the always-ping list; and a `<!channel>` alert when a user's rolling seven-day spend, including live running-trial checkpoints, rises more than the configured dollar delta above their workspace's average spender. The two channel escalation thresholds and the ping list are set by an admin on the Costs tab of `/admin` and stored in `slack_alert_settings`; the constants in `slack_alert_settings.py` are the defaults they override, and no setting here is environment-configurable. Weekly user alerts re-arm after spend drops back below the threshold. The per-user DM cutoffs (the milestone and completed-trial floor) are separate deploy-time constants in `user_alert_prefs.py` that each person tunes in their own notification settings, not admin-editable here. Notifications are on by default for the production app; previews opt in with `ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS=true` and can attach a preview-only notification secret via `ODDISH_SLACK_EXPENSE_SECRET_NAME` / `ODDISH_SLACK_EXPENSE_SECRET_ENVIRONMENT`.
 - `ODDISH_SLACK_UNFURL_*` for a lean, single-workspace Slack app that unfurls Oddish task, experiment, and public-share links. It requires `links:read` and `links:write`, a `link_shared` event subscription pointed at `/webhooks/slack/events`, a signing secret, bot token, and bound Oddish org. Optional team/channel allowlists add defense in depth. This is separate from the expense notifications above.
+- `ODDISH_CARL_*`, `ODDISH_API_KEY`, and `ODDISH_DATABASE_URL_RO` extend that same Slack app with read-only answers to permitted `app_mention` events. Carl keeps the existing `/webhooks/slack/events` URL and `link_shared` subscription; add `app_mentions:read` and subscribe the installed app to `app_mention`. The SQL DSN must use a dedicated non-superuser role restricted to the analytics table allow-list. See `slackbot/README.md`.
 
 ### Observability (Pydantic Logfire)
 
@@ -222,6 +224,37 @@ throughput (`ODDISH_MODAL_MAX_WORKERS_PER_POLL`, default `256`;
 
 Local `backend/.env` values are layered on top of the shared Modal secret for local deploys.
 
+### Ephemeral EC2 Harbor backend
+
+EC2 is an explicit CPU-only provider; Daytona remains the default. Set the
+non-secret `ODDISH_EC2_*` launch coordinates from `backend/.env.example` and
+name two dedicated Modal secrets:
+
+- The control secret contains `ODDISH_EC2_AWS_ACCESS_KEY_ID`,
+  `ODDISH_EC2_AWS_SECRET_ACCESS_KEY`, and optional
+  `ODDISH_EC2_AWS_SESSION_TOKEN`.
+- The worker-only SSH secret contains `ODDISH_EC2_SSH_PRIVATE_KEY`.
+
+Only dedicated `ec2_trial` worker functions receive both secrets. Generic trial
+workers receive neither; the reconciler and dedicated `teardown_ec2_sandbox`
+function receive only control credentials. API and dispatcher functions receive
+neither. API cancellation delegates one teardown call to that dedicated
+function. EC2 workers materialize the AWS credentials and SSH key as mode-`0600`
+temporary files, pass only the named AWS profile and key path to Harbor, and
+remove the raw secret variables from the Harbor child. Set
+`ODDISH_EC2_MAX_CONCURRENT_INSTANCES` to the provider-wide instance cap; this is
+enforced across every model and Harbor variant. The dispatcher subtracts live
+EC2 leases before spending its per-poll spawn budget, and workers retain the
+atomic lease-acquisition check before claiming a trial.
+The control policy must include `sts:GetCallerIdentity` in addition to the EC2
+launch, describe, image lookup, tag, and terminate actions listed in
+`.env.example`.
+
+Standalone hosts installed with `oddish[worker]` must also provide the OpenSSH
+client (`openssh-client` on Debian/Ubuntu), because Harbor invokes `ssh` to reach
+the VM. The shared `backend/Dockerfile` already installs this package for the
+Railway/Docker deployment path, and the Modal worker image installs it as well.
+
 ### oddish runtime patching
 
 `endpoints.py`, `serve.py`, and `worker/runtime.py` patch oddish settings at startup:
@@ -247,7 +280,7 @@ All routes require auth unless marked public.
 | GET | `/tasks` | List tasks (org-scoped, paginated/filtered) |
 | GET | `/tasks/browse` | Browse latest task versions with pagination and search |
 | GET | `/tasks/{task_id}` | Task details |
-| POST | `/tasks/cancel` | Cancel in-flight trials and queue jobs for one or more tasks (org-scoped); Modal workers terminated when applicable |
+| POST | `/tasks/cancel` | Cancel in-flight trials and queue jobs for one or more tasks (org-scoped); Modal workers and supported remote sandboxes are terminated when applicable |
 | POST | `/tasks/{task_id}/qa/retry` | Re-run task QA: classify trials and synthesize the verdict |
 | POST | `/tasks/{task_id}/qa/cancel` | Cancel a task's in-flight QA job |
 | GET | `/tasks/{task_id}/trials` | Trials for task |
@@ -301,6 +334,7 @@ All routes require auth unless marked public.
 | GET | `/public/experiments/{public_token}/tasks` | Public tasks and trials for a shared experiment |
 | GET | `/public/experiments/{public_token}/tasks/{task_id}` | Public task status within a shared experiment |
 | GET | `/public/experiments/{public_token}/tasks/{task_id}/trials` | Public trial list within a shared experiment |
+| GET | `/public/experiments/{public_token}/trials/{trial_id}/live` | Public live transcript and running usage |
 | GET | `/public/experiments/{public_token}/trials/{trial_id}/logs` | Public trial logs |
 | GET | `/public/experiments/{public_token}/trials/{trial_id}/logs/structured` | Public structured logs |
 | GET | `/public/experiments/{public_token}/trials/{trial_id}/trajectory` | Public trajectory |
@@ -451,6 +485,7 @@ or globally via the env default. Under `enforce`, an over-cap submission gets
 HTTP **402** (`"Your organization is over its monthly budget …"`); under
 `shadow` it emits `metric=quota.would_block reason=org_over_budget`. Admins see
 month-to-date org usage on `GET /quotas`; any member can read the org budget
-snapshot + adaptive daily goal on `GET /quotas/org`. Advisory-lock order is
-org → payer → row locks (ENFORCE-only on admission; the org lock is always
-taken first, even when no org cap is configured).
+snapshot + adaptive daily goal on `GET /quotas/org`. Admission takes no
+locks; concurrent submissions can briefly overshoot a cap and the
+enforcement sweep cancels the overage. Only the sweep takes the quota
+advisory locks (org → payer, non-blocking).

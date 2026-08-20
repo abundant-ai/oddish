@@ -1,0 +1,26 @@
+# Sweep config for the opencode/gemini arm.
+#
+# This exists because --ak cannot carry a nested value: oddish parses agent
+# kwargs into dict[str, str], so `--ak opencode_config={...}` would reach Harbor
+# as a STRING and its _deep_merge would fail on it. A config file preserves the
+# real dict.
+#
+# compaction.reserved is the token headroom opencode keeps free. Trials were
+# overflowing because opencode ran the conversation to ~99% of the window and
+# only compacted twice in 1715 steps; a single large tool result then pushed the
+# request past gemini-3.7-flash's hard 1,048,576-token limit and Gemini 400'd:
+#   "The input token count exceeds the maximum number of tokens allowed 1048576."
+# Reserving 209,716 keeps 20% free, i.e. compaction at ~80% of the window.
+#
+# variant: high is load-bearing -- opencode's `variant` is a CliFlag with NO
+# default, so dropping it silently runs a different configuration.
+agents:
+  - name: opencode
+    model_name: google/gemini-3.7-flash
+    n_trials: 16
+    kwargs:
+      variant: high
+      opencode_config:
+        compaction:
+          auto: true
+          reserved: 209716

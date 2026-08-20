@@ -1,8 +1,8 @@
 """The billed payer must be ACTIVE or None.
 
-``resolve_billed_user_id`` may never return a tombstoned/offboarded user id: it
+``resolve_sweep_attribution`` may never bill a tombstoned/offboarded user id: it
 would be invisible to the active-scoped admin quota list and un-overridable.
-Provenance (``resolve_created_by_user_id``) is the opposite — it keeps the real
+Provenance is the opposite — it keeps the real
 author even once offboarded — so these tests pin that the active-only guard
 lives on the billing helper, not the provenance one.
 """
@@ -15,8 +15,7 @@ import pytest
 
 import api.routers.task_submission as task_submission
 from api.routers.task_submission import (
-    resolve_billed_user_id,
-    resolve_created_by_user_id,
+    resolve_sweep_attribution,
 )
 from auth.types import AuthContext, AuthMethod
 from models import APIKeyScope, UserModel, UserRole
@@ -77,10 +76,11 @@ async def test_billed_none_for_offboarded_api_key_creator():
     submission = _submission()
 
     # Billing refuses the tombstoned creator ...
-    assert await resolve_billed_user_id(session, submission, auth) is None
+    attribution = await resolve_sweep_attribution(session, submission, auth)
+    assert attribution.billed_user_id is None
     # ... but provenance still reports the real (offboarded) author. This
     # assertion fails if the active guard is mistakenly put on created_by.
-    assert await resolve_created_by_user_id(session, submission, auth) == creator.id
+    assert attribution.task_created_by_user_id == creator.id
 
 
 @pytest.mark.asyncio
@@ -90,8 +90,8 @@ async def test_billed_bills_active_api_key_creator():
     auth = _api_key_auth(creator.id)
 
     assert (
-        await resolve_billed_user_id(session, _submission(), auth) == creator.id
-    )
+        await resolve_sweep_attribution(session, _submission(), auth)
+    ).billed_user_id == creator.id
 
 
 @pytest.mark.asyncio
@@ -109,20 +109,36 @@ async def test_billed_uses_linked_github_even_when_creator_offboarded(monkeypatc
     auth = _api_key_auth(creator.id)
     submission = _submission(github_id="12345")
 
-    assert await resolve_billed_user_id(session, submission, auth) == author.id
+    assert (
+        await resolve_sweep_attribution(session, submission, auth)
+    ).billed_user_id == author.id
 
 
 @pytest.mark.asyncio
-async def test_billed_rejects_inactive_cached_owner():
-    # tasks.py passes a cached owner_user_id into resolve_billed_user_id; the
-    # active guard must cover that short-circuit too, not only the fallback.
-    stale = _user(id="stale_owner", is_active=False)
-    session = _GetSession({stale.id: stale})
-    auth = AuthContext(
-        method=AuthMethod.CLERK_JWT, org_id="org_1", user_id="someone_else"
+async def test_billed_falls_back_to_active_task_creator_when_owner_is_inactive():
+    creator = _user(id="creator_on", is_active=True)
+    author = _user(id="author_off", is_active=False)
+    session = _GetSession({creator.id: creator, author.id: author})
+    auth = _api_key_auth(creator.id)
+
+    attribution = await resolve_sweep_attribution(
+        session,
+        _submission(github_id="author"),
+        auth,
+        connected_user=author,
     )
 
-    result = await resolve_billed_user_id(
-        session, _submission(), auth, owner_user_id=stale.id
-    )
-    assert result is None
+    assert attribution.experiment_owner_user_id == author.id
+    assert attribution.task_created_by_user_id == creator.id
+    assert attribution.billed_user_id == creator.id
+
+
+@pytest.mark.asyncio
+async def test_billed_rejects_inactive_authenticated_owner():
+    stale = _user(id="stale_owner", is_active=False)
+    session = _GetSession({stale.id: stale})
+    auth = AuthContext(method=AuthMethod.CLERK_JWT, org_id="org_1", user_id=stale.id)
+
+    result = await resolve_sweep_attribution(session, _submission(), auth)
+    assert result.experiment_owner_user_id == stale.id
+    assert result.billed_user_id is None

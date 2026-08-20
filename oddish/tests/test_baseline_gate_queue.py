@@ -28,6 +28,7 @@ from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE  # noqa: E402
 from oddish.db import (  # noqa: E402
     TaskModel,
     TaskStatus,
+    TaskVersionModel,
     TrialModel,
     TrialStatus,
     WorkerJobKind,
@@ -43,6 +44,7 @@ from oddish.queue import (  # noqa: E402
     maybe_gate_llm_trials,
 )
 from oddish.schemas import TaskSubmission, TrialSpec  # noqa: E402
+from oddish.workers.queue import cleanup  # noqa: E402
 
 _RUN = uuid.uuid4().hex[:8]
 _LLM_AGENT = "claude-code"
@@ -78,7 +80,10 @@ async def cleanup_task_ids():
 
 
 async def _job_status_by_agent(task_id: str) -> dict[str, WorkerJobStatus]:
-    """Map each trial's agent -> its TRIAL worker_job status."""
+    """Map each agent trial's agent -> its TRIAL worker_job status.
+
+    Excludes analysis kinds: the always-on pre-trial audit also runs as a
+    claude-code trial and would shadow the LLM agent's entry."""
     async with get_session() as session:
         rows = (
             await session.execute(
@@ -87,7 +92,7 @@ async def _job_status_by_agent(task_id: str) -> dict[str, WorkerJobStatus]:
                     WorkerJobModel,
                     WorkerJobModel.subject_id == TrialModel.id,
                 )
-                .where(TrialModel.task_id == task_id)
+                .where(TrialModel.task_id == task_id, TrialModel.kind == "agent")
             )
         ).all()
     return {agent: status for agent, status in rows}
@@ -96,7 +101,7 @@ async def _job_status_by_agent(task_id: str) -> dict[str, WorkerJobStatus]:
 async def _set_baseline_outcomes(
     task_id: str, *, oracle_reward: float, nop_reward: float
 ) -> str:
-    """Drive the baseline trials terminal; return a baseline trial id."""
+    """Drive baseline trial and scheduling rows terminal; return one trial id."""
     async with get_session() as session:
         for agent, reward in (("oracle", oracle_reward), ("nop", nop_reward)):
             await session.execute(
@@ -108,6 +113,18 @@ async def _set_baseline_outcomes(
                     finished_at=utcnow(),
                 )
             )
+        baseline_trial_ids = select(TrialModel.id).where(
+            TrialModel.task_id == task_id,
+            TrialModel.queue_key == "nop_oracle",
+        )
+        await session.execute(
+            update(WorkerJobModel)
+            .where(
+                WorkerJobModel.kind == WorkerJobKind.TRIAL,
+                WorkerJobModel.subject_id.in_(baseline_trial_ids),
+            )
+            .values(status=WorkerJobStatus.SUCCESS)
+        )
         baseline_id = (
             await session.execute(
                 select(TrialModel.id).where(
@@ -116,6 +133,60 @@ async def _set_baseline_outcomes(
             )
         ).scalar_one()
     return baseline_id
+
+
+async def _set_transient_failed_baseline(
+    task_id: str, *, job_status: WorkerJobStatus
+) -> str:
+    """Create the FAILED-trial/live-job settlement race and return the nop id."""
+    async with get_session() as session:
+        rows = (
+            await session.execute(
+                select(TrialModel.id, TrialModel.agent).where(
+                    TrialModel.task_id == task_id,
+                    TrialModel.queue_key == "nop_oracle",
+                )
+            )
+        ).all()
+        baseline_ids = {agent: trial_id for trial_id, agent in rows}
+        nop_id = baseline_ids["nop"]
+        oracle_id = baseline_ids["oracle"]
+
+        await session.execute(
+            update(TrialModel)
+            .where(TrialModel.id == oracle_id)
+            .values(status=TrialStatus.SUCCESS, reward=1.0, finished_at=utcnow())
+        )
+        await session.execute(
+            update(WorkerJobModel)
+            .where(WorkerJobModel.subject_id == oracle_id)
+            .values(status=WorkerJobStatus.SUCCESS)
+        )
+        await session.execute(
+            update(TrialModel)
+            .where(TrialModel.id == nop_id)
+            .values(status=TrialStatus.FAILED, reward=None, finished_at=utcnow())
+        )
+        await session.execute(
+            update(WorkerJobModel)
+            .where(WorkerJobModel.subject_id == nop_id)
+            .values(status=job_status)
+        )
+    return nop_id
+
+
+async def _finish_nop_retry(nop_id: str) -> None:
+    async with get_session() as session:
+        await session.execute(
+            update(TrialModel)
+            .where(TrialModel.id == nop_id)
+            .values(status=TrialStatus.SUCCESS, reward=0.0, finished_at=utcnow())
+        )
+        await session.execute(
+            update(WorkerJobModel)
+            .where(WorkerJobModel.subject_id == nop_id)
+            .values(status=WorkerJobStatus.SUCCESS)
+        )
 
 
 @pytest.mark.asyncio
@@ -166,11 +237,92 @@ async def test_valid_baselines_unblock_llm(monkeypatch, cleanup_task_ids):
         llm_trial = (
             await session.execute(
                 select(TrialModel).where(
-                    TrialModel.task_id == task_id, TrialModel.agent == _LLM_AGENT
+                    TrialModel.task_id == task_id,
+                    TrialModel.agent == _LLM_AGENT,
+                    TrialModel.kind == "agent",
                 )
             )
         ).scalar_one()
     assert llm_trial.status != TrialStatus.FAILED
+
+
+@pytest.mark.parametrize(
+    "active_job_status",
+    [
+        WorkerJobStatus.QUEUED,
+        WorkerJobStatus.RUNNING,
+        WorkerJobStatus.RETRYING,
+        WorkerJobStatus.BLOCKED,
+    ],
+)
+@pytest.mark.asyncio
+async def test_active_baseline_job_overrides_transient_failed_trial(
+    monkeypatch,
+    cleanup_task_ids,
+    active_job_status: WorkerJobStatus,
+):
+    """A live scheduler row wins over a transient terminal trial mirror."""
+    monkeypatch.setattr(settings, "gate_llm_on_baselines", True)
+    task_id = f"gate-job-active-{active_job_status.value.lower()}-{_RUN}"
+    cleanup_task_ids.append(task_id)
+    async with get_session() as session:
+        await create_task(session, _mixed_submission("job-active"), task_id=task_id)
+    # This is the race: the domain row has already mirrored FAILED while its
+    # authoritative scheduler row is still live and can retry.
+    nop_id = await _set_transient_failed_baseline(task_id, job_status=active_job_status)
+
+    async with get_session() as session:
+        assert await maybe_gate_llm_trials(session, nop_id) is False
+    assert (await _job_status_by_agent(task_id))[_LLM_AGENT] == WorkerJobStatus.BLOCKED
+
+    # Once the retry really settles, the same gate resolves normally.
+    await _finish_nop_retry(nop_id)
+    async with get_session() as session:
+        assert await maybe_gate_llm_trials(session, nop_id) is True
+    assert (await _job_status_by_agent(task_id))[_LLM_AGENT] == WorkerJobStatus.QUEUED
+
+
+@pytest.mark.asyncio
+async def test_cleanup_backstop_waits_for_active_baseline_job(
+    monkeypatch, cleanup_task_ids
+):
+    """Cleanup must not re-drive a gate during the FAILED -> RETRYING race."""
+    monkeypatch.setattr(settings, "gate_llm_on_baselines", True)
+    task_id = f"gate-cleanup-job-active-{_RUN}"
+    cleanup_task_ids.append(task_id)
+    async with get_session() as session:
+        await create_task(
+            session, _mixed_submission("cleanup-job-active"), task_id=task_id
+        )
+    nop_id = await _set_transient_failed_baseline(
+        task_id, job_status=WorkerJobStatus.RETRYING
+    )
+
+    gated_trial_ids: list[str] = []
+
+    async def record_gate(_session, trial_id: str) -> bool:
+        gated_trial_ids.append(trial_id)
+        return False
+
+    async def no_stage_change(_session, _trial_id: str) -> bool:
+        return False
+
+    monkeypatch.setattr("oddish.queue.maybe_gate_llm_trials", record_gate)
+    monkeypatch.setattr("oddish.queue.maybe_start_qa_stage", no_stage_change)
+
+    async with get_session() as session:
+        await cleanup._advance_running_tasks_to_analysis(session, [])
+    assert gated_trial_ids == []
+
+    # The backstop resumes as soon as the scheduler row becomes terminal.
+    async with get_session() as session:
+        await session.execute(
+            update(WorkerJobModel)
+            .where(WorkerJobModel.subject_id == nop_id)
+            .values(status=WorkerJobStatus.SUCCESS)
+        )
+        await cleanup._advance_running_tasks_to_analysis(session, [])
+    assert len(gated_trial_ids) == 1
 
 
 @pytest.mark.asyncio
@@ -196,7 +348,9 @@ async def test_faulty_baselines_cancel_llm(monkeypatch, cleanup_task_ids):
         llm_trial = (
             await session.execute(
                 select(TrialModel).where(
-                    TrialModel.task_id == task_id, TrialModel.agent == _LLM_AGENT
+                    TrialModel.task_id == task_id,
+                    TrialModel.agent == _LLM_AGENT,
+                    TrialModel.kind == "agent",
                 )
             )
         ).scalar_one()
@@ -312,7 +466,9 @@ async def test_gate_is_experiment_scoped(monkeypatch, cleanup_task_ids):
                     select(TrialModel.experiment_id, WorkerJobModel.status)
                     .join(WorkerJobModel, WorkerJobModel.subject_id == TrialModel.id)
                     .where(
-                        TrialModel.task_id == task_id, TrialModel.agent == _LLM_AGENT
+                        TrialModel.task_id == task_id,
+                    TrialModel.agent == _LLM_AGENT,
+                    TrialModel.kind == "agent",
                     )
                 )
             ).all()
@@ -335,6 +491,20 @@ async def test_gate_is_experiment_scoped(monkeypatch, cleanup_task_ids):
                 TrialModel.queue_key == "nop_oracle",
             )
             .values(status=TrialStatus.SUCCESS, reward=0.0, finished_at=utcnow())
+        )
+        await session.execute(
+            update(WorkerJobModel)
+            .where(
+                WorkerJobModel.kind == WorkerJobKind.TRIAL,
+                WorkerJobModel.subject_id.in_(
+                    select(TrialModel.id).where(
+                        TrialModel.task_id == task_id,
+                        TrialModel.experiment_id == exp_a,
+                        TrialModel.queue_key == "nop_oracle",
+                    )
+                ),
+            )
+            .values(status=WorkerJobStatus.SUCCESS)
         )
         a_oracle_id = (
             await session.execute(
@@ -500,7 +670,9 @@ async def test_retry_of_gated_llm_trial_reports_skipped(monkeypatch, cleanup_tas
         kimi_id = (
             await session.execute(
                 select(TrialModel.id).where(
-                    TrialModel.task_id == task_id, TrialModel.agent == _LLM_AGENT
+                    TrialModel.task_id == task_id,
+                    TrialModel.agent == _LLM_AGENT,
+                    TrialModel.kind == "agent",
                 )
             )
         ).scalar_one()
@@ -523,9 +695,7 @@ async def test_retry_of_gated_llm_trial_reports_skipped(monkeypatch, cleanup_tas
 async def test_qa_classification_excludes_gate_skipped_and_cancelled(
     monkeypatch, cleanup_task_ids
 ):
-    from oddish.workers.queue.qa_handler import (
-        _load_live_trials_for_classification,
-    )
+    from oddish.queue import qa_eligible_trial_ids
 
     monkeypatch.setattr(settings, "gate_llm_on_baselines", True)
     task_id = f"qa-skip-{_RUN}"
@@ -544,12 +714,17 @@ async def test_qa_classification_excludes_gate_skipped_and_cancelled(
         kimi_id = (
             await session.execute(
                 select(TrialModel.id).where(
-                    TrialModel.task_id == task_id, TrialModel.agent == _LLM_AGENT
+                    TrialModel.task_id == task_id,
+                    TrialModel.agent == _LLM_AGENT,
+                    TrialModel.kind == "agent",
                 )
             )
         ).scalar_one()
 
-    live_ids = {tid for tid, _ in await _load_live_trials_for_classification(task_id)}
+    async with get_session() as session:
+        live_ids = set(
+            await qa_eligible_trial_ids(session, task_id, task_version_id=None)
+        )
     # Neither the gate-skipped (never-run) kimi nor the cancelled baseline has
     # an outcome to classify. The remaining completed baseline is excluded too,
     # now that nop/oracle are never classified -- so this mixed task, whose only
@@ -557,6 +732,41 @@ async def test_qa_classification_excludes_gate_skipped_and_cancelled(
     assert kimi_id not in live_ids
     assert baseline_id not in live_ids
     assert live_ids == set()
+
+
+@pytest.mark.asyncio
+async def test_qa_classification_excludes_historical_task_versions(cleanup_task_ids):
+    from oddish.queue import qa_eligible_trial_ids
+
+    task_id = f"qa-version-{_RUN}"
+    cleanup_task_ids.append(task_id)
+    async with get_session() as session:
+        task = await create_task(
+            session,
+            _mixed_submission("qa-version"),
+            task_id=task_id,
+        )
+        current_trial = next(t for t in task.trials if t.agent == _LLM_AGENT)
+        version_id = f"{task_id}-v2"
+        session.add(
+            TaskVersionModel(
+                id=version_id,
+                task_id=task_id,
+                version=2,
+                task_path=f"s3://test-bucket/{task_id}/v2",
+            )
+        )
+        await session.flush()
+        current_trial_id = current_trial.id
+        current_trial.task_version_id = version_id
+        task.current_version_id = version_id
+        await session.flush()
+
+    async with get_session() as session:
+        live_ids = set(
+            await qa_eligible_trial_ids(session, task_id, task_version_id=version_id)
+        )
+    assert live_ids == {current_trial_id}
 
 
 # ---------------------------------------------------------------------------
@@ -677,7 +887,9 @@ async def test_retry_opt_out_not_regated(monkeypatch, cleanup_task_ids):
         kimi_id = (
             await session.execute(
                 select(TrialModel.id).where(
-                    TrialModel.task_id == task_id, TrialModel.agent == _LLM_AGENT
+                    TrialModel.task_id == task_id,
+                    TrialModel.agent == _LLM_AGENT,
+                    TrialModel.kind == "agent",
                 )
             )
         ).scalar_one()

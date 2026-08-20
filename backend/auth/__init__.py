@@ -9,7 +9,12 @@ from sqlalchemy.exc import DBAPIError, TimeoutError as SATimeoutError
 
 from models import APIKeyScope, UserRole, hash_api_key
 from oddish.db import get_session
-from oddish.timing import add_server_timing_metric, elapsed_ms, now
+from oddish.timing import (
+    begin_auth_timing,
+    finish_auth_timing,
+    record_cache_result,
+    timed_phase,
+)
 
 from auth.permissions import (
     allowed_api_key_scopes,
@@ -67,7 +72,7 @@ async def get_auth_context(
 
     Raises HTTPException for invalid credentials.
     """
-    auth_started_at = now()
+    auth_timing = begin_auth_timing()
     try:
         auth_header = authorization or x_clerk_authorization or x_authorization
 
@@ -88,10 +93,13 @@ async def get_auth_context(
         # API Key authentication (starts with "ok_")
         if token.startswith("ok_"):
             # Cache key based on key hash (stable across requests)
-            cache_key = f"apikey:{hash_api_key(token)}"
+            with timed_phase("auth_verify", credential_kind="api_key"):
+                cache_key = f"apikey:{hash_api_key(token)}"
 
             # Check cache first
-            cached = get_cached_auth(cache_key)
+            with timed_phase("auth_cache", credential_kind="api_key"):
+                cached = get_cached_auth(cache_key)
+            record_cache_result(hit=cached is not None)
             if cached:
                 return AuthContext(
                     method=cached.method,
@@ -112,15 +120,8 @@ async def get_auth_context(
                 try:
                     cached_auth: CachedAuthData | None = None
                     auth_context: AuthContext | None = None
-                    db_started_at = now()
                     async with get_session() as session:
                         result = await verify_api_key(session, token)
-                    add_server_timing_metric(
-                        request,
-                        "auth_db",
-                        elapsed_ms(db_started_at),
-                        "API key auth DB",
-                    )
 
                     if result is None:
                         # Only show "ok_***" like standard SaaS apps (Stripe, etc.)
@@ -175,14 +176,8 @@ async def get_auth_context(
         # Clerk JWT authentication (JWT format - contains dots)
         if "." in token:
             # Verify the JWT first (uses cached JWKS, fast)
-            jwt_started_at = now()
-            claims = await verify_clerk_jwt(token)
-            add_server_timing_metric(
-                request,
-                "auth_jwt",
-                elapsed_ms(jwt_started_at),
-                "Clerk JWT verify",
-            )
+            with timed_phase("auth_verify", credential_kind="clerk_jwt"):
+                claims = await verify_clerk_jwt(token)
 
             clerk_user_id = claims.get("sub")
             clerk_org_id = claims.get("org_id")
@@ -200,7 +195,9 @@ async def get_auth_context(
             cache_key = f"clerk:{clerk_user_id}:{clerk_org_id or 'no-org'}"
 
             # Check cache first (after JWT validation to ensure token is valid)
-            cached = get_cached_auth(cache_key)
+            with timed_phase("auth_cache", credential_kind="clerk_jwt"):
+                cached = get_cached_auth(cache_key)
+            record_cache_result(hit=cached is not None)
             if cached:
                 return AuthContext(
                     method=cached.method,
@@ -218,17 +215,10 @@ async def get_auth_context(
                 try:
                     clerk_cached_auth: CachedAuthData | None = None
                     clerk_auth_context: AuthContext | None = None
-                    db_started_at = now()
                     async with get_session() as session:
                         result = await get_or_create_user_from_clerk(
                             session, clerk_user_id, clerk_org_id, email, org_role
                         )
-                    add_server_timing_metric(
-                        request,
-                        "auth_db",
-                        elapsed_ms(db_started_at),
-                        "Clerk auth DB",
-                    )
 
                     if result is None:
                         raise HTTPException(
@@ -284,12 +274,7 @@ async def get_auth_context(
             headers={"WWW-Authenticate": "Bearer"},
         )
     finally:
-        add_server_timing_metric(
-            request,
-            "auth_total",
-            elapsed_ms(auth_started_at),
-            "Auth dependency total",
-        )
+        finish_auth_timing(auth_timing)
 
 
 async def require_auth(

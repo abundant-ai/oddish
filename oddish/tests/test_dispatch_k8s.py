@@ -89,6 +89,27 @@ def test_spawn_creates_one_job_per_queue_key_with_durable_name() -> None:
     assert labels["oddish_managed"] == "true"
 
 
+def test_spawn_units_passes_exact_variant_and_ec2_lane() -> None:
+    dispatcher, api = _dispatcher()
+
+    async def _go():
+        return list(
+            await dispatcher.spawn_units(
+                spawn_units=[("zai/glm-5.2", "harbor-next", "ec2_trial")]
+            )
+        )
+
+    (handle,) = asyncio.run(_go())
+    container = api.created[0]["spec"]["template"]["spec"]["containers"][0]
+    env = {item["name"]: item["value"] for item in container["env"]}
+    assert env["ODDISH_WORKER_HARBOR_VARIANT_ID"] == "harbor-next"
+    assert env["ODDISH_WORKER_EXECUTION_LANE"] == "ec2_trial"
+    assert handle.metadata == {
+        "harbor_variant_id": "harbor-next",
+        "execution_lane": "ec2_trial",
+    }
+
+
 def test_spawn_sanitizes_queue_key_into_dns_safe_job_name() -> None:
     dispatcher, api = _dispatcher()
 

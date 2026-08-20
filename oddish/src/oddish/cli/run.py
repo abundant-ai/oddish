@@ -52,11 +52,12 @@ from oddish.preflight.runner import run_checks
 console = Console()
 
 # Environments the hosted (Modal-backed) API dispatches directly; any other
-# ``--env`` on that path is coerced to Modal. GKE joins Modal and Daytona so
-# TPU trials reach the GKE backend instead of being forced onto Modal.
+# ``--env`` on that path is coerced to Modal. EC2 and GKE join Modal and Daytona
+# so explicitly selected cloud backends reach the hosted API unchanged.
 _HOSTED_PASSTHROUGH_ENVIRONMENTS = {
     EnvironmentType.MODAL,
     EnvironmentType.DAYTONA,
+    EnvironmentType.EC2,
     EnvironmentType.GKE,
 }
 
@@ -323,7 +324,8 @@ def run(
             "--env",
             "-e",
             help=(
-                "Execution environment (docker, daytona, e2b, modal, runloop, gke). "
+                "Execution environment (docker, daytona, ec2, e2b, modal, runloop, "
+                "gke). "
                 "Defaults: daytona for CPU-only hosted tasks, modal for GPU hosted "
                 "tasks, docker otherwise."
             ),
@@ -414,13 +416,6 @@ def run(
             help="Suppress infrastructure startup logs",
         ),
     ] = False,
-    run_analysis: Annotated[
-        bool,
-        typer.Option(
-            "--run-analysis",
-            help="Run LLM analysis on each trial and compute task verdict",
-        ),
-    ] = False,
     run_probe: Annotated[
         bool,
         typer.Option(
@@ -498,8 +493,17 @@ def run(
             "--force-new-version",
             help=(
                 "Allocate a new task version even when the local content is "
-                "unchanged from the latest existing version. Useful when "
-                "appending trials with a different run_analysis setting."
+                "unchanged from the latest existing version."
+            ),
+        ),
+    ] = False,
+    overwrite_current_version: Annotated[
+        bool,
+        typer.Option(
+            "--overwrite-current-version",
+            help=(
+                "Replace the selected current version in place; pinned trials "
+                "will use the replacement content."
             ),
         ),
     ] = False,
@@ -702,6 +706,12 @@ def run(
     require_api_key(api_url)
     is_modal_api = is_modal_api_url(api_url)
 
+    if force_new_version and overwrite_current_version:
+        error_console.print(
+            "[red]--force-new-version and --overwrite-current-version cannot be used together.[/red]"
+        )
+        raise typer.Exit(1)
+
     import os as _os
 
     from oddish.registry_auth import parse_registry_login
@@ -772,9 +782,6 @@ def run(
             exclude_task_names = sweep_config["exclude_task_names"]
         if "n_tasks" in sweep_config and n_tasks is None:
             n_tasks = sweep_config["n_tasks"]
-        # Config can enable analysis
-        if "run_analysis" in sweep_config:
-            run_analysis = sweep_config["run_analysis"]
         # Config can enable auto-probe
         if "run_probe" in sweep_config:
             run_probe = sweep_config["run_probe"]
@@ -843,6 +850,11 @@ def run(
                 "[red]--task does not support task filtering flags.[/red]"
             )
             raise typer.Exit(1)
+        if overwrite_current_version:
+            error_console.print(
+                "[red]--overwrite-current-version requires a local task path to upload.[/red]"
+            )
+            raise typer.Exit(1)
         # --experiment is allowed with --task: tasks can belong to multiple
         # experiments (see `task_experiments` M2M in `oddish/db/models.py`),
         # and the server will file the new trials under the provided
@@ -885,8 +897,8 @@ def run(
         and environment not in _HOSTED_PASSTHROUGH_ENVIRONMENTS
     ):
         console.print(
-            "[yellow]Oddish Cloud supports --env modal, --env daytona, and "
-            "--env gke; forcing --env modal[/yellow]"
+            "[yellow]Oddish Cloud supports --env modal, --env daytona, --env ec2, "
+            "and --env gke; forcing --env modal[/yellow]"
         )
         environment = EnvironmentType.MODAL
 
@@ -922,7 +934,6 @@ def run(
             priority=priority,
             experiment_id=experiment_id,
             max_trial_attempts=max_trial_attempts,
-            run_analysis=run_analysis,
             run_probe=run_probe,
             gate_baselines=gate_baselines,
             github_username=github_user,
@@ -966,11 +977,8 @@ def run(
     # Phase 1: upload any local task directories (shared with
     # ``oddish upload``). ``oddish run`` deliberately uses
     # ``register=False`` so the subsequent sweep call owns TaskModel
-    # creation: this keeps ``--run-analysis`` working for fresh tasks
-    # (the server's append-mode guard rejects enabling run_analysis
-    # on an already-registered task that didn't opt in). ``oddish
-    # upload`` uses ``register=True`` because its whole purpose is
-    # making the task visible before any trials exist.
+    # creation; ``oddish upload`` uses ``register=True`` because its
+    # whole purpose is making the task visible before any trials exist.
     #
     # When ``--task`` is used the upload phase is skipped -- we
     # already have a task ID and only need to submit trials against
@@ -991,6 +999,7 @@ def run(
             json_output=json_output,
             progress_label="Uploading",
             force_new_version=force_new_version,
+            overwrite_current_version=overwrite_current_version,
             limiter=submit_limiter,
         )
         for task_path, result in zip(task_paths, upload_results):
@@ -1002,8 +1011,9 @@ def run(
                         f"[dim]Task '{task_path.name}' unchanged, reusing version {ver}[/dim]"
                     )
                 else:
+                    action = "overwrote" if overwrite_current_version else "created"
                     console.print(
-                        f"[dim]Task '{task_path.name}' updated, created version {ver}[/dim]"
+                        f"[dim]Task '{task_path.name}' updated, {action} version {ver}[/dim]"
                     )
             submit_targets.append(
                 (

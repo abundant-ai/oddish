@@ -1,8 +1,10 @@
+import json
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -11,10 +13,12 @@ import yaml
 REPO = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO / ".github/workflows/pr-preview.yml"
 RESET_WORKFLOW = REPO / ".github/workflows/preview-reset.yml"
+PRUNE_WORKFLOW = REPO / ".github/workflows/preview-prune.yml"
 PREVIEW = REPO / ".github/scripts/preview"
 PREPARE = PREVIEW / "prepare_preview_database.sh"
 COMPUTE_PLAN = PREVIEW / "compute_deployment_plan.sh"
 DEPLOY = PREVIEW / "deploy_preview_backend.sh"
+PRUNE = PREVIEW / "prune_stale_supabase_branches.sh"
 MODAL_APP = REPO / "backend/modal_app.py"
 
 URL_FRAGMENT = "abundant-ai-preview--oddish-pr-{0}-api.modal.run"
@@ -67,6 +71,11 @@ def test_backend_and_vercel_are_siblings():
     jobs = _wf()["jobs"]
     assert "update-vercel-preview" not in _needs(jobs["deploy-preview-backend"])
     assert "prepare-preview-database" in _needs(jobs["deploy-preview-backend"])
+
+
+def test_disposable_preview_backend_does_not_enable_ec2():
+    env = _wf()["jobs"]["deploy-preview-backend"]["env"]
+    assert not any(name.startswith("ODDISH_EC2_") for name in env)
 
 
 def test_post_links_waits_for_backend_and_vercel():
@@ -218,7 +227,9 @@ def test_stop_fold_skipped_on_migrations_only():
     assert order[0] == "supabase"
     assert "migrate" in order
     assert "seed" in order
-    assert "publish" not in order
+    # The supabase step rotates the branch DB password on every run, so the
+    # rotated value must reach the Modal secret even without a backend deploy.
+    assert order[-1] == "publish"
 
 
 @needs_bash
@@ -232,8 +243,11 @@ def test_created_branch_seeds_and_publishes_without_flags():
 
 @needs_bash
 def test_no_work_when_all_flags_false():
+    # Even a no-op prepare rotates the branch DB password in the supabase
+    # step, so the secret publish must still follow -- skipping it left the
+    # running backend with a dead connection string on frontend-only pushes.
     order = _run_prepare({"DEPLOY_BACKEND": "false", "RUN_MIGRATIONS": "false"})
-    assert order == ["supabase"]
+    assert order == ["supabase", "publish"]
 
 
 @needs_bash
@@ -437,3 +451,243 @@ def test_reset_reuses_preview_scripts():
     )
     assert prepare_step["env"]["DEPLOY_BACKEND"] == "true"
     assert prepare_step["env"]["RUN_MIGRATIONS"] == "true"
+
+
+def _prune_wf():
+    return yaml.safe_load(PRUNE_WORKFLOW.read_text())
+
+
+def test_prune_runs_on_a_schedule():
+    on = _on(_prune_wf())
+    assert on["schedule"], "prune must run unattended, not only on dispatch"
+    assert "workflow_dispatch" in on
+    assert on["workflow_dispatch"]["inputs"]["max_age_days"]["default"] == "7"
+
+
+def test_prune_workflow_invokes_the_script():
+    job = _prune_wf()["jobs"]["prune"]
+    steps = job["steps"]
+    assert any("prune_stale_supabase_branches.sh" in s.get("run", "") for s in steps)
+    for key in ("SUPABASE_ACCESS_TOKEN", "SUPABASE_PROJECT_REF", "MAX_AGE_DAYS"):
+        assert key in job["env"]
+    # Dispatch inputs reach the script through env, never interpolated into a
+    # run: body where they would be shell injection.
+    assert not any("${{" in s.get("run", "") for s in steps)
+
+
+def test_prune_script_is_executable():
+    # The workflow runs it by path, so a lost exec bit is a broken cron.
+    assert os.access(PRUNE, os.X_OK)
+
+
+def _branch(name, days_old, *, persistent=False, created_at=None):
+    if created_at is None:
+        stamp = datetime.now(timezone.utc) - timedelta(days=days_old)
+        created_at = stamp.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {
+        "id": f"id-{name}",
+        "name": name,
+        "persistent": persistent,
+        "created_at": created_at,
+    }
+
+
+def _run_prune(branches, *, env=None, fail_delete=""):
+    tmp = Path(tempfile.mkdtemp())
+    bins = tmp / "bin"
+    bins.mkdir()
+    listing = tmp / "branches.json"
+    listing.write_text(json.dumps(branches))
+    deleted = tmp / "deleted"
+    deleted.write_text("")
+    fake = bins / "supabase"
+    # `delete` drains stdin the way the real interactive CLI does, so a script
+    # that fed it the branch list would only ever delete the first branch.
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$2" in\n'
+        f'  list) cat "{listing}" ;;\n'
+        "  delete)\n"
+        "    cat >/dev/null\n"
+        f'    echo "$3" >> "{deleted}"\n'
+        f'    [ "$3" = "{fail_delete}" ] && exit 1\n'
+        "    ;;\n"
+        "esac\n"
+        "exit 0\n"
+    )
+    fake.chmod(0o755)
+    proc = subprocess.run(
+        ["bash", str(PRUNE)],
+        env={
+            **os.environ,
+            "PATH": f"{bins}:{os.environ['PATH']}",
+            "SUPABASE_ACCESS_TOKEN": "token",
+            "SUPABASE_PROJECT_REF": "ref",
+            **(env or {}),
+        },
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+    )
+    return proc, deleted.read_text().split()
+
+
+@needs_bash
+def test_prune_deletes_only_stale_pr_branches():
+    proc, deleted = _run_prune(
+        [
+            _branch("pr-1", 10),
+            _branch("pr-2", 2),
+            _branch("pr-3", 30, persistent=True),
+            _branch("main", 99, persistent=True),
+            _branch("staging-preview", 99),
+        ]
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert deleted == ["id-pr-1"]
+
+
+@needs_bash
+def test_prune_honours_max_age_days():
+    proc, deleted = _run_prune(
+        [_branch("pr-1", 10), _branch("pr-2", 2)],
+        env={"MAX_AGE_DAYS": "1"},
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert sorted(deleted) == ["id-pr-1", "id-pr-2"]
+
+
+@needs_bash
+def test_prune_dry_run_deletes_nothing():
+    proc, deleted = _run_prune([_branch("pr-1", 10)], env={"DRY_RUN": "true"})
+    assert proc.returncode == 0, proc.stderr
+    assert deleted == []
+    assert "would delete pr-1" in proc.stdout
+
+
+@needs_bash
+def test_prune_deletes_every_stale_branch():
+    # Regression: the delete CLI must not consume the loop's branch list.
+    proc, deleted = _run_prune([_branch(f"pr-{n}", 10) for n in (1, 2, 3)])
+    assert proc.returncode == 0, proc.stderr
+    assert sorted(deleted) == ["id-pr-1", "id-pr-2", "id-pr-3"]
+
+
+@needs_bash
+def test_prune_accepts_fractional_second_timestamps():
+    stamp = datetime.now(timezone.utc) - timedelta(days=10)
+    proc, deleted = _run_prune(
+        [_branch("pr-1", 0, created_at=stamp.strftime("%Y-%m-%dT%H:%M:%S.123456Z"))]
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert deleted == ["id-pr-1"]
+
+
+@needs_bash
+def test_prune_accepts_fractional_second_timestamps_with_utc_offset():
+    stamp = datetime.now(timezone.utc) - timedelta(days=10)
+    created_at = stamp.strftime("%Y-%m-%dT%H:%M:%S.297635+00:00")
+    proc, deleted = _run_prune([_branch("pr-1", 0, created_at=created_at)])
+    assert proc.returncode == 0, proc.stderr
+    assert deleted == ["id-pr-1"]
+
+
+@needs_bash
+def test_prune_fails_closed_on_unreadable_timestamp():
+    proc, deleted = _run_prune(
+        [_branch("pr-1", 10), _branch("pr-2", 0, created_at="whenever")]
+    )
+    assert proc.returncode != 0
+    assert deleted == []
+
+
+@needs_bash
+def test_prune_reports_a_failed_delete_and_keeps_going():
+    proc, deleted = _run_prune(
+        [_branch("pr-1", 10), _branch("pr-2", 10)], fail_delete="id-pr-1"
+    )
+    assert proc.returncode == 1
+    assert sorted(deleted) == ["id-pr-1", "id-pr-2"]
+
+
+@needs_bash
+def test_prune_rejects_a_non_numeric_age():
+    proc, deleted = _run_prune([_branch("pr-1", 10)], env={"MAX_AGE_DAYS": "7 days"})
+    assert proc.returncode == 1
+    assert deleted == []
+
+
+@needs_bash
+def test_prune_is_quiet_when_nothing_is_stale():
+    proc, deleted = _run_prune([_branch("pr-1", 2)])
+    assert proc.returncode == 0, proc.stderr
+    assert deleted == []
+
+
+WAIT_BRANCH = PREVIEW / "wait_for_supabase_branch.sh"
+
+
+def _is_failed_status(value: str) -> str:
+    """Run the script's own is_failed_status() against a value."""
+    script = WAIT_BRANCH.read_text()
+    body = script.split("is_failed_status() {", 1)[1].split("\n}", 1)[0]
+    probe = (
+        f"is_failed_status() {{{body}\n}}\n"
+        f'if is_failed_status "{value}"; then echo FAILED; else echo OK; fi'
+    )
+    return subprocess.run(
+        ["bash", "-c", probe],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+
+
+class TestBranchIsReusedAcrossPushes:
+    """A preview branch must survive a second push.
+
+    `supabase/migrations/` is empty on purpose (supabase/config.toml) so
+    Supabase's migration runner is a no-op and Alembic owns the schema. The
+    runner therefore reports MIGRATIONS_FAILED without that meaning anything,
+    and the branch DB password is rotated on every run, which is enough by
+    itself to stop the runner reporting success.
+
+    Treating that as terminal deleted and recreated the branch on every second
+    push: no preview kept its data, every push paid a full reseed, and an API
+    key made from the preview dashboard died on the next push.
+    """
+
+    def test_migrations_failed_is_not_terminal(self):
+        assert _is_failed_status("MIGRATIONS_FAILED") == "OK", (
+            "MIGRATIONS_FAILED must not tear the branch down: the migration "
+            "runner is a deliberate no-op, so its verdict says nothing about "
+            "whether the branch works."
+        )
+
+    def test_genuinely_broken_states_are_still_terminal(self):
+        assert _is_failed_status("FUNCTIONS_FAILED") == "FAILED"
+
+    def test_migrations_failed_still_counts_as_ready(self):
+        """Otherwise the branch never satisfies readiness, times out, and is
+        recreated anyway -- the same churn by a slower route."""
+        script = WAIT_BRANCH.read_text()
+        ready_block = script.split('case "$status" in', 1)[1].split("esac", 1)[0]
+        assert "MIGRATIONS_FAILED" in ready_block
+        assert "ACTIVE_HEALTHY" in ready_block
+
+    def test_the_real_health_gate_is_still_present(self):
+        """Reusing a branch is only safe because a real connection is proven."""
+        script = WAIT_BRANCH.read_text()
+        assert "smoke-testing connection to branch DB" in script
+        assert "select 1" in script
+
+    def test_supabase_migrations_dir_is_still_empty(self):
+        """The premise of this whole change. If someone adds a migration here,
+        Supabase's runner stops being a no-op and MIGRATIONS_FAILED starts
+        carrying real meaning again."""
+        migrations = REPO / "supabase/migrations"
+        files = [p for p in migrations.iterdir() if p.name != ".gitkeep"]
+        assert files == [], (
+            f"supabase/migrations/ is no longer empty ({files}); revisit "
+            "whether MIGRATIONS_FAILED should be terminal again."
+        )

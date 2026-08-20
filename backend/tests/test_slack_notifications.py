@@ -1583,7 +1583,7 @@ def _mock_slack_http(monkeypatch: pytest.MonkeyPatch, handler) -> None:
         kwargs["transport"] = httpx.MockTransport(handler)
         return real_client(**kwargs)
 
-    monkeypatch.setattr(notifications.httpx, "AsyncClient", _factory)
+    monkeypatch.setattr(notifications, "RequestTimedAsyncClient", _factory)
 
 
 @pytest.mark.asyncio

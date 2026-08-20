@@ -20,6 +20,21 @@ from oddish.schemas import RegistryAuth
 from oddish.workers.harbor.outcome import HarborOutcome
 
 
+@pytest.fixture(autouse=True)
+def _stub_browse_summary_refresh(monkeypatch):
+    """These tests drive retry_trial_core against hand-rolled fake sessions
+    that assert exact statement/flush sequences; the task-browser summary
+    refresh (advisory lock + aggregate + upsert, with its own flush) has
+    dedicated real-database coverage and is stubbed out here."""
+
+    async def _noop(session, task_version_ids):
+        return None
+
+    monkeypatch.setattr(
+        trials_endpoint_mod, "refresh_task_browse_summaries", _noop
+    )
+
+
 class _Result:
     def __init__(self, scalar=None, rowcount=0, rows=()):
         self._scalar = scalar
@@ -41,6 +56,7 @@ class _RecordingTrial:
         self._events = events
         self._superseded_by_trial_id = None
         self.id = "task-1-0"
+        self.kind = "agent"
         self.name = "task-1-0"
         self.task_id = "task-1"
         self.task_version_id = "task-1-v1"
@@ -174,6 +190,7 @@ async def test_retry_trial_flushes_new_trial_before_setting_superseded_fk(
         max_attempts,
         parent_job_id=None,
         harbor_variant_id="default",
+        execution_lane="default",
         registry_auth_enc=None,
     ):
         events.append(("enqueue", trial_id, queue_key, org_id, max_attempts))
@@ -312,6 +329,126 @@ async def test_retry_carries_registry_auth_to_new_trial(monkeypatch):
     await endpoints.retry_trial_core(session, trial_id=trial.id, org_id="org-1")
 
     assert captured["registry_auth_enc"] == "ENC"
+
+
+@pytest.mark.asyncio
+async def test_retry_keeps_a_terminal_verdict_until_qa_replaces_it(monkeypatch):
+    from oddish.db import VerdictStatus
+
+    events = []
+    trial = _RecordingTrial(events, status=TrialStatus.SUCCESS)
+    task = SimpleNamespace(
+        id="task-1",
+        name="task-1",
+        status=TaskStatus.COMPLETED,
+        finished_at=object(),
+        verdict={"verdict": "accept", "is_good": True},
+        verdict_status=VerdictStatus.SUCCESS,
+        verdict_error=None,
+        verdict_started_at=object(),
+    )
+    session = _RecordingSession(trial=trial, task=task, events=events)
+
+    async def fake_reserve_next_trial_index(_session, *, task_id):
+        return 1
+
+    async def fake_enqueue_trial_worker_job(_session, **_):
+        return None
+
+    monkeypatch.setattr(
+        queue_mod, "reserve_next_trial_index", fake_reserve_next_trial_index
+    )
+    monkeypatch.setattr(
+        queue_mod, "enqueue_trial_worker_job", fake_enqueue_trial_worker_job
+    )
+
+    await endpoints.retry_trial_core(session, trial_id=trial.id, org_id="org-1")
+
+    assert task.status == TaskStatus.RUNNING
+    assert task.verdict == {"verdict": "accept", "is_good": True}
+    assert task.verdict_status == VerdictStatus.SUCCESS
+
+
+@pytest.mark.asyncio
+async def test_retry_clears_an_inflight_verdict_whose_job_it_cancels(monkeypatch):
+    from oddish.db import VerdictStatus
+
+    events = []
+    trial = _RecordingTrial(events, status=TrialStatus.SUCCESS)
+    task = SimpleNamespace(
+        id="task-1",
+        name="task-1",
+        status=TaskStatus.VERDICT_PENDING,
+        finished_at=object(),
+        verdict=None,
+        verdict_status=VerdictStatus.RUNNING,
+        verdict_error=None,
+        verdict_started_at=object(),
+    )
+    session = _RecordingSession(trial=trial, task=task, events=events)
+
+    async def fake_reserve_next_trial_index(_session, *, task_id):
+        return 1
+
+    async def fake_enqueue_trial_worker_job(_session, **_):
+        return None
+
+    monkeypatch.setattr(
+        queue_mod, "reserve_next_trial_index", fake_reserve_next_trial_index
+    )
+    monkeypatch.setattr(
+        queue_mod, "enqueue_trial_worker_job", fake_enqueue_trial_worker_job
+    )
+
+    await endpoints.retry_trial_core(session, trial_id=trial.id, org_id="org-1")
+
+    assert task.verdict_status is None
+    assert task.verdict_started_at is None
+
+
+@pytest.mark.asyncio
+async def test_retry_restores_published_verdict_from_cancelled_replacement(
+    monkeypatch,
+):
+    from oddish.db import VerdictStatus
+
+    events = []
+    trial = _RecordingTrial(events, status=TrialStatus.SUCCESS)
+    published_at = object()
+    payload = {"verdict": "accept", "is_good": True}
+    task = SimpleNamespace(
+        id="task-1",
+        name="task-1",
+        status=TaskStatus.VERDICT_PENDING,
+        finished_at=object(),
+        verdict=payload,
+        verdict_status=VerdictStatus.RUNNING,
+        verdict_error=None,
+        verdict_started_at=object(),
+        verdict_finished_at=published_at,
+    )
+    session = _RecordingSession(trial=trial, task=task, events=events)
+
+    async def fake_reserve_next_trial_index(_session, *, task_id):
+        return 1
+
+    async def fake_enqueue_trial_worker_job(_session, **_):
+        return None
+
+    monkeypatch.setattr(
+        queue_mod, "reserve_next_trial_index", fake_reserve_next_trial_index
+    )
+    monkeypatch.setattr(
+        queue_mod, "enqueue_trial_worker_job", fake_enqueue_trial_worker_job
+    )
+
+    await endpoints.retry_trial_core(session, trial_id=trial.id, org_id="org-1")
+
+    assert task.status == TaskStatus.RUNNING
+    assert task.verdict is payload
+    assert task.verdict_status == VerdictStatus.SUCCESS
+    assert task.verdict_started_at is None
+    assert task.verdict_finished_at is published_at
 
 
 @pytest.mark.asyncio

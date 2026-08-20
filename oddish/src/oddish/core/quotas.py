@@ -16,7 +16,12 @@ from oddish.core.cost_basis import (
     settled_cost_from_row,
     sum_settled_cost,
 )
-from oddish.db import AnalysisCostModel, ModalCostSpanModel, TrialModel, TrialStatus
+from oddish.db import (
+    ModalCostSpanModel,
+    TrialModel,
+    TrialStatus,
+    analysis_spend_view,
+)
 from oddish.db.pg_errors import is_missing_table
 
 logger = logging.getLogger(__name__)
@@ -58,40 +63,15 @@ def _quota_user_lock_key(org_id: str, billed_user_id: str) -> str:
     return f"quota:user:{org_id}:{billed_user_id}"
 
 
-async def acquire_quota_locks(
-    session: AsyncSession,
-    org_id: str,
-    billed_user_id: str | None,
-) -> None:
-    """Block until the org (and optional user) quota advisory locks are held.
-
-    Used by admission / sweep so two concurrent submits cannot both observe
-    headroom and oversubscribe. Prefer :func:`try_acquire_quota_locks` on the
-    high-frequency enforcement path so workers that lose the race exit instead
-    of queueing behind a long cancellation transaction.
-    """
-    await session.execute(
-        text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
-        {"key": _quota_org_lock_key(org_id)},
-    )
-    if billed_user_id is not None:
-        await session.execute(
-            text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
-            {"key": _quota_user_lock_key(org_id, billed_user_id)},
-        )
-
-
 async def try_acquire_quota_locks(
     session: AsyncSession,
     org_id: str,
     billed_user_id: str | None,
 ) -> bool:
-    """Non-blocking sibling of :func:`acquire_quota_locks`.
+    """Take the org (and optional user) quota advisory locks without waiting.
 
-    Returns ``False`` when another transaction already holds the org or user
-    quota lock. Callers should treat that as "someone else is checking /
-    cancelling" and skip rather than wait — under an over-quota storm, blocking
-    here serializes every worker behind one org-wide lock and starves sweeps.
+    Only the enforcement sweep uses these. ``False`` means another sweep
+    holds them; skip instead of waiting.
     """
     org_locked = await session.scalar(
         text("SELECT pg_try_advisory_xact_lock(hashtext(:key))"),
@@ -120,7 +100,12 @@ def _settled_cost_predicates(
         if inclusive_start
         else TrialModel.finished_at > period_start
     )
-    return [TrialModel.org_id == org_id, boundary, first_party_spend_filter()]
+    return [
+        TrialModel.org_id == org_id,
+        TrialModel.kind == "agent",
+        boundary,
+        first_party_spend_filter(),
+    ]
 
 
 async def _sum_settled_cost_usd(session: AsyncSession, predicates: list) -> Decimal:
@@ -152,11 +137,16 @@ async def _sum_analysis_and_compute_cost_usd(
     filter_user: bool = False,
     inclusive_start: bool = False,
 ) -> Decimal:
+    # Reads the analysis_spend view (frozen ledger + QA/audit trial spend),
+    # so new analysis runs keep counting toward caps after the cutover. New
+    # trial rows carry billed_user_id NULL: analysis spend is org-level, not
+    # any individual's.
     analysis_predicates = [
-        AnalysisCostModel.org_id == org_id,
-        AnalysisCostModel.deleted_at.is_(None),
+        analysis_spend_view.c.org_id == org_id,
         _timestamp_in_period(
-            AnalysisCostModel.created_at, period_start, inclusive_start=inclusive_start
+            analysis_spend_view.c.occurred_at,
+            period_start,
+            inclusive_start=inclusive_start,
         ),
     ]
     compute_predicates = [
@@ -171,10 +161,12 @@ async def _sum_analysis_and_compute_cost_usd(
         ),
     ]
     if filter_user:
-        analysis_predicates.append(AnalysisCostModel.billed_user_id == billed_user_id)
+        analysis_predicates.append(
+            analysis_spend_view.c.billed_user_id == billed_user_id
+        )
         compute_predicates.append(ModalCostSpanModel.billed_user_id == billed_user_id)
     analysis = await session.scalar(
-        select(func.coalesce(func.sum(AnalysisCostModel.cost_usd), 0)).where(
+        select(func.coalesce(func.sum(analysis_spend_view.c.cost_usd), 0)).where(
             *analysis_predicates
         )
     )
@@ -196,20 +188,19 @@ async def _analysis_and_compute_cost_by_user(
     totals: dict[str, float] = {}
     analysis_rows = await session.execute(
         select(
-            AnalysisCostModel.billed_user_id,
-            func.coalesce(func.sum(AnalysisCostModel.cost_usd), 0.0),
+            analysis_spend_view.c.billed_user_id,
+            func.coalesce(func.sum(analysis_spend_view.c.cost_usd), 0.0),
         )
         .where(
-            AnalysisCostModel.org_id == org_id,
-            AnalysisCostModel.billed_user_id.is_not(None),
-            AnalysisCostModel.deleted_at.is_(None),
+            analysis_spend_view.c.org_id == org_id,
+            analysis_spend_view.c.billed_user_id.is_not(None),
             _timestamp_in_period(
-                AnalysisCostModel.created_at,
+                analysis_spend_view.c.occurred_at,
                 period_start,
                 inclusive_start=inclusive_start,
             ),
         )
-        .group_by(AnalysisCostModel.billed_user_id)
+        .group_by(analysis_spend_view.c.billed_user_id)
     )
     for user_id, cost_usd in analysis_rows.all():
         totals[user_id] = totals.get(user_id, 0.0) + float(cost_usd or 0)
@@ -246,20 +237,21 @@ async def _analysis_and_compute_cost_by_org_user(
     totals: dict[tuple[str | None, str], float] = {}
     analysis_rows = await session.execute(
         select(
-            AnalysisCostModel.org_id,
-            AnalysisCostModel.billed_user_id,
-            func.coalesce(func.sum(AnalysisCostModel.cost_usd), 0.0),
+            analysis_spend_view.c.org_id,
+            analysis_spend_view.c.billed_user_id,
+            func.coalesce(func.sum(analysis_spend_view.c.cost_usd), 0.0),
         )
         .where(
-            AnalysisCostModel.billed_user_id.is_not(None),
-            AnalysisCostModel.deleted_at.is_(None),
+            analysis_spend_view.c.billed_user_id.is_not(None),
             _timestamp_in_period(
-                AnalysisCostModel.created_at,
+                analysis_spend_view.c.occurred_at,
                 period_start,
                 inclusive_start=inclusive_start,
             ),
         )
-        .group_by(AnalysisCostModel.org_id, AnalysisCostModel.billed_user_id)
+        .group_by(
+            analysis_spend_view.c.org_id, analysis_spend_view.c.billed_user_id
+        )
     )
     for org_id, user_id, cost_usd in analysis_rows.all():
         key = (org_id, user_id)
@@ -468,6 +460,7 @@ def _inflight_predicates(org_id: str | None, billed_user_id: str) -> list:
     return [
         TrialModel.org_id == org_id,
         TrialModel.billed_user_id == billed_user_id,
+        TrialModel.kind == "agent",
         TrialModel.finished_at.is_(None),
         TrialModel.deleted_at.is_(None),
         TrialModel.superseded_by_trial_id.is_(None),
@@ -479,6 +472,7 @@ def _inflight_predicates(org_id: str | None, billed_user_id: str) -> list:
 def _org_inflight_predicates(org_id: str | None) -> list:
     return [
         TrialModel.org_id == org_id,
+        TrialModel.kind == "agent",
         TrialModel.finished_at.is_(None),
         TrialModel.deleted_at.is_(None),
         TrialModel.superseded_by_trial_id.is_(None),
