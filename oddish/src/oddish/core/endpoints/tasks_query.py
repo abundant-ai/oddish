@@ -77,6 +77,7 @@ from oddish.schemas import (
     UserTagRef,
 )
 from oddish.core.cost_basis import not_combine_copy_filter
+from oddish.core.cost_exclusions import load_cost_exclusions
 from oddish.core.task_browse_metrics import (
     browse_trial_scope,
     resolve_browse_cost_breakdown,
@@ -386,6 +387,7 @@ async def list_tasks_core(
                 elapsed_ms(queue_info_started_at),
                 "Trial queue info",
             )
+        exclusions = await load_cost_exclusions(session)
         if compact_trials:
             # The analysis summary fields (classification / subtype /
             # evidence) are now loaded inline on the trials selectinload
@@ -404,6 +406,7 @@ async def list_tasks_core(
                     jobs_by_subject=jobs_by_subject,
                     experiment_context_id=experiment_id,
                     gathered_trial_ids=gathered_trial_ids,
+                    exclusions=exclusions,
                 )
                 for task in tasks
             ]
@@ -423,6 +426,7 @@ async def list_tasks_core(
                 jobs_by_subject=jobs_by_subject,
                 experiment_context_id=experiment_id,
                 gathered_trial_ids=gathered_trial_ids,
+                exclusions=exclusions,
             )
             for task in tasks
         ]
@@ -623,6 +627,7 @@ async def list_experiment_slim_tasks(
     qa_costs_by_trial_id = await get_trial_qa_costs(
         session, trial_ids=page_trial_ids, org_id=org_id
     )
+    exclusions = await load_cost_exclusions(session)
 
     build_started_at = now()
     response = [
@@ -632,6 +637,7 @@ async def list_experiment_slim_tasks(
             experiment_context_id=experiment_id,
             gathered_trial_ids=gathered_trial_ids,
             qa_costs_by_trial_id=qa_costs_by_trial_id,
+            exclusions=exclusions,
         )
         for task in tasks
     ]
@@ -2530,6 +2536,7 @@ async def get_task_status_core(
             include_empty_rewards=include_empty_rewards,
             queue_info_by_trial_id=queue_info_by_trial_id,
             jobs_by_subject=jobs_by_subject,
+            exclusions=await load_cost_exclusions(session),
         )
 
     jobs_by_subject = await fetch_visible_worker_jobs(session, task_ids=[task.id])

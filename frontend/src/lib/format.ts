@@ -32,6 +32,7 @@ export function formatFileSize(bytes: number): string {
 
 export interface TaskTrialCost {
   costUsd: number;
+  excludedCostUsd: number;
   qaCostUsd: number;
   pricedCount: number;
   hasEstimated: boolean;
@@ -46,6 +47,7 @@ export function sumTaskTrialCost(
   trials: Trial[] | null | undefined,
 ): TaskTrialCost {
   let costUsd = 0;
+  let excludedCostUsd = 0;
   let qaCostUsd = 0;
   let pricedCount = 0;
   let hasEstimated = false;
@@ -59,11 +61,19 @@ export function sumTaskTrialCost(
     if (trial.qa_cost_usd != null) qaCostUsd += trial.qa_cost_usd;
     if (trial.cost_usd == null) continue;
     costUsd += trial.cost_usd;
+    if (trial.cost_exclusion_reason) excludedCostUsd += trial.cost_usd;
     pricedCount += 1;
     if (trial.cost_is_estimated) hasEstimated = true;
     else hasNative = true;
   }
-  return { costUsd, qaCostUsd, pricedCount, hasEstimated, hasNative };
+  return {
+    costUsd,
+    excludedCostUsd,
+    qaCostUsd,
+    pricedCount,
+    hasEstimated,
+    hasNative,
+  };
 }
 
 // Estimate markers matching the experiment header (#599): "~" prefix when every
