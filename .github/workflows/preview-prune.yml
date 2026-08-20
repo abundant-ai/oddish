@@ -4,6 +4,13 @@ name: Preview Prune
 # ceiling never blocks a new PR's "Prepare preview database" job. Runs on its
 # own schedule rather than at the point of failure, so a PR that hits the
 # ceiling is a bug in this sweep, not something to recover from inline.
+#
+# Then stops preview Modal apps whose PR is closed or whose Supabase branch
+# no longer exists (including the branches deleted moments earlier by this
+# very run). Without this second pass an app outlives its database and
+# redials the deleted Supabase tenant from every scheduled function forever.
+# Order matters: apps are swept AFTER branches so a branch pruned by this run
+# takes its app down in the same run, not a day later.
 
 on:
   schedule:
@@ -14,7 +21,7 @@ on:
         description: "Delete preview branches created more than this many days ago"
         default: "7"
       dry_run:
-        description: "Log what would be deleted without deleting it"
+        description: "Log what would be deleted/stopped without doing it"
         type: boolean
         default: false
 
@@ -30,6 +37,8 @@ jobs:
     permissions:
       contents: read
       packages: read
+      # The app sweep asks the REST API whether each app's PR is still open.
+      pull-requests: read
     container:
       image: ghcr.io/abundant-ai/oddish-ci-base:latest
       credentials:
@@ -38,6 +47,10 @@ jobs:
     env:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      MODAL_ENVIRONMENT: preview
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       MAX_AGE_DAYS: ${{ inputs.max_age_days || '7' }}
       DRY_RUN: ${{ inputs.dry_run || false }}
     steps:
@@ -46,3 +59,6 @@ jobs:
 
       - name: Prune stale Supabase preview branches
         run: "$GITHUB_WORKSPACE/.github/scripts/preview/prune_stale_supabase_branches.sh"
+
+      - name: Stop preview Modal apps whose PR closed or whose database is gone
+        run: "$GITHUB_WORKSPACE/.github/scripts/preview/prune_stale_preview_apps.sh"
