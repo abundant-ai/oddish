@@ -1,7 +1,7 @@
 """add durable trajectory-summary refresh pointer
 
 Revision ID: trajsum_002
-Revises: tvm_metrics_001
+Revises: costexcl02
 Create Date: 2026-08-20 00:00:00.000000
 
 ``trials.trajectory_summary_refresh_trial_id`` identifies the summarize trial
@@ -19,7 +19,7 @@ from alembic import op
 from oddish.db.migration_locks import run_with_lock_retry
 
 revision: str = "trajsum_002"
-down_revision: Union[str, Sequence[str], None] = "tvm_metrics_001"
+down_revision: Union[str, Sequence[str], None] = "costexcl02"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
