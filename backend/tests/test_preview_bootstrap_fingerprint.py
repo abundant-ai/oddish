@@ -323,9 +323,8 @@ def _rebuild_mod(monkeypatch, version_sequence):
 
     async def _capture(url):
         calls.append("capture_keys")
-        return {}
 
-    async def _restore_rows(url, captured):
+    async def _restore_rows(url):
         calls.append("restore_keys")
 
     monkeypatch.setattr(mod, "_fetch_prod_alembic_versions", _fetch)

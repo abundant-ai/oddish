@@ -439,6 +439,10 @@ def _prepare_row(table, row: dict) -> dict:
 
 async def seed(engine: AsyncEngine, *, sampled: dict | None = None) -> None:
     sample_rows = (sampled or {}).get("rows", {})
+    # Re-checked here, not only in sample_prod_subset: seed() takes an
+    # arbitrary dict, so a caller that builds `sampled` some other way would
+    # otherwise load a credential table without ever passing the sampler.
+    _assert_no_forbidden_tables(sample_rows)
     md = MetaData()
     async with engine.begin() as conn:
         await conn.run_sync(md.reflect)

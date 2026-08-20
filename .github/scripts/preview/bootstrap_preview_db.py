@@ -187,35 +187,63 @@ def _assert_preview_branch(url: str) -> None:
         )
 
 
-# Rows that belong to THIS preview branch and must survive its rebuild.
+# Rows that belong to THIS preview branch and must survive its rebuild, in
+# restore order: an API key is rejected by auth when its organization is
+# missing, so the organization has to land first.
 #
 # API keys are minted against one preview, hashed, and are meaningless
 # anywhere else. They are deliberately NOT part of the prod sample (see
-# preview_seed._RECONCILED_TABLES) and must never be, or one environment's
+# preview_seed._NEVER_SAMPLED_TABLES) and must never be, or one environment's
 # credentials would appear in another. Preserving them here is the opposite
-# operation: the rows never leave the branch, they are only carried across
-# that branch's own DROP SCHEMA.
+# operation: the rows never leave the branch.
 #
 # Without this, every rebuild silently invalidates the key a developer just
 # created from the preview dashboard -- and a rebuild is not rare: any
 # cancelled run leaves the branch untrusted, so the next push rebuilds it.
-_PRESERVED_TABLES = ("api_keys",)
+_PRESERVED_TABLES = ("organizations", "api_keys")
+
+# The stash lives OUTSIDE public, because the rebuild runs
+# ``DROP SCHEMA IF EXISTS public CASCADE`` and nothing else. Holding the rows
+# in the database rather than in this process is the whole point: the workflow
+# uses cancel-in-progress, so a second push can kill the run between the drop
+# and the restore. In-memory rows would die with it and the next run would
+# capture an already-empty table -- losing the keys permanently, in exactly the
+# scenario this change exists to fix.
+#
+# Rows are stored as jsonb keyed by (table_name, row_id) so the stash survives
+# schema drift: a migration that adds, drops or renames a column cannot break
+# a payload that is read back column by column.
+_PRESERVE_SCHEMA = "preview_preserved"
+_PRESERVE_TABLE = f"{_PRESERVE_SCHEMA}.rows"
 
 
-async def _capture_preserved_rows(url: str) -> dict[str, list[dict]]:
-    """Read this branch's preserved rows before the schema is dropped.
+async def _capture_preserved_rows(url: str) -> None:
+    """Copy this branch's credential rows into the stash before the drop.
 
-    Best effort: a fresh branch has no such table, and a read failure must
-    never block the rebuild. Either way the caller proceeds with nothing to
-    restore.
+    Idempotent and additive: re-capturing refreshes a row that is still in
+    public and leaves a row that a previous rebuild already stashed. That is
+    what makes a cancelled run recoverable.
+
+    Best effort -- a fresh branch has no such tables, and a read failure must
+    never block the rebuild.
     """
-    captured: dict[str, list[dict]] = {}
     engine = None
     try:
         # Inside the guard: a malformed URL or a missing driver must degrade to
-        # "nothing to preserve", never abort the rebuild.
+        # "nothing preserved", never abort the rebuild.
         engine = _engine(url)
         async with engine.begin() as conn:
+            await conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {_PRESERVE_SCHEMA}"))
+            await conn.execute(
+                text(
+                    f"CREATE TABLE IF NOT EXISTS {_PRESERVE_TABLE} ("
+                    " table_name text NOT NULL,"
+                    " row_id text NOT NULL,"
+                    " payload jsonb NOT NULL,"
+                    " captured_at timestamptz NOT NULL DEFAULT now(),"
+                    " PRIMARY KEY (table_name, row_id))"
+                )
+            )
             for table in _PRESERVED_TABLES:
                 present = await conn.scalar(
                     text("SELECT to_regclass(:qualified) IS NOT NULL"),
@@ -223,71 +251,89 @@ async def _capture_preserved_rows(url: str) -> dict[str, list[dict]]:
                 )
                 if not present:
                     continue
-                result = await conn.execute(text(f"SELECT * FROM public.{table}"))
-                captured[table] = [dict(row) for row in result.mappings()]
+                stashed = await conn.scalar(
+                    text(
+                        f"WITH copied AS ("
+                        f"  INSERT INTO {_PRESERVE_TABLE}"
+                        f"    (table_name, row_id, payload)"
+                        f"  SELECT :t, source.id::text, to_jsonb(source)"
+                        f"  FROM public.{table} AS source"
+                        f"  ON CONFLICT (table_name, row_id) DO UPDATE"
+                        f"    SET payload = EXCLUDED.payload,"
+                        f"        captured_at = now()"
+                        f"  RETURNING 1)"
+                        f" SELECT count(*) FROM copied"
+                    ),
+                    {"t": table},
+                )
+                if stashed:
+                    print(
+                        f"bootstrap_preview_db: stashed {stashed} {table} row(s)",
+                        file=sys.stderr,
+                    )
     except Exception as exc:  # noqa: BLE001 - never block the rebuild
         print(
-            f"bootstrap_preview_db: could not capture preserved rows ({exc}); "
+            f"bootstrap_preview_db: could not stash preserved rows ({exc}); "
             "the rebuild continues and existing preview API keys will be lost",
             file=sys.stderr,
         )
-        return {}
     finally:
         if engine is not None:
             await engine.dispose()
-    return captured
 
 
-async def _restore_preserved_rows(url: str, captured: dict[str, list[dict]]) -> None:
-    """Put the preserved rows back after the schema is rebuilt.
+async def _restore_preserved_rows(url: str) -> None:
+    """Put the stashed rows back after the schema is rebuilt.
 
-    Runs after ``upgrade head`` so the table has its final shape. Only columns
-    that still exist are written, so a migration that drops or renames one
-    cannot fail the restore. Conflicts are ignored: a row the seed already
-    recreated wins.
+    Runs after ``upgrade head`` so each table has its final shape.
+    ``jsonb_populate_record`` maps the stashed payload onto the CURRENT row
+    type: it coerces each value to that column's real type (a plain ``->>``
+    would hand Postgres text, which has no assignment cast to boolean or
+    timestamptz), ignores keys whose column a migration removed, and leaves a
+    column a migration added as NULL. Conflicts do nothing: a row the seed
+    already recreated wins.
+
+    The stash is deliberately NOT cleared. It costs a few rows and it means a
+    run cancelled before this point can still be recovered by the next one.
     """
-    if not captured:
-        return
     engine = None
     try:
         engine = _engine(url)
         async with engine.begin() as conn:
-            for table, rows in captured.items():
-                if not rows:
+            present = await conn.scalar(
+                text("SELECT to_regclass(:qualified) IS NOT NULL"),
+                {"qualified": _PRESERVE_TABLE},
+            )
+            if not present:
+                return
+            for table in _PRESERVED_TABLES:
+                if not await conn.scalar(
+                    text("SELECT to_regclass(:qualified) IS NOT NULL"),
+                    {"qualified": f"public.{table}"},
+                ):
                     continue
-                live = {
-                    row[0]
-                    for row in await conn.execute(
-                        text(
-                            "SELECT column_name FROM information_schema.columns"
-                            " WHERE table_schema = 'public' AND table_name = :t"
-                        ),
-                        {"t": table},
-                    )
-                }
-                usable = [column for column in rows[0] if column in live]
-                if not usable:
+                restored = await conn.scalar(
+                    text(
+                        f"WITH stashed AS ("
+                        f"  SELECT payload FROM {_PRESERVE_TABLE}"
+                        f"  WHERE table_name = :t),"
+                        f" inserted AS ("
+                        f'  INSERT INTO public."{table}"'
+                        f"  SELECT (jsonb_populate_record("
+                        f'    NULL::public."{table}", stashed.payload)).*'
+                        f"  FROM stashed"
+                        f"  ON CONFLICT DO NOTHING"
+                        f"  RETURNING 1)"
+                        f" SELECT count(*) FROM inserted"
+                    ),
+                    {"t": table},
+                )
+                if restored:
                     print(
-                        f"bootstrap_preview_db: no shared columns for {table}; "
-                        "skipping restore",
+                        f"bootstrap_preview_db: restored {restored} {table} "
+                        "row(s) preserved across the rebuild",
                         file=sys.stderr,
                     )
-                    continue
-                columns = ", ".join(f'"{column}"' for column in usable)
-                values = ", ".join(f":{column}" for column in usable)
-                statement = text(
-                    f'INSERT INTO public."{table}" ({columns})'
-                    f" VALUES ({values}) ON CONFLICT DO NOTHING"
-                )
-                for row in rows:
-                    await conn.execute(
-                        statement, {column: row[column] for column in usable}
-                    )
-                print(
-                    f"bootstrap_preview_db: restored {len(rows)} {table} row(s) "
-                    "preserved across the rebuild",
-                    file=sys.stderr,
-                )
     except Exception as exc:  # noqa: BLE001 - a failed restore must not fail the deploy
         print(
             f"bootstrap_preview_db: could not restore preserved rows ({exc}); "
@@ -505,9 +551,10 @@ def _rebuild(url: str) -> None:
     # (e.g. a reverted PR commit) is also healed here: the rebuild never
     # consults the branch's old pointer.
     schema_sql, versions = _snapshot_prod()
-    # Captured before the drop, restored after the upgrade: a rebuild must not
-    # invalidate the API key a developer just created on this preview.
-    preserved = asyncio.run(_capture_preserved_rows(url))
+    # Stashed before the drop, restored after the upgrade: a rebuild must not
+    # invalidate the API key a developer just created on this preview. The
+    # stash lives in the database, so a cancelled run does not lose it.
+    asyncio.run(_capture_preserved_rows(url))
     asyncio.run(_reset_schema(url))
     _restore_schema(url, schema_sql)
     asyncio.run(_write_alembic_versions(url, versions))
@@ -518,7 +565,7 @@ def _rebuild(url: str) -> None:
     for project in STACKS:
         _upgrade_head(project)
     asyncio.run(_assert_model_schema(url))
-    asyncio.run(_restore_preserved_rows(url, preserved))
+    asyncio.run(_restore_preserved_rows(url))
     # Trust last: a cancelled run leaves the branch untrusted -> next run rebuilds.
     asyncio.run(_mark_trusted(url))
 
