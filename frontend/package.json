@@ -25,6 +25,7 @@
     "@opentelemetry/api": "1.9.1",
     "@opentelemetry/auto-instrumentations-web": "0.63.0",
     "@pierre/diffs": "1.1.18",
+    "@pierre/trees": "1.0.0-beta.6",
     "@pydantic/logfire-browser": "0.15.1",
     "@radix-ui/react-accordion": "1.2.12",
     "@radix-ui/react-alert-dialog": "1.1.15",

@@ -1,40 +1,23 @@
 "use client";
 
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  ChevronDown,
-  ChevronRight,
-  Code,
-  Eye,
-  File,
-  FileCode,
-  FileText,
-  Folder,
-  FolderOpen,
-  Loader2,
-  Package,
-} from "lucide-react";
+import { Code, Eye, Loader2, Package } from "lucide-react";
+import { FileTreePane } from "@/components/file-tree-pane";
 import {
   FileRenderer,
   isBinaryRendererFile,
 } from "@/components/renderers/file-renderer";
 import { fetcher } from "@/lib/api";
+import { firstFilePath } from "@/lib/file-tree-order";
+import { formatFileSize } from "@/lib/format";
 import { sameFilePath } from "@/lib/file-path";
 import type { LineRange } from "@/lib/line-range";
 
-// Truncate previews of files larger than 100KB so we don't blow up the
-// renderer pane on huge artifacts (matches TaskFilesPanel).
+// Preview truncation threshold; matches TaskFilesPanel.
 const TRUNCATE_THRESHOLD = 100 * 1024;
 
 interface ArtifactFile {
@@ -48,19 +31,16 @@ interface ArtifactsListing {
   files?: ArtifactFile[];
 }
 
-interface TreeNode {
-  name: string;
-  // Relative path inside the synthetic artifact root. Used as the React key
-  // and for selection state — stripped of the Harbor `<trial_name>/` (and
-  // `steps/<step>/`) wrapper dirs so the tree reads like a normal filesystem.
+interface ArtifactEntry {
+  // Relative path inside the synthetic artifact root — the tree row's
+  // identity, stripped of the Harbor `<trial_name>/` (and `steps/<step>/`)
+  // wrapper dirs so the tree reads like a normal filesystem.
   path: string;
   // Original S3-relative path returned by /trials/{id}/files. Used to build
   // the backend proxy URL for content fetches.
-  fullPath?: string;
-  type: "file" | "dir";
+  fullPath: string;
   size?: number;
   url?: string;
-  children?: TreeNode[];
 }
 
 // Harbor writes artifacts inside the per-trial subdirectory of the job dir,
@@ -92,117 +72,26 @@ function relativizeArtifactPath(path: string): string {
   return inside;
 }
 
-function getFileIcon(name: string) {
-  const ext = name.split(".").pop()?.toLowerCase();
-  switch (ext) {
-    case "md":
-    case "txt":
-    case "log":
-      return FileText;
-    case "ts":
-    case "tsx":
-    case "js":
-    case "jsx":
-    case "py":
-    case "toml":
-    case "yaml":
-    case "yml":
-    case "sh":
-    case "json":
-      return FileCode;
-    default:
-      return File;
-  }
-}
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function buildArtifactTree(files: ArtifactFile[]): TreeNode[] {
-  const dirIndex = new Map<string, TreeNode>();
-  const roots: TreeNode[] = [];
-
-  function ensureDir(parts: string[]): TreeNode | null {
-    if (parts.length === 0) return null;
-    const dirPath = parts.join("/");
-    const existing = dirIndex.get(dirPath);
-    if (existing) return existing;
-    const parent = ensureDir(parts.slice(0, -1));
-    const node: TreeNode = {
-      name: parts[parts.length - 1],
-      path: dirPath,
-      type: "dir",
-      children: [],
-    };
-    dirIndex.set(dirPath, node);
-    if (parent) parent.children!.push(node);
-    else roots.push(node);
-    return node;
-  }
-
+/**
+ * One entry per artifact file, keyed by relativized path. Colliding
+ * relativized paths (a multi-step and a single-step artifact reducing to the
+ * same name) keep the first entry — `path` is the tree row's identity.
+ */
+function buildArtifactEntries(
+  files: ArtifactFile[],
+): Map<string, ArtifactEntry> {
+  const entries = new Map<string, ArtifactEntry>();
   for (const file of files) {
-    const rel = relativizeArtifactPath(file.path);
-    const parts = rel.split("/").filter(Boolean);
-    if (parts.length === 0) continue;
-    const fileName = parts[parts.length - 1];
-    const parentDir = parts.length > 1 ? ensureDir(parts.slice(0, -1)) : null;
-    const fileNode: TreeNode = {
-      name: fileName,
-      path: rel,
+    const path = relativizeArtifactPath(file.path);
+    if (!path || entries.has(path)) continue;
+    entries.set(path, {
+      path,
       fullPath: file.path,
-      type: "file",
       size: file.size,
       url: file.url,
-    };
-    if (parentDir) parentDir.children!.push(fileNode);
-    else roots.push(fileNode);
-  }
-
-  function sortChildren(nodes: TreeNode[]) {
-    nodes.sort((a, b) => {
-      if (a.type !== b.type) return a.type === "dir" ? -1 : 1;
-      return a.name.localeCompare(b.name);
     });
-    for (const node of nodes) {
-      if (node.children) sortChildren(node.children);
-    }
   }
-  sortChildren(roots);
-  return roots;
-}
-
-function findFirstFile(nodes: TreeNode[]): TreeNode | null {
-  for (const node of nodes) {
-    if (node.type === "file") return node;
-    if (node.type === "dir" && node.children) {
-      const found = findFirstFile(node.children);
-      if (found) return found;
-    }
-  }
-  return null;
-}
-
-function collectDirPaths(nodes: TreeNode[]): string[] {
-  const paths: string[] = [];
-  for (const node of nodes) {
-    if (node.type === "dir") {
-      paths.push(node.path);
-      if (node.children) paths.push(...collectDirPaths(node.children));
-    }
-  }
-  return paths;
-}
-
-function collectFiles(nodes: TreeNode[]): TreeNode[] {
-  const out: TreeNode[] = [];
-  for (const node of nodes) {
-    if (node.type === "file") out.push(node);
-    else if (node.children) out.push(...collectFiles(node.children));
-  }
-  return out;
+  return entries;
 }
 
 interface ArtifactsViewerProps {
@@ -239,17 +128,19 @@ export function ArtifactsViewer({
     { revalidateOnFocus: false },
   );
 
-  const tree = useMemo(() => {
-    const artifactFiles = (data?.files ?? []).filter((f) =>
-      isArtifactPath(f.path),
-    );
-    return buildArtifactTree(artifactFiles);
-  }, [data]);
+  const entriesByPath = useMemo(
+    () =>
+      buildArtifactEntries(
+        (data?.files ?? []).filter((f) => isArtifactPath(f.path)),
+      ),
+    [data],
+  );
 
-  const allFiles = useMemo(() => collectFiles(tree), [tree]);
+  // Identity must only change with the listing — FileTreePane rebuilds (and
+  // re-expands) the tree on any new array.
+  const treePaths = useMemo(() => [...entriesByPath.keys()], [entriesByPath]);
 
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
-  const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
   const [viewMode, setViewMode] = useState<"rendered" | "raw">("rendered");
 
   // A deep-linked path owns the first selection; read through a ref so the
@@ -259,33 +150,27 @@ export function ArtifactsViewer({
     initialFilePathRef.current = initialFilePath;
   });
 
-  // First load: expand every dir and select the deep-linked file if one is
-  // addressed (exact path or suffix), else the first file. We also re-run
-  // this if the file set changes (e.g. trial finishes producing artifacts
-  // while the drawer is open) but only fall back to a fresh selection when
-  // the previously selected path no longer exists.
+  // Re-runs as the listing grows (a live trial keeps producing artifacts);
+  // a still-present selection is kept.
   useEffect(() => {
-    if (!tree.length) {
+    if (!entriesByPath.size) {
       setSelectedPath(null);
-      setExpandedDirs(new Set());
       return;
     }
-    setExpandedDirs(new Set(collectDirPaths(tree)));
     setSelectedPath((prev) => {
-      if (prev && allFiles.some((f) => f.path === prev)) return prev;
+      if (prev && entriesByPath.has(prev)) return prev;
       const wanted = initialFilePathRef.current;
       if (wanted) {
         // Match against the relativized tree path and the original storage
         // path: multi-step artifacts insert the step segment into the tree
         // path (steps/setup/artifacts/x → setup/x), so a storage path from
         // the files API is not a suffix of it and only fullPath can match.
+        const entries = [...entriesByPath.values()];
         const match =
-          allFiles.find((f) => f.path === wanted) ??
-          allFiles.find((f) => f.fullPath === wanted) ??
-          allFiles.find((f) => sameFilePath(f.path, wanted)) ??
-          allFiles.find(
-            (f) => f.fullPath != null && sameFilePath(f.fullPath, wanted),
-          );
+          entriesByPath.get(wanted) ??
+          entries.find((f) => f.fullPath === wanted) ??
+          entries.find((f) => sameFilePath(f.path, wanted)) ??
+          entries.find((f) => sameFilePath(f.fullPath, wanted));
         // An unresolved deep link keeps the selection empty instead of
         // falling through to the first file: reporting that fallback
         // would wipe the ?file= / ?lines= address it couldn't resolve.
@@ -293,10 +178,9 @@ export function ArtifactsViewer({
         // artifact still resolves.
         return match?.path ?? null;
       }
-      const first = findFirstFile(tree);
-      return first?.path ?? null;
+      return firstFilePath(treePaths);
     });
-  }, [tree, allFiles]);
+  }, [entriesByPath, treePaths]);
 
   // Report file selections upward for URL sync. Nulls (transient resets)
   // are never reported — they would wipe a live ?file= anchor.
@@ -306,80 +190,14 @@ export function ArtifactsViewer({
   });
   useEffect(() => {
     if (selectedPath === null) return;
-    const file = allFiles.find((f) => f.path === selectedPath);
+    const file = entriesByPath.get(selectedPath);
     onSelectedFileChangeRef.current?.(selectedPath, file?.fullPath);
-    // allFiles is a dependency only to read the fullPath; a listing refresh
-    // re-reports the same selection, which the parent treats as a no-op.
-  }, [selectedPath, allFiles]);
+    // entriesByPath is a dependency only to read fullPath; a listing refresh
+    // re-reports the same selection, a no-op upstream.
+  }, [selectedPath, entriesByPath]);
 
-  const selectedFile = useMemo(
-    () => allFiles.find((f) => f.path === selectedPath) ?? null,
-    [allFiles, selectedPath],
-  );
-
-  const toggleDir = useCallback((path: string) => {
-    setExpandedDirs((prev) => {
-      const next = new Set(prev);
-      if (next.has(path)) next.delete(path);
-      else next.add(path);
-      return next;
-    });
-  }, []);
-
-  const renderTree = (nodes: TreeNode[], depth = 0): ReactNode => {
-    return nodes.map((node) => {
-      const isExpanded = expandedDirs.has(node.path);
-      const isSelected = selectedFile?.path === node.path;
-      const Icon =
-        node.type === "dir"
-          ? isExpanded
-            ? FolderOpen
-            : Folder
-          : getFileIcon(node.name);
-      return (
-        <div key={node.path}>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={() => {
-              if (node.type === "dir") toggleDir(node.path);
-              else setSelectedPath(node.path);
-            }}
-            className={`h-auto w-full justify-start gap-1.5 rounded px-2 py-1 text-left font-mono text-xs transition-colors ${
-              isSelected
-                ? "bg-primary/20 text-primary hover:bg-primary/20"
-                : "text-foreground hover:bg-muted"
-            }`}
-            style={{ paddingLeft: `${depth * 12 + 8}px` }}
-          >
-            {node.type === "dir" ? (
-              <span className="flex h-3 w-3 items-center justify-center">
-                {isExpanded ? (
-                  <ChevronDown className="text-muted-foreground h-3 w-3" />
-                ) : (
-                  <ChevronRight className="text-muted-foreground h-3 w-3" />
-                )}
-              </span>
-            ) : (
-              <span className="w-3" />
-            )}
-            <Icon
-              className={`h-4 w-4 shrink-0 ${
-                node.type === "dir"
-                  ? "text-yellow-500"
-                  : "text-muted-foreground"
-              }`}
-            />
-            <span className="truncate">{node.name}</span>
-          </Button>
-          {node.type === "dir" && isExpanded && node.children && (
-            <div>{renderTree(node.children, depth + 1)}</div>
-          )}
-        </div>
-      );
-    });
-  };
+  const selectedFile =
+    selectedPath != null ? (entriesByPath.get(selectedPath) ?? null) : null;
 
   if (isLoading) {
     return (
@@ -398,7 +216,7 @@ export function ArtifactsViewer({
     );
   }
 
-  if (allFiles.length === 0) {
+  if (entriesByPath.size === 0) {
     return (
       <div className="p-6 text-center">
         <Package className="text-muted-foreground/50 mx-auto mb-2 h-8 w-8" />
@@ -410,22 +228,29 @@ export function ArtifactsViewer({
     );
   }
 
-  const fileCountLabel = `${allFiles.length} ${
-    allFiles.length === 1 ? "file" : "files"
+  const fileCountLabel = `${entriesByPath.size} ${
+    entriesByPath.size === 1 ? "file" : "files"
   }`;
 
   return (
     <div className="flex h-full flex-col overflow-hidden md:flex-row">
-      <div className="border-border bg-muted/30 max-h-[30vh] w-full overflow-auto border-b md:max-h-none md:w-56 md:border-r md:border-b-0 lg:w-64">
-        <div className="p-2">
-          <div className="text-muted-foreground flex items-center justify-between gap-2 px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
-            <span>Artifacts</span>
-            <span className="text-muted-foreground/70 font-sans text-[10px] font-normal normal-case">
-              {fileCountLabel}
-            </span>
-          </div>
-          {renderTree(tree)}
+      {/* Stacked layout needs a DEFINITE height (h-[30vh], not max-h): the
+          tree virtualizes against this viewport, and a flex-1 child inside
+          an auto-height column measures ~0 and renders blank. On md+ the
+          row layout stretches the pane to the container's full height. */}
+      <div className="border-border bg-muted/30 flex h-[30vh] w-full flex-col overflow-hidden border-b p-2 md:h-auto md:w-56 md:border-r md:border-b-0 lg:w-64">
+        <div className="text-muted-foreground flex items-center justify-between gap-2 px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
+          <span>Artifacts</span>
+          <span className="text-muted-foreground/70 font-sans text-[10px] font-normal normal-case">
+            {fileCountLabel}
+          </span>
         </div>
+        <FileTreePane
+          className="min-h-0 flex-1"
+          onSelectPath={setSelectedPath}
+          paths={treePaths}
+          selectedPath={selectedPath}
+        />
       </div>
       <ArtifactContentPane
         filesUrl={filesUrl}
@@ -441,7 +266,7 @@ export function ArtifactsViewer({
 
 interface ArtifactContentPaneProps {
   filesUrl: string;
-  selectedFile: TreeNode | null;
+  selectedFile: ArtifactEntry | null;
   viewMode: "rendered" | "raw";
   onViewModeChange: (mode: "rendered" | "raw") => void;
   selectedLines?: LineRange | null;
@@ -466,7 +291,7 @@ function ArtifactContentPane({
   const fullPath = selectedFile?.fullPath ?? null;
   const presignedUrl = selectedFile?.url;
   const fileSize = selectedFile?.size;
-  const fileName = selectedFile?.name ?? "";
+  const fileName = selectedFile?.path.split("/").pop() ?? "";
   const isBinary = fileName ? isBinaryRendererFile(fileName) : false;
 
   // Each path segment is URL-encoded individually so `/` separators in the
@@ -478,8 +303,6 @@ function ArtifactContentPane({
     return `${filesUrl}/${encoded}`;
   }, [filesUrl, fullPath]);
 
-  // Scroll back to the top when the selected file changes so the user
-  // doesn't land halfway through a file's content.
   useEffect(() => {
     if (contentRef.current) contentRef.current.scrollTop = 0;
   }, [selectedFile?.path]);
