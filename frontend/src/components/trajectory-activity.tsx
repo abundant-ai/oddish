@@ -20,6 +20,7 @@ import {
   STEP_BAND_TITLE,
   TIMELINE_CAPTION,
   TOKEN_BAND_TITLE,
+  UNGROUPED_FALLBACK_CAPTION,
 } from "@/lib/activity-view-model";
 
 interface TrajectoryActivityProps {
@@ -264,8 +265,7 @@ export function TrajectoryActivity({
         )}
         {model.fallback && (
           <p className="text-muted-foreground font-mono text-[10.5px]">
-            No summary for this run yet — steps are not grouped into components,
-            so the timeline is one gray band.
+            {UNGROUPED_FALLBACK_CAPTION}
           </p>
         )}
       </CardContent>

@@ -18,6 +18,8 @@ export const STEP_BAND_TITLE = "Timeline · by steps";
 export const TOKEN_BAND_TITLE = "Timeline · by tokens";
 export const TIMELINE_CAPTION =
   "bars share components and order · thin band = tokens per step, darker is more · lower band = width by token volume";
+export const UNGROUPED_FALLBACK_CAPTION =
+  "No summary for this run yet — steps are not grouped into components, so the timeline is one gray band.";
 
 /** Compact token counts so a 1.2M cell still fits the fixed-width column. */
 const fmtTokens = (n: number) =>
