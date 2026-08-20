@@ -245,11 +245,10 @@ async def get_queue_status_core(
     """Get queue status grouped by worker-job kind and queue key."""
     now = utcnow()
 
-    # One grouped query against ``worker_jobs``. QA and audits run as
-    # trials now, so a TRIAL job's effective kind comes from joining the
-    # subject trial's ``kind`` -- a QA trial reports as 'QA' and an audit
-    # as 'AUDIT' instead of hiding inside the TRIAL totals. The legacy
-    # aggregate fields are preserved for older clients.
+    # One grouped query against ``worker_jobs``. Analysis runs use TRIAL jobs,
+    # so their effective kind comes from the subject trial instead of hiding
+    # inside the ordinary evaluation totals. The legacy aggregate fields are
+    # preserved for older clients.
     rows = (
         await session.execute(
             text(
@@ -260,6 +259,8 @@ async def get_queue_status_core(
                             THEN 'QA'
                         WHEN wj.kind::text = 'TRIAL' AND tr.kind = 'audit'
                             THEN 'AUDIT'
+                        WHEN wj.kind::text = 'TRIAL' AND tr.kind = 'summarize'
+                            THEN 'SUMMARIZE'
                         ELSE wj.kind::text
                     END AS kind,
                     wj.queue_key,
@@ -301,8 +302,9 @@ async def get_queue_status_core(
             # The task-level QA trial (classification + verdict).
             verdict_queued += queued
             verdict_running += running
-        elif kind == "AUDIT":
-            # The pre-trial audit trial fills the legacy analysis slots.
+        elif kind in {"AUDIT", "SUMMARIZE"}:
+            # Pre-trial audits and requested trajectory summaries fill the
+            # legacy analysis slots.
             analysis_queued += queued
             analysis_running += running
         # Unknown kinds silently ignored by this endpoint; the

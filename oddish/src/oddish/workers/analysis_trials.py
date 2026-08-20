@@ -1,11 +1,10 @@
 """Analysis trials: the platform's own agents, run through the trial pipeline.
 
-The pre-trial audit and QA are trials with a non-'agent' ``kind``. Each runs
-claude-code on the analysis model in its own analysis sandbox, reads the
-audited task's data through the oddish-query CLI, and writes one JSON
-artifact. When the trial settles, the importer for its kind parses that
-artifact into the same columns the old block-based path wrote, so nothing
-downstream changes.
+The pre-trial audit, task QA, and single-trial summarizer are trials with a
+non-'agent' ``kind``. Each runs claude-code on the analysis model in its own
+analysis sandbox, reads task or trial data through the oddish-query CLI, and
+writes one JSON artifact. Settlement imports that artifact into the columns
+owned by the analysis kind.
 """
 
 from __future__ import annotations
@@ -300,7 +299,7 @@ async def create_analysis_trial(
     # Priority 1, not the default 0: analysis trials are enqueued after the
     # agent burst that produced them, and on pure FIFO one waited ~59 minutes
     # behind that backlog. The bump is what lets a draining worker pick the
-    # QA/audit up ahead of it; agent trials keep priority 0.
+    # analysis run up ahead of it; agent trials keep priority 0.
     await enqueue_trial_worker_job(
         session,
         trial_id=trial_id,
@@ -478,28 +477,25 @@ async def find_live_summarize_trial(
     )
 
 
-async def maybe_create_summarize_trial(
-    session: AsyncSession, *, target: TrialModel
+async def get_or_create_summarize_trial(
+    session: AsyncSession, *, target_trial_id: str
 ) -> TrialModel | None:
-    """Create one summarize trial for ``target``, or return None when one
-    should not exist.
+    """Return the live summarize trial for an eligible agent target.
 
-    Guards:
-    - a summarize trial never gets a summarize trial. The regress terminates
-      because every analysis trial's own row gets the deterministic counted
-      self-summary at settlement instead;
-    - a target with no recorded trajectory would send an agent to fetch
-      nothing;
-    - one live summarize trial per target, so repeated refresh requests are
-      answered by the run already in flight. Best-effort (two truly
-      concurrent creators can both pass the check); the importer overwrites
-      the same column idempotently, so the cost of the race is one duplicate
-      sandbox run, not corrupt state.
+    Locking the target row serializes concurrent paid refresh requests. The
+    first transaction creates the summarize trial and worker job; the next
+    transaction sees and returns that same live trial after the lock releases.
+    ``None`` means the target is missing, is not an agent trial, has no
+    recorded trajectory, or belongs to a missing task.
     """
-    if target.kind == "summarize" or not target.has_trajectory:
+    target = await session.scalar(
+        select(TrialModel).where(TrialModel.id == target_trial_id).with_for_update()
+    )
+    if target is None or target.kind != "agent" or not target.has_trajectory:
         return None
-    if await find_live_summarize_trial(session, target.id) is not None:
-        return None
+    live = await find_live_summarize_trial(session, target.id)
+    if live is not None:
+        return live
     task = await session.get(TaskModel, target.task_id)
     if task is None:
         return None
@@ -748,8 +744,8 @@ async def store_analysis_self_summary(
 ) -> None:
     """Write the analysis trial's own ``trajectory_summary``.
 
-    The QA agent summarizes the trials it grades; this is the same telemetry
-    for the QA/audit run itself, counted from its tool calls
+    QA and summarize agents summarize their targets; this is the same telemetry
+    for the analysis run itself, counted from its tool calls
     (``analysis_activity``) because workers make no LLM calls of their own.
     Runs on every settlement — success or failure — so a failed analysis run
     still shows what its agent did.
@@ -1146,9 +1142,9 @@ async def _import_summarize_result(trial: TrialModel) -> None:
         return
     async with get_session() as session:
         target = await session.get(TrialModel, target_id)
-        if target is None or target.task_id != trial.task_id:
+        if target is None or target.kind != "agent" or target.task_id != trial.task_id:
             logger.warning(
-                "summarize trial %s: target %s no longer exists on task %s; "
+                "summarize trial %s: target %s is not an agent trial on task %s; "
                 "dropping its summary",
                 trial.id,
                 target_id,

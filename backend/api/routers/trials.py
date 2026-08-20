@@ -35,6 +35,10 @@ from oddish.core.sharing.helpers import (
     list_trial_files_s3,
 )
 from oddish.db.storage import delete_s3_prefixes
+from oddish.workers.analysis_trials import (
+    find_live_summarize_trial,
+    get_or_create_summarize_trial,
+)
 from auth import APIKeyScope, AuthContext, require_admin, require_auth
 from oddish.db import (
     TrialModel,
@@ -416,34 +420,6 @@ def _summary_pending_response(summarize_trial: TrialModel) -> JSONResponse:
     )
 
 
-async def _live_summarize_trial(target_trial_id: str):
-    """The in-flight summarize trial for this target, if any. Module-level so
-    the DB-less endpoint tests can patch it."""
-    from oddish.workers.analysis_trials import find_live_summarize_trial
-
-    async with get_session() as session:
-        return await find_live_summarize_trial(session, target_trial_id)
-
-
-async def _request_summarize_trial(target_trial_id: str):
-    """Create-or-adopt the summarize trial for this target: the new trial,
-    the one already in flight, or None when the target cannot be summarized
-    (no trajectory recorded, or it is itself a summarize trial)."""
-    from oddish.workers.analysis_trials import (
-        find_live_summarize_trial,
-        maybe_create_summarize_trial,
-    )
-
-    async with get_session() as session:
-        target = await session.get(TrialModel, target_trial_id)
-        if target is None:
-            return None
-        created = await maybe_create_summarize_trial(session, target=target)
-        if created is not None:
-            return created
-        return await find_live_summarize_trial(session, target_trial_id)
-
-
 @router.get("/trials/{trial_id}/trajectory/summary")
 async def get_trial_trajectory_summary(
     trial_id: str,
@@ -466,13 +442,16 @@ async def get_trial_trajectory_summary(
         auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
     trial = await _get_authorized_trial(trial_id, auth)
     if refresh:
-        live = await _request_summarize_trial(trial.id)
+        async with get_session() as session:
+            live = await get_or_create_summarize_trial(
+                session, target_trial_id=trial.id
+            )
         if live is None:
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    "This trial cannot be summarized: it has no recorded "
-                    "trajectory, or it is itself a summarize trial"
+                    "This trial cannot be summarized: only agent trials with "
+                    "a recorded trajectory are eligible"
                 ),
             )
         return _summary_pending_response(live)
@@ -481,7 +460,8 @@ async def get_trial_trajectory_summary(
         return summary
     # A live summarize trial means the summary is on its way; report pending
     # so pollers keep waiting instead of treating the miss as final.
-    live = await _live_summarize_trial(trial.id)
+    async with get_session() as session:
+        live = await find_live_summarize_trial(session, trial.id)
     if live is not None:
         return _summary_pending_response(live)
     raise HTTPException(status_code=404, detail="No trajectory summary for this trial")

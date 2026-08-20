@@ -4,6 +4,7 @@ pending contract while a summarize trial is in flight, and the gated
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -48,12 +49,17 @@ def tasks_client():
     return _client(APIKeyScope.TASKS, created_by_role="admin")
 
 
-def _trial(summary):
-    return SimpleNamespace(id="t-1", trajectory_summary=summary)
+def _trial(summary, *, kind="agent"):
+    return SimpleNamespace(id="t-1", kind=kind, trajectory_summary=summary)
 
 
 def _summarize_trial(status="queued"):
     return SimpleNamespace(id="t-1-9", status=SimpleNamespace(value=status))
+
+
+@asynccontextmanager
+async def _session():
+    yield "session"
 
 
 def test_endpoint_returns_stored_summary(client):
@@ -74,9 +80,10 @@ def test_endpoint_404s_without_stored_summary(client):
             new=AsyncMock(return_value=_trial(None)),
         ),
         patch(
-            "api.routers.trials._live_summarize_trial",
+            "api.routers.trials.find_live_summarize_trial",
             new=AsyncMock(return_value=None),
         ),
+        patch("api.routers.trials.get_session", new=_session),
     ):
         resp = client.get("/trials/t-1/trajectory/summary")
     assert resp.status_code == 404
@@ -90,9 +97,10 @@ def test_a_live_summarize_trial_reports_pending_not_404(client):
             new=AsyncMock(return_value=_trial(None)),
         ),
         patch(
-            "api.routers.trials._live_summarize_trial",
+            "api.routers.trials.find_live_summarize_trial",
             new=AsyncMock(return_value=_summarize_trial("running")),
         ),
+        patch("api.routers.trials.get_session", new=_session),
     ):
         resp = client.get("/trials/t-1/trajectory/summary")
     assert resp.status_code == 202
@@ -111,31 +119,40 @@ def test_refresh_requires_more_than_read_scope(client):
     assert resp.status_code == 403
 
 
-def test_refresh_enqueues_and_answers_202(tasks_client):
-    request = AsyncMock(return_value=_summarize_trial("queued"))
+def test_refresh_adopts_an_existing_run_and_answers_202(tasks_client):
+    get_or_create = AsyncMock(return_value=_summarize_trial("running"))
     with (
         patch(
             "api.routers.trials._get_authorized_trial",
             new=AsyncMock(return_value=_trial({"stale": True})),
         ),
-        patch("api.routers.trials._request_summarize_trial", new=request),
+        patch("api.routers.trials.get_or_create_summarize_trial", new=get_or_create),
+        patch("api.routers.trials.get_session", new=_session),
     ):
         resp = tasks_client.get("/trials/t-1/trajectory/summary?refresh=true")
     assert resp.status_code == 202
-    assert resp.json()["status"] == "queued"
-    request.assert_awaited_once_with("t-1")
+    assert resp.json() == {
+        "status": "running",
+        "job_id": "t-1-9",
+        "retry_after_ms": 3000,
+    }
+    get_or_create.assert_awaited_once_with("session", target_trial_id="t-1")
 
 
-def test_refresh_409s_when_the_trial_cannot_be_summarized(tasks_client):
+def test_refresh_409s_for_a_non_agent_target(tasks_client):
+    get_or_create = AsyncMock(return_value=None)
     with (
         patch(
             "api.routers.trials._get_authorized_trial",
-            new=AsyncMock(return_value=_trial(None)),
+            new=AsyncMock(return_value=_trial(None, kind="qa")),
         ),
         patch(
-            "api.routers.trials._request_summarize_trial",
-            new=AsyncMock(return_value=None),
+            "api.routers.trials.get_or_create_summarize_trial",
+            new=get_or_create,
         ),
+        patch("api.routers.trials.get_session", new=_session),
     ):
         resp = tasks_client.get("/trials/t-1/trajectory/summary?refresh=true")
     assert resp.status_code == 409
+    assert "only agent trials" in resp.json()["detail"]
+    get_or_create.assert_awaited_once_with("session", target_trial_id="t-1")

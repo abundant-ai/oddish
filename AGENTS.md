@@ -214,13 +214,13 @@ only while the step is expanded. Trajectory summaries are written onto
 `summarize`-kind trial's import; the read path never generates. The public
 summary route stays a plain column read. The authenticated route additionally
 accepts `refresh=true` (TASKS scope, member-created keys refused — the same
-gate as an analysis rerun), which enqueues one summarize trial via
-`maybe_create_summarize_trial` and answers 202
+gate as an analysis rerun), which enqueues or adopts one summarize trial via
+`get_or_create_summarize_trial` and answers 202
 `{status, job_id, retry_after_ms}`; a plain read whose summary is missing but
 whose summarize trial is in flight also answers 202, so pollers keep waiting.
 The frontend's summary hook already implements this 202-polling contract.
 
-A QA/audit trial's **own** summary is deterministic, never an LLM call:
+A QA/audit/summarize trial's **own** summary is deterministic, never an LLM call:
 settlement (`handle_analysis_trial_settled`) counts one from the run's tool
 calls. `oddish.analyze.trajectory_tool_calls` owns the external ATIF tool-call
 name and string-argument spellings used by activity, provenance, and delegation
@@ -245,11 +245,12 @@ brief embeds the same packaged taxonomy prompt the QA brief uses, its agent
 writes `summary_result.json` (`{target_trial_id, trajectory_summary}`,
 validated in-sandbox and at import by the shared checker), and its importer
 overwrites only the target's `trials.trajectory_summary` — no verdict, task,
-or analysis state. `maybe_create_summarize_trial` enforces the guards: never
-for a summarize-kind target (the counted self-summary is the regress
-terminator), never for a target without `has_trajectory`, and at most one
-live summarize trial per target (best-effort; the import is idempotent so a
-creation race costs a duplicate run, not corrupt state).
+or analysis state. Only `kind = 'agent'` trials with `has_trajectory` can be
+summarize targets; QA, audit, and summarize runs keep their deterministic own
+summaries. `get_or_create_summarize_trial` locks the target trial row before it
+checks for an existing live summarize trial and enqueues work. Concurrent
+refresh requests therefore return the same summarize trial id and create one
+`worker_jobs` row for the paid sandbox run.
 
 Trajectory summaries use schema v5. Each taxonomy-valued `components` entry
 contains its `step_ids`, summary, and deterministic `tool_count` and
