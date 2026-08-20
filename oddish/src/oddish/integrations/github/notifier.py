@@ -21,6 +21,8 @@ from oddish.db import (
     task_experiments,
 )
 
+from oddish.workers.analysis_trials import is_analysis_kind
+
 from .client import GitHubMeta, get_github_client
 from .formatter import (
     TaskSummary,
@@ -224,12 +226,17 @@ async def _update_pr_comment_for_task(
 
 
 async def notify_trial_update(trial_id: str) -> bool:
-    """Notify GitHub when a trial status changes."""
+    """Notify GitHub when a trial status changes.
+
+    Analysis trials (qa, audit) never post trial status; the QA import
+    hook owns that comment."""
     try:
         async with get_session() as session:
             trial = await session.get(TrialModel, trial_id)
             if not trial:
                 logger.warning(f"Trial {trial_id} not found for GitHub notification")
+                return False
+            if is_analysis_kind(trial.kind):
                 return False
 
             task = await session.get(TaskModel, trial.task_id)
@@ -249,34 +256,6 @@ async def notify_trial_update(trial_id: str) -> bool:
 
     except Exception as e:
         logger.error(f"Error in notify_trial_update for {trial_id}: {e}")
-        return False
-
-
-async def notify_analysis_update(trial_id: str) -> bool:
-    """Notify GitHub when an analysis completes."""
-    try:
-        async with get_session() as session:
-            trial = await session.get(TrialModel, trial_id)
-            if not trial:
-                logger.warning(f"Trial {trial_id} not found for GitHub notification")
-                return False
-
-            task = await session.get(TaskModel, trial.task_id)
-            if not task:
-                logger.warning(
-                    f"Task {trial.task_id} not found for GitHub notification"
-                )
-                return False
-
-            experiment_id = trial.experiment_id
-
-        # Close the session before the comment update (see notify_trial_update):
-        # nesting it with _update_pr_comment_for_task's session deadlocks the
-        # worker's size-1 DB pool.
-        return await _update_pr_comment_for_task(task, experiment_id=experiment_id)
-
-    except Exception as e:
-        logger.error(f"Error in notify_analysis_update for {trial_id}: {e}")
         return False
 
 

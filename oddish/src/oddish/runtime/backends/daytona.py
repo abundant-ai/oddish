@@ -22,7 +22,9 @@ async def reap_stale_daytona_sandboxes(stale_after_minutes: int = 15) -> int:
         SandboxListSortField,
         SandboxState,
     )
+    from daytona.common.errors import DaytonaNotFoundError
     import daytona_api_client_async as api
+    from daytona_api_client_async.exceptions import NotFoundException
 
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(minutes=stale_after_minutes)
@@ -31,10 +33,12 @@ async def reap_stale_daytona_sandboxes(stale_after_minutes: int = 15) -> int:
     labels = {"harbor.managed": "true", "oddish.managed": "true"}
     client = AsyncDaytona()
     try:
+        # No include_errored_deleted: that flag adds sandboxes whose desired
+        # state is already "destroyed". Those 404 on every get, forever, and
+        # there is nothing left to reap.
         terminal_page = await client._sandbox_api.list_sandboxes(
             limit=50,
             labels=json.dumps(labels),
-            include_errored_deleted=True,
             states=[api.SandboxState.ERROR, api.SandboxState.BUILD_FAILED],
             created_at_before=cutoff,
             sort=api.SandboxListSortField.CREATEDAT,
@@ -58,8 +62,25 @@ async def reap_stale_daytona_sandboxes(stale_after_minutes: int = 15) -> int:
 
         async def delete(sandbox) -> int:
             try:
+                # Screen on the listed row before any network call: a sandbox
+                # already destroyed (or on its way) has nothing left to reap.
+                desired = getattr(sandbox, "desired_state", None)
+                if sandbox.state in inactive or (
+                    getattr(desired, "value", desired) == "destroyed"
+                ):
+                    return 0
                 async with semaphore:
-                    sandbox = await client.get(sandbox.id, request_timeout=10)
+                    try:
+                        sandbox = await client.get(sandbox.id, request_timeout=10)
+                    except (DaytonaNotFoundError, NotFoundException):
+                        # Destroyed between the list page and this refresh —
+                        # the goal state. The metric line makes the expected
+                        # outcome countable for vendor-burst alerting.
+                        logger.info(
+                            "metric=daytona.sandbox_gone phase=reap external_id=%s",
+                            sandbox.id,
+                        )
+                        return 0
                     if sandbox.state in inactive or any(
                         sandbox.labels.get(key) != value
                         for key, value in labels.items()
@@ -133,11 +154,22 @@ class DaytonaBackend:
             return False
         try:
             from daytona import AsyncDaytona
+            from daytona.common.errors import DaytonaNotFoundError
+            from daytona_api_client_async.exceptions import NotFoundException
 
             client = AsyncDaytona()
             try:
                 sandbox = await client.get(external_id)
                 await client.delete(sandbox)
+            except (DaytonaNotFoundError, NotFoundException):
+                # Auto-delete or the expiry reaper got there first. The
+                # sandbox is gone, which is the goal; the metric key makes
+                # the expected outcome countable for vendor-burst alerting.
+                logger.info(
+                    "metric=daytona.sandbox_gone phase=teardown external_id=%s",
+                    external_id,
+                )
+                return True
             finally:
                 await client.close()
         except Exception:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
+from fastapi.responses import JSONResponse
 from oddish.core.dashboard import invalidate_dashboard_cache
 from oddish.core.endpoints import (
     delete_trial_core,
@@ -34,6 +35,10 @@ from oddish.core.sharing.helpers import (
     list_trial_files_s3,
 )
 from oddish.db.storage import delete_s3_prefixes
+from oddish.workers.analysis_trials import (
+    find_live_summarize_trial,
+    get_or_create_summarize_trial,
+)
 from auth import APIKeyScope, AuthContext, require_admin, require_auth
 from oddish.db import (
     TrialModel,
@@ -49,11 +54,6 @@ from oddish.schemas import (
 )
 
 import logging
-
-from api.services.summarize_trajectory import (
-    SummaryGenerationError,
-    get_or_generate_summary,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -397,6 +397,29 @@ async def get_trial_trajectory(
     return await read_trial_trajectory(trial)
 
 
+# Trial statuses the summary poller understands, mapped from TrialStatus
+# values. The client (`use-trajectory-summary.ts`) polls on exactly these.
+_SUMMARY_PENDING_STATUS = {
+    "pending": "queued",
+    "queued": "queued",
+    "running": "running",
+    "retrying": "retrying",
+}
+
+
+def _summary_pending_response(summarize_trial: TrialModel) -> JSONResponse:
+    # Direct indexing on purpose: find_live_summarize_trial selects exactly
+    # the four statuses this map covers, so a miss is drift worth crashing on.
+    return JSONResponse(
+        status_code=202,
+        content={
+            "status": _SUMMARY_PENDING_STATUS[summarize_trial.status.value],
+            "job_id": summarize_trial.id,
+            "retry_after_ms": 3000,
+        },
+    )
+
+
 @router.get("/trials/{trial_id}/trajectory/summary")
 async def get_trial_trajectory_summary(
     trial_id: str,
@@ -404,49 +427,44 @@ async def get_trial_trajectory_summary(
     refresh: bool = Query(
         False,
         description=(
-            "Discard the stored summary and generate a new one. Costs an LLM "
-            "call per request, so it needs the same scope as an analysis rerun."
+            "Enqueue a summarize trial that regenerates the stored summary. "
+            "Costs an analysis-model sandbox run, so it needs the same scope "
+            "as an analysis rerun."
         ),
     ),
 ) -> dict:
-    """Get a Claude-generated summary of the trajectory.
-
-    Returns the summary from the latest `analyzer_blocks` row (mirrored to
-    `trials.trajectory_summary`) when fresh, otherwise generates one. 404 when
-    the trial has no trajectory; 502 if generation fails.
-
-    Freshness is keyed on `schema_version` alone, so a change that alters the
-    summary's *content* without altering its shape -- retiring a taxonomy
-    label, say -- leaves stored summaries serving the old vocabulary forever.
-    `refresh=true` is the way out for those.
-    """
+    """Return the stored trajectory summary. Summaries are written by the
+    task's QA trial import or by a summarize trial's import; the read path
+    never generates. ``refresh=true`` enqueues a summarize trial and returns
+    202; polls answer 202 while it runs and 200 once its import lands."""
     auth.require_scope(APIKeyScope.READ)
     if refresh:
         auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
     trial = await _get_authorized_trial(trial_id, auth)
-    try:
+    if refresh:
         async with get_session() as session:
-            attached_trial = await session.get(TrialModel, trial.id)
-            if attached_trial is None:
-                raise HTTPException(status_code=404, detail="Trial not found")
-            summary = await get_or_generate_summary(
-                session,
-                attached_trial,
-                triggered_by_user_id=auth.user_id,
-                refresh=refresh,
+            live = await get_or_create_summarize_trial(
+                session, target_trial_id=trial.id
             )
-    except SummaryGenerationError as e:
-        logger.error(
-            "Trajectory summary generation failed for trial %s: %s", trial_id, e
-        )
-        raise HTTPException(
-            status_code=502, detail=f"Summary generation failed: {e}"
-        )
-    if summary is None:
-        raise HTTPException(
-            status_code=404, detail="No trajectory available for this trial"
-        )
-    return summary
+        if live is None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This trial cannot be summarized: only agent trials with "
+                    "a recorded trajectory are eligible"
+                ),
+            )
+        return _summary_pending_response(live)
+    summary = trial.trajectory_summary
+    if summary:
+        return summary
+    # A live summarize trial means the summary is on its way; report pending
+    # so pollers keep waiting instead of treating the miss as final.
+    async with get_session() as session:
+        live = await find_live_summarize_trial(session, trial.id)
+    if live is not None:
+        return _summary_pending_response(live)
+    raise HTTPException(status_code=404, detail="No trajectory summary for this trial")
 
 
 @router.get("/trials/{trial_id}/result")

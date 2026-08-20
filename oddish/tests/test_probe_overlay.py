@@ -140,6 +140,8 @@ def test_render_includes_cli_usage_block():
     out = _render()
     assert "ACCESSING TASK DATA" in out
     # concrete, copyable invocations for each capability
+    assert "task cat" in out
+    assert "task fetch" in out
     assert "solution cat" in out
     assert "solution fetch" in out
     assert "verifier source" in out

@@ -32,16 +32,23 @@ def test_command_delivers_exact_prompt_over_stdin_without_plaintext_on_argv(tmp_
     assert base64.b64decode(encoded).decode("utf-8") == instruction
 
 
-def test_requirement_explicit_source_sha_is_git_reference():
+def test_requirement_explicit_source_sha_is_no_git_tarball():
+    # The sandbox has no git binary, so the requirement must be installable
+    # over plain HTTPS: GitHub sources render as the commit tarball.
     req = _pinned_harbor_requirement("https://github.com/dot-agi/harbor", "a" * 40)
-    assert req == f"harbor @ git+https://github.com/dot-agi/harbor@{'a' * 40}"
+    assert req == (
+        f"harbor @ https://github.com/dot-agi/harbor/archive/{'a' * 40}.tar.gz"
+    )
 
 
-def test_requirement_from_installed_direct_url_is_git_reference():
-    # The orchestrator's harbor is git-installed from the locked fork, so the
-    # requirement derived from its direct_url is the locked default pin.
+def test_requirement_from_installed_direct_url_is_no_git_tarball():
+    # The orchestrator's harbor is git-installed from the locked fork; the
+    # requirement derived from its direct_url pins the same commit but as a
+    # tarball the git-less sandbox can install.
     req = _pinned_harbor_requirement()
-    assert req == f"harbor @ git+{HARBOR_DEFAULT_SOURCE}@{HARBOR_DEFAULT_SHA}"
+    assert req == (
+        f"harbor @ {HARBOR_DEFAULT_SOURCE}/archive/{HARBOR_DEFAULT_SHA}.tar.gz"
+    )
 
 
 def test_requirement_falls_back_to_version_without_direct_url(monkeypatch):
@@ -63,7 +70,7 @@ def test_requirement_none_when_harbor_absent(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_install_runs_pip_with_git_requirement(tmp_path, monkeypatch):
+async def test_install_runs_pip_with_no_git_requirement(tmp_path, monkeypatch):
     agent = OddishProbeClaudeCode(logs_dir=tmp_path)
 
     calls: list[str] = []
@@ -84,7 +91,11 @@ async def test_install_runs_pip_with_git_requirement(tmp_path, monkeypatch):
     assert calls[0] == "super"  # stock CLI install runs first
     install_cmd = calls[1]
     assert install_cmd.startswith("pip install --user --quiet ")
-    assert f"harbor @ git+{HARBOR_DEFAULT_SOURCE}@{HARBOR_DEFAULT_SHA}" in install_cmd
+    assert (
+        f"harbor @ {HARBOR_DEFAULT_SOURCE}/archive/{HARBOR_DEFAULT_SHA}.tar.gz"
+        in install_cmd
+    )
+    assert "git+" not in install_cmd
 
 
 @pytest.mark.asyncio

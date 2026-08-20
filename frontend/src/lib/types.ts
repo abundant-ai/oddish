@@ -15,6 +15,16 @@ type TrialStatus =
   | "retrying"
   | "skipped";
 
+// trials.kind: "agent" is a normal evaluation run; "qa" and "audit" are the
+// platform's analysis agents (arriving with the analysis-trial pipeline).
+// The union is open (`| (string & {})`) because the column is a plain
+// VARCHAR and historical rows may carry retired kinds.
+export type TrialKind = "agent" | "qa" | "audit" | (string & {});
+
+export function isAgentTrial(t: { kind?: TrialKind }): boolean {
+  return (t.kind ?? "agent") === "agent";
+}
+
 export type JobStatus = "pending" | "queued" | "running" | "success" | "failed";
 
 type VisibleJobKind = "trial" | "qa" | "analysis";
@@ -102,6 +112,11 @@ interface TrialExploitation {
 }
 
 interface TrialAnalysis {
+  /** Id of the QA trial that wrote this analysis. */
+  _graded_by?: string;
+  /** Steps of the QA run whose tool calls named this trial, scanned by the
+      importer — anchors for jumping into the grader's trajectory. */
+  _graded_at_steps?: number[];
   trial_name?: string;
   classification: AnalysisClassification;
   subtype: string;
@@ -177,6 +192,7 @@ export interface Trial {
   is_billed?: boolean;
   has_trajectory?: boolean;
   is_probe?: boolean;
+  kind?: TrialKind;
   created_at: string;
   started_at?: string | null;
   finished_at?: string | null;
@@ -707,6 +723,7 @@ export interface DashboardExperiment {
   last_pr_url: string | null;
   last_pr_title: string | null;
   last_pr_number: string | null;
+  qa_report_experiment_id?: string | null;
 }
 
 export interface DashboardResponse {
@@ -837,77 +854,6 @@ export interface TrajectoryComponent {
   /** Deterministic metadata added in summary schema v5; optional for older summaries. */
   tool_count?: number;
   duration_ms?: number;
-}
-
-/** Behaviour categories from the backend cohort taxonomy. */
-export type BehaviorCategory =
-  | "behavior_discovery"
-  | "planning"
-  | "testing_verification"
-  | "debugging"
-  | "scope_adherence"
-  | "coherence"
-  | "environment_tooling";
-
-/** Two shapes, never both on one citation. Summary evidence quotes a stored
- *  component summary; step evidence quotes the raw step the agent produced,
- *  and only the CLAUDE_CLI comparison can read those. Comparisons stored
- *  before schema 4 carry the summary shape exclusively. */
-export interface BehaviorEvidence {
-  trial_id: string;
-  quote: string;
-  /** A stored component's label, not a live-enum value: the backend accepts
-   *  any string here and verifies it against the trial's stored components,
-   *  so retired vocabulary arrives intact. */
-  trajectory_component?: string | null;
-  step_ids?: number[];
-  step_id?: number | null;
-}
-
-export interface BehaviorObservation {
-  behavior_description: string;
-  evidence: BehaviorEvidence[];
-}
-
-export interface CategoryComparison {
-  category: BehaviorCategory;
-  label: string | null;
-  successful: BehaviorObservation[];
-  failing: BehaviorObservation[];
-}
-
-export interface AgentCapabilities {
-  schema_version: number;
-  /** The version compared, stamped by the endpoint. Trial links carry it so
-   *  the task page opens the drawer on the version that owns the trial. */
-  task_version_id?: string;
-  /** Trials have landed on this version since the comparison was built, so it
-   *  describes a smaller trial set than the page shows. Only the share route
-   *  serves these — the signed-in route regenerates instead. */
-  stale?: boolean;
-  /** A durable rebuild job is queued or already active. */
-  regenerating?: boolean;
-  cohort_success: string[];
-  cohort_failure: string[];
-  /** Model-written headline: one or two sentences naming the capability that
-   *  separates the cohorts. Optional because comparisons stored before
-   *  schema_version 2 have no such field. */
-  summary?: string;
-  /** "single" when every classified run landed on one side, so the section
-   *  describes a cohort rather than comparing two. Absent on pre-v3 rows. */
-  mode?: "comparison" | "single";
-  /** Which models ran on each side, counted server-side from the trial rows —
-   *  never model-authored, so it is a fact rather than a claim. */
-  models?: {
-    successful: { model: string; trials: number }[];
-    failing: { model: string; trials: number }[];
-  };
-  /** trial id -> short model name, so each citation can name its model. */
-  trial_models?: Record<string, string>;
-  categories: CategoryComparison[];
-  dropped?: { evidence: number; observations: number; categories: number };
-  /** Trials whose summary covers under half their run; evidence from these is thin. */
-  thin_coverage?: string[];
 }
 
 export interface TrajectorySummary {
@@ -1302,56 +1248,8 @@ export interface ExperimentShareInfo {
   is_public: boolean;
   public_token: string | null;
   description: string | null;
-}
-
-export type ReportStatus =
-  | "pending"
-  | "queued"
-  | "running"
-  | "success"
-  | "failed";
-
-export interface ModelDenominators {
-  trials: number;
-  scored: number;
-  solved: number;
-  mean_reward: number | null;
-  analyzed: number;
-  bad: number;
-  good: number;
-}
-
-export interface ByModelEntry {
-  model: string;
-  bucket: "bad" | "good" | "all";
-  narrative: string;
-  relative_strengths: string;
-  relative_weaknesses: string;
-  distinctive_failures: string[];
-}
-
-export interface ByModel {
-  version: number;
-  comparison: string;
-  denominators: Record<string, ModelDenominators>;
-  models: ByModelEntry[];
-}
-
-export interface Report {
-  id: string;
-  name: string;
-  status: ReportStatus;
-  error?: string | null;
-  bad_failure_content?: string | null;
-  good_failure_content?: string | null;
-  universal_capabilities_content?: string | null;
-  headroom_analysis?: string | null;
-  num_trials?: number | null;
-  num_bad_failures?: number | null;
-  num_good_failures?: number | null;
-  breakdown?: Record<string, number> | null;
-  by_model?: ByModel | null;
-  experiment_ids: string[];
-  created_at?: string | null;
-  finished_at?: string | null;
+  // QA-report linkage: a shadow experiment points at the experiment it
+  // grades; a graded experiment points at its shadow.
+  shadow_of?: string | null;
+  qa_report_experiment_id?: string | null;
 }

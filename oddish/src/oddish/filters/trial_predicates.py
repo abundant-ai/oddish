@@ -7,7 +7,7 @@ from typing import Any, Sequence
 
 from sqlalchemy import Integer, and_, exists, false, func, select
 
-from oddish.db import TrialModel, TrialStatus
+from oddish.db import AGENT_TRIAL_KIND, TrialModel, TrialStatus
 from oddish.filters.trial_metrics import TrialMetricFilter, TrialMetricMatch
 
 
@@ -19,15 +19,23 @@ class EligibleTrialScope:
     include_probes: bool = False
     include_superseded: bool = False
     include_deleted: bool = False
+    # Platform analysis runs (``trials.kind != 'agent'``) are excluded by
+    # default: user-facing surfaces count agent runs only. Opt out on the
+    # (admin/analysis) surfaces that deliberately look at analysis trials.
+    include_non_agent_kinds: bool = False
 
     def clauses(self) -> list[Any]:
         clauses = list(self.membership)
+        if not self.include_non_agent_kinds:
+            clauses.append(TrialModel.kind == "agent")
         if not self.include_probes:
             clauses.append(TrialModel.is_probe.isnot(True))
         if not self.include_superseded:
             clauses.append(TrialModel.superseded_by_trial_id.is_(None))
         if not self.include_deleted:
             clauses.append(TrialModel.deleted_at.is_(None))
+        if not self.include_non_agent_kinds:
+            clauses.append(TrialModel.kind == AGENT_TRIAL_KIND)
         return clauses
 
 

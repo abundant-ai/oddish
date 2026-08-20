@@ -6,10 +6,23 @@
 # later pushes the branch is reused; the seed is idempotent + convergent so
 # re-running is safe.
 #
-# If a branch lands in a terminal-failed state (status MIGRATIONS_FAILED /
-# FUNCTIONS_FAILED, or preview_project_status INIT_FAILED / PAUSE_FAILED)
-# or never becomes ready within the deadline, it is torn down and recreated
-# (up to MAX_ATTEMPTS) so a flaky run doesn't poison every push to the PR.
+# If a branch lands in a terminal-failed state (status FUNCTIONS_FAILED, or
+# preview_project_status INIT_FAILED / PAUSE_FAILED) or never becomes ready
+# within the deadline, it is torn down and recreated (up to MAX_ATTEMPTS) so a
+# flaky run doesn't poison every push to the PR.
+#
+# MIGRATIONS_FAILED is NOT one of those states. `supabase/migrations/` is kept
+# empty on purpose (see supabase/config.toml) so Supabase's migration runner is
+# a no-op on every branch; Alembic owns the schema and this workflow applies
+# it. The runner's verdict therefore says nothing about whether the branch
+# works, and the branch DB password is rotated on every run below, which is
+# enough on its own to leave that runner unable to report success.
+#
+# Treating it as terminal made EVERY second push delete and recreate the
+# branch: no preview ever kept its data, every push paid a full reseed, and an
+# API key created from the preview dashboard died on the next push. The real
+# health gate is the psql smoke test further down -- a branch that answers
+# `select 1` is usable no matter what the migration runner thinks.
 set -uo pipefail
 
 BRANCH_NAME="pr-${PR_NUMBER}"
@@ -25,7 +38,7 @@ MAX_ATTEMPTS=3
 #   created with data; data-less preview branches have no restore.)
 is_failed_status() {
   case "$1" in
-    MIGRATIONS_FAILED|FUNCTIONS_FAILED) return 0 ;;
+    FUNCTIONS_FAILED) return 0 ;;
   esac
   return 1
 }
@@ -97,8 +110,12 @@ for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
         branch_failed=1
         break
       fi
+      # MIGRATIONS_FAILED counts as ready: the runner is a deliberate no-op
+      # here, so its state cannot make a healthy compute unusable. Without
+      # this the branch would never satisfy the readiness check, time out,
+      # and be recreated anyway -- the same churn by a slower route.
       case "$status" in
-        MIGRATIONS_PASSED|FUNCTIONS_DEPLOYED)
+        MIGRATIONS_PASSED|FUNCTIONS_DEPLOYED|MIGRATIONS_FAILED)
           [ "$preview" = "ACTIVE_HEALTHY" ] && { ready=1; break; }
           ;;
       esac

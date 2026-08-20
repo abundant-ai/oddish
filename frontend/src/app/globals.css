@@ -114,6 +114,10 @@
 @layer base {
   :root {
     --preview-banner-h: 0px;
+
+    /* Lets shadow-DOM components resolve `light-dark()` against the app
+       theme instead of the OS preference — see TREES_UNSAFE_CSS. */
+    --app-color-scheme: light;
   }
 
   :root[data-preview="true"] {
@@ -246,6 +250,8 @@
   }
 
   .dark {
+    --app-color-scheme: dark;
+
     --paper-bg: oklch(18% 0.012 70);
     --paper-bg-2: oklch(21% 0.012 70);
     --paper-surface: oklch(22% 0.013 70);

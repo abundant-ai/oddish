@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import partial
 import json
+import logging
 import os
 import shutil
 import tempfile
@@ -15,6 +16,12 @@ from pathlib import Path
 from harbor.models.environment_type import EnvironmentType
 from harbor.models.job.config import RetryConfig
 from harbor.trial.hooks import TrialEvent, TrialHookEvent
+
+# Only the abundant-ai Harbor fork defines ENVIRONMENT_PROVISIONED; against
+# vanilla harbor the attribute access itself would raise AttributeError on
+# every hook event. Resolve it once so the comparisons below simply never
+# match when the event does not exist.
+_ENVIRONMENT_PROVISIONED = getattr(TrialEvent, "ENVIRONMENT_PROVISIONED", None)
 from harbor.viewer.scanner import JobScanner
 from sqlalchemy import select, update
 
@@ -64,7 +71,12 @@ from oddish.worker.probe_creds import (
     revoke_probe_creds,
 )
 from oddish.worker.probe_overlay import PROBE_HARNESS_DIR
-from oddish.worker.probe_staging import apply_probe_overlay, stage_cli_mount
+from oddish.worker.probe_staging import (
+    apply_analysis_overlay,
+    apply_probe_overlay,
+    stage_cli_mount,
+)
+from oddish.workers.analysis_trials import is_analysis_kind
 from oddish.workers.harbor.ephemeral import HarborOverrideImportError
 from oddish.workers.harbor.outcome import merged_trial_result
 from oddish.workers.harbor.runner import (
@@ -86,6 +98,8 @@ from oddish.workers.queue.worker_job_single_job import (
     SandboxCapacityLeaseLostError,
     heartbeat_worker_job,
 )
+
+logger = logging.getLogger(__name__)
 
 TRIAL_HEARTBEAT_INTERVAL_SECONDS = 30
 
@@ -601,6 +615,17 @@ async def _prepare_trial_run(
         )
 
 
+def should_generate_inline_probe_summary(
+    trial_mode: str | None, extra_instructions: str | None
+) -> bool:
+    """Only probe trials get the inline probe-summary call. QA/audit trials
+    also carry ``extra_instructions`` (their brief), but their analysis IS the
+    trial itself: running the direct probe analyzer for them would burn a
+    second, unintended LLM call per analysis run and stamp probe-style
+    analysis fields onto the qa/audit row."""
+    return bool(extra_instructions) and not is_analysis_kind(trial_mode)
+
+
 async def _generate_probe_summary_inline(
     *,
     trial_id: str,
@@ -610,14 +635,11 @@ async def _generate_probe_summary_inline(
 ) -> dict:
     """Run the probe analyzer in-process, right after a probe trial finishes.
 
-    The probe summary is the whole point of a probe, but probes never set
-    ``task.run_analysis`` (they're appended to an existing task that owns that
-    flag), so the generic completion path below won't enqueue an ANALYSIS job
-    for them -- which is why probe trials previously had no summary in the
-    cloud. Instead we generate it inline here: same job, same session,
-    mirroring ``worker.local_runner``, while the local Harbor artifacts still
-    exist on disk (before ``_cleanup_uploaded_job_dir`` prunes them). Returns
-    the analysis fields ``_store_trial_results`` writes onto the trial row.
+    Probes are excluded from task-level QA, so this inline pass is the only
+    place their summary is produced: same job, same session, mirroring
+    ``worker.local_runner``, while the local Harbor artifacts still exist on
+    disk (before ``_cleanup_uploaded_job_dir`` prunes them). Returns the
+    analysis fields ``_store_trial_results`` writes onto the trial row.
 
     Never raises: an analyzer failure is captured as ``analysis_status=FAILED``
     so the trial result itself still persists.
@@ -634,7 +656,7 @@ async def _generate_probe_summary_inline(
             verifier_stdout=artifacts["verifier_stdout"] or "",
             reward=reward,
             result_focus=harbor_config.get("result_focus") or "",
-            model=settings.analysis_model,
+            model=settings.probe_analyzer_model,
         )
         status = AnalysisStatus.SUCCESS
         console.print(
@@ -958,30 +980,44 @@ async def _store_trial_results(
 
 async def _run_post_trial_hooks(trial_id: str) -> None:
     from oddish.queue import maybe_gate_llm_trials, maybe_start_qa_stage
+    from oddish.workers.analysis_trials import handle_analysis_trial_settled
 
-    async with get_session() as session:
-        if (
-            task_id := await session.scalar(
-                select(TrialModel.task_id).where(TrialModel.id == trial_id)
-            )
-        ) is None:
-            return
-        task = await session.get(TaskModel, task_id, with_for_update=True)
-        trial = await session.get(TrialModel, trial_id, with_for_update=True)
-        if (
-            trial is None
-            or trial.status not in (TrialStatus.SUCCESS, TrialStatus.FAILED)
-            or trial.harbor_stage == "cancelled"
-        ):
-            return
-        if task is None or task.status == TaskStatus.FAILED:
-            return
+    trial_kind = "agent"
+    try:
+        async with get_session() as session:
+            if (
+                task_id := await session.scalar(
+                    select(TrialModel.task_id).where(TrialModel.id == trial_id)
+                )
+            ) is None:
+                return
+            task = await session.get(TaskModel, task_id, with_for_update=True)
+            trial = await session.get(TrialModel, trial_id, with_for_update=True)
+            if (
+                trial is None
+                or trial.status not in (TrialStatus.SUCCESS, TrialStatus.FAILED)
+                or trial.harbor_stage == "cancelled"
+            ):
+                return
+            trial_kind = trial.kind or "agent"
+            if trial_kind == "agent":
+                if task is None or task.status == TaskStatus.FAILED:
+                    return
+                await maybe_gate_llm_trials(session, trial_id)
+                if await maybe_start_qa_stage(session, trial_id):
+                    console.print(
+                        f"[blue]Task {trial.task_id} transitioned to next stage[/blue]"
+                    )
+    except Exception:  # noqa: BLE001 — the trial is already terminal;
+        # a hook failure must not fail the settled job. The cleanup sweep
+        # re-runs stage advancement.
+        logger.exception("post-trial hooks failed for trial %s", trial_id)
 
-        await maybe_gate_llm_trials(session, trial_id)
-        if await maybe_start_qa_stage(session, trial_id):
-            console.print(
-                f"[blue]Task {trial.task_id} transitioned to next stage[/blue]"
-            )
+    if trial_kind != "agent":
+        try:
+            await handle_analysis_trial_settled(trial_id)
+        except Exception:  # noqa: BLE001 — the cleanup sweep re-runs importers
+            logger.exception("analysis import failed for trial %s", trial_id)
 
 
 async def _finish_trial_settlement(
@@ -1056,7 +1092,7 @@ async def _handle_harbor_event(
     elif observed_at.tzinfo is None:
         observed_at = observed_at.replace(tzinfo=timezone.utc)
 
-    if event == TrialEvent.ENVIRONMENT_PROVISIONED:
+    if _ENVIRONMENT_PROVISIONED is not None and event == _ENVIRONMENT_PROVISIONED:
         if sandbox_launch is None:
             raise RuntimeError(
                 f"Trial {trial_id} received environment-provisioned without a "
@@ -1313,7 +1349,7 @@ async def _handle_harbor_event(
 
     except Exception as e:
         console.print(f"[yellow]Hook callback error: {e}[/yellow]")
-        if event == TrialEvent.ENVIRONMENT_PROVISIONED:
+        if _ENVIRONMENT_PROVISIONED is not None and event == _ENVIRONMENT_PROVISIONED:
             raise
 
 
@@ -1578,6 +1614,7 @@ async def run_trial_job(
     probe_agent_env: dict[str, str] | None = None
     probe_key_id: str | None = None
     job_scoped_bundle: job_tokens.JobCredentialBundle | None = None
+    trial_mode = (prepared_trial.trial_harbor_config or {}).get("mode")
     if probe_extra_instructions:
         if temp_task_dir is None:
             probe_copy_root = Path(tempfile.mkdtemp(prefix=f"probe-{trial_id}-"))
@@ -1585,14 +1622,29 @@ async def run_trial_job(
             shutil.copytree(task_path_to_run, probe_copy_dir, symlinks=True)
             task_path_to_run = probe_copy_dir
             temp_task_dir = probe_copy_root
-        await apply_probe_overlay(
-            task_path_to_run,
-            task_id=prepared_trial.task_id,
-            trial_id=trial_id,
-            extra_instructions=probe_extra_instructions,
-            probe_scope=probe_scope,
-        )
-        # Probes get network egress so the oddish-query CLI can reach the API.
+        if is_analysis_kind(trial_mode):
+            from oddish.workers.analysis_trials import (
+                ANALYSIS_ARTIFACTS,
+                analysis_check_payload,
+            )
+
+            apply_analysis_overlay(
+                task_path_to_run,
+                brief=probe_extra_instructions,
+                artifact=ANALYSIS_ARTIFACTS[trial_mode],
+                check_payload=analysis_check_payload(
+                    trial_mode, prepared_trial.trial_harbor_config
+                ),
+            )
+        else:
+            await apply_probe_overlay(
+                task_path_to_run,
+                task_id=prepared_trial.task_id,
+                trial_id=trial_id,
+                extra_instructions=probe_extra_instructions,
+                probe_scope=probe_scope,
+            )
+        # Network egress so the oddish-query CLI can reach the API.
         enable_local_internet(task_path_to_run)
         try:
             probe_key_id, probe_agent_env = await mint_probe_creds(
@@ -1604,6 +1656,11 @@ async def run_trial_job(
         except ProbeCredsError as exc:
             # Record the failure on the trial row so the operator sees why the
             # probe failed; _execute_trial's handler never runs in this path.
+            logger.error(
+                "trial %s failed before sandbox start: ProbeCredsError: %s",
+                trial_id,
+                exc,
+            )
             _, run_post_trial_hooks = await asyncio.shield(
                 _store_trial_results(
                     trial_id=trial_id,
@@ -1773,12 +1830,18 @@ async def run_trial_job(
                 console.print(f"[yellow]Sauron mirror failed (non-fatal): {e}[/yellow]")
 
         # Probe trials get their summary generated inline, in this same job,
-        # while the local Harbor artifacts still exist on disk -- mirroring the
-        # local runner. Probes never set task.run_analysis, so this is the only
-        # place their summary is produced in the cloud. Must run before the
-        # cleanup below prunes job_dir.
+        # while the local Harbor artifacts still exist on disk -- mirroring
+        # the local runner. Probes are excluded from task-level QA, so this
+        # is the only place their summary is produced in the cloud. Must run
+        # before the cleanup below prunes job_dir. QA/audit trials also carry
+        # extra_instructions but must never take this path (see
+        # should_generate_inline_probe_summary).
         probe_analysis = None
-        if probe_extra_instructions and execution.outcome and execution.outcome.job_dir:
+        if (
+            should_generate_inline_probe_summary(trial_mode, probe_extra_instructions)
+            and execution.outcome
+            and execution.outcome.job_dir
+        ):
             probe_analysis = await _generate_probe_summary_inline(
                 trial_id=trial_id,
                 job_dir=execution.outcome.job_dir,

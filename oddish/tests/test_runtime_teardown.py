@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 import types
 from pathlib import Path
@@ -75,6 +76,35 @@ def test_daytona_teardown_gets_and_deletes_then_closes(monkeypatch) -> None:
     assert calls["get"] == "dt-1"
     assert calls["delete"] == {"sandbox": "dt-1"}
     assert calls["closed"] is True
+
+
+def test_daytona_teardown_treats_missing_sandbox_as_done(monkeypatch, caplog) -> None:
+    from daytona.common.errors import DaytonaNotFoundError
+
+    calls: dict[str, object] = {}
+
+    class _FakeClient:
+        async def get(self, external_id: str):
+            raise DaytonaNotFoundError(
+                f"Sandbox with ID or name {external_id} not found",
+                status_code=404,
+            )
+
+        async def close(self):
+            calls["closed"] = True
+
+    fake_daytona = types.ModuleType("daytona")
+    fake_daytona.AsyncDaytona = lambda: _FakeClient()
+    monkeypatch.setitem(sys.modules, "daytona", fake_daytona)
+
+    with caplog.at_level(
+        logging.INFO, logger="oddish.runtime.backends.daytona"
+    ):
+        assert asyncio.run(DaytonaBackend().teardown("dt-gone")) is True
+    assert calls["closed"] is True
+    assert "metric=daytona.sandbox_gone phase=teardown external_id=dt-gone" in (
+        caplog.text
+    )
 
 
 def test_cancel_job_by_worker_delegates_to_modal(monkeypatch) -> None:
