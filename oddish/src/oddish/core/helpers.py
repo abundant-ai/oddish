@@ -496,6 +496,7 @@ def build_compact_trial_response(
     analysis_summary: dict[str, str | None] | None | object = _ANALYSIS_SUMMARY_UNSET,
     queue_info: TrialQueueInfo | None = None,
     jobs: Sequence[VisibleWorkerJob] | None = None,
+    exclusions: CostExclusions | None = None,
 ) -> TrialResponse:
     """Build a compact TrialResponse for table views.
 
@@ -553,6 +554,11 @@ def build_compact_trial_response(
         cost_usd=cost_usd,
         cost_is_estimated=cost_is_estimated,
         is_billed=trial.billed_user_id is not None,
+        cost_exclusion_reason=(
+            exclusions.reason_for(model=trial.model, experiment_id=trial.experiment_id)
+            if exclusions
+            else None
+        ),
         phase_timing=trial.phase_timing,
         has_trajectory=_has_fetchable_trajectory(trial),
         analysis_status=trial.analysis_status,
@@ -952,6 +958,7 @@ def build_task_status_response(
     effective_version_id: str | None | object = _VERSION_ID_UNSET,
     gathered_trial_ids: set[str] | None = None,
     exclude_combine_copies: bool = False,
+    exclusions: CostExclusions | None = None,
 ) -> TaskStatusResponse:
     """Build a TaskStatusResponse from a TaskModel with eagerly loaded trials.
 
@@ -1001,6 +1008,7 @@ def build_task_status_response(
                     if jobs_by_subject is not None
                     else None
                 ),
+                exclusions=exclusions,
             )
             for t in task_trials
         ]
@@ -1040,6 +1048,7 @@ def build_task_status_response_compact(
     experiment_context_id: str | None = None,
     effective_version_id: str | None | object = _VERSION_ID_UNSET,
     gathered_trial_ids: set[str] | None = None,
+    exclusions: CostExclusions | None = None,
 ) -> TaskStatusResponse:
     """Build TaskStatusResponse with compact per-trial payloads.
 
@@ -1079,6 +1088,7 @@ def build_task_status_response_compact(
                 if jobs_by_subject is not None
                 else None
             ),
+            exclusions=exclusions,
         )
         for t in task_trials
     ]
