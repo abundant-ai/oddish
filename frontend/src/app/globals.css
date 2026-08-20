@@ -115,14 +115,8 @@
   :root {
     --preview-banner-h: 0px;
 
-    /*
-     * The app's theme as a `color-scheme` keyword, for components that resolve
-     * their own colors with `light-dark()`. Pierre's shadow-root components
-     * (see `pierre-options.ts`) would otherwise follow the OS preference
-     * instead of the `.dark` class. Deliberately not applied to `:root`
-     * itself — that would restyle native scrollbars and form controls
-     * app-wide.
-     */
+    /* Lets shadow-DOM components resolve `light-dark()` against the app
+       theme instead of the OS preference — see TREES_UNSAFE_CSS. */
     --app-color-scheme: light;
   }
 

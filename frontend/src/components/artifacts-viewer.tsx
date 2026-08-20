@@ -33,10 +33,9 @@ interface ArtifactsListing {
 }
 
 interface ArtifactEntry {
-  // Relative path inside the synthetic artifact root. Identifies the row in
-  // the tree and drives selection state — stripped of the Harbor
-  // `<trial_name>/` (and `steps/<step>/`) wrapper dirs so the tree reads like
-  // a normal filesystem.
+  // Relative path inside the synthetic artifact root — the tree row's
+  // identity, stripped of the Harbor `<trial_name>/` (and `steps/<step>/`)
+  // wrapper dirs so the tree reads like a normal filesystem.
   path: string;
   // Original S3-relative path returned by /trials/{id}/files. Used to build
   // the backend proxy URL for content fetches.
@@ -75,12 +74,9 @@ function relativizeArtifactPath(path: string): string {
 }
 
 /**
- * Flattens the listing into one entry per artifact file, keyed by
- * relativized path. Directory rows are inferred from the path segments by
- * @pierre/trees, so only leaves are built here — and `path` is the tree's
- * identity, so colliding relativized paths (a multi-step and a single-step
- * artifact reducing to the same name) keep the first entry rather than
- * producing a duplicate row.
+ * One entry per artifact file, keyed by relativized path. Colliding
+ * relativized paths (a multi-step and a single-step artifact reducing to the
+ * same name) keep the first entry — `path` is the tree row's identity.
  */
 function buildArtifactEntries(
   files: ArtifactFile[],
@@ -141,9 +137,8 @@ export function ArtifactsViewer({
     [data],
   );
 
-  // The tree takes a flat path list and infers the directories. Memoized so
-  // its identity only changes when the listing does — FileTreePane rebuilds
-  // (and re-expands) the tree on every new array.
+  // Identity must only change with the listing — FileTreePane rebuilds (and
+  // re-expands) the tree on any new array.
   const treePaths = useMemo(() => [...entriesByPath.keys()], [entriesByPath]);
 
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
@@ -201,9 +196,8 @@ export function ArtifactsViewer({
     if (selectedPath === null) return;
     const file = entriesByPath.get(selectedPath);
     onSelectedFileChangeRef.current?.(selectedPath, file?.fullPath);
-    // entriesByPath is a dependency only to read the fullPath; a listing
-    // refresh re-reports the same selection, which the parent treats as a
-    // no-op.
+    // entriesByPath is a dependency only to read fullPath; a listing refresh
+    // re-reports the same selection, a no-op upstream.
   }, [selectedPath, entriesByPath]);
 
   const selectedFile =
@@ -251,8 +245,8 @@ export function ArtifactsViewer({
             {fileCountLabel}
           </span>
         </div>
-        {/* The tree virtualizes its own rows, so it scrolls internally and
-            needs a bounded height rather than an `overflow-auto` parent. */}
+        {/* The tree scrolls internally (virtualized rows), so it needs a
+            bounded height, not an `overflow-auto` parent. */}
         <FileTreePane
           className="min-h-0 flex-1"
           onSelectPath={setSelectedPath}

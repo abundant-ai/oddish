@@ -30,9 +30,7 @@ test("names compare case-insensitively", () => {
   assert.equal(firstFilePath(["Zebra/a.txt", "apple/b.txt"]), "apple/b.txt");
 });
 
-test("numeric segments natural-sort", () => {
-  // Harbor listings are full of attempt_{n} / step names; a plain string
-  // compare would put attempt_10 first.
+test("numeric segments natural-sort (a string compare puts attempt_10 first)", () => {
   assert.equal(
     firstFilePath(["attempt_10/r.json", "attempt_2/r.json"]),
     "attempt_2/r.json",
@@ -40,10 +38,9 @@ test("numeric segments natural-sort", () => {
 });
 
 test("matches the first file row of a real tree model", () => {
-  // The invariant callers rely on: the default selection is the top file of
-  // the rendered tree. Assert it against an actual model, with the same
-  // options FileTreePane uses, so a library upgrade that changes sort or
-  // flattening semantics fails here instead of silently mis-selecting.
+  // Built with the same options FileTreePane uses, so a library upgrade that
+  // changes sort or flattening semantics fails here instead of silently
+  // mis-selecting.
   const paths = [
     "result.json",
     "logs/agent.log",
