@@ -61,4 +61,11 @@ jobs:
         run: "$GITHUB_WORKSPACE/.github/scripts/preview/prune_stale_supabase_branches.sh"
 
       - name: Stop preview Modal apps whose PR closed or whose database is gone
+        # Runs even when a `supabase branches delete` above failed (the prune
+        # script exits 1 if ANY delete fails, which would skip this step and
+        # leave every already-pruned branch's app running as a zombie for
+        # another day). The sweep re-lists branches and classifies
+        # missing/stale itself, so it never depends on the prune succeeding;
+        # the job still reports the prune failure.
+        if: ${{ !cancelled() }}
         run: "$GITHUB_WORKSPACE/.github/scripts/preview/prune_stale_preview_apps.sh"
