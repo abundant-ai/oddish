@@ -204,6 +204,40 @@ async def get_session() -> AsyncIterator[AsyncSession]:
             raise
 
 
+@asynccontextmanager
+async def get_read_session() -> AsyncIterator[AsyncSession]:
+    """Get a database session for read-only work, without transaction
+    round-trips.
+
+    ``get_session`` brackets every use in BEGIN ... COMMIT (or ROLLBACK on
+    error). The database sits a network hop away behind Supavisor, so each
+    of those statements is a full round-trip that a SELECT-only endpoint
+    pays for nothing. This variant checks the connection out in
+    driver-level autocommit: each statement runs as its own implicit
+    transaction and the only round-trips are the queries themselves.
+
+    Reads only. There is no COMMIT here, and any ORM mutation that flushes
+    through this session would be applied statement-by-statement with no
+    enclosing transaction to roll back. The soft-delete auto-filter still
+    applies -- it is keyed on the Session class, not the transaction.
+    """
+    async with async_session_maker() as session:
+        # The isolation level must be set when the connection is first
+        # procured for this session, before any query runs on it. The
+        # option applies for this checkout only; the pool resets the
+        # connection to the engine default on return.
+        if current_request_timing() is not None:
+            with timed_phase("db_checkout"):
+                await session.connection(
+                    execution_options={"isolation_level": "AUTOCOMMIT"}
+                )
+        else:
+            await session.connection(
+                execution_options={"isolation_level": "AUTOCOMMIT"}
+            )
+        yield session
+
+
 # =============================================================================
 # Database Initialization
 # =============================================================================
