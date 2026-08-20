@@ -22,7 +22,9 @@ export async function GET(
       });
     }
 
-    return NextResponse.json(data);
+    // Forward the upstream status even when ok (2xx isn't only 200), so the
+    // polling hook's status-code contract survives this proxy too.
+    return NextResponse.json(data, { status: res.status });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
