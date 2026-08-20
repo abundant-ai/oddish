@@ -106,6 +106,10 @@ pytestmark_db = pytest.mark.skipif(
 
 _DDL = """
 CREATE TYPE apikeyscope AS ENUM ('full','tasks','read_only');
+CREATE TABLE public.users (
+    id varchar(64) PRIMARY KEY,
+    email varchar(255) NOT NULL
+);
 CREATE TABLE public.organizations (
     id varchar(64) PRIMARY KEY,
     name varchar(255) NOT NULL,
@@ -119,9 +123,16 @@ CREATE TABLE public.api_keys (
     key_prefix varchar(16) NOT NULL,
     key_hash varchar(128) NOT NULL UNIQUE,
     scope apikeyscope NOT NULL,
+    created_by_user_id varchar(64),
     is_active boolean NOT NULL DEFAULT true,
     expires_at timestamptz,
-    created_at timestamptz NOT NULL DEFAULT now()
+    created_at timestamptz NOT NULL DEFAULT now(),
+    -- Real constraint: backend/alembic a1b2c3d4e5f6 adds
+    -- fk_api_keys_created_by_user_id, and the later oddish drop migration
+    -- removes api_keys_created_by_user_id_fkey -- a DIFFERENT name -- so this
+    -- survives a rebuild.
+    CONSTRAINT fk_api_keys_created_by_user_id
+        FOREIGN KEY (created_by_user_id) REFERENCES public.users(id)
 );
 """
 
@@ -166,6 +177,9 @@ class TestPersistenceAgainstPostgres:
         async with engine.begin() as conn:
             await conn.execute(text("DROP SCHEMA IF EXISTS preview_preserved CASCADE"))
             await conn.execute(
+                text("INSERT INTO public.users VALUES ('u1', 'dev@preview.local')")
+            )
+            await conn.execute(
                 text(
                     "INSERT INTO public.organizations (id, name)"
                     " VALUES ('org-local', 'Local Personal Org')"
@@ -174,8 +188,10 @@ class TestPersistenceAgainstPostgres:
             await conn.execute(
                 text(
                     "INSERT INTO public.api_keys"
-                    " (id, org_id, name, key_prefix, key_hash, scope)"
-                    " VALUES ('k1', 'org-local', 'gke', 'ok_pr-1', 'h1', 'full')"
+                    " (id, org_id, name, key_prefix, key_hash, scope,"
+                    "  created_by_user_id)"
+                    " VALUES ('k1', 'org-local', 'gke', 'ok_pr-1', 'h1', 'full',"
+                    "  'u1')"
                 )
             )
         return engine
@@ -188,7 +204,7 @@ class TestPersistenceAgainstPostgres:
 
         await mod._capture_preserved_rows(URL)
         await _fresh_public(engine)
-        await mod._restore_preserved_rows(URL)
+        assert await mod._restore_preserved_rows(URL) is True
 
         assert await _read(engine, "api_keys") == before_keys
         # The organization matters as much as the key: auth rejects a key whose
@@ -240,3 +256,114 @@ class TestPersistenceAgainstPostgres:
         await mod._restore_preserved_rows(URL)
         assert await _read(engine, "api_keys") == []
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytestmark_db
+class TestRestoreSurvivesBadRows:
+    """One row that cannot be written must not take the others with it.
+
+    A single set-at-a-time INSERT aborts the whole transaction, so one stale
+    payload would lose every preserved key. These are the cases raised in
+    review against this branch.
+    """
+
+    async def _seeded(self):
+        return await TestPersistenceAgainstPostgres()._seeded()
+
+    async def test_key_survives_when_its_creator_is_gone(self):
+        """api_keys.created_by_user_id keeps a real FK on a rebuilt schema.
+
+        If the creator cannot be restored, the key is retried with that
+        column cleared: losing the attribution beats losing the key.
+        """
+        from sqlalchemy import text
+
+        mod = _load_bootstrap()
+        engine = await self._seeded()
+        await mod._capture_preserved_rows(URL)
+        await _fresh_public(engine)
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("DELETE FROM preview_preserved.rows WHERE table_name = 'users'")
+            )
+
+        assert await mod._restore_preserved_rows(URL) is True
+        keys = await _read(engine, "api_keys")
+        assert len(keys) == 1
+        assert keys[0]["created_by_user_id"] is None
+        await engine.dispose()
+
+    async def test_unrestorable_row_leaves_the_schema_untrusted(self):
+        """A NOT NULL column added after the payload was stashed.
+
+        The row cannot be written, so the restore reports failure and the
+        caller must not mark the schema trusted -- otherwise the next push
+        takes the upgrade path, never restores, and the loss is permanent.
+        """
+        from sqlalchemy import text
+
+        mod = _load_bootstrap()
+        engine = await self._seeded()
+        await mod._capture_preserved_rows(URL)
+        await _fresh_public(engine)
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "ALTER TABLE public.api_keys"
+                    " ADD COLUMN tier varchar(16) NOT NULL DEFAULT 'x'"
+                )
+            )
+            await conn.execute(
+                text("ALTER TABLE public.api_keys ALTER COLUMN tier DROP DEFAULT")
+            )
+
+        assert await mod._restore_preserved_rows(URL) is False
+        # The other tables still came back: failure is per row, not per run.
+        assert len(await _read(engine, "organizations")) == 1
+        await engine.dispose()
+
+    async def test_key_is_skipped_when_its_organization_is_missing(self):
+        """verify_api_key refuses a key whose org row is absent, so restoring
+        it would look repaired while failing every request."""
+        from sqlalchemy import text
+
+        mod = _load_bootstrap()
+        engine = await self._seeded()
+        await mod._capture_preserved_rows(URL)
+        await _fresh_public(engine)
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "DELETE FROM preview_preserved.rows"
+                    " WHERE table_name = 'organizations'"
+                )
+            )
+
+        assert await mod._restore_preserved_rows(URL) is False
+        assert await _read(engine, "api_keys") == []
+        await engine.dispose()
+
+
+class TestCaptureGuardsAgainstProduction:
+    """Capture is now the first database write in a rebuild.
+
+    It creates the stash schema before _reset_schema runs its guard, so a
+    mispointed ODDISH_DATABASE_URL would copy credentials into production
+    before the drop refused.
+    """
+
+    def test_capture_asserts_the_preview_branch_before_writing(self):
+        source = (
+            Path(__file__).resolve().parents[2]
+            / ".github/scripts/preview/bootstrap_preview_db.py"
+        ).read_text()
+        body = source.split("async def _capture_preserved_rows(", 1)[1]
+        body = body.split("\nasync def _restore_preserved_rows", 1)[0]
+        assert "_assert_preview_branch(url)" in body, (
+            "capture is the first database write in a rebuild; it must assert "
+            "the target is a preview branch before creating the stash schema"
+        )
+        assert body.index("_assert_preview_branch(url)") < body.index(
+            "CREATE SCHEMA IF NOT EXISTS"
+        ), "the guard must run before the first write"

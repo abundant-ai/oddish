@@ -326,6 +326,8 @@ def _rebuild_mod(monkeypatch, version_sequence):
 
     async def _restore_rows(url):
         calls.append("restore_keys")
+        # True = restore succeeded; _rebuild only marks trusted on success.
+        return True
 
     monkeypatch.setattr(mod, "_fetch_prod_alembic_versions", _fetch)
     monkeypatch.setattr(mod, "_reset_schema", _reset)

@@ -12,12 +12,14 @@ the snapshot and runs the same incremental ``upgrade head`` prod does.
 
 import asyncio
 import hashlib
+import json
 import os
 import subprocess
 import sys
 from pathlib import Path
 
 from sqlalchemy import pool, text
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -200,7 +202,14 @@ def _assert_preview_branch(url: str) -> None:
 # Without this, every rebuild silently invalidates the key a developer just
 # created from the preview dashboard -- and a rebuild is not rare: any
 # cancelled run leaves the branch untrusted, so the next push rebuilds it.
-_PRESERVED_TABLES = ("organizations", "api_keys")
+# `users` comes first because api_keys.created_by_user_id still has a real
+# foreign key on a rebuilt schema: backend/alembic a1b2c3d4e5f6 adds
+# `fk_api_keys_created_by_user_id`, and the later oddish drop migration only
+# removes `api_keys_created_by_user_id_fkey` -- a different name, so the
+# constraint survives. Organizations come next: verify_api_key rejects a key
+# whose organization row is missing, so a key alone would restore and still
+# not work.
+_PRESERVED_TABLES = ("users", "organizations", "api_keys")
 
 # The stash lives OUTSIDE public, because the rebuild runs
 # ``DROP SCHEMA IF EXISTS public CASCADE`` and nothing else. Holding the rows
@@ -228,6 +237,13 @@ async def _capture_preserved_rows(url: str) -> None:
     never block the rebuild.
     """
     engine = None
+    # Guard BEFORE the first write. This creates a schema, so it is now the
+    # earliest database write in a rebuild -- ahead of _reset_schema, which
+    # used to hold that position along with this check. A mispointed
+    # ODDISH_DATABASE_URL would otherwise copy users, organizations and
+    # api_keys into production before the drop guard refused: the exact
+    # cross-environment credential copy _NEVER_SAMPLED_TABLES exists to stop.
+    _assert_preview_branch(url)
     try:
         # Inside the guard: a malformed URL or a missing driver must degrade to
         # "nothing preserved", never abort the rebuild.
@@ -286,70 +302,135 @@ async def _capture_preserved_rows(url: str) -> None:
             await engine.dispose()
 
 
-async def _restore_preserved_rows(url: str) -> None:
+async def _restore_preserved_rows(url: str) -> bool:
     """Put the stashed rows back after the schema is rebuilt.
 
-    Runs after ``upgrade head`` so each table has its final shape.
-    ``jsonb_populate_record`` maps the stashed payload onto the CURRENT row
-    type: it coerces each value to that column's real type (a plain ``->>``
-    would hand Postgres text, which has no assignment cast to boolean or
-    timestamptz), ignores keys whose column a migration removed, and leaves a
-    column a migration added as NULL. Conflicts do nothing: a row the seed
-    already recreated wins.
+    Returns True when the restore completed. The caller must NOT mark the
+    schema trusted on False: a trusted schema takes the upgrade path on the
+    next push, which never restores, so the rows would sit in the stash while
+    public stays empty. Retrying on the next rebuild keeps a failure
+    temporary instead of permanent.
 
-    The stash is deliberately NOT cleared. It costs a few rows and it means a
-    run cancelled before this point can still be recovered by the next one.
+    Rows go back ONE AT A TIME inside savepoints. A single row that cannot be
+    written -- a payload from before a NOT NULL column existed, a foreign key
+    that no longer resolves -- must not take the other rows with it. A single
+    set-at-a-time INSERT would abort the whole transaction and lose every
+    preserved key.
+
+    ``jsonb_populate_record`` maps a payload onto the CURRENT row type: it
+    gives each value that column's real type (a plain ``->>`` yields text,
+    which has no assignment cast to boolean or timestamptz), ignores a column
+    a migration removed, and leaves a column a migration added as NULL.
+
+    The stash is deliberately NOT cleared, so a run cancelled before this
+    point is still recoverable by the next one.
     """
     engine = None
+    ok = True
     try:
         engine = _engine(url)
         async with engine.begin() as conn:
-            present = await conn.scalar(
+            if not await conn.scalar(
                 text("SELECT to_regclass(:qualified) IS NOT NULL"),
                 {"qualified": _PRESERVE_TABLE},
-            )
-            print(
-                f"bootstrap_preview_db: restore stash present={bool(present)}",
-                file=sys.stderr,
-            )
-            if not present:
-                return
+            ):
+                return True
+
             for table in _PRESERVED_TABLES:
                 if not await conn.scalar(
                     text("SELECT to_regclass(:qualified) IS NOT NULL"),
                     {"qualified": f"public.{table}"},
                 ):
                     continue
-                restored = await conn.scalar(
-                    text(
-                        f"WITH stashed AS ("
-                        f"  SELECT payload FROM {_PRESERVE_TABLE}"
-                        f"  WHERE table_name = :t),"
-                        f" inserted AS ("
-                        f'  INSERT INTO public."{table}"'
-                        f"  SELECT (jsonb_populate_record("
-                        f'    NULL::public."{table}", stashed.payload)).*'
-                        f"  FROM stashed"
-                        f"  ON CONFLICT DO NOTHING"
-                        f"  RETURNING 1)"
-                        f" SELECT count(*) FROM inserted"
-                    ),
-                    {"t": table},
-                )
+
+                payloads = [
+                    row[0]
+                    for row in await conn.execute(
+                        text(
+                            f"SELECT payload FROM {_PRESERVE_TABLE}"
+                            " WHERE table_name = :t"
+                        ),
+                        {"t": table},
+                    )
+                ]
+                restored = skipped = 0
+                for payload in payloads:
+                    if await _restore_one(conn, table, payload):
+                        restored += 1
+                    else:
+                        skipped += 1
+                        ok = False
                 print(
-                    f"bootstrap_preview_db: restored {restored} {table} "
-                    "row(s) preserved across the rebuild",
+                    f"bootstrap_preview_db: restored {restored} {table} row(s)"
+                    + (f", skipped {skipped}" if skipped else ""),
                     file=sys.stderr,
                 )
     except Exception as exc:  # noqa: BLE001 - a failed restore must not fail the deploy
         print(
             f"bootstrap_preview_db: could not restore preserved rows ({exc}); "
-            "create a new preview API key from the dashboard",
+            "the schema stays untrusted so the next run retries",
             file=sys.stderr,
         )
+        return False
     finally:
         if engine is not None:
             await engine.dispose()
+    return ok
+
+
+async def _restore_one(conn, table: str, payload: dict) -> bool:
+    """Write one preserved row, inside its own savepoint.
+
+    An api_key whose creator no longer exists is retried once with
+    ``created_by_user_id`` cleared: the column is nullable, and losing the
+    attribution is far better than losing the key itself. An api_key whose
+    organization did not come back is skipped outright -- verify_api_key
+    refuses such a key, so restoring it would look repaired while still
+    failing every request.
+    """
+    if table == "api_keys":
+        org_id = payload.get("org_id")
+        if org_id and not await conn.scalar(
+            text("SELECT 1 FROM public.organizations WHERE id = :o"), {"o": org_id}
+        ):
+            print(
+                f"bootstrap_preview_db: skipping api_key {payload.get('id')}: "
+                f"organization {org_id} is not present, so the key could not "
+                "authenticate anyway",
+                file=sys.stderr,
+            )
+            return False
+
+    for attempt, body in enumerate(_restore_attempts(table, payload)):
+        try:
+            async with conn.begin_nested():
+                await conn.execute(
+                    text(
+                        f'INSERT INTO public."{table}"'
+                        f"  SELECT (jsonb_populate_record("
+                        f'    NULL::public."{table}", CAST(:payload AS jsonb))).*'
+                        f"  ON CONFLICT DO NOTHING"
+                    ),
+                    {"payload": json.dumps(body, default=str)},
+                )
+            return True
+        except (IntegrityError, DBAPIError) as exc:
+            if attempt == 0 and table == "api_keys":
+                continue  # retry without the creator reference
+            print(
+                f"bootstrap_preview_db: could not restore {table} row "
+                f"{payload.get('id')}: {exc.__class__.__name__}",
+                file=sys.stderr,
+            )
+            return False
+    return False
+
+
+def _restore_attempts(table: str, payload: dict):
+    """The payload, then a fallback that drops a dangling creator reference."""
+    yield payload
+    if table == "api_keys" and payload.get("created_by_user_id") is not None:
+        yield {**payload, "created_by_user_id": None}
 
 
 async def _reset_schema(url: str) -> None:
@@ -572,9 +653,17 @@ def _rebuild(url: str) -> None:
     for project in STACKS:
         _upgrade_head(project)
     asyncio.run(_assert_model_schema(url))
-    asyncio.run(_restore_preserved_rows(url))
-    # Trust last: a cancelled run leaves the branch untrusted -> next run rebuilds.
-    asyncio.run(_mark_trusted(url))
+    # Trust last, and only when the restore worked: a trusted schema takes the
+    # upgrade path next push, which never restores, so trusting after a failed
+    # restore would strand the rows in the stash for good.
+    if asyncio.run(_restore_preserved_rows(url)):
+        asyncio.run(_mark_trusted(url))
+    else:
+        print(
+            "bootstrap_preview_db: leaving the schema untrusted so the next "
+            "run rebuilds and retries the preserved rows",
+            file=sys.stderr,
+        )
 
 
 def _upgrade_and_verify(url: str) -> None:
