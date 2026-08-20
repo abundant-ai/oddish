@@ -6,12 +6,14 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Code, Eye, Loader2, Package } from "lucide-react";
-import { FileTreePane, firstFilePath } from "@/components/file-tree-pane";
+import { FileTreePane } from "@/components/file-tree-pane";
 import {
   FileRenderer,
   isBinaryRendererFile,
 } from "@/components/renderers/file-renderer";
 import { fetcher } from "@/lib/api";
+import { firstFilePath } from "@/lib/file-tree-order";
+import { formatFileSize } from "@/lib/format";
 import { sameFilePath } from "@/lib/file-path";
 import type { LineRange } from "@/lib/line-range";
 
@@ -31,8 +33,6 @@ interface ArtifactsListing {
 }
 
 interface ArtifactEntry {
-  // File name, i.e. the last segment of `path`.
-  name: string;
   // Relative path inside the synthetic artifact root. Identifies the row in
   // the tree and drives selection state — stripped of the Harbor
   // `<trial_name>/` (and `steps/<step>/`) wrapper dirs so the tree reads like
@@ -74,29 +74,22 @@ function relativizeArtifactPath(path: string): string {
   return inside;
 }
 
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
 /**
- * Flattens the listing into one entry per artifact file. Directory rows are
- * inferred from the path segments by @pierre/trees, so only leaves are built
- * here — and `path` is the tree's identity, so colliding relativized paths
- * (a multi-step and a single-step artifact reducing to the same name) keep
- * the first entry rather than producing a duplicate row.
+ * Flattens the listing into one entry per artifact file, keyed by
+ * relativized path. Directory rows are inferred from the path segments by
+ * @pierre/trees, so only leaves are built here — and `path` is the tree's
+ * identity, so colliding relativized paths (a multi-step and a single-step
+ * artifact reducing to the same name) keep the first entry rather than
+ * producing a duplicate row.
  */
-function buildArtifactEntries(files: ArtifactFile[]): ArtifactEntry[] {
-  const entries: ArtifactEntry[] = [];
-  const seen = new Set<string>();
+function buildArtifactEntries(
+  files: ArtifactFile[],
+): Map<string, ArtifactEntry> {
+  const entries = new Map<string, ArtifactEntry>();
   for (const file of files) {
     const path = relativizeArtifactPath(file.path);
-    const name = path.split("/").pop();
-    if (!name || seen.has(path)) continue;
-    seen.add(path);
-    entries.push({
-      name,
+    if (!path || entries.has(path)) continue;
+    entries.set(path, {
       path,
       fullPath: file.path,
       size: file.size,
@@ -140,7 +133,7 @@ export function ArtifactsViewer({
     { revalidateOnFocus: false },
   );
 
-  const allFiles = useMemo(
+  const entriesByPath = useMemo(
     () =>
       buildArtifactEntries(
         (data?.files ?? []).filter((f) => isArtifactPath(f.path)),
@@ -151,7 +144,7 @@ export function ArtifactsViewer({
   // The tree takes a flat path list and infers the directories. Memoized so
   // its identity only changes when the listing does — FileTreePane rebuilds
   // (and re-expands) the tree on every new array.
-  const treePaths = useMemo(() => allFiles.map((f) => f.path), [allFiles]);
+  const treePaths = useMemo(() => [...entriesByPath.keys()], [entriesByPath]);
 
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"rendered" | "raw">("rendered");
@@ -169,23 +162,24 @@ export function ArtifactsViewer({
   // open) but only fall back to a fresh selection when the previously
   // selected path no longer exists.
   useEffect(() => {
-    if (!allFiles.length) {
+    if (!entriesByPath.size) {
       setSelectedPath(null);
       return;
     }
     setSelectedPath((prev) => {
-      if (prev && allFiles.some((f) => f.path === prev)) return prev;
+      if (prev && entriesByPath.has(prev)) return prev;
       const wanted = initialFilePathRef.current;
       if (wanted) {
         // Match against the relativized tree path and the original storage
         // path: multi-step artifacts insert the step segment into the tree
         // path (steps/setup/artifacts/x → setup/x), so a storage path from
         // the files API is not a suffix of it and only fullPath can match.
+        const entries = [...entriesByPath.values()];
         const match =
-          allFiles.find((f) => f.path === wanted) ??
-          allFiles.find((f) => f.fullPath === wanted) ??
-          allFiles.find((f) => sameFilePath(f.path, wanted)) ??
-          allFiles.find((f) => sameFilePath(f.fullPath, wanted));
+          entriesByPath.get(wanted) ??
+          entries.find((f) => f.fullPath === wanted) ??
+          entries.find((f) => sameFilePath(f.path, wanted)) ??
+          entries.find((f) => sameFilePath(f.fullPath, wanted));
         // An unresolved deep link keeps the selection empty instead of
         // falling through to the first file: reporting that fallback
         // would wipe the ?file= / ?lines= address it couldn't resolve.
@@ -195,7 +189,7 @@ export function ArtifactsViewer({
       }
       return firstFilePath(treePaths);
     });
-  }, [allFiles, treePaths]);
+  }, [entriesByPath, treePaths]);
 
   // Report file selections upward for URL sync. Nulls (transient resets)
   // are never reported — they would wipe a live ?file= anchor.
@@ -205,16 +199,15 @@ export function ArtifactsViewer({
   });
   useEffect(() => {
     if (selectedPath === null) return;
-    const file = allFiles.find((f) => f.path === selectedPath);
+    const file = entriesByPath.get(selectedPath);
     onSelectedFileChangeRef.current?.(selectedPath, file?.fullPath);
-    // allFiles is a dependency only to read the fullPath; a listing refresh
-    // re-reports the same selection, which the parent treats as a no-op.
-  }, [selectedPath, allFiles]);
+    // entriesByPath is a dependency only to read the fullPath; a listing
+    // refresh re-reports the same selection, which the parent treats as a
+    // no-op.
+  }, [selectedPath, entriesByPath]);
 
-  const selectedFile = useMemo(
-    () => allFiles.find((f) => f.path === selectedPath) ?? null,
-    [allFiles, selectedPath],
-  );
+  const selectedFile =
+    selectedPath != null ? (entriesByPath.get(selectedPath) ?? null) : null;
 
   if (isLoading) {
     return (
@@ -233,7 +226,7 @@ export function ArtifactsViewer({
     );
   }
 
-  if (allFiles.length === 0) {
+  if (entriesByPath.size === 0) {
     return (
       <div className="p-6 text-center">
         <Package className="text-muted-foreground/50 mx-auto mb-2 h-8 w-8" />
@@ -245,8 +238,8 @@ export function ArtifactsViewer({
     );
   }
 
-  const fileCountLabel = `${allFiles.length} ${
-    allFiles.length === 1 ? "file" : "files"
+  const fileCountLabel = `${entriesByPath.size} ${
+    entriesByPath.size === 1 ? "file" : "files"
   }`;
 
   return (
@@ -306,7 +299,7 @@ function ArtifactContentPane({
   const fullPath = selectedFile?.fullPath ?? null;
   const presignedUrl = selectedFile?.url;
   const fileSize = selectedFile?.size;
-  const fileName = selectedFile?.name ?? "";
+  const fileName = selectedFile?.path.split("/").pop() ?? "";
   const isBinary = fileName ? isBinaryRendererFile(fileName) : false;
 
   // Each path segment is URL-encoded individually so `/` separators in the

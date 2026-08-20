@@ -31,20 +31,16 @@ export const PIERRE_UNSAFE_CSS = `
 `;
 
 /**
- * Theme bridge for @pierre/trees, passed as the tree's `unsafeCSS`.
+ * Theme bridge for @pierre/trees, passed as the tree's `unsafeCSS`. The
+ * `--trees-*-override` variables are the library's supported theming surface,
+ * same pattern as `--diffs-*-override` above.
  *
- * Two things are going on:
- *
- * 1. `color-scheme`. The tree declares `color-scheme: light dark` and resolves
- *    ~27 defaults (notably the file-type icon palette, which has no per-hue
- *    override) through `light-dark()`. Left alone that follows the *OS*
- *    preference, not oddish's `.dark` class, so a light-theme user on a dark
- *    machine would get dark icons. `--app-color-scheme` (globals.css) inherits
- *    across the shadow boundary and pins it to the app's theme instead.
- * 2. The `--trees-*-override` variables, which are the library's supported
- *    theming surface — same pattern as `--diffs-*-override` above. Row colors
- *    mirror what the hand-rolled trees used: `bg-primary/20` + `text-primary`
- *    for the selected row, `bg-muted` on hover, mono type at `text-xs`.
+ * `color-scheme` needs pinning: the tree declares `color-scheme: light dark`
+ * and resolves many defaults (notably the file-type icon palette, which has
+ * no per-hue override) through `light-dark()`. Left alone that follows the
+ * *OS* preference, not oddish's `.dark` class, so a light-theme user on a
+ * dark machine would get dark icons. `--app-color-scheme` (globals.css)
+ * inherits across the shadow boundary and pins it to the app's theme.
  *
  * The background stays transparent so the pane's own `bg-muted/30` shows
  * through; the tree still derives its scrollbar thumb and indent guides from
