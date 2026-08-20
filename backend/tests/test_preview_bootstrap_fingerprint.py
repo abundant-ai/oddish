@@ -321,6 +321,14 @@ def _rebuild_mod(monkeypatch, version_sequence):
     async def _trust(url):
         calls.append("trust")
 
+    async def _capture(url):
+        calls.append("capture_keys")
+
+    async def _restore_rows(url):
+        calls.append("restore_keys")
+        # True = restore succeeded; _rebuild only marks trusted on success.
+        return True
+
     monkeypatch.setattr(mod, "_fetch_prod_alembic_versions", _fetch)
     monkeypatch.setattr(mod, "_reset_schema", _reset)
     monkeypatch.setattr(mod, "_restore_schema", lambda url, sql: calls.append("restore"))
@@ -331,6 +339,8 @@ def _rebuild_mod(monkeypatch, version_sequence):
     )
     monkeypatch.setattr(mod, "_assert_model_schema", _assert_ok)
     monkeypatch.setattr(mod, "_mark_trusted", _trust)
+    monkeypatch.setattr(mod, "_capture_preserved_rows", _capture)
+    monkeypatch.setattr(mod, "_restore_preserved_rows", _restore_rows)
     return mod, calls
 
 
@@ -349,6 +359,8 @@ def test_rebuild_snapshots_prod_before_touching_the_branch(monkeypatch):
         "fetch_versions",
         "dump",
         "fetch_versions",
+        # Preserved rows are read while the old schema still exists...
+        "capture_keys",
         "reset",
         "restore",
         "write_versions",
@@ -356,6 +368,8 @@ def test_rebuild_snapshots_prod_before_touching_the_branch(monkeypatch):
         "upgrade:oddish",
         "upgrade:backend",
         "assert",
+        # ...and written back once the schema is at its final shape.
+        "restore_keys",
         "trust",
     ]
 
@@ -374,7 +388,10 @@ def test_rebuild_retries_snapshot_when_prod_migrates_mid_dump(monkeypatch):
         "dump",
         "fetch_versions",
     ]
-    assert calls[6] == "reset"
+    # Capture still lands between the settled snapshot and the drop.
+    assert calls[6] == "capture_keys"
+    assert calls[7] == "reset"
+    assert calls[-2] == "restore_keys"
     assert calls[-1] == "trust"
 
 
