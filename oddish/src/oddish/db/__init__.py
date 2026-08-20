@@ -28,7 +28,6 @@ from oddish.db.models import (
     # ORM Models
     AnalysisCostModel,
     analysis_spend_view,
-    AnalyzerBlockModel,
     CostExcludedLlmKeyModel,
     DocumentModel,
     ExperimentModel,
@@ -47,6 +46,7 @@ from oddish.db.models import (
     TaskModel,
     TaskVersionModel,
     TaskBrowseSummaryModel,
+    TaskVersionModelMetricsModel,
     TrialEventModel,
     TrialFacetModel,
     TrialModel,
@@ -120,7 +120,6 @@ __all__ = [
     # ORM Models
     "AnalysisCostModel",
     "analysis_spend_view",
-    "AnalyzerBlockModel",
     "CostExcludedLlmKeyModel",
     "ExperimentModel",
     "DocumentModel",
@@ -140,6 +139,7 @@ __all__ = [
     "TaskModel",
     "TaskVersionModel",
     "TaskBrowseSummaryModel",
+    "TaskVersionModelMetricsModel",
     "TrialEventModel",
     "TrialFacetModel",
     "TrialModel",

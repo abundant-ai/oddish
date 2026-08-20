@@ -72,11 +72,37 @@ test('harbor src without a pin dies clearly', () => {
   assert.match(out, /harbor (repo|ref)/i);
 });
 
-test('verifier source prints test.sh from the API', () => {
+test('task cat fetches a task source file without adding a solution prefix', () => {
+  const out = runApi(['task', 'cat', 'instruction.md'],
+    { '/tasks/task-123/files/instruction.md': { path: 'instruction.md', content: 'TASK-INSTRUCTIONS' } });
+  assert.match(out, /PROBE-ONLY/);
+  assert.match(out, /TASK-INSTRUCTIONS/);
+});
+
+test('task fetch downloads the complete source tree into --into', () => {
+  const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'task-dest-'));
+  const out = runApi(['task', 'fetch', '--into', dest],
+    { '/tasks/task-123/files': { files: [
+        { path: 'instruction.md', content: 'TASK-INSTRUCTIONS' },
+        { path: 'tests/test.sh', content: 'VERIFIER' } ] } });
+  assert.match(out, /PROBE-ONLY/);
+  assert.equal(fs.readFileSync(path.join(dest, 'instruction.md'), 'utf8'), 'TASK-INSTRUCTIONS');
+  assert.equal(fs.readFileSync(path.join(dest, 'tests/test.sh'), 'utf8'), 'VERIFIER');
+});
+
+test('verifier source resolves tests/test.sh from the task listing', () => {
   const out = runApi(['verifier', 'source'],
-    { '/tasks/task-123/files/test.sh': { path: 'test.sh', content: '#!/bin/bash\necho SCORER\n' } });
+    { '/tasks/task-123/files': { files: [{ path: 'tests/test.sh' }] },
+      '/tasks/task-123/files/tests/test.sh': { path: 'tests/test.sh', content: '#!/bin/bash\necho SCORER\n' } });
   assert.match(out, /PROBE-ONLY/);
   assert.match(out, /SCORER/);
+});
+
+test('verifier source supports legacy root-level test.sh', () => {
+  const out = runApi(['verifier', 'source'],
+    { '/tasks/task-123/files': { files: [{ path: 'test.sh' }] },
+      '/tasks/task-123/files/test.sh': { path: 'test.sh', content: 'LEGACY-SCORER' } });
+  assert.match(out, /LEGACY-SCORER/);
 });
 
 test('solution fetch downloads the solution tree into --into', () => {
@@ -93,17 +119,17 @@ test('solution fetch downloads the solution tree into --into', () => {
   assert.ok(!fs.existsSync(path.join(dest, 'test.sh')));  // only solution/ subtree
 });
 
-test('verify run materializes test.sh from the API, runs it, returns JSON', () => {
+test('verify run executes tests/test.sh discovered in the task listing', () => {
   const out = runApi(['verify', 'run'],
     { '/tasks/task-123/files': { files: [
-        { path: 'test.sh', content: '#!/bin/bash\necho RUNNING_VERIFIER\n' } ] } });
+        { path: 'tests/test.sh', content: '#!/bin/bash\necho RUNNING_VERIFIER\n' } ] } });
   const obj = JSON.parse(out);
   assert.match(obj.note, /PROBE-ONLY/);
   assert.equal(obj.exit, 0);
   assert.match(obj.build_log_tail, /RUNNING_VERIFIER/);
 });
 
-test('verify run captures stderr in build_log_tail', () => {
+test('verify run supports a legacy root-level verifier and captures stderr', () => {
   const out = runApi(['verify', 'run'],
     { '/tasks/task-123/files': { files: [
         { path: 'test.sh', content: '#!/bin/bash\necho STDERR_MARKER >&2\n' } ] } });
@@ -112,6 +138,8 @@ test('verify run captures stderr in build_log_tail', () => {
 
 test('--help lists the command groups', () => {
   const out = runApi(['--help'], {});
+  assert.match(out, /task cat/);
+  assert.match(out, /task fetch/);
   assert.match(out, /solution/);
   assert.match(out, /verifier/);
   assert.match(out, /verify run/);

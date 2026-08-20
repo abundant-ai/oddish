@@ -18,6 +18,8 @@ from typing import Sequence, Union
 
 from alembic import op
 
+from oddish.db.migration_locks import run_with_lock_retry
+
 revision: str = "clearstale01"
 down_revision: Union[str, Sequence[str], None] = "retirejobs01"
 branch_labels: Union[str, Sequence[str], None] = None
@@ -25,17 +27,21 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.execute("SET lock_timeout = '8s'")
-    op.execute(
-        """
-        UPDATE trials
-        SET    analysis_status = NULL,
-               analysis_error = NULL,
-               analysis_started_at = NULL,
-               analysis_finished_at = NULL
-        WHERE  analysis_status::text IN ('PENDING', 'QUEUED', 'RUNNING')
-        """
-    )
+    # Row-lock waits on the busy ``trials`` table are bounded by a short
+    # lock_timeout and retried (see migration_locks).
+    def _clear_inflight_flags() -> None:
+        op.execute(
+            """
+            UPDATE trials
+            SET    analysis_status = NULL,
+                   analysis_error = NULL,
+                   analysis_started_at = NULL,
+                   analysis_finished_at = NULL
+            WHERE  analysis_status::text IN ('PENDING', 'QUEUED', 'RUNNING')
+            """
+        )
+
+    run_with_lock_retry(_clear_inflight_flags, table_name="trials")
 
 
 def downgrade() -> None:

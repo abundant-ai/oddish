@@ -251,12 +251,10 @@ class PreTrialActionItems(BaseModel):
 # ---------------------------------------------------------------------------
 # Agent-capabilities output schema.
 #
-# Moved verbatim from the retired backend cohort block
-# (backend/api/services/blocks/analyzer/cohort/agent_capabilities_block.py and
-# cohort_taxonomy.py) when the execution path was removed. Preserved here so
-# the feature can return as a 'capabilities' analysis trial whose brief and
-# importer build against the same schema, and so stored analyzer_blocks rows
-# remain interpretable. Only the constant was renamed
+# Moved verbatim from the retired backend cohort block when its execution
+# path was removed. Preserved so the feature can return as a 'capabilities'
+# analysis trial whose brief and importer build against the same schema.
+# Only the constant was renamed
 # (SCHEMA_VERSION -> AGENT_CAPABILITIES_SCHEMA_VERSION) to fit a shared module.
 
 

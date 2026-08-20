@@ -23,6 +23,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
+from oddish.db.migration_locks import run_with_lock_retry
+
 revision: str = "shadowexp01"
 down_revision: Union[str, Sequence[str], None] = "trialkind01"
 branch_labels: Union[str, Sequence[str], None] = None
@@ -58,23 +60,31 @@ def _recover_invalid_index(index_name: str) -> None:
 
 
 def upgrade() -> None:
-    # Bound the ALTER's brief ACCESS EXCLUSIVE lock: without a timeout it
-    # queues behind any long-running query, and all traffic queues behind it.
-    op.execute("SET lock_timeout = '8s'")
-    op.add_column(
-        "experiments",
-        sa.Column("shadow_of", sa.String(64), nullable=True),
-        if_not_exists=True,
+    # The ALTER's ACCESS EXCLUSIVE lock is bounded by a short lock_timeout
+    # (an uncapped wait queues all traffic on ``experiments`` behind it) and
+    # retried, since one short window can lose to in-flight queries.
+    run_with_lock_retry(
+        lambda: op.add_column(
+            "experiments",
+            sa.Column("shadow_of", sa.String(64), nullable=True),
+            if_not_exists=True,
+        ),
+        table_name="experiments",
     )
+
     # Index name matches the model's ``__table_args__`` declaration so the
-    # create_all() index and this one are the same object.
-    with op.get_context().autocommit_block():
+    # create_all() index and this one are the same object. The invalid-index
+    # recovery runs inside the retried step: a lock-timed-out CREATE INDEX
+    # CONCURRENTLY leaves an INVALID index the next attempt must drop first.
+    def _create_index() -> None:
         _recover_invalid_index("uq_experiments_shadow_of_live")
         op.execute(
             "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "
             "uq_experiments_shadow_of_live ON experiments (shadow_of) "
             "WHERE deleted_at IS NULL"
         )
+
+    run_with_lock_retry(_create_index, table_name="experiments")
 
 
 def downgrade() -> None:

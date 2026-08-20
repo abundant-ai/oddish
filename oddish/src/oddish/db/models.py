@@ -33,7 +33,6 @@ from sqlalchemy import column as sql_column
 from sqlalchemy import event as sa_event
 from sqlalchemy import table as sql_table
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
-from sqlalchemy.dialects.postgresql import ENUM as PGEnum
 from sqlalchemy.ext.asyncio import AsyncAttrs  # type: ignore[attr-defined]
 from sqlalchemy.orm import Mapped, relationship
 from sqlalchemy.orm import DeclarativeBase, mapped_column  # type: ignore[attr-defined]
@@ -192,9 +191,9 @@ class WorkerJobKind(str, Enum):
     TAG_PROJECT = "TAG_PROJECT"
     # Retired analyzer kind. No handler claims it (workers claim only
     # registered kinds); the member stays so the native ``worker_job_kind``
-    # Postgres type keeps the values historical rows reference. The
-    # agent-capabilities service still enqueues rows of this kind until PR B
-    # removes it; they sit QUEUED and are cancelled by ``retirejobs01``.
+    # Postgres type keeps the values historical rows reference. Nothing
+    # enqueues it anymore; stragglers were cancelled by ``retirejobs01``
+    # and ``dropblocks01``.
     ANALYZER = "ANALYZER"
     ANALYZER_BLOCK = "ANALYZER_BLOCK"
 
@@ -533,70 +532,6 @@ class ExperimentModel(TimestampedMixin, Base):
     )
 
 
-class AnalyzerBlockModel(TimestampedMixin, Base):
-    """One run of a single composable analyzer block.
-
-    Standalone primitive: many blocks chain arbitrarily in test scripts.
-    ``type`` / ``llm_client_type`` are
-    the ``.value`` of the ``AnalyzerType`` / ``LLMClientType`` enums defined in
-    ``backend/api/services`` -- stored as plain strings so this module stays free
-    of any backend-package dependency. Raw streamed output lives in S3 at
-    ``{key_prefix}/{id}``; ``output`` here is the accumulated/parsed result.
-    """
-
-    __tablename__ = "analyzer_blocks"
-    __table_args__ = (
-        Index(
-            "idx_analyzer_blocks_analyzer_id_live",
-            "analyzer_id",
-            postgresql_where=text("deleted_at IS NULL"),
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
-    analyzer_id: Mapped[str | None] = mapped_column(
-        String(64), nullable=True, index=True
-    )
-    # Task-level QA blocks use this explicit subject link. ``analyzer_id`` held
-    # the report association for the removed reports feature; historical rows
-    # keep their ids (the ``analyzers`` table itself is dropped).
-    task_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
-    type: Mapped[str] = mapped_column(String(64), nullable=False)
-    key_prefix: Mapped[str] = mapped_column(Text, nullable=False)
-    llm_client_type: Mapped[str] = mapped_column(String(64), nullable=False)
-
-    prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Unwritten since the DB prompt registry was dropped; historical rows
-    # keep their stamps.
-    prompt_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    prompt_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    prompt_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
-    # input/output are arbitrary JSON (the block's I/O are typed ``any``).
-    input: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
-    output: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
-
-    status: Mapped[JobStatus] = mapped_column(
-        PGEnum(JobStatus, name="jobstatus", create_type=False),
-        default=JobStatus.PENDING,
-        nullable=False,
-    )
-    error: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    job_started_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    job_ended_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    job_duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
-
-    # ``metadata`` is reserved on the declarative Base, so the attribute is
-    # ``block_metadata`` while the DB column is literally named ``metadata``.
-    block_metadata: Mapped[dict | None] = mapped_column(
-        "metadata", JSONB, nullable=True
-    )
-
-
 class TaskModel(TimestampedMixin, Base):
     """Task database model (one Harbor task submission)."""
 
@@ -899,6 +834,87 @@ class TaskBrowseSummaryModel(Base):
     cost_breakdown: Mapped[list[dict[str, Any]]] = mapped_column(
         JSONB, nullable=False, default=list
     )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+        server_default=text("NOW()"),
+    )
+
+
+def _counter() -> Mapped[int]:
+    return mapped_column(Integer, nullable=False, default=0, server_default="0")
+
+
+class TaskVersionModelMetricsModel(Base):
+    """Trial metrics for one task version under one agent and model.
+
+    A finer grain than ``TaskBrowseSummaryModel``: that table answers "how did
+    this task version do", this one answers "how did this model do on it", which
+    cannot be recovered by splitting the coarser row.
+    """
+
+    __tablename__ = "task_version_model_metrics"
+
+    task_version_id: Mapped[str] = mapped_column(
+        String(160),
+        ForeignKey("task_versions.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    agent: Mapped[str] = mapped_column(String(128), primary_key=True)
+    # Older trials carry no model; "" keeps them addressable in the primary key
+    # rather than dropping them or inventing a name.
+    model: Mapped[str] = mapped_column(
+        String(256), primary_key=True, server_default=""
+    )
+    task_id: Mapped[str] = mapped_column(
+        String(128), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
+    )
+
+    n_pass: Mapped[int] = _counter()
+    n_partial: Mapped[int] = _counter()
+    n_fail: Mapped[int] = _counter()
+
+    n_unscored_agent: Mapped[int] = _counter()
+    n_unscored_env: Mapped[int] = _counter()
+    n_unscored_verify: Mapped[int] = _counter()
+    n_cancelled_user: Mapped[int] = _counter()
+    n_cancelled_reaped: Mapped[int] = _counter()
+    n_cancelled_other: Mapped[int] = _counter()
+    n_skipped: Mapped[int] = _counter()
+    n_scoreless: Mapped[int] = _counter()
+    n_unscored_unknown: Mapped[int] = _counter()
+    n_inflight: Mapped[int] = _counter()
+
+    sum_reward: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.0, server_default="0"
+    )
+    n_reward_present: Mapped[int] = _counter()
+    sum_runtime: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.0, server_default="0"
+    )
+    n_runtime_present: Mapped[int] = _counter()
+    n_with_trajectory: Mapped[int] = _counter()
+
+    # NULL on every distribution column means "never measured", which is not the
+    # same as a measured zero -- total_steps is absent on most pre-July trials.
+    n_steps_present: Mapped[int] = _counter()
+    sum_steps: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+    steps_all_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steps_all_p50: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steps_all_max: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steps_pass_n: Mapped[int] = _counter()
+    steps_pass_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steps_pass_p50: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steps_pass_max: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steps_fail_n: Mapped[int] = _counter()
+    steps_fail_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steps_fail_p50: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steps_fail_max: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steps_partial_n: Mapped[int] = _counter()
+
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -2587,7 +2603,6 @@ from oddish.db.soft_delete import register_soft_delete_models
 
 register_soft_delete_models(
     ExperimentModel,
-    AnalyzerBlockModel,
     TaskModel,
     TrialModel,
     TagModel,

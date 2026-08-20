@@ -14,6 +14,8 @@ from harbor.llms.utils import split_provider_model_name
 from harbor.models.agent.name import AgentName
 from litellm.litellm_core_utils.get_llm_provider_logic import get_llm_provider
 
+from oddish.harbor_pin import load_harbor_pin as _load_harbor_pin
+
 logger = logging.getLogger(__name__)
 
 
@@ -136,16 +138,15 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 
 
 # --- Configurable Harbor source ----------------------------------------------
-# The locked default fork + commit. HARBOR_DEFAULT_SHA MUST equal the pin in
-# both uv.lock files (a test asserts it against oddish/uv.lock). This is the
-# lean Harbor baked into the default Modal/Daytona worker image; GKE (TPU)
-# trials run a heavier GKE-enabled Harbor on a dedicated blessed-variant image
-# (see HARBOR_VARIANTS in oddish.core.harbor_source), never this default.
-HARBOR_DEFAULT_SOURCE = "https://github.com/abundant-ai/harbor"
-# Exact abundant-ai/harbor revision resolved into both uv.lock files. Harbor
-# PR #24 recovers Claude Code ATIF from the streamed transcript after timeouts,
-# on top of PR #25's subagent attribution and PR #26's lifecycle setup hooks.
-HARBOR_DEFAULT_SHA = "ca4fda6aa75180487c2c7c07fabaaf03d01b2e8d"
+# The locked default fork + commit lives in src/oddish/harbor-pin.toml (single
+# source of truth). HARBOR_DEFAULT_SHA MUST equal the pin in both uv.lock files
+# (a test asserts it against oddish/uv.lock). This is the lean Harbor baked
+# into the default Modal/Daytona worker image; GKE (TPU) trials run a heavier
+# GKE-enabled Harbor on a dedicated blessed-variant image (see HARBOR_VARIANTS
+# in oddish.core.harbor_source), never this default.
+_harbor_pin = _load_harbor_pin()
+HARBOR_DEFAULT_SOURCE = _harbor_pin["git"]
+HARBOR_DEFAULT_SHA = _harbor_pin["rev"]
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
@@ -432,7 +433,10 @@ def deepseek_bare_model_id(model: str) -> str:
     """Strip the ``deepseek/`` prefix and normalize GA aliases."""
     raw = model.strip()
     provider_prefix, bare = split_provider_model_name(raw)
-    if provider_prefix and provider_prefix.strip().lower() in _DEEPSEEK_PROVIDER_PREFIXES:
+    if (
+        provider_prefix
+        and provider_prefix.strip().lower() in _DEEPSEEK_PROVIDER_PREFIXES
+    ):
         bare = bare.strip()
     else:
         bare = raw
@@ -1096,25 +1100,37 @@ PREVIEW_URL_TEMPLATE = os.environ.get(
     "ODDISH_PREVIEW_URL_TEMPLATE",
     "https://abundant-ai-preview--oddish-pr-{n}-api.modal.run",
 )
+STAGING_API_URL = os.environ.get(
+    "ODDISH_STAGING_API_URL",
+    "https://abundant-ai-staging--oddish-staging-api.modal.run",
+)
 
 
 def api_base_url_for_modal_app(app_name: str | None = None) -> str:
     """Derive the deployed backend API base URL from the Modal app identity.
 
     Keys off ``MODAL_APP_NAME`` (baked into every Modal container by
-    ``backend/modal_app.py``; unset in local dev). Returns ``""`` when not
-    running in Modal, so callers fall back or fail fast rather than silently
-    pointing a local sandbox at prod. ``oddish`` -> prod; ``oddish-pr-<n>`` ->
-    that PR's preview URL.
+    ``backend/modal_app.py``; unset in local dev). The mapping is exhaustive
+    and fails closed: ``oddish`` -> prod, ``oddish-staging`` -> staging,
+    ``oddish-pr-<n>`` -> that PR's preview URL, and anything else -> ``""``
+    so callers fail fast (probe/QA sandboxes refuse to start, naming
+    ``ODDISH_PUBLIC_API_BASE_URL`` as the override) rather than silently
+    pointing another environment's sandbox at prod -- an unknown app name
+    used to fall through to the prod URL, which sent staging's QA/audit
+    agents to prod with staging-minted keys and made every fetch 401.
     """
     name = app_name if app_name is not None else os.environ.get("MODAL_APP_NAME")
     if not name:
         return ""
+    if name == "oddish":
+        return DEFAULT_API_URL
+    if name == "oddish-staging":
+        return STAGING_API_URL
     if name.startswith("oddish-pr-"):
         suffix = name[len("oddish-pr-") :]
         if suffix.isdigit():
             return PREVIEW_URL_TEMPLATE.format(n=suffix)
-    return DEFAULT_API_URL
+    return ""
 
 
 class QuotaMode(str, Enum):
@@ -1455,11 +1471,6 @@ class Settings(BaseSettings):
 
     # API keys (read from env without ODDISH_ prefix)
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
-    # Optional separate Anthropic key for analyzer blocks (summary + trajectory
-    # analysis). When unset, analyzer blocks fall back to anthropic_api_key.
-    analyzer_anthropic_api_key: str | None = Field(
-        default=None, alias="ANALYZER_ANTHROPIC_API_KEY"
-    )
     # Separate Anthropic key for ``anthropic-hdo/<model>`` trials. Injected as
     # ``ANTHROPIC_API_KEY`` (overwriting the platform key) so Claude Code talks
     # to the direct Anthropic API with this credential instead of Bedrock /

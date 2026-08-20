@@ -15,6 +15,7 @@ from fastapi import (
     Response,
     status,
 )
+from fastapi.responses import JSONResponse
 from harbor.models.environment_type import EnvironmentType
 from sqlalchemy import or_, select
 from sqlalchemy.exc import SQLAlchemyError
@@ -1736,13 +1737,22 @@ async def get_task_file_content(
         if version is None and task.current_version:
             version = task.current_version.version
 
-    result = await get_task_file_content_s3(
-        task_id=task_id,
-        file_path=file_path,
-        presign=presign,
-        version=version,
-        max_bytes=max_bytes,
-    )
+    try:
+        result = await get_task_file_content_s3(
+            task_id=task_id,
+            file_path=file_path,
+            presign=presign,
+            version=version,
+            max_bytes=max_bytes,
+        )
+    except HTTPException as exc:
+        if exc.status_code != status.HTTP_404_NOT_FOUND:
+            raise
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+            headers=exc.headers,
+        )
 
     archive_etag = result.get("archive_etag")
     if archive_etag and version is not None:
