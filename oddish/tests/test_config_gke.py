@@ -15,6 +15,7 @@ _GKE_ENV = (
     "ODDISH_GKE_REGISTRY_LOCATION",
     "ODDISH_GKE_REGISTRY_NAME",
     "ODDISH_GKE_FLEX_START",
+    "ODDISH_GKE_SPOT",
     "ODDISH_GKE_POD_READY_TIMEOUT_SEC",
 )
 
@@ -56,3 +57,19 @@ def test_gke_settings_read_from_env(monkeypatch) -> None:
     assert settings.gke_registry_name == "oddish-envs"
     assert settings.gke_flex_start is False
     assert settings.gke_pod_ready_timeout_sec == 1800
+
+
+def test_gke_spot_defaults_off(monkeypatch) -> None:
+    """Spot must be opt-in: it trades preemptibility for reach."""
+    _clear(monkeypatch)
+    settings = Settings(_env_file=None)
+    assert settings.gke_spot is False
+
+
+def test_gke_spot_reads_the_environment(monkeypatch) -> None:
+    _clear(monkeypatch)
+    monkeypatch.setenv("ODDISH_GKE_SPOT", "true")
+    monkeypatch.setenv("ODDISH_GKE_FLEX_START", "false")
+    settings = Settings(_env_file=None)
+    assert settings.gke_spot is True
+    assert settings.gke_flex_start is False
