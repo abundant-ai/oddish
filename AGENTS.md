@@ -1048,6 +1048,38 @@ source of truth for the full list and defaults (e.g.
 `ODDISH_MODAL_MAX_WORKERS_PER_POLL=256`,
 `ODDISH_MODAL_WORKER_MAX_CONTAINERS=2688`).
 
+### Preview Branch Preserved Rows
+
+Each preview branch database holds a schema named `preview_preserved` with one
+table, `rows`. It keeps the API keys that a person creates from that preview
+dashboard, and the `organizations` and `users` rows those keys need.
+
+**Why it exists.** A preview rebuild runs `DROP SCHEMA public CASCADE` and
+restores a schema-only snapshot of production, which holds no rows. Without
+this stash, every rebuild removes the keys.
+
+**Why it sits outside `public`.** The rebuild drops `public` and nothing else,
+so the stash survives. It also holds the rows in the database rather than in
+the workflow process: the preview workflow uses `cancel-in-progress`, so a
+second push can stop a run between the drop and the write-back.
+
+**Lifecycle.** `bootstrap_preview_db.py` writes to the stash before the drop
+and reads from it after `upgrade head`. The stash is not cleared after a
+successful write-back, so a cancelled run stays recoverable. Rows are jsonb,
+and `jsonb_populate_record` maps each one onto the current row type.
+
+**Do not copy it between environments.** An API key is a credential for one
+environment only. The seed must never sample `api_keys` from production or
+from another branch; `_NEVER_SAMPLED_TABLES` in `backend/preview_seed.py`
+enforces that, and `_assert_no_forbidden_tables` fails the seed if a later
+change breaks the rule. Cloning a preview branch, or copying this schema
+between branches, would put one environment's credentials in another.
+
+**Do not delete it while diagnosing a branch.** It looks unused, and removing
+it destroys the keys of everyone using that preview. A branch that is deleted
+and made again loses the stash with the rest of the database; that is expected,
+and a new key is then required.
+
 ### Database Migrations
 
 Two migration stacks are required:
