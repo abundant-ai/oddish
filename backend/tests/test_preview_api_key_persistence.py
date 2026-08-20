@@ -16,9 +16,8 @@ Two properties, pulling in opposite directions:
 import importlib.util
 from pathlib import Path
 
-import pytest
-
 import preview_seed
+import pytest
 
 
 def _load_bootstrap():

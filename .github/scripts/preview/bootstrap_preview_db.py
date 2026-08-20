@@ -223,7 +223,7 @@ async def _capture_preserved_rows(url: str) -> dict[str, list[dict]]:
                 )
                 if not present:
                     continue
-                result = await conn.execute(text(f"SELECT * FROM public.{table}"))  # noqa: S608
+                result = await conn.execute(text(f"SELECT * FROM public.{table}"))
                 captured[table] = [dict(row) for row in result.mappings()]
     except Exception as exc:  # noqa: BLE001 - never block the rebuild
         print(
@@ -276,7 +276,7 @@ async def _restore_preserved_rows(url: str, captured: dict[str, list[dict]]) -> 
                 columns = ", ".join(f'"{column}"' for column in usable)
                 values = ", ".join(f":{column}" for column in usable)
                 statement = text(
-                    f'INSERT INTO public."{table}" ({columns})'  # noqa: S608
+                    f'INSERT INTO public."{table}" ({columns})'
                     f" VALUES ({values}) ON CONFLICT DO NOTHING"
                 )
                 for row in rows:
@@ -407,9 +407,7 @@ async def _write_alembic_versions(url: str, versions: dict[str, str]) -> None:
 def _run_seed() -> None:
     # Same interpreter (the backend venv under `uv run`); the seed reads
     # ODDISH_DATABASE_URL / PREVIEW_SAMPLE_SOURCE_DB_URL / PR_NUMBER from env.
-    subprocess.run(
-        [sys.executable, str(SCRIPT_DIR / "seed_preview_db.py")], check=True
-    )
+    subprocess.run([sys.executable, str(SCRIPT_DIR / "seed_preview_db.py")], check=True)
 
 
 async def _assert_model_schema(url: str) -> None:
