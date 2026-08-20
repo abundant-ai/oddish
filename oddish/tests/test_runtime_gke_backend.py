@@ -83,6 +83,7 @@ def test_gke_env_kwargs_inject_settings_defaults() -> None:
     assert merged["registry_location"] == settings.gke_registry_location
     assert merged["registry_name"] == settings.gke_registry_name
     assert merged["flex_start"] == settings.gke_flex_start
+    assert merged["spot"] == settings.gke_spot
     assert merged["auto_build_missing_image"] == settings.gke_auto_build_missing_image
     assert merged["auto_provision_cluster"] == settings.gke_auto_provision_cluster
     assert merged["pod_ready_timeout_sec"] == settings.gke_pod_ready_timeout_sec
@@ -158,3 +159,39 @@ def test_gke_registered_after_modal_when_cluster_configured() -> None:
     assert "gke" in names
     # Never a cheap-first default: GKE follows Modal in the negotiation order.
     assert names.index("modal") < names.index("gke")
+
+
+def test_gke_env_kwargs_explicit_spot_clears_a_flex_default() -> None:
+    """The two flags encode ONE choice, and Harbor rejects both-true.
+
+    A deployment defaulting to flex-start would otherwise turn a plain
+    ``spot=true`` submission into a deterministic both-true error, repeated
+    for every trial attempt.
+    """
+    merged = GkeBackend().harbor_env_kwargs({"spot": True})
+    assert merged["spot"] is True
+    assert merged["flex_start"] is False
+
+
+def test_gke_env_kwargs_explicit_flex_clears_a_spot_default() -> None:
+    merged = GkeBackend().harbor_env_kwargs({"flex_start": True})
+    assert merged["flex_start"] is True
+    assert merged["spot"] is False
+
+
+def test_gke_env_kwargs_explicit_pair_is_left_alone() -> None:
+    """A caller who names both keys owns the outcome, including a bad one.
+
+    Harbor raises on both-true. Silently repairing it here would hide a real
+    configuration mistake behind a mode the caller never asked for.
+    """
+    merged = GkeBackend().harbor_env_kwargs({"spot": True, "flex_start": True})
+    assert merged["spot"] is True
+    assert merged["flex_start"] is True
+
+
+def test_gke_env_kwargs_spot_false_does_not_disable_a_flex_default() -> None:
+    """Normalization keys on PRESENCE of a True, never on a False."""
+    merged = GkeBackend().harbor_env_kwargs({"spot": False})
+    assert merged["spot"] is False
+    assert merged["flex_start"] == settings.gke_flex_start
