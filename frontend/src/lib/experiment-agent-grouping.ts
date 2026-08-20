@@ -1,4 +1,4 @@
-import type { Task, Trial } from "@/lib/types";
+import { isAgentTrial, type Task, type Trial } from "@/lib/types";
 
 const DEFAULT_EXPERIMENT_MODEL_KEY = "default";
 const GEMINI_35_DISPLAY_AGENT = "gemini-cli";
@@ -77,12 +77,12 @@ export function getExperimentAgentDisplay(
 }
 
 export function getExperimentModelScopedAgents(
-  entries: ReadonlyArray<Pick<Trial, "agent" | "model" | "is_probe">>
+  entries: ReadonlyArray<Pick<Trial, "agent" | "model" | "is_probe" | "kind">>
 ): Set<string> {
   const modelsByAgent = new Map<string, Set<string>>();
 
   for (const entry of entries) {
-    if (entry.is_probe) continue;
+    if (entry.is_probe || !isAgentTrial(entry)) continue;
     const display = getExperimentAgentDisplay(entry);
     const existing = modelsByAgent.get(display.agent) ?? new Set<string>();
     existing.add(getModelKey(display.model));
@@ -97,11 +97,17 @@ export function getExperimentModelScopedAgents(
 }
 
 export function getExperimentAgentKey(
-  trial: Pick<Trial, "agent" | "model" | "is_probe">,
+  trial: Pick<Trial, "agent" | "model" | "is_probe" | "kind">,
   modelScopedAgents: ReadonlySet<string>
 ): string {
   if (trial.is_probe) {
     return PROBE_AGENT_KEY;
+  }
+  // QA / audit trials are the platform's own runs, not the agent under
+  // test: give them their own column so a qa-report experiment does not
+  // mirror the agent matrix.
+  if (!isAgentTrial(trial)) {
+    return trial.kind as string;
   }
   const display = getExperimentAgentDisplay(trial);
   if (!modelScopedAgents.has(display.agent)) {
@@ -130,6 +136,18 @@ export function buildExperimentAgentSummaries(tasks: Task[]): {
           agent: PROBE_AGENT_KEY,
           model: null,
           queueKey: null,
+          isModelScoped: false,
+        });
+        continue;
+      }
+
+      if (!isAgentTrial(trial)) {
+        summaries.set(key, {
+          key,
+          label: trial.kind === "qa" ? "QA run" : "Pre-trial audit",
+          agent: trial.agent,
+          model: trial.model ?? null,
+          queueKey: trial.provider ?? null,
           isModelScoped: false,
         });
         continue;

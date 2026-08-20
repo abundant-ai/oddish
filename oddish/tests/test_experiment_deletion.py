@@ -54,7 +54,9 @@ class _FakeDeleteExperimentSession:
         if self.execute_calls == 2:
             return _FakeRowsResult(rows=[("task-123",)])
         if self.execute_calls == 3:
-            return _FakeRowsResult(rows=[("trial-123",)])
+            # (trial id, task_version_id) pairs; None version -> no browse
+            # summary refresh statement.
+            return _FakeRowsResult(rows=[("trial-123", None)])
         if self.execute_calls == 4:
             return _FakeRowsResult(rowcount=1)
         if self.execute_calls == 5:

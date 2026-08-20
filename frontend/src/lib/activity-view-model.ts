@@ -18,6 +18,8 @@ export const STEP_BAND_TITLE = "Timeline · by steps";
 export const TOKEN_BAND_TITLE = "Timeline · by tokens";
 export const TIMELINE_CAPTION =
   "bars share components and order · thin band = tokens per step, darker is more · lower band = width by token volume";
+export const UNGROUPED_FALLBACK_CAPTION =
+  "No summary for this run yet — steps are not grouped into components, so the timeline is one gray band.";
 
 /** Compact token counts so a 1.2M cell still fits the fixed-width column. */
 const fmtTokens = (n: number) =>
@@ -111,6 +113,9 @@ export interface ActivityViewModel {
   tokenTotalLabel: string;
   /** Set when empty padding steps were dropped from every count above. */
   emptyNote: string | null;
+  /** True when there is no summary and the card is drawing the ungrouped
+      gray view: totals, timeline, and token heat without component colors. */
+  fallback: boolean;
 }
 
 const instanceTitle = (instance: InstanceStat) =>
@@ -127,10 +132,17 @@ const instanceTitle = (instance: InstanceStat) =>
  * disagree about segment math, ordering or labels.
  *
  * Returns null when there is nothing to show (no steps, or no usable summary).
+ * With `showUngroupedFallback`, a missing summary degrades instead of
+ * hiding the card: every metric here is arithmetic over the steps, and only
+ * the component *coloring* needs a summary, so the totals, the timeline, and
+ * the token heat render as one gray ungrouped band. Callers pass it only once
+ * the summary fetch has settled, so the gray view never flashes before a real
+ * summary arrives.
  */
 export function buildActivityViewModel(
   allSteps: TrajectoryStep[],
-  summary: TrajectorySummary | null | undefined
+  summary: TrajectorySummary | null | undefined,
+  opts: { showUngroupedFallback: boolean }
 ): ActivityViewModel | null {
   // Empty padding steps are dropped up front, so they cannot be counted in a
   // bar, drawn as a cell, or measured as gap-fill distance further down. Their
@@ -143,7 +155,20 @@ export function buildActivityViewModel(
   const emptyCount = allSteps.length - steps.length;
   const renderableIds = new Set(steps.map((s) => Number(s.step_id)));
 
-  const segments = withOtherSegment(toSegments(summary), steps, renderableIds);
+  let segments = withOtherSegment(toSegments(summary), steps, renderableIds);
+  const fallback = Boolean(
+    opts.showUngroupedFallback && steps.length > 0 && segments.length === 0
+  );
+  if (fallback) {
+    segments = [
+      {
+        key: "all",
+        label: "All steps",
+        gist: "",
+        stepIds: steps.map((s) => Number(s.step_id)),
+      },
+    ];
+  }
   if (!steps.length || segments.length === 0) return null;
 
   const colorFor = phaseColorVars(segments.map((s) => s.key));
@@ -155,7 +180,11 @@ export function buildActivityViewModel(
     (summary?.highlights ?? []).map((h) => h.step_id)
   );
   const colorOf = (key: string | undefined) =>
-    colorFor.get(key ?? "") ?? "var(--phase-other)";
+    // The fallback's one segment is not a component; giving it a component
+    // color would claim a grouping that does not exist.
+    fallback
+      ? "var(--phase-other)"
+      : (colorFor.get(key ?? "") ?? "var(--phase-other)");
 
   const allDurations = stepDurationsMs(allSteps);
   const durations = kept.map(({ index }) => allDurations[index]);
@@ -289,22 +318,26 @@ export function buildActivityViewModel(
     sections.push({
       name: spec.name,
       totalLabel: spec.totalLabel,
-      rows: ranked.map((kind) => ({
-        key: kind.key,
-        label: kind.label,
-        color: colorOf(kind.key),
-        valueLabel: spec.fmt(spec.value(kind)),
-        bars:
-          denom > 0
-            ? kind.instances
-                .map((instance) => ({
-                  firstStepId: instance.firstStepId,
-                  pct: Math.min(100, (spec.value(instance) / denom) * 100),
-                  title: instanceTitle(instance),
-                }))
-                .filter((bar) => bar.pct > 0)
-            : [],
-      })),
+      // The fallback's single all-steps row would draw one full-width bar per
+      // section — a chart with no comparison in it. Totals alone say as much.
+      rows: fallback
+        ? []
+        : ranked.map((kind) => ({
+            key: kind.key,
+            label: kind.label,
+            color: colorOf(kind.key),
+            valueLabel: spec.fmt(spec.value(kind)),
+            bars:
+              denom > 0
+                ? kind.instances
+                    .map((instance) => ({
+                      firstStepId: instance.firstStepId,
+                      pct: Math.min(100, (spec.value(instance) / denom) * 100),
+                      title: instanceTitle(instance),
+                    }))
+                    .filter((bar) => bar.pct > 0)
+                : [],
+          })),
     });
   }
 
@@ -361,6 +394,7 @@ export function buildActivityViewModel(
     sections,
     runs,
     hasTokens,
+    fallback,
     stepTotalLabel: `${steps.length.toLocaleString()} steps`,
     tokenTotalLabel: `${fmtTokens(totalTokens)} tokens`,
     emptyNote: emptyCount

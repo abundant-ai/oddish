@@ -2,6 +2,7 @@ import {
   STEP_BAND_TITLE,
   TIMELINE_CAPTION,
   TOKEN_BAND_TITLE,
+  UNGROUPED_FALLBACK_CAPTION,
   type ActivityViewModel,
 } from "@/lib/activity-view-model";
 
@@ -360,7 +361,7 @@ function drawIcon(
 function measureHeight(
   model: ActivityViewModel,
   border: number,
-  noteLines: number
+  noteBlocks: string[][]
 ): number {
   let h = border + PAD + TITLE_ROW_H + TITLE_GAP;
   model.sections.forEach((section, i) => {
@@ -375,7 +376,9 @@ function measureHeight(
     h += TOKEN_BAND_GAP + ROW_H + SECTION_HEAD_GAP + BAND_H;
     h += CAPTION_GAP + CAPTION_LINE_H;
   }
-  if (noteLines > 0) h += SECTION_GAP + noteLines * CAPTION_LINE_H;
+  for (const block of noteBlocks) {
+    h += SECTION_GAP + block.length * CAPTION_LINE_H;
+  }
   return h + PAD + border;
 }
 
@@ -433,17 +436,18 @@ function paintActivityCard(
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("Canvas 2D is unavailable");
 
-  // The excluded-steps note is the one line of prose on the card, so how many
-  // lines it wraps to has to be measured before the canvas can be sized.
+  // The prose under the timeline (excluded-steps note, ungrouped fallback)
+  // wraps, so line counts have to be measured before the canvas can be sized.
   ctx.font = `${CAPTION_FS}px ${mono}`;
-  const noteLines = model.emptyNote
-    ? wrapText(ctx, model.emptyNote, contentW)
-    : [];
+  const noteBlocks = [
+    ...(model.emptyNote ? [model.emptyNote] : []),
+    ...(model.fallback ? [UNGROUPED_FALLBACK_CAPTION] : []),
+  ].map((note) => wrapText(ctx, note, contentW));
 
   // Fractional line heights leave the card half a CSS pixel tall; Blink paints
   // the border box snapped to whole CSS pixels, which pushes the bottom border
   // a device row down from where the layout box ends. Snap the same way.
-  const height = Math.round(measureHeight(model, border, noteLines.length));
+  const height = Math.round(measureHeight(model, border, noteBlocks));
   canvas.width = Math.round(width * scale);
   canvas.height = Math.round(height * scale);
   ctx.scale(scale, scale);
@@ -731,11 +735,11 @@ function paintActivityCard(
   }
   ctx.restore();
 
-  if (noteLines.length) {
+  for (const block of noteBlocks) {
     y += SECTION_GAP;
     ctx.fillStyle = muted;
     ctx.font = `${CAPTION_FS}px ${mono}`;
-    for (const line of noteLines) {
+    for (const line of block) {
       drawText(ctx, probe, line, left, y, CAPTION_LINE_H, "left");
       y += CAPTION_LINE_H;
     }

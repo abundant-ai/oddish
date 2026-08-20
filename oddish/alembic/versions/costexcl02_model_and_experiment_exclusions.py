@@ -1,7 +1,7 @@
 """replace llm-key cost exclusion with model and experiment exclusions
 
 Revision ID: costexcl02
-Revises: agentcap01
+Revises: tvm_metrics_001
 Create Date: 2026-08-15 00:00:00.000000
 """
 
@@ -10,7 +10,7 @@ from typing import Sequence, Union
 from alembic import op
 
 revision: str = "costexcl02"
-down_revision: Union[str, Sequence[str], None] = "agentcap01"
+down_revision: Union[str, Sequence[str], None] = "tvm_metrics_001"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

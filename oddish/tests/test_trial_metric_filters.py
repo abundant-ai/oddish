@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.dialects import postgresql
 
 from oddish.db import TaskModel, TrialModel
@@ -95,3 +95,20 @@ def test_all_predicate_is_non_vacuous_and_ignores_failed_or_unmeasured_trials() 
     assert "trials.status = 'SUCCESS'" in sql
     assert "coalesce(trials.total_steps >= 100, false)" in sql
     assert "NOT (EXISTS" in sql
+
+
+def test_scope_excludes_non_agent_kinds_by_default() -> None:
+    sql = _compiled("any")
+    assert "trials.kind = 'agent'" in sql
+
+
+def test_scope_opt_out_drops_the_kind_clause() -> None:
+    # Admin/analysis surfaces that deliberately look at analysis trials pass
+    # include_non_agent_kinds=True and get no kind clause at all.
+    scope = EligibleTrialScope(membership=(), include_non_agent_kinds=True)
+    sql = str(
+        and_(*scope.clauses()).compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    )
+    assert "kind" not in sql

@@ -255,6 +255,7 @@ _PROVIDER_RUNTIME_SECRET_KEYS: dict[str, tuple[str, ...]] = {
     "xai": ("XAI_API_KEY", "XAI_API_KEYS"),
     "meta": ("META_API_KEY", "OPENAI_API_KEY"),
     "fireworks": ("FIREWORKS_API_KEY",),
+    "deepseek": ("DEEPSEEK_API_KEY",),
     "zai": ("ZAI_API_KEY",),
     "minimax": ("MINIMAX_API_KEY",),
     "moonshot": ("MOONSHOT_API_KEY",),
@@ -1499,9 +1500,12 @@ async def _run_harbor_trial_async_impl(
             environment_build_timeout_multiplier=env_build_multiplier,
         )
 
-    # Probes attach to an existing task and inherit its task.toml, which may
-    # predate the timeout requirement. Rather than hard-fail, skip strict
-    # validation and hand the probe a capped default agent timeout below.
+    # Probes and analysis trials attach to an existing task and inherit its
+    # task.toml, which may predate the timeout requirement. Rather than
+    # hard-fail, skip strict validation and cap the agent timeout below.
+    from oddish.workers.analysis_trials import is_analysis_kind
+
+    is_probe = raw.get("mode") == "probe" or is_analysis_kind(raw.get("mode"))
     if not is_probe:
         validate_task_timeout_config(task_path)
 

@@ -3,7 +3,6 @@
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import useSWR from "swr";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -26,7 +25,6 @@ import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { ExperimentsList } from "@/components/experiments-list";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
 import { trialNotRealSpendNote } from "@/components/not-real-spend-badge";
-import { fetcher } from "@/lib/api";
 import { getExperimentAgentKey } from "@/lib/experiment-agent-grouping";
 import {
   formatCostUsd,
@@ -43,11 +41,6 @@ import {
   STATUS_CONFIG,
 } from "@/lib/status-config";
 import { summarizeTrials, type TrialAggregate } from "@/lib/trial-aggregation";
-import {
-  isBrowseTaskDetail,
-  taskDetailValue,
-  type TaskDetailResource,
-} from "@/lib/task-detail-resource";
 import type {
   Task,
   TaskOpenAgentModelSummary,
@@ -103,6 +96,16 @@ const TrialDetailPanel = dynamic(
     loading: () => <DrawerContentLoading label="Loading trial details..." />,
   }
 );
+
+// Human labels for non-agent trial kinds. Raw kind strings ("qa",
+// "audit") read as jargon next to a section header; unknown kinds fall
+// back to the raw string so new kinds are never hidden.
+const QA_TRIAL_KIND_LABELS: Record<string, string> = {
+  qa: "QA run",
+  audit: "Pre-trial audit",
+  analyzer_map: "Analyzer (map)",
+  analyzer_reduce: "Analyzer (reduce)",
+};
 
 function DrawerContentLoading({ label }: { label: string }) {
   return (
@@ -666,9 +669,9 @@ export function TaskDetailClient({
 }: TaskDetailClientProps) {
   const {
     agentCards,
+    analysisTrialsForVersion,
     defaultVersionError,
     defaultVersionId,
-    detailKey,
     error,
     explicitVersionMissing,
     handleSelectVersion,
@@ -699,34 +702,14 @@ export function TaskDetailClient({
     [selectedVersion, trialsForVersion]
   );
   const [drawer, setDrawer] = useState<DrawerState | null>(null);
-  const [drawerShowTask, setDrawerShowTask] = useState(true);
+  const [drawerShowTask, setDrawerShowTask] = useState(false);
   const [drawerShowTrial, setDrawerShowTrial] = useState(true);
-  const { data: drawerDetailResource, isLoading: isDrawerDetailLoading } =
-    useSWR<TaskDetailResource>(drawer ? detailKey : null, fetcher, {
-      revalidateOnFocus: false,
-      revalidateOnMount: true,
-    });
-  const canonicalDrawerDetailResource =
-    drawerDetailResource && !isBrowseTaskDetail(drawerDetailResource)
-      ? drawerDetailResource
-      : undefined;
-  const canonicalDrawerDetail = taskDetailValue(canonicalDrawerDetailResource);
-  const drawerTask = canonicalDrawerDetail?.task ?? task;
-  const drawerTrialsForVersion = useMemo(() => {
-    const canonicalTrials = canonicalDrawerDetail?.task.trials;
-    if (!canonicalTrials || selectedVersionId === null) {
-      return trialsForVersion;
-    }
-    return canonicalTrials.filter(
-      (trial) => trial.task_version_id === selectedVersionId
-    );
-  }, [canonicalDrawerDetail?.task.trials, selectedVersionId, trialsForVersion]);
   const drawerTrialGroups = useMemo(
     () =>
       agentCards.map((card) => ({
         agent: card.key,
         model: card.summary.model,
-        trials: drawerTrialsForVersion.filter(
+        trials: trialsForVersion.filter(
           (trial) =>
             getExperimentAgentKey(
               normalizedAgentModel(trial),
@@ -734,7 +717,7 @@ export function TaskDetailClient({
             ) === card.key
         ),
       })),
-    [agentCards, drawerTrialsForVersion, modelScopedAgents]
+    [agentCards, modelScopedAgents, trialsForVersion]
   );
   const drawerOrderedTrials = useMemo(
     () => drawerTrialGroups.flatMap((group) => group.trials),
@@ -780,6 +763,7 @@ export function TaskDetailClient({
     // The user (or hydration) is driving the drawer now; any unresolved
     // deep-link trial param no longer needs preserving.
     unresolvedTrialParamRef.current = false;
+    setDrawerShowTask(false);
     setDrawer({ mode: "trial", fallbackTrial: trial });
   }, []);
 
@@ -808,7 +792,7 @@ export function TaskDetailClient({
   // --- Drawer addressability ------------------------------------------
   // The drawer state lives in the URL so any view on this page can be
   // linked: ?trial=<id> opens that trial, ?drawer=task opens the task
-  // files drawer, ?taskPane=capabilities opens the lazy analysis, and
+  // files drawer, and
   // ?taskFile= / ?taskLines= address the task pane's file and line range
   // (the trial pane's ?file= / ?lines= are handled inside TrialDetailPanel).
   const [activeTaskPane, setActiveTaskPane] = useState<TaskPane>("overview");
@@ -828,7 +812,7 @@ export function TaskDetailClient({
       const params = new URLSearchParams(window.location.search);
       const pane = params.get("taskPane");
       setActiveTaskPane(
-        pane === "capabilities" || pane === "file"
+        pane === "file"
           ? pane
           : params.has("taskFile")
             ? "file"
@@ -878,7 +862,7 @@ export function TaskDetailClient({
     const urlTaskLines = parseLineRange(params.get("taskLines"));
     const urlTaskPane = params.get("taskPane");
     setActiveTaskPane(
-      urlTaskPane === "capabilities" || urlTaskPane === "file"
+      urlTaskPane === "file"
         ? urlTaskPane
         : urlTaskFile
           ? "file"
@@ -898,6 +882,7 @@ export function TaskDetailClient({
         drawerHydratedRef.current = true;
         hydrationOpeningRef.current = true;
         handleSelectTrial(previewTrial);
+        if (urlTaskFile || urlTaskPane) setDrawerShowTask(true);
         return;
       }
       if (isDeepLinkTrialLoading) return;
@@ -917,6 +902,7 @@ export function TaskDetailClient({
       }
       hydrationOpeningRef.current = true;
       handleSelectTrial(fetchedDeepLinkTrial);
+      if (urlTaskFile || urlTaskPane) setDrawerShowTask(true);
       return;
     }
 
@@ -1380,6 +1366,21 @@ export function TaskDetailClient({
               />
             ))
           )}
+          {analysisTrialsForVersion.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              <span className="text-[11px] uppercase tracking-wide text-[color:var(--paper-ink-3)]">
+                QA
+              </span>
+              {analysisTrialsForVersion.map((t) => (
+                <div key={t.id} className="flex items-center gap-1">
+                  <span className="text-[11px] text-[color:var(--paper-ink-3)]">
+                    {QA_TRIAL_KIND_LABELS[t.kind ?? ""] ?? t.kind}
+                  </span>
+                  <TrialChip trial={t} onClick={() => handleSelectTrial(t)} />
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {drawer && (
@@ -1400,15 +1401,11 @@ export function TaskDetailClient({
                 taskId={null}
                 // Scopes the overview's trial aggregation; this pane renders
                 // no header, so none of the task-driven header UI appears.
-                task={drawerTask ?? task}
+                task={task}
                 staticChecksTaskId={task.id}
-                taskDetail={canonicalDrawerDetailResource}
                 onOpenTrial={handleOpenTrialFromOverview}
                 filesUrl={`/api/tasks/${task.id}/files`}
                 loadFilesLazily
-                overviewTrialsLoading={
-                  isDrawerDetailLoading || canonicalDrawerDetail == null
-                }
                 taskVersion={selectedVersion?.version}
                 initialFilePath={taskPaneFile}
                 selectedLines={taskPaneLines}
@@ -1425,12 +1422,8 @@ export function TaskDetailClient({
                 activePane={activeTaskPane}
                 onActivePaneChange={selectTaskPane}
                 taskId={task.id}
-                task={drawerTask ?? task}
-                taskDetail={canonicalDrawerDetailResource}
+                task={task}
                 loadFilesLazily
-                overviewTrialsLoading={
-                  isDrawerDetailLoading || canonicalDrawerDetail == null
-                }
                 taskVersion={selectedVersion?.version}
                 onOpenTrial={handleOpenTrialFromOverview}
                 initialFilePath={taskPaneFile}
@@ -1458,7 +1451,7 @@ export function TaskDetailClient({
                   isOpen={true}
                   onClose={() => setDrawer(null)}
                   trial={drawerTrial}
-                  task={drawerTask ?? task}
+                  task={task}
                   orderedTrials={drawerOrderedTrials}
                   trialIndex={drawerTrialIndex >= 0 ? drawerTrialIndex : null}
                   trialGroups={drawerTrialGroups}

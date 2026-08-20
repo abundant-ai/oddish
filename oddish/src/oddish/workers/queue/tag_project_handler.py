@@ -28,6 +28,7 @@ from oddish.core.tags.projection import (
     recompute_task_browse_projection,
 )
 from oddish.db import get_session
+from oddish.db.deadlock import retry_deadlocks
 
 
 # Bounded so one TAG_PROJECT job fits comfortably within the dispatcher's
@@ -117,6 +118,12 @@ async def _heartbeat_progress(
     )
 
 
+# Retried as a whole on deadlock loss: the projection UPDATEs on ``tasks``
+# race trial imports (and each other) on the same rows, everything here
+# recomputes from truth in one session committed at the end, and the
+# continuation enqueue coalesces on its unique index -- so a re-run after a
+# rollback redoes no visible work.
+@retry_deadlocks(what="tag_project")
 async def run_tag_project_job(*, payload: dict[str, Any]) -> dict[str, Any]:
     scope = str(payload.get("scope") or "")
     target_id = str(payload.get("target_id") or "")

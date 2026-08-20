@@ -438,6 +438,7 @@ def _build_aggregates_for_experiment_ids(
         .where(
             TrialModel.task_version_id.is_not(None),
             TrialModel.is_probe.isnot(True),
+            TrialModel.kind == "agent",
             TrialModel.superseded_by_trial_id.is_(None),
         )
         .order_by(
@@ -526,6 +527,7 @@ def _build_aggregates_for_experiment_ids(
         .where(
             TrialModel.superseded_by_trial_id.is_(None),
             TrialModel.is_probe.isnot(True),
+            TrialModel.kind == "agent",
         )
     )
     trial_agg_query = _join_effective_version(trial_agg_query)
@@ -547,6 +549,7 @@ def _build_aggregates_for_experiment_ids(
         .where(
             TrialModel.superseded_by_trial_id.is_(None),
             TrialModel.is_probe.isnot(True),
+            TrialModel.kind == "agent",
             TrialModel.reward.isnot(None),
             not_(_baseline_agent_clause()),
         )
@@ -1141,7 +1144,7 @@ async def load_dashboard_experiments(
         ExperimentModel.owner.label("experiment_owner"),
         ExperimentModel.owner_user_id.label("experiment_owner_user_id"),
         ExperimentModel.link.label("experiment_link"),
-    )
+    ).where(ExperimentModel.shadow_of.is_(None))
     if org_id is not None:
         page_query = page_query.where(ExperimentModel.org_id == org_id)
     if normalized_query:
@@ -1431,6 +1434,18 @@ async def load_dashboard_experiments(
 
     aggregates_by_id = {str(row["experiment_id"]): row for row in agg_rows}
 
+    # QA-report shadows for this page, so each row can link to its report.
+    qa_report_by_parent = {
+        str(parent): str(shadow)
+        for parent, shadow in (
+            await session.execute(
+                select(ExperimentModel.shadow_of, ExperimentModel.id).where(
+                    ExperimentModel.shadow_of.in_(experiment_ids)
+                )
+            )
+        ).all()
+    }
+
     # ------------------------------------------------------------------
     # Step 3: stitch + post-filter, preserving page order.
     # ------------------------------------------------------------------
@@ -1600,6 +1615,7 @@ async def load_dashboard_experiments(
                     else None
                 ),
                 "last_pr_number": last_pr_number,
+                "qa_report_experiment_id": qa_report_by_parent.get(exp_id),
             }
         )
 
