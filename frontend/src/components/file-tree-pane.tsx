@@ -46,11 +46,14 @@ export function FileTreePane({
   });
 
   // `resetPaths` re-applies `initialExpansion`, so refreshed listings land
-  // fully expanded.
+  // fully expanded. It also clears the tree's selection, so the applied-
+  // selection marker below resets with it and the open file re-highlights.
   const appliedPathsRef = useRef(paths);
+  const appliedSelectionRef = useRef<string | null>(null);
   useEffect(() => {
     if (appliedPathsRef.current === paths) return;
     appliedPathsRef.current = paths;
+    appliedSelectionRef.current = null;
     model.resetPaths(paths);
   }, [model, paths]);
 
@@ -64,14 +67,19 @@ export function FileTreePane({
     onSelectPath(path);
   }, [model, onSelectPath, selected]);
 
-  // Highlight `selectedPath`'s row. `paths` is a dependency so a deep-linked
-  // path that only exists in a later listing gets selected when it arrives;
-  // re-selecting echoes through the report effect above, a no-op upstream.
+  // Highlight `selectedPath`'s row — but only when the OPEN FILE changes
+  // (or first appears in a refreshed listing), never as an echo of the
+  // tree's own selection drifting. Re-selecting on drift is what undid a
+  // directory collapse: a directory click moves the tree selection off the
+  // open file, and an unconditional re-select would re-expand the ancestors
+  // the user just collapsed. `paths` stays a dependency so a deep-linked
+  // path that only exists in a later listing gets selected when it arrives.
   useEffect(() => {
     if (selectedPath == null) return;
-    if (model.getSelectedPaths().includes(selectedPath)) return;
+    if (appliedSelectionRef.current === selectedPath) return;
     const item = model.getItem(selectedPath);
     if (item == null || item.isDirectory()) return;
+    appliedSelectionRef.current = selectedPath;
     item.select();
     model.scrollToPath(selectedPath, { offset: "nearest" });
   }, [model, paths, selectedPath]);
