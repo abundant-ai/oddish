@@ -965,6 +965,7 @@ export function TrajectoryViewer({
         trialId={trialId}
         steps={trajectory.steps}
         summary={summary}
+        summaryPending={summaryQuery.isLoading}
         stepIdToIndex={stepIdToIndex}
         onStepSelect={handleStepClick}
       />

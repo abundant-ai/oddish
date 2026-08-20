@@ -26,6 +26,10 @@ interface TrajectoryActivityProps {
   trialId: string;
   steps: TrajectoryStep[];
   summary: TrajectorySummary | null;
+  /** True while the summary fetch is still in flight. The gray no-summary
+      fallback waits for it so a real summary never paints over a flash of
+      ungrouped bands. */
+  summaryPending?: boolean;
   stepIdToIndex: (stepId: number) => number;
   onStepSelect: (index: number) => void;
 }
@@ -34,13 +38,16 @@ export function TrajectoryActivity({
   trialId,
   steps,
   summary,
+  summaryPending = false,
   stepIdToIndex,
   onStepSelect,
 }: TrajectoryActivityProps) {
   const cardRef = useRef<HTMLDivElement>(null);
   const [exportError, setExportError] = useState<string | null>(null);
 
-  const model = buildActivityViewModel(steps, summary);
+  const model = buildActivityViewModel(steps, summary, {
+    fallbackWithoutSummary: !summaryPending,
+  });
   if (!model) return null;
 
   const select = (stepId: number) => {
@@ -254,6 +261,12 @@ export function TrajectoryActivity({
         {model.emptyNote && (
           <p className="text-muted-foreground font-mono text-[10.5px]">
             {model.emptyNote}
+          </p>
+        )}
+        {model.fallback && (
+          <p className="text-muted-foreground font-mono text-[10.5px]">
+            No summary for this run yet — steps are not grouped into components,
+            so the timeline is one gray band.
           </p>
         )}
       </CardContent>

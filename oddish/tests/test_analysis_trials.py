@@ -1324,6 +1324,257 @@ async def test_the_qa_import_is_all_or_nothing(monkeypatch):
         assert task.status == TaskStatus.COMPLETED
 
 
+def _qa_run_trajectory(graded_ids: list[str]) -> dict:
+    """A stereotyped QA run: plan, fetch each trial, read the data, inspect,
+    write the artifact. Step 4 mixes a fetch with a read so precedence is
+    exercised, and the fetch commands name the graded trials so the mention
+    scan has something to find."""
+    return {
+        "agent": "claude-code",
+        "steps": [
+            {"step_id": 1, "timestamp": "2026-08-18T00:00:00Z", "tool_calls": []},
+            {
+                "step_id": 2,
+                "timestamp": "2026-08-18T00:00:05Z",
+                "tool_calls": [
+                    {
+                        "name": "Bash",
+                        "arguments": {
+                            "command": f"node /probe-harness/oddish-query trajectory {graded_ids[0]}"
+                        },
+                    }
+                ],
+            },
+            {
+                "step_id": 3,
+                "timestamp": "2026-08-18T00:00:10Z",
+                "tool_calls": [
+                    {
+                        "name": "Read",
+                        "arguments": {"file_path": f"/tmp/data/{graded_ids[1]}.json"},
+                    }
+                ],
+            },
+            {
+                "step_id": 4,
+                "timestamp": "2026-08-18T00:00:15Z",
+                "tool_calls": [
+                    {"name": "Read", "arguments": {"file_path": "/tmp/notes.md"}},
+                    {
+                        "name": "Bash",
+                        "arguments": {
+                            "command": f"node /probe-harness/oddish-query logs {graded_ids[1]}"
+                        },
+                    },
+                ],
+            },
+            {
+                "step_id": 5,
+                "timestamp": "2026-08-18T00:00:20Z",
+                "tool_calls": [
+                    {"name": "Bash", "arguments": {"command": "jq .steps /tmp/t.json"}}
+                ],
+            },
+            {
+                "step_id": 6,
+                "timestamp": "2026-08-18T00:00:25Z",
+                "tool_calls": [
+                    {
+                        "name": "Write",
+                        "arguments": {"file_path": "/logs/qa_result.json"},
+                    }
+                ],
+            },
+        ],
+    }
+
+
+def test_analysis_steps_are_classified_by_their_tool_calls():
+    """The self-summary is counted, not judged: contiguous same-label runs
+    become components, a mixed step takes the higher-precedence label, and
+    the payload carries the marker that says which rules made it."""
+    from oddish.analyze.analysis_activity import build_analysis_activity_summary
+
+    summary = build_analysis_activity_summary(
+        kind="qa",
+        task_name="apache-kafka",
+        trial_count=2,
+        status="success",
+        artifact_name="qa_result.json",
+        trajectory=_qa_run_trajectory(["a" * 32, "b" * 32]),
+    )
+    assert summary["generator"] == "analysis-activity"
+    assert "apache-kafka" in summary["summary"]
+    assert "2 agent trials" in summary["summary"]
+    labels = [
+        (c["trajectory_component"], c["step_ids"]) for c in summary["components"]
+    ]
+    assert labels == [
+        ("reasoning", [1]),
+        ("fetching_trial_data", [2]),
+        ("reading_files", [3]),
+        # Step 4 holds a Read and an oddish-query Bash call: the fetch wins.
+        ("fetching_trial_data", [4]),
+        ("inspecting_data", [5]),
+        ("writing_result", [6]),
+    ]
+    # Every step is claimed exactly once, so the Activity card needs no
+    # gap-fill and no synthetic Other segment.
+    claimed = [s for _, ids in labels for s in ids]
+    assert claimed == [1, 2, 3, 4, 5, 6]
+    assert [h["step_id"] for h in summary["highlights"]] == [2, 6]
+
+
+def test_a_trajectory_with_no_steps_yields_no_summary():
+    from oddish.analyze.analysis_activity import build_analysis_activity_summary
+
+    assert (
+        build_analysis_activity_summary(
+            kind="qa",
+            task_name="t",
+            trial_count=0,
+            status="failed",
+            artifact_name="qa_result.json",
+            trajectory={"steps": []},
+        )
+        is None
+    )
+
+
+def test_graded_step_anchors_come_from_the_scan():
+    """A graded trial's anchors are the QA-run steps whose tool-call
+    arguments name it -- a command or a path -- and nothing else."""
+    from oddish.analyze.analysis_activity import trial_mention_steps
+
+    a, b = "a" * 32, "b" * 32
+    mentions = trial_mention_steps(_qa_run_trajectory([a, b]), [a, b, "c" * 32])
+    assert mentions[a] == [2]
+    # Named by a Read path at step 3 and a fetch command at step 4.
+    assert mentions[b] == [3, 4]
+    assert "c" * 32 not in mentions
+    # Too short to match safely, and a missing trajectory scans to nothing.
+    assert trial_mention_steps(_qa_run_trajectory([a, b]), ["ab"]) == {}
+    assert trial_mention_steps(None, [a]) == {}
+
+
+@pytest.mark.asyncio
+async def test_a_settled_qa_trial_summarizes_its_own_run(monkeypatch):
+    """Needs a database. Settlement writes the QA trial's own deterministic
+    trajectory_summary (independent of the artifact import) and stamps
+    ``_graded_at_steps`` anchors onto each graded trial."""
+    if not URL:
+        pytest.skip("ODDISH_DATABASE_URL not set")
+    from oddish.analyze.analysis_activity import analysis_activity_version
+    from oddish.db import TaskStatus, TrialStatus, get_session, init_db
+    from oddish.db.models import ExperimentModel, TaskModel
+    from oddish.workers import analysis_trials
+    from oddish.workers.analysis_trials import handle_analysis_trial_settled
+
+    await init_db()
+    run = uuid.uuid4().hex[:8]
+    task_id = f"qa-selfsum-{run}"
+    graded_ids = [f"{task_id}-graded-{i}-{uuid.uuid4().hex}" for i in (1, 2)]
+    qa_id = f"{task_id}-qa"
+    async with get_session() as session:
+        experiment = ExperimentModel(name=f"exp-{run}")
+        session.add(experiment)
+        session.add(
+            TaskModel(
+                id=task_id,
+                name=task_id,
+                user="u",
+                task_path="p",
+                status=TaskStatus.VERDICT_PENDING,
+                run_analysis=True,
+            )
+        )
+        await session.flush()
+        for trial_id in graded_ids:
+            session.add(
+                TrialModel(
+                    id=trial_id,
+                    name=trial_id,
+                    task_id=task_id,
+                    experiment_id=experiment.id,
+                    agent="claude-code",
+                    provider="local",
+                    queue_key="q",
+                    status=TrialStatus.SUCCESS,
+                    attempts=1,
+                    max_attempts=3,
+                )
+            )
+        session.add(
+            TrialModel(
+                id=qa_id,
+                name=qa_id,
+                task_id=task_id,
+                experiment_id=experiment.id,
+                agent="claude-code",
+                provider="local",
+                queue_key="q",
+                kind="qa",
+                model="anthropic/claude-opus-5",
+                status=TrialStatus.SUCCESS,
+                # The settlement gate: without it the self-summary skips the
+                # trajectory read entirely.
+                has_trajectory=True,
+                attempts=1,
+                max_attempts=3,
+                harbor_config={
+                    "mode": "qa",
+                    "analysis_payload": {
+                        "trial_ids": graded_ids,
+                        "with_verdict": False,
+                    },
+                },
+            )
+        )
+        await session.commit()
+
+    qa_trajectory = _qa_run_trajectory(graded_ids)
+
+    async def fake_trajectory(row):
+        # Only the QA run has a trajectory; the graded rows read as absent so
+        # their summaries carry version stamps but no derived facts.
+        return qa_trajectory if row.id == qa_id else None
+
+    monkeypatch.setattr(
+        "oddish.core.trial_io.read_trial_trajectory", fake_trajectory
+    )
+    artifact = {
+        "trials": [_good_qa_entry(t) for t in graded_ids],
+        "verdict": None,
+    }
+
+    async def read_artifact(trial, filename):
+        return artifact
+
+    monkeypatch.setattr(analysis_trials, "read_analysis_artifact", read_artifact)
+
+    await handle_analysis_trial_settled(qa_id)
+
+    async with get_session() as session:
+        qa_row = await session.get(TrialModel, qa_id)
+        own = qa_row.trajectory_summary
+        assert own is not None
+        assert own["generator"] == "analysis-activity"
+        assert own["taxonomy_version"] == analysis_activity_version()
+        assert own["model"] == "anthropic/claude-opus-5"
+        # Enrichment ran over the counted components: derived facts present.
+        assert own["components"][1]["trajectory_component"] == "fetching_trial_data"
+        assert own["components"][1]["tool_count"] == 1
+        assert own["components"][1]["duration_ms"] == 5000
+
+        first, second = [
+            await session.get(TrialModel, trial_id) for trial_id in graded_ids
+        ]
+        assert first.analysis["_graded_at_steps"] == [2]
+        assert second.analysis["_graded_at_steps"] == [3, 4]
+        task = await session.get(TaskModel, task_id)
+        assert task.status == TaskStatus.COMPLETED
+
+
 def test_the_importer_stamps_derived_facts_onto_the_summary():
     """tool_count / duration / subagent dispatches / provenance are counted
     from the trajectory by the importer, never taken from the model (#1275),
