@@ -46,7 +46,11 @@ export async function GET(
         status: res.status,
       });
     }
-    return NextResponse.json(data);
+    // Forward the upstream status even when ok: a 202 pending-summary body
+    // must stay a 202 — the polling hook keys on the status code, and a
+    // flattened 200 would make it treat the pending payload as the summary
+    // and stop polling.
+    return NextResponse.json(data, { status: res.status });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },

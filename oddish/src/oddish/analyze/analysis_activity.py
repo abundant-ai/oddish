@@ -183,8 +183,10 @@ def build_analysis_activity_summary(
             f"This QA trial audited {trial_count} agent "
             f"trial{'s' if trial_count != 1 else ''} of {task}."
         )
-    else:
+    elif kind == "audit":
         opening = f"This {kind} trial reviewed the source of {task}."
+    else:
+        opening = f"This {kind} trial analyzed one trial of {task}."
     observed_labels: set[str] = set()
     observed_actions: list[str] = []
     for component in components:
