@@ -67,6 +67,7 @@ import { TimingBreakdownBar } from "@/components/timing-breakdown-bar";
 import { CodeBlock } from "@/components/code-block";
 import type { Trial, Task } from "@/lib/types";
 import { isAgentTrial } from "@/lib/types";
+import { stepIdsLabel } from "@/lib/trajectory-segments";
 import {
   costEstimateMarks,
   formatCostUsd,
@@ -572,13 +573,27 @@ function TrialAnalysisCard({
               raw={trial.analysis}
             />
             {trial.analysis?._graded_by && onOpenGrader && (
-              <button
-                type="button"
-                onClick={() => onOpenGrader(trial.analysis!._graded_by!)}
-                className="text-muted-foreground hover:text-foreground mt-2 font-mono text-[11px] underline decoration-dotted underline-offset-2"
-              >
-                graded by {trial.analysis._graded_by}
-              </button>
+              <p className="mt-2 flex flex-wrap items-baseline gap-x-2 font-mono text-[11px]">
+                <button
+                  type="button"
+                  onClick={() => onOpenGrader(trial.analysis!._graded_by!)}
+                  className="text-muted-foreground hover:text-foreground underline decoration-dotted underline-offset-2"
+                >
+                  graded by {trial.analysis._graded_by}
+                </button>
+                {(trial.analysis._graded_at_steps?.length ?? 0) > 0 && (
+                  // A plain anchor on purpose: the trajectory viewer captures
+                  // the #step- fragment at mount, which document navigation
+                  // guarantees and in-place drawer switching does not.
+                  <a
+                    href={`/tasks/${encodeURIComponent(trial.task_id)}?trial=${encodeURIComponent(trial.analysis._graded_by)}&tab=trajectory#step-${trial.analysis._graded_at_steps![0]}`}
+                    title="Open the QA run's trajectory at the steps that judged this trial"
+                    className="text-muted-foreground hover:text-foreground underline decoration-dotted underline-offset-2"
+                  >
+                    at {stepIdsLabel(trial.analysis._graded_at_steps!)}
+                  </a>
+                )}
+              </p>
             )}
           </>
         ) : (

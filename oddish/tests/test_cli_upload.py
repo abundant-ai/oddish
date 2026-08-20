@@ -229,3 +229,239 @@ def test_git_lfs_pointer_detection_ignores_real_asset(tmp_path: Path) -> None:
     asset_path.write_bytes(b"\x8c\r\x04\t\x03\n\xadU\x99\x81\xb7L")
 
     assert cli_api.find_git_lfs_pointer_files(task_path) == []
+
+
+_TPU_TASK_WITHOUT_TOPOLOGY = """\
+version = "1.0"
+
+[metadata]
+difficulty = "easy"
+description = "tpu task"
+
+[environment]
+cpus = 1
+memory_mb = 2048
+
+[environment.tpu]
+type = "v6e"
+"""
+
+
+class TestRejectedConfigIsNotReportedAsMissingFiles:
+    """A task whose config is rejected must not be called a missing-files error.
+
+    `topology` is required on a TPU spec. Removing it makes `task.toml`
+    genuinely invalid, which is correct. The reported problem was the message:
+    the CLI answered "A task directory must contain: task.toml, instruction.md,
+    environment/, tests/" while all four were present, so the reader looked for
+    files instead of the one missing key.
+    """
+
+    def test_the_directory_is_still_recognised_as_a_task(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "tpu-task"
+        _write_minimal_task(task_path, task_toml=_TPU_TASK_WITHOUT_TOPOLOGY)
+
+        assert cli_api.holds_task_config(task_path) is True
+        assert cli_api.is_task_dir(task_path) is False
+
+    def test_the_reason_names_the_field(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "tpu-task"
+        _write_minimal_task(task_path, task_toml=_TPU_TASK_WITHOUT_TOPOLOGY)
+
+        error = cli_api.task_load_error(task_path)
+        assert error is not None
+        assert "topology" in str(error)
+
+    def test_a_valid_task_reports_no_error(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "ok-task"
+        _write_minimal_task(task_path)
+
+        assert cli_api.task_load_error(task_path) is None
+        assert cli_api.is_task_dir(task_path) is True
+
+    def test_a_directory_without_a_task_toml_is_not_a_task(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "not-a-task").mkdir()
+        assert cli_api.holds_task_config(tmp_path / "not-a-task") is False
+
+    def test_a_step_task_is_recognised_without_a_top_level_instruction(
+        self, tmp_path: Path
+    ) -> None:
+        """Harbor requires instruction.md only when a task has no steps, and
+        requires tests/ only when no verifier environment is declared. A fixed
+        list of required entries would call these shapes "not a task" and hand
+        back the wrong message."""
+        task_path = tmp_path / "step-task"
+        (task_path / "environment").mkdir(parents=True)
+        (task_path / "environment" / "Dockerfile").write_text("FROM alpine:3.20\n")
+        (task_path / "steps" / "one").mkdir(parents=True)
+        (task_path / "steps" / "one" / "instruction.md").write_text("step\n")
+        (task_path / "task.toml").write_text(
+            "[environment]\ncpus = 1\n\n"
+            '[environment.tpu]\ntype = "v6e"\n\n'
+            '[[steps]]\nname = "one"\n'
+        )
+
+        assert cli_api.holds_task_config(task_path) is True
+        error = cli_api.task_load_error(task_path)
+        assert error is not None and "topology" in str(error)
+
+    def test_cli_reports_the_config_error_not_the_file_list(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The end-to-end message a user sees."""
+        task_path = tmp_path / "tpu-task"
+        _write_minimal_task(task_path, task_toml=_TPU_TASK_WITHOUT_TOPOLOGY)
+
+        with pytest.raises(typer.Exit):
+            cli_api.resolve_local_task_paths(
+                path=Path(task_path),
+                path_option=None,
+                dataset=None,
+                task_names=None,
+                exclude_task_names=None,
+                n_tasks=None,
+                quiet=True,
+            )
+
+        printed = capsys.readouterr()
+        combined = printed.out + printed.err
+        assert "topology" in combined, combined
+        assert "must contain" not in combined, (
+            "the files are all present; naming them sends the reader to the wrong place"
+        )
+
+
+class TestInvalidTaskInADatasetIsNotDroppedSilently:
+    """Discovery removes an invalid task before validate_tasks() sees it.
+
+    Uploading a dataset of N tasks where one is invalid used to upload N-1 and
+    print nothing, so the author believed all N went up. That is quieter than
+    the reported bug, and worse.
+    """
+
+    def test_the_skipped_task_is_named_with_its_reason(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _write_minimal_task(tmp_path / "good")
+        _write_minimal_task(tmp_path / "bad", task_toml=_TPU_TASK_WITHOUT_TOPOLOGY)
+
+        found = cli_api.get_task_paths_from_local(dataset_path=tmp_path)
+
+        assert sorted(p.name for p in found) == ["good"]
+        printed = capsys.readouterr()
+        combined = printed.out + printed.err
+        assert "bad" in combined
+        assert "topology" in combined, combined
+
+    def test_a_non_task_directory_stays_quiet(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Only children that carry a task.toml are reported."""
+        _write_minimal_task(tmp_path / "good")
+        (tmp_path / "notes").mkdir()
+        (tmp_path / "notes" / "README.md").write_text("nothing here\n")
+
+        cli_api.get_task_paths_from_local(dataset_path=tmp_path)
+
+        printed = capsys.readouterr()
+        assert "notes" not in (printed.out + printed.err)
+
+    def test_a_task_removed_by_a_filter_is_not_called_an_error(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """--task-name and -n drop valid tasks; those are not failures."""
+        _write_minimal_task(tmp_path / "keep")
+        _write_minimal_task(tmp_path / "drop")
+
+        found = cli_api.get_task_paths_from_local(
+            dataset_path=tmp_path, task_names=["keep"]
+        )
+
+        assert sorted(p.name for p in found) == ["keep"]
+        printed = capsys.readouterr()
+        assert "drop" not in (printed.out + printed.err)
+
+
+_TASK_WITH_MARKUP_IN_A_VALUE = """\
+version = "1.0"
+
+[environment]
+os = "[/red]"
+"""
+
+
+class TestExceptionTextIsNotTreatedAsMarkup:
+    """Exception text echoes values straight out of task.toml.
+
+    A value holding square brackets is enough to be read as a Rich markup tag.
+    That raised MarkupError and replaced the diagnostic with a traceback.
+    Config values can also be secrets, so this text must be shown, never
+    interpreted.
+    """
+
+    def test_a_bracketed_value_does_not_raise(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "brackets"
+        _write_minimal_task(task_path, task_toml=_TASK_WITH_MARKUP_IN_A_VALUE)
+
+        error = cli_api.task_load_error(task_path)
+        assert error is not None
+        # Would raise rich.errors.MarkupError before escaping.
+        cli_api.error_console.print(
+            f"[red]x[/red]\n{cli_api.describe_load_error(error)}"
+        )
+
+    def test_the_brackets_survive_as_text(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "brackets"
+        _write_minimal_task(task_path, task_toml=_TASK_WITH_MARKUP_IN_A_VALUE)
+
+        rendered = cli_api.describe_load_error(cli_api.task_load_error(task_path))
+        assert "/red" in rendered
+
+
+class TestSkipReportRespectsTheNameFilters:
+    """A task the caller did not ask for is not their problem."""
+
+    def test_selecting_a_valid_task_is_quiet_about_an_invalid_one(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _write_minimal_task(tmp_path / "good")
+        _write_minimal_task(tmp_path / "bad", task_toml=_TPU_TASK_WITHOUT_TOPOLOGY)
+
+        found = cli_api.get_task_paths_from_local(
+            dataset_path=tmp_path, task_names=["good"]
+        )
+
+        assert sorted(p.name for p in found) == ["good"]
+        printed = capsys.readouterr()
+        assert "bad" not in (printed.out + printed.err)
+
+    def test_excluding_a_task_is_quiet_about_it(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _write_minimal_task(tmp_path / "good")
+        _write_minimal_task(tmp_path / "bad", task_toml=_TPU_TASK_WITHOUT_TOPOLOGY)
+
+        cli_api.get_task_paths_from_local(
+            dataset_path=tmp_path, exclude_task_names=["bad"]
+        )
+
+        printed = capsys.readouterr()
+        assert "bad" not in (printed.out + printed.err)
+
+    def test_selecting_only_an_invalid_task_reports_why(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Harbor drops a rejected task before it applies the filters, so this
+        surfaced as "no tasks matched" and never named the real reason."""
+        _write_minimal_task(tmp_path / "good")
+        _write_minimal_task(tmp_path / "bad", task_toml=_TPU_TASK_WITHOUT_TOPOLOGY)
+
+        with pytest.raises(ValueError):
+            cli_api.get_task_paths_from_local(dataset_path=tmp_path, task_names=["bad"])
+
+        printed = capsys.readouterr()
+        combined = printed.out + printed.err
+        assert "bad" in combined
+        assert "topology" in combined, combined
