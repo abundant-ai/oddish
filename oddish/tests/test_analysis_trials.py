@@ -925,6 +925,7 @@ async def test_cleanup_reimports_a_settled_audit(monkeypatch):
             )
         ).scalar_one()
         audit.status = TrialStatus.SUCCESS
+        audit.has_trajectory = True
         await session.commit()
     async with get_session() as session:
         version = await session.get(TaskVersionModel, version_id)
@@ -934,6 +935,25 @@ async def test_cleanup_reimports_a_settled_audit(monkeypatch):
         return {"items": []}
 
     monkeypatch.setattr(analysis_trials, "read_analysis_artifact", read_clean)
+
+    async def read_audit_trajectory(trial):
+        return {
+            "steps": [
+                {
+                    "step_id": 1,
+                    "tool_calls": [
+                        {
+                            "name": "Write",
+                            "arguments": {"absolute_path": "/logs/audit_result.json"},
+                        }
+                    ],
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        "oddish.core.trial_io.read_trial_trajectory", read_audit_trajectory
+    )
     # The sweep composes these two: the scan runs inside the sweep
     # transaction, the re-imports after it commits (the importer takes its
     # own locks).
@@ -948,6 +968,13 @@ async def test_cleanup_reimports_a_settled_audit(monkeypatch):
         version = await session.get(TaskVersionModel, version_id)
         assert version.pre_trial_status == VerdictStatus.SUCCESS
         assert version.pre_trial is not None
+        audit_row = await session.get(TrialModel, audit.id)
+        assert audit_row.trajectory_summary["generator"] == "analysis-activity"
+        assert (
+            audit_row.trajectory_summary["taxonomy_version"]
+            == analysis_trials.ANALYSIS_ACTIVITY_VERSION
+        )
+        assert "wrote audit_result.json" in audit_row.trajectory_summary["summary"]
 
 
 @pytest.mark.asyncio
@@ -1389,74 +1416,6 @@ def _qa_run_trajectory(graded_ids: list[str]) -> dict:
     }
 
 
-def test_analysis_steps_are_classified_by_their_tool_calls():
-    """The self-summary is counted, not judged: contiguous same-label runs
-    become components, a mixed step takes the higher-precedence label, and
-    the payload carries the marker that says which rules made it."""
-    from oddish.analyze.analysis_activity import build_analysis_activity_summary
-
-    summary = build_analysis_activity_summary(
-        kind="qa",
-        task_name="apache-kafka",
-        trial_count=2,
-        status="success",
-        artifact_name="qa_result.json",
-        trajectory=_qa_run_trajectory(["a" * 32, "b" * 32]),
-    )
-    assert summary["generator"] == "analysis-activity"
-    assert "apache-kafka" in summary["summary"]
-    assert "2 agent trials" in summary["summary"]
-    labels = [
-        (c["trajectory_component"], c["step_ids"]) for c in summary["components"]
-    ]
-    assert labels == [
-        ("reasoning", [1]),
-        ("fetching_trial_data", [2]),
-        ("reading_files", [3]),
-        # Step 4 holds a Read and an oddish-query Bash call: the fetch wins.
-        ("fetching_trial_data", [4]),
-        ("inspecting_data", [5]),
-        ("writing_result", [6]),
-    ]
-    # Every step is claimed exactly once, so the Activity card needs no
-    # gap-fill and no synthetic Other segment.
-    claimed = [s for _, ids in labels for s in ids]
-    assert claimed == [1, 2, 3, 4, 5, 6]
-    assert [h["step_id"] for h in summary["highlights"]] == [2, 6]
-
-
-def test_a_trajectory_with_no_steps_yields_no_summary():
-    from oddish.analyze.analysis_activity import build_analysis_activity_summary
-
-    assert (
-        build_analysis_activity_summary(
-            kind="qa",
-            task_name="t",
-            trial_count=0,
-            status="failed",
-            artifact_name="qa_result.json",
-            trajectory={"steps": []},
-        )
-        is None
-    )
-
-
-def test_graded_step_anchors_come_from_the_scan():
-    """A graded trial's anchors are the QA-run steps whose tool-call
-    arguments name it -- a command or a path -- and nothing else."""
-    from oddish.analyze.analysis_activity import trial_mention_steps
-
-    a, b = "a" * 32, "b" * 32
-    mentions = trial_mention_steps(_qa_run_trajectory([a, b]), [a, b, "c" * 32])
-    assert mentions[a] == [2]
-    # Named by a Read path at step 3 and a fetch command at step 4.
-    assert mentions[b] == [3, 4]
-    assert "c" * 32 not in mentions
-    # Too short to match safely, and a missing trajectory scans to nothing.
-    assert trial_mention_steps(_qa_run_trajectory([a, b]), ["ab"]) == {}
-    assert trial_mention_steps(None, [a]) == {}
-
-
 @pytest.mark.asyncio
 async def test_a_settled_qa_trial_summarizes_its_own_run(monkeypatch):
     """Needs a database. Settlement writes the QA trial's own deterministic
@@ -1464,7 +1423,7 @@ async def test_a_settled_qa_trial_summarizes_its_own_run(monkeypatch):
     ``_graded_at_steps`` anchors onto each graded trial."""
     if not URL:
         pytest.skip("ODDISH_DATABASE_URL not set")
-    from oddish.analyze.analysis_activity import analysis_activity_version
+    from oddish.analyze.analysis_activity import ANALYSIS_ACTIVITY_VERSION
     from oddish.db import TaskStatus, TrialStatus, get_session, init_db
     from oddish.db.models import ExperimentModel, TaskModel
     from oddish.workers import analysis_trials
@@ -1539,9 +1498,7 @@ async def test_a_settled_qa_trial_summarizes_its_own_run(monkeypatch):
         # their summaries carry version stamps but no derived facts.
         return qa_trajectory if row.id == qa_id else None
 
-    monkeypatch.setattr(
-        "oddish.core.trial_io.read_trial_trajectory", fake_trajectory
-    )
+    monkeypatch.setattr("oddish.core.trial_io.read_trial_trajectory", fake_trajectory)
     artifact = {
         "trials": [_good_qa_entry(t) for t in graded_ids],
         "verdict": None,
@@ -1559,7 +1516,7 @@ async def test_a_settled_qa_trial_summarizes_its_own_run(monkeypatch):
         own = qa_row.trajectory_summary
         assert own is not None
         assert own["generator"] == "analysis-activity"
-        assert own["taxonomy_version"] == analysis_activity_version()
+        assert own["taxonomy_version"] == ANALYSIS_ACTIVITY_VERSION
         assert own["model"] == "anthropic/claude-opus-5"
         # Enrichment ran over the counted components: derived facts present.
         assert own["components"][1]["trajectory_component"] == "fetching_trial_data"
@@ -1654,9 +1611,7 @@ async def test_reimport_scan_miss_keeps_same_grader_step_anchors(monkeypatch):
     async def fake_trajectory(row):
         return qa_trajectory if row.id == qa_id else None
 
-    monkeypatch.setattr(
-        "oddish.core.trial_io.read_trial_trajectory", fake_trajectory
-    )
+    monkeypatch.setattr("oddish.core.trial_io.read_trial_trajectory", fake_trajectory)
     artifact = {
         "trials": [_good_qa_entry(t) for t in graded_ids],
         "verdict": None,

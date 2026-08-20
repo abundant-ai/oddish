@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.analyze import Classification, TrialClassification
 from oddish.analyze.analysis_activity import (
-    analysis_activity_version,
+    ANALYSIS_ACTIVITY_VERSION,
     build_analysis_activity_summary,
     trial_mention_steps,
 )
@@ -688,7 +688,7 @@ async def store_analysis_self_summary(
         )
         # The components were counted under this module's rules, not the
         # solver vocabulary enrich stamps by default.
-        enriched["taxonomy_version"] = analysis_activity_version()
+        enriched["taxonomy_version"] = ANALYSIS_ACTIVITY_VERSION
         row = await session.get(TrialModel, trial.id)
         if row is not None:
             row.trajectory_summary = enriched
