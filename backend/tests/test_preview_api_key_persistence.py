@@ -106,15 +106,21 @@ pytestmark_db = pytest.mark.skipif(
 
 _DDL = """
 CREATE TYPE apikeyscope AS ENUM ('full','tasks','read_only');
-CREATE TABLE public.users (
-    id varchar(64) PRIMARY KEY,
-    email varchar(255) NOT NULL
-);
 CREATE TABLE public.organizations (
     id varchar(64) PRIMARY KEY,
     name varchar(255) NOT NULL,
     is_active boolean NOT NULL DEFAULT true,
     created_at timestamptz NOT NULL DEFAULT now()
+);
+-- users.org_id carries fk_users_org_id (NOT NULL) to organizations, so the
+-- restore has to write organizations first. The real constraint must be in
+-- this schema or the ordering bug it caused cannot be reproduced here.
+CREATE TABLE public.users (
+    id varchar(64) PRIMARY KEY,
+    org_id varchar(64) NOT NULL,
+    email varchar(255) NOT NULL,
+    CONSTRAINT fk_users_org_id FOREIGN KEY (org_id)
+        REFERENCES public.organizations(id) ON DELETE CASCADE
 );
 CREATE TABLE public.api_keys (
     id varchar(64) PRIMARY KEY,
@@ -176,13 +182,17 @@ class TestPersistenceAgainstPostgres:
         await _fresh_public(engine)
         async with engine.begin() as conn:
             await conn.execute(text("DROP SCHEMA IF EXISTS preview_preserved CASCADE"))
-            await conn.execute(
-                text("INSERT INTO public.users VALUES ('u1', 'dev@preview.local')")
-            )
+            # Organization first: users.org_id has fk_users_org_id.
             await conn.execute(
                 text(
                     "INSERT INTO public.organizations (id, name)"
                     " VALUES ('org-local', 'Local Personal Org')"
+                )
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO public.users (id, org_id, email)"
+                    " VALUES ('u1', 'org-local', 'dev@preview.local')"
                 )
             )
             await conn.execute(
@@ -367,3 +377,27 @@ class TestCaptureGuardsAgainstProduction:
         assert body.index("_assert_preview_branch(url)") < body.index(
             "CREATE SCHEMA IF NOT EXISTS"
         ), "the guard must run before the first write"
+
+
+class TestRestoreOrderFollowsForeignKeys:
+    """Parents before children, or the restore fails on every push.
+
+    users.org_id -> organizations (fk_users_org_id, NOT NULL)
+    api_keys.created_by_user_id -> users (fk_api_keys_created_by_user_id)
+
+    Getting this backwards is not a one-off: the failed insert makes the
+    restore report failure, the schema is never marked trusted, and every
+    later push rebuilds and fails again the same way.
+    """
+
+    def test_order_is_organizations_then_users_then_api_keys(self):
+        assert _load_bootstrap()._PRESERVED_TABLES == (
+            "organizations",
+            "users",
+            "api_keys",
+        )
+
+    def test_each_table_precedes_the_tables_that_reference_it(self):
+        order = list(_load_bootstrap()._PRESERVED_TABLES)
+        assert order.index("organizations") < order.index("users")
+        assert order.index("users") < order.index("api_keys")

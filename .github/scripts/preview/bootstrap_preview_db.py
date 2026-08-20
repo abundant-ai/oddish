@@ -202,14 +202,23 @@ def _assert_preview_branch(url: str) -> None:
 # Without this, every rebuild silently invalidates the key a developer just
 # created from the preview dashboard -- and a rebuild is not rare: any
 # cancelled run leaves the branch untrusted, so the next push rebuilds it.
-# `users` comes first because api_keys.created_by_user_id still has a real
-# foreign key on a rebuilt schema: backend/alembic a1b2c3d4e5f6 adds
-# `fk_api_keys_created_by_user_id`, and the later oddish drop migration only
-# removes `api_keys_created_by_user_id_fkey` -- a different name, so the
-# constraint survives. Organizations come next: verify_api_key rejects a key
-# whose organization row is missing, so a key alone would restore and still
-# not work.
-_PRESERVED_TABLES = ("users", "organizations", "api_keys")
+# Restore order follows the foreign keys, parents first:
+#
+#   organizations <- users.org_id          (fk_users_org_id, NOT NULL)
+#   users         <- api_keys.created_by_user_id
+#                                          (fk_api_keys_created_by_user_id)
+#
+# Both constraints are real on a rebuilt schema. `fk_users_org_id` comes from
+# backend/alembic a1b2c3d4e5f6, as does `fk_api_keys_created_by_user_id`; the
+# later oddish migration drops only `api_keys_created_by_user_id_fkey`, a
+# different name, so that one survives too. Neither column declares
+# ForeignKey() on a model this script can see, which is why the order has to
+# be written down rather than derived.
+#
+# Organizations also matter for a second reason: verify_api_key rejects a key
+# whose organization row is missing, so a key restored alone would come back
+# and still fail every request.
+_PRESERVED_TABLES = ("organizations", "users", "api_keys")
 
 # The stash lives OUTSIDE public, because the rebuild runs
 # ``DROP SCHEMA IF EXISTS public CASCADE`` and nothing else. Holding the rows
