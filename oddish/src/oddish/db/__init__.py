@@ -68,6 +68,7 @@ from oddish.db.connection import (
     engine,
     get_pool,
     reconfigure_database_connections,
+    get_read_session,
     get_session,
     drop_db,
     init_db,
@@ -153,6 +154,7 @@ __all__ = [
     "utcnow",
     # Session/Pool
     "engine",
+    "get_read_session",
     "get_session",
     "get_pool",
     "close_pool",

@@ -14,6 +14,8 @@ from harbor.llms.utils import split_provider_model_name
 from harbor.models.agent.name import AgentName
 from litellm.litellm_core_utils.get_llm_provider_logic import get_llm_provider
 
+from oddish.harbor_pin import load_harbor_pin as _load_harbor_pin
+
 logger = logging.getLogger(__name__)
 
 
@@ -136,16 +138,15 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 
 
 # --- Configurable Harbor source ----------------------------------------------
-# The locked default fork + commit. HARBOR_DEFAULT_SHA MUST equal the pin in
-# both uv.lock files (a test asserts it against oddish/uv.lock). This is the
-# lean Harbor baked into the default Modal/Daytona worker image; GKE (TPU)
-# trials run a heavier GKE-enabled Harbor on a dedicated blessed-variant image
-# (see HARBOR_VARIANTS in oddish.core.harbor_source), never this default.
-HARBOR_DEFAULT_SOURCE = "https://github.com/abundant-ai/harbor"
-# Exact abundant-ai/harbor revision resolved into both uv.lock files. Harbor
-# PR #24 recovers Claude Code ATIF from the streamed transcript after timeouts,
-# on top of PR #25's subagent attribution and PR #26's lifecycle setup hooks.
-HARBOR_DEFAULT_SHA = "ca4fda6aa75180487c2c7c07fabaaf03d01b2e8d"
+# The locked default fork + commit lives in src/oddish/harbor-pin.toml (single
+# source of truth). HARBOR_DEFAULT_SHA MUST equal the pin in both uv.lock files
+# (a test asserts it against oddish/uv.lock). This is the lean Harbor baked
+# into the default Modal/Daytona worker image; GKE (TPU) trials run a heavier
+# GKE-enabled Harbor on a dedicated blessed-variant image (see HARBOR_VARIANTS
+# in oddish.core.harbor_source), never this default.
+_harbor_pin = _load_harbor_pin()
+HARBOR_DEFAULT_SOURCE = _harbor_pin["git"]
+HARBOR_DEFAULT_SHA = _harbor_pin["rev"]
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
