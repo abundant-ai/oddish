@@ -73,6 +73,13 @@ async def reap_stale_daytona_sandboxes(stale_after_minutes: int = 15) -> int:
                     try:
                         sandbox = await client.get(sandbox.id, request_timeout=10)
                     except (DaytonaNotFoundError, NotFoundException):
+                        # Destroyed between the list page and this refresh —
+                        # the goal state. The metric line makes the expected
+                        # outcome countable for vendor-burst alerting.
+                        logger.info(
+                            "metric=daytona.sandbox_gone phase=reap external_id=%s",
+                            sandbox.id,
+                        )
                         return 0
                     if sandbox.state in inactive or any(
                         sandbox.labels.get(key) != value
@@ -156,8 +163,12 @@ class DaytonaBackend:
                 await client.delete(sandbox)
             except (DaytonaNotFoundError, NotFoundException):
                 # Auto-delete or the expiry reaper got there first. The
-                # sandbox is gone, which is the goal.
-                logger.info("DaytonaBackend.teardown: %s already gone", external_id)
+                # sandbox is gone, which is the goal; the metric key makes
+                # the expected outcome countable for vendor-burst alerting.
+                logger.info(
+                    "metric=daytona.sandbox_gone phase=teardown external_id=%s",
+                    external_id,
+                )
                 return True
             finally:
                 await client.close()
