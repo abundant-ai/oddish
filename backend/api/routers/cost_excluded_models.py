@@ -6,7 +6,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import distinct, select
 from sqlalchemy.exc import IntegrityError, ProgrammingError
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.routers.cost_exclusions_shared import soft_delete, unavailable
 from auth import AuthContext, require_admin
@@ -41,14 +40,6 @@ def _response(row: CostExcludedModelModel) -> CostExcludedModelResponse:
     )
 
 
-async def _resolve_models(session: AsyncSession, ref: str) -> list[str]:
-    key = model_family_key(ref)
-    rows = await session.scalars(
-        select(distinct(TrialModel.model)).where(TrialModel.model.isnot(None))
-    )
-    return sorted({m for m in rows if m and (m == ref or model_family_key(m) == key)})
-
-
 @router.get("", response_model=list[CostExcludedModelResponse])
 async def list_cost_excluded_models(
     auth: Annotated[AuthContext, Depends(require_admin)],
@@ -78,8 +69,11 @@ async def add_cost_excluded_model(
 
     try:
         async with get_session() as session:
-            names = await _resolve_models(session, request.model_name.strip())
-            if not names:
+            family = model_family_key(request.model_name)
+            models = await session.scalars(
+                select(distinct(TrialModel.model)).where(TrialModel.model.isnot(None))
+            )
+            if not any(model_family_key(model) == family for model in models):
                 raise HTTPException(
                     status_code=404,
                     detail=(
@@ -89,29 +83,21 @@ async def add_cost_excluded_model(
                     ),
                 )
 
-            existing = await session.scalars(
-                select(CostExcludedModelModel.model_name).where(
-                    CostExcludedModelModel.model_name.in_(names)
-                )
-            )
-            fresh = [name for name in names if name not in set(existing)]
-            if not fresh:
+            existing = await session.scalars(select(CostExcludedModelModel.model_name))
+            if any(model_family_key(model) == family for model in existing):
                 raise HTTPException(status_code=409, detail="model is already excluded")
 
-            rows = [
-                CostExcludedModelModel(
-                    model_name=name,
-                    label=request.label.strip(),
-                    created_by_user_id=auth.user_id,
-                )
-                for name in fresh
-            ]
-            session.add_all(rows)
+            row = CostExcludedModelModel(
+                model_name=family,
+                label=request.label.strip(),
+                created_by_user_id=auth.user_id,
+            )
+            session.add(row)
             try:
                 await session.commit()
             except IntegrityError:
                 raise HTTPException(status_code=409, detail="model is already excluded")
-            return [_response(row) for row in rows]
+            return [_response(row)]
     except ProgrammingError as exc:
         raise unavailable(exc)
 

@@ -34,6 +34,7 @@ INCLUDED_EXP = f"excl-included-{_RUN}"
 EXPERIMENTS = (EXCLUDED_EXP, FREE_MODEL_EXP, INCLUDED_EXP)
 
 FREE_MODEL = "xai/grok-free-preview"
+FREE_MODEL_FAMILY = "grok-free-preview"
 PAID_MODEL = "xai/grok-4"
 
 EXCLUDED_EXP_COST = 7.0
@@ -66,7 +67,9 @@ async def seeded_data():
     excluded_exp = CostExcludedExperimentModel(
         experiment_id=EXCLUDED_EXP, experiment_name="excl-exp", label="comped"
     )
-    excluded_model = CostExcludedModelModel(model_name=FREE_MODEL, label="free tier")
+    excluded_model = CostExcludedModelModel(
+        model_name=FREE_MODEL_FAMILY, label="free tier"
+    )
 
     async with get_session() as session:
         await session.execute(
@@ -133,7 +136,7 @@ async def seeded_data():
         )
         await session.execute(
             CostExcludedModelModel.__table__.delete().where(
-                CostExcludedModelModel.model_name == FREE_MODEL
+                CostExcludedModelModel.model_name == FREE_MODEL_FAMILY
             )
         )
         await session.execute(
@@ -195,6 +198,27 @@ async def test_excluded_model_spend_reincluded_on_removal(seeded_data):
         org_total = await sum_org_cost_usd(session, ORG, period_start)
         expected = INCLUDED_COST + FREE_MODEL_COST
         assert abs(float(org_total) - expected) <= 1e-6, org_total
+
+
+@pytest.mark.asyncio
+async def test_excluded_model_family_covers_future_provider_spelling(seeded_data):
+    period_start = utcnow() - timedelta(days=1)
+    future_spelling_cost = 4.0
+
+    async with get_session() as session:
+        session.add(
+            _trial(
+                FREE_MODEL_EXP,
+                7,
+                future_spelling_cost,
+                utcnow(),
+                model="azure/grok-free-preview",
+            )
+        )
+        await session.flush()
+
+        org_total = await sum_org_cost_usd(session, ORG, period_start)
+        assert abs(float(org_total) - INCLUDED_COST) <= 1e-6, org_total
 
 
 @pytest.mark.asyncio

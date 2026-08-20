@@ -440,7 +440,8 @@ tiers, vendor credits, a comped run. Excluded spend drops off the admin cost
 dashboards and stops counting against quotas. It is still shown on experiment,
 task, and trial pages, marked as not real, so the two never disagree silently.
 
-- **Models** - every trial that used the model stops counting.
+- **Models** - every trial that used the model stops counting, including the
+  same model name through another provider.
 - **Experiments** - trials the experiment ran itself stop counting. Trials it
   gathered from elsewhere keep counting on the experiment that ran them.
 

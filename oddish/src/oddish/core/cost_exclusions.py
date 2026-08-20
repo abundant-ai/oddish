@@ -3,11 +3,11 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from oddish.config import normalize_model_id
+from oddish.config import model_family_key, normalize_model_id
 from oddish.db import CostExcludedExperimentModel, CostExcludedModelModel, TrialModel
 from oddish.db.pg_errors import is_missing_table
 
@@ -22,10 +22,13 @@ def canonical_excluded_model(model: str | None) -> str:
 
 
 def _excluded_model_spend():
+    trial_family = func.lower(
+        func.btrim(func.regexp_replace(TrialModel.model, "^.*/", ""))
+    )
     return (
         select(CostExcludedModelModel.id)
         .where(
-            CostExcludedModelModel.model_name == TrialModel.model,
+            CostExcludedModelModel.model_name == trial_family,
             CostExcludedModelModel.deleted_at.is_(None),
         )
         .correlate(TrialModel)
@@ -62,10 +65,17 @@ class CostExclusions:
     models: frozenset[str] = field(default_factory=frozenset)
     experiment_ids: frozenset[str] = field(default_factory=frozenset)
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "models",
+            frozenset(filter(None, (model_family_key(model) for model in self.models))),
+        )
+
     def reason_for(
         self, *, model: str | None = None, experiment_id: str | None = None
     ) -> str | None:
-        if model and model in self.models:
+        if model and model_family_key(model) in self.models:
             return REASON_MODEL
         if experiment_id and experiment_id in self.experiment_ids:
             return REASON_EXPERIMENT

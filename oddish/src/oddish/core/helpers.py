@@ -1153,6 +1153,7 @@ def build_slim_trial_response(
     trial: TrialModel,
     task_path: str,
     *,
+    exclusions: CostExclusions | None = None,
     # None = "not resolved by this caller", which the UI renders as nothing.
     # Distinct from 0.0, which would mean "resolved, and there was no QA".
     qa_cost_usd: float | None = None,
@@ -1204,6 +1205,11 @@ def build_slim_trial_response(
         started_at=trial.started_at,
         finished_at=trial.finished_at,
         qa_cost_usd=qa_cost_usd,
+        cost_exclusion_reason=(
+            exclusions.reason_for(model=trial.model, experiment_id=trial.experiment_id)
+            if exclusions
+            else None
+        ),
     )
 
 
@@ -1215,6 +1221,7 @@ def build_slim_task_status_response(
     effective_version_id: str | None | object = _VERSION_ID_UNSET,
     gathered_trial_ids: set[str] | None = None,
     qa_costs_by_trial_id: dict[str, float] | None = None,
+    exclusions: CostExclusions | None = None,
 ) -> TaskStatusResponse:
     """Build a task status response with slim per-trial payloads.
 
@@ -1245,6 +1252,7 @@ def build_slim_task_status_response(
                 if qa_costs_by_trial_id is not None
                 else None
             ),
+            exclusions=exclusions,
         )
         for t in task_trials
     ]

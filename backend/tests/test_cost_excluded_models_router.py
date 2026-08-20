@@ -132,7 +132,7 @@ async def admin_client(app):
         app.dependency_overrides.pop(require_auth, None)
 
 
-async def test_add_stores_the_spelling_trials_actually_use(admin_client, monkeypatch):
+async def test_add_stores_the_provider_independent_family(admin_client, monkeypatch):
     session = FakeSession(results=[["moonshot/kimi-k2"], []])
     _install_fake_get_session(monkeypatch, session)
 
@@ -142,13 +142,13 @@ async def test_add_stores_the_spelling_trials_actually_use(admin_client, monkeyp
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert [r["model_name"] for r in body] == ["moonshot/kimi-k2"]
+    assert [r["model_name"] for r in body] == ["kimi-k2"]
     assert body[0]["label"] == "sponsored"
-    assert session.added[0].model_name == "moonshot/kimi-k2"
+    assert session.added[0].model_name == "kimi-k2"
     assert session.committed
 
 
-async def test_add_covers_every_stored_spelling(admin_client, monkeypatch):
+async def test_add_bare_id_stores_one_family(admin_client, monkeypatch):
     session = FakeSession(results=[["grok-free-preview", "xai/grok-free-preview"], []])
     _install_fake_get_session(monkeypatch, session)
 
@@ -156,13 +156,10 @@ async def test_add_covers_every_stored_spelling(admin_client, monkeypatch):
         "/admin/cost-excluded-models", json={"model_name": "grok-free-preview"}
     )
     assert resp.status_code == 200, resp.text
-    assert sorted(r["model_name"] for r in resp.json()) == [
-        "grok-free-preview",
-        "xai/grok-free-preview",
-    ]
+    assert [r["model_name"] for r in resp.json()] == ["grok-free-preview"]
 
 
-async def test_add_prefixed_id_covers_the_bare_spelling(admin_client, monkeypatch):
+async def test_add_prefixed_id_stores_the_same_family(admin_client, monkeypatch):
     session = FakeSession(results=[["grok-free-preview", "xai/grok-free-preview"], []])
     _install_fake_get_session(monkeypatch, session)
 
@@ -170,10 +167,7 @@ async def test_add_prefixed_id_covers_the_bare_spelling(admin_client, monkeypatc
         "/admin/cost-excluded-models", json={"model_name": "xai/grok-free-preview"}
     )
     assert resp.status_code == 200, resp.text
-    assert sorted(r["model_name"] for r in resp.json()) == [
-        "grok-free-preview",
-        "xai/grok-free-preview",
-    ]
+    assert [r["model_name"] for r in resp.json()] == ["grok-free-preview"]
 
 
 async def test_add_unknown_model_is_404(admin_client, monkeypatch):

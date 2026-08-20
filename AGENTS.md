@@ -355,7 +355,8 @@ for other orgs.
 
 Admin cost exclusions (`oddish/core/cost_exclusions.py`) name spend that was
 never really paid for, along two axes: a **model** (`cost_excluded_models`,
-matched against `trials.model`, global and retroactive) and an **experiment**
+stored and matched by provider-independent model family against `trials.model`,
+global and retroactive) and an **experiment**
 (`cost_excluded_experiments`, matched against `trials.experiment_id` so a
 collection cannot launder gathered trials' cost). Both fold into
 `first_party_spend_filter` and the quota inflight predicates, so excluded

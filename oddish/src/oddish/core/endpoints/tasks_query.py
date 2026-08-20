@@ -627,6 +627,7 @@ async def list_experiment_slim_tasks(
     qa_costs_by_trial_id = await get_trial_qa_costs(
         session, trial_ids=page_trial_ids, org_id=org_id
     )
+    exclusions = await load_cost_exclusions(session)
 
     build_started_at = now()
     response = [
@@ -636,6 +637,7 @@ async def list_experiment_slim_tasks(
             experiment_context_id=experiment_id,
             gathered_trial_ids=gathered_trial_ids,
             qa_costs_by_trial_id=qa_costs_by_trial_id,
+            exclusions=exclusions,
         )
         for task in tasks
     ]
