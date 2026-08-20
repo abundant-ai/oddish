@@ -1575,6 +1575,124 @@ async def test_a_settled_qa_trial_summarizes_its_own_run(monkeypatch):
         assert task.status == TaskStatus.COMPLETED
 
 
+@pytest.mark.asyncio
+async def test_reimport_scan_miss_keeps_same_grader_step_anchors(monkeypatch):
+    """Needs a database. A healer re-import whose grader-trajectory read
+    failed (``own_trajectory=None``, the best-effort read's failure value)
+    must keep the ``_graded_at_steps`` anchors the first import stored — and
+    a *different* grader's scan miss must not inherit them, because anchors
+    index into the grader's own trajectory."""
+    if not URL:
+        pytest.skip("ODDISH_DATABASE_URL not set")
+    from oddish.db import TaskStatus, TrialStatus, get_session, init_db
+    from oddish.db.models import ExperimentModel, TaskModel
+    from oddish.workers import analysis_trials
+    from oddish.workers.analysis_trials import handle_analysis_trial_settled
+
+    await init_db()
+    run = uuid.uuid4().hex[:8]
+    task_id = f"qa-anchor-keep-{run}"
+    graded_ids = [f"{task_id}-graded-{i}-{uuid.uuid4().hex}" for i in (1, 2)]
+    qa_id = f"{task_id}-qa"
+    async with get_session() as session:
+        experiment = ExperimentModel(name=f"exp-{run}")
+        session.add(experiment)
+        session.add(
+            TaskModel(
+                id=task_id,
+                name=task_id,
+                user="u",
+                task_path="p",
+                status=TaskStatus.VERDICT_PENDING,
+                run_analysis=True,
+            )
+        )
+        await session.flush()
+        for trial_id in graded_ids:
+            session.add(
+                TrialModel(
+                    id=trial_id,
+                    name=trial_id,
+                    task_id=task_id,
+                    experiment_id=experiment.id,
+                    agent="claude-code",
+                    provider="local",
+                    queue_key="q",
+                    status=TrialStatus.SUCCESS,
+                    attempts=1,
+                    max_attempts=3,
+                )
+            )
+        session.add(
+            TrialModel(
+                id=qa_id,
+                name=qa_id,
+                task_id=task_id,
+                experiment_id=experiment.id,
+                agent="claude-code",
+                provider="local",
+                queue_key="q",
+                kind="qa",
+                model="anthropic/claude-opus-5",
+                status=TrialStatus.SUCCESS,
+                has_trajectory=True,
+                attempts=1,
+                max_attempts=3,
+                harbor_config={
+                    "mode": "qa",
+                    "analysis_payload": {
+                        "trial_ids": graded_ids,
+                        "with_verdict": False,
+                    },
+                },
+            )
+        )
+        await session.commit()
+
+    qa_trajectory = _qa_run_trajectory(graded_ids)
+
+    async def fake_trajectory(row):
+        return qa_trajectory if row.id == qa_id else None
+
+    monkeypatch.setattr(
+        "oddish.core.trial_io.read_trial_trajectory", fake_trajectory
+    )
+    artifact = {
+        "trials": [_good_qa_entry(t) for t in graded_ids],
+        "verdict": None,
+    }
+
+    async def read_artifact(trial, filename):
+        return artifact
+
+    monkeypatch.setattr(analysis_trials, "read_analysis_artifact", read_artifact)
+
+    await handle_analysis_trial_settled(qa_id)
+
+    async with get_session() as session:
+        first = await session.get(TrialModel, graded_ids[0])
+        assert first.analysis["_graded_at_steps"] == [2]
+        qa_row = await session.get(TrialModel, qa_id)
+
+    # Same grader re-imports with the trajectory read failing: the scan
+    # misses, the stored anchors survive.
+    await analysis_trials._import_qa_result(qa_row, own_trajectory=None)
+    async with get_session() as session:
+        first = await session.get(TrialModel, graded_ids[0])
+        assert first.analysis["_graded_by"] == qa_id
+        assert first.analysis["_graded_at_steps"] == [2]
+
+    # A different grader's scan miss must not inherit another run's anchors.
+    async with get_session() as session:
+        row = await session.get(TrialModel, graded_ids[0])
+        row.analysis = {**row.analysis, "_graded_by": "some-other-qa-trial"}
+    await analysis_trials._import_qa_result(qa_row, own_trajectory=None)
+    async with get_session() as session:
+        first = await session.get(TrialModel, graded_ids[0])
+        assert first.analysis["_graded_by"] == qa_id
+        assert "_graded_at_steps" not in first.analysis
+
+
 def test_the_importer_stamps_derived_facts_onto_the_summary():
     """tool_count / duration / subagent dispatches / provenance are counted
     from the trajectory by the importer, never taken from the model (#1275),

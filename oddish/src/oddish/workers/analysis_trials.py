@@ -804,6 +804,18 @@ async def _import_qa_result(
             analysis = {**entry["analysis"], "_graded_by": trial.id}
             if graded_steps.get(trial_id):
                 analysis["_graded_at_steps"] = graded_steps[trial_id]
+            elif (
+                isinstance(row.analysis, dict)
+                and row.analysis.get("_graded_by") == trial.id
+                and row.analysis.get("_graded_at_steps")
+            ):
+                # A re-import whose grader-trajectory scan came up empty
+                # (read_own_trajectory is best-effort and returns None on a
+                # storage blip) must not erase anchors an earlier import
+                # stored. Same-grader only: anchors index into the grader's
+                # own trajectory, so a different QA trial's scan miss must
+                # not inherit another run's steps.
+                analysis["_graded_at_steps"] = row.analysis["_graded_at_steps"]
             row.analysis = analysis
             row.analysis_status = AnalysisStatus.SUCCESS
             row.analysis_finished_at = utcnow()
