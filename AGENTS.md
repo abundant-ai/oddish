@@ -346,11 +346,28 @@ status, queue health, worker, orphan, cost, per-user cost, and task-expansion
 handlers must pass `auth.org_id`; never accept an organization selector from
 the client. A user cost drilldown returns 404 when the requested user belongs
 to another org. Deployment-wide diagnostics or mutations (global queue
-status/health and slot topology, model concurrency, shared-channel Slack alert
-settings, and the global cost-excluded LLM-key list) additionally require the active org to match
+status/health and slot topology, model concurrency, shared-channel Slack
+alert settings, and the global cost-exclusion lists) additionally require the
+active org to match
 `ODDISH_OPERATOR_ORG_ID`, which fails closed when unset; the frontend discovers
 that capability through `GET /admin/operator-access` and hides those controls
 for other orgs.
+
+Admin cost exclusions (`oddish/core/cost_exclusions.py`) name spend that was
+never really paid for, along two axes: a **model** (`cost_excluded_models`,
+stored and matched by provider-independent model family against `trials.model`,
+global and retroactive) and an **experiment**
+(`cost_excluded_experiments`, matched against `trials.experiment_id` so a
+collection cannot launder gathered trials' cost). Both fold into
+`first_party_spend_filter` and the quota inflight predicates, so excluded
+spend leaves the cost dashboards and stops counting against caps together.
+It is dropped from accounting but **not** hidden: experiment, task, and trial
+surfaces still render the money and label it, via `excluded_cost_usd` on the
+experiment rollup and `cost_exclusion_reason` on `TrialResponse`. Keep the SQL
+predicates and the `CostExclusions` Python twin in step — a surface that
+labels spend differently from the way accounting drops it is worse than one
+that says nothing. Callers that do not pass an exclusions snapshot report
+`cost_exclusion_reason=None`, which means "unresolved", not "real".
 
 The authenticated org-scoped cost leaderboard is served by `GET /leaderboard` in
 `backend/api/routers/dashboard.py`. It shares the admin cost dashboard's

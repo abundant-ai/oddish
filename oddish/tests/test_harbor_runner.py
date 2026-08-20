@@ -1632,7 +1632,6 @@ def test_store_trial_results_settles_metering_after_quota_cancel(monkeypatch):
         cache_write_tokens=None,
         output_tokens=None,
         cost_usd=0.25,
-        llm_key_hash=None,
         phase_timing=None,
         has_trajectory=False,
         current_worker_id=None,
@@ -1650,11 +1649,6 @@ def test_store_trial_results_settles_metering_after_quota_cancel(monkeypatch):
         yield SimpleNamespace(), trial
 
     monkeypatch.setattr(trial_handler, "_trial_session", _fake_trial_session)
-    monkeypatch.setattr(
-        trial_handler,
-        "trial_llm_key_hash",
-        lambda *_args: "settled-key-hash",
-    )
 
     outcome = harbor_runner.HarborOutcome(
         reward=1.0,
@@ -1696,7 +1690,6 @@ def test_store_trial_results_settles_metering_after_quota_cancel(monkeypatch):
     assert trial.cache_write_tokens == 10
     assert trial.output_tokens == 50
     assert trial.cost_usd == 0.25
-    assert trial.llm_key_hash == "settled-key-hash"
     assert stored == (True, False)
 
 
@@ -1709,7 +1702,6 @@ def test_store_trial_results_ignores_stale_cancelled_attempt(monkeypatch):
         superseded_by_trial_id=None,
         input_tokens=7,
         cost_usd=0.25,
-        llm_key_hash="current-key",
     )
 
     @asynccontextmanager
@@ -1739,11 +1731,7 @@ def test_store_trial_results_ignores_stale_cancelled_attempt(monkeypatch):
     )
 
     assert stored == (True, False)
-    assert (trial.input_tokens, trial.cost_usd, trial.llm_key_hash) == (
-        7,
-        0.25,
-        "current-key",
-    )
+    assert (trial.input_tokens, trial.cost_usd) == (7, 0.25)
 
 
 @pytest.mark.asyncio
