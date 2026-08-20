@@ -302,6 +302,7 @@ test.describe("critical task and trial subtree", () => {
     const requests: string[] = [];
     let summaryGetCount = 0;
     let summaryPostCount = 0;
+    let failNextSummaryPost = false;
     page.on("request", (request) => requests.push(request.url()));
 
     await page.route(/\/api\/tasks\/browse(?:\?|$)/, async (route) => {
@@ -390,6 +391,14 @@ test.describe("critical task and trial subtree", () => {
         if (new URL(route.request().url()).pathname.endsWith("/summary")) {
           if (route.request().method() === "POST") {
             summaryPostCount += 1;
+            if (failNextSummaryPost) {
+              failNextSummaryPost = false;
+              await route.fulfill({
+                status: 503,
+                json: { detail: "Summary refresh temporarily unavailable" },
+              });
+              return;
+            }
             await route.fulfill({
               status: 202,
               json: {
@@ -609,6 +618,30 @@ test.describe("critical task and trial subtree", () => {
     await expect(page.getByText("Replacement summary published")).toBeVisible();
     expect(summaryPostCount).toBe(1);
     expect(summaryGetCount).toBeGreaterThanOrEqual(4);
+
+    failNextSummaryPost = true;
+    const failedSummaryPost = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.url().endsWith(`/api/trials/${TRIAL_ID}/trajectory/summary`) &&
+        response.status() === 503
+    );
+    await page.getByRole("button", { name: "Regenerate" }).click();
+    await failedSummaryPost;
+    await expect(page.getByText("Replacement summary published")).toBeVisible();
+    const regenerationAlert = page.getByRole("alert");
+    await expect(regenerationAlert).toContainText(
+      "Summary refresh temporarily unavailable"
+    );
+
+    const retriedSummaryPost = page.waitForRequest(
+      (request) =>
+        request.method() === "POST" &&
+        request.url().endsWith(`/api/trials/${TRIAL_ID}/trajectory/summary`)
+    );
+    await regenerationAlert.getByRole("button", { name: "Retry" }).click();
+    await retriedSummaryPost;
+    expect(summaryPostCount).toBe(3);
 
     await page.getByRole("tab", { name: "Summary" }).click();
     // The analysis mutation revalidates the canonical trial. A transient

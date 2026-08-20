@@ -64,11 +64,15 @@ export function TrajectorySummary({
     return () => clearTimeout(timer);
   }, [isLoading]);
 
-  const displayedError = regenerationError ?? error;
-  if (displayedError) {
+  // A failed request must not replace a summary that was already published.
+  // The SWR resource remains the source of truth; request errors are rendered
+  // as retryable status alongside that resource.
+  const blockingError =
+    resource?.status === "ready" ? undefined : (regenerationError ?? error);
+  if (blockingError) {
     const retryRefresh =
       regenerationError != null ||
-      (displayedError as { status?: number }).status === 409;
+      (blockingError as { status?: number }).status === 409;
     return (
       <Card className="my-3 border-red-200">
         <CardHeader className="pb-2">
@@ -79,7 +83,7 @@ export function TrajectorySummary({
         </CardHeader>
         <CardContent className="space-y-2">
           <p className="text-muted-foreground text-xs">
-            {displayedError.message}
+            {blockingError.message}
           </p>
           <Button
             size="sm"
@@ -188,6 +192,36 @@ export function TrajectorySummary({
         )}
       </CardHeader>
       <CardContent className="space-y-3">
+        {(regenerationError || error) && (
+          <div
+            role="alert"
+            className="flex items-start justify-between gap-3 rounded-md border border-red-200 p-3"
+          >
+            <div className="space-y-1">
+              <p className="flex items-center gap-1.5 text-xs font-medium text-red-600">
+                <AlertCircle className="h-3.5 w-3.5" />
+                {regenerationError
+                  ? "Couldn’t regenerate the summary"
+                  : "Couldn’t check for a newer summary"}
+              </p>
+              <p className="text-muted-foreground text-xs">
+                {(regenerationError ?? error)?.message} The published summary is
+                still shown below.
+              </p>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={regenerationError ? onRegenerate : onRetry}
+              disabled={isStartingRegeneration}
+            >
+              {isStartingRegeneration && (
+                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              )}
+              Retry
+            </Button>
+          </div>
+        )}
         {data.summary && (
           <p className="text-foreground text-sm leading-relaxed">
             {data.summary}
