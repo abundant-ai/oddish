@@ -104,20 +104,19 @@ def resolve_task_path(path_arg: Path | None, path_option: Path | None) -> Path |
     return task_path
 
 
-# The entries Harbor expects in a task directory. Used to tell "this is not a
-# task directory" apart from "this is a task directory whose config is wrong",
-# which need very different messages.
-TASK_DIR_ENTRIES = ("task.toml", "instruction.md", "environment", "tests")
+def holds_task_config(path: Path) -> bool:
+    """Whether *path* carries a ``task.toml``, so it was meant to be a task.
 
+    Deliberately not a check of the full directory shape. What Harbor requires
+    is conditional: a task with `steps` needs no top-level `instruction.md`,
+    and a task that declares a verifier environment needs no `tests/` (see
+    Task._validate_tests). Restating those rules here would drift from Harbor
+    and would send the wrong message for either shape.
 
-def looks_like_task_dir(path: Path) -> bool:
-    """Whether *path* has the shape of a task directory.
-
-    Structure only. The config may still fail to load, which is exactly the
-    case this separates out: reporting a config error as a missing file sends
-    the reader looking for files that are already there.
+    The presence of a task.toml is enough to say the author meant this to be a
+    task. Whatever is wrong after that, Harbor names precisely.
     """
-    return path.is_dir() and all((path / entry).exists() for entry in TASK_DIR_ENTRIES)
+    return (path / "task.toml").is_file()
 
 
 def task_load_error(path: Path) -> Exception | None:
@@ -173,6 +172,34 @@ def validate_tasks(task_paths: list[Path]) -> list[Path]:
     return valid
 
 
+def report_skipped_tasks(dataset_path: Path, discovered: list[Path]) -> None:
+    """Name the children that carry a task.toml but did not survive discovery.
+
+    Discovery drops a task whose config is rejected, and it does so before
+    validate_tasks() ever sees it. Without this, uploading a dataset of N tasks
+    where one is invalid uploads N-1 and says nothing, so the author believes
+    all N went up.
+
+    Only children that hold a task.toml are considered, so an unrelated
+    directory stays quiet. Only children that actually fail to load are
+    reported, so a task removed by --task-name or -n is not called an error.
+    """
+    try:
+        children = sorted(p for p in dataset_path.iterdir() if p.is_dir())
+    except OSError:
+        return
+    found = {p.resolve() for p in discovered}
+    for child in children:
+        if child.resolve() in found or not holds_task_config(child):
+            continue
+        error = task_load_error(child)
+        if error is None:
+            continue
+        error_console.print(
+            f"[yellow]Skipped {child.name}: {type(error).__name__}: {error}[/yellow]"
+        )
+
+
 def get_task_paths_from_local(
     dataset_path: Path,
     task_names: list[str] | None = None,
@@ -200,6 +227,7 @@ def get_task_paths_from_local(
             ]
         if n_tasks is not None:
             task_paths = task_paths[:n_tasks]
+        report_skipped_tasks(dataset_path, task_paths)
         return task_paths
     else:
         config = DatasetConfig(
@@ -209,7 +237,9 @@ def get_task_paths_from_local(
             n_tasks=n_tasks,
         )
         task_configs = asyncio.run(config.get_task_configs())
-        return [tc.path for tc in task_configs if tc.path is not None]
+        task_paths = [tc.path for tc in task_configs if tc.path is not None]
+        report_skipped_tasks(dataset_path, task_paths)
+        return task_paths
 
 
 def get_task_paths_from_registry(
@@ -344,13 +374,13 @@ def resolve_local_task_paths(
                 # the reason the config was rejected instead.
                 load_error = (
                     task_load_error(local_path)
-                    if looks_like_task_dir(local_path)
+                    if holds_task_config(local_path)
                     else None
                 )
                 if load_error is not None:
                     error_console.print(
-                        f"[red]{local_path} is a task directory, but its "
-                        f"configuration was rejected.[/red]\n"
+                        f"[red]{local_path} holds a task.toml, but the task "
+                        f"was rejected.[/red]\n"
                         f"{type(load_error).__name__}: {load_error}"
                     )
                 else:

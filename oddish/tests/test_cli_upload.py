@@ -257,11 +257,11 @@ class TestRejectedConfigIsNotReportedAsMissingFiles:
     files instead of the one missing key.
     """
 
-    def test_the_directory_still_looks_like_a_task(self, tmp_path: Path) -> None:
+    def test_the_directory_is_still_recognised_as_a_task(self, tmp_path: Path) -> None:
         task_path = tmp_path / "tpu-task"
         _write_minimal_task(task_path, task_toml=_TPU_TASK_WITHOUT_TOPOLOGY)
 
-        assert cli_api.looks_like_task_dir(task_path) is True
+        assert cli_api.holds_task_config(task_path) is True
         assert cli_api.is_task_dir(task_path) is False
 
     def test_the_reason_names_the_field(self, tmp_path: Path) -> None:
@@ -279,11 +279,33 @@ class TestRejectedConfigIsNotReportedAsMissingFiles:
         assert cli_api.task_load_error(task_path) is None
         assert cli_api.is_task_dir(task_path) is True
 
-    def test_a_directory_without_the_entries_does_not_look_like_a_task(
+    def test_a_directory_without_a_task_toml_is_not_a_task(
         self, tmp_path: Path
     ) -> None:
         (tmp_path / "not-a-task").mkdir()
-        assert cli_api.looks_like_task_dir(tmp_path / "not-a-task") is False
+        assert cli_api.holds_task_config(tmp_path / "not-a-task") is False
+
+    def test_a_step_task_is_recognised_without_a_top_level_instruction(
+        self, tmp_path: Path
+    ) -> None:
+        """Harbor requires instruction.md only when a task has no steps, and
+        requires tests/ only when no verifier environment is declared. A fixed
+        list of required entries would call these shapes "not a task" and hand
+        back the wrong message."""
+        task_path = tmp_path / "step-task"
+        (task_path / "environment").mkdir(parents=True)
+        (task_path / "environment" / "Dockerfile").write_text("FROM alpine:3.20\n")
+        (task_path / "steps" / "one").mkdir(parents=True)
+        (task_path / "steps" / "one" / "instruction.md").write_text("step\n")
+        (task_path / "task.toml").write_text(
+            "[environment]\ncpus = 1\n\n"
+            '[environment.tpu]\ntype = "v6e"\n\n'
+            '[[steps]]\nname = "one"\n'
+        )
+
+        assert cli_api.holds_task_config(task_path) is True
+        error = cli_api.task_load_error(task_path)
+        assert error is not None and "topology" in str(error)
 
     def test_cli_reports_the_config_error_not_the_file_list(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -307,6 +329,56 @@ class TestRejectedConfigIsNotReportedAsMissingFiles:
         combined = printed.out + printed.err
         assert "topology" in combined, combined
         assert "must contain" not in combined, (
-            "the files are all present; naming them sends the reader to the "
-            "wrong place"
+            "the files are all present; naming them sends the reader to the wrong place"
         )
+
+
+class TestInvalidTaskInADatasetIsNotDroppedSilently:
+    """Discovery removes an invalid task before validate_tasks() sees it.
+
+    Uploading a dataset of N tasks where one is invalid used to upload N-1 and
+    print nothing, so the author believed all N went up. That is quieter than
+    the reported bug, and worse.
+    """
+
+    def test_the_skipped_task_is_named_with_its_reason(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _write_minimal_task(tmp_path / "good")
+        _write_minimal_task(tmp_path / "bad", task_toml=_TPU_TASK_WITHOUT_TOPOLOGY)
+
+        found = cli_api.get_task_paths_from_local(dataset_path=tmp_path)
+
+        assert sorted(p.name for p in found) == ["good"]
+        printed = capsys.readouterr()
+        combined = printed.out + printed.err
+        assert "bad" in combined
+        assert "topology" in combined, combined
+
+    def test_a_non_task_directory_stays_quiet(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Only children that carry a task.toml are reported."""
+        _write_minimal_task(tmp_path / "good")
+        (tmp_path / "notes").mkdir()
+        (tmp_path / "notes" / "README.md").write_text("nothing here\n")
+
+        cli_api.get_task_paths_from_local(dataset_path=tmp_path)
+
+        printed = capsys.readouterr()
+        assert "notes" not in (printed.out + printed.err)
+
+    def test_a_task_removed_by_a_filter_is_not_called_an_error(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """--task-name and -n drop valid tasks; those are not failures."""
+        _write_minimal_task(tmp_path / "keep")
+        _write_minimal_task(tmp_path / "drop")
+
+        found = cli_api.get_task_paths_from_local(
+            dataset_path=tmp_path, task_names=["keep"]
+        )
+
+        assert sorted(p.name for p in found) == ["keep"]
+        printed = capsys.readouterr()
+        assert "drop" not in (printed.out + printed.err)
