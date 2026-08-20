@@ -34,6 +34,20 @@ def _canonical_queue_key(queue_key: str) -> str:
     return settings.normalize_queue_key(queue_key)
 
 
+def _capacity_row_matches(item: Any, queue_key: str) -> bool:
+    """Whether a queue-health capacity row is the canonical queue we read back.
+
+    Server-supplied rows are untrusted: a blank or malformed queue key is
+    skipped rather than aborting the whole readback.
+    """
+    if not isinstance(item, dict):
+        return False
+    raw = str(item.get("queue_key", "")).strip()
+    if not raw:
+        return False
+    return settings.normalize_queue_key(raw) == queue_key
+
+
 def _api_error(response: httpx.Response) -> str:
     try:
         payload = response.json()
@@ -103,12 +117,7 @@ def _request_legacy_readback(
     payload = response.json()
     capacity = payload.get("capacity", []) if isinstance(payload, dict) else []
     row = next(
-        (
-            item
-            for item in capacity
-            if isinstance(item, dict)
-            and _canonical_queue_key(str(item.get("queue_key", ""))) == queue_key
-        ),
+        (item for item in capacity if _capacity_row_matches(item, queue_key)),
         None,
     )
     if row is None:

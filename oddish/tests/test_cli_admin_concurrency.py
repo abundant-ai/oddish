@@ -227,6 +227,51 @@ def test_set_reads_back_through_queue_health_on_deployed_put_only_api(monkeypatc
     }
 
 
+def test_legacy_readback_skips_blank_capacity_rows(monkeypatch):
+    old_put_payload = {
+        "queue_key": "minimax/minimax-m3",
+        "limit": 96,
+        "deploy_limit": 64,
+        "override_limit": 96,
+    }
+    queue_health = {
+        "capacity": [
+            {"queue_key": "  ", "limit": 1},
+            {"queue_key": ""},
+            "not-a-dict",
+            {
+                "queue_key": "minimax/minimax-m3",
+                "limit": 96,
+                "deploy_limit": 64,
+                "override_limit": 96,
+            },
+        ]
+    }
+    _install_client(
+        monkeypatch,
+        put_response=_Response(200, old_put_payload),
+        get_response=_Response(404, {"detail": "Not Found"}),
+        queue_health_response=_Response(200, queue_health),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "admin",
+            "concurrency",
+            "set",
+            "MiniMax/MiniMax-M3",
+            "96",
+            "--api-url",
+            "http://api.test",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["readback_source"] == "queue-health"
+
+
 def test_clear_sends_null_then_reads_back_deploy_fallback(monkeypatch):
     payload = _setting(override=None, effective=64)
     calls = _install_client(
