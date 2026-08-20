@@ -22,6 +22,7 @@ async def reap_stale_daytona_sandboxes(stale_after_minutes: int = 15) -> int:
         SandboxListSortField,
         SandboxState,
     )
+    from daytona.common.errors import DaytonaNotFoundError
     import daytona_api_client_async as api
     from daytona_api_client_async.exceptions import NotFoundException
 
@@ -71,7 +72,7 @@ async def reap_stale_daytona_sandboxes(stale_after_minutes: int = 15) -> int:
                 async with semaphore:
                     try:
                         sandbox = await client.get(sandbox.id, request_timeout=10)
-                    except NotFoundException:
+                    except (DaytonaNotFoundError, NotFoundException):
                         return 0
                     if sandbox.state in inactive or any(
                         sandbox.labels.get(key) != value
@@ -146,13 +147,14 @@ class DaytonaBackend:
             return False
         try:
             from daytona import AsyncDaytona
+            from daytona.common.errors import DaytonaNotFoundError
             from daytona_api_client_async.exceptions import NotFoundException
 
             client = AsyncDaytona()
             try:
                 sandbox = await client.get(external_id)
                 await client.delete(sandbox)
-            except NotFoundException:
+            except (DaytonaNotFoundError, NotFoundException):
                 # Auto-delete or the expiry reaper got there first. The
                 # sandbox is gone, which is the goal.
                 logger.info("DaytonaBackend.teardown: %s already gone", external_id)
