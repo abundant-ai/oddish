@@ -45,7 +45,7 @@ export function ConfigJsonRenderer({ content }: { content: string }) {
   }
 
   return (
-    <div className="space-y-3 p-3 text-sm">
+    <div className="min-w-0 space-y-3 p-3 text-sm">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h2 className="text-base font-semibold text-foreground">
@@ -107,7 +107,9 @@ export function ConfigJsonRenderer({ content }: { content: string }) {
         </Card>
       )}
 
-      {(data.trial_name || data.trials_dir || data.timeout_multiplier) && (
+      {(data.trial_name ||
+        data.trials_dir ||
+        data.timeout_multiplier !== undefined) && (
         <Card className="border-border/50 bg-card/50">
           <CardHeader>
             <CardTitle className="text-sm">Trial Information</CardTitle>
@@ -175,7 +177,7 @@ export function ConfigJsonRenderer({ content }: { content: string }) {
               )}
             {data.agent.kwargs && Object.keys(data.agent.kwargs).length > 0 && (
               <Row label="Arguments">
-                <pre className="rounded bg-muted/50 p-2 font-mono text-xs text-foreground">
+                <pre className="min-w-0 max-w-full wrap-break-word whitespace-pre-wrap rounded bg-muted/50 p-2 font-mono text-xs text-foreground">
                   {JSON.stringify(data.agent.kwargs, null, 2)}
                 </pre>
               </Row>
@@ -222,7 +224,7 @@ export function ConfigJsonRenderer({ content }: { content: string }) {
             {data.environment.kwargs &&
               Object.keys(data.environment.kwargs).length > 0 && (
                 <Row label="Arguments">
-                  <pre className="rounded bg-muted/50 p-2 font-mono text-xs text-foreground">
+                  <pre className="min-w-0 max-w-full wrap-break-word whitespace-pre-wrap rounded bg-muted/50 p-2 font-mono text-xs text-foreground">
                     {JSON.stringify(data.environment.kwargs, null, 2)}
                   </pre>
                 </Row>
@@ -260,11 +262,9 @@ function Row({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex items-start gap-2">
-      <span className="min-w-[110px] text-xs text-muted-foreground">
-        {label}:
-      </span>
-      {children}
+    <div className="grid min-w-0 grid-cols-[7rem_minmax(0,1fr)] items-start gap-2">
+      <span className="text-xs text-muted-foreground">{label}:</span>
+      <div className="min-w-0 wrap-break-word">{children}</div>
     </div>
   );
 }
