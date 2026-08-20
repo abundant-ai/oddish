@@ -8,4 +8,14 @@ The component's `trajectory_component` must be one of these labels. The two grou
 
 {{taxonomy}}
 
+The `trajectory_summary` value must be a JSON object with this exact shape:
+{
+  "summary": "2-3 sentences",
+  "highlights": [
+    {"step_id": <int>, "title": "<short label>", "why": "<one sentence>"}
+  ],
+  "components": [
+    {"step_ids": [<int>, ...], "trajectory_component": "<label>", "action": "<action>", "purpose": "<purpose>", "summary": "<one sentence>"}
+  ]
+}
 Order the highlights by `step_id`, lowest first.

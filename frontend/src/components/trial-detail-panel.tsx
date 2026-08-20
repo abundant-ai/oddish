@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 import Image from "next/image";
 import {
@@ -65,6 +66,7 @@ import { QaAssessmentReport } from "@/components/qa-report/qa-assessment-report"
 import { TimingBreakdownBar } from "@/components/timing-breakdown-bar";
 import { CodeBlock } from "@/components/code-block";
 import type { Trial, Task } from "@/lib/types";
+import { isAgentTrial } from "@/lib/types";
 import {
   costEstimateMarks,
   formatCostUsd,
@@ -88,6 +90,7 @@ import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { StatusIcon } from "@/components/status-icon";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
 import { useSWRConfig } from "swr";
+import { isLiveQaTrial, taskHasActiveVerdict } from "@/lib/job-status";
 import { isAnalysisStatusActive, trialKey, useTrial } from "@/lib/use-trial";
 import { embeddedCtrfSummary } from "@/lib/verifier-results";
 
@@ -216,12 +219,14 @@ function TrialAnalysisCard({
   apiBaseUrl,
   actionsReady,
   onQueued,
+  onOpenGrader,
 }: {
   trial: Trial;
   task: Task | null;
   apiBaseUrl: string;
   actionsReady: boolean;
   onQueued?: () => void;
+  onOpenGrader?: (qaTrialId: string) => void;
 }) {
   // The global mutate writes to an explicitly named cache key. The bound
   // mutation would write to whichever trial is currently showing, which is
@@ -261,11 +266,17 @@ function TrialAnalysisCard({
     setQueueError(null);
   }, [trialProp.id]);
 
-  // An analysis counts as in progress when the server says it is queued
-  // or running. The rerun endpoint sets the status to QUEUED before it
-  // responds, so the server's status is always current and the client
-  // does not need to track a run on its own.
-  const inProgress = isAnalysisStatusActive(trial.analysis_status);
+  // QA is task-scoped: the rerun creates one qa trial that grades every
+  // trial, and never stamps this row's analysis_status. Reading that field
+  // alone showed "No analysis yet" while the run was live.
+  const inProgress =
+    isAnalysisStatusActive(trial.analysis_status) ||
+    taskHasActiveVerdict(task);
+  // The qa trial doing the grading right now (kind qa specifically: a live
+  // pre-trial audit must not be linked as "the QA run"). Once it settles
+  // the importer stamps analysis._graded_by and the "graded by" link below
+  // takes over.
+  const liveQaTrialId = (task?.trials ?? []).find(isLiveQaTrial)?.id;
 
   // When an analysis run that we were watching finishes, this tells the
   // parent to refresh its lists, so the grid shows the result even after
@@ -560,6 +571,15 @@ function TrialAnalysisCard({
               duration={analysisDuration}
               raw={trial.analysis}
             />
+            {trial.analysis?._graded_by && onOpenGrader && (
+              <button
+                type="button"
+                onClick={() => onOpenGrader(trial.analysis!._graded_by!)}
+                className="text-muted-foreground hover:text-foreground mt-2 font-mono text-[11px] underline decoration-dotted underline-offset-2"
+              >
+                graded by {trial.analysis._graded_by}
+              </button>
+            )}
           </>
         ) : (
           <div className="flex items-start gap-3">
@@ -576,11 +596,26 @@ function TrialAnalysisCard({
                   <span className="font-mono text-sm font-bold">
                     {trial.analysis_status === "running"
                       ? "Analyzing"
-                      : "Analysis queued"}
+                      : trial.analysis_status
+                        ? "Analysis queued"
+                        : "QA is running"}
                   </span>
                   <span className="text-muted-foreground text-xs">
-                    {progressLine}
+                    {trial.analysis_status
+                      ? progressLine
+                      : "The task's QA run grades every trial; this trial's result lands when it finishes."}
                   </span>
+                  {!trial.analysis_status &&
+                    liveQaTrialId &&
+                    onOpenGrader && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenGrader(liveQaTrialId)}
+                        className="text-muted-foreground hover:text-foreground self-start font-mono text-[11px] underline decoration-dotted underline-offset-2"
+                      >
+                        view the QA run
+                      </button>
+                    )}
                 </div>
               ) : hasAnalysis ? (
                 // Analysis state exists but produced no report (e.g. failed
@@ -860,6 +895,7 @@ export function TrialDetailPanel({
   const actionsReady = !revalidateTrial || canonicalTrial !== null;
   const trial = canonicalTrial ?? selectedTrial;
   const verifierSummary = embeddedCtrfSummary(trial?.result);
+  const router = useRouter();
 
   const validTabs = useMemo(
     () => new Set(["summary", "live", "files", "trajectory", "artifacts"]),
@@ -1033,8 +1069,12 @@ export function TrialDetailPanel({
     artifactsLines,
   ]);
 
+  // Agent rows only: the generic retry endpoint refuses qa/audit kinds, so
+  // offering the button on their drawers would only ever render its 400.
   const showRetry =
-    allowRetry && (trial?.status === "failed" || trial?.status === "success");
+    allowRetry &&
+    Boolean(trial && isAgentTrial(trial)) &&
+    (trial?.status === "failed" || trial?.status === "success");
   const canRetry = actionsReady && showRetry;
   const showDelete = allowDelete && Boolean(onDelete) && Boolean(trial);
   const canDelete = actionsReady && showDelete;
@@ -1238,6 +1278,11 @@ export function TrialDetailPanel({
       <DrawerHeader className="border-border border-b px-4 py-3 sm:px-6 sm:py-4">
         <DrawerTitle className="flex min-w-0 items-center gap-2 pr-16 font-mono text-sm sm:text-base">
           <span className="min-w-0 truncate">{trial.name}</span>
+          {(trial.kind ?? "agent") !== "agent" && (
+            <span className="inline-flex shrink-0 items-center rounded-md border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[11px] font-medium text-amber-700 dark:text-amber-400">
+              {trial.kind}
+            </span>
+          )}
           {showAnalysis && trial.task_version != null && (
             <span className="border-border bg-muted/50 text-muted-foreground inline-flex shrink-0 items-center rounded-md border px-1.5 py-0.5 font-mono text-[11px] font-medium">
               v{trial.task_version}
@@ -1642,6 +1687,21 @@ export function TrialDetailPanel({
                   apiBaseUrl={apiBaseUrl}
                   actionsReady={actionsReady}
                   onQueued={() => onRetry?.(task ? [task.id] : undefined)}
+                  onOpenGrader={(qaTrialId) => {
+                    // The qa trial lives in the shadow experiment, so it is
+                    // usually absent from this host's list. Navigate in place
+                    // when it happens to be here, else deep-link the task page.
+                    const idx = orderedList.findIndex(
+                      (t) => t.id === qaTrialId,
+                    );
+                    if (idx >= 0 && onNavigate) {
+                      onNavigate(orderedList[idx], idx);
+                      return;
+                    }
+                    router.push(
+                      `/tasks/${encodeURIComponent(trial.task_id)}?trial=${encodeURIComponent(qaTrialId)}`,
+                    );
+                  }}
                 />
               )}
 

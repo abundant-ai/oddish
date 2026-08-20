@@ -215,44 +215,6 @@ function detailResponse(versionId = DEFAULT_VERSION_ID) {
   };
 }
 
-function capabilitiesResponse() {
-  return {
-    schema_version: 4,
-    task_version_id: DEFAULT_VERSION_ID,
-    cohort_success: [],
-    cohort_failure: ["trial-1", "trial-2"],
-    mode: "single",
-    summary: "Agents found the failure but stopped before applying the fix.",
-    models: {
-      successful: [],
-      failing: [{ model: "gpt-current", trials: 2 }],
-    },
-    trial_models: {
-      "trial-1": "gpt-current",
-      "trial-2": "gpt-current",
-    },
-    categories: [
-      {
-        category: "debugging",
-        label: null,
-        successful: [],
-        failing: [
-          {
-            behavior_description: "Agents reproduced the reported failure.",
-            evidence: [
-              {
-                trial_id: "trial-1",
-                step_id: 7,
-                quote: "The failing case reproduces consistently.",
-              },
-            ],
-          },
-        ],
-      },
-    ],
-  };
-}
-
 async function signIn(page: Page) {
   await setupClerkTestingToken({ page });
   await page.goto("/");
@@ -311,6 +273,7 @@ test.describe("authenticated task view", () => {
       return url.pathname === `/api/tasks/${TASK_ID}/files`;
     });
     await page.goto(`/tasks/${TASK_ID}?drawer=task`);
+    await page.getByRole("button", { name: "Files", exact: true }).click();
 
     const response = await listingResponse;
     const url = new URL(response.url());
@@ -326,83 +289,6 @@ test.describe("authenticated task view", () => {
         (file) => file.content === undefined && file.url === undefined
       )
     ).toBe(true);
-  });
-
-  test("capabilities load only when their pane is selected", async ({
-    page,
-  }) => {
-    await signIn(page);
-    let capabilityRequests = 0;
-
-    await page.route(
-      new RegExp(`/api/tasks/${READER_TASK_ID}/open(?:\\?|$)`),
-      (route) => route.fulfill({ json: openResponse() })
-    );
-    await page.route(
-      new RegExp(`/api/tasks/${READER_TASK_ID}/detail(?:\\?|$)`),
-      (route) => route.fulfill({ json: detailResponse() })
-    );
-    await page.route(
-      new RegExp(`/api/tasks/${READER_TASK_ID}/trials(?:\\?|$)`),
-      (route) => route.fulfill({ json: [] })
-    );
-    await page.route(
-      new RegExp(`/api/tasks/${READER_TASK_ID}/files(?:\\?|$)`),
-      (route) => route.fulfill({ json: { files: [] } })
-    );
-    await page.route(
-      new RegExp(`/api/tasks/${READER_TASK_ID}/agent-capabilities(?:\\?|$)`),
-      (route) => {
-        expect(new URL(page.url()).searchParams.get("taskPane")).toBe(
-          "capabilities"
-        );
-        capabilityRequests += 1;
-        route.fulfill({ json: capabilitiesResponse() });
-      }
-    );
-
-    await page.goto(`/tasks/${READER_TASK_ID}?drawer=task`);
-    await expect(
-      page.getByRole("button", { name: "Overview" })
-    ).toHaveAttribute("aria-current", "page");
-    await expect(
-      page.getByRole("button", { name: "Capabilities" })
-    ).toBeVisible();
-
-    await page.getByRole("button", { name: "Capabilities" }).click();
-    await expect.poll(() => capabilityRequests).toBe(1);
-    await expect(
-      page.getByRole("heading", { name: "Capabilities" })
-    ).toBeVisible();
-    await expect(page.getByText("Agents found the failure")).toBeVisible();
-    const debuggingCategory = page
-      .getByText("Debugging", { exact: true })
-      .locator("..");
-    await expect(debuggingCategory.getByText("gpt-current ×1")).toBeVisible();
-    await debuggingCategory.getByText("1 example").click();
-    await expect(
-      debuggingCategory.getByRole("link", { name: /step 7/ })
-    ).toHaveAttribute(
-      "href",
-      new RegExp(`trial=trial-1.*tab=trajectory#step-7$`)
-    );
-    await expect(page).toHaveURL(/taskPane=capabilities/);
-    expect(capabilityRequests).toBe(1);
-
-    await page.reload();
-    await expect(
-      page.getByRole("heading", { name: "Capabilities" })
-    ).toBeVisible();
-    expect(capabilityRequests).toBe(2);
-
-    await page.goBack();
-    await expect(
-      page.getByRole("button", { name: "Overview" })
-    ).toHaveAttribute("aria-current", "page");
-    await page.goForward();
-    await expect(
-      page.getByRole("heading", { name: "Capabilities" })
-    ).toBeVisible();
   });
 
   test("binary preview waits for its own presigned URL", async ({ page }) => {
@@ -469,6 +355,7 @@ test.describe("authenticated task view", () => {
     });
 
     await page.goto(`/tasks/${TASK_ID}?drawer=task`);
+    await page.getByRole("button", { name: "Files", exact: true }).click();
     await page.getByRole("button", { name: "readme.txt" }).click();
     await expect(page.getByText("text preview loaded")).toBeVisible();
     await expect(page.getByText(/Showing first 100\.0 KB/)).toBeVisible();

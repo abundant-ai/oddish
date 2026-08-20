@@ -460,54 +460,16 @@ test.describe("critical task and trial subtree", () => {
     const taskOpenResponse = page.waitForResponse(taskOpenPattern);
     taskOpenGate.release();
     await taskOpenResponse;
-    const taskDetailRequest = page.waitForRequest(taskDetailPattern);
-    await page.getByRole("button", { name: "View task files" }).click();
-    await taskDetailRequest;
-    expect(requestCount(requests, taskDetailPattern)).toBe(1);
-    await expect(
-      page.getByRole("button", { name: "Rerun trials" })
-    ).toBeDisabled();
-    await expect(
-      page.getByRole("button", { name: "Rerun QA", exact: true })
-    ).toBeDisabled();
-    await page.keyboard.press("Escape");
-    await expect(
-      page.getByRole("button", { name: "Rerun QA", exact: true })
-    ).toBeHidden();
-
     const trialButton = page.getByRole("button", { name: "trial-p1 Fail" });
     await expect(trialButton).toBeVisible();
 
     const trialDetailPattern = new RegExp(`/api/trials/${TRIAL_ID}(?:\\?|$)`);
-    const trialDetailRequest = page.waitForRequest(trialDetailPattern);
-    await trialButton.click();
-    await trialDetailRequest;
-    expect(requestCount(requests, trialDetailPattern)).toBe(1);
-    // Both canonical requests are blocked. The snapshot still paints Summary,
-    // but every mutation waits for the full trial resource.
-    await expect(page.getByRole("tab", { name: "Summary" })).toBeVisible();
-    await expect(
-      page.getByRole("button", { name: "Retry Trial" })
-    ).toBeDisabled();
-    await expect(
-      page.getByRole("button", { name: "Run analysis" })
-    ).toBeDisabled();
-    await expect(page.getByText("Loading latest trial state.")).toBeVisible();
-
-    taskDetailGate.release();
-    // The open drawer adopts the canonical task list instead of retaining its
-    // snapshot copy. That list also contributes the selected trial's report.
-    await expect(
-      page.getByRole("heading", { name: "GOOD FAILURE", exact: true })
-    ).toBeVisible();
-    const nextTrialButton = page.getByRole("button", { name: "Next trial" });
-    await expect(nextTrialButton).toBeEnabled();
-    const analysisLogDisclosure = page
-      .locator("summary")
-      .filter({ hasText: "Analysis log" });
-    await expect(analysisLogDisclosure).toBeVisible();
-
-    await page.waitForTimeout(300);
+    const taskTrialsPattern = new RegExp(
+      `/api/tasks/${TASK_ID}/trials(?:\\?|$)`
+    );
+    const taskFilesPattern = new RegExp(
+      `/api/tasks/${TASK_ID}/files(?:/|\\?|$)`
+    );
     const analysisLogPattern = new RegExp(
       `/api/trials/${TRIAL_ID}/analysis-log(?:\\?|$)`
     );
@@ -517,11 +479,45 @@ test.describe("critical task and trial subtree", () => {
     const trajectoryPattern = new RegExp(
       `/api/trials/${TRIAL_ID}/trajectory(?:/|\\?|$)`
     );
+    const trialDetailRequest = page.waitForRequest(trialDetailPattern);
+    await trialButton.click();
+    await trialDetailRequest;
+    expect(requestCount(requests, trialDetailPattern)).toBe(1);
+    // The lightweight /open row paints Summary, but mutations wait for the
+    // selected trial resource. The hidden task pane owns no network work.
+    await expect(page.getByRole("tab", { name: "Summary" })).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Retry Trial" })
+    ).toBeDisabled();
+    await expect(
+      page.getByRole("button", { name: "Run analysis" })
+    ).toBeDisabled();
+    await expect(page.getByText("Loading latest trial state.")).toBeVisible();
+
+    await page.waitForTimeout(300);
+    expect(requestCount(requests, taskDetailPattern)).toBe(0);
+    expect(requestCount(requests, taskTrialsPattern)).toBe(0);
+    expect(requestCount(requests, taskFilesPattern)).toBe(0);
     expect(requestCount(requests, analysisLogPattern)).toBe(0);
     expect(requestCount(requests, trialFilesPattern)).toBe(0);
     expect(requestCount(requests, trajectoryPattern)).toBe(0);
 
+    const taskDetailRequest = page.waitForRequest(taskDetailPattern);
+    await page.getByRole("button", { name: "Show task" }).click();
+    await taskDetailRequest;
+    expect(requestCount(requests, taskDetailPattern)).toBe(1);
+    await expect.poll(() => requestCount(requests, taskTrialsPattern)).toBe(1);
+    expect(requestCount(requests, taskFilesPattern)).toBe(0);
+    taskDetailGate.release();
+
     trialDetailGate.release();
+    await expect(
+      page.getByRole("heading", { name: "GOOD FAILURE", exact: true })
+    ).toBeVisible();
+    const analysisLogDisclosure = page
+      .locator("summary")
+      .filter({ hasText: "Analysis log" });
+    await expect(analysisLogDisclosure).toBeVisible();
     await expect(
       page.getByRole("button", { name: "Re-run analysis" })
     ).toBeEnabled();
@@ -558,14 +554,6 @@ test.describe("critical task and trial subtree", () => {
     await expect(
       page.getByRole("button", { name: "Retry Trial" })
     ).toBeEnabled();
-
-    const probeDetailPattern = new RegExp(
-      `/api/trials/${PROBE_TRIAL_ID}(?:\\?|$)`
-    );
-    const probeDetailRequest = page.waitForRequest(probeDetailPattern);
-    await nextTrialButton.click();
-    await probeDetailRequest;
-    await expect(page.getByText("probe-p1", { exact: true })).toBeVisible();
 
     await page.goto("/tasks");
     const failedTaskLink = page.getByRole("link", {

@@ -56,7 +56,7 @@ def _install_fakes(monkeypatch, *, trial=None, task=None):
 
 
 def test_notify_trial_update_closes_session_before_update(monkeypatch):
-    trial = SimpleNamespace(task_id="task-1", experiment_id="exp-1")
+    trial = SimpleNamespace(task_id="task-1", experiment_id="exp-1", kind="agent")
     task = SimpleNamespace(id="task-1", name="t", tags={})
     state = _install_fakes(monkeypatch, trial=trial, task=task)
 
@@ -65,16 +65,6 @@ def test_notify_trial_update_closes_session_before_update(monkeypatch):
     assert state["open_at_update"] == 0
     assert state["max_open"] == 1  # only ever one session at a time
     assert state["called_with"] == (task, "exp-1")
-
-
-def test_notify_analysis_update_closes_session_before_update(monkeypatch):
-    trial = SimpleNamespace(task_id="task-1", experiment_id="exp-2")
-    task = SimpleNamespace(id="task-1", name="t", tags={})
-    state = _install_fakes(monkeypatch, trial=trial, task=task)
-
-    assert asyncio.run(notifier.notify_analysis_update("task-1-0")) is True
-    assert state["open_at_update"] == 0
-    assert state["called_with"] == (task, "exp-2")
 
 
 def test_notify_qa_update_closes_session_before_update(monkeypatch):

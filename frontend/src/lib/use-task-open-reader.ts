@@ -13,6 +13,7 @@ import {
   updateTaskOpenDefault,
   type TaskOpenResource,
 } from "@/lib/task-open-resource";
+import { isAgentTrial } from "@/lib/types";
 import type {
   Task,
   TaskOpenResponse,
@@ -229,7 +230,19 @@ export function useTaskOpenReader(
     [defaultVersionId]
   );
 
-  const trialsForVersion = useMemo(() => task?.trials ?? [], [task?.trials]);
+  // Agent trials drive the cards/matrix; the platform's own QA/audit trials
+  // render separately as the QA strip.
+  const trialsForVersion = useMemo(
+    () => (task?.trials ?? []).filter((t) => isAgentTrial(t)),
+    [task?.trials]
+  );
+  const analysisTrialsForVersion = useMemo(
+    () =>
+      (task?.trials ?? []).filter(
+        (t) => !isAgentTrial(t) && !t.superseded_by_trial_id
+      ),
+    [task?.trials]
+  );
   const handleSetDefaultVersion = useCallback(async () => {
     if (!task || !open || !selectedVersion || selectedVersion.is_current) {
       return;
@@ -317,9 +330,9 @@ export function useTaskOpenReader(
 
   return {
     agentCards,
+    analysisTrialsForVersion,
     defaultVersionError,
     defaultVersionId,
-    detailKey,
     error,
     exactAgentModels,
     explicitVersionMissing,

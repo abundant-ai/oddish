@@ -134,6 +134,7 @@ async def get_public_task_for_experiment(
             t
             for t in task.trials
             if not t.is_probe
+            and t.kind == "agent"
             and (t.experiment_id == experiment.id or t.id in gathered_ids)
         ],
     )
@@ -151,6 +152,7 @@ async def get_public_trial_for_experiment(
         select(TrialModel)
         .where(TrialModel.id == trial_id)
         .where(TrialModel.is_probe.is_(False))
+        .where(TrialModel.kind == "agent")
         .where(trial_in_experiment(experiment.id))
     )
     return result.scalar_one_or_none()
@@ -201,6 +203,7 @@ async def list_experiment_trials_for_org(
     conditions = [
         trial_in_experiment(experiment_id),
         TrialModel.superseded_by_trial_id.is_(None),
+        TrialModel.kind == "agent",
     ]
     if org_id is not None:
         conditions.append(TrialModel.org_id == org_id)
@@ -248,6 +251,7 @@ async def list_task_trials_for_task(
     conditions = [
         TrialModel.task_id == task_id,
         TrialModel.superseded_by_trial_id.is_(None),
+        TrialModel.kind == "agent",
     ]
     if probe is not None:
         conditions.append(TrialModel.is_probe == probe)
@@ -290,6 +294,7 @@ async def list_task_trials_for_public_experiment(
             TrialModel.task_id == task_id,
             TrialModel.superseded_by_trial_id.is_(None),
             TrialModel.is_probe.is_(False),
+            TrialModel.kind == "agent",
             trial_in_experiment(experiment.id),
         )
         .order_by(TrialModel.created_at.asc())

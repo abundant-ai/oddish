@@ -1,4 +1,5 @@
 from oddish.db.models import (
+    AGENT_TRIAL_KIND,
     AnalysisStatus,
     Base,
     JobStatus,
@@ -26,8 +27,7 @@ from oddish.db.models import (
     TagPolicyProfanityMode,
     # ORM Models
     AnalysisCostModel,
-    AnalyzerModel,
-    AnalyzerBlockModel,
+    analysis_spend_view,
     CostExcludedLlmKeyModel,
     DocumentModel,
     ExperimentModel,
@@ -46,6 +46,7 @@ from oddish.db.models import (
     TaskModel,
     TaskVersionModel,
     TaskBrowseSummaryModel,
+    TaskVersionModelMetricsModel,
     TrialEventModel,
     TrialFacetModel,
     TrialModel,
@@ -90,6 +91,8 @@ from oddish.db.soft_delete import (
 __all__ = [
     # Base
     "Base",
+    # Constants
+    "AGENT_TRIAL_KIND",
     # Enums
     "TaskStatus",
     "JobStatus",
@@ -116,8 +119,7 @@ __all__ = [
     "TagPolicyProfanityMode",
     # ORM Models
     "AnalysisCostModel",
-    "AnalyzerModel",
-    "AnalyzerBlockModel",
+    "analysis_spend_view",
     "CostExcludedLlmKeyModel",
     "ExperimentModel",
     "DocumentModel",
@@ -137,6 +139,7 @@ __all__ = [
     "TaskModel",
     "TaskVersionModel",
     "TaskBrowseSummaryModel",
+    "TaskVersionModelMetricsModel",
     "TrialEventModel",
     "TrialFacetModel",
     "TrialModel",
