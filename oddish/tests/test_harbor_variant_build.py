@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from oddish.core.harbor_source import (
     harbor_git_requirement,
+    harbor_sandbox_requirement,
     harbor_variant_function_name,
 )
 
@@ -51,3 +52,39 @@ def test_harbor_variant_function_name():
     assert (
         harbor_variant_function_name("harbor-next") == "process_single_job__harbor-next"
     )
+
+
+def test_harbor_sandbox_requirement_renders_github_commit_tarball():
+    # Sandboxes have no git binary; a GitHub source must install over HTTPS.
+    req = harbor_sandbox_requirement("https://github.com/dot-agi/harbor", "a" * 40)
+    assert req == (
+        f"harbor @ https://github.com/dot-agi/harbor/archive/{'a' * 40}.tar.gz"
+    )
+
+
+def test_harbor_sandbox_requirement_strips_git_prefix_and_dot_git_suffix():
+    req = harbor_sandbox_requirement(
+        "git+https://github.com/dot-agi/harbor.git", "b" * 40
+    )
+    assert req == (
+        f"harbor @ https://github.com/dot-agi/harbor/archive/{'b' * 40}.tar.gz"
+    )
+
+
+def test_harbor_sandbox_requirement_renders_extras_group():
+    req = harbor_sandbox_requirement(
+        "https://github.com/dot-agi/harbor", "a" * 40, extras=["daytona"]
+    )
+    assert req == (
+        "harbor[daytona] @ "
+        f"https://github.com/dot-agi/harbor/archive/{'a' * 40}.tar.gz"
+    )
+
+
+def test_harbor_sandbox_requirement_non_github_falls_back_to_git_reference():
+    # No forge tarball endpoint to target: only the git+ form can express
+    # an arbitrary git remote, so the rendering matches harbor_git_requirement.
+    src = "https://gitlab.com/dot-agi/harbor"
+    req = harbor_sandbox_requirement(src, "c" * 40)
+    assert req == harbor_git_requirement(src, "c" * 40)
+    assert req == f"harbor @ git+{src}@{'c' * 40}"
