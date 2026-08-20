@@ -104,13 +104,34 @@ def resolve_task_path(path_arg: Path | None, path_option: Path | None) -> Path |
     return task_path
 
 
-def is_task_dir(path: Path) -> bool:
-    """Check if a path is a valid Harbor task directory."""
+# The entries Harbor expects in a task directory. Used to tell "this is not a
+# task directory" apart from "this is a task directory whose config is wrong",
+# which need very different messages.
+TASK_DIR_ENTRIES = ("task.toml", "instruction.md", "environment", "tests")
+
+
+def looks_like_task_dir(path: Path) -> bool:
+    """Whether *path* has the shape of a task directory.
+
+    Structure only. The config may still fail to load, which is exactly the
+    case this separates out: reporting a config error as a missing file sends
+    the reader looking for files that are already there.
+    """
+    return path.is_dir() and all((path / entry).exists() for entry in TASK_DIR_ENTRIES)
+
+
+def task_load_error(path: Path) -> Exception | None:
+    """The reason ``Task(path)`` fails, or None when it loads."""
     try:
         Task(path)
-    except Exception:
-        return False
-    return True
+    except Exception as exc:  # noqa: BLE001 - the reason is the return value
+        return exc
+    return None
+
+
+def is_task_dir(path: Path) -> bool:
+    """Check if a path is a valid Harbor task directory."""
+    return task_load_error(path) is None
 
 
 def validate_tasks(task_paths: list[Path]) -> list[Path]:
@@ -316,10 +337,27 @@ def resolve_local_task_paths(
                 n_tasks=n_tasks,
             )
             if not task_paths:
-                error_console.print(
-                    f"[red]No valid tasks found in {local_path}[/red]\n"
-                    "A task directory must contain: task.toml, instruction.md, environment/, tests/"
+                # A task directory whose config does not load reaches here too,
+                # because is_task_dir() above returned False. Saying "must
+                # contain task.toml, ..." would be wrong: those files exist,
+                # and the reader would go looking for the wrong thing. Report
+                # the reason the config was rejected instead.
+                load_error = (
+                    task_load_error(local_path)
+                    if looks_like_task_dir(local_path)
+                    else None
                 )
+                if load_error is not None:
+                    error_console.print(
+                        f"[red]{local_path} is a task directory, but its "
+                        f"configuration was rejected.[/red]\n"
+                        f"{type(load_error).__name__}: {load_error}"
+                    )
+                else:
+                    error_console.print(
+                        f"[red]No valid tasks found in {local_path}[/red]\n"
+                        "A task directory must contain: task.toml, instruction.md, environment/, tests/"
+                    )
                 raise typer.Exit(1)
             if not quiet:
                 console.print(

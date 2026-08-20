@@ -229,3 +229,84 @@ def test_git_lfs_pointer_detection_ignores_real_asset(tmp_path: Path) -> None:
     asset_path.write_bytes(b"\x8c\r\x04\t\x03\n\xadU\x99\x81\xb7L")
 
     assert cli_api.find_git_lfs_pointer_files(task_path) == []
+
+
+_TPU_TASK_WITHOUT_TOPOLOGY = """\
+version = "1.0"
+
+[metadata]
+difficulty = "easy"
+description = "tpu task"
+
+[environment]
+cpus = 1
+memory_mb = 2048
+
+[environment.tpu]
+type = "v6e"
+"""
+
+
+class TestRejectedConfigIsNotReportedAsMissingFiles:
+    """A task whose config is rejected must not be called a missing-files error.
+
+    `topology` is required on a TPU spec. Removing it makes `task.toml`
+    genuinely invalid, which is correct. The reported problem was the message:
+    the CLI answered "A task directory must contain: task.toml, instruction.md,
+    environment/, tests/" while all four were present, so the reader looked for
+    files instead of the one missing key.
+    """
+
+    def test_the_directory_still_looks_like_a_task(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "tpu-task"
+        _write_minimal_task(task_path, task_toml=_TPU_TASK_WITHOUT_TOPOLOGY)
+
+        assert cli_api.looks_like_task_dir(task_path) is True
+        assert cli_api.is_task_dir(task_path) is False
+
+    def test_the_reason_names_the_field(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "tpu-task"
+        _write_minimal_task(task_path, task_toml=_TPU_TASK_WITHOUT_TOPOLOGY)
+
+        error = cli_api.task_load_error(task_path)
+        assert error is not None
+        assert "topology" in str(error)
+
+    def test_a_valid_task_reports_no_error(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "ok-task"
+        _write_minimal_task(task_path)
+
+        assert cli_api.task_load_error(task_path) is None
+        assert cli_api.is_task_dir(task_path) is True
+
+    def test_a_directory_without_the_entries_does_not_look_like_a_task(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "not-a-task").mkdir()
+        assert cli_api.looks_like_task_dir(tmp_path / "not-a-task") is False
+
+    def test_cli_reports_the_config_error_not_the_file_list(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The end-to-end message a user sees."""
+        task_path = tmp_path / "tpu-task"
+        _write_minimal_task(task_path, task_toml=_TPU_TASK_WITHOUT_TOPOLOGY)
+
+        with pytest.raises(typer.Exit):
+            cli_api.resolve_local_task_paths(
+                path=Path(task_path),
+                path_option=None,
+                dataset=None,
+                task_names=None,
+                exclude_task_names=None,
+                n_tasks=None,
+                quiet=True,
+            )
+
+        printed = capsys.readouterr()
+        combined = printed.out + printed.err
+        assert "topology" in combined, combined
+        assert "must contain" not in combined, (
+            "the files are all present; naming them sends the reader to the "
+            "wrong place"
+        )
