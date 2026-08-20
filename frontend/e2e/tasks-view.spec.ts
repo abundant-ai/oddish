@@ -311,6 +311,7 @@ test.describe("authenticated task view", () => {
       return url.pathname === `/api/tasks/${TASK_ID}/files`;
     });
     await page.goto(`/tasks/${TASK_ID}?drawer=task`);
+    await page.getByRole("button", { name: "Files", exact: true }).click();
 
     const response = await listingResponse;
     const url = new URL(response.url());
@@ -469,6 +470,7 @@ test.describe("authenticated task view", () => {
     });
 
     await page.goto(`/tasks/${TASK_ID}?drawer=task`);
+    await page.getByRole("button", { name: "Files", exact: true }).click();
     await page.getByRole("button", { name: "readme.txt" }).click();
     await expect(page.getByText("text preview loaded")).toBeVisible();
     await expect(page.getByText(/Showing first 100\.0 KB/)).toBeVisible();
