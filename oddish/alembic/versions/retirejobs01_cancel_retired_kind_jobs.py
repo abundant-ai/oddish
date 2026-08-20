@@ -19,6 +19,8 @@ from typing import Sequence, Union
 
 from alembic import op
 
+from oddish.db.migration_locks import run_with_lock_retry
+
 revision: str = "retirejobs01"
 down_revision: Union[str, Sequence[str], None] = "shadowexp01"
 branch_labels: Union[str, Sequence[str], None] = None
@@ -26,23 +28,26 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Bound waiting on row locks a still-draining worker may briefly hold.
-    op.execute("SET lock_timeout = '8s'")
-    op.execute(
-        """
-        UPDATE worker_jobs
-        SET    status = 'CANCELLED',
-               finished_at = NOW(),
-               error_message = 'pipeline removed: analysis runs as trials now',
-               current_worker_id = NULL,
-               current_queue_slot = NULL,
-               modal_function_call_id = NULL
-        WHERE  kind::text IN
-               ('QA', 'VERDICT', 'ANALYSIS', 'QA_REVIEW',
-                'ANALYZER', 'ANALYZER_BLOCK')
-          AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
-        """
-    )
+    # Waiting on row locks a still-draining worker may briefly hold is
+    # bounded by a short lock_timeout and retried (see migration_locks).
+    def _cancel_retired_kind_jobs() -> None:
+        op.execute(
+            """
+            UPDATE worker_jobs
+            SET    status = 'CANCELLED',
+                   finished_at = NOW(),
+                   error_message = 'pipeline removed: analysis runs as trials now',
+                   current_worker_id = NULL,
+                   current_queue_slot = NULL,
+                   modal_function_call_id = NULL
+            WHERE  kind::text IN
+                   ('QA', 'VERDICT', 'ANALYSIS', 'QA_REVIEW',
+                    'ANALYZER', 'ANALYZER_BLOCK')
+              AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+            """
+        )
+
+    run_with_lock_retry(_cancel_retired_kind_jobs, table_name="worker_jobs")
 
 
 def downgrade() -> None:
