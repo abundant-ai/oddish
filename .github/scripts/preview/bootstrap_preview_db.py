@@ -228,7 +228,6 @@ async def _capture_preserved_rows(url: str) -> None:
     never block the rebuild.
     """
     engine = None
-    print("bootstrap_preview_db: capture starting", file=sys.stderr)
     try:
         # Inside the guard: a malformed URL or a missing driver must degrade to
         # "nothing preserved", never abort the rebuild.
@@ -302,7 +301,6 @@ async def _restore_preserved_rows(url: str) -> None:
     run cancelled before this point can still be recovered by the next one.
     """
     engine = None
-    print("bootstrap_preview_db: restore starting", file=sys.stderr)
     try:
         engine = _engine(url)
         async with engine.begin() as conn:
