@@ -130,7 +130,7 @@ const instanceTitle = (instance: InstanceStat) =>
  * disagree about segment math, ordering or labels.
  *
  * Returns null when there is nothing to show (no steps, or no usable summary).
- * With `fallbackWithoutSummary`, a missing summary degrades instead of
+ * With `showUngroupedFallback`, a missing summary degrades instead of
  * hiding the card: every metric here is arithmetic over the steps, and only
  * the component *coloring* needs a summary, so the totals, the timeline, and
  * the token heat render as one gray ungrouped band. Callers pass it only once
@@ -140,7 +140,7 @@ const instanceTitle = (instance: InstanceStat) =>
 export function buildActivityViewModel(
   allSteps: TrajectoryStep[],
   summary: TrajectorySummary | null | undefined,
-  opts?: { fallbackWithoutSummary?: boolean }
+  opts: { showUngroupedFallback: boolean }
 ): ActivityViewModel | null {
   // Empty padding steps are dropped up front, so they cannot be counted in a
   // bar, drawn as a cell, or measured as gap-fill distance further down. Their
@@ -155,7 +155,7 @@ export function buildActivityViewModel(
 
   let segments = withOtherSegment(toSegments(summary), steps, renderableIds);
   const fallback = Boolean(
-    opts?.fallbackWithoutSummary && steps.length > 0 && segments.length === 0
+    opts.showUngroupedFallback && steps.length > 0 && segments.length === 0
   );
   if (fallback) {
     segments = [

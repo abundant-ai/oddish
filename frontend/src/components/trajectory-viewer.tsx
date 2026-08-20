@@ -808,13 +808,12 @@ export function TrajectoryViewer({
 
   // A summary request can trigger paid on-demand generation server-side, so it
   // must not fire for a trial we already know (via shouldFetch) has no trajectory.
-  const summaryQuery = useTrajectorySummary(
-    trialId,
-    apiBaseUrl,
-    shouldFetch
-  );
+  const summaryQuery = useTrajectorySummary(trialId, apiBaseUrl, shouldFetch);
   const summary =
     summaryQuery.data?.status === "ready" ? summaryQuery.data.summary : null;
+  const summarySettled =
+    summaryQuery.error != null || summaryQuery.data?.status === "ready";
+  const showUngroupedFallback = summary === null && summarySettled;
   // Derived from the whole trajectory, so attribution stays put while the user
   // searches, and shared with the Activity card so both agree on every owner.
   const renderableIds = useMemo(
@@ -965,7 +964,7 @@ export function TrajectoryViewer({
         trialId={trialId}
         steps={trajectory.steps}
         summary={summary}
-        summaryPending={summaryQuery.isLoading}
+        showUngroupedFallback={showUngroupedFallback}
         stepIdToIndex={stepIdToIndex}
         onStepSelect={handleStepClick}
       />

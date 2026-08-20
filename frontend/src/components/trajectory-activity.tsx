@@ -26,10 +26,9 @@ interface TrajectoryActivityProps {
   trialId: string;
   steps: TrajectoryStep[];
   summary: TrajectorySummary | null;
-  /** True while the summary fetch is still in flight. The gray no-summary
-      fallback waits for it so a real summary never paints over a flash of
-      ungrouped bands. */
-  summaryPending?: boolean;
+  /** True after a missing summary request settles, when the card should draw
+      the gray ungrouped view instead of waiting for component colors. */
+  showUngroupedFallback: boolean;
   stepIdToIndex: (stepId: number) => number;
   onStepSelect: (index: number) => void;
 }
@@ -38,7 +37,7 @@ export function TrajectoryActivity({
   trialId,
   steps,
   summary,
-  summaryPending = false,
+  showUngroupedFallback,
   stepIdToIndex,
   onStepSelect,
 }: TrajectoryActivityProps) {
@@ -46,7 +45,7 @@ export function TrajectoryActivity({
   const [exportError, setExportError] = useState<string | null>(null);
 
   const model = buildActivityViewModel(steps, summary, {
-    fallbackWithoutSummary: !summaryPending,
+    showUngroupedFallback,
   });
   if (!model) return null;
 
