@@ -10,7 +10,6 @@ from oddish.core.verdict_state import (
     complete_verdict_without_result,
     fail_verdict,
     queue_verdict,
-    start_verdict,
 )
 from oddish.db import VerdictStatus
 
@@ -63,18 +62,11 @@ def test_replacement_lifecycle_retains_published_result_until_success() -> None:
     replacement = {"verdict": "accept", "is_good": True}
     task = _task(payload=original, status=VerdictStatus.SUCCESS)
     published_at = task.verdict_finished_at
-    started_at = datetime(2026, 1, 3, tzinfo=timezone.utc)
     finished_at = datetime(2026, 1, 4, tzinfo=timezone.utc)
 
     queue_verdict(task)
     assert task.verdict is original
     assert task.verdict_status == VerdictStatus.QUEUED
-    assert task.verdict_finished_at == published_at
-
-    start_verdict(task, now=started_at)
-    assert task.verdict is original
-    assert task.verdict_status == VerdictStatus.RUNNING
-    assert task.verdict_started_at == started_at
     assert task.verdict_finished_at == published_at
 
     complete_verdict(task, payload=replacement, now=finished_at)

@@ -62,6 +62,13 @@ def test_default_sha_matches_uv_lock_pin():
     ), "HARBOR_DEFAULT_SHA drifted from backend/uv.lock"
 
 
+def test_harbor_pin_toml_matches_default():
+    with open("src/oddish/harbor-pin.toml", "rb") as fh:
+        pin = tomllib.load(fh)
+    assert pin["git"] == HARBOR_DEFAULT_SOURCE
+    assert pin["rev"] == HARBOR_DEFAULT_SHA
+
+
 def test_probe_harbor_ref_matches_pyproject_pin():
     # The probe fetches harbor at ``harbor_source_ref``; it must resolve to the
     # exact code the worker image runs, or probe trials inspect different harbor
@@ -84,6 +91,16 @@ def test_pyproject_default_source_matches_config():
     with open("pyproject.toml", "rb") as fh:
         harbor_pin = tomllib.load(fh)["tool"]["uv"]["sources"]["harbor"]
     assert harbor_pin["git"] == HARBOR_DEFAULT_SOURCE
+
+
+def test_backend_pyproject_harbor_pin_matches_default():
+    # The production worker image is built from backend/pyproject.toml. Keep its
+    # direct dependency aligned with the server-side default provenance stamp,
+    # not merely with the generated backend lock file.
+    with open("../backend/pyproject.toml", "rb") as fh:
+        harbor_pin = tomllib.load(fh)["tool"]["uv"]["sources"]["harbor"]
+    assert harbor_pin["git"] == HARBOR_DEFAULT_SOURCE
+    assert harbor_pin["rev"] == HARBOR_DEFAULT_SHA
 
 
 def test_r1_url_with_userinfo_does_not_split_ref_on_userinfo_at():

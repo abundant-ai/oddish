@@ -80,7 +80,10 @@ async def cleanup_task_ids():
 
 
 async def _job_status_by_agent(task_id: str) -> dict[str, WorkerJobStatus]:
-    """Map each trial's agent -> its TRIAL worker_job status."""
+    """Map each agent trial's agent -> its TRIAL worker_job status.
+
+    Excludes analysis kinds: the always-on pre-trial audit also runs as a
+    claude-code trial and would shadow the LLM agent's entry."""
     async with get_session() as session:
         rows = (
             await session.execute(
@@ -89,7 +92,7 @@ async def _job_status_by_agent(task_id: str) -> dict[str, WorkerJobStatus]:
                     WorkerJobModel,
                     WorkerJobModel.subject_id == TrialModel.id,
                 )
-                .where(TrialModel.task_id == task_id)
+                .where(TrialModel.task_id == task_id, TrialModel.kind == "agent")
             )
         ).all()
     return {agent: status for agent, status in rows}
@@ -234,7 +237,9 @@ async def test_valid_baselines_unblock_llm(monkeypatch, cleanup_task_ids):
         llm_trial = (
             await session.execute(
                 select(TrialModel).where(
-                    TrialModel.task_id == task_id, TrialModel.agent == _LLM_AGENT
+                    TrialModel.task_id == task_id,
+                    TrialModel.agent == _LLM_AGENT,
+                    TrialModel.kind == "agent",
                 )
             )
         ).scalar_one()
@@ -343,7 +348,9 @@ async def test_faulty_baselines_cancel_llm(monkeypatch, cleanup_task_ids):
         llm_trial = (
             await session.execute(
                 select(TrialModel).where(
-                    TrialModel.task_id == task_id, TrialModel.agent == _LLM_AGENT
+                    TrialModel.task_id == task_id,
+                    TrialModel.agent == _LLM_AGENT,
+                    TrialModel.kind == "agent",
                 )
             )
         ).scalar_one()
@@ -459,7 +466,9 @@ async def test_gate_is_experiment_scoped(monkeypatch, cleanup_task_ids):
                     select(TrialModel.experiment_id, WorkerJobModel.status)
                     .join(WorkerJobModel, WorkerJobModel.subject_id == TrialModel.id)
                     .where(
-                        TrialModel.task_id == task_id, TrialModel.agent == _LLM_AGENT
+                        TrialModel.task_id == task_id,
+                    TrialModel.agent == _LLM_AGENT,
+                    TrialModel.kind == "agent",
                     )
                 )
             ).all()
@@ -661,7 +670,9 @@ async def test_retry_of_gated_llm_trial_reports_skipped(monkeypatch, cleanup_tas
         kimi_id = (
             await session.execute(
                 select(TrialModel.id).where(
-                    TrialModel.task_id == task_id, TrialModel.agent == _LLM_AGENT
+                    TrialModel.task_id == task_id,
+                    TrialModel.agent == _LLM_AGENT,
+                    TrialModel.kind == "agent",
                 )
             )
         ).scalar_one()
@@ -684,9 +695,7 @@ async def test_retry_of_gated_llm_trial_reports_skipped(monkeypatch, cleanup_tas
 async def test_qa_classification_excludes_gate_skipped_and_cancelled(
     monkeypatch, cleanup_task_ids
 ):
-    from oddish.workers.queue.qa_handler import (
-        _load_live_trials_for_classification,
-    )
+    from oddish.queue import qa_eligible_trial_ids
 
     monkeypatch.setattr(settings, "gate_llm_on_baselines", True)
     task_id = f"qa-skip-{_RUN}"
@@ -705,12 +714,17 @@ async def test_qa_classification_excludes_gate_skipped_and_cancelled(
         kimi_id = (
             await session.execute(
                 select(TrialModel.id).where(
-                    TrialModel.task_id == task_id, TrialModel.agent == _LLM_AGENT
+                    TrialModel.task_id == task_id,
+                    TrialModel.agent == _LLM_AGENT,
+                    TrialModel.kind == "agent",
                 )
             )
         ).scalar_one()
 
-    live_ids = {tid for tid, _ in await _load_live_trials_for_classification(task_id)}
+    async with get_session() as session:
+        live_ids = set(
+            await qa_eligible_trial_ids(session, task_id, task_version_id=None)
+        )
     # Neither the gate-skipped (never-run) kimi nor the cancelled baseline has
     # an outcome to classify. The remaining completed baseline is excluded too,
     # now that nop/oracle are never classified -- so this mixed task, whose only
@@ -722,9 +736,7 @@ async def test_qa_classification_excludes_gate_skipped_and_cancelled(
 
 @pytest.mark.asyncio
 async def test_qa_classification_excludes_historical_task_versions(cleanup_task_ids):
-    from oddish.workers.queue.qa_handler import (
-        _load_live_trials_for_classification,
-    )
+    from oddish.queue import qa_eligible_trial_ids
 
     task_id = f"qa-version-{_RUN}"
     cleanup_task_ids.append(task_id)
@@ -750,13 +762,10 @@ async def test_qa_classification_excludes_historical_task_versions(cleanup_task_
         task.current_version_id = version_id
         await session.flush()
 
-    live_ids = {
-        trial_id
-        for trial_id, _ in await _load_live_trials_for_classification(
-            task_id,
-            version_id,
+    async with get_session() as session:
+        live_ids = set(
+            await qa_eligible_trial_ids(session, task_id, task_version_id=version_id)
         )
-    }
     assert live_ids == {current_trial_id}
 
 
@@ -878,7 +887,9 @@ async def test_retry_opt_out_not_regated(monkeypatch, cleanup_task_ids):
         kimi_id = (
             await session.execute(
                 select(TrialModel.id).where(
-                    TrialModel.task_id == task_id, TrialModel.agent == _LLM_AGENT
+                    TrialModel.task_id == task_id,
+                    TrialModel.agent == _LLM_AGENT,
+                    TrialModel.kind == "agent",
                 )
             )
         ).scalar_one()

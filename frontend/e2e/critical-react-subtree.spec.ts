@@ -6,6 +6,10 @@ import type {
   TaskDetailResponse,
   Trial,
 } from "../src/lib/types";
+import {
+  taskOpenFromBrowse,
+  taskOpenValue,
+} from "../src/lib/task-open-resource";
 
 const CLERK_EMAIL = process.env.E2E_CLERK_EMAIL;
 const CLERK_SECRET = process.env.CLERK_SECRET_KEY;
@@ -81,6 +85,12 @@ const browseTask: TaskBrowseResponse["items"][number] = {
   reward_success: 0,
   reward_sum: 0,
   reward_total: 1,
+  pass_count: 0,
+  partial_count: 0,
+  fail_count: 1,
+  harness_count: 0,
+  skipped_count: 0,
+  pending_count: 0,
   last_run_at: NOW,
   cost_usd: 0.12,
   cost_trial_count: 1,
@@ -100,6 +110,7 @@ const browseTask: TaskBrowseResponse["items"][number] = {
       model: trial.model,
     },
   ],
+  latest_trials_truncated: false,
   experiments: [{ id: "experiment-p1", name: "P1 experiment" }],
   user_tags: [],
 };
@@ -118,6 +129,71 @@ const browseResponse: TaskBrowseResponse = {
   limit: 25,
   offset: 0,
   has_more: false,
+};
+const browseTaskOpen = taskOpenValue(taskOpenFromBrowse(browseTask))!;
+const canonicalTaskOpen = {
+  ...browseTaskOpen,
+  selected_version: browseTaskOpen.selected_version
+    ? {
+        ...browseTaskOpen.selected_version,
+        agent_models: [
+          {
+            agent: trial.agent,
+            model: trial.model,
+            providers: [trial.provider],
+            is_probe: false,
+            trial_count: 1,
+            completed_count: 1,
+            failed_count: 0,
+            skipped_count: 0,
+            pending_count: 0,
+            pass_count: 0,
+            partial_count: 0,
+            fail_count: 1,
+            reward_sum: 0,
+            reward_total: 1,
+            cost_usd: trial.cost_usd ?? 0,
+            cost_trial_count: 1,
+            cost_has_estimated: false,
+            cost_has_native: true,
+            billed_cost_usd: trial.cost_usd ?? 0,
+            billed_trial_count: 1,
+            billed_has_estimated: false,
+            billed_has_native: true,
+            last_run_at: trial.finished_at,
+            duration_sum_seconds: 4,
+            duration_trial_count: 1,
+          },
+          {
+            agent: probeTrial.agent,
+            model: probeTrial.model,
+            providers: [probeTrial.provider],
+            is_probe: true,
+            trial_count: 1,
+            completed_count: 1,
+            failed_count: 0,
+            skipped_count: 0,
+            pending_count: 0,
+            pass_count: 1,
+            partial_count: 0,
+            fail_count: 0,
+            reward_sum: 1,
+            reward_total: 1,
+            cost_usd: probeTrial.cost_usd ?? 0,
+            cost_trial_count: 1,
+            cost_has_estimated: false,
+            cost_has_native: true,
+            billed_cost_usd: 0,
+            billed_trial_count: 0,
+            billed_has_estimated: false,
+            billed_has_native: false,
+            last_run_at: probeTrial.finished_at,
+            duration_sum_seconds: 4,
+            duration_trial_count: 1,
+          },
+        ],
+      }
+    : null,
 };
 
 const taskDetail: TaskDetailResponse = {
@@ -219,6 +295,7 @@ test.describe("critical task and trial subtree", () => {
     await page.goto("/");
     await clerk.signIn({ page, emailAddress: CLERK_EMAIL! });
 
+    const taskOpenGate = deferred();
     const taskDetailGate = deferred();
     const trialDetailGate = deferred();
     let failTrialRevalidation = false;
@@ -245,19 +322,26 @@ test.describe("critical task and trial subtree", () => {
       await route.fulfill({ json: { items: [] } });
     });
     await page.route(
+      new RegExp(`/api/tasks/${TASK_ID}/open(?:\\?|$)`),
+      async (route) => {
+        await taskOpenGate.pending;
+        await route.fulfill({ json: canonicalTaskOpen });
+      }
+    );
+    await page.route(
+      new RegExp(`/api/tasks/${FAILED_DETAIL_TASK_ID}/open(?:\\?|$)`),
+      async (route) => {
+        await route.fulfill({
+          status: 500,
+          json: { error: "open unavailable" },
+        });
+      }
+    );
+    await page.route(
       new RegExp(`/api/tasks/${TASK_ID}/detail(?:\\?|$)`),
       async (route) => {
         await taskDetailGate.pending;
         await route.fulfill({ json: taskDetail });
-      }
-    );
-    await page.route(
-      new RegExp(`/api/tasks/${FAILED_DETAIL_TASK_ID}/detail(?:\\?|$)`),
-      async (route) => {
-        await route.fulfill({
-          status: 500,
-          json: { error: "detail unavailable" },
-        });
       }
     );
     await page.route(
@@ -301,7 +385,36 @@ test.describe("critical task and trial subtree", () => {
     await page.route(
       new RegExp(`/api/trials/${TRIAL_ID}/trajectory(?:/|\\?|$)`),
       async (route) => {
-        await route.fulfill({ json: null });
+        if (new URL(route.request().url()).pathname.endsWith("/summary")) {
+          await route.fulfill({ status: 404, json: { detail: "not found" } });
+          return;
+        }
+        await route.fulfill({
+          json: {
+            schema_version: "1",
+            session_id: "session-p1",
+            agent: {
+              name: "codex",
+              version: "1",
+              model_name: "gpt-5",
+            },
+            steps: [
+              {
+                step_id: 1,
+                timestamp: NOW,
+                source: "agent",
+                model_name: "gpt-5",
+                message: "Short collapsed preview",
+                reasoning_content: "DEFERRED_TRAJECTORY_STEP_BODY",
+                tool_calls: null,
+                observation: null,
+                metrics: null,
+              },
+            ],
+            notes: null,
+            final_metrics: null,
+          },
+        });
       }
     );
     await page.route(
@@ -329,60 +442,34 @@ test.describe("critical task and trial subtree", () => {
     const taskLink = page.getByRole("link", { name: "P1 snapshot task" });
     await expect(taskLink).toBeVisible();
 
+    const taskOpenPattern = new RegExp(`/api/tasks/${TASK_ID}/open(?:\\?|$)`);
     const taskDetailPattern = new RegExp(
       `/api/tasks/${TASK_ID}/detail(?:\\?|$)`
     );
-    const taskDetailRequest = page.waitForRequest(taskDetailPattern);
+    const taskOpenRequest = page.waitForRequest(taskOpenPattern);
     await taskLink.click();
-    await taskDetailRequest;
-    expect(requestCount(requests, taskDetailPattern)).toBe(1);
-    // The detail response is still blocked: this heading can only be the
-    // browse snapshot preserved on the detail resource key.
+    await taskOpenRequest;
+    expect(requestCount(requests, taskOpenPattern)).toBe(1);
+    expect(requestCount(requests, taskDetailPattern)).toBe(0);
+    // The canonical open response is still blocked: this heading can only be
+    // the browse snapshot synchronously preserved on the bounded resource.
     await expect(
       page.getByRole("heading", { name: "P1 snapshot task" })
     ).toBeVisible();
 
-    await page.getByRole("button", { name: "View task files" }).click();
-    await expect(
-      page.getByRole("button", { name: "Rerun trials" })
-    ).toBeDisabled();
-    await expect(page.getByRole("button", { name: "Run QA" })).toBeDisabled();
-    await page.keyboard.press("Escape");
-    await expect(page.getByRole("button", { name: "Run QA" })).toBeHidden();
-
+    const taskOpenResponse = page.waitForResponse(taskOpenPattern);
+    taskOpenGate.release();
+    await taskOpenResponse;
     const trialButton = page.getByRole("button", { name: "trial-p1 Fail" });
     await expect(trialButton).toBeVisible();
 
     const trialDetailPattern = new RegExp(`/api/trials/${TRIAL_ID}(?:\\?|$)`);
-    const trialDetailRequest = page.waitForRequest(trialDetailPattern);
-    await trialButton.click();
-    await trialDetailRequest;
-    expect(requestCount(requests, trialDetailPattern)).toBe(1);
-    // Both canonical requests are blocked. The snapshot still paints Summary,
-    // but every mutation waits for the full trial resource.
-    await expect(page.getByRole("tab", { name: "Summary" })).toBeVisible();
-    await expect(
-      page.getByRole("button", { name: "Retry Trial" })
-    ).toBeDisabled();
-    await expect(
-      page.getByRole("button", { name: "Run analysis" })
-    ).toBeDisabled();
-    await expect(page.getByText("Loading latest trial state.")).toBeVisible();
-
-    taskDetailGate.release();
-    // The open drawer adopts the canonical task list instead of retaining its
-    // snapshot copy. That list also contributes the selected trial's report.
-    await expect(
-      page.getByRole("heading", { name: "GOOD FAILURE" })
-    ).toBeVisible();
-    const nextTrialButton = page.getByRole("button", { name: "Next trial" });
-    await expect(nextTrialButton).toBeEnabled();
-    const analysisLogDisclosure = page
-      .locator("summary")
-      .filter({ hasText: "Analysis log" });
-    await expect(analysisLogDisclosure).toBeVisible();
-
-    await page.waitForTimeout(300);
+    const taskTrialsPattern = new RegExp(
+      `/api/tasks/${TASK_ID}/trials(?:\\?|$)`
+    );
+    const taskFilesPattern = new RegExp(
+      `/api/tasks/${TASK_ID}/files(?:/|\\?|$)`
+    );
     const analysisLogPattern = new RegExp(
       `/api/trials/${TRIAL_ID}/analysis-log(?:\\?|$)`
     );
@@ -392,11 +479,45 @@ test.describe("critical task and trial subtree", () => {
     const trajectoryPattern = new RegExp(
       `/api/trials/${TRIAL_ID}/trajectory(?:/|\\?|$)`
     );
+    const trialDetailRequest = page.waitForRequest(trialDetailPattern);
+    await trialButton.click();
+    await trialDetailRequest;
+    expect(requestCount(requests, trialDetailPattern)).toBe(1);
+    // The lightweight /open row paints Summary, but mutations wait for the
+    // selected trial resource. The hidden task pane owns no network work.
+    await expect(page.getByRole("tab", { name: "Summary" })).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Retry Trial" })
+    ).toBeDisabled();
+    await expect(
+      page.getByRole("button", { name: "Run analysis" })
+    ).toBeDisabled();
+    await expect(page.getByText("Loading latest trial state.")).toBeVisible();
+
+    await page.waitForTimeout(300);
+    expect(requestCount(requests, taskDetailPattern)).toBe(0);
+    expect(requestCount(requests, taskTrialsPattern)).toBe(0);
+    expect(requestCount(requests, taskFilesPattern)).toBe(0);
     expect(requestCount(requests, analysisLogPattern)).toBe(0);
     expect(requestCount(requests, trialFilesPattern)).toBe(0);
     expect(requestCount(requests, trajectoryPattern)).toBe(0);
 
+    const taskDetailRequest = page.waitForRequest(taskDetailPattern);
+    await page.getByRole("button", { name: "Show task" }).click();
+    await taskDetailRequest;
+    expect(requestCount(requests, taskDetailPattern)).toBe(1);
+    await expect.poll(() => requestCount(requests, taskTrialsPattern)).toBe(1);
+    expect(requestCount(requests, taskFilesPattern)).toBe(0);
+    taskDetailGate.release();
+
     trialDetailGate.release();
+    await expect(
+      page.getByRole("heading", { name: "GOOD FAILURE", exact: true })
+    ).toBeVisible();
+    const analysisLogDisclosure = page
+      .locator("summary")
+      .filter({ hasText: "Analysis log" });
+    await expect(analysisLogDisclosure).toBeVisible();
     await expect(
       page.getByRole("button", { name: "Re-run analysis" })
     ).toBeEnabled();
@@ -414,6 +535,11 @@ test.describe("critical task and trial subtree", () => {
     await page.getByRole("tab", { name: "Trajectory" }).click();
     await trajectoryRequest;
     expect(requestCount(requests, trajectoryPattern)).toBeGreaterThan(0);
+    await expect(page.getByText("DEFERRED_TRAJECTORY_STEP_BODY")).toHaveCount(
+      0
+    );
+    await page.getByRole("button", { name: /^#1/ }).click();
+    await expect(page.getByText("DEFERRED_TRAJECTORY_STEP_BODY")).toBeVisible();
 
     await page.getByRole("tab", { name: "Summary" }).click();
     // The analysis mutation revalidates the canonical trial. A transient
@@ -429,27 +555,29 @@ test.describe("critical task and trial subtree", () => {
       page.getByRole("button", { name: "Retry Trial" })
     ).toBeEnabled();
 
-    const probeDetailPattern = new RegExp(
-      `/api/trials/${PROBE_TRIAL_ID}(?:\\?|$)`
-    );
-    const probeDetailRequest = page.waitForRequest(probeDetailPattern);
-    await nextTrialButton.click();
-    await probeDetailRequest;
-    await expect(page.getByText("probe-p1", { exact: true })).toBeVisible();
-
     await page.goto("/tasks");
     const failedTaskLink = page.getByRole("link", {
       name: "P1 failed detail task",
     });
     await expect(failedTaskLink).toBeVisible();
-    const failedDetailRequest = page.waitForRequest(
-      new RegExp(`/api/tasks/${FAILED_DETAIL_TASK_ID}/detail(?:\\?|$)`)
+    const failedOpenPattern = new RegExp(
+      `/api/tasks/${FAILED_DETAIL_TASK_ID}/open(?:\\?|$)`
+    );
+    const failedOpenResponse = page.waitForResponse(
+      (response) =>
+        failedOpenPattern.test(response.url()) && response.status() === 500
     );
     await failedTaskLink.click();
-    await failedDetailRequest;
+    await failedOpenResponse;
     await expect(page.getByText("Failed to load task")).toBeVisible();
     await expect(
       page.getByRole("heading", { name: "P1 failed detail task" })
     ).toHaveCount(0);
+    expect(
+      requestCount(
+        requests,
+        new RegExp(`/api/tasks/${FAILED_DETAIL_TASK_ID}/detail(?:\\?|$)`)
+      )
+    ).toBe(0);
   });
 });

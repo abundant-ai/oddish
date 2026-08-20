@@ -180,6 +180,7 @@ async def test_combine_copies_terminal_trials_and_links_tasks(monkeypatch):
         name="combined",
         org_id="org-1",
         copy_artifacts=True,
+        owner_user_id="user-1",
     )
 
     assert result.id == "exp-result"
@@ -189,6 +190,10 @@ async def test_combine_copies_terminal_trials_and_links_tasks(monkeypatch):
     assert result.trials_copied == 2
     assert result.trials_skipped == 1
     assert result.artifacts_copied == 6  # 2 copied trials * 3 objects each
+    result_experiment = next(
+        obj for obj in session.added if isinstance(obj, ExperimentModel)
+    )
+    assert result_experiment.owner_user_id == "user-1"
 
     # Both tasks linked into the result experiment.
     assert link_calls == [("task-1", "exp-result"), ("task-2", "exp-result")]

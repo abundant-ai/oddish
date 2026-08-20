@@ -1,0 +1,115 @@
+Compare the cohorts below. For each category, state what the successful runs
+did and what the failing runs did, as short behaviour descriptions.
+
+QA is optional context, not a gate. A trial may carry `qa_classification` and
+`verifier_reward`; use them to qualify claims about task defects, misleading
+successes, or harness errors, but analyze every trajectory in its outcome
+cohort. When QA is absent, do not invent it: the verifier reward is the only
+outcome signal available.
+
+When only ONE cohort is present -- every classified run on this task version
+landed on the same side -- describe that cohort instead of comparing. Put every
+observation in its own list, leave the other empty, and never characterise the
+side that does not exist. "Failing runs did X, successful runs presumably did
+Y" is exactly the invention this forbids: you have no successful runs to read.
+
+{{taxonomy}}
+
+When a side holds runs from several models, do not rest a behaviour on a
+single trial: cite two or three, from DIFFERENT models where the behaviour
+holds across them. One citation under a column listing fourteen models reads
+as if all fourteen behaved that way. If the behaviour really is one model's,
+say so in the description and cite only that model's runs -- that is a finding,
+not a shortcut.
+
+A trial may carry a `subagents` attribute: how many subagents that run spawned,
+counted from the recorded trajectory rather than read out of the summaries. Use
+it directly -- the component text will rarely mention delegation, so this
+attribute is the only reliable signal that it happened. `n/a` means the agent
+has no subagent tool at all, so never read it as zero and never rest a
+delegation finding on a side whose runs are `n/a`; that is a difference in
+tooling, not in behaviour. A trial with no `subagents` attribute was summarised
+before the count existed -- treat it as unknown and leave it out of any
+delegation claim. A delegation finding still needs a cited component, like any
+other: cite the components spanning the steps where the run was delegating.
+
+You can read the runs themselves. Your working directory holds `MAP.md` — the
+same cohorts, trials and components listed above, each naming a file under
+`trials/<trial_id>/` that holds that component's RAW steps: messages, reasoning,
+tool calls with their arguments, and the output that came back. Read `MAP.md`
+first, then open the component files that bear on the behaviour you are
+testing. The summaries are a table of contents, not the evidence; a claim about
+how an agent worked should be checked against the steps before you make it.
+
+Read selectively. A component file can be large, and opening every file on both
+sides wastes the run. Follow the behaviour: pick the components whose labels and
+summaries suggest it, read those, and stop when the pattern is settled or
+refuted.
+
+Every behaviour description must carry at least one piece of evidence, in ONE of
+these two shapes. Never set fields from both shapes on one citation.
+
+1. Summary evidence — `trial_id`, `trajectory_component`, `step_ids`, `quote`.
+   The `quote` must be the component's summary text copied EXACTLY. Each
+   component is shown with its step range as `[first-last]`; write `step_ids` as
+   exactly those two numbers, so `[34-35]` becomes `[34, 35]`.
+
+2. Step evidence — `trial_id`, `step_id`, `quote`. The `quote` must appear
+   VERBATIM in that step: a phrase from the agent's message or reasoning, a
+   command it ran, or the output it saw. Do not tidy, trim or paraphrase it,
+   and do not join two fragments that are not adjacent. The component files
+   are JSON, so quote what the field SAYS, not how the file spells it: write
+   the newline, quote or backslash itself, never the `\n`, `\"` or `\\` you
+   see on the page. A short single-line phrase is easiest to get right.
+
+Prefer step evidence when you have read the step: it shows the reader what the
+agent actually did, and it deep-links to that step. Fall back to summary
+evidence for a behaviour you are reading off the summaries alone.
+
+Do not cite a component or a step that is not in the files, and do not invent
+ids. Every citation is checked against the stored summaries and the raw steps,
+and one that does not resolve is DELETED — an observation loses its evidence, a
+category can lose all its observations, and the headline is dropped with it. A
+behaviour you cannot cite is one you must omit.
+
+Write `summary` last, after the categories are settled: one or two sentences
+naming the capability that separates the cohorts -- or, with a single cohort,
+the capability these runs show. Where one model's runs behave differently from
+another's, say which model; the trials carry a `model` attribute for exactly
+this. Do not count runs per model in prose -- the reader is shown those counts
+already. It must follow from the
+categories you kept -- do not raise a difference there that you did not
+record below, and do not restate the counts, which the reader can already
+see. Name the behaviour and its consequence, e.g. "Successful runs took a
+test baseline before editing and caught regressions early; failing runs ran
+the verifier only at the end, after the cause was buried." If the categories
+show only unrelated differences, say that plainly instead of inventing a
+theme.
+
+With TWO cohorts, only include a category when they actually differ on it.
+Omit categories where you see no difference; an empty comparison is a better
+answer than a manufactured one.
+
+With ONE cohort there is nothing to differ against, so that rule does not
+apply and would silence the whole analysis if you followed it. Include a
+category whenever these runs did something worth reporting in it, and omit
+only the categories the evidence says nothing about. Returning no categories
+at all, for a cohort with runs to read, is a failure -- it is the exact
+outcome this single-cohort mode exists to prevent.
+
+Set `label` only on `behavior_discovery`, where it names the pattern you found.
+Every other category must have `label` set to null. A label is two to four
+plain English words naming ONE pattern -- `subagent delegation`, not
+`subagent_delegation` and not `delegation_and_scripted_bulk_conversion`. No
+underscores, no `and`: if you are joining two patterns with `and`, pick the one
+the evidence supports better and drop the other.
+
+Each `behavior_description` is ONE sentence, at most about twenty words, whose
+subject is `Agents`. The column the description sits in already says which
+cohort it belongs to, so "Successful runs read the codebase first" spends its
+opening on something the reader can see. Write "Agents read the codebase once,
+then implement without re-planning." Never open with "Successful runs",
+"Failing runs", "The successful cohort" or any other naming of the side. Say
+what was done, not whether it was good.
+
+Write all prose in short, plain sentences: one fact per sentence, active voice.

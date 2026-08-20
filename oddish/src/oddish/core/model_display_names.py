@@ -64,6 +64,59 @@ async def load_model_display_names(session: AsyncSession) -> dict[str, str]:
     return names
 
 
+def display_model_name(model: str | None, names: dict[str, str]) -> str | None:
+    """The alias for one model id, or the id unchanged when none is set.
+
+    For published payloads that carry model ids outside a ``TrialResponse`` --
+    the cohort comparison names the models on each side, and cites one per
+    trial. Those spellings have to be masked by the same table, or a share page
+    hides the real id in the trial grid and prints it in the analysis below.
+    """
+    if not names or not model:
+        return model
+    return next((names[key] for key in _lookup_keys(model) if key in names), model)
+
+
+def mask_trajectory_model_names(
+    trajectory: dict | None, names: dict[str, str]
+) -> dict | None:
+    """Rewrite the model ids an ATIF trajectory carries, on a copy.
+
+    The trial grid masks ``trials.model``, but a share page renders the
+    trajectory's own ``agent.model_name`` and per-step ``model_name`` too --
+    unmasked, the step headers print the real id directly beneath the alias.
+
+    Copies rather than mutates: ``read_trial_trajectory`` memoizes the parsed
+    document, and the authenticated route serves that same object, which must
+    keep the real ids.
+    """
+    if not names or not trajectory:
+        return trajectory
+
+    def masked_name(value):
+        # The document is agent-written JSON, not a validated schema. A
+        # model_name that is not a string reaches _lookup_keys' .strip() and
+        # 500s the whole trajectory read, so pass anything odd straight
+        # through rather than trusting the declared type.
+        if not isinstance(value, str):
+            return value
+        return display_model_name(value, names)
+
+    masked = dict(trajectory)
+    agent = masked.get("agent")
+    if isinstance(agent, dict):
+        masked["agent"] = {**agent, "model_name": masked_name(agent.get("model_name"))}
+    steps = masked.get("steps")
+    if isinstance(steps, list):
+        masked["steps"] = [
+            {**step, "model_name": masked_name(step.get("model_name"))}
+            if isinstance(step, dict)
+            else step
+            for step in steps
+        ]
+    return masked
+
+
 def apply_model_display_names(
     trials: Iterable[TrialResponse], names: dict[str, str]
 ) -> None:

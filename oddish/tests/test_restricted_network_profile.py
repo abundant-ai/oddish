@@ -1216,3 +1216,23 @@ def test_stock_harnesses_are_identity_only_and_still_fail_closed():
         resolved_env={},
     )
     assert grok.outbound_hosts == ("api.x.ai",)
+
+
+def test_ensure_web_tool_wrapper_when_disabling_wraps_public_cursor_and_gemini():
+    # Public / non-Compose trials keep the stock agent class, which ignores
+    # disable_web_tools. When the switch is requested they must be swapped to the
+    # oddish wrapper that honors it, or the closed-book web-fetch leak survives on
+    # those paths (the gap Cursor Bugbot flagged on PR #1224).
+    for name, expected in [
+        ("cursor-cli", "oddish.workers.agents.cursor_cli:OddishCursorCli"),
+        ("gemini-cli", "oddish.workers.agents.gemini_cli:OddishGeminiCli"),
+    ]:
+        cfg = AgentConfig(name=name, model_name="x/y", kwargs={"disable_web_tools": True})
+        runner._ensure_web_tool_wrapper_when_disabling(cfg)
+        assert cfg.import_path == expected
+
+    # Without the switch the stock class is preserved (no behavior change for
+    # normal trials), and an already-wrapped config is left untouched.
+    stock = AgentConfig(name="cursor-cli", model_name="cursor/composer")
+    runner._ensure_web_tool_wrapper_when_disabling(stock)
+    assert stock.import_path is None

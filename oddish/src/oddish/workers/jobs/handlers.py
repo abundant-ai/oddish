@@ -1,9 +1,9 @@
 """Per-kind ``JobHandler`` wrappers for the unified ``worker_jobs`` runner.
 
 These are thin adapters: they delegate to the existing
-``run_trial_job`` / ``run_task_qa_job`` / ``run_task_expand_job`` bodies
-(plus the transitional ``run_analysis_job``) and translate the resulting
-domain state into a ``JobOutcome`` for the runner to record.
+``run_trial_job`` / ``run_task_expand_job`` / ``run_tag_project_job`` bodies
+and translate the resulting domain state into a ``JobOutcome`` for the
+runner to record. QA, audits, and analyzer reports run as trials.
 
 Keeping the handlers in one module lets tests monkey-patch the
 ``get_session`` / ``run_*_job`` module globals without reaching into
@@ -12,41 +12,20 @@ the queue execution code.
 
 from __future__ import annotations
 
-from sqlalchemy import select, text
 
-from oddish.core.verdict_state import queue_verdict
 from oddish.db import (
-    AnalysisStatus,
-    TaskModel,
-    TaskStatus,
-    TaskVersionModel,
     TrialModel,
     TrialStatus,
-    VerdictStatus,
     WorkerJobKind,
-    WorkerJobModel,
-    WorkerJobStatus,
     get_session,
 )
-from oddish.db.models import AnalyzerModel, JobStatus
 from oddish.registry_auth import (
     RegistryAuthDecryptError,
     current_registry_credentials,
     decrypt_credentials,
 )
 from oddish.workers.jobs.registry import JobOutcome
-from oddish.workers.queue.analysis_handler import run_analysis_job
-from oddish.workers.queue.analyzer_handler import (
-    default_eval_rows,
-    run_analyzer_generation_job,
-)
-from oddish.workers.queue.provider_failures import is_permanent_provider_failure
-from oddish.workers.queue.qa_handler import run_task_qa_job
 from oddish.workers.queue.task_expand_handler import run_task_expand_job
-from oddish.workers.queue.trial_failures import (
-    MODAL_IMAGE_BUILD_FAILED_STAGE,
-    is_modal_image_build_failure,
-)
 from oddish.workers.queue.trial_handler import run_trial_job
 
 
@@ -113,292 +92,9 @@ class TrialJobHandler:
                 )
             if trial.status == TrialStatus.FAILED:
                 error_message = trial.error_message or f"Trial {trial_id} marked FAILED"
-                if getattr(
-                    trial, "harbor_stage", None
-                ) == MODAL_IMAGE_BUILD_FAILED_STAGE or is_modal_image_build_failure(
-                    trial.error_message
-                ):
-                    return _fail_permanent(error_message)
-                return _fail_retryable(error_message)
+                return _fail_permanent(error_message)
             return _fail_retryable(
                 f"Trial {trial_id} left in non-terminal status {trial.status!r}"
-            )
-
-
-class AnalysisJobHandler:
-    """Per-trial analysis: classify one trial, touch nothing else.
-
-    The task-level ``QA`` job (:class:`QaJobHandler`) classifies every trial
-    and synthesizes the verdict. This handler serves the independent
-    trial-level trigger (``enqueue_trial_analysis_worker_job``, used by the
-    trial card's run/re-run button) and drains any legacy ANALYSIS rows.
-    """
-
-    kind = WorkerJobKind.ANALYSIS
-
-    def default_queue_key(self, job: WorkerJobLike) -> str:
-        return job.queue_key or "analysis"
-
-    def validate_payload(self, payload: dict) -> dict:
-        return payload
-
-    async def run(self, job: WorkerJobLike) -> JobOutcome:
-        trial_id = job.subject_id or (job.payload or {}).get("trial_id")
-        if not trial_id:
-            raise ValueError(
-                "ANALYSIS worker_job missing subject_id / payload.trial_id"
-            )
-
-        async with get_session() as session:
-            # A cancel can land between the claim and this point. It marks
-            # the job CANCELLED and the trial FAILED; reviving the trial
-            # here would undo the cancel and classify anyway.
-            current_job_status = await session.scalar(
-                select(WorkerJobModel.status).where(WorkerJobModel.id == job.id)
-            )
-            if current_job_status == WorkerJobStatus.CANCELLED:
-                return JobOutcome.ok()
-            trial = await session.get(TrialModel, trial_id)
-            if trial is None:
-                return _fail_permanent(f"Trial {trial_id} vanished before analysis")
-            if trial.analysis_status in (AnalysisStatus.SUCCESS, AnalysisStatus.FAILED):
-                trial.analysis_status = AnalysisStatus.QUEUED
-                trial.analysis_error = None
-                trial.analysis_finished_at = None
-
-        await run_analysis_job(
-            trial_id,
-            queue_key=job.queue_key,
-            modal_function_call_id=job.modal_function_call_id,
-            worker_job_id=job.id,
-        )
-
-        async with get_session() as session:
-            trial = await session.get(TrialModel, trial_id)
-            if trial is None:
-                return _fail_permanent(f"Trial {trial_id} vanished mid-analysis")
-            if trial.analysis_status == AnalysisStatus.SUCCESS:
-                return JobOutcome.ok()
-            if trial.analysis_status == AnalysisStatus.FAILED:
-                return _fail_retryable(
-                    trial.analysis_error or f"Analysis {trial_id} FAILED"
-                )
-            return _fail_retryable(
-                f"Analysis {trial_id} left in non-terminal status "
-                f"{trial.analysis_status!r}"
-            )
-
-
-class QaJobHandler:
-    """The task-level QA job: classify every trial, then synthesize the
-    task verdict. Backed by ``run_task_qa_job``.
-
-    ``payload.mode == "pre_trial"`` selects the audit-only path: run the
-    pre-trial audit for the current version and stop. No classification,
-    no verdict, no change to task state.
-    """
-
-    kind = WorkerJobKind.QA
-
-    def default_queue_key(self, job: WorkerJobLike) -> str:
-        return job.queue_key or "qa"
-
-    def validate_payload(self, payload: dict) -> dict:
-        return payload
-
-    async def run(self, job: WorkerJobLike) -> JobOutcome:
-        task_id = job.subject_id or (job.payload or {}).get("task_id")
-        if not task_id:
-            raise ValueError("QA worker_job missing subject_id / payload.task_id")
-
-        if (job.payload or {}).get("mode") == "pre_trial":
-            from oddish.workers.queue.qa_handler import run_pre_trial_only_job
-
-            async with get_session() as session:
-                # A cancel can land between the claim and this point. It
-                # marks the job CANCELLED and clears the audit state;
-                # running the audit here would undo the cancel and spend a
-                # sandbox on it.
-                current_job_status = await session.scalar(
-                    select(WorkerJobModel.status).where(WorkerJobModel.id == job.id)
-                )
-            if current_job_status == WorkerJobStatus.CANCELLED:
-                return JobOutcome.ok()
-
-            await run_pre_trial_only_job(
-                task_id,
-                worker_job_id=job.id,
-                task_version_id=(job.payload or {}).get("task_version_id"),
-                task_version_content_hash=(job.payload or {}).get(
-                    "task_version_content_hash"
-                ),
-                enforce_task_version_content_hash=(
-                    "task_version_content_hash" in (job.payload or {})
-                ),
-            )
-            return JobOutcome.ok()
-
-        payload = job.payload or {}
-        task_version_id = payload.get("task_version_id")
-        task_version_pinned = "task_version_id" in payload
-        task_version_content_hash = payload.get("task_version_content_hash")
-        task_version_content_hash_pinned = "task_version_content_hash" in payload
-        legacy_admission = None
-        async with get_session() as session:
-            # Cancellation can land after claim. Check the durable worker row
-            # before resetting verdict state or touching the task at all.
-            current_job_status = await session.scalar(
-                select(WorkerJobModel.status).where(WorkerJobModel.id == job.id)
-            )
-            if current_job_status != WorkerJobStatus.RUNNING:
-                return JobOutcome.ok()
-            task = await session.get(TaskModel, task_id, with_for_update=True)
-            if task is None:
-                return _fail_permanent(f"Task {task_id} vanished before QA")
-            qa_owner_id = await session.scalar(
-                text(
-                    """
-                    SELECT id
-                    FROM worker_jobs
-                    WHERE kind::text IN ('QA', 'VERDICT')
-                      AND subject_table = 'tasks'
-                      AND subject_id = :task_id
-                      AND COALESCE(payload->>'mode', '') <> 'pre_trial'
-                      AND status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
-                    ORDER BY created_at ASC, id ASC
-                    LIMIT 1
-                    """
-                ),
-                {"task_id": task_id},
-            )
-            if qa_owner_id is not None and qa_owner_id != job.id:
-                return JobOutcome.ok()
-            # A retired legacy worker must not revive a terminal task after a
-            # default-version change. A legitimate new version resets the task
-            # to RUNNING at upload time and enters admission below.
-            task_status = getattr(task, "status", None)
-            if task_status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-                # sync_verdict_to_task intentionally completes the task even
-                # when synthesis FAILED, then asks this same pinned worker to
-                # retry. Only that exact current source snapshot may revive;
-                # historical/unpinned workers remain retired.
-                current_version = (
-                    await session.get(TaskVersionModel, task.current_version_id)
-                    if getattr(task, "current_version_id", None) is not None
-                    else None
-                )
-                current_content_hash = (
-                    current_version.content_hash
-                    if current_version is not None
-                    else None
-                )
-                pinned_retry_is_current = bool(
-                    task_version_pinned
-                    and task_version_content_hash_pinned
-                    and task.verdict_status == VerdictStatus.FAILED
-                    and task.current_version_id == task_version_id
-                    and current_content_hash == task_version_content_hash
-                )
-                legacy_failed_retry = bool(
-                    not task_version_pinned
-                    and task.verdict_status == VerdictStatus.FAILED
-                )
-                if not pinned_retry_is_current and not legacy_failed_retry:
-                    return JobOutcome.ok()
-                if legacy_failed_retry:
-                    # Pre-pin jobs still own a genuine transient retry, but
-                    # must resolve and pass current-version trial admission
-                    # afresh rather than blindly running whatever is current.
-                    from oddish.core.verdict_state import abandon_verdict
-
-                    abandon_verdict(task)
-                    task.status = TaskStatus.RUNNING
-                    task.finished_at = None
-            if task.verdict_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
-                queue_verdict(task)
-            task_status = getattr(task, "status", None)
-            if not task_version_pinned and task_status in (
-                TaskStatus.PENDING,
-                TaskStatus.RUNNING,
-                TaskStatus.VERDICT_PENDING,
-            ):
-                # Jobs created before task-version pins existed must also pass
-                # current admission on every attempt. Reset an old admitted
-                # state in this same transaction, so an admission exception
-                # rolls it back and the worker retry cannot bypass the gates.
-                if task_status == TaskStatus.VERDICT_PENDING:
-                    from oddish.core.verdict_state import abandon_verdict
-
-                    abandon_verdict(task)
-                    task.status = TaskStatus.RUNNING
-                    task.finished_at = None
-                from oddish.queue import maybe_start_task_qa_stage
-
-                legacy_admission = await maybe_start_task_qa_stage(
-                    session,
-                    task_id,
-                    reuse_worker=True,
-                )
-
-        if legacy_admission is not None:
-            if not legacy_admission.reuse_worker:
-                return JobOutcome.ok()
-            task_version_id = legacy_admission.task_version_id
-            task_version_pinned = True
-            task_version_content_hash = legacy_admission.task_version_content_hash
-            task_version_content_hash_pinned = True
-
-        while True:
-            result_superseded = await run_task_qa_job(
-                task_id,
-                queue_key=job.queue_key,
-                modal_function_call_id=job.modal_function_call_id,
-                worker_job_id=job.id,
-                task_version_id=task_version_id,
-                enforce_task_version_id=task_version_pinned,
-                task_version_content_hash=task_version_content_hash,
-                enforce_task_version_content_hash=task_version_content_hash_pinned,
-            )
-            if not result_superseded:
-                break
-
-            # Re-enter the same current-version trial gates while this worker
-            # still owns the retry. Active trials leave the task RUNNING and
-            # retire this obsolete job; zero eligible trials complete it. If
-            # all eligible trials are terminal, reuse this worker rather than
-            # enqueueing a competing row. A DB failure escapes to the runner,
-            # which retries this still-live job instead of stranding the task.
-            from oddish.queue import maybe_start_task_qa_stage
-
-            async with get_session() as session:
-                admission = await maybe_start_task_qa_stage(
-                    session,
-                    task_id,
-                    reuse_worker=True,
-                )
-            if not admission.reuse_worker:
-                return JobOutcome.ok()
-            task_version_id = admission.task_version_id
-            task_version_pinned = True
-            task_version_content_hash = admission.task_version_content_hash
-            task_version_content_hash_pinned = True
-
-        async with get_session() as session:
-            task = await session.get(TaskModel, task_id)
-            if task is None:
-                return _fail_permanent(f"Task {task_id} vanished mid-QA")
-            if task.verdict_status == VerdictStatus.SUCCESS:
-                return JobOutcome.ok()
-            if task.verdict_status == VerdictStatus.FAILED:
-                error_message = task.verdict_error or f"QA {task_id} FAILED"
-                # Re-running the whole QA job cannot clear a provider
-                # permission block, and each attempt re-hits the blocked
-                # endpoint -- which is what abuse monitoring is watching for.
-                if is_permanent_provider_failure(task.verdict_error):
-                    return _fail_permanent(error_message)
-                return _fail_retryable(error_message)
-            return _fail_retryable(
-                f"QA {task_id} left in non-terminal status {task.verdict_status!r}"
             )
 
 
@@ -476,61 +172,7 @@ class TagProjectJobHandler:
         return JobOutcome.ok(summary if isinstance(summary, dict) else None)
 
 
-class AnalyzerJobHandler:
-    kind = WorkerJobKind.ANALYZER
-    # Swapped by the hosted backend's sandbox subclass; staticmethod so the
-    # attribute stays a plain function rather than binding as a method.
-    eval_rows_fn = staticmethod(default_eval_rows)
-
-    def default_queue_key(self, job) -> str:
-        return job.queue_key or "qa"
-
-    def validate_payload(self, payload: dict) -> dict:
-        return payload
-
-    async def run(self, job) -> JobOutcome:
-        analyzer_id = job.subject_id or (job.payload or {}).get("analyzer_id")
-        if not analyzer_id:
-            raise ValueError(
-                "ANALYZER worker_job missing subject_id / payload.analyzer_id"
-            )
-        # A retryable failure re-dispatches this handler, but
-        # run_analyzer_generation_job early-exits on a terminal analyzer status.
-        # Clear a prior terminal state so the retry actually re-runs instead of
-        # no-op'ing and reporting the same failure forever (mirrors QaJobHandler).
-        async with get_session() as session:
-            analyzer = await session.get(
-                AnalyzerModel, analyzer_id, with_for_update=True
-            )
-            if analyzer is None:
-                return JobOutcome.fail(
-                    "Analyzer vanished before generation", retryable=False
-                )
-            if analyzer.status in (JobStatus.SUCCESS, JobStatus.FAILED):
-                analyzer.status = JobStatus.QUEUED
-                analyzer.error = None
-                analyzer.finished_at = None
-        await run_analyzer_generation_job(
-            analyzer_id, worker_job_id=job.id, eval_rows_fn=self.eval_rows_fn
-        )
-        async with get_session() as session:
-            analyzer = await session.get(AnalyzerModel, analyzer_id)
-            if analyzer is None:
-                return JobOutcome.fail(
-                    "Analyzer vanished mid-generation", retryable=False
-                )
-            if analyzer.status == JobStatus.SUCCESS:
-                return JobOutcome.ok()
-            return JobOutcome.fail(
-                analyzer.error or f"Analyzer {analyzer_id} left in {analyzer.status}",
-                retryable=True,
-            )
-
-
 __all__ = [
-    "AnalysisJobHandler",
-    "QaJobHandler",
-    "AnalyzerJobHandler",
     "TagProjectJobHandler",
     "TaskExpandJobHandler",
     "TrialJobHandler",

@@ -9,7 +9,6 @@ import {
 } from "@/components/ui/resizable-drawer";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { TaskVerdictBadge } from "@/components/task-verdict-badge";
 import {
   Folder,
   FolderOpen,
@@ -43,6 +42,7 @@ import type {
   TaskVersionSummary,
   Trial,
 } from "@/lib/types";
+import { isAgentTrial } from "@/lib/types";
 import {
   isBrowseTaskDetail,
   taskDetailKey,
@@ -57,6 +57,7 @@ import {
   taskHasActiveTrials,
   taskHasActiveVerdict,
   taskHasCancellableWork,
+  taskHasLiveAnalysisTrial,
 } from "@/lib/job-status";
 
 interface TaskFile {
@@ -143,6 +144,10 @@ interface TaskFilesPanelProps {
    * read-only share view.
    */
   showAnalysis?: boolean;
+  /** Whether the task drawer offers and may fetch the capability analysis. */
+  /** The route host owns this because the drawer can mount two task panes. */
+  activePane: TaskPane;
+  onActivePaneChange?: (pane: TaskPane) => void;
   onRetryComplete?: (taskIds?: string[]) => void;
   /** Render content only without ResizableDrawer wrapper */
   contentOnly?: boolean;
@@ -198,6 +203,8 @@ interface TaskFilesPanelProps {
    */
   onSelectedFileChange?: (path: string) => void;
 }
+
+export type TaskPane = "overview" | "file";
 
 function getNodeName(path: string): string {
   const parts = path.split("/").filter(Boolean);
@@ -409,7 +416,7 @@ export function TaskFilesPanel({
   isOpen,
   onClose,
   taskId,
-  task,
+  task: taskSnapshot,
   orderedTasks,
   taskIndex,
   onNavigate,
@@ -418,6 +425,8 @@ export function TaskFilesPanel({
   cancelExperimentId,
   allowRetry = true,
   showAnalysis = true,
+  activePane,
+  onActivePaneChange,
   onRetryComplete,
   contentOnly = false,
   filesUrl,
@@ -433,12 +442,15 @@ export function TaskFilesPanel({
   onSelectedFileChange,
 }: TaskFilesPanelProps) {
   const baseUrl = apiBaseUrl ?? "/api";
+  const shareToken = baseUrl.match(
+    /^\/api\/public\/experiments\/([^/]+)$/
+  )?.[1];
   // The TASK OVERVIEW entry is keyed off the task even in filesUrl-driven
   // panes (which pass taskId={null}); staticChecksTaskId supplies the id there.
   const effectiveChecksTaskId = taskId ?? staticChecksTaskId ?? null;
   // The pre_trial_* fields live on the version summaries of /detail, not on
-  // the plain task endpoint. The task page uses the same key, so SWR shares
-  // the cache there.
+  // the plain task endpoint. Task cards seed this key from their browse rows;
+  // SWR replaces that snapshot with the full response when this pane mounts.
   const checksKey =
     effectiveChecksTaskId && showAnalysis !== false
       ? taskDetailKey(effectiveChecksTaskId, baseUrl)
@@ -457,25 +469,42 @@ export function TaskFilesPanel({
     refreshInterval: (data) => {
       const detail = taskDetailValue(data);
       const checksLive =
-        pickChecksVersion(detail, taskVersion)?.pre_trial_status === "running" ||
+        pickChecksVersion(detail, taskVersion)?.pre_trial_status ===
+          "running" ||
         pickChecksVersion(detail, taskVersion)?.pre_trial_status === "queued";
-      const qaLive =
-        detail?.task?.verdict_status === "queued" ||
-        detail?.task?.verdict_status === "running";
-      if (checksLive || qaLive) return 5000;
+      if (checksLive || taskHasActiveVerdict(detail?.task)) return 5000;
       return isOpen ? 30000 : 0;
     },
   });
   const checksDetail = taskDetailValue(checksResource);
+  const task = cancelExperimentId
+    ? taskSnapshot
+    : (checksDetail?.task ?? taskSnapshot);
   const actionsReady =
     checksResource !== undefined && !isBrowseTaskDetail(checksResource);
   // Scoped panes (the experiment drawer) pin the version whose files are on
   // screen; the checks must describe that same source.
   const checksVersion = pickChecksVersion(checksDetail, taskVersion);
+  // The pinned version wins outright — falling back to the /detail-resolved
+  // version while it loads would briefly widen the trial aggregation to every
+  // version. Without a pin, undefined keeps the aggregation waiting until the
+  // version resolves; only a loaded task with no versions is genuinely
+  // unscoped.
+  const overviewVersion =
+    taskVersion !== undefined
+      ? taskVersion
+      : checksVersion
+        ? checksVersion.version
+        : checksDetail !== undefined
+          ? null
+          : undefined;
   const overviewAvailable =
-    showAnalysis !== false && effectiveChecksTaskId !== null;
+    effectiveChecksTaskId !== null && showAnalysis !== false;
+  const taskPaneExists = overviewAvailable;
   // Until /detail answers, the checks state is unknown, not "unaudited":
   // an enabled Run button on the misread queues an audit that wipes findings.
+  // Never on public shares: `checksKey` is null there, so /detail is not
+  // fetched and this would otherwise latch on "loading" forever.
   const checksLoading =
     overviewAvailable &&
     (isBrowseTaskDetail(checksResource) ||
@@ -488,10 +517,14 @@ export function TaskFilesPanel({
       ? "Unable to load the static checks state."
       : null;
   const checksFindings = checksVersion?.pre_trial_findings ?? [];
-  const taskQaActive =
-    checksDetail?.task?.verdict_status === "queued" ||
-    checksDetail?.task?.verdict_status === "running";
+  const taskQaActive = taskHasActiveVerdict(checksDetail?.task);
   const resolvedFilesUrl = filesUrl ?? `${baseUrl}/tasks/${taskId}/files`;
+  // Trial file routes stream the file itself; task file routes answer with a
+  // JSON envelope ({path, content, key}, or {url} when presigning). Read that
+  // off the route, not off whether a filesUrl prop was passed — the drawer's
+  // side-by-side task pane passes a TASK filesUrl, and treating its envelope
+  // as the file body rendered every task file blank.
+  const fileRouteServesBytes = !/\/tasks\/[^/]+\/files$/.test(resolvedFilesUrl);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isRerunning, setIsRerunning] = useState(false);
@@ -505,12 +538,6 @@ export function TaskFilesPanel({
   const [fileTree, setFileTree] = useState<TreeNode[]>([]);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
-  // The task overview is the default view; picking a file switches away.
-  const [overviewSelected, setOverviewSelected] = useState(true);
-  // The one gate for "the overview pane is on screen". The tree highlight and
-  // the main pane must both use it: with the overview hidden (public share),
-  // overviewSelected stays true but the pane shows a file.
-  const overviewShowing = overviewSelected && overviewAvailable;
   const [loadingFullFile, setLoadingFullFile] = useState(false);
   const [viewMode, setViewMode] = useState<"rendered" | "raw">("rendered");
   const [copiedTaskName, setCopiedTaskName] = useState(false);
@@ -561,7 +588,12 @@ export function TaskFilesPanel({
 
   const listedPreview = selectedFile ? listedFilePreview(selectedFile) : null;
   const directBinaryPreview =
-    selectedFile && isBinaryRendererFile(selectedFile.name) && !loadFilesLazily
+    selectedFile &&
+    isBinaryRendererFile(selectedFile.name) &&
+    !loadFilesLazily &&
+    // Without a presigned URL from the listing, only a byte-serving route can
+    // back an <img>/<embed> src directly; a task route would hand it JSON.
+    (selectedFile.url || fileRouteServesBytes)
       ? {
           kind: "binary" as const,
           url: selectedFile.url ?? buildSelectedFileUrl()!,
@@ -578,7 +610,7 @@ export function TaskFilesPanel({
           shouldScopeFilesToVersion ? currentVersion : null,
           currentContentHash,
           loadFilesLazily,
-          filesUrl ? "raw" : "json",
+          fileRouteServesBytes ? "raw" : "json",
           selectedFile.url ?? null,
           selectedFile.size ?? null,
         ]
@@ -634,7 +666,7 @@ export function TaskFilesPanel({
         if (!url) throw new Error("File content unavailable");
         const res = await fetch(url);
         if (!res.ok) throw new Error("Failed to fetch file content");
-        if (filesUrl && !loadFilesLazily) {
+        if (fileRouteServesBytes) {
           content = await res.text();
         } else {
           const data = (await res.json()) as {
@@ -657,13 +689,9 @@ export function TaskFilesPanel({
   // shallow, there's nothing to page or lazy-load. stream=1 asks for
   // NDJSON (the tree first, then every file's contents); endpoints that
   // don't stream (trial files) ignore it and answer with plain JSON.
-  // Downloading every file's contents up front is only worth it when the
-  // pane shows a file immediately, which happens in the file-only view
-  // used by the public share page. Panes that open on the overview skip
-  // stream=1, because the plain listing is enough to draw the file tree
-  // and clicking a file downloads just that file. Before this condition
-  // existed, opening a trial downloaded the task's entire file contents
-  // behind a pane that was not showing any of them.
+  // Downloading every file's contents up front is only worth it in a file-only
+  // pane such as trial files. Task panes skip stream=1 because the listing is
+  // enough to draw the tree and a click downloads only the chosen file.
   const buildListingUrl = useCallback(() => {
     const params = new URLSearchParams();
     params.set("recursive", "1");
@@ -671,7 +699,7 @@ export function TaskFilesPanel({
       params.set("inline", "0");
       params.set("presign", "0");
     }
-    if (!overviewAvailable) {
+    if (!taskPaneExists && !loadFilesLazily) {
       params.set("stream", "1");
     }
     if (shouldScopeFilesToVersion && currentVersion != null) {
@@ -684,7 +712,7 @@ export function TaskFilesPanel({
     shouldScopeFilesToVersion,
     currentVersion,
     currentContentHash,
-    overviewAvailable,
+    taskPaneExists,
     loadFilesLazily,
   ]);
 
@@ -700,8 +728,13 @@ export function TaskFilesPanel({
 
   const retryableTrials = useMemo(() => {
     if (!task?.trials) return [];
+    // Agent trials only: task.trials now carries qa/audit rows too, and
+    // "Rerun trials" must never replay an analysis brief through the
+    // generic retry endpoint (it also refuses them server-side).
     return task.trials.filter(
-      (trial) => trial.status === "failed" || trial.status === "success"
+      (trial) =>
+        isAgentTrial(trial) &&
+        (trial.status === "failed" || trial.status === "success")
     );
   }, [task]);
 
@@ -788,18 +821,19 @@ export function TaskFilesPanel({
       let path = `${baseUrl}/tasks/cancel`;
       let body: string | undefined = JSON.stringify({
         task_ids: id ? [id] : [],
-        ...(cancelExperimentId
-          ? { experiment_id: cancelExperimentId }
-          : {}),
+        ...(cancelExperimentId ? { experiment_id: cancelExperimentId } : {}),
       });
-      // No active trials but QA in flight -> cancel just the task QA job.
+      // No active trials but analysis in flight (QA or the source audit --
+      // qa/cancel covers both kinds) -> cancel just the task QA job.
       // Experiment-scoped cancel leaves shared QA alone unless the caller is
       // on the dedicated cancel-QA path.
       if (
         id &&
         !cancelExperimentId &&
         !taskHasActiveTrials(task) &&
-        (taskHasActiveVerdict(task) || taskHasActiveAnalysis(task))
+        (taskHasActiveVerdict(task) ||
+          taskHasActiveAnalysis(task) ||
+          taskHasLiveAnalysisTrial(task))
       ) {
         path = `${baseUrl}/tasks/${id}/qa/cancel`;
         body = undefined;
@@ -902,7 +936,7 @@ export function TaskFilesPanel({
 
   // Fetch root file list when panel opens
   useEffect(() => {
-    if (!isOpen || (!taskId && !filesUrl)) {
+    if (!isOpen || activePane !== "file" || (!taskId && !filesUrl)) {
       return;
     }
 
@@ -914,7 +948,6 @@ export function TaskFilesPanel({
       setError(null);
       setFileTree([]);
       setSelectedFilePath(null);
-      setOverviewSelected(true);
       setExpandedDirs(new Set());
 
       // Once the tree is painted, later stream failures must not replace
@@ -931,19 +964,6 @@ export function TaskFilesPanel({
       const applyListing = (tree: TreeNode[]) => {
         paintedTree = true;
         setFileTree(tree);
-        // A deep-linked initialFilePath owns the first selection: letting
-        // the default auto-select land first would report the wrong path
-        // upward and clear the link's line anchor before the target file
-        // is applied.
-        if (!overviewAvailable && !initialFilePathRef.current) {
-          const defaultFile =
-            findNodeBySuffix(tree, "instruction.md") ??
-            tree.find((node) => node.type === "file") ??
-            findFirstFile(tree);
-          if (defaultFile) {
-            setSelectedFilePath(defaultFile.path);
-          }
-        }
       };
 
       try {
@@ -1006,12 +1026,29 @@ export function TaskFilesPanel({
     };
   }, [
     isOpen,
+    activePane,
     taskId,
     filesUrl,
     resolvedFilesUrl,
     buildListingUrl,
-    overviewAvailable,
+    taskPaneExists,
   ]);
+
+  // Paint a default file in file-only panes such as trial files.
+  //
+  // A deep-linked initialFilePath owns the first selection: letting the
+  // default land first would report the wrong path upward and clear the
+  // link's line anchor before the target file is applied.
+  useEffect(() => {
+    if (activePane !== "file" || taskPaneExists) return;
+    if (initialFilePathRef.current || selectedFilePath) return;
+    if (!fileTree.length) return;
+    const defaultFile =
+      findNodeBySuffix(fileTree, "instruction.md") ??
+      fileTree.find((node) => node.type === "file") ??
+      findFirstFile(fileTree);
+    if (defaultFile) setSelectedFilePath(defaultFile.path);
+  }, [activePane, taskPaneExists, fileTree, selectedFilePath]);
 
   // Load full file content (when user clicks "Load full file")
   async function loadFullFile() {
@@ -1043,7 +1080,7 @@ export function TaskFilesPanel({
         return;
       }
       let content: string;
-      if (filesUrl && !loadFilesLazily) {
+      if (fileRouteServesBytes) {
         content = await res.text();
       } else {
         const data = (await res.json()) as { content?: string };
@@ -1123,7 +1160,6 @@ export function TaskFilesPanel({
     if (!node || node.type !== "file") return;
 
     setSelectedFilePath(node.path);
-    setOverviewSelected(false);
   }, [initialFilePath, fileTree]);
 
   useEffect(() => {
@@ -1178,7 +1214,8 @@ export function TaskFilesPanel({
   const renderFileTree = (nodes: TreeNode[], depth = 0) => {
     return nodes.map((node) => {
       const isExpanded = expandedDirs.has(node.path);
-      const isSelected = !overviewShowing && selectedFile?.path === node.path;
+      const isSelected =
+        activePane === "file" && selectedFile?.path === node.path;
       const Icon =
         node.type === "dir"
           ? isExpanded
@@ -1197,7 +1234,7 @@ export function TaskFilesPanel({
                 toggleDir(node.path);
               } else {
                 setSelectedFilePath(node.path);
-                setOverviewSelected(false);
+                onActivePaneChange?.("file");
               }
             }}
             className={`h-auto w-full justify-start gap-1.5 rounded px-2 py-1 text-left font-mono text-xs transition-colors ${
@@ -1388,7 +1425,7 @@ export function TaskFilesPanel({
     <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
       <div className="border-border bg-muted/30 max-h-[30vh] w-full border-b p-2 md:max-h-none md:w-56 md:border-r md:border-b-0 lg:w-64">
         <div className="space-y-2 px-2 py-2">
-          {overviewAvailable && (
+          {taskPaneExists && (
             <>
               <Skeleton className="h-3 w-24" />
               <Skeleton className="h-6 w-full" />
@@ -1419,7 +1456,7 @@ export function TaskFilesPanel({
     <>
       {isListingLoading ? (
         listingSkeleton
-      ) : listingError && !overviewAvailable ? (
+      ) : listingError && !taskPaneExists ? (
         <div className="flex flex-1 items-center justify-center p-4 sm:p-6">
           <div className="space-y-2 text-center">
             <AlertCircle className="mx-auto h-8 w-8 text-red-500" />
@@ -1429,7 +1466,7 @@ export function TaskFilesPanel({
             <p className="text-muted-foreground text-xs">{listingError}</p>
           </div>
         </div>
-      ) : fileTree.length === 0 && !overviewAvailable ? (
+      ) : fileTree.length === 0 && !taskPaneExists ? (
         <div className="flex flex-1 items-center justify-center p-4 sm:p-6">
           <div className="space-y-2 text-center">
             <p className="text-muted-foreground text-sm">No files found</p>
@@ -1444,38 +1481,62 @@ export function TaskFilesPanel({
         <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
           <div className="border-border bg-muted/30 max-h-[30vh] w-full overflow-auto border-b md:max-h-none md:w-56 md:border-r md:border-b-0 lg:w-64">
             <div className="p-2">
-              {overviewAvailable && (
+              {taskPaneExists && (
                 <div className="border-border mb-2 border-b pb-2">
                   <div className="text-muted-foreground px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
-                    Task overview
+                    Task
                   </div>
+                  {overviewAvailable ? (
+                    <button
+                      type="button"
+                      onClick={() => onActivePaneChange?.("overview")}
+                      aria-current={
+                        activePane === "overview" ? "page" : undefined
+                      }
+                      className={`flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-sm ${
+                        activePane === "overview"
+                          ? "bg-primary/20 text-primary"
+                          : "hover:bg-muted/50 cursor-pointer"
+                      }`}
+                      title="View task QA and aggregated trial QA"
+                    >
+                      <ListChecks
+                        className="h-3.5 w-3.5 shrink-0"
+                        aria-hidden="true"
+                      />
+                      <span className="truncate">
+                        {checksLoading
+                          ? "Loading…"
+                          : checksLoadFailure
+                            ? "Unavailable"
+                            : "Overview"}
+                      </span>
+                    </button>
+                  ) : null}
                   <button
                     type="button"
-                    onClick={() => setOverviewSelected(true)}
+                    onClick={() => onActivePaneChange?.("file")}
+                    aria-current={activePane === "file" ? "page" : undefined}
                     className={`flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-sm ${
-                      overviewSelected
+                      activePane === "file"
                         ? "bg-primary/20 text-primary"
                         : "hover:bg-muted/50 cursor-pointer"
                     }`}
-                    title="View the task overview: task QA plus aggregated trial QA"
+                    title="Browse task files"
                   >
-                    <ListChecks
+                    <FolderOpen
                       className="h-3.5 w-3.5 shrink-0"
                       aria-hidden="true"
                     />
-                    <span className="truncate">
-                      {checksLoading
-                        ? "Loading…"
-                        : checksLoadFailure
-                          ? "Unavailable"
-                          : "Overview"}
-                    </span>
+                    <span className="truncate">Files</span>
                   </button>
                 </div>
               )}
-              <div className="text-muted-foreground px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
-                Files
-              </div>
+              {!taskPaneExists ? (
+                <div className="text-muted-foreground px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
+                  Files
+                </div>
+              ) : null}
               {listingError ? (
                 <p className="text-muted-foreground px-2 py-2 text-xs">
                   Unable to load files: {listingError}
@@ -1490,7 +1551,7 @@ export function TaskFilesPanel({
             </div>
           </div>
           <div className="flex flex-1 flex-col overflow-hidden">
-            {!overviewShowing && selectedFile && (
+            {activePane === "file" && selectedFile && (
               <div className="border-border bg-muted/30 flex items-center justify-between gap-2 border-b px-3 py-2 sm:px-4">
                 <div className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[10px] sm:text-xs">
                   {selectedFile.path}
@@ -1540,25 +1601,11 @@ export function TaskFilesPanel({
               </div>
             )}
             <div ref={contentRef} className="bg-card flex-1 overflow-auto">
-              {overviewShowing ? (
+              {activePane === "overview" && overviewAvailable ? (
                 <TaskOverviewPanel
                   taskId={effectiveChecksTaskId}
                   apiBaseUrl={baseUrl}
-                  // The pinned version wins outright — falling back to the
-                  // /detail-resolved version while it loads would briefly
-                  // widen the trial aggregation to every version. Without a
-                  // pin, undefined keeps the aggregation waiting until the
-                  // version resolves; only a loaded task with no versions is
-                  // genuinely unscoped.
-                  version={
-                    taskVersion !== undefined
-                      ? taskVersion
-                      : checksVersion
-                        ? checksVersion.version
-                        : checksDetail !== undefined
-                          ? null
-                          : undefined
-                  }
+                  version={overviewVersion}
                   // The host's rows are the authoritative set: an experiment
                   // drawer aggregates only its own trials. A task prop with
                   // no trials yet still scopes (empty + overviewTrialsLoading
@@ -1568,11 +1615,12 @@ export function TaskFilesPanel({
                   // Panes with their own header render the verdict card there;
                   // the filesUrl-driven panes have no header, so the overview
                   // carries the verdict itself.
-                  verdictTask={checksDetail?.task ?? verdictTask ?? task ?? null}
+                  verdictTask={
+                    checksDetail?.task ?? verdictTask ?? task ?? null
+                  }
                   checksFindings={checksFindings}
                   checksStatus={checksVersion?.pre_trial_status}
                   checksError={checksVersion?.pre_trial_error}
-                  checksCostUsd={checksVersion?.pre_trial_cost_usd}
                   onRerunChecks={handleRerunChecks}
                   checksRerunning={checksRerunning}
                   checksQueueError={checksQueueError}

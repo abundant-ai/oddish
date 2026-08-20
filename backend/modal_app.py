@@ -88,6 +88,11 @@ API_CONCURRENCY_MAX = _env_int("ODDISH_MODAL_API_CONCURRENCY_MAX", 3)
 # the most headroom since it is the most concurrent, latency-sensitive surface.
 API_CPU = _env_float("ODDISH_MODAL_API_CPU", 2.0)
 API_MEMORY_MB = _env_int("ODDISH_MODAL_API_MEMORY_MB", 4096)
+# Wall clock a single API request gets before Modal kills the container. Named
+# rather than inlined on the function because in-request generation has to fit
+# inside it: a subprocess budget larger than this can never be honoured, since
+# the platform kills the request first and whatever it had done is lost.
+API_TIMEOUT_SECONDS = _env_int("ODDISH_MODAL_API_TIMEOUT", 600)
 LOCAL_DOTENV_PATH = Path(__file__).with_name(".env")
 LOCAL_DOTENV_VARS = {
     key: value
@@ -701,8 +706,7 @@ MODEL_CONCURRENCY_OVERRIDES = os.environ.get(
     '{"google/gemini-3.5-flash": 128, '
     '"global.anthropic.claude-haiku-4-5-20251001-v1:0": 128, '
     '"minimax/minimax-m3": 128, '
-    '"global.anthropic.claude-sonnet-4-6": 128, '
-    '"anthropic/claude-sonnet-5": 256, '
+    '"global.anthropic.claude-sonnet-4-6": 256, '
     '"openai/gpt-5.4-mini": 128, '
     '"zai/glm-5.2": 64}',
 )
@@ -770,18 +774,6 @@ ENV_VARS = {
     # Gate LLM trials on nop/oracle baseline outcomes. Off unless the deploy
     # environment sets it (preview sets "1"); prod stays off until flipped here.
     "ODDISH_GATE_LLM_ON_BASELINES": os.environ.get("ODDISH_GATE_LLM_ON_BASELINES", "0"),
-    # Pre-trial task-source audit. This is the ONLY writer of
-    # task_versions.pre_trial, which is in turn the only source of the
-    # post-trial classifier's {pre_trial_context} -- so with it off, post-trial
-    # never sees pre-trial findings no matter how many audits the QA-job
-    # assignment path (which this flag does not gate) has run.
-    #
-    # Enabling is deployment-wide on purpose: qa_handler checks this flag
-    # BEFORE the per-org pre_trial_analysis_enabled setting, so while it is off
-    # an org cannot opt itself in -- the org setting can only ever opt OUT.
-    # Post-trial runs for task versions with no audit are unaffected:
-    # pre_trial_items stays None and {pre_trial_context} renders "(none)".
-    "ODDISH_PRE_TRIAL_ENABLED": os.environ.get("ODDISH_PRE_TRIAL_ENABLED", "1"),
     # GKE coordinates resolved at deploy time (process env wins over
     # backend/.env, mirroring _effective_gke_cluster_name), baked into the
     # image like MODAL_APP_NAME above. The oddish-gcp secret gate and the

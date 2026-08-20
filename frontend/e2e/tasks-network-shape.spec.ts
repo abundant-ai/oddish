@@ -1,7 +1,11 @@
 import { expect, test, type Route } from "@playwright/test";
 import { clerk, setupClerkTestingToken } from "@clerk/testing/playwright";
 
-import { countSince, holdCountedResponses, recordRequests } from "./network-log";
+import {
+  countSince,
+  holdCountedResponses,
+  recordRequests,
+} from "./network-log";
 
 /**
  * Each test here checks the number and kind of network requests the tasks
@@ -47,6 +51,107 @@ const FACETS_RE = /\/api\/tasks\/browse\/facets/;
 const TAGS_RE = /\/api\/tags(\?|$)/;
 const LEADERBOARD_RE = /\/api\/leaderboard\?/;
 
+const READER_TASK_ID = "task-open-network-shape";
+const readerBrowseItem = {
+  id: READER_TASK_ID,
+  name: "Cached task reader",
+  current_version: 2,
+  current_version_id: "version-2",
+  version_count: 2,
+  total_trials: 25,
+  completed_trials: 25,
+  failed_trials: 0,
+  reward_success: 20,
+  reward_sum: 20,
+  reward_total: 25,
+  last_run_at: "2026-08-11T12:00:00Z",
+  link: null,
+  github_meta: null,
+  cost_usd: 25,
+  cost_trial_count: 25,
+  cost_has_estimated: false,
+  cost_has_native: true,
+  billed_cost_usd: 25,
+  billed_trial_count: 25,
+  billed_has_estimated: false,
+  billed_has_native: true,
+  latest_trials: [],
+  experiments: [{ id: "experiment-current", name: "Current experiment" }],
+  user_tags: [],
+};
+
+function readerOpenResponse() {
+  return {
+    task: {
+      id: READER_TASK_ID,
+      name: readerBrowseItem.name,
+      status: "completed",
+      priority: "low",
+      user: "network@example.com",
+      task_path: "tasks/network",
+      experiments: readerBrowseItem.experiments,
+      current_version: 2,
+      current_version_id: "version-2",
+      user_tags: [],
+      run_analysis: false,
+      verdict_status: null,
+      verdict: null,
+      verdict_error: null,
+      created_at: "2026-08-10T12:00:00Z",
+      updated_at: "2026-08-11T12:00:00Z",
+    },
+    default_version: {
+      id: "version-2",
+      version: 2,
+      created_at: "2026-08-10T12:00:00Z",
+      is_current: true,
+    },
+    selected_version: {
+      id: "version-2",
+      version: 2,
+      created_at: "2026-08-10T12:00:00Z",
+      is_current: true,
+      trial_count: 25,
+      completed_count: 25,
+      failed_count: 0,
+      skipped_count: 0,
+      pass_count: 20,
+      partial_count: 0,
+      fail_count: 5,
+      pending_count: 0,
+      reward_sum: 20,
+      reward_total: 25,
+      cost_usd: 25,
+      cost_trial_count: 25,
+      cost_has_estimated: false,
+      cost_has_native: true,
+      billed_cost_usd: 25,
+      billed_trial_count: 25,
+      billed_has_estimated: false,
+      billed_has_native: true,
+      last_run_at: "2026-08-11T12:00:00Z",
+      user_tags: [],
+      experiments: readerBrowseItem.experiments,
+      agent_models: [],
+    },
+    totals: {
+      cost_usd: 25,
+      cost_trial_count: 25,
+      cost_has_estimated: false,
+      cost_has_native: true,
+      billed_cost_usd: 25,
+      billed_trial_count: 25,
+      billed_has_estimated: false,
+      billed_has_native: true,
+      total_trials: 25,
+      token_count: 0,
+      token_trial_count: 0,
+    },
+    trials: [],
+    trials_has_more: true,
+  };
+}
+
 test.describe("tasks page network shape", () => {
   test.skip(
     !hasClerkEnv,
@@ -88,9 +193,7 @@ test.describe("tasks page network shape", () => {
     await page.goto("/tasks");
     // CardTitle renders a styled <div>, not an <h*>, so this is text — not a
     // heading role.
-    await expect(
-      page.getByText("Recent Tasks", { exact: true })
-    ).toBeVisible();
+    await expect(page.getByText("Recent Tasks", { exact: true })).toBeVisible();
     await expect(settled.first()).toBeVisible({ timeout: 30_000 });
     await expect
       .poll(() => countSince(log, 0, BROWSE_RE), { timeout: 10_000 })
@@ -155,5 +258,105 @@ test.describe("tasks page network shape", () => {
     expect(countSince(log, 0, FACETS_RE)).toBe(1);
     expect(countSince(log, 0, TAGS_RE)).toBe(1);
     expect(countSince(log, 0, LEADERBOARD_RE)).toBeLessThanOrEqual(1);
+  });
+
+  test("task-card paint seeds open, cold navigation stays non-blocking, and files intent loads detail", async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    await setupClerkTestingToken({ page });
+    await page.goto("/");
+    await clerk.signIn({ page, emailAddress: CLERK_EMAIL! });
+
+    await page.route(/\/api\/tasks\/browse\/facets/, (route) =>
+      route.fulfill({
+        json: {
+          agents: [],
+          models: [],
+          agent_models: [],
+          providers: [],
+          environments: [],
+          harbor_stages: [],
+          analysis_classifications: [],
+        },
+      })
+    );
+    await page.route(/\/api\/tasks\/browse\/experiment-options/, (route) =>
+      route.fulfill({ json: { items: [] } })
+    );
+    await page.route(/\/api\/tasks\/browse\?/, (route) =>
+      route.fulfill({
+        json: {
+          items: [readerBrowseItem],
+          limit: 50,
+          offset: 0,
+          has_more: false,
+        },
+      })
+    );
+
+    let openCount = 0;
+    let detailCount = 0;
+    const releaseOpen: { current: (() => void) | null } = { current: null };
+    let holdOpen = true;
+    await page.route(
+      new RegExp(`/api/tasks/${READER_TASK_ID}/open(?:\\?|$)`),
+      async (route) => {
+        openCount += 1;
+        if (holdOpen) {
+          await new Promise<void>((resolve) => {
+            releaseOpen.current = resolve;
+          });
+        }
+        await route.fulfill({ json: readerOpenResponse() });
+      }
+    );
+    await page.route(
+      new RegExp(`/api/tasks/${READER_TASK_ID}/detail(?:\\?|$)`),
+      async (route) => {
+        detailCount += 1;
+        await route.fulfill({
+          json: {
+            task: {
+              ...readerOpenResponse().task,
+              experiment_id: "",
+              experiment_name: "",
+              experiment_is_public: false,
+              total: 25,
+              completed: 25,
+              failed: 0,
+              trials: [],
+            },
+            versions: [readerOpenResponse().selected_version],
+            totals: readerOpenResponse().totals,
+          },
+        });
+      }
+    );
+
+    await page.goto("/tasks");
+    await page.getByRole("link", { name: readerBrowseItem.name }).click();
+    await expect(
+      page.getByRole("heading", { name: readerBrowseItem.name })
+    ).toBeVisible();
+    expect(openCount).toBe(1);
+    expect(detailCount).toBe(0);
+    (releaseOpen.current as (() => void) | null)?.();
+    holdOpen = false;
+    await expect(page.getByRole("heading", { name: "Agents" })).toBeVisible();
+    expect(detailCount).toBe(0);
+
+    holdOpen = true;
+    releaseOpen.current = null;
+    await page.goto(`/tasks/${READER_TASK_ID}`);
+    await expect(page.locator(".animate-pulse").first()).toBeVisible();
+    expect(detailCount).toBe(0);
+    (releaseOpen.current as (() => void) | null)?.();
+    holdOpen = false;
+    await expect(
+      page.getByRole("button", { name: "View task files" })
+    ).toBeVisible();
+    await page.getByRole("button", { name: "View task files" }).click();
+    await expect.poll(() => detailCount).toBe(1);
   });
 });
