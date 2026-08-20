@@ -44,6 +44,18 @@ _RECONCILED_TABLES = (
     "tag_assignments",
 )
 
+# Tables that must NEVER be copied from prod into a preview branch, nor from
+# one branch to another. An API key is a credential: it is minted against one
+# environment, and carrying it anywhere else would hand that environment's
+# access to a different one. Preview branches keep their OWN keys across a
+# rebuild instead -- see _PRESERVED_TABLES in
+# .github/scripts/preview/bootstrap_preview_db.py, which reads them from and
+# writes them back to the same branch database.
+#
+# Enforced by _assert_no_forbidden_tables below, so adding a table to the
+# sample can never quietly include one of these.
+_NEVER_SAMPLED_TABLES = frozenset({"api_keys"})
+
 _BACKEDGES = {("tasks", "current_version_id")}
 
 _LINKAGE_COLUMNS = {
@@ -358,7 +370,24 @@ async def sample_prod_subset(source: AsyncEngine, *, sample_key: str) -> dict:
             "trials": trials,
         }
     )
+    _assert_no_forbidden_tables(rows)
     return {"rows": rows, "linkage": linkage}
+
+
+def _assert_no_forbidden_tables(rows: dict) -> None:
+    """Fail loudly if the sample picked up a credential table.
+
+    A silent leak here would copy one environment's API keys into another, so
+    this raises rather than warning: a broken preview seed is recoverable, a
+    leaked credential is not.
+    """
+    leaked = sorted(_NEVER_SAMPLED_TABLES.intersection(rows))
+    if leaked:
+        raise RuntimeError(
+            f"preview_seed: refusing to copy credential table(s) {leaked} into "
+            "a preview branch. API keys belong to the environment that minted "
+            "them and must never cross environments."
+        )
 
 
 def _topo_order(md: MetaData) -> list:

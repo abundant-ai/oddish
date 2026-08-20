@@ -187,6 +187,118 @@ def _assert_preview_branch(url: str) -> None:
         )
 
 
+# Rows that belong to THIS preview branch and must survive its rebuild.
+#
+# API keys are minted against one preview, hashed, and are meaningless
+# anywhere else. They are deliberately NOT part of the prod sample (see
+# preview_seed._RECONCILED_TABLES) and must never be, or one environment's
+# credentials would appear in another. Preserving them here is the opposite
+# operation: the rows never leave the branch, they are only carried across
+# that branch's own DROP SCHEMA.
+#
+# Without this, every rebuild silently invalidates the key a developer just
+# created from the preview dashboard -- and a rebuild is not rare: any
+# cancelled run leaves the branch untrusted, so the next push rebuilds it.
+_PRESERVED_TABLES = ("api_keys",)
+
+
+async def _capture_preserved_rows(url: str) -> dict[str, list[dict]]:
+    """Read this branch's preserved rows before the schema is dropped.
+
+    Best effort: a fresh branch has no such table, and a read failure must
+    never block the rebuild. Either way the caller proceeds with nothing to
+    restore.
+    """
+    captured: dict[str, list[dict]] = {}
+    engine = None
+    try:
+        # Inside the guard: a malformed URL or a missing driver must degrade to
+        # "nothing to preserve", never abort the rebuild.
+        engine = _engine(url)
+        async with engine.begin() as conn:
+            for table in _PRESERVED_TABLES:
+                present = await conn.scalar(
+                    text("SELECT to_regclass(:qualified) IS NOT NULL"),
+                    {"qualified": f"public.{table}"},
+                )
+                if not present:
+                    continue
+                result = await conn.execute(text(f"SELECT * FROM public.{table}"))  # noqa: S608
+                captured[table] = [dict(row) for row in result.mappings()]
+    except Exception as exc:  # noqa: BLE001 - never block the rebuild
+        print(
+            f"bootstrap_preview_db: could not capture preserved rows ({exc}); "
+            "the rebuild continues and existing preview API keys will be lost",
+            file=sys.stderr,
+        )
+        return {}
+    finally:
+        if engine is not None:
+            await engine.dispose()
+    return captured
+
+
+async def _restore_preserved_rows(url: str, captured: dict[str, list[dict]]) -> None:
+    """Put the preserved rows back after the schema is rebuilt.
+
+    Runs after ``upgrade head`` so the table has its final shape. Only columns
+    that still exist are written, so a migration that drops or renames one
+    cannot fail the restore. Conflicts are ignored: a row the seed already
+    recreated wins.
+    """
+    if not captured:
+        return
+    engine = None
+    try:
+        engine = _engine(url)
+        async with engine.begin() as conn:
+            for table, rows in captured.items():
+                if not rows:
+                    continue
+                live = {
+                    row[0]
+                    for row in await conn.execute(
+                        text(
+                            "SELECT column_name FROM information_schema.columns"
+                            " WHERE table_schema = 'public' AND table_name = :t"
+                        ),
+                        {"t": table},
+                    )
+                }
+                usable = [column for column in rows[0] if column in live]
+                if not usable:
+                    print(
+                        f"bootstrap_preview_db: no shared columns for {table}; "
+                        "skipping restore",
+                        file=sys.stderr,
+                    )
+                    continue
+                columns = ", ".join(f'"{column}"' for column in usable)
+                values = ", ".join(f":{column}" for column in usable)
+                statement = text(
+                    f'INSERT INTO public."{table}" ({columns})'  # noqa: S608
+                    f" VALUES ({values}) ON CONFLICT DO NOTHING"
+                )
+                for row in rows:
+                    await conn.execute(
+                        statement, {column: row[column] for column in usable}
+                    )
+                print(
+                    f"bootstrap_preview_db: restored {len(rows)} {table} row(s) "
+                    "preserved across the rebuild",
+                    file=sys.stderr,
+                )
+    except Exception as exc:  # noqa: BLE001 - a failed restore must not fail the deploy
+        print(
+            f"bootstrap_preview_db: could not restore preserved rows ({exc}); "
+            "create a new preview API key from the dashboard",
+            file=sys.stderr,
+        )
+    finally:
+        if engine is not None:
+            await engine.dispose()
+
+
 async def _reset_schema(url: str) -> None:
     _assert_preview_branch(url)
     engine = _engine(url)
@@ -395,6 +507,9 @@ def _rebuild(url: str) -> None:
     # (e.g. a reverted PR commit) is also healed here: the rebuild never
     # consults the branch's old pointer.
     schema_sql, versions = _snapshot_prod()
+    # Captured before the drop, restored after the upgrade: a rebuild must not
+    # invalidate the API key a developer just created on this preview.
+    preserved = asyncio.run(_capture_preserved_rows(url))
     asyncio.run(_reset_schema(url))
     _restore_schema(url, schema_sql)
     asyncio.run(_write_alembic_versions(url, versions))
@@ -405,6 +520,7 @@ def _rebuild(url: str) -> None:
     for project in STACKS:
         _upgrade_head(project)
     asyncio.run(_assert_model_schema(url))
+    asyncio.run(_restore_preserved_rows(url, preserved))
     # Trust last: a cancelled run leaves the branch untrusted -> next run rebuilds.
     asyncio.run(_mark_trusted(url))
 
