@@ -150,7 +150,26 @@ async function materializeFiles(prefix, destDir) {
     fs.writeFileSync(dest, body);
     n += 1;
   }
-  return n;
+  return { count: n, files };
+}
+
+function selectVerifierPath(files) {
+  const paths = new Set(files.map((file) => file.path));
+  if (paths.has('tests/test.sh')) return 'tests/test.sh';
+  if (paths.has('test.sh')) return 'test.sh';
+  return null;
+}
+
+async function cmdTaskCat(a) {
+  const rel = (a.rel || '').replace(/^\/+/, '');
+  out(withBanner(await fetchFileContent(rel)));
+}
+
+async function cmdTaskFetch(a) {
+  const dest = a.into || fs.mkdtempSync(path.join(os.tmpdir(), 'probe-task-'));
+  const { count } = await materializeFiles('', dest);
+  if (!count) die('probe asset unavailable: task', 3);
+  out(withBanner(`copied task (${count} files) to ${dest}`));
 }
 
 async function cmdSolutionCat(a) {
@@ -184,9 +203,10 @@ function cmdHarborSrc(a) {
 async function cmdVerify() {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-verify-'));
   try {
-    const n = await materializeFiles('', work);
-    const sh = path.join(work, 'test.sh');
-    if (!n || !fs.existsSync(sh)) dieStage('probe asset unavailable: test.sh', 3);
+    const { count, files } = await materializeFiles('', work);
+    const verifier = selectVerifierPath(files);
+    if (!count || !verifier) dieStage('probe asset unavailable: tests/test.sh', 3);
+    const sh = path.join(work, verifier);
     const r = spawnSync('bash', [sh], { cwd: work, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
     let reward = null, metrics = null;
     try { reward = fs.readFileSync('/logs/verifier/reward.txt', 'utf8').trim(); } catch {}
@@ -199,23 +219,27 @@ async function cmdVerify() {
 }
 
 async function cmdVerifierSource() {
-  out(withBanner(await fetchFileContent('test.sh')));
+  const verifier = selectVerifierPath(await listFiles(''));
+  if (!verifier) dieStage('probe asset unavailable: tests/test.sh', 3);
+  out(withBanner(await fetchFileContent(verifier)));
 }
 
 async function cmdSolutionFetch(a) {
   const dest = a.into || fs.mkdtempSync(path.join(os.tmpdir(), 'probe-solution-'));
-  const n = await materializeFiles('solution/', dest);
-  if (!n) die('probe asset unavailable: solution', 3);
-  out(withBanner(`copied solution (${n} files) to ${dest}`));
+  const { count } = await materializeFiles('solution/', dest);
+  if (!count) die('probe asset unavailable: solution', 3);
+  out(withBanner(`copied solution (${count} files) to ${dest}`));
 }
 
 const HELP = `oddish-query — probe-only read access to task data (every command prints a PROBE-ONLY banner)
 
 USAGE: node /probe-harness/oddish-query <group> <command> [args]
 
+  task cat <path>             print one task source file
+  task fetch [--into DIR]     copy the whole task source tree into DIR
   solution cat <relpath>      print one file from the reference solution
   solution fetch [--into DIR] copy the whole reference solution into DIR
-  verifier source             print the verifier (test.sh)
+  verifier source             print the verifier (tests/test.sh; legacy test.sh supported)
   verify run                  fetch + run the verifier against /app; prints reward/metrics
   harbor src [--into DIR]      fetch the pinned harbor framework source into DIR
   tasks search [--q TEXT]     find tasks
@@ -256,6 +280,8 @@ async function main() {
   if (group === 'tasks' && cmd === 'trials') return cmdTaskTrials(a);
   if (group === 'experiments' && cmd === 'trials') return cmdExpTrials(a);
   if (group === 'trials' && cmd === 'logs') return cmdLogs(a);
+  if (group === 'task' && cmd === 'cat') return cmdTaskCat(a);
+  if (group === 'task' && cmd === 'fetch') return await cmdTaskFetch({ into: opt.into });
   if (group === 'solution' && cmd === 'cat') return cmdSolutionCat(a);
   if (group === 'verifier' && cmd === 'source') return await cmdVerifierSource();
   if (group === 'solution' && cmd === 'fetch') return await cmdSolutionFetch({ into: opt.into });

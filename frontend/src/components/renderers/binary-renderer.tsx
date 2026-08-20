@@ -2,17 +2,12 @@
 
 import { Download, FileQuestion } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { formatFileSize } from "@/lib/format";
 
 interface BinaryRendererProps {
   url: string;
   fileName: string;
   fileSize?: number;
-}
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 export function BinaryRenderer({
@@ -30,7 +25,7 @@ export function BinaryRenderer({
       <div>
         <p className="text-sm font-medium text-foreground">{fileName}</p>
         <p className="mt-1 text-xs text-muted-foreground">
-          {ext} file{fileSize ? ` · ${formatSize(fileSize)}` : ""}
+          {ext} file{fileSize ? ` · ${formatFileSize(fileSize)}` : ""}
         </p>
         <p className="mt-1 text-xs text-muted-foreground">
           Binary file — no preview available

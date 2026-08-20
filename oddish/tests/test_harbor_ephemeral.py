@@ -16,7 +16,10 @@ from harbor.models.environment_type import EnvironmentType
 from harbor.models.trial.config import EnvironmentConfig
 from harbor.trial.hooks import TrialEvent
 
-from oddish.core.harbor_source import harbor_git_requirement
+from oddish.core.harbor_source import (
+    harbor_git_requirement,
+    harbor_sandbox_requirement,
+)
 from oddish.runtime.backends.daytona import DaytonaBackend
 from oddish.workers.harbor import ephemeral as harbor_ephemeral
 from oddish.workers.harbor._entry import (
@@ -303,10 +306,11 @@ def _payload(**over):
     return _build_payload(**base)
 
 
-def test_payload_agent_harbor_requirement_is_override_git_req_for_probe_claude_code():
+def test_payload_agent_harbor_requirement_is_override_sandbox_req_for_probe_claude_code():
     req = _payload()["agent_harbor_requirement"]
-    assert req == harbor_git_requirement(_SOURCE, _SHA)
-    assert req == f"harbor @ git+{_SOURCE}@{_SHA}"
+    assert req == harbor_sandbox_requirement(_SOURCE, _SHA)
+    # Tarball form: the probe sandbox image has no git binary to clone with.
+    assert req == f"harbor @ {_SOURCE}/archive/{_SHA}.tar.gz"
     assert _SHA in req
 
 
@@ -322,7 +326,7 @@ def test_payload_agent_harbor_requirement_is_exact_match_not_substring():
     assert _payload(agent="claude-code-custom")["agent_harbor_requirement"] is None
     assert _payload(agent="my-claude-code")["agent_harbor_requirement"] is None
     assert _payload(agent="Claude-Code")["agent_harbor_requirement"] == (
-        harbor_git_requirement(_SOURCE, _SHA)
+        harbor_sandbox_requirement(_SOURCE, _SHA)
     )
 
 

@@ -645,6 +645,9 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                 .join(TrialModel, TrialModel.experiment_id == ExperimentModel.id)
                 .where(
                     ExperimentModel.is_collection.is_(False),
+                    # QA-report shadow experiments never make the digest;
+                    # their spend is analysis spend, not the owner's runs.
+                    ExperimentModel.shadow_of.is_(None),
                     ExperimentModel.deleted_at.is_(None),
                     _real_spend_filter(),
                     or_(
@@ -814,6 +817,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
 
         current_trial = and_(
             TrialModel.deleted_at.is_(None),
+            TrialModel.kind == "agent",
             TrialModel.superseded_by_trial_id.is_(None),
             or_(
                 func.coalesce(TrialModel.harbor_stage, "") != CANCELLED_HARBOR_STAGE,

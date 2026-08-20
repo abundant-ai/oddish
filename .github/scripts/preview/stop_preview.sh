@@ -17,7 +17,10 @@ is_configured_vercel() {
 }
 
 modal app stop -y --env "$MODAL_ENVIRONMENT" "$MODAL_APP_NAME" || true
-modal secret delete --env "$MODAL_ENVIRONMENT" "$MODAL_APP_NAME-db" || true
+# -y matters: `modal secret delete` click.confirm()s without it, which in a
+# non-tty CI job raises Abort — the `|| true` then swallowed the failure, so
+# this line had been silently leaking one orphaned secret per closed PR.
+modal secret delete -y --env "$MODAL_ENVIRONMENT" "$MODAL_APP_NAME-db" || true
 
 ids=$(supabase branches list --project-ref "$SUPABASE_PROJECT_REF" -o json \
   | jq -r --arg name "$branch_name" '

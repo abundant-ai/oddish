@@ -21,7 +21,6 @@ SAMPLE_EXTRA_TASKS = 20
 SAMPLE_TRIALS_PER_EXPERIMENT = 50
 SAMPLE_SKILLS = 10
 SAMPLE_DOCUMENTS = 10
-SAMPLE_BLOCKS_PER_SUBJECT = 2
 
 _MAX_BIND_PARAMS = 28000
 _LOAD_STREAMS = 6
@@ -37,7 +36,6 @@ _RECONCILED_TABLES = (
     "task_experiments",
     "trials",
     "worker_jobs",
-    "analyzer_blocks",
     "skills",
     "skill_files",
     "documents",
@@ -45,6 +43,18 @@ _RECONCILED_TABLES = (
     "tags",
     "tag_assignments",
 )
+
+# Tables that must NEVER be copied from prod into a preview branch, nor from
+# one branch to another. An API key is a credential: it is minted against one
+# environment, and carrying it anywhere else would hand that environment's
+# access to a different one. Preview branches keep their OWN keys across a
+# rebuild instead -- see _PRESERVED_TABLES in
+# .github/scripts/preview/bootstrap_preview_db.py, which reads them from and
+# writes them back to the same branch database.
+#
+# Enforced by _assert_no_forbidden_tables below, so adding a table to the
+# sample can never quietly include one of these.
+_NEVER_SAMPLED_TABLES = frozenset({"api_keys"})
 
 _BACKEDGES = {("tasks", "current_version_id")}
 
@@ -210,48 +220,6 @@ async def sample_prod_subset(source: AsyncEngine, *, sample_key: str) -> dict:
             statuses=list(_TERMINAL_JOB_STATUSES),
             subjects=sorted(trial_ids | set(kept_task_ids)),
         )
-        # Blocks for sampled subjects: `analyzer_id` carries the trial id on
-        # trial blocks (report blocks point it at `analyzers`, which we don't
-        # sample, so those would dangle), `task_id` the task-level QA ones.
-        # The `task_id` arm is restricted to rows with no `analyzer_id`: a
-        # post-trial block sets BOTH, for its own trial and that trial's task,
-        # so matching on `task_id` alone would draw a block for every trial a
-        # sampled task ever ran -- overwhelmingly trials outside the draw, and
-        # partitioned by trial, so the cap below wouldn't bound them either.
-        # SUCCESS first, then newest: the trajectory-summary read path serves
-        # the latest SUCCESS row, and a couple of newer failed attempts must
-        # not push it out of the draw. Without one, every trial opened in a
-        # preview regenerates its summary against the real API.
-        # `prompt` is left out of the projection rather than fetched and
-        # discarded: it embeds the whole trajectory, and nothing reads it back.
-        block_columns = await rows_of(
-            conn,
-            "SELECT column_name FROM information_schema.columns"
-            " WHERE table_schema = 'public' AND table_name = 'analyzer_blocks'"
-            "   AND column_name <> 'prompt'"
-            " ORDER BY ordinal_position",
-        )
-        if block_columns:
-            projection = ", ".join(f'b."{c["column_name"]}"' for c in block_columns)
-            await section(
-                "analyzer_blocks",
-                f"SELECT {projection} FROM ("
-                "  SELECT b.*, row_number() OVER ("
-                "    PARTITION BY coalesce(b.analyzer_id, b.task_id), b.type"
-                "    ORDER BY (b.status::text = 'SUCCESS') DESC,"
-                "             b.created_at DESC"
-                "  ) AS _rn FROM analyzer_blocks b"
-                "  WHERE b.deleted_at IS NULL"
-                "    AND b.status::text = ANY(:statuses)"
-                "    AND (b.analyzer_id = ANY(:trial_ids)"
-                "         OR (b.analyzer_id IS NULL"
-                "             AND b.task_id = ANY(:task_ids)))"
-                ") b WHERE b._rn <= :cap",
-                statuses=list(_TERMINAL_JOB_STATUSES),
-                trial_ids=sorted(trial_ids) or [""],
-                task_ids=kept_task_ids or [""],
-                cap=SAMPLE_BLOCKS_PER_SUBJECT,
-            )
         await section(
             "skills",
             "SELECT * FROM skills WHERE deleted_at IS NULL"
@@ -402,7 +370,24 @@ async def sample_prod_subset(source: AsyncEngine, *, sample_key: str) -> dict:
             "trials": trials,
         }
     )
+    _assert_no_forbidden_tables(rows)
     return {"rows": rows, "linkage": linkage}
+
+
+def _assert_no_forbidden_tables(rows: dict) -> None:
+    """Fail loudly if the sample picked up a credential table.
+
+    A silent leak here would copy one environment's API keys into another, so
+    this raises rather than warning: a broken preview seed is recoverable, a
+    leaked credential is not.
+    """
+    leaked = sorted(_NEVER_SAMPLED_TABLES.intersection(rows))
+    if leaked:
+        raise RuntimeError(
+            f"preview_seed: refusing to copy credential table(s) {leaked} into "
+            "a preview branch. API keys belong to the environment that minted "
+            "them and must never cross environments."
+        )
 
 
 def _topo_order(md: MetaData) -> list:
@@ -454,6 +439,10 @@ def _prepare_row(table, row: dict) -> dict:
 
 async def seed(engine: AsyncEngine, *, sampled: dict | None = None) -> None:
     sample_rows = (sampled or {}).get("rows", {})
+    # Re-checked here, not only in sample_prod_subset: seed() takes an
+    # arbitrary dict, so a caller that builds `sampled` some other way would
+    # otherwise load a credential table without ever passing the sampler.
+    _assert_no_forbidden_tables(sample_rows)
     md = MetaData()
     async with engine.begin() as conn:
         await conn.run_sync(md.reflect)

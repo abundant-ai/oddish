@@ -227,7 +227,9 @@ def test_stop_fold_skipped_on_migrations_only():
     assert order[0] == "supabase"
     assert "migrate" in order
     assert "seed" in order
-    assert "publish" not in order
+    # The supabase step rotates the branch DB password on every run, so the
+    # rotated value must reach the Modal secret even without a backend deploy.
+    assert order[-1] == "publish"
 
 
 @needs_bash
@@ -241,8 +243,11 @@ def test_created_branch_seeds_and_publishes_without_flags():
 
 @needs_bash
 def test_no_work_when_all_flags_false():
+    # Even a no-op prepare rotates the branch DB password in the supabase
+    # step, so the secret publish must still follow -- skipping it left the
+    # running backend with a dead connection string on frontend-only pushes.
     order = _run_prepare({"DEPLOY_BACKEND": "false", "RUN_MIGRATIONS": "false"})
-    assert order == ["supabase"]
+    assert order == ["supabase", "publish"]
 
 
 @needs_bash
@@ -617,3 +622,72 @@ def test_prune_is_quiet_when_nothing_is_stale():
     proc, deleted = _run_prune([_branch("pr-1", 2)])
     assert proc.returncode == 0, proc.stderr
     assert deleted == []
+
+
+WAIT_BRANCH = PREVIEW / "wait_for_supabase_branch.sh"
+
+
+def _is_failed_status(value: str) -> str:
+    """Run the script's own is_failed_status() against a value."""
+    script = WAIT_BRANCH.read_text()
+    body = script.split("is_failed_status() {", 1)[1].split("\n}", 1)[0]
+    probe = (
+        f"is_failed_status() {{{body}\n}}\n"
+        f'if is_failed_status "{value}"; then echo FAILED; else echo OK; fi'
+    )
+    return subprocess.run(
+        ["bash", "-c", probe],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+
+
+class TestBranchIsReusedAcrossPushes:
+    """A preview branch must survive a second push.
+
+    `supabase/migrations/` is empty on purpose (supabase/config.toml) so
+    Supabase's migration runner is a no-op and Alembic owns the schema. The
+    runner therefore reports MIGRATIONS_FAILED without that meaning anything,
+    and the branch DB password is rotated on every run, which is enough by
+    itself to stop the runner reporting success.
+
+    Treating that as terminal deleted and recreated the branch on every second
+    push: no preview kept its data, every push paid a full reseed, and an API
+    key made from the preview dashboard died on the next push.
+    """
+
+    def test_migrations_failed_is_not_terminal(self):
+        assert _is_failed_status("MIGRATIONS_FAILED") == "OK", (
+            "MIGRATIONS_FAILED must not tear the branch down: the migration "
+            "runner is a deliberate no-op, so its verdict says nothing about "
+            "whether the branch works."
+        )
+
+    def test_genuinely_broken_states_are_still_terminal(self):
+        assert _is_failed_status("FUNCTIONS_FAILED") == "FAILED"
+
+    def test_migrations_failed_still_counts_as_ready(self):
+        """Otherwise the branch never satisfies readiness, times out, and is
+        recreated anyway -- the same churn by a slower route."""
+        script = WAIT_BRANCH.read_text()
+        ready_block = script.split('case "$status" in', 1)[1].split("esac", 1)[0]
+        assert "MIGRATIONS_FAILED" in ready_block
+        assert "ACTIVE_HEALTHY" in ready_block
+
+    def test_the_real_health_gate_is_still_present(self):
+        """Reusing a branch is only safe because a real connection is proven."""
+        script = WAIT_BRANCH.read_text()
+        assert "smoke-testing connection to branch DB" in script
+        assert "select 1" in script
+
+    def test_supabase_migrations_dir_is_still_empty(self):
+        """The premise of this whole change. If someone adds a migration here,
+        Supabase's runner stops being a no-op and MIGRATIONS_FAILED starts
+        carrying real meaning again."""
+        migrations = REPO / "supabase/migrations"
+        files = [p for p in migrations.iterdir() if p.name != ".gitkeep"]
+        assert files == [], (
+            f"supabase/migrations/ is no longer empty ({files}); revisit "
+            "whether MIGRATIONS_FAILED should be terminal again."
+        )

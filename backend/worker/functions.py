@@ -70,7 +70,6 @@ from oddish.core.model_concurrency import get_model_concurrency_overrides
 from oddish.db import close_database_connections, get_session, WorkerJobKind
 from oddish.runtime.backends.daytona import reap_stale_daytona_sandboxes
 from oddish.workers.jobs import ensure_builtin_handlers_registered
-from oddish.workers.jobs.handlers import register_agent_capabilities_provider
 from oddish.workers.queue.cleanup import cleanup_orphaned_queue_state
 from oddish.workers.queue.concurrency_controller import (
     get_advisory_limits,
@@ -83,7 +82,6 @@ from oddish.workers.queue.slots import (
     release_queue_slot,
 )
 
-from api.services.agent_capabilities import run_queued_analysis
 from oddish.workers.queue.sandbox_capacity import (
     SANDBOX_CAPACITY_LEASE_SECONDS,
     acquire_sandbox_capacity_lease,
@@ -115,7 +113,9 @@ from oddish.runtime.sandbox_lifecycle import (
     EC2_TRIAL_EXECUTION_LANE,
 )
 
-from .github import notify_github_analysis, notify_github_qa, notify_github_trial
+from oddish.workers.analysis_trials import register_qa_imported_hook
+
+from .github import notify_github_qa, notify_github_trial
 from .runtime import configure_storage_paths, console
 
 # Generic workers must never receive EC2 launch credentials or the SSH key.
@@ -139,12 +139,11 @@ async def teardown_ec2_sandbox(external_id: str) -> bool:
     return await backend.teardown(external_id)
 
 
-# Register TRIAL / ANALYSIS / VERDICT handlers against the unified
+# Register TRIAL / TASK_EXPAND / TAG_PROJECT handlers against the unified
 # registry as soon as this module loads in a worker container. The
 # dispatcher and single-job runner also call this defensively, but
 # doing it here makes the startup order explicit for readers.
 ensure_builtin_handlers_registered()
-register_agent_capabilities_provider(run_queued_analysis)
 
 # Let the core trial handler resolve per-user BYOK keys (Statsig-gated) without
 # the core package importing backend. Inert until a user has a key and the gate
@@ -153,39 +152,14 @@ from .byok_resolver import install_byok_resolver
 
 install_byok_resolver()
 
-# Swap the core ANALYZER handler for the multi-block sandbox runner. Each map
-# batch gets an independent AnalyzerBlock/sandbox, bounded by map_concurrency,
-# followed by a reduce block.
-from .analyzer_sandbox import install_sandbox_analyzer_handler
-
-if install_sandbox_analyzer_handler():
-    console.print("[dim]analyzer: multi-block sandbox handler registered[/dim]")
-
-# Register the Daytona-sandbox analyzer backend into core's client factory.
-# Import for the side effect; core runs every non-sandbox block without it.
-from api.services.blocks.analyzer import (
-    sandbox_llm_client as _sandbox_llm_client,  # noqa: F401
-)
-
-# Register the hosted pre-trial synth hook (invoked by qa_handler only when
-# settings.pre_trial_enabled). Import for the side effect.
-from . import pre_trial_synth as _pre_trial_synth  # noqa: F401
-
-# Register the hosted trajectory-summary provider so post-trial classification
-# can feed a component map to the classifier. Import for the side effect.
-from . import trajectory_summary_provider as _trajectory_summary_provider  # noqa: F401
-
+# QA import writes the verdict; the hook refreshes the whole PR comment.
+register_qa_imported_hook(notify_github_qa)
 
 # Post-success hooks: fired after the worker_jobs row is in SUCCESS state.
-# The QA hook refreshes the whole PR comment (per-trial classifications +
-# task verdict) in one update. ``ANALYSIS`` is transitional -- it only fires
-# for legacy per-trial rows draining across a deploy. Hook exceptions are
-# swallowed by the runner so a GitHub API hiccup never corrupts scheduling
-# state.
+# Hook exceptions are swallowed by the runner so a GitHub API hiccup never
+# corrupts scheduling state.
 _POST_SUCCESS_HOOKS: PostSuccessHooks = {
     WorkerJobKind.TRIAL: notify_github_trial,
-    WorkerJobKind.QA: notify_github_qa,
-    WorkerJobKind.ANALYSIS: notify_github_analysis,
 }
 
 

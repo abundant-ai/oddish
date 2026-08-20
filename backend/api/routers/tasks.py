@@ -15,9 +15,11 @@ from fastapi import (
     Response,
     status,
 )
+from fastapi.responses import JSONResponse
 from harbor.models.environment_type import EnvironmentType
 from sqlalchemy import or_, select
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cloud_policy import (
@@ -103,6 +105,7 @@ from oddish.core.tasks import (
 from oddish.db import (
     ExperimentModel,
     TaskModel,
+    get_read_session,
     get_session,
     utcnow,
 )
@@ -1119,26 +1122,48 @@ async def get_experiment_share(
     experiment_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> ExperimentShareResponse:
-    """Get share status for an experiment."""
+    """Get share status for an experiment.
+
+    This runs on every experiment-page load (the page title fetch and the
+    share dialog both call it), and the database is a network hop away, so
+    the handler is built to spend exactly one statement round-trip: the
+    experiment row and the id of its QA-report shadow come back from a
+    single self outer-join, on an autocommit session that adds no
+    BEGIN/COMMIT traffic.
+    """
     auth.require_scope(APIKeyScope.READ)
 
-    async with get_session() as session:
-        result = await session.execute(
-            select(ExperimentModel).where(
-                ExperimentModel.id == experiment_id,
-                ExperimentModel.org_id == auth.org_id,
+    shadow = aliased(ExperimentModel)
+    async with get_read_session() as session:
+        row = (
+            await session.execute(
+                select(ExperimentModel, shadow.id)
+                .outerjoin(shadow, shadow.shadow_of == ExperimentModel.id)
+                .where(
+                    ExperimentModel.id == experiment_id,
+                    ExperimentModel.org_id == auth.org_id,
+                )
+                .limit(1)
             )
-        )
-        experiment = result.scalar_one_or_none()
-        if not experiment:
-            raise HTTPException(status_code=404, detail="Experiment not found")
+        ).first()
 
-        return ExperimentShareResponse(
-            name=experiment.name,
-            is_public=bool(experiment.is_public),
-            public_token=experiment.public_token,
-            description=experiment.description,
-        )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+
+    experiment, qa_report_experiment_id = row
+    if experiment.shadow_of is not None:
+        # A shadow experiment is never itself shadowed; ignore any join
+        # artifact rather than report a shadow-of-a-shadow.
+        qa_report_experiment_id = None
+
+    return ExperimentShareResponse(
+        name=experiment.name,
+        is_public=bool(experiment.is_public),
+        public_token=experiment.public_token,
+        description=experiment.description,
+        shadow_of=experiment.shadow_of,
+        qa_report_experiment_id=qa_report_experiment_id,
+    )
 
 
 @router.patch(
@@ -1453,8 +1478,7 @@ async def backfill_task_qa(
     """Backfill trial analysis for a task: fill trials with no successful analysis yet.
 
     Default fills only missing/never-analyzed trials; ``force`` re-runs
-    (optionally only ``trial_ids``); ``enable_analysis`` also opts the task
-    into analysis going forward.
+    (optionally only ``trial_ids``).
     """
     auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
 
@@ -1465,7 +1489,6 @@ async def backfill_task_qa(
             org_id=auth.org_id,
             trial_ids=body.trial_ids,
             force=body.force,
-            enable_analysis=body.enable_analysis,
         )
 
 
@@ -1555,107 +1578,6 @@ async def get_task_detail(
 
     async with get_session() as session:
         return await get_task_detail_core(session, task_id=task_id, org_id=auth.org_id)
-
-
-@router.get("/tasks/{task_id}/agent-capabilities")
-# Pre-rename path. Kept so a frontend deploy that lags this one -- or a
-# rollback to it -- keeps working; undocumented so only the new path is
-# published. Remove once no released frontend calls it.
-@router.get("/tasks/{task_id}/cohort-comparison", include_in_schema=False)
-async def get_task_agent_capabilities(
-    task_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
-    response: Response,
-    refresh: bool = Query(
-        False,
-        description=(
-            "Discard the stored analysis and generate a new one. Costs an "
-            "LLM call, so it needs the same scope as an analysis rerun."
-        ),
-    ),
-    version: int | None = Query(
-        None,
-        description=(
-            "Compare this task version instead of the current one. The overview "
-            "scopes its other sections to the selected version, so without this "
-            "an older version would show the current version's comparison."
-        ),
-    ),
-) -> dict:
-    """Successful-vs-failing comparison for a task version.
-
-    404 only when the task version has no completed, fetchable trajectory.
-    """
-    auth.require_scope(APIKeyScope.READ)
-    if refresh:
-        auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
-    async with get_session() as session:
-        # This router has no _get_authorized_task helper; task-scoped routes
-        # authorize by filtering on auth.org_id (see the READ routes above).
-        task = (
-            await session.execute(
-                select(TaskModel).where(
-                    TaskModel.id == task_id,
-                    TaskModel.org_id == auth.org_id,
-                )
-            )
-        ).scalar_one_or_none()
-        if task is None or not task.current_version_id:
-            raise HTTPException(status_code=404, detail="Task not found")
-        version_id = task.current_version_id
-        if version is not None:
-            # Imported here to match this module's convention: TaskVersionModel
-            # is pulled in per-function rather than at module scope.
-            from oddish.db.models import TaskVersionModel
-
-            version_id = (
-                await session.execute(
-                    select(TaskVersionModel.id).where(
-                        TaskVersionModel.task_id == task.id,
-                        TaskVersionModel.version == version,
-                    )
-                )
-            ).scalar_one_or_none()
-            if version_id is None:
-                raise HTTPException(status_code=404, detail="Task version not found")
-        from api.services.agent_capabilities import (
-            analysis_is_eligible,
-            enqueue_analysis,
-            load_stored_analysis,
-        )
-        from oddish.db.models import TaskVersionModel
-
-        result = None if refresh else await load_stored_analysis(
-            session, version_id, task_id=task.id
-        )
-        if result is None:
-            if not await analysis_is_eligible(session, version_id):
-                raise HTTPException(
-                    status_code=404,
-                    detail="No completed trajectories available to analyze",
-                )
-            # Serialize cache misses for this version across API containers.
-            await session.execute(
-                select(TaskVersionModel.id)
-                .where(TaskVersionModel.id == version_id)
-                .with_for_update()
-            )
-            await enqueue_analysis(
-                session,
-                task_id=task.id,
-                task_version_id=version_id,
-                task_name=task.name,
-                org_id=task.org_id,
-                triggered_by_user_id=auth.user_id,
-            )
-            response.status_code = status.HTTP_202_ACCEPTED
-            return {"status": "queued", "task_version_id": version_id}
-    # Stamped at serve time rather than stored in the block's output: the
-    # version is what the comparison covers, so every response carries it
-    # whether it was generated or read from cache. The UI needs it because
-    # the task page addresses a version by id (`?version=`), while this
-    # endpoint takes the version number.
-    return {**result.output, "task_version_id": version_id}
 
 
 # =============================================================================
@@ -1829,13 +1751,22 @@ async def get_task_file_content(
         if version is None and task.current_version:
             version = task.current_version.version
 
-    result = await get_task_file_content_s3(
-        task_id=task_id,
-        file_path=file_path,
-        presign=presign,
-        version=version,
-        max_bytes=max_bytes,
-    )
+    try:
+        result = await get_task_file_content_s3(
+            task_id=task_id,
+            file_path=file_path,
+            presign=presign,
+            version=version,
+            max_bytes=max_bytes,
+        )
+    except HTTPException as exc:
+        if exc.status_code != status.HTTP_404_NOT_FOUND:
+            raise
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+            headers=exc.headers,
+        )
 
     archive_etag = result.get("archive_etag")
     if archive_etag and version is not None:

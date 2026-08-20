@@ -1,4 +1,5 @@
 import type { JobStatus, Task, Trial, VisibleWorkerJob } from "@/lib/types";
+import { isAgentTrial } from "@/lib/types";
 
 const ACTIVE_TRIAL_STATUSES = [
   "running",
@@ -50,11 +51,15 @@ function trialHasActiveAnalysis(trial: Trial | null | undefined): boolean {
 }
 
 export function taskHasActiveTrials(task: Task | null | undefined): boolean {
+  // Agent trials only. A live qa/audit trial counts as active QA (see
+  // taskHasLiveAnalysisTrial), so the cancel path picks the QA cancel
+  // endpoint instead of the whole-task one.
   return (
     task?.trials?.some(
       (trial) =>
-        isActiveTrialStatus(trial.status) ||
-        trial.jobs?.some((job) => isActiveVisibleJobKind(job, "trial")),
+        isAgentTrial(trial) &&
+        (isActiveTrialStatus(trial.status) ||
+          trial.jobs?.some((job) => isActiveVisibleJobKind(job, "trial"))),
     ) === true
   );
 }
@@ -67,11 +72,46 @@ export function taskHasActiveAnalysis(task: Task | null | undefined): boolean {
   );
 }
 
+// QA and the source audit run as qa/audit-kind trials now. A live one means
+// analysis is in progress no matter what the status flags say -- after a
+// crash the flags can be stale. The qa/cancel endpoint cancels both kinds.
+export function isLiveAnalysisTrial(trial: Trial): boolean {
+  return (
+    !isAgentTrial(trial) &&
+    !trial.superseded_by_trial_id &&
+    isActiveTrialStatus(trial.status)
+  );
+}
+
+export function taskHasLiveAnalysisTrial(
+  task: Task | null | undefined,
+): boolean {
+  return task?.trials?.some(isLiveAnalysisTrial) === true;
+}
+
+// The qa kind specifically: verdict presentation must not read a live
+// pre-trial audit as "QA is running" (the audit is a per-version source
+// check, not the task verdict), so anything that DISPLAYS verdict progress
+// keys off these, while cancellation keeps using the analysis-wide
+// predicates above.
+export function isLiveQaTrial(trial: Trial): boolean {
+  return (
+    trial.kind === "qa" &&
+    !trial.superseded_by_trial_id &&
+    isActiveTrialStatus(trial.status)
+  );
+}
+
+export function taskHasLiveQaTrial(task: Task | null | undefined): boolean {
+  return task?.trials?.some(isLiveQaTrial) === true;
+}
+
 export function taskHasActiveVerdict(task: Task | null | undefined): boolean {
   if (!task) return false;
   return (
     task.status === "verdict_pending" ||
     isActivePipelineStatus(task.verdict_status) ||
+    taskHasLiveQaTrial(task) ||
     task.jobs?.some((job) => isActiveVisibleJobKind(job, "qa")) === true
   );
 }
@@ -82,13 +122,18 @@ export function taskHasCancellableWork(task: Task | null | undefined): boolean {
   return (
     taskHasActiveTrials(task) ||
     taskHasActiveAnalysis(task) ||
-    taskHasActiveVerdict(task)
+    taskHasActiveVerdict(task) ||
+    // A live audit is cancellable work (qa/cancel covers both kinds) even
+    // though it no longer counts as an active verdict above.
+    taskHasLiveAnalysisTrial(task)
   );
 }
 
 function getActiveTrialCount(task: Task | null | undefined): number {
-  return (task?.trials ?? []).filter((trial) =>
-    isActiveTrialStatus(trial.status),
+  // Agent trials only: a running qa/audit trial should read as "Cancel QA",
+  // not as a mystery "Cancel (1)".
+  return (task?.trials ?? []).filter(
+    (trial) => isAgentTrial(trial) && isActiveTrialStatus(trial.status),
   ).length;
 }
 

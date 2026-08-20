@@ -9,9 +9,11 @@ Stock Harbor installs only the claude-code CLI into the sandbox (see
 want the *harbor* package importable inside the sandbox so the agent can
 ``import harbor`` while exploring the harness. We pin the install to the exact
 harbor the orchestrator is running -- read from the installed package's PEP 610
-``direct_url.json`` so it emits a ``git+<source>@<commit>`` requirement (harbor is
-a git fork, not a PyPI release). In a blessed-variant container that is the
-variant's harbor; for an explicit override the caller can pass ``(source, sha)``.
+``direct_url.json`` (harbor is a git fork, not a PyPI release) and rendered as
+a requirement the sandbox can actually install: probe sandbox images ship no
+``git`` binary, so GitHub sources become a commit tarball rather than a
+``git+`` reference. In a blessed-variant container that is the variant's
+harbor; for an explicit override the caller can pass ``(source, sha)``.
 
 The wrappers are selected by ``_apply_claude_code_oddish_wrapper`` in
 :mod:`oddish.workers.harbor.agent_config`.
@@ -28,7 +30,7 @@ from importlib.metadata import Distribution, PackageNotFoundError, version
 from harbor.agents.installed.base import BaseEnvironment
 from harbor.agents.installed.claude_code import ClaudeCode
 
-from oddish.core.harbor_source import harbor_git_requirement
+from oddish.core.harbor_source import harbor_sandbox_requirement
 
 logger = logging.getLogger(__name__)
 
@@ -63,16 +65,18 @@ def _pinned_harbor_requirement(
 ) -> str | None:
     """The pip requirement that installs the run's harbor into the sandbox.
 
-    Emits a git direct reference (``harbor @ git+<source>@<sha>``) so the sandbox
-    gets the same fork commit as the run: an explicit ``(source, sha)`` wins;
-    otherwise the orchestrator's own git-installed harbor (via ``direct_url``);
-    falling back to ``harbor==<version>`` only if harbor is a plain release.
+    Emits a direct reference the sandbox can install WITHOUT a git binary
+    (GitHub sources render as the commit tarball; see
+    ``harbor_sandbox_requirement``) so the sandbox gets the same fork commit
+    as the run: an explicit ``(source, sha)`` wins; otherwise the
+    orchestrator's own git-installed harbor (via ``direct_url``); falling
+    back to ``harbor==<version>`` only if harbor is a plain release.
     """
     if source and sha:
-        return harbor_git_requirement(source, sha)
+        return harbor_sandbox_requirement(source, sha)
     pin = _installed_harbor_git_pin()
     if pin is not None:
-        return harbor_git_requirement(*pin)
+        return harbor_sandbox_requirement(*pin)
     try:
         return f"harbor=={version('harbor')}"
     except PackageNotFoundError:

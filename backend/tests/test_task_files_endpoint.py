@@ -7,6 +7,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastapi import HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from api.app import create_app
@@ -103,3 +105,44 @@ def test_selected_file_forwards_preview_limit(client):
         version=3,
         max_bytes=102400,
     )
+
+
+@pytest.mark.parametrize(
+    ("storage_status", "detail", "expected_handled_statuses"),
+    [
+        (404, "Task file not found: test.sh", []),
+        (503, "Storage unavailable", [503]),
+    ],
+)
+def test_selected_file_http_error_handling(
+    client, storage_status, detail, expected_handled_statuses
+):
+    handled_statuses: list[int] = []
+
+    async def record_http_exception(_request: Request, exc: HTTPException):
+        handled_statuses.append(exc.status_code)
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+            headers=exc.headers,
+        )
+
+    client.app.add_exception_handler(HTTPException, record_http_exception)
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield object()
+
+    get_task = AsyncMock(return_value=SimpleNamespace(current_version=None))
+    get_file = AsyncMock(side_effect=HTTPException(storage_status, detail=detail))
+
+    with (
+        patch("api.routers.tasks.get_session", new=fake_get_session),
+        patch("api.routers.tasks.get_task_for_org_core", new=get_task),
+        patch("api.routers.tasks.get_task_file_content_s3", new=get_file),
+    ):
+        response = client.get("/tasks/task-1/files/test.sh?version=3")
+
+    assert response.status_code == storage_status
+    assert response.json() == {"detail": detail}
+    assert handled_statuses == expected_handled_statuses

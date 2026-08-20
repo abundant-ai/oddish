@@ -82,7 +82,7 @@ async def reanalyze(trial_id: str | None, write: bool) -> str:
         verifier_stdout=artifacts.get("verifier_stdout") or "",
         reward=info["reward"],
         result_focus=info["result_focus"],
-        model=settings.analysis_model,
+        model=settings.probe_analyzer_model,
     )
 
     if write:

@@ -6,8 +6,8 @@ and production:
 
 - ``worker.local_runner`` (in-process, local Docker dev runner) calls these
   inline right after the Harbor trial finishes.
-- ``workers.queue.analysis_handler`` (cloud Modal analysis worker) calls them
-  from the probe branch, against the trial dir it resolved from S3/local.
+- ``workers.queue.trial_handler`` (cloud Modal trial worker) calls them
+  inline right after a probe trial finishes, before the job dir is pruned.
 
 The two runners (local_runner vs. trial_handler) stay separate by design --
 they only share the probe-*specific* logic, which lives here and in
@@ -16,8 +16,8 @@ behavior means editing this file and nowhere else.
 
 Artifact extraction is deliberately layout-agnostic (``rglob`` for the known
 filenames) because the trial dir layout differs between the local Harbor
-output and the cloud's S3-downloaded job dir (cf. the nested-subdir handling
-in ``analyze.classifier``).
+output and the cloud's S3-downloaded job dir (the local Harbor
+output nests differently than the cloud's S3-downloaded job dir).
 """
 
 from __future__ import annotations
@@ -94,7 +94,7 @@ def _build_envelope_schema(findings_schema: dict | None) -> dict:
 
 
 # Default analyzer model. Callers may override (e.g. the cloud worker passing
-# ``settings.analysis_model``).
+# ``settings.probe_analyzer_model``).
 DEFAULT_ANALYZER_MODEL = "claude-sonnet-4-6"
 
 # Caps for the transcript handed to the summarizer. The agent's FINAL message is
@@ -689,7 +689,7 @@ async def run_probe_analyzer(
         )
 
     # The probe summary runs on the direct Anthropic API (see _make_client). The
-    # cloud callers pass settings.analysis_model, a Bedrock inference-profile id
+    # cloud callers pass settings.probe_analyzer_model, a Bedrock inference-profile id
     # (e.g. "global.anthropic.claude-haiku-4-5-...-v1:0"); normalize it back to
     # the plain API id ("claude-haiku-4-5") the direct API accepts. Plain ids
     # (local dev's "claude-sonnet-4-6") pass through unchanged.
