@@ -56,6 +56,7 @@ from oddish.db import (
     get_session,
     utcnow,
 )
+from oddish.db.deadlock import retry_deadlocks, run_with_deadlock_retry
 from oddish.db.storage import StorageClient, get_storage_client
 from oddish.experiment import generate_experiment_name
 from oddish.schemas import (
@@ -180,6 +181,7 @@ async def _link_task_to_experiment(
 # =============================================================================
 
 
+@retry_deadlocks(what="trial_import_init")
 async def initialize_trial_import(
     *,
     task_id: str,
@@ -192,6 +194,11 @@ async def initialize_trial_import(
     """Create an imported trial row and return a presigned artifact URL.
 
     See module docstring for the full flow.
+
+    Retried as a whole on a deadlock loss (``retry_deadlocks``): the
+    transaction's ``tasks`` UPDATE races TAG_PROJECT recomputes on the same
+    row, and nothing commits until the end, so a killed attempt leaves no
+    partial state to double up on.
 
     When the target task has ``run_analysis`` enabled, the imported trial
     gets a per-trial analysis ``worker_job`` enqueued the same way a live
@@ -264,11 +271,34 @@ async def initialize_trial_import(
 
         # When the client supplies a stable external ID, scope it by
         # the target experiment so an accidental re-import into the
-        # *same* experiment collides on the unique index, but the same
-        # source trial can still be merged into a *different*
-        # experiment as a separate row.
+        # *same* experiment is refused, while the same source trial can
+        # still be merged into a *different* experiment as a separate
+        # row. The pre-check cannot race: same-key imports target the
+        # same task, and _get_task_for_org's FOR UPDATE lock serializes
+        # them until the winner's row is committed and visible. A clean
+        # 409 naming the existing trial replaces the IntegrityError the
+        # unique index on idempotency_key used to raise at commit
+        # (surfacing as an opaque 500).
         if trial_spec.external_trial_id:
             idempotency_key = f"import:{trial_spec.external_trial_id}:{experiment.id}"
+            existing_trial_id = await session.scalar(
+                select(TrialModel.id)
+                .where(TrialModel.idempotency_key == idempotency_key)
+                .execution_options(include_deleted=True)
+            )
+            if existing_trial_id is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": (
+                            "This trial was already imported into this "
+                            "experiment."
+                        ),
+                        "external_trial_id": trial_spec.external_trial_id,
+                        "experiment_id": experiment.id,
+                        "trial_id": existing_trial_id,
+                    },
+                )
         else:
             idempotency_key = f"import-{uuid.uuid4()}"
 
@@ -464,18 +494,28 @@ async def complete_trial_import(
 
     # After the artifacts are in place, nudge the task status forward
     # the same way the live trial handler does when a trial finishes.
+    # Retried on a deadlock loss: this task UPDATE races TAG_PROJECT
+    # recomputes (and sibling imports) on the same row, and
+    # maybe_start_qa_stage is idempotent. Only this transaction retries --
+    # NOT the archive extraction above, which deletes its staging object
+    # and must not run twice.
     from oddish.queue import maybe_start_qa_stage
 
-    async with get_session() as session:
-        await maybe_start_qa_stage(session, trial_id)
-        await session.commit()
+    async def _finalize_once() -> str:
+        async with get_session() as session:
+            await maybe_start_qa_stage(session, trial_id)
+            await session.commit()
 
-        trial_again = await session.get(TrialModel, trial_id)
-        trial_s3_key = (
-            trial_again.trial_s3_key
-            if trial_again and trial_again.trial_s3_key
-            else StorageClient._trial_prefix(trial_id)
-        )
+            trial_again = await session.get(TrialModel, trial_id)
+            return (
+                trial_again.trial_s3_key
+                if trial_again and trial_again.trial_s3_key
+                else StorageClient._trial_prefix(trial_id)
+            )
+
+    trial_s3_key = await run_with_deadlock_retry(
+        _finalize_once, what="trial_import_complete"
+    )
 
     _ = task_id  # kept for future observability hooks
     return TrialImportCompleteResponse(
