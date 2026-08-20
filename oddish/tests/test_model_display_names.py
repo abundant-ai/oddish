@@ -8,6 +8,7 @@ of all) changes because an alias exists.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 import uuid
 
 import pytest
@@ -46,6 +47,18 @@ class _Exp:
 
     def __init__(self, renames):
         self.public_model_renames = renames
+
+
+def test_migration_preserves_live_global_aliases_before_dropping_the_table():
+    migration = (
+        Path(__file__).resolve().parents[1]
+        / "alembic/versions/expmodelrename01_experiment_model_renames.py"
+    ).read_text()
+
+    backfill = migration.index("UPDATE experiments")
+    drop = migration.index("DROP TABLE IF EXISTS model_display_names")
+    assert backfill < drop
+    assert "WHERE deleted_at IS NULL" in migration[backfill - 250 : drop]
 
 
 def _trial_response(
