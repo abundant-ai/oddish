@@ -436,6 +436,16 @@ def test_browse_author_filter_restricts_page_query():
     assert "bob" in page
 
 
+def test_default_browse_page_joins_summary_without_trial_grouping():
+    from oddish.core.endpoints import browse_tasks_core
+
+    session = _BrowseCaptureSession()
+    _run(browse_tasks_core(session, org_id="org-1", limit=25))
+    page = _page_query_text(session)
+    assert "task_version_browse_summaries" in page
+    assert "group by trials.task_id" not in page
+
+
 def test_browse_author_ands_with_tag():
     from oddish.core.endpoints import browse_tasks_core
 

@@ -34,107 +34,14 @@ export ODDISH_API_KEY="ok_..."
 - `oddish delete` - delete task data (trial delete works on hosted Oddish; task/experiment delete is self-host only)
 - `oddish publish` / `oddish unpublish` - toggle public read-only sharing for an experiment
 - `oddish probe` - internal probe-trial helpers (`oddish probe`, `oddish probe skill add`)
-- `oddish qa` - run and compare versioned QA prompt variants for an experiment, task, or trial
 
 Every command except `oddish logs` accepts `--json` for machine-readable output (CI / scripts / agents).
-
-### Custom QA prompt runs
-
-Run two prompt variants concurrently and retain the exact prompt version,
-model, scope, command/config, AnalyzerBlock ID, and output for each run:
-
-```bash
-oddish qa task <task_id> \
-  --variant oracle-check \
-  --variant degenerate-check@2 \
-  --model claude-opus-4-6 \
-  --reasoning-effort high \
-  --allow-oddish-cli
-```
-
-Variants reference prompts saved in the shared registry, addressed by kind:
-the built-in UPPERCASE kinds (`QA_PRE_TRIAL`, `QA_POST_TRIAL`) or your own
-lowercase-slug custom kinds (like `oracle-check` above), created with
-`oddish prompt set`. With no `@VERSION`, the latest
-version is resolved and pinned into the run; `KIND@2` selects an exact
-historical version. Manage them with `oddish prompt list`,
-`oddish prompt set KIND --file prompt.md`, `oddish prompt versions KIND`,
-and `oddish prompt diff KIND 2 3`. Editing appends a new version, which is
-live immediately (latest always wins; there is no activation step).
-
-Every prompt is also scopeable — org, user, experiment, task, or trial, on
-top of the installation-wide default — via `--org`, `--user`, `--task ID`,
-`--experiment ID`, `--trial ID`, or `--global` on any `prompt` subcommand.
-`set`/`upload` default to `--org` (there's rarely a reason to overwrite the
-global default by accident); `get`, `view`, `versions`, and `diff` default
-to `--global` instead, matching the long-standing unscoped lookup every
-existing caller expects. That means `oddish prompt set KIND -f x.md`
-followed by a bare `oddish prompt view KIND` does **not** round-trip — the
-`set` wrote the org row, the `view` reads the global one. Pass the matching
-flag (`--org` here) to read back what you just wrote. Every read command
-prints the scope it actually resolved (`scope=org:acme`, `scope=global`,
-...) so which row you're looking at is never a guess.
-
-When several scopes could apply, the narrowest wins: **trial → task →
-experiment → user → org → global**. Task outranks experiment deliberately —
-the two aren't nested (a task spans experiments, an experiment spans tasks),
-and a task override usually encodes durable knowledge about that task, which
-a broader experiment override should not silently suppress. Only one prompt
-ever wins; overrides replace rather than combine.
-
-### Automatic QA jobs
-
-`oddish qa` runs a prompt once, by hand. To make one run *automatically*, assign
-it as a QA job with `oddish qa-jobs`. An assignment binds a registry prompt to a
-lifecycle stage — `--pre-trial` (once per task version) or `--post-trial` (once
-per trial) — at any of the same six scopes:
-
-```bash
-# Override this task's post-trial QA, uploading new text in the same step
-oddish qa-jobs assign QA_POST_TRIAL --post-trial --task fvsmith \
-  --file ./post_trial.md --backend api --model claude-opus-4-8
-
-# What will this task actually run?
-oddish qa-jobs list --task fvsmith
-
-# Suppress a broader default here
-oddish qa-jobs disable QA_POST_TRIAL --post-trial --task fvsmith
-```
-
-Unlike prompt content, assignments **union** across scopes rather than picking a
-single winner: adding one extra check to a task must not silently switch off the
-org's default post-trial QA. Within a scope ladder, a narrower row *replaces* a
-broader one for the same `(stage, prompt kind)`, and a row written by `disable`
-suppresses the broader default entirely. `list` defaults to `--global` and shows
-the resolved set with the scope each row came from; `--defined` shows only rows
-set at exactly that scope, which is what you edit.
-
-`--file` is a convenience for the create case — omitting it assigns against
-whatever content already resolves at that scope. Content keeps following
-latest-wins afterwards, so a later `oddish prompt upload` is picked up with no
-change to the assignment; pass `--prompt-version N` to pin instead. Global-scope
-assignments are installation-wide and restricted to the platform operator.
-
-Assignment execution is additive and non-blocking. A pre-trial assignment is
-enqueued once per `(assignment, task version)` when a sweep first submits trials
-for that version; it does not gate those trials. A post-trial assignment is
-enqueued once per `(assignment, trial)` when that trial reaches its final
-`SUCCESS` or `FAILED` state. Retried lifecycle hooks are idempotent. Assignment
-failures are visible through `oddish qa-jobs status`, but do not change the
-trial's status or the task verdict.
-
-The default `sandbox` backend is agentic. `--allow-oddish-cli` requests an
-authenticated Oddish CLI in the ephemeral sandbox, allowing the prompt to run
-oracle/nop and lazy-solution experiments. The worker mints a short-lived
-internal key when the queued block starts and revokes it during cleanup; the
-caller's credential is never forwarded or persisted. Use `--backend api` for
-a prompt-only provider call without shell execution.
 
 ### Lifecycle
 
 A typical run flows through these commands:
 
-1. `oddish run` (or `oddish upload`) — submit a task, dataset, or sweep and get back a task ID and experiment ID.
+1. `oddish run` (or `oddish upload`) — submit a task, dataset, or sweep and get back a task ID and experiment ID. Task-level QA (per-trial trajectory classification, plus a task verdict when there are enough trials from enough distinct agents) runs automatically once every trial settles.
 2. `oddish status` — discover what's in flight, then drill into a specific task or experiment to see trial-level progress and rewards.
 3. `oddish pull` — once you have a trial, task, or experiment ID, download its logs, results, trajectories, and artifact files to disk.
 4. `oddish run --retry` — re-queue failed trials or re-run task-level QA.
@@ -178,7 +85,7 @@ Options
 - `--task-name`, `-t TEXT` - Include task glob filter; can be passed multiple times
 - `--exclude-task-name`, `-x TEXT` - Exclude task glob filter; can be passed multiple times
 - `--n-tasks`, `-l INTEGER` - Limit the number of selected tasks after filtering
-- `--env`, `-e` - Execution environment: `docker`, `daytona`, `e2b`, `modal`, `runloop`, or `gke`
+- `--env`, `-e` - Execution environment: `docker`, `daytona`, `ec2`, `e2b`, `modal`, `runloop`, or `gke`. Hosted EC2 is opt-in and must be enabled by the deployment operator; Daytona remains the CPU default.
 - `--priority`, `-P TEXT` - Queue priority, typically `low` or `high`
 - `--experiment`, `-E TEXT` - Reuse or create an experiment ID/name
 - `--user`, `-u TEXT` - Override the author attached to the run. Defaults to the authenticated identity (Clerk-linked email for API keys / dashboard sessions); set this only to attribute a run to someone other than yourself.
@@ -189,10 +96,10 @@ Options
 - `--watch/--no-watch`, `-w` - Watch progress after submission; enabled by default
 - `--background`, `--async`, `-b` - Submit and return immediately
 - `--quiet`, `-q` - Suppress startup logs
-- `--run-analysis` - Run task-level QA (classify every trial's trajectory and compute the task verdict)
 - `--run-probe` - Auto-enqueue a probe trial for the task version (off by default)
 - `--disable-verification/--enable-verification` - Skip task verification or tests
 - `--force-new-version` - Allocate a new task version even when the content is unchanged
+- `--overwrite-current-version` - Replace the selected current version in place; existing trials pinned to it will resolve to the replacement content
 - `--submit-concurrency INTEGER` - Max parallel task uploads/submissions (default: adaptive)
 - `--override-cpus INTEGER` - Override environment CPU count
 - `--override-memory-mb INTEGER` - Override environment memory
@@ -215,6 +122,22 @@ Options
 - `--yes`, `-y` - Skip confirmation prompts (used with `--retry`)
 - `--api TEXT` - Override the API URL
 - `--json` - Emit JSON for scripts and CI; implies `--background`
+
+### Run on ephemeral EC2
+
+An EC2-enabled deployment can run a trial on one disposable CPU VM by selecting
+the backend explicitly:
+
+```bash
+oddish run ./my-task --env ec2 -a claude-code -m anthropic/claude-sonnet-4-5
+```
+
+The hosted API rejects `--env ec2` when its operator has not enabled and fully
+configured the backend. EC2 is not an automatic fallback: CPU-only hosted runs
+without `--env` continue to use Daytona. V1 does not accept GPU/TPU requests,
+attach mode, retained instances, or caller overrides of platform EC2 settings.
+It uses a public address and key-only SSH; the instance is terminated after the
+trial or cancellation.
 
 ### Re-run with `--retry`
 
@@ -286,6 +209,9 @@ unchanged task content is idempotent (no new version).
 oddish upload ./my-task
 oddish upload -d swebench@1.0
 
+# Correct the selected version without growing version history
+oddish upload ./my-task --overwrite-current-version
+
 # Import Harbor job results into an existing task
 oddish upload ./jobs --task <task_id>
 
@@ -303,6 +229,7 @@ Options
 - `--skip-artifacts` - Import mode: import metadata without logs/trajectories
 - `--priority`, `-P TEXT` - Task row priority (default `low`)
 - `--message`, `-M TEXT` - Task version description
+- `--overwrite-current-version` - Replace the selected current version in place; existing trials pinned to it will resolve to the replacement content
 - `--user`, `-u TEXT` - Author override
 - `--quiet`, `-q` / `--json` / `--api TEXT`
 
@@ -468,7 +395,7 @@ Use `oddish backfill-analysis` to (re)run trial analysis (LLM trajectory classif
 ```bash
 oddish backfill-analysis --task <task_id>
 oddish backfill-analysis --trial <trial_id> --force
-oddish backfill-analysis --experiment <experiment_id> --enable-analysis
+oddish backfill-analysis --experiment <experiment_id>
 ```
 
 Options
@@ -477,7 +404,6 @@ Options
 - `--task TEXT` - Re-analyze all trials in a task
 - `--trial TEXT` - Re-analyze a single trial
 - `--force` - Re-run analysis even for trials already analyzed. With `--trial`, re-runs just that trial; with `--task` or `--experiment`, re-runs all their trials.
-- `--enable-analysis` - Also set `run_analysis=true` on the affected tasks so future trials auto-analyze.
 - `--json` - Emit machine-readable output.
 - `--api TEXT` - Override the API URL
 

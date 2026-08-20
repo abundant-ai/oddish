@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import time
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
@@ -15,6 +16,15 @@ from api.services.slack_unfurls import (
 )
 
 router = APIRouter(prefix="/webhooks/slack", tags=["Slack"])
+
+
+def _carl_agent_enabled() -> bool:
+    return os.environ.get("ODDISH_ENABLE_CARL_AGENT", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def verify_slack_signature(
@@ -68,6 +78,11 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks) -> d
         return {"ok": True}
 
     event = payload.get("event") or {}
+    if event.get("type") == "app_mention" and _carl_agent_enabled():
+        from carl import dispatch_app_mention
+
+        background_tasks.add_task(dispatch_app_mention, payload)
+        return {"ok": True}
     if event.get("type") != "link_shared":
         return {"ok": True}
     if config.allowed_channels and event.get("channel") not in config.allowed_channels:

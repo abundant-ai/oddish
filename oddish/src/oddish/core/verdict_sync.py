@@ -6,6 +6,11 @@ from typing import Any, Awaitable, Callable
 from sqlalchemy import select
 
 from oddish.analyze import Classification, TrialClassification
+from oddish.core.verdict_state import (
+    complete_verdict,
+    complete_verdict_without_result,
+    fail_verdict,
+)
 from oddish.db import (
     TaskModel,
     TaskStatus,
@@ -27,10 +32,10 @@ def build_verdict_payload(
 
     ``verdict`` supplies only the model's judgment; the four counts are always
     recomputed from ``classifications`` so no model output can inflate them.
-    Accepts both ``TaskVerdict`` and ``TaskVerdictModel`` by duck typing, which
-    is what lets the legacy and AnalyzerBlock paths share one writer.
     """
     return {
+        "verdict": "accept" if verdict.is_good else "reject",
+        # Old rows and the SQL readers use is_good; keep it next to the label.
         "is_good": verdict.is_good,
         "confidence": verdict.confidence,
         "primary_issue": verdict.primary_issue,
@@ -64,9 +69,7 @@ async def sync_verdict_to_task(
     should_store: Callable[[Any], Awaitable[bool]] | None = None,
 ) -> str | None:
     """Write verdict state and complete the task. The only writer of a
-    *synthesized* verdict, so the legacy and block paths cannot diverge.
-    Cleanup and gate-failure paths elsewhere still set ``verdict_status``
-    directly; they never produce a payload.
+    synthesized verdict.
 
     Returns the terminal ``VerdictStatus`` value written, or ``None`` when the
     write was skipped (task gone, or the job was cancelled).
@@ -80,19 +83,39 @@ async def sync_verdict_to_task(
             return None
 
         if payload:
-            task.verdict = payload
-            task.verdict_status = VerdictStatus.SUCCESS
-            task.verdict_error = None
+            complete_verdict(task, payload=payload, now=utcnow())
+            terminal_status = VerdictStatus.SUCCESS
         else:
-            task.verdict_status = VerdictStatus.FAILED
-            task.verdict_error = error or "Verdict synthesis failed with exception"
+            failure = error or "Verdict synthesis failed with exception"
+            fail_verdict(task, error=failure, now=utcnow())
+            terminal_status = VerdictStatus.FAILED
 
-        task.verdict_finished_at = utcnow()
-        # The task completes either way: a failed verdict must not leave the
-        # task hanging in a non-terminal state.
         task.status = TaskStatus.COMPLETED
         task.finished_at = utcnow()
-        return task.verdict_status.value
+        return terminal_status.value
+
+
+async def complete_task_without_verdict(
+    task_id: str,
+    *,
+    should_store: Callable[[Any], Awaitable[bool]] | None = None,
+) -> str | None:
+    """Finish a QA pass that was not asked for a verdict (too few trials).
+
+    Per-trial analysis is already stored; this only clears the in-flight
+    verdict state and completes the task. A previously published verdict is
+    restored rather than dropped.
+    """
+    async with get_session() as session:
+        task = await session.get(TaskModel, task_id, with_for_update=True)
+        if not task:
+            return None
+        if should_store is not None and not await should_store(session):
+            return None
+        complete_verdict_without_result(task, now=utcnow())
+        task.status = TaskStatus.COMPLETED
+        task.finished_at = utcnow()
+        return VerdictStatus.SUCCESS.value
 
 
 def build_pre_trial_payload(
@@ -127,16 +150,23 @@ async def sync_pre_trial_to_task_version(
     *,
     payload: dict | None,
     error: BaseException | str | None,
-    should_store: Callable[[Any], Awaitable[bool]] | None = None,
+    expected_content_hash: str | None = None,
 ) -> str | None:
     """Write the pre-trial columns on the audited task version. Unlike
     :func:`sync_verdict_to_task`, this never completes the task and never
     touches a verdict column -- pre-trial is a per-version source audit that
     runs independently of trial classification.
 
+    ``expected_content_hash`` pins the source bytes the audit actually read:
+    the check runs here, under the version row lock, because an in-place
+    overwrite can replace the bytes between any earlier unlocked check and
+    this write. On a mismatch nothing is written -- the overwrite already
+    reset the pre-trial state, so a fresh audit of the new bytes can still
+    be enqueued.
+
     Returns the terminal ``VerdictStatus`` value written, or ``None`` when
-    the write was skipped (version gone, or ``should_store`` vetoed it) so
-    the caller can release its claim on the version.
+    the write was skipped (version gone, or overwritten bytes) so the caller
+    can release its claim on the version.
     """
     async with get_session() as session:
         version = await session.get(
@@ -144,8 +174,16 @@ async def sync_pre_trial_to_task_version(
         )
         if version is None:
             return None
-
-        if should_store is not None and not await should_store(session):
+        if (
+            expected_content_hash is not None
+            and version.content_hash is not None
+            and version.content_hash != expected_content_hash
+        ):
+            logger.warning(
+                "pre-trial write for version %s skipped: content hash changed "
+                "since the audit started (in-place overwrite)",
+                task_version_id,
+            )
             return None
 
         if error is None:
@@ -193,8 +231,14 @@ async def aggregate_exploited_into_pre_trial(task_id: str) -> None:
         # exploited the weakness is still valid evidence the task-source flaw is
         # exploitable. This is a task-level audit, not the current-trial verdict.
         trials = (
-            await session.execute(select(TrialModel).where(TrialModel.task_id == task_id))
-        ).scalars().all()
+            (
+                await session.execute(
+                    select(TrialModel).where(TrialModel.task_id == task_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
 
         exploited: dict[str, str] = {}
         for trial in trials:

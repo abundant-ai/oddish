@@ -349,14 +349,6 @@ async def get_dashboard(
     auth.require_scope(APIKeyScope.READ)
 
     async with get_session() as session:
-        connect_started_at = now()
-        await session.connection()
-        add_server_timing_metric(
-            request,
-            "db_connect",
-            elapsed_ms(connect_started_at),
-            "Dashboard DB connect",
-        )
         resolve_started_at = now()
         (
             author_user_id,

@@ -6,13 +6,15 @@ from decimal import Decimal
 from enum import Enum
 from typing import ClassVar
 
-from pydantic import Field, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from harbor.agents.utils import PROVIDER_KEYS
 from harbor.llms.utils import split_provider_model_name
 from harbor.models.agent.name import AgentName
 from litellm.litellm_core_utils.get_llm_provider_logic import get_llm_provider
+
+from oddish.harbor_pin import load_harbor_pin as _load_harbor_pin
 
 logger = logging.getLogger(__name__)
 
@@ -43,23 +45,14 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
     "default",
 }
 
-# Plain Anthropic-style id (no Bedrock inference-profile mapping): the
-# classifier and trajectory analyzers route non-Bedrock Claude ids to the
-# direct Anthropic API.
-ANALYSIS_MODEL = "claude-sonnet-5"
-# Model for the probe transcript summarizer. Deliberately larger than
-# ANALYSIS_MODEL: it reads the agent's full transcript (including the final
-# synthesis / audit JSON) and must summarize it reliably. Kept separate from
-# ANALYSIS_MODEL so it does not change the analysis queue key or the
-# TrialClassifier model. Normalized to a direct-API id at call time.
+# Analysis (QA + audit) trials run claude-code on GLM via Fireworks.
+ANALYSIS_MODEL = "fireworks/glm-5p2"
+# Model for the probe transcript summarizer -- the one direct LLM call that
+# remains outside the trial pipeline. Kept separate from ANALYSIS_MODEL
+# because run_probe_analyzer speaks the Anthropic API only; it must not
+# follow analysis_model to a non-Anthropic provider. Normalized to a
+# direct-API id at call time.
 PROBE_ANALYZER_MODEL = "global.anthropic.claude-sonnet-4-6"
-VERDICT_MODEL = "gpt-5.4"
-# Used only when VERDICT_MODEL's provider returns a permanent error (see
-# provider_failures). Deliberately a different *provider*, not just a different
-# model: the failure mode this exists for is a whole OpenAI/Azure resource
-# going away, which a sibling OpenAI model would share.
-VERDICT_FALLBACK_MODEL = ANALYSIS_MODEL
-PRE_TRIAL_MODEL = ANALYSIS_MODEL
 
 PROBE_MODEL_ROTATION: list[str] = [
     "claude-haiku-4-5",
@@ -145,15 +138,15 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 
 
 # --- Configurable Harbor source ----------------------------------------------
-# The locked default fork + commit. HARBOR_DEFAULT_SHA MUST equal the pin in
-# both uv.lock files (a test asserts it against oddish/uv.lock). This is the
-# lean Harbor baked into the default Modal/Daytona worker image; GKE (TPU)
-# trials run a heavier GKE-enabled Harbor on a dedicated blessed-variant image
-# (see HARBOR_VARIANTS in oddish.core.harbor_source), never this default.
-HARBOR_DEFAULT_SOURCE = "https://github.com/abundant-ai/harbor"
-# abundant-ai/harbor main, as resolved into both uv.lock files. Harbor PR #19
-# adds per-model Grok Build context-window overrides.
-HARBOR_DEFAULT_SHA = "4440acb85122d293629f083262c13700f965a867"
+# The locked default fork + commit lives in src/oddish/harbor-pin.toml (single
+# source of truth). HARBOR_DEFAULT_SHA MUST equal the pin in both uv.lock files
+# (a test asserts it against oddish/uv.lock). This is the lean Harbor baked
+# into the default Modal/Daytona worker image; GKE (TPU) trials run a heavier
+# GKE-enabled Harbor on a dedicated blessed-variant image (see HARBOR_VARIANTS
+# in oddish.core.harbor_source), never this default.
+_harbor_pin = _load_harbor_pin()
+HARBOR_DEFAULT_SOURCE = _harbor_pin["git"]
+HARBOR_DEFAULT_SHA = _harbor_pin["rev"]
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
@@ -410,6 +403,52 @@ def to_moonshot_model_id(model: str | None) -> str | None:
         return model
     assert model is not None
     return f"{MOONSHOT_PROVIDER}/{moonshot_bare_model_id(model)}"
+
+
+# DeepSeek routing for the ``dsh`` harness. Trials use ``deepseek/<model>`` so
+# they get their own provider/queue bucket distinct from OpenRouter or Fireworks.
+DEEPSEEK_PROVIDER = "deepseek"
+DEEPSEEK_DEFAULT_BASE_URL = "https://api.deepseek.com"
+_DEEPSEEK_PROVIDER_PREFIXES: frozenset[str] = frozenset({"deepseek", "ds"})
+_DEEPSEEK_MODEL_ALIASES: dict[str, str] = {
+    "deepseek-v4-pro-0813": "deepseek-v4-pro",
+}
+
+
+def is_deepseek_model(model: str | None) -> bool:
+    """Return True if *model* should route to DeepSeek's official API."""
+    if not model:
+        return False
+    raw = model.strip().lower()
+    if not raw:
+        return False
+    provider_prefix, bare = split_provider_model_name(raw)
+    if provider_prefix:
+        return provider_prefix.strip().lower() in _DEEPSEEK_PROVIDER_PREFIXES
+    bare_id = raw.split("/")[-1]
+    return bare_id.startswith("deepseek-")
+
+
+def deepseek_bare_model_id(model: str) -> str:
+    """Strip the ``deepseek/`` prefix and normalize GA aliases."""
+    raw = model.strip()
+    provider_prefix, bare = split_provider_model_name(raw)
+    if (
+        provider_prefix
+        and provider_prefix.strip().lower() in _DEEPSEEK_PROVIDER_PREFIXES
+    ):
+        bare = bare.strip()
+    else:
+        bare = raw
+    return _DEEPSEEK_MODEL_ALIASES.get(bare, bare)
+
+
+def to_deepseek_model_id(model: str | None) -> str | None:
+    """Canonicalize a DeepSeek reference to ``deepseek/<bare-id>``."""
+    if not is_deepseek_model(model):
+        return model
+    assert model is not None
+    return f"{DEEPSEEK_PROVIDER}/{deepseek_bare_model_id(model)}"
 
 
 # Fireworks routing. Fireworks serves GLM / MiniMax / Kimi (and many other open
@@ -937,6 +976,9 @@ _MODEL_PROVIDER_ALIASES: dict[str, str] = {
     "meta": META_PROVIDER,
     # Direct Anthropic API with the separate HDO key (ANTHROPIC_HDO_API_KEY).
     "anthropic-hdo": ANTHROPIC_HDO_PROVIDER,
+    # DeepSeek official API for the dsh harness.
+    "deepseek": DEEPSEEK_PROVIDER,
+    "ds": DEEPSEEK_PROVIDER,
 }
 
 
@@ -1019,6 +1061,8 @@ def _infer_provider_prefix(
         return MOONSHOT_PROVIDER
     if lowered.startswith("grok-"):
         return XAI_PROVIDER
+    if lowered.startswith("deepseek-"):
+        return DEEPSEEK_PROVIDER
 
     return None
 
@@ -1056,25 +1100,37 @@ PREVIEW_URL_TEMPLATE = os.environ.get(
     "ODDISH_PREVIEW_URL_TEMPLATE",
     "https://abundant-ai-preview--oddish-pr-{n}-api.modal.run",
 )
+STAGING_API_URL = os.environ.get(
+    "ODDISH_STAGING_API_URL",
+    "https://abundant-ai-staging--oddish-staging-api.modal.run",
+)
 
 
 def api_base_url_for_modal_app(app_name: str | None = None) -> str:
     """Derive the deployed backend API base URL from the Modal app identity.
 
     Keys off ``MODAL_APP_NAME`` (baked into every Modal container by
-    ``backend/modal_app.py``; unset in local dev). Returns ``""`` when not
-    running in Modal, so callers fall back or fail fast rather than silently
-    pointing a local sandbox at prod. ``oddish`` -> prod; ``oddish-pr-<n>`` ->
-    that PR's preview URL.
+    ``backend/modal_app.py``; unset in local dev). The mapping is exhaustive
+    and fails closed: ``oddish`` -> prod, ``oddish-staging`` -> staging,
+    ``oddish-pr-<n>`` -> that PR's preview URL, and anything else -> ``""``
+    so callers fail fast (probe/QA sandboxes refuse to start, naming
+    ``ODDISH_PUBLIC_API_BASE_URL`` as the override) rather than silently
+    pointing another environment's sandbox at prod -- an unknown app name
+    used to fall through to the prod URL, which sent staging's QA/audit
+    agents to prod with staging-minted keys and made every fetch 401.
     """
     name = app_name if app_name is not None else os.environ.get("MODAL_APP_NAME")
     if not name:
         return ""
+    if name == "oddish":
+        return DEFAULT_API_URL
+    if name == "oddish-staging":
+        return STAGING_API_URL
     if name.startswith("oddish-pr-"):
         suffix = name[len("oddish-pr-") :]
         if suffix.isdigit():
             return PREVIEW_URL_TEMPLATE.format(n=suffix)
-    return DEFAULT_API_URL
+    return ""
 
 
 class QuotaMode(str, Enum):
@@ -1217,6 +1273,7 @@ class Settings(BaseSettings):
     # ``e127df61`` died that way on 2026-07-24.
     daytona_auto_stop_interval_mins: int = 120
     daytona_auto_delete_interval_mins: int = 60
+    daytona_sandbox_expiry_minutes: int = 780
 
     # Our Daytona region only permits ephemeral sandboxes -- ``daytona.create``
     # rejects persistent ones with "Only ephemeral sandboxes are permitted in
@@ -1225,56 +1282,24 @@ class Settings(BaseSettings):
     # still applies as the idle backstop.
     daytona_ephemeral: bool = True
 
-    # Name of a pre-baked Daytona snapshot for cc_chat sandboxes, with
-    # claude-code + harbor already installed. When set, sandboxes are created
-    # from it and ClaudeCodeRuntime.install() skips the npm/pip installs (~a
-    # minute of per-chat provisioning). Unset -> default base image + install
-    # at provision time. See docs/cc-chat-snapshot.md to build it.
-    cc_chat_daytona_snapshot: str = ""
+    ec2_enabled: bool = False
+    ec2_region: str | None = None
+    ec2_ami_id: str | None = None
+    ec2_instance_type: str = "m7i-flex.large"
+    ec2_subnet_id: str | None = None
+    ec2_security_group_ids: list[str] = Field(default_factory=list)
+    ec2_key_name: str | None = None
+    ec2_ssh_user: str = "ubuntu"
+    ec2_ssh_private_key: SecretStr | None = None
+    ec2_aws_access_key_id: SecretStr | None = None
+    ec2_aws_secret_access_key: SecretStr | None = None
+    ec2_aws_session_token: SecretStr | None = None
+    ec2_instance_profile: str | None = None
+    ec2_root_volume_size_gb: int = 80
+    ec2_use_public_ip: bool = True
+    ec2_bootstrap_docker: bool = True
+    ec2_max_concurrent_instances: int = 16
 
-    # Snapshot for non-chat agent sandboxes (the analyzer). Falls back to the
-    # cc_chat snapshot above, which is the same image: ClaudeCodeRuntime.install
-    # checks claude-code and harbor independently, so a leaner analyzer-only
-    # image would still pay harbor's pip install on every sandbox.
-    agent_daytona_snapshot: str = ""
-
-    @property
-    def analyzer_snapshot(self) -> str:
-        return self.agent_daytona_snapshot or self.cc_chat_daytona_snapshot
-
-    # Kill switch for the hosted multi-block sandbox analyzer. Gates
-    # registration, so unsetting it reverts to the core API path.
-    analyzer_sandbox_enabled: bool = True
-
-    # Default for the org-scoped AnalyzerBlock pre-trial QA setting. An explicit
-    # organizations.settings.pre_trial_analysis_enabled value takes precedence.
-    # The hosted backend must register the synth via register_pre_trial_synth();
-    # standalone oddish remains a no-op even when this default is enabled.
-    pre_trial_enabled: bool = False
-
-    # Single source of truth for the pre-trial-synthesis timeout. oddish/ can't
-    # import backend/, so this lives here rather than as a shared constant.
-    # 180s was sized for the old sandbox path and proved to be right at the
-    # edge for the worker-local CLI audit: prod audits that finished took
-    # 108-142s, and the ones that hit the cap died at exactly 180.02s losing
-    # the whole run (the CLI buffers its envelope, so a timeout saves 0 bytes).
-    # The claim lease is pre_trial_timeout + 900 + 60, so it still outlives this.
-    # 600s then reproduced the same shape one notch up, measured over the runs
-    # after #959 unblocked parsing: 46 audits finished (p50 309s, p90 480s, max
-    # 561s) while 13 more died at exactly 600.0s -- 18% of all runs, and 11 of
-    # those 13 tasks never got an audit at all. A cap only 1.25x p90 truncates
-    # the tail of a healthy distribution rather than catching runaways, and a
-    # timed-out audit is a total loss, so this is set clear of the observed max.
-    pre_trial_timeout: float = 1200.0
-
-    # Run post-trial QA classification inside a Daytona sandbox instead of a
-    # worker-local Claude Code subprocess. Off by default: the classifier is
-    # restricted to Read/Glob over two already-downloaded directories, so it
-    # gains no isolation from a sandbox while paying provisioning latency and
-    # compute for every classified trial -- the highest-volume analysis path
-    # there is. Enable only to give the classifier capabilities (shell, the
-    # verifier) that the local subprocess deliberately withholds.
-    post_trial_sandbox_enabled: bool = False
     # GKE execution backend (TPU trials). The cluster and Artifact Registry
     # coordinates are unset by default; configuring GKE (project id, or an
     # explicit cluster name) registers the backend and makes ``--env gke``
@@ -1290,6 +1315,15 @@ class Settings(BaseSettings):
     # DWS flex-start provisions TPU capacity on demand, so a pod can sit Pending
     # while the node is created; the readiness wait is generous to match.
     gke_flex_start: bool = True
+    # Spot draws on the SAME preemptible quota as flex-start but is offered in
+    # every zone the accelerator exists in, not just the few that serve
+    # flex-start, so it reaches regions flex-start cannot -- notably us-east1
+    # for TPU v6e, which holds 1536 preemptible v6e and no CT6E chip cap
+    # against us-east5's 256 and cap of 8. It does not queue: capacity now or
+    # nothing, and the node can be reclaimed at any time. Mutually exclusive
+    # with gke_flex_start; Dynamic Workload Scheduler does not support Spot
+    # VMs and Harbor rejects the pair.
+    gke_spot: bool = False
     # Auto-build missing task images via the Cloud Build SDK instead of
     # failing on require_prebuilt_image. Spends minutes of the attempt's
     # budget on first-run tasks, so hosted deployments opt in explicitly.
@@ -1308,13 +1342,6 @@ class Settings(BaseSettings):
     # API server
     api_host: str = "0.0.0.0"
     api_port: int = 8000
-
-    # Externally reachable base URL of the oddish backend API. Injected into
-    # global-scope cc_chat sandboxes (as ODDISH_API_BASE_URL) so the uploaded
-    # oddish-query CLI can call back into the backend. Optional override — when
-    # unset, the orchestrator derives it from MODAL_APP_NAME via
-    # api_base_url_for_modal_app(), so prod and PR previews work automatically.
-    public_api_base_url: str = ""
 
     # Database connection pools (constants — override on Settings class
     # in entry modules for different deployment targets)
@@ -1351,9 +1378,6 @@ class Settings(BaseSettings):
     queue_key_buckets: dict[str, str] = Field(default_factory=dict)
     analysis_model: str = ANALYSIS_MODEL
     probe_analyzer_model: str = PROBE_ANALYZER_MODEL
-    verdict_model: str = VERDICT_MODEL
-    verdict_fallback_model: str = VERDICT_FALLBACK_MODEL
-    pre_trial_model: str = PRE_TRIAL_MODEL
 
     # Agent to provider mapping (computed from Harbor's AgentName enum)
     agent_to_provider: ClassVar[dict[str, str]] = _build_agent_provider_map()
@@ -1438,9 +1462,9 @@ class Settings(BaseSettings):
     # When enabled, uploading a new task version enqueues a
     # ``TASK_EXPAND`` worker job that writes the tarball's contents out
     # as individual S3 objects under ``tasks/{task_id}/v{N}-files/``
-    # alongside a ``.oddish-manifest.json`` sentinel. The canonical
-    # archive at ``tasks/{task_id}/v{N}/.oddish-task.tar.gz`` is never
-    # touched, so runner download paths remain unchanged.
+    # alongside a ``.oddish-manifest.json`` sentinel. The selected archive
+    # comes from ``task_versions.task_s3_key``; in-place replacements switch
+    # that pointer to a new immutable revision prefix.
     tasks_expand_archive: bool = True
     tasks_expand_max_bytes: int = 1_073_741_824  # 1 GiB
     tasks_expand_max_member_bytes: int = 104_857_600  # 100 MiB
@@ -1456,11 +1480,6 @@ class Settings(BaseSettings):
 
     # API keys (read from env without ODDISH_ prefix)
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
-    # Optional separate Anthropic key for analyzer blocks (summary + trajectory
-    # analysis). When unset, analyzer blocks fall back to anthropic_api_key.
-    analyzer_anthropic_api_key: str | None = Field(
-        default=None, alias="ANALYZER_ANTHROPIC_API_KEY"
-    )
     # Separate Anthropic key for ``anthropic-hdo/<model>`` trials. Injected as
     # ``ANTHROPIC_API_KEY`` (overwriting the platform key) so Claude Code talks
     # to the direct Anthropic API with this credential instead of Bedrock /
@@ -1498,6 +1517,71 @@ class Settings(BaseSettings):
         if self.gke_project_id and not self.gke_cluster_name:
             app_name = os.environ.get("MODAL_APP_NAME", "oddish")
             self.gke_cluster_name = f"{app_name}-trials"
+        return self
+
+    @model_validator(mode="after")
+    def _reject_both_gke_provisioning_modes(self) -> "Settings":
+        """A deployment cannot ask for flex-start and Spot at once.
+
+        The two settings encode ONE three-valued choice and Harbor rejects the
+        pair. Caught here rather than per trial: ``gke_flex_start`` defaults to
+        True, so an operator who sets only ODDISH_GKE_SPOT=true leaves both
+        true, and every GKE trial then fails the same way -- retried to
+        exhaustion, because the failure is permanent but classified as
+        retryable. Failing at config load turns that into one loud error at
+        deploy.
+
+        Per-submission kwargs are normalized separately in ``GkeBackend``:
+        naming one mode there clears the other. This guard is only about the
+        deployment defaults, which have no caller to disambiguate them.
+        """
+        if self.gke_flex_start and self.gke_spot:
+            raise ValueError(
+                "ODDISH_GKE_FLEX_START and ODDISH_GKE_SPOT cannot both be "
+                "true: Dynamic Workload Scheduler does not support Spot VMs. "
+                "Set ODDISH_GKE_FLEX_START=false to run Spot, or "
+                "ODDISH_GKE_SPOT=false to run flex-start."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_ec2_configuration(self) -> "Settings":
+        if not self.ec2_enabled:
+            return self
+        required = {
+            "ec2_region": self.ec2_region,
+            "ec2_ami_id": self.ec2_ami_id,
+            "ec2_instance_type": self.ec2_instance_type,
+            "ec2_subnet_id": self.ec2_subnet_id,
+            "ec2_key_name": self.ec2_key_name,
+            "ec2_ssh_user": self.ec2_ssh_user,
+        }
+        missing = [
+            name
+            for name, value in required.items()
+            if not isinstance(value, str) or not value.strip()
+        ]
+        if not self.ec2_security_group_ids or any(
+            not security_group_id.strip()
+            for security_group_id in self.ec2_security_group_ids
+        ):
+            missing.append("ec2_security_group_ids")
+        if missing:
+            raise ValueError(
+                "EC2 is enabled but required settings are missing: "
+                + ", ".join(missing)
+            )
+        if not self.ec2_use_public_ip:
+            raise ValueError("ec2_use_public_ip must be true for the EC2 v1 backend")
+        if (
+            self.ec2_instance_profile is not None
+            and not self.ec2_instance_profile.strip()
+        ):
+            raise ValueError("ec2_instance_profile cannot be blank when configured")
+        if self.ec2_root_volume_size_gb <= 0:
+            raise ValueError("ec2_root_volume_size_gb must be greater than zero")
+        if self.ec2_max_concurrent_instances <= 0:
+            raise ValueError("ec2_max_concurrent_instances must be greater than zero")
         return self
 
     @model_validator(mode="after")
@@ -1656,6 +1740,8 @@ class Settings(BaseSettings):
             return to_minimax_model_id(cleaned)
         if is_moonshot_model(cleaned):
             return to_moonshot_model_id(cleaned)
+        if is_deepseek_model(cleaned):
+            return to_deepseek_model_id(cleaned)
         # Explicit ``anthropic-hdo/`` keeps Claude on the direct Anthropic API
         # with ANTHROPIC_HDO_API_KEY — must win over the Bedrock chokepoint.
         if is_anthropic_hdo_model(cleaned):
@@ -1708,17 +1794,12 @@ class Settings(BaseSettings):
             return XAI_PROVIDER
         return "default"
 
-    def get_analysis_queue_key(self) -> str:
-        return self.normalize_queue_key(self.analysis_model)
-
     def get_qa_queue_key(self) -> str:
-        """Concurrency bucket for the task-level QA job.
+        """Concurrency bucket for QA and audit trials.
 
-        Keyed off ``analysis_model``: the bulk of a QA job's LLM work is the
-        per-trial classification pass, which runs on the analysis model, so the
-        job leases slots from that model's concurrency bucket (and existing
-        per-model concurrency overrides keep applying). The single
-        verdict-synthesis call on ``verdict_model`` rides along.
+        Keyed off ``analysis_model``: analysis trials run the analysis model,
+        so they lease slots from its concurrency bucket (and existing
+        per-model concurrency overrides keep applying).
         """
         return self.normalize_queue_key(self.analysis_model)
 

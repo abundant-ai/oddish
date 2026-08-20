@@ -4,8 +4,8 @@ Phase A scope is exactly the four oddish-side provider concerns that are
 consolidated out of scattered ``if environment == …`` branches:
 capability reporting, Harbor env-kwargs, hung-sandbox teardown, and Modal
 debug capture. The full ``Sandbox`` lifecycle verb set (create/exec/logs/
-files/stop/delete) from spec §5.1 lands with its first consumer (cc_chat)
-in a later phase; it is intentionally NOT defined here (YAGNI).
+files/stop/delete) from spec §5.1 lands with its first consumer in a later
+phase; it is intentionally NOT defined here (YAGNI).
 """
 
 from __future__ import annotations
@@ -60,8 +60,11 @@ class ExecutionBackend(Protocol):
     def capabilities(self) -> Capabilities: ...
 
     def harbor_env_kwargs(self, base_kwargs: dict[str, Any]) -> dict[str, Any]:
-        """Return the Harbor ``environment.kwargs`` for this backend, merging
-        provider defaults under the caller's kwargs (caller wins)."""
+        """Return validated Harbor ``environment.kwargs`` for this backend.
+
+        Backends may merge user-owned options over defaults or reject overrides
+        of platform-owned settings.
+        """
         ...
 
     async def teardown(self, external_id: str) -> bool:

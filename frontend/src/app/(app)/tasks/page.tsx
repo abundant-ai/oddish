@@ -1,4 +1,3 @@
-import { auth } from "@clerk/nextjs/server";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { TasksPageNumber, TasksToolbar } from "./tasks-client";
@@ -6,14 +5,11 @@ import { TasksFilterSidebar } from "./tasks-filter-sidebar";
 import { SelectionProvider } from "./selection-context";
 import { RecentTasksResults } from "./recent-tasks-results";
 
-// Reads auth, so the route is always dynamically rendered. Forcing it also
-// avoids the static-prerender error for the client components that call
-// useSearchParams (sidebar, toolbar, results grid).
+// Forcing dynamic rendering avoids the static-prerender error for the client
+// components that call useSearchParams (sidebar, toolbar, results grid).
 export const dynamic = "force-dynamic";
 
-export default async function TasksPage() {
-  const { orgId } = await auth();
-
+export default function TasksPage() {
   return (
     <SelectionProvider>
       <TooltipProvider>
@@ -29,7 +25,7 @@ export default async function TasksPage() {
                       <TasksPageNumber />
                     </div>
                   </div>
-                  <TasksToolbar orgId={orgId ?? null} />
+                  <TasksToolbar />
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <RecentTasksResults />

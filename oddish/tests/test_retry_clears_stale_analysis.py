@@ -32,6 +32,7 @@ from oddish.db import (  # noqa: E402
     TaskStatus,
     TrialModel,
     TrialStatus,
+    VerdictStatus,
     WorkerJobModel,
     get_session,
     utcnow,
@@ -108,6 +109,9 @@ async def _settle(
         task = await session.get(TaskModel, trial.task_id)
         task.status = task_status
         task.verdict = {"is_good": True}
+        # A published verdict must carry a non-FAILED status
+        # (ck_tasks_published_verdict_status).
+        task.verdict_status = VerdictStatus.SUCCESS
         task.verdict_finished_at = started
         if task_status is TaskStatus.COMPLETED:
             task.finished_at = started

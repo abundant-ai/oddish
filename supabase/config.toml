@@ -6,7 +6,7 @@
 # (cloud) — remains the single source of truth for schema changes. The
 # `supabase/migrations/` directory is intentionally kept empty so Supabase's
 # own migration runner is a no-op on every branch; Alembic is applied from
-# `.github/workflows/modal-preview.yml` (previews) and
-# `.github/workflows/supabase-db-migrations.yml` (production).
+# `.github/workflows/pr-preview.yml` (previews) and
+# `.github/workflows/modal-deploy.yml` (production).
 
 project_id = "lmmlhiospelnvmtjljnn"

@@ -149,6 +149,7 @@ class OddishGrokBuild(BaseInstalledAgent):
         context_window: int | float | str | None = _DEFAULT_CONTEXT_WINDOW,
         max_retries: int | str | None = None,
         inference_idle_timeout_secs: int | str | None = None,
+        background_wait_sec: int | str | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -172,6 +173,9 @@ class OddishGrokBuild(BaseInstalledAgent):
         self.max_retries = _positive_int("max_retries", max_retries)
         self.inference_idle_timeout_secs = _positive_int(
             "inference_idle_timeout_secs", inference_idle_timeout_secs
+        )
+        self.background_wait_sec = _positive_int(
+            "background_wait_sec", background_wait_sec
         )
 
     @staticmethod
@@ -383,6 +387,10 @@ class OddishGrokBuild(BaseInstalledAgent):
             reasoning_effort = (self.reasoning_effort or "").strip()
             if include_reasoning_effort and reasoning_effort:
                 parts.extend(["--reasoning-effort", shlex.quote(reasoning_effort)])
+            if self.background_wait_sec is not None:
+                parts.extend(
+                    ["--background-wait-timeout", str(self.background_wait_sec)]
+                )
             if no_auto_update:
                 parts.append("--no-auto-update")
             return " ".join(parts)

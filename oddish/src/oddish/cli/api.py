@@ -104,13 +104,45 @@ def resolve_task_path(path_arg: Path | None, path_option: Path | None) -> Path |
     return task_path
 
 
-def is_task_dir(path: Path) -> bool:
-    """Check if a path is a valid Harbor task directory."""
+def holds_task_config(path: Path) -> bool:
+    """Whether *path* carries a ``task.toml``, so it was meant to be a task.
+
+    Deliberately not a check of the full directory shape. What Harbor requires
+    is conditional: a task with `steps` needs no top-level `instruction.md`,
+    and a task that declares a verifier environment needs no `tests/` (see
+    Task._validate_tests). Restating those rules here would drift from Harbor
+    and would send the wrong message for either shape.
+
+    The presence of a task.toml is enough to say the author meant this to be a
+    task. Whatever is wrong after that, Harbor names precisely.
+    """
+    return (path / "task.toml").is_file()
+
+
+def describe_load_error(error: Exception) -> str:
+    """Render an exception for Rich output without letting it act as markup.
+
+    Exception text is untrusted: it echoes values straight out of task.toml.
+    A value holding square brackets -- `os = "[/red]"` is enough -- would be
+    read as a markup tag and raise MarkupError, replacing the diagnostic with
+    a traceback. Config values can also be secrets, so this must never be
+    interpreted, only shown.
+    """
+    return escape(f"{type(error).__name__}: {error}")
+
+
+def task_load_error(path: Path) -> Exception | None:
+    """The reason ``Task(path)`` fails, or None when it loads."""
     try:
         Task(path)
-    except Exception:
-        return False
-    return True
+    except Exception as exc:  # noqa: BLE001 - the reason is the return value
+        return exc
+    return None
+
+
+def is_task_dir(path: Path) -> bool:
+    """Check if a path is a valid Harbor task directory."""
+    return task_load_error(path) is None
 
 
 def validate_tasks(task_paths: list[Path]) -> list[Path]:
@@ -152,6 +184,48 @@ def validate_tasks(task_paths: list[Path]) -> list[Path]:
     return valid
 
 
+def report_skipped_tasks(
+    dataset_path: Path,
+    discovered: list[Path],
+    task_names: list[str] | None = None,
+    exclude_task_names: list[str] | None = None,
+) -> None:
+    """Name the children that carry a task.toml but did not survive discovery.
+
+    Discovery drops a task whose config is rejected, and it does so before
+    validate_tasks() ever sees it. Without this, uploading a dataset of N tasks
+    where one is invalid uploads N-1 and says nothing, so the author believes
+    all N went up.
+
+    Only children that hold a task.toml are considered, so an unrelated
+    directory stays quiet. Only children that actually fail to load are
+    reported, so a task removed by -n is not called an error. The name filters
+    are applied here too: a task the caller did not ask for is not their
+    problem, and warning about it is noise.
+    """
+    try:
+        children = sorted(p for p in dataset_path.iterdir() if p.is_dir())
+    except OSError:
+        return
+    found = {p.resolve() for p in discovered}
+    for child in children:
+        if child.resolve() in found or not holds_task_config(child):
+            continue
+        if task_names and not any(fnmatch(child.name, p) for p in task_names):
+            continue
+        if exclude_task_names and any(
+            fnmatch(child.name, p) for p in exclude_task_names
+        ):
+            continue
+        error = task_load_error(child)
+        if error is None:
+            continue
+        error_console.print(
+            f"[yellow]Skipped {escape(child.name)}: "
+            f"{describe_load_error(error)}[/yellow]"
+        )
+
+
 def get_task_paths_from_local(
     dataset_path: Path,
     task_names: list[str] | None = None,
@@ -179,6 +253,7 @@ def get_task_paths_from_local(
             ]
         if n_tasks is not None:
             task_paths = task_paths[:n_tasks]
+        report_skipped_tasks(dataset_path, task_paths, task_names, exclude_task_names)
         return task_paths
     else:
         config = DatasetConfig(
@@ -187,8 +262,17 @@ def get_task_paths_from_local(
             exclude_task_names=exclude_task_names,
             n_tasks=n_tasks,
         )
-        task_configs = asyncio.run(config.get_task_configs())
-        return [tc.path for tc in task_configs if tc.path is not None]
+        try:
+            task_configs = asyncio.run(config.get_task_configs())
+        except ValueError:
+            # Harbor drops a task whose config is rejected BEFORE it applies
+            # the name filters, so asking for one by name reports "no tasks
+            # matched" and never mentions why it was dropped.
+            report_skipped_tasks(dataset_path, [], task_names, exclude_task_names)
+            raise
+        task_paths = [tc.path for tc in task_configs if tc.path is not None]
+        report_skipped_tasks(dataset_path, task_paths, task_names, exclude_task_names)
+        return task_paths
 
 
 def get_task_paths_from_registry(
@@ -316,10 +400,44 @@ def resolve_local_task_paths(
                 n_tasks=n_tasks,
             )
             if not task_paths:
-                error_console.print(
-                    f"[red]No valid tasks found in {local_path}[/red]\n"
-                    "A task directory must contain: task.toml, instruction.md, environment/, tests/"
+                # A task directory whose config does not load reaches here too,
+                # because is_task_dir() above returned False. Saying "must
+                # contain task.toml, ..." would be wrong: those files exist,
+                # and the reader would go looking for the wrong thing. Report
+                # the reason the config was rejected instead.
+                load_error = (
+                    task_load_error(local_path)
+                    if holds_task_config(local_path)
+                    else None
                 )
+                has_task_children = (
+                    any(
+                        holds_task_config(child)
+                        for child in local_path.iterdir()
+                        if child.is_dir()
+                    )
+                    if local_path.is_dir()
+                    else False
+                )
+                if load_error is not None:
+                    error_console.print(
+                        f"[red]{escape(str(local_path))} holds a task.toml, "
+                        f"but the task was rejected.[/red]\n"
+                        f"{describe_load_error(load_error)}"
+                    )
+                elif has_task_children:
+                    # The directory does hold tasks; none of them loaded, and
+                    # each reason was printed above. Repeating the file list
+                    # here would contradict that.
+                    error_console.print(
+                        f"[red]No task in {escape(str(local_path))} could be "
+                        f"loaded. See the reasons above.[/red]"
+                    )
+                else:
+                    error_console.print(
+                        f"[red]No valid tasks found in {escape(str(local_path))}[/red]\n"
+                        "A task directory must contain: task.toml, instruction.md, environment/, tests/"
+                    )
                 raise typer.Exit(1)
             if not quiet:
                 console.print(
@@ -693,6 +811,7 @@ def upload_task(
     user: str | None = None,
     priority: str | None = None,
     force_new_version: bool = False,
+    overwrite_current_version: bool = False,
     quiet: bool = False,
 ) -> dict:
     """Upload a task directory to the API.
@@ -733,6 +852,8 @@ def upload_task(
         init_body["message"] = message
     if force_new_version:
         init_body["force_new_version"] = True
+    if overwrite_current_version:
+        init_body["overwrite_current_version"] = True
 
     try:
         with httpx.Client(timeout=600.0, headers=get_auth_headers()) as client:
@@ -778,6 +899,23 @@ def upload_task(
                 "version": init_payload["version"],
                 "content_hash": content_hash,
             }
+            staging_key = init_payload.get("staging_key")
+            if overwrite_current_version and init_payload.get("existing_task"):
+                if not isinstance(staging_key, str) or not staging_key:
+                    error_console.print(
+                        "[red]Task upload initialization did not return a staging key.[/red]"
+                    )
+                    raise typer.Exit(1)
+                complete_body["overwrite_current_version"] = True
+                complete_body["staging_key"] = staging_key
+                if "overwrite_base_content_hash" not in init_payload:
+                    error_console.print(
+                        "[red]Task upload initialization did not return the base content hash.[/red]"
+                    )
+                    raise typer.Exit(1)
+                complete_body["overwrite_base_content_hash"] = init_payload[
+                    "overwrite_base_content_hash"
+                ]
             if message:
                 complete_body["message"] = message
             if register:
@@ -817,6 +955,7 @@ def upload_tasks_with_progress(
     json_output: bool = False,
     progress_label: str = "Uploading",
     force_new_version: bool = False,
+    overwrite_current_version: bool = False,
     concurrency: int | None = None,
     limiter: AdaptiveConcurrencyLimiter | None = None,
 ) -> list[dict]:
@@ -852,6 +991,7 @@ def upload_tasks_with_progress(
             user=user,
             priority=priority,
             force_new_version=force_new_version,
+            overwrite_current_version=overwrite_current_version,
             quiet=quiet or json_output,
         )
 
@@ -1044,7 +1184,6 @@ def build_sweep_payload(
     priority: str,
     experiment_id: str | None,
     max_trial_attempts: int | None = None,
-    run_analysis: bool = False,
     run_probe: bool = False,
     gate_baselines: bool = True,
     github_username: str | None = None,
@@ -1127,7 +1266,6 @@ def build_sweep_payload(
         "task_id": task_id,
         "configs": configs,
         "priority": priority,
-        "run_analysis": run_analysis,
         "run_probe": run_probe,
         "gate_baselines": gate_baselines,
     }
@@ -1243,7 +1381,6 @@ def submit_sweep(
     priority: str,
     experiment_id: str | None,
     max_trial_attempts: int | None = None,
-    run_analysis: bool = False,
     run_probe: bool = False,
     gate_baselines: bool = True,
     github_username: str | None = None,
@@ -1279,7 +1416,6 @@ def submit_sweep(
         priority=priority,
         experiment_id=experiment_id,
         max_trial_attempts=max_trial_attempts,
-        run_analysis=run_analysis,
         run_probe=run_probe,
         gate_baselines=gate_baselines,
         github_username=github_username,

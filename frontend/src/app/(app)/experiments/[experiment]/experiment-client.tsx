@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
+import Link from "next/link";
 import useSWR from "swr";
 import useSWRInfinite from "swr/infinite";
 import { useAuth } from "@clerk/nextjs";
@@ -15,7 +16,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { ExperimentShareButton } from "@/components/experiment-share-button";
-import { ChatButton } from "@/components/cc-chat/chat-button";
 import {
   ProbeLaunchButton,
   resolveProbeHostTask,
@@ -37,10 +37,9 @@ import {
   hasFatalExperimentTaskLoadError,
   mergeExperimentTaskPages,
 } from "@/lib/experiment-task-pages";
-import { ExperimentPageSkeleton } from "./experiment-skeleton";
+import { ExperimentPageSkeleton } from "@/components/experiment-page-skeleton";
 
-// Paper-styled header action button, shared by the Probe and Chat buttons so
-// they render as the same element.
+// Shared by the experiment header action buttons so they render identically.
 const HEADER_ACTION_BUTTON_CLASS =
   "h-8 select-none gap-[7px] rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] leading-none text-[color:var(--paper-ink)] transition-colors hover:border-[color:var(--paper-ink-4)] hover:bg-[color:var(--paper-surface-2)]";
 
@@ -290,6 +289,10 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
   const displayName = experimentName || experimentId || "Experiment";
   const initialName = experimentName || experimentId || "";
   const canManageExperimentShare = isOrgAdminRole(orgRole);
+  // The qa-report experiment is QA's machinery, not a product surface: the
+  // verdict, reasoning, and per-trial grades are all inline on this page and
+  // in the task overview. Only admins get the hop, for debugging QA itself.
+  const canSeeQaReport = isOrgAdminRole(orgRole);
 
   // Deletes below write the grid optimistically, so for one round trip the row
   // is gone while the cost tiles still show the pre-delete rollup. Do NOT
@@ -599,6 +602,22 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
                   …
                 </span>
               </div>
+            ) : experimentShare?.shadow_of && canSeeQaReport ? (
+              <Link
+                href={`/experiments/${encodeExperimentRouteParam(experimentShare.shadow_of)}`}
+                className="text-muted-foreground text-[10px] hover:underline"
+                title="This page is the QA machinery for the graded experiment"
+              >
+                ⇄ graded experiment
+              </Link>
+            ) : experimentShare?.qa_report_experiment_id && canSeeQaReport ? (
+              <Link
+                href={`/experiments/${encodeExperimentRouteParam(experimentShare.qa_report_experiment_id)}`}
+                className="text-muted-foreground text-[10px] hover:underline"
+                title="Debug view: the QA/audit runs behind this experiment's verdicts"
+              >
+                ⇄ QA report
+              </Link>
             ) : null
           }
           headerRight={
@@ -613,12 +632,6 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
                     className={HEADER_ACTION_BUTTON_CLASS}
                   />
                 ) : null}
-                <ChatButton
-                  scopeKind="experiment"
-                  scopeId={experimentId}
-                  variant="ghost"
-                  className={HEADER_ACTION_BUTTON_CLASS}
-                />
                 <ExperimentShareButton
                   experimentId={experimentId}
                   canManageShare={canManageExperimentShare}

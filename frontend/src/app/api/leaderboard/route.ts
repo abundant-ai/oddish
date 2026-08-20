@@ -8,5 +8,8 @@ export async function GET(request: NextRequest) {
   if (windowDays !== null) params.set("window_days", windowDays);
   if (limit !== null) params.set("limit", limit);
   const query = params.toString();
-  return proxyBackendJson({ path: `leaderboard${query ? `?${query}` : ""}` });
+  return proxyBackendJson({
+    request,
+    path: `leaderboard${query ? `?${query}` : ""}`,
+  });
 }

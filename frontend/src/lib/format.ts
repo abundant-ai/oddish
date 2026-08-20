@@ -1,4 +1,4 @@
-import type { Trial } from "@/lib/types";
+import { isAgentTrial, type Trial } from "@/lib/types";
 
 export function formatCostUsd(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return "$0.00";
@@ -24,6 +24,12 @@ export function formatTokenCount(value: number): string {
   return `${rounded.toLocaleString()} tokens`;
 }
 
+export function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export interface TaskTrialCost {
   costUsd: number;
   qaCostUsd: number;
@@ -46,6 +52,7 @@ export function sumTaskTrialCost(
   let hasNative = false;
   for (const trial of trials ?? []) {
     if (trial.is_probe) continue;
+    if (!isAgentTrial(trial)) continue;
     if (trial.superseded_by_trial_id) continue;
     // Outside the cost_usd guard below: QA can exist on a trial whose agent
     // cost was never reported.

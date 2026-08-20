@@ -86,7 +86,7 @@ if [ "$schema_rebuilt" != "true" ] && { [ "$RUN_MIGRATIONS" = "true" ] || [ "$br
   ( cd "$GITHUB_WORKSPACE/backend" && uv run python "$script_dir/seed_preview_db.py" )
 fi
 
-if [ "$DEPLOY_BACKEND" = "true" ] || [ "$branch_was_created" = "true" ]; then
-  "$script_dir/publish_modal_db_secret.sh"
-  published_modal_secret=true
-fi
+# Unconditional: the supabase step rotates the DB password every run, so the
+# secret must carry the new value even when no backend deploy follows.
+"$script_dir/publish_modal_db_secret.sh"
+published_modal_secret=true

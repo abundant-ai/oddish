@@ -1,7 +1,15 @@
 import asyncio
+import os
 import sys
 from logging.config import fileConfig
 from pathlib import Path
+
+# Signal to oddish.db.models that alembic is driving: its after_create
+# listener must NOT create the analysis_spend view during 000_initial's
+# create_all, or the historical column ALTERs later in the chain fail with
+# "cannot alter type of a column used by a view". The chain creates the
+# view at its own point in history (analysisspend01).
+os.environ["ODDISH_ALEMBIC_RUNNING"] = "1"
 
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection

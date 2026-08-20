@@ -3,10 +3,14 @@ from __future__ import annotations
 import asyncio
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.workers.queue import queue_manager
+from oddish.workers.queue import worker as worker_module
 
 
 def _limit(value):
@@ -94,3 +98,140 @@ def test_assigned_queue_worker_no_slot_available(monkeypatch) -> None:
         queue_manager, "load_effective_model_concurrency_limit", _limit(1)
     )
     assert asyncio.run(queue_manager.run_assigned_queue_worker("x")) == 0
+
+
+def test_assigned_ec2_worker_claims_exact_lane_and_releases_capacity(
+    monkeypatch,
+) -> None:
+    events: list[str] = []
+    drained: dict = {}
+
+    async def _acquire_capacity(**kwargs):
+        events.append("capacity-acquire")
+        return 4
+
+    async def _release_capacity(**kwargs):
+        events.append("capacity-release")
+
+    async def _acquire_slot(**kwargs):
+        events.append("queue-acquire")
+        return 2
+
+    async def _release_slot(**kwargs):
+        events.append("queue-release")
+
+    async def _drain(queue_key, **kwargs):
+        drained.update(kwargs)
+        events.append("drain")
+        return 1
+
+    monkeypatch.setattr(
+        queue_manager, "acquire_sandbox_capacity_lease", _acquire_capacity
+    )
+    monkeypatch.setattr(
+        queue_manager, "release_sandbox_capacity_lease", _release_capacity
+    )
+    monkeypatch.setattr(queue_manager, "acquire_queue_slot", _acquire_slot)
+    monkeypatch.setattr(queue_manager, "release_queue_slot", _release_slot)
+    monkeypatch.setattr(queue_manager, "drain_worker_jobs", _drain)
+    monkeypatch.setattr(
+        queue_manager, "load_effective_model_concurrency_limit", _limit(3)
+    )
+
+    processed = asyncio.run(
+        queue_manager.run_assigned_queue_worker(
+            "zai/glm-5.2",
+            worker_id="worker-1",
+            harbor_variant_id="harbor-next",
+            execution_lane="ec2_trial",
+        )
+    )
+
+    assert processed == 1
+    assert drained["harbor_variant_id"] == "harbor-next"
+    assert drained["execution_lane"] == "ec2_trial"
+    assert drained["capacity_provider"] == "ec2"
+    assert drained["capacity_slot"] == 4
+    assert events == [
+        "capacity-acquire",
+        "queue-acquire",
+        "drain",
+        "queue-release",
+        "capacity-release",
+    ]
+
+
+def test_assigned_ec2_worker_cancellation_preserves_capacity(monkeypatch) -> None:
+    events: list[str] = []
+
+    async def _acquire_capacity(**kwargs):
+        return 4
+
+    async def _release_capacity(**kwargs):
+        events.append("capacity-release")
+
+    async def _acquire_slot(**kwargs):
+        return 2
+
+    async def _release_slot(**kwargs):
+        events.append("queue-release")
+
+    async def _drain(*args, **kwargs):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(
+        queue_manager, "acquire_sandbox_capacity_lease", _acquire_capacity
+    )
+    monkeypatch.setattr(
+        queue_manager, "release_sandbox_capacity_lease", _release_capacity
+    )
+    monkeypatch.setattr(queue_manager, "acquire_queue_slot", _acquire_slot)
+    monkeypatch.setattr(queue_manager, "release_queue_slot", _release_slot)
+    monkeypatch.setattr(queue_manager, "drain_worker_jobs", _drain)
+    monkeypatch.setattr(
+        queue_manager, "load_effective_model_concurrency_limit", _limit(3)
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            queue_manager.run_assigned_queue_worker(
+                "fireworks/glm-5p2",
+                worker_id="worker-1",
+                execution_lane="ec2_trial",
+            )
+        )
+
+    assert events == ["queue-release"]
+
+
+def test_worker_entrypoint_forwards_assigned_variant_and_lane(monkeypatch) -> None:
+    received: dict = {}
+
+    async def _run_assigned(queue_key, **kwargs):
+        received["queue_key"] = queue_key
+        received.update(kwargs)
+        return 1
+
+    async def _close_pool():
+        return None
+
+    monkeypatch.setenv(worker_module.ASSIGNED_QUEUE_KEY_ENV, "zai/glm-5.2")
+    monkeypatch.setenv(worker_module.ASSIGNED_HARBOR_VARIANT_ENV, "harbor-next")
+    monkeypatch.setenv(worker_module.ASSIGNED_EXECUTION_LANE_ENV, "ec2_trial")
+    monkeypatch.setattr(worker_module, "run_assigned_queue_worker", _run_assigned)
+    monkeypatch.setattr(worker_module, "close_pool", _close_pool)
+    monkeypatch.setattr(worker_module, "configure_observability", lambda *_: None)
+    monkeypatch.setattr(worker_module, "log_local_storage_snapshot", lambda *_: None)
+    monkeypatch.setattr(
+        worker_module.asyncio,
+        "get_event_loop",
+        lambda: SimpleNamespace(add_signal_handler=lambda *_: None),
+    )
+
+    asyncio.run(worker_module.run_worker())
+
+    assert received == {
+        "queue_key": "zai/glm-5.2",
+        "harbor_variant_id": "harbor-next",
+        "execution_lane": "ec2_trial",
+    }

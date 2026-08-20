@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
-from typing import TYPE_CHECKING, Annotated, cast
+from typing import Annotated, cast
 
 from fastapi import (
     APIRouter,
@@ -15,9 +15,11 @@ from fastapi import (
     Response,
     status,
 )
+from fastapi.responses import JSONResponse
 from harbor.models.environment_type import EnvironmentType
 from sqlalchemy import or_, select
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cloud_policy import (
@@ -28,6 +30,7 @@ from oddish.dispatch.backends.modal import ModalDispatcher
 from oddish.dispatch.ports import WorkerHandle
 from oddish.filters.trial_metrics import TrialMetricFilter
 from oddish.core.endpoints import (
+    SweepAttribution,
     backfill_task_analysis_core,
     browse_experiment_options_core,
     browse_task_facets_core,
@@ -42,6 +45,7 @@ from oddish.core.endpoints import (
     delete_task_core,
     get_experiment_cost_totals,
     get_task_detail_core,
+    get_task_open_core,
     get_task_for_org_core,
     get_task_status_core,
     get_task_version_core,
@@ -90,11 +94,8 @@ from api.routers.task_submission import (
     require_connected_github_user,
     require_experiment_publish_scope,
     resolve_actor_user_string,
-    resolve_billed_user_id,
-    resolve_created_by_user_id,
-    resolve_experiment_owner_user_id,
+    resolve_sweep_attribution,
     resolve_submission_identity,
-    stamp_experiment_owner,
 )
 from dashboard_attribution import resolve_search_authors
 from oddish.core.tasks import (
@@ -104,10 +105,11 @@ from oddish.core.tasks import (
 from oddish.db import (
     ExperimentModel,
     TaskModel,
+    get_read_session,
     get_session,
     utcnow,
 )
-from oddish.timing import TimingRecorder, add_server_timing_metric, elapsed_ms, now
+from oddish.timing import TimingRecorder, add_server_timing_metric
 from oddish.queue import (
     cancel_tasks_runs,
 )
@@ -133,6 +135,7 @@ from oddish.schemas import (
     TaskBrowseResponse,
     TaskBatchCancelRequest,
     TaskDetailResponse,
+    TaskOpenResponse,
     TaskUploadCompleteRequest,
     TaskUploadInitRequest,
     TaskUploadInitResponse,
@@ -146,9 +149,6 @@ from oddish.schemas import (
     TrialCollectionResponse,
     UploadResponse,
 )
-
-if TYPE_CHECKING:
-    from models import UserModel
 
 router = APIRouter(tags=["Tasks"])
 logger = logging.getLogger(__name__)
@@ -270,6 +270,7 @@ async def init_task_upload(
         content_hash=payload.content_hash,
         message=payload.message,
         force_new_version=payload.force_new_version,
+        overwrite_current_version=payload.overwrite_current_version,
     )
 
 
@@ -302,6 +303,9 @@ async def finalize_task_upload(
         register=payload.register_task,
         user=resolved_user,
         priority=payload.priority,
+        overwrite_current_version=payload.overwrite_current_version,
+        staging_key=payload.staging_key,
+        overwrite_base_content_hash=payload.overwrite_base_content_hash,
     )
 
 
@@ -365,14 +369,8 @@ async def create_task_sweep(
         # active org user is rejected here, before any rows are written.
         connected_user = await require_connected_github_user(session, submission, auth)
 
-        # Billing follows the resolved owner (submitted github_id/github_username,
-        # github_id first), else the API-key owner / submitter. Reuse the
-        # linkage-gate user so we don't re-query it.
-        owner_user_id = await resolve_experiment_owner_user_id(
+        attribution = await resolve_sweep_attribution(
             session, submission, auth, connected_user
-        )
-        billed_user_id = await resolve_billed_user_id(
-            session, submission, auth, owner_user_id=owner_user_id
         )
 
         try:
@@ -380,7 +378,7 @@ async def create_task_sweep(
                 session,
                 submission=submission,
                 org_id=auth.org_id,
-                billed_user_id=billed_user_id,
+                attribution=attribution,
                 default_environment=get_default_cloud_environment(submission),
                 allowed_environments=ALLOWED_CLOUD_ENVIRONMENTS,
                 idempotency_key=idempotency_key,
@@ -388,9 +386,7 @@ async def create_task_sweep(
                 request_hash=request_hash,
             )
         except TimeoutError as exc:
-            # Quota advisory-lock waits (and other DB wait timeouts) surface as
-            # bare TimeoutError from asyncpg. Map to 503 so the CLI retries with
-            # a legible message instead of an opaque "Internal Server Error".
+            # asyncpg raises bare TimeoutError on DB wait timeouts.
             logger.error(
                 "create_task_sweep timed out for task_id=%s org_id=%s",
                 submission.task_id,
@@ -427,16 +423,7 @@ async def create_task_sweep(
                 await _spawn_gke_image_builds(session, [replay_task_id])
             return response
 
-        stamp_experiment_owner(experiment, owner_user_id, claim_unowned=not is_append)
-
         if not is_append:
-            created_by_user_id = await resolve_created_by_user_id(
-                session, submission, auth, connected_user
-            )
-            if created_by_user_id:
-                task.created_by_user_id = created_by_user_id
-            task.api_key_id = auth.api_key_id
-
             await maybe_publish_experiment(session, task, submission, auth)
 
         elif experiment and submission.publish_experiment:
@@ -474,11 +461,9 @@ async def create_task_sweep_batch(
             status_code=400, detail="Must specify at least one submission"
         )
 
-    connected_users: dict[int, UserModel | None] = {}
-
     async def _prepare(
         session: AsyncSession, submission: TaskSweepSubmission
-    ) -> EnvironmentType | None:
+    ) -> tuple[EnvironmentType | None, SweepAttribution]:
         # Per-item, auth-aware setup. Runs in the batch core's read-only
         # pre-loop (identity -> attribution -> billed, same order as the single
         # route); a failure fails only this item.
@@ -487,25 +472,11 @@ async def create_task_sweep_batch(
         # Unconditional linkage gate: a truthy github_id resolving to no active
         # org user raises 403 here; the batch core catches it and fails only
         # this item (rolling back its savepoint) before any rows are written.
-        connected_users[id(submission)] = await require_connected_github_user(
-            session, submission, auth
+        connected_user = await require_connected_github_user(session, submission, auth)
+        attribution = await resolve_sweep_attribution(
+            session, submission, auth, connected_user
         )
-        return get_default_cloud_environment(submission)
-
-    # Owner resolved once in the pre-loop (inside _resolve_billed) and reused
-    # by _finalize -- same single-resolution shape as the single route.
-    owners: dict[int, str | None] = {}
-
-    async def _resolve_billed(
-        session: AsyncSession, submission: TaskSweepSubmission
-    ) -> str | None:
-        owner_user_id = await resolve_experiment_owner_user_id(
-            session, submission, auth
-        )
-        owners[id(submission)] = owner_user_id
-        return await resolve_billed_user_id(
-            session, submission, auth, owner_user_id=owner_user_id
-        )
+        return get_default_cloud_environment(submission), attribution
 
     async def _finalize(
         session: AsyncSession,
@@ -514,19 +485,7 @@ async def create_task_sweep_batch(
         is_append: bool,
         experiment: ExperimentModel | None,
     ) -> None:
-        # Post-create stamping, inside the savepoint (mirrors the single route).
-        # Owner was resolved once in _resolve_billed; connected_user (linkage
-        # gate) is reused for created_by resolution below.
-        connected_user = connected_users.get(id(submission))
-        owner_user_id = owners.get(id(submission))
-        stamp_experiment_owner(experiment, owner_user_id, claim_unowned=not is_append)
         if not is_append:
-            created_by_user_id = await resolve_created_by_user_id(
-                session, submission, auth, connected_user
-            )
-            if created_by_user_id:
-                task.created_by_user_id = created_by_user_id
-            task.api_key_id = auth.api_key_id
             await maybe_publish_experiment(session, task, submission, auth)
         elif experiment and submission.publish_experiment:
             require_experiment_publish_scope(auth)
@@ -540,7 +499,6 @@ async def create_task_sweep_batch(
             allowed_environments=ALLOWED_CLOUD_ENVIRONMENTS,
             prepare=_prepare,
             finalize=_finalize,
-            resolve_billed_user_id=_resolve_billed,
         )
         await session.commit()
 
@@ -594,14 +552,6 @@ async def list_tasks(
     auth.require_scope(APIKeyScope.READ)
 
     async with get_session() as session:
-        connect_started_at = now()
-        await session.connection()
-        add_server_timing_metric(
-            request,
-            "db_connect",
-            elapsed_ms(connect_started_at),
-            "Tasks DB connect",
-        )
         tasks = await list_tasks_core(
             session,
             status=status,
@@ -642,14 +592,6 @@ async def list_experiment_task_shells(
     auth.require_scope(APIKeyScope.READ)
 
     async with get_session() as session:
-        connect_started_at = now()
-        await session.connection()
-        add_server_timing_metric(
-            request,
-            "db_connect",
-            elapsed_ms(connect_started_at),
-            "Task shells DB connect",
-        )
         return await list_experiment_task_shells_core(
             session,
             experiment_id=experiment_id,
@@ -709,14 +651,6 @@ async def list_experiment_slim_tasks_route(
     auth.require_scope(APIKeyScope.READ)
 
     async with get_session() as session:
-        connect_started_at = now()
-        await session.connection()
-        add_server_timing_metric(
-            request,
-            "db_connect",
-            elapsed_ms(connect_started_at),
-            "Slim tasks DB connect",
-        )
         return await list_experiment_slim_tasks(
             session,
             experiment_id=experiment_id,
@@ -880,14 +814,6 @@ async def browse_tasks(
     auth.require_scope(APIKeyScope.READ)
 
     async with get_session() as session:
-        connect_started_at = now()
-        await session.connection()
-        add_server_timing_metric(
-            request,
-            "db_connect",
-            elapsed_ms(connect_started_at),
-            "Browse DB connect",
-        )
         author_tokens = [
             token.strip() for token in (author or "").split(",") if token.strip()
         ]
@@ -1072,6 +998,7 @@ async def combine_experiments(
             name=payload.name,
             org_id=auth.org_id,
             copy_artifacts=payload.copy_artifacts,
+            owner_user_id=auth.user_id,
         )
         await session.commit()
 
@@ -1098,6 +1025,7 @@ async def create_trial_collection(
             trial_ids=payload.trial_ids,
             task_ids=payload.task_ids,
             org_id=auth.org_id,
+            owner_user_id=auth.user_id,
         )
         await session.commit()
 
@@ -1194,26 +1122,48 @@ async def get_experiment_share(
     experiment_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> ExperimentShareResponse:
-    """Get share status for an experiment."""
+    """Get share status for an experiment.
+
+    This runs on every experiment-page load (the page title fetch and the
+    share dialog both call it), and the database is a network hop away, so
+    the handler is built to spend exactly one statement round-trip: the
+    experiment row and the id of its QA-report shadow come back from a
+    single self outer-join, on an autocommit session that adds no
+    BEGIN/COMMIT traffic.
+    """
     auth.require_scope(APIKeyScope.READ)
 
-    async with get_session() as session:
-        result = await session.execute(
-            select(ExperimentModel).where(
-                ExperimentModel.id == experiment_id,
-                ExperimentModel.org_id == auth.org_id,
+    shadow = aliased(ExperimentModel)
+    async with get_read_session() as session:
+        row = (
+            await session.execute(
+                select(ExperimentModel, shadow.id)
+                .outerjoin(shadow, shadow.shadow_of == ExperimentModel.id)
+                .where(
+                    ExperimentModel.id == experiment_id,
+                    ExperimentModel.org_id == auth.org_id,
+                )
+                .limit(1)
             )
-        )
-        experiment = result.scalar_one_or_none()
-        if not experiment:
-            raise HTTPException(status_code=404, detail="Experiment not found")
+        ).first()
 
-        return ExperimentShareResponse(
-            name=experiment.name,
-            is_public=bool(experiment.is_public),
-            public_token=experiment.public_token,
-            description=experiment.description,
-        )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+
+    experiment, qa_report_experiment_id = row
+    if experiment.shadow_of is not None:
+        # A shadow experiment is never itself shadowed; ignore any join
+        # artifact rather than report a shadow-of-a-shadow.
+        qa_report_experiment_id = None
+
+    return ExperimentShareResponse(
+        name=experiment.name,
+        is_public=bool(experiment.is_public),
+        public_token=experiment.public_token,
+        description=experiment.description,
+        shadow_of=experiment.shadow_of,
+        qa_report_experiment_id=qa_report_experiment_id,
+    )
 
 
 @router.patch(
@@ -1468,7 +1418,10 @@ async def cancel_tasks(
     try:
         async with get_session() as session:
             result = await cancel_tasks_runs(
-                session, payload.task_ids, org_id=auth.org_id
+                session,
+                payload.task_ids,
+                org_id=auth.org_id,
+                experiment_id=payload.experiment_id,
             )
             if result.get("error") == "not_found":
                 raise HTTPException(status_code=404, detail="No matching tasks found")
@@ -1479,7 +1432,10 @@ async def cancel_tasks(
         # Postgres deadlock/timeout detail). The UI gets a simple, honest
         # message instead of an opaque "Internal Server Error".
         logger.error(
-            "cancel_tasks failed for task_ids=%s", payload.task_ids, exc_info=exc
+            "cancel_tasks failed for task_ids=%s experiment_id=%s",
+            payload.task_ids,
+            payload.experiment_id,
+            exc_info=exc,
         )
         raise HTTPException(
             status_code=503,
@@ -1522,8 +1478,7 @@ async def backfill_task_qa(
     """Backfill trial analysis for a task: fill trials with no successful analysis yet.
 
     Default fills only missing/never-analyzed trials; ``force`` re-runs
-    (optionally only ``trial_ids``); ``enable_analysis`` also opts the task
-    into analysis going forward.
+    (optionally only ``trial_ids``).
     """
     auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
 
@@ -1534,7 +1489,6 @@ async def backfill_task_qa(
             org_id=auth.org_id,
             trial_ids=body.trial_ids,
             force=body.force,
-            enable_analysis=body.enable_analysis,
         )
 
 
@@ -1591,6 +1545,26 @@ async def get_task_status(
             include_trials=include_trials,
             include_empty_rewards=True,
             org_id=auth.org_id,
+        )
+
+
+@router.get("/tasks/{task_id}/open", response_model=TaskOpenResponse)
+async def get_task_open(
+    request: Request,
+    task_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    version_id: str | None = None,
+) -> TaskOpenResponse:
+    """Bounded task-page header, aggregates, and trial preview."""
+    auth.require_scope(APIKeyScope.READ)
+
+    async with get_session() as session:
+        return await get_task_open_core(
+            session,
+            task_id=task_id,
+            version_id=version_id,
+            org_id=auth.org_id,
+            record_timing=_make_timing_recorder(request),
         )
 
 
@@ -1694,6 +1668,9 @@ async def list_task_files(
     presign: bool = Query(
         True, description="Include presigned URLs for direct S3 access"
     ),
+    inline: bool = Query(
+        True, description="Include eligible text file contents in the listing"
+    ),
     version: int | None = Query(None, description="Task version number"),
     stream: bool = Query(
         False,
@@ -1740,6 +1717,7 @@ async def list_task_files(
         cursor=cursor,
         presign=presign,
         version=version,
+        inline=inline,
     )
 
 
@@ -1752,13 +1730,14 @@ async def get_task_file_content(
     auth: Annotated[AuthContext, Depends(require_auth)],
     presign: bool = Query(False),
     version: int | None = Query(None, description="Task version number"),
+    max_bytes: int | None = Query(None, ge=1),
 ):
     """Get content of a specific task file from S3.
 
-    When the underlying source is a pinned task archive (immutable at a
-    given version) the response carries ``ETag`` + ``Cache-Control``
-    headers and honors ``If-None-Match`` with a ``304``, so the browser's
-    HTTP cache covers repeated clicks on the same file.
+    When the underlying source is a pinned task archive, the response carries
+    ``ETag`` and revalidating ``Cache-Control`` headers and honors
+    ``If-None-Match`` with a ``304``. Versions can be explicitly overwritten,
+    so clients must revalidate rather than treating a version URL as immutable.
     """
     auth.require_scope(APIKeyScope.READ)
 
@@ -1772,12 +1751,22 @@ async def get_task_file_content(
         if version is None and task.current_version:
             version = task.current_version.version
 
-    result = await get_task_file_content_s3(
-        task_id=task_id,
-        file_path=file_path,
-        presign=presign,
-        version=version,
-    )
+    try:
+        result = await get_task_file_content_s3(
+            task_id=task_id,
+            file_path=file_path,
+            presign=presign,
+            version=version,
+            max_bytes=max_bytes,
+        )
+    except HTTPException as exc:
+        if exc.status_code != status.HTTP_404_NOT_FOUND:
+            raise
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+            headers=exc.headers,
+        )
 
     archive_etag = result.get("archive_etag")
     if archive_etag and version is not None:
@@ -1790,10 +1779,10 @@ async def get_task_file_content(
                 status_code=304,
                 headers={
                     "ETag": etag_value,
-                    "Cache-Control": "private, max-age=86400, immutable",
+                    "Cache-Control": "private, no-cache",
                 },
             )
         response.headers["ETag"] = etag_value
-        response.headers["Cache-Control"] = "private, max-age=86400, immutable"
+        response.headers["Cache-Control"] = "private, no-cache"
 
     return result

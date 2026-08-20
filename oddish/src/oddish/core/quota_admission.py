@@ -7,7 +7,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import QuotaMode, settings
 from oddish.core.quotas import (
-    acquire_quota_locks,
     get_effective_limit,
     get_effective_org_limit,
     inflight_reserved_usd,
@@ -234,13 +233,15 @@ async def admit_trials(
     *,
     allow_unattributed: bool = False,
 ) -> None:
+    """Reject over-budget submissions (402/403).
+
+    Takes no locks: concurrent admissions can briefly overshoot a cap, and
+    the enforcement sweep cancels the overage.
+    """
     mode = settings.quota_mode
     if mode == QuotaMode.OFF or org_id is None or count <= 0:
         return
     enforce = mode == QuotaMode.ENFORCE
-
-    if enforce:
-        await acquire_quota_locks(session, org_id, billed_user_id)
 
     if billed_user_id is None:
         if enforce and not allow_unattributed:

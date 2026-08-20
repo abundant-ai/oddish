@@ -229,7 +229,20 @@ def _publish_probe(monkeypatch):
         api_key_created_by_role=UserRole.ADMIN.value,
         scope=APIKeyScope.TASKS,
     )
-    task = SimpleNamespace(experiments=[SimpleNamespace(id="exp-1")])
+    task = SimpleNamespace(
+        experiments=[SimpleNamespace(id="exp-1", shadow_of=None)]
+    )
+
+    class _FakeAwaitableAttrs:
+        # Mirrors SQLAlchemy's ``awaitable_attrs``, which
+        # maybe_publish_experiment uses to load ``task.experiments``.
+        def __getattr__(self, name):
+            async def _get():
+                return getattr(task, name)
+
+            return _get()
+
+    task.awaitable_attrs = _FakeAwaitableAttrs()
 
     def run(submission):
         asyncio.run(

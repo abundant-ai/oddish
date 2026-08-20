@@ -1,4 +1,4 @@
-"""Quota advisory locks: non-blocking enforcement must not queue behind admission."""
+"""Quota advisory locks: enforcement-only, non-blocking; admission takes none."""
 
 from __future__ import annotations
 
@@ -98,18 +98,40 @@ async def test_enforce_returns_none_on_lock_busy_without_settlement(monkeypatch)
     assert after_check_calls == 0
 
 
-def test_append_sweep_preserves_quota_then_task_lock_order():
-    """Regression: lock order and admit-against-locked-plan invariants.
+def test_submission_paths_take_no_quota_advisory_locks():
+    """Admission is lock-free; only the enforcement sweep takes quota locks."""
+    from oddish.core import quota_admission
+    from oddish.core.endpoints import sweep as sweep_mod
 
-    Enforcement takes quota advisory first, then task FOR UPDATE. Append must
-    do the same or concurrent cancel deadlocks. Admit must use the locked plan
-    only — an unlocked estimate can 402 after a concurrent append already
-    filled the deficit.
-    """
+    for module in (sweep_mod, quota_admission):
+        source = Path(module.__file__).read_text(encoding="utf-8")
+        assert "acquire_quota_locks" not in source.replace(
+            "try_acquire_quota_locks", ""
+        ), f"{module.__name__} must not take blocking quota advisory locks"
+    assert not hasattr(quotas, "acquire_quota_locks")
+
+
+def test_retry_reserves_trial_index_under_the_task_lock():
+    """Concurrent retries/appends must not mint the same ``{task_id}-{N}``."""
+    from oddish.core.endpoints import trials as trials_mod
+
+    source = Path(trials_mod.__file__).read_text(encoding="utf-8")
+    start = source.index("async def retry_trial_core(")
+    end = source.index("\nasync def ", start + 1)
+    body = source[start:end]
+
+    lock_at = body.index("with_for_update")
+    reserve_at = body.index("await reserve_next_trial_index(")
+    assert lock_at < reserve_at, (
+        "retry must lock the task row before reserving the trial index"
+    )
+
+
+def test_append_sweep_admits_against_the_locked_plan():
+    """An unlocked estimate can 402 after a concurrent append filled the deficit."""
     from oddish.core.endpoints import sweep as sweep_mod
 
     source = Path(sweep_mod.__file__).read_text(encoding="utf-8")
-    assert "from oddish.core.quotas import acquire_quota_locks" in source
     assert "async def _plan_append_trials(" in source
 
     append_start = source.index("if submission.append_to_task:")
@@ -117,15 +139,13 @@ def test_append_sweep_preserves_quota_then_task_lock_order():
     append_end = source.index("\n    # Create mode", append_start)
     append_body = source[append_start:append_end]
 
-    acquire_at = append_body.index("await acquire_quota_locks(")
     for_update_at = append_body.index("with_for_update=True")
     plan_at = append_body.index("await _plan_append_trials(")
     admit_at = append_body.index("await admit_trials(")
 
-    assert acquire_at < for_update_at < plan_at < admit_at, (
-        "expected acquire_quota_locks → FOR UPDATE → plan → admit_trials; "
-        f"got acquire@{acquire_at} for_update@{for_update_at} "
-        f"plan@{plan_at} admit@{admit_at}"
+    assert for_update_at < plan_at < admit_at, (
+        "expected FOR UPDATE → plan → admit_trials; "
+        f"got for_update@{for_update_at} plan@{plan_at} admit@{admit_at}"
     )
     assert append_body.count("await _plan_append_trials(") == 1, (
         "append must plan once under the task lock, not against an unlocked estimate"

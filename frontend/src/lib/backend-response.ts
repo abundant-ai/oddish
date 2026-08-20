@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import { getAuthHeaders, getBackendUrl, getClerkToken } from "./backend-config";
+import {
+  attachUpstreamServerTiming,
+  backendFetchHeaders,
+} from "./proxy-headers";
 
 type JsonObject = Record<string, unknown>;
 
@@ -59,11 +63,13 @@ export function backendErrorPayload(
 // request.signal so a disconnected caller cancels the backend call too,
 // instead of leaving it running for a response nobody will read.
 export async function proxyBackendJson({
+  request,
   path,
   method = "GET",
   body,
   signal,
 }: {
+  request: Request;
   path: string;
   method?: "GET" | "PUT" | "POST" | "DELETE";
   body?: unknown;
@@ -81,9 +87,12 @@ export async function proxyBackendJson({
       method,
       cache: "no-store",
       signal,
-      headers: sendsBody
-        ? { "Content-Type": "application/json", ...getAuthHeaders(token) }
-        : getAuthHeaders(token),
+      headers: backendFetchHeaders(
+        request,
+        sendsBody
+          ? { "Content-Type": "application/json", ...getAuthHeaders(token) }
+          : getAuthHeaders(token),
+      ),
       body: sendsBody ? JSON.stringify(body) : undefined,
     });
 
@@ -92,16 +101,25 @@ export async function proxyBackendJson({
       "Upstream error"
     );
     if (parseError) {
-      return NextResponse.json(parseError, { status });
+      return attachUpstreamServerTiming(
+        NextResponse.json(parseError, { status }),
+        res,
+      );
     }
     if (!res.ok) {
-      return NextResponse.json(backendErrorPayload(data, "Upstream error"), {
-        status: res.status,
-      });
+      return attachUpstreamServerTiming(
+        NextResponse.json(backendErrorPayload(data, "Upstream error"), {
+          status: res.status,
+        }),
+        res,
+      );
     }
-    return data === null
-      ? NextResponse.json({ error: "Upstream error" }, { status: 502 })
-      : NextResponse.json(data);
+    return attachUpstreamServerTiming(
+      data === null
+        ? NextResponse.json({ error: "Upstream error" }, { status: 502 })
+        : NextResponse.json(data),
+      res,
+    );
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
@@ -121,5 +139,5 @@ export async function proxyJsonRequest(
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
-  return proxyBackendJson({ path, method, body });
+  return proxyBackendJson({ request, path, method, body });
 }

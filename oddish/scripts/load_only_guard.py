@@ -97,16 +97,9 @@ _COVERED_FUNCTIONS = frozenset(fn for fn, _ in _COVERAGE_UNITS)
 # the model -- they're populated some other way and read nothing off the row.
 # Every other field must be a column, so a renamed or typo'd field fails loudly
 # instead of silently dropping out of coverage.
-_SCHEMA_UNITS: tuple[tuple[str, Path, str, str, frozenset[str]], ...] = (
-    (
-        "list_analyzers_core",
-        _PKG_ROOT / "core" / "analyzers.py",
-        "AnalyzerModel",
-        "ReportResponse",
-        # Filled by a separate query in the router's _to_response().
-        frozenset({"experiment_ids"}),
-    ),
-)
+# Empty since the reports feature (its only unit) was removed; the machinery
+# stays for the next schema-built list endpoint.
+_SCHEMA_UNITS: tuple[tuple[str, Path, str, str, frozenset[str]], ...] = ()
 
 # Builtins that wrap an iterable but preserve element type (``list(xs)``,
 # ``sorted(xs)``, ...). Used to see through wrappers to the underlying
@@ -585,7 +578,7 @@ def schema_read_columns(
 ) -> set[str]:
     """Columns a Pydantic response model reads off ``meta`` via model_validate.
 
-    ``AnalyzerResponse.model_validate(analyzer)`` runs with ``from_attributes``,
+    ``SomeResponse.model_validate(row)`` runs with ``from_attributes``,
     so every field it declares is an attribute read on the ORM row. A field whose
     name is a deferred column lazy-loads outside the request greenlet and 500s the
     list response -- the same failure the AST walker catches for hand-written

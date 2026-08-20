@@ -18,12 +18,17 @@ from oddish.core.helpers import (
     build_trial_response,
     fetch_trial_queue_info,
 )
+from oddish.core.model_display_names import (
+    apply_model_display_names,
+    load_model_display_names,
+)
 from oddish.db import (
     ExperimentModel,
     TaskModel,
     TaskVersionModel,
     TrialModel,
     experiment_trials,
+    get_session,
     get_storage_client,
     task_experiments,
 )
@@ -129,6 +134,7 @@ async def get_public_task_for_experiment(
             t
             for t in task.trials
             if not t.is_probe
+            and t.kind == "agent"
             and (t.experiment_id == experiment.id or t.id in gathered_ids)
         ],
     )
@@ -146,6 +152,7 @@ async def get_public_trial_for_experiment(
         select(TrialModel)
         .where(TrialModel.id == trial_id)
         .where(TrialModel.is_probe.is_(False))
+        .where(TrialModel.kind == "agent")
         .where(trial_in_experiment(experiment.id))
     )
     return result.scalar_one_or_none()
@@ -159,7 +166,13 @@ async def get_task_status_counts(
     join_experiment: bool = False,
 ) -> TaskStatusResponse:
     """Get task status with aggregated trial counts."""
-    query = select(TaskModel).where(TaskModel.id == task_id)
+    # ``build_task_status_responses_from_counts`` aggregates trials in SQL
+    # but its response builder still reads ``task.experiments``.
+    query = (
+        select(TaskModel)
+        .options(selectinload(TaskModel.experiments))
+        .where(TaskModel.id == task_id)
+    )
     if join_experiment:
         query = query.join(
             task_experiments, task_experiments.c.task_id == TaskModel.id
@@ -190,6 +203,7 @@ async def list_experiment_trials_for_org(
     conditions = [
         trial_in_experiment(experiment_id),
         TrialModel.superseded_by_trial_id.is_(None),
+        TrialModel.kind == "agent",
     ]
     if org_id is not None:
         conditions.append(TrialModel.org_id == org_id)
@@ -211,7 +225,10 @@ async def list_experiment_trials_for_org(
 
 
 async def list_task_trials_for_task(
-    session: AsyncSession, task_id: str, *, probe: bool | None = None,
+    session: AsyncSession,
+    task_id: str,
+    *,
+    probe: bool | None = None,
     version: int | None = None,
 ) -> list[TrialResponse]:
     """List all trials for a task with their responses.
@@ -234,6 +251,7 @@ async def list_task_trials_for_task(
     conditions = [
         TrialModel.task_id == task_id,
         TrialModel.superseded_by_trial_id.is_(None),
+        TrialModel.kind == "agent",
     ]
     if probe is not None:
         conditions.append(TrialModel.is_probe == probe)
@@ -276,6 +294,7 @@ async def list_task_trials_for_public_experiment(
             TrialModel.task_id == task_id,
             TrialModel.superseded_by_trial_id.is_(None),
             TrialModel.is_probe.is_(False),
+            TrialModel.kind == "agent",
             trial_in_experiment(experiment.id),
         )
         .order_by(TrialModel.created_at.asc())
@@ -283,7 +302,7 @@ async def list_task_trials_for_public_experiment(
     rows = result.all()
     trials = [trial for trial, _ in rows]
     queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=trials)
-    return [
+    responses = [
         build_trial_response(
             trial,
             task_path,
@@ -291,11 +310,27 @@ async def list_task_trials_for_public_experiment(
         )
         for trial, task_path in rows
     ]
+    apply_model_display_names(responses, await load_model_display_names(session))
+    return responses
 
 
 # =============================================================================
 # S3 File Operations
 # =============================================================================
+
+
+async def _task_version_s3_prefix(task_id: str, version: int | None) -> str | None:
+    """Resolve the DB-selected source prefix for a task version."""
+    if version is None:
+        return None
+    async with get_session() as session:
+        row = await session.scalar(
+            select(TaskVersionModel.task_s3_key).where(
+                TaskVersionModel.task_id == task_id,
+                TaskVersionModel.version == version,
+            )
+        )
+    return str(row) if row else None
 
 
 async def list_task_files_s3(
@@ -306,11 +341,13 @@ async def list_task_files_s3(
     cursor: str | None,
     presign: bool,
     version: int | None = None,
+    inline: bool = True,
 ) -> dict:
     """List files in a task's S3 directory."""
     storage = get_storage_client()
 
     try:
+        task_s3_prefix = await _task_version_s3_prefix(task_id, version)
         return await storage.list_task_files(
             task_id=task_id,
             prefix=prefix,
@@ -319,6 +356,8 @@ async def list_task_files_s3(
             cursor=cursor,
             presign=presign,
             version=version,
+            task_s3_prefix=task_s3_prefix,
+            inline=inline,
         )
     except HTTPException:
         raise
@@ -342,6 +381,7 @@ async def stream_task_files_s3(
     falls back to per-file fetches for missing bodies.
     """
     storage = get_storage_client()
+    task_s3_prefix = await _task_version_s3_prefix(task_id, version)
 
     stream = storage.stream_task_files(
         task_id=task_id,
@@ -351,6 +391,7 @@ async def stream_task_files_s3(
         cursor=cursor,
         presign=presign,
         version=version,
+        task_s3_prefix=task_s3_prefix,
     )
     started = False
     try:
@@ -401,16 +442,20 @@ async def get_task_file_content_s3(
     file_path: str,
     presign: bool,
     version: int | None = None,
+    max_bytes: int | None = None,
 ) -> dict:
     """Get content of a specific task file from S3."""
     storage = get_storage_client()
 
     try:
+        task_s3_prefix = await _task_version_s3_prefix(task_id, version)
         return await storage.get_task_file_content(
             task_id=task_id,
             file_path=file_path,
             presign=presign,
             version=version,
+            task_s3_prefix=task_s3_prefix,
+            max_bytes=max_bytes,
         )
     except HTTPException:
         raise

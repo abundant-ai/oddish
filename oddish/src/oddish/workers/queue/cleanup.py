@@ -20,8 +20,9 @@ flush failed at handler-commit time.
 """
 
 import asyncio
+import logging
 from datetime import timedelta
-from typing import cast
+from typing import Any, cast
 
 from sqlalchemy import func, select, text
 from sqlalchemy.engine import CursorResult
@@ -32,13 +33,13 @@ from oddish.config import (
     ORPHANED_ANALYSIS_ERROR_PREFIX,
     settings,
 )
-from oddish.core.baseline_gate import GATE_SKIP_PREFIX
 from oddish.core.helpers import cancel_job_by_worker
 from oddish.core.tags.ownership_transfer import sweep_orphaned_tag_owners
+from oddish.core.task_browse_summary import refresh_task_browse_summaries
+from oddish.core.verdict_state import fail_verdict
 from oddish.costs.recorder import reconcile_compute_cost_spans
 from oddish.db import (
     AnalysisStatus,
-    JobStatus,
     TaskModel,
     TaskStatus,
     TaskVersionModel,
@@ -48,12 +49,22 @@ from oddish.db import (
     get_session,
     utcnow,
 )
-from oddish.db.models import AnalyzerModel
+from oddish.runtime.ec2_orphans import (
+    Ec2InstanceSnapshot,
+    Ec2InventorySnapshot,
+    Ec2OrphanVerdict,
+    Ec2WorkerLiveness,
+    decide_ec2_orphan,
+)
+from oddish.runtime.registry import get_backend
+from oddish.workers.queue.sandbox_capacity import cleanup_sandbox_capacity_leases
+from oddish.workers.queue.shared import console
 from oddish.workers.queue.worker_job_single_job import (
     calculate_trial_retry_delay_seconds,
     classify_retry_reason,
 )
-from oddish.workers.queue.shared import console
+
+logger = logging.getLogger(__name__)
 
 # See historical context: we bumped this from 10 -> 15 after a
 # pooler-blip incident reaped 25-70 healthy trials in a single sweep.
@@ -75,6 +86,13 @@ ZOMBIE_IDLE_MINUTES = 10
 # meaningfully delaying reclamation of genuinely leaked leases.
 ORPHANED_SLOT_GRACE_MINUTES = 2
 
+# A provider launch may finish just after its worker is cancelled, so a
+# sandbox_run with no external_id cannot be declared absent from the ledger
+# alone. After this grace, a successful provider inventory snapshot is the
+# authority: if neither the run id, launch token, nor worker-attempt identity is
+# present and the owner is no longer RUNNING, the ledger row is safe to close.
+UNPROVISIONED_SANDBOX_GRACE_MINUTES = 30
+
 # Backstop for tasks wedged in ANALYZING because a live trial never produced an
 # analysis verdict. The stage-advance passes treat a live trial whose
 # ``analysis_status`` is NULL as "analysis still pending", so a task with a
@@ -89,46 +107,16 @@ ORPHANED_SLOT_GRACE_MINUTES = 2
 STUCK_ANALYZING_MINUTES = 15
 STUCK_ANALYZING_BATCH_LIMIT = 200
 
-# Backstop for tasks wedged in VERDICT_PENDING whose QA job is gone -- e.g. it
-# failed/exhausted without committing a terminal ``verdict_status`` (the old
-# unguarded verdict reconstruction crashed on probe-summary trials and rolled
-# back, leaving ``verdict_status='QUEUED'`` with no live worker_job). The
-# previous step-4 guard keyed off ``verdict_status NOT IN ('QUEUED','RUNNING')``
-# and so skipped exactly these rows, stranding them forever. We instead key off
-# "no live QA/VERDICT worker_job" and re-enqueue (or finalize) them. Batched so
-# a large backlog drains over several ticks instead of one giant burst.
+# Backstop for tasks wedged in VERDICT_PENDING with no live QA trial -- the
+# worker died between the trial settling and the import, or the QA trial was
+# lost. Keyed off "no live qa-kind trial", not ``verdict_status``, so rows
+# stuck at QUEUED with nothing running still heal. Batched so a large backlog
+# drains over several ticks instead of one giant burst.
 STALE_VERDICT_PENDING_BATCH_LIMIT = 200
 STUCK_ANALYZING_REASON = (
     "Analysis never produced a verdict for this trial; marked terminal by "
     "orphaned-pipeline cleanup so the task could leave the ANALYZING stage."
 )
-
-# Backstop for trials stranded with a non-terminal ``analysis_status`` by a QA
-# job that died or was cancelled mid-classification. The task-level QA job
-# marks one trial RUNNING at a time; a SIGKILLed/timed-out worker (or a
-# cancelled ``should_store`` write) leaves that trial non-terminal with nothing
-# left to finish it. Historically these accumulated forever (an incident found
-# 4k+ of them rendering as phantom "running" analyses). Two arms:
-#   * never-classifiable rows (superseded / SKIPPED / bulk-imported /
-#     gate-skipped trials, a soft-deleted task, or a terminal task with no
-#     active QA job) are finalized FAILED, stamped with the
-#     orphaned-analysis sentinel so a later resurrect can reopen them;
-#   * rows a future QA attempt will re-classify are moved RUNNING -> QUEUED so
-#     the UI reflects "waiting", not a live classification.
-# Staleness-gated well above the QA per-trial classification window so we
-# never race an in-flight write, and batched so a large backlog drains over a
-# few ticks instead of one giant transaction. Both arms select their rows
-# FOR UPDATE SKIP LOCKED (of trials only): the sweep transaction may already
-# hold task row locks, and waiting on a trial row inverts the trials-then-task
-# lock order ``cancel_tasks_runs`` documents (deadlock).
-ORPHANED_ANALYSIS_MINUTES = 30
-ORPHANED_ANALYSIS_BATCH_LIMIT = 2000
-ORPHANED_ANALYSIS_REASON = (
-    ORPHANED_ANALYSIS_ERROR_PREFIX
-    + "its QA job died or was cancelled and no further attempt will classify "
-    "this trial; marked terminal by orphaned-pipeline cleanup."
-)
-
 
 async def reap_idle_in_transaction_zombies(
     *,
@@ -366,6 +354,9 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
                 f"retry_reason={classify_retry_reason(row['error_message'])} "
                 f"retry_delay_seconds={delay_seconds:.2f}"
             )
+            await refresh_task_browse_summaries(
+                session, [getattr(trial, "task_version_id", None)]
+            )
             return None
         trial.status = TrialStatus.FAILED
         trial.error_message = row["error_message"]
@@ -376,12 +367,9 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
         if trial.harbor_stage not in {"completed", "cancelled"}:
             trial.harbor_stage = "cancelled"
 
-        task = await session.get(TaskModel, trial.task_id)
-        if (
-            task
-            and task.run_analysis
-            and trial.analysis_status
-            not in (AnalysisStatus.SUCCESS, AnalysisStatus.FAILED)
+        if trial.analysis_status not in (
+            AnalysisStatus.SUCCESS,
+            AnalysisStatus.FAILED,
         ):
             trial.analysis_status = AnalysisStatus.FAILED
             trial.analysis_error = (
@@ -389,7 +377,10 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
                 "cancelled during orphaned queue cleanup."
             )
             trial.analysis_finished_at = utcnow()
-        return trial.id
+        await refresh_task_browse_summaries(
+            session, [getattr(trial, "task_version_id", None)]
+        )
+        return str(trial.id)
 
     if kind == "ANALYSIS":
         # Legacy per-trial classification rows, drained across a deploy.
@@ -423,6 +414,13 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
             version = await session.get(
                 TaskVersionModel, version_id, with_for_update=True
             )
+            expected_content_hash = payload.get("task_version_content_hash")
+            if (
+                version is not None
+                and "task_version_content_hash" in payload
+                and version.content_hash != expected_content_hash
+            ):
+                return None
             if version is not None and version.pre_trial_status in (
                 VerdictStatus.PENDING,
                 VerdictStatus.QUEUED,
@@ -439,9 +437,7 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
         if task is None:
             return None
         if row["new_status"] == "FAILED":
-            task.verdict_status = VerdictStatus.FAILED
-            task.verdict_error = row["error_message"]
-            task.verdict_finished_at = utcnow()
+            fail_verdict(task, error=row["error_message"], now=utcnow())
             # No further QA attempt will run for this task, so any trial the
             # dead job left mid-classification would stay non-terminal forever
             # (and count as a phantom "running" analysis in the dashboard
@@ -481,31 +477,15 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
                 },
             )
         else:
+            # The VERDICT_PENDING healer creates a fresh QA trial next sweep.
             task.verdict_status = VerdictStatus.QUEUED
             task.verdict_error = row["error_message"]
-            # The retry re-classifies anything non-terminal; requeue the rows
-            # the dead attempt left in flight (and reopen orphan-finalized
-            # ones) so the UI shows "queued for retry" instead of a phantom
-            # in-flight classification. Shared helper: SKIP LOCKED, same
-            # lock-order rationale as the FAILED arm above.
-            from oddish.queue import requeue_inflight_trial_analysis
-
-            await requeue_inflight_trial_analysis(session, task_id=task.id)
         return None
 
-    if kind == "ANALYZER":
-        analyzer = await _locked_or_missing(session, AnalyzerModel, str(subject_id))
-        if analyzer is None:
-            return None
-        if row["new_status"] == "FAILED":
-            analyzer.status = JobStatus.FAILED
-            analyzer.error = row["error_message"]
-            analyzer.finished_at = utcnow()
-        else:
-            analyzer.status = JobStatus.QUEUED
-            analyzer.error = row["error_message"]
-        return None
-
+    # ANALYZER jobs have no domain row to mirror into: the reports feature
+    # that owned the ``analyzers`` table was removed, and the remaining
+    # enqueuer (agent capabilities, removed in PR B) tracks state in its own
+    # columns.
     return None
 
 
@@ -521,7 +501,41 @@ async def cleanup_orphaned_queue_state(
     else -- stage transitions, terminal-runtime-ref cleanup -- is
     either handled by the handler commit or kept as a safety net here.
     """
+    ec2_inventory: Ec2InventorySnapshot | None = None
+    ec2_orphan_snapshot_errors = 0
+
+    if settings.ec2_enabled:
+        ec2_backend = cast(Any, get_backend("ec2"))
+        try:
+            if ec2_backend is None:
+                raise RuntimeError("EC2 is enabled but its backend is not registered")
+            ec2_inventory = await ec2_backend.snapshot_managed_instances()
+            console.print(
+                "metric=ec2_orphan_snapshot "
+                f"outcome=success count={len(ec2_inventory.instances)}"
+            )
+        except Exception as exc:
+            ec2_orphan_snapshot_errors = 1
+            ec2_inventory = None
+            console.print(
+                "metric=ec2_orphan_snapshot_error outcome=error "
+                f"error_type={type(exc).__name__} error={exc}"
+            )
+
     zombie_txn_reaped = await reap_idle_in_transaction_zombies()
+    sandbox_capacity_cleanup_errors = 0
+    try:
+        sandbox_capacity_leases_cleared = await cleanup_sandbox_capacity_leases()
+    except Exception as exc:
+        sandbox_capacity_leases_cleared = 0
+        sandbox_capacity_cleanup_errors = 1
+        console.print(
+            "metric=sandbox_capacity_cleanup outcome=error "
+            f"error_type={type(exc).__name__} error={exc}"
+        )
+    ec2_orphan_keep_verdicts = 0
+    ec2_orphan_terminate_candidates = 0
+    unprovisioned_sandbox_runs_finalized = 0
 
     async with get_session() as session:
         (
@@ -532,28 +546,44 @@ async def cleanup_orphaned_queue_state(
         ) = await _reap_stale_worker_jobs(
             session, stale_after_minutes=stale_after_minutes
         )
+        if ec2_inventory is not None and ec2_inventory.instances:
+            ec2_targets, ec2_orphan_keep_verdicts = await _decide_ec2_orphan_targets(
+                session,
+                ec2_inventory.instances,
+                expected_deployment=ec2_inventory.expected_deployment,
+                expected_account_id=ec2_inventory.expected_account_id,
+                stale_after_minutes=stale_after_minutes,
+            )
+            worker_targets.update(ec2_targets)
+            ec2_orphan_terminate_candidates = len(ec2_targets)
 
-    worker_sandboxes_terminated = await _terminate_orphaned_sandboxes(worker_targets)
+        if ec2_inventory is not None:
+            unprovisioned_sandbox_runs_finalized = (
+                await _finalize_unprovisioned_sandbox_runs(
+                    session,
+                    ec2_inventory,
+                    grace_minutes=UNPROVISIONED_SANDBOX_GRACE_MINUTES,
+                )
+            )
 
-    async with get_session() as session:
         tasks_progressed_to_analysis = await _advance_running_tasks_to_analysis(
             session, reaped_trial_ids
         )
 
         tasks_progressed_to_verdict = await _advance_legacy_analyzing_tasks(session)
 
-        verdict_pending_completed = await _heal_stale_verdict_pending(session)
+        (
+            verdict_pending_completed,
+            analysis_reimport_trial_ids,
+        ) = await _heal_stale_verdict_pending(session)
+
+        analysis_reimport_trial_ids += await _heal_stale_audit_imports(session)
 
         (
             stuck_analyzing_advanced,
             stuck_analyzing_finalized,
             stuck_analysis_nulls_failed,
         ) = await _unwedge_stuck_analyzing(session)
-
-        (
-            orphaned_analysis_failed,
-            orphaned_analysis_requeued,
-        ) = await _reset_orphaned_trial_analysis(session)
 
         orphaned_active_slots_cleared = await _release_orphaned_slots(session)
 
@@ -564,15 +594,50 @@ async def cleanup_orphaned_queue_state(
         tag_projections_reconciled = await _maybe_reconcile_tag_projections(session)
         tag_owners_reassigned = await sweep_orphaned_tag_owners(session)
 
+    # Analysis re-imports run AFTER the outer commit: the importers take
+    # their own task/version row locks on fresh connections
+    # (sync_verdict_to_task, the QA admission nudge on audit settlement),
+    # while the healers above may still hold FOR UPDATE locks on those same
+    # task rows until this transaction ends -- re-importing inside it can
+    # block on our own uncommitted locks. Importers are idempotent, so a
+    # sweep that commits and then dies before this point just retries next
+    # sweep.
+    stale_analysis_imports_healed = 0
+    if analysis_reimport_trial_ids:
+        from oddish.workers.analysis_trials import handle_analysis_trial_settled
+
+        for reimport_trial_id in analysis_reimport_trial_ids:
+            try:
+                await handle_analysis_trial_settled(reimport_trial_id)
+                stale_analysis_imports_healed += 1
+            except Exception:  # noqa: BLE001 -- next sweep retries
+                logger.exception(
+                    "healer: analysis re-import of trial %s failed",
+                    reimport_trial_id,
+                )
+
+    # Re-run after the ledger transaction commits only when it closed rows. They
+    # no longer protect their capacity leases, so the same reconciliation cycle
+    # restores dispatch capacity instead of waiting for another scheduled pass.
+    if unprovisioned_sandbox_runs_finalized:
+        try:
+            sandbox_capacity_leases_cleared += await cleanup_sandbox_capacity_leases()
+        except Exception as exc:
+            sandbox_capacity_cleanup_errors = 1
+            console.print(
+                "metric=sandbox_capacity_cleanup outcome=error phase=post_inventory "
+                f"error_type={type(exc).__name__} error={exc}"
+            )
+
+    # These run AFTER the outer commit so a rolled-back sweep never tears down
+    # remote handles / claim metadata the DB still points at. Best-effort; the
+    # provider TTL and the next sweep are the backstops.
+    worker_sandboxes_terminated = await _terminate_orphaned_sandboxes(worker_targets)
     try:
         modal_cost_spans_reconciled = await reconcile_compute_cost_spans()
     except Exception as exc:
         console.print(f"[yellow]Modal cost reconciliation failed: {exc}[/yellow]")
         modal_cost_spans_reconciled = 0
-
-    # These run AFTER the outer commit so a rolled-back sweep never tears down
-    # remote handles / claim metadata the DB still points at. Best-effort; the
-    # provider TTL and the next sweep are the backstops.
     terminal_trial_runtime_refs_cleared = await clear_terminal_trial_runtime_refs()
     stale_trial_events_purged = await purge_stale_trial_events()
 
@@ -580,23 +645,319 @@ async def cleanup_orphaned_queue_state(
         "worker_jobs_retried": worker_jobs_retried,
         "worker_jobs_failed": worker_jobs_failed,
         "worker_sandboxes_terminated": worker_sandboxes_terminated,
+        "ec2_orphan_instances_seen": (
+            len(ec2_inventory.instances) if ec2_inventory is not None else 0
+        ),
+        "ec2_orphan_terminate_candidates": ec2_orphan_terminate_candidates,
+        "ec2_orphan_snapshot_errors": ec2_orphan_snapshot_errors,
+        "ec2_orphan_keep_verdicts": ec2_orphan_keep_verdicts,
         "tasks_progressed_to_analysis": tasks_progressed_to_analysis,
         "tasks_progressed_to_verdict": tasks_progressed_to_verdict,
         "verdict_pending_completed": verdict_pending_completed,
+        "stale_analysis_imports_healed": stale_analysis_imports_healed,
         "stuck_analyzing_advanced": stuck_analyzing_advanced,
         "stuck_analyzing_finalized": stuck_analyzing_finalized,
         "stuck_analysis_nulls_failed": stuck_analysis_nulls_failed,
-        "orphaned_analysis_failed": orphaned_analysis_failed,
-        "orphaned_analysis_requeued": orphaned_analysis_requeued,
         "terminal_trial_runtime_refs_cleared": terminal_trial_runtime_refs_cleared,
         "stale_trial_events_purged": stale_trial_events_purged,
         "orphaned_active_slots_cleared": orphaned_active_slots_cleared,
         "zombie_txn_reaped": zombie_txn_reaped,
+        "sandbox_capacity_leases_cleared": sandbox_capacity_leases_cleared,
+        "sandbox_capacity_cleanup_errors": sandbox_capacity_cleanup_errors,
+        "unprovisioned_sandbox_runs_finalized": (unprovisioned_sandbox_runs_finalized),
         "experiments_last_activity_reconciled": experiments_last_activity_reconciled,
         "tag_projections_reconciled": tag_projections_reconciled,
         "tag_owners_reassigned": tag_owners_reassigned,
         "modal_cost_spans_reconciled": modal_cost_spans_reconciled,
     }
+
+
+async def _finalize_unprovisioned_sandbox_runs(
+    session: Any,
+    inventory: Ec2InventorySnapshot,
+    *,
+    grace_minutes: int,
+) -> int:
+    """Close old pre-identity EC2 ledger rows absent from provider inventory."""
+    active_sandbox_run_ids = sorted(
+        {
+            instance.sandbox_run_id_tag
+            for instance in inventory.instances
+            if instance.sandbox_run_id_tag
+        }
+    )
+    active_launch_tokens = sorted(
+        {
+            instance.launch_token_tag
+            for instance in inventory.instances
+            if instance.launch_token_tag
+        }
+    )
+    active_worker_attempts = sorted(
+        {
+            f"{instance.worker_job_id_tag}:{instance.worker_attempt_tag}"
+            for instance in inventory.instances
+            if instance.worker_job_id_tag and instance.worker_attempt_tag
+        }
+    )
+    result = cast(
+        CursorResult,
+        await session.execute(
+            text(
+                """
+                UPDATE sandbox_runs AS run
+                SET    state = 'TERMINATED',
+                       termination_requested_at = COALESCE(
+                           run.termination_requested_at, NOW()
+                       ),
+                       terminated_at = NOW(),
+                       last_error = COALESCE(
+                           run.last_error,
+                           'No provider instance appeared before the inventory grace expired.'
+                       ),
+                       updated_at = NOW()
+                WHERE  run.provider = 'ec2'
+                  AND  run.deleted_at IS NULL
+                  AND  run.state IN ('PROVISIONING', 'TERMINATING')
+                  AND  run.external_id IS NULL
+                  AND  run.terminated_at IS NULL
+                  AND  COALESCE(
+                           run.termination_requested_at,
+                           run.updated_at,
+                           run.created_at
+                       ) <= NOW() - make_interval(mins => :grace_minutes)
+                  AND  NOT EXISTS (
+                      SELECT 1
+                      FROM worker_jobs AS wj
+                      WHERE wj.id = run.worker_job_id
+                        AND wj.status::text = 'RUNNING'
+                  )
+                  AND  NOT (
+                      run.id::text = ANY(
+                          CAST(:active_sandbox_run_ids AS text[])
+                      )
+                  )
+                  AND  NOT (
+                      run.launch_token::text = ANY(
+                          CAST(:active_launch_tokens AS text[])
+                      )
+                  )
+                  AND  NOT (
+                      (run.worker_job_id::text || ':' || run.worker_job_attempt::text)
+                      = ANY(CAST(:active_worker_attempts AS text[]))
+                  )
+                """
+            ),
+            {
+                "active_sandbox_run_ids": active_sandbox_run_ids,
+                "active_launch_tokens": active_launch_tokens,
+                "active_worker_attempts": active_worker_attempts,
+                "grace_minutes": grace_minutes,
+            },
+        ),
+    )
+    finalized = int(result.rowcount or 0)
+    if finalized:
+        console.print(
+            "metric=unprovisioned_sandbox_finalized "
+            f"provider=ec2 count={finalized} grace_minutes={grace_minutes}"
+        )
+    return finalized
+
+
+async def _decide_ec2_orphan_targets(
+    session: Any,
+    snapshots: tuple[Ec2InstanceSnapshot, ...],
+    *,
+    expected_deployment: str,
+    expected_account_id: str,
+    stale_after_minutes: int,
+) -> tuple[set[tuple[str, str]], int]:
+    """Join inventory to the attempt ledger before any destructive decision."""
+
+    now = await session.scalar(select(func.now()))
+    if now is None:
+        raise RuntimeError("database did not return NOW() for EC2 orphan decisions")
+
+    worker_job_ids = sorted(
+        {
+            snapshot.worker_job_id_tag
+            for snapshot in snapshots
+            if snapshot.worker_job_id_tag
+        }
+    )
+    trial_ids = sorted(
+        {snapshot.trial_id_tag for snapshot in snapshots if snapshot.trial_id_tag}
+    )
+    external_ids = sorted(
+        {snapshot.external_id for snapshot in snapshots if snapshot.account_id_tag}
+    )
+    rows = (
+        (
+            await session.execute(
+                text(
+                    """
+                    SELECT id,
+                           subject_id,
+                           status::text AS status,
+                           provider,
+                           external_id,
+                           (
+                               heartbeat_at IS NOT NULL
+                               AND heartbeat_at >= NOW() - make_interval(
+                                   mins => :stale_after_minutes
+                               )
+                           ) AS heartbeat_fresh
+                    FROM worker_jobs
+                    WHERE deleted_at IS NULL
+                      AND kind = 'TRIAL'
+                      AND subject_table = 'trials'
+                      AND (
+                          id = ANY(:worker_job_ids)
+                          OR subject_id = ANY(:trial_ids)
+                          OR (
+                              provider = 'ec2'
+                              AND external_id = ANY(:external_ids)
+                          )
+                      )
+                    """
+                ),
+                {
+                    "worker_job_ids": worker_job_ids,
+                    "trial_ids": trial_ids,
+                    "external_ids": external_ids,
+                    "stale_after_minutes": stale_after_minutes,
+                },
+            )
+        )
+        .mappings()
+        .all()
+    )
+    workers = tuple(
+        Ec2WorkerLiveness(
+            worker_job_id=str(row["id"]),
+            trial_id=str(row["subject_id"]) if row["subject_id"] else None,
+            status=str(row["status"]),
+            provider=str(row["provider"]) if row["provider"] else None,
+            external_id=(str(row["external_id"]) if row["external_id"] else None),
+            heartbeat_fresh=bool(row["heartbeat_fresh"]),
+        )
+        for row in rows
+    )
+
+    sandbox_run_ids = sorted(
+        {
+            snapshot.sandbox_run_id_tag
+            for snapshot in snapshots
+            if snapshot.sandbox_run_id_tag
+        }
+    )
+    ledger_rows = []
+    if sandbox_run_ids:
+        ledger_rows = (
+            (
+                await session.execute(
+                    text(
+                        """
+                        SELECT id,
+                               worker_job_id,
+                               worker_job_attempt,
+                               trial_id,
+                               provider,
+                               state,
+                               deployment,
+                               aws_account_id,
+                               region,
+                               launch_token,
+                               external_id
+                        FROM sandbox_runs
+                        WHERE deleted_at IS NULL
+                          AND id = ANY(:sandbox_run_ids)
+                        """
+                    ),
+                    {"sandbox_run_ids": sandbox_run_ids},
+                )
+            )
+            .mappings()
+            .all()
+        )
+    ledger_by_id = {str(row["id"]): row for row in ledger_rows}
+
+    targets: set[tuple[str, str]] = set()
+    kept = 0
+    inventory_handles = frozenset(snapshot.external_id for snapshot in snapshots)
+    for snapshot in snapshots:
+        ledger = ledger_by_id.get(snapshot.sandbox_run_id_tag or "")
+        try:
+            tagged_attempt = int(snapshot.worker_attempt_tag or "")
+        except ValueError:
+            tagged_attempt = -1
+        ledger_matches = bool(
+            ledger is not None
+            and str(ledger["provider"]).lower() == "ec2"
+            and str(ledger["deployment"]) == expected_deployment
+            and str(ledger["aws_account_id"]) == expected_account_id
+            and str(ledger["region"]) == snapshot.region
+            and str(ledger["worker_job_id"]) == snapshot.worker_job_id_tag
+            and int(ledger["worker_job_attempt"]) == tagged_attempt
+            and str(ledger["trial_id"]) == snapshot.trial_id_tag
+            and str(ledger["launch_token"]) == snapshot.launch_token_tag
+            and (
+                ledger["external_id"] is None
+                or str(ledger["external_id"]) == snapshot.external_id
+            )
+        )
+        if not ledger_matches:
+            console.print(
+                "metric=ec2_orphan_verdict "
+                f"instance_id={snapshot.instance_id} verdict=refuse "
+                "reason=ledger_ownership_mismatch"
+            )
+            continue
+
+        decision = decide_ec2_orphan(
+            snapshot,
+            workers,
+            expected_deployment=expected_deployment,
+            expected_account_id=expected_account_id,
+            now=now,
+            inventory_handles=inventory_handles,
+        )
+        teardown_requested = str(ledger["state"]) in {
+            "TERMINATING",
+            "TERMINATED",
+        }
+        if decision.verdict is Ec2OrphanVerdict.KEEP and not teardown_requested:
+            kept += 1
+        console.print(
+            "metric=ec2_orphan_verdict "
+            f"instance_id={snapshot.instance_id} "
+            f"verdict={'terminate' if teardown_requested else decision.verdict.value} "
+            f"reason={'ledger_teardown_requested' if teardown_requested else decision.reason.value}"
+        )
+        if decision.should_terminate or teardown_requested:
+            if ledger["external_id"] is None:
+                await session.execute(
+                    text(
+                        """
+                        UPDATE sandbox_runs
+                        SET external_id = :external_id,
+                            state = 'TERMINATING',
+                            termination_requested_at = COALESCE(
+                                termination_requested_at, NOW()
+                            ),
+                            updated_at = NOW()
+                        WHERE id = :sandbox_run_id
+                          AND external_id IS NULL
+                        """
+                    ),
+                    {
+                        "external_id": snapshot.external_id,
+                        "sandbox_run_id": str(ledger["id"]),
+                    },
+                )
+            targets.add(("ec2", snapshot.external_id))
+    return targets, kept
 
 
 # Advisory-lock key so only one container reconciles tag projections per
@@ -870,6 +1231,10 @@ async def _advance_running_tasks_to_analysis(
                   AND t.deleted_at IS NULL
                   AND tr.deleted_at IS NULL
                   AND tr.superseded_by_trial_id IS NULL
+                  -- Agent trials only: an audit trial runs concurrently with
+                  -- them, and counting it here would suppress this backstop
+                  -- for its whole task while it runs.
+                  AND tr.kind = 'agent'
                 GROUP BY t.id
                 HAVING COUNT(*) FILTER (
                     WHERE tr.status IN ('PENDING', 'QUEUED', 'RUNNING', 'RETRYING')
@@ -885,15 +1250,14 @@ async def _advance_running_tasks_to_analysis(
 
     # -----------------------------------------------------------------
     # 2b. Baseline gate backstop: (task_version, experiment) groups whose
-    #     nop/oracle baselines are all terminal but whose LLM trials are
-    #     still BLOCKED. Normally the last baseline's handler resolves the
-    #     gate; this re-drives it if that handler was killed first. The gate
-    #     is (task version, experiment)-scoped, so group + match BLOCKED LLM
-    #     trials by (task_id, task_version_id, experiment_id) and hand it one
-    #     representative baseline trial id per group. ``IS NOT DISTINCT
-    #     FROM`` so a NULL version/experiment still matches itself (plain
-    #     ``=`` would drop those scopes, unlike the ORM push path). Skipped
-    #     entirely when the gate is off so it never touches the hot path.
+    #     nop/oracle trial mirrors and worker jobs are all terminal but whose
+    #     LLM trials are still BLOCKED. Normally the last baseline's handler
+    #     resolves the gate; this re-drives it if that handler was killed first.
+    #     The gate is (task version, experiment)-scoped, so group + match BLOCKED
+    #     LLM trials by (task_id, task_version_id, experiment_id) and hand it one
+    #     representative baseline trial id per group. ``IS NOT DISTINCT FROM``
+    #     lets a NULL version/experiment match itself (plain ``=`` would drop
+    #     those scopes, unlike the ORM push path).
     # -----------------------------------------------------------------
     # Only run the heavy grouped scan when something is actually BLOCKED.
     # Runs regardless of the feature flag so a flag rollback can't strand
@@ -931,8 +1295,19 @@ async def _advance_running_tasks_to_analysis(
                     GROUP BY base.task_id, base.task_version_id,
                              base.experiment_id
                     HAVING COUNT(*) FILTER (
-                        WHERE base.status
-                            IN ('PENDING', 'QUEUED', 'RUNNING', 'RETRYING')
+                        WHERE base.status IN (
+                            'PENDING', 'QUEUED', 'RUNNING', 'RETRYING'
+                        )
+                        OR EXISTS (
+                            SELECT 1
+                            FROM worker_jobs baseline_job
+                            WHERE baseline_job.subject_table = 'trials'
+                              AND baseline_job.kind::text = 'TRIAL'
+                              AND baseline_job.subject_id = base.id
+                              AND baseline_job.status::text IN (
+                                  'QUEUED', 'RUNNING', 'RETRYING', 'BLOCKED'
+                              )
+                        )
                     ) = 0
                     """
                 ),
@@ -972,6 +1347,10 @@ async def _advance_legacy_analyzing_tasks(session) -> int:
                   AND t.deleted_at IS NULL
                   AND tr.deleted_at IS NULL
                   AND tr.superseded_by_trial_id IS NULL
+                  -- Agent trials only: analysis trials never carry a
+                  -- per-trial classification, so counting one here would
+                  -- strand the legacy task in ANALYZING forever.
+                  AND tr.kind = 'agent'
                 GROUP BY t.id
                 HAVING COUNT(*) FILTER (
                     WHERE tr.status <> 'SKIPPED'
@@ -992,21 +1371,19 @@ async def _advance_legacy_analyzing_tasks(session) -> int:
     return progressed
 
 
-async def _heal_stale_verdict_pending(session) -> int:
-    """Step 4 -- VERDICT_PENDING tasks with no LIVE QA job.
+async def _heal_stale_verdict_pending(session) -> tuple[int, list[str]]:
+    """Step 4 -- VERDICT_PENDING tasks with no live QA trial.
 
-    A task is wedged here when its QA (task-level) job is gone -- it
-    finished/failed/exhausted (and we missed the hook, or it rolled back before
-    committing a terminal ``verdict_status``), or the task predates the unified
-    refactor and never had one. The condition that matters is "no claimable
-    QA/VERDICT worker_job", NOT ``verdict_status``: a row stuck at
-    ``verdict_status='QUEUED'`` with no live job (the old probe-summary KeyError
-    left thousands of these) would never be healed by a ``verdict_status``-keyed
-    check. Re-enqueue so the dispatcher has something to claim (or finalize if
-    the verdict is already terminal). ``ANALYSIS`` rows are intentionally ignored
-    here -- they no longer drive the verdict. Returns the count finalized.
+    Three repairs, in order: a terminal ``verdict_status`` just needs the
+    task completed; a settled QA trial with a non-terminal verdict means
+    the import never landed (worker died between settle and import), so it
+    is returned for re-import; otherwise create a fresh QA trial (or
+    complete the task when nothing is eligible). Returns the count
+    completed without QA and the settled QA trial ids to re-import -- the
+    caller runs those AFTER this transaction commits, because the importer
+    locks the same task rows this healer may still hold FOR UPDATE.
     """
-    from oddish.queue import enqueue_qa_worker_job
+    from oddish.queue import live_analysis_trial_id, start_qa_for_task
 
     stale_verdict_pending = (
         await session.execute(
@@ -1017,13 +1394,12 @@ async def _heal_stale_verdict_pending(session) -> int:
                 WHERE t.status = 'VERDICT_PENDING'
                   AND t.deleted_at IS NULL
                   AND NOT EXISTS (
-                      SELECT 1 FROM worker_jobs wj
-                      WHERE wj.subject_table = 'tasks'
-                        AND wj.subject_id = t.id
-                        AND wj.kind::text IN ('QA', 'VERDICT')
-                        AND wj.status::text IN (
-                            'QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED'
-                        )
+                      SELECT 1 FROM trials tr
+                      WHERE tr.task_id = t.id
+                        AND tr.kind = 'qa'
+                        AND tr.deleted_at IS NULL
+                        AND tr.superseded_by_trial_id IS NULL
+                        AND tr.status::text NOT IN ('SUCCESS', 'FAILED', 'SKIPPED')
                   )
                 ORDER BY t.updated_at ASC
                 LIMIT :batch_limit
@@ -1034,21 +1410,150 @@ async def _heal_stale_verdict_pending(session) -> int:
     ).all()
 
     verdict_pending_completed = 0
+    reimport_trial_ids: list[str] = []
     for (task_id,) in stale_verdict_pending:
-        task = await session.get(TaskModel, str(task_id))
-        if not task or task.status != TaskStatus.VERDICT_PENDING:
-            continue
-        if task.verdict_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
-            task.status = TaskStatus.COMPLETED
-            task.finished_at = task.finished_at or utcnow()
-            verdict_pending_completed += 1
-        else:
-            task.verdict_status = VerdictStatus.QUEUED
-            task.verdict_error = None
-            task.verdict_started_at = None
-            task.verdict_finished_at = None
-            await enqueue_qa_worker_job(session, task_id=task.id, org_id=task.org_id)
-    return verdict_pending_completed
+        # Savepoint per task: one unrepairable task (e.g. its experiment
+        # memberships are gone, so QA creation raises) must not abort the
+        # step and starve every task behind it in the updated_at ordering.
+        try:
+            async with session.begin_nested():
+                task = (
+                    await session.execute(
+                        select(TaskModel)
+                        .where(TaskModel.id == str(task_id))
+                        .with_for_update()
+                    )
+                ).scalar_one_or_none()
+                if not task or task.status != TaskStatus.VERDICT_PENDING:
+                    continue
+                # The candidate scan precedes the row lock. A trial
+                # settlement may have created a fresh QA trial while cleanup
+                # waited, so recheck after locking before repairing state or
+                # creating a duplicate.
+                active_qa = await session.scalar(
+                    text(
+                        """
+                        SELECT 1 FROM trials
+                        WHERE task_id = :task_id AND kind = 'qa'
+                          AND deleted_at IS NULL
+                          AND superseded_by_trial_id IS NULL
+                          AND status::text NOT IN ('SUCCESS', 'FAILED', 'SKIPPED')
+                        LIMIT 1
+                        """
+                    ),
+                    {"task_id": task.id},
+                )
+                if active_qa is not None:
+                    continue
+                if task.verdict_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
+                    task.status = TaskStatus.COMPLETED
+                    task.finished_at = task.finished_at or utcnow()
+                    verdict_pending_completed += 1
+                    continue
+                # A terminal QA trial with a non-terminal verdict means the
+                # import never landed (worker died between settle and
+                # import). Re-import after this transaction; only create a
+                # fresh QA trial when none exists.
+                settled_qa = await session.scalar(
+                    text(
+                        """
+                        SELECT tr.id FROM trials tr
+                        WHERE tr.task_id = :task_id AND tr.kind = 'qa'
+                          AND tr.deleted_at IS NULL
+                          AND tr.superseded_by_trial_id IS NULL
+                          AND tr.status::text IN ('SUCCESS', 'FAILED')
+                        ORDER BY tr.created_at DESC LIMIT 1
+                        """
+                    ),
+                    {"task_id": task.id},
+                )
+                if settled_qa is not None:
+                    logger.info(
+                        "healer: task %s has settled qa trial %s with no "
+                        "verdict, re-importing",
+                        task.id,
+                        settled_qa,
+                    )
+                    reimport_trial_ids.append(str(settled_qa))
+                    continue
+                # start_qa_for_task itself has no audit gate; creating a QA
+                # trial while an audit is live would bake "(none recorded)"
+                # findings into its brief. Skip for now: the audit's
+                # settlement re-enters admission, and the next sweep retries
+                # regardless.
+                if (
+                    await live_analysis_trial_id(session, task.id, kind="audit")
+                    is not None
+                ):
+                    continue
+                if await start_qa_for_task(session, task):
+                    logger.info(
+                        "healer: task %s was wedged in VERDICT_PENDING "
+                        "with no qa trial",
+                        task.id,
+                    )
+                else:
+                    verdict_pending_completed += 1
+        except Exception:  # noqa: BLE001 -- log and move to the next task
+            logger.exception(
+                "healer: verdict-pending repair failed for task %s", task_id
+            )
+
+    return verdict_pending_completed, reimport_trial_ids
+
+
+async def _heal_stale_audit_imports(session) -> list[str]:
+    """Step 4b -- task versions stuck with a queued/running pre-trial audit
+    whose audit trial already settled: the importer died between settle and
+    import (transient exception, worker crash). Returns the newest settled
+    audit trial id per stuck version for the caller to re-import AFTER this
+    transaction commits (the importer and its QA-admission nudge take their
+    own task/version locks); importers are idempotent, so racing a normal
+    settlement import is harmless. Versions with a live audit are skipped --
+    that trial imports on its own settlement. This is the audit counterpart
+    of the QA re-import above, and what makes the settlement path's
+    "the cleanup sweep re-runs importers" recovery promise true for both
+    kinds.
+    """
+    stale = (
+        await session.execute(
+            text(
+                """
+                SELECT settled.id
+                FROM task_versions tv
+                JOIN LATERAL (
+                    SELECT tr.id FROM trials tr
+                    WHERE tr.task_version_id = tv.id AND tr.kind = 'audit'
+                      AND tr.deleted_at IS NULL
+                      AND tr.superseded_by_trial_id IS NULL
+                      AND COALESCE(tr.harbor_stage, '') != 'cancelled'
+                      AND tr.status::text IN ('SUCCESS', 'FAILED', 'SKIPPED')
+                    ORDER BY tr.created_at DESC LIMIT 1
+                ) settled ON true
+                WHERE tv.pre_trial_status::text IN ('QUEUED', 'RUNNING')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM trials live
+                      WHERE live.task_version_id = tv.id
+                        AND live.kind = 'audit'
+                        AND live.deleted_at IS NULL
+                        AND live.superseded_by_trial_id IS NULL
+                        AND live.status::text NOT IN
+                            ('SUCCESS', 'FAILED', 'SKIPPED')
+                  )
+                ORDER BY tv.id
+                LIMIT :batch_limit
+                """
+            ),
+            {"batch_limit": STALE_VERDICT_PENDING_BATCH_LIMIT},
+        )
+    ).all()
+
+    for (trial_id,) in stale:
+        logger.info(
+            "healer: settled audit trial %s never imported, queuing re-import",
+            trial_id,
+        )
+    return [str(trial_id) for (trial_id,) in stale]
 
 
 async def _unwedge_stuck_analyzing(session) -> tuple[int, int, int]:
@@ -1182,144 +1687,6 @@ async def _unwedge_stuck_analyzing(session) -> tuple[int, int, int]:
     )
 
 
-async def _reset_orphaned_trial_analysis(session) -> tuple[int, int]:
-    """Step 6 -- heal trials stranded with a non-terminal ``analysis_status``.
-
-    The task-level QA job stamps ``analysis_status='RUNNING'`` one trial at a
-    time as it classifies. A worker killed (SIGKILL / Modal timeout) or a
-    cancelled job skips the store, so the trial stays PENDING/QUEUED/RUNNING
-    with nothing left to finish it. The QA reap mirror now resets these at
-    reap time; this pass is the belt-and-braces backstop for every other
-    leak path (and for rows leaked before the mirror existed).
-
-    Arm 1 finalizes rows no QA attempt will ever classify again -- superseded
-    retries, SKIPPED and gate-skipped trials, bulk-imported (Sauron) rows,
-    soft-deleted tasks, or trials of a terminal task with no active QA
-    worker_job -- as FAILED, stamped with ``ORPHANED_ANALYSIS_ERROR_PREFIX``
-    so ``requeue_inflight_trial_analysis`` can reopen them if the task is
-    later resurrected by an append. A task that is merely missing its QA job
-    while still VERDICT_PENDING is deliberately NOT matched:
-    ``_heal_stale_verdict_pending`` (which runs earlier in this same sweep
-    transaction) re-enqueues those, and the fresh job re-classifies.
-
-    Arm 2 moves RUNNING rows whose task will get another QA pass (task not
-    terminal, no QA job currently RUNNING) back to QUEUED so the dashboard
-    shows "waiting for analysis" instead of a phantom live classification.
-
-    Both arms are staleness-gated (``ORPHANED_ANALYSIS_MINUTES``, well above a
-    single classification's runtime budget) and batched. Raw SQL: soft-delete
-    filters are explicit. Returns ``(failed, requeued)``.
-    """
-    orphans_failed = int(
-        cast(
-            CursorResult,
-            await session.execute(
-                text(
-                    """
-                    UPDATE trials
-                    SET    analysis_status = 'FAILED',
-                           analysis_error = :reason,
-                           analysis_finished_at = NOW()
-                    WHERE  id IN (
-                        SELECT tr.id
-                        FROM   trials tr
-                        JOIN   tasks t ON t.id = tr.task_id
-                        WHERE  tr.deleted_at IS NULL
-                          AND  tr.analysis_status IN
-                                   ('PENDING', 'QUEUED', 'RUNNING')
-                          AND  COALESCE(tr.analysis_started_at, tr.updated_at)
-                                   < NOW() - make_interval(mins => :stale_minutes)
-                          AND  (
-                              tr.superseded_by_trial_id IS NOT NULL
-                              OR tr.status = 'SKIPPED'
-                              OR tr.imported_at IS NOT NULL
-                              OR COALESCE(tr.error_message, '')
-                                     LIKE :gate_skip_pattern
-                              OR t.deleted_at IS NOT NULL
-                              OR (
-                                  t.status IN ('COMPLETED', 'FAILED')
-                                  AND NOT EXISTS (
-                                      SELECT 1
-                                      FROM   worker_jobs wj
-                                      WHERE  wj.subject_table = 'tasks'
-                                        AND  wj.subject_id = t.id
-                                        AND  wj.kind::text = 'QA'
-                                        AND  wj.status::text IN (
-                                            'QUEUED', 'RETRYING',
-                                            'RUNNING', 'BLOCKED'
-                                        )
-                                  )
-                              )
-                          )
-                        LIMIT :batch_limit
-                        FOR UPDATE OF tr SKIP LOCKED
-                    )
-                    """
-                ),
-                {
-                    "reason": ORPHANED_ANALYSIS_REASON,
-                    "stale_minutes": ORPHANED_ANALYSIS_MINUTES,
-                    "batch_limit": ORPHANED_ANALYSIS_BATCH_LIMIT,
-                    "gate_skip_pattern": f"{GATE_SKIP_PREFIX}%",
-                },
-            ),
-        ).rowcount
-        or 0
-    )
-
-    orphans_requeued = int(
-        cast(
-            CursorResult,
-            await session.execute(
-                text(
-                    """
-                    UPDATE trials
-                    SET    analysis_status = 'QUEUED'
-                    WHERE  id IN (
-                        SELECT tr.id
-                        FROM   trials tr
-                        JOIN   tasks t ON t.id = tr.task_id
-                        WHERE  tr.deleted_at IS NULL
-                          AND  tr.analysis_status = 'RUNNING'
-                          AND  tr.superseded_by_trial_id IS NULL
-                          AND  tr.imported_at IS NULL
-                          AND  tr.status <> 'SKIPPED'
-                          AND  COALESCE(tr.error_message, '')
-                                   NOT LIKE :gate_skip_pattern
-                          AND  COALESCE(tr.analysis_started_at, tr.updated_at)
-                                   < NOW() - make_interval(mins => :stale_minutes)
-                          AND  t.deleted_at IS NULL
-                          AND  t.status NOT IN ('COMPLETED', 'FAILED')
-                          AND  NOT EXISTS (
-                              SELECT 1
-                              FROM   worker_jobs wj
-                              WHERE  wj.subject_table = 'tasks'
-                                AND  wj.subject_id = t.id
-                                AND  wj.kind::text = 'QA'
-                                AND  wj.status::text = 'RUNNING'
-                          )
-                        LIMIT :batch_limit
-                        FOR UPDATE OF tr SKIP LOCKED
-                    )
-                    """
-                ),
-                {
-                    "stale_minutes": ORPHANED_ANALYSIS_MINUTES,
-                    "batch_limit": ORPHANED_ANALYSIS_BATCH_LIMIT,
-                    "gate_skip_pattern": f"{GATE_SKIP_PREFIX}%",
-                },
-            ),
-        ).rowcount
-        or 0
-    )
-
-    if orphans_failed or orphans_requeued:
-        console.print(
-            "metric=orphaned_trial_analysis_reset "
-            f"failed={orphans_failed} requeued={orphans_requeued}"
-        )
-    return orphans_failed, orphans_requeued
-
 
 async def _release_orphaned_slots(session) -> int:
     """Step 7 -- release queue slot leases whose owning worker is dead.
@@ -1431,10 +1798,28 @@ async def _terminate_orphaned_sandboxes(worker_targets: set[tuple[str, str]]) ->
     """
     if not worker_targets:
         return 0
+    ordered_targets = sorted(worker_targets)
     results = await asyncio.gather(
         *(
             cancel_job_by_worker(provider, external_id)
-            for provider, external_id in worker_targets
-        )
+            for provider, external_id in ordered_targets
+        ),
+        return_exceptions=True,
     )
-    return sum(1 for ok in results if ok)
+    terminated = 0
+    for (provider, external_id), result in zip(ordered_targets, results, strict=True):
+        if isinstance(result, BaseException):
+            console.print(
+                "metric=orphaned_sandbox_termination outcome=error "
+                f"provider={provider} external_id={external_id} "
+                f"error_type={type(result).__name__} error={result}"
+            )
+            continue
+        if result:
+            terminated += 1
+        console.print(
+            "metric=orphaned_sandbox_termination "
+            f"outcome={'terminated' if result else 'failed'} "
+            f"provider={provider} external_id={external_id}"
+        )
+    return terminated

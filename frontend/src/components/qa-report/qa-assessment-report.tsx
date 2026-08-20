@@ -17,6 +17,7 @@ export function QaAssessmentReport({
   evidence,
   actionItems,
   log,
+  logStatus,
   logOpen,
   onLogToggle,
   duration,
@@ -32,6 +33,8 @@ export function QaAssessmentReport({
   actionItems?: PreTrialFinding[] | null;
   /** the analyzer's run log, shown as a fold under Evidence */
   log?: string | null;
+  /** terminal logs stay idle until the fold is opened */
+  logStatus?: "idle" | "loading" | "ready" | "error";
   /** carries the fold's open state across the live-log -> report handoff */
   logOpen?: boolean;
   onLogToggle?: (open: boolean) => void;
@@ -167,7 +170,7 @@ export function QaAssessmentReport({
           </details>
         ) : null}
 
-        {log ? (
+        {onLogToggle ? (
           <details
             className="group mt-3"
             open={logOpen}
@@ -184,9 +187,19 @@ export function QaAssessmentReport({
               </span>
               Analysis log
             </summary>
-            <pre className="bg-muted/40 mt-2 max-h-48 overflow-auto rounded p-2 font-mono text-[10.5px] leading-relaxed whitespace-pre-wrap">
-              {log}
-            </pre>
+            {log ? (
+              <pre className="bg-muted/40 mt-2 max-h-48 overflow-auto rounded p-2 font-mono text-[10.5px] leading-relaxed whitespace-pre-wrap">
+                {log}
+              </pre>
+            ) : logOpen ? (
+              <p className="text-muted-foreground mt-2 text-[11px]">
+                {logStatus === "error"
+                  ? "Unable to load the analysis log."
+                  : logStatus === "ready"
+                    ? "No log output."
+                    : "Loading analysis log…"}
+              </p>
+            ) : null}
           </details>
         ) : null}
       </div>

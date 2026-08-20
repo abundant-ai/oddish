@@ -25,6 +25,11 @@ from oddish.core.quotas import (
     sum_org_cost_usd,
     try_acquire_quota_locks,
 )
+from oddish.core.verdict_state import (
+    cancel_verdict,
+    has_active_verdict,
+    has_published_verdict,
+)
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
@@ -41,6 +46,15 @@ logger = logging.getLogger(__name__)
 QUOTA_CANCELLED_MESSAGE = "Cancelled because quota was reached"
 _RETRY_INITIAL_SECONDS = 1.0
 _RETRY_MAX_SECONDS = 30.0
+# Remote teardown after a quota cancellation is best-effort reaping: the
+# trials are already CANCELLED in the DB before it runs, and every remote
+# (Modal function call, provider sandbox) has its own hard timeout. An
+# unreapable target must therefore be abandoned, not retried forever --
+# _terminate_quota_harvest runs in the ``finally`` of enforce_trial_quotas,
+# so an unbounded loop pins that worker container for its whole life
+# (observed in production: one stuck target retried for days). Eight
+# attempts with the capped exponential backoff is ~90 seconds end to end.
+_TERMINATION_MAX_ATTEMPTS = 8
 
 
 class QuotaLockBusy(Exception):
@@ -73,9 +87,9 @@ async def _quota_scope_reached(
     billed_user_id: str | None,
 ) -> str | None:
     # Non-blocking: many workers call enforcement on cost checkpoints. If
-    # another transaction already holds the org/user quota lock (admission or
-    # an in-flight cancellation), raise instead of pile-waiting and starving
-    # /tasks/sweep — and instead of returning None, which means under-quota.
+    # another transaction already holds the org/user quota lock (an in-flight
+    # cancellation), raise instead of pile-waiting — and instead of returning
+    # None, which means under-quota.
     if not await try_acquire_quota_locks(session, org_id, billed_user_id):
         raise QuotaLockBusy(
             f"quota lock busy for org_id={org_id} billed_user_id={billed_user_id}"
@@ -103,6 +117,7 @@ def _active_trial_predicates(
 ) -> list:
     predicates = [
         TrialModel.org_id == org_id,
+        TrialModel.kind == "agent",
         TrialModel.finished_at.is_(None),
         TrialModel.deleted_at.is_(None),
         TrialModel.superseded_by_trial_id.is_(None),
@@ -285,6 +300,11 @@ async def cancel_trials_if_quota_reached(
             "worker_targets": worker_targets,
         }
     )
+    from oddish.core.task_browse_summary import refresh_task_browse_summaries
+
+    await refresh_task_browse_summaries(
+        session, (trial.task_version_id for trial in trials)
+    )
     await _reconcile_cancelled_tasks(session, result)
     return result
 
@@ -341,18 +361,13 @@ async def _reconcile_cancelled_tasks(
     for task in tasks:
         if task.id not in exhausted:
             continue
+        if has_published_verdict(task) or has_active_verdict(task):
+            cancel_verdict(task, error=QUOTA_CANCELLED_MESSAGE, now=now)
         if task.status in _ACTIVE_TASK_STATUSES:
-            task.status = TaskStatus.FAILED
+            restored = task.verdict_status == VerdictStatus.SUCCESS
+            task.status = TaskStatus.COMPLETED if restored else TaskStatus.FAILED
             task.finished_at = now
             tasks_cancelled += 1
-        if task.verdict_status in (
-            VerdictStatus.PENDING,
-            VerdictStatus.QUEUED,
-            VerdictStatus.RUNNING,
-        ):
-            task.verdict_status = VerdictStatus.FAILED
-            task.verdict_error = QUOTA_CANCELLED_MESSAGE
-            task.verdict_finished_at = now
 
     released_trial_ids: list[str] = []
     cancelled_trial_ids = set(result["cancelled_trial_ids"])
@@ -479,7 +494,7 @@ async def _terminate_quota_harvest(
         pending_modal_ids = modal_ids
         pending_targets = targets
         retry_delay = _RETRY_INITIAL_SECONDS
-        while True:
+        for attempt in range(1, _TERMINATION_MAX_ATTEMPTS + 1):
             try:
                 await terminate_run_harvest(
                     {
@@ -490,17 +505,53 @@ async def _terminate_quota_harvest(
                 )
                 break
             except HarvestTerminationError as exc:
+                # The exception names exactly which targets are still alive;
+                # narrow the next attempt to them and LOG them -- an abandoned
+                # target is only actionable if the record says which provider
+                # and external id to go look at.
                 pending_modal_ids = exc.modal_function_call_ids
                 pending_targets = exc.worker_targets
-                logger.exception(
-                    "Quota remote termination incomplete for org_id=%s "
-                    "billed_user_id=%s",
+                if attempt == _TERMINATION_MAX_ATTEMPTS:
+                    logger.error(
+                        "metric=quota.harvest_abandoned org_id=%s "
+                        "billed_user_id=%s attempts=%d "
+                        "modal_function_call_ids=%s worker_targets=%s",
+                        org_id,
+                        billed_user_id,
+                        attempt,
+                        pending_modal_ids,
+                        pending_targets,
+                    )
+                    break
+                logger.warning(
+                    "Quota remote termination incomplete (attempt %d/%d) for "
+                    "org_id=%s billed_user_id=%s modal_function_call_ids=%s "
+                    "worker_targets=%s",
+                    attempt,
+                    _TERMINATION_MAX_ATTEMPTS,
                     org_id,
                     billed_user_id,
+                    pending_modal_ids,
+                    pending_targets,
                 )
             except Exception:
+                if attempt == _TERMINATION_MAX_ATTEMPTS:
+                    logger.exception(
+                        "metric=quota.harvest_abandoned org_id=%s "
+                        "billed_user_id=%s attempts=%d "
+                        "modal_function_call_ids=%s worker_targets=%s",
+                        org_id,
+                        billed_user_id,
+                        attempt,
+                        pending_modal_ids,
+                        pending_targets,
+                    )
+                    break
                 logger.exception(
-                    "Quota remote termination failed for org_id=%s billed_user_id=%s",
+                    "Quota remote termination failed (attempt %d/%d) for "
+                    "org_id=%s billed_user_id=%s",
+                    attempt,
+                    _TERMINATION_MAX_ATTEMPTS,
                     org_id,
                     billed_user_id,
                 )
