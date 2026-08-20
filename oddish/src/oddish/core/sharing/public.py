@@ -99,11 +99,16 @@ async def _detached_public_trial_with_display_names(
     """A public trial plus this experiment's alias table, both read before I/O.
 
     One session for the pair, released before the S3 read for the same reason
-    :func:`_get_detached_public_trial` releases it.
+    :func:`_get_detached_public_trial` releases it. The experiment is loaded
+    once here and handed to the trial lookup so it isn't re-queried.
     """
     async with get_session() as session:
         experiment = await get_public_experiment(session, public_token)
-        trial = await get_public_trial_for_experiment(session, public_token, trial_id)
+        if not experiment:
+            raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
+        trial = await get_public_trial_for_experiment(
+            session, public_token, trial_id, experiment=experiment
+        )
         if not trial:
             raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
         session.expunge(trial)
