@@ -20,7 +20,12 @@ CLERK_SECRET_KEY = os.getenv("CLERK_SECRET_KEY", "")
 
 # A checked-absent marker older than this is treated as UNchecked everywhere so a
 # user who links GitHub after being stamped self-heals on the next refresh/backfill.
-GITHUB_ID_RECHECK_TTL = timedelta(hours=1)
+# One day, not one hour: every lapse makes the hourly backfill sweep re-ask Clerk
+# about EVERY github-less user, and each expected 404 answer is recorded as an
+# error span by the httpx instrumentation -- at 1h that was ~350 error traces per
+# environment per day, in every deployed environment at once. This TTL bounds how
+# long a user who just linked GitHub waits to be picked up.
+GITHUB_ID_RECHECK_TTL = timedelta(days=1)
 
 
 def github_id_recheck_cutoff(now: datetime | None = None) -> datetime:

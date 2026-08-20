@@ -19,6 +19,25 @@ logger = logging.getLogger(__name__)
 
 GITHUB_API_BASE = "https://api.github.com"
 
+# GitHub caps issue-comment bodies at 65,536 characters and answers anything
+# longer with 422 Unprocessable Entity (observed on comments for large
+# experiments). Truncate from the tail: the ``<!-- oddish-… -->`` marker that
+# ``find_oddish_comment`` matches on is the FIRST line of every body, so the
+# head must survive or each upsert stops finding the comment and posts a
+# duplicate instead.
+_MAX_COMMENT_CHARS = 65_536
+_TRUNCATION_NOTICE = (
+    "\n\n---\n_Comment truncated to fit GitHub's 65,536-character limit; "
+    "full results are on the Oddish dashboard._"
+)
+
+
+def fit_comment_body(body: str) -> str:
+    """Return *body* cut to GitHub's comment-size cap, keeping the head."""
+    if len(body) <= _MAX_COMMENT_CHARS:
+        return body
+    return body[: _MAX_COMMENT_CHARS - len(_TRUNCATION_NOTICE)] + _TRUNCATION_NOTICE
+
 
 @dataclass
 class GitHubMeta:
@@ -132,6 +151,7 @@ class GitHubClient:
     ) -> dict[str, Any] | None:
         """Create a new comment on a PR."""
         client = await self._get_client()
+        body = fit_comment_body(body)
         try:
             response = await client.post(
                 f"/repos/{owner}/{repo}/issues/{pr_number}/comments",
@@ -148,6 +168,7 @@ class GitHubClient:
     ) -> dict[str, Any] | None:
         """Update an existing comment."""
         client = await self._get_client()
+        body = fit_comment_body(body)
         try:
             response = await client.patch(
                 f"/repos/{owner}/{repo}/issues/comments/{comment_id}",
