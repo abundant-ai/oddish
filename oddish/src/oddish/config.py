@@ -1315,6 +1315,15 @@ class Settings(BaseSettings):
     # DWS flex-start provisions TPU capacity on demand, so a pod can sit Pending
     # while the node is created; the readiness wait is generous to match.
     gke_flex_start: bool = True
+    # Spot draws on the SAME preemptible quota as flex-start but is offered in
+    # every zone the accelerator exists in, not just the few that serve
+    # flex-start, so it reaches regions flex-start cannot -- notably us-east1
+    # for TPU v6e, which holds 1536 preemptible v6e and no CT6E chip cap
+    # against us-east5's 256 and cap of 8. It does not queue: capacity now or
+    # nothing, and the node can be reclaimed at any time. Mutually exclusive
+    # with gke_flex_start; Dynamic Workload Scheduler does not support Spot
+    # VMs and Harbor rejects the pair.
+    gke_spot: bool = False
     # Auto-build missing task images via the Cloud Build SDK instead of
     # failing on require_prebuilt_image. Spends minutes of the attempt's
     # budget on first-run tasks, so hosted deployments opt in explicitly.
