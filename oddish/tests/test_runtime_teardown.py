@@ -78,13 +78,16 @@ def test_daytona_teardown_gets_and_deletes_then_closes(monkeypatch) -> None:
 
 
 def test_daytona_teardown_treats_missing_sandbox_as_done(monkeypatch) -> None:
-    from daytona_api_client_async.exceptions import NotFoundException
+    from daytona.common.errors import DaytonaNotFoundError
 
     calls: dict[str, object] = {}
 
     class _FakeClient:
         async def get(self, external_id: str):
-            raise NotFoundException(status=404, reason="Not Found")
+            raise DaytonaNotFoundError(
+                f"Sandbox with ID or name {external_id} not found",
+                status_code=404,
+            )
 
         async def close(self):
             calls["closed"] = True

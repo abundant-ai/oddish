@@ -15,9 +15,11 @@ from fastapi import (
     Response,
     status,
 )
+from fastapi.responses import JSONResponse
 from harbor.models.environment_type import EnvironmentType
 from sqlalchemy import or_, select
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cloud_policy import (
@@ -106,6 +108,7 @@ from oddish.core.model_display_names import canonical_model_key
 from oddish.db import (
     ExperimentModel,
     TaskModel,
+    get_read_session,
     get_session,
     utcnow,
 )
@@ -1122,36 +1125,48 @@ async def get_experiment_share(
     experiment_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> ExperimentShareResponse:
-    """Get share status for an experiment."""
+    """Get share status for an experiment.
+
+    This runs on every experiment-page load (the page title fetch and the
+    share dialog both call it), and the database is a network hop away, so
+    the handler is built to spend exactly one statement round-trip: the
+    experiment row and the id of its QA-report shadow come back from a
+    single self outer-join, on an autocommit session that adds no
+    BEGIN/COMMIT traffic.
+    """
     auth.require_scope(APIKeyScope.READ)
 
-    async with get_session() as session:
-        result = await session.execute(
-            select(ExperimentModel).where(
-                ExperimentModel.id == experiment_id,
-                ExperimentModel.org_id == auth.org_id,
-            )
-        )
-        experiment = result.scalar_one_or_none()
-        if not experiment:
-            raise HTTPException(status_code=404, detail="Experiment not found")
-
-        qa_report_experiment_id = None
-        if experiment.shadow_of is None:
-            qa_report_experiment_id = await session.scalar(
-                select(ExperimentModel.id).where(
-                    ExperimentModel.shadow_of == experiment.id
+    shadow = aliased(ExperimentModel)
+    async with get_read_session() as session:
+        row = (
+            await session.execute(
+                select(ExperimentModel, shadow.id)
+                .outerjoin(shadow, shadow.shadow_of == ExperimentModel.id)
+                .where(
+                    ExperimentModel.id == experiment_id,
+                    ExperimentModel.org_id == auth.org_id,
                 )
+                .limit(1)
             )
+        ).first()
 
-        return ExperimentShareResponse(
-            name=experiment.name,
-            is_public=bool(experiment.is_public),
-            public_token=experiment.public_token,
-            description=experiment.description,
-            shadow_of=experiment.shadow_of,
-            qa_report_experiment_id=qa_report_experiment_id,
-        )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+
+    experiment, qa_report_experiment_id = row
+    if experiment.shadow_of is not None:
+        # A shadow experiment is never itself shadowed; ignore any join
+        # artifact rather than report a shadow-of-a-shadow.
+        qa_report_experiment_id = None
+
+    return ExperimentShareResponse(
+        name=experiment.name,
+        is_public=bool(experiment.is_public),
+        public_token=experiment.public_token,
+        description=experiment.description,
+        shadow_of=experiment.shadow_of,
+        qa_report_experiment_id=qa_report_experiment_id,
+    )
 
 
 @router.patch(
@@ -1801,13 +1816,22 @@ async def get_task_file_content(
         if version is None and task.current_version:
             version = task.current_version.version
 
-    result = await get_task_file_content_s3(
-        task_id=task_id,
-        file_path=file_path,
-        presign=presign,
-        version=version,
-        max_bytes=max_bytes,
-    )
+    try:
+        result = await get_task_file_content_s3(
+            task_id=task_id,
+            file_path=file_path,
+            presign=presign,
+            version=version,
+            max_bytes=max_bytes,
+        )
+    except HTTPException as exc:
+        if exc.status_code != status.HTTP_404_NOT_FOUND:
+            raise
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+            headers=exc.headers,
+        )
 
     archive_etag = result.get("archive_etag")
     if archive_etag and version is not None:

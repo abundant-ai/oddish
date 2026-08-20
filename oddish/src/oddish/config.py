@@ -14,6 +14,8 @@ from harbor.llms.utils import split_provider_model_name
 from harbor.models.agent.name import AgentName
 from litellm.litellm_core_utils.get_llm_provider_logic import get_llm_provider
 
+from oddish.harbor_pin import load_harbor_pin as _load_harbor_pin
+
 logger = logging.getLogger(__name__)
 
 
@@ -136,16 +138,15 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 
 
 # --- Configurable Harbor source ----------------------------------------------
-# The locked default fork + commit. HARBOR_DEFAULT_SHA MUST equal the pin in
-# both uv.lock files (a test asserts it against oddish/uv.lock). This is the
-# lean Harbor baked into the default Modal/Daytona worker image; GKE (TPU)
-# trials run a heavier GKE-enabled Harbor on a dedicated blessed-variant image
-# (see HARBOR_VARIANTS in oddish.core.harbor_source), never this default.
-HARBOR_DEFAULT_SOURCE = "https://github.com/abundant-ai/harbor"
-# Exact abundant-ai/harbor revision resolved into both uv.lock files. Harbor
-# PR #24 recovers Claude Code ATIF from the streamed transcript after timeouts,
-# on top of PR #25's subagent attribution and PR #26's lifecycle setup hooks.
-HARBOR_DEFAULT_SHA = "ca4fda6aa75180487c2c7c07fabaaf03d01b2e8d"
+# The locked default fork + commit lives in src/oddish/harbor-pin.toml (single
+# source of truth). HARBOR_DEFAULT_SHA MUST equal the pin in both uv.lock files
+# (a test asserts it against oddish/uv.lock). This is the lean Harbor baked
+# into the default Modal/Daytona worker image; GKE (TPU) trials run a heavier
+# GKE-enabled Harbor on a dedicated blessed-variant image (see HARBOR_VARIANTS
+# in oddish.core.harbor_source), never this default.
+_harbor_pin = _load_harbor_pin()
+HARBOR_DEFAULT_SOURCE = _harbor_pin["git"]
+HARBOR_DEFAULT_SHA = _harbor_pin["rev"]
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
@@ -1314,6 +1315,15 @@ class Settings(BaseSettings):
     # DWS flex-start provisions TPU capacity on demand, so a pod can sit Pending
     # while the node is created; the readiness wait is generous to match.
     gke_flex_start: bool = True
+    # Spot draws on the SAME preemptible quota as flex-start but is offered in
+    # every zone the accelerator exists in, not just the few that serve
+    # flex-start, so it reaches regions flex-start cannot -- notably us-east1
+    # for TPU v6e, which holds 1536 preemptible v6e and no CT6E chip cap
+    # against us-east5's 256 and cap of 8. It does not queue: capacity now or
+    # nothing, and the node can be reclaimed at any time. Mutually exclusive
+    # with gke_flex_start; Dynamic Workload Scheduler does not support Spot
+    # VMs and Harbor rejects the pair.
+    gke_spot: bool = False
     # Auto-build missing task images via the Cloud Build SDK instead of
     # failing on require_prebuilt_image. Spends minutes of the attempt's
     # budget on first-run tasks, so hosted deployments opt in explicitly.
@@ -1507,6 +1517,31 @@ class Settings(BaseSettings):
         if self.gke_project_id and not self.gke_cluster_name:
             app_name = os.environ.get("MODAL_APP_NAME", "oddish")
             self.gke_cluster_name = f"{app_name}-trials"
+        return self
+
+    @model_validator(mode="after")
+    def _reject_both_gke_provisioning_modes(self) -> "Settings":
+        """A deployment cannot ask for flex-start and Spot at once.
+
+        The two settings encode ONE three-valued choice and Harbor rejects the
+        pair. Caught here rather than per trial: ``gke_flex_start`` defaults to
+        True, so an operator who sets only ODDISH_GKE_SPOT=true leaves both
+        true, and every GKE trial then fails the same way -- retried to
+        exhaustion, because the failure is permanent but classified as
+        retryable. Failing at config load turns that into one loud error at
+        deploy.
+
+        Per-submission kwargs are normalized separately in ``GkeBackend``:
+        naming one mode there clears the other. This guard is only about the
+        deployment defaults, which have no caller to disambiguate them.
+        """
+        if self.gke_flex_start and self.gke_spot:
+            raise ValueError(
+                "ODDISH_GKE_FLEX_START and ODDISH_GKE_SPOT cannot both be "
+                "true: Dynamic Workload Scheduler does not support Spot VMs. "
+                "Set ODDISH_GKE_FLEX_START=false to run Spot, or "
+                "ODDISH_GKE_SPOT=false to run flex-start."
+            )
         return self
 
     @model_validator(mode="after")

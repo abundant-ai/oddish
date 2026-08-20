@@ -31,6 +31,7 @@ import {
 } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { fetcher } from "@/lib/api";
+import { formatFileSize } from "@/lib/format";
 import type { LineRange } from "@/lib/line-range";
 import {
   FileRenderer,
@@ -231,12 +232,6 @@ function pickChecksVersion(
 // Truncate files larger than 100KB initially
 const TRUNCATE_THRESHOLD = 100 * 1024;
 const FILE_LOAD_ERROR = "Error loading file content";
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 /**
  * Build the full nested tree from a recursive listing in one pass.

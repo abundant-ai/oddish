@@ -7,7 +7,10 @@ survives only if the LLM happened to mention it in prose. The cohort comparison
 reads component summaries and nothing else, so once the prose omitted it the
 finding was unrecoverable.
 """
+
 from __future__ import annotations
+
+from oddish.analyze.trajectory_tool_calls import tool_name
 
 # claude-code's subagent tool. `Agent` is what current trajectories record;
 # `Task` is the older spelling, and the one the probe overlay still writes
@@ -20,17 +23,6 @@ SUBAGENT_TOOL_NAMES = frozenset({"Agent", "Task"})
 DELEGATING_AGENTS = frozenset({"claude-code"})
 
 
-def _tool_name(call: dict) -> str | None:
-    """``function_name``, falling back to ``name``.
-
-    Mirrors core/harbor_artifacts.py:301. The fallback is not cosmetic: reading
-    only `name` is exactly how per-step subagent attribution was lost before.
-    """
-    if not isinstance(call, dict):
-        return None
-    return call.get("function_name") or call.get("name")
-
-
 def subagent_dispatches_in(steps) -> int:
     """How many subagents these steps spawned."""
     total = 0
@@ -38,7 +30,7 @@ def subagent_dispatches_in(steps) -> int:
         if not isinstance(step, dict):
             continue
         for call in step.get("tool_calls") or []:
-            if _tool_name(call) in SUBAGENT_TOOL_NAMES:
+            if tool_name(call) in SUBAGENT_TOOL_NAMES:
                 total += 1
     return total
 

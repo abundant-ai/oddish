@@ -1,0 +1,44 @@
+name: Harbor Pin Sync Guard
+
+# Enforces oddish/src/oddish/harbor-pin.toml as the single source of truth for
+# the locked abundant-ai/harbor revision. Both pyproject.toml files must stay
+# in sync because the backend worker image cannot inherit uv sources from the
+# transitive oddish dependency.
+
+on:
+  pull_request:
+    paths:
+      - "oddish/src/oddish/harbor-pin.toml"
+      - "oddish/pyproject.toml"
+      - "backend/pyproject.toml"
+      - "oddish/scripts/sync_harbor_pin.py"
+      - ".github/workflows/harbor-pin-guard.yml"
+  push:
+    branches:
+      - main
+      - staging
+    paths:
+      - "oddish/src/oddish/harbor-pin.toml"
+      - "oddish/pyproject.toml"
+      - "backend/pyproject.toml"
+      - "oddish/scripts/sync_harbor_pin.py"
+      - ".github/workflows/harbor-pin-guard.yml"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: oddish
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            oddish/uv.lock
+            backend/uv.lock
+      - name: Install sync script deps
+        run: uv sync --extra dev
+      - name: Assert pyproject harbor pins match harbor-pin.toml
+        run: uv run python scripts/sync_harbor_pin.py --check

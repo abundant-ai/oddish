@@ -214,6 +214,26 @@ only while the step is expanded. Trajectory summaries are written onto
 authenticated summary routes are plain column reads (200 with the stored
 summary, 404 on a miss) with no on-demand generation.
 
+A QA/audit trial's **own** summary is deterministic, never an LLM call:
+settlement (`handle_analysis_trial_settled`) counts one from the run's tool
+calls. `oddish.analyze.trajectory_tool_calls` owns the external ATIF tool-call
+name and string-argument spellings used by activity, provenance, and delegation
+scans. `oddish.analyze.analysis_activity` applies analysis-shaped labels such as
+`fetching_trial_data` / `writing_result`, one component per contiguous
+same-label run and stores it through the same enrichment as graded-trial
+summaries. These payloads carry `generator: "analysis-activity"` and the
+explicit `taxonomy_version = "analysis-activity:v1"`; any semantic change to
+the ordered activity rules must increment that version. Summary prose names
+only actions present in the trajectory, so a failed partial run does not claim
+an unobserved oddish-query fetch or `/logs` artifact write. The same settlement
+scans the QA trajectory's tool-call
+arguments for each graded trial id and stamps the matching step ids onto the
+graded trial's `analysis._graded_at_steps`, which the drawer's "graded by"
+link uses as a `#step-` anchor into the QA run. Both writes are best-effort
+telemetry: neither may block or fail the artifact import. The Activity card
+degrades rather than hides when a trial has steps but no stored summary — a
+single gray ungrouped band with real totals — once the summary fetch settles.
+
 Trajectory summaries use schema v5. Each taxonomy-valued `components` entry
 contains its `step_ids`, summary, and deterministic `tool_count` and
 `duration_ms` metadata. Step count is the length of `step_ids`; the other
@@ -1047,6 +1067,38 @@ directly by `backend/modal_app.py` from `ODDISH_MODAL_*` /
 source of truth for the full list and defaults (e.g.
 `ODDISH_MODAL_MAX_WORKERS_PER_POLL=256`,
 `ODDISH_MODAL_WORKER_MAX_CONTAINERS=2688`).
+
+### Preview Branch Preserved Rows
+
+Each preview branch database holds a schema named `preview_preserved` with one
+table, `rows`. It keeps the API keys that a person creates from that preview
+dashboard, and the `organizations` and `users` rows those keys need.
+
+**Why it exists.** A preview rebuild runs `DROP SCHEMA public CASCADE` and
+restores a schema-only snapshot of production, which holds no rows. Without
+this stash, every rebuild removes the keys.
+
+**Why it sits outside `public`.** The rebuild drops `public` and nothing else,
+so the stash survives. It also holds the rows in the database rather than in
+the workflow process: the preview workflow uses `cancel-in-progress`, so a
+second push can stop a run between the drop and the write-back.
+
+**Lifecycle.** `bootstrap_preview_db.py` writes to the stash before the drop
+and reads from it after `upgrade head`. The stash is not cleared after a
+successful write-back, so a cancelled run stays recoverable. Rows are jsonb,
+and `jsonb_populate_record` maps each one onto the current row type.
+
+**Do not copy it between environments.** An API key is a credential for one
+environment only. The seed must never sample `api_keys` from production or
+from another branch; `_NEVER_SAMPLED_TABLES` in `backend/preview_seed.py`
+enforces that, and `_assert_no_forbidden_tables` fails the seed if a later
+change breaks the rule. Cloning a preview branch, or copying this schema
+between branches, would put one environment's credentials in another.
+
+**Do not delete it while diagnosing a branch.** It looks unused, and removing
+it destroys the keys of everyone using that preview. A branch that is deleted
+and made again loses the stash with the rest of the database; that is expected,
+and a new key is then required.
 
 ### Database Migrations
 

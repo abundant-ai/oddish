@@ -19,6 +19,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.analyze import Classification, TrialClassification
+from oddish.analyze.analysis_activity import (
+    ANALYSIS_ACTIVITY_VERSION,
+    build_analysis_activity_summary,
+    trial_mention_steps,
+)
 from oddish.analyze.models import (
     _DIMENSION_HEADING_SPELLINGS,
     ActionItem,
@@ -623,6 +628,72 @@ def enrich_trajectory_summary(
     return out
 
 
+async def read_own_trajectory(trial: TrialModel) -> dict | None:
+    """The analysis trial's own ATIF trajectory, or None on any failure.
+
+    Best-effort by design: the self-summary and the graded-step anchors are
+    telemetry, and a storage hiccup here must never block the artifact import.
+    ``has_trajectory`` is checked first so a trial that recorded none does not
+    pay a multi-second S3 probe on every settlement and healer re-import.
+    """
+    if not trial.has_trajectory:
+        return None
+    try:
+        from oddish.core.trial_io import read_trial_trajectory
+
+        return await read_trial_trajectory(trial)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "%s trial %s: own trajectory read failed; skipping self-summary",
+            trial.kind,
+            trial.id,
+        )
+        return None
+
+
+async def store_analysis_self_summary(
+    trial: TrialModel, trajectory: dict | None
+) -> None:
+    """Write the analysis trial's own ``trajectory_summary``.
+
+    The QA agent summarizes the trials it grades; this is the same telemetry
+    for the QA/audit run itself, counted from its tool calls
+    (``analysis_activity``) because workers make no LLM calls of their own.
+    Runs on every settlement — success or failure — so a failed analysis run
+    still shows what its agent did.
+    """
+    if trajectory is None:
+        return
+    payload = (trial.harbor_config or {}).get("analysis_payload") or {}
+    artifact_name = ANALYSIS_ARTIFACTS.get(trial.kind or "", "the result artifact")
+    async with get_session() as session:
+        task_name = await session.scalar(
+            select(TaskModel.name).where(TaskModel.id == trial.task_id)
+        )
+        summary = build_analysis_activity_summary(
+            kind=trial.kind or "analysis",
+            task_name=task_name,
+            trial_count=len(payload.get("trial_ids") or []),
+            status=trial.status.value,
+            artifact_name=artifact_name,
+            trajectory=trajectory,
+        )
+        if summary is None:
+            return
+        enriched = enrich_trajectory_summary(
+            summary,
+            trajectory=trajectory,
+            model=trial.model,
+            graded_by=trial.id,
+        )
+        # The components were counted under this module's rules, not the
+        # solver vocabulary enrich stamps by default.
+        enriched["taxonomy_version"] = ANALYSIS_ACTIVITY_VERSION
+        row = await session.get(TrialModel, trial.id)
+        if row is not None:
+            row.trajectory_summary = enriched
+
+
 async def _qa_import_still_current(
     session, task_id: str, graded_version_id: str | None
 ) -> bool:
@@ -659,7 +730,9 @@ async def _qa_import_still_current(
     return pending is None
 
 
-async def _import_qa_result(trial: TrialModel) -> None:
+async def _import_qa_result(
+    trial: TrialModel, own_trajectory: dict | None = None
+) -> None:
     task_id = trial.task_id
     graded_version_id = trial.task_version_id
     artifact = None
@@ -697,6 +770,13 @@ async def _import_qa_result(trial: TrialModel) -> None:
         )
         return
 
+    # Which steps of the QA run dealt with which graded trial, scanned from
+    # the QA trajectory's tool-call arguments. The anchors let the graded
+    # trial's "graded by" link land on the exact steps that judged it.
+    graded_steps = trial_mention_steps(
+        own_trajectory, [entry["trial_id"] for entry in artifact["trials"]]
+    )
+
     contract_drift: str | None = None
     classifications: list[TrialClassification] = []
     async with get_session() as session:
@@ -721,7 +801,22 @@ async def _import_qa_result(trial: TrialModel) -> None:
                     trial_id,
                 )
                 continue
-            row.analysis = {**entry["analysis"], "_graded_by": trial.id}
+            analysis = {**entry["analysis"], "_graded_by": trial.id}
+            if graded_steps.get(trial_id):
+                analysis["_graded_at_steps"] = graded_steps[trial_id]
+            elif (
+                isinstance(row.analysis, dict)
+                and row.analysis.get("_graded_by") == trial.id
+                and row.analysis.get("_graded_at_steps")
+            ):
+                # A re-import whose grader-trajectory scan came up empty
+                # (read_own_trajectory is best-effort and returns None on a
+                # storage blip) must not erase anchors an earlier import
+                # stored. Same-grader only: anchors index into the grader's
+                # own trajectory, so a different QA trial's scan miss must
+                # not inherit another run's steps.
+                analysis["_graded_at_steps"] = row.analysis["_graded_at_steps"]
+            row.analysis = analysis
             row.analysis_status = AnalysisStatus.SUCCESS
             row.analysis_finished_at = utcnow()
             # Enrichment reads the graded trial's own trajectory from
@@ -942,8 +1037,16 @@ async def handle_analysis_trial_settled(trial_id: str) -> None:
         kind = trial.kind
         status = trial.status.value
     logger.info("importing %s trial %s (status=%s)", kind, trial_id, status)
+    # One trajectory read serves both the self-summary and the graded-step
+    # anchors. Both are telemetry: a failure in either must not stop the
+    # artifact import, and the import must run even with no trajectory.
+    own_trajectory = await read_own_trajectory(trial)
+    try:
+        await store_analysis_self_summary(trial, own_trajectory)
+    except Exception:  # noqa: BLE001
+        logger.exception("self-summary for %s trial %s failed", kind, trial_id)
     if kind == "qa":
-        await _import_qa_result(trial)
+        await _import_qa_result(trial, own_trajectory=own_trajectory)
         await _fire_qa_imported(trial.task_id)
     elif kind == "audit":
         await _import_audit_result(trial)

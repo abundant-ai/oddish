@@ -35,6 +35,11 @@ export async function GET(
     const res = await fetch(url, {
       cache: "no-store",
       headers: getAuthHeaders(token),
+      // Without a bound this proxy waits as long as the backend does
+      // (10s+ observed at the tail). 12s covers the slowest backend
+      // response seen in production while still answering before the
+      // platform's function timeout would kill the route uncleanly.
+      signal: AbortSignal.timeout(12_000),
     });
 
     const text = await res.text();
@@ -48,6 +53,12 @@ export async function GET(
 
     return NextResponse.json(data);
   } catch (error) {
+    if (error instanceof Error && error.name === "TimeoutError") {
+      return NextResponse.json(
+        { error: "Backend timed out" },
+        { status: 504 },
+      );
+    }
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
       { status: 503 },
