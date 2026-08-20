@@ -24,6 +24,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
+from oddish.db.migration_locks import run_with_lock_retry
+
 revision: str = "trialkind01"
 down_revision: Union[str, Sequence[str], None] = "dropanalyzers01"
 branch_labels: Union[str, Sequence[str], None] = None
@@ -56,27 +58,37 @@ def _recover_invalid_index(index_name: str) -> None:
 
 
 def upgrade() -> None:
-    # Bound the ALTER's brief ACCESS EXCLUSIVE lock: without a timeout it
-    # queues behind any long-running query, and all traffic queues behind it.
-    op.execute("SET lock_timeout = '8s'")
-    op.add_column(
-        "trials",
-        sa.Column(
-            "kind",
-            sa.String(32),
-            nullable=False,
-            server_default="agent",
+    # The ALTER's ACCESS EXCLUSIVE lock is bounded by a short lock_timeout
+    # (an uncapped wait queues all traffic on ``trials`` behind it) and
+    # retried: one short window regularly loses to in-flight queries on this
+    # busy table — the 2026-08-19 production deploy lost its single 8s
+    # window three runs in a row.
+    run_with_lock_retry(
+        lambda: op.add_column(
+            "trials",
+            sa.Column(
+                "kind",
+                sa.String(32),
+                nullable=False,
+                server_default="agent",
+            ),
+            if_not_exists=True,
         ),
-        if_not_exists=True,
+        table_name="trials",
     )
+
     # Index name matches the model's ``__table_args__`` declaration so the
-    # create_all() index and this one are the same object.
-    with op.get_context().autocommit_block():
+    # create_all() index and this one are the same object. The invalid-index
+    # recovery runs inside the retried step: a lock-timed-out CREATE INDEX
+    # CONCURRENTLY leaves an INVALID index the next attempt must drop first.
+    def _create_index() -> None:
         _recover_invalid_index("ix_trials_kind_non_agent")
         op.execute(
             "CREATE INDEX CONCURRENTLY IF NOT EXISTS "
             "ix_trials_kind_non_agent ON trials (kind) WHERE kind != 'agent'"
         )
+
+    run_with_lock_retry(_create_index, table_name="trials")
 
 
 def downgrade() -> None:
