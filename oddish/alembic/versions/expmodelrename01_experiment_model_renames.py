@@ -1,7 +1,7 @@
 """move model display names onto the experiment
 
 Revision ID: expmodelrename01
-Revises: dropblocks01
+Revises: tvm_metrics_001
 Create Date: 2026-08-19 00:00:00.000000
 
 """
@@ -11,7 +11,7 @@ from typing import Sequence, Union
 from alembic import op
 
 revision: str = "expmodelrename01"
-down_revision: Union[str, Sequence[str], None] = "dropblocks01"
+down_revision: Union[str, Sequence[str], None] = "tvm_metrics_001"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
