@@ -234,7 +234,11 @@ export function ArtifactsViewer({
 
   return (
     <div className="flex h-full flex-col overflow-hidden md:flex-row">
-      <div className="border-border bg-muted/30 flex max-h-[30vh] w-full flex-col overflow-hidden border-b p-2 md:max-h-none md:w-56 md:border-r md:border-b-0 lg:w-64">
+      {/* Stacked layout needs a DEFINITE height (h-[30vh], not max-h): the
+          tree virtualizes against this viewport, and a flex-1 child inside
+          an auto-height column measures ~0 and renders blank. On md+ the
+          row layout stretches the pane to the container's full height. */}
+      <div className="border-border bg-muted/30 flex h-[30vh] w-full flex-col overflow-hidden border-b p-2 md:h-auto md:w-56 md:border-r md:border-b-0 lg:w-64">
         <div className="text-muted-foreground flex items-center justify-between gap-2 px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
           <span>Artifacts</span>
           <span className="text-muted-foreground/70 font-sans text-[10px] font-normal normal-case">
