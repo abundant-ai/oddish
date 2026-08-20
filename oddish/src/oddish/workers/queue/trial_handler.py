@@ -16,6 +16,12 @@ from pathlib import Path
 from harbor.models.environment_type import EnvironmentType
 from harbor.models.job.config import RetryConfig
 from harbor.trial.hooks import TrialEvent, TrialHookEvent
+
+# Only the abundant-ai Harbor fork defines ENVIRONMENT_PROVISIONED; against
+# vanilla harbor the attribute access itself would raise AttributeError on
+# every hook event. Resolve it once so the comparisons below simply never
+# match when the event does not exist.
+_ENVIRONMENT_PROVISIONED = getattr(TrialEvent, "ENVIRONMENT_PROVISIONED", None)
 from harbor.viewer.scanner import JobScanner
 from sqlalchemy import select, update
 
@@ -1086,7 +1092,7 @@ async def _handle_harbor_event(
     elif observed_at.tzinfo is None:
         observed_at = observed_at.replace(tzinfo=timezone.utc)
 
-    if event == TrialEvent.ENVIRONMENT_PROVISIONED:
+    if _ENVIRONMENT_PROVISIONED is not None and event == _ENVIRONMENT_PROVISIONED:
         if sandbox_launch is None:
             raise RuntimeError(
                 f"Trial {trial_id} received environment-provisioned without a "
@@ -1343,7 +1349,7 @@ async def _handle_harbor_event(
 
     except Exception as e:
         console.print(f"[yellow]Hook callback error: {e}[/yellow]")
-        if event == TrialEvent.ENVIRONMENT_PROVISIONED:
+        if _ENVIRONMENT_PROVISIONED is not None and event == _ENVIRONMENT_PROVISIONED:
             raise
 
 

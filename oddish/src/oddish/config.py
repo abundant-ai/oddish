@@ -432,7 +432,10 @@ def deepseek_bare_model_id(model: str) -> str:
     """Strip the ``deepseek/`` prefix and normalize GA aliases."""
     raw = model.strip()
     provider_prefix, bare = split_provider_model_name(raw)
-    if provider_prefix and provider_prefix.strip().lower() in _DEEPSEEK_PROVIDER_PREFIXES:
+    if (
+        provider_prefix
+        and provider_prefix.strip().lower() in _DEEPSEEK_PROVIDER_PREFIXES
+    ):
         bare = bare.strip()
     else:
         bare = raw
@@ -1096,25 +1099,37 @@ PREVIEW_URL_TEMPLATE = os.environ.get(
     "ODDISH_PREVIEW_URL_TEMPLATE",
     "https://abundant-ai-preview--oddish-pr-{n}-api.modal.run",
 )
+STAGING_API_URL = os.environ.get(
+    "ODDISH_STAGING_API_URL",
+    "https://abundant-ai-staging--oddish-staging-api.modal.run",
+)
 
 
 def api_base_url_for_modal_app(app_name: str | None = None) -> str:
     """Derive the deployed backend API base URL from the Modal app identity.
 
     Keys off ``MODAL_APP_NAME`` (baked into every Modal container by
-    ``backend/modal_app.py``; unset in local dev). Returns ``""`` when not
-    running in Modal, so callers fall back or fail fast rather than silently
-    pointing a local sandbox at prod. ``oddish`` -> prod; ``oddish-pr-<n>`` ->
-    that PR's preview URL.
+    ``backend/modal_app.py``; unset in local dev). The mapping is exhaustive
+    and fails closed: ``oddish`` -> prod, ``oddish-staging`` -> staging,
+    ``oddish-pr-<n>`` -> that PR's preview URL, and anything else -> ``""``
+    so callers fail fast (probe/QA sandboxes refuse to start, naming
+    ``ODDISH_PUBLIC_API_BASE_URL`` as the override) rather than silently
+    pointing another environment's sandbox at prod -- an unknown app name
+    used to fall through to the prod URL, which sent staging's QA/audit
+    agents to prod with staging-minted keys and made every fetch 401.
     """
     name = app_name if app_name is not None else os.environ.get("MODAL_APP_NAME")
     if not name:
         return ""
+    if name == "oddish":
+        return DEFAULT_API_URL
+    if name == "oddish-staging":
+        return STAGING_API_URL
     if name.startswith("oddish-pr-"):
         suffix = name[len("oddish-pr-") :]
         if suffix.isdigit():
             return PREVIEW_URL_TEMPLATE.format(n=suffix)
-    return DEFAULT_API_URL
+    return ""
 
 
 class QuotaMode(str, Enum):
