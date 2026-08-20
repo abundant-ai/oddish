@@ -23,7 +23,6 @@ carl_image = (
         "claude-agent-sdk==0.2.110",
         "httpx==0.28.1",
         "asyncpg==0.31.0",
-        "pglast==8.4",
     )
     .env(
         {
