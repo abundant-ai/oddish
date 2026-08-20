@@ -87,7 +87,9 @@ def test_list_fetches_both_axes_by_default():
 
 
 def test_list_can_scope_to_one_axis():
-    result, calls = _invoke(["list", "--kind", "model", "--json"], [(200, [_MODEL_ROW])])
+    result, calls = _invoke(
+        ["list", "--kind", "model", "--json"], [(200, [_MODEL_ROW])]
+    )
     assert result.exit_code == 0, result.output
     assert len(calls) == 1
     assert "cost-excluded-models" in calls[0]["url"]
@@ -110,7 +112,9 @@ def test_add_model_posts_to_the_model_endpoint():
 
 
 def test_add_experiment_uses_the_experiment_field():
-    result, calls = _invoke(["add", "experiment", "glm sweep"], [(200, _EXPERIMENT_ROW)])
+    result, calls = _invoke(
+        ["add", "experiment", "glm sweep"], [(200, _EXPERIMENT_ROW)]
+    )
     assert result.exit_code == 0, result.output
     assert calls[0]["json"] == {"experiment": "glm sweep", "label": ""}
 
@@ -140,6 +144,31 @@ def test_remove_resolves_the_model_name():
     )
     assert result.exit_code == 0, result.output
     assert calls[1]["url"].endswith("/admin/cost-excluded-models/m1")
+
+
+def test_remove_undoes_add_across_routed_spellings():
+    bare = {**_MODEL_ROW, "id": "m2", "model_name": "kimi-k2"}
+    routed = {**_MODEL_ROW, "id": "m3", "model_name": "moonshot/kimi-k2"}
+    result, calls = _invoke(
+        ["remove", "model", "kimi-k2"],
+        [
+            (200, [_MODEL_ROW, bare, routed]),
+            (200, {"deleted": "m2"}),
+            (200, {"deleted": "m3"}),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert [c["url"].rsplit("/", 1)[-1] for c in calls[1:]] == ["m2", "m3"]
+
+
+def test_remove_finds_the_routed_spelling_from_the_typed_one():
+    routed = {**_MODEL_ROW, "id": "m3", "model_name": "moonshot/kimi-k2"}
+    result, calls = _invoke(
+        ["remove", "model", "kimi-k2"],
+        [(200, [_MODEL_ROW, routed]), (200, {"deleted": "m3"})],
+    )
+    assert result.exit_code == 0, result.output
+    assert calls[1]["url"].endswith("/admin/cost-excluded-models/m3")
 
 
 def test_remove_resolves_an_experiment_name():

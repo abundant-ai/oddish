@@ -7,7 +7,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from oddish.config import normalize_model_id
+from oddish.config import model_family_key
 from oddish.cli.config import (
     get_api_url,
     get_auth_headers,
@@ -159,9 +159,7 @@ def list_exclusions(
         _kind(value, json_output=json_output)
 
     payload: dict[str, Any] = {
-        f"{value}s": _request(
-            "GET", api_url, _KINDS[value][0], json_output=json_output
-        )
+        f"{value}s": _request("GET", api_url, _KINDS[value][0], json_output=json_output)
         for value in kinds
     }
 
@@ -242,43 +240,39 @@ def remove_exclusion(
 
     path, _, noun = _kind(kind, json_output=json_output)
     rows = _request("GET", api_url, path, json_output=json_output)
-    refs = {reference}
-    if kind == "model" and (canonical := normalize_model_id(reference)):
-        refs.add(canonical)
 
-    match = next((row for row in rows if row.get("id") == reference), None)
-    if match is None:
-        candidates = [
-            row
-            for row in rows
-            if refs
-            & {
-                row.get("model_name"),
-                row.get("experiment_id"),
-                row.get("experiment_name"),
-            }
+    matches = [row for row in rows if row.get("id") == reference]
+    if not matches and kind == "model":
+        key = model_family_key(reference)
+        matches = [r for r in rows if model_family_key(r.get("model_name")) == key]
+    elif not matches:
+        matches = [
+            r
+            for r in rows
+            if reference in {r.get("experiment_id"), r.get("experiment_name")}
         ]
-        if len(candidates) > 1:
+        if len(matches) > 1:
             _fail(
-                f"'{reference}' matches {len(candidates)} entries; use the row "
+                f"'{reference}' matches {len(matches)} entries; use the row "
                 "id from `oddish cost-exclusions list`.",
                 json_output=json_output,
             )
-        match = candidates[0] if candidates else None
-    if match is None:
+    if not matches:
         _fail(
             f"No excluded {noun} matches '{reference}'. Run "
             "`oddish cost-exclusions list` to see the current entries.",
             json_output=json_output,
         )
 
-    result = _request(
-        "DELETE", api_url, f"{path}/{match['id']}", json_output=json_output
-    )
+    results = [
+        _request("DELETE", api_url, f"{path}/{row['id']}", json_output=json_output)
+        for row in matches
+    ]
     if json_output:
-        print_json(result)
+        print_json(results if len(results) > 1 else results[0])
         return
-    name = match.get("model_name") or match.get("experiment_name") or reference
-    console.print(
-        f"[green]Re-included {noun}[/green] {name} [dim]({match['id']})[/dim]"
-    )
+    for row in matches:
+        name = row.get("model_name") or row.get("experiment_name") or reference
+        console.print(
+            f"[green]Re-included {noun}[/green] {name} [dim]({row['id']})[/dim]"
+        )

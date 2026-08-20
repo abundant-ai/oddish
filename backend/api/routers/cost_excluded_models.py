@@ -4,14 +4,14 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import distinct, or_, select
+from sqlalchemy import distinct, select
 from sqlalchemy.exc import IntegrityError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.routers.cost_exclusions_shared import soft_delete, unavailable
 from auth import AuthContext, require_admin
 from auth.permissions import require_operator_org
-from oddish.config import normalize_model_id
+from oddish.config import model_family_key
 from oddish.core.cost_exclusions import canonical_excluded_model
 from oddish.db import CostExcludedModelModel, TrialModel, get_session
 
@@ -42,29 +42,11 @@ def _response(row: CostExcludedModelModel) -> CostExcludedModelResponse:
 
 
 async def _resolve_models(session: AsyncSession, ref: str) -> list[str]:
-    canonical = canonical_excluded_model(ref)
+    key = model_family_key(ref)
     rows = await session.scalars(
-        select(distinct(TrialModel.model)).where(
-            TrialModel.model.isnot(None),
-            or_(
-                TrialModel.model == ref,
-                TrialModel.model == canonical,
-                TrialModel.model.ilike(f"%/{canonical}"),
-            ),
-        )
+        select(distinct(TrialModel.model)).where(TrialModel.model.isnot(None))
     )
-    return sorted(
-        {
-            m
-            for m in rows
-            if m
-            and (
-                m == ref
-                or normalize_model_id(m) == canonical
-                or (normalize_model_id(m) or "").endswith(f"/{canonical}")
-            )
-        }
-    )
+    return sorted({m for m in rows if m and (m == ref or model_family_key(m) == key)})
 
 
 @router.get("", response_model=list[CostExcludedModelResponse])

@@ -162,6 +162,20 @@ async def test_add_covers_every_stored_spelling(admin_client, monkeypatch):
     ]
 
 
+async def test_add_prefixed_id_covers_the_bare_spelling(admin_client, monkeypatch):
+    session = FakeSession(results=[["grok-free-preview", "xai/grok-free-preview"], []])
+    _install_fake_get_session(monkeypatch, session)
+
+    resp = await admin_client.post(
+        "/admin/cost-excluded-models", json={"model_name": "xai/grok-free-preview"}
+    )
+    assert resp.status_code == 200, resp.text
+    assert sorted(r["model_name"] for r in resp.json()) == [
+        "grok-free-preview",
+        "xai/grok-free-preview",
+    ]
+
+
 async def test_add_unknown_model_is_404(admin_client, monkeypatch):
     _install_fake_get_session(monkeypatch, FakeSession(results=[[]]))
     resp = await admin_client.post(
