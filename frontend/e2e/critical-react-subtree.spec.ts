@@ -409,6 +409,17 @@ test.describe("critical task and trial subtree", () => {
             await route.fulfill({
               status: 202,
               json: {
+                status: "running",
+                job_id: "summary-refresh-p1",
+                retry_after_ms: 25,
+              },
+            });
+            return;
+          }
+          if (summaryGetCount === 3) {
+            await route.fulfill({
+              status: 202,
+              json: {
                 status: "settling",
                 job_id: "summary-refresh-p1",
                 retry_after_ms: 25,
@@ -597,7 +608,7 @@ test.describe("critical task and trial subtree", () => {
     await summaryPost;
     await expect(page.getByText("Replacement summary published")).toBeVisible();
     expect(summaryPostCount).toBe(1);
-    expect(summaryGetCount).toBeGreaterThanOrEqual(3);
+    expect(summaryGetCount).toBeGreaterThanOrEqual(4);
 
     await page.getByRole("tab", { name: "Summary" }).click();
     // The analysis mutation revalidates the canonical trial. A transient

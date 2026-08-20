@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import useSWR from "swr";
 import useSWRMutation from "swr/mutation";
 import type { TrajectorySummary } from "@/lib/types";
@@ -105,12 +106,41 @@ export function useTrajectorySummary({
     fetchTrajectorySummary,
     {
       revalidateOnFocus: false,
-      refreshInterval: (value) =>
-        value && value.status !== "ready" && value.status !== "missing"
-          ? value.retryAfterMs
-          : 0,
     }
   );
+  const resource = summaryQuery.data;
+  const revalidateSummary = summaryQuery.mutate;
+  const pendingResource =
+    resource && resource.status !== "ready" && resource.status !== "missing"
+      ? resource
+      : null;
+  useEffect(() => {
+    if (!summaryUrl || !pendingResource || summaryQuery.error) return;
+
+    let cancelled = false;
+    let timer: number | undefined;
+    function schedulePoll(afterMs: number) {
+      timer = window.setTimeout(async () => {
+        const next = await revalidateSummary();
+        if (
+          cancelled ||
+          !next ||
+          next.status === "ready" ||
+          next.status === "missing"
+        ) {
+          return;
+        }
+        schedulePoll(next.retryAfterMs);
+      }, afterMs);
+    }
+
+    schedulePoll(pendingResource.retryAfterMs);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [pendingResource, revalidateSummary, summaryQuery.error, summaryUrl]);
+
   const refreshMutation = useSWRMutation<TrajectorySummaryResource>(
     canRegenerate ? summaryUrl : null,
     async (url: string) =>
