@@ -68,15 +68,17 @@ from oddish.worker.analysis_result_check import check_analysis_result
 
 logger = logging.getLogger(__name__)
 
-ANALYSIS_TRIAL_KINDS = ("qa", "audit")
+ANALYSIS_TRIAL_KINDS = ("qa", "audit", "summarize")
 QA_RESULT_FILENAME = "qa_result.json"
 AUDIT_RESULT_FILENAME = "audit_result.json"
+SUMMARIZE_RESULT_FILENAME = "summary_result.json"
 
 # The one artifact each kind's agent writes to /logs. The analysis verifier
 # stages it under /logs/verifier so harbor collects it.
 ANALYSIS_ARTIFACTS = {
     "qa": QA_RESULT_FILENAME,
     "audit": AUDIT_RESULT_FILENAME,
+    "summarize": SUMMARIZE_RESULT_FILENAME,
 }
 
 ANALYSIS_TRIAL_MAX_ATTEMPTS = 3
@@ -121,6 +123,12 @@ def analysis_check_payload(kind: str, harbor_config: dict | None) -> dict:
                 get_args(TaskVerdictModel.model_fields["confidence"].annotation)
             ),
             **item_vocabulary,
+        }
+    if kind == "summarize":
+        payload = (harbor_config or {}).get("analysis_payload") or {}
+        return {
+            "kind": "summarize",
+            "target_trial_id": str(payload.get("target_trial_id") or ""),
         }
     return {"kind": "audit", **item_vocabulary}
 
@@ -419,6 +427,90 @@ def build_audit_brief(*, task_name: str) -> str:
 == OUTPUT ==
 Write exactly one file: /logs/{AUDIT_RESULT_FILENAME}
 It must hold the JSON object described in the OUTPUT section above: {{"items": [...]}} where every item carries the ten keys with the exact values that section defines. An empty "items" list means the source is clean. The file must be valid JSON. Do not write anything else to /logs."""
+
+
+def build_summarize_brief(*, task_name: str, target_trial_id: str) -> str:
+    """The brief for a summarize trial: apply the shared taxonomy to one
+    trial's trajectory. Same prompt text the QA brief embeds, so a summary
+    reads the same no matter which kind of trial produced it."""
+    summary = render_summary_instructions(_prompt("prompts/trajectory_summary.txt"))
+    return f"""You are the trajectory summarizer for one trial of the task `{task_name}`. You are in a clean analysis sandbox, not the trial's own environment. Do not solve the task and do not judge the trial; only summarize what its agent did.
+
+Summarize this trial:
+- {target_trial_id}
+
+The oddish-query CLI fetches trial data from the oddish API (logs, trajectories, results, files). Run `node /probe-harness/oddish-query --help` first. Fetch the trial's trajectory before writing anything.
+
+== TRAJECTORY SUMMARY ==
+{summary}
+
+== OUTPUT ==
+Write exactly one file: /logs/{SUMMARIZE_RESULT_FILENAME}
+{{
+  "target_trial_id": "{target_trial_id}",
+  "trajectory_summary": <object with the exact shape given in the trajectory summary section>
+}}
+The file must be valid JSON. Do not write anything else to /logs."""
+
+
+_LIVE_TRIAL_STATUSES = (
+    TrialStatus.PENDING,
+    TrialStatus.QUEUED,
+    TrialStatus.RUNNING,
+    TrialStatus.RETRYING,
+)
+
+
+async def find_live_summarize_trial(
+    session: AsyncSession, target_trial_id: str
+) -> TrialModel | None:
+    """The in-flight summarize trial targeting this trial, if one exists."""
+    return await session.scalar(
+        select(TrialModel)
+        .where(
+            TrialModel.kind == "summarize",
+            TrialModel.superseded_by_trial_id.is_(None),
+            TrialModel.status.in_(_LIVE_TRIAL_STATUSES),
+            TrialModel.harbor_config["analysis_payload"]["target_trial_id"].astext
+            == target_trial_id,
+        )
+        .limit(1)
+    )
+
+
+async def maybe_create_summarize_trial(
+    session: AsyncSession, *, target: TrialModel
+) -> TrialModel | None:
+    """Create one summarize trial for ``target``, or return None when one
+    should not exist.
+
+    Guards:
+    - a summarize trial never gets a summarize trial. The regress terminates
+      because every analysis trial's own row gets the deterministic counted
+      self-summary at settlement instead;
+    - a target with no recorded trajectory would send an agent to fetch
+      nothing;
+    - one live summarize trial per target, so repeated refresh requests are
+      answered by the run already in flight. Best-effort (two truly
+      concurrent creators can both pass the check); the importer overwrites
+      the same column idempotently, so the cost of the race is one duplicate
+      sandbox run, not corrupt state.
+    """
+    if target.kind == "summarize" or not target.has_trajectory:
+        return None
+    if await find_live_summarize_trial(session, target.id) is not None:
+        return None
+    task = await session.get(TaskModel, target.task_id)
+    if task is None:
+        return None
+    return await create_analysis_trial(
+        session,
+        task=task,
+        kind="summarize",
+        brief=build_summarize_brief(task_name=task.name, target_trial_id=target.id),
+        task_version_id=target.task_version_id,
+        payload={"target_trial_id": target.id},
+    )
 
 
 async def maybe_enqueue_audit_trial(
@@ -1020,6 +1112,73 @@ async def _import_audit_result(trial: TrialModel) -> None:
     )
 
 
+async def _import_summarize_result(trial: TrialModel) -> None:
+    """Store a settled summarize trial's artifact onto its target trial.
+
+    Touches nothing but the target's ``trajectory_summary``: no verdict, no
+    task status, no analysis columns — so a failed or stale summarize trial
+    needs no repair path beyond its own trial row recording the failure.
+    """
+    payload = (trial.harbor_config or {}).get("analysis_payload") or {}
+    target_id = str(payload.get("target_trial_id") or "")
+    artifact = None
+    if trial.status == TrialStatus.SUCCESS:
+        artifact = await read_analysis_artifact(trial, SUMMARIZE_RESULT_FILENAME)
+    violations = (
+        check_analysis_result(
+            artifact, analysis_check_payload("summarize", trial.harbor_config)
+        )
+        if artifact is not None
+        else None
+    )
+    if not target_id or artifact is None or violations:
+        if not target_id:
+            detail = "carries no target_trial_id"
+        elif trial.status != TrialStatus.SUCCESS:
+            detail = f"finished {trial.status.value}"
+        elif artifact is None:
+            detail = f"produced no valid {SUMMARIZE_RESULT_FILENAME}"
+        else:
+            detail = "artifact violates the summarize contract: " + "; ".join(
+                violations[:5]
+            )
+        logger.warning("summarize trial %s import skipped: %s", trial.id, detail)
+        return
+    async with get_session() as session:
+        target = await session.get(TrialModel, target_id)
+        if target is None or target.task_id != trial.task_id:
+            logger.warning(
+                "summarize trial %s: target %s no longer exists on task %s; "
+                "dropping its summary",
+                trial.id,
+                target_id,
+                trial.task_id,
+            )
+            return
+        # Enrichment reads the target's trajectory for the counted facts; a
+        # read failure must not lose the summary itself (same rule as the QA
+        # importer).
+        trajectory = None
+        try:
+            from oddish.core.trial_io import read_trial_trajectory
+
+            trajectory = await read_trial_trajectory(target)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "summarize trial %s: trajectory read for %s failed; "
+                "storing summary without derived facts",
+                trial.id,
+                target_id,
+            )
+        target.trajectory_summary = enrich_trajectory_summary(
+            artifact["trajectory_summary"],
+            trajectory=trajectory,
+            model=trial.model,
+            graded_by=trial.id,
+        )
+    logger.info("summarize trial %s: stored summary for trial %s", trial.id, target_id)
+
+
 async def handle_analysis_trial_settled(trial_id: str) -> None:
     """Importer dispatch. Runs after a non-'agent' trial reaches a terminal
     status. Idempotent per kind: each importer's writers CAS or overwrite the
@@ -1048,6 +1207,8 @@ async def handle_analysis_trial_settled(trial_id: str) -> None:
     if kind == "qa":
         await _import_qa_result(trial, own_trajectory=own_trajectory)
         await _fire_qa_imported(trial.task_id)
+    elif kind == "summarize":
+        await _import_summarize_result(trial)
     elif kind == "audit":
         await _import_audit_result(trial)
         # QA admission defers while this audit is live (the QA brief embeds

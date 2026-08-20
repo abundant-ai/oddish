@@ -210,9 +210,15 @@ Shared trial drawers open on Summary and fetch a trajectory only after explicit
 user or URL intent. Collapsed trajectory steps must not mount their message,
 reasoning, tool, or observation bodies; those potentially large bodies mount
 only while the step is expanded. Trajectory summaries are written onto
-`trials.trajectory_summary` by the task's QA trial import; both the public and
-authenticated summary routes are plain column reads (200 with the stored
-summary, 404 on a miss) with no on-demand generation.
+`trials.trajectory_summary` by the task's QA trial import or by a
+`summarize`-kind trial's import; the read path never generates. The public
+summary route stays a plain column read. The authenticated route additionally
+accepts `refresh=true` (TASKS scope, member-created keys refused — the same
+gate as an analysis rerun), which enqueues one summarize trial via
+`maybe_create_summarize_trial` and answers 202
+`{status, job_id, retry_after_ms}`; a plain read whose summary is missing but
+whose summarize trial is in flight also answers 202, so pollers keep waiting.
+The frontend's summary hook already implements this 202-polling contract.
 
 A QA/audit trial's **own** summary is deterministic, never an LLM call:
 settlement (`handle_analysis_trial_settled`) counts one from the run's tool
@@ -233,6 +239,17 @@ link uses as a `#step-` anchor into the QA run. Both writes are best-effort
 telemetry: neither may block or fail the artifact import. The Activity card
 degrades rather than hides when a trial has steps but no stored summary — a
 single gray ungrouped band with real totals — once the summary fetch settles.
+
+The `summarize` trial kind is the LLM path for one trial's summary: its
+brief embeds the same packaged taxonomy prompt the QA brief uses, its agent
+writes `summary_result.json` (`{target_trial_id, trajectory_summary}`,
+validated in-sandbox and at import by the shared checker), and its importer
+overwrites only the target's `trials.trajectory_summary` — no verdict, task,
+or analysis state. `maybe_create_summarize_trial` enforces the guards: never
+for a summarize-kind target (the counted self-summary is the regress
+terminator), never for a target without `has_trajectory`, and at most one
+live summarize trial per target (best-effort; the import is idempotent so a
+creation race costs a duplicate run, not corrupt state).
 
 Trajectory summaries use schema v5. Each taxonomy-valued `components` entry
 contains its `step_ids`, summary, and deterministic `tool_count` and
@@ -259,9 +276,9 @@ a code change that ships with a deploy.
 
 `WorkerJobKind` (in `oddish.db.models`):
 
-- **Active**: `TRIAL` (Harbor trial execution — including `qa` and `audit`
-  kind trials), `TASK_EXPAND` (sweep expansion), `TAG_PROJECT` (tag
-  recompute).
+- **Active**: `TRIAL` (Harbor trial execution — including `qa`, `audit`, and
+  `summarize` kind trials), `TASK_EXPAND` (sweep expansion), `TAG_PROJECT`
+  (tag recompute).
 - **Legacy, enum-only**: `QA`, `VERDICT`, `ANALYSIS`, `QA_REVIEW`,
   `ANALYZER`, `ANALYZER_BLOCK`. QA/audit/analyzer work runs as trials now;
   no handler claims these kinds (workers claim only registered kinds), and

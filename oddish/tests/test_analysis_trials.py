@@ -1532,6 +1532,35 @@ async def test_a_settled_qa_trial_summarizes_its_own_run(monkeypatch):
         assert task.status == TaskStatus.COMPLETED
 
 
+def test_the_summarize_brief_names_its_output_and_target():
+    from oddish.workers.analysis_trials import build_summarize_brief
+
+    brief = build_summarize_brief(task_name="apache-kafka", target_trial_id="t-42")
+    assert "/logs/summary_result.json" in brief
+    assert '"target_trial_id": "t-42"' in brief
+    assert "reading_files" in brief and "debugging" in brief
+    assert "Do not solve the task" in brief
+
+
+def test_the_validator_enforces_the_summarize_contract():
+    from oddish.worker.analysis_result_check import check_analysis_result
+
+    expected = {"kind": "summarize", "target_trial_id": "t-42"}
+    good = {
+        "target_trial_id": "t-42",
+        "trajectory_summary": _good_qa_entry("t-42")["trajectory_summary"],
+    }
+    assert check_analysis_result(good, expected) == []
+    wrong_target = {**good, "target_trial_id": "t-9"}
+    assert any(
+        "target_trial_id" in violation
+        for violation in check_analysis_result(wrong_target, expected)
+    )
+    assert check_analysis_result(
+        {"target_trial_id": "t-42", "trajectory_summary": {}}, expected
+    )
+
+
 @pytest.mark.asyncio
 async def test_reimport_scan_miss_keeps_same_grader_step_anchors(monkeypatch):
     """Needs a database. A healer re-import whose grader-trajectory read
