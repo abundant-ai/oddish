@@ -629,7 +629,9 @@ test.describe("critical task and trial subtree", () => {
     await page.getByRole("button", { name: "Regenerate" }).click();
     await failedSummaryPost;
     await expect(page.getByText("Replacement summary published")).toBeVisible();
-    const regenerationAlert = page.getByRole("alert");
+    const regenerationAlert = page
+      .getByRole("tabpanel", { name: "Trajectory" })
+      .getByRole("alert");
     await expect(regenerationAlert).toContainText(
       "Summary refresh temporarily unavailable"
     );
