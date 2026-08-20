@@ -173,10 +173,40 @@ def test_gke_env_kwargs_explicit_spot_clears_a_flex_default() -> None:
     assert merged["flex_start"] is False
 
 
-def test_gke_env_kwargs_explicit_flex_clears_a_spot_default() -> None:
+def test_gke_env_kwargs_explicit_flex_clears_a_spot_default(monkeypatch) -> None:
+    """The deployment default MUST be spot for this to prove anything.
+
+    With the shipped default (spot off) the assertion below holds whether or
+    not the normalization exists, so the test passed while the branch it
+    covers could be deleted freely.
+    """
+    monkeypatch.setattr(settings, "gke_spot", True)
+    monkeypatch.setattr(settings, "gke_flex_start", False)
     merged = GkeBackend().harbor_env_kwargs({"flex_start": True})
     assert merged["flex_start"] is True
     assert merged["spot"] is False
+
+
+def test_gke_env_kwargs_spot_default_survives_an_unrelated_override(
+    monkeypatch,
+) -> None:
+    """A spot-default deployment keeps spot when the caller names neither flag."""
+    monkeypatch.setattr(settings, "gke_spot", True)
+    monkeypatch.setattr(settings, "gke_flex_start", False)
+    merged = GkeBackend().harbor_env_kwargs({"namespace": "custom-ns"})
+    assert merged["spot"] is True
+    assert merged["flex_start"] is False
+
+
+def test_gke_env_kwargs_flex_false_does_not_disable_a_spot_default(
+    monkeypatch,
+) -> None:
+    """Mirror of the spot=false case: normalization keys on a True, not a False."""
+    monkeypatch.setattr(settings, "gke_spot", True)
+    monkeypatch.setattr(settings, "gke_flex_start", False)
+    merged = GkeBackend().harbor_env_kwargs({"flex_start": False})
+    assert merged["flex_start"] is False
+    assert merged["spot"] is True
 
 
 def test_gke_env_kwargs_explicit_pair_is_left_alone() -> None:

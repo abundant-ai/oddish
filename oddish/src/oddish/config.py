@@ -1520,6 +1520,31 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _reject_both_gke_provisioning_modes(self) -> "Settings":
+        """A deployment cannot ask for flex-start and Spot at once.
+
+        The two settings encode ONE three-valued choice and Harbor rejects the
+        pair. Caught here rather than per trial: ``gke_flex_start`` defaults to
+        True, so an operator who sets only ODDISH_GKE_SPOT=true leaves both
+        true, and every GKE trial then fails the same way -- retried to
+        exhaustion, because the failure is permanent but classified as
+        retryable. Failing at config load turns that into one loud error at
+        deploy.
+
+        Per-submission kwargs are normalized separately in ``GkeBackend``:
+        naming one mode there clears the other. This guard is only about the
+        deployment defaults, which have no caller to disambiguate them.
+        """
+        if self.gke_flex_start and self.gke_spot:
+            raise ValueError(
+                "ODDISH_GKE_FLEX_START and ODDISH_GKE_SPOT cannot both be "
+                "true: Dynamic Workload Scheduler does not support Spot VMs. "
+                "Set ODDISH_GKE_FLEX_START=false to run Spot, or "
+                "ODDISH_GKE_SPOT=false to run flex-start."
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_ec2_configuration(self) -> "Settings":
         if not self.ec2_enabled:
             return self

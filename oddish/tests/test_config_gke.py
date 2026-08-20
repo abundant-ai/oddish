@@ -3,6 +3,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.config import Settings  # noqa: E402
@@ -67,6 +70,30 @@ def test_gke_spot_defaults_off(monkeypatch) -> None:
 
 
 def test_gke_spot_reads_the_environment(monkeypatch) -> None:
+    _clear(monkeypatch)
+    monkeypatch.setenv("ODDISH_GKE_SPOT", "true")
+    monkeypatch.setenv("ODDISH_GKE_FLEX_START", "false")
+    settings = Settings(_env_file=None)
+    assert settings.gke_spot is True
+    assert settings.gke_flex_start is False
+
+
+def test_gke_both_provisioning_modes_true_is_rejected(monkeypatch) -> None:
+    """The deployment-level trap: gke_flex_start defaults to True.
+
+    An operator who sets only ODDISH_GKE_SPOT=true leaves both true, and
+    per-submission normalization cannot help -- there is no caller kwarg to
+    disambiguate. Every GKE trial would then hit Harbor's both-true rejection
+    and retry to exhaustion. Fail once, at config load, instead.
+    """
+    _clear(monkeypatch)
+    monkeypatch.setenv("ODDISH_GKE_SPOT", "true")
+    # ODDISH_GKE_FLEX_START deliberately unset, so it keeps its True default.
+    with pytest.raises(ValidationError, match="cannot both be true"):
+        Settings(_env_file=None)
+
+
+def test_gke_spot_alone_is_fine_when_flex_is_disabled(monkeypatch) -> None:
     _clear(monkeypatch)
     monkeypatch.setenv("ODDISH_GKE_SPOT", "true")
     monkeypatch.setenv("ODDISH_GKE_FLEX_START", "false")
