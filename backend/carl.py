@@ -203,26 +203,24 @@ def dispatch_app_mention(payload: dict) -> None:
         claimed = True
 
         channels = os.environ.get("ODDISH_CARL_ALLOWED_CHANNELS", "").strip()
-        if channels and channel not in {
-            value.strip() for value in channels.split(",") if value.strip()
-        }:
+        channel_set = {value.strip() for value in channels.split(",") if value.strip()}
+        if channel_set and channel not in channel_set:
             _log("channel_not_allowed", event_id=event_id, channel=channel, user=user)
             _notify(channel, thread, "Carl isn't enabled in this channel.", event_id)
             return
 
         allowed = os.environ.get("ODDISH_CARL_ALLOWED_USERS", "").strip()
-        if not allowed:
-            _log("allowlist_unset", event_id=event_id, user=user)
+        allowed_users = {value.strip() for value in allowed.split(",") if value.strip()}
+        if not allowed_users and not channel_set:
+            _log("no_boundary", event_id=event_id, user=user)
             _notify(
                 channel,
                 thread,
-                "Carl's question allowlist isn't configured; refusing to run.",
+                "Carl has no channel or user allowlist configured; refusing to run.",
                 event_id,
             )
             return
-        if not user or user not in {
-            value.strip() for value in allowed.split(",") if value.strip()
-        }:
+        if allowed_users and (not user or user not in allowed_users):
             _log("unauthorized", event_id=event_id, user=user)
             _notify(channel, thread, "Sorry, you aren't authorized to ask Carl.", event_id)
             return

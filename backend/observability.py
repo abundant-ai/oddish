@@ -103,20 +103,44 @@ def configure_logfire(service_name: str) -> bool:
             )
             os.environ["OTEL_RESOURCE_ATTRIBUTES"] = merged
 
+        # Severity policy shared with the portable layer: handled 4xx and
+        # expected Daytona NotFounds record at warn, not error, so
+        # ``level >= error`` means a real failure. See
+        # ``oddish.observability`` for the policy itself.
+        from oddish.observability import (
+            classify_recorded_exception,
+            expected_4xx_response_hook,
+        )
+
+        configure_kwargs: dict = dict(
+            service_name=service_name,
+            service_version=os.environ.get("ODDISH_RELEASE")
+            or os.environ.get("GIT_COMMIT_SHA"),
+            environment=_resolve_environment(),
+            send_to_logfire="if-token-present",
+            console=False,
+        )
         try:
-            logfire.configure(
-                service_name=service_name,
-                service_version=os.environ.get("ODDISH_RELEASE")
-                or os.environ.get("GIT_COMMIT_SHA"),
-                environment=_resolve_environment(),
-                send_to_logfire="if-token-present",
-                console=False,
+            configure_kwargs["advanced"] = logfire.AdvancedOptions(
+                exception_callback=classify_recorded_exception
             )
+        except Exception:
+            logger.warning("logfire AdvancedOptions unavailable", exc_info=True)
+        try:
+            logfire.configure(**configure_kwargs)
         except Exception:
             logger.warning("logfire.configure failed", exc_info=True)
             return False
 
-        _safe_instrument(logfire.instrument_httpx)
+        def _instrument_httpx_with_severity_policy():
+            # Both hook params: async clients only run the async hook, and
+            # logfire's wrapper makes a plain callable safe there.
+            logfire.instrument_httpx(
+                response_hook=expected_4xx_response_hook,
+                async_response_hook=expected_4xx_response_hook,
+            )
+
+        _safe_instrument(_instrument_httpx_with_severity_policy)
         _safe_instrument(logfire.instrument_asyncpg)
         _safe_instrument(logfire.instrument_system_metrics)
         # SQLAlchemy instrumentation walks the expression tree on every

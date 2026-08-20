@@ -989,10 +989,8 @@ class TrialModel(TimestampedMixin, Base):
     )
 
     # What kind of run this row is: ``'agent'`` (the default) is a normal
-    # evaluation run; any other value is a platform analysis agent run
-    # (``'qa'`` / ``'audit'`` arrive with the analysis-trial pipeline).
-    # Nothing writes a non-agent value yet -- the column and its filters land
-    # first so every counter/summer is kind-aware before the writers exist.
+    # evaluation run; ``'qa'``, ``'audit'``, and ``'summarize'`` are platform
+    # analysis-agent runs created by the analysis-trial pipeline.
     kind: Mapped[str] = mapped_column(
         String(32),
         default=AGENT_TRIAL_KIND,
@@ -1103,9 +1101,10 @@ class TrialModel(TimestampedMixin, Base):
         Boolean, default=False, nullable=False, server_default="false"
     )
 
-    # LLM-generated summary of the trajectory; populated lazily on first
-    # request to GET /trials/{id}/trajectory/summary. Replaces the prior
-    # S3-cached `agent/trajectory_summary.json` sibling file.
+    # Summary of the trajectory, written by a task QA import or an explicit
+    # summarize trial import. GET /trials/{id}/trajectory/summary reads this
+    # column; a plain read never starts generation. Replaces the prior S3-cached
+    # `agent/trajectory_summary.json` sibling file.
     trajectory_summary: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     # Analysis data (LLM analysis of this trial)

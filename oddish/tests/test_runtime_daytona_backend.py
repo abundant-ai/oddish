@@ -183,10 +183,15 @@ def test_reap_stale_daytona_sandboxes_ignores_already_deleted_sandbox(
     )
     calls = _fake_daytona(monkeypatch, [sandbox], missing_ids={sandbox.id})
 
-    with caplog.at_level(logging.ERROR, logger="oddish.runtime.backends.daytona"):
+    with caplog.at_level(logging.INFO, logger="oddish.runtime.backends.daytona"):
         deleted_count = asyncio.run(reap_stale_daytona_sandboxes())
 
     assert deleted_count == 0
     assert calls.deleted == []
     assert calls.closed is True
     assert "Failed to delete stale Daytona sandbox" not in caplog.text
+    # The expected outcome is countable, not silent: vendor-burst alerting
+    # counts this key.
+    assert "metric=daytona.sandbox_gone phase=reap external_id=already-gone" in (
+        caplog.text
+    )
