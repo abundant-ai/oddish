@@ -382,3 +382,86 @@ class TestInvalidTaskInADatasetIsNotDroppedSilently:
         assert sorted(p.name for p in found) == ["keep"]
         printed = capsys.readouterr()
         assert "drop" not in (printed.out + printed.err)
+
+
+_TASK_WITH_MARKUP_IN_A_VALUE = """\
+version = "1.0"
+
+[environment]
+os = "[/red]"
+"""
+
+
+class TestExceptionTextIsNotTreatedAsMarkup:
+    """Exception text echoes values straight out of task.toml.
+
+    A value holding square brackets is enough to be read as a Rich markup tag.
+    That raised MarkupError and replaced the diagnostic with a traceback.
+    Config values can also be secrets, so this text must be shown, never
+    interpreted.
+    """
+
+    def test_a_bracketed_value_does_not_raise(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "brackets"
+        _write_minimal_task(task_path, task_toml=_TASK_WITH_MARKUP_IN_A_VALUE)
+
+        error = cli_api.task_load_error(task_path)
+        assert error is not None
+        # Would raise rich.errors.MarkupError before escaping.
+        cli_api.error_console.print(
+            f"[red]x[/red]\n{cli_api.describe_load_error(error)}"
+        )
+
+    def test_the_brackets_survive_as_text(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "brackets"
+        _write_minimal_task(task_path, task_toml=_TASK_WITH_MARKUP_IN_A_VALUE)
+
+        rendered = cli_api.describe_load_error(cli_api.task_load_error(task_path))
+        assert "/red" in rendered
+
+
+class TestSkipReportRespectsTheNameFilters:
+    """A task the caller did not ask for is not their problem."""
+
+    def test_selecting_a_valid_task_is_quiet_about_an_invalid_one(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _write_minimal_task(tmp_path / "good")
+        _write_minimal_task(tmp_path / "bad", task_toml=_TPU_TASK_WITHOUT_TOPOLOGY)
+
+        found = cli_api.get_task_paths_from_local(
+            dataset_path=tmp_path, task_names=["good"]
+        )
+
+        assert sorted(p.name for p in found) == ["good"]
+        printed = capsys.readouterr()
+        assert "bad" not in (printed.out + printed.err)
+
+    def test_excluding_a_task_is_quiet_about_it(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _write_minimal_task(tmp_path / "good")
+        _write_minimal_task(tmp_path / "bad", task_toml=_TPU_TASK_WITHOUT_TOPOLOGY)
+
+        cli_api.get_task_paths_from_local(
+            dataset_path=tmp_path, exclude_task_names=["bad"]
+        )
+
+        printed = capsys.readouterr()
+        assert "bad" not in (printed.out + printed.err)
+
+    def test_selecting_only_an_invalid_task_reports_why(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Harbor drops a rejected task before it applies the filters, so this
+        surfaced as "no tasks matched" and never named the real reason."""
+        _write_minimal_task(tmp_path / "good")
+        _write_minimal_task(tmp_path / "bad", task_toml=_TPU_TASK_WITHOUT_TOPOLOGY)
+
+        with pytest.raises(ValueError):
+            cli_api.get_task_paths_from_local(dataset_path=tmp_path, task_names=["bad"])
+
+        printed = capsys.readouterr()
+        combined = printed.out + printed.err
+        assert "bad" in combined
+        assert "topology" in combined, combined

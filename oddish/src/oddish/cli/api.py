@@ -119,6 +119,18 @@ def holds_task_config(path: Path) -> bool:
     return (path / "task.toml").is_file()
 
 
+def describe_load_error(error: Exception) -> str:
+    """Render an exception for Rich output without letting it act as markup.
+
+    Exception text is untrusted: it echoes values straight out of task.toml.
+    A value holding square brackets -- `os = "[/red]"` is enough -- would be
+    read as a markup tag and raise MarkupError, replacing the diagnostic with
+    a traceback. Config values can also be secrets, so this must never be
+    interpreted, only shown.
+    """
+    return escape(f"{type(error).__name__}: {error}")
+
+
 def task_load_error(path: Path) -> Exception | None:
     """The reason ``Task(path)`` fails, or None when it loads."""
     try:
@@ -172,7 +184,12 @@ def validate_tasks(task_paths: list[Path]) -> list[Path]:
     return valid
 
 
-def report_skipped_tasks(dataset_path: Path, discovered: list[Path]) -> None:
+def report_skipped_tasks(
+    dataset_path: Path,
+    discovered: list[Path],
+    task_names: list[str] | None = None,
+    exclude_task_names: list[str] | None = None,
+) -> None:
     """Name the children that carry a task.toml but did not survive discovery.
 
     Discovery drops a task whose config is rejected, and it does so before
@@ -182,7 +199,9 @@ def report_skipped_tasks(dataset_path: Path, discovered: list[Path]) -> None:
 
     Only children that hold a task.toml are considered, so an unrelated
     directory stays quiet. Only children that actually fail to load are
-    reported, so a task removed by --task-name or -n is not called an error.
+    reported, so a task removed by -n is not called an error. The name filters
+    are applied here too: a task the caller did not ask for is not their
+    problem, and warning about it is noise.
     """
     try:
         children = sorted(p for p in dataset_path.iterdir() if p.is_dir())
@@ -192,11 +211,18 @@ def report_skipped_tasks(dataset_path: Path, discovered: list[Path]) -> None:
     for child in children:
         if child.resolve() in found or not holds_task_config(child):
             continue
+        if task_names and not any(fnmatch(child.name, p) for p in task_names):
+            continue
+        if exclude_task_names and any(
+            fnmatch(child.name, p) for p in exclude_task_names
+        ):
+            continue
         error = task_load_error(child)
         if error is None:
             continue
         error_console.print(
-            f"[yellow]Skipped {child.name}: {type(error).__name__}: {error}[/yellow]"
+            f"[yellow]Skipped {escape(child.name)}: "
+            f"{describe_load_error(error)}[/yellow]"
         )
 
 
@@ -227,7 +253,7 @@ def get_task_paths_from_local(
             ]
         if n_tasks is not None:
             task_paths = task_paths[:n_tasks]
-        report_skipped_tasks(dataset_path, task_paths)
+        report_skipped_tasks(dataset_path, task_paths, task_names, exclude_task_names)
         return task_paths
     else:
         config = DatasetConfig(
@@ -236,9 +262,16 @@ def get_task_paths_from_local(
             exclude_task_names=exclude_task_names,
             n_tasks=n_tasks,
         )
-        task_configs = asyncio.run(config.get_task_configs())
+        try:
+            task_configs = asyncio.run(config.get_task_configs())
+        except ValueError:
+            # Harbor drops a task whose config is rejected BEFORE it applies
+            # the name filters, so asking for one by name reports "no tasks
+            # matched" and never mentions why it was dropped.
+            report_skipped_tasks(dataset_path, [], task_names, exclude_task_names)
+            raise
         task_paths = [tc.path for tc in task_configs if tc.path is not None]
-        report_skipped_tasks(dataset_path, task_paths)
+        report_skipped_tasks(dataset_path, task_paths, task_names, exclude_task_names)
         return task_paths
 
 
@@ -377,15 +410,32 @@ def resolve_local_task_paths(
                     if holds_task_config(local_path)
                     else None
                 )
+                has_task_children = (
+                    any(
+                        holds_task_config(child)
+                        for child in local_path.iterdir()
+                        if child.is_dir()
+                    )
+                    if local_path.is_dir()
+                    else False
+                )
                 if load_error is not None:
                     error_console.print(
-                        f"[red]{local_path} holds a task.toml, but the task "
-                        f"was rejected.[/red]\n"
-                        f"{type(load_error).__name__}: {load_error}"
+                        f"[red]{escape(str(local_path))} holds a task.toml, "
+                        f"but the task was rejected.[/red]\n"
+                        f"{describe_load_error(load_error)}"
+                    )
+                elif has_task_children:
+                    # The directory does hold tasks; none of them loaded, and
+                    # each reason was printed above. Repeating the file list
+                    # here would contradict that.
+                    error_console.print(
+                        f"[red]No task in {escape(str(local_path))} could be "
+                        f"loaded. See the reasons above.[/red]"
                     )
                 else:
                     error_console.print(
-                        f"[red]No valid tasks found in {local_path}[/red]\n"
+                        f"[red]No valid tasks found in {escape(str(local_path))}[/red]\n"
                         "A task directory must contain: task.toml, instruction.md, environment/, tests/"
                     )
                 raise typer.Exit(1)
