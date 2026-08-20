@@ -1,14 +1,11 @@
 /**
- * Shared configuration for pierre components — @pierre/diffs (code + diff
- * rendering) and @pierre/trees (file trees).
- *
- * Pierre renders inside a Shadow DOM, so app styles don't reach it — but CSS
- * custom properties inherit across the shadow boundary. Everything here is
- * wired to the app's own theme variables (which flip with the `.dark` class),
- * so pierre panes take on oddish's palette instead of pierre's stock
- * white/black. Pierre derives all its secondary shades (gutters, headers,
- * separators, diff tints) from `--diffs-*-bg` via color-mix, so setting the
- * base background to the app's card color re-themes the whole component.
+ * Theming for pierre components — @pierre/diffs (code + diffs) and
+ * @pierre/trees (file trees). Pierre renders inside a Shadow DOM, which app
+ * styles can't reach, but CSS custom properties inherit across the boundary,
+ * so everything here maps pierre variables to the app's theme variables.
+ * Pierre derives its secondary shades (gutters, headers, separators, diff
+ * tints) from `--diffs-*-bg` via color-mix, so setting the base background
+ * re-themes the whole component.
  */
 
 export const PIERRE_THEME = {
@@ -31,14 +28,13 @@ export const PIERRE_UNSAFE_CSS = `
 `;
 
 /**
- * Theme bridge for @pierre/trees (its `unsafeCSS` option); `--trees-*-override`
- * is the library's theming surface, like `--diffs-*` above.
- *
- * `color-scheme` must be pinned: the tree resolves defaults — including the
- * file-type icon palette, which has no override variable — via `light-dark()`,
- * which follows the OS preference, not `.dark`. `--app-color-scheme`
- * (globals.css) carries the app theme across the shadow boundary. The
- * transparent background lets the pane's own `bg-muted/30` show through.
+ * @pierre/trees theming (its `unsafeCSS` option); `--trees-*-override` is the
+ * library's theming surface. `color-scheme` must be pinned: the tree resolves
+ * defaults it has no override for (e.g. file-type icon colors) via
+ * `light-dark()`, which follows the OS preference, not `.dark` —
+ * `--app-color-scheme` (globals.css) carries the app theme across the shadow
+ * boundary. The transparent background lets the pane's own `bg-muted/30`
+ * show through.
  */
 export const TREES_UNSAFE_CSS = `
   :host {

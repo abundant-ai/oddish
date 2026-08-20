@@ -17,8 +17,7 @@ import { formatFileSize } from "@/lib/format";
 import { sameFilePath } from "@/lib/file-path";
 import type { LineRange } from "@/lib/line-range";
 
-// Truncate previews of files larger than 100KB so we don't blow up the
-// renderer pane on huge artifacts (matches TaskFilesPanel).
+// Preview truncation threshold; matches TaskFilesPanel.
 const TRUNCATE_THRESHOLD = 100 * 1024;
 
 interface ArtifactFile {
@@ -151,11 +150,8 @@ export function ArtifactsViewer({
     initialFilePathRef.current = initialFilePath;
   });
 
-  // First load: select the deep-linked file if one is addressed (exact path
-  // or suffix), else the first file. We also re-run this if the file set
-  // changes (e.g. trial finishes producing artifacts while the drawer is
-  // open) but only fall back to a fresh selection when the previously
-  // selected path no longer exists.
+  // Re-runs as the listing grows (a live trial keeps producing artifacts);
+  // a still-present selection is kept.
   useEffect(() => {
     if (!entriesByPath.size) {
       setSelectedPath(null);
@@ -305,8 +301,6 @@ function ArtifactContentPane({
     return `${filesUrl}/${encoded}`;
   }, [filesUrl, fullPath]);
 
-  // Scroll back to the top when the selected file changes so the user
-  // doesn't land halfway through a file's content.
   useEffect(() => {
     if (contentRef.current) contentRef.current.scrollTop = 0;
   }, [selectedFile?.path]);
