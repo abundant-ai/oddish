@@ -20,12 +20,16 @@ import {
   STEP_BAND_TITLE,
   TIMELINE_CAPTION,
   TOKEN_BAND_TITLE,
+  UNGROUPED_FALLBACK_CAPTION,
 } from "@/lib/activity-view-model";
 
 interface TrajectoryActivityProps {
   trialId: string;
   steps: TrajectoryStep[];
   summary: TrajectorySummary | null;
+  /** True after a missing summary request settles, when the card should draw
+      the gray ungrouped view instead of waiting for component colors. */
+  showUngroupedFallback: boolean;
   stepIdToIndex: (stepId: number) => number;
   onStepSelect: (index: number) => void;
 }
@@ -34,13 +38,16 @@ export function TrajectoryActivity({
   trialId,
   steps,
   summary,
+  showUngroupedFallback,
   stepIdToIndex,
   onStepSelect,
 }: TrajectoryActivityProps) {
   const cardRef = useRef<HTMLDivElement>(null);
   const [exportError, setExportError] = useState<string | null>(null);
 
-  const model = buildActivityViewModel(steps, summary);
+  const model = buildActivityViewModel(steps, summary, {
+    showUngroupedFallback,
+  });
   if (!model) return null;
 
   const select = (stepId: number) => {
@@ -254,6 +261,11 @@ export function TrajectoryActivity({
         {model.emptyNote && (
           <p className="text-muted-foreground font-mono text-[10.5px]">
             {model.emptyNote}
+          </p>
+        )}
+        {model.fallback && (
+          <p className="text-muted-foreground font-mono text-[10.5px]">
+            {UNGROUPED_FALLBACK_CAPTION}
           </p>
         )}
       </CardContent>

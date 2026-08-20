@@ -114,6 +114,9 @@ interface TrialExploitation {
 interface TrialAnalysis {
   /** Id of the QA trial that wrote this analysis. */
   _graded_by?: string;
+  /** Steps of the QA run whose tool calls named this trial, scanned by the
+      importer — anchors for jumping into the grader's trajectory. */
+  _graded_at_steps?: number[];
   trial_name?: string;
   classification: AnalysisClassification;
   subtype: string;

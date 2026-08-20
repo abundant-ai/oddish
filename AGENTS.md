@@ -214,6 +214,26 @@ only while the step is expanded. Trajectory summaries are written onto
 authenticated summary routes are plain column reads (200 with the stored
 summary, 404 on a miss) with no on-demand generation.
 
+A QA/audit trial's **own** summary is deterministic, never an LLM call:
+settlement (`handle_analysis_trial_settled`) counts one from the run's tool
+calls. `oddish.analyze.trajectory_tool_calls` owns the external ATIF tool-call
+name and string-argument spellings used by activity, provenance, and delegation
+scans. `oddish.analyze.analysis_activity` applies analysis-shaped labels such as
+`fetching_trial_data` / `writing_result`, one component per contiguous
+same-label run and stores it through the same enrichment as graded-trial
+summaries. These payloads carry `generator: "analysis-activity"` and the
+explicit `taxonomy_version = "analysis-activity:v1"`; any semantic change to
+the ordered activity rules must increment that version. Summary prose names
+only actions present in the trajectory, so a failed partial run does not claim
+an unobserved oddish-query fetch or `/logs` artifact write. The same settlement
+scans the QA trajectory's tool-call
+arguments for each graded trial id and stamps the matching step ids onto the
+graded trial's `analysis._graded_at_steps`, which the drawer's "graded by"
+link uses as a `#step-` anchor into the QA run. Both writes are best-effort
+telemetry: neither may block or fail the artifact import. The Activity card
+degrades rather than hides when a trial has steps but no stored summary — a
+single gray ungrouped band with real totals — once the summary fetch settles.
+
 Trajectory summaries use schema v5. Each taxonomy-valued `components` entry
 contains its `step_ids`, summary, and deterministic `tool_count` and
 `duration_ms` metadata. Step count is the length of `step_ids`; the other
