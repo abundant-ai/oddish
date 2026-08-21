@@ -179,8 +179,8 @@ interface TrialDetailPanelProps {
    * entirely — used by the public read-only share view.
    */
   showAnalysis?: boolean;
-  /** Revalidate a selected row against the full trial resource. */
-  revalidateTrial?: boolean;
+  /** Load fields omitted from compact task and experiment trial rows. */
+  requireTrialDetail?: boolean;
   allowDelete?: boolean;
   /** Render content only without ResizableDrawer wrapper */
   contentOnly?: boolean;
@@ -270,8 +270,7 @@ function TrialAnalysisCard({
   // trial, and never stamps this row's analysis_status. Reading that field
   // alone showed "No analysis yet" while the run was live.
   const inProgress =
-    isAnalysisStatusActive(trial.analysis_status) ||
-    taskHasActiveVerdict(task);
+    isAnalysisStatusActive(trial.analysis_status) || taskHasActiveVerdict(task);
   // The qa trial doing the grading right now (kind qa specifically: a live
   // pre-trial audit must not be linked as "the QA run"). Once it settles
   // the importer stamps analysis._graded_by and the "graded by" link below
@@ -403,7 +402,7 @@ function TrialAnalysisCard({
   if (!hasAnalysis && !showQueueButton) return null;
 
   const queueRun = async () => {
-    if (queuing || !actionsReady) return;
+    if (queuing || !actionsReady || queueBlockedReason) return;
     const requestTrialId = trial.id;
     setQueuing(true);
     setQueueError(null);
@@ -620,17 +619,15 @@ function TrialAnalysisCard({
                       ? progressLine
                       : "The task's QA run grades every trial; this trial's result lands when it finishes."}
                   </span>
-                  {!trial.analysis_status &&
-                    liveQaTrialId &&
-                    onOpenGrader && (
-                      <button
-                        type="button"
-                        onClick={() => onOpenGrader(liveQaTrialId)}
-                        className="text-muted-foreground hover:text-foreground self-start font-mono text-[11px] underline decoration-dotted underline-offset-2"
-                      >
-                        view the QA run
-                      </button>
-                    )}
+                  {!trial.analysis_status && liveQaTrialId && onOpenGrader && (
+                    <button
+                      type="button"
+                      onClick={() => onOpenGrader(liveQaTrialId)}
+                      className="text-muted-foreground hover:text-foreground self-start font-mono text-[11px] underline decoration-dotted underline-offset-2"
+                    >
+                      view the QA run
+                    </button>
+                  )}
                 </div>
               ) : hasAnalysis ? (
                 // Analysis state exists but produced no report (e.g. failed
@@ -894,20 +891,18 @@ export function TrialDetailPanel({
   apiBaseUrl = "/api",
   allowRetry = true,
   showAnalysis = true,
-  revalidateTrial = true,
+  requireTrialDetail = true,
   allowDelete = false,
   contentOnly = false,
   paneAction,
 }: TrialDetailPanelProps) {
   const { data: refreshedTrial } = useTrial(
-    isOpen && revalidateTrial ? selectedTrial?.id : null,
-    {
-      apiBaseUrl,
-    }
+    isOpen && requireTrialDetail ? selectedTrial?.id : null,
+    { apiBaseUrl },
   );
   const canonicalTrial =
     refreshedTrial?.id === selectedTrial?.id ? refreshedTrial : null;
-  const actionsReady = !revalidateTrial || canonicalTrial !== null;
+  const actionsReady = !requireTrialDetail || canonicalTrial !== null;
   const trial = canonicalTrial ?? selectedTrial;
   const verifierSummary = embeddedCtrfSummary(trial?.result);
   const router = useRouter();

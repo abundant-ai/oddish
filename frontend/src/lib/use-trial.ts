@@ -1,6 +1,6 @@
 "use client";
 
-import useSWR, { type SWRResponse } from "swr";
+import useSWR, { preload, type SWRResponse } from "swr";
 import type { Trial } from "@/lib/types";
 
 /** Returns true while the trial's analysis is queued or running on the server. */
@@ -46,6 +46,10 @@ async function trialFetcher(url: string): Promise<Trial> {
  */
 export function trialKey(apiBaseUrl: string, trialId: string): string {
   return `${apiBaseUrl}/trials/${encodeURIComponent(trialId)}`;
+}
+
+export function preloadTrial(apiBaseUrl: string, trialId: string) {
+  return preload(trialKey(apiBaseUrl, trialId), trialFetcher);
 }
 
 /**
