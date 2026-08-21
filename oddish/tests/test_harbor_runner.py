@@ -3511,6 +3511,7 @@ def _make_retry_decision_trial(*, attempts: int = 1, max_attempts: int = 6):
     return SimpleNamespace(
         id="trial-1",
         task_id="task-retry-gate",
+        kind="agent",
         model="gpt-5",
         status=trial_handler.TrialStatus.RUNNING,
         attempts=attempts,
@@ -3622,6 +3623,49 @@ def test_store_trial_results_still_retries_unknown_exception(monkeypatch):
 
     assert trial.status == trial_handler.TrialStatus.RETRYING
     assert trial.finished_at is None
+
+
+@pytest.mark.parametrize(
+    ("attempts", "expected_status"),
+    [
+        (1, trial_handler.TrialStatus.RETRYING),
+        (3, trial_handler.TrialStatus.FAILED),
+    ],
+)
+def test_analysis_artifact_upload_failure_cannot_settle_successfully(
+    monkeypatch, attempts, expected_status
+):
+    """A verifier reward is unusable until an analysis artifact is durable."""
+    trial = _make_retry_decision_trial(attempts=attempts, max_attempts=3)
+    trial.kind = "summarize"
+    _install_retry_decision_session_fakes(monkeypatch, trial)
+
+    outcome = harbor_runner.HarborOutcome(
+        reward=1.0,
+        error=None,
+        exit_code=0,
+        duration_sec=5.0,
+        job_result_path=Path("/tmp/result.json"),
+        job_dir=Path("/tmp/job"),
+    )
+    upload_error = "Failed to upload trial results to S3: TimeoutError: timed out"
+
+    terminal, completed = asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id=trial.id,
+            outcome=outcome,
+            trial_s3_key=None,
+            execution_error=None,
+            artifact_upload_error=upload_error,
+            trial_attempt=trial.attempts,
+        )
+    )
+
+    assert trial.status == expected_status
+    assert trial.reward is None
+    assert trial.error_message == upload_error
+    assert terminal is (expected_status == trial_handler.TrialStatus.FAILED)
+    assert completed is (expected_status == trial_handler.TrialStatus.FAILED)
 
 
 def test_store_trial_results_retries_when_exception_type_is_missing(monkeypatch):

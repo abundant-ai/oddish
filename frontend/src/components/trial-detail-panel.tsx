@@ -1890,6 +1890,7 @@ export function TrialDetailPanel({
               trialId={trial.id}
               hasTrajectory={trial.has_trajectory}
               apiBaseUrl={apiBaseUrl}
+              canRegenerateSummary={showAnalysis}
             />
           </ActiveTabContent>
         </div>

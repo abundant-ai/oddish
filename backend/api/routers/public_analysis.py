@@ -28,7 +28,7 @@ async def get_public_trial_trajectory_summary(public_token: str, trial_id: str) 
         if trial is None:
             raise HTTPException(status_code=404, detail="Trial not found")
         summary = trial.trajectory_summary
-    if not summary:
+    if summary is None:
         raise HTTPException(
             status_code=404, detail="No trajectory summary for this trial"
         )

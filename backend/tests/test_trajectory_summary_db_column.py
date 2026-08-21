@@ -20,3 +20,12 @@ def test_trajectory_summary_attribute_is_mapped():
 def test_trajectory_summary_defaults_to_none():
     trial = TrialModel()
     assert trial.trajectory_summary is None
+
+
+def test_trajectory_summary_refresh_pointer_is_plain_nullable_column():
+    trial = TrialModel()
+    trial.trajectory_summary_refresh_trial_id = "task-1-9"
+    assert trial.trajectory_summary_refresh_trial_id == "task-1-9"
+    column = TrialModel.__table__.columns["trajectory_summary_refresh_trial_id"]
+    assert column.nullable is True
+    assert not column.foreign_keys

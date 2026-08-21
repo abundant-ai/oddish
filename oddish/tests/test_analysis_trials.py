@@ -1561,6 +1561,28 @@ def test_the_validator_enforces_the_summarize_contract():
     )
 
 
+@pytest.mark.asyncio
+async def test_analysis_artifact_storage_errors_remain_retryable(monkeypatch):
+    """A storage outage must reach the cleanup retry path, not look absent."""
+    from types import SimpleNamespace
+
+    from oddish.workers import analysis_trials
+
+    class UnavailableStorage:
+        async def list_objects_all(self, _prefix):
+            raise TimeoutError("storage timed out")
+
+    monkeypatch.setattr(
+        analysis_trials, "get_storage_client", lambda: UnavailableStorage()
+    )
+
+    with pytest.raises(TimeoutError, match="storage timed out"):
+        await analysis_trials.read_analysis_artifact(
+            SimpleNamespace(id="task-1-9", trial_s3_key="trials/task-1-9/"),
+            "summary_result.json",
+        )
+
+
 async def _seed_summarize_targets(
     prefix: str, specs: list[tuple[str, str, bool]]
 ) -> tuple[str, dict[str, str]]:
@@ -1650,6 +1672,8 @@ async def test_summarize_creation_accepts_only_agent_targets_and_imports_only_su
         )
         assert created is not None
         summarize_id = created.id
+        target = await session.get(TrialModel, ids["agent"])
+        assert target.trajectory_summary_refresh_trial_id == summarize_id
 
     async with get_session() as session:
         target = await session.get(TrialModel, ids["agent"])
@@ -1677,10 +1701,69 @@ async def test_summarize_creation_accepts_only_agent_targets_and_imports_only_su
         target = await session.get(TrialModel, ids["agent"])
         assert target.task_id == task_id
         assert target.trajectory_summary["_graded_by"] == summarize_id
+        assert target.trajectory_summary_refresh_trial_id is None
         assert target.analysis == {"sentinel": True}
         for label in ("qa", "audit", "summarize"):
             row = await session.get(TrialModel, ids[label])
             assert row.trajectory_summary is None
+
+
+@pytest.mark.asyncio
+async def test_missing_summarize_artifact_fails_refresh_and_allows_replacement(
+    monkeypatch,
+):
+    """Needs PostgreSQL. A permanently absent artifact must not stay settling."""
+    if not URL:
+        pytest.skip("ODDISH_DATABASE_URL not set")
+    from oddish.db import TrialStatus, get_session, init_db
+    from oddish.workers import analysis_trials
+    from oddish.workers.analysis_trials import (
+        get_or_create_summarize_trial,
+        handle_analysis_trial_settled,
+    )
+
+    await init_db()
+    _, ids = await _seed_summarize_targets(
+        "summarize-missing-artifact", [("agent", "agent", True)]
+    )
+    target_id = ids["agent"]
+    async with get_session() as session:
+        summarize = await get_or_create_summarize_trial(
+            session, target_trial_id=target_id
+        )
+        assert summarize is not None
+        summarize_id = summarize.id
+    async with get_session() as session:
+        summarize = await session.get(TrialModel, summarize_id)
+        summarize.status = TrialStatus.SUCCESS
+        summarize.reward = 1.0
+
+    async def missing_artifact(_trial, _filename):
+        return None
+
+    monkeypatch.setattr(
+        analysis_trials, "read_analysis_artifact", missing_artifact
+    )
+    await handle_analysis_trial_settled(summarize_id)
+
+    async with get_session() as session:
+        target = await session.get(TrialModel, target_id)
+        failed = await session.get(TrialModel, summarize_id)
+        assert target.trajectory_summary_refresh_trial_id == summarize_id
+        assert failed.status == TrialStatus.FAILED
+        assert failed.reward is None
+        assert failed.error_message == (
+            "Trajectory summary import failed: produced no valid summary_result.json"
+        )
+
+    async with get_session() as session:
+        replacement = await get_or_create_summarize_trial(
+            session, target_trial_id=target_id
+        )
+        assert replacement is not None
+        assert replacement.id != summarize_id
+        target = await session.get(TrialModel, target_id)
+        assert target.trajectory_summary_refresh_trial_id == replacement.id
 
 
 @pytest.mark.asyncio
@@ -1732,6 +1815,92 @@ async def test_concurrent_summarize_creation_returns_one_trial_and_one_worker_jo
         ).all()
         assert [trial.id for trial in summarize_trials] == [first_id]
         assert len(jobs) == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_summarize_creation_for_two_targets_reserves_unique_ids():
+    """Needs PostgreSQL. The task lock serializes ids across target rows."""
+    if not URL:
+        pytest.skip("ODDISH_DATABASE_URL not set")
+    import asyncio
+
+    from oddish.db import get_session, init_db
+    from oddish.workers.analysis_trials import get_or_create_summarize_trial
+
+    await init_db()
+    _, ids = await _seed_summarize_targets(
+        "summarize-two-targets",
+        [("first", "agent", True), ("second", "agent", True)],
+    )
+
+    async def request_summary(target_id: str) -> str:
+        async with get_session() as session:
+            trial = await get_or_create_summarize_trial(
+                session, target_trial_id=target_id
+            )
+            assert trial is not None
+            return trial.id
+
+    first_id, second_id = await asyncio.gather(
+        request_summary(ids["first"]), request_summary(ids["second"])
+    )
+    assert first_id != second_id
+
+    async with get_session() as session:
+        first = await session.get(TrialModel, ids["first"])
+        second = await session.get(TrialModel, ids["second"])
+        assert first.trajectory_summary_refresh_trial_id == first_id
+        assert second.trajectory_summary_refresh_trial_id == second_id
+
+
+@pytest.mark.asyncio
+async def test_older_summarize_import_cannot_overwrite_newer_refresh(monkeypatch):
+    """Needs PostgreSQL. Publication compares the target pointer under lock."""
+    if not URL:
+        pytest.skip("ODDISH_DATABASE_URL not set")
+    from oddish.db import TrialStatus, get_session, init_db
+    from oddish.workers import analysis_trials
+    from oddish.workers.analysis_trials import (
+        get_or_create_summarize_trial,
+        handle_analysis_trial_settled,
+    )
+
+    await init_db()
+    _, ids = await _seed_summarize_targets(
+        "summarize-stale-import", [("agent", "agent", True)]
+    )
+    target_id = ids["agent"]
+    async with get_session() as session:
+        older = await get_or_create_summarize_trial(session, target_trial_id=target_id)
+        assert older is not None
+        older_id = older.id
+    async with get_session() as session:
+        older = await session.get(TrialModel, older_id)
+        older.status = TrialStatus.FAILED
+    async with get_session() as session:
+        newer = await get_or_create_summarize_trial(session, target_trial_id=target_id)
+        assert newer is not None
+        newer_id = newer.id
+        assert newer_id != older_id
+    async with get_session() as session:
+        target = await session.get(TrialModel, target_id)
+        target.trajectory_summary = {"sentinel": "newer publication pending"}
+        older = await session.get(TrialModel, older_id)
+        older.status = TrialStatus.SUCCESS
+
+    async def read_artifact(_trial, _filename):
+        return {
+            "target_trial_id": target_id,
+            "trajectory_summary": _good_qa_entry(target_id)["trajectory_summary"],
+        }
+
+    monkeypatch.setattr(analysis_trials, "read_analysis_artifact", read_artifact)
+    await handle_analysis_trial_settled(older_id)
+
+    async with get_session() as session:
+        target = await session.get(TrialModel, target_id)
+        assert target.trajectory_summary == {"sentinel": "newer publication pending"}
+        assert target.trajectory_summary_refresh_trial_id == newer_id
 
 
 @pytest.mark.asyncio
