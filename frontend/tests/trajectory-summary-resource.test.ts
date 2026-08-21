@@ -12,8 +12,8 @@ const response = (status: number, statusText = "") => ({
 test("parses a published summary", () => {
   const summary = { schema_version: 5, summary: "done", components: [] };
   assert.deepEqual(parseTrajectorySummaryResponse(response(200), summary), {
-    status: "ready",
     summary,
+    refresh: null,
   });
 });
 
@@ -22,7 +22,7 @@ test("maps 404 to the renderable missing state", () => {
     parseTrajectorySummaryResponse(response(404, "Not Found"), {
       detail: "No trajectory summary",
     }),
-    { status: "missing" }
+    { summary: null, refresh: null }
   );
 });
 
@@ -30,29 +30,44 @@ for (const status of ["queued", "running", "retrying", "settling"] as const) {
   test(`parses the ${status} lifecycle state`, () => {
     assert.deepEqual(
       parseTrajectorySummaryResponse(response(202), {
-        status,
-        job_id: "task-1-9",
-        retry_after_ms: 3000,
+        summary: null,
+        refresh: {
+          status,
+          job_id: "task-1-9",
+          retry_after_ms: 3000,
+        },
       }),
       {
-        status,
         summary: null,
-        jobId: "task-1-9",
-        retryAfterMs: 3000,
+        refresh: {
+          status,
+          jobId: "task-1-9",
+          retryAfterMs: 3000,
+        },
       }
     );
   });
 }
 
-test("preserves a failed refresh HTTP response", () => {
-  assert.throws(
-    () =>
-      parseTrajectorySummaryResponse(response(409, "Conflict"), {
+test("preserves a published summary after its refresh fails", () => {
+  const summary = { schema_version: 5, summary: "published", components: [] };
+  assert.deepEqual(
+    parseTrajectorySummaryResponse(response(200), {
+      summary,
+      refresh: {
+        status: "failed",
+        job_id: "task-1-9",
         detail: "Trajectory summary refresh failed",
-      }),
-    (error: Error & { status?: number }) =>
-      error.message === "Trajectory summary refresh failed" &&
-      error.status === 409
+      },
+    }),
+    {
+      summary,
+      refresh: {
+        status: "failed",
+        jobId: "task-1-9",
+        detail: "Trajectory summary refresh failed",
+      },
+    }
   );
 });
 
@@ -60,11 +75,14 @@ test("rejects an unknown pending status instead of assuming queued", () => {
   assert.throws(
     () =>
       parseTrajectorySummaryResponse(response(202), {
-        status: "blocked",
-        job_id: "task-1-9",
-        retry_after_ms: 3000,
+        summary: null,
+        refresh: {
+          status: "blocked",
+          job_id: "task-1-9",
+          retry_after_ms: 3000,
+        },
       }),
-    /Malformed trajectory summary pending response/
+    /Malformed trajectory summary refresh response/
   );
 });
 
@@ -72,10 +90,10 @@ test("rejects a missing job id", () => {
   assert.throws(
     () =>
       parseTrajectorySummaryResponse(response(202), {
-        status: "queued",
-        retry_after_ms: 3000,
+        summary: null,
+        refresh: { status: "queued", retry_after_ms: 3000 },
       }),
-    /Malformed trajectory summary pending response/
+    /Malformed trajectory summary refresh response/
   );
 });
 
@@ -83,10 +101,13 @@ test("rejects a non-positive retry interval", () => {
   assert.throws(
     () =>
       parseTrajectorySummaryResponse(response(202), {
-        status: "queued",
-        job_id: "task-1-9",
-        retry_after_ms: 0,
+        summary: null,
+        refresh: {
+          status: "queued",
+          job_id: "task-1-9",
+          retry_after_ms: 0,
+        },
       }),
-    /Malformed trajectory summary pending response/
+    /Malformed trajectory summary refresh response/
   );
 });

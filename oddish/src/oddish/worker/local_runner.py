@@ -43,6 +43,7 @@ from oddish.db import (
     get_session,
 )
 from oddish.core.harbor_artifacts import cache_write_tokens_from_trajectory
+from oddish.core.llm_key_fingerprint import platform_key_hash_for_provider
 from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
 from oddish.db.models import WorkerJobKind, WorkerJobModel, WorkerJobStatus
@@ -863,6 +864,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
             if not owns_outcome and prev_cost_usd is not None:
                 if trial.cost_usd is None or trial.cost_usd < prev_cost_usd:
                     trial.cost_usd = prev_cost_usd
+            trial.llm_key_hash = platform_key_hash_for_provider(provider)
             log_unpriced_trial_if_needed(
                 cost_usd=trial.cost_usd,
                 trial_id=trial.id,

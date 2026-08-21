@@ -29,6 +29,7 @@ from sqlalchemy import and_, case, func, or_
 from oddish.config import settings
 from oddish.core.cost_exclusions import (
     not_excluded_experiment_filter,
+    not_excluded_llm_key_filter,
     not_excluded_model_filter,
 )
 from oddish.db import AGENT_TRIAL_KIND, TrialModel, TrialOrigin
@@ -89,6 +90,7 @@ def first_party_spend_filter():
         TrialModel.origin == TrialOrigin.ODDISH,
         TrialModel.kind == AGENT_TRIAL_KIND,
         not_combine_copy_filter(),
+        not_excluded_llm_key_filter(),
         not_excluded_model_filter(),
         not_excluded_experiment_filter(),
     )

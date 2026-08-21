@@ -24,7 +24,15 @@ type ExcludedExperiment = {
   created_at: string;
 };
 
-type ExcludedRow = ExcludedModel | ExcludedExperiment;
+type ExcludedKey = {
+  id: string;
+  key_hint: string;
+  label: string;
+  created_by: string | null;
+  created_at: string;
+};
+
+type ExcludedRow = ExcludedModel | ExcludedExperiment | ExcludedKey;
 
 function backendError(body: unknown, fallback: string): string {
   const { detail, error } = (body ?? {}) as {
@@ -44,6 +52,7 @@ function ExclusionList<T extends ExcludedRow>({
   emptyLabel,
   primary,
   secondary,
+  inputType = "text",
 }: {
   endpoint: string;
   field: string;
@@ -52,17 +61,20 @@ function ExclusionList<T extends ExcludedRow>({
   emptyLabel: string;
   primary: (row: T) => string;
   secondary: (row: T) => string | null;
+  inputType?: "text" | "password";
 }) {
   const { data, error, isLoading, mutate } = useSWR<T[]>(endpoint, fetcher);
 
   const [reference, setReference] = useState("");
   const [label, setLabel] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [mutation, setMutation] = useState<
+    { kind: "add" } | { kind: "remove"; id: string } | null
+  >(null);
   const [formError, setFormError] = useState<string | null>(null);
 
   async function add() {
-    if (!reference.trim()) return;
-    setBusy(true);
+    if (!reference.trim() || mutation) return;
+    setMutation({ kind: "add" });
     setFormError(null);
     try {
       const res = await fetch(endpoint, {
@@ -81,27 +93,47 @@ function ExclusionList<T extends ExcludedRow>({
       }
       setReference("");
       setLabel("");
-      await mutate();
+      try {
+        await mutate();
+      } catch {
+        setFormError("Added, but failed to refresh the list.");
+      }
+    } catch {
+      setFormError("Failed to add.");
     } finally {
-      setBusy(false);
+      setMutation(null);
     }
   }
 
   async function remove(id: string) {
+    if (mutation) return;
+    setMutation({ kind: "remove", id });
     setFormError(null);
-    const res = await fetch(`${endpoint}/${id}`, { method: "DELETE" });
-    if (!res.ok) {
-      setFormError(
-        backendError(await res.json().catch(() => ({})), "Failed to remove.")
-      );
+    try {
+      const res = await fetch(`${endpoint}/${id}`, { method: "DELETE" });
+      if (!res.ok) {
+        setFormError(
+          backendError(await res.json().catch(() => ({})), "Failed to remove.")
+        );
+        return;
+      }
+      try {
+        await mutate();
+      } catch {
+        setFormError("Removed, but failed to refresh the list.");
+      }
+    } catch {
+      setFormError("Failed to remove.");
+    } finally {
+      setMutation(null);
     }
-    await mutate();
   }
 
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-start gap-2">
         <Input
+          type={inputType}
           placeholder={placeholder}
           value={reference}
           onChange={(e) => setReference(e.target.value)}
@@ -113,7 +145,7 @@ function ExclusionList<T extends ExcludedRow>({
           onChange={(e) => setLabel(e.target.value)}
           className="w-48"
         />
-        <Button onClick={add} disabled={busy || !reference.trim()}>
+        <Button onClick={add} disabled={mutation !== null || !reference.trim()}>
           {addLabel}
         </Button>
       </div>
@@ -144,8 +176,15 @@ function ExclusionList<T extends ExcludedRow>({
                   </span>
                 )}
               </div>
-              <Button variant="ghost" size="sm" onClick={() => remove(row.id)}>
-                Remove
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => remove(row.id)}
+                disabled={mutation !== null}
+              >
+                {mutation?.kind === "remove" && mutation.id === row.id
+                  ? "Removing…"
+                  : "Remove"}
               </Button>
             </div>
           ))}
@@ -195,6 +234,24 @@ export function CostExclusionsCard() {
             emptyLabel="No experiments excluded."
             primary={(row) => row.experiment_name || row.experiment_id}
             secondary={(row) => row.experiment_id}
+          />
+        </section>
+
+        <section className="space-y-2">
+          <h3 className="text-sm font-medium">Provider keys</h3>
+          <p className="text-muted-foreground text-sm">
+            Trials funded by this provider key stop counting. Only a one-way
+            hash and the last four characters are stored.
+          </p>
+          <ExclusionList<ExcludedKey>
+            endpoint="/api/admin/cost-excluded-keys"
+            field="key"
+            placeholder="Provider API key"
+            inputType="password"
+            addLabel="Exclude key"
+            emptyLabel="No provider keys excluded."
+            primary={(row) => `••••${row.key_hint}`}
+            secondary={() => null}
           />
         </section>
       </CardContent>

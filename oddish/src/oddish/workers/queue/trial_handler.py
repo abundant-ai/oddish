@@ -45,6 +45,7 @@ from oddish.db import (
     get_session,
     utcnow,
 )
+from oddish.core.llm_key_fingerprint import trial_llm_key_hash
 from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.db.storage import get_storage_client, resolve_task_directory
 from oddish.model_pricing import is_native_cost_trusted, settle_cost_usd
@@ -1610,6 +1611,12 @@ async def run_trial_job(
             agent=prepared_trial.trial_agent,
         )
     byok_env = byok_resolution.env if byok_resolution else None
+    funding_key_hash = trial_llm_key_hash(
+        settings.get_provider_for_trial(
+            prepared_trial.trial_agent, prepared_trial.trial_model
+        ),
+        byok_env,
+    )
     claim = update(TrialModel).where(
         TrialModel.id == trial_id,
         TrialModel.finished_at.is_(None),
@@ -1618,7 +1625,9 @@ async def run_trial_job(
     if worker_id is not None:
         claim = claim.where(TrialModel.current_worker_id == worker_id)
     async with get_session() as session:
-        claimed = await session.execute(claim.values(updated_at=utcnow()))
+        claimed = await session.execute(
+            claim.values(llm_key_hash=funding_key_hash, updated_at=utcnow())
+        )
     if not getattr(claimed, "rowcount", 0):
         return
 
