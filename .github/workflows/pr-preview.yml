@@ -180,16 +180,37 @@ jobs:
       # this branch merges.
       ODDISH_GKE_ENABLED: "true"
       ODDISH_GKE_PROJECT_ID: "abundant-default"
-      # us-east5 to match the task under test. Its flex-start v6e zones are
-      # us-east5-a and us-east5-b, and the task names exactly those, so the
-      # cluster and the task agree on where the pod can land.
-      ODDISH_GKE_REGION: "us-east5"
+      # us-east1 to match the task under test, which names us-east1-d.
+      #
+      # This was us-east5 + flex-start, and that pairing cannot get a node
+      # right now. Flex-start reaches a much narrower zone set than the other
+      # two modes: harbor's GKE_TPU_FLEX_START_ZONES for tpu-v6e-slice is only
+      # (asia-northeast1-b, us-east5-a, us-east5-b), and both US entries have
+      # been out of v6e for hours -- a trial there sits Pending for its whole
+      # readiness window and dies having never been offered a node.
+      #
+      # The wider GKE_TPU_ZONES adds us-east1-d, us-central1-b and
+      # us-south1-ai1b, and none of those are reachable with flex-start. So
+      # the mode has to move with the region. us-east1-d holds 1536
+      # preemptible v6e against us-east5's 256 and carries no CT6E chip cap.
+      ODDISH_GKE_REGION: "us-east1"
+      # Artifact Registry stays in us-east5, where oddish-envs and every
+      # already-built task image live. A cross-region pull costs a little
+      # latency on first pull; a rebuild costs minutes.
       ODDISH_GKE_REGISTRY_LOCATION: "us-east5"
       ODDISH_GKE_REGISTRY_NAME: "oddish-envs"
       ODDISH_GKE_AUTO_PROVISION_CLUSTER: "true"
-      # Flex-start queues for capacity instead of failing outright. One key,
-      # three values: "on-demand", "spot", "flex-start".
-      ODDISH_GKE_PROVISIONING_MODE: "flex-start"
+      # Spot takes capacity now or fails, and is offered in every zone the
+      # accelerator exists in rather than the few that serve flex-start. It
+      # is preemptible, which is the wrong trade for a long agent run and the
+      # right one for proving a node can be obtained at all. One key, three
+      # values: "on-demand", "spot", "flex-start".
+      ODDISH_GKE_PROVISIONING_MODE: "spot"
+      # Build a task image that is not in Artifact Registry yet, instead of
+      # hard-failing on require_prebuilt_image (which GkeBackend always sets).
+      # staging-deploy.yml and modal-deploy.yml both set this; the preview did
+      # not, so a preview trial could never build a missing image.
+      ODDISH_GKE_AUTO_BUILD_MISSING_IMAGE: "true"
       ODDISH_MODAL_API_MIN_CONTAINERS: "0"
       ODDISH_MODAL_API_BUFFER_CONTAINERS: "0"
       ODDISH_MODAL_API_MAX_CONTAINERS: "2"
