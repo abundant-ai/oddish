@@ -167,6 +167,30 @@ jobs:
       MODAL_SECRET_ENVIRONMENT: main
       EXPECTED_MODAL_API_URL: ${{ needs.detect-changes.outputs.preview_api_url }}
       UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
+      # TEMPORARY -- REVERT BEFORE MERGE.
+      # Previews are GKE-less by default, so `--env gke` is not in
+      # ALLOWED_CLOUD_ENVIRONMENTS and a TPU submission is refused. This
+      # branch exists to give a GKE TPU change an end-to-end run, which needs
+      # a preview that can actually run a GKE trial. Setting the flag
+      # attaches the oddish-gcp secret (GCP service-account credentials) to
+      # this preview app and lets its trials create real clusters and spend
+      # real money in the project below.
+      #
+      # Do not copy this block to another pull request, and delete it before
+      # this branch merges.
+      ODDISH_GKE_ENABLED: "true"
+      ODDISH_GKE_PROJECT_ID: "abundant-default"
+      # us-east5 to match the task under test. Its flex-start v6e zones are
+      # us-east5-a and us-east5-b, and the task names exactly those, so the
+      # cluster and the task agree on where the pod can land.
+      ODDISH_GKE_REGION: "us-east5"
+      ODDISH_GKE_REGISTRY_LOCATION: "us-east5"
+      ODDISH_GKE_REGISTRY_NAME: "oddish-envs"
+      ODDISH_GKE_AUTO_PROVISION_CLUSTER: "true"
+      # Flex-start queues for capacity instead of failing. Both must never be
+      # set: harbor rejects the pair because DWS does not support Spot VMs.
+      ODDISH_GKE_FLEX_START: "true"
+      ODDISH_GKE_SPOT: "false"
       ODDISH_MODAL_API_MIN_CONTAINERS: "0"
       ODDISH_MODAL_API_BUFFER_CONTAINERS: "0"
       ODDISH_MODAL_API_MAX_CONTAINERS: "2"
