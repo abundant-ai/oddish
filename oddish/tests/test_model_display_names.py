@@ -49,16 +49,25 @@ class _Exp:
         self.public_model_renames = renames
 
 
-def test_migration_preserves_live_global_aliases_before_dropping_the_table():
+def test_migration_drops_global_aliases_without_copying_them():
     migration = (
         Path(__file__).resolve().parents[1]
         / "alembic/versions/expmodelrename01_experiment_model_renames.py"
     ).read_text()
 
-    backfill = migration.index("UPDATE experiments")
-    drop = migration.index("DROP TABLE IF EXISTS model_display_names")
-    assert backfill < drop
-    assert "WHERE deleted_at IS NULL" in migration[backfill - 250 : drop]
+    assert "DROP TABLE IF EXISTS model_display_names" in migration
+    assert "UPDATE experiments" not in migration
+
+
+def test_followup_migration_removes_only_learnability_aliases():
+    migration = (
+        Path(__file__).resolve().parents[1]
+        / "alembic/versions/expmodelrename02_remove_learnability_renames.py"
+    ).read_text()
+
+    assert "public_model_renames - ARRAY" in migration
+    assert "key ILIKE '%learnability%'" in migration
+    assert "value ILIKE '%learnability%'" in migration
 
 
 def _trial_response(
