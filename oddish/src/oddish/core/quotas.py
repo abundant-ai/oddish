@@ -9,9 +9,13 @@ from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
+from oddish.core.cost_exclusions import (
+    not_excluded_experiment_filter,
+    not_excluded_llm_key_filter,
+    not_excluded_model_filter,
+)
 from oddish.core.cost_basis import (
     first_party_spend_filter,
-    not_excluded_llm_key_filter,
     settled_cost_columns,
     settled_cost_from_row,
     sum_settled_cost,
@@ -454,9 +458,6 @@ async def _bump_aware_limits_by_org_user_all_orgs(
 
 
 def _inflight_predicates(org_id: str | None, billed_user_id: str) -> list:
-    # ``not_excluded_llm_key_filter``: a RETRYING attempt already carries its
-    # settlement stamp while finished_at is still NULL; spend the settled sums
-    # will drop must not keep reserving against the cap either.
     return [
         TrialModel.org_id == org_id,
         TrialModel.billed_user_id == billed_user_id,
@@ -466,6 +467,8 @@ def _inflight_predicates(org_id: str | None, billed_user_id: str) -> list:
         TrialModel.superseded_by_trial_id.is_(None),
         TrialModel.status.in_(_INFLIGHT_TRIAL_STATUSES),
         not_excluded_llm_key_filter(),
+        not_excluded_model_filter(),
+        not_excluded_experiment_filter(),
     ]
 
 
@@ -478,6 +481,8 @@ def _org_inflight_predicates(org_id: str | None) -> list:
         TrialModel.superseded_by_trial_id.is_(None),
         TrialModel.status.in_(_INFLIGHT_TRIAL_STATUSES),
         not_excluded_llm_key_filter(),
+        not_excluded_model_filter(),
+        not_excluded_experiment_filter(),
     ]
 
 
@@ -516,6 +521,8 @@ async def inflight_trial_count_by_org_user_all_orgs(
             TrialModel.superseded_by_trial_id.is_(None),
             TrialModel.status.in_(_INFLIGHT_TRIAL_STATUSES),
             not_excluded_llm_key_filter(),
+            not_excluded_model_filter(),
+            not_excluded_experiment_filter(),
         )
         .group_by(TrialModel.org_id, TrialModel.billed_user_id)
     )

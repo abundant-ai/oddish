@@ -113,6 +113,7 @@ STUCK_ANALYZING_BATCH_LIMIT = 200
 # stuck at QUEUED with nothing running still heal. Batched so a large backlog
 # drains over several ticks instead of one giant burst.
 STALE_VERDICT_PENDING_BATCH_LIMIT = 200
+STALE_SUMMARIZE_IMPORT_BATCH_LIMIT = 200
 STUCK_ANALYZING_REASON = (
     "Analysis never produced a verdict for this trial; marked terminal by "
     "orphaned-pipeline cleanup so the task could leave the ANALYZING stage."
@@ -578,6 +579,8 @@ async def cleanup_orphaned_queue_state(
         ) = await _heal_stale_verdict_pending(session)
 
         analysis_reimport_trial_ids += await _heal_stale_audit_imports(session)
+        summarize_reimport_trial_ids = await _heal_stale_summarize_imports(session)
+        analysis_reimport_trial_ids += summarize_reimport_trial_ids
 
         (
             stuck_analyzing_advanced,
@@ -655,6 +658,7 @@ async def cleanup_orphaned_queue_state(
         "tasks_progressed_to_verdict": tasks_progressed_to_verdict,
         "verdict_pending_completed": verdict_pending_completed,
         "stale_analysis_imports_healed": stale_analysis_imports_healed,
+        "stale_summarize_imports_queued": len(summarize_reimport_trial_ids),
         "stuck_analyzing_advanced": stuck_analyzing_advanced,
         "stuck_analyzing_finalized": stuck_analyzing_finalized,
         "stuck_analysis_nulls_failed": stuck_analysis_nulls_failed,
@@ -1553,6 +1557,41 @@ async def _heal_stale_audit_imports(session) -> list[str]:
             "healer: settled audit trial %s never imported, queuing re-import",
             trial_id,
         )
+    return [str(trial_id) for (trial_id,) in stale]
+
+
+async def _heal_stale_summarize_imports(session) -> list[str]:
+    """Queue successful current summarize trials whose import did not land.
+
+    The target pointer is durable evidence that publication is incomplete.
+    Only successful summarize trials are retried here; failed trials remain
+    pointed to so the authenticated GET reports the failure until a POST starts
+    a replacement. The bounded batch prevents a historical backlog from
+    turning one cleanup sweep into an unbounded artifact-import pass.
+    """
+    stale = (
+        await session.execute(
+            text(
+                """
+                SELECT refresh.id
+                FROM trials target
+                JOIN trials refresh
+                  ON refresh.id = target.trajectory_summary_refresh_trial_id
+                WHERE target.trajectory_summary_refresh_trial_id IS NOT NULL
+                  AND target.deleted_at IS NULL
+                  AND target.kind = 'agent'
+                  AND refresh.deleted_at IS NULL
+                  AND refresh.kind = 'summarize'
+                  AND refresh.superseded_by_trial_id IS NULL
+                  AND COALESCE(refresh.harbor_stage, '') != 'cancelled'
+                  AND refresh.status::text = 'SUCCESS'
+                ORDER BY target.updated_at ASC
+                LIMIT :batch_limit
+                """
+            ),
+            {"batch_limit": STALE_SUMMARIZE_IMPORT_BATCH_LIMIT},
+        )
+    ).all()
     return [str(trial_id) for (trial_id,) in stale]
 
 

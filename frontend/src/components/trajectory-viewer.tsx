@@ -692,12 +692,14 @@ interface TrajectoryViewerProps {
    */
   hasTrajectory?: boolean;
   apiBaseUrl?: string;
+  canRegenerateSummary?: boolean;
 }
 
 export function TrajectoryViewer({
   trialId,
   hasTrajectory,
   apiBaseUrl = "/api",
+  canRegenerateSummary = false,
 }: TrajectoryViewerProps) {
   const shouldFetch = hasTrajectory !== false;
   const {
@@ -806,13 +808,20 @@ export function TrajectoryViewer({
     );
   }, [renderedSteps, lowerQuery]);
 
-  // A summary request can trigger paid on-demand generation server-side, so it
-  // must not fire for a trial we already know (via shouldFetch) has no trajectory.
-  const summaryQuery = useTrajectorySummary(trialId, apiBaseUrl, shouldFetch);
-  const summary =
-    summaryQuery.data?.status === "ready" ? summaryQuery.data.summary : null;
+  const summaryQuery = useTrajectorySummary({
+    trialId,
+    apiBaseUrl,
+    enabled: shouldFetch,
+    canRegenerate: canRegenerateSummary,
+  });
+  const summary = summaryQuery.data?.summary ?? null;
   const summarySettled =
-    summaryQuery.error != null || summaryQuery.data?.status === "ready";
+    summaryQuery.error != null ||
+    summaryQuery.regenerationError != null ||
+    summary !== null ||
+    (summaryQuery.data != null &&
+      (summaryQuery.data.refresh === null ||
+        summaryQuery.data.refresh.status === "failed"));
   const showUngroupedFallback = summary === null && summarySettled;
   // Derived from the whole trajectory, so attribution stays put while the user
   // searches, and shared with the Activity card so both agree on every owner.
@@ -954,8 +963,12 @@ export function TrajectoryViewer({
       <TrajectorySummary
         resource={summaryQuery.data}
         error={summaryQuery.error}
+        regenerationError={summaryQuery.regenerationError}
         isLoading={summaryQuery.isLoading}
+        canRegenerate={canRegenerateSummary}
+        isStartingRegeneration={summaryQuery.isStartingRegeneration}
         onRetry={() => void summaryQuery.mutate()}
+        onRegenerate={() => void summaryQuery.regenerate()}
         renderableIds={renderableIds}
         stepIdToIndex={stepIdToIndex}
         onStepSelect={handleStepClick}

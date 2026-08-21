@@ -639,12 +639,18 @@ def _get_next_trial_index(task_id: str, existing_trials: list[TrialModel]) -> in
 async def reserve_next_trial_index(session: AsyncSession, *, task_id: str) -> int:
     """SQL-backed sibling of :func:`_get_next_trial_index` for rerun paths.
 
-    The retry path doesn't already have ``task.trials`` loaded and we
-    don't want to pull every trial just to compute the suffix. Instead
-    we scan ``trials.id`` directly for numeric ``{task_id}-{N}``
-    suffixes -- including superseded rows so the new id can never
-    collide with an existing prefix in S3.
+    The task row lock serializes every caller that allocates a
+    ``{task_id}-{N}`` id, including unrelated target trials under the same
+    task. We then scan ``trials.id`` directly for numeric suffixes, including
+    superseded rows so the new id can never collide with an existing DB or S3
+    prefix.
     """
+    task_id_locked = await session.scalar(
+        select(TaskModel.id).where(TaskModel.id == task_id).with_for_update()
+    )
+    if task_id_locked is None:
+        raise RuntimeError(f"cannot reserve a trial id for missing task {task_id}")
+
     prefix = f"{task_id}-"
     rows = await session.execute(
         select(TrialModel.id)

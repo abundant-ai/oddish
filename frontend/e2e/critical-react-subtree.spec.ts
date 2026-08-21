@@ -300,6 +300,26 @@ test.describe("critical task and trial subtree", () => {
     const trialDetailGate = deferred();
     let failTrialRevalidation = false;
     const requests: string[] = [];
+    let summaryGetCount = 0;
+    let summaryPostCount = 0;
+    let failNextSummaryPost = false;
+    let failNextSummaryPoll = false;
+    const replacementSummary = {
+      schema_version: "5",
+      model: "analysis-model",
+      generated_at: NOW,
+      summary: "Replacement summary published",
+      highlights: [],
+      components: [
+        {
+          step_ids: [1],
+          trajectory_component: "implementing",
+          summary: "Implemented the requested change.",
+          tool_count: 0,
+          duration_ms: 0,
+        },
+      ],
+    };
     page.on("request", (request) => requests.push(request.url()));
 
     await page.route(/\/api\/tasks\/browse(?:\?|$)/, async (route) => {
@@ -386,7 +406,83 @@ test.describe("critical task and trial subtree", () => {
       new RegExp(`/api/trials/${TRIAL_ID}/trajectory(?:/|\\?|$)`),
       async (route) => {
         if (new URL(route.request().url()).pathname.endsWith("/summary")) {
-          await route.fulfill({ status: 404, json: { detail: "not found" } });
+          if (route.request().method() === "POST") {
+            summaryPostCount += 1;
+            if (failNextSummaryPost) {
+              failNextSummaryPost = false;
+              await route.fulfill({
+                status: 503,
+                json: { detail: "Summary refresh temporarily unavailable" },
+              });
+              return;
+            }
+            failNextSummaryPoll = summaryPostCount > 1;
+            await route.fulfill({
+              status: summaryPostCount > 1 ? 200 : 202,
+              json: {
+                summary: summaryPostCount > 1 ? replacementSummary : null,
+                refresh: {
+                  status: "running",
+                  job_id: "summary-refresh-p1",
+                  retry_after_ms: 25,
+                },
+              },
+            });
+            return;
+          }
+          summaryGetCount += 1;
+          if (summaryPostCount === 0) {
+            await route.fulfill({ status: 404, json: { detail: "not found" } });
+            return;
+          }
+          if (failNextSummaryPoll) {
+            failNextSummaryPoll = false;
+            await route.fulfill({
+              json: {
+                summary: replacementSummary,
+                refresh: {
+                  status: "failed",
+                  job_id: "summary-refresh-p1",
+                  detail: "Trajectory summary refresh failed after it started",
+                },
+              },
+            });
+            return;
+          }
+          if (summaryGetCount === 2) {
+            await route.fulfill({
+              status: 202,
+              json: {
+                summary: null,
+                refresh: {
+                  status: "running",
+                  job_id: "summary-refresh-p1",
+                  retry_after_ms: 25,
+                },
+              },
+            });
+            return;
+          }
+          if (summaryGetCount === 3) {
+            await route.fulfill({
+              status: 202,
+              json: {
+                summary: null,
+                refresh: {
+                  status: "settling",
+                  job_id: "summary-refresh-p1",
+                  retry_after_ms: 25,
+                },
+              },
+            });
+            return;
+          }
+          await route.fulfill({
+            json: {
+              summary: replacementSummary,
+              refresh: null,
+            },
+          });
           return;
         }
         await route.fulfill({
@@ -540,6 +636,47 @@ test.describe("critical task and trial subtree", () => {
     );
     await page.getByRole("button", { name: /^#1/ }).click();
     await expect(page.getByText("DEFERRED_TRAJECTORY_STEP_BODY")).toBeVisible();
+
+    const summaryPost = page.waitForRequest(
+      (request) =>
+        request.method() === "POST" &&
+        request.url().endsWith(`/api/trials/${TRIAL_ID}/trajectory/summary`)
+    );
+    await page.getByRole("button", { name: "Generate" }).click();
+    await summaryPost;
+    await expect(page.getByText("Replacement summary published")).toBeVisible();
+    expect(summaryPostCount).toBe(1);
+    expect(summaryGetCount).toBeGreaterThanOrEqual(4);
+
+    failNextSummaryPost = true;
+    const failedSummaryPost = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.url().endsWith(`/api/trials/${TRIAL_ID}/trajectory/summary`) &&
+        response.status() === 503
+    );
+    await page.getByRole("button", { name: "Regenerate" }).click();
+    await failedSummaryPost;
+    await expect(page.getByText("Replacement summary published")).toBeVisible();
+    const regenerationAlert = page
+      .getByRole("tabpanel", { name: "Trajectory" })
+      .getByRole("alert");
+    await expect(regenerationAlert).toContainText(
+      "Summary refresh temporarily unavailable"
+    );
+
+    const retriedSummaryPost = page.waitForRequest(
+      (request) =>
+        request.method() === "POST" &&
+        request.url().endsWith(`/api/trials/${TRIAL_ID}/trajectory/summary`)
+    );
+    await regenerationAlert.getByRole("button", { name: "Retry" }).click();
+    await retriedSummaryPost;
+    expect(summaryPostCount).toBe(3);
+    await expect(page.getByText("Replacement summary published")).toBeVisible();
+    await expect(regenerationAlert).toContainText(
+      "Trajectory summary refresh failed after it started"
+    );
 
     await page.getByRole("tab", { name: "Summary" }).click();
     // The analysis mutation revalidates the canonical trial. A transient

@@ -9,9 +9,11 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import QuotaMode, settings
-from oddish.core.cost_basis import (
-    CANCELLED_HARBOR_STAGE,
+from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
+from oddish.core.cost_exclusions import (
+    not_excluded_experiment_filter,
     not_excluded_llm_key_filter,
+    not_excluded_model_filter,
 )
 from oddish.core.helpers import HarvestTerminationError, terminate_run_harvest
 from oddish.core.quotas import (
@@ -123,6 +125,8 @@ def _active_trial_predicates(
         TrialModel.superseded_by_trial_id.is_(None),
         TrialModel.status.in_(_ACTIVE_TRIAL_STATUSES),
         not_excluded_llm_key_filter(),
+        not_excluded_model_filter(),
+        not_excluded_experiment_filter(),
     ]
     if scope == "user":
         predicates.append(TrialModel.billed_user_id == billed_user_id)

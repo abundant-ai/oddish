@@ -239,6 +239,22 @@ def _check_audit(data: dict, expected: dict) -> list[str]:
     return errors
 
 
+def _check_summarize(data: dict, expected: dict) -> list[str]:
+    errors: list[str] = []
+    target = expected.get("target_trial_id")
+    written = data.get("target_trial_id")
+    if _missing(written):
+        errors.append('"target_trial_id" must be a non-empty string')
+    elif target and written != target:
+        # A summary attributed to the wrong trial is worse than no summary:
+        # the importer would overwrite an unrelated trial's telemetry.
+        errors.append(f'"target_trial_id" must be {target!r}')
+    errors.extend(
+        _check_trajectory_summary(data.get("trajectory_summary"), "trajectory_summary")
+    )
+    return errors
+
+
 def check_analysis_result(data: object, expected: dict) -> list[str]:
     """Return every way ``data`` violates the analysis contract; [] is valid."""
     if not isinstance(data, dict):
@@ -248,6 +264,8 @@ def check_analysis_result(data: object, expected: dict) -> list[str]:
         return _check_qa(data, expected)
     if kind == "audit":
         return _check_audit(data, expected)
+    if kind == "summarize":
+        return _check_summarize(data, expected)
     return [f"unknown artifact kind {kind!r}"]
 
 

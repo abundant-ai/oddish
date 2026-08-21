@@ -22,6 +22,7 @@ from sqlalchemy import insert
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from oddish.core.cost_exclusions import REASON_MODEL  # noqa: E402
 from oddish.core.endpoints.qa_cost import (  # noqa: E402
     get_experiment_qa_cost_totals,
     get_task_qa_costs,
@@ -32,9 +33,13 @@ from oddish.core.endpoints.trials import (  # noqa: E402
     get_trial_by_index_core,
     get_trial_response_for_org_core,
 )
-from oddish.core.sharing.helpers import list_experiment_trials_for_org  # noqa: E402
+from oddish.core.sharing.helpers import (  # noqa: E402
+    list_experiment_trials_for_org,
+    list_task_trials_for_task,
+)
 from oddish.db.models import (  # noqa: E402
     AnalysisCostModel,
+    CostExcludedModelModel,
     ExperimentModel,
     TaskModel,
     TaskVersionModel,
@@ -582,6 +587,38 @@ async def test_slim_tasks_populate_per_trial_qa_cost(session):
     by_id = {t.id: t for t in (task_resp.trials or [])}
     assert by_id[with_qa.id].qa_cost_usd == pytest.approx(0.04)
     assert by_id[without_qa.id].qa_cost_usd is None
+
+
+@pytest.mark.asyncio
+async def test_authenticated_trial_lists_label_model_exclusions(session):
+    task, experiment = await _fixture(session, "excluded-labels")
+    trial = _trial(task, experiment)
+    session.add_all(
+        [trial, CostExcludedModelModel(model_name="claude-opus-4-8", label="free")]
+    )
+    await session.execute(
+        task_experiments.insert().values(task_id=task.id, experiment_id=experiment.id)
+    )
+    await session.flush()
+
+    slim = await list_experiment_slim_tasks(
+        session, experiment_id=experiment.id, org_id=_ORG
+    )
+    experiment_trials = await list_experiment_trials_for_org(
+        session, experiment_id=experiment.id, org_id=_ORG
+    )
+    task_trials = await list_task_trials_for_task(session, task.id)
+
+    slim_trial = next(t for row in slim for t in (row.trials or []) if t.id == trial.id)
+    assert slim_trial.cost_exclusion_reason == REASON_MODEL
+    assert (
+        next(t for t in experiment_trials if t.id == trial.id).cost_exclusion_reason
+        == REASON_MODEL
+    )
+    assert (
+        next(t for t in task_trials if t.id == trial.id).cost_exclusion_reason
+        == REASON_MODEL
+    )
 
 
 @pytest.mark.asyncio

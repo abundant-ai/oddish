@@ -920,6 +920,10 @@ def normalize_model_id(model: str | None) -> str | None:
     return normalized
 
 
+def model_family_key(model: str | None) -> str:
+    return (normalize_model_id(model) or "").rsplit("/", 1)[-1]
+
+
 def _build_agent_provider_map() -> dict[str, str]:
     """Maps Harbor agent names to API providers for rate limiting.
 
@@ -1104,6 +1108,9 @@ STAGING_API_URL = os.environ.get(
     "ODDISH_STAGING_API_URL",
     "https://abundant-ai-staging--oddish-staging-api.modal.run",
 )
+
+# Shared contract for the hosted concurrency API and its CLI client.
+MAX_MODEL_CONCURRENCY = 10_000
 
 
 def api_base_url_for_modal_app(app_name: str | None = None) -> str:

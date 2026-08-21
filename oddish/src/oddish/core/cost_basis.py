@@ -24,10 +24,15 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import and_, case, func, or_
 
 from oddish.config import settings
-from oddish.db import AGENT_TRIAL_KIND, CostExcludedLlmKeyModel, TrialModel, TrialOrigin
+from oddish.core.cost_exclusions import (
+    not_excluded_experiment_filter,
+    not_excluded_llm_key_filter,
+    not_excluded_model_filter,
+)
+from oddish.db import AGENT_TRIAL_KIND, TrialModel, TrialOrigin
 from oddish.model_pricing import estimate_cost_usd
 
 # ``harbor_stage='cancelled'`` marks an abandoned trial. Three paths stamp it:
@@ -70,53 +75,24 @@ def not_combine_copy_filter():
     )
 
 
-def _cost_excluded_key_spend():
-    """Trials stamped with an LLM key that admins flagged cost-excluded.
-
-    A correlated EXISTS on the live ``cost_excluded_llm_keys`` rows. A NULL
-    ``llm_key_hash`` (pre-rollout / unresolved) never matches, so it is kept.
-    The ``deleted_at`` filter is explicit because every cost surface runs with
-    ``include_deleted=True``, which disables the session-level soft-delete
-    filter -- so removing a key from the list re-includes its spend.
-    """
-    return (
-        select(CostExcludedLlmKeyModel.id)
-        .where(
-            CostExcludedLlmKeyModel.key_hash == TrialModel.llm_key_hash,
-            CostExcludedLlmKeyModel.deleted_at.is_(None),
-        )
-        .correlate(TrialModel)
-        .exists()
-    )
-
-
-def not_excluded_llm_key_filter():
-    """Drop trials stamped with an LLM key on the admin cost-exclusion list.
-
-    Shared by :func:`first_party_spend_filter` (settled spend) and the quota
-    inflight reservation, so excluded-key spend neither counts against a cap
-    once settled nor reserves against it while a stamped attempt is retrying.
-    """
-    return ~_cost_excluded_key_spend()
-
-
 def first_party_spend_filter():
     """Select actual Oddish executions, excluding non-spend materializations.
 
-    Imported trials were paid for outside Oddish. Experiment-combine rows copy
-    an existing trial's result and cost, so counting them would charge the same
-    execution twice. Spend stamped with an LLM key on the admin cost-exclusion
-    list (sponsored/free keys) is deliberately not counted. Platform analysis
-    runs (``kind != 'agent'``) are the platform's own spend, not the user's --
-    they are reported separately via :func:`analysis_spend_filter`, never mixed
-    into agent spend. Keep this eligibility rule shared by quota accounting and
-    cost reporting so both surfaces count the same execution population.
+    execution twice. Spend on a cost-excluded model, or homed in a
+    cost-excluded experiment, was never really paid for and admins have said
+    so (``core.cost_exclusions``). Platform analysis runs (``kind != 'agent'``)
+    are the platform's own spend, not the user's -- they are reported separately
+    via :func:`analysis_spend_filter`, never mixed into agent spend. Keep this
+    eligibility rule shared by quota accounting and cost reporting so both
+    surfaces count the same execution population.
     """
     return and_(
         TrialModel.origin == TrialOrigin.ODDISH,
         TrialModel.kind == AGENT_TRIAL_KIND,
         not_combine_copy_filter(),
         not_excluded_llm_key_filter(),
+        not_excluded_model_filter(),
+        not_excluded_experiment_filter(),
     )
 
 
