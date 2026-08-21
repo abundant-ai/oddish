@@ -725,14 +725,18 @@ test.describe("critical task and trial subtree", () => {
     const secondTrialResponse = page.waitForResponse(secondTrialPattern);
     await page.getByRole("button", { name: "Next trial" }).click();
     await secondTrialResponse;
-    await expect(page.getByText(SECOND_TRIAL_ID)).toBeVisible();
+    await expect(
+      page.locator("p.sr-only").filter({ hasText: SECOND_TRIAL_ID })
+    ).toHaveText(SECOND_TRIAL_ID);
     await page.waitForTimeout(2_100);
     analysisRerunGate.release();
     await page.waitForTimeout(300);
     expect(requestCount(requests, secondTrialPattern)).toBe(1);
 
     await page.getByRole("button", { name: "Previous trial" }).click();
-    await expect(page.getByText(TRIAL_ID)).toBeVisible();
+    await expect(
+      page.locator("p.sr-only").filter({ hasText: TRIAL_ID })
+    ).toHaveText(TRIAL_ID);
     // The analysis mutation revalidates the canonical trial. A transient
     // failure keeps that canonical row and must not relock other mutations.
     failTrialRevalidation = true;
