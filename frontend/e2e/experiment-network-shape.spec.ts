@@ -71,6 +71,7 @@ test.describe("experiment page network shape", () => {
 
     await holdCountedResponses(page, [
       TASK_SHELLS_RE,
+      TRIAL_DETAIL_RE,
       TASK_FILES_RE,
       TRIAL_FILES_STREAM_RE,
     ]);
