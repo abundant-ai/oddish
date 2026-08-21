@@ -86,6 +86,8 @@ from api.schemas import (
     ExperimentShareResponse,
     ExperimentUpdateRequest,
     ExperimentUpdateResponse,
+    ModelRenameRequest,
+    ModelRenameResponse,
 )
 from auth import APIKeyScope, AuthContext, require_admin, require_auth
 from api.routers.task_submission import (
@@ -102,6 +104,7 @@ from oddish.core.tasks import (
     complete_task_upload,
     initialize_task_upload,
 )
+from oddish.core.model_display_names import canonical_model_key
 from oddish.db import (
     ExperimentModel,
     TaskModel,
@@ -1352,6 +1355,68 @@ async def unpublish_experiment(
             is_public=False,
             public_token=experiment.public_token,
         )
+
+
+@router.get(
+    "/experiments/{experiment_id}/model-renames",
+    response_model=ModelRenameResponse,
+)
+async def get_experiment_model_renames(
+    experiment_id: str,
+    auth: Annotated[AuthContext, Depends(require_admin)],
+) -> ModelRenameResponse:
+    """The experiment's current public model-rename map."""
+    async with get_session() as session:
+        result = await session.execute(
+            select(ExperimentModel).where(
+                ExperimentModel.id == experiment_id,
+                ExperimentModel.org_id == auth.org_id,
+            )
+        )
+        experiment = result.scalar_one_or_none()
+        if not experiment:
+            raise HTTPException(status_code=404, detail="Experiment not found")
+        return ModelRenameResponse(
+            name=experiment.name, renames=experiment.public_model_renames or {}
+        )
+
+
+@router.post(
+    "/experiments/{experiment_id}/model-renames",
+    response_model=ModelRenameResponse,
+)
+async def set_experiment_model_rename(
+    experiment_id: str,
+    request: ModelRenameRequest,
+    auth: Annotated[AuthContext, Depends(require_admin)],
+) -> ModelRenameResponse:
+    """Set or clear one public model alias, shown only on the experiment's
+    published ``/share`` pages; cost and queue routing keep the real model id."""
+    model_key = canonical_model_key(request.model)
+    if not model_key:
+        raise HTTPException(status_code=400, detail="model must not be empty")
+    display = (request.display or "").strip()
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(ExperimentModel).where(
+                ExperimentModel.id == experiment_id,
+                ExperimentModel.org_id == auth.org_id,
+            )
+        )
+        experiment = result.scalar_one_or_none()
+        if not experiment:
+            raise HTTPException(status_code=404, detail="Experiment not found")
+
+        renames = dict(experiment.public_model_renames or {})
+        if request.remove or not display:
+            renames.pop(model_key, None)
+        else:
+            renames[model_key] = display
+        experiment.public_model_renames = renames or None
+        await session.commit()
+
+        return ModelRenameResponse(name=experiment.name, renames=renames)
 
 
 @router.get(

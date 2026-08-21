@@ -190,6 +190,7 @@ export interface Trial {
   // would mean "resolved, and there was no QA".
   qa_cost_usd?: number | null;
   is_billed?: boolean;
+  cost_exclusion_reason?: string | null;
   has_trajectory?: boolean;
   is_probe?: boolean;
   kind?: TrialKind;
@@ -569,6 +570,9 @@ export interface ExperimentCostTotals {
   qa_cost_usd?: number;
   owned_qa_cost_usd?: number;
   qa_has_estimated?: boolean;
+  excluded_cost_usd?: number;
+  owned_excluded_cost_usd?: number;
+  experiment_cost_excluded?: boolean;
 }
 
 export interface TaskDetailResponse {
