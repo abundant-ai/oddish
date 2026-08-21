@@ -1784,6 +1784,12 @@ async def test_post_trial_hooks_run_for_completed_trial(monkeypatch):
         status=trial_handler.TrialStatus.SUCCESS,
         harbor_stage="completed",
         agent="claude-code",
+        # First attempt, never classified: the stale-analysis clear
+        # (test_retry_clears_stale_analysis) reads these and must no-op here.
+        attempts=1,
+        started_at=None,
+        analysis_started_at=None,
+        analysis_finished_at=None,
     )
     calls = []
 

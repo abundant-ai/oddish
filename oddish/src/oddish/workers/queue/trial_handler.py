@@ -530,6 +530,10 @@ async def _prepare_trial_run(
         trial.cost_usd = None
         trial.phase_timing = None
         trial.has_trajectory = False
+        # A stale analysis from an earlier attempt is dropped in
+        # ``_run_post_trial_hooks``, not here: clearing it at attempt start would
+        # leave the trial unclassified for the whole attempt, racing an in-flight
+        # QA job that snapshots its work list up front.
         trial.attempts += 1
 
         if not trial.idempotency_key:
@@ -973,6 +977,7 @@ async def _store_trial_results(
 
 
 async def _run_post_trial_hooks(trial_id: str) -> None:
+    from oddish.core.verdict_state import reset_verdict
     from oddish.queue import maybe_gate_llm_trials, maybe_start_qa_stage
     from oddish.workers.analysis_trials import handle_analysis_trial_settled
 
@@ -997,6 +1002,54 @@ async def _run_post_trial_hooks(trial_id: str) -> None:
             if trial_kind == "agent":
                 if task is None or task.status == TaskStatus.FAILED:
                     return
+                # A retried trial's classification describes an earlier attempt
+                # -- one whose reward, result and artifacts
+                # ``_prepare_trial_run`` already cleared. Nothing re-runs QA on a
+                # task that has closed out, so that stale verdict would ride the
+                # row forever: a HARNESS_ERROR from an infra-killed attempt
+                # pinned to a trial that went on to pass.
+                #
+                # Dropped here, under the task + trial locks this function
+                # already holds, so it is atomic with the ``maybe_start_qa_stage``
+                # re-enqueue below and the trial is terminal (its artifacts
+                # complete). Clearing at attempt start would instead leave the
+                # trial unclassified for the length of an attempt, racing an
+                # in-flight QA trial that snapshots its graded set at creation.
+                #
+                # No timestamp comparison would be safe: a label an in-flight QA
+                # trial wrote mid-attempt -- off the row ``_prepare_trial_run``
+                # had already wiped -- carries a NEWER stamp than this attempt's
+                # own start, yet is exactly the kind that must go. Probes are the
+                # one exception; ``_store_trial_results`` writes their
+                # classification during settlement, above.
+                if (
+                    trial.attempts > 1
+                    and not trial.is_probe
+                    and trial.analysis_status
+                ):
+                    trial.analysis = None
+                    trial.analysis_status = None
+                    trial.analysis_error = None
+                    trial.analysis_started_at = None
+                    trial.analysis_finished_at = None
+                    trial.analysis_log = None
+                    # ``maybe_start_task_qa_stage`` only fires from
+                    # PENDING/RUNNING. If QA already closed this task out while
+                    # the attempt was still running, nothing would re-enqueue it
+                    # -- so reopen the task the way ``append_trials_to_task``
+                    # reopens a finished task when live trials appear. COMPLETED
+                    # is the only status reaching here that needs it: a FAILED
+                    # task returns above, PENDING/RUNNING re-enqueue on their
+                    # own, and VERDICT_PENDING means a QA trial is already live
+                    # and will grade this trial now that its analysis is gone.
+                    if task.status == TaskStatus.COMPLETED:
+                        task.status = TaskStatus.RUNNING
+                        task.finished_at = None
+                        if task.run_analysis:
+                            # The stale verdict described the same superseded
+                            # artifacts; discard it so the re-enqueued QA
+                            # republishes from the current attempt.
+                            reset_verdict(task)
                 await maybe_gate_llm_trials(session, trial_id)
                 if await maybe_start_qa_stage(session, trial_id):
                     console.print(
