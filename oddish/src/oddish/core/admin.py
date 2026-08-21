@@ -244,6 +244,7 @@ async def get_queue_status_core(
 ) -> QueueStatusResponse:
     """Get queue status grouped by worker-job kind and queue key."""
     now = utcnow()
+    active_kinds = [kind.value for kind in ACTIVE_WORKER_JOB_KINDS]
 
     # One grouped query against ``worker_jobs``. Analysis runs use TRIAL jobs,
     # so their effective kind comes from the subject trial instead of hiding
@@ -272,12 +273,13 @@ async def get_queue_status_core(
                    AND wj.subject_table = 'trials'
                    AND tr.id = wj.subject_id
                 WHERE wj.status::text IN ('QUEUED', 'RETRYING', 'RUNNING')
+                  AND wj.kind::text = ANY(CAST(:active_kinds AS TEXT[]))
                   AND (CAST(:org_id AS TEXT) IS NULL OR wj.org_id = CAST(:org_id AS TEXT))
                 GROUP BY 1, wj.queue_key
                 ORDER BY 1, wj.queue_key
                 """
             ),
-            {"org_id": org_id},
+            {"org_id": org_id, "active_kinds": active_kinds},
         )
     ).all()
 

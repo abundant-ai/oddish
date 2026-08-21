@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from oddish.core.admin import get_queue_health_core
+from oddish.core.admin import get_queue_health_core, get_queue_status_core
 from oddish.db import ACTIVE_WORKER_JOB_KINDS
 
 
@@ -32,3 +32,17 @@ def test_queue_capacity_only_counts_active_worker_job_kinds():
     for statement, params in session.calls[1:]:
         assert "kind::text = ANY" in statement
         assert params["active_kinds"] == active_kinds
+
+
+def test_queue_status_only_counts_active_worker_job_kinds():
+    session = _Session()
+
+    response = asyncio.run(get_queue_status_core(session))
+
+    assert response.queues == []
+    assert len(session.calls) == 1
+    statement, params = session.calls[0]
+    assert "wj.kind::text = ANY" in statement
+    assert params["active_kinds"] == [
+        kind.value for kind in ACTIVE_WORKER_JOB_KINDS
+    ]
