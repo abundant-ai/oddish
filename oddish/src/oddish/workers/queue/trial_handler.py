@@ -1491,19 +1491,6 @@ async def _execute_trial(
     )
 
 
-def _harbor_config_is_ephemeral(harbor_config: dict | None) -> bool:
-    """Whether the trial runs on the out-of-process (custom-Harbor) engine.
-
-    Mirrors the runner's own fork on ``variant_id``. BYOK is honored only
-    in-process: the ephemeral child builds its agent from the raw trial model
-    without the direct/Bedrock normalization a user key needs. Its agent env is
-    passed through a private temporary payload that is deleted as soon as the
-    child reads it, but BYOK still must not be resolved for these trials -- they
-    keep the platform credentials.
-    """
-    return bool((harbor_config or {}).get("variant_id") == "ephemeral")
-
-
 def _phase_timestamp(value: object) -> datetime | None:
     if not isinstance(value, str):
         return None
@@ -1600,7 +1587,7 @@ async def run_trial_job(
         return
 
     byok_resolution = None
-    if byok.byok_resolver_registered() and not _harbor_config_is_ephemeral(
+    if byok.byok_resolver_registered() and not byok.harbor_config_is_ephemeral(
         prepared_trial.trial_harbor_config
     ):
         byok_resolution = await byok.resolve_byok(

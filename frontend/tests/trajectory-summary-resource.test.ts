@@ -49,6 +49,24 @@ for (const status of ["queued", "running", "retrying", "settling"] as const) {
   });
 }
 
+test("parses the legacy top-level pending lifecycle during rolling deploys", () => {
+  assert.deepEqual(
+    parseTrajectorySummaryResponse(response(202), {
+      status: "running",
+      job_id: "task-1-9",
+      retry_after_ms: 3000,
+    }),
+    {
+      summary: null,
+      refresh: {
+        status: "running",
+        jobId: "task-1-9",
+        retryAfterMs: 3000,
+      },
+    }
+  );
+});
+
 test("preserves a published summary after its refresh fails", () => {
   const summary = { schema_version: 5, summary: "published", components: [] };
   assert.deepEqual(

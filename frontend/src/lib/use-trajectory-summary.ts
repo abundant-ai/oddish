@@ -29,6 +29,38 @@ const activeRefreshStatuses = new Set<ActiveRefreshStatus>([
   "settling",
 ]);
 
+function parseRefreshPayload(
+  refresh: object
+): NonNullable<TrajectorySummaryResource["refresh"]> {
+  const status = "status" in refresh ? refresh.status : null;
+  const jobId = "job_id" in refresh ? refresh.job_id : null;
+  if (typeof status !== "string" || typeof jobId !== "string" || !jobId) {
+    throw new Error("Malformed trajectory summary refresh response");
+  }
+  if (status === "failed") {
+    const detail = "detail" in refresh ? refresh.detail : null;
+    if (typeof detail !== "string" || !detail) {
+      throw new Error("Malformed trajectory summary refresh response");
+    }
+    return { status, jobId, detail };
+  }
+  const retryAfterMs =
+    "retry_after_ms" in refresh ? refresh.retry_after_ms : null;
+  if (
+    !activeRefreshStatuses.has(status as ActiveRefreshStatus) ||
+    typeof retryAfterMs !== "number" ||
+    !Number.isFinite(retryAfterMs) ||
+    retryAfterMs <= 0
+  ) {
+    throw new Error("Malformed trajectory summary refresh response");
+  }
+  return {
+    status: status as ActiveRefreshStatus,
+    jobId,
+    retryAfterMs,
+  };
+}
+
 export function parseTrajectorySummaryResponse(
   response: Pick<Response, "ok" | "status" | "statusText">,
   body: unknown
@@ -56,40 +88,16 @@ export function parseTrajectorySummaryResponse(
       }
       return { summary: summary as TrajectorySummary | null, refresh: null };
     }
-
-    const status = "status" in refresh ? refresh.status : null;
-    const jobId = "job_id" in refresh ? refresh.job_id : null;
-    if (typeof status !== "string" || typeof jobId !== "string" || !jobId) {
-      throw new Error("Malformed trajectory summary refresh response");
-    }
-    if (status === "failed") {
-      const detail = "detail" in refresh ? refresh.detail : null;
-      if (typeof detail !== "string" || !detail) {
-        throw new Error("Malformed trajectory summary refresh response");
-      }
-      return {
-        summary: summary as TrajectorySummary | null,
-        refresh: { status, jobId, detail },
-      };
-    }
-    const retryAfterMs =
-      "retry_after_ms" in refresh ? refresh.retry_after_ms : null;
-    if (
-      !activeRefreshStatuses.has(status as ActiveRefreshStatus) ||
-      typeof retryAfterMs !== "number" ||
-      !Number.isFinite(retryAfterMs) ||
-      retryAfterMs <= 0
-    ) {
-      throw new Error("Malformed trajectory summary refresh response");
-    }
     return {
       summary: summary as TrajectorySummary | null,
-      refresh: {
-        status: status as ActiveRefreshStatus,
-        jobId,
-        retryAfterMs,
-      },
+      refresh: parseRefreshPayload(refresh),
     };
+  }
+  // During a rolling deploy, an older backend can still return the original
+  // top-level HTTP 202 payload. It represents a refresh lifecycle, not a
+  // published TrajectorySummary, and must keep the resource polling.
+  if (response.status === 202 && body && typeof body === "object") {
+    return { summary: null, refresh: parseRefreshPayload(body) };
   }
   if (!response.ok) {
     const error = new Error(
@@ -169,7 +177,13 @@ export function useTrajectorySummary({
       throwOnError: false,
     });
     if (!resource) return undefined;
-    await summaryQuery.mutate(resource, { revalidate: false });
+    await summaryQuery.mutate(resource, {
+      // A query that previously settled at 404 has no refresh timer. Start one
+      // GET immediately after POST enters an active lifecycle; subsequent
+      // responses own their polling interval through refreshInterval above.
+      revalidate:
+        resource.refresh !== null && resource.refresh.status !== "failed",
+    });
     return resource;
   }
 
