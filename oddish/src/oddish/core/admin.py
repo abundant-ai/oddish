@@ -32,6 +32,7 @@ from oddish.core.quotas import (
     sum_cost_usd_by_org_user_all_orgs,
 )
 from oddish.db import (
+    ACTIVE_WORKER_JOB_KINDS,
     ExperimentModel,
     ModalCostSpanModel,
     TaskModel,
@@ -840,8 +841,9 @@ async def get_queue_health_core(
     org_id: str | None = None,
     include_global_details: bool = True,
 ) -> QueueHealthResponse:
-    """Aggregate throughput, per-queue-key capacity fill, and component health."""
+    """Aggregate throughput, active-kind capacity fill, and component health."""
     now = utcnow()
+    active_kinds = [kind.value for kind in ACTIVE_WORKER_JOB_KINDS]
 
     # -- throughput per kind ----------------------------------------------
     throughput_rows = (
@@ -902,11 +904,12 @@ async def get_queue_health_core(
                        ))) AS oldest_queued_age_seconds
                 FROM   worker_jobs
                 WHERE  status::text IN ('QUEUED', 'RETRYING', 'RUNNING')
+                  AND  kind::text = ANY(CAST(:active_kinds AS TEXT[]))
                   AND  (CAST(:org_id AS TEXT) IS NULL OR org_id = CAST(:org_id AS TEXT))
                 GROUP  BY queue_key
                 """
             ),
-            {"org_id": org_id},
+            {"org_id": org_id, "active_kinds": active_kinds},
         )
     ).all()
 
@@ -924,6 +927,7 @@ async def get_queue_health_core(
                        ) AS wait_p95
                 FROM   worker_jobs
                 WHERE  claimed_at IS NOT NULL
+                  AND  kind::text = ANY(CAST(:active_kinds AS TEXT[]))
                   AND  (CAST(:org_id AS TEXT) IS NULL OR org_id = CAST(:org_id AS TEXT))
                   AND  claimed_at >= NOW() - INTERVAL '1 hour'
                   AND  claimed_at >= created_at
@@ -931,7 +935,7 @@ async def get_queue_health_core(
                 HAVING COUNT(*) >= 3
                 """
             ),
-            {"org_id": org_id},
+            {"org_id": org_id, "active_kinds": active_kinds},
         )
     ).all()
     wait_by_key: dict[str, tuple[float | None, float | None]] = {}

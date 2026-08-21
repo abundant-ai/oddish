@@ -1,4 +1,5 @@
 from oddish.db.models import (
+    ACTIVE_WORKER_JOB_KINDS,
     AGENT_TRIAL_KIND,
     AnalysisStatus,
     Base,
@@ -94,6 +95,7 @@ __all__ = [
     # Base
     "Base",
     # Constants
+    "ACTIVE_WORKER_JOB_KINDS",
     "AGENT_TRIAL_KIND",
     # Enums
     "TaskStatus",

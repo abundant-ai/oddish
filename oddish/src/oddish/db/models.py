@@ -167,7 +167,8 @@ class WorkerJobKind(str, Enum):
     """Kind of work represented by a `worker_jobs` row.
 
     The polymorphism discriminator for the unified queue table. Handlers
-    register against a kind; the dispatcher is kind-agnostic.
+    register against a kind; the scheduler admits the kinds listed in
+    ``ACTIVE_WORKER_JOB_KINDS``.
     """
 
     TRIAL = "TRIAL"
@@ -196,6 +197,15 @@ class WorkerJobKind(str, Enum):
     # and ``dropblocks01``.
     ANALYZER = "ANALYZER"
     ANALYZER_BLOCK = "ANALYZER_BLOCK"
+
+
+# Scheduler-facing kinds. Historical enum-only kinds stay queryable through
+# admin diagnostics but must not consume dispatch capacity.
+ACTIVE_WORKER_JOB_KINDS = (
+    WorkerJobKind.TRIAL,
+    WorkerJobKind.TASK_EXPAND,
+    WorkerJobKind.TAG_PROJECT,
+)
 
 
 class WorkerJobStatus(str, Enum):
