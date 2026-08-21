@@ -814,13 +814,14 @@ export function TrajectoryViewer({
     enabled: shouldFetch,
     canRegenerate: canRegenerateSummary,
   });
-  const summary =
-    summaryQuery.data?.status === "ready" ? summaryQuery.data.summary : null;
+  const summary = summaryQuery.data?.summary ?? null;
   const summarySettled =
     summaryQuery.error != null ||
     summaryQuery.regenerationError != null ||
-    summaryQuery.data?.status === "ready" ||
-    summaryQuery.data?.status === "missing";
+    summary !== null ||
+    (summaryQuery.data != null &&
+      (summaryQuery.data.refresh === null ||
+        summaryQuery.data.refresh.status === "failed"));
   const showUngroupedFallback = summary === null && summarySettled;
   // Derived from the whole trajectory, so attribution stays put while the user
   // searches, and shared with the Activity card so both agree on every owner.

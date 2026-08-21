@@ -8,13 +8,19 @@ from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import model_family_key, normalize_model_id
-from oddish.db import CostExcludedExperimentModel, CostExcludedModelModel, TrialModel
+from oddish.db import (
+    CostExcludedExperimentModel,
+    CostExcludedLlmKeyModel,
+    CostExcludedModelModel,
+    TrialModel,
+)
 from oddish.db.pg_errors import is_missing_table
 
 logger = logging.getLogger(__name__)
 
 REASON_MODEL = "model"
 REASON_EXPERIMENT = "experiment"
+REASON_KEY = "key"
 
 
 def canonical_excluded_model(model: str | None) -> str:
@@ -22,8 +28,21 @@ def canonical_excluded_model(model: str | None) -> str:
 
 
 def _excluded_model_spend():
-    trial_family = func.lower(
-        func.btrim(func.regexp_replace(TrialModel.model, "^.*/", ""))
+    trial_family = func.btrim(
+        func.regexp_replace(
+            func.regexp_replace(
+                func.lower(
+                    func.btrim(func.regexp_replace(TrialModel.model, "^.*/", ""))
+                ),
+                r"\s+",
+                "-",
+                "g",
+            ),
+            r"-{2,}",
+            "-",
+            "g",
+        ),
+        "-",
     )
     return (
         select(CostExcludedModelModel.id)
@@ -38,6 +57,22 @@ def _excluded_model_spend():
 
 def not_excluded_model_filter():
     return ~_excluded_model_spend()
+
+
+def _excluded_llm_key_spend():
+    return (
+        select(CostExcludedLlmKeyModel.id)
+        .where(
+            CostExcludedLlmKeyModel.key_hash == TrialModel.llm_key_hash,
+            CostExcludedLlmKeyModel.deleted_at.is_(None),
+        )
+        .correlate(TrialModel)
+        .exists()
+    )
+
+
+def not_excluded_llm_key_filter():
+    return ~_excluded_llm_key_spend()
 
 
 def _excluded_experiment_spend():
@@ -57,11 +92,16 @@ def not_excluded_experiment_filter():
 
 
 def excluded_spend_filter():
-    return _excluded_model_spend() | _excluded_experiment_spend()
+    return (
+        _excluded_llm_key_spend()
+        | _excluded_model_spend()
+        | _excluded_experiment_spend()
+    )
 
 
 @dataclass(frozen=True)
 class CostExclusions:
+    llm_key_hashes: frozenset[str] = field(default_factory=frozenset)
     models: frozenset[str] = field(default_factory=frozenset)
     experiment_ids: frozenset[str] = field(default_factory=frozenset)
 
@@ -73,8 +113,14 @@ class CostExclusions:
         )
 
     def reason_for(
-        self, *, model: str | None = None, experiment_id: str | None = None
+        self,
+        *,
+        llm_key_hash: str | None = None,
+        model: str | None = None,
+        experiment_id: str | None = None,
     ) -> str | None:
+        if llm_key_hash and llm_key_hash in self.llm_key_hashes:
+            return REASON_KEY
         if model and model_family_key(model) in self.models:
             return REASON_MODEL
         if experiment_id and experiment_id in self.experiment_ids:
@@ -82,14 +128,26 @@ class CostExclusions:
         return None
 
     def excludes(
-        self, *, model: str | None = None, experiment_id: str | None = None
+        self,
+        *,
+        llm_key_hash: str | None = None,
+        model: str | None = None,
+        experiment_id: str | None = None,
     ) -> bool:
-        return self.reason_for(model=model, experiment_id=experiment_id) is not None
+        return (
+            self.reason_for(
+                llm_key_hash=llm_key_hash,
+                model=model,
+                experiment_id=experiment_id,
+            )
+            is not None
+        )
 
 
 async def load_cost_exclusions(session: AsyncSession) -> CostExclusions:
     try:
         async with session.begin_nested():
+            llm_keys = list(await session.scalars(select(CostExcludedLlmKeyModel)))
             models = list(await session.scalars(select(CostExcludedModelModel)))
             experiments = list(
                 await session.scalars(select(CostExcludedExperimentModel))
@@ -105,6 +163,7 @@ async def load_cost_exclusions(session: AsyncSession) -> CostExclusions:
         return CostExclusions()
 
     return CostExclusions(
+        llm_key_hashes=frozenset(row.key_hash for row in llm_keys),
         models=frozenset(row.model_name for row in models),
         experiment_ids=frozenset(row.experiment_id for row in experiments),
     )

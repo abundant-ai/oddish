@@ -26,6 +26,8 @@ from oddish.db import (
     get_session,
 )
 from oddish.db.models import task_experiments
+from oddish.core.llm_key_fingerprint import hash_llm_key
+from oddish.workers.queue import byok
 
 from oddish.worker.local_runner import _run_harbor_trial, run_trial_locally
 
@@ -107,8 +109,10 @@ async def seeded_trial_id(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_run_trial_locally_dry_run_marks_success(seeded_trial_id):
+async def test_run_trial_locally_dry_run_marks_success(monkeypatch, seeded_trial_id):
     """Dry-run path should QUEUED -> RUNNING -> SUCCESS and set timestamps."""
+    platform_key = "bedrock-local-platform"
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", platform_key)
     await run_trial_locally(seeded_trial_id, dry_run=True)
 
     async with get_session() as session:
@@ -118,12 +122,107 @@ async def test_run_trial_locally_dry_run_marks_success(seeded_trial_id):
         assert trial.started_at is not None
         assert trial.finished_at is not None
         assert trial.finished_at >= trial.started_at
+        assert trial.llm_key_hash == hash_llm_key(platform_key)
 
 
 @pytest.mark.asyncio
 async def test_run_trial_locally_missing_trial_skips():
     """A missing trial is not claimable; the runner returns without raising."""
     await run_trial_locally("nonexistent-trial-id", dry_run=True)
+
+
+@pytest.mark.asyncio
+async def test_local_api_lifespan_installs_byok_resolver(monkeypatch, tmp_path):
+    from api import app as app_module
+    from worker import byok_resolver
+
+    installed = []
+
+    async def no_startup_work():
+        return None
+
+    monkeypatch.setattr(app_module.settings, "local_mode", True)
+    monkeypatch.setattr(app_module.settings, "harbor_jobs_dir", str(tmp_path))
+    monkeypatch.setattr(
+        app_module, "_assert_quota_schema_or_force_off", no_startup_work
+    )
+    monkeypatch.setattr(app_module, "_apply_role_defaults_bg", no_startup_work)
+    monkeypatch.setattr(app_module, "close_database_connections", no_startup_work)
+    monkeypatch.setattr(
+        "dashboard_cache.install_modal_dashboard_cache", lambda: None
+    )
+    monkeypatch.setattr(
+        byok_resolver, "install_byok_resolver", lambda: installed.append(True)
+    )
+
+    async with app_module.lifespan(None):
+        assert installed == [True]
+
+
+@pytest.mark.asyncio
+async def test_local_harbor_run_injects_and_stamps_byok_before_agent_work(
+    monkeypatch, seeded_probe_trial_with_task_dir
+):
+    trial_id, _ = seeded_probe_trial_with_task_dir
+    captured: dict[str, object] = {}
+    user_key = "sk-ant-local-user"
+
+    class FakeTrial:
+        def __init__(self, cfg, **_kwargs):
+            captured["agent_env"] = dict(cfg.agent.env or {})
+            captured["model_name"] = cfg.agent.model_name
+            self.result = MagicMock()
+            self.result.verifier_result = MagicMock(rewards={"reward": 0.0})
+            self.result.agent_result = MagicMock()
+            self.result.agent_result.is_empty.return_value = True
+            self.result.model_dump = lambda mode=None: {}
+            self._hooks = []
+
+        @classmethod
+        async def create(cls, cfg):
+            return cls(cfg)
+
+        def add_hook(self, _event, hook):
+            self._hooks.append(hook)
+
+        async def run(self):
+            async with get_session() as session:
+                trial = await session.get(TrialModel, trial_id)
+                captured["hash_during_run"] = trial.llm_key_hash
+            return self.result
+
+    async def resolve_byok(**_kwargs):
+        return byok.ByokResolution(env={"ANTHROPIC_API_KEY": user_key})
+
+    async def fake_mint_probe_creds(*, org_id, trial_id):
+        return "fake-key-id", {
+            "ODDISH_API_KEY": "fake-key",
+            "ODDISH_API_BASE_URL": "http://localhost:8800",
+        }
+
+    async def fake_probe_analyzer(**_kwargs):
+        return {}
+
+    monkeypatch.setattr("oddish.worker.local_runner.Trial", FakeTrial)
+    monkeypatch.setattr(
+        "oddish.worker.local_runner.mint_probe_creds", fake_mint_probe_creds
+    )
+    monkeypatch.setattr(
+        "oddish.worker.local_runner.run_probe_analyzer", fake_probe_analyzer
+    )
+    byok.register_byok_resolver(resolve_byok)
+    try:
+        await _run_harbor_trial(trial_id)
+    finally:
+        byok.clear_byok_resolver()
+
+    expected_hash = hash_llm_key(user_key)
+    assert captured["hash_during_run"] == expected_hash
+    assert captured["agent_env"]["ANTHROPIC_API_KEY"] == user_key
+    assert captured["model_name"] == "claude-sonnet-4-5"
+    async with get_session() as session:
+        trial = await session.get(TrialModel, trial_id)
+        assert trial.llm_key_hash == expected_hash
 
 
 @pytest_asyncio.fixture

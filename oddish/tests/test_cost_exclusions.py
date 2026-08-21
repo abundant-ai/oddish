@@ -15,6 +15,7 @@ from oddish.core.admin import get_cost_breakdown_core  # noqa: E402
 from oddish.core.quotas import sum_org_cost_usd  # noqa: E402
 from oddish.db import (  # noqa: E402
     CostExcludedExperimentModel,
+    CostExcludedLlmKeyModel,
     CostExcludedModelModel,
     ExperimentModel,
     TaskModel,
@@ -31,7 +32,8 @@ USER = f"excl-user-{_RUN}"
 EXCLUDED_EXP = f"excl-exp-{_RUN}"
 FREE_MODEL_EXP = f"excl-freemodel-{_RUN}"
 INCLUDED_EXP = f"excl-included-{_RUN}"
-EXPERIMENTS = (EXCLUDED_EXP, FREE_MODEL_EXP, INCLUDED_EXP)
+LEGACY_KEY_EXP = f"excl-legacy-key-{_RUN}"
+EXPERIMENTS = (EXCLUDED_EXP, FREE_MODEL_EXP, INCLUDED_EXP, LEGACY_KEY_EXP)
 
 FREE_MODEL = "xai/grok-free-preview"
 FREE_MODEL_FAMILY = "grok-free-preview"
@@ -40,9 +42,18 @@ PAID_MODEL = "xai/grok-4"
 EXCLUDED_EXP_COST = 7.0
 FREE_MODEL_COST = 3.0
 INCLUDED_COST = 2.0
+LEGACY_KEY_COST = 5.0
+LEGACY_KEY_HASH = f"legacy-key-{_RUN}"
 
 
-def _trial(experiment_id, index, cost_usd, created_at, model=PAID_MODEL) -> TrialModel:
+def _trial(
+    experiment_id,
+    index,
+    cost_usd,
+    created_at,
+    model=PAID_MODEL,
+    llm_key_hash=None,
+) -> TrialModel:
     task_id = f"{experiment_id}-task"
     return TrialModel(
         id=f"{task_id}-{index}",
@@ -54,6 +65,7 @@ def _trial(experiment_id, index, cost_usd, created_at, model=PAID_MODEL) -> Tria
         provider="xai",
         queue_key=model,
         model=model,
+        llm_key_hash=llm_key_hash,
         billed_user_id=USER,
         cost_usd=cost_usd,
         created_at=created_at,
@@ -70,6 +82,9 @@ async def seeded_data():
     excluded_model = CostExcludedModelModel(
         model_name=FREE_MODEL_FAMILY, label="free tier"
     )
+    excluded_key = CostExcludedLlmKeyModel(
+        key_hash=LEGACY_KEY_HASH, key_hint="test", label="legacy policy"
+    )
 
     async with get_session() as session:
         await session.execute(
@@ -81,7 +96,7 @@ async def seeded_data():
             ),
             {"id": ORG},
         )
-        session.add_all([excluded_exp, excluded_model])
+        session.add_all([excluded_exp, excluded_model, excluded_key])
         for exp_id in EXPERIMENTS:
             session.add(
                 ExperimentModel(
@@ -107,6 +122,13 @@ async def seeded_data():
                 _trial(EXCLUDED_EXP, 0, EXCLUDED_EXP_COST, recent),
                 _trial(FREE_MODEL_EXP, 0, FREE_MODEL_COST, recent, model=FREE_MODEL),
                 _trial(INCLUDED_EXP, 0, INCLUDED_COST, recent),
+                _trial(
+                    LEGACY_KEY_EXP,
+                    0,
+                    LEGACY_KEY_COST,
+                    recent,
+                    llm_key_hash=LEGACY_KEY_HASH,
+                ),
             ]
         )
         await session.flush()
@@ -130,6 +152,11 @@ async def seeded_data():
             )
         )
         await session.execute(
+            CostExcludedLlmKeyModel.__table__.delete().where(
+                CostExcludedLlmKeyModel.key_hash == LEGACY_KEY_HASH
+            )
+        )
+        await session.execute(
             CostExcludedExperimentModel.__table__.delete().where(
                 CostExcludedExperimentModel.experiment_id == EXCLUDED_EXP
             )
@@ -145,7 +172,7 @@ async def seeded_data():
 
 
 @pytest.mark.asyncio
-async def test_both_axes_drop_from_cost_breakdown(seeded_data):
+async def test_all_exclusion_axes_drop_from_cost_breakdown(seeded_data):
     async with get_session() as session:
         result = await get_cost_breakdown_core(
             session, window_days=7, experiment_limit=500, user_limit=500
@@ -153,6 +180,7 @@ async def test_both_axes_drop_from_cost_breakdown(seeded_data):
         by_id = {e.experiment_id: e for e in result.experiments}
         assert EXCLUDED_EXP not in by_id, "excluded experiment still on the dashboard"
         assert FREE_MODEL_EXP not in by_id, "free-model spend still on the dashboard"
+        assert LEGACY_KEY_EXP not in by_id, "legacy-key spend still on the dashboard"
 
         included = by_id[INCLUDED_EXP]
         assert abs(included.cost_usd - INCLUDED_COST) <= 1e-6, included.cost_usd
@@ -212,7 +240,7 @@ async def test_excluded_model_family_covers_future_provider_spelling(seeded_data
                 7,
                 future_spelling_cost,
                 utcnow(),
-                model="azure/grok-free-preview",
+                model=" azure/ Grok  Free--Preview ",
             )
         )
         await session.flush()
@@ -222,12 +250,35 @@ async def test_excluded_model_family_covers_future_provider_spelling(seeded_data
 
 
 @pytest.mark.asyncio
+async def test_legacy_key_policy_survives_alongside_new_exclusions(seeded_data):
+    period_start = utcnow() - timedelta(days=1)
+
+    async with get_session() as session:
+        org_total = await sum_org_cost_usd(session, ORG, period_start)
+        assert abs(float(org_total) - INCLUDED_COST) <= 1e-6, org_total
+
+        await session.execute(
+            CostExcludedLlmKeyModel.__table__.update()
+            .where(CostExcludedLlmKeyModel.key_hash == LEGACY_KEY_HASH)
+            .values(deleted_at=utcnow())
+        )
+        await session.flush()
+
+        org_total = await sum_org_cost_usd(session, ORG, period_start)
+        assert abs(float(org_total) - (INCLUDED_COST + LEGACY_KEY_COST)) <= 1e-6
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "experiment_id,model",
-    [(EXCLUDED_EXP, PAID_MODEL), (FREE_MODEL_EXP, FREE_MODEL)],
+    "experiment_id,model,llm_key_hash",
+    [
+        (EXCLUDED_EXP, PAID_MODEL, None),
+        (FREE_MODEL_EXP, FREE_MODEL, None),
+        (LEGACY_KEY_EXP, PAID_MODEL, LEGACY_KEY_HASH),
+    ],
 )
 async def test_inflight_reservation_skips_excluded_spend(
-    seeded_data, monkeypatch, experiment_id, model
+    seeded_data, monkeypatch, experiment_id, model, llm_key_hash
 ):
     from oddish.config import settings
     from oddish.core.quotas import (
@@ -238,7 +289,9 @@ async def test_inflight_reservation_skips_excluded_spend(
 
     monkeypatch.setattr(settings, "pending_trial_reservation_usd", 2.5)
 
-    inflight = _trial(experiment_id, 9, 5.0, utcnow(), model=model)
+    inflight = _trial(
+        experiment_id, 9, 5.0, utcnow(), model=model, llm_key_hash=llm_key_hash
+    )
     inflight.finished_at = None
     inflight.status = TrialStatus.RUNNING
 
@@ -263,18 +316,24 @@ async def test_model_exclusion_matches_case_and_whitespace_variants(seeded_data)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "experiment_id,model",
-    [(EXCLUDED_EXP, PAID_MODEL), (FREE_MODEL_EXP, FREE_MODEL)],
+    "experiment_id,model,llm_key_hash",
+    [
+        (EXCLUDED_EXP, PAID_MODEL, None),
+        (FREE_MODEL_EXP, FREE_MODEL, None),
+        (LEGACY_KEY_EXP, PAID_MODEL, LEGACY_KEY_HASH),
+    ],
 )
 async def test_quota_sweep_does_not_cancel_excluded_trials(
-    seeded_data, experiment_id, model
+    seeded_data, experiment_id, model, llm_key_hash
 ):
     from sqlalchemy import select
 
     from oddish.core.quota_enforcement import _active_trial_predicates
     from oddish.db import TrialStatus
 
-    active = _trial(experiment_id, 8, 5.0, utcnow(), model=model)
+    active = _trial(
+        experiment_id, 8, 5.0, utcnow(), model=model, llm_key_hash=llm_key_hash
+    )
     active.finished_at = None
     active.status = TrialStatus.RUNNING
 

@@ -1098,6 +1098,7 @@ class TrialModel(TimestampedMixin, Base):
     total_tool_calls: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tool_counts: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    llm_key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Per-phase timing breakdown (from Harbor's TrialResult TimingInfo)
     phase_timing: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
@@ -2568,6 +2569,24 @@ class TagProjectionSweepStateModel(Base):
     )
 
 
+class CostExcludedLlmKeyModel(TimestampedMixin, Base):
+    __tablename__ = "cost_excluded_llm_keys"
+    __table_args__ = (
+        Index(
+            "idx_cost_excluded_llm_keys_hash_live",
+            "key_hash",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    key_hint: Mapped[str] = mapped_column(String(8), nullable=False, server_default="")
+    label: Mapped[str] = mapped_column(String(255), nullable=False, server_default="")
+    created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
 class CostExcludedModelModel(TimestampedMixin, Base):
     __tablename__ = "cost_excluded_models"
     __table_args__ = (
@@ -2618,6 +2637,7 @@ register_soft_delete_models(
     SavedTagFilterModel,
     SkillModel,
     DocumentModel,
+    CostExcludedLlmKeyModel,
     CostExcludedModelModel,
     CostExcludedExperimentModel,
 )

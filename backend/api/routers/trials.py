@@ -460,25 +460,35 @@ _SUMMARY_PENDING_STATUS = {
 }
 
 
-def _summary_refresh_response(summarize_trial: TrialModel) -> JSONResponse:
-    """Translate the durable summarize-trial state into the GET/POST contract."""
+def _summary_refresh_response(
+    summarize_trial: TrialModel, summary: dict | None
+) -> JSONResponse:
+    """Return published data and its replacement lifecycle without conflating them."""
     status = summarize_trial.status.value
     if status in {"failed", "skipped"} or summarize_trial.harbor_stage == "cancelled":
         return JSONResponse(
-            status_code=409,
+            status_code=200 if summary is not None else 409,
             content={
-                "status": "failed",
-                "job_id": summarize_trial.id,
-                "detail": "Trajectory summary refresh failed; start a new refresh to retry",
+                "summary": summary,
+                "refresh": {
+                    "status": "failed",
+                    "job_id": summarize_trial.id,
+                    "detail": (
+                        "Trajectory summary refresh failed; start a new refresh to retry"
+                    ),
+                },
             },
         )
     if status in _SUMMARY_PENDING_STATUS:
         return JSONResponse(
-            status_code=202,
+            status_code=200 if summary is not None else 202,
             content={
-                "status": _SUMMARY_PENDING_STATUS[status],
-                "job_id": summarize_trial.id,
-                "retry_after_ms": 3000,
+                "summary": summary,
+                "refresh": {
+                    "status": _SUMMARY_PENDING_STATUS[status],
+                    "job_id": summarize_trial.id,
+                    "retry_after_ms": 3000,
+                },
             },
         )
     raise RuntimeError(
@@ -508,10 +518,10 @@ async def get_trial_trajectory_summary(
                 f"trial {trial.id} points to invalid summary refresh "
                 f"{trial.trajectory_summary_refresh_trial_id}"
             )
-        return _summary_refresh_response(refresh_trial)
+        return _summary_refresh_response(refresh_trial, trial.trajectory_summary)
     summary = trial.trajectory_summary
     if summary is not None:
-        return summary
+        return {"summary": summary, "refresh": None}
     raise HTTPException(status_code=404, detail="No trajectory summary for this trial")
 
 
@@ -535,7 +545,7 @@ async def regenerate_trial_trajectory_summary(
                 "a recorded trajectory are eligible"
             ),
         )
-    return _summary_refresh_response(refresh_trial)
+    return _summary_refresh_response(refresh_trial, trial.trajectory_summary)
 
 
 @router.get("/trials/{trial_id}/result")

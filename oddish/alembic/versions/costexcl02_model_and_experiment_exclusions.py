@@ -55,7 +55,9 @@ def upgrade() -> None:
         ON cost_excluded_experiments (experiment_id) WHERE deleted_at IS NULL
         """
     )
-    op.execute("DROP TABLE IF EXISTS cost_excluded_llm_keys")
+    # Keep the key-based policy until operators have moved every live row to a
+    # model or experiment exclusion. Old API/worker processes also query this
+    # table while a rolling deployment replaces them.
 
 
 def downgrade() -> None:
