@@ -1,0 +1,31 @@
+name: Main source branch gate
+
+on:
+  pull_request:
+
+permissions: {}
+
+jobs:
+  require-staging-source:
+    name: Require staging source
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check pull request source
+        shell: bash
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          TARGET_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ "$BASE_REF" = "main" ] \
+            && [ "$HEAD_REF" = "staging" ] \
+            && [ "$HEAD_REPOSITORY" = "$TARGET_REPOSITORY" ]; then
+            echo "Allowed: staging from this repository may update main."
+            exit 0
+          fi
+
+          echo "::error::Only the staging branch from this repository may update main."
+          echo "Received: ${HEAD_REPOSITORY}:${HEAD_REF} -> ${BASE_REF}"
+          exit 1
