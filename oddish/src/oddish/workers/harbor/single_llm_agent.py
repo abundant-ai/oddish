@@ -11,6 +11,7 @@ from harbor.agents.base import BaseAgent
 from harbor.environments.base import BaseEnvironment
 from harbor.llms.lite_llm import LiteLLM
 from harbor.models.agent.context import AgentContext
+from harbor.models.trial.paths import EnvironmentPaths
 from harbor.models.trajectories import (
     Agent,
     FinalMetrics,
@@ -95,15 +96,29 @@ class SingleLLMAgent(BaseAgent):
         )
         finished_at = datetime.now(timezone.utc).isoformat()
 
+        usage = response.usage
+        if usage is not None:
+            # The provider has already billed this request. Preserve its usage
+            # even when response validation or artifact publication fails.
+            context.n_input_tokens = usage.prompt_tokens
+            context.n_output_tokens = usage.completion_tokens
+            context.n_cache_tokens = usage.cache_tokens
+            context.cost_usd = usage.cost_usd
+
         artifact = self._response_model.model_validate_json(
             response.content
         ).model_dump(mode="json")
-        (self.logs_dir / self._output_filename).write_text(
+        local_artifact_path = self.logs_dir / self._output_filename
+        local_artifact_path.write_text(
             json.dumps(artifact, indent=2) + "\n"
+        )
+        sandbox_artifact_path = EnvironmentPaths.logs_dir / self._output_filename
+        await environment.upload_file(
+            local_artifact_path,
+            sandbox_artifact_path.as_posix(),
         )
         artifact_written_at = datetime.now(timezone.utc).isoformat()
 
-        usage = response.usage
         metrics = (
             Metrics(
                 prompt_tokens=usage.prompt_tokens,
@@ -151,7 +166,7 @@ class SingleLLMAgent(BaseAgent):
                             tool_call_id="write-result",
                             function_name="Write",
                             arguments={
-                                "file_path": f"/logs/{self._output_filename}",
+                                "file_path": sandbox_artifact_path.as_posix(),
                                 "content": "[structured LLM response]",
                             },
                         )
@@ -178,9 +193,3 @@ class SingleLLMAgent(BaseAgent):
         (self.logs_dir / "trajectory.json").write_text(
             format_trajectory_json(trajectory.to_json_dict()) + "\n"
         )
-
-        if usage is not None:
-            context.n_input_tokens = usage.prompt_tokens
-            context.n_output_tokens = usage.completion_tokens
-            context.n_cache_tokens = usage.cache_tokens
-            context.cost_usd = usage.cost_usd
