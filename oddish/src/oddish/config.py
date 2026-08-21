@@ -1168,7 +1168,7 @@ class Settings(BaseSettings):
 
     pending_trial_reservation_usd: Decimal = Decimal("1.00")
     default_daily_quota_usd: Decimal = Decimal("200.00")
-    quota_pause_remaining_percent: Decimal = Field(Decimal("5"), ge=0, le=100)
+    quota_pause_remaining_percent: Decimal = Field(Decimal("80"), ge=0, le=100)
     quota_pause_remaining_usd: Decimal | None = Field(None, ge=0)
     quota_pause_poll_seconds: float = Field(1.0, gt=0)
     quota_pause_refresh_seconds: float = Field(30.0, gt=0)

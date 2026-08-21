@@ -13,7 +13,7 @@ def test_quota_defaults_are_enforced_at_two_hundred_usd(monkeypatch):
     settings = Settings(_env_file=None)
 
     assert settings.default_daily_quota_usd == Decimal("200.00")
-    assert settings.quota_pause_remaining_percent == Decimal("5")
+    assert settings.quota_pause_remaining_percent == Decimal("80")
     assert settings.quota_pause_remaining_usd is None
     assert settings.quota_mode == QuotaMode.ENFORCE
 
