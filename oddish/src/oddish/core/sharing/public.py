@@ -342,7 +342,9 @@ async def get_public_task_status(
         _apply_public_experiments(
             response, public_exps.get(task.id, []), preferred_id=exp.id
         )
-        apply_model_display_names(response.trials or [], experiment_display_names(exp))
+        apply_model_display_names(
+            response.trials or [], experiment_display_names(exp)
+        )
         return response
 
 
@@ -398,11 +400,7 @@ async def get_public_trial_logs_structured(public_token: str, trial_id: str) -> 
 
 
 @router.get("/public/experiments/{public_token}/trials/{trial_id}/trajectory")
-async def get_public_trial_trajectory(
-    public_token: str,
-    trial_id: str,
-    include_summary: bool = Query(False),
-) -> dict | None:
+async def get_public_trial_trajectory(public_token: str, trial_id: str) -> dict | None:
     """Get ATIF trajectory.json for a public trial.
 
     Masked: the step headers render the trajectory's own ``model_name``, so an
@@ -420,16 +418,7 @@ async def get_public_trial_trajectory(
     trial, names = await _detached_public_trial_with_display_names(
         public_token, trial_id
     )
-    trajectory = mask_trajectory_model_names(await read_trial_trajectory(trial), names)
-    if include_summary:
-        return {
-            "trajectory": trajectory,
-            "summary_resource": {
-                "summary": trial.trajectory_summary,
-                "refresh": None,
-            },
-        }
-    return trajectory
+    return mask_trajectory_model_names(await read_trial_trajectory(trial), names)
 
 
 @router.get("/public/experiments/{public_token}/trials/{trial_id}/files")

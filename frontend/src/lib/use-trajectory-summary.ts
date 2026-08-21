@@ -136,7 +136,6 @@ interface UseTrajectorySummaryOptions {
   apiBaseUrl?: string;
   enabled?: boolean;
   canRegenerate?: boolean;
-  initialResource?: TrajectorySummaryResource;
 }
 
 /** Owns the summary read, paid refresh event, cache transition, and polling. */
@@ -145,7 +144,6 @@ export function useTrajectorySummary({
   apiBaseUrl = "/api",
   enabled = true,
   canRegenerate = false,
-  initialResource,
 }: UseTrajectorySummaryOptions) {
   const summaryUrl = enabled
     ? `${apiBaseUrl}/trials/${trialId}/trajectory/summary`
@@ -155,8 +153,6 @@ export function useTrajectorySummary({
     fetchTrajectorySummary,
     {
       revalidateOnFocus: false,
-      fallbackData: initialResource,
-      revalidateOnMount: initialResource === undefined,
     }
   );
   const activeRefresh =

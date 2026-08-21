@@ -7,7 +7,7 @@ import {
 } from "@/lib/backend-config";
 
 export async function GET(
-  request: Request,
+  _request: Request,
   { params }: { params: Promise<{ trial_id: string }> },
 ) {
   try {
@@ -15,12 +15,8 @@ export async function GET(
     const token = await getClerkToken(getToken);
 
     const { trial_id } = await params;
-    const includeSummary = new URL(request.url).searchParams.get(
-      "include_summary",
-    );
 
-    const search = includeSummary === "1" ? "?include_summary=1" : "";
-    const url = getBackendUrl("trials", `/${trial_id}/trajectory${search}`);
+    const url = getBackendUrl("trials", `/${trial_id}/trajectory`);
     const res = await fetch(url, {
       cache: "no-store",
       headers: getAuthHeaders(token),

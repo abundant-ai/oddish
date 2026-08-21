@@ -233,17 +233,7 @@ function TrialAnalysisCard({
   // mutation would write to whichever trial is currently showing, which is
   // the wrong target when the user switches trials during a rerun request.
   const { mutate: mutateByKey } = useSWRConfig();
-  // Terminal trials render from the row their parent already owns. The full
-  // resource is needed only while this card owns an active analysis poll.
-  const [pollQueuedAnalysis, setPollQueuedAnalysis] = useState(false);
-  const shouldPollAnalysis =
-    pollQueuedAnalysis || isAnalysisStatusActive(trialProp.analysis_status);
-  const { data: refreshedTrial } = useTrial(
-    shouldPollAnalysis ? trialProp.id : null,
-    { apiBaseUrl },
-  );
-  const trial =
-    refreshedTrial?.id === trialProp.id ? refreshedTrial : trialProp;
+  const trial = trialProp;
   const [queuing, setQueuing] = useState(false);
   const [queueError, setQueueError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -269,7 +259,6 @@ function TrialAnalysisCard({
   // cache stores it under each trial's id.
   useEffect(() => {
     trialIdRef.current = trialProp.id;
-    setPollQueuedAnalysis(false);
     setQueuing(false);
     setAnalysisLog(EMPTY_ANALYSIS_LOG);
     setLogOpen(false);
@@ -432,7 +421,6 @@ function TrialAnalysisCard({
       // when the user has switched trials; only the local card state below
       // is scoped to the trial this request was for.
       onQueued?.();
-      setPollQueuedAnalysis(true);
       // The server set analysis_status to queued before it responded, so
       // the queued state is already true on the server. Writing it into
       // the cache shows it immediately and starts the refetching, and
@@ -1014,7 +1002,7 @@ export function TrialDetailPanel({
       artifactsTargetPathRef.current = path;
       setArtifactsTargetPath(path);
     },
-    [],
+    []
   );
 
   // Navigating to a different trial keeps the file paths (attempts share

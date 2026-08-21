@@ -2598,12 +2598,7 @@ export function ExperimentTrialsTable({
                                       <Button
                                         type="button"
                                         variant="unstyled"
-                                        onPointerEnter={() => {
-                                          if (!readOnly && !trial.is_probe) {
-                                            void preloadTrial("/api", trial.id);
-                                          }
-                                        }}
-                                        onFocus={() => {
+                                        onPointerDown={() => {
                                           if (!readOnly && !trial.is_probe) {
                                             void preloadTrial("/api", trial.id);
                                           }

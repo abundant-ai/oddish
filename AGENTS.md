@@ -209,16 +209,11 @@ feature can return as a `'capabilities'` analysis trial.
 Shared trial drawers paint terminal trials from the slim row already owned by
 the task or experiment page while the authoritative `GET /trials/{id}` resource
 loads. Trial controls prefetch that resource on pointer or keyboard intent, and
-the drawer and QA card share its SWR cache entry, so one trial must never produce
-parallel detail requests. Drawers open on Summary and fetch a trajectory only
-after explicit user or URL intent. The Trajectory tab requests
-`GET /trials/{id}/trajectory?include_summary=1`, which returns the ATIF
-trajectory plus the current summary resource as
-`{"trajectory": ..., "summary_resource": {"summary": ..., "refresh": ...}}`
-after one trial authorization lookup. The public share route supports the same
-query and response shape. The legacy trajectory-without-query and
-`/trajectory/summary` contracts remain available to other clients. Collapsed
-trajectory steps must not mount their message,
+the drawer owns its SWR cache entry and passes the authoritative trial to the QA
+card, so one trial must never produce parallel detail requests. Drawers open on
+Summary and fetch trajectory and summary resources independently only after
+explicit user or URL intent. Collapsed trajectory steps must not mount their
+message,
 reasoning, tool, or observation bodies; those potentially large bodies mount
 only while the step is expanded. Trajectory summaries are written onto
 `trials.trajectory_summary` by the task's QA trial import or by a

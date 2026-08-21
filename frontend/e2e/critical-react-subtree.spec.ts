@@ -18,6 +18,7 @@ const hasClerkEnv = !!CLERK_EMAIL && !!CLERK_SECRET && !!CLERK_PUBLISHABLE;
 
 const TASK_ID = "task-p1-snapshot";
 const TRIAL_ID = "trial-p1-snapshot";
+const SECOND_TRIAL_ID = "trial-p1-second";
 const PROBE_TRIAL_ID = "trial-p1-probe";
 const FAILED_DETAIL_TASK_ID = "task-p1-failed-detail";
 const NOW = "2026-08-10T20:00:00Z";
@@ -71,6 +72,16 @@ const probeTrial: Trial = {
   analysis_finished_at: null,
   has_trajectory: false,
   is_probe: true,
+};
+
+const secondTrial: Trial = {
+  ...trial,
+  id: SECOND_TRIAL_ID,
+  name: "trial-p1-second",
+  analysis: {
+    ...trial.analysis!,
+    root_cause: "A second completed trial used to expose stale polling state.",
+  },
 };
 
 const browseTask: TaskBrowseResponse["items"][number] = {
@@ -221,7 +232,7 @@ const taskDetail: TaskDetailResponse = {
     current_version_id: "version-p1",
     trial_version: 1,
     trial_version_id: "version-p1",
-    trials: [trial, probeTrial],
+    trials: [trial, secondTrial, probeTrial],
     user_tags: [],
     created_at: NOW,
     updated_at: NOW,
@@ -298,6 +309,8 @@ test.describe("critical task and trial subtree", () => {
     const taskOpenGate = deferred();
     const taskDetailGate = deferred();
     const trialDetailGate = deferred();
+    const analysisRerunGate = deferred();
+    let holdAnalysisRerun = false;
     let failTrialRevalidation = false;
     const requests: string[] = [];
     let summaryGetCount = 0;
@@ -379,7 +392,7 @@ test.describe("critical task and trial subtree", () => {
     await page.route(
       new RegExp(`/api/tasks/${TASK_ID}/trials(?:\\?|$)`),
       async (route) => {
-        await route.fulfill({ json: [trial, probeTrial] });
+        await route.fulfill({ json: [trial, secondTrial, probeTrial] });
       }
     );
     await page.route(
@@ -393,6 +406,7 @@ test.describe("critical task and trial subtree", () => {
     await page.route(
       new RegExp(`/api/trials/${TRIAL_ID}/analysis/rerun(?:\\?|$)`),
       async (route) => {
+        if (holdAnalysisRerun) await analysisRerunGate.pending;
         await route.fulfill({ status: 202, json: {} });
       }
     );
@@ -449,7 +463,7 @@ test.describe("critical task and trial subtree", () => {
             });
             return;
           }
-          if (summaryGetCount === 1) {
+          if (summaryGetCount === 2) {
             await route.fulfill({
               status: 202,
               json: {
@@ -463,7 +477,7 @@ test.describe("critical task and trial subtree", () => {
             });
             return;
           }
-          if (summaryGetCount === 2) {
+          if (summaryGetCount === 3) {
             await route.fulfill({
               status: 202,
               json: {
@@ -487,31 +501,28 @@ test.describe("critical task and trial subtree", () => {
         }
         await route.fulfill({
           json: {
-            trajectory: {
-              schema_version: "1",
-              session_id: "session-p1",
-              agent: {
-                name: "codex",
-                version: "1",
-                model_name: "gpt-5",
-              },
-              steps: [
-                {
-                  step_id: 1,
-                  timestamp: NOW,
-                  source: "agent",
-                  model_name: "gpt-5",
-                  message: "Short collapsed preview",
-                  reasoning_content: "DEFERRED_TRAJECTORY_STEP_BODY",
-                  tool_calls: null,
-                  observation: null,
-                  metrics: null,
-                },
-              ],
-              notes: null,
-              final_metrics: null,
+            schema_version: "1",
+            session_id: "session-p1",
+            agent: {
+              name: "codex",
+              version: "1",
+              model_name: "gpt-5",
             },
-            summary_resource: { summary: null, refresh: null },
+            steps: [
+              {
+                step_id: 1,
+                timestamp: NOW,
+                source: "agent",
+                model_name: "gpt-5",
+                message: "Short collapsed preview",
+                reasoning_content: "DEFERRED_TRAJECTORY_STEP_BODY",
+                tool_calls: null,
+                observation: null,
+                metrics: null,
+              },
+            ],
+            notes: null,
+            final_metrics: null,
           },
         });
       }
@@ -520,6 +531,12 @@ test.describe("critical task and trial subtree", () => {
       new RegExp(`/api/trials/${PROBE_TRIAL_ID}(?:\\?|$)`),
       async (route) => {
         await route.fulfill({ json: probeTrial });
+      }
+    );
+    await page.route(
+      new RegExp(`/api/trials/${SECOND_TRIAL_ID}(?:\\?|$)`),
+      async (route) => {
+        await route.fulfill({ json: secondTrial });
       }
     );
     await page.route(
@@ -639,8 +656,7 @@ test.describe("critical task and trial subtree", () => {
     const trajectoryRequest = page.waitForRequest(trajectoryPattern);
     await page.getByRole("tab", { name: "Trajectory" }).click();
     await trajectoryRequest;
-    expect(requestCount(requests, trajectoryPattern)).toBe(1);
-    expect(summaryGetCount).toBe(0);
+    expect(requestCount(requests, trajectoryPattern)).toBeGreaterThan(0);
     await expect(page.getByText("DEFERRED_TRAJECTORY_STEP_BODY")).toHaveCount(
       0
     );
@@ -656,7 +672,7 @@ test.describe("critical task and trial subtree", () => {
     await summaryPost;
     await expect(page.getByText("Replacement summary published")).toBeVisible();
     expect(summaryPostCount).toBe(1);
-    expect(summaryGetCount).toBeGreaterThanOrEqual(3);
+    expect(summaryGetCount).toBeGreaterThanOrEqual(4);
 
     failNextSummaryPost = true;
     const failedSummaryPost = page.waitForResponse(
@@ -689,6 +705,26 @@ test.describe("critical task and trial subtree", () => {
     );
 
     await page.getByRole("tab", { name: "Summary" }).click();
+    const secondTrialPattern = new RegExp(
+      `/api/trials/${SECOND_TRIAL_ID}(?:\\?|$)`
+    );
+    holdAnalysisRerun = true;
+    const queuedAnalysisRequest = page.waitForRequest(
+      new RegExp(`/api/trials/${TRIAL_ID}/analysis/rerun(?:\\?|$)`)
+    );
+    await page.getByRole("button", { name: "Re-run analysis" }).click();
+    await queuedAnalysisRequest;
+    const secondTrialResponse = page.waitForResponse(secondTrialPattern);
+    await page.getByRole("button", { name: "Next trial" }).click();
+    await secondTrialResponse;
+    await expect(page.getByText(SECOND_TRIAL_ID)).toBeVisible();
+    await page.waitForTimeout(2_100);
+    analysisRerunGate.release();
+    await page.waitForTimeout(300);
+    expect(requestCount(requests, secondTrialPattern)).toBe(1);
+
+    await page.getByRole("button", { name: "Previous trial" }).click();
+    await expect(page.getByText(TRIAL_ID)).toBeVisible();
     // The analysis mutation revalidates the canonical trial. A transient
     // failure keeps that canonical row and must not relock other mutations.
     failTrialRevalidation = true;
