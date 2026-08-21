@@ -585,7 +585,7 @@ def run(
                 "Re-run an existing target instead of submitting new work. "
                 "Pass a trial, task, or experiment id (positional, --task, or "
                 "--experiment). Retries failed trials by default; combine with "
-                "--qa to re-run the task-level QA job (classify every trial + "
+                "--qa to create a replacement task-level QA trial (classify every trial + "
                 "synthesize the verdict)."
             ),
         ),
@@ -595,7 +595,7 @@ def run(
         typer.Option(
             "--qa",
             help=(
-                "With --retry: re-run the task-level QA job (classify trials + "
+                "With --retry: create a replacement task-level QA trial (classify trials + "
                 "verdict) instead of retrying trials."
             ),
         ),

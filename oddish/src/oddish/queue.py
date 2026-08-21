@@ -1671,7 +1671,7 @@ async def maybe_gate_llm_trials(session: AsyncSession, trial_id: str) -> bool:
     and its authoritative worker job for that task version in that experiment
     are terminal, evaluates them and — if they validate the task (oracle passes,
     nop fails) — releases that scope's BLOCKED LLM trials to QUEUED; otherwise
-    cancels them and mirrors them to FAILED so the task can advance. Scoping by
+    cancels them and mirrors them to SKIPPED so the task can advance. Scoping by
     experiment keeps concurrent sweeps in different experiments from sharing
     each other's gate timing or verdict; scoping by task version keeps an older
     version's baselines from validating a newer version's (different code) LLM

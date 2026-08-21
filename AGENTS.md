@@ -15,8 +15,8 @@ Python `3.13` is required for `oddish` and `backend`. Node.js `20+` and `pnpm` a
 - Keep `DOCS.md` focused on end-user CLI workflows; keep `oddish/README.md` as a short package quick start.
 - Put `oddish` implementation details, architecture notes, and local development guidance here.
 - If you change the CLI surface in `oddish/src/oddish/cli/`, update `DOCS.md`,
-  the command list in `oddish/README.md`, and the packaged agent guide at
-  `oddish/src/oddish/assets/skills/oddish/SKILL.md` (served by `oddish skill`).
+  the command list in `oddish/README.md`, and the packaged agent skill under
+  `oddish/src/oddish/assets/skills/oddish/` (served by `oddish skill`).
 - If you change API contracts, queue behavior, or storage layout, update this file.
 - If you change `backend/` auth, deployment, or worker orchestration, update this file.
 - If you change `frontend/` routing, API proxy structure, or auth behavior, update this file.

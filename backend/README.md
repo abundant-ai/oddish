@@ -278,11 +278,11 @@ All routes require auth unless marked public.
 | POST | `/trials/import/complete` | Finalize an imported trial after the client PUT succeeds |
 | POST | `/tasks/sweep` | Expand one task into multiple trials; accepts optional `max_trial_attempts` for newly-created trials |
 | GET | `/tasks` | List tasks (org-scoped, paginated/filtered) |
-| GET | `/tasks/browse` | Browse latest task versions with pagination and search |
+| GET | `/tasks/browse` | Browse selected default task versions with pagination and search |
 | GET | `/tasks/{task_id}` | Task details |
 | POST | `/tasks/cancel` | Cancel in-flight trials and queue jobs for one or more tasks (org-scoped); Modal workers and supported remote sandboxes are terminated when applicable |
-| POST | `/tasks/{task_id}/qa/retry` | Re-run task QA: classify trials and synthesize the verdict |
-| POST | `/tasks/{task_id}/qa/cancel` | Cancel a task's in-flight QA job |
+| POST | `/tasks/{task_id}/qa/retry` | Create replacement task QA over every eligible agent trial |
+| POST | `/tasks/{task_id}/qa/cancel` | Cancel a task's live QA and pre-trial audit analysis trials |
 | GET | `/tasks/{task_id}/trials` | Trials for task |
 | GET | `/tasks/{task_id}/trials/{index}` | Trial by index |
 | GET | `/tasks/{task_id}/versions` | List stored task versions |

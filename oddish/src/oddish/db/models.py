@@ -201,9 +201,9 @@ class WorkerJobKind(str, Enum):
 class WorkerJobStatus(str, Enum):
     """Single state machine for every kind of worker job.
 
-    `BLOCKED` is reserved for future M-of-N dependency gating; v1 keeps
-    stage transitions driven by application-level enqueue helpers and
-    does not enter BLOCKED.
+    `BLOCKED` holds paid TRIAL jobs while same-version, same-experiment
+    nop/oracle baselines run. Baseline settlement moves them to QUEUED or
+    CANCELLED.
     """
 
     QUEUED = "QUEUED"
@@ -633,7 +633,7 @@ class TaskModel(TimestampedMixin, Base):
     )  # Original local path or task name
     task_s3_key: Mapped[str | None] = mapped_column(
         Text, nullable=True
-    )  # S3 prefix for task files (mirrors latest version)
+    )  # S3 prefix for task files (mirrors the selected default version)
     tags: Mapped[dict] = mapped_column(JSONB, default=dict)
     # Materialized read projection — see `oddish.core.tags_projection`.
     effective_tag_ids: Mapped[list[str]] = mapped_column(

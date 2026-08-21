@@ -1,171 +1,123 @@
 ---
 name: oddish
-description: Run, monitor, QA, and pull Harbor evaluation tasks with the oddish CLI. Use when submitting eval sweeps (agents/models/nop/oracle baselines), checking trial progress, triggering or reading task QA verdicts and per-trial classifications, diagnosing failures, downloading logs/artifacts, or retrying cancelled work. Requires the oddish package installed and ODDISH_API_KEY set.
+description: Run, inspect, compare, retry, and diagnose Harbor evaluation tasks through the Oddish CLI. Use for Oddish task versions, experiments, agent trials, nop/oracle baseline gates, task-level QA verdicts, trajectory summaries, logs, artifacts, and preflight checks. Do not use for a plain local Harbor run that will not be submitted to Oddish.
 ---
 
-# oddish — drive Harbor evals from the CLI
+# Oddish evaluations
 
-Oddish schedules Harbor-compatible eval trials against an API server, tracks them
-through execution, and runs task-level QA (LLM trajectory classification + a task
-verdict). This skill teaches an agent the deterministic command paths.
+Oddish is the scheduler and results store around Harbor, the task-execution
+harness. Use the installed CLI as the executable contract and this skill for
+the repository rules that are easy to misread from command output.
 
-## Setup
-
-```bash
-oddish --help                 # confirms the CLI is installed
-export ODDISH_API_KEY="ok_..."  # required for every API call
-oddish status                 # read-only; confirms auth + connectivity
-```
-
-- Never print, log, commit, or reply with the value of `ODDISH_API_KEY`.
-- `ODDISH_API_URL` overrides the target server; unset means the hosted API.
-- **Every command except `oddish logs` accepts `--json`** for machine-readable
-  output. Agents should pass `--json` and parse stdout; human output is Rich
-  tables and not a stable contract.
-
-## Core invariants
-
-- **One comparison = one frozen task version.** Submit nop, oracle, and every
-  model in ONE sweep against ONE task version. Do not append a model-only
-  submission after the task version changed — the old baseline columns stop
-  applying.
-- **Baseline gating.** When a sweep includes baselines, `nop` must finish with
-  reward `0` and `oracle` with reward `1` before paid model trials run. A
-  missing/failed/unexpected baseline makes the gate fail and model trials land
-  as `skipped` — that is the task failing admission, not the model failing.
-- **QA is task-scoped, not trial-scoped.** One QA job classifies every live
-  trial of a task, then synthesizes the task verdict. You trigger and read it
-  per task.
-- **Re-submitting the same sweep reconciles.** Live/successful trials satisfy
-  the requested count; failed ones are replaced (old attempts kept for history,
-  marked superseded). Interrupted submissions are safe to repeat.
-
-## Workflow 1 — Submit a sweep (mutating, spends money)
+## Start safely
 
 ```bash
-# Single task, one agent/model
-oddish run ./my-task -a claude-code -m anthropic/claude-sonnet-4-5 --n-trials 5 --json
-
-# Multi-agent comparison with baselines, from config
-oddish run ./my-task -c sweep.yaml --json
+oddish --help
+oddish status --json
 ```
 
-`sweep.yaml` shape (nop + oracle + models in one atomic sweep):
+API-backed commands require `ODDISH_API_KEY`. Never print, log, commit, or
+return its value. The API target resolves in this order:
+`ODDISH_API_URL`, `ODDISH_PREVIEW_PR`, then hosted Oddish.
 
-```yaml
-agents:
-  - name: nop
-    model_name: none/none
-    n_trials: 1
-  - name: oracle
-    model_name: none/none
-    n_trials: 1
-  - name: claude-code
-    model_name: anthropic/claude-sonnet-4-5
-    n_trials: 3
-```
+Run `oddish <command> --help` before relying on an option not shown here.
+`--json` exists on many operational commands, but it is not a global option.
+`oddish logs`, `oddish link`, and `oddish probe` do not provide JSON output.
 
-- `--json` implies `--background`: submit returns immediately with IDs.
-  Record the task ID(s) and experiment ID from the output.
-- Add `--run-analysis` to auto-enqueue QA once every trial of a task finishes.
-  Without it, trigger QA manually later (Workflow 3).
-- Only submit when the user has authorized a paid run.
+## Authorization boundaries
 
-## Workflow 2 — Monitor (read-only)
+Treat these as separate mutations:
 
-```bash
-oddish status <task_id> --json        # single JSON snapshot for scripts/agents
-oddish status --experiment <id>       # experiment-level progress
-oddish logs <trial_id> --follow       # live transcript of a running trial
-```
+- `run`, trial retry, and QA backfill can spend money. Get authorization for
+  the intended agents, models, trial count, and scope.
+- `publish` and `collect` can expose an experiment through a public link. Get
+  authorization before making data public.
+- `cancel` stops active work. Inspect the failure first because cancellation
+  replaces the visible error with `Cancelled by user`.
+- `delete` removes database visibility. Get explicit authorization for the
+  exact trial, task, or experiment.
 
-Interpret `status` / `harbor_stage` literally: `queued` (no worker yet),
-`environment setup`, `agent running`, `verification`, `retrying` (inspect the
-exception before cancelling — do not cancel just because setup takes minutes).
-Terminal trial statuses: `success`, `failed`, `cancelled`, `skipped`.
+Read-only inspection through `status`, `ls`, `logs`, `pull`, and `link` does
+not authorize a later mutation.
 
-## Workflow 3 — Trigger QA after trials finish, then read it
+## Normal workflow
 
-QA classifies stored trajectories; it never re-executes trials. Triggering and
-reading are separate commands.
+1. Validate a local task before submitting it:
 
-```bash
-# 1. Trigger (mutating, LLM cost). Pick ONE:
-oddish backfill-analysis --task <task_id>          # fills unanalyzed trials + recomputes verdict
-oddish backfill-analysis --task <task_id> --force  # redo already-analyzed trials too
-oddish run <task_id> --retry --qa -y               # re-run the whole task QA job
+   ```bash
+   oddish preflight ./task --json
+   ```
 
-# 2. Read (read-only). Poll until verdict_status is success or failed.
-oddish status <task_id> --json
-```
+   `run` and task-mode `upload` perform the same gate. Use `--force` only when
+   the user accepts the reported finding.
 
-Read these fields from the task JSON:
+2. Submit all comparison columns against one task version and one experiment:
 
-- `verdict_status` — `queued` / `running` (QA in flight; poll again in a few
-  seconds), `success` / `failed` (settled).
-- `verdict` — the settled task verdict: `verdict` (`accept` / `reject`),
-  `is_good`, `confidence`, `primary_issue`, `reasoning`, and
-  **`recommendations` — the task-level fix list** (3–5 items for rejected
-  tasks). The verdict carries no per-finding details; those live on trials.
-- Per-trial `analysis` — TRIMMED here to `classification` / `subtype` /
-  `evidence`. Classifications: `GOOD_SUCCESS`, `GOOD_FAILURE`, `BAD_SUCCESS`,
-  `BAD_FAILURE`, `HARNESS_ERROR`.
+   ```bash
+   oddish run ./task -c sweep.yaml --json
+   ```
 
-The concrete fix suggestions are one level down, on the full trial record:
+   Include nop, oracle, and paid model trials in the same sweep. `run --json`
+   implies background mode. Preserve `tasks[].id` and `experiment_url` from
+   the output; the `experiment` field is the experiment name, not a guaranteed
+   identifier.
 
-```bash
-oddish status <trial_id> --json      # <task_id>-<index>
-```
+3. Inspect a task, experiment, or individual trial:
 
-Its full `analysis` adds `recommendation` (per-trial fix) and
-`action_items[]` — findings with `file`, `line_start`–`line_end`, `title`,
-`detail`, **`recommendation`** (the fix), `tier` (`must_fix` / `should_fix` /
-`optional`), `exploited` + `exploit_evidence`, and `source` (`pre_trial` =
-found by the source audit before any run, `post_trial` = found from
-trajectories). Everything the web UI's QA panel renders is these stored
-fields; nothing is UI-only.
+   ```bash
+   oddish status <task_id> --json
+   oddish status --experiment <experiment_id> --json
+   oddish status <trial_id> --json
+   oddish logs <trial_id> --follow
+   ```
 
-Reading it correctly:
+   Task JSON can contain platform analysis trials. Count evaluation attempts
+   only where `trials[].kind == "agent"`.
 
-- Keep **verifier reward** and **QA classification** separate. A `GOOD_FAILURE`
-  trial still failed the verifier; a `BAD_SUCCESS` trial passed the verifier but
-  QA suspects the pass (e.g. reward hacking).
-- If baselines gated the sweep (`skipped` model trials), fix the task's
-  baselines before reading anything into model results.
+4. Let task-level QA start automatically after current-version agent trials
+   settle and the pre-trial audit finishes. Read the task verdict from task
+   status and the full classification/action items from individual trial
+   status. Trigger a replacement pass only when requested:
 
-## Workflow 4 — Pull evidence (read-only)
+   ```bash
+   oddish backfill-analysis --task <task_id> --json
+   oddish run <task_id> --retry --qa --yes --json
+   ```
 
-```bash
-oddish pull <trial_id> --structured --files --out /tmp/<trial_id>
-oddish pull <task_id>                # whole task; experiment IDs also work
-```
+5. Pull permanent evidence before diagnosing or cancelling:
 
-Read in order: `result.json` → verifier `reward.json` / `details.json` →
-`trial.log` → trajectory / agent log. Live transcripts (`oddish logs`) are
-purged when a trial ends; `pull` fetches the permanent S3 record.
+   ```bash
+   oddish pull <trial_id> --structured --files --out /tmp/<trial_id>
+   ```
 
-## Workflow 5 — Retry and cancel
+   Read the result and verifier artifacts before the log and trajectory.
+   Live transcript events are temporary; pulled storage artifacts are the
+   permanent record.
 
-```bash
-oddish run <trial_id> --retry -y            # re-run one failed trial
-oddish run <task_id> --retry -y             # re-run every failed trial in a task
-oddish cancel <task_id>                     # stop in-flight trials (completed kept)
-oddish cancel <task_id> --qa                # stop only the in-flight QA job
-```
+6. Retry only the intended immutable attempt:
 
-Diagnose before cancelling: `cancel` stamps "Cancelled by user", which hides
-the earlier exception. Pull the trial first.
+   ```bash
+   oddish run <trial_id> --retry --yes --json
+   oddish run <task_id> --retry --yes --json
+   ```
 
-## Gotchas
+   A retry creates a new trial row and points the old row to it through
+   `superseded_by_trial_id`; it does not rewrite the old attempt.
 
-- `--qa` requires `--retry` (`oddish run <id> --retry --qa`).
-- `--json` on `run` implies `--background` — no watch output follows.
-- Trial IDs are `<task_id>-<index>`; commands that take a task usually accept a
-  trial ID and resolve to its parent task.
-- Baseline `nop` scoring `0` is the EXPECTED calibration result, not a failure.
-  Do not judge task quality from an average reward that includes nop.
-- `status --queue` and `costs` need a full-scope API key on hosted Oddish.
-- Task/experiment `delete` is self-host only; hosted supports `--trial` deletes.
-  Never delete without explicit user authorization.
-- Full command reference: `oddish <command> --help` (always current with the
-  installed package) or https://github.com/abundant-ai/oddish/blob/main/DOCS.md
+## Load the contract you need
+
+- Read [references/domain-contract.md](references/domain-contract.md) before
+  comparing versions, counting trials, interpreting statuses, using baselines,
+  or retrying work.
+- Read [references/qa-contract.md](references/qa-contract.md) before reading or
+  rerunning audits, classifications, verdicts, action items, or summaries.
+- Read [references/cli-contract.md](references/cli-contract.md) before scripting
+  commands, parsing JSON, choosing an API target, or checking API-key scope.
+- Read [references/known-contract-traps.md](references/known-contract-traps.md)
+  when repository docs, comments, UI labels, and runtime behavior disagree.
+
+For details beyond these contracts, prefer the current runtime enum,
+predicate, response schema, endpoint, or Typer command definition over prose
+documentation. `AGENTS.md` is the architecture guide; `DOCS.md` is the end-user
+CLI guide. Plans and handoff notes describe proposed or historical work, not
+the running contract.

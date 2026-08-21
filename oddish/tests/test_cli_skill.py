@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+from importlib import resources
+import re
+
 import typer
 from typer.testing import CliRunner
 
-from oddish.cli.skill import SKILL_DIR_NAME, skill, skill_text
+from oddish.cli.skill import (
+    SKILL_DIR_NAME,
+    SKILL_RESOURCE_DIR,
+    skill,
+    skill_text,
+)
 
 
 def _invoke(args: list[str]):
@@ -22,27 +30,39 @@ def test_packaged_skill_has_valid_frontmatter():
     assert "description:" in frontmatter
 
 
+def test_packaged_skill_reference_links_exist():
+    text = skill_text()
+    skill_root = resources.files("oddish").joinpath(SKILL_RESOURCE_DIR)
+    links = re.findall(r"\((references/[^)]+\.md)\)", text)
+    assert links
+    assert all(skill_root.joinpath(link).is_file() for link in links)
+
+
 def test_skill_prints_markdown_to_stdout():
     result = _invoke([])
     assert result.exit_code == 0, result.output
     assert result.stdout.startswith("---\n")
-    assert "oddish backfill-analysis" in result.stdout
+    assert "references/qa-contract.md" in result.stdout
     assert "\x1b[" not in result.stdout
 
 
 def test_skill_install_writes_skill_md_under_named_dir(tmp_path):
     result = _invoke(["--install", "--dir", str(tmp_path)])
     assert result.exit_code == 0, result.output
-    dest = tmp_path / SKILL_DIR_NAME / "SKILL.md"
-    assert dest.read_text() == skill_text()
+    dest = tmp_path / SKILL_DIR_NAME
+    assert (dest / "SKILL.md").read_text() == skill_text()
+    assert (dest / "references" / "domain-contract.md").is_file()
+    assert (dest / "references" / "qa-contract.md").is_file()
+    assert (dest / "references" / "cli-contract.md").is_file()
+    assert (dest / "references" / "known-contract-traps.md").is_file()
 
 
 def test_skill_install_detects_existing_skills_dir(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    (tmp_path / ".claude" / "skills").mkdir(parents=True)
+    (tmp_path / ".agents" / "skills").mkdir(parents=True)
     result = _invoke(["--install"])
     assert result.exit_code == 0, result.output
-    dest = tmp_path / ".claude" / "skills" / SKILL_DIR_NAME / "SKILL.md"
+    dest = tmp_path / ".agents" / "skills" / SKILL_DIR_NAME / "SKILL.md"
     assert dest.read_text() == skill_text()
 
 
