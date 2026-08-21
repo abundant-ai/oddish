@@ -342,6 +342,38 @@ def test_legacy_clear_accepts_absent_override_only_queue(monkeypatch):
     }
 
 
+def test_legacy_clear_formats_unknown_deploy_limit_as_unavailable(monkeypatch):
+    old_put_payload = {
+        "queue_key": "custom/idle-model",
+        "limit": 64,
+        "deploy_limit": 64,
+        "override_limit": None,
+    }
+    _install_client(
+        monkeypatch,
+        put_response=_Response(200, old_put_payload),
+        get_response=_Response(404, {"detail": "Not Found"}),
+        queue_health_response=_Response(200, {"capacity": []}),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "admin",
+            "concurrency",
+            "clear",
+            "custom/idle-model",
+            "--api-url",
+            "http://api.test",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "None" not in result.output
+    assert "Deploy" in result.output
+    assert "—" in result.output
+
+
 @pytest.mark.parametrize("limit", ["-1", "10001"])
 def test_set_rejects_values_outside_server_range(monkeypatch, limit):
     calls = _install_client(monkeypatch)

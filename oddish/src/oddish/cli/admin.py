@@ -166,7 +166,10 @@ def _print_setting(data: dict[str, Any]) -> None:
     table.add_column("Setting")
     table.add_column("Value")
     table.add_row("Queue key", str(data.get("queue_key", "")))
-    table.add_row("Deploy", str(data.get("deploy_limit", "")))
+    table.add_row(
+        "Deploy",
+        "—" if data.get("deploy_limit") is None else str(data["deploy_limit"]),
+    )
     table.add_row(
         "DB override",
         "—" if data.get("override_limit") is None else str(data["override_limit"]),
