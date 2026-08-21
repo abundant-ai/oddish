@@ -33,4 +33,4 @@ def test_repair_revision_restores_table_for_already_migrated_databases():
 def test_cost_exclusion_repair_keeps_one_migration_head():
     scripts = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
 
-    assert scripts.get_heads() == ["costexcl03"]
+    assert scripts.get_heads() == ["expmodelrename02"]
