@@ -1547,8 +1547,9 @@ async def _execute_trial(
                 f"{prepared_trial.trial_environment or settings.harbor_environment}"
             ) from exc
 
-        is_probe = bool(
-            (prepared_trial.trial_harbor_config or {}).get("extra_instructions")
+        harbor_config = prepared_trial.trial_harbor_config or {}
+        is_probe = bool(harbor_config.get("extra_instructions")) and (
+            harbor_config.get("mode") != "summarize"
         )
         outcome = await run_harbor_trial_async(
             task_path=task_path_to_run,
@@ -1773,8 +1774,13 @@ async def run_trial_job(
             from oddish.workers.analysis_trials import (
                 ANALYSIS_ARTIFACTS,
                 analysis_check_payload,
+                materialize_summarize_brief,
             )
 
+            if trial_mode == "summarize":
+                probe_extra_instructions = await materialize_summarize_brief(
+                    prepared_trial.trial_harbor_config
+                )
             apply_analysis_overlay(
                 task_path_to_run,
                 brief=probe_extra_instructions,
@@ -1782,6 +1788,7 @@ async def run_trial_job(
                 check_payload=analysis_check_payload(
                     trial_mode, prepared_trial.trial_harbor_config
                 ),
+                needs_query_cli=trial_mode != "summarize",
             )
         else:
             await apply_probe_overlay(
@@ -1791,43 +1798,48 @@ async def run_trial_job(
                 extra_instructions=probe_extra_instructions,
                 probe_scope=probe_scope,
             )
-        # Network egress so the oddish-query CLI can reach the API.
-        enable_local_internet(task_path_to_run)
-        try:
-            probe_key_id, probe_agent_env = await mint_probe_creds(
-                org_id=prepared_trial.org_id, trial_id=trial_id
-            )
-            probe_agent_env["ODDISH_PROBE_TASK_ID"] = prepared_trial.task_id
-            probe_agent_env["ODDISH_PROBE_HARBOR_REPO"] = settings.harbor_source_repo
-            probe_agent_env["ODDISH_PROBE_HARBOR_REF"] = settings.harbor_source_ref
-        except ProbeCredsError as exc:
-            # Record the failure on the trial row so the operator sees why the
-            # probe failed; _execute_trial's handler never runs in this path.
-            logger.error(
-                "trial %s failed before sandbox start: ProbeCredsError: %s",
-                trial_id,
-                exc,
-            )
-            _, run_post_trial_hooks = await asyncio.shield(
-                _store_trial_results(
-                    trial_id=trial_id,
-                    outcome=None,
-                    trial_s3_key=None,
-                    execution_error=f"ProbeCredsError: {exc}",
-                    worker_id=worker_id,
-                    worker_job_id=worker_job_id,
-                    trial_attempt=prepared_trial.trial_attempt,
+        if trial_mode != "summarize":
+            # QA, audit, and operator probes use oddish-query inside the
+            # sandbox. Summarize already has its bounded input and needs no
+            # Oddish API credential or sandbox network access.
+            enable_local_internet(task_path_to_run)
+            try:
+                probe_key_id, probe_agent_env = await mint_probe_creds(
+                    org_id=prepared_trial.org_id, trial_id=trial_id
                 )
-            )
-            await _finish_trial_settlement(
-                trial_id=trial_id,
-                org_id=prepared_trial.org_id,
-                billed_user_id=prepared_trial.billed_user_id,
-                run_post_trial_hooks=run_post_trial_hooks,
-            )
-            if temp_task_dir and temp_task_dir.exists():
-                shutil.rmtree(temp_task_dir, ignore_errors=True)
-            raise
+                probe_agent_env["ODDISH_PROBE_TASK_ID"] = prepared_trial.task_id
+                probe_agent_env["ODDISH_PROBE_HARBOR_REPO"] = (
+                    settings.harbor_source_repo
+                )
+                probe_agent_env["ODDISH_PROBE_HARBOR_REF"] = settings.harbor_source_ref
+            except ProbeCredsError as exc:
+                # Record the failure on the trial row so the operator sees why
+                # the probe failed; _execute_trial never runs in this path.
+                logger.error(
+                    "trial %s failed before sandbox start: ProbeCredsError: %s",
+                    trial_id,
+                    exc,
+                )
+                _, run_post_trial_hooks = await asyncio.shield(
+                    _store_trial_results(
+                        trial_id=trial_id,
+                        outcome=None,
+                        trial_s3_key=None,
+                        execution_error=f"ProbeCredsError: {exc}",
+                        worker_id=worker_id,
+                        worker_job_id=worker_job_id,
+                        trial_attempt=prepared_trial.trial_attempt,
+                    )
+                )
+                await _finish_trial_settlement(
+                    trial_id=trial_id,
+                    org_id=prepared_trial.org_id,
+                    billed_user_id=prepared_trial.billed_user_id,
+                    run_post_trial_hooks=run_post_trial_hooks,
+                )
+                if temp_task_dir and temp_task_dir.exists():
+                    shutil.rmtree(temp_task_dir, ignore_errors=True)
+                raise
 
     # Ensure Harbor scratch directories exist before execution starts.
     os.makedirs(settings.harbor_jobs_dir, exist_ok=True)
