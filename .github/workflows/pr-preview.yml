@@ -191,8 +191,14 @@ jobs:
       #
       # The wider GKE_TPU_ZONES adds us-east1-d, us-central1-b and
       # us-south1-ai1b, and none of those are reachable with flex-start. So
-      # the mode has to move with the region. us-east1-d holds 1536
-      # preemptible v6e against us-east5's 256 and carries no CT6E chip cap.
+      # the mode has to move with the region. us-east1-d is picked because it
+      # is the zone that actually produced a machine: it answered with
+      # TriggeredScaleUp and a real node in minutes, where us-east5 repeatedly
+      # logged scale.up.error.waiting.for.instances.timeout. Not for headroom
+      # -- v6e quota is a project-wide per-zone default applied to every zone
+      # equally (512 on-demand, 1536 preemptible), so no zone has an advantage
+      # and 4 chips is never the binding constraint. Physical availability is
+      # what differs, it is not published anywhere, and it can go stale.
       ODDISH_GKE_REGION: "us-east1"
       # Artifact Registry stays in us-east5, where oddish-envs and every
       # already-built task image live. A cross-region pull costs a little
