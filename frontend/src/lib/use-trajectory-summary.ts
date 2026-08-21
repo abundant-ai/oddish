@@ -159,9 +159,18 @@ export function useTrajectorySummary({
     summaryQuery.data?.refresh?.status === "failed"
       ? null
       : summaryQuery.data?.refresh;
+  const pollingJobId = activeRefresh?.jobId ?? null;
+  const initialPollDelay = activeRefresh?.retryAfterMs ?? null;
   const revalidateSummary = summaryQuery.mutate;
   useEffect(() => {
-    if (!summaryUrl || !activeRefresh || summaryQuery.error) return;
+    if (
+      !summaryUrl ||
+      !pollingJobId ||
+      initialPollDelay === null ||
+      summaryQuery.error
+    ) {
+      return;
+    }
 
     let cancelled = false;
     let timer: number | undefined;
@@ -171,7 +180,9 @@ export function useTrajectorySummary({
           const next = await revalidateSummary();
           const nextRefresh =
             next?.refresh?.status === "failed" ? null : next?.refresh;
-          if (cancelled || !nextRefresh) return;
+          if (cancelled || !nextRefresh || nextRefresh.jobId !== pollingJobId) {
+            return;
+          }
           // If SWR considers two responses equal, React will not rerender and
           // restart this effect. Continue the same lifecycle from the response.
           schedulePoll(nextRefresh.retryAfterMs);
@@ -182,12 +193,18 @@ export function useTrajectorySummary({
       }, afterMs);
     }
 
-    schedulePoll(activeRefresh.retryAfterMs);
+    schedulePoll(initialPollDelay);
     return () => {
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [activeRefresh, revalidateSummary, summaryQuery.error, summaryUrl]);
+  }, [
+    initialPollDelay,
+    pollingJobId,
+    revalidateSummary,
+    summaryQuery.error,
+    summaryUrl,
+  ]);
 
   const refreshMutation = useSWRMutation<TrajectorySummaryResource>(
     canRegenerate ? summaryUrl : null,
