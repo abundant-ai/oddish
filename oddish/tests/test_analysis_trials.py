@@ -153,6 +153,23 @@ def test_the_overlay_replaces_the_whole_task(tmp_path):
     assert "def check_analysis_result" in validator
 
 
+def test_the_single_llm_overlay_does_not_install_the_query_cli(tmp_path):
+    from oddish.worker.probe_staging import apply_analysis_overlay
+
+    apply_analysis_overlay(
+        tmp_path,
+        brief="bounded prompt",
+        artifact="summary_result.json",
+        check_payload={"kind": "summarize", "target_trial_id": "t-42"},
+        needs_query_cli=False,
+    )
+
+    dockerfile = (tmp_path / "environment" / "Dockerfile").read_text()
+    assert "python:3.13-slim" in dockerfile
+    assert "apt-get" not in dockerfile
+    assert "nodejs" not in dockerfile
+
+
 def test_a_correct_analysis_is_accepted():
     """A well-formed analysis from the QA agent parses into a classification."""
     parsed = _classification_from_analysis(GOOD_ANALYSIS)
@@ -1540,6 +1557,86 @@ def test_the_summarize_brief_names_its_output_and_target():
     assert '"target_trial_id": "t-42"' in brief
     assert "reading_files" in brief and "debugging" in brief
     assert "Do not solve the task" in brief
+    assert "oddish-query" not in brief
+
+
+def test_the_materialized_summarize_brief_contains_bounded_trial_data():
+    from oddish.workers.analysis_trials import build_summarize_brief
+
+    brief = build_summarize_brief(
+        task_name="apache-kafka",
+        target_trial_id="t-42",
+        trajectory={
+            "steps": [{"step_id": 1, "source": "agent", "message": "finished"}]
+        },
+        instruction="repair the broker",
+        final_reward=1.0,
+        model_used="anthropic/claude-test",
+        verifier_output="all tests passed",
+    )
+
+    assert "repair the broker" in brief
+    assert "Final reward: 1.0" in brief
+    assert '"step_id":1' in brief
+    assert "all tests passed" in brief
+
+
+@pytest.mark.asyncio
+async def test_materialize_summarize_brief_reads_the_target_without_the_api(
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from oddish.core import trial_io
+    from oddish.db import TaskModel
+    from oddish.workers import analysis_trials
+
+    target = SimpleNamespace(
+        id="t-42",
+        task_id="task-1",
+        kind="agent",
+        has_trajectory=True,
+        reward=1.0,
+        model="anthropic/claude-test",
+    )
+    task = SimpleNamespace(id="task-1", name="apache-kafka")
+
+    class Session:
+        async def get(self, model, row_id):
+            if model is TrialModel and row_id == "t-42":
+                return target
+            if model is TaskModel and row_id == "task-1":
+                return task
+            return None
+
+    class SessionContext:
+        async def __aenter__(self):
+            return Session()
+
+        async def __aexit__(self, *_args):
+            return None
+
+    async def read_trajectory(_target):
+        return {"steps": [{"step_id": 1, "source": "agent", "message": "done"}]}
+
+    async def read_instruction(_target):
+        return "repair the broker"
+
+    async def read_verifier(_target):
+        return "all tests passed"
+
+    monkeypatch.setattr(analysis_trials, "get_session", SessionContext)
+    monkeypatch.setattr(trial_io, "read_trial_trajectory", read_trajectory)
+    monkeypatch.setattr(trial_io, "read_trial_instruction", read_instruction)
+    monkeypatch.setattr(trial_io, "read_trial_verifier_output", read_verifier)
+
+    brief = await analysis_trials.materialize_summarize_brief(
+        {"analysis_payload": {"target_trial_id": "t-42"}}
+    )
+
+    assert "repair the broker" in brief
+    assert '"step_id":1' in brief
+    assert "oddish-query" not in brief
 
 
 def test_the_validator_enforces_the_summarize_contract():
@@ -1679,6 +1776,10 @@ async def test_summarize_creation_accepts_only_agent_targets_and_imports_only_su
         target = await session.get(TrialModel, ids["agent"])
         target.analysis = {"sentinel": True}
         row = await session.get(TrialModel, summarize_id)
+        assert row.agent == "single-llm"
+        assert row.harbor_config["agent_config"]["import_path"].endswith(
+            ":SingleLLMAgent"
+        )
         row.status = TrialStatus.SUCCESS
 
     artifact = {
@@ -1741,9 +1842,7 @@ async def test_missing_summarize_artifact_fails_refresh_and_allows_replacement(
     async def missing_artifact(_trial, _filename):
         return None
 
-    monkeypatch.setattr(
-        analysis_trials, "read_analysis_artifact", missing_artifact
-    )
+    monkeypatch.setattr(analysis_trials, "read_analysis_artifact", missing_artifact)
     await handle_analysis_trial_settled(summarize_id)
 
     async with get_session() as session:

@@ -1,14 +1,15 @@
 """Analysis trials: the platform's own agents, run through the trial pipeline.
 
 The pre-trial audit, task QA, and single-trial summarizer are trials with a
-non-'agent' ``kind``. Each runs claude-code on the analysis model in its own
-analysis sandbox, reads task or trial data through the oddish-query CLI, and
-writes one JSON artifact. Settlement imports that artifact into the columns
-owned by the analysis kind.
+non-'agent' ``kind``. QA and audit run claude-code because they browse multiple
+artifacts through oddish-query. Summarize runs one host-side LLM request over a
+trajectory the worker materializes before Harbor starts the agent. Every kind
+writes one JSON artifact that settlement imports into its owned columns.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
@@ -36,6 +37,10 @@ from oddish.analyze.models import (
 from oddish.analyze.trajectory_delegation import (
     delegation_facts,
     subagent_dispatches_in,
+)
+from oddish.analyze.trajectory_prompt import (
+    compact_summary_text,
+    compact_trajectory_for_prompt,
 )
 from oddish.analyze.trajectory_provenance import component_provenance
 from oddish.analyze.trajectory_taxonomy import (
@@ -82,6 +87,11 @@ ANALYSIS_ARTIFACTS = {
 
 ANALYSIS_TRIAL_MAX_ATTEMPTS = 3
 ANALYSIS_TRIAL_TIMEOUT_MINUTES = 60
+SINGLE_LLM_AGENT_IMPORT_PATH = "oddish.workers.harbor.single_llm_agent:SingleLLMAgent"
+SUMMARY_RESPONSE_MODEL_IMPORT_PATH = (
+    "oddish.analyze.trajectory_summary_models:SummarizeResultOutput"
+)
+SUMMARY_MAX_TOKENS = 16_384
 
 
 def is_analysis_kind(kind: str | None) -> bool:
@@ -260,6 +270,8 @@ async def create_analysis_trial(
         experiment_id = await resolve_analysis_experiment_id(session, task.id)
     next_index = await reserve_next_trial_index(session, task_id=task.id)
     trial_id = f"{task.id}-{next_index}"
+    analysis_agent = "single-llm" if kind == "summarize" else "claude-code"
+    model = settings.normalize_trial_model(analysis_agent, settings.analysis_model)
     harbor_config: dict = {"mode": kind, "extra_instructions": brief}
     if kind == "audit" and version is not None and version.content_hash:
         # Pin the audited bytes. An in-place overwrite keeps the version id
@@ -271,10 +283,16 @@ async def create_analysis_trial(
         }
     if payload:
         harbor_config["analysis_payload"] = payload
-    # Same normalize/provider/queue trio as agent-trial creation. The worker
-    # re-normalizes strictly at pickup, so an unmapped model must fail here,
-    # at create, not there.
-    model = settings.normalize_trial_model("claude-code", settings.analysis_model)
+    if kind == "summarize":
+        harbor_config["agent_config"] = {
+            "import_path": SINGLE_LLM_AGENT_IMPORT_PATH,
+            "model_name": model,
+            "kwargs": {
+                "output_filename": SUMMARIZE_RESULT_FILENAME,
+                "response_model_import_path": SUMMARY_RESPONSE_MODEL_IMPORT_PATH,
+                "max_tokens": SUMMARY_MAX_TOKENS,
+            },
+        }
     trial = TrialModel(
         id=trial_id,
         name=f"{task.name}-{kind}-{next_index}",
@@ -283,9 +301,9 @@ async def create_analysis_trial(
         experiment_id=experiment_id,
         org_id=task.org_id,
         billed_user_id=None,
-        agent="claude-code",
-        provider=settings.get_provider_for_trial("claude-code", model),
-        queue_key=settings.get_queue_key_for_trial("claude-code", model),
+        agent=analysis_agent,
+        provider=settings.get_provider_for_trial(analysis_agent, model),
+        queue_key=settings.get_queue_key_for_trial(analysis_agent, model),
         model=model,
         timeout_minutes=ANALYSIS_TRIAL_TIMEOUT_MINUTES,
         harbor_config=harbor_config,
@@ -428,17 +446,47 @@ Write exactly one file: /logs/{AUDIT_RESULT_FILENAME}
 It must hold the JSON object described in the OUTPUT section above: {{"items": [...]}} where every item carries the ten keys with the exact values that section defines. An empty "items" list means the source is clean. The file must be valid JSON. Do not write anything else to /logs."""
 
 
-def build_summarize_brief(*, task_name: str, target_trial_id: str) -> str:
+def build_summarize_brief(
+    *,
+    task_name: str,
+    target_trial_id: str,
+    trajectory: dict | None = None,
+    instruction: str | None = None,
+    final_reward: float | None = None,
+    model_used: str | None = None,
+    verifier_output: str | None = None,
+) -> str:
     """The brief for a summarize trial: apply the shared taxonomy to one
     trial's trajectory. Same prompt text the QA brief embeds, so a summary
     reads the same no matter which kind of trial produced it."""
     summary = render_summary_instructions(_prompt("prompts/trajectory_summary.txt"))
+    trajectory_text = (
+        json.dumps(
+            compact_trajectory_for_prompt(trajectory),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        if trajectory is not None
+        else "[the worker materializes this trajectory immediately before execution]"
+    )
+    reward = str(final_reward) if final_reward is not None else "[unavailable]"
+    model = model_used or "[unavailable]"
     return f"""You are the trajectory summarizer for one trial of the task `{task_name}`. You are in a clean analysis sandbox, not the trial's own environment. Do not solve the task and do not judge the trial; only summarize what its agent did.
 
 Summarize this trial:
 - {target_trial_id}
 
-The oddish-query CLI fetches trial data from the oddish API (logs, trajectories, results, files). Run `node /probe-harness/oddish-query --help` first. Fetch the trial's trajectory before writing anything.
+== TASK ==
+{compact_summary_text(instruction)}
+
+== OUTCOME ==
+Final reward: {reward}
+Model used: {model}
+Verifier output:
+{compact_summary_text(verifier_output)}
+
+== TRAJECTORY ==
+{trajectory_text}
 
 == TRAJECTORY SUMMARY ==
 {summary}
@@ -450,6 +498,48 @@ Write exactly one file: /logs/{SUMMARIZE_RESULT_FILENAME}
   "trajectory_summary": <object with the exact shape given in the trajectory summary section>
 }}
 The file must be valid JSON. Do not write anything else to /logs."""
+
+
+async def materialize_summarize_brief(harbor_config: dict | None) -> str:
+    """Read one target trial's immutable artifacts and build its bounded prompt."""
+    payload = (harbor_config or {}).get("analysis_payload") or {}
+    target_trial_id = str(payload.get("target_trial_id") or "")
+    if not target_trial_id:
+        raise ValueError("summarize trial is missing analysis_payload.target_trial_id")
+
+    from oddish.core.trial_io import (
+        read_trial_instruction,
+        read_trial_trajectory,
+        read_trial_verifier_output,
+    )
+
+    async with get_session() as session:
+        target = await session.get(TrialModel, target_trial_id)
+        if target is None or target.kind != "agent" or not target.has_trajectory:
+            raise ValueError(
+                f"summarize target {target_trial_id} is not an agent trial with a trajectory"
+            )
+        task = await session.get(TaskModel, target.task_id)
+        if task is None:
+            raise ValueError(f"summarize target {target_trial_id} has no live task")
+        trajectory, task_instruction, verifier_output = await asyncio.gather(
+            read_trial_trajectory(target),
+            read_trial_instruction(target),
+            read_trial_verifier_output(target),
+        )
+        if trajectory is None:
+            raise ValueError(
+                f"summarize target {target_trial_id} trajectory is missing"
+            )
+        return build_summarize_brief(
+            task_name=task.name,
+            target_trial_id=target.id,
+            trajectory=trajectory,
+            instruction=task_instruction,
+            final_reward=target.reward,
+            model_used=target.model,
+            verifier_output=verifier_output,
+        )
 
 
 _LIVE_TRIAL_STATUSES = (
@@ -1153,9 +1243,7 @@ async def _import_summarize_result(trial: TrialModel) -> None:
         stored_trial = await session.get(TrialModel, trial.id)
 
         if import_error is None and (
-            target is None
-            or target.kind != "agent"
-            or target.task_id != trial.task_id
+            target is None or target.kind != "agent" or target.task_id != trial.task_id
         ):
             import_error = (
                 f"target {target_id} is not an agent trial on task {trial.task_id}"

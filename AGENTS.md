@@ -246,14 +246,24 @@ telemetry: neither may block or fail the artifact import. The Activity card
 degrades rather than hides when a trial has steps but no stored summary — a
 single gray ungrouped band with real totals — once the summary fetch settles.
 
-The `summarize` trial kind is the LLM path for one trial's summary: its
-brief embeds the same packaged taxonomy prompt the QA brief uses, its agent
-writes `summary_result.json` (`{target_trial_id, trajectory_summary}`,
-validated in-sandbox and at import by the shared checker), and its importer
-overwrites only the target's `trials.trajectory_summary` — no verdict, task,
-or analysis state. Only `kind = 'agent'` trials with `has_trajectory` can be
-summarize targets; QA, audit, and summarize runs keep their deterministic own
-summaries. The target's nullable
+The `summarize` trial kind is the LLM path for one trial's summary. At worker
+pickup, `materialize_summarize_brief` reads the target's trajectory,
+instruction, and verifier output directly through `oddish.core.trial_io`, then
+removes empty steps, images, oversized text, embedded subagent trajectories,
+and as much of the middle as needed to keep the serialized trajectory below
+400,000 characters. The worker stages that bounded prompt instead of giving
+the sandbox an oddish-query CLI, Oddish API credential, or internet access.
+Harbor loads `SingleLLMAgent` through `AgentConfig.import_path`; the agent uses
+Harbor's `LiteLLM` once, writes `summary_result.json`
+(`{target_trial_id, trajectory_summary}`), and emits an ATIF trajectory with
+one LLM step plus one deterministic artifact-write step. Harbor's normal trial
+result therefore remains the source for status, timing, tokens, cost, logs,
+verification, retries, and S3 artifacts. The result is validated in-sandbox
+and at import by the shared checker, and its importer overwrites only the
+target's `trials.trajectory_summary` — no verdict, task, or analysis state.
+Only `kind = 'agent'` trials with `has_trajectory` can be summarize targets;
+QA and audit remain tool-using claude-code trials, while QA, audit, and
+summarize runs keep their deterministic own summaries. The target's nullable
 `trials.trajectory_summary_refresh_trial_id` is the durable identity of the
 summarize trial responsible for its next published summary; `harbor_config`'s
 `target_trial_id` remains an artifact-validation boundary, not job discovery.
