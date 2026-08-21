@@ -11,8 +11,8 @@ import {
 } from "@/lib/proxy-headers";
 
 // Full single-trial detail for direct links, active-analysis polling, and
-// clients that explicitly need fields omitted from list responses. Opening a
-// terminal trial drawer renders the list row and does not call this route.
+// drawer fields omitted from compact list responses. Trial controls preload
+// this route so opening a drawer can consume the same cached request.
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ trial_id: string }> },

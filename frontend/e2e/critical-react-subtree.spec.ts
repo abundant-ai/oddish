@@ -297,6 +297,7 @@ test.describe("critical task and trial subtree", () => {
 
     const taskOpenGate = deferred();
     const taskDetailGate = deferred();
+    const trialDetailGate = deferred();
     let failTrialRevalidation = false;
     const requests: string[] = [];
     let summaryGetCount = 0;
@@ -524,6 +525,7 @@ test.describe("critical task and trial subtree", () => {
     await page.route(
       new RegExp(`/api/trials/${TRIAL_ID}(?:\\?|$)`),
       async (route) => {
+        await trialDetailGate.pending;
         if (failTrialRevalidation) {
           await route.fulfill({
             status: 503,
@@ -576,20 +578,21 @@ test.describe("critical task and trial subtree", () => {
     const trajectoryPattern = new RegExp(
       `/api/trials/${TRIAL_ID}/trajectory(?:/|\\?|$)`
     );
+    const prefetchedTrialRequest = page.waitForRequest(trialDetailPattern);
+    await trialButton.hover();
+    await prefetchedTrialRequest;
+    expect(requestCount(requests, trialDetailPattern)).toBe(1);
     await trialButton.click();
-    expect(requestCount(requests, trialDetailPattern)).toBe(0);
-    // The lightweight /open row owns the drawer. Terminal trials do not need
-    // another GET before Summary paints or a mutation can be attempted.
+    // The compact row paints immediately while the hover-prefetched detail
+    // remains blocked. SWR shares that request with the mounted drawer.
     await expect(page.getByRole("tab", { name: "Summary" })).toBeVisible();
     await expect(
       page.getByRole("button", { name: "Retry Trial" })
-    ).toBeEnabled();
+    ).toBeDisabled();
     await expect(
-      page.getByRole("button", { name: "Re-run analysis" })
-    ).toBeEnabled();
-    await expect(
-      page.getByRole("heading", { name: "GOOD FAILURE", exact: true })
-    ).toBeVisible();
+      page.getByRole("button", { name: "Run analysis" })
+    ).toBeDisabled();
+    await expect(page.getByText("Loading latest trial state.")).toBeVisible();
 
     await page.waitForTimeout(300);
     expect(requestCount(requests, taskDetailPattern)).toBe(0);
@@ -598,6 +601,15 @@ test.describe("critical task and trial subtree", () => {
     expect(requestCount(requests, analysisLogPattern)).toBe(0);
     expect(requestCount(requests, trialFilesPattern)).toBe(0);
     expect(requestCount(requests, trajectoryPattern)).toBe(0);
+    expect(requestCount(requests, trialDetailPattern)).toBe(1);
+
+    trialDetailGate.release();
+    await expect(
+      page.getByRole("heading", { name: "GOOD FAILURE", exact: true })
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Re-run analysis" })
+    ).toBeEnabled();
 
     const taskDetailRequest = page.waitForRequest(taskDetailPattern);
     await page.getByRole("button", { name: "Show task" }).click();

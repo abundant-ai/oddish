@@ -206,11 +206,12 @@ permanently. The output schema (`AgentCapabilitiesOutput` and sub-models) is
 preserved in `oddish.analyze.models`, and
 `oddish/src/oddish/analyze/prompts/agent_capabilities.txt` is kept, so the
 feature can return as a `'capabilities'` analysis trial.
-Shared trial drawers open terminal trials from the slim row already owned by
-the task or experiment page; opening the drawer must not fetch the full
-`GET /trials/{id}` resource. The QA card may fetch that resource while it owns
-an active-analysis polling lifecycle. Drawers open on Summary and fetch a
-trajectory only after explicit user or URL intent. The Trajectory tab requests
+Shared trial drawers paint terminal trials from the slim row already owned by
+the task or experiment page while the authoritative `GET /trials/{id}` resource
+loads. Trial controls prefetch that resource on pointer or keyboard intent, and
+the drawer and QA card share its SWR cache entry, so one trial must never produce
+parallel detail requests. Drawers open on Summary and fetch a trajectory only
+after explicit user or URL intent. The Trajectory tab requests
 `GET /trials/{id}/trajectory?include_summary=1`, which returns the ATIF
 trajectory plus the current summary resource as
 `{"trajectory": ..., "summary_resource": {"summary": ..., "refresh": ...}}`

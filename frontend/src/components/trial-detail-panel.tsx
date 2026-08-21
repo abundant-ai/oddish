@@ -179,6 +179,8 @@ interface TrialDetailPanelProps {
    * entirely — used by the public read-only share view.
    */
   showAnalysis?: boolean;
+  /** Load fields omitted from compact task and experiment trial rows. */
+  requireTrialDetail?: boolean;
   allowDelete?: boolean;
   /** Render content only without ResizableDrawer wrapper */
   contentOnly?: boolean;
@@ -216,12 +218,14 @@ function TrialAnalysisCard({
   trial: trialProp,
   task,
   apiBaseUrl,
+  actionsReady,
   onQueued,
   onOpenGrader,
 }: {
   trial: Trial;
   task: Task | null;
   apiBaseUrl: string;
+  actionsReady: boolean;
   onQueued?: () => void;
   onOpenGrader?: (qaTrialId: string) => void;
 }) {
@@ -393,7 +397,9 @@ function TrialAnalysisCard({
   // job.
   const taskQaActive = task?.verdict_status === "running";
   let queueBlockedReason: string | null = null;
-  if (inProgress && !runStale) {
+  if (!actionsReady) {
+    queueBlockedReason = "Loading latest trial state.";
+  } else if (inProgress && !runStale) {
     queueBlockedReason =
       trial.analysis_status === "running"
         ? "Analysis is already running for this trial"
@@ -407,7 +413,7 @@ function TrialAnalysisCard({
   if (!hasAnalysis && !showQueueButton) return null;
 
   const queueRun = async () => {
-    if (queuing || queueBlockedReason) return;
+    if (queuing || !actionsReady || queueBlockedReason) return;
     const requestTrialId = trial.id;
     setQueuing(true);
     setQueueError(null);
@@ -897,11 +903,19 @@ export function TrialDetailPanel({
   apiBaseUrl = "/api",
   allowRetry = true,
   showAnalysis = true,
+  requireTrialDetail = true,
   allowDelete = false,
   contentOnly = false,
   paneAction,
 }: TrialDetailPanelProps) {
-  const trial = selectedTrial;
+  const { data: refreshedTrial } = useTrial(
+    isOpen && requireTrialDetail ? selectedTrial?.id : null,
+    { apiBaseUrl },
+  );
+  const canonicalTrial =
+    refreshedTrial?.id === selectedTrial?.id ? refreshedTrial : null;
+  const actionsReady = !requireTrialDetail || canonicalTrial !== null;
+  const trial = canonicalTrial ?? selectedTrial;
   const verifierSummary = embeddedCtrfSummary(trial?.result);
   const router = useRouter();
 
@@ -1083,9 +1097,9 @@ export function TrialDetailPanel({
     allowRetry &&
     Boolean(trial && isAgentTrial(trial)) &&
     (trial?.status === "failed" || trial?.status === "success");
-  const canRetry = showRetry;
+  const canRetry = actionsReady && showRetry;
   const showDelete = allowDelete && Boolean(onDelete) && Boolean(trial);
-  const canDelete = showDelete;
+  const canDelete = actionsReady && showDelete;
   const handleRetry = async () => {
     if (!trial || retrying || !canRetry) return;
     setRetrying(true);
@@ -1528,6 +1542,7 @@ export function TrialDetailPanel({
               <Button
                 onClick={handleRetry}
                 disabled={!canRetry || retrying}
+                title={actionsReady ? undefined : "Loading latest trial state."}
                 variant="outline"
                 size="sm"
                 className="h-7 min-w-[128px] px-2 text-[10px] font-semibold tracking-wide uppercase"
@@ -1570,6 +1585,7 @@ export function TrialDetailPanel({
                   setDeleteDialogOpen(true);
                 }}
                 disabled={!canDelete || deleting}
+                title={actionsReady ? undefined : "Loading latest trial state."}
                 variant="outline"
                 size="sm"
                 className="text-destructive hover:bg-destructive/10 hover:text-destructive h-7 min-w-[112px] px-2 text-[10px] font-semibold tracking-wide uppercase"
@@ -1693,6 +1709,7 @@ export function TrialDetailPanel({
                   trial={trial}
                   task={task}
                   apiBaseUrl={apiBaseUrl}
+                  actionsReady={actionsReady}
                   onQueued={() => onRetry?.(task ? [task.id] : undefined)}
                   onOpenGrader={(qaTrialId) => {
                     // The qa trial lives in the shadow experiment, so it is

@@ -15,8 +15,8 @@ import {
  *  1. Loading the page issues exactly one task-shells request. The shells
  *     used to be fetched twice, once during the server render and once
  *     again on mount.
- *  2. Opening a terminal trial issues no GET /api/trials/{id}. The drawer
- *     renders the slim row already loaded for the experiment grid.
+ *  2. Hovering and opening a trial issues one GET /api/trials/{id}. The
+ *     preload and drawer share the same SWR cache entry.
  *  3. No task-files request uses stream=1 during this flow. Opening a
  *     trial used to download the task's entire file contents behind a
  *     pane that showed only the overview. No stream request of any kind
@@ -60,7 +60,7 @@ test.describe("experiment page network shape", () => {
     "needs E2E_CLERK_EMAIL + CLERK_SECRET_KEY + NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY"
   );
 
-  test("terminal drawers skip detail fetches and load tab bodies on demand", async ({
+  test("trial detail preloads once and tab bodies load on demand", async ({
     page,
   }) => {
     test.setTimeout(120_000);
@@ -121,16 +121,22 @@ test.describe("experiment page network shape", () => {
     expect(countSince(log, 0, TASK_SHELLS_RE)).toBe(1);
     expect(countSince(log, 0, TRIAL_DETAIL_RE)).toBe(0);
 
-    // Phase 2 — open a terminal trial. The already-loaded slim row paints the
-    // drawer. The visible task pane fetches its plain tree listing, and
+    // Phase 2 — hover and open a trial. The preload and mounted drawer share
+    // one request. The visible task pane fetches its plain tree listing, and
     // nothing downloads file contents.
     const openMark = Date.now();
+    await trialCell.hover();
     await trialCell.click();
     await expect(page.getByRole("tab", { name: "Summary" })).toBeVisible({
       timeout: 15_000,
     });
+    await expect
+      .poll(() => countSince(log, openMark, TRIAL_DETAIL_RE), {
+        timeout: 10_000,
+      })
+      .toBe(1);
     await page.waitForTimeout(1_500);
-    expect(countSince(log, openMark, TRIAL_DETAIL_RE)).toBe(0);
+    expect(countSince(log, openMark, TRIAL_DETAIL_RE)).toBe(1);
     await expect
       .poll(() => countSince(log, openMark, TASK_FILES_RE), {
         timeout: 10_000,

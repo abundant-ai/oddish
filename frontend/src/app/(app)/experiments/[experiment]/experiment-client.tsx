@@ -161,9 +161,8 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
         return null;
       const offset = pageIndex * TRIALS_BATCH_SIZE;
       // Phase 2 uses the dedicated slim-tasks endpoint: tasks with trimmed
-      // per-trial payloads (grid fields + cost). The same row opens the
-      // drawer without another request; a direct deep link can still use the
-      // by-id resource when its trial has not streamed into the grid.
+      // per-trial payloads (grid fields + cost). Trial controls preload the
+      // by-id resource before the drawer needs its omitted fields.
       return `/api/experiments/${encodedId}/slim-tasks?limit=${TRIALS_BATCH_SIZE}&offset=${offset}`;
     },
     [experimentId, encodedId]
