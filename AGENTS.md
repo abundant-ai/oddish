@@ -373,7 +373,9 @@ alert settings, and the global cost-exclusion lists) additionally require the
 active org to match
 `ODDISH_OPERATOR_ORG_ID`, which fails closed when unset; the frontend discovers
 that capability through `GET /admin/operator-access` and hides those controls
-for other orgs.
+for other orgs. `GET /admin/concurrency` reports the deploy, database override,
+deprecated-controller advisory, and actual effective limit for one canonical
+queue key; `PUT /admin/concurrency` sets or clears the database override.
 
 Admin cost exclusions (`oddish/core/cost_exclusions.py`) name spend that was
 never really paid for, along two axes: a **model** (`cost_excluded_models`,
