@@ -1399,10 +1399,12 @@ async def set_experiment_model_rename(
 
     async with get_session() as session:
         result = await session.execute(
-            select(ExperimentModel).where(
+            select(ExperimentModel)
+            .where(
                 ExperimentModel.id == experiment_id,
                 ExperimentModel.org_id == auth.org_id,
             )
+            .with_for_update()
         )
         experiment = result.scalar_one_or_none()
         if not experiment:

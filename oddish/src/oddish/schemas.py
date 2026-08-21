@@ -1140,9 +1140,9 @@ class TrialResponse(BaseModel):
     cost_exclusion_reason: str | None = Field(
         None,
         description=(
-            "Why this trial's ``cost_usd`` is not real spend: ``model`` when "
-            "it ran on a cost-excluded model, ``experiment`` when its home "
-            "experiment is cost-excluded (``core.cost_exclusions``). The cost "
+            "Why this trial's ``cost_usd`` is not real spend: ``key`` for a "
+            "preserved provider-key exclusion, ``model`` for a cost-excluded "
+            "model, or ``experiment`` when its home experiment is excluded. The cost "
             "is still reported -- the work ran -- but it is absent from the "
             "admin cost dashboards and from quota enforcement, and the UI "
             "labels it. Null means the spend is real, OR that the builder "

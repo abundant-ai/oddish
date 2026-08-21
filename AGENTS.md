@@ -213,16 +213,18 @@ only while the step is expanded. Trajectory summaries are written onto
 `trials.trajectory_summary` by the task's QA trial import or by a
 `summarize`-kind trial's import; the read path never generates. The public
 summary route stays a plain column read. The authenticated routes split reads
-from paid mutation: `GET /trials/{id}/trajectory/summary` returns the published
-summary when no refresh is current, while
+from paid mutation: `GET /trials/{id}/trajectory/summary` returns the resource,
+while
 `POST /trials/{id}/trajectory/summary` (TASKS scope, member-created keys
 refused, matching an analysis rerun) creates or adopts the current summarize
-trial. Both authenticated methods answer 202
-`{status, job_id, retry_after_ms}` while that trial is queued, running,
-retrying, or successfully awaiting import (`status = "settling"`). GET answers
-409 when the current refresh failed, and 404 only when there is neither a
-published summary nor a current refresh. The frontend's one summary hook owns
-POST, the immediate 202 cache transition, and GET polling.
+trial. Both authenticated methods return `{summary, refresh}` so the published
+summary and its replacement lifecycle cannot hide each other. They answer 200
+whenever `summary` is present, including while `refresh` is active or failed;
+without a published summary, an active refresh answers 202 and a failed refresh
+answers 409. `refresh` carries `status`, `job_id`, and either
+`retry_after_ms` or failure `detail`; 404 means neither publication nor refresh
+exists. The frontend's one summary hook owns POST, the cache transition, and
+SWR polling.
 
 A QA/audit/summarize trial's **own** summary is deterministic, never an LLM call:
 settlement (`handle_analysis_trial_settled`) counts one from the run's tool
@@ -378,11 +380,13 @@ deprecated-controller advisory, and actual effective limit for one canonical
 queue key; `PUT /admin/concurrency` sets or clears the database override.
 
 Admin cost exclusions (`oddish/core/cost_exclusions.py`) name spend that was
-never really paid for, along two axes: a **model** (`cost_excluded_models`,
+never really paid for, along three axes: a **model** (`cost_excluded_models`,
 stored and matched by provider-independent model family against `trials.model`,
 global and retroactive) and an **experiment**
 (`cost_excluded_experiments`, matched against `trials.experiment_id` so a
-collection cannot launder gathered trials' cost). Both fold into
+collection cannot launder gathered trials' cost), or a provider key
+(`cost_excluded_llm_keys`, matched through the one-way `trials.llm_key_hash`
+stamped before execution, including BYOK overlays). All three fold into
 `first_party_spend_filter` and the quota inflight predicates, so excluded
 spend leaves the cost dashboards and stops counting against caps together.
 It is dropped from accounting but **not** hidden: experiment, task, and trial
