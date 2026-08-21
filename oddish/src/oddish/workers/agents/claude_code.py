@@ -29,6 +29,7 @@ from importlib.metadata import Distribution, PackageNotFoundError, version
 
 from harbor.agents.installed.base import BaseEnvironment
 from harbor.agents.installed.claude_code import ClaudeCode
+from harbor.models.agent.context import AgentContext
 
 from oddish.core.harbor_source import harbor_sandbox_requirement
 
@@ -96,9 +97,7 @@ def _pinned_oddish_requirement() -> str | None:
     try:
         return f"oddish=={version('oddish')}"
     except PackageNotFoundError:
-        logger.warning(
-            "pre-trial: oddish not installed in orchestrator; skipping pin"
-        )
+        logger.warning("pre-trial: oddish not installed in orchestrator; skipping pin")
         return None
 
 
@@ -134,6 +133,128 @@ class OddishClaudeCode(ClaudeCode):
             f"{extra_flags}"
             "--print 2>&1 | tee /logs/agent/claude-code.txt"
         )
+
+
+class OddishAnalysisClaudeCode(OddishClaudeCode):
+    """Claude Code with bounded, same-session analysis artifact repair.
+
+    Analysis agents do the expensive evidence gathering once. After the first
+    response, this wrapper runs the same deterministic checker the Harbor
+    verifier will run. A malformed artifact receives only the concrete checker
+    errors and resumes the existing Claude session to edit the file in place.
+    Harbor still runs its verifier after this method returns and remains the
+    authority that accepts or rejects the result.
+    """
+
+    _MAX_REPAIR_ATTEMPTS = 2
+    _VALIDATOR = "/probe-harness/validate-analysis-result"
+
+    async def _validate_analysis_artifact(
+        self,
+        environment: BaseEnvironment,
+        *,
+        artifact: str,
+        attempt: int,
+    ) -> tuple[bool, str, bool]:
+        artifact_path = f"/logs/{artifact}"
+        stem, separator, suffix = artifact.rpartition(".")
+        attempt_name = (
+            f"{stem}.attempt-{attempt}.{suffix}"
+            if separator
+            else f"{artifact}.attempt-{attempt}"
+        )
+        attempt_dir = "/logs/agent/analysis-attempts"
+        saved_path = f"{attempt_dir}/{attempt_name}"
+        validation_path = f"{attempt_dir}/validation.attempt-{attempt}.txt"
+        command = (
+            f"mkdir -p {attempt_dir}; "
+            f"if [ -f {shlex.quote(artifact_path)} ]; then "
+            f"cp {shlex.quote(artifact_path)} {shlex.quote(saved_path)}; fi; "
+            f"{self._VALIDATOR} {shlex.quote(artifact_path)} "
+            f"> {shlex.quote(validation_path)} 2>&1; "
+            "validation_status=$?; "
+            f"cat {shlex.quote(validation_path)}; "
+            "exit $validation_status"
+        )
+        result = await environment.exec(command=command, timeout_sec=60)
+        output = "\n".join(
+            part.strip() for part in (result.stdout, result.stderr) if part
+        ).strip()
+        validator_available = not (
+            result.return_code in (126, 127)
+            or "validate-analysis-result: not found" in output
+            or "No such file or directory" in output
+        )
+        return result.return_code == 0, output, validator_available
+
+    async def run(
+        self,
+        instruction: str,
+        environment: BaseEnvironment,
+        context: AgentContext,
+    ) -> None:
+        await super().run(instruction, environment, context)
+
+        artifact = (self._get_env("ODDISH_ANALYSIS_ARTIFACT") or "").strip()
+        if not artifact:
+            self.logger.warning(
+                "analysis wrapper received no ODDISH_ANALYSIS_ARTIFACT; "
+                "leaving validation to Harbor"
+            )
+            return
+
+        original_resume = self._resume
+        try:
+            for attempt in range(1, self._MAX_REPAIR_ATTEMPTS + 2):
+                (
+                    valid,
+                    errors,
+                    validator_available,
+                ) = await self._validate_analysis_artifact(
+                    environment,
+                    artifact=artifact,
+                    attempt=attempt,
+                )
+                if valid:
+                    return
+                if not validator_available:
+                    self.logger.warning(
+                        "analysis validator is unavailable in the sandbox; "
+                        "leaving validation to Harbor"
+                    )
+                    return
+                if attempt > self._MAX_REPAIR_ATTEMPTS:
+                    self.logger.warning(
+                        "analysis artifact %s remains invalid after %d repairs: %s",
+                        artifact,
+                        self._MAX_REPAIR_ATTEMPTS,
+                        errors,
+                    )
+                    return
+
+                await environment.exec(
+                    command=(
+                        "if [ -f /logs/agent/claude-code.txt ]; then "
+                        "cp /logs/agent/claude-code.txt "
+                        f"/logs/agent/claude-code.attempt-{attempt}.txt; fi"
+                    ),
+                    timeout_sec=30,
+                )
+                repair_prompt = f"""Analysis is complete. Do not repeat the analysis or fetch trial data again.
+
+The existing file `/logs/{artifact}` failed the deterministic output validator with these errors:
+
+{errors[:12000] or "The validator rejected the file without an error message."}
+
+Repair `/logs/{artifact}` in place. Preserve valid evidence and conclusions. Read `/probe-harness/expected.json` for the exact machine contract. Then run:
+
+`/probe-harness/validate-analysis-result /logs/{artifact}`
+
+Do not finish until that command exits successfully. Output no alternative file and do not merely claim validation passed."""
+                self._resume = True
+                await super().run(repair_prompt, environment, context)
+        finally:
+            self._resume = original_resume
 
 
 class OddishProbeClaudeCode(OddishClaudeCode):

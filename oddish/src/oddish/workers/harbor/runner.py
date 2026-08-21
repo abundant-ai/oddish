@@ -172,6 +172,8 @@ def _gemini_ai_sdk_alias_env(model: str | None) -> dict[str, str]:
         if value := os.environ.get(source):
             return {_AI_SDK_GOOGLE_KEY: value}
     return {}
+
+
 # Ambient claude-code platform credentials must fold into the redaction map for
 # the same reason: when job-scoped injection is off, the direct/OAuth Anthropic
 # credential or the Bedrock credential chain the stock agent forwards is only in
@@ -1500,13 +1502,14 @@ async def _run_harbor_trial_async_impl(
             environment_build_timeout_multiplier=env_build_multiplier,
         )
 
-    # Probes and analysis trials attach to an existing task and inherit its
-    # task.toml, which may predate the timeout requirement. Rather than
-    # hard-fail, skip strict validation and cap the agent timeout below.
+    # Probe and analysis overlays replace or wrap an existing task, so neither
+    # depends on the uploaded task's timeout fields. Only an actual probe gets
+    # the 1,800-second probe cap; analysis_task.toml supplies the 3,600-second
+    # QA/audit/summarize timeout.
     from oddish.workers.analysis_trials import is_analysis_kind
 
-    is_probe = raw.get("mode") == "probe" or is_analysis_kind(raw.get("mode"))
-    if not is_probe:
+    analysis_kind = raw.get("mode") if is_analysis_kind(raw.get("mode")) else None
+    if not is_probe and analysis_kind is None:
         validate_task_timeout_config(task_path)
 
     needs_task_patch = bool(hc.docker_image or hc.mcp_servers)
@@ -1601,6 +1604,7 @@ async def _run_harbor_trial_async_impl(
                 model=model,
                 raw_harbor_config=raw,
                 is_probe=is_probe,
+                analysis_kind=analysis_kind,
                 probe_oddish_env=extra_agent_env,
             )
             # Early no-serialized-routes checkpoint, symmetric with the
@@ -1802,7 +1806,8 @@ async def _run_harbor_trial_async_impl(
         runtime_env.update(_gemini_ai_sdk_alias_env(model))
         is_claude_code = "claude-code" in (agent or "").strip().lower()
         if is_claude_code and (
-            byok_anthropic_env or _claude_code_forces_direct_api(is_probe)
+            byok_anthropic_env
+            or _claude_code_forces_direct_api(is_probe or analysis_kind is not None)
         ):
             # Harbor's _is_bedrock_mode() reads os.environ, and the Modal image
             # bakes in Bedrock credentials. Blank them when claude-code runs

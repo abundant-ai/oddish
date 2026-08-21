@@ -1018,6 +1018,35 @@ class VisibleWorkerJob(BaseModel):
     error_message: str | None = None
 
 
+class QaRunResponse(BaseModel):
+    """Compact task-page view of one real ``kind='qa'`` trial."""
+
+    id: str
+    name: str
+    task_id: str
+    task_path: str
+    task_version: int | None = None
+    task_version_id: str | None = None
+    agent: str
+    provider: str
+    model: str | None
+    environment: str | None = None
+    status: TrialStatus
+    attempts: int
+    max_attempts: int
+    harbor_stage: str | None = None
+    reward: float | None = None
+    error_message: str | None = None
+    cost_usd: float | None = None
+    has_trajectory: bool = False
+    kind: str = "qa"
+    is_probe: bool = False
+    artifacts_available: bool = False
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
 class TrialResponse(BaseModel):
     id: str
     name: str

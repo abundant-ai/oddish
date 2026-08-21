@@ -47,8 +47,8 @@ def stage_query_cli(work_task_dir: Path) -> None:
 # subtrees, so this stages the artifact into the verifier dir and validates
 # it against the contract the host pinned at trial creation (expected.json,
 # checked by the staged copy of oddish.worker.analysis_result_check) -- a
-# nonzero exit fails the verifier and lets normal trial retries re-run the
-# agent. The importer runs the same validator with the same payload, so an
+# nonzero exit fails the verifier. The importer runs the same validator with
+# the same payload, so an
 # artifact the verifier passed cannot be refused as malformed later, and an
 # incomplete one never earns reward 1.0 here.
 _ANALYSIS_TEST_SH = """#!/bin/sh
@@ -132,12 +132,39 @@ def apply_analysis_overlay(
     test_sh.chmod(0o755)
 
 
-def stage_cli_mount(harness_dir: Path) -> None:
-    """Write ONLY the oddish-query CLI into ``harness_dir`` (the /probe-harness
-    mount). Everything else probe-only goes to the hidden stage, so this mount is
-    the single advertised entry point the agent sees."""
+def stage_cli_mount(
+    harness_dir: Path, *, analysis_task_dir: Path | None = None
+) -> None:
+    """Write the agent-visible tools into the ``/probe-harness`` mount.
+
+    Every probe gets the oddish-query CLI. Analysis trials additionally get
+    the exact checker and expected payload already staged for their Harbor
+    verifier. Copying those two files makes agent-phase validation use the
+    same contract as final verification instead of maintaining a second
+    schema implementation.
+    """
     harness_dir.mkdir(parents=True, exist_ok=True)
     stage_query_cli(harness_dir)
+    if analysis_task_dir is None:
+        return
+
+    tests_dir = analysis_task_dir / "tests"
+    checker = tests_dir / "analysis_result_check.py"
+    expected = tests_dir / "expected.json"
+    if not checker.is_file() or not expected.is_file():
+        return
+
+    import shutil
+
+    shutil.copy2(checker, harness_dir / checker.name)
+    shutil.copy2(expected, harness_dir / expected.name)
+    command = harness_dir / "validate-analysis-result"
+    command.write_text(
+        "#!/bin/sh\n"
+        'exec python3 /probe-harness/analysis_result_check.py "$1" '
+        "/probe-harness/expected.json\n"
+    )
+    command.chmod(0o755)
 
 
 async def stage_org_skills(

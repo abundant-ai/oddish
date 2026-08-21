@@ -52,6 +52,9 @@ _ODDISH_CLAUDE_CODE_IMPORT_PATH = "oddish.workers.agents.claude_code:OddishClaud
 _ODDISH_PROBE_CLAUDE_CODE_IMPORT_PATH = (
     "oddish.workers.agents.claude_code:OddishProbeClaudeCode"
 )
+_ODDISH_ANALYSIS_CLAUDE_CODE_IMPORT_PATH = (
+    "oddish.workers.agents.claude_code:OddishAnalysisClaudeCode"
+)
 _ODDISH_CURSOR_CLI_IMPORT_PATH = "oddish.workers.agents.cursor_cli:OddishCursorCli"
 _ODDISH_GROK_BUILD_IMPORT_PATH = "oddish.workers.agents.grok_build:OddishGrokBuild"
 _ODDISH_OPENCODE_IMPORT_PATH = "oddish.workers.agents.opencode:OddishOpenCode"
@@ -448,17 +451,15 @@ def _apply_mini_swe_agent(agent_config: AgentConfig) -> None:
         )
         set_runtime_model_name(agent_config, f"fireworks_ai/{api_model}")
         agent_config.env = dict(agent_config.env or {})
-        agent_config.env.setdefault(
-            "FIREWORKS_AI_API_KEY", "${FIREWORKS_API_KEY}"
-        )
+        agent_config.env.setdefault("FIREWORKS_AI_API_KEY", "${FIREWORKS_API_KEY}")
     agent_config.name = None
     agent_config.import_path = _ODDISH_MINI_SWE_IMPORT_PATH
 
 
 def _apply_claude_code_oddish_wrapper(
-    agent_config: AgentConfig, is_probe: bool
+    agent_config: AgentConfig, is_probe: bool, analysis_kind: str | None
 ) -> None:
-    """Keep all Claude prompts off argv; probes also install Harbor."""
+    """Select the Oddish wrapper that owns this Claude trial's lifecycle."""
     if agent_config.import_path is not None:
         return
     agent_name = (agent_config.name or "").strip().lower()
@@ -466,11 +467,12 @@ def _apply_claude_code_oddish_wrapper(
         return
 
     agent_config.name = None
-    agent_config.import_path = (
-        _ODDISH_PROBE_CLAUDE_CODE_IMPORT_PATH
-        if is_probe
-        else _ODDISH_CLAUDE_CODE_IMPORT_PATH
-    )
+    if analysis_kind:
+        agent_config.import_path = _ODDISH_ANALYSIS_CLAUDE_CODE_IMPORT_PATH
+    elif is_probe:
+        agent_config.import_path = _ODDISH_PROBE_CLAUDE_CODE_IMPORT_PATH
+    else:
+        agent_config.import_path = _ODDISH_CLAUDE_CODE_IMPORT_PATH
 
 
 def _apply_claude_code_probe_subagent_model(
@@ -535,6 +537,7 @@ def _build_agent_config(
     model: str | None,
     raw_harbor_config: dict[str, Any],
     is_probe: bool = False,
+    analysis_kind: str | None = None,
     probe_oddish_env: dict[str, str] | None = None,
 ) -> AgentConfig:
     """Build Harbor's full AgentConfig, preserving rich per-trial fields."""
@@ -623,7 +626,7 @@ def _build_agent_config(
         # litellm-based agents need a "provider/model" id; claude-code is the
         # only agent that consumes the bare Bedrock inference-profile id.
         agent_config.model_name = _to_litellm_claude_model_id(agent_config.model_name)
-    elif _claude_code_forces_direct_api(is_probe):
+    elif _claude_code_forces_direct_api(is_probe or bool(analysis_kind)):
         agent_config.model_name = to_anthropic_api_model_id(agent_config.model_name)
     elif _agent_uses_bedrock():
         agent_config.model_name = to_bedrock_model_id(agent_config.model_name)
@@ -635,7 +638,18 @@ def _build_agent_config(
     _apply_claude_code_zai_env(agent_config)
     _apply_claude_code_minimax_env(agent_config)
     _apply_claude_code_moonshot_env(agent_config)
-    _apply_claude_code_probe_subagent_model(agent_config, is_probe)
+    _apply_claude_code_probe_subagent_model(
+        agent_config, is_probe or bool(analysis_kind)
+    )
+
+    if analysis_kind:
+        from oddish.workers.analysis_trials import ANALYSIS_ARTIFACTS
+
+        artifact = ANALYSIS_ARTIFACTS.get(analysis_kind)
+        if artifact:
+            env = dict(agent_config.env or {})
+            env["ODDISH_ANALYSIS_ARTIFACT"] = artifact
+            agent_config.env = env
 
     # Gate on agent_keeps_public_model_identity: a harness that routes the model
     # through its own service (Cursor) or pins its egress to one provider
@@ -663,7 +677,7 @@ def _build_agent_config(
     _apply_opencode_oddish_wrapper(agent_config)
     _apply_meta_mini_swe_agent(agent_config)
     _apply_mini_swe_agent(agent_config)
-    _apply_claude_code_oddish_wrapper(agent_config, is_probe)
+    _apply_claude_code_oddish_wrapper(agent_config, is_probe, analysis_kind)
     _apply_probe_oddish_creds(agent_config, probe_oddish_env)
     # HDO key must win over probe/BYOK/platform ANTHROPIC_API_KEY merges above.
     # Use the original *model* arg: non-claude-code agents rewrite model_name to

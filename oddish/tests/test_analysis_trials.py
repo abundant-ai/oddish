@@ -3,6 +3,7 @@
 Each test checks one rule. The rule is in the test name and the first line.
 """
 
+import json
 import os
 import uuid
 
@@ -116,7 +117,7 @@ def test_the_overlay_replaces_the_whole_task(tmp_path):
     audited task survives into the sandbox: not its image, not its verifier,
     not its hidden files. Our verifier stages /logs/<artifact> and validates
     it against the contract pinned at trial creation, so a missing or
-    malformed artifact fails the trial and retries re-run the agent."""
+    malformed artifact fails the trial after the bounded in-session repair."""
     import json
 
     from oddish.worker.probe_staging import apply_analysis_overlay
@@ -140,6 +141,7 @@ def test_the_overlay_replaces_the_whole_task(tmp_path):
     assert "python:3.13-slim" in dockerfile
     assert "nodejs" in dockerfile
     assert "oddish-analysis" in (tmp_path / "task.toml").read_text()
+    assert "timeout_sec = 3600" in (tmp_path / "task.toml").read_text()
     test_sh = (tmp_path / "tests" / "test.sh").read_text()
     assert "/logs/qa_result.json" in test_sh
     assert "exit 1" in test_sh
@@ -152,12 +154,97 @@ def test_the_overlay_replaces_the_whole_task(tmp_path):
     validator = (tmp_path / "tests" / "analysis_result_check.py").read_text()
     assert "def check_analysis_result" in validator
 
+    from oddish.worker.probe_staging import stage_cli_mount
+
+    harness = tmp_path / "harness"
+    stage_cli_mount(harness, analysis_task_dir=tmp_path)
+    assert (harness / "validate-analysis-result").stat().st_mode & 0o111
+    assert (harness / "expected.json").read_text() == (
+        tmp_path / "tests" / "expected.json"
+    ).read_text()
+
 
 def test_a_correct_analysis_is_accepted():
     """A well-formed analysis from the QA agent parses into a classification."""
     parsed = _classification_from_analysis(GOOD_ANALYSIS)
     assert parsed is not None
     assert parsed.classification.value == "BAD_FAILURE"
+
+
+@pytest.mark.asyncio
+async def test_failed_qa_import_reports_uploaded_schema_errors(monkeypatch):
+    """A failed Harbor row must report the rejected JSON contract, not only
+    the downstream missing-reward exception."""
+    import json
+    from types import SimpleNamespace
+
+    from oddish.db import TrialStatus
+    from oddish.workers import analysis_trials
+
+    entry = _good_qa_entry("task-1-1")
+    entry["analysis"]["evidence"] = ["wrong container type"]
+    payload = {"trials": [entry], "verdict": None}
+    captured: dict[str, str | None] = {}
+
+    async def read_bytes(_trial, _filename):
+        return json.dumps(payload).encode()
+
+    async def sync(_task_id, *, payload, should_store, error):
+        captured["error"] = error
+
+    monkeypatch.setattr(analysis_trials, "read_artifact_bytes", read_bytes)
+    monkeypatch.setattr(analysis_trials, "sync_verdict_to_task", sync)
+    trial = SimpleNamespace(
+        id="task-1-9",
+        task_id="task-1",
+        task_version_id="version-1",
+        status=TrialStatus.FAILED,
+        error_message="RewardFileNotFoundError",
+        harbor_config={
+            "mode": "qa",
+            "analysis_payload": {
+                "trial_ids": ["task-1-1"],
+                "with_verdict": False,
+            },
+        },
+    )
+
+    await analysis_trials._import_qa_result(trial)
+
+    assert "analysis.evidence must be a string" in (captured["error"] or "")
+    assert "RewardFileNotFoundError" not in (captured["error"] or "")
+
+
+@pytest.mark.asyncio
+async def test_analysis_artifact_reader_falls_back_to_local_harbor_result(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from oddish.workers import analysis_trials
+
+    verifier = tmp_path / "trial-0" / "verifier"
+    verifier.mkdir(parents=True)
+    (verifier / "qa_result.json").write_bytes(b'{"local": true}')
+
+    class _Storage:
+        async def list_objects_all(self, _prefix):
+            return []
+
+    async def resolve(**_kwargs):
+        return tmp_path, None, "local"
+
+    monkeypatch.setattr(analysis_trials, "get_storage_client", lambda: _Storage())
+    monkeypatch.setattr(analysis_trials, "resolve_trial_directory", resolve)
+    trial = SimpleNamespace(
+        id="task-1-9",
+        trial_s3_key=None,
+        harbor_result_path="/tmp/job/result.json",
+    )
+
+    data = await analysis_trials.read_artifact_bytes(trial, "qa_result.json")
+
+    assert data == b'{"local": true}'
 
 
 @pytest.mark.parametrize(
@@ -1309,9 +1396,9 @@ async def test_the_qa_import_is_all_or_nothing(monkeypatch):
     subset = {"trials": [_good_qa_entry(graded_ids[0])], "verdict": None}
 
     async def read_subset(trial, filename):
-        return subset
+        return json.dumps(subset).encode()
 
-    monkeypatch.setattr(analysis_trials, "read_analysis_artifact", read_subset)
+    monkeypatch.setattr(analysis_trials, "read_artifact_bytes", read_subset)
     async with get_session() as session:
         qa_trial = await session.get(TrialModel, qa_id)
     await _import_qa_result(qa_trial)
@@ -1335,9 +1422,9 @@ async def test_the_qa_import_is_all_or_nothing(monkeypatch):
     }
 
     async def read_complete(trial, filename):
-        return complete
+        return json.dumps(complete).encode()
 
-    monkeypatch.setattr(analysis_trials, "read_analysis_artifact", read_complete)
+    monkeypatch.setattr(analysis_trials, "read_artifact_bytes", read_complete)
     await _import_qa_result(qa_trial)
 
     async with get_session() as session:
@@ -1505,9 +1592,9 @@ async def test_a_settled_qa_trial_summarizes_its_own_run(monkeypatch):
     }
 
     async def read_artifact(trial, filename):
-        return artifact
+        return json.dumps(artifact).encode()
 
-    monkeypatch.setattr(analysis_trials, "read_analysis_artifact", read_artifact)
+    monkeypatch.setattr(analysis_trials, "read_artifact_bytes", read_artifact)
 
     await handle_analysis_trial_settled(qa_id)
 
@@ -1741,9 +1828,7 @@ async def test_missing_summarize_artifact_fails_refresh_and_allows_replacement(
     async def missing_artifact(_trial, _filename):
         return None
 
-    monkeypatch.setattr(
-        analysis_trials, "read_analysis_artifact", missing_artifact
-    )
+    monkeypatch.setattr(analysis_trials, "read_analysis_artifact", missing_artifact)
     await handle_analysis_trial_settled(summarize_id)
 
     async with get_session() as session:
@@ -2035,9 +2120,9 @@ async def test_reimport_scan_miss_keeps_same_grader_step_anchors(monkeypatch):
     }
 
     async def read_artifact(trial, filename):
-        return artifact
+        return json.dumps(artifact).encode()
 
-    monkeypatch.setattr(analysis_trials, "read_analysis_artifact", read_artifact)
+    monkeypatch.setattr(analysis_trials, "read_artifact_bytes", read_artifact)
 
     await handle_analysis_trial_settled(qa_id)
 

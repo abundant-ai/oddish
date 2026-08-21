@@ -62,7 +62,12 @@ from oddish.db import (
     get_session,
     utcnow,
 )
-from oddish.db.storage import get_storage_client, resolve_trial_s3_prefix
+from oddish.db.storage import (
+    _cleanup_temp_directory,
+    get_storage_client,
+    resolve_trial_directory,
+    resolve_trial_s3_prefix,
+)
 from oddish.worker.analysis_result_check import check_analysis_result
 
 logger = logging.getLogger(__name__)
@@ -589,7 +594,23 @@ async def read_artifact_bytes(trial: TrialModel, filename: str) -> bytes | None:
     loose = [o for o in objects if str(o.get("key", "")).endswith(f"/{filename}")]
     candidates = staged or loose
     if not candidates:
-        return None
+        if not trial.harbor_result_path:
+            return None
+        trial_dir, temp_dir, _ = await resolve_trial_directory(
+            trial_id=trial.id,
+            trial_s3_key=trial.trial_s3_key,
+            trial_result_path=trial.harbor_result_path,
+        )
+        try:
+            local_staged = sorted(trial_dir.rglob(f"verifier/{filename}"))
+            local_loose = sorted(trial_dir.rglob(filename))
+            local_candidates = local_staged or local_loose
+            if not local_candidates:
+                return None
+            return local_candidates[-1].read_bytes()
+        finally:
+            if temp_dir is not None:
+                _cleanup_temp_directory(temp_dir)
     newest = max(
         candidates,
         key=lambda o: (str(o.get("last_modified") or ""), str(o.get("key"))),
@@ -828,10 +849,19 @@ async def _import_qa_result(
 ) -> None:
     task_id = trial.task_id
     graded_version_id = trial.task_version_id
-    artifact = None
-    if trial.status == TrialStatus.SUCCESS:
-        artifact = await read_analysis_artifact(trial, QA_RESULT_FILENAME)
     expected = analysis_check_payload("qa", trial.harbor_config)
+    artifact: object | None = None
+    parse_error: str | None = None
+    # Failed Harbor runs still upload their verifier directory. Inspect that
+    # rejected output so the task records the actual schema violation instead
+    # of only Harbor's downstream missing-reward exception. A failed trial is
+    # never imported, even when its uploaded candidate happens to validate.
+    artifact_bytes = await read_artifact_bytes(trial, QA_RESULT_FILENAME)
+    if artifact_bytes is not None:
+        try:
+            artifact = json.loads(artifact_bytes)
+        except Exception as exc:  # noqa: BLE001 - exact parse failure is user-facing
+            parse_error = f"the artifact is not valid JSON: {exc}"
     # A run below the evidence bar was told not to produce a verdict, so a
     # missing one is the expected outcome, not an import failure.
     verdict_expected = expected["verdict_expected"]
@@ -839,18 +869,22 @@ async def _import_qa_result(
     # all-or-nothing: a partial or malformed artifact must never publish a
     # subset of grades or a verdict built on one.
     violations = (
-        check_analysis_result(artifact, expected) if artifact is not None else None
+        [parse_error]
+        if parse_error is not None
+        else check_analysis_result(artifact, expected)
+        if artifact is not None
+        else None
     )
-    if artifact is None or violations:
-        if trial.status != TrialStatus.SUCCESS:
+    if trial.status != TrialStatus.SUCCESS or artifact is None or violations:
+        if violations:
+            detail = "artifact violates the QA contract: " + "; ".join(violations[:5])
+        elif trial.status != TrialStatus.SUCCESS:
             detail = (
                 f"finished {trial.status.value}: "
                 f"{trial.error_message or 'no error recorded'}"
             )
         elif artifact is None:
             detail = "produced no valid qa_result.json"
-        else:
-            detail = "artifact violates the QA contract: " + "; ".join(violations[:5])
         error = f"QA trial {trial.id} {detail}"
         logger.warning("qa import for task %s failed: %s", task_id, error)
         await sync_verdict_to_task(
@@ -862,6 +896,8 @@ async def _import_qa_result(
             error=error,
         )
         return
+
+    assert isinstance(artifact, dict)
 
     # Which steps of the QA run dealt with which graded trial, scanned from
     # the QA trajectory's tool-call arguments. The anchors let the graded
@@ -1153,9 +1189,7 @@ async def _import_summarize_result(trial: TrialModel) -> None:
         stored_trial = await session.get(TrialModel, trial.id)
 
         if import_error is None and (
-            target is None
-            or target.kind != "agent"
-            or target.task_id != trial.task_id
+            target is None or target.kind != "agent" or target.task_id != trial.task_id
         ):
             import_error = (
                 f"target {target_id} is not an agent trial on task {trial.task_id}"

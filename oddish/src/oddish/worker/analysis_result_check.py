@@ -17,7 +17,9 @@ this file cannot drift from what the importer's parsers accept.
 
 The checks are deliberately at least as strict as the importer: anything the
 importer would reject (and previously dropped silently) must already fail
-here, where failing still buys a retry.
+here. The analysis agent runs this checker before it exits so it can repair
+schema violations in the same session; Harbor runs it again as the final
+acceptance boundary.
 """
 
 from __future__ import annotations
@@ -72,7 +74,8 @@ def _check_action_item(item: object, expected: dict, where: str) -> list[str]:
         if _missing(item.get(key)):
             errors.append(f"{where}.{key} must be a non-empty string")
     # Optional fields still fail the importer's parser when wrong-typed, so
-    # they must fail here first, where failing buys a retry.
+    # they must fail here first, while the analysis session can still repair
+    # the artifact.
     for key in ("id", "links_to", "exploit_evidence"):
         if key in item and item[key] is not None and not isinstance(item[key], str):
             errors.append(f"{where}.{key} must be a string or null")

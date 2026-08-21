@@ -12,6 +12,7 @@ from oddish.core.endpoints import (
     get_task_for_org_core,
     get_trial_for_org_core,
     get_trial_response_for_org_core,
+    list_task_qa_runs_core,
     rerun_trial_analysis_core,
     retry_trial_core,
 )
@@ -35,13 +36,17 @@ from oddish.core.sharing.helpers import (
     list_trial_files_s3,
 )
 from oddish.db.storage import delete_s3_prefixes
-from oddish.workers.analysis_trials import get_or_create_summarize_trial
+from oddish.workers.analysis_trials import (
+    ANALYSIS_ARTIFACTS,
+    get_or_create_summarize_trial,
+    read_artifact_bytes,
+)
 from auth import APIKeyScope, AuthContext, require_admin, require_auth
 from oddish.db import (
     TrialModel,
     get_session,
 )
-from oddish.schemas import TrialRetryRequest
+from oddish.schemas import QaRunResponse, TrialRetryRequest
 from oddish.schemas import (
     TrialImportCompleteRequest,
     TrialImportCompleteResponse,
@@ -154,6 +159,26 @@ async def list_task_trials(
 
         return await list_task_trials_for_task(
             session, task_id, probe=probe, version=version
+        )
+
+
+@router.get("/tasks/{task_id}/qa/runs", response_model=list[QaRunResponse])
+async def list_task_qa_runs(
+    task_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    version: int | None = Query(
+        None,
+        description="Scope QA history to one task version; omitted=all versions.",
+    ),
+) -> list[QaRunResponse]:
+    """List real task-scoped QA trials, including failed and historical runs."""
+    auth.require_scope(APIKeyScope.READ)
+    async with get_session() as session:
+        return await list_task_qa_runs_core(
+            session,
+            task_id=task_id,
+            org_id=auth.org_id,
+            version=version,
         )
 
 
@@ -381,6 +406,36 @@ async def get_trial_probe_artifacts(
     auth.require_scope(APIKeyScope.READ)
     trial = await _get_authorized_trial(trial_id, auth)
     return await read_trial_probe_artifacts(trial)
+
+
+@router.get("/trials/{trial_id}/analysis-output/{output_kind}")
+async def get_analysis_trial_output(
+    trial_id: str,
+    output_kind: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> Response:
+    """Read a generated analysis artifact or its final validator errors.
+
+    The storage key includes Harbor's randomized job directory, so callers use
+    this stable route instead of guessing a trial-relative S3 path.
+    """
+    auth.require_scope(APIKeyScope.READ)
+    trial = await _get_authorized_trial(trial_id, auth)
+    if trial.kind not in ANALYSIS_ARTIFACTS:
+        raise HTTPException(status_code=404, detail="Analysis output not found")
+    if output_kind == "artifact":
+        filename = ANALYSIS_ARTIFACTS[trial.kind]
+        media_type = "application/json"
+    elif output_kind == "validation":
+        filename = "error.txt"
+        media_type = "text/plain; charset=utf-8"
+    else:
+        raise HTTPException(status_code=404, detail="Analysis output not found")
+
+    content = await read_artifact_bytes(trial, filename)
+    if content is None:
+        raise HTTPException(status_code=404, detail="Analysis output not found")
+    return Response(content=content, media_type=media_type)
 
 
 @router.get("/trials/{trial_id}/trajectory")

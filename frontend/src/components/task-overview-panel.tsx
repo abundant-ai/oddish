@@ -13,6 +13,7 @@ import { SeverityGroups } from "@/components/qa-report/action-items";
 import { CopyJsonButton } from "@/components/qa-report/copy-json-button";
 import { FALLBACK_TOKEN, VERDICT_TOKENS } from "@/components/qa-report/tokens";
 import { TaskVerdictBadge } from "@/components/task-verdict-badge";
+import { QaRunsPanel } from "@/components/qa-runs-panel";
 import { isActivePipelineStatus } from "@/lib/job-status";
 import { isAgentTrial } from "@/lib/types";
 import type {
@@ -36,7 +37,7 @@ export type StaticCheckState =
  */
 export function staticCheckState(
   status: string | null | undefined,
-  findingCount: number,
+  findingCount: number
 ): StaticCheckState {
   if (!status) return "unaudited";
   const normalized = status.toLowerCase();
@@ -72,9 +73,7 @@ function findingKey(item: PreTrialFinding): string {
   // Server ids are content hashes that include the analyzer source, so they
   // dedupe within one source only — the cross-source join is `links_to`.
   // Items without an id fall back to a content key.
-  return (
-    item.id ?? `${item.tier ?? ""}|${item.title ?? ""}|${item.file ?? ""}`
-  );
+  return item.id ?? `${item.tier ?? ""}|${item.title ?? ""}|${item.file ?? ""}`;
 }
 
 function classificationRank(trial: Trial): number {
@@ -163,27 +162,31 @@ export function TaskOverviewPanel({
           version !== null ? `&version=${version}` : ""
         }`
       : null;
-  const { data: trials, error: trialsError } = useSWR<Trial[]>(trialsKey, fetcher, {
-    revalidateOnFocus: false,
-    refreshInterval: (data) => {
-      const anyAnalysisLive = (data ?? []).some((trial) =>
-        isActivePipelineStatus(trial.analysis_status),
-      );
-      return anyAnalysisLive || qaActive ? 15000 : 0;
-    },
-  });
+  const { data: trials, error: trialsError } = useSWR<Trial[]>(
+    trialsKey,
+    fetcher,
+    {
+      revalidateOnFocus: false,
+      refreshInterval: (data) => {
+        const anyAnalysisLive = (data ?? []).some((trial) =>
+          isActivePipelineStatus(trial.analysis_status)
+        );
+        return anyAnalysisLive || qaActive ? 15000 : 0;
+      },
+    }
+  );
 
   // Host rows can include probes and superseded trials; filter them here too.
   const scoped = useMemo(() => {
     if (scopeTrials == null) return null;
     return scopeTrials.filter(
       (trial) =>
-        !trial.is_probe && isAgentTrial(trial) && !trial.superseded_by_trial_id,
+        !trial.is_probe && isAgentTrial(trial) && !trial.superseded_by_trial_id
     );
   }, [scopeTrials]);
   const fetchedById = useMemo(
     () => new Map((trials ?? []).map((trial) => [trial.id, trial])),
-    [trials],
+    [trials]
   );
   // Show every trial of the version. The verdict is computed over all of
   // them, so a shorter list can hide the evidence behind it.
@@ -195,7 +198,7 @@ export function TaskOverviewPanel({
     const elsewhere = scopeLoading
       ? []
       : (trials ?? []).filter(
-          (trial) => !inScope.has(trial.id) && !trial.superseded_by_trial_id,
+          (trial) => !inScope.has(trial.id) && !trial.superseded_by_trial_id
         );
     return [
       ...scoped.map((trial) => fetchedById.get(trial.id) ?? trial),
@@ -209,9 +212,9 @@ export function TaskOverviewPanel({
     return new Set(
       (trials ?? [])
         .filter(
-          (trial) => !inScope.has(trial.id) && !trial.superseded_by_trial_id,
+          (trial) => !inScope.has(trial.id) && !trial.superseded_by_trial_id
         )
-        .map((trial) => trial.id),
+        .map((trial) => trial.id)
     );
   }, [scoped, scopeLoading, trials]);
   const versionTrials = useMemo(() => {
@@ -226,7 +229,7 @@ export function TaskOverviewPanel({
     unanalyzedCount,
     analyzedCount,
     mergedFindings,
-    qaTrials,
+    analyzedTrials,
   } = useMemo(() => {
     const byKey = new Map<string, SourcedFinding>();
     const addTrial = (row: SourcedFinding, trial: Trial) => {
@@ -249,7 +252,7 @@ export function TaskOverviewPanel({
       if (!analysis) continue;
       counts.set(
         analysis.classification,
-        (counts.get(analysis.classification) ?? 0) + 1,
+        (counts.get(analysis.classification) ?? 0) + 1
       );
       // Exploitation assessments are the trial→audit-finding join: an
       // exploiting trial belongs on the audit row's "seen in" list. A
@@ -287,14 +290,14 @@ export function TaskOverviewPanel({
         classificationRank(a) - classificationRank(b) ||
         Number(foreignIds?.has(a.id) ?? false) -
           Number(foreignIds?.has(b.id) ?? false) ||
-        a.created_at.localeCompare(b.created_at),
+        a.created_at.localeCompare(b.created_at)
     );
     return {
       classificationCounts: counts,
       unanalyzedCount: unanalyzed,
       analyzedCount: withQa.filter((trial) => trial.analysis).length,
       mergedFindings: Array.from(byKey.values()),
-      qaTrials: withQa,
+      analyzedTrials: withQa,
     };
   }, [versionTrials, checksFindings, foreignIds]);
 
@@ -308,18 +311,18 @@ export function TaskOverviewPanel({
         from_audit: fromAudit,
         trial_ids: sources.map((t) => t.id),
       })),
-    [mergedFindings],
+    [mergedFindings]
   );
   const findingSourcesById = useMemo(
     () => new Map(mergedFindings.map((f) => [f.id ?? "", f])),
-    [mergedFindings],
+    [mergedFindings]
   );
   const foreignShownCount = useMemo(
     () =>
       foreignIds
         ? versionTrials.filter((trial) => foreignIds.has(trial.id)).length
         : 0,
-    [foreignIds, versionTrials],
+    [foreignIds, versionTrials]
   );
 
   const taskTrialHref = (trial: Trial): string | null => {
@@ -368,8 +371,8 @@ export function TaskOverviewPanel({
               type="button"
               onClick={() => openTrial(trial)}
               className={cn(
-                "border-border text-muted-foreground hover:text-foreground hover:border-foreground/40 inline-flex min-w-0 max-w-full items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] transition-colors",
-                foreign && "border-dashed",
+                "border-border text-muted-foreground hover:text-foreground hover:border-foreground/40 inline-flex max-w-full min-w-0 items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] transition-colors",
+                foreign && "border-dashed"
               )}
               title={
                 foreign
@@ -386,7 +389,10 @@ export function TaskOverviewPanel({
     );
   };
 
-  const checkState = staticCheckState(checksStatus, checksFindings?.length ?? 0);
+  const checkState = staticCheckState(
+    checksStatus,
+    checksFindings?.length ?? 0
+  );
   const checksStateUnknown = Boolean(checksLoading || checksLoadError);
   // Only a live run blocks the button. A stale "queued" row must stay
   // re-queueable: re-queue is the backend's recovery path for queued jobs
@@ -527,7 +533,7 @@ export function TaskOverviewPanel({
         </p>
       );
     }
-    if (qaTrials.length === 0) {
+    if (analyzedTrials.length === 0) {
       // The verdict badge above already says "Running QA..." in this state;
       // telling the user to run QA at the same time reads as broken.
       if (qaActive) {
@@ -541,8 +547,8 @@ export function TaskOverviewPanel({
       }
       return (
         <p className="text-muted-foreground text-sm leading-relaxed">
-          Trial QA has not run yet. Run QA to classify this task&apos;s
-          trials and synthesize a verdict.
+          Trial QA has not run yet. Run QA to classify this task&apos;s trials
+          and synthesize a verdict.
         </p>
       );
     }
@@ -551,9 +557,8 @@ export function TaskOverviewPanel({
       <>
         {qaActive ? (
           <p className="text-muted-foreground flex items-center gap-1.5 font-mono text-[11px]">
-            <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
-            A new QA run is in progress. The results below are from the last
-            run.
+            <Loader2 className="h-3 w-3 shrink-0 animate-spin" />A new QA run is
+            in progress. The results below are from the last run.
           </p>
         ) : null}
         <div className="flex flex-wrap items-center gap-1.5">
@@ -568,7 +573,7 @@ export function TaskOverviewPanel({
                 className={cn(
                   "inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px]",
                   token.chip,
-                  token.accent,
+                  token.accent
                 )}
               >
                 <Icon className="h-3 w-3" aria-hidden="true" />
@@ -584,7 +589,7 @@ export function TaskOverviewPanel({
         </div>
 
         <div className="flex flex-col gap-1.5">
-          {qaTrials.map((trial) => (
+          {analyzedTrials.map((trial) => (
             <TrialQaRow
               key={trial.id}
               trial={trial}
@@ -670,6 +675,12 @@ export function TaskOverviewPanel({
         </div>
         {trialQaBody()}
       </div>
+      <QaRunsPanel
+        taskId={taskId}
+        apiBaseUrl={apiBaseUrl}
+        version={version}
+        onOpenTrial={onOpenTrial}
+      />
     </div>
   );
 }
@@ -692,7 +703,7 @@ function TrialQaRow({
     : FALLBACK_TOKEN;
   const Icon = token.icon;
   const hasBody = Boolean(
-    analysis?.evidence || analysis?.root_cause || analysis?.recommendation,
+    analysis?.evidence || analysis?.root_cause || analysis?.recommendation
   );
 
   const header = (
@@ -706,7 +717,7 @@ function TrialQaRow({
         <Icon
           className={cn(
             "h-3.5 w-3.5 shrink-0",
-            failed ? "text-red-500" : token.accent,
+            failed ? "text-red-500" : token.accent
           )}
           aria-hidden="true"
         />
@@ -714,7 +725,7 @@ function TrialQaRow({
       <span
         className={cn(
           "shrink-0 font-mono text-[10px] font-semibold tracking-wider",
-          running ? "text-blue-500" : failed ? "text-red-500" : token.accent,
+          running ? "text-blue-500" : failed ? "text-red-500" : token.accent
         )}
       >
         {running

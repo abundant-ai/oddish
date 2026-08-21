@@ -295,6 +295,23 @@ summary template must retain the `{{taxonomy}}` placeholder, rendered by the
 QA-trial brief builder (`oddish.workers.analysis_trials`). Editing a prompt is
 a code change that ships with a deploy.
 
+Claude Code analysis trials use `OddishAnalysisClaudeCode`, not the probe
+wrapper. After the initial agent response, that wrapper runs the same staged
+`analysis_result_check.py` and `expected.json` contract that the Harbor
+verifier runs. Invalid output gets at most two repair-only continuations in the
+same Claude session; each attempted artifact and validator transcript is kept
+under `/logs/agent/analysis-attempts/`. Harbor verification remains the final
+acceptance boundary, and import remains all-or-nothing. Only real probes receive
+`ODDISH_PROBE_AGENT_TIMEOUT_SEC`; the analysis overlay's 3,600-second
+`[agent].timeout_sec` controls QA, audit, and summarize runs.
+
+Authenticated task pages discover actual QA execution history through
+`GET /tasks/{task_id}/qa/runs`, which returns compact `kind = 'qa'` rows and
+does not widen the agent-only `GET /tasks/{task_id}/trials` contract. Generated
+analysis JSON and final validator output are addressed through
+`GET /trials/{trial_id}/analysis-output/{artifact|validation}`; the backend
+resolves Harbor's randomized job directory under the trial storage prefix.
+
 ### Worker job kinds
 
 `WorkerJobKind` (in `oddish.db.models`):

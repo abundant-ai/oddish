@@ -23,6 +23,63 @@ from oddish.db import (
     VerdictStatus,
     utcnow,
 )
+from oddish.schemas import QaRunResponse
+
+
+async def list_task_qa_runs_core(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    org_id: str | None = None,
+    version: int | None = None,
+) -> list[QaRunResponse]:
+    """List the task's actual QA executions without widening agent-trial APIs."""
+    task = await session.scalar(
+        select(TaskModel).where(
+            TaskModel.id == task_id,
+            TaskModel.org_id == org_id if org_id is not None else True,
+        )
+    )
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+    query = (
+        select(TrialModel, TaskVersionModel.version)
+        .outerjoin(TaskVersionModel, TaskVersionModel.id == TrialModel.task_version_id)
+        .where(TrialModel.task_id == task_id, TrialModel.kind == "qa")
+        .order_by(TrialModel.created_at.desc())
+    )
+    if version is not None:
+        query = query.where(TaskVersionModel.version == version)
+
+    rows = (await session.execute(query)).all()
+    return [
+        QaRunResponse(
+            id=trial.id,
+            name=trial.name,
+            task_id=trial.task_id,
+            task_path=task.task_path,
+            task_version=task_version,
+            task_version_id=trial.task_version_id,
+            agent=trial.agent,
+            provider=trial.provider,
+            model=trial.model,
+            environment=trial.environment,
+            status=trial.status,
+            attempts=trial.attempts,
+            max_attempts=trial.max_attempts,
+            harbor_stage=trial.harbor_stage,
+            reward=trial.reward,
+            error_message=trial.error_message,
+            cost_usd=trial.cost_usd,
+            has_trajectory=trial.has_trajectory,
+            artifacts_available=bool(trial.trial_s3_key or trial.harbor_result_path),
+            created_at=trial.created_at,
+            started_at=trial.started_at,
+            finished_at=trial.finished_at,
+        )
+        for trial, task_version in rows
+    ]
 
 
 async def _live_analysis_trial_id(
@@ -408,7 +465,6 @@ async def rerun_pre_trial_audit_core(
     of this version is running inside its lease.
     """
     from datetime import timedelta
-
 
     # The task row lock serializes this check-and-enqueue against the QA
     # backfill (which takes the same lock): without it, two concurrent

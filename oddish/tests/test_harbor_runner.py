@@ -788,8 +788,7 @@ def test_restricted_cursor_gets_transport_hosts_and_web_hardening(tmp_path):
         **agent_config.kwargs,
     )
     assert agent.build_cli_flags() == (
-        "--exclude-tools web_search_tool_call "
-        "--exclude-tools web_fetch_tool_call"
+        "--exclude-tools web_search_tool_call --exclude-tools web_fetch_tool_call"
     )
 
 
@@ -972,9 +971,7 @@ def test_restricted_compose_runtime_route_is_private_and_artifacts_are_scrubbed(
             (self.job_dir / "result.json").write_text(leaked, encoding="utf-8")
             return object()
 
-    monkeypatch.setattr(
-        harbor_runner, "apply_harbor_patches", lambda **_kwargs: None
-    )
+    monkeypatch.setattr(harbor_runner, "apply_harbor_patches", lambda **_kwargs: None)
     monkeypatch.setattr(harbor_runner, "get_backend", lambda value: None)
     monkeypatch.setattr(
         harbor_runner, "validate_task_timeout_config", lambda path: None
@@ -2112,6 +2109,25 @@ def test_build_agent_config_uses_probe_claude_code_wrapper(monkeypatch):
     )
 
 
+def test_build_agent_config_uses_analysis_wrapper_without_probe_timeout(monkeypatch):
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model=None,
+        raw_harbor_config={"mode": "qa"},
+        is_probe=False,
+        analysis_kind="qa",
+    )
+
+    assert agent_config.name is None
+    assert agent_config.import_path == (
+        "oddish.workers.agents.claude_code:OddishAnalysisClaudeCode"
+    )
+    assert agent_config.override_timeout_sec is None
+    assert agent_config.env["ODDISH_ANALYSIS_ARTIFACT"] == "qa_result.json"
+
+
 def test_build_agent_config_mini_swe_anthropic_uses_oddish_wrapper(monkeypatch):
     """Non-Meta mini-swe-agent trials route through the Oddish base subclass so
     install() pulls litellm's proxy extras (orjson/fastapi) into the tool venv."""
@@ -2145,12 +2161,11 @@ def test_build_agent_config_mini_swe_fireworks_uses_litellm_runtime_model(
     assert getattr(agent_config, RUNTIME_MODEL_NAME_ATTR) == (
         "fireworks_ai/accounts/fireworks/models/glm-5p2"
     )
-    assert (agent_config.env or {})["FIREWORKS_AI_API_KEY"] == (
-        "${FIREWORKS_API_KEY}"
+    assert (agent_config.env or {})["FIREWORKS_AI_API_KEY"] == ("${FIREWORKS_API_KEY}")
+    assert (
+        harbor_runner.resolve_env_vars(agent_config.env)["FIREWORKS_AI_API_KEY"]
+        == "fireworks-secret"
     )
-    assert harbor_runner.resolve_env_vars(agent_config.env)[
-        "FIREWORKS_AI_API_KEY"
-    ] == "fireworks-secret"
     assert RUNTIME_MODEL_NAME_ATTR not in agent_config.model_dump()
 
 
@@ -2585,9 +2600,7 @@ def test_build_agent_config_uses_oddish_opencode_wrapper(monkeypatch):
     )
 
     assert agent_config.name is None
-    assert (
-        agent_config.import_path == "oddish.workers.agents.opencode:OddishOpenCode"
-    )
+    assert agent_config.import_path == "oddish.workers.agents.opencode:OddishOpenCode"
     assert agent_config.model_name == "openrouter/tencent/hy3"
 
 

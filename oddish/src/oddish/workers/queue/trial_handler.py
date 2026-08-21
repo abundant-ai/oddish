@@ -1103,7 +1103,7 @@ async def _upload_probe_assets(
     fallback; a failure must never block the probe)."""
     harness_mount = Path(tempfile.mkdtemp(prefix=f"probe-cli-{trial_id}-"))
     try:
-        stage_cli_mount(harness_mount)
+        stage_cli_mount(harness_mount, analysis_task_dir=probe_task_dir)
         await environment.upload_dir(
             source_dir=harness_mount, target_dir=PROBE_HARNESS_DIR
         )
@@ -1837,7 +1837,9 @@ async def run_trial_job(
                 )
                 oddish_uploaded = True
             except Exception as e:
-                message = f"Failed to upload trial results to S3: {type(e).__name__}: {e}"
+                message = (
+                    f"Failed to upload trial results to S3: {type(e).__name__}: {e}"
+                )
                 console.print(f"[yellow]{message}[/yellow]")
                 if is_analysis_kind(trial_mode):
                     artifact_upload_error = message

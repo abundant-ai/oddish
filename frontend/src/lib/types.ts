@@ -221,6 +221,13 @@ export interface Trial {
   } | null;
 }
 
+/** Compact real QA-trial row returned by the task QA history endpoint. */
+export interface QaRun extends Trial {
+  kind: "qa";
+  is_probe: false;
+  artifacts_available: boolean;
+}
+
 export interface TaskVerdict {
   /** Absent on rows stored before the accept/reject label existed. */
   verdict?: "accept" | "reject";
