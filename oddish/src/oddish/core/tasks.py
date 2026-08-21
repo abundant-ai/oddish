@@ -9,7 +9,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
 from oddish.core.tags.enqueue import enqueue_tag_project_worker_job
-from oddish.db import Priority, TaskModel, TaskVersionModel, TrialModel, get_session
+from oddish.db import (
+    AGENT_TRIAL_KIND,
+    Priority,
+    TaskModel,
+    TaskVersionModel,
+    TrialModel,
+    get_session,
+)
 from oddish.db.storage import StorageClient, get_storage_client
 from oddish.schemas import TaskUploadInitResponse, UploadResponse
 
@@ -418,10 +425,14 @@ async def complete_task_upload(
                         "start the in-place upload again"
                     ),
                 )
+            # Agent trials only: the pre-trial audit is created concurrently
+            # at task creation, so counting analysis trials here would make
+            # every version refuse in-place overwrite immediately.
             existing_trial_count = await session.scalar(
                 select(func.count(TrialModel.id)).where(
                     TrialModel.task_id == task_id,
                     TrialModel.task_version_id == version_id,
+                    TrialModel.kind == AGENT_TRIAL_KIND,
                 )
             )
             if existing_trial_count or any(
@@ -488,7 +499,16 @@ async def complete_task_upload(
         if source_changed:
             from oddish.queue import invalidate_task_qa_for_source_change
 
-            await invalidate_task_qa_for_source_change(session, existing_task)
+            # In-place overwrite keeps the version id but replaces its bytes,
+            # so a live audit of that version is auditing bytes that no
+            # longer exist -- name it so the invalidator cancels it.
+            await invalidate_task_qa_for_source_change(
+                session,
+                existing_task,
+                overwritten_version_id=(
+                    version_id if overwrite_current_version else None
+                ),
+            )
 
         if settings.tasks_expand_archive:
             # Kick off the per-file expansion so the task-files drawer

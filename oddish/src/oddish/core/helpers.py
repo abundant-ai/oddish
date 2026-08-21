@@ -25,6 +25,7 @@ from oddish.db import (
     WorkerJobStatus,
 )
 from oddish.core.cost_basis import is_combine_copy
+from oddish.core.cost_exclusions import CostExclusions
 from oddish.core.tags.projection import (
     list_effective_user_tags_for_task_versions,
 )
@@ -424,6 +425,7 @@ def build_trial_response(
     # None = "not resolved by this caller", which the UI renders as nothing.
     # Distinct from 0.0, which would mean "resolved, and there was no QA".
     qa_cost_usd: float | None = None,
+    exclusions: CostExclusions | None = None,
 ) -> TrialResponse:
     """Build a TrialResponse from a TrialModel."""
     normalized_model = settings.normalize_trial_model(trial.agent, trial.model, strict=False)
@@ -454,6 +456,7 @@ def build_trial_response(
         harbor_sha=trial.harbor_sha,
         harbor_source=(trial.harbor_config or {}).get("source"),
         is_probe=trial.is_probe,
+        kind=trial.kind or "agent",
         input_tokens=trial.input_tokens,
         cache_tokens=trial.cache_tokens,
         output_tokens=trial.output_tokens,
@@ -464,6 +467,15 @@ def build_trial_response(
         cost_usd=cost_usd,
         cost_is_estimated=cost_is_estimated,
         is_billed=trial.billed_user_id is not None,
+        cost_exclusion_reason=(
+            exclusions.reason_for(
+                llm_key_hash=trial.llm_key_hash,
+                model=trial.model,
+                experiment_id=trial.experiment_id,
+            )
+            if exclusions
+            else None
+        ),
         phase_timing=trial.phase_timing,
         has_trajectory=_has_fetchable_trajectory(trial),
         analysis_status=trial.analysis_status,
@@ -488,6 +500,7 @@ def build_compact_trial_response(
     analysis_summary: dict[str, str | None] | None | object = _ANALYSIS_SUMMARY_UNSET,
     queue_info: TrialQueueInfo | None = None,
     jobs: Sequence[VisibleWorkerJob] | None = None,
+    exclusions: CostExclusions | None = None,
 ) -> TrialResponse:
     """Build a compact TrialResponse for table views.
 
@@ -534,6 +547,7 @@ def build_compact_trial_response(
         harbor_sha=trial.harbor_sha,
         harbor_source=(trial.harbor_config or {}).get("source"),
         is_probe=trial.is_probe,
+        kind=trial.kind or "agent",
         input_tokens=trial.input_tokens,
         cache_tokens=trial.cache_tokens,
         output_tokens=trial.output_tokens,
@@ -544,6 +558,15 @@ def build_compact_trial_response(
         cost_usd=cost_usd,
         cost_is_estimated=cost_is_estimated,
         is_billed=trial.billed_user_id is not None,
+        cost_exclusion_reason=(
+            exclusions.reason_for(
+                llm_key_hash=trial.llm_key_hash,
+                model=trial.model,
+                experiment_id=trial.experiment_id,
+            )
+            if exclusions
+            else None
+        ),
         phase_timing=trial.phase_timing,
         has_trajectory=_has_fetchable_trajectory(trial),
         analysis_status=trial.analysis_status,
@@ -791,12 +814,10 @@ def _primary_experiment_for_task(
     to several experiments at once. Response shapes that still expose a
     single ``experiment_id``/``experiment_name`` need to pick one:
 
-    - If ``preferred_experiment_id`` is in the task's set, use it (lets
-      experiment-scoped list endpoints return the experiment the caller
-      is actually looking at).
-    - Otherwise fall back to the first linked experiment (stable ordering
-      comes from SQLAlchemy's relationship load, which in turn respects
-      the association table's ``created_at`` insertion order).
+    - If ``preferred_experiment_id`` is in the task's set, use it.
+    - Otherwise the first non-shadow experiment. A shadow (qa report) wins
+      only when it is all the task has: the eager audit can link it before
+      the agent trials link the real one.
     """
     experiments = list(task.experiments or [])
     if not experiments:
@@ -805,7 +826,8 @@ def _primary_experiment_for_task(
         for exp in experiments:
             if exp.id == preferred_experiment_id:
                 return exp
-    return experiments[0]
+    non_shadow = [exp for exp in experiments if exp.shadow_of is None]
+    return (non_shadow or experiments)[0]
 
 
 TASK_STATUS_RESPONSE_COLUMNS = (
@@ -895,12 +917,13 @@ def _build_task_status_response(
         experiment_created_at=experiment_created_at,
         experiment_owner=experiment_owner,
         experiment_link=experiment_link,
-        # Sorted (name, id) to match the browse chips and because the ORM
-        # relationship has no order_by -- DB return order is not stable.
+        # Sorted (name, id): the ORM relationship has no order_by. Shadow
+        # (qa report) experiments stay out of the chips.
         experiments=[
             TaskBrowseExperiment(id=exp.id, name=exp.name)
             for exp in sorted(
-                task.experiments or [], key=lambda exp: (exp.name, exp.id)
+                (e for e in task.experiments or [] if e.shadow_of is None),
+                key=lambda exp: (exp.name, exp.id),
             )
         ],
         current_version=current_version,
@@ -943,6 +966,7 @@ def build_task_status_response(
     effective_version_id: str | None | object = _VERSION_ID_UNSET,
     gathered_trial_ids: set[str] | None = None,
     exclude_combine_copies: bool = False,
+    exclusions: CostExclusions | None = None,
 ) -> TaskStatusResponse:
     """Build a TaskStatusResponse from a TaskModel with eagerly loaded trials.
 
@@ -992,6 +1016,7 @@ def build_task_status_response(
                     if jobs_by_subject is not None
                     else None
                 ),
+                exclusions=exclusions,
             )
             for t in task_trials
         ]
@@ -1031,6 +1056,7 @@ def build_task_status_response_compact(
     experiment_context_id: str | None = None,
     effective_version_id: str | None | object = _VERSION_ID_UNSET,
     gathered_trial_ids: set[str] | None = None,
+    exclusions: CostExclusions | None = None,
 ) -> TaskStatusResponse:
     """Build TaskStatusResponse with compact per-trial payloads.
 
@@ -1070,6 +1096,7 @@ def build_task_status_response_compact(
                 if jobs_by_subject is not None
                 else None
             ),
+            exclusions=exclusions,
         )
         for t in task_trials
     ]
@@ -1112,6 +1139,7 @@ SLIM_TRIAL_RESPONSE_COLUMNS = (
     TrialModel.reward,
     TrialModel.error_message,
     TrialModel.is_probe,
+    TrialModel.kind,
     TrialModel.analysis,
     TrialModel.analysis_status,
     TrialModel.analysis_started_at,
@@ -1122,6 +1150,7 @@ SLIM_TRIAL_RESPONSE_COLUMNS = (
     TrialModel.output_tokens,
     TrialModel.cost_usd,
     TrialModel.billed_user_id,
+    TrialModel.llm_key_hash,
     TrialModel.superseded_by_trial_id,
     TrialModel.created_at,
     TrialModel.started_at,
@@ -1133,6 +1162,7 @@ def build_slim_trial_response(
     trial: TrialModel,
     task_path: str,
     *,
+    exclusions: CostExclusions | None = None,
     # None = "not resolved by this caller", which the UI renders as nothing.
     # Distinct from 0.0, which would mean "resolved, and there was no QA".
     qa_cost_usd: float | None = None,
@@ -1169,6 +1199,7 @@ def build_slim_trial_response(
         error_message=trial.error_message,
         result=None,
         is_probe=trial.is_probe,
+        kind=trial.kind or "agent",
         input_tokens=trial.input_tokens,
         output_tokens=trial.output_tokens,
         cost_usd=cost_usd,
@@ -1183,6 +1214,15 @@ def build_slim_trial_response(
         started_at=trial.started_at,
         finished_at=trial.finished_at,
         qa_cost_usd=qa_cost_usd,
+        cost_exclusion_reason=(
+            exclusions.reason_for(
+                llm_key_hash=trial.llm_key_hash,
+                model=trial.model,
+                experiment_id=trial.experiment_id,
+            )
+            if exclusions
+            else None
+        ),
     )
 
 
@@ -1194,6 +1234,7 @@ def build_slim_task_status_response(
     effective_version_id: str | None | object = _VERSION_ID_UNSET,
     gathered_trial_ids: set[str] | None = None,
     qa_costs_by_trial_id: dict[str, float] | None = None,
+    exclusions: CostExclusions | None = None,
 ) -> TaskStatusResponse:
     """Build a task status response with slim per-trial payloads.
 
@@ -1224,6 +1265,7 @@ def build_slim_task_status_response(
                 if qa_costs_by_trial_id is not None
                 else None
             ),
+            exclusions=exclusions,
         )
         for t in task_trials
     ]
@@ -1317,6 +1359,9 @@ async def build_task_status_responses_from_counts(
         TrialModel.superseded_by_trial_id.is_(None),
     ]
     if experiment_context_id is not None:
+        # Membership already separates kinds: agent trials belong to the
+        # experiment they ran in, analysis trials to its shadow. No kind
+        # filter, or a shadow page would count zero trials.
         from oddish.core.experiment_membership import trial_in_experiment
 
         stats_filters.extend(
@@ -1325,6 +1370,8 @@ async def build_task_status_responses_from_counts(
                 TrialModel.is_probe.is_(False),
             ]
         )
+    else:
+        stats_filters.append(TrialModel.kind == "agent")
     if effective_map:
         # Match (task_id, task_version_id) pairs so we only count trials at
         # each task's effective version.  Tasks without an effective version

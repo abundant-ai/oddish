@@ -65,19 +65,19 @@ test("summary polling preserves the durable backend job state", async () => {
     await expect(
       fetchTrajectorySummary("https://example.test/summary")
     ).resolves.toEqual({
-      status: "running",
       summary: null,
-      jobId: "job-1",
-      retryAfterMs: 1700,
+      refresh: {
+        status: "running",
+        jobId: "job-1",
+        retryAfterMs: 1700,
+      },
     });
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("public trial drawers defer trajectory and capabilities work", async ({
-  page,
-}) => {
+test("public trial drawers defer trajectory work", async ({ page }) => {
   const token = "public-drawer-regression";
   const publicTrial: Trial = {
     id: "task-1-2",
@@ -109,7 +109,6 @@ test("public trial drawers defer trajectory and capabilities work", async ({
     reward_total: 1,
   });
   let trajectoryRequests = 0;
-  let capabilityRequests = 0;
 
   await page.route(`**/api/public/experiments/${token}`, (route) =>
     route.fulfill({
@@ -126,13 +125,6 @@ test("public trial drawers defer trajectory and capabilities work", async ({
   await page.route(
     `**/api/public/experiments/${token}/tasks/task-1/files?*`,
     (route) => route.fulfill({ json: { files: [] } })
-  );
-  await page.route(
-    `**/api/public/experiments/${token}/tasks/task-1/agent-capabilities?*`,
-    (route) => {
-      capabilityRequests += 1;
-      return route.fulfill({ status: 404, json: { detail: "not found" } });
-    }
   );
   await page.route(
     `**/api/public/experiments/${token}/trials/task-1-2/trajectory/summary`,
@@ -181,12 +173,8 @@ test("public trial drawers defer trajectory and capabilities work", async ({
     "data-state",
     "active"
   );
-  await expect(page.getByRole("button", { name: "Capabilities" })).toHaveCount(
-    0
-  );
   await page.waitForTimeout(500);
   expect(trajectoryRequests).toBe(0);
-  expect(capabilityRequests).toBe(0);
 
   await page.getByRole("tab", { name: "Trajectory" }).click();
   await expect.poll(() => trajectoryRequests).toBe(1);

@@ -77,6 +77,7 @@ from oddish.schemas import (
     UserTagRef,
 )
 from oddish.core.cost_basis import not_combine_copy_filter
+from oddish.core.cost_exclusions import load_cost_exclusions
 from oddish.core.task_browse_metrics import (
     browse_trial_scope,
     resolve_browse_cost_breakdown,
@@ -210,6 +211,7 @@ async def list_tasks_core(
                 TrialModel.harbor_config,
                 TrialModel.harbor_sha,
                 TrialModel.is_probe,
+                TrialModel.kind,
                 TrialModel.has_trajectory,
                 TrialModel.phase_timing,
                 TrialModel.analysis_status,
@@ -226,6 +228,7 @@ async def list_tasks_core(
                 TrialModel.tool_counts,
                 TrialModel.cost_usd,
                 TrialModel.billed_user_id,
+                TrialModel.llm_key_hash,
                 TrialModel.superseded_by_trial_id,
                 TrialModel.created_at,
                 TrialModel.started_at,
@@ -238,6 +241,9 @@ async def list_tasks_core(
                 ExperimentModel.created_at,
                 ExperimentModel.owner,
                 ExperimentModel.link,
+                # Read by the shadow-exclusion picker; eager-load it or the
+                # read lazy-loads outside the greenlet and 500s /tasks.
+                ExperimentModel.shadow_of,
             )
             query = query.options(
                 load_only(*TASK_STATUS_RESPONSE_COLUMNS),
@@ -382,6 +388,7 @@ async def list_tasks_core(
                 elapsed_ms(queue_info_started_at),
                 "Trial queue info",
             )
+        exclusions = await load_cost_exclusions(session)
         if compact_trials:
             # The analysis summary fields (classification / subtype /
             # evidence) are now loaded inline on the trials selectinload
@@ -400,6 +407,7 @@ async def list_tasks_core(
                     jobs_by_subject=jobs_by_subject,
                     experiment_context_id=experiment_id,
                     gathered_trial_ids=gathered_trial_ids,
+                    exclusions=exclusions,
                 )
                 for task in tasks
             ]
@@ -419,6 +427,7 @@ async def list_tasks_core(
                 jobs_by_subject=jobs_by_subject,
                 experiment_context_id=experiment_id,
                 gathered_trial_ids=gathered_trial_ids,
+                exclusions=exclusions,
             )
             for task in tasks
         ]
@@ -619,6 +628,7 @@ async def list_experiment_slim_tasks(
     qa_costs_by_trial_id = await get_trial_qa_costs(
         session, trial_ids=page_trial_ids, org_id=org_id
     )
+    exclusions = await load_cost_exclusions(session)
 
     build_started_at = now()
     response = [
@@ -628,6 +638,7 @@ async def list_experiment_slim_tasks(
             experiment_context_id=experiment_id,
             gathered_trial_ids=gathered_trial_ids,
             qa_costs_by_trial_id=qa_costs_by_trial_id,
+            exclusions=exclusions,
         )
         for task in tasks
     ]
@@ -1361,6 +1372,7 @@ async def browse_tasks_core(
             TrialModel.task_id == TaskModel.id,
             TrialModel.task_version_id == TaskModel.current_version_id,
             TrialModel.superseded_by_trial_id.is_(None),
+            TrialModel.kind == "agent",
         ]
         if not include_probes:
             conds.append(TrialModel.is_probe.isnot(True))
@@ -2045,6 +2057,8 @@ async def browse_tasks_core(
         exp_where = [
             task_experiments.c.task_id.in_(task_ids),
             task_experiments.c.deleted_at.is_(None),
+            # Shadow (qa report) experiments stay out of browse chips.
+            ExperimentModel.shadow_of.is_(None),
         ]
         if org_id is not None:
             exp_where.append(ExperimentModel.org_id == org_id)
@@ -2153,6 +2167,7 @@ async def browse_tasks_core(
                       AND t.deleted_at IS NULL
                       AND t.superseded_by_trial_id IS NULL
                       AND t.is_probe IS NOT TRUE
+                      AND t.kind = 'agent'
                       AND (
                           t.idempotency_key IS NULL
                           OR t.idempotency_key NOT LIKE 'combine:%'
@@ -2522,6 +2537,7 @@ async def get_task_status_core(
             include_empty_rewards=include_empty_rewards,
             queue_info_by_trial_id=queue_info_by_trial_id,
             jobs_by_subject=jobs_by_subject,
+            exclusions=await load_cost_exclusions(session),
         )
 
     jobs_by_subject = await fetch_visible_worker_jobs(session, task_ids=[task.id])

@@ -1,5 +1,4 @@
-"""Compute-cost estimation (Modal container spend) — the compute sibling of
-the LLM-spend helpers in :mod:`oddish.analyze.analysis_cost`."""
+"""Compute-cost estimation (Modal container spend)."""
 
 from oddish.costs.modal_cost import (
     DEFAULT_RATES,

@@ -1,4 +1,4 @@
-import type { Trial } from "@/lib/types";
+import { isAgentTrial, type Trial } from "@/lib/types";
 
 export function formatCostUsd(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return "$0.00";
@@ -24,8 +24,15 @@ export function formatTokenCount(value: number): string {
   return `${rounded.toLocaleString()} tokens`;
 }
 
+export function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export interface TaskTrialCost {
   costUsd: number;
+  excludedCostUsd: number;
   qaCostUsd: number;
   pricedCount: number;
   hasEstimated: boolean;
@@ -40,23 +47,33 @@ export function sumTaskTrialCost(
   trials: Trial[] | null | undefined,
 ): TaskTrialCost {
   let costUsd = 0;
+  let excludedCostUsd = 0;
   let qaCostUsd = 0;
   let pricedCount = 0;
   let hasEstimated = false;
   let hasNative = false;
   for (const trial of trials ?? []) {
     if (trial.is_probe) continue;
+    if (!isAgentTrial(trial)) continue;
     if (trial.superseded_by_trial_id) continue;
     // Outside the cost_usd guard below: QA can exist on a trial whose agent
     // cost was never reported.
     if (trial.qa_cost_usd != null) qaCostUsd += trial.qa_cost_usd;
     if (trial.cost_usd == null) continue;
     costUsd += trial.cost_usd;
+    if (trial.cost_exclusion_reason) excludedCostUsd += trial.cost_usd;
     pricedCount += 1;
     if (trial.cost_is_estimated) hasEstimated = true;
     else hasNative = true;
   }
-  return { costUsd, qaCostUsd, pricedCount, hasEstimated, hasNative };
+  return {
+    costUsd,
+    excludedCostUsd,
+    qaCostUsd,
+    pricedCount,
+    hasEstimated,
+    hasNative,
+  };
 }
 
 // Estimate markers matching the experiment header (#599): "~" prefix when every

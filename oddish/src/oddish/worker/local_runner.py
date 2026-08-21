@@ -33,19 +33,21 @@ from oddish.config import (
     ZAI_DEFAULT_BASE_URL,
     is_zai_model,
     settings,
+    to_anthropic_api_model_id,
     zai_bare_model_id,
 )
 from oddish.db import (
     AnalysisStatus,
+    ExperimentModel,
     TaskModel,
     TrialModel,
     TrialStatus,
     get_session,
 )
 from oddish.core.harbor_artifacts import cache_write_tokens_from_trajectory
+from oddish.core.llm_key_fingerprint import trial_llm_key_hash
 from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
-from oddish.core.llm_key_fingerprint import platform_key_hash_for_provider
 from oddish.db.models import WorkerJobKind, WorkerJobModel, WorkerJobStatus
 from oddish.db.storage import resolve_task_directory
 from oddish.model_pricing import is_native_cost_trusted, settle_cost_usd
@@ -63,6 +65,7 @@ from oddish.worker.probe_staging import (
 from oddish.worker.local_offline_policy import enable_local_internet, task_is_offline
 from oddish.worker.probe_creds import mint_probe_creds
 from oddish.task_timeouts import PROBE_AGENT_TIMEOUT_SEC
+from oddish.workers.queue import byok
 
 logger = logging.getLogger(__name__)
 
@@ -331,6 +334,16 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
     # this claim is the single choke point that prevents double-dispatch.
     claimed_at = datetime.now(timezone.utc)
     async with get_session() as session:
+        trial_to_claim = await session.get(TrialModel, trial_id)
+        platform_key_hash = (
+            trial_llm_key_hash(
+                settings.get_provider_for_trial(
+                    trial_to_claim.agent, trial_to_claim.model
+                )
+            )
+            if trial_to_claim is not None
+            else None
+        )
         claimed_trial_id = (
             await session.execute(
                 update(TrialModel)
@@ -349,6 +362,7 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
                 .values(
                     status=TrialStatus.RUNNING,
                     started_at=claimed_at,
+                    llm_key_hash=platform_key_hash,
                 )
                 .returning(TrialModel.id)
             )
@@ -568,6 +582,35 @@ async def _run_harbor_trial(trial_id: str) -> None:
         extra_instructions = harbor_config.get("extra_instructions")
         probe_scope = harbor_config.get("probe_scope", "task")
         skill_ids = harbor_config.get("skill_ids")
+        experiment = await session.get(ExperimentModel, trial.experiment_id)
+        experiment_name = experiment.name if experiment is not None else None
+        owner_user_id = task.created_by_user_id or (
+            experiment.owner_user_id if experiment is not None else None
+        )
+
+    byok_resolution = None
+    if byok.byok_resolver_registered() and not byok.harbor_config_is_ephemeral(
+        harbor_config
+    ):
+        byok_resolution = await byok.resolve_byok(
+            owner_user_id=owner_user_id,
+            org_id=trial_org_id,
+            experiment_name=experiment_name,
+            model=model_name,
+            agent=agent_name,
+        )
+    byok_env = dict(byok_resolution.env) if byok_resolution else None
+    provider = settings.get_provider_for_trial(agent_name, model_name)
+    async with get_session() as session:
+        await session.execute(
+            update(TrialModel)
+            .where(
+                TrialModel.id == trial_id,
+                TrialModel.status == TrialStatus.RUNNING,
+                TrialModel.finished_at.is_(None),
+            )
+            .values(llm_key_hash=trial_llm_key_hash(provider, byok_env))
+        )
 
     # Resolve the task files. Cloud-created tasks store their files in S3
     # (MinIO in local dev) with a ``s3://`` task_path, so a bare ``Path``
@@ -648,18 +691,27 @@ async def _run_harbor_trial(trial_id: str) -> None:
                 trial_id,
             )
 
+    direct_anthropic = bool(
+        byok_env
+        and "claude-code" in agent_name.strip().lower()
+        and byok_env.get("ANTHROPIC_API_KEY", "").strip()
+    )
     agent_config = AgentConfig(
         name=agent_name,
-        model_name=model_name,
+        model_name=(
+            to_anthropic_api_model_id(model_name) if direct_anthropic else model_name
+        ),
         override_timeout_sec=_PROBE_AGENT_TIMEOUT_SEC,
         skills=agent_skill_paths,
     )
-    bedrock_env = _bedrock_agent_env(model_name)
+    bedrock_env = None if direct_anthropic else _bedrock_agent_env(model_name)
     if bedrock_env:
         agent_config.env = {**(agent_config.env or {}), **bedrock_env}
     zai_env = _zai_agent_env(model_name)
     if zai_env:
         agent_config.env = {**(agent_config.env or {}), **zai_env}
+    if byok_env:
+        agent_config.env = {**(agent_config.env or {}), **byok_env}
 
     # Probe trials get read-only oddish CLI creds + network egress so the
     # oddish-query CLI staged into the sandbox can reach the backend. Local
@@ -845,9 +897,6 @@ async def _run_harbor_trial(trial_id: str) -> None:
             trial.cache_tokens = agent_result.n_cache_tokens
             trial.cache_write_tokens = cache_write_tokens
             trial.output_tokens = agent_result.n_output_tokens
-            provider = settings.get_provider_for_trial(
-                getattr(trial, "agent", ""), trial.model
-            )
             native_cost_trusted = is_native_cost_trusted(
                 agent=getattr(trial, "agent", None),
                 provider=provider,
@@ -864,10 +913,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
             if not owns_outcome and prev_cost_usd is not None:
                 if trial.cost_usd is None or trial.cost_usd < prev_cost_usd:
                     trial.cost_usd = prev_cost_usd
-            # Local-mode trials land in the same cost accounting as queue
-            # trials, so stamp the platform key hash here too (see
-            # workers/queue/trial_handler settlement).
-            trial.llm_key_hash = platform_key_hash_for_provider(provider)
+            trial.llm_key_hash = trial_llm_key_hash(provider, byok_env)
             log_unpriced_trial_if_needed(
                 cost_usd=trial.cost_usd,
                 trial_id=trial.id,

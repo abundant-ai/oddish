@@ -1301,6 +1301,7 @@ def test_format_exception_message_includes_exception_group_children():
 
 def test_store_trial_results_marks_modal_image_build_failed_permanent(monkeypatch):
     trial = SimpleNamespace(
+        kind="agent",
         id="trial-1",
         task_id="task-1",
         model="gpt-5",
@@ -1372,6 +1373,7 @@ def test_store_trial_results_marks_modal_image_build_failed_permanent(monkeypatc
 
 def test_store_trial_results_persists_total_steps(monkeypatch):
     trial = SimpleNamespace(
+        kind="agent",
         id="trial-1",
         task_id="task-1",
         model="gpt-5",
@@ -1459,6 +1461,7 @@ def test_store_trial_results_persists_total_steps(monkeypatch):
 
 def test_store_trial_results_overrides_runtime_cancelled_for_image_build(monkeypatch):
     trial = SimpleNamespace(
+        kind="agent",
         id="trial-1",
         task_id="task-1",
         model="gpt-5",
@@ -1533,6 +1536,7 @@ def test_store_trial_results_overrides_runtime_cancelled_for_image_build(monkeyp
 
 def test_store_trial_results_preserves_user_cancel_for_image_build(monkeypatch):
     trial = SimpleNamespace(
+        kind="agent",
         id="trial-1",
         task_id="task-1",
         model="gpt-5",
@@ -1608,6 +1612,7 @@ def test_store_trial_results_settles_metering_after_quota_cancel(monkeypatch):
     cancelled_result = {"state": "cancelled"}
     cancelled_analysis = {"state": "cancelled"}
     trial = SimpleNamespace(
+        kind="agent",
         id="trial-1",
         task_id="task-1",
         model="gpt-5",
@@ -1627,7 +1632,6 @@ def test_store_trial_results_settles_metering_after_quota_cancel(monkeypatch):
         cache_write_tokens=None,
         output_tokens=None,
         cost_usd=0.25,
-        llm_key_hash=None,
         phase_timing=None,
         has_trajectory=False,
         current_worker_id=None,
@@ -1645,11 +1649,6 @@ def test_store_trial_results_settles_metering_after_quota_cancel(monkeypatch):
         yield SimpleNamespace(), trial
 
     monkeypatch.setattr(trial_handler, "_trial_session", _fake_trial_session)
-    monkeypatch.setattr(
-        trial_handler,
-        "trial_llm_key_hash",
-        lambda *_args: "settled-key-hash",
-    )
 
     outcome = harbor_runner.HarborOutcome(
         reward=1.0,
@@ -1691,19 +1690,18 @@ def test_store_trial_results_settles_metering_after_quota_cancel(monkeypatch):
     assert trial.cache_write_tokens == 10
     assert trial.output_tokens == 50
     assert trial.cost_usd == 0.25
-    assert trial.llm_key_hash == "settled-key-hash"
     assert stored == (True, False)
 
 
 def test_store_trial_results_ignores_stale_cancelled_attempt(monkeypatch):
     trial = SimpleNamespace(
+        kind="agent",
         id="trial-1",
         attempts=2,
         finished_at=object(),
         superseded_by_trial_id=None,
         input_tokens=7,
         cost_usd=0.25,
-        llm_key_hash="current-key",
     )
 
     @asynccontextmanager
@@ -1733,16 +1731,13 @@ def test_store_trial_results_ignores_stale_cancelled_attempt(monkeypatch):
     )
 
     assert stored == (True, False)
-    assert (trial.input_tokens, trial.cost_usd, trial.llm_key_hash) == (
-        7,
-        0.25,
-        "current-key",
-    )
+    assert (trial.input_tokens, trial.cost_usd) == (7, 0.25)
 
 
 @pytest.mark.asyncio
 async def test_post_trial_hooks_skip_cancelled_trial(monkeypatch):
     trial = SimpleNamespace(
+        kind="agent",
         id="trial-1",
         task_id="task-1",
         status=trial_handler.TrialStatus.FAILED,
@@ -1780,6 +1775,7 @@ async def test_post_trial_hooks_skip_cancelled_trial(monkeypatch):
 @pytest.mark.asyncio
 async def test_post_trial_hooks_run_for_completed_trial(monkeypatch):
     trial = SimpleNamespace(
+        kind="agent",
         id="trial-1",
         task_id="task-1",
         experiment_id="exp-1",
@@ -1788,6 +1784,12 @@ async def test_post_trial_hooks_run_for_completed_trial(monkeypatch):
         status=trial_handler.TrialStatus.SUCCESS,
         harbor_stage="completed",
         agent="claude-code",
+        # First attempt, never classified: the stale-analysis clear
+        # (test_retry_clears_stale_analysis) reads these and must no-op here.
+        attempts=1,
+        started_at=None,
+        analysis_started_at=None,
+        analysis_finished_at=None,
     )
     calls = []
 
@@ -3515,6 +3517,7 @@ def _make_retry_decision_trial(*, attempts: int = 1, max_attempts: int = 6):
     return SimpleNamespace(
         id="trial-1",
         task_id="task-retry-gate",
+        kind="agent",
         model="gpt-5",
         status=trial_handler.TrialStatus.RUNNING,
         attempts=attempts,
@@ -3626,6 +3629,49 @@ def test_store_trial_results_still_retries_unknown_exception(monkeypatch):
 
     assert trial.status == trial_handler.TrialStatus.RETRYING
     assert trial.finished_at is None
+
+
+@pytest.mark.parametrize(
+    ("attempts", "expected_status"),
+    [
+        (1, trial_handler.TrialStatus.RETRYING),
+        (3, trial_handler.TrialStatus.FAILED),
+    ],
+)
+def test_analysis_artifact_upload_failure_cannot_settle_successfully(
+    monkeypatch, attempts, expected_status
+):
+    """A verifier reward is unusable until an analysis artifact is durable."""
+    trial = _make_retry_decision_trial(attempts=attempts, max_attempts=3)
+    trial.kind = "summarize"
+    _install_retry_decision_session_fakes(monkeypatch, trial)
+
+    outcome = harbor_runner.HarborOutcome(
+        reward=1.0,
+        error=None,
+        exit_code=0,
+        duration_sec=5.0,
+        job_result_path=Path("/tmp/result.json"),
+        job_dir=Path("/tmp/job"),
+    )
+    upload_error = "Failed to upload trial results to S3: TimeoutError: timed out"
+
+    terminal, completed = asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id=trial.id,
+            outcome=outcome,
+            trial_s3_key=None,
+            execution_error=None,
+            artifact_upload_error=upload_error,
+            trial_attempt=trial.attempts,
+        )
+    )
+
+    assert trial.status == expected_status
+    assert trial.reward is None
+    assert trial.error_message == upload_error
+    assert terminal is (expected_status == trial_handler.TrialStatus.FAILED)
+    assert completed is (expected_status == trial_handler.TrialStatus.FAILED)
 
 
 def test_store_trial_results_retries_when_exception_type_is_missing(monkeypatch):

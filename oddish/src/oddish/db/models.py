@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from datetime import datetime, timezone
 from decimal import Decimal
 from enum import Enum
@@ -25,9 +27,12 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
+from sqlalchemy import DDL
 from sqlalchemy import Enum as SQLEnum
+from sqlalchemy import column as sql_column
+from sqlalchemy import event as sa_event
+from sqlalchemy import table as sql_table
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
-from sqlalchemy.dialects.postgresql import ENUM as PGEnum
 from sqlalchemy.ext.asyncio import AsyncAttrs  # type: ignore[attr-defined]
 from sqlalchemy.orm import Mapped, relationship
 from sqlalchemy.orm import DeclarativeBase, mapped_column  # type: ignore[attr-defined]
@@ -166,16 +171,10 @@ class WorkerJobKind(str, Enum):
     """
 
     TRIAL = "TRIAL"
-    # The single task-level trajectory-analysis (QA) job: it classifies every
-    # trial's trajectory and then synthesizes the task verdict in one job.
+    # Legacy kinds: QA runs as a ``qa``-kind TRIAL now and nothing enqueues
+    # or handles these. Kept as enum members so the native
+    # ``worker_job_kind`` Postgres type still carries the historical values.
     QA = "QA"
-    # Legacy kinds. Trajectory analysis used to be a per-trial ``ANALYSIS`` job
-    # plus a separate per-task ``VERDICT`` job; both collapsed into ``QA``.
-    # Nothing enqueues these anymore. They are kept as enum members so the
-    # native ``worker_job_kind`` Postgres type (created from this enum) still
-    # carries the values that historical migrations / rows reference, and so
-    # any row in flight across the deploy can drain. ``qa02`` repoints existing
-    # ``VERDICT`` rows to ``QA``.
     VERDICT = "VERDICT"
     ANALYSIS = "ANALYSIS"
     QA_REVIEW = "QA_REVIEW"
@@ -190,12 +189,12 @@ class WorkerJobKind(str, Enum):
     # rebuilds from source rather than applying a delta. Sibling-enqueued
     # by every tag write in the same transaction.
     TAG_PROJECT = "TAG_PROJECT"
-    # Hosted analyzer work. Payload mode selects cross-experiment report
-    # orchestration, agent capabilities, or one trial's trajectory summary.
-    # Runs on the QA queue; handled by AnalyzerJobHandler.
+    # Retired analyzer kind. No handler claims it (workers claim only
+    # registered kinds); the member stays so the native ``worker_job_kind``
+    # Postgres type keeps the values historical rows reference. Nothing
+    # enqueues it anymore; stragglers were cancelled by ``retirejobs01``
+    # and ``dropblocks01``.
     ANALYZER = "ANALYZER"
-    # Legacy: executed one row of the dropped ``analyzer_runs`` table.
-    # Enum value only, no handler; nothing enqueues it anymore.
     ANALYZER_BLOCK = "ANALYZER_BLOCK"
 
 
@@ -398,30 +397,6 @@ experiment_trials = Table(
 )
 
 
-# Association table: analyzers ↔ experiments. A analyzer analyzes trajectories
-# across N experiments; membership is additive and soft-deletable, mirroring
-# ``experiment_trials``.
-analyzer_experiments = Table(
-    "analyzer_experiments",
-    Base.metadata,
-    Column(
-        "analyzer_id",
-        String(64),
-        ForeignKey("analyzers.id", ondelete="CASCADE"),
-        primary_key=True,
-    ),
-    Column(
-        "experiment_id",
-        String(64),
-        ForeignKey("experiments.id", ondelete="CASCADE"),
-        primary_key=True,
-    ),
-    Column("created_at", DateTime(timezone=True), default=utcnow, nullable=False),
-    Column("deleted_at", DateTime(timezone=True), nullable=True),
-    Index("idx_analyzer_experiments_experiment_id", "experiment_id"),
-)
-
-
 class ExperimentModel(TimestampedMixin, Base):
     """Experiment database model (grouping for tasks)."""
 
@@ -458,6 +433,16 @@ class ExperimentModel(TimestampedMixin, Base):
         # soft-deleted experiment doesn't take its name slot with it.
         # Experiments don't currently have a name uniqueness constraint,
         # but new code that adds one should follow the same convention.
+        #
+        # One *live* shadow experiment per live experiment: the partial
+        # unique lets the shadow creator use INSERT .. ON CONFLICT for a
+        # race-safe get-or-create, and a soft-deleted shadow frees the slot.
+        Index(
+            "uq_experiments_shadow_of_live",
+            "shadow_of",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
     )
 
     # Override id to add auto-generation
@@ -497,15 +482,33 @@ class ExperimentModel(TimestampedMixin, Base):
     is_public: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     public_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
+    # Operator aliases from a real model id to the name rendered on THIS
+    # experiment's published share pages. Display-only: cost accounting and
+    # queue routing keep reading ``trials.model``. Keys are canonicalized
+    # (``canonical_model_key``); NULL/empty means no aliasing.
+    public_model_renames: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
     # Read-only "collection" experiment: gathers existing trials from other
     # experiments for dashboard viewing (see ``experiment_trials``).
     is_collection: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False, server_default="false"
     )
 
+    # QA-report shadow: the id of the experiment this one grades. A shadow
+    # holds the analysis trials (qa, audit) for its parent's tasks. Shadows
+    # are hidden from experiment lists; the parent links to its shadow.
+    shadow_of: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     # User-authored markdown description shown in the experiment header.
     # Nullable; ``None``/blank means "no description".
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # NULL for normal experiments. Set to another experiment's id on the
+    # hidden "shadow" experiment that will home that experiment's analysis
+    # trials (qa/audit) once the analysis-trial pipeline lands. Nothing
+    # writes it yet; the column and its unique index land first so the
+    # get-or-create can be race-safe from its first caller.
+    shadow_of: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Migration markers (Sauron->Oddish import). NULL for normal rows.
     # ``imported_at`` = when this row was created by the legacy importer ->
@@ -532,152 +535,6 @@ class ExperimentModel(TimestampedMixin, Base):
         secondaryjoin=lambda: TaskModel.id == task_experiments.c.task_id,
         back_populates="experiments",
         passive_deletes=True,
-    )
-
-
-class AnalyzerModel(TimestampedMixin, Base):
-    """Cross-experiment trajectory-analysis analyzer.
-
-    Inherits from experiments in the domain sense: a analyzer references N
-    experiments (via ``analyzer_experiments``), gathers their trials, and rolls
-    the per-trial subanalysis up one tier into four narrative sections. The
-    section bodies are markdown with inline ``/tasks/{task_id}/probe/{trial_id}``
-    deep links.
-    """
-
-    __tablename__ = "analyzers"
-    __table_args__ = (
-        Index(
-            "idx_analyzers_org_created_live",
-            "org_id",
-            "created_at",
-            postgresql_where=text("deleted_at IS NULL"),
-        ),
-        Index(
-            "idx_analyzers_org_owner_user_live",
-            "org_id",
-            "owner_user_id",
-            postgresql_where=text("deleted_at IS NULL"),
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
-    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
-    owner_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    owner: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    status: Mapped[JobStatus] = mapped_column(
-        SQLEnum(JobStatus, name="jobstatus", create_type=False),
-        default=JobStatus.PENDING,
-        nullable=False,
-    )
-    error: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    bad_failure_content: Mapped[str | None] = mapped_column(Text, nullable=True)
-    good_failure_content: Mapped[str | None] = mapped_column(Text, nullable=True)
-    universal_capabilities_content: Mapped[str | None] = mapped_column(
-        Text, nullable=True
-    )
-    headroom_analysis: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    # Per-model insights payload. NULL = pre-analyzers_008 report; the report UI
-    # falls back to the four-section render on NULL, so do not default this to {}.
-    by_model: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-
-    # The reduce-stage prompt that produced the section bodies above; persisted
-    # for debugging/reproducibility. NULL for zero-failure analyzers (no reduce).
-    reduce_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    num_trials: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    num_bad_failures: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    num_good_failures: Mapped[int | None] = mapped_column(Integer, nullable=True)
-
-    # Additive: per-subcategory counts (1a/1b, 3a/3b/3c, emergent) for FE chips.
-    breakdown: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-
-    # Per-trial findings from the map phase. NULL = analyzed before findings
-    # were persisted; [] = analyzed, no failures found. Not the same thing.
-    findings: Mapped[list | None] = mapped_column(JSONB, nullable=True)
-
-    # Per-task roster of models that ran it, including those that passed --
-    # the Task Construction denominator can't come from findings (failures only).
-    models_by_task: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-
-    # Opt-in (set at create time): when true, the worker uploads the per-trial
-    # findings+subanalyses to S3 (analyzers/{id}/trial_analyses.json).
-    save_trial_analyses: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False, server_default="false"
-    )
-
-    started_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    finished_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-
-
-class AnalyzerBlockModel(TimestampedMixin, Base):
-    """One run of a single composable analyzer block.
-
-    Standalone primitive (not part of ``run_analyzer_generation_job``): many
-    blocks chain arbitrarily in test scripts. ``type`` / ``llm_client_type`` are
-    the ``.value`` of the ``AnalyzerType`` / ``LLMClientType`` enums defined in
-    ``backend/api/services`` -- stored as plain strings so this module stays free
-    of any backend-package dependency. Raw streamed output lives in S3 at
-    ``{key_prefix}/{id}``; ``output`` here is the accumulated/parsed result.
-    """
-
-    __tablename__ = "analyzer_blocks"
-    __table_args__ = (
-        Index(
-            "idx_analyzer_blocks_analyzer_id_live",
-            "analyzer_id",
-            postgresql_where=text("deleted_at IS NULL"),
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
-    analyzer_id: Mapped[str | None] = mapped_column(
-        String(64), nullable=True, index=True
-    )
-    # Task-level QA blocks use this explicit subject link. ``analyzer_id`` is
-    # reserved for the existing AnalyzerModel/report association.
-    task_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
-    type: Mapped[str] = mapped_column(String(64), nullable=False)
-    key_prefix: Mapped[str] = mapped_column(Text, nullable=False)
-    llm_client_type: Mapped[str] = mapped_column(String(64), nullable=False)
-
-    prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Unwritten since the DB prompt registry was dropped; historical rows
-    # keep their stamps.
-    prompt_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    prompt_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    prompt_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
-    # input/output are arbitrary JSON (the block's I/O are typed ``any``).
-    input: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
-    output: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
-
-    status: Mapped[JobStatus] = mapped_column(
-        PGEnum(JobStatus, name="jobstatus", create_type=False),
-        default=JobStatus.PENDING,
-        nullable=False,
-    )
-    error: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    job_started_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    job_ended_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    job_duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
-
-    # ``metadata`` is reserved on the declarative Base, so the attribute is
-    # ``block_metadata`` while the DB column is literally named ``metadata``.
-    block_metadata: Mapped[dict | None] = mapped_column(
-        "metadata", JSONB, nullable=True
     )
 
 
@@ -991,6 +848,94 @@ class TaskBrowseSummaryModel(Base):
     )
 
 
+def _counter() -> Mapped[int]:
+    return mapped_column(Integer, nullable=False, default=0, server_default="0")
+
+
+class TaskVersionModelMetricsModel(Base):
+    """Trial metrics for one task version under one agent and model.
+
+    A finer grain than ``TaskBrowseSummaryModel``: that table answers "how did
+    this task version do", this one answers "how did this model do on it", which
+    cannot be recovered by splitting the coarser row.
+    """
+
+    __tablename__ = "task_version_model_metrics"
+
+    task_version_id: Mapped[str] = mapped_column(
+        String(160),
+        ForeignKey("task_versions.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    agent: Mapped[str] = mapped_column(String(128), primary_key=True)
+    # Older trials carry no model; "" keeps them addressable in the primary key
+    # rather than dropping them or inventing a name.
+    model: Mapped[str] = mapped_column(
+        String(256), primary_key=True, server_default=""
+    )
+    task_id: Mapped[str] = mapped_column(
+        String(128), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
+    )
+
+    n_pass: Mapped[int] = _counter()
+    n_partial: Mapped[int] = _counter()
+    n_fail: Mapped[int] = _counter()
+
+    n_unscored_agent: Mapped[int] = _counter()
+    n_unscored_env: Mapped[int] = _counter()
+    n_unscored_verify: Mapped[int] = _counter()
+    n_cancelled_user: Mapped[int] = _counter()
+    n_cancelled_reaped: Mapped[int] = _counter()
+    n_cancelled_other: Mapped[int] = _counter()
+    n_skipped: Mapped[int] = _counter()
+    n_scoreless: Mapped[int] = _counter()
+    n_unscored_unknown: Mapped[int] = _counter()
+    n_inflight: Mapped[int] = _counter()
+
+    sum_reward: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.0, server_default="0"
+    )
+    n_reward_present: Mapped[int] = _counter()
+    sum_runtime: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.0, server_default="0"
+    )
+    n_runtime_present: Mapped[int] = _counter()
+    n_with_trajectory: Mapped[int] = _counter()
+
+    # NULL on every distribution column means "never measured", which is not the
+    # same as a measured zero -- total_steps is absent on most pre-July trials.
+    n_steps_present: Mapped[int] = _counter()
+    sum_steps: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+    steps_all_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steps_all_p50: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steps_all_max: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steps_pass_n: Mapped[int] = _counter()
+    steps_pass_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steps_pass_p50: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steps_pass_max: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steps_fail_n: Mapped[int] = _counter()
+    steps_fail_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steps_fail_p50: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steps_fail_max: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steps_partial_n: Mapped[int] = _counter()
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+        server_default=text("NOW()"),
+    )
+
+
+# The ``trials.kind`` value of a normal evaluation run. Every other value
+# marks a platform analysis agent run; filters are written as
+# ``kind == AGENT_TRIAL_KIND`` / ``kind != AGENT_TRIAL_KIND`` (never an
+# enumeration of analysis kinds) so new analysis kinds inherit the exclusions.
+AGENT_TRIAL_KIND = "agent"
+
+
 class TrialModel(TimestampedMixin, Base):
     """Trial database model."""
 
@@ -1047,6 +992,16 @@ class TrialModel(TimestampedMixin, Base):
     # harbor_config; this is set at trial creation in queue.py.
     is_probe: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false"), index=True
+    )
+
+    # What kind of run this row is: ``'agent'`` (the default) is a normal
+    # evaluation run; ``'qa'``, ``'audit'``, and ``'summarize'`` are platform
+    # analysis-agent runs created by the analysis-trial pipeline.
+    kind: Mapped[str] = mapped_column(
+        String(32),
+        default=AGENT_TRIAL_KIND,
+        nullable=False,
+        server_default=AGENT_TRIAL_KIND,
     )
 
     # Status
@@ -1143,11 +1098,6 @@ class TrialModel(TimestampedMixin, Base):
     total_tool_calls: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tool_counts: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
-
-    # SHA-256 of the platform provider API key this trial ran on, stamped at
-    # settlement (forward-only; NULL for pre-rollout / unresolved keys). Matched
-    # against ``cost_excluded_llm_keys`` to drop sponsored/free spend from cost
-    # accounting -- see ``oddish.core.cost_basis.first_party_spend_filter``.
     llm_key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Per-phase timing breakdown (from Harbor's TrialResult TimingInfo)
@@ -1158,10 +1108,18 @@ class TrialModel(TimestampedMixin, Base):
         Boolean, default=False, nullable=False, server_default="false"
     )
 
-    # LLM-generated summary of the trajectory; populated lazily on first
-    # request to GET /trials/{id}/trajectory/summary. Replaces the prior
-    # S3-cached `agent/trajectory_summary.json` sibling file.
+    # Summary of the trajectory, written by a task QA import or an explicit
+    # summarize trial import. GET /trials/{id}/trajectory/summary reads this
+    # column; a plain read never starts generation. Replaces the prior S3-cached
+    # `agent/trajectory_summary.json` sibling file.
     trajectory_summary: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Summarize trial responsible for the next published summary. The pointed
+    # trial owns execution status; this pointer owns which completed writer is
+    # still current. It deliberately has no foreign key or ORM relationship so
+    # trial cleanup cannot erase the publication/recovery evidence implicitly.
+    trajectory_summary_refresh_trial_id: Mapped[str | None] = mapped_column(
+        String(160), nullable=True
+    )
 
     # Analysis data (LLM analysis of this trial)
     analysis: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
@@ -1268,6 +1226,22 @@ class TrialModel(TimestampedMixin, Base):
             "model",
             "provider",
         ),
+        # Partial: almost every trial is 'agent', so only the analysis rows
+        # are indexed. Serves the user-facing surfaces' kind exclusions and
+        # the QA-cost surfaces' ``kind != 'agent'`` selections.
+        Index(
+            "ix_trials_kind_non_agent",
+            "kind",
+            postgresql_where=text("kind != 'agent'"),
+        ),
+        # Cleanup only needs targets with an unfinished publication. Almost
+        # every trial has NULL here, so keep the index limited to active
+        # refresh pointers.
+        Index(
+            "ix_trials_trajectory_summary_refresh_trial_id",
+            "trajectory_summary_refresh_trial_id",
+            postgresql_where=text("trajectory_summary_refresh_trial_id IS NOT NULL"),
+        ),
         # Partial index that supports the default "non-superseded only"
         # filter on hot list/aggregation paths without indexing every
         # row (the superseded set is small relative to total trials).
@@ -1370,8 +1344,9 @@ class AnalysisCostModel(TimestampedMixin, Base):
     org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     billed_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     task_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    # AnalyzerModel/report association. Task-level QA and classifiers leave
-    # this NULL and reconcile through task_id/trial_id instead.
+    # Historical report association (the reports feature is removed; the column
+    # stays for old rows). Task-level QA and classifiers leave this NULL and
+    # reconcile through task_id/trial_id instead.
     analyzer_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -1382,6 +1357,74 @@ class AnalysisCostModel(TimestampedMixin, Base):
     # "native" = harness-reported (CLI total_cost_usd); "estimated" = priced
     # via model_pricing. Job A is always "native".
     cost_source: Mapped[str] = mapped_column(String(16), nullable=False)
+
+
+# The ``analysis_spend`` VIEW: the frozen ``analysis_costs`` ledger unioned
+# with QA/audit trial spend -- the single home of the analysis-cost cutover
+# seam. Created by migration ``analysisspend01`` on migrated databases and by
+# the ``after_create`` listener below on ``create_all`` databases (000_initial
+# and test harnesses); ``create_all`` never creates views on its own, and the
+# two definitions are pinned identical by a test. CREATE OR REPLACE keeps
+# both paths idempotent.
+ANALYSIS_SPEND_VIEW_SQL = """
+CREATE OR REPLACE VIEW analysis_spend AS
+  SELECT created_at              AS occurred_at,
+         org_id,
+         task_id,
+         trial_id,
+         billed_user_id,
+         job_kind                AS kind,
+         model,
+         cost_usd,
+         'analysis_costs'::text  AS source
+    FROM analysis_costs
+   WHERE deleted_at IS NULL
+UNION ALL
+  SELECT COALESCE(t.finished_at, t.updated_at) AS occurred_at,
+         t.org_id,
+         t.task_id,
+         t.id                    AS trial_id,
+         t.billed_user_id,
+         t.kind,
+         t.model,
+         t.cost_usd,
+         'trials'::text          AS source
+    FROM trials t
+   WHERE t.kind != 'agent'
+     AND t.cost_usd IS NOT NULL
+     AND t.deleted_at IS NULL
+"""
+
+sa_event.listen(
+    Base.metadata,
+    "after_create",
+    DDL(ANALYSIS_SPEND_VIEW_SQL).execute_if(
+        # Never during an alembic run: 000_initial's create_all would create
+        # the view before the historical column ALTERs later in the chain,
+        # and Postgres refuses to alter a column a view depends on. The
+        # chain creates the view itself at analysisspend01.
+        callable_=lambda ddl, target, bind, **kw: not os.environ.get(
+            "ODDISH_ALEMBIC_RUNNING"
+        )
+    ),
+)
+
+# Read-only query handle for the view. Built with the lightweight ``table()``
+# constructor, NOT on ``Base.metadata`` -- a metadata Table would make
+# ``create_all`` materialize a real table under the view's name, and the
+# migration's CREATE OR REPLACE VIEW would then fail.
+analysis_spend_view = sql_table(
+    "analysis_spend",
+    sql_column("occurred_at"),
+    sql_column("org_id"),
+    sql_column("task_id"),
+    sql_column("trial_id"),
+    sql_column("billed_user_id"),
+    sql_column("kind"),
+    sql_column("model"),
+    sql_column("cost_usd"),
+    sql_column("source"),
+)
 
 
 class ModalCostSpanModel(TimestampedMixin, Base):
@@ -2527,16 +2570,6 @@ class TagProjectionSweepStateModel(Base):
 
 
 class CostExcludedLlmKeyModel(TimestampedMixin, Base):
-    """An LLM provider API key whose spend is excluded from cost accounting.
-
-    The admin-managed list of sponsored/free keys. Only the one-way ``key_hash``
-    (SHA-256) is stored -- exclusion is pure equality matching against
-    ``trials.llm_key_hash``, never key reuse -- plus a masked ``key_hint`` for
-    display; the plaintext key is never persisted. ``deleted_at`` (soft delete)
-    is the live/removed state, and the partial UNIQUE keeps one live row per hash
-    so a removed key can be re-added.
-    """
-
     __tablename__ = "cost_excluded_llm_keys"
     __table_args__ = (
         Index(
@@ -2554,11 +2587,11 @@ class CostExcludedLlmKeyModel(TimestampedMixin, Base):
     created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
-class ModelDisplayNameModel(TimestampedMixin, Base):
-    __tablename__ = "model_display_names"
+class CostExcludedModelModel(TimestampedMixin, Base):
+    __tablename__ = "cost_excluded_models"
     __table_args__ = (
         Index(
-            "idx_model_display_names_model_live",
+            "idx_cost_excluded_models_model_live",
             "model_name",
             unique=True,
             postgresql_where=text("deleted_at IS NULL"),
@@ -2567,7 +2600,27 @@ class ModelDisplayNameModel(TimestampedMixin, Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
     model_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    label: Mapped[str] = mapped_column(String(255), nullable=False, server_default="")
+    created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class CostExcludedExperimentModel(TimestampedMixin, Base):
+    __tablename__ = "cost_excluded_experiments"
+    __table_args__ = (
+        Index(
+            "idx_cost_excluded_experiments_exp_live",
+            "experiment_id",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    experiment_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    experiment_name: Mapped[str] = mapped_column(
+        String(255), nullable=False, server_default=""
+    )
+    label: Mapped[str] = mapped_column(String(255), nullable=False, server_default="")
     created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
@@ -2575,8 +2628,6 @@ from oddish.db.soft_delete import register_soft_delete_models
 
 register_soft_delete_models(
     ExperimentModel,
-    AnalyzerModel,
-    AnalyzerBlockModel,
     TaskModel,
     TrialModel,
     TagModel,
@@ -2587,5 +2638,6 @@ register_soft_delete_models(
     SkillModel,
     DocumentModel,
     CostExcludedLlmKeyModel,
-    ModelDisplayNameModel,
+    CostExcludedModelModel,
+    CostExcludedExperimentModel,
 )

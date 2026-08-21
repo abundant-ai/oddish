@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 from datetime import datetime, timedelta, timezone
 from functools import partial
@@ -9,6 +10,7 @@ from types import SimpleNamespace
 
 import daytona
 from daytona import SandboxState
+from daytona.common.errors import DaytonaNotFoundError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -65,7 +67,7 @@ def test_daytona_env_kwargs_caller_overrides_win() -> None:
     assert merged["extra"] == "x"
 
 
-def _fake_daytona(monkeypatch, sandboxes, fail_ids=()):
+def _fake_daytona(monkeypatch, sandboxes, fail_ids=(), missing_ids=()):
     calls = SimpleNamespace(deleted=[], closed=False, query=None, terminal_query=None)
     terminal = {SandboxState.ERROR, SandboxState.BUILD_FAILED}
 
@@ -84,6 +86,11 @@ def _fake_daytona(monkeypatch, sandboxes, fail_ids=()):
                 yield sandbox
 
         async def get(self, sandbox_id, request_timeout=None):
+            if sandbox_id in missing_ids:
+                raise DaytonaNotFoundError(
+                    f"Sandbox with ID or name {sandbox_id} not found",
+                    status_code=404,
+                )
             return next(sandbox for sandbox in sandboxes if sandbox.id == sandbox_id)
 
         async def delete(self, sandbox, timeout=60):
@@ -154,8 +161,37 @@ def test_reap_stale_daytona_sandboxes(monkeypatch) -> None:
     assert calls.deleted == ["error", "failed", "naive", "expired-started"]
     assert calls.closed is True
     assert calls.query.labels == labels
-    assert calls.terminal_query["include_errored_deleted"] is True
+    # Already-deleted errored sandboxes must not be requested: they 404 on
+    # every get and there is nothing left to reap.
+    assert "include_errored_deleted" not in calls.terminal_query
     assert calls.terminal_query["created_at_before"] < now
     assert len(calls.terminal_query["states"]) == 2
     assert calls.query.states is None
     assert calls.terminal_query["limit"] == calls.query.limit == 50
+
+
+def test_reap_stale_daytona_sandboxes_ignores_already_deleted_sandbox(
+    monkeypatch, caplog
+) -> None:
+    old = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
+    sandbox = SimpleNamespace(
+        id="already-gone",
+        state=SandboxState.ERROR,
+        labels={"harbor.managed": "true", "oddish.managed": "true"},
+        created_at=old,
+        updated_at=None,
+    )
+    calls = _fake_daytona(monkeypatch, [sandbox], missing_ids={sandbox.id})
+
+    with caplog.at_level(logging.INFO, logger="oddish.runtime.backends.daytona"):
+        deleted_count = asyncio.run(reap_stale_daytona_sandboxes())
+
+    assert deleted_count == 0
+    assert calls.deleted == []
+    assert calls.closed is True
+    assert "Failed to delete stale Daytona sandbox" not in caplog.text
+    # The expected outcome is countable, not silent: vendor-burst alerting
+    # counts this key.
+    assert "metric=daytona.sandbox_gone phase=reap external_id=already-gone" in (
+        caplog.text
+    )

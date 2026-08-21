@@ -256,6 +256,7 @@ def build_alerts(
     user_prefs: Mapping[str, UserAlertPrefs] | None = None,
 ) -> list[SlackAlert]:
     prefs_by_email = user_prefs or {}
+    alert_date = (recent_cutoff + timedelta(days=1)).astimezone(timezone.utc).date()
 
     def prefs_for(email: str | None) -> UserAlertPrefs:
         return prefs_by_email.get(
@@ -417,7 +418,7 @@ def build_alerts(
             continue
         alerts.append(
             SlackAlert(
-                key=f"user-daily-overage:{user.org_id}:{user.user_id}",
+                key=f"user-daily-overage:{user.org_id}:{user.user_id}:{alert_date}",
                 text=(
                     "<!channel>\n"
                     ":moneybag: *User spend above their 7-day daily average*\n"
@@ -644,6 +645,9 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                 .join(TrialModel, TrialModel.experiment_id == ExperimentModel.id)
                 .where(
                     ExperimentModel.is_collection.is_(False),
+                    # QA-report shadow experiments never make the digest;
+                    # their spend is analysis spend, not the owner's runs.
+                    ExperimentModel.shadow_of.is_(None),
                     ExperimentModel.deleted_at.is_(None),
                     _real_spend_filter(),
                     or_(
@@ -813,6 +817,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
 
         current_trial = and_(
             TrialModel.deleted_at.is_(None),
+            TrialModel.kind == "agent",
             TrialModel.superseded_by_trial_id.is_(None),
             or_(
                 func.coalesce(TrialModel.harbor_stage, "") != CANCELLED_HARBOR_STAGE,

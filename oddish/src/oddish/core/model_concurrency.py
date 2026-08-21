@@ -6,11 +6,9 @@ from collections.abc import Iterable
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from oddish.config import settings
+from oddish.config import MAX_MODEL_CONCURRENCY, settings
 
 logger = logging.getLogger(__name__)
-
-MAX_MODEL_CONCURRENCY = 10_000
 
 
 async def get_model_concurrency_overrides(

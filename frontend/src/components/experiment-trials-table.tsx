@@ -58,6 +58,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { mutate } from "swr";
 import type { Task, Trial, AnalysisClassification } from "@/lib/types";
+import { isAgentTrial } from "@/lib/types";
 import {
   costEstimateMarks,
   formatCostUsd,
@@ -75,6 +76,7 @@ import {
   taskHasActiveAnalysis,
   taskHasActiveVerdict,
   taskHasCancellableWork,
+  taskHasLiveAnalysisTrial,
 } from "@/lib/job-status";
 import {
   formatPartialRewardBadgeValue,
@@ -101,6 +103,7 @@ import {
 } from "lucide-react";
 import { QueueKeyIcon } from "./queue-key-icon";
 import { StatusIcon } from "./status-icon";
+import { NotRealSpendBadge } from "./not-real-spend-badge";
 
 const PassAtKGraph = dynamic(
   () => import("./pass-at-k-graph").then((mod) => mod.PassAtKGraph),
@@ -348,6 +351,104 @@ const ANALYSIS_LEGEND_ITEMS: Array<{
     dotClass: "bg-yellow-400",
   },
 ];
+
+// QA is task-scoped: a verdict can come from a run that did not cover this
+// experiment's trials. When settled trials here carry no grade the chip goes
+// dashed ("earlier run"). Clicking opens the task overview, which lists the
+// full graded set.
+function TaskVerdictChip({
+  task,
+  ungradedSettled,
+  onOpen,
+}: {
+  task: Task;
+  ungradedSettled: number;
+  onOpen?: () => void;
+}) {
+  const running = taskHasActiveVerdict(task);
+  // Rows stored before the accept/reject label existed only carry is_good.
+  const verdict = task.verdict
+    ? (task.verdict.verdict ?? (task.verdict.is_good ? "accept" : "reject"))
+    : null;
+  const failed =
+    !running && verdict == null && task.verdict_status === "failed";
+  if (!running && verdict == null && !failed) return null;
+
+  const stale = !running && verdict != null && ungradedSettled > 0;
+
+  let chipClass: string;
+  let label: React.ReactNode;
+  let tip: string;
+  if (running) {
+    chipClass =
+      "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300";
+    label = (
+      <>
+        <Loader2 className="h-2.5 w-2.5 animate-spin" />
+        QA
+      </>
+    );
+    tip = "QA is running";
+  } else if (verdict === "accept") {
+    chipClass = stale
+      ? "border border-dashed border-emerald-500/60 bg-transparent text-emerald-700 dark:text-emerald-400"
+      : "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300";
+    label = "Accepted";
+    tip = task.verdict?.confidence
+      ? `QA accepted this task (${task.verdict.confidence} confidence)`
+      : "QA accepted this task";
+  } else if (verdict === "reject") {
+    chipClass = stale
+      ? "border border-dashed border-red-500/60 bg-transparent text-red-700 dark:text-red-400"
+      : "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300";
+    label = "Rejected";
+    tip = task.verdict?.confidence
+      ? `QA rejected this task (${task.verdict.confidence} confidence)`
+      : "QA rejected this task";
+  } else {
+    chipClass =
+      "bg-[color:var(--paper-bg-2)] text-[color:var(--paper-ink-3)]";
+    label = "QA failed";
+    tip = task.verdict_error
+      ? `QA failed: ${task.verdict_error}`
+      : "QA failed to produce a verdict";
+  }
+  if (stale) {
+    tip += `. From an earlier QA run: ${ungradedSettled} settled trial${
+      ungradedSettled === 1 ? "" : "s"
+    } in this experiment ${ungradedSettled === 1 ? "was" : "were"} not part of it`;
+  }
+  if (onOpen) {
+    tip += ". Click for the task overview";
+  }
+
+  const chip = (
+    <span
+      className={`inline-flex shrink-0 items-center gap-1 rounded-[3px] px-1 py-px font-mono text-[9.5px] leading-[14px] font-medium whitespace-nowrap ${chipClass}`}
+    >
+      {label}
+    </span>
+  );
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        {onOpen ? (
+          <button
+            type="button"
+            onClick={onOpen}
+            className="inline-flex shrink-0 cursor-pointer bg-transparent p-0"
+            aria-label={`Open QA overview for ${task.name}`}
+          >
+            {chip}
+          </button>
+        ) : (
+          chip
+        )}
+      </TooltipTrigger>
+      <TooltipContent>{tip}</TooltipContent>
+    </Tooltip>
+  );
+}
 
 type AnalysisLegendKey = "analyzing" | "good" | "bad" | "analysis-failed";
 
@@ -906,7 +1007,11 @@ export function ExperimentTrialsTable({
     const retryable: Trial[] = [];
     for (const task of selectedTaskList) {
       for (const trial of task.trials ?? []) {
+        // Agent trials only: task.trials carries qa/audit rows too, and
+        // bulk retry must never replay an analysis brief through the
+        // generic retry endpoint (it also refuses them server-side).
         if (
+          isAgentTrial(trial) &&
           (trial.status === "failed" || trial.status === "success") &&
           !seen.has(trial.id)
         ) {
@@ -923,12 +1028,16 @@ export function ExperimentTrialsTable({
     [selectedTaskList]
   );
 
-  // Tasks whose single task-level QA job is in flight (classifying trials or
-  // synthesizing the verdict) and can therefore be cancelled.
+  // Tasks whose task-level analysis is in flight (classifying trials,
+  // synthesizing the verdict, or running the source audit -- qa/cancel
+  // covers both trial kinds) and can therefore be cancelled.
   const selectedQACancellableTasks = useMemo(
     () =>
       selectedTaskList.filter(
-        (task) => taskHasActiveAnalysis(task) || taskHasActiveVerdict(task)
+        (task) =>
+          taskHasActiveAnalysis(task) ||
+          taskHasActiveVerdict(task) ||
+          taskHasLiveAnalysisTrial(task)
       ),
     [selectedTaskList]
   );
@@ -2314,39 +2423,52 @@ export function ExperimentTrialsTable({
                                 </TooltipContent>
                               </Tooltip>
                             </div>
+                            {showAnalysis && (
+                              <TaskVerdictChip
+                                task={task}
+                                // Settled agent trials this verdict's run
+                                // did not grade (baselines/probes never are).
+                                ungradedSettled={
+                                  orderedTrials.filter(
+                                    (t) =>
+                                      !t.is_probe &&
+                                      (t.kind ?? "agent") === "agent" &&
+                                      !isBaselineAgentName(t.agent) &&
+                                      (t.status === "success" ||
+                                        t.status === "failed") &&
+                                      !t.analysis?._graded_by &&
+                                      !t.analysis?.classification
+                                  ).length
+                                }
+                                onOpen={
+                                  onTaskSelect
+                                    ? () =>
+                                        onTaskSelect(task, {
+                                          orderedTasks: filteredTasks,
+                                          taskIndex: index,
+                                        })
+                                    : undefined
+                                }
+                              />
+                            )}
                             {(() => {
                               const showVersion =
                                 showAnalysis && task.current_version != null;
-                              // Sum the trials actually rendered in this row's
-                              // matrix (visible agent columns) so the badge
-                              // tracks the grid when agent columns are hidden.
-                              // Gathered/shared-task trials count: the badge
-                              // prices the row being shown, matching the Cost
-                              // tile.
-                              const cost = readOnly
-                                ? null
-                                : sumTaskTrialCost(orderedTrials);
-                              // Agent cost only. QA spend is deliberately not
-                              // annotated per row -- the row is already dense,
-                              // and QA totals live on the experiment's Cost
-                              // tile and on each task's own page.
+                              const cost = sumTaskTrialCost(orderedTrials);
                               const showCost =
-                                cost != null &&
+                                !readOnly &&
                                 cost.pricedCount > 0 &&
                                 hasDisplayableCostUsd(cost.costUsd);
 
                               if (!showVersion && !showCost) return null;
 
-                              const marks = showCost
-                                ? costEstimateMarks(
-                                    cost.hasEstimated,
-                                    cost.hasNative
-                                  )
-                                : null;
-                              const costTone =
-                                showCost && cost.hasEstimated
-                                  ? "text-amber-700 dark:text-amber-400"
-                                  : "text-[color:var(--paper-ink-3)]";
+                              const marks = costEstimateMarks(
+                                cost.hasEstimated,
+                                cost.hasNative
+                              );
+                              const costTone = cost.hasEstimated
+                                ? "text-amber-700 dark:text-amber-400"
+                                : "text-[color:var(--paper-ink-3)]";
 
                               return (
                                 <div className="flex shrink-0 flex-col items-end gap-0.5 leading-none">
@@ -2355,9 +2477,8 @@ export function ExperimentTrialsTable({
                                       v{task.current_version}
                                     </span>
                                   )}
-                                  {showCost &&
-                                    cost != null &&
-                                    marks != null && (
+                                  {showCost && (
+                                    <span className="inline-flex items-center gap-1">
                                       <Tooltip>
                                         <TooltipTrigger asChild>
                                           <span
@@ -2379,7 +2500,12 @@ export function ExperimentTrialsTable({
                                               : ""}
                                         </TooltipContent>
                                       </Tooltip>
-                                    )}
+                                      <NotRealSpendBadge
+                                        excludedCostUsd={cost.excludedCostUsd}
+                                        totalCostUsd={cost.costUsd}
+                                      />
+                                    </span>
+                                  )}
                                 </div>
                               );
                             })()}

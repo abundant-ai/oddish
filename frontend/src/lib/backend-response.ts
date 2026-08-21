@@ -117,7 +117,7 @@ export async function proxyBackendJson({
     return attachUpstreamServerTiming(
       data === null
         ? NextResponse.json({ error: "Upstream error" }, { status: 502 })
-        : NextResponse.json(data),
+        : NextResponse.json(data, { status: res.status }),
       res,
     );
   } catch (error) {

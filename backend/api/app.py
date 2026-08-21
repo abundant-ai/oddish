@@ -175,6 +175,16 @@ async def lifespan(_api: FastAPI):
         await _assert_quota_schema_or_force_off()
         role_defaults_task = asyncio.create_task(_apply_role_defaults_bg())
 
+        # ODDISH_LOCAL_MODE executes trials inside this API process instead of
+        # importing worker.functions, where hosted workers normally register
+        # the backend BYOK resolver. Register the same resolver here before a
+        # local sweep can dispatch, so the local runner receives and accounts
+        # for the credential that actually funds the trial.
+        if settings.local_mode:
+            from worker.byok_resolver import install_byok_resolver
+
+            install_byok_resolver()
+
         # Route the dashboard's whole-``trials``-table queue/pipeline slice
         # through a shared Modal Dict so a cold container reads a warm entry
         # instead of re-running the multi-second scan. Best-effort: falls back
@@ -245,17 +255,17 @@ def create_app() -> FastAPI:
         api_keys,
         byok,
         clerk_webhooks,
+        cost_excluded_experiments,
         cost_excluded_keys,
+        cost_excluded_models,
         dashboard,
         documents,
         github_linkage,
         github_webhooks,
         imports,
         load,
-        model_display_names,
         notifications,
         orgs,
-        reports,
         skills,
         public,
         public_analysis,
@@ -264,10 +274,6 @@ def create_app() -> FastAPI:
         tasks,
         trials,
     )
-
-    # Import registers the hosted Daytona backend with core's client factory,
-    # so API-side sandbox AnalyzerBlocks (hosted failure analysis) resolve it.
-    from api.services.blocks.analyzer import sandbox_llm_client as _sandbox  # noqa: F401
 
     api.include_router(dashboard.router)
     api.include_router(orgs.router)
@@ -287,10 +293,10 @@ def create_app() -> FastAPI:
     api.include_router(public_analysis.router)
     api.include_router(slack.router)
     api.include_router(admin.router)
+    api.include_router(cost_excluded_models.router)
+    api.include_router(cost_excluded_experiments.router)
     api.include_router(cost_excluded_keys.router)
-    api.include_router(model_display_names.router)
     api.include_router(tags.router)
-    api.include_router(reports.router)
 
     return api
 

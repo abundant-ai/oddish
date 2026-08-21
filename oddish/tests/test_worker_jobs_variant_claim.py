@@ -17,11 +17,18 @@ from oddish.workers.jobs.enqueue import (
     EnqueueRequest,
     bulk_enqueue_worker_jobs,
 )  # noqa: E402
+from oddish.workers.jobs import ensure_builtin_handlers_registered
 from oddish.workers.queue.worker_job_single_job import (
     claim_single_worker_job,
 )  # noqa: E402
 
 _RUN = uuid.uuid4().hex[:8]
+
+
+@pytest.fixture(autouse=True)
+def _handlers():
+    # The claim only picks up kinds with a registered handler.
+    ensure_builtin_handlers_registered()
 
 
 @pytest.mark.asyncio

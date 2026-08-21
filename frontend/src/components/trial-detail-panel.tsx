@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 import Image from "next/image";
 import {
@@ -65,6 +66,8 @@ import { QaAssessmentReport } from "@/components/qa-report/qa-assessment-report"
 import { TimingBreakdownBar } from "@/components/timing-breakdown-bar";
 import { CodeBlock } from "@/components/code-block";
 import type { Trial, Task } from "@/lib/types";
+import { isAgentTrial } from "@/lib/types";
+import { stepIdsLabel } from "@/lib/trajectory-segments";
 import {
   costEstimateMarks,
   formatCostUsd,
@@ -87,7 +90,9 @@ import { HarborStageBadge } from "@/components/harbor-stage-badge";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { StatusIcon } from "@/components/status-icon";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
+import { TrialNotRealSpendBadge } from "@/components/not-real-spend-badge";
 import { useSWRConfig } from "swr";
+import { isLiveQaTrial, taskHasActiveVerdict } from "@/lib/job-status";
 import { isAnalysisStatusActive, trialKey, useTrial } from "@/lib/use-trial";
 import { embeddedCtrfSummary } from "@/lib/verifier-results";
 
@@ -97,18 +102,18 @@ const TaskFilesPanel = dynamic(
   {
     ssr: false,
     loading: () => <DrawerPanelLoading label="Loading files..." />,
-  },
+  }
 );
 
 const LiveTranscriptPanel = dynamic(
   () =>
     import("@/components/live-transcript-panel").then(
-      (mod) => mod.LiveTranscriptPanel,
+      (mod) => mod.LiveTranscriptPanel
     ),
   {
     ssr: false,
     loading: () => <DrawerPanelLoading label="Loading live transcript..." />,
-  },
+  }
 );
 
 const ArtifactsViewer = dynamic(
@@ -117,20 +122,19 @@ const ArtifactsViewer = dynamic(
   {
     ssr: false,
     loading: () => <DrawerPanelLoading label="Loading artifacts..." />,
-  },
+  }
 );
 
 const TrajectoryViewer = dynamic(
   () =>
     import("@/components/trajectory-viewer").then(
-      (mod) => mod.TrajectoryViewer,
+      (mod) => mod.TrajectoryViewer
     ),
   {
     ssr: false,
     loading: () => <DrawerPanelLoading label="Loading trajectory..." />,
-  },
+  }
 );
-
 
 function DrawerPanelLoading({ label }: { label: string }) {
   return (
@@ -216,12 +220,14 @@ function TrialAnalysisCard({
   apiBaseUrl,
   actionsReady,
   onQueued,
+  onOpenGrader,
 }: {
   trial: Trial;
   task: Task | null;
   apiBaseUrl: string;
   actionsReady: boolean;
   onQueued?: () => void;
+  onOpenGrader?: (qaTrialId: string) => void;
 }) {
   // The global mutate writes to an explicitly named cache key. The bound
   // mutation would write to whichever trial is currently showing, which is
@@ -231,9 +237,8 @@ function TrialAnalysisCard({
   const [queuing, setQueuing] = useState(false);
   const [queueError, setQueueError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
-  const [analysisLog, setAnalysisLog] = useState<AnalysisLogState>(
-    EMPTY_ANALYSIS_LOG,
-  );
+  const [analysisLog, setAnalysisLog] =
+    useState<AnalysisLogState>(EMPTY_ANALYSIS_LOG);
   const [logOpen, setLogOpen] = useState(false);
   const [queuePosition, setQueuePosition] = useState<number | null>(null);
   const logRef = useRef<HTMLPreElement | null>(null);
@@ -261,11 +266,17 @@ function TrialAnalysisCard({
     setQueueError(null);
   }, [trialProp.id]);
 
-  // An analysis counts as in progress when the server says it is queued
-  // or running. The rerun endpoint sets the status to QUEUED before it
-  // responds, so the server's status is always current and the client
-  // does not need to track a run on its own.
-  const inProgress = isAnalysisStatusActive(trial.analysis_status);
+  // QA is task-scoped: the rerun creates one qa trial that grades every
+  // trial, and never stamps this row's analysis_status. Reading that field
+  // alone showed "No analysis yet" while the run was live.
+  const inProgress =
+    isAnalysisStatusActive(trial.analysis_status) ||
+    taskHasActiveVerdict(task);
+  // The qa trial doing the grading right now (kind qa specifically: a live
+  // pre-trial audit must not be linked as "the QA run"). Once it settles
+  // the importer stamps analysis._graded_by and the "graded by" link below
+  // takes over.
+  const liveQaTrialId = (task?.trials ?? []).find(isLiveQaTrial)?.id;
 
   // When an analysis run that we were watching finishes, this tells the
   // parent to refresh its lists, so the grid shows the result even after
@@ -307,12 +318,12 @@ function TrialAnalysisCard({
     let cancelled = false;
     const fetchLog = async () => {
       setAnalysisLog((current) =>
-        current.status === "ready" ? current : { status: "loading", text: null },
+        current.status === "ready" ? current : { status: "loading", text: null }
       );
       try {
         const res = await fetch(
           `${apiBaseUrl}/trials/${trialProp.id}/analysis-log`,
-          { cache: "no-store" },
+          { cache: "no-store" }
         );
         if (!res.ok) throw new Error("Failed to load analysis log");
         if (cancelled) return;
@@ -329,7 +340,7 @@ function TrialAnalysisCard({
           setAnalysisLog((current) =>
             current.status === "ready"
               ? current
-              : { status: "error", text: null },
+              : { status: "error", text: null }
           );
         }
       }
@@ -354,7 +365,8 @@ function TrialAnalysisCard({
     if (inProgress) setLogOpen(true);
   }, [inProgress]);
 
-  const hasAnalysis = Boolean(trial.analysis_status || trial.analysis) || inProgress;
+  const hasAnalysis =
+    Boolean(trial.analysis_status || trial.analysis) || inProgress;
   // Always SHOW the button when the feature is on. Disable it (with the
   // reason) when a run cannot be queued right now — a hidden button with
   // no explanation is impossible to debug from the UI. The trigger is
@@ -398,12 +410,12 @@ function TrialAnalysisCard({
     try {
       const res = await fetch(
         `${apiBaseUrl}/trials/${requestTrialId}/analysis/rerun`,
-        { method: "POST" },
+        { method: "POST" }
       );
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(
-          data.detail || data.error || "Failed to queue analysis",
+          data.detail || data.error || "Failed to queue analysis"
         );
       }
       // The server queued the run, so the parent list must refresh even
@@ -426,7 +438,7 @@ function TrialAnalysisCard({
           analysis_error: null,
           analysis_started_at: null,
         },
-        { revalidate: true },
+        { revalidate: true }
       );
       if (trialIdRef.current !== requestTrialId) return;
       // The old run's log is cleared server-side; clear it here too. Open
@@ -438,7 +450,7 @@ function TrialAnalysisCard({
     } catch (err) {
       if (trialIdRef.current === requestTrialId) {
         setQueueError(
-          err instanceof Error ? err.message : "Failed to queue analysis",
+          err instanceof Error ? err.message : "Failed to queue analysis"
         );
       }
     } finally {
@@ -457,8 +469,8 @@ function TrialAnalysisCard({
         const secs = Math.max(
           0,
           Math.floor(
-            (now - new Date(trial.analysis_started_at).getTime()) / 1000,
-          ),
+            (now - new Date(trial.analysis_started_at).getTime()) / 1000
+          )
         );
         progressLine = `Running for ${Math.floor(secs / 60)}m ${secs % 60}s.`;
       }
@@ -476,7 +488,7 @@ function TrialAnalysisCard({
     const secs = Math.round(
       (new Date(trial.analysis_finished_at).getTime() -
         new Date(trial.analysis_started_at).getTime()) /
-        1000,
+        1000
     );
     if (Number.isFinite(secs) && secs >= 0) {
       analysisDuration =
@@ -560,6 +572,29 @@ function TrialAnalysisCard({
               duration={analysisDuration}
               raw={trial.analysis}
             />
+            {trial.analysis?._graded_by && onOpenGrader && (
+              <p className="mt-2 flex flex-wrap items-baseline gap-x-2 font-mono text-[11px]">
+                <button
+                  type="button"
+                  onClick={() => onOpenGrader(trial.analysis!._graded_by!)}
+                  className="text-muted-foreground hover:text-foreground underline decoration-dotted underline-offset-2"
+                >
+                  graded by {trial.analysis._graded_by}
+                </button>
+                {(trial.analysis._graded_at_steps?.length ?? 0) > 0 && (
+                  // A plain anchor on purpose: the trajectory viewer captures
+                  // the #step- fragment at mount, which document navigation
+                  // guarantees and in-place drawer switching does not.
+                  <a
+                    href={`/tasks/${encodeURIComponent(trial.task_id)}?trial=${encodeURIComponent(trial.analysis._graded_by)}&tab=trajectory#step-${trial.analysis._graded_at_steps![0]}`}
+                    title="Open the QA run's trajectory at the steps that judged this trial"
+                    className="text-muted-foreground hover:text-foreground underline decoration-dotted underline-offset-2"
+                  >
+                    at {stepIdsLabel(trial.analysis._graded_at_steps!)}
+                  </a>
+                )}
+              </p>
+            )}
           </>
         ) : (
           <div className="flex items-start gap-3">
@@ -576,11 +611,26 @@ function TrialAnalysisCard({
                   <span className="font-mono text-sm font-bold">
                     {trial.analysis_status === "running"
                       ? "Analyzing"
-                      : "Analysis queued"}
+                      : trial.analysis_status
+                        ? "Analysis queued"
+                        : "QA is running"}
                   </span>
                   <span className="text-muted-foreground text-xs">
-                    {progressLine}
+                    {trial.analysis_status
+                      ? progressLine
+                      : "The task's QA run grades every trial; this trial's result lands when it finishes."}
                   </span>
+                  {!trial.analysis_status &&
+                    liveQaTrialId &&
+                    onOpenGrader && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenGrader(liveQaTrialId)}
+                        className="text-muted-foreground hover:text-foreground self-start font-mono text-[11px] underline decoration-dotted underline-offset-2"
+                      >
+                        view the QA run
+                      </button>
+                    )}
                 </div>
               ) : hasAnalysis ? (
                 // Analysis state exists but produced no report (e.g. failed
@@ -733,7 +783,7 @@ const SANDBOX_BACKENDS: Record<
 };
 
 function normalizeSandboxBackend(
-  provider: string | null | undefined,
+  provider: string | null | undefined
 ): SandboxBackendId | null {
   const normalized = provider?.trim().toLowerCase();
   if (
@@ -749,7 +799,7 @@ function normalizeSandboxBackend(
 function getSandboxBackend(trial: Trial): SandboxBackend | null {
   const trialBackendId = normalizeSandboxBackend(trial.environment);
   const sandboxJob = trial.jobs?.find((job) =>
-    Boolean(normalizeSandboxBackend(job.provider)),
+    Boolean(normalizeSandboxBackend(job.provider))
   );
   const backendId =
     trialBackendId ?? normalizeSandboxBackend(sandboxJob?.provider);
@@ -760,7 +810,7 @@ function getSandboxBackend(trial: Trial): SandboxBackend | null {
     return {
       ...backend,
       href: `https://app.daytona.io/dashboard/sandboxes?sandboxId=${encodeURIComponent(
-        sandboxJob.external_id,
+        sandboxJob.external_id
       )}`,
     };
   }
@@ -853,17 +903,18 @@ export function TrialDetailPanel({
     isOpen && revalidateTrial ? selectedTrial?.id : null,
     {
       apiBaseUrl,
-    },
+    }
   );
   const canonicalTrial =
     refreshedTrial?.id === selectedTrial?.id ? refreshedTrial : null;
   const actionsReady = !revalidateTrial || canonicalTrial !== null;
   const trial = canonicalTrial ?? selectedTrial;
   const verifierSummary = embeddedCtrfSummary(trial?.result);
+  const router = useRouter();
 
   const validTabs = useMemo(
     () => new Set(["summary", "live", "files", "trajectory", "artifacts"]),
-    [],
+    []
   );
 
   const [activeTab, setActiveTab] = useState(() => {
@@ -880,21 +931,21 @@ export function TrialDetailPanel({
   // they address the artifact browser, otherwise the files tab. Each tab
   // keeps its own state; the URL carries the active tab's pair.
   const [filesTargetPath, setFilesTargetPath] = useState<string | null>(() =>
-    getLiveParam("tab") === "artifacts" ? null : getLiveParam("file"),
+    getLiveParam("tab") === "artifacts" ? null : getLiveParam("file")
   );
   // Line-anchor range within the selected file (``?lines=L12-L20``).
   const [selectedLines, setSelectedLines] = useState<LineRange | null>(() =>
     getLiveParam("tab") === "artifacts"
       ? null
-      : parseLineRange(getLiveParam("lines")),
+      : parseLineRange(getLiveParam("lines"))
   );
-  const [artifactsTargetPath, setArtifactsTargetPath] = useState<
-    string | null
-  >(() => (getLiveParam("tab") === "artifacts" ? getLiveParam("file") : null));
+  const [artifactsTargetPath, setArtifactsTargetPath] = useState<string | null>(
+    () => (getLiveParam("tab") === "artifacts" ? getLiveParam("file") : null)
+  );
   const [artifactsLines, setArtifactsLines] = useState<LineRange | null>(() =>
     getLiveParam("tab") === "artifacts"
       ? parseLineRange(getLiveParam("lines"))
-      : null,
+      : null
   );
 
   const hydratedFromUrl = useRef(false);
@@ -1033,8 +1084,12 @@ export function TrialDetailPanel({
     artifactsLines,
   ]);
 
+  // Agent rows only: the generic retry endpoint refuses qa/audit kinds, so
+  // offering the button on their drawers would only ever render its 400.
   const showRetry =
-    allowRetry && (trial?.status === "failed" || trial?.status === "success");
+    allowRetry &&
+    Boolean(trial && isAgentTrial(trial)) &&
+    (trial?.status === "failed" || trial?.status === "success");
   const canRetry = actionsReady && showRetry;
   const showDelete = allowDelete && Boolean(onDelete) && Boolean(trial);
   const canDelete = actionsReady && showDelete;
@@ -1073,7 +1128,7 @@ export function TrialDetailPanel({
       onClose();
     } catch (err) {
       setDeleteError(
-        err instanceof Error ? err.message : "Failed to delete trial",
+        err instanceof Error ? err.message : "Failed to delete trial"
       );
     } finally {
       setDeleting(false);
@@ -1115,7 +1170,7 @@ export function TrialDetailPanel({
 
   const orderedList = useMemo(
     () => orderedTrials ?? task?.trials ?? [],
-    [orderedTrials, task?.trials],
+    [orderedTrials, task?.trials]
   );
   const resolvedIndex =
     typeof trialIndex === "number" && trialIndex >= 0
@@ -1147,7 +1202,7 @@ export function TrialDetailPanel({
       if (!nextTrial) return;
       onNavigate(nextTrial, nextIndex);
     },
-    [onNavigate, orderedList],
+    [onNavigate, orderedList]
   );
 
   useEffect(() => {
@@ -1188,7 +1243,7 @@ export function TrialDetailPanel({
   const trialStatus = getMatrixStatus(
     trial.status,
     trial.reward,
-    trial.error_message,
+    trial.error_message
   );
   const showLive = trial.status === "running" || trial.status === "retrying";
   const effectiveTab =
@@ -1215,13 +1270,13 @@ export function TrialDetailPanel({
           },
         ];
   const currentGroupIndex = resolvedGroups.findIndex((group) =>
-    group.trials.some((groupTrial) => groupTrial.id === trial.id),
+    group.trials.some((groupTrial) => groupTrial.id === trial.id)
   );
   const currentGroup =
     currentGroupIndex >= 0 ? resolvedGroups[currentGroupIndex] : null;
   const currentGroupTrials = currentGroup?.trials ?? [];
   const currentGroupTrialIndex = currentGroupTrials.findIndex(
-    (groupTrial) => groupTrial.id === trial.id,
+    (groupTrial) => groupTrial.id === trial.id
   );
 
   const navigateToGroupTrial = (groupIndex: number) => {
@@ -1238,6 +1293,11 @@ export function TrialDetailPanel({
       <DrawerHeader className="border-border border-b px-4 py-3 sm:px-6 sm:py-4">
         <DrawerTitle className="flex min-w-0 items-center gap-2 pr-16 font-mono text-sm sm:text-base">
           <span className="min-w-0 truncate">{trial.name}</span>
+          {(trial.kind ?? "agent") !== "agent" && (
+            <span className="inline-flex shrink-0 items-center rounded-md border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[11px] font-medium text-amber-700 dark:text-amber-400">
+              {trial.kind}
+            </span>
+          )}
           {showAnalysis && trial.task_version != null && (
             <span className="border-border bg-muted/50 text-muted-foreground inline-flex shrink-0 items-center rounded-md border px-1.5 py-0.5 font-mono text-[11px] font-medium">
               v{trial.task_version}
@@ -1306,7 +1366,7 @@ export function TrialDetailPanel({
                   const groupStatus = getMatrixStatus(
                     groupTrial.status,
                     groupTrial.reward,
-                    groupTrial.error_message,
+                    groupTrial.error_message
                   );
                   const groupConfig = STATUS_CONFIG[groupStatus];
                   const isPartial = groupStatus === "partial";
@@ -1330,7 +1390,7 @@ export function TrialDetailPanel({
                           : "",
                         isActive
                           ? "ring-primary/60 ring-offset-background ring-2 ring-offset-1"
-                          : "",
+                          : ""
                       )}
                       style={getRewardStyle(groupTrial.reward)}
                       aria-label={`Trial ${index + 1} ${groupConfig.shortLabel}`}
@@ -1363,7 +1423,7 @@ export function TrialDetailPanel({
             <Card
               className={cn(
                 "min-w-[145px] border",
-                OUTCOME_CARD_TONE[trialStatus],
+                OUTCOME_CARD_TONE[trialStatus]
               )}
               style={getRewardStyle(trial.reward, "panel")}
             >
@@ -1388,7 +1448,7 @@ export function TrialDetailPanel({
                       (trialStatus === "pending" ||
                         trialStatus === "queued" ||
                         trialStatus === "running") &&
-                        "animate-spin",
+                        "animate-spin"
                     )}
                   />
                   <div className="min-w-0">
@@ -1430,6 +1490,9 @@ export function TrialDetailPanel({
                           <>
                             {trial.cost_is_estimated ? "~" : ""}
                             {formatCostUsd(trial.cost_usd)}
+                            <TrialNotRealSpendBadge
+                              reason={trial.cost_exclusion_reason}
+                            />
                           </>
                         ) : (
                           "—"
@@ -1441,7 +1504,7 @@ export function TrialDetailPanel({
                         (() => {
                           const marks = costEstimateMarks(
                             taskCost.hasEstimated,
-                            taskCost.hasNative,
+                            taskCost.hasNative
                           );
                           return (
                             <span className="text-muted-foreground text-[9px] leading-none">
@@ -1460,8 +1523,7 @@ export function TrialDetailPanel({
                       trial.output_tokens != null) && (
                       <div className="text-muted-foreground mt-1 font-mono text-[9px] leading-none">
                         {formatTokenCount(
-                          (trial.input_tokens ?? 0) +
-                            (trial.output_tokens ?? 0),
+                          (trial.input_tokens ?? 0) + (trial.output_tokens ?? 0)
                         )}
                       </div>
                     )}
@@ -1642,6 +1704,21 @@ export function TrialDetailPanel({
                   apiBaseUrl={apiBaseUrl}
                   actionsReady={actionsReady}
                   onQueued={() => onRetry?.(task ? [task.id] : undefined)}
+                  onOpenGrader={(qaTrialId) => {
+                    // The qa trial lives in the shadow experiment, so it is
+                    // usually absent from this host's list. Navigate in place
+                    // when it happens to be here, else deep-link the task page.
+                    const idx = orderedList.findIndex(
+                      (t) => t.id === qaTrialId,
+                    );
+                    if (idx >= 0 && onNavigate) {
+                      onNavigate(orderedList[idx], idx);
+                      return;
+                    }
+                    router.push(
+                      `/tasks/${encodeURIComponent(trial.task_id)}?trial=${encodeURIComponent(qaTrialId)}`,
+                    );
+                  }}
                 />
               )}
 
@@ -1813,6 +1890,7 @@ export function TrialDetailPanel({
               trialId={trial.id}
               hasTrajectory={trial.has_trajectory}
               apiBaseUrl={apiBaseUrl}
+              canRegenerateSummary={showAnalysis}
             />
           </ActiveTabContent>
         </div>

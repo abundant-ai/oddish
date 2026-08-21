@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oddish.core.endpoints._common import (
     get_trial_for_org_core,
 )
+from oddish.core.cost_exclusions import load_cost_exclusions
 from oddish.core.endpoints.qa_cost import get_trial_qa_costs
 from oddish.core.helpers import (
     build_trial_response,
@@ -24,7 +25,6 @@ from oddish.core.trial_io import (
 from oddish.core.verdict_state import abandon_verdict
 from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.db import (
-    AnalysisStatus,
     TaskModel,
     TaskStatus,
     TaskVersionModel,
@@ -33,7 +33,6 @@ from oddish.db import (
     WorkerJobKind,
     WorkerJobModel,
     WorkerJobStatus,
-    utcnow,
 )
 from oddish.registry_auth import RegistryCredential, encrypt_credentials
 from oddish.runtime.sandbox_lifecycle import execution_lane_for_environment
@@ -91,20 +90,16 @@ async def get_trial_by_index_core(
     queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=[trial])
     jobs_by_subject = await fetch_visible_worker_jobs(session, trial_ids=[trial.id])
     qa_costs = await get_trial_qa_costs(session, trial_ids=[trial.id], org_id=org_id)
+    exclusions = await load_cost_exclusions(session)
     response = build_trial_response(
         trial,
         task_path,
         queue_info=queue_info_by_trial_id.get(trial.id),
         jobs=jobs_by_subject.get(("trials", trial.id), []),
         qa_cost_usd=qa_costs.get(trial.id),
+        exclusions=exclusions,
     )
     return await _attach_pre_trial_audit(session, response, trial.task_version_id)
-
-
-# Mirrors ANALYSIS_CLAIM_TTL_MINUTES in workers/queue/analysis_handler.py.
-# Copied, not imported: importing the worker module here would pull the
-# whole analyzer stack into the API process.
-_ANALYSIS_CLAIM_TTL_MINUTES = 35
 
 
 async def rerun_trial_analysis_core(
@@ -113,111 +108,33 @@ async def rerun_trial_analysis_core(
     trial_id: str,
     org_id: str | None = None,
 ) -> dict:
-    """Queue analysis for one trial.
+    """Re-run analysis for one trial.
 
-    This is the independent trial-level trigger. It resets and re-runs
-    only this trial's analysis. It does not touch other trials, the task
-    verdict, or the pre-trial audit. It is blocked only while this
-    trial's own analysis is active.
+    Classification is one QA trial per task now, so a single trial cannot
+    be re-analyzed alone: this resets the trial's analysis and reruns the
+    task's QA. The QA agent re-reads every trial; only the reset one loses
+    its stored analysis first.
     """
-    from datetime import timedelta
-
     task_id = await session.scalar(
         select(TrialModel.task_id).where(TrialModel.id == trial_id)
     )
     if task_id is None:
         raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
-    # Lock the task first, in the same order as the QA backfill and the
-    # audit rerun. Without the shared lock, this rerun and a task-level
-    # enqueue can each pass the other's guards and queue conflicting jobs.
-    task = await session.get(TaskModel, task_id, with_for_update=True)
-    if task is None or (org_id is not None and task.org_id != org_id):
-        raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
-    trial = (
-        await session.execute(
-            select(TrialModel).where(TrialModel.id == trial_id).with_for_update()
-        )
-    ).scalar_one_or_none()
-    if trial is None:
-        raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
 
-    if trial.status not in (TrialStatus.SUCCESS, TrialStatus.FAILED):
-        raise HTTPException(
-            status_code=400,
-            detail="The trial must finish before analysis can run",
-        )
-    if trial.analysis_status in (AnalysisStatus.PENDING, AnalysisStatus.QUEUED):
-        raise HTTPException(
-            status_code=400,
-            detail="Analysis is already queued for this trial",
-        )
-    if trial.analysis_status == AnalysisStatus.RUNNING:
-        started = trial.analysis_started_at
-        # A RUNNING claim inside its TTL belongs to a live worker. Past the
-        # TTL the worker is presumed dead and a re-run is the remedy.
-        if started is not None and utcnow() - started < timedelta(
-            minutes=_ANALYSIS_CLAIM_TTL_MINUTES
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail="Analysis is already running for this trial",
-            )
+    from oddish.core.endpoints.qa import backfill_task_analysis_core
 
-    # A failed analysis can leave its job in RETRYING. Enqueuing another job
-    # then would run the analysis twice. The existing job serves the re-run.
-    active_job = await session.scalar(
-        select(WorkerJobModel.id)
-        .where(
-            WorkerJobModel.kind == WorkerJobKind.ANALYSIS,
-            WorkerJobModel.subject_table == "trials",
-            WorkerJobModel.subject_id == trial_id,
-            WorkerJobModel.status.in_(
-                [
-                    WorkerJobStatus.QUEUED,
-                    WorkerJobStatus.RETRYING,
-                    WorkerJobStatus.RUNNING,
-                ]
-            ),
-        )
-        .limit(1)
+    result = await backfill_task_analysis_core(
+        session,
+        task_id=str(task_id),
+        org_id=org_id,
+        trial_ids=[trial_id],
+        force=True,
     )
-    if active_job is not None:
-        raise HTTPException(
-            status_code=400,
-            detail="An analysis job is already queued or running for this trial",
-        )
-
-    # A RUNNING full QA job reads every trial's stored analysis to build the
-    # verdict. Resetting one mid-run would drop it from the verdict inputs.
-    # A QUEUED full QA job is fine: it classifies this trial itself when it
-    # starts, and the per-trial claim keeps the two jobs from colliding.
-    running_task_qa = await session.scalar(
-        select(WorkerJobModel.id)
-        .where(
-            WorkerJobModel.kind == WorkerJobKind.QA,
-            WorkerJobModel.subject_table == "tasks",
-            WorkerJobModel.subject_id == trial.task_id,
-            WorkerJobModel.status == WorkerJobStatus.RUNNING,
-            func.coalesce(WorkerJobModel.payload["mode"].astext, "full") != "pre_trial",
-        )
-        .limit(1)
-    )
-    if running_task_qa is not None:
-        raise HTTPException(
-            status_code=400,
-            detail="Task-level QA is running; wait for it to finish",
-        )
-
-    from oddish.core.endpoints.qa import _reset_trial_analysis
-    from oddish.queue import enqueue_trial_analysis_worker_job
-
-    _reset_trial_analysis(trial)
-    trial.analysis_status = AnalysisStatus.QUEUED
-    await enqueue_trial_analysis_worker_job(
-        session, trial_id=trial.id, org_id=task.org_id
-    )
-    await session.commit()
-    return {"status": "queued", "trial_id": trial_id}
+    return {
+        "status": result["status"],
+        "trial_id": trial_id,
+        "task_id": str(task_id),
+    }
 
 
 async def get_trial_analysis_log_core(
@@ -249,49 +166,43 @@ async def get_trial_analysis_log_core(
         raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
     return {
         "log": analysis_log,
-        "queue_position": await _qa_queue_position(
-            session, task_id=task_id, trial_id=trial_id
-        ),
+        "queue_position": await _qa_queue_position(session, task_id=task_id),
     }
 
 
-async def _qa_queue_position(
-    session: AsyncSession, *, task_id: str, trial_id: str
-) -> int | None:
-    """1-based position of the waiting analysis job in the QA queue.
+async def _qa_queue_position(session: AsyncSession, *, task_id: str) -> int | None:
+    """1-based position of the task's waiting QA trial in its queue.
 
-    Two job shapes can carry this trial's analysis: a trial-level ANALYSIS
-    job (subject: the trial), or the task-level QA job (subject: the task).
-    The trial-level job wins when both wait. Ordering matches the worker's
-    claim query for non-trial kinds: ``priority DESC, created_at ASC``
-    within the job's queue_key. None when no job is waiting (already
-    running, finished, or never enqueued).
+    The task's analysis is carried by its live qa-kind trial's TRIAL job.
+    Ordering matches the worker's claim query: ``priority DESC,
+    created_at ASC`` within the job's queue_key. None when no job is
+    waiting (already running, finished, or never enqueued).
     """
     waiting = [WorkerJobStatus.QUEUED, WorkerJobStatus.RETRYING]
 
-    async def _waiting_job(kind: WorkerJobKind, subject_table: str, subject_id: str):
-        return (
-            await session.execute(
-                select(
-                    WorkerJobModel.queue_key,
-                    WorkerJobModel.priority,
-                    WorkerJobModel.created_at,
-                    (WorkerJobModel.available_after > func.now()).label("in_backoff"),
-                )
-                .where(
-                    WorkerJobModel.kind == kind,
-                    WorkerJobModel.subject_table == subject_table,
-                    WorkerJobModel.subject_id == subject_id,
-                    WorkerJobModel.status.in_(waiting),
-                )
-                .order_by(WorkerJobModel.created_at.asc())
-                .limit(1)
+    qa_trial_ids = select(TrialModel.id).where(
+        TrialModel.task_id == task_id,
+        TrialModel.kind == "qa",
+        TrialModel.superseded_by_trial_id.is_(None),
+    )
+    job = (
+        await session.execute(
+            select(
+                WorkerJobModel.queue_key,
+                WorkerJobModel.priority,
+                WorkerJobModel.created_at,
+                (WorkerJobModel.available_after > func.now()).label("in_backoff"),
             )
-        ).first()
-
-    job = await _waiting_job(WorkerJobKind.ANALYSIS, "trials", trial_id)
-    if job is None:
-        job = await _waiting_job(WorkerJobKind.QA, "tasks", task_id)
+            .where(
+                WorkerJobModel.kind == WorkerJobKind.TRIAL,
+                WorkerJobModel.subject_table == "trials",
+                WorkerJobModel.subject_id.in_(qa_trial_ids),
+                WorkerJobModel.status.in_(waiting),
+            )
+            .order_by(WorkerJobModel.created_at.asc())
+            .limit(1)
+        )
+    ).first()
     if job is None:
         return None
     queue_key, priority, created_at, in_backoff = job
@@ -348,12 +259,14 @@ async def get_trial_response_for_org_core(
     queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=[trial])
     jobs_by_subject = await fetch_visible_worker_jobs(session, trial_ids=[trial.id])
     qa_costs = await get_trial_qa_costs(session, trial_ids=[trial.id], org_id=org_id)
+    exclusions = await load_cost_exclusions(session)
     response = build_trial_response(
         trial,
         task_path,
         queue_info=queue_info_by_trial_id.get(trial.id),
         jobs=jobs_by_subject.get(("trials", trial.id), []),
         qa_cost_usd=qa_costs.get(trial.id),
+        exclusions=exclusions,
     )
     return await _attach_pre_trial_audit(session, response, trial.task_version_id)
 
@@ -390,6 +303,21 @@ async def retry_trial_core(
             detail=(
                 "This trial has already been superseded by another retry "
                 f"({old_trial.superseded_by_trial_id}); retry that one instead"
+            ),
+        )
+
+    # Retrying a qa/audit row here would copy its kind and brief into a new
+    # trial, move the task back to RUNNING, and discard a published verdict
+    # -- from a button that promises to rerun agent work. Analysis reruns
+    # have their own task-level endpoints (/tasks/{id}/qa and
+    # /tasks/{id}/qa/audit), which rebuild the brief instead of replaying a
+    # stale one.
+    if (old_trial.kind or "agent") != "agent":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Only agent trials can be retried here; rerun the task's "
+                f"{old_trial.kind} from its QA controls instead"
             ),
         )
 
@@ -459,6 +387,7 @@ async def retry_trial_core(
         environment=old_trial.environment,
         harbor_config=old_trial.harbor_config,
         is_probe=old_trial.is_probe,
+        kind=old_trial.kind or "agent",
         max_attempts=old_trial.max_attempts,
         status=TrialStatus.QUEUED,
     )

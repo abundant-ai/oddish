@@ -3,7 +3,13 @@
 import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Sparkles, ChevronRight, AlertCircle, Loader2 } from "lucide-react";
+import {
+  Sparkles,
+  ChevronRight,
+  AlertCircle,
+  Loader2,
+  RefreshCw,
+} from "lucide-react";
 import { phaseColorVars } from "@/lib/trajectory-metrics";
 import { segmentOwners, toSegments } from "@/lib/trajectory-segments";
 import type { TrajectorySummaryResource } from "@/lib/use-trajectory-summary";
@@ -11,8 +17,12 @@ import type { TrajectorySummaryResource } from "@/lib/use-trajectory-summary";
 interface TrajectorySummaryProps {
   resource?: TrajectorySummaryResource;
   error?: Error;
+  regenerationError?: Error;
   isLoading: boolean;
+  canRegenerate: boolean;
+  isStartingRegeneration: boolean;
   onRetry: () => void;
+  onRegenerate: () => void;
   /**
    * Map a step_id from the summary to the array index used by the
    * accordion in TrajectoryViewer. Returns -1 if the step_id is unknown
@@ -32,14 +42,18 @@ interface TrajectorySummaryProps {
 export function TrajectorySummary({
   resource,
   error,
+  regenerationError,
   isLoading,
+  canRegenerate,
+  isStartingRegeneration,
   onRetry,
+  onRegenerate,
   stepIdToIndex,
   onStepSelect,
   renderableIds,
 }: TrajectorySummaryProps) {
-  // A stored summary returns in well under a second; only a long in-flight
-  // request means the backend is actually generating one (~30s).
+  // The initial stored-column GET is usually fast. Pending generation arrives
+  // as a resource state instead; this timer only owns the delayed read message.
   const [slow, setSlow] = useState(false);
   useEffect(() => {
     if (!isLoading) {
@@ -50,31 +64,15 @@ export function TrajectorySummary({
     return () => clearTimeout(timer);
   }, [isLoading]);
 
-  const waitingForGeneration = resource?.status !== "ready" && !!resource;
-
-  if (isLoading || waitingForGeneration) {
-    return (
-      <Card className="my-3">
-        <CardHeader className="pb-2">
-          <CardTitle className="flex items-center gap-2 text-sm font-medium">
-            <Sparkles className="h-4 w-4" />
-            Summary
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="text-muted-foreground flex items-center gap-2 text-sm">
-          <Loader2 className="h-4 w-4 animate-spin" />
-          {waitingForGeneration
-            ? "Generating summary…"
-            : slow
-            ? "Generating summary… (first view can take ~30s)"
-            : "Retrieving summary…"}
-        </CardContent>
-      </Card>
-    );
-  }
-
-  if (error) {
-    if ((error as { status?: number }).status === 404) return null;
+  const data = resource?.summary ?? null;
+  const refresh = resource?.refresh ?? null;
+  const activeRefresh = refresh?.status === "failed" ? null : refresh;
+  const failedRefresh = refresh?.status === "failed" ? refresh : null;
+  const requestError = regenerationError ?? error;
+  const blockingMessage = data
+    ? null
+    : (failedRefresh?.detail ?? requestError?.message);
+  if (blockingMessage) {
     return (
       <Card className="my-3 border-red-200">
         <CardHeader className="pb-2">
@@ -84,8 +82,20 @@ export function TrajectorySummary({
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
-          <p className="text-muted-foreground text-xs">{error.message}</p>
-          <Button size="sm" variant="outline" onClick={onRetry}>
+          <p className="text-muted-foreground text-xs">{blockingMessage}</p>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={
+              (failedRefresh || regenerationError) && canRegenerate
+                ? onRegenerate
+                : onRetry
+            }
+            disabled={isStartingRegeneration}
+          >
+            {isStartingRegeneration && (
+              <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+            )}
             Retry
           </Button>
         </CardContent>
@@ -93,8 +103,63 @@ export function TrajectorySummary({
     );
   }
 
-  if (!resource || resource.status !== "ready") return null;
-  const data = resource.summary;
+  const waitingForGeneration = data === null && activeRefresh !== null;
+
+  if (isLoading || waitingForGeneration) {
+    return (
+      <Card className="my-3">
+        <CardHeader className="flex-row items-center justify-between space-y-0 pb-2">
+          <CardTitle className="flex items-center gap-2 text-sm font-medium">
+            <Sparkles className="h-4 w-4" /> Summary
+          </CardTitle>
+          {canRegenerate && waitingForGeneration && (
+            <Button size="sm" variant="outline" disabled>
+              <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              Regenerating
+            </Button>
+          )}
+        </CardHeader>
+        <CardContent className="text-muted-foreground flex items-center gap-2 text-sm">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          {waitingForGeneration
+            ? activeRefresh?.status === "settling"
+              ? "Publishing summary…"
+              : "Generating summary…"
+            : slow
+              ? "Retrieving summary… (storage is taking longer than expected)"
+              : "Retrieving summary…"}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (resource && data === null && refresh === null) {
+    if (!canRegenerate) return null;
+    return (
+      <Card className="my-3">
+        <CardHeader className="flex-row items-center justify-between space-y-0 pb-2">
+          <CardTitle className="flex items-center gap-2 text-sm font-medium">
+            <Sparkles className="h-4 w-4" /> Summary
+          </CardTitle>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onRegenerate}
+            disabled={isStartingRegeneration}
+          >
+            {isStartingRegeneration ? (
+              <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <RefreshCw className="mr-1 h-3.5 w-3.5" />
+            )}
+            Generate
+          </Button>
+        </CardHeader>
+      </Card>
+    );
+  }
+
+  if (!data) return null;
 
   // Same segment → color assignment as the Activity card and step groups, so
   // a highlight's underline matches its component everywhere.
@@ -104,13 +169,64 @@ export function TrajectorySummary({
 
   return (
     <Card className="my-3">
-      <CardHeader className="pb-2">
+      <CardHeader className="flex-row items-center justify-between space-y-0 pb-2">
         <CardTitle className="flex items-center gap-2 text-sm font-medium">
-          <Sparkles className="h-4 w-4" />
-          Summary
+          <Sparkles className="h-4 w-4" /> Summary
         </CardTitle>
+        {canRegenerate && activeRefresh ? (
+          <Button size="sm" variant="outline" disabled>
+            <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+            Regenerating
+          </Button>
+        ) : canRegenerate ? (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onRegenerate}
+            disabled={isStartingRegeneration}
+          >
+            {isStartingRegeneration ? (
+              <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <RefreshCw className="mr-1 h-3.5 w-3.5" />
+            )}
+            Regenerate
+          </Button>
+        ) : null}
       </CardHeader>
       <CardContent className="space-y-3">
+        {(failedRefresh || requestError) && (
+          <div
+            role="alert"
+            className="flex items-start justify-between gap-3 rounded-md border border-red-200 p-3"
+          >
+            <div className="space-y-1">
+              <p className="flex items-center gap-1.5 text-xs font-medium text-red-600">
+                <AlertCircle className="h-3.5 w-3.5" />
+                {failedRefresh || regenerationError
+                  ? "Couldn’t regenerate the summary"
+                  : "Couldn’t check for a newer summary"}
+              </p>
+              <p className="text-muted-foreground text-xs">
+                {failedRefresh?.detail ?? requestError?.message} The published
+                summary is still shown below.
+              </p>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={
+                failedRefresh || regenerationError ? onRegenerate : onRetry
+              }
+              disabled={isStartingRegeneration}
+            >
+              {isStartingRegeneration && (
+                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              )}
+              Retry
+            </Button>
+          </div>
+        )}
         {data.summary && (
           <p className="text-foreground text-sm leading-relaxed">
             {data.summary}

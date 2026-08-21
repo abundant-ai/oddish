@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { ExperimentTrialsTable } from "@/components/experiment-trials-table";
 import { ExperimentPageSkeleton } from "@/components/experiment-page-skeleton";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
+import { NotRealSpendBadge } from "@/components/not-real-spend-badge";
 import { TagEditor } from "@/components/tag-editor";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { fetcher } from "@/lib/api";
@@ -55,6 +56,7 @@ import {
   type ExperimentAgentSummary,
 } from "@/lib/experiment-agent-grouping";
 import { resolveExperimentTaskVersion } from "@/lib/experiment-task-version";
+import { taskHasActiveVerdict } from "@/lib/job-status";
 import {
   formatLineRange,
   parseLineRange,
@@ -135,7 +137,6 @@ interface ExperimentDetailViewProps {
   readOnly?: boolean;
   allowRetry?: boolean;
   showAnalysis?: boolean;
-  showCapabilities?: boolean;
   apiBaseUrl?: string;
   onTaskUnlink?: (task: Task) => Promise<void>;
   onTrialDelete?: (trial: Trial, task: Task | null) => Promise<void>;
@@ -198,6 +199,9 @@ type ExperimentSummary = {
   billedHasNative: boolean;
   billedTokenCount: number;
   billedTokenTrialCount: number;
+  excludedCostUsd: number;
+  ownedExcludedCostUsd: number;
+  experimentCostExcluded: boolean;
 };
 
 function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
@@ -291,6 +295,9 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
     billedHasNative: acc.billedHasNative,
     billedTokenCount: acc.billedTokenCount,
     billedTokenTrialCount: acc.billedTokenTrialCount,
+    excludedCostUsd: 0,
+    ownedExcludedCostUsd: 0,
+    experimentCostExcluded: false,
   };
 }
 
@@ -591,6 +598,7 @@ function ExperimentSummaryBar({
   // probes that the table below filters out. Drives the tooltip's disclosure.
   costIsSpend,
   costPending,
+  qa,
 }: {
   taskCount: number;
   summary: ExperimentSummary;
@@ -599,6 +607,12 @@ function ExperimentSummaryBar({
   showNewSpend: boolean;
   costIsSpend: boolean;
   costPending: boolean;
+  qa: {
+    accepted: number;
+    rejected: number;
+    running: number;
+    failed: number;
+  } | null;
 }) {
   if (isInitialLoading) {
     return (
@@ -642,9 +656,13 @@ function ExperimentSummaryBar({
   return (
     <div
       className={`grid grid-cols-2 overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] ${
-        showNewSpend
-          ? "md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_0.9fr_1.4fr]"
-          : "md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_1.4fr]"
+        qa
+          ? showNewSpend
+            ? "md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_0.9fr_0.9fr_1.4fr]"
+            : "md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_0.9fr_1.4fr]"
+          : showNewSpend
+            ? "md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_0.9fr_1.4fr]"
+            : "md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_1.4fr]"
       }`}
     >
       <KpiTile
@@ -693,6 +711,43 @@ function ExperimentSummaryBar({
           </span>
         </span>
       </KpiTile>
+      {qa && (
+        <KpiTile
+          label="QA verdicts"
+          labelInfo="Task-level QA outcome for every task in this experiment that ran QA. Each task's row carries the same chip."
+        >
+          <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
+            {qa.accepted}
+            <span className="font-mono text-xs font-normal text-[color:var(--paper-ink-3)]">
+              accepted
+            </span>
+          </span>
+          <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
+            {qa.rejected > 0 && (
+              <span className="text-[color:var(--paper-fail)]">
+                {qa.rejected} rejected
+              </span>
+            )}
+            {qa.running > 0 && (
+              <span className={qa.rejected > 0 ? "ml-1.5" : ""}>
+                {qa.rejected > 0 && "· "}
+                {qa.running} running
+              </span>
+            )}
+            {qa.failed > 0 && (
+              <span
+                className={qa.rejected > 0 || qa.running > 0 ? "ml-1.5" : ""}
+              >
+                {(qa.rejected > 0 || qa.running > 0) && "· "}
+                {qa.failed} failed
+              </span>
+            )}
+            {qa.rejected === 0 && qa.running === 0 && qa.failed === 0 && (
+              <span>all accepted</span>
+            )}
+          </span>
+        </KpiTile>
+      )}
       <KpiTile
         label="Cost"
         labelInfo="Total cost of all trials shown in this experiment, including trials gathered from other experiments."
@@ -762,6 +817,12 @@ function ExperimentSummaryBar({
                   ? "QA/analysis spend across this experiment's trials. Some values estimated from token counts × static model pricing. Not included in the cost figure."
                   : "QA/analysis spend across this experiment's trials. Not included in the cost figure."
               }
+            />
+          )}
+          {!costPending && (
+            <NotRealSpendBadge
+              excludedCostUsd={summary.excludedCostUsd}
+              totalCostUsd={summary.costUsd}
             />
           )}
         </span>
@@ -843,6 +904,13 @@ function ExperimentSummaryBar({
                 costUsd={summary.ownedQaCostUsd}
                 size="tile"
                 title="QA/analysis spend on this experiment's own trials. Not included in the new spend figure."
+              />
+            )}
+            {!costPending && (
+              <NotRealSpendBadge
+                excludedCostUsd={summary.ownedExcludedCostUsd}
+                totalCostUsd={summary.ownedCostUsd}
+                wholeSubjectExcluded={summary.experimentCostExcluded}
               />
             )}
           </span>
@@ -936,7 +1004,6 @@ export function ExperimentDetailView({
   readOnly = false,
   allowRetry = true,
   showAnalysis = true,
-  showCapabilities = true,
   apiBaseUrl = "/api",
   onTaskUnlink,
   onTrialDelete,
@@ -960,20 +1027,15 @@ export function ExperimentDetailView({
   // tree beside the trial view, so the two panes address independently:
   // the trial pane owns ?file= / ?lines= (see TrialDetailPanel) and the
   // task pane owns ?taskPane= / ?taskFile= / ?taskLines=.
-  const defaultTaskPane: TaskPane = showAnalysis
-    ? "overview"
-    : showCapabilities
-      ? "capabilities"
-      : "file";
+  const defaultTaskPane: TaskPane = showAnalysis ? "overview" : "file";
   const readTaskPane = useCallback(
     (params: Pick<URLSearchParams, "get" | "has">): TaskPane => {
       const pane = params.get("taskPane");
       if (pane === "file") return "file";
-      if (pane === "capabilities" && showCapabilities) return "capabilities";
       if (params.has("taskFile")) return "file";
       return defaultTaskPane;
     },
-    [defaultTaskPane, showCapabilities]
+    [defaultTaskPane]
   );
   const [activeTaskPane, setActiveTaskPane] = useState<TaskPane>(() => {
     return readTaskPane(searchParams);
@@ -1560,8 +1622,36 @@ export function ExperimentDetailView({
       billedHasNative: costTotals.billed_has_native,
       billedTokenCount: costTotals.billed_token_count,
       billedTokenTrialCount: costTotals.billed_token_trial_count,
+      excludedCostUsd: costTotals.excluded_cost_usd ?? 0,
+      ownedExcludedCostUsd: costTotals.owned_excluded_cost_usd ?? 0,
+      experimentCostExcluded: costTotals.experiment_cost_excluded ?? false,
     };
   }, [deferredTasksForDerivedData, costTotals]);
+
+  // Task-level QA rollup for the summary bar. Null when no task in the
+  // grid ever ran QA, so non-QA experiments keep their five tiles.
+  const qaRollup = useMemo(() => {
+    let accepted = 0;
+    let rejected = 0;
+    let running = 0;
+    let failed = 0;
+    for (const task of deferredTasksForDerivedData) {
+      if (taskHasActiveVerdict(task)) {
+        running += 1;
+        continue;
+      }
+      const v = task.verdict;
+      if (v) {
+        const label = v.verdict ?? (v.is_good ? "accept" : "reject");
+        if (label === "accept") accepted += 1;
+        else rejected += 1;
+      } else if (task.verdict_status === "failed") {
+        failed += 1;
+      }
+    }
+    if (accepted + rejected + running + failed === 0) return null;
+    return { accepted, rejected, running, failed };
+  }, [deferredTasksForDerivedData]);
 
   const closeDrawer = () => {
     cancelPendingDeepLink();
@@ -1697,6 +1787,7 @@ export function ExperimentDetailView({
             showNewSpend={!readOnly}
             costIsSpend={costTotals != null}
             costPending={costTotalsPending}
+            qa={showAnalysis ? qaRollup : null}
           />
 
           {hasError ? (
@@ -1802,7 +1893,6 @@ export function ExperimentDetailView({
               apiBaseUrl={apiBaseUrl}
               cancelExperimentId={experimentId}
               showAnalysis={showAnalysis}
-              showCapabilities={showCapabilities}
               loadFilesLazily={readOnly}
               contentOnly={true}
             />
@@ -1822,7 +1912,6 @@ export function ExperimentDetailView({
               allowRetry={allowRetry}
               cancelExperimentId={experimentId}
               showAnalysis={showAnalysis}
-              showCapabilities={showCapabilities}
               loadFilesLazily={readOnly}
               onNavigate={(nextTask, nextIndex) => {
                 if (!drawerState) return;

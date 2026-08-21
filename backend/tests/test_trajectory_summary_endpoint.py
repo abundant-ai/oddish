@@ -1,30 +1,26 @@
-"""GET /trials/{id}/trajectory/summary endpoint (DB-backed)."""
+"""Authenticated trajectory-summary GET/POST lifecycle contract."""
 
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 from api.app import create_app
-from api.services.summarize_trajectory import (
-    SCHEMA_VERSION,
-    SummaryGenerationError,
-)
 
 
-@pytest.fixture
-def app_with_stub_auth():
-    from auth import APIKeyScope, AuthContext, AuthMethod, require_auth
+def _client(scope, created_by_role=None):
+    from auth import AuthContext, AuthMethod, require_auth
 
     fake_auth = AuthContext(
         method=AuthMethod.API_KEY,
         org_id="org-1",
         user_id="u-1",
-        scope=APIKeyScope.READ,
+        scope=scope,
+        api_key_created_by_role=created_by_role,
     )
 
     async def _fake_require_auth():
@@ -32,139 +28,206 @@ def app_with_stub_auth():
 
     app = create_app()
     app.dependency_overrides[require_auth] = _fake_require_auth
-    return app
+    return TestClient(app)
 
 
 @pytest.fixture
-def client(app_with_stub_auth):
-    return TestClient(app_with_stub_auth)
+def client():
+    from auth import APIKeyScope
+
+    return _client(APIKeyScope.READ)
 
 
 @pytest.fixture
-def fake_trial():
-    return SimpleNamespace(id="t-1", name="trial-0", trial_s3_key="trials/t-1/")
+def tasks_client():
+    from auth import APIKeyScope
+
+    return _client(APIKeyScope.TASKS, created_by_role="admin")
 
 
-def _make_fake_session(fake_trial):
-    """Return a context-manager mock for get_session() that yields a stub session."""
-    mock_session = MagicMock()
-    mock_session.get = AsyncMock(return_value=fake_trial)
+@pytest.fixture
+def member_tasks_client():
+    from auth import APIKeyScope
 
-    @asynccontextmanager
-    async def _fake_get_session():
-        yield mock_session
-
-    return _fake_get_session
+    return _client(APIKeyScope.TASKS, created_by_role="member")
 
 
-def test_endpoint_returns_summary_when_present(client, fake_trial):
-    summary = {
-        "schema_version": SCHEMA_VERSION,
-        "model": "claude-sonnet-4-6",
-        "generated_at": "2026-05-02T00:00:00Z",
-        "summary": "ok",
-        "highlights": [],
+def _trial(summary, *, refresh_trial_id=None, kind="agent"):
+    return SimpleNamespace(
+        id="t-1",
+        task_id="task-1",
+        kind=kind,
+        trajectory_summary=summary,
+        trajectory_summary_refresh_trial_id=refresh_trial_id,
+    )
+
+
+def _summarize_trial(status="queued"):
+    return SimpleNamespace(
+        id="task-1-9",
+        task_id="task-1",
+        kind="summarize",
+        status=SimpleNamespace(value=status),
+        harbor_stage=None,
+    )
+
+
+@asynccontextmanager
+async def _session(refresh_trial=None):
+    yield SimpleNamespace(get=AsyncMock(return_value=refresh_trial))
+
+
+def test_get_returns_stored_summary_when_no_refresh_is_current(client):
+    summary = {"schema_version": 5, "components": []}
+    with patch(
+        "api.routers.trials._get_authorized_trial",
+        new=AsyncMock(return_value=_trial(summary)),
+    ):
+        response = client.get("/trials/t-1/trajectory/summary")
+    assert response.status_code == 200
+    assert response.json() == {"summary": summary, "refresh": None}
+
+
+def test_get_returns_missing_resource_when_nothing_is_published(client):
+    with patch(
+        "api.routers.trials._get_authorized_trial",
+        new=AsyncMock(return_value=_trial(None)),
+    ):
+        response = client.get("/trials/t-1/trajectory/summary")
+    assert response.status_code == 404
+
+
+@pytest.mark.parametrize(
+    ("trial_status", "wire_status"),
+    [("queued", "queued"), ("running", "running"), ("retrying", "retrying")],
+)
+def test_get_reports_current_live_refresh_before_stored_summary(
+    client, trial_status, wire_status
+):
+    refresh = _summarize_trial(trial_status)
+    with (
+        patch(
+            "api.routers.trials._get_authorized_trial",
+            new=AsyncMock(
+                return_value=_trial({"stale": True}, refresh_trial_id=refresh.id)
+            ),
+        ),
+        patch("api.routers.trials.get_session", new=lambda: _session(refresh)),
+    ):
+        response = client.get("/trials/t-1/trajectory/summary")
+    assert response.status_code == 200
+    assert response.json() == {
+        "summary": {"stale": True},
+        "refresh": {
+            "status": wire_status,
+            "job_id": refresh.id,
+            "retry_after_ms": 3000,
+        },
     }
-    with patch(
-        "api.routers.trials._get_authorized_trial",
-        new=AsyncMock(return_value=fake_trial),
-    ), patch(
-        "api.routers.trials.get_session",
-        new=_make_fake_session(fake_trial),
-    ), patch(
-        "api.routers.trials.get_or_generate_summary",
-        new=AsyncMock(return_value=summary),
+
+
+def test_get_reports_successful_unimported_refresh_as_settling(client):
+    refresh = _summarize_trial("success")
+    with (
+        patch(
+            "api.routers.trials._get_authorized_trial",
+            new=AsyncMock(return_value=_trial(None, refresh_trial_id=refresh.id)),
+        ),
+        patch("api.routers.trials.get_session", new=lambda: _session(refresh)),
     ):
-        resp = client.get("/trials/t-1/trajectory/summary")
-    assert resp.status_code == 200
-    assert resp.json() == summary
+        response = client.get("/trials/t-1/trajectory/summary")
+    assert response.status_code == 202
+    assert response.json()["refresh"]["status"] == "settling"
 
 
-def test_endpoint_returns_404_when_no_trajectory(client, fake_trial):
-    with patch(
-        "api.routers.trials._get_authorized_trial",
-        new=AsyncMock(return_value=fake_trial),
-    ), patch(
-        "api.routers.trials.get_session",
-        new=_make_fake_session(fake_trial),
-    ), patch(
-        "api.routers.trials.get_or_generate_summary",
-        new=AsyncMock(return_value=None),
+def test_get_reports_current_failed_refresh(client):
+    refresh = _summarize_trial("failed")
+    with (
+        patch(
+            "api.routers.trials._get_authorized_trial",
+            new=AsyncMock(
+                return_value=_trial({"stale": True}, refresh_trial_id=refresh.id)
+            ),
+        ),
+        patch("api.routers.trials.get_session", new=lambda: _session(refresh)),
     ):
-        resp = client.get("/trials/t-1/trajectory/summary")
-    assert resp.status_code == 404
+        response = client.get("/trials/t-1/trajectory/summary")
+    assert response.status_code == 200
+    assert response.json() == {
+        "summary": {"stale": True},
+        "refresh": {
+            "status": "failed",
+            "job_id": refresh.id,
+            "detail": (
+                "Trajectory summary refresh failed; start a new refresh to retry"
+            ),
+        },
+    }
 
 
-def test_endpoint_returns_502_on_generation_error(client, fake_trial):
-    async def _raise(_session, _trial, triggered_by_user_id=None, *, refresh=False):
-        raise SummaryGenerationError("model returned garbage")
-
-    with patch(
-        "api.routers.trials._get_authorized_trial",
-        new=AsyncMock(return_value=fake_trial),
-    ), patch(
-        "api.routers.trials.get_session",
-        new=_make_fake_session(fake_trial),
-    ), patch(
-        "api.routers.trials.get_or_generate_summary", new=_raise
+def test_get_reports_cancelled_refresh_as_failed_even_if_trial_status_is_success(
+    client,
+):
+    refresh = _summarize_trial("success")
+    refresh.harbor_stage = "cancelled"
+    with (
+        patch(
+            "api.routers.trials._get_authorized_trial",
+            new=AsyncMock(return_value=_trial(None, refresh_trial_id=refresh.id)),
+        ),
+        patch("api.routers.trials.get_session", new=lambda: _session(refresh)),
     ):
-        resp = client.get("/trials/t-1/trajectory/summary")
-    assert resp.status_code == 502
-    assert "Summary generation failed" in resp.json()["detail"]
+        response = client.get("/trials/t-1/trajectory/summary")
+    assert response.status_code == 409
 
 
-def test_refresh_needs_more_than_a_read_scope(client, fake_trial):
-    """A read key may read a summary but not spend an LLM call replacing one."""
-    spy = AsyncMock(return_value={"schema_version": "5"})
-    with patch(
-        "api.routers.trials._get_authorized_trial",
-        new=AsyncMock(return_value=fake_trial),
-    ), patch(
-        "api.routers.trials.get_session",
-        new=_make_fake_session(fake_trial),
-    ), patch("api.routers.trials.get_or_generate_summary", new=spy):
-        assert client.get("/trials/t-1/trajectory/summary").status_code == 200
-        assert spy.await_args.kwargs["refresh"] is False
-
-        resp = client.get("/trials/t-1/trajectory/summary?refresh=true")
-
-    assert resp.status_code == 403
-    # Rejected before any work is scheduled, not after paying for it.
-    assert spy.await_count == 1
+def test_post_requires_tasks_scope(client):
+    response = client.post("/trials/t-1/trajectory/summary")
+    assert response.status_code == 403
 
 
-def test_endpoint_threads_refresh_through_to_the_service(fake_trial):
-    """?refresh=true must reach get_or_generate_summary.
+def test_post_refuses_member_created_tasks_key(member_tasks_client):
+    response = member_tasks_client.post("/trials/t-1/trajectory/summary")
+    assert response.status_code == 403
 
-    It is the only way to replace a stored summary that is "fresh" by
-    schema_version but stale in content, so a silently-dropped flag would
-    hand the caller the very block it asked to be rid of.
-    """
-    from auth import APIKeyScope, AuthContext, AuthMethod, require_auth
-    from models import UserRole
 
-    async def _tasks_scoped_auth():
-        return AuthContext(
-            method=AuthMethod.API_KEY,
-            org_id="org-1",
-            user_id="u-1",
-            scope=APIKeyScope.TASKS,
-            # Member-created TASKS keys are barred, as they are for an
-            # analysis rerun; this stands in for an admin-minted key.
-            api_key_created_by_role=UserRole.ADMIN.value,
-        )
+def test_post_adopts_existing_refresh(tasks_client):
+    refresh = _summarize_trial("running")
+    get_or_create = AsyncMock(return_value=refresh)
+    with (
+        patch(
+            "api.routers.trials._get_authorized_trial",
+            new=AsyncMock(return_value=_trial({"stale": True})),
+        ),
+        patch("api.routers.trials.get_or_create_summarize_trial", new=get_or_create),
+        patch("api.routers.trials.get_session", new=lambda: _session()),
+    ):
+        response = tasks_client.post("/trials/t-1/trajectory/summary")
+    assert response.status_code == 200
+    assert response.json() == {
+        "summary": {"stale": True},
+        "refresh": {
+            "status": "running",
+            "job_id": refresh.id,
+            "retry_after_ms": 3000,
+        },
+    }
+    session = get_or_create.await_args.args[0]
+    get_or_create.assert_awaited_once_with(session, target_trial_id="t-1")
 
-    app = create_app()
-    app.dependency_overrides[require_auth] = _tasks_scoped_auth
-    spy = AsyncMock(return_value={"schema_version": "5"})
-    with patch(
-        "api.routers.trials._get_authorized_trial",
-        new=AsyncMock(return_value=fake_trial),
-    ), patch(
-        "api.routers.trials.get_session",
-        new=_make_fake_session(fake_trial),
-    ), patch("api.routers.trials.get_or_generate_summary", new=spy):
-        resp = TestClient(app).get("/trials/t-1/trajectory/summary?refresh=true")
 
-    assert resp.status_code == 200
-    assert spy.await_args.kwargs["refresh"] is True
+def test_post_refuses_ineligible_target(tasks_client):
+    with (
+        patch(
+            "api.routers.trials._get_authorized_trial",
+            new=AsyncMock(return_value=_trial(None, kind="qa")),
+        ),
+        patch(
+            "api.routers.trials.get_or_create_summarize_trial",
+            new=AsyncMock(return_value=None),
+        ),
+        patch("api.routers.trials.get_session", new=lambda: _session()),
+    ):
+        response = tasks_client.post("/trials/t-1/trajectory/summary")
+    assert response.status_code == 409
+    assert "only agent trials" in response.json()["detail"]

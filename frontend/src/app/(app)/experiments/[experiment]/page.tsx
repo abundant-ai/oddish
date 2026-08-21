@@ -38,7 +38,16 @@ async function getExperimentName(experimentId: string): Promise<string | null> {
     const data = (await response.json()) as { name?: unknown };
     return typeof data.name === "string" && data.name.trim() ? data.name : null;
   } catch (error) {
-    console.error("[experiment/page] Experiment metadata fetch failed", error);
+    // The 2.5s abort above firing IS the designed fallback (title falls
+    // back to the experiment id), so a TimeoutError is expected behavior,
+    // not an error worth recording. Logging it at error level was putting
+    // one error record into telemetry per slow-backend page load.
+    if (!(error instanceof Error && error.name === "TimeoutError")) {
+      console.error(
+        "[experiment/page] Experiment metadata fetch failed",
+        error
+      );
+    }
     return null;
   }
 }

@@ -277,10 +277,6 @@ class TaskSubmission(BaseModel):
     )
     experiment_id: str | None = Field(None, description="Optional experiment ID")
     tags: dict[str, str] = Field(default_factory=dict, description="Optional tags")
-    run_analysis: bool = Field(
-        False,
-        description="If True, run LLM analysis on each trial after completion and compute task verdict",
-    )
     run_probe: bool = Field(
         False,
         description="If True, auto-enqueue a probe trial for this task's version on submit. Opt-in (off by default).",
@@ -471,10 +467,6 @@ class TaskSweepSubmission(BaseModel):
     )
     environment: EnvironmentType | None = Field(
         None, description="Default execution backend override"
-    )
-    run_analysis: bool = Field(
-        False,
-        description="If True, run LLM analysis on each trial after completion and compute task verdict",
     )
     run_probe: bool = Field(
         False,
@@ -722,7 +714,7 @@ class TaskUploadInitRequest(BaseModel):
         description=(
             "Allocate a new task version even when the content hash matches the "
             "latest existing version. Used when callers need a fresh version "
-            "stamp (e.g. to flip run_analysis on)."
+            "stamp."
         ),
     )
     overwrite_current_version: bool = Field(
@@ -986,6 +978,10 @@ class ExperimentCostTotals(BaseModel):
     billed_token_trial_count: int = 0
     total_trials: int = 0
 
+    excluded_cost_usd: float = 0.0
+    owned_excluded_cost_usd: float = 0.0
+    experiment_cost_excluded: bool = False
+
     # QA/analysis spend (``analysis_costs``), scoped exactly like the agent
     # figures above: ``qa_cost_usd`` over every member trial, ``owned_*`` over
     # homed trials only. Never folded into ``cost_usd`` -- the UI renders it as
@@ -1085,6 +1081,10 @@ class TrialResponse(BaseModel):
         None,
         description="Harbor git source this trial executed against (None for legacy rows).",
     )
+    kind: str = Field(
+        default="agent",
+        description="agent | qa | audit",
+    )
     is_probe: bool = Field(
         False,
         description=(
@@ -1135,6 +1135,19 @@ class TrialResponse(BaseModel):
             "True when the trial is attributed to a billed user "
             "(``billed_user_id`` is set), i.e. its cost counts toward "
             "billed spend and quota usage."
+        ),
+    )
+    cost_exclusion_reason: str | None = Field(
+        None,
+        description=(
+            "Why this trial's ``cost_usd`` is not real spend: ``key`` for a "
+            "preserved provider-key exclusion, ``model`` for a cost-excluded "
+            "model, or ``experiment`` when its home experiment is excluded. The cost "
+            "is still reported -- the work ran -- but it is absent from the "
+            "admin cost dashboards and from quota enforcement, and the UI "
+            "labels it. Null means the spend is real, OR that the builder "
+            "did not resolve exclusions; only callers that pass an "
+            "exclusions snapshot populate it."
         ),
     )
     # QA/analysis spend for this trial. None when no QA ran -- distinct from
@@ -1250,7 +1263,6 @@ class TaskBatchCancelRequest(BaseModel):
 
 class BackfillQARequest(BaseModel):
     force: bool = False
-    enable_analysis: bool = False
     trial_ids: list[str] | None = None
 
 
@@ -2147,15 +2159,8 @@ class SkillResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Reports — agent-eval reports across experiments.
+# Experiment typeahead — shared item shape for the task browser.
 # ---------------------------------------------------------------------------
-class ReportCreate(BaseModel):
-    # Optional: when omitted the server auto-names it report_<N>_<experiment>.
-    name: str | None = Field(default=None)
-    experiment_ids: list[str] = Field(min_length=1)
-    save_trial_analyses: bool = False
-
-
 class ExperimentOption(BaseModel):
     id: str
     name: str
@@ -2170,27 +2175,6 @@ class ExperimentOptionsResponse(BaseModel):
     """
 
     items: list[ExperimentOption] = Field(default_factory=list)
-
-
-class ReportResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: str
-    name: str
-    status: str
-    error: str | None = None
-    bad_failure_content: str | None = None
-    good_failure_content: str | None = None
-    universal_capabilities_content: str | None = None
-    headroom_analysis: str | None = None
-    num_trials: int | None = None
-    num_bad_failures: int | None = None
-    num_good_failures: int | None = None
-    breakdown: dict | None = None
-    by_model: dict | None = None
-    experiment_ids: list[str] = []
-    created_at: datetime | None = None
-    finished_at: datetime | None = None
 
 
 # ---------------------------------------------------------------------------

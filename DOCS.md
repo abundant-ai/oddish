@@ -26,6 +26,8 @@ export ODDISH_API_KEY="ok_..."
 - `oddish cancel` - stop in-flight task runs or task-level QA jobs
 - `oddish backfill-analysis` - (re)run trial analysis for a trial, task, or experiment
 - `oddish costs` - view billable-spend accounting (org-wide, or per-user with `--user`)
+- `oddish admin concurrency` - inspect, set, or clear operator queue-key limits
+- `oddish cost-exclusions` - hide spend for models and experiments that were never really paid for
 - `oddish pull` - download logs and artifacts
 - `oddish combine` - merge several experiments into a new one
 - `oddish collect` - gather trials from tasks/trial IDs into a shareable read-only collection
@@ -42,7 +44,7 @@ Every command except `oddish logs` accepts `--json` for machine-readable output 
 
 A typical run flows through these commands:
 
-1. `oddish run` (or `oddish upload`) — submit a task, dataset, or sweep and get back a task ID and experiment ID.
+1. `oddish run` (or `oddish upload`) — submit a task, dataset, or sweep and get back a task ID and experiment ID. Task-level QA (per-trial trajectory classification, plus a task verdict when there are enough trials from enough distinct agents) runs automatically once every trial settles.
 2. `oddish status` — discover what's in flight, then drill into a specific task or experiment to see trial-level progress and rewards.
 3. `oddish pull` — once you have a trial, task, or experiment ID, download its logs, results, trajectories, and artifact files to disk.
 4. `oddish run --retry` — re-queue failed trials or re-run task-level QA.
@@ -119,7 +121,6 @@ Options
 - `--watch/--no-watch`, `-w` - Watch progress after submission; enabled by default
 - `--background`, `--async`, `-b` - Submit and return immediately
 - `--quiet`, `-q` - Suppress startup logs
-- `--run-analysis` - Run task-level QA (classify every trial's trajectory and compute the task verdict)
 - `--run-probe` - Auto-enqueue a probe trial for the task version (off by default)
 - `--disable-verification/--enable-verification` - Skip task verification or tests
 - `--force-new-version` - Allocate a new task version even when the content is unchanged
@@ -359,6 +360,29 @@ On hosted Oddish these diagnostics require a **full-scope** API key
 (`read`/`tasks` keys get a clear error); a self-hosted core server applies no
 auth.
 
+### Operator Concurrency Controls
+
+Hosted Oddish operators can inspect every layer of a queue key's concurrency
+limit and make a database-backed override without using a raw API request:
+
+```bash
+# Read the deploy limit, DB override, controller advisory, and effective limit
+oddish admin concurrency get xai/v9m-rl-learnability-tp8
+
+# Set or clear the database override
+oddish admin concurrency set xai/v9m-rl-learnability-tp8 300
+oddish admin concurrency clear xai/v9m-rl-learnability-tp8
+
+# Machine-readable output for audit logs and automation
+oddish admin concurrency get xai/v9m-rl-learnability-tp8 --json
+```
+
+Queue keys are canonicalized by the same model-aware helper as the dispatcher.
+`set` accepts limits from `0` through `10000`; `0` disables dispatch for that
+queue. Both mutation commands read the setting back and fail if the stored
+override does not match. These hosted endpoints require an admin key in the
+configured operator organization. Use `--api-url`/`-u` to target another API.
+
 ## Stream Live Logs
 
 Use `oddish logs` to stream a **running** trial's transcript (agent messages,
@@ -419,7 +443,7 @@ Use `oddish backfill-analysis` to (re)run trial analysis (LLM trajectory classif
 ```bash
 oddish backfill-analysis --task <task_id>
 oddish backfill-analysis --trial <trial_id> --force
-oddish backfill-analysis --experiment <experiment_id> --enable-analysis
+oddish backfill-analysis --experiment <experiment_id>
 ```
 
 Options
@@ -428,7 +452,6 @@ Options
 - `--task TEXT` - Re-analyze all trials in a task
 - `--trial TEXT` - Re-analyze a single trial
 - `--force` - Re-run analysis even for trials already analyzed. With `--trial`, re-runs just that trial; with `--task` or `--experiment`, re-runs all their trials.
-- `--enable-analysis` - Also set `run_analysis=true` on the affected tasks so future trials auto-analyze.
 - `--json` - Emit machine-readable output.
 - `--api TEXT` - Override the API URL
 
@@ -456,6 +479,51 @@ Options
 - `--window-days INTEGER` - Trailing window in days; `0` = all-time (default 7)
 - `--api TEXT` - Override the API URL
 - `--json` - Emit the raw cost breakdown JSON
+
+## Remove Spend Tracking
+
+Hide spend that was never really paid for - sponsored capacity, free preview
+tiers, vendor credits, a comped run. Excluded spend drops off the admin cost
+dashboards and stops counting against quotas. It is still shown on experiment,
+task, and trial pages, marked as not real, so the two never disagree silently.
+
+- **Models** - every trial that used the model stops counting, including the
+  same model name through another provider.
+- **Experiments** - trials the experiment ran itself stop counting. Trials it
+  gathered from elsewhere keep counting on the experiment that ran them.
+
+Both lists are deployment-wide and retroactive: adding an entry removes spend
+already recorded, removing one puts every dollar back. Operator-only on hosted
+Oddish (a full-scope API key in the operator org); not available on a
+self-hosted core server. Also editable in the admin dashboard under
+Costs -> Remove Spend Tracking.
+
+```bash
+# What currently doesn't count
+oddish cost-exclusions list
+oddish cost-exclusions list --kind model --json
+
+# Stop counting a free model, and a comped experiment
+oddish cost-exclusions add model kimi-k2 --label "sponsored"
+oddish cost-exclusions add experiment "glm sweep" --label "comped"
+
+# Put the spend back (by row id, model name, or experiment name/id)
+oddish cost-exclusions remove model kimi-k2
+oddish cost-exclusions remove experiment exp_01j...
+```
+
+Options
+
+- `--kind TEXT` - On `list`, limit to one axis: `model` or `experiment`
+- `--label TEXT` - On `add`, why it doesn't count (e.g. `sponsored`)
+- `--api TEXT` - Override the API URL
+- `--json` - Emit raw JSON
+
+`add model` matches what trials actually store, so `kimi-k2` finds trials saved
+as `moonshot/kimi-k2`. A model no trial has ever used is rejected rather than
+saved as an entry that matches nothing. Experiments take a name or an id;
+ambiguous names are rejected, and a collection is rejected because it runs no
+trials of its own.
 
 ## Download Outputs
 

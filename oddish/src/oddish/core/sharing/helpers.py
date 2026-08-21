@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import set_committed_value
 
+from oddish.core.cost_exclusions import load_cost_exclusions
 from oddish.core.experiment_membership import trial_in_experiment
 from oddish.core.helpers import (
     build_task_status_responses_from_counts,
@@ -20,7 +21,7 @@ from oddish.core.helpers import (
 )
 from oddish.core.model_display_names import (
     apply_model_display_names,
-    load_model_display_names,
+    experiment_display_names,
 )
 from oddish.db import (
     ExperimentModel,
@@ -134,6 +135,7 @@ async def get_public_task_for_experiment(
             t
             for t in task.trials
             if not t.is_probe
+            and t.kind == "agent"
             and (t.experiment_id == experiment.id or t.id in gathered_ids)
         ],
     )
@@ -141,16 +143,27 @@ async def get_public_task_for_experiment(
 
 
 async def get_public_trial_for_experiment(
-    session: AsyncSession, public_token: str, trial_id: str
+    session: AsyncSession,
+    public_token: str,
+    trial_id: str,
+    *,
+    experiment: ExperimentModel | None = None,
 ) -> TrialModel | None:
-    """Get a public trial only through the share token that exposes it."""
-    experiment = await get_public_experiment(session, public_token)
+    """Get a public trial only through the share token that exposes it.
+
+    Pass ``experiment`` when the caller already loaded the row for this same
+    token to skip the redundant lookup; it must be what
+    ``get_public_experiment`` would return for ``public_token``.
+    """
+    if experiment is None:
+        experiment = await get_public_experiment(session, public_token)
     if not experiment:
         return None
     result = await session.execute(
         select(TrialModel)
         .where(TrialModel.id == trial_id)
         .where(TrialModel.is_probe.is_(False))
+        .where(TrialModel.kind == "agent")
         .where(trial_in_experiment(experiment.id))
     )
     return result.scalar_one_or_none()
@@ -201,6 +214,7 @@ async def list_experiment_trials_for_org(
     conditions = [
         trial_in_experiment(experiment_id),
         TrialModel.superseded_by_trial_id.is_(None),
+        TrialModel.kind == "agent",
     ]
     if org_id is not None:
         conditions.append(TrialModel.org_id == org_id)
@@ -213,9 +227,13 @@ async def list_experiment_trials_for_org(
     rows = result.all()
     trials = [trial for trial, _ in rows]
     queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=trials)
+    exclusions = await load_cost_exclusions(session)
     return [
         build_trial_response(
-            trial, task_path, queue_info=queue_info_by_trial_id.get(trial.id)
+            trial,
+            task_path,
+            queue_info=queue_info_by_trial_id.get(trial.id),
+            exclusions=exclusions,
         )
         for trial, task_path in rows
     ]
@@ -248,6 +266,7 @@ async def list_task_trials_for_task(
     conditions = [
         TrialModel.task_id == task_id,
         TrialModel.superseded_by_trial_id.is_(None),
+        TrialModel.kind == "agent",
     ]
     if probe is not None:
         conditions.append(TrialModel.is_probe == probe)
@@ -265,11 +284,13 @@ async def list_task_trials_for_task(
     rows = result.all()
     trials = [trial for trial, _ in rows]
     queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=trials)
+    exclusions = await load_cost_exclusions(session)
     return [
         build_trial_response(
             trial,
             task_path,
             queue_info=queue_info_by_trial_id.get(trial.id),
+            exclusions=exclusions,
         )
         for trial, task_path in rows
     ]
@@ -290,6 +311,7 @@ async def list_task_trials_for_public_experiment(
             TrialModel.task_id == task_id,
             TrialModel.superseded_by_trial_id.is_(None),
             TrialModel.is_probe.is_(False),
+            TrialModel.kind == "agent",
             trial_in_experiment(experiment.id),
         )
         .order_by(TrialModel.created_at.asc())
@@ -305,7 +327,7 @@ async def list_task_trials_for_public_experiment(
         )
         for trial, task_path in rows
     ]
-    apply_model_display_names(responses, await load_model_display_names(session))
+    apply_model_display_names(responses, experiment_display_names(experiment))
     return responses
 
 

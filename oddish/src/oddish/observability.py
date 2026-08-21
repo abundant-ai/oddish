@@ -41,14 +41,21 @@ def configure_observability(service_name: str) -> bool:
         except ImportError:
             logger.info("logfire not installed; oddish tracing disabled")
             return False
+        configure_kwargs: dict = dict(
+            service_name=service_name,
+            service_version=os.environ.get("ODDISH_RELEASE")
+            or os.environ.get("GIT_COMMIT_SHA"),
+            send_to_logfire="if-token-present",
+            console=False,
+        )
         try:
-            logfire.configure(
-                service_name=service_name,
-                service_version=os.environ.get("ODDISH_RELEASE")
-                or os.environ.get("GIT_COMMIT_SHA"),
-                send_to_logfire="if-token-present",
-                console=False,
+            configure_kwargs["advanced"] = logfire.AdvancedOptions(
+                exception_callback=classify_recorded_exception
             )
+        except Exception:
+            logger.warning("logfire AdvancedOptions unavailable", exc_info=True)
+        try:
+            logfire.configure(**configure_kwargs)
         except Exception:
             logger.warning("logfire.configure failed", exc_info=True)
             return False
@@ -63,12 +70,118 @@ def configure_observability(service_name: str) -> bool:
             if fn is None:
                 continue
             try:
-                fn()
+                if name == "instrument_httpx":
+                    # Both hook params: async clients only run the async hook.
+                    fn(
+                        response_hook=expected_4xx_response_hook,
+                        async_response_hook=expected_4xx_response_hook,
+                    )
+                else:
+                    fn()
             except Exception:
                 logger.warning("logfire %s failed", name, exc_info=True)
         _configured = True
         logger.info("oddish tracing configured (service=%s)", service_name)
         return True
+
+
+# ---------------------------------------------------------------------------
+# Severity policy: handled 4xx responses and expected vendor NotFounds are
+# recorded, but not as errors — ``level >= error`` should mean a real failure.
+# Shared by this module's configure and ``backend/observability.py``.
+# ---------------------------------------------------------------------------
+
+# Daytona SDK spans (``daytona/_utils/otel_decorator.py``) set ERROR status
+# and record the raw NotFoundException on the span BEFORE oddish's own
+# ``except NotFoundException`` handlers run, so no call-site handling can fix
+# their severity. A missing sandbox on get/delete is the expected outcome for
+# finished or harvested trials (teardown and the reaper both classify it as
+# success); NotFound on any other SDK operation stays an error.
+_DAYTONA_EXPECTED_NOTFOUND_SPANS = frozenset(
+    {"AsyncDaytona.get", "AsyncDaytona.delete"}
+)
+
+_WARN_LEVEL_NUM = 13  # logfire's numeric "warn" level
+
+
+def _set_span_status_ok(span) -> None:
+    """ERROR -> OK. OK rather than UNSET: the OTel SDK silently ignores
+    ``set_status(UNSET)``, so OK is the only way to un-error a span."""
+    try:
+        from opentelemetry.trace import Status, StatusCode
+
+        span.set_status(Status(StatusCode.OK))
+    except Exception:  # noqa: BLE001 - observability must never raise
+        pass
+
+
+def expected_4xx_response_hook(span, request, response) -> None:
+    """httpx response hook: un-error client spans for handled 4xx responses.
+
+    The OTel httpx instrumentation marks EVERY client response >= 400 as
+    ERROR (server spans get the 4xx exemption; client spans do not), so a
+    Clerk 404 on a background recheck or a Daytona 404 on a gone sandbox
+    painted dashboards red while the caller handled it. This hook runs after
+    the instrumentation assigns the status and downgrades 4xx to OK at warn
+    level; 5xx stays an error. A caller that treats a 4xx as fatal raises,
+    and that exception is recorded on the calling span as usual.
+    """
+    try:
+        status_code = getattr(response, "status_code", None)
+        if status_code is None or not 400 <= int(status_code) < 500:
+            return
+        _set_span_status_ok(span)
+        span.set_attributes({"logfire.level_num": _WARN_LEVEL_NUM})
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def classify_recorded_exception(helper) -> None:
+    """``logfire.AdvancedOptions.exception_callback``: downgrade recorded
+    exceptions that represent handled, expected outcomes.
+
+    Module-level on purpose (logfire documents the callback must be
+    importable, e.g. for forked workers). logfire wraps the call in its own
+    ``handle_internal_errors``, and every branch here is defensive too, so a
+    bug reverts to default severity instead of breaking a request.
+    """
+    try:
+        exc = helper.exception
+
+        # Handled HTTP 4xx raised inside a route handler: FastAPI converts
+        # it into a clean response, so recording it as an error was pure
+        # labeling. Two recording paths land here. logfire's FastAPI
+        # integration records an event on the request span (marked by the
+        # attribute below) — drop that event and touch nothing else, the
+        # request span's own 4xx handling is already correct. Auto-tracing's
+        # ``Calling api.routers.*`` span records the exception as escaped
+        # with ERROR status and error level already applied — undo both.
+        try:
+            from starlette.exceptions import HTTPException
+        except ImportError:  # pragma: no cover - workers without starlette
+            HTTPException = None
+        if HTTPException is not None and isinstance(exc, HTTPException):
+            if int(getattr(exc, "status_code", 500)) >= 500:
+                return
+            helper.create_issue = False
+            if helper.event_attributes.get("recorded_by_logfire_fastapi"):
+                helper.no_record_exception()
+                return
+            helper.level = "warn"
+            _set_span_status_ok(helper.span)
+            return
+
+        # Expected Daytona sandbox-gone (see the span allowlist above).
+        exc_type = type(exc)
+        if exc_type.__name__ in ("NotFoundException", "DaytonaNotFoundError") and (
+            "daytona" in (exc_type.__module__ or "")
+        ):
+            if getattr(helper.span, "name", None) in _DAYTONA_EXPECTED_NOTFOUND_SPANS:
+                helper.create_issue = False
+                helper.level = "warn"
+                _set_span_status_ok(helper.span)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def mark_observability_configured() -> None:
