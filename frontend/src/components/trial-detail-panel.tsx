@@ -92,7 +92,12 @@ import { StatusIcon } from "@/components/status-icon";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
 import { TrialNotRealSpendBadge } from "@/components/not-real-spend-badge";
 import { useSWRConfig } from "swr";
-import { isLiveQaTrial, taskHasActiveVerdict } from "@/lib/job-status";
+import {
+  isActiveTrialStatus,
+  isLiveQaTrial,
+  isWorkerOwnedTrialStatus,
+  taskHasActiveVerdict,
+} from "@/lib/job-status";
 import { isAnalysisStatusActive, trialKey, useTrial } from "@/lib/use-trial";
 import { embeddedCtrfSummary } from "@/lib/verifier-results";
 
@@ -202,6 +207,7 @@ const OUTCOME_CARD_TONE: Record<MatrixStatus, string> = {
   pending: "border-gray-500/30 bg-gray-500/10",
   queued: "border-purple-500/30 bg-purple-500/10",
   running: "border-blue-500/30 bg-blue-500/10",
+  paused: "border-amber-500/30 bg-amber-500/10",
 };
 
 type AnalysisLogState =
@@ -747,10 +753,10 @@ function getQueueSnapshotItems(trial: Trial): string[] {
 }
 
 function hasLiveQueueSnapshot(trial: Trial): boolean {
-  return ["queued", "retrying", "running", "pending"].includes(trial.status);
+  return isActiveTrialStatus(trial.status);
 }
 
-type SandboxBackendId = "daytona" | "modal" | "ec2";
+type SandboxBackendId = "daytona" | "modal" | "archil" | "ec2";
 
 type SandboxBackend = {
   id: SandboxBackendId;
@@ -776,6 +782,10 @@ const SANDBOX_BACKENDS: Record<
     logoSrc: "/modal-logo-icon.png",
     logoWidth: 10,
   },
+  archil: {
+    id: "archil",
+    label: "Archil",
+  },
   ec2: {
     id: "ec2",
     label: "EC2",
@@ -789,6 +799,7 @@ function normalizeSandboxBackend(
   if (
     normalized === "daytona" ||
     normalized === "modal" ||
+    normalized === "archil" ||
     normalized === "ec2"
   ) {
     return normalized;
@@ -1245,7 +1256,8 @@ export function TrialDetailPanel({
     trial.reward,
     trial.error_message
   );
-  const showLive = trial.status === "running" || trial.status === "retrying";
+  const showLive =
+    isWorkerOwnedTrialStatus(trial.status) || trial.status === "retrying";
   const effectiveTab =
     activeTab === "live" && !showLive ? "summary" : activeTab;
   const trialStatusConfig = STATUS_CONFIG[trialStatus];
@@ -1444,7 +1456,9 @@ export function TrialDetailPanel({
                                 ? "text-purple-500"
                                 : trialStatus === "running"
                                   ? "text-blue-500"
-                                  : "text-gray-500",
+                                  : trialStatus === "paused"
+                                    ? "text-amber-500"
+                                    : "text-gray-500",
                       (trialStatus === "pending" ||
                         trialStatus === "queued" ||
                         trialStatus === "running") &&

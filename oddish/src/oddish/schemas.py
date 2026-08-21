@@ -1385,7 +1385,7 @@ class ExperimentCombineResponse(BaseModel):
         0,
         description=(
             "Source trials skipped because they were not finished "
-            "(still pending/queued/running) at combine time"
+            "(still pending/queued/running/paused) at combine time"
         ),
     )
     artifacts_copied: int = Field(

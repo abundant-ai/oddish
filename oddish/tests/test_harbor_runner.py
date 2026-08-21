@@ -787,10 +787,8 @@ def test_restricted_cursor_gets_transport_hosts_and_web_hardening(tmp_path):
         model_name="cursor/composer",
         **agent_config.kwargs,
     )
-    assert agent.build_cli_flags() == (
-        "--exclude-tools web_search_tool_call "
-        "--exclude-tools web_fetch_tool_call"
-    )
+    assert agent.build_cli_flags() == ""
+    assert agent._oddish_disable_web_tools is True
 
 
 @pytest.mark.parametrize("shape", ["public-compose", "restricted-kube"])
@@ -1927,7 +1925,11 @@ def test_run_harbor_trial_async_skips_temp_root_preflight_without_task_patch(
     monkeypatch.setattr(
         harbor_runner, "validate_task_timeout_config", lambda path: None
     )
-    monkeypatch.setattr(harbor_runner, "_build_agent_config", lambda **kwargs: object())
+    monkeypatch.setattr(
+        harbor_runner,
+        "_build_agent_config",
+        lambda **kwargs: SimpleNamespace(kwargs={}),
+    )
     monkeypatch.setattr(harbor_runner, "TaskConfig", lambda path: path)
     monkeypatch.setattr(harbor_runner, "JobConfig", lambda **kwargs: kwargs)
     monkeypatch.setattr(harbor_runner, "Job", _FakeJob)
@@ -3726,6 +3728,27 @@ def test_store_trial_results_retries_execution_exception_without_outcome(monkeyp
     assert trial.finished_at is None
     assert trial.error_message == "ConnectionResetError: worker transport disappeared"
     assert stored == (False, False)
+
+
+def test_store_trial_results_fails_non_retryable_execution_exception(monkeypatch):
+    trial = _make_retry_decision_trial(attempts=1, max_attempts=6)
+    _install_retry_decision_session_fakes(monkeypatch, trial)
+
+    stored = asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id="trial-1",
+            outcome=None,
+            trial_s3_key=None,
+            execution_error="QuotaPauseControlError: snapshot failed",
+            execution_retryable=False,
+            trial_attempt=trial.attempts,
+        )
+    )
+
+    assert trial.status == trial_handler.TrialStatus.FAILED
+    assert trial.finished_at is not None
+    assert trial.error_message == "QuotaPauseControlError: snapshot failed"
+    assert stored == (True, True)
 
 
 def test_store_trial_results_retries_runtime_cancel_with_budget(monkeypatch):

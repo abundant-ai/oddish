@@ -47,6 +47,7 @@ from oddish.core.tags.projection import (
 )
 from oddish.config import normalize_model_id
 from oddish.db import (
+    ACTIVE_TRIAL_STATUSES,
     ExperimentModel,
     TagAssignmentModel,
     TagAssignmentScope,
@@ -61,6 +62,7 @@ from oddish.db import (
     VerdictStatus,
     WorkerJobModel,
     WorkerJobStatus,
+    WORKER_OWNED_TRIAL_STATUSES,
     experiment_trials,
     get_session,
     task_experiments,
@@ -495,14 +497,7 @@ def _build_aggregates_for_experiment_ids(
             func.count(
                 case(
                     (
-                        TrialModel.status.in_(
-                            [
-                                TrialStatus.PENDING,
-                                TrialStatus.QUEUED,
-                                TrialStatus.RUNNING,
-                                TrialStatus.RETRYING,
-                            ]
-                        ),
+                        TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
                         1,
                     )
                 )
@@ -1669,7 +1664,7 @@ async def get_model_usage_core(
         # silently counting as $0 like a raw SUM(cost_usd) would. Requires
         # grouping by TrialModel.model (below) so the per-row estimate resolves.
         *settled_cost_columns(),
-        func.count(case((TrialModel.status == TrialStatus.RUNNING, 1))).label(
+        func.count(case((TrialModel.status.in_(WORKER_OWNED_TRIAL_STATUSES), 1))).label(
             "running"
         ),
         func.count(case((TrialModel.status == TrialStatus.RETRYING, 1))).label(

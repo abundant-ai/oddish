@@ -40,6 +40,7 @@ from oddish.db import (
     TaskModel,
     TrialModel,
     TrialStatus,
+    is_worker_owned_trial_status,
     get_session,
 )
 from oddish.core.harbor_artifacts import cache_write_tokens_from_trajectory
@@ -407,7 +408,7 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
                 raise ValueError(
                     f"Trial {trial_id} disappeared mid-run; cannot mark SUCCESS"
                 )
-        elif trial.status == TrialStatus.RUNNING:
+        elif is_worker_owned_trial_status(trial.status):
             if failure is not None:
                 trial.status = TrialStatus.FAILED
                 trial.error_message = str(failure)
@@ -828,7 +829,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
         trial = await session.get(TrialModel, trial_id, with_for_update=True)
         if trial is None:
             return
-        owns_outcome = trial.status == TrialStatus.RUNNING
+        owns_outcome = is_worker_owned_trial_status(trial.status)
         if owns_outcome:
             trial.harbor_result_path = str(trials_dir)
             if reward_value is not None:

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import useSWR from "swr";
 import { ProbeDetailPanel } from "@/components/probe-detail-panel";
+import { isWorkerOwnedTrialStatus } from "@/lib/job-status";
 
 // "cheat_ratio"/"ratio" are legacy aliases — normalizeMetric maps them to "none".
 type EvaluationMetric = "result_focus" | "none" | "cheat_ratio" | "ratio";
@@ -45,6 +46,7 @@ function probeLabel(t: Trial): string {
 function statusLabel(t: Trial): string {
   if (t.status === "queued" || t.status === "pending") return "queued";
   if (t.status === "running") return "running";
+  if (t.status === "paused") return "paused";
   if (t.status === "success") return "done";
   if (t.status === "failed") return "failed";
   return t.status;
@@ -70,11 +72,11 @@ function resultDisplay(t: Trial): ResultDisplay {
         title: "Trial queued",
       };
     }
-    if (t.status === "running") {
+    if (isWorkerOwnedTrialStatus(t.status)) {
       return {
         text: "awaiting answer",
         variant: "muted",
-        title: "Trial running",
+        title: `Trial ${statusLabel(t)}`,
       };
     }
     if (t.status === "failed") {
@@ -131,7 +133,7 @@ function resultDisplay(t: Trial): ResultDisplay {
   if (t.status === "queued" || t.status === "pending") {
     return { text: "—", variant: "muted" };
   }
-  if (t.status === "running") {
+  if (isWorkerOwnedTrialStatus(t.status)) {
     return { text: "—", variant: "muted", title: "Trial in progress" };
   }
   // Harness-level failure (agent didn't get to run, or backend orphaned)

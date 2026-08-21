@@ -39,6 +39,7 @@ from oddish.core.verdict_state import (
     reset_verdict,
 )
 from oddish.db import (
+    ACTIVE_TRIAL_STATUSES,
     AGENT_TRIAL_KIND,
     AnalysisStatus,
     ExperimentModel,
@@ -52,6 +53,7 @@ from oddish.db import (
     WorkerJobModel,
     WorkerJobStatus,
     generate_id,
+    is_active_trial_status,
     utcnow,
 )
 from oddish.db.storage import extract_s3_key_from_path, get_storage_client
@@ -83,12 +85,6 @@ class TaskQAStageAdmission:
     task_version_id: str | None = None
 
 
-ACTIVE_TRIAL_STATUSES = (
-    TrialStatus.PENDING,
-    TrialStatus.QUEUED,
-    TrialStatus.RUNNING,
-    TrialStatus.RETRYING,
-)
 ACTIVE_WORKER_JOB_STATUSES = (
     WorkerJobStatus.QUEUED,
     WorkerJobStatus.RUNNING,
@@ -302,7 +298,7 @@ async def cancel_tasks_runs(
     cancelled_trial_ids: set[str] = set()
     for trial in trials:
         trial_updated = False
-        if trial.id in canceled_trial_kinds or trial.status in ACTIVE_TRIAL_STATUSES:
+        if trial.id in canceled_trial_kinds or is_active_trial_status(trial.status):
             # Modal function-call ids now live only on ``worker_jobs``;
             # the ``UPDATE worker_jobs ... RETURNING`` above is the
             # single source for FCs to terminate.
@@ -335,7 +331,7 @@ async def cancel_tasks_runs(
         for trial in all_trials
         if trial.id not in cancelled_trial_ids
         and (
-            trial.status in ACTIVE_TRIAL_STATUSES
+            is_active_trial_status(trial.status)
             or trial.analysis_status in ACTIVE_PIPELINE_STATUSES
         )
     }
@@ -1564,7 +1560,7 @@ async def start_qa_for_task(session: AsyncSession, task: TaskModel) -> bool:
 async def live_analysis_trial_id(
     session: AsyncSession, task_id: str, *, kind: str
 ) -> str | None:
-    """Id of a live (pending/queued/running/retrying) non-superseded trial
+    """Id of a live (pending/queued/running/paused/retrying) non-superseded trial
     of ``kind`` for this task, or None. The live row itself is the
     in-progress marker for analysis stages: status flags can be stale after
     a crash, the trial row cannot."""
@@ -1619,14 +1615,7 @@ async def maybe_start_task_qa_stage(
                 ),
                 TrialModel.kind == AGENT_TRIAL_KIND,
                 TrialModel.superseded_by_trial_id.is_(None),
-                TrialModel.status.in_(
-                    [
-                        TrialStatus.PENDING,
-                        TrialStatus.QUEUED,
-                        TrialStatus.RUNNING,
-                        TrialStatus.RETRYING,
-                    ]
-                ),
+                TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
             )
         )
     )
@@ -2068,14 +2057,7 @@ async def maybe_advance_legacy_analyzing_task(
                 TrialModel.task_id == task_id,
                 TrialModel.kind == "agent",
                 TrialModel.superseded_by_trial_id.is_(None),
-                TrialModel.status.in_(
-                    [
-                        TrialStatus.PENDING,
-                        TrialStatus.QUEUED,
-                        TrialStatus.RUNNING,
-                        TrialStatus.RETRYING,
-                    ]
-                ),
+                TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
             )
         )
     )

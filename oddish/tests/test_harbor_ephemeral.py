@@ -480,6 +480,15 @@ def test_spawn_args_requests_daytona_extra_for_daytona_env():
     assert req.startswith("harbor[daytona] @ git+")
 
 
+def test_spawn_args_requests_archil_extra_for_archil_env():
+    args = harbor_ephemeral._spawn_args(
+        _SOURCE, _SHA, environment=EnvironmentType.ARCHIL
+    )
+    req = args[args.index("--with") + 1]
+    assert req == harbor_git_requirement(_SOURCE, _SHA, extras=["archil"])
+    assert req.startswith("harbor[archil] @ git+")
+
+
 def test_ephemeral_daytona_forces_ownership_labels():
     raw_kwargs = {
         "auto_labels": False,

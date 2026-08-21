@@ -177,6 +177,8 @@ def trial_outcome(trial: TrialSnapshot) -> str:
         return "queued"
     if status == "running":
         return "running"
+    if status == "paused":
+        return "paused"
     return "pending"
 
 
@@ -193,6 +195,7 @@ def outcome_glyph(trial: TrialSnapshot) -> str:
         "scoreless": ":heavy_minus_sign:",
         "queued": ":clock3:",
         "running": ":arrows_counterclockwise:",
+        "paused": ":double_vertical_bar:",
         "pending": ":white_circle:",
     }[outcome]
 
@@ -419,6 +422,7 @@ def _result_summary(counts: Counter[str]) -> str:
         ("skipped", ":no_entry_sign:", "skipped"),
         ("scoreless", ":heavy_minus_sign:", "scoreless"),
         ("running", ":arrows_counterclockwise:", "running"),
+        ("paused", ":double_vertical_bar:", "paused"),
         ("queued", ":clock3:", "queued"),
         ("pending", ":white_circle:", "pending"),
     ):

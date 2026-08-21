@@ -527,8 +527,11 @@ async def test_cost_checkpoint_enforces_trial_quota(monkeypatch):
     patch_db(monkeypatch, price=0.25)
     calls = []
 
-    async def record_enforcement(*, org_id, billed_user_id, caller_trial_id):
+    async def record_enforcement(
+        *, org_id, billed_user_id, caller_trial_id, quota_pause_callback
+    ):
         calls.append((org_id, billed_user_id, caller_trial_id))
+        quota_pause_callback(True)
         return 0
 
     monkeypatch.setattr(quota_enforcement, "enforce_trial_quotas", record_enforcement)
@@ -540,6 +543,9 @@ async def test_cost_checkpoint_enforces_trial_quota(monkeypatch):
     await tailer._tick()
 
     assert calls == [("org-1", "user-1", "t1")]
+    from oddish.workers.harbor import quota_control
+
+    assert quota_control._requests.pop("t1") is True
 
 
 @pytest.mark.asyncio

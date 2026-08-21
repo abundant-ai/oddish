@@ -87,7 +87,7 @@ Options
 - `--task-name`, `-t TEXT` - Include task glob filter; can be passed multiple times
 - `--exclude-task-name`, `-x TEXT` - Exclude task glob filter; can be passed multiple times
 - `--n-tasks`, `-l INTEGER` - Limit the number of selected tasks after filtering
-- `--env`, `-e` - Execution environment: `docker`, `daytona`, `ec2`, `e2b`, `modal`, `runloop`, or `gke`. Hosted EC2 is opt-in and must be enabled by the deployment operator; Daytona remains the CPU default.
+- `--env`, `-e` - Execution environment: `docker`, `daytona`, `ec2`, `e2b`, `modal`, `archil`, `runloop`, or `gke`. Hosted EC2 is opt-in and must be enabled by the deployment operator; Daytona remains the CPU default.
 - `--priority`, `-P TEXT` - Queue priority, typically `low` or `high`
 - `--experiment`, `-E TEXT` - Reuse or create an experiment ID/name
 - `--user`, `-u TEXT` - Override the author attached to the run. Defaults to the authenticated identity (Clerk-linked email for API keys / dashboard sessions); set this only to attribute a run to someone other than yourself.

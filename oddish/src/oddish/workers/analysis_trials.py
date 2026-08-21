@@ -53,6 +53,7 @@ from oddish.core.verdict_sync import (
     sync_verdict_to_task,
 )
 from oddish.db import (
+    ACTIVE_TRIAL_STATUSES,
     AnalysisStatus,
     TaskModel,
     TaskVersionModel,
@@ -808,14 +809,7 @@ async def _qa_import_still_current(
         TrialModel.task_id == task_id,
         TrialModel.kind == "agent",
         TrialModel.superseded_by_trial_id.is_(None),
-        TrialModel.status.in_(
-            [
-                TrialStatus.PENDING,
-                TrialStatus.QUEUED,
-                TrialStatus.RUNNING,
-                TrialStatus.RETRYING,
-            ]
-        ),
+        TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
     ]
     if graded_version_id is not None:
         conditions.append(TrialModel.task_version_id == graded_version_id)

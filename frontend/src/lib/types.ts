@@ -10,6 +10,7 @@ type TrialStatus =
   | "pending"
   | "queued"
   | "running"
+  | "paused"
   | "success"
   | "failed"
   | "retrying"
