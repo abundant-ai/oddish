@@ -43,23 +43,20 @@ class GkeBackend:
         # Provider defaults first, caller kwargs last (caller wins), matching
         # the Daytona spread. Names mirror ``GKEEnvironment.__init__``.
         #
-        # flex_start and spot are two encodings of ONE three-valued choice, and
-        # Harbor rejects both-true outright. A caller who asks for one mode has
-        # implicitly declined the other, so an explicit request clears the
-        # deployment default for its opposite. Without this, a deployment
-        # defaulting to flex-start turns a plain ``--environment-kwarg
-        # spot=true`` into a both-true error -- repeated for all six trial
-        # attempts, because the failure is deterministic but classified as
-        # retryable.
+        # ``provisioning_mode`` is the one key that selects accelerator
+        # capacity -- 'flex-start', 'spot' or 'on-demand'. It needs no
+        # reconciliation against the deployment default, because the spread
+        # already does that whole job: a caller who names a mode overwrites
+        # the default, and one key cannot contradict itself.
         #
-        # Keyed on PRESENCE, not on value: ``spot=false`` is a statement about
-        # spot, not a request to turn off a deployment's flex-start default.
-        flex_start = settings.gke_flex_start
-        spot = settings.gke_spot
-        if base_kwargs.get("spot") is True and "flex_start" not in base_kwargs:
-            flex_start = False
-        if base_kwargs.get("flex_start") is True and "spot" not in base_kwargs:
-            spot = False
+        # The two booleans it replaced did need it. Naming one mode left the
+        # other at its deployment default, and flex_start=true beside
+        # spot=true asks for a node pool that cannot exist, so an explicit
+        # request had to clear its opposite -- keyed on presence, because
+        # spot=false was a statement about spot rather than a vote against a
+        # flex-start default. Harbor removed the booleans, so that state is
+        # unrepresentable and the reconciliation has nothing left to
+        # reconcile.
         return {
             "cluster_name": settings.gke_cluster_name,
             "region": settings.gke_region,
@@ -67,8 +64,7 @@ class GkeBackend:
             "namespace": settings.gke_namespace,
             "registry_location": settings.gke_registry_location,
             "registry_name": settings.gke_registry_name,
-            "flex_start": flex_start,
-            "spot": spot,
+            "provisioning_mode": settings.gke_provisioning_mode,
             "auto_build_missing_image": settings.gke_auto_build_missing_image,
             "auto_provision_cluster": settings.gke_auto_provision_cluster,
             "pod_ready_timeout_sec": settings.gke_pod_ready_timeout_sec,

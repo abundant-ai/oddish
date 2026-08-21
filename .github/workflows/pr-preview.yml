@@ -187,10 +187,9 @@ jobs:
       ODDISH_GKE_REGISTRY_LOCATION: "us-east5"
       ODDISH_GKE_REGISTRY_NAME: "oddish-envs"
       ODDISH_GKE_AUTO_PROVISION_CLUSTER: "true"
-      # Flex-start queues for capacity instead of failing. Both must never be
-      # set: harbor rejects the pair because DWS does not support Spot VMs.
-      ODDISH_GKE_FLEX_START: "true"
-      ODDISH_GKE_SPOT: "false"
+      # Flex-start queues for capacity instead of failing outright. One key,
+      # three values: "on-demand", "spot", "flex-start".
+      ODDISH_GKE_PROVISIONING_MODE: "flex-start"
       ODDISH_MODAL_API_MIN_CONTAINERS: "0"
       ODDISH_MODAL_API_BUFFER_CONTAINERS: "0"
       ODDISH_MODAL_API_MAX_CONTAINERS: "2"
