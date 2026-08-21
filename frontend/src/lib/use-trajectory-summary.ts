@@ -1,16 +1,19 @@
 "use client";
 
+import { useEffect } from "react";
 import useSWR from "swr";
+import useSWRMutation from "swr/mutation";
 import type { TrajectorySummary } from "@/lib/types";
 
-type PendingSummaryStatus = "queued" | "running" | "retrying" | "blocked";
+type PendingSummaryStatus = "queued" | "running" | "retrying" | "settling";
 
 export type TrajectorySummaryResource =
   | { status: "ready"; summary: TrajectorySummary }
+  | { status: "missing" }
   | {
       status: PendingSummaryStatus;
       summary: null;
-      jobId?: string;
+      jobId: string;
       retryAfterMs: number;
     };
 
@@ -18,36 +21,37 @@ const pendingStatuses = new Set<PendingSummaryStatus>([
   "queued",
   "running",
   "retrying",
-  "blocked",
+  "settling",
 ]);
 
-export async function fetchTrajectorySummary(
-  url: string
-): Promise<TrajectorySummaryResource> {
-  const response = await fetch(url, { credentials: "include" });
-  const body = await response.json().catch(() => null);
+export function parseTrajectorySummaryResponse(
+  response: Pick<Response, "ok" | "status" | "statusText">,
+  body: unknown
+): TrajectorySummaryResource {
+  if (response.status === 404) return { status: "missing" };
   if (response.status === 202) {
-    const rawStatus =
-      body && typeof body === "object" && "status" in body
-        ? String(body.status).toLowerCase()
-        : "queued";
-    const pendingStatus = pendingStatuses.has(rawStatus as PendingSummaryStatus)
-      ? (rawStatus as PendingSummaryStatus)
-      : "queued";
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      throw new Error("Malformed trajectory summary pending response");
+    }
+    const status = "status" in body ? body.status : null;
+    const jobId = "job_id" in body ? body.job_id : null;
+    const retryAfterMs = "retry_after_ms" in body ? body.retry_after_ms : null;
+    if (
+      typeof status !== "string" ||
+      !pendingStatuses.has(status as PendingSummaryStatus) ||
+      typeof jobId !== "string" ||
+      jobId.length === 0 ||
+      typeof retryAfterMs !== "number" ||
+      !Number.isFinite(retryAfterMs) ||
+      retryAfterMs <= 0
+    ) {
+      throw new Error("Malformed trajectory summary pending response");
+    }
     return {
-      status: pendingStatus,
+      status: status as PendingSummaryStatus,
       summary: null,
-      jobId:
-        body && typeof body === "object" && "job_id" in body
-          ? String(body.job_id)
-          : undefined,
-      retryAfterMs:
-        body &&
-        typeof body === "object" &&
-        "retry_after_ms" in body &&
-        Number.isFinite(Number(body.retry_after_ms))
-          ? Number(body.retry_after_ms)
-          : 3000,
+      jobId,
+      retryAfterMs,
     };
   }
   if (!response.ok) {
@@ -59,25 +63,108 @@ export async function fetchTrajectorySummary(
     (error as Error & { status?: number }).status = response.status;
     throw error;
   }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new Error("Malformed trajectory summary response");
+  }
   return { status: "ready", summary: body as TrajectorySummary };
 }
 
-/**
- * The one SWR handle for a trial's trajectory summary. The viewer owns it and
- * passes the result to its summary, activity, and step-group children.
- */
-export function useTrajectorySummary(
-  trialId: string,
+async function readTrajectorySummaryResponse(
+  response: Response
+): Promise<TrajectorySummaryResource> {
+  const body = await response.json().catch(() => null);
+  return parseTrajectorySummaryResponse(response, body);
+}
+
+export async function fetchTrajectorySummary(
+  url: string
+): Promise<TrajectorySummaryResource> {
+  return readTrajectorySummaryResponse(
+    await fetch(url, { credentials: "include" })
+  );
+}
+
+interface UseTrajectorySummaryOptions {
+  trialId: string;
+  apiBaseUrl?: string;
+  enabled?: boolean;
+  canRegenerate?: boolean;
+}
+
+/** Owns the summary read, paid refresh event, cache transition, and polling. */
+export function useTrajectorySummary({
+  trialId,
   apiBaseUrl = "/api",
-  enabled = true
-) {
-  return useSWR<TrajectorySummaryResource>(
-    enabled ? `${apiBaseUrl}/trials/${trialId}/trajectory/summary` : null,
+  enabled = true,
+  canRegenerate = false,
+}: UseTrajectorySummaryOptions) {
+  const summaryUrl = enabled
+    ? `${apiBaseUrl}/trials/${trialId}/trajectory/summary`
+    : null;
+  const summaryQuery = useSWR<TrajectorySummaryResource>(
+    summaryUrl,
     fetchTrajectorySummary,
     {
       revalidateOnFocus: false,
-      refreshInterval: (value) =>
-        value && value.status !== "ready" ? value.retryAfterMs : 0,
     }
   );
+  const resource = summaryQuery.data;
+  const revalidateSummary = summaryQuery.mutate;
+  const pendingResource =
+    resource && resource.status !== "ready" && resource.status !== "missing"
+      ? resource
+      : null;
+  useEffect(() => {
+    if (!summaryUrl || !pendingResource || summaryQuery.error) return;
+
+    let cancelled = false;
+    let timer: number | undefined;
+    function schedulePoll(afterMs: number) {
+      timer = window.setTimeout(async () => {
+        const next = await revalidateSummary();
+        if (
+          cancelled ||
+          !next ||
+          next.status === "ready" ||
+          next.status === "missing"
+        ) {
+          return;
+        }
+        schedulePoll(next.retryAfterMs);
+      }, afterMs);
+    }
+
+    schedulePoll(pendingResource.retryAfterMs);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [pendingResource, revalidateSummary, summaryQuery.error, summaryUrl]);
+
+  const refreshMutation = useSWRMutation<TrajectorySummaryResource>(
+    canRegenerate ? summaryUrl : null,
+    async (url: string) =>
+      readTrajectorySummaryResponse(
+        await fetch(url, { method: "POST", credentials: "include" })
+      )
+  );
+
+  async function regenerate() {
+    if (!summaryUrl || !canRegenerate) {
+      throw new Error("Trajectory summary regeneration is not available");
+    }
+    const resource = await refreshMutation.trigger(undefined, {
+      throwOnError: false,
+    });
+    if (!resource) return undefined;
+    await summaryQuery.mutate(resource, { revalidate: false });
+    return resource;
+  }
+
+  return {
+    ...summaryQuery,
+    regenerate,
+    regenerationError: refreshMutation.error,
+    isStartingRegeneration: refreshMutation.isMutating,
+  };
 }

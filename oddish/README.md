@@ -66,6 +66,7 @@ reference. The main commands are:
 - `oddish logs` — stream a running trial's live transcript and cost estimate (`--follow` to poll until it ends); finished trials are served by `oddish pull` instead.
 - `oddish costs` — billable-spend accounting (org-wide, or per-user with `--user`).
 - `oddish admin concurrency` — inspect, set, or clear operator queue-key concurrency overrides with verified readback.
+- `oddish cost-exclusions` — hide spend for models and experiments that were never really paid for.
 - `oddish cancel` — cancel active runs or task-level QA.
 - `oddish pull` — download logs, results, trajectories, and artifacts; `--debug-files` lists a trial's raw S3 inventory instead.
 - `oddish combine` — merge finished trials from multiple experiments.

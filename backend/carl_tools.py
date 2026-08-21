@@ -36,6 +36,7 @@ _SQL_FORBIDDEN_NODES = {
     "RangeTableFunc",
 }
 _SQL_FORBIDDEN_COLUMNS = {
+    "llm_key_hash",
     "harbor_config",
     "idempotency_key",
     "result",
@@ -44,7 +45,6 @@ _SQL_FORBIDDEN_COLUMNS = {
     "trial_s3_key",
     "harbor_result_path",
     "orig_s3_src",
-    "llm_key_hash",
     "trajectory_summary",
     "trajectory_graph",
     "analysis",

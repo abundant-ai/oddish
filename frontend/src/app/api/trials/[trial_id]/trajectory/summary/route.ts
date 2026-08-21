@@ -6,9 +6,13 @@ import {
   getClerkToken,
 } from "@/lib/backend-config";
 
-export async function GET(
-  _request: Request,
-  { params }: { params: Promise<{ trial_id: string }> },
+type SummaryRouteContext = {
+  params: Promise<{ trial_id: string }>;
+};
+
+async function forwardSummaryRequest(
+  method: "GET" | "POST",
+  { params }: SummaryRouteContext,
 ) {
   try {
     const { getToken } = await auth();
@@ -18,6 +22,7 @@ export async function GET(
 
     const url = getBackendUrl("trials", `/${trial_id}/trajectory/summary`);
     const res = await fetch(url, {
+      method,
       cache: "no-store",
       headers: getAuthHeaders(token),
     });
@@ -46,11 +51,23 @@ export async function GET(
         status: res.status,
       });
     }
-    return NextResponse.json(data);
+    // Forward the upstream status even when ok: a 202 pending-summary body
+    // must stay a 202 — the polling hook keys on the status code, and a
+    // flattened 200 would make it treat the pending payload as the summary
+    // and stop polling.
+    return NextResponse.json(data, { status: res.status });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
       { status: 503 },
     );
   }
+}
+
+export async function GET(_request: Request, context: SummaryRouteContext) {
+  return forwardSummaryRequest("GET", context);
+}
+
+export async function POST(_request: Request, context: SummaryRouteContext) {
+  return forwardSummaryRequest("POST", context);
 }

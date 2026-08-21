@@ -6,6 +6,7 @@ from oddish.cli.backfill_analysis import backfill_analysis
 from oddish.cli.cancel import cancel
 from oddish.cli.collect import collect
 from oddish.cli.combine import combine
+from oddish.cli.cost_exclusions import cost_exclusions_app
 from oddish.cli.costs import costs
 from oddish.cli.delete import delete
 from oddish.cli.experiment import experiment_app
@@ -36,6 +37,7 @@ app.command(help="Stream a running trial's live transcript and running cost.")(l
 app.command()(cancel)
 app.command()(combine)
 app.command()(costs)
+app.add_typer(cost_exclusions_app, name="cost-exclusions")
 app.command()(collect)
 app.command()(delete)
 app.add_typer(admin_app, name="admin")

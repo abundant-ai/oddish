@@ -920,6 +920,10 @@ def normalize_model_id(model: str | None) -> str | None:
     return normalized
 
 
+def model_family_key(model: str | None) -> str:
+    return (normalize_model_id(model) or "").rsplit("/", 1)[-1]
+
+
 def _build_agent_provider_map() -> dict[str, str]:
     """Maps Harbor agent names to API providers for rate limiting.
 

@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import set_committed_value
 
+from oddish.core.cost_exclusions import load_cost_exclusions
 from oddish.core.experiment_membership import trial_in_experiment
 from oddish.core.helpers import (
     build_task_status_responses_from_counts,
@@ -20,7 +21,7 @@ from oddish.core.helpers import (
 )
 from oddish.core.model_display_names import (
     apply_model_display_names,
-    load_model_display_names,
+    experiment_display_names,
 )
 from oddish.db import (
     ExperimentModel,
@@ -142,10 +143,20 @@ async def get_public_task_for_experiment(
 
 
 async def get_public_trial_for_experiment(
-    session: AsyncSession, public_token: str, trial_id: str
+    session: AsyncSession,
+    public_token: str,
+    trial_id: str,
+    *,
+    experiment: ExperimentModel | None = None,
 ) -> TrialModel | None:
-    """Get a public trial only through the share token that exposes it."""
-    experiment = await get_public_experiment(session, public_token)
+    """Get a public trial only through the share token that exposes it.
+
+    Pass ``experiment`` when the caller already loaded the row for this same
+    token to skip the redundant lookup; it must be what
+    ``get_public_experiment`` would return for ``public_token``.
+    """
+    if experiment is None:
+        experiment = await get_public_experiment(session, public_token)
     if not experiment:
         return None
     result = await session.execute(
@@ -216,9 +227,13 @@ async def list_experiment_trials_for_org(
     rows = result.all()
     trials = [trial for trial, _ in rows]
     queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=trials)
+    exclusions = await load_cost_exclusions(session)
     return [
         build_trial_response(
-            trial, task_path, queue_info=queue_info_by_trial_id.get(trial.id)
+            trial,
+            task_path,
+            queue_info=queue_info_by_trial_id.get(trial.id),
+            exclusions=exclusions,
         )
         for trial, task_path in rows
     ]
@@ -269,11 +284,13 @@ async def list_task_trials_for_task(
     rows = result.all()
     trials = [trial for trial, _ in rows]
     queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=trials)
+    exclusions = await load_cost_exclusions(session)
     return [
         build_trial_response(
             trial,
             task_path,
             queue_info=queue_info_by_trial_id.get(trial.id),
+            exclusions=exclusions,
         )
         for trial, task_path in rows
     ]
@@ -310,7 +327,7 @@ async def list_task_trials_for_public_experiment(
         )
         for trial, task_path in rows
     ]
-    apply_model_display_names(responses, await load_model_display_names(session))
+    apply_model_display_names(responses, experiment_display_names(experiment))
     return responses
 
 
