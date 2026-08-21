@@ -219,6 +219,10 @@ export function useTrajectorySummary({
       throw new Error("Trajectory summary regeneration is not available");
     }
     const resource = await refreshMutation.trigger(undefined, {
+      // The effect below owns every GET in this lifecycle. The mutation
+      // default would revalidate the same SWR key before this POST response is
+      // published, allowing an older response to be overwritten out of order.
+      revalidate: false,
       throwOnError: false,
     });
     if (!resource) return undefined;
