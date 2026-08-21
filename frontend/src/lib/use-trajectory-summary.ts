@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import useSWR from "swr";
 import useSWRMutation from "swr/mutation";
 import type { TrajectorySummary } from "@/lib/types";
@@ -152,14 +153,41 @@ export function useTrajectorySummary({
     fetchTrajectorySummary,
     {
       revalidateOnFocus: false,
-      refreshInterval: (latest) => {
-        const refresh = latest?.refresh;
-        return refresh && refresh.status !== "failed"
-          ? refresh.retryAfterMs
-          : 0;
-      },
     }
   );
+  const activeRefresh =
+    summaryQuery.data?.refresh?.status === "failed"
+      ? null
+      : summaryQuery.data?.refresh;
+  const revalidateSummary = summaryQuery.mutate;
+  useEffect(() => {
+    if (!summaryUrl || !activeRefresh || summaryQuery.error) return;
+
+    let cancelled = false;
+    let timer: number | undefined;
+    function schedulePoll(afterMs: number) {
+      timer = window.setTimeout(async () => {
+        try {
+          const next = await revalidateSummary();
+          const nextRefresh =
+            next?.refresh?.status === "failed" ? null : next?.refresh;
+          if (cancelled || !nextRefresh) return;
+          // If SWR considers two responses equal, React will not rerender and
+          // restart this effect. Continue the same lifecycle from the response.
+          schedulePoll(nextRefresh.retryAfterMs);
+        } catch {
+          // SWR exposes the request error through summaryQuery.error. Stop this
+          // lifecycle until the user explicitly retries the read.
+        }
+      }, afterMs);
+    }
+
+    schedulePoll(activeRefresh.retryAfterMs);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [activeRefresh, revalidateSummary, summaryQuery.error, summaryUrl]);
 
   const refreshMutation = useSWRMutation<TrajectorySummaryResource>(
     canRegenerate ? summaryUrl : null,
@@ -177,13 +205,8 @@ export function useTrajectorySummary({
       throwOnError: false,
     });
     if (!resource) return undefined;
-    await summaryQuery.mutate(resource, {
-      // A query that previously settled at 404 has no refresh timer. Start one
-      // GET immediately after POST enters an active lifecycle; subsequent
-      // responses own their polling interval through refreshInterval above.
-      revalidate:
-        resource.refresh !== null && resource.refresh.status !== "failed",
-    });
+    // Publishing the POST response starts the effect-owned polling lifecycle.
+    await summaryQuery.mutate(resource, { revalidate: false });
     return resource;
   }
 
