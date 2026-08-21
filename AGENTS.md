@@ -206,8 +206,18 @@ permanently. The output schema (`AgentCapabilitiesOutput` and sub-models) is
 preserved in `oddish.analyze.models`, and
 `oddish/src/oddish/analyze/prompts/agent_capabilities.txt` is kept, so the
 feature can return as a `'capabilities'` analysis trial.
-Shared trial drawers open on Summary and fetch a trajectory only after explicit
-user or URL intent. Collapsed trajectory steps must not mount their message,
+Shared trial drawers open terminal trials from the slim row already owned by
+the task or experiment page; opening the drawer must not fetch the full
+`GET /trials/{id}` resource. The QA card may fetch that resource while it owns
+an active-analysis polling lifecycle. Drawers open on Summary and fetch a
+trajectory only after explicit user or URL intent. The Trajectory tab requests
+`GET /trials/{id}/trajectory?include_summary=1`, which returns the ATIF
+trajectory plus the current summary resource as
+`{"trajectory": ..., "summary_resource": {"summary": ..., "refresh": ...}}`
+after one trial authorization lookup. The public share route supports the same
+query and response shape. The legacy trajectory-without-query and
+`/trajectory/summary` contracts remain available to other clients. Collapsed
+trajectory steps must not mount their message,
 reasoning, tool, or observation bodies; those potentially large bodies mount
 only while the step is expanded. Trajectory summaries are written onto
 `trials.trajectory_summary` by the task's QA trial import or by a

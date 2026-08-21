@@ -2,14 +2,18 @@ import { NextResponse } from "next/server";
 import { getBackendUrl } from "@/lib/backend-config";
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ token: string; trial_id: string }> },
 ) {
   try {
     const { token, trial_id } = await params;
+    const includeSummary = new URL(request.url).searchParams.get(
+      "include_summary",
+    );
+    const search = includeSummary === "1" ? "?include_summary=1" : "";
     const url = getBackendUrl(
       "public/experiments",
-      `/${token}/trials/${trial_id}/trajectory`,
+      `/${token}/trials/${trial_id}/trajectory${search}`,
     );
     const res = await fetch(url, { cache: "no-store" });
 

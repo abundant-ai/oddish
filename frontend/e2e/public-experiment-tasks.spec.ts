@@ -109,6 +109,7 @@ test("public trial drawers defer trajectory work", async ({ page }) => {
     reward_total: 1,
   });
   let trajectoryRequests = 0;
+  let summaryRequests = 0;
 
   await page.route(`**/api/public/experiments/${token}`, (route) =>
     route.fulfill({
@@ -128,36 +129,42 @@ test("public trial drawers defer trajectory work", async ({ page }) => {
   );
   await page.route(
     `**/api/public/experiments/${token}/trials/task-1-2/trajectory/summary`,
-    (route) => route.fulfill({ status: 404, json: { detail: "not found" } })
+    (route) => {
+      summaryRequests += 1;
+      return route.fulfill({ status: 404, json: { detail: "not found" } });
+    }
   );
   await page.route(
-    `**/api/public/experiments/${token}/trials/task-1-2/trajectory`,
+    `**/api/public/experiments/${token}/trials/task-1-2/trajectory?*`,
     (route) => {
       trajectoryRequests += 1;
       return route.fulfill({
         json: {
-          schema_version: "1",
-          session_id: "session-1",
-          agent: {
-            name: "claude-code",
-            version: "1",
-            model_name: "masked-model",
-          },
-          steps: [
-            {
-              step_id: 1,
-              timestamp: "2026-07-14T00:00:01Z",
-              source: "agent",
+          trajectory: {
+            schema_version: "1",
+            session_id: "session-1",
+            agent: {
+              name: "claude-code",
+              version: "1",
               model_name: "masked-model",
-              message: "Short collapsed preview",
-              reasoning_content: "EXPENSIVE_STEP_BODY",
-              tool_calls: null,
-              observation: null,
-              metrics: null,
             },
-          ],
-          notes: null,
-          final_metrics: null,
+            steps: [
+              {
+                step_id: 1,
+                timestamp: "2026-07-14T00:00:01Z",
+                source: "agent",
+                model_name: "masked-model",
+                message: "Short collapsed preview",
+                reasoning_content: "EXPENSIVE_STEP_BODY",
+                tool_calls: null,
+                observation: null,
+                metrics: null,
+              },
+            ],
+            notes: null,
+            final_metrics: null,
+          },
+          summary_resource: { summary: null, refresh: null },
         },
       });
     }
@@ -178,6 +185,7 @@ test("public trial drawers defer trajectory work", async ({ page }) => {
 
   await page.getByRole("tab", { name: "Trajectory" }).click();
   await expect.poll(() => trajectoryRequests).toBe(1);
+  expect(summaryRequests).toBe(0);
   await expect(page.getByText("EXPENSIVE_STEP_BODY")).toHaveCount(0);
   await page.getByRole("button", { name: /^#1/ }).click();
   await expect(page.getByText("EXPENSIVE_STEP_BODY")).toBeVisible();

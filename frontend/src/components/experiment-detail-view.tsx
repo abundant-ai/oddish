@@ -1957,7 +1957,6 @@ export function ExperimentDetailView({
                 onDelete={onTrialDelete}
                 allowRetry={allowRetry}
                 showAnalysis={showAnalysis}
-                revalidateTrial={loadFullTrialOnOpen}
                 allowDelete={Boolean(onTrialDelete)}
                 apiBaseUrl={apiBaseUrl}
                 contentOnly={true}

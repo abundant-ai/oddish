@@ -89,8 +89,9 @@ async def get_trial_full(
 ) -> TrialResponse:
     """Full detail for a single trial by id.
 
-    The experiment grid loads only slim trials; clicking a cell fetches the
-    full trial here (timing, harbor, tokens, full analysis, etc.).
+    The experiment grid opens terminal trial drawers from its slim row. This
+    resource remains for direct links, active-analysis polling, and clients
+    that explicitly need timing, Harbor, token, or full-analysis fields.
     """
     auth.require_scope(APIKeyScope.READ)
 
@@ -387,11 +388,19 @@ async def get_trial_probe_artifacts(
 async def get_trial_trajectory(
     trial_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
+    include_summary: bool = Query(False),
 ) -> dict | None:
-    """Get ATIF trajectory.json for a trial (step-by-step agent actions)."""
+    """Get ATIF trajectory.json and, when requested, its summary resource."""
     auth.require_scope(APIKeyScope.READ)
     trial = await _get_authorized_trial(trial_id, auth)
-    return await read_trial_trajectory(trial)
+    trajectory = await read_trial_trajectory(trial)
+    if include_summary:
+        return {
+            "trajectory": trajectory,
+            "summary_resource": await _summary_resource_for_trial(trial)
+            or {"summary": None, "refresh": None},
+        }
+    return trajectory
 
 
 # Trial statuses the summary poller understands, mapped from TrialStatus
@@ -405,15 +414,15 @@ _SUMMARY_PENDING_STATUS = {
 }
 
 
-def _summary_refresh_response(
+def _summary_refresh_payload(
     summarize_trial: TrialModel, summary: dict | None
-) -> JSONResponse:
-    """Return published data and its replacement lifecycle without conflating them."""
+) -> tuple[int, dict]:
+    """Build published data and its replacement lifecycle without conflating them."""
     status = summarize_trial.status.value
     if status in {"failed", "skipped"} or summarize_trial.harbor_stage == "cancelled":
-        return JSONResponse(
-            status_code=200 if summary is not None else 409,
-            content={
+        return (
+            200 if summary is not None else 409,
+            {
                 "summary": summary,
                 "refresh": {
                     "status": "failed",
@@ -425,9 +434,9 @@ def _summary_refresh_response(
             },
         )
     if status in _SUMMARY_PENDING_STATUS:
-        return JSONResponse(
-            status_code=200 if summary is not None else 202,
-            content={
+        return (
+            200 if summary is not None else 202,
+            {
                 "summary": summary,
                 "refresh": {
                     "status": _SUMMARY_PENDING_STATUS[status],
@@ -441,14 +450,15 @@ def _summary_refresh_response(
     )
 
 
-@router.get("/trials/{trial_id}/trajectory/summary")
-async def get_trial_trajectory_summary(
-    trial_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
-) -> dict:
-    """Read the published summary or report the current refresh lifecycle."""
-    auth.require_scope(APIKeyScope.READ)
-    trial = await _get_authorized_trial(trial_id, auth)
+def _summary_refresh_response(
+    summarize_trial: TrialModel, summary: dict | None
+) -> JSONResponse:
+    status_code, content = _summary_refresh_payload(summarize_trial, summary)
+    return JSONResponse(status_code=status_code, content=content)
+
+
+async def _summary_resource_for_trial(trial: TrialModel) -> dict | None:
+    """Read the published summary and current replacement lifecycle."""
     if trial.trajectory_summary_refresh_trial_id:
         async with get_session() as session:
             refresh_trial = await session.get(
@@ -463,10 +473,33 @@ async def get_trial_trajectory_summary(
                 f"trial {trial.id} points to invalid summary refresh "
                 f"{trial.trajectory_summary_refresh_trial_id}"
             )
-        return _summary_refresh_response(refresh_trial, trial.trajectory_summary)
-    summary = trial.trajectory_summary
-    if summary is not None:
-        return {"summary": summary, "refresh": None}
+        return _summary_refresh_payload(refresh_trial, trial.trajectory_summary)[1]
+    if trial.trajectory_summary is not None:
+        return {"summary": trial.trajectory_summary, "refresh": None}
+    return None
+
+
+@router.get("/trials/{trial_id}/trajectory/summary")
+async def get_trial_trajectory_summary(
+    trial_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> dict:
+    """Read the published summary or report the current refresh lifecycle."""
+    auth.require_scope(APIKeyScope.READ)
+    trial = await _get_authorized_trial(trial_id, auth)
+    resource = await _summary_resource_for_trial(trial)
+    if resource is not None:
+        refresh = resource["refresh"]
+        if refresh is not None:
+            status_code = (
+                409
+                if refresh["status"] == "failed" and resource["summary"] is None
+                else 202
+                if refresh["status"] != "failed" and resource["summary"] is None
+                else 200
+            )
+            return JSONResponse(status_code=status_code, content=resource)
+        return resource
     raise HTTPException(status_code=404, detail="No trajectory summary for this trial")
 
 

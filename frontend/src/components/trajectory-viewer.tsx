@@ -49,7 +49,11 @@ import {
   toSegments,
   withOtherSegment,
 } from "@/lib/trajectory-segments";
-import { useTrajectorySummary } from "@/lib/use-trajectory-summary";
+import {
+  parseTrajectorySummaryResponse,
+  useTrajectorySummary,
+  type TrajectorySummaryResource,
+} from "@/lib/use-trajectory-summary";
 
 import { formatMs } from "@/lib/utils";
 
@@ -695,6 +699,11 @@ interface TrajectoryViewerProps {
   canRegenerateSummary?: boolean;
 }
 
+interface TrajectoryViewResource {
+  trajectory: Trajectory | null;
+  summary_resource: unknown;
+}
+
 export function TrajectoryViewer({
   trialId,
   hasTrajectory,
@@ -703,16 +712,19 @@ export function TrajectoryViewer({
 }: TrajectoryViewerProps) {
   const shouldFetch = hasTrajectory !== false;
   const {
-    data: trajectory,
+    data: trajectoryView,
     isLoading,
     error,
-  } = useSWR<Trajectory | null>(
-    shouldFetch ? `${apiBaseUrl}/trials/${trialId}/trajectory` : null,
+  } = useSWR<TrajectoryViewResource>(
+    shouldFetch
+      ? `${apiBaseUrl}/trials/${trialId}/trajectory?include_summary=1`
+      : null,
     fetcher,
     {
       revalidateOnFocus: false,
     }
   );
+  const trajectory = trajectoryView?.trajectory;
 
   const [expandedSteps, setExpandedSteps] = useState<string[]>([]);
   const expandedStepKeys = new Set(expandedSteps);
@@ -808,11 +820,19 @@ export function TrajectoryViewer({
     );
   }, [renderedSteps, lowerQuery]);
 
+  const bundledSummary = useMemo<TrajectorySummaryResource | undefined>(() => {
+    if (!trajectoryView) return undefined;
+    return parseTrajectorySummaryResponse(
+      { ok: true, status: 200, statusText: "OK" },
+      trajectoryView.summary_resource
+    );
+  }, [trajectoryView]);
   const summaryQuery = useTrajectorySummary({
     trialId,
     apiBaseUrl,
-    enabled: shouldFetch,
+    enabled: shouldFetch && trajectoryView !== undefined,
     canRegenerate: canRegenerateSummary,
+    initialResource: bundledSummary,
   });
   const summary = summaryQuery.data?.summary ?? null;
   const summarySettled =

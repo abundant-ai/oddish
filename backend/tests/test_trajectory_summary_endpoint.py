@@ -231,3 +231,52 @@ def test_post_refuses_ineligible_target(tasks_client):
         response = tasks_client.post("/trials/t-1/trajectory/summary")
     assert response.status_code == 409
     assert "only agent trials" in response.json()["detail"]
+
+
+def test_trajectory_can_return_stored_summary_in_same_request(client):
+    summary = {"schema_version": 5, "components": []}
+    trajectory = {"schema_version": "1", "steps": []}
+    with (
+        patch(
+            "api.routers.trials._get_authorized_trial",
+            new=AsyncMock(return_value=_trial(summary)),
+        ),
+        patch(
+            "api.routers.trials.read_trial_trajectory",
+            new=AsyncMock(return_value=trajectory),
+        ),
+    ):
+        response = client.get("/trials/t-1/trajectory?include_summary=1")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "trajectory": trajectory,
+        "summary_resource": {"summary": summary, "refresh": None},
+    }
+
+
+def test_trajectory_bundle_preserves_active_summary_refresh(client):
+    refresh = _summarize_trial("running")
+    trial = _trial({"stale": True}, refresh_trial_id=refresh.id)
+    with (
+        patch(
+            "api.routers.trials._get_authorized_trial",
+            new=AsyncMock(return_value=trial),
+        ),
+        patch(
+            "api.routers.trials.read_trial_trajectory",
+            new=AsyncMock(return_value={"steps": []}),
+        ),
+        patch("api.routers.trials.get_session", new=lambda: _session(refresh)),
+    ):
+        response = client.get("/trials/t-1/trajectory?include_summary=1")
+
+    assert response.status_code == 200
+    assert response.json()["summary_resource"] == {
+        "summary": {"stale": True},
+        "refresh": {
+            "status": "running",
+            "job_id": refresh.id,
+            "retry_after_ms": 3000,
+        },
+    }

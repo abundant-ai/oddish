@@ -18,6 +18,7 @@ from api.app import create_app
 
 TOKEN = "share-tok"
 SUMMARY_URL = f"/public/experiments/{TOKEN}/trials/t-1/trajectory/summary"
+TRAJECTORY_URL = f"/public/experiments/{TOKEN}/trials/t-1/trajectory"
 
 
 @pytest.fixture
@@ -66,3 +67,26 @@ def test_unknown_trial_is_a_404(client, patched_session):
     with patched_session, _patched_trial(None):
         resp = client.get(SUMMARY_URL)
     assert resp.status_code == 404
+
+
+def test_public_trajectory_can_return_summary_in_same_request(client):
+    summary = {"schema_version": "6", "summary": "ok", "components": []}
+    trajectory = {"schema_version": "1", "steps": []}
+    trial = SimpleNamespace(id="t-1", trajectory_summary=summary)
+    with (
+        patch(
+            "oddish.core.sharing.public._detached_public_trial_with_display_names",
+            new=AsyncMock(return_value=(trial, {})),
+        ),
+        patch(
+            "oddish.core.sharing.public.read_trial_trajectory",
+            new=AsyncMock(return_value=trajectory),
+        ),
+    ):
+        resp = client.get(f"{TRAJECTORY_URL}?include_summary=1")
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "trajectory": trajectory,
+        "summary_resource": {"summary": summary, "refresh": None},
+    }

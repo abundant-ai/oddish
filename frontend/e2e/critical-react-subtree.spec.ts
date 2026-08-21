@@ -297,7 +297,6 @@ test.describe("critical task and trial subtree", () => {
 
     const taskOpenGate = deferred();
     const taskDetailGate = deferred();
-    const trialDetailGate = deferred();
     let failTrialRevalidation = false;
     const requests: string[] = [];
     let summaryGetCount = 0;
@@ -449,7 +448,7 @@ test.describe("critical task and trial subtree", () => {
             });
             return;
           }
-          if (summaryGetCount === 2) {
+          if (summaryGetCount === 1) {
             await route.fulfill({
               status: 202,
               json: {
@@ -463,7 +462,7 @@ test.describe("critical task and trial subtree", () => {
             });
             return;
           }
-          if (summaryGetCount === 3) {
+          if (summaryGetCount === 2) {
             await route.fulfill({
               status: 202,
               json: {
@@ -487,28 +486,31 @@ test.describe("critical task and trial subtree", () => {
         }
         await route.fulfill({
           json: {
-            schema_version: "1",
-            session_id: "session-p1",
-            agent: {
-              name: "codex",
-              version: "1",
-              model_name: "gpt-5",
-            },
-            steps: [
-              {
-                step_id: 1,
-                timestamp: NOW,
-                source: "agent",
+            trajectory: {
+              schema_version: "1",
+              session_id: "session-p1",
+              agent: {
+                name: "codex",
+                version: "1",
                 model_name: "gpt-5",
-                message: "Short collapsed preview",
-                reasoning_content: "DEFERRED_TRAJECTORY_STEP_BODY",
-                tool_calls: null,
-                observation: null,
-                metrics: null,
               },
-            ],
-            notes: null,
-            final_metrics: null,
+              steps: [
+                {
+                  step_id: 1,
+                  timestamp: NOW,
+                  source: "agent",
+                  model_name: "gpt-5",
+                  message: "Short collapsed preview",
+                  reasoning_content: "DEFERRED_TRAJECTORY_STEP_BODY",
+                  tool_calls: null,
+                  observation: null,
+                  metrics: null,
+                },
+              ],
+              notes: null,
+              final_metrics: null,
+            },
+            summary_resource: { summary: null, refresh: null },
           },
         });
       }
@@ -522,7 +524,6 @@ test.describe("critical task and trial subtree", () => {
     await page.route(
       new RegExp(`/api/trials/${TRIAL_ID}(?:\\?|$)`),
       async (route) => {
-        await trialDetailGate.pending;
         if (failTrialRevalidation) {
           await route.fulfill({
             status: 503,
@@ -575,20 +576,20 @@ test.describe("critical task and trial subtree", () => {
     const trajectoryPattern = new RegExp(
       `/api/trials/${TRIAL_ID}/trajectory(?:/|\\?|$)`
     );
-    const trialDetailRequest = page.waitForRequest(trialDetailPattern);
     await trialButton.click();
-    await trialDetailRequest;
-    expect(requestCount(requests, trialDetailPattern)).toBe(1);
-    // The lightweight /open row paints Summary, but mutations wait for the
-    // selected trial resource. The hidden task pane owns no network work.
+    expect(requestCount(requests, trialDetailPattern)).toBe(0);
+    // The lightweight /open row owns the drawer. Terminal trials do not need
+    // another GET before Summary paints or a mutation can be attempted.
     await expect(page.getByRole("tab", { name: "Summary" })).toBeVisible();
     await expect(
       page.getByRole("button", { name: "Retry Trial" })
-    ).toBeDisabled();
+    ).toBeEnabled();
     await expect(
-      page.getByRole("button", { name: "Run analysis" })
-    ).toBeDisabled();
-    await expect(page.getByText("Loading latest trial state.")).toBeVisible();
+      page.getByRole("button", { name: "Re-run analysis" })
+    ).toBeEnabled();
+    await expect(
+      page.getByRole("heading", { name: "GOOD FAILURE", exact: true })
+    ).toBeVisible();
 
     await page.waitForTimeout(300);
     expect(requestCount(requests, taskDetailPattern)).toBe(0);
@@ -606,10 +607,6 @@ test.describe("critical task and trial subtree", () => {
     expect(requestCount(requests, taskFilesPattern)).toBe(0);
     taskDetailGate.release();
 
-    trialDetailGate.release();
-    await expect(
-      page.getByRole("heading", { name: "GOOD FAILURE", exact: true })
-    ).toBeVisible();
     const analysisLogDisclosure = page
       .locator("summary")
       .filter({ hasText: "Analysis log" });
@@ -630,7 +627,8 @@ test.describe("critical task and trial subtree", () => {
     const trajectoryRequest = page.waitForRequest(trajectoryPattern);
     await page.getByRole("tab", { name: "Trajectory" }).click();
     await trajectoryRequest;
-    expect(requestCount(requests, trajectoryPattern)).toBeGreaterThan(0);
+    expect(requestCount(requests, trajectoryPattern)).toBe(1);
+    expect(summaryGetCount).toBe(0);
     await expect(page.getByText("DEFERRED_TRAJECTORY_STEP_BODY")).toHaveCount(
       0
     );
@@ -646,7 +644,7 @@ test.describe("critical task and trial subtree", () => {
     await summaryPost;
     await expect(page.getByText("Replacement summary published")).toBeVisible();
     expect(summaryPostCount).toBe(1);
-    expect(summaryGetCount).toBeGreaterThanOrEqual(4);
+    expect(summaryGetCount).toBeGreaterThanOrEqual(3);
 
     failNextSummaryPost = true;
     const failedSummaryPost = page.waitForResponse(
