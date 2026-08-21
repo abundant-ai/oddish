@@ -151,3 +151,24 @@ def test_submission_defaults_to_the_experiments_version():
     submission = TaskSweepSubmission(task_id="task-a", configs=[])
 
     assert submission.use_default_version is False
+
+
+@pytest.mark.asyncio
+async def test_implicit_primary_experiment_keeps_the_task_default(effective_versions):
+    """A submission with no ``experiment_id`` must not adopt the primary's version.
+
+    ``oddish probe`` submits with ``experiment_id=None``, and the sweep falls back
+    to the task's primary experiment for trial ownership. Pinning to that
+    experiment's version would probe older content than the task now holds.
+    """
+    effective_versions.mapping["task-a"] = "task-a-v15"
+
+    version_id = await sweep_mod.resolve_append_version_id(
+        None,
+        task=_task(current_version_id="task-a-v16"),
+        experiment_id=None,
+        uploaded_content_hash=None,
+    )
+
+    assert version_id == "task-a-v16"
+    assert effective_versions.calls == []
