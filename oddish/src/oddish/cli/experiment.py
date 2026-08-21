@@ -392,3 +392,90 @@ def rename(
             experiment_id=experiment_id,
             json_output=json_output,
         )
+
+
+def _print_renames(data: dict) -> None:
+    renames = data.get("renames") or {}
+    console.print(f"[green]Model renames for {data.get('name')}[/green]")
+    if not renames:
+        console.print("  [dim](none)[/dim]")
+        return
+    for model_id, display in sorted(renames.items()):
+        console.print(f"  {model_id} → {display}")
+    console.print(
+        "  [dim]Shown on the public /share view only; publish to make it "
+        "visible.[/dim]"
+    )
+
+
+@experiment_app.command("rename-model")
+def rename_model(
+    experiment_id: Annotated[
+        str, typer.Argument(help="Experiment id to alias models for.")
+    ],
+    model: Annotated[
+        Optional[str],
+        typer.Option(
+            "--model", "-m", help="Real model id to alias (e.g. v9-learnability)."
+        ),
+    ] = None,
+    display: Annotated[
+        Optional[str],
+        typer.Option(
+            "--as", "-a", help="Public display name to show instead (e.g. 4.5)."
+        ),
+    ] = None,
+    remove: Annotated[
+        Optional[str],
+        typer.Option("--remove", "-r", help="Real model id whose alias to delete."),
+    ] = None,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print raw JSON.")
+    ] = False,
+    api_url: Annotated[
+        Optional[str],
+        typer.Option("--api-url", "-u", help="API URL (uses configured URL if unset)."),
+    ] = None,
+):
+    """Alias a model's id to a friendlier name on an experiment's public share.
+
+    Renames apply ONLY to the public /share view; the real id still drives cost
+    and shows in the org dashboard. Publish the experiment for the alias to show.
+
+        oddish experiment rename-model my-exp --model v9-learnability --as 4.5
+        oddish experiment rename-model my-exp --remove v9-learnability
+        oddish experiment rename-model my-exp
+    """
+    if model and remove:
+        console.print("[red]Use either --model/--as or --remove, not both.[/red]")
+        raise typer.Exit(1)
+    if model and not (display and display.strip()):
+        console.print("[red]--model requires --as <display-name>.[/red]")
+        raise typer.Exit(1)
+
+    if not api_url:
+        api_url = get_api_url()
+    require_api_key(api_url)
+
+    url = f"{api_url}/experiments/{experiment_id}/model-renames"
+    with httpx.Client(timeout=60.0, headers=get_auth_headers()) as client:
+        try:
+            if remove:
+                resp = client.post(url, json={"model": remove, "remove": True})
+            elif model:
+                resp = client.post(url, json={"model": model, "display": display})
+            else:
+                resp = client.get(url)
+        except httpx.RequestError as e:
+            console.print(f"[red]Failed to connect to API:[/red] {e}")
+            raise typer.Exit(1)
+
+    if resp.status_code != 200:
+        _explain_failure(resp, _ADMIN_SCOPE_HINT)
+        raise typer.Exit(1)
+
+    data = resp.json()
+    if json_output:
+        console.print_json(data=data)
+        return
+    _print_renames(data)

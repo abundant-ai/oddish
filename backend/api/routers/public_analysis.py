@@ -5,10 +5,9 @@ These live here rather than beside their siblings in
 share-token resolvers they use come from the ``oddish`` package, which is
 the allowed import direction.
 
-Summaries are written onto ``trials.trajectory_summary`` by the task's QA
-trial import; there is no on-demand generation, so this is a plain column
-read -- the same contract as the authenticated
-``/trials/{trial_id}/trajectory/summary`` route.
+Summaries are written onto ``trials.trajectory_summary`` by a task QA import
+or an explicit summarize-trial import. This public route is a plain stored
+column read and never starts generation.
 """
 
 from __future__ import annotations
@@ -29,7 +28,7 @@ async def get_public_trial_trajectory_summary(public_token: str, trial_id: str) 
         if trial is None:
             raise HTTPException(status_code=404, detail="Trial not found")
         summary = trial.trajectory_summary
-    if not summary:
+    if summary is None:
         raise HTTPException(
             status_code=404, detail="No trajectory summary for this trial"
         )

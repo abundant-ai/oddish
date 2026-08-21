@@ -66,6 +66,38 @@ def test_rejects_user_outside_allowlist(monkeypatch):
     ]
 
 
+def test_allows_any_user_when_only_channel_allowlisted(monkeypatch):
+    spawned = []
+    monkeypatch.delenv("ODDISH_CARL_ALLOWED_USERS", raising=False)
+    monkeypatch.setenv("ODDISH_CARL_ALLOWED_CHANNELS", "C123")
+    monkeypatch.setattr(carl, "_claim_event", lambda _event_id: True)
+    monkeypatch.setattr(carl, "_spawn_answer", lambda *args: spawned.append(args))
+
+    carl.dispatch_app_mention(_mention())
+
+    assert spawned == [("C123", "100.1", "what is queue health?", "UASKER", "Ev123")]
+
+
+def test_refuses_when_no_channel_or_user_allowlist(monkeypatch):
+    notices = []
+    monkeypatch.delenv("ODDISH_CARL_ALLOWED_USERS", raising=False)
+    monkeypatch.delenv("ODDISH_CARL_ALLOWED_CHANNELS", raising=False)
+    monkeypatch.setattr(carl, "_claim_event", lambda _event_id: True)
+    monkeypatch.setattr(carl, "_spawn_answer", lambda *_args: None)
+    monkeypatch.setattr(carl, "_notify", lambda *args: notices.append(args))
+
+    carl.dispatch_app_mention(_mention())
+
+    assert notices == [
+        (
+            "C123",
+            "100.1",
+            "Carl has no channel or user allowlist configured; refusing to run.",
+            "Ev123",
+        )
+    ]
+
+
 def test_duplicate_event_is_ignored(monkeypatch):
     monkeypatch.setenv("ODDISH_CARL_ALLOWED_USERS", "UASKER")
     monkeypatch.setattr(carl, "_claim_event", lambda _event_id: False)

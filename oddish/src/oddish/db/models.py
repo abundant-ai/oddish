@@ -482,6 +482,12 @@ class ExperimentModel(TimestampedMixin, Base):
     is_public: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     public_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
+    # Operator aliases from a real model id to the name rendered on THIS
+    # experiment's published share pages. Display-only: cost accounting and
+    # queue routing keep reading ``trials.model``. Keys are canonicalized
+    # (``canonical_model_key``); NULL/empty means no aliasing.
+    public_model_renames: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
     # Read-only "collection" experiment: gathers existing trials from other
     # experiments for dashboard viewing (see ``experiment_trials``).
     is_collection: Mapped[bool] = mapped_column(
@@ -989,10 +995,8 @@ class TrialModel(TimestampedMixin, Base):
     )
 
     # What kind of run this row is: ``'agent'`` (the default) is a normal
-    # evaluation run; any other value is a platform analysis agent run
-    # (``'qa'`` / ``'audit'`` arrive with the analysis-trial pipeline).
-    # Nothing writes a non-agent value yet -- the column and its filters land
-    # first so every counter/summer is kind-aware before the writers exist.
+    # evaluation run; ``'qa'``, ``'audit'``, and ``'summarize'`` are platform
+    # analysis-agent runs created by the analysis-trial pipeline.
     kind: Mapped[str] = mapped_column(
         String(32),
         default=AGENT_TRIAL_KIND,
@@ -1095,12 +1099,6 @@ class TrialModel(TimestampedMixin, Base):
     tool_counts: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
 
-    # SHA-256 of the platform provider API key this trial ran on, stamped at
-    # settlement (forward-only; NULL for pre-rollout / unresolved keys). Matched
-    # against ``cost_excluded_llm_keys`` to drop sponsored/free spend from cost
-    # accounting -- see ``oddish.core.cost_basis.first_party_spend_filter``.
-    llm_key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
-
     # Per-phase timing breakdown (from Harbor's TrialResult TimingInfo)
     phase_timing: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
@@ -1109,10 +1107,18 @@ class TrialModel(TimestampedMixin, Base):
         Boolean, default=False, nullable=False, server_default="false"
     )
 
-    # LLM-generated summary of the trajectory; populated lazily on first
-    # request to GET /trials/{id}/trajectory/summary. Replaces the prior
-    # S3-cached `agent/trajectory_summary.json` sibling file.
+    # Summary of the trajectory, written by a task QA import or an explicit
+    # summarize trial import. GET /trials/{id}/trajectory/summary reads this
+    # column; a plain read never starts generation. Replaces the prior S3-cached
+    # `agent/trajectory_summary.json` sibling file.
     trajectory_summary: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Summarize trial responsible for the next published summary. The pointed
+    # trial owns execution status; this pointer owns which completed writer is
+    # still current. It deliberately has no foreign key or ORM relationship so
+    # trial cleanup cannot erase the publication/recovery evidence implicitly.
+    trajectory_summary_refresh_trial_id: Mapped[str | None] = mapped_column(
+        String(160), nullable=True
+    )
 
     # Analysis data (LLM analysis of this trial)
     analysis: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
@@ -1226,6 +1232,14 @@ class TrialModel(TimestampedMixin, Base):
             "ix_trials_kind_non_agent",
             "kind",
             postgresql_where=text("kind != 'agent'"),
+        ),
+        # Cleanup only needs targets with an unfinished publication. Almost
+        # every trial has NULL here, so keep the index limited to active
+        # refresh pointers.
+        Index(
+            "ix_trials_trajectory_summary_refresh_trial_id",
+            "trajectory_summary_refresh_trial_id",
+            postgresql_where=text("trajectory_summary_refresh_trial_id IS NOT NULL"),
         ),
         # Partial index that supports the default "non-superseded only"
         # filter on hot list/aggregation paths without indexing every
@@ -2554,39 +2568,11 @@ class TagProjectionSweepStateModel(Base):
     )
 
 
-class CostExcludedLlmKeyModel(TimestampedMixin, Base):
-    """An LLM provider API key whose spend is excluded from cost accounting.
-
-    The admin-managed list of sponsored/free keys. Only the one-way ``key_hash``
-    (SHA-256) is stored -- exclusion is pure equality matching against
-    ``trials.llm_key_hash``, never key reuse -- plus a masked ``key_hint`` for
-    display; the plaintext key is never persisted. ``deleted_at`` (soft delete)
-    is the live/removed state, and the partial UNIQUE keeps one live row per hash
-    so a removed key can be re-added.
-    """
-
-    __tablename__ = "cost_excluded_llm_keys"
+class CostExcludedModelModel(TimestampedMixin, Base):
+    __tablename__ = "cost_excluded_models"
     __table_args__ = (
         Index(
-            "idx_cost_excluded_llm_keys_hash_live",
-            "key_hash",
-            unique=True,
-            postgresql_where=text("deleted_at IS NULL"),
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
-    key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    key_hint: Mapped[str] = mapped_column(String(8), nullable=False, server_default="")
-    label: Mapped[str] = mapped_column(String(255), nullable=False, server_default="")
-    created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-
-
-class ModelDisplayNameModel(TimestampedMixin, Base):
-    __tablename__ = "model_display_names"
-    __table_args__ = (
-        Index(
-            "idx_model_display_names_model_live",
+            "idx_cost_excluded_models_model_live",
             "model_name",
             unique=True,
             postgresql_where=text("deleted_at IS NULL"),
@@ -2595,7 +2581,27 @@ class ModelDisplayNameModel(TimestampedMixin, Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
     model_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    label: Mapped[str] = mapped_column(String(255), nullable=False, server_default="")
+    created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class CostExcludedExperimentModel(TimestampedMixin, Base):
+    __tablename__ = "cost_excluded_experiments"
+    __table_args__ = (
+        Index(
+            "idx_cost_excluded_experiments_exp_live",
+            "experiment_id",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    experiment_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    experiment_name: Mapped[str] = mapped_column(
+        String(255), nullable=False, server_default=""
+    )
+    label: Mapped[str] = mapped_column(String(255), nullable=False, server_default="")
     created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
@@ -2612,6 +2618,6 @@ register_soft_delete_models(
     SavedTagFilterModel,
     SkillModel,
     DocumentModel,
-    CostExcludedLlmKeyModel,
-    ModelDisplayNameModel,
+    CostExcludedModelModel,
+    CostExcludedExperimentModel,
 )

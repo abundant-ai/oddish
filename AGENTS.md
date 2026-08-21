@@ -210,11 +210,21 @@ Shared trial drawers open on Summary and fetch a trajectory only after explicit
 user or URL intent. Collapsed trajectory steps must not mount their message,
 reasoning, tool, or observation bodies; those potentially large bodies mount
 only while the step is expanded. Trajectory summaries are written onto
-`trials.trajectory_summary` by the task's QA trial import; both the public and
-authenticated summary routes are plain column reads (200 with the stored
-summary, 404 on a miss) with no on-demand generation.
+`trials.trajectory_summary` by the task's QA trial import or by a
+`summarize`-kind trial's import; the read path never generates. The public
+summary route stays a plain column read. The authenticated routes split reads
+from paid mutation: `GET /trials/{id}/trajectory/summary` returns the published
+summary when no refresh is current, while
+`POST /trials/{id}/trajectory/summary` (TASKS scope, member-created keys
+refused, matching an analysis rerun) creates or adopts the current summarize
+trial. Both authenticated methods answer 202
+`{status, job_id, retry_after_ms}` while that trial is queued, running,
+retrying, or successfully awaiting import (`status = "settling"`). GET answers
+409 when the current refresh failed, and 404 only when there is neither a
+published summary nor a current refresh. The frontend's one summary hook owns
+POST, the immediate 202 cache transition, and GET polling.
 
-A QA/audit trial's **own** summary is deterministic, never an LLM call:
+A QA/audit/summarize trial's **own** summary is deterministic, never an LLM call:
 settlement (`handle_analysis_trial_settled`) counts one from the run's tool
 calls. `oddish.analyze.trajectory_tool_calls` owns the external ATIF tool-call
 name and string-argument spellings used by activity, provenance, and delegation
@@ -233,6 +243,36 @@ link uses as a `#step-` anchor into the QA run. Both writes are best-effort
 telemetry: neither may block or fail the artifact import. The Activity card
 degrades rather than hides when a trial has steps but no stored summary — a
 single gray ungrouped band with real totals — once the summary fetch settles.
+
+The `summarize` trial kind is the LLM path for one trial's summary: its
+brief embeds the same packaged taxonomy prompt the QA brief uses, its agent
+writes `summary_result.json` (`{target_trial_id, trajectory_summary}`,
+validated in-sandbox and at import by the shared checker), and its importer
+overwrites only the target's `trials.trajectory_summary` — no verdict, task,
+or analysis state. Only `kind = 'agent'` trials with `has_trajectory` can be
+summarize targets; QA, audit, and summarize runs keep their deterministic own
+summaries. The target's nullable
+`trials.trajectory_summary_refresh_trial_id` is the durable identity of the
+summarize trial responsible for its next published summary; `harbor_config`'s
+`target_trial_id` remains an artifact-validation boundary, not job discovery.
+Creation locks Task then target Trial, sets the pointer in the same transaction
+as the summarize Trial and WorkerJob, and adopts a live or successfully settled
+pointed trial. `reserve_next_trial_index` takes the Task lock itself, so two
+different targets on one task cannot allocate the same `{task_id}-{N}` id.
+Import locks the target and writes only when its pointer still equals the
+summarize trial id; it writes `trajectory_summary` and clears the pointer in one
+transaction, so a delayed older importer cannot replace a newer result. The
+cleanup sweep selects at most 200 non-null pointers whose summarize trial is
+SUCCESS and retries those imports after the cleanup transaction commits. A
+worker that dies between trial settlement and import therefore leaves durable,
+bounded recovery work instead of a permanently stale summary. In an S3-backed
+run, a QA/audit/summarize trial cannot settle SUCCESS until its Harbor artifact
+directory uploads successfully; an upload failure uses the trial's normal retry
+budget. Storage list/download errors during import propagate so cleanup retries
+them. A successfully settled summarize trial whose stored artifact is absent or
+violates the pinned contract becomes FAILED while the target pointer remains,
+so GET reports 409 and the next POST replaces it instead of adopting a SUCCESS
+trial that can never publish.
 
 Trajectory summaries use schema v5. Each taxonomy-valued `components` entry
 contains its `step_ids`, summary, and deterministic `tool_count` and
@@ -259,9 +299,9 @@ a code change that ships with a deploy.
 
 `WorkerJobKind` (in `oddish.db.models`):
 
-- **Active**: `TRIAL` (Harbor trial execution — including `qa` and `audit`
-  kind trials), `TASK_EXPAND` (sweep expansion), `TAG_PROJECT` (tag
-  recompute).
+- **Active**: `TRIAL` (Harbor trial execution — including `qa`, `audit`, and
+  `summarize` kind trials), `TASK_EXPAND` (sweep expansion), `TAG_PROJECT`
+  (tag recompute).
 - **Legacy, enum-only**: `QA`, `VERDICT`, `ANALYSIS`, `QA_REVIEW`,
   `ANALYZER`, `ANALYZER_BLOCK`. QA/audit/analyzer work runs as trials now;
   no handler claims these kinds (workers claim only registered kinds), and
@@ -328,11 +368,28 @@ status, queue health, worker, orphan, cost, per-user cost, and task-expansion
 handlers must pass `auth.org_id`; never accept an organization selector from
 the client. A user cost drilldown returns 404 when the requested user belongs
 to another org. Deployment-wide diagnostics or mutations (global queue
-status/health and slot topology, model concurrency, shared-channel Slack alert
-settings, and the global cost-excluded LLM-key list) additionally require the active org to match
+status/health and slot topology, model concurrency, shared-channel Slack
+alert settings, and the global cost-exclusion lists) additionally require the
+active org to match
 `ODDISH_OPERATOR_ORG_ID`, which fails closed when unset; the frontend discovers
 that capability through `GET /admin/operator-access` and hides those controls
 for other orgs.
+
+Admin cost exclusions (`oddish/core/cost_exclusions.py`) name spend that was
+never really paid for, along two axes: a **model** (`cost_excluded_models`,
+stored and matched by provider-independent model family against `trials.model`,
+global and retroactive) and an **experiment**
+(`cost_excluded_experiments`, matched against `trials.experiment_id` so a
+collection cannot launder gathered trials' cost). Both fold into
+`first_party_spend_filter` and the quota inflight predicates, so excluded
+spend leaves the cost dashboards and stops counting against caps together.
+It is dropped from accounting but **not** hidden: experiment, task, and trial
+surfaces still render the money and label it, via `excluded_cost_usd` on the
+experiment rollup and `cost_exclusion_reason` on `TrialResponse`. Keep the SQL
+predicates and the `CostExclusions` Python twin in step — a surface that
+labels spend differently from the way accounting drops it is worse than one
+that says nothing. Callers that do not pass an exclusions snapshot report
+`cost_exclusion_reason=None`, which means "unresolved", not "real".
 
 The authenticated org-scoped cost leaderboard is served by `GET /leaderboard` in
 `backend/api/routers/dashboard.py`. It shares the admin cost dashboard's

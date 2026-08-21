@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { proxyBackendJson, proxyJsonRequest } from "@/lib/backend-response";
 
-const PATH = "admin/model-display-names";
+const PATH = "admin/cost-excluded-models";
 
 export const GET = (request: NextRequest) =>
   proxyBackendJson({ request, path: PATH });
