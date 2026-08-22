@@ -122,3 +122,71 @@ async def test_deploy_time_identity_beats_the_container_environment(monkeypatch)
     with pytest.raises(RuntimeError, match="stop here"):
         await mod.reap_idle_cluster(deploy_app_name="real")
     assert sentinel["reached"], "the deploy-bound identity did not authorize"
+
+
+@pytest.mark.asyncio
+async def test_teardown_waits_until_the_cluster_is_gone(monkeypatch):
+    """The pinned harbor raises on a cluster it finds in STOPPING, so the
+    delete must be awaited: a redeploy that returns while the cluster is
+    half-deleted hands the race straight to the next trial."""
+    from google.api_core import exceptions as gcp_exceptions
+    from worker import gke_cluster_reaper as mod
+
+    monkeypatch.setenv("MODAL_APP_NAME", "dep")
+    monkeypatch.setattr(mod.settings, "gke_cluster_name", "dep-trials")
+    monkeypatch.setattr(mod.settings, "gke_project_id", "p")
+    monkeypatch.setattr(
+        "worker.runtime._materialize_gcp_adc_credentials", lambda: None, raising=False
+    )
+
+    class _Cluster:
+        name = "dep-trials"
+        resource_labels = {"harbor-managed": "true"}
+        location = "loc"
+
+    polls = {"n": 0}
+
+    class _Manager:
+        def list_clusters(self, parent):
+            class _L:
+                clusters = [_Cluster()]
+
+            return _L()
+
+        def delete_cluster(self, name):
+            return None
+
+        def get_cluster(self, name):
+            polls["n"] += 1
+            if polls["n"] >= 3:
+                raise gcp_exceptions.NotFound("gone")
+            return _Cluster()
+
+    class _CV1:
+        @staticmethod
+        def ClusterManagerClient(credentials=None):
+            return _Manager()
+
+    import google.auth
+
+    monkeypatch.setattr(google.auth, "default", lambda scopes=None: (object(), "p"))
+    import sys
+    from types import SimpleNamespace
+
+    monkeypatch.setitem(
+        sys.modules, "google.cloud.container_v1", SimpleNamespace(**vars(_CV1))
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "google.cloud",
+        SimpleNamespace(container_v1=SimpleNamespace(**vars(_CV1))),
+    )
+
+    async def _no_sleep(_):
+        return None
+
+    monkeypatch.setattr("asyncio.sleep", _no_sleep)
+
+    outcome = await mod.teardown_deployment_cluster()
+    assert outcome == "deleted 1 cluster(s)"
+    assert polls["n"] >= 3, "the delete was not awaited to absence"

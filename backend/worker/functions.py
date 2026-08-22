@@ -856,7 +856,7 @@ def build_gke_cluster_teardown_function(modal_app) -> object | None:
         secrets=runtime_secrets,
         min_containers=0,
         buffer_containers=0,
-        timeout=300,
+        timeout=600,
         cpu=1.0,
         memory=2048,
         name="teardown_gke_cluster",

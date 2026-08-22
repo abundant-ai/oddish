@@ -219,6 +219,13 @@ async def _probe_pods() -> int | None:
         return None
 
 
+# Bounded wait for a delete to finish. Long enough for the ordinary case,
+# short enough not to stall a redeploy pipeline; whatever it does not cover
+# is retry-covered on the trial side.
+_TEARDOWN_WAIT_SEC = 240.0
+_TEARDOWN_POLL_SEC = 10.0
+
+
 def select_teardown_targets(
     clusters: "list[tuple[str, dict[str, str], str]]", cluster_name: str
 ) -> list[str]:
@@ -275,8 +282,13 @@ async def teardown_deployment_cluster(deploy_app_name: str | None = None) -> str
     The scheduled idle reaper dies with the Modal app, so a closing preview
     must delete its cluster while the app still exists to do it -- this is
     the function the stop workflow calls just before ``modal app stop``.
-    Deletion is issued as a long-running operation and not awaited; the
-    caller needs the request accepted, not the teardown finished.
+    Deletion is awaited, bounded. The pinned harbor raises when it finds a
+    cluster in STOPPING during provisioning, so a trial racing a redeploy
+    would burn attempts against a half-deleted cluster until the delete
+    completes. Waiting here shrinks that window to nothing in the common
+    case; if the cap expires, the residual window is retry-covered, because
+    the provisioning error is an ordinary retryable failure inside the
+    trial run.
     """
     import asyncio
 
@@ -316,11 +328,28 @@ async def teardown_deployment_cluster(deploy_app_name: str | None = None) -> str
             return "skip: cluster exists but is not harbor-managed"
         return "skip: no cluster"
 
-    deleted = 0
+    deleted = []
     for path in targets:
         try:
             await asyncio.to_thread(manager.delete_cluster, name=path)
-            deleted += 1
+            deleted.append(path)
         except gcp_exceptions.NotFound:
             pass
-    return f"deleting {deleted} cluster(s)"
+
+    gone = 0
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + _TEARDOWN_WAIT_SEC
+    for path in deleted:
+        while True:
+            try:
+                await asyncio.to_thread(manager.get_cluster, name=path)
+            except gcp_exceptions.NotFound:
+                gone += 1
+                break
+            if loop.time() >= deadline:
+                break
+            await asyncio.sleep(_TEARDOWN_POLL_SEC)
+
+    if gone == len(deleted):
+        return f"deleted {gone} cluster(s)"
+    return f"deleting {len(deleted)} cluster(s) ({gone} gone, rest in progress)"
