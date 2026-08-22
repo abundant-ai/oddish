@@ -43,8 +43,8 @@ def cancel(
         typer.Option(
             "--qa",
             help=(
-                "Cancel the task's in-flight QA job only (classification + "
-                "verdict). A trial-shaped ID resolves to its parent task."
+                "Cancel the task's live QA and pre-trial audit analysis trials. "
+                "A trial-shaped ID resolves to its parent task."
             ),
         ),
     ] = False,
@@ -68,7 +68,7 @@ def cancel(
         ),
     ] = False,
 ):
-    """Cancel in-flight runs or pipeline jobs.
+    """Cancel in-flight runs or task analysis trials.
 
     Stops running trials, cancels queued jobs, and terminates Modal workers.
     Task data and completed trial results are preserved.
