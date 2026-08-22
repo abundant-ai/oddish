@@ -235,6 +235,19 @@ def select_teardown_targets(
     ]
 
 
+def teardown_owns_cluster(cluster_name: str | None, app_name: str) -> bool:
+    """Whether teardown may touch this cluster name at all.
+
+    Only the app-derived name -- what auto-provisioning would have created
+    for THIS deployment -- qualifies. An explicitly configured name is a
+    cluster the deployment was pointed at, not one it owns: a preview aimed
+    at a shared cluster must not delete it on close, and the managed label
+    cannot make that distinction because every provisioned cluster carries
+    it.
+    """
+    return bool(cluster_name) and cluster_name == f"{app_name}-trials"
+
+
 async def teardown_deployment_cluster() -> str:
     """Delete this deployment's auto-provisioned cluster(s), wherever they are.
 
@@ -246,9 +259,14 @@ async def teardown_deployment_cluster() -> str:
     """
     import asyncio
 
+    import os
+
     cluster_name = settings.gke_cluster_name
     if not (cluster_name and settings.gke_project_id):
         return "skip: GKE not configured"
+    app_name = os.environ.get("MODAL_APP_NAME", "oddish")
+    if not teardown_owns_cluster(cluster_name, app_name):
+        return "skip: cluster name is not this deployment's derived name"
 
     from worker.runtime import _materialize_gcp_adc_credentials
 
