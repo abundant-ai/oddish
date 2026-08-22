@@ -1,8 +1,9 @@
 """Oddish's Claude Code agent wrappers.
 
 All Claude Code trials deliver the task over stdin so task text is absent from
-the process command line. Probe trials additionally install Harbor into the
-sandbox so the agent can inspect the harness.
+the process command line -- upstream Harbor does this itself now, so the
+wrappers no longer patch the command. Probe trials additionally install Harbor
+into the sandbox so the agent can inspect the harness.
 
 Stock Harbor installs only the claude-code CLI into the sandbox (see
 ``harbor.agents.installed.claude_code.ClaudeCode.install``). Probe trials also
@@ -21,7 +22,6 @@ The wrappers are selected by ``_apply_claude_code_oddish_wrapper`` in
 
 from __future__ import annotations
 
-import base64
 import json
 import logging
 import shlex
@@ -103,37 +103,19 @@ def _pinned_oddish_requirement() -> str | None:
 
 
 class OddishClaudeCode(ClaudeCode):
-    """Claude Code with task delivery kept off the process command line."""
+    """Stock Claude Code under an Oddish-owned name.
 
-    def _build_claude_command(self, escaped_instruction: str, extra_flags: str) -> str:
-        """Pipe the prompt over stdin instead of including it in ``claude`` argv.
+    Oddish used to override Harbor's ``_build_claude_command`` seam here to keep
+    the prompt off ``claude``'s argv. Harbor now does that natively -- it hands
+    the instruction to the agent's stdin and tees the stream-json output to
+    ``/logs/agent/claude-code.txt`` -- so the override is gone and this subclass
+    adds no behaviour.
 
-        Long-horizon tasks often restart services with ``pkill -f``. When the
-        full task is on argv, a service name from that prompt can match and kill
-        the agent itself. Encoding only protects the transport command line;
-        ``base64 -d`` restores the exact UTF-8 prompt on Claude Code's stdin.
-        """
-        try:
-            instruction_parts = shlex.split(escaped_instruction)
-        except ValueError as exc:
-            raise ValueError(
-                "Claude Code instruction is not valid shell quoting"
-            ) from exc
-        if len(instruction_parts) != 1:
-            raise ValueError(
-                "Claude Code instruction must decode to exactly one shell argument"
-            )
-
-        encoded_instruction = base64.b64encode(
-            instruction_parts[0].encode("utf-8")
-        ).decode("ascii")
-        return (
-            'export PATH="$HOME/.local/bin:$PATH"; '
-            f"printf %s {shlex.quote(encoded_instruction)} | base64 -d | "
-            "claude --verbose --output-format=stream-json "
-            f"{extra_flags}"
-            "--print 2>&1 | tee /logs/agent/claude-code.txt"
-        )
+    It still exists because its import path is a routing key: the agent-config
+    wrapper selects it by name (``_ODDISH_CLAUDE_CODE_IMPORT_PATH``), the
+    restricted-network compatibility profiles are keyed on it, and
+    :class:`OddishProbeClaudeCode` derives from it.
+    """
 
 
 class OddishProbeClaudeCode(OddishClaudeCode):

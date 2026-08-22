@@ -242,10 +242,11 @@ def test_claude_code_glm_agent_config_sets_zai_anthropic_skin_env(
     assert agent_config.env["ANTHROPIC_API_KEY"] == ""
     assert agent_config.env["CLAUDE_CODE_USE_BEDROCK"] == ""
     assert agent_config.env["AWS_BEARER_TOKEN_BEDROCK"] == ""
-    # z.ai's recommended "max effort" + adaptive thinking, rendered by Harbor's
-    # claude-code agent as `--effort max --thinking adaptive`.
-    assert agent_config.kwargs["thinking"] == "adaptive"
+    # z.ai's recommended "max effort", rendered by Harbor's claude-code agent
+    # as `--effort max`. Harbor no longer exposes a `--thinking` flag, so no
+    # thinking kwarg is set.
     assert agent_config.kwargs["reasoning_effort"] == "max"
+    assert "thinking" not in agent_config.kwargs
 
 
 def test_claude_code_glm_recommended_kwargs_render_as_cli_flags() -> None:
@@ -266,7 +267,7 @@ def test_claude_code_glm_recommended_kwargs_render_as_cli_flags() -> None:
     )
     flags = agent.build_cli_flags()
     assert "--effort max" in flags
-    assert "--thinking adaptive" in flags
+    assert "--thinking" not in flags
 
 
 def test_claude_code_glm_kwargs_are_overridable() -> None:
@@ -277,7 +278,6 @@ def test_claude_code_glm_kwargs_are_overridable() -> None:
     )
 
     assert agent_config.kwargs["reasoning_effort"] == "high"
-    assert agent_config.kwargs["thinking"] == "adaptive"
 
 
 def test_claude_code_bare_glm_model_is_canonicalized_to_zai(monkeypatch) -> None:

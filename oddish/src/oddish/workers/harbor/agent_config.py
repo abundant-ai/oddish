@@ -243,7 +243,8 @@ def _apply_claude_code_zai_env(agent_config: AgentConfig) -> None:
     )
 
     kwargs = dict(agent_config.kwargs or {})
-    kwargs.setdefault("thinking", "adaptive")
+    # z.ai also recommends adaptive thinking, but Harbor's claude-code agent no
+    # longer exposes a `--thinking` flag, so only the effort level is set here.
     kwargs.setdefault("reasoning_effort", "max")
     agent_config.kwargs = kwargs
 

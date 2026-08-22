@@ -48,8 +48,9 @@ dependencies = [
     # Source-of-truth pricing table (`litellm.model_cost`) covering ~2,700
     # models.  See ``oddish.model_pricing`` for our fallback for brand-new
     # models not yet in the installed litellm release.  Bump this pin on a
-    # regular cadence (e.g. weekly) to pick up newly-launched models.
-    "litellm==1.83.14",
+    # regular cadence (e.g. weekly) to pick up newly-launched models.  Harbor
+    # floors this at >=1.92.0, so the pin must not drop below that.
+    "litellm==1.92.0",
     # YAML parsing for skill frontmatter (skills library).
     "pyyaml>=6.0",
     # Comment-preserving TOML round-trip for task.toml typography normalization.
