@@ -297,6 +297,12 @@ OPENAI_PROVIDER_AZURE = "azure"
 OPENAI_PROVIDER_OPENAI = "openai"
 _OPENAI_PROVIDERS: set[str] = {OPENAI_PROVIDER_AZURE, OPENAI_PROVIDER_OPENAI}
 
+# The capacity a GKE accelerator pod can ask for. Mirrors
+# ``harbor.environments.gke.GKEProvisioningMode`` -- written out rather than
+# imported because this module loads wherever oddish loads, including the API
+# and worker images that carry the lean default Harbor with no ``gke`` extra.
+GKE_PROVISIONING_MODES: tuple[str, ...] = ("on-demand", "spot", "flex-start")
+
 # Cross-region inference profile prefixes used for AWS Bedrock model ids, e.g.
 # "global.anthropic.claude-haiku-4-5-20251001-v1:0".
 _BEDROCK_REGION_PREFIXES: tuple[str, ...] = ("us.", "eu.", "apac.", "apn.", "global.")
@@ -1409,18 +1415,28 @@ class Settings(BaseSettings):
     gke_namespace: str = "oddish-trials"
     gke_registry_location: str | None = None
     gke_registry_name: str | None = None
-    # DWS flex-start provisions TPU capacity on demand, so a pod can sit Pending
-    # while the node is created; the readiness wait is generous to match.
-    gke_flex_start: bool = True
-    # Spot draws on the SAME preemptible quota as flex-start but is offered in
-    # every zone the accelerator exists in, not just the few that serve
-    # flex-start, so it reaches regions flex-start cannot -- notably us-east1
-    # for TPU v6e, which holds 1536 preemptible v6e and no CT6E chip cap
-    # against us-east5's 256 and cap of 8. It does not queue: capacity now or
-    # nothing, and the node can be reclaimed at any time. Mutually exclusive
-    # with gke_flex_start; Dynamic Workload Scheduler does not support Spot
-    # VMs and Harbor rejects the pair.
-    gke_spot: bool = False
+    # Which capacity an accelerator pod asks GKE for. One name, three values,
+    # replacing the gke_flex_start / gke_spot boolean pair: the pair could
+    # express a fourth state (both true) that no node pool can serve, so
+    # Harbor rejected it and a config validator here had to catch it first.
+    #
+    #   flex-start  DWS provisions TPU capacity on demand, so a pod can sit
+    #               Pending while the node is created; the readiness wait is
+    #               generous to match. Offered in only a few zones per
+    #               accelerator.
+    #   spot        Draws on the SAME preemptible quota as flex-start but is
+    #               offered in every zone the accelerator exists in, so it
+    #               reaches regions flex-start cannot -- notably us-east1 for
+    #               TPU v6e, which holds 1536 preemptible v6e and no CT6E chip
+    #               cap against us-east5's 256 and cap of 8. It does not
+    #               queue: capacity now or nothing, and the node can be
+    #               reclaimed at any time.
+    #   on-demand   Reserved/standard capacity. No queue, no preemption.
+    #
+    # Harbor's own default is on-demand; oddish keeps flex-start, which is
+    # what hosted TPU trials have always run and what the accelerator quota in
+    # this project is shaped for.
+    gke_provisioning_mode: str = "flex-start"
     # Auto-build missing task images via the Cloud Build SDK instead of
     # failing on require_prebuilt_image. Spends minutes of the attempt's
     # budget on first-run tasks, so hosted deployments opt in explicitly.
@@ -1617,27 +1633,26 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def _reject_both_gke_provisioning_modes(self) -> "Settings":
-        """A deployment cannot ask for flex-start and Spot at once.
+    def _validate_gke_provisioning_mode(self) -> "Settings":
+        """The deployment default must be a mode Harbor actually accepts.
 
-        The two settings encode ONE three-valued choice and Harbor rejects the
-        pair. Caught here rather than per trial: ``gke_flex_start`` defaults to
-        True, so an operator who sets only ODDISH_GKE_SPOT=true leaves both
-        true, and every GKE trial then fails the same way -- retried to
-        exhaustion, because the failure is permanent but classified as
-        retryable. Failing at config load turns that into one loud error at
-        deploy.
+        Checked here rather than per trial because the value is a free string
+        off the environment: ODDISH_GKE_PROVISIONING_MODE=flexstart reaches
+        Harbor unread, raises GKEConfigurationError inside every GKE
+        environment construction, and stops each trial outright with a message
+        nobody is watching for. Failing at config load turns that into one
+        loud error at deploy.
 
-        Per-submission kwargs are normalized separately in ``GkeBackend``:
-        naming one mode there clears the other. This guard is only about the
-        deployment defaults, which have no caller to disambiguate them.
+        The three values mirror ``harbor.environments.gke.GKEProvisioningMode``
+        and are written out rather than imported: this module loads in the API
+        and worker containers, which carry the lean default Harbor with no GKE
+        extra, and only the ``gke`` variant image has that enum to import.
         """
-        if self.gke_flex_start and self.gke_spot:
+        if self.gke_provisioning_mode not in GKE_PROVISIONING_MODES:
+            valid = ", ".join(repr(m) for m in GKE_PROVISIONING_MODES)
             raise ValueError(
-                "ODDISH_GKE_FLEX_START and ODDISH_GKE_SPOT cannot both be "
-                "true: Dynamic Workload Scheduler does not support Spot VMs. "
-                "Set ODDISH_GKE_FLEX_START=false to run Spot, or "
-                "ODDISH_GKE_SPOT=false to run flex-start."
+                f"ODDISH_GKE_PROVISIONING_MODE={self.gke_provisioning_mode!r} "
+                f"is not a provisioning mode. Valid values are: {valid}."
             )
         return self
 
