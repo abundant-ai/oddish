@@ -34,12 +34,19 @@ def backfill_analysis(
     ] = None,
     trial: Annotated[
         Optional[str],
-        typer.Option("--trial", help="Backfill this trial (runs as its task's QA job)"),
+        typer.Option(
+            "--trial",
+            help="Select one trial's parent task for a task-wide QA replacement",
+        ),
     ] = None,
     force: Annotated[
         bool,
         typer.Option(
-            "--force", help="Re-run analysis even for already-analyzed trials"
+            "--force",
+            help=(
+                "Clear stored analysis before replacement QA starts; the full "
+                "eligible set is reclassified either way"
+            ),
         ),
     ] = False,
     api_url: Annotated[str, typer.Option("--api", help="API URL")] = "",
@@ -47,7 +54,7 @@ def backfill_analysis(
         bool, typer.Option("--json", help="Output JSON (for CI/scripts)")
     ] = False,
 ):
-    """(Re)run trial analysis for an experiment, a task, or a single trial.
+    """Queue replacement task-wide QA for an experiment, task, or trial selector.
 
     Examples:
         oddish backfill-analysis --task <task_id>

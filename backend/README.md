@@ -24,10 +24,10 @@ Modal API (FastAPI in `endpoints.py` and `api/routers/*`)
   │  - Enqueues trial and task QA work as worker_jobs rows
   ▼
 Postgres
-  - worker_jobs   (unified queue, including TRIAL / QA / TASK_EXPAND)
+  - worker_jobs   (unified queue: TRIAL / TASK_EXPAND / TAG_PROJECT)
   - trials/tasks  (domain state + live UI columns)
   - queue_slots   (per-queue-key concurrency leases)
-  + cloud tables  (orgs / users / api_keys)
+  + cloud tables  (organizations / users / api keys)
   │
   ▼
 Scheduled functions
@@ -38,40 +38,47 @@ Scheduled functions
   │    - Runs cleanup, stage safety nets, and owner backfill
   └─ process_single_job
        - Acquires a queue_slots lease
-       - Claims ONE worker_jobs row (any kind)
-       - Dispatches to the registered handler
-       - Writes heartbeats, records outcome, exits
+       - Drains queued worker_jobs rows for its queue key until a
+         wall-clock budget expires (EC2 lane: one row per container)
+       - Dispatches each to the registered handler
+       - Writes heartbeats, records outcomes, exits
   ▼
-Harbor execution on Modal, Daytona, or opt-in ephemeral EC2
+Harbor execution on Modal, Daytona, GKE (TPU), or opt-in ephemeral EC2
   - logs/artifacts persisted to S3
 ```
 
 ### Worker architecture
 
-Dispatcher + single-job pattern backed by the unified `worker_jobs` table:
+Dispatcher + batch-draining workers backed by the unified `worker_jobs` table:
 
-1. `poll_queue()` runs on a 180s Modal schedule. It discovers active queue
-   keys via `discover_active_worker_job_queue_keys` and launches up to
-   `MAX_WORKERS_PER_POLL` single-job containers.
+1. `poll_queue()` runs on a 180s Modal schedule. It builds a dispatch plan via
+   `build_dispatch_plan` (org-first fair share over active queue keys, plus a
+   budgeted EC2 capacity lane) and launches up to `MAX_WORKERS_PER_POLL`
+   worker containers.
 2. `reconcile_queue_state()` runs separately. It calls
    `cleanup_orphaned_queue_state` (zombie-txn reap, stale-heartbeat sweep,
    stage safety nets, orphaned-slot release) and runs the experiments owner
    backfill (dashboard Mine fast path).
-3. `process_single_job(queue_key)` acquires a `queue_slots` lease for the
-   queue key and calls `run_single_worker_job`, which atomically claims one
-   row from `worker_jobs`, dispatches to the registered handler
-  (`TRIAL` / `QA` / `TASK_EXPAND` / `TAG_PROJECT`), writes heartbeats to both
+3. `process_single_job(queue_key, ...)` acquires a `queue_slots` lease for
+   the queue key, then on the default lane calls `drain_worker_jobs`, which
+   atomically claims and runs queued rows one at a time until the
+   `ODDISH_MODAL_WORKER_BATCH_BUDGET_SECONDS` budget (default 300) expires;
+   the EC2 lane still runs exactly one row via `run_single_worker_job`. Each
+   claim dispatches to the registered handler
+   (`TRIAL` / `TASK_EXPAND` / `TAG_PROJECT`), writes heartbeats to both
    `worker_jobs.heartbeat_at` and the mirrored domain column, records the
-   outcome, runs the post-success hook, releases the lease, and exits.
+   outcome, runs the post-success hook, and releases the lease.
 
-Post-success hooks for `TRIAL`, `QA`, and transitional `ANALYSIS` rows are
-threaded through so GitHub notifications fire after the row is `SUCCESS`.
-Handlers are registered at module load via `ensure_builtin_handlers_registered()`
-so every container has
-`TRIAL`, `QA`, `TASK_EXPAND`, `TAG_PROJECT`, and transitional `ANALYSIS`
-wired up before any claim. Adding a new kind (e.g. `QA_REVIEW`) is one
-handler class plus a `register` call — no new claim SQL, cleanup step, or
-dispatcher branch.
+The only post-success hook is `notify_github_trial` on `TRIAL` rows
+(`_POST_SUCCESS_HOOKS`); QA GitHub notifications fire separately through
+`register_qa_imported_hook(notify_github_qa)` when a QA result is imported.
+Handlers are registered at module load via
+`ensure_builtin_handlers_registered()` so every container has `TRIAL`,
+`TASK_EXPAND`, and `TAG_PROJECT` wired up before any claim. The legacy
+`QA` / `ANALYSIS` / `VERDICT` / `QA_REVIEW` enum values are historical only —
+QA, audit, and summary refreshes run as `qa`/`audit`/`summarize`-kind `TRIAL`
+jobs. Adding a new kind is one handler class plus a `register` call — no new
+claim SQL, cleanup step, or dispatcher branch.
 
 ## Authentication Model
 
@@ -140,7 +147,7 @@ The API layer enforces this scope in all list/read/write queries.
 | `auth/provisioning.py` | Clerk user/org provisioning helpers |
 | `auth/types.py` | `AuthContext` dataclass and `AuthMethod` enum |
 | `models.py` | Cloud auth models (orgs/users/api keys) |
-| `slack_notifications.py` | Scheduled expensive experiment/trial Slack and owner-email notifications |
+| `slack_notifications.py` | Scheduled Slack notifications (channel alerts + owner DMs; `owner_email` is only a Slack lookup key — there is no email delivery) |
 | `worker/functions.py` | Modal dispatcher (`poll_queue`) and kind-agnostic `process_single_job` runner |
 | `worker/runtime.py` | Modal runtime patching and storage setup |
 | `worker/github.py` | Thin wrappers delegating GitHub notifications to `oddish.integrations.github` |
@@ -168,11 +175,12 @@ Required if you want Clerk webhook ingestion enabled:
 
 S3-compatible storage is **required**. Task bundles and trial artifacts are
 uploaded directly from the client to S3 via presigned PUT URLs, and the
-backend streams logs/results/files back through the same bucket. You must
-configure the full `ODDISH_S3_*` set:
+backend streams logs/results/files back through the same bucket. Configure
+the `ODDISH_S3_*` set — access key, secret key, and (for non-AWS providers)
+endpoint are required; bucket defaults to `data` and region to `us-east-1`:
 
-- `ODDISH_S3_BUCKET`
-- `ODDISH_S3_REGION`
+- `ODDISH_S3_BUCKET` (default `data`)
+- `ODDISH_S3_REGION` (default `us-east-1`)
 - `ODDISH_S3_ACCESS_KEY`
 - `ODDISH_S3_SECRET_KEY`
 - `ODDISH_S3_ENDPOINT_URL` (for non-AWS S3-compatible providers)
@@ -187,7 +195,7 @@ Common optional settings:
 - GitHub notifier settings such as `GITHUB_TOKEN` and `ODDISH_DASHBOARD_URL`
 - `SLACK_ALERT_BOT_TOKEN` (scopes `chat:write`, `im:write`, `users:read.email`) for deterministic cost alerts, which DM an experiment's owner: a milestone for each $1,000 spent in the past 24 hours, and any trial over $200 that finished in that window. The same token delivers the other DM-only alerts -- trial failed, QA failed, experiment failed -- and resolves in-channel mentions by account email. The email delivery channel has been removed entirely. `SLACK_EXPENSE_WEBHOOK_URL` carries what is left in-channel: unpriceable-model alerts from the past 24 hours; an escalation when a running or retrying trial's live cost rises above the configured floor, which `<@...>`-mentions its owner plus the always-ping list; and a `<!channel>` alert when a user's rolling seven-day spend, including live running-trial checkpoints, rises more than the configured dollar delta above their workspace's average spender. The two channel escalation thresholds and the ping list are set by an admin on the Costs tab of `/admin` and stored in `slack_alert_settings`; the constants in `slack_alert_settings.py` are the defaults they override, and no setting here is environment-configurable. User daily-overage alerts fire at most once per UTC calendar day. The per-user DM cutoffs (the milestone and completed-trial floor) are separate deploy-time constants in `user_alert_prefs.py` that each person tunes in their own notification settings, not admin-editable here. Notifications are on by default for the production app; previews opt in with `ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS=true` and can attach a preview-only notification secret via `ODDISH_SLACK_EXPENSE_SECRET_NAME` / `ODDISH_SLACK_EXPENSE_SECRET_ENVIRONMENT`.
 - `ODDISH_SLACK_UNFURL_*` for a lean, single-workspace Slack app that unfurls Oddish task, experiment, and public-share links. It requires `links:read` and `links:write`, a `link_shared` event subscription pointed at `/webhooks/slack/events`, a signing secret, bot token, and bound Oddish org. Optional team/channel allowlists add defense in depth. This is separate from the expense notifications above.
-- `ODDISH_CARL_*`, `ODDISH_API_KEY`, and `ODDISH_DATABASE_URL_RO` extend that same Slack app with read-only answers to permitted `app_mention` events. Carl keeps the existing `/webhooks/slack/events` URL and `link_shared` subscription; add `app_mentions:read` and subscribe the installed app to `app_mention`. The SQL DSN must use a dedicated non-superuser role restricted to the analytics table allow-list. See `slackbot/README.md`.
+- `ODDISH_CARL_*`, `ODDISH_API_KEY`, and `ODDISH_DATABASE_URL_RO` extend that same Slack app with read-only answers to permitted `app_mention` events. Carl keeps the existing `/webhooks/slack/events` URL and `link_shared` subscription; add `app_mentions:read` and subscribe the installed app to `app_mention`. The SQL DSN must use a dedicated non-superuser role restricted to the analytics table allow-list. Carl's code lives in `carl.py`, `carl_agent.py`, and `carl_tools.py`.
 
 ### Observability (Pydantic Logfire)
 
@@ -259,8 +267,8 @@ Railway/Docker deployment path, and the Modal worker image installs it as well.
 
 `endpoints.py`, `serve.py`, and `worker/runtime.py` patch oddish settings at startup:
 
-- `endpoints.py` / `serve.py`: set `db_use_null_pool` for per-request DB connections
-- `worker/runtime.py`: refresh DB connection pools per container, ensure the per-container Harbor scratch dir exists (defaults to `/tmp/harbor-jobs`), and force Harbor environment to Modal-compatible mode
+- `endpoints.py` / `serve.py`: set `db_use_null_pool = False` and configure a small real pool (size 2, overflow 1) for the API; NullPool is the *workers'* setting (`worker/functions.py`)
+- `worker/runtime.py`: refresh DB connections per container, ensure the per-container Harbor scratch dir exists (defaults to `/tmp/harbor-jobs`), and materialize GCP application-default credentials when configured
 
 ## API Endpoints
 
@@ -278,11 +286,11 @@ All routes require auth unless marked public.
 | POST | `/trials/import/complete` | Finalize an imported trial after the client PUT succeeds |
 | POST | `/tasks/sweep` | Expand one task into multiple trials; accepts optional `max_trial_attempts` for newly-created trials |
 | GET | `/tasks` | List tasks (org-scoped, paginated/filtered) |
-| GET | `/tasks/browse` | Browse latest task versions with pagination and search |
+| GET | `/tasks/browse` | Browse tasks at their selected current version, with pagination and search |
 | GET | `/tasks/{task_id}` | Task details |
 | POST | `/tasks/cancel` | Cancel in-flight trials and queue jobs for one or more tasks (org-scoped); Modal workers and supported remote sandboxes are terminated when applicable |
 | POST | `/tasks/{task_id}/qa/retry` | Re-run task QA: classify trials and synthesize the verdict |
-| POST | `/tasks/{task_id}/qa/cancel` | Cancel a task's in-flight QA job |
+| POST | `/tasks/{task_id}/qa/cancel` | Cancel a task's in-flight QA and pre-trial audit runs |
 | GET | `/tasks/{task_id}/trials` | Trials for task |
 | GET | `/tasks/{task_id}/trials/{index}` | Trial by index |
 | GET | `/tasks/{task_id}/versions` | List stored task versions |
@@ -306,8 +314,9 @@ All routes require auth unless marked public.
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/experiments/{experiment_id}/share` | Get publish/share state |
-| PATCH | `/experiments/{experiment_id}` | Rename experiment |
+| PATCH | `/experiments/{experiment_id}` | Update experiment name and/or description (each independently optional) |
 | POST | `/experiments/{experiment_id}/publish` | Publish experiment |
+| POST | `/experiments/{experiment_id}/feedback` | Record an append-only QA review vote (`qa_verdict`/`qa_action_item`, `agree`/`disagree`) |
 | POST | `/experiments/{experiment_id}/unpublish` | Unpublish experiment |
 | DELETE | `/experiments/{experiment_id}` | Soft-delete experiment + its trials and now-orphaned tasks (admin only) |
 | DELETE | `/experiments/{experiment_id}/tasks/{task_id}` | Unlink a shared task from one experiment (tombstones the join row + that experiment's trials; the task survives) |
@@ -331,7 +340,7 @@ All routes require auth unless marked public.
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/public/experiments/{public_token}` | Public experiment metadata |
-| GET | `/public/experiments` | List public experiments for dataset browsing |
+| GET | `/public/experiments` | Deliberately returns an empty list — public share links must be entered directly, never enumerated |
 | GET | `/public/experiments/{public_token}/tasks` | Public tasks and trials for a shared experiment |
 | GET | `/public/experiments/{public_token}/tasks/{task_id}` | Public task status within a shared experiment |
 | GET | `/public/experiments/{public_token}/tasks/{task_id}/trials` | Public trial list within a shared experiment |
@@ -442,8 +451,8 @@ redeploy of code (`off` stays available as a full no-op opt-out):
    `{"detail": {message, used_usd, reserved_usd, limit_usd}}`; an
    unattributable run gets **403**.
 
-An unattributable run is *retried* rather than submitted fresh (`POST
-/trials/{id}/retry`) it cannot 403 — there is no payer to bill and refusing
+When an unattributable run is *retried* rather than submitted fresh (`POST
+/trials/{id}/retry`), it cannot 403 — there is no payer to bill and refusing
 would strand the run. That spend instead pools per org, logged as
 `metric=quota.admitted reason=unattributed_admitted`. Set
 `ODDISH_UNATTRIBUTED_POOL_LIMIT_USD` to cap that pool over the rolling 24h

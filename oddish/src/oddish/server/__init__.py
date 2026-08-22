@@ -505,7 +505,7 @@ async def browse_tasks(
     tool_count_mins: str | None = Query(None),
     trial_metric_match: str = Query("any", pattern="^(any|all)$"),
 ) -> TaskBrowseResponse:
-    """Browse latest task versions with aggregated trial stats."""
+    """Browse selected default task versions with aggregated trial stats."""
     async with get_session() as session:
         from oddish.filters.trial_metrics import TrialMetricFilter
 
@@ -726,31 +726,30 @@ async def get_trial(task_id: str, index: int):
 
 
 # =============================================================================
-# Task QA (trajectory analysis + verdict, one job)
+# Task QA (one qa-kind analysis trial per replacement pass)
 # =============================================================================
 
 
 @api.post("/tasks/{task_id}/qa/retry")
 async def retry_task_qa(task_id: str) -> dict:
-    """(Re)run the single task-level QA job: classify every trial, then
-    synthesize the task verdict."""
+    """Create replacement task-level QA over every eligible agent trial."""
     async with get_session() as session:
         return await rerun_task_qa_core(session, task_id=task_id)
 
 
 @api.post("/tasks/{task_id}/qa/cancel")
 async def cancel_task_qa(task_id: str) -> dict:
-    """Cancel a task's in-flight QA job."""
+    """Cancel a task's live qa-kind and audit-kind analysis trials."""
     async with get_session() as session:
         return await cancel_task_qa_core(session, task_id=task_id)
 
 
 @api.post("/tasks/{task_id}/qa/backfill")
 async def backfill_task_qa(task_id: str, body: BackfillQARequest) -> dict:
-    """Backfill trial analysis for a task: (re)run the task-level QA job.
+    """Create replacement task-level QA over every eligible agent trial.
 
-    Fills only missing/never-analyzed trials by default; ``force`` re-runs
-    (optionally just ``trial_ids``).
+    ``force`` and ``trial_ids`` choose which stored analysis fields are cleared
+    before the pass; they do not narrow the replacement trial's input set.
     """
     async with get_session() as session:
         return await backfill_task_analysis_core(
@@ -776,8 +775,10 @@ async def rerun_pre_trial_audit(task_id: str) -> dict:
 async def rerun_trial_analysis(trial_id: str) -> dict:
     """Queue analysis for one trial.
 
-    Classifies only this trial. Does not touch other trials, the task
-    verdict, or the pre-trial audit.
+    Classification is one task-wide QA pass, so a single trial cannot be
+    re-read alone: this clears the named trial's stored analysis, then
+    re-runs the task's QA, which re-reads every live trial and recomputes
+    the verdict. Only the named trial loses its stored result up front.
     """
     async with get_session() as session:
         return await rerun_trial_analysis_core(session, trial_id=trial_id)

@@ -1211,7 +1211,7 @@ class TrialResponse(BaseModel):
 class UserTagRef(BaseModel):
     """Effective tag on a task, surfaced to API/CLI/frontend.
 
-    ``current=True`` -> tag is on the latest task version (primary chip).
+    ``current=True`` -> tag is on the selected default version (primary chip).
     ``older=True``   -> tag exists only on older versions (de-emphasized).
     """
 
