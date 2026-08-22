@@ -97,6 +97,13 @@ for app in $apps; do
   fi
 
   echo "stopping $app — $reason"
+  # Same rule as the close and redeploy paths: the app deletes its own
+  # trials cluster before it is stopped, because the credentials live only
+  # inside it. A stale app is exactly the one whose stop workflow never
+  # ran, so this is the last chance to avoid an orphaned cluster.
+  modal run --env "$MODAL_ENVIRONMENT" \
+    "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/teardown_gke_cluster.py" \
+    --app-name "$app" || true
   modal app stop -y --env "$MODAL_ENVIRONMENT" "$app" || true
   modal secret delete -y --env "$MODAL_ENVIRONMENT" "$app-db" || true
   stopped=$((stopped + 1))
