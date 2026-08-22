@@ -214,7 +214,7 @@ async def recompute_all_versions_for_task(
 class UserTagView:
     """Materialized view of a tag attached to a task, for the API DTOs.
 
-    ``current=True`` means the tag is on the latest task version (primary
+    ``current=True`` means the tag is on the selected default version (primary
     chip); ``older=True`` means the tag is effective only on older
     versions (de-emphasized chip).
     """

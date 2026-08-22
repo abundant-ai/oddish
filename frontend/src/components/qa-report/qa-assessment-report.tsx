@@ -45,7 +45,7 @@ export function QaAssessmentReport({
    * Vote controls render only when this is provided — a vote that persists
    * nowhere is worse than no vote control.
    */
-  onFeedback?: (record: FeedbackRecord) => void;
+  onFeedback?: (record: FeedbackRecord) => Promise<void>;
   className?: string;
 }) {
   const token = VERDICT_TOKENS[classification] ?? FALLBACK_TOKEN;
@@ -66,7 +66,7 @@ export function QaAssessmentReport({
         <h2
           className={cn(
             "font-mono text-sm font-semibold tracking-wide",
-            token.accent,
+            token.accent
           )}
         >
           {classification.replace(/_/g, " ")}
@@ -76,7 +76,7 @@ export function QaAssessmentReport({
             className={cn(
               "rounded-md border px-2 py-0.5 font-mono text-[10px]",
               token.chip,
-              token.accent,
+              token.accent
             )}
           >
             {subtype.replace(/_/g, " ")}
