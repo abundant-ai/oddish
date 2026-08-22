@@ -44,7 +44,7 @@ import {
   Package,
   Trash2,
 } from "lucide-react";
-import { cn, urlWithSearch } from "@/lib/utils";
+import { cn, encodeExperimentRouteParam, urlWithSearch } from "@/lib/utils";
 import {
   formatLineRange,
   parseLineRange,
@@ -63,6 +63,7 @@ function getLiveParam(name: string): string | null {
 }
 import { Skeleton } from "@/components/ui/skeleton";
 import { QaAssessmentReport } from "@/components/qa-report/qa-assessment-report";
+import type { FeedbackRecord } from "@/components/qa-report/types";
 import { TimingBreakdownBar } from "@/components/timing-breakdown-bar";
 import { CodeBlock } from "@/components/code-block";
 import type { Trial, Task } from "@/lib/types";
@@ -95,6 +96,7 @@ import { useSWRConfig } from "swr";
 import { isLiveQaTrial, taskHasActiveVerdict } from "@/lib/job-status";
 import { isAnalysisStatusActive, trialKey, useTrial } from "@/lib/use-trial";
 import { embeddedCtrfSummary } from "@/lib/verifier-results";
+import { fetcher } from "@/lib/api";
 
 const TaskFilesPanel = dynamic(
   () =>
@@ -221,6 +223,7 @@ function TrialAnalysisCard({
   actionsReady,
   onQueued,
   onOpenGrader,
+  onFeedback,
 }: {
   trial: Trial;
   task: Task | null;
@@ -228,6 +231,7 @@ function TrialAnalysisCard({
   actionsReady: boolean;
   onQueued?: () => void;
   onOpenGrader?: (qaTrialId: string) => void;
+  onFeedback?: (record: FeedbackRecord) => Promise<void>;
 }) {
   // The global mutate writes to an explicitly named cache key. The bound
   // mutation would write to whichever trial is currently showing, which is
@@ -550,6 +554,7 @@ function TrialAnalysisCard({
               </p>
             )}
             <QaAssessmentReport
+              key={trial.id}
               classification={trial.analysis!.classification!}
               subtype={trial.analysis?.subtype}
               rootCause={trial.analysis?.root_cause || trial.analysis?.evidence}
@@ -570,6 +575,7 @@ function TrialAnalysisCard({
               onLogToggle={setLogOpen}
               duration={analysisDuration}
               raw={trial.analysis}
+              onFeedback={onFeedback}
             />
             {trial.analysis?._graded_by && onOpenGrader && (
               <p className="mt-2 flex flex-wrap items-baseline gap-x-2 font-mono text-[11px]">
@@ -898,7 +904,7 @@ export function TrialDetailPanel({
 }: TrialDetailPanelProps) {
   const { data: refreshedTrial } = useTrial(
     isOpen && requireTrialDetail ? selectedTrial?.id : null,
-    { apiBaseUrl },
+    { apiBaseUrl }
   );
   const canonicalTrial =
     refreshedTrial?.id === selectedTrial?.id ? refreshedTrial : null;
@@ -906,6 +912,34 @@ export function TrialDetailPanel({
   const trial = canonicalTrial ?? selectedTrial;
   const verifierSummary = embeddedCtrfSummary(trial?.result);
   const router = useRouter();
+
+  // QA votes require authenticated routes and an experiment anchor. Public
+  // share drawers use a different apiBaseUrl, so they do not render controls.
+  const feedbackExperimentId =
+    apiBaseUrl === "/api" ? (trial?.experiment_id ?? null) : null;
+  async function handleQaFeedback(record: FeedbackRecord): Promise<void> {
+    if (!feedbackExperimentId || !trial) {
+      throw new Error("QA feedback is unavailable for this trial");
+    }
+    await fetcher(
+      `/api/experiments/${encodeExperimentRouteParam(feedbackExperimentId)}/feedback`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          body: record.note?.trim() ?? "",
+          target:
+            record.target.kind === "verdict" ? "qa_verdict" : "qa_action_item",
+          target_key:
+            record.target.kind === "verdict"
+              ? record.target.classification
+              : record.target.id,
+          vote: record.vote,
+          trial_id: trial.id,
+        }),
+      }
+    );
+  }
 
   const validTabs = useMemo(
     () => new Set(["summary", "live", "files", "trajectory", "artifacts"]),
@@ -1698,20 +1732,23 @@ export function TrialDetailPanel({
                   task={task}
                   apiBaseUrl={apiBaseUrl}
                   actionsReady={actionsReady}
+                  onFeedback={
+                    feedbackExperimentId ? handleQaFeedback : undefined
+                  }
                   onQueued={() => onRetry?.(task ? [task.id] : undefined)}
                   onOpenGrader={(qaTrialId) => {
                     // The qa trial lives in the shadow experiment, so it is
                     // usually absent from this host's list. Navigate in place
                     // when it happens to be here, else deep-link the task page.
                     const idx = orderedList.findIndex(
-                      (t) => t.id === qaTrialId,
+                      (t) => t.id === qaTrialId
                     );
                     if (idx >= 0 && onNavigate) {
                       onNavigate(orderedList[idx], idx);
                       return;
                     }
                     router.push(
-                      `/tasks/${encodeURIComponent(trial.task_id)}?trial=${encodeURIComponent(qaTrialId)}`,
+                      `/tasks/${encodeURIComponent(trial.task_id)}?trial=${encodeURIComponent(qaTrialId)}`
                     );
                   }}
                 />

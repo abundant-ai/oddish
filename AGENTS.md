@@ -423,6 +423,16 @@ by model (`series_qa_by_model`) and by analyzer job kind
 (`series_by_analysis_type`). The Cost breakdown chart exposes the latter as the
 `Analyzer` stack; analyzer spend does not belong on the people leaderboard.
 
+QA agree/disagree submissions live in the append-only core `feedback` table
+(`FeedbackModel`) and use the hosted backend's authenticated
+`POST /experiments/{id}/feedback` route. Every row requires a `trial_id`, a
+`target` (`qa_verdict` or `qa_action_item`), the verdict classification or
+action-item id as `target_key`, and an `agree` or `disagree` vote. Creation
+validates organization scope and experiment membership through the shared
+`trial_in_experiment` predicate. The dashboard waits for persistence, reports
+errors, and permits one successful submission per mounted control. There are
+no public, read, update, triage, snapshot, or notification paths.
+
 ### Task Identity
 
 `GET /tasks/{task_id}/open` is the bounded first-paint contract for the task
