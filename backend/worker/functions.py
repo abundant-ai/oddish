@@ -826,6 +826,41 @@ def build_gke_cluster_reaper_function(modal_app) -> object | None:
 GKE_CLUSTER_REAPER: object | None = build_gke_cluster_reaper_function(app)
 
 
+async def _teardown_gke_cluster_entry() -> str:
+    from worker.gke_cluster_reaper import teardown_deployment_cluster
+
+    outcome = await teardown_deployment_cluster()
+    console.print(f"[cyan]GKE cluster teardown[/cyan]: {outcome}")
+    return outcome
+
+
+def build_gke_cluster_teardown_function(modal_app) -> object | None:
+    """On-demand deletion of the deployment's own cluster.
+
+    The hourly reaper is a scheduled function, so it dies with the app and
+    can never clean up after a closing preview. The stop workflow calls this
+    just before ``modal app stop``, while the app still holds the credentials
+    to do it. No schedule: invoked explicitly or not at all.
+    """
+    images = harbor_variant_images()
+    if "gke" not in images:
+        return None
+    return modal_app.function(
+        image=images["gke"],
+        secrets=runtime_secrets,
+        min_containers=0,
+        buffer_containers=0,
+        timeout=300,
+        cpu=1.0,
+        memory=2048,
+        name="teardown_gke_cluster",
+        serialized=True,
+    )(_teardown_gke_cluster_entry)
+
+
+GKE_CLUSTER_TEARDOWN: object | None = build_gke_cluster_teardown_function(app)
+
+
 @app.function(
     image=image,
     volumes=worker_volumes,

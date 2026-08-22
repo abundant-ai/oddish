@@ -16,6 +16,14 @@ is_configured_vercel() {
     [ -n "${VERCEL_PROJECT_ID:-}" ]
 }
 
+# The app must delete its own auto-provisioned trials cluster BEFORE it is
+# stopped: the credentials live only inside the app, and its scheduled idle
+# reaper dies with it. Best-effort -- a preview without GKE, or one deployed
+# before the teardown function existed, prints a skip.
+modal run --env "$MODAL_ENVIRONMENT" \
+  "$GITHUB_WORKSPACE/.github/scripts/preview/teardown_gke_cluster.py" \
+  --app-name "$MODAL_APP_NAME" || true
+
 modal app stop -y --env "$MODAL_ENVIRONMENT" "$MODAL_APP_NAME" || true
 # -y matters: `modal secret delete` click.confirm()s without it, which in a
 # non-tty CI job raises Abort — the `|| true` then swallowed the failure, so

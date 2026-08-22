@@ -211,3 +211,80 @@ async def _probe_pods() -> int | None:
         return len(pods.items)
     except Exception:  # noqa: BLE001 -- unknown pods must block reaping
         return None
+
+
+def select_teardown_targets(
+    clusters: "list[tuple[str, dict[str, str], str]]", cluster_name: str
+) -> list[str]:
+    """Pick which clusters a deployment teardown may delete.
+
+    ``clusters`` is ``(name, resource_labels, full_resource_path)`` for every
+    cluster the project can see, across all locations -- a region override on
+    a submission can have provisioned the deployment's cluster somewhere the
+    settings never mention, so teardown must search wider than
+    ``settings.gke_region``.
+
+    Two guards, both absolute: the name must be exactly this deployment's
+    cluster name, and the cluster must carry ``harbor-managed: "true"``. A
+    hand-built cluster that happens to share the name is never touched.
+    """
+    return [
+        path
+        for name, labels, path in clusters
+        if name == cluster_name and labels.get("harbor-managed") == "true"
+    ]
+
+
+async def teardown_deployment_cluster() -> str:
+    """Delete this deployment's auto-provisioned cluster(s), wherever they are.
+
+    The scheduled idle reaper dies with the Modal app, so a closing preview
+    must delete its cluster while the app still exists to do it -- this is
+    the function the stop workflow calls just before ``modal app stop``.
+    Deletion is issued as a long-running operation and not awaited; the
+    caller needs the request accepted, not the teardown finished.
+    """
+    import asyncio
+
+    cluster_name = settings.gke_cluster_name
+    if not (cluster_name and settings.gke_project_id):
+        return "skip: GKE not configured"
+
+    from worker.runtime import _materialize_gcp_adc_credentials
+
+    _materialize_gcp_adc_credentials()
+
+    import google.auth
+    from google.api_core import exceptions as gcp_exceptions
+    from google.cloud import container_v1
+
+    creds, _ = google.auth.default(
+        scopes=["https://www.googleapis.com/auth/cloud-platform"]
+    )
+    manager = container_v1.ClusterManagerClient(credentials=creds)
+    parent = f"projects/{settings.gke_project_id}/locations/-"
+    listing = await asyncio.to_thread(manager.list_clusters, parent=parent)
+    seen = [
+        (
+            c.name,
+            dict(c.resource_labels or {}),
+            f"projects/{settings.gke_project_id}/locations/{c.location}"
+            f"/clusters/{c.name}",
+        )
+        for c in listing.clusters
+    ]
+    targets = select_teardown_targets(seen, cluster_name)
+    if not targets:
+        matched = [name for name, _, _ in seen if name == cluster_name]
+        if matched:
+            return "skip: cluster exists but is not harbor-managed"
+        return "skip: no cluster"
+
+    deleted = 0
+    for path in targets:
+        try:
+            await asyncio.to_thread(manager.delete_cluster, name=path)
+            deleted += 1
+        except gcp_exceptions.NotFound:
+            pass
+    return f"deleting {deleted} cluster(s)"

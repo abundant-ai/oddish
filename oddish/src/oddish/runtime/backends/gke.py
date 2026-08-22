@@ -40,6 +40,15 @@ class GkeBackend:
         )
 
     def harbor_env_kwargs(self, base_kwargs: dict[str, Any]) -> dict[str, Any]:
+        # Precedence, stated exactly because it has been misread twice:
+        # a submission kwarg (--environment-kwarg) beats the deployment
+        # setting, because base_kwargs is spread last. A task.toml
+        # [environment.kwargs] key CANNOT beat the deployment setting on this
+        # path: harbor merges task kwargs as the base UNDER job kwargs, and
+        # this dict is the job kwargs, so the deployment value always covers
+        # the task's. Fixing that needs a defaults channel harbor does not
+        # have; until then a task-level provisioning_mode is decorative here
+        # and the per-submission kwarg is the override that works.
         # Provider defaults first, caller kwargs last (caller wins), matching
         # the Daytona spread. Names mirror ``GKEEnvironment.__init__``.
         #

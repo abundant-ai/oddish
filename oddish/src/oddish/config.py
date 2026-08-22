@@ -1424,11 +1424,13 @@ class Settings(BaseSettings):
     #               Pending while the node is created; the readiness wait is
     #               generous to match. Offered in only a few zones per
     #               accelerator.
-    #   spot        Draws on the SAME preemptible quota as flex-start but is
-    #               offered in every zone the accelerator exists in, so it
-    #               reaches regions flex-start cannot -- notably us-east1 for
-    #               TPU v6e, which holds 1536 preemptible v6e and no CT6E chip
-    #               cap against us-east5's 256 and cap of 8. It does not
+    #   spot        Draws on preemptible quota and is offered in every zone
+    #               the accelerator exists in, so it reaches regions
+    #               flex-start cannot. That reachability is the whole
+    #               advantage: v6e quota is a per-zone default applied to
+    #               every zone equally, so no zone holds more than another --
+    #               an earlier claim here that one region had extra headroom
+    #               was measured and found false. It does not
     #               queue: capacity now or nothing, and the node can be
     #               reclaimed at any time.
     #   on-demand   Reserved/standard capacity. No queue, no preemption.
