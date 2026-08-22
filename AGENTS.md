@@ -54,7 +54,7 @@ backend/                        # Hosted cloud layer (Modal deployment)
 ├── api/
 │   ├── app.py                  # FastAPI app factory and lifespan wiring
 │   ├── schemas.py              # Pydantic models for org/auth/share responses
-│   ├── services/               # hosted services (agent capabilities, summaries, …)
+│   ├── services/               # hosted service helpers (Slack unfurls, shared query helpers)
 │   └── routers/                # tasks, trials, dashboard, documents, tags, skills,
 │                               # admin, orgs, api_keys, imports, load, webhooks
 ├── auth/                       # header parsing (auth/__init__.py), API key + Clerk JWT
@@ -148,11 +148,11 @@ High-level flow:
    QA trials, not `T × (N + 1)`. The pre-trial audit is an `audit`-kind trial
    created once per task version at sweep time.
    Non-'agent' kinds are excluded from cost, quota, leaderboard, facet, and
-   public surfaces (see `oddish.filters.EligibleTrialScope`).
+   public surfaces (see `oddish.filters.trial_predicates.EligibleTrialScope`).
 5. While a trial runs, a worker-side tailer (`oddish.workers.harbor.live_tail`,
    on by default via `live_tail_enabled` / `live_tail_interval_sec`) polls the
    agent's log file inside the sandbox for supported agents (claude-code,
-   codex, cursor-cli, mini-swe-agent), folds token usage, checkpoints live
+   codex, cursor-cli, grok-build, tbh, mini-swe-agent), folds token usage, checkpoints live
    tokens/cost onto the trial row (`UPDATE … WHERE finished_at IS NULL`, so
    inflight quota reservations only tighten), and appends transcript events to
    `trial_events` (PK `(trial_id, attempt, seq)`, capped at 5000 events).
@@ -202,9 +202,9 @@ High-level flow:
    injected `EligibleTrialScope` rather than reimplementing Any/All logic.
 
 Agent capability analysis (the successful-vs-failing cohort comparison) has
-been removed: its endpoints, cohort blocks, and UI pane are gone, and a queued
-`ANALYZER` job with `payload.mode = "agent_capabilities"` now fails
-permanently. The output schema (`AgentCapabilitiesOutput` and sub-models) is
+been removed: its endpoints, cohort blocks, and UI pane are gone, and nothing
+enqueues or handles `ANALYZER` jobs any more (the enum value survives only so
+historical rows stay readable). The output schema (`AgentCapabilitiesOutput` and sub-models) is
 preserved in `oddish.analyze.models`, and
 `oddish/src/oddish/analyze/prompts/agent_capabilities.txt` is kept, so the
 feature can return as a `'capabilities'` analysis trial.
@@ -284,7 +284,7 @@ violates the pinned contract becomes FAILED while the target pointer remains,
 so GET reports 409 and the next POST replaces it instead of adopting a SUCCESS
 trial that can never publish.
 
-Trajectory summaries use schema v5. Each taxonomy-valued `components` entry
+Trajectory summaries use schema v6. Each taxonomy-valued `components` entry
 contains its `step_ids`, summary, and deterministic `tool_count` and
 `duration_ms` metadata. Step count is the length of `step_ids`; the other
 analytics are computed from the immutable
@@ -300,7 +300,7 @@ QA analyzer prompts are **not** stored in the database. They ship as packaged
 files under `oddish/src/oddish/analyze/`: `prompts/pre_trial_qa.txt` drives the
 source audit, `classify_prompt.txt` drives the per-trial log classifier,
 `verdict_prompt.txt` drives verdict synthesis, and
-`prompts/trajectory_summary.txt` drives schema-v5 trajectory summaries; the
+`prompts/trajectory_summary.txt` drives schema-v6 trajectory summaries; the
 summary template must retain the `{{taxonomy}}` placeholder, rendered by the
 QA-trial brief builder (`oddish.workers.analysis_trials`). Editing a prompt is
 a code change that ships with a deploy.
@@ -843,7 +843,7 @@ fed by the same endpoints in `oddish/src/oddish/core/sharing/public.py`, so the
 filtering lives at the **data layer** (don't return `is_probe` trials), not just
 the UI:
 
-- `get_public_task` (`sharing/helpers.py`) strips `is_probe` trials from the
+- `get_public_task_for_experiment` (`sharing/helpers.py`) strips `is_probe` trials from the
   loaded task, covering `get_public_task_status`.
 - `list_public_experiment_tasks` excludes `is_probe` when filtering each task's
   trials.
@@ -1245,7 +1245,9 @@ attach response bodies, request payloads, credentials, or SQL parameter values.
 The frontend is a Next.js 16 / React 19 App Router app. Browser code calls
 `src/app/api/*` route handlers, which forward to the backend from
 `NEXT_PUBLIC_API_URL` and preserve auth. Public routes are `/`, `/share/*`,
-`/datasets/*`, and `/api/public/*`; everything else is Clerk-protected.
+`/datasets/*`, `/api/public/*`, `/sign-in`, `/sign-up`, `/api/client-traces`,
+and — deliberately, for link-unfurl bots — `/experiments/*`; everything else
+is Clerk-protected.
 
 Authenticated proxy routes forward incoming `traceparent`, `tracestate`, and
 `baggage` headers to the backend and join the backend's `Server-Timing` value

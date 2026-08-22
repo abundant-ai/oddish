@@ -201,9 +201,11 @@ class WorkerJobKind(str, Enum):
 class WorkerJobStatus(str, Enum):
     """Single state machine for every kind of worker job.
 
-    `BLOCKED` holds paid TRIAL jobs while same-version, same-experiment
-    nop/oracle baselines run. Baseline settlement moves them to QUEUED or
-    CANCELLED.
+    `BLOCKED` parks a job the dispatcher must not claim yet. Today only
+    the nop/oracle baseline gate uses it: LLM trial jobs sit BLOCKED
+    until the baselines settle, then are released to QUEUED or cancelled
+    (their trial rows marked SKIPPED). Other stage transitions stay
+    driven by application-level enqueue helpers.
     """
 
     QUEUED = "QUEUED"

@@ -775,8 +775,10 @@ async def rerun_pre_trial_audit(task_id: str) -> dict:
 async def rerun_trial_analysis(trial_id: str) -> dict:
     """Queue analysis for one trial.
 
-    Classifies only this trial. Does not touch other trials, the task
-    verdict, or the pre-trial audit.
+    Classification is one task-wide QA pass, so a single trial cannot be
+    re-read alone: this clears the named trial's stored analysis, then
+    re-runs the task's QA, which re-reads every live trial and recomputes
+    the verdict. Only the named trial loses its stored result up front.
     """
     async with get_session() as session:
         return await rerun_trial_analysis_core(session, trial_id=trial_id)

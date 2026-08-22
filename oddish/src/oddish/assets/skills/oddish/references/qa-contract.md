@@ -48,22 +48,31 @@ Per-trial classifications are:
 - `GOOD_FAILURE`: the verifier failed without showing a task defect.
 - `BAD_FAILURE`: the verifier failed because QA found a task defect.
 - `HARNESS_ERROR`: execution evidence indicates a harness or infrastructure
-  failure rather than an ordinary verifier outcome.
+  failure rather than an ordinary verifier outcome. Exception: a
+  `HARNESS_ERROR` with `subtype = "hidden_file_leak"` counts as a task
+  defect, not an infra failure.
 
 Keep `status`, `reward`, and `analysis.classification` separate. `success`
 means execution completed, `reward` is verifier credit, and the classification
 is QA's judgment of why that result occurred.
 
 The task verdict contains `verdict` (`accept` or `reject`), `is_good`,
-`confidence`, `primary_issue`, `reasoning`, and task-level `recommendations`.
-The full individual trial record adds `analysis.root_cause`,
-`analysis.recommendation`, and `analysis.action_items[]`.
+`confidence`, `primary_issue`, `reasoning`, task-level `recommendations`, and
+four server-recomputed counts that model output cannot inflate:
+`task_problem_count`, `agent_problem_count`, `success_count`, and
+`harness_error_count`.
+The full individual trial record's `analysis` blob carries the whole
+classification entry: `classification`, `subtype`, `evidence`, `root_cause`,
+`recommendation`, `action_items[]`, `exploitation[]`, plus internal
+`_graded_by` / `_graded_at_steps` keys.
 
-Each action item can carry `source` (`pre_trial` or `post_trial`),
+Each action item carries a server-computed `id` (the target of other items'
+`links_to`) and can carry `source` (`pre_trial` or `post_trial`),
 `problem_type`, `dimension`, `file`, one-based `line_start` and `line_end`,
 `title`, `detail`, `recommendation`, `tier` (`must_fix`, `should_fix`, or
-`optional`), and exploitation linkage fields. Task status can trim embedded
-trial analysis; use `oddish status <trial_id> --json` for the full record.
+`optional`), and exploitation linkage fields (`links_to`, `exploited`,
+`exploit_evidence`, `causal`). Task status can trim embedded trial analysis;
+use `oddish status <trial_id> --json` for the full record.
 
 ## Replacement and backfill semantics
 
@@ -84,3 +93,13 @@ state machine.
 `oddish cancel <task_id> --qa` cancels live `qa` and `audit` trials for that
 task. The CLI label says QA, but the endpoint also stops the pre-trial audit.
 It does not target an independent legacy QA worker job.
+
+## QA review votes
+
+Dashboard users can vote on QA output. Votes persist in the append-only core
+`feedback` table: `target` is `qa_verdict` or `qa_action_item`, `vote` is
+`agree` or `disagree`, with optional free-text `body`, scoped by org and
+experiment. The hosted route is `POST /experiments/{experiment_id}/feedback`
+(a `tasks`-scope key suffices; 404 when the named trial is not in that
+experiment). Votes never alter the stored verdict or classifications — they
+are review signal only, and there is no CLI command for them.

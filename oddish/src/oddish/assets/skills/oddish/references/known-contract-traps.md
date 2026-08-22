@@ -12,14 +12,14 @@ appear inconsistent.
 | Trial `status == "failed"` means the agent produced a bad solution. | `failed` means an execution/harness error; an ordinary completed zero-reward run can still have `status == "success"`. |
 | A gate-skipped model is a model failure. | `skipped` means nop/oracle validation rejected that task version and experiment before the paid trial ran. |
 | QA is a separate worker-job type. | QA, audit, and summary refreshes are `TRIAL` jobs whose `trials.kind` identifies the analysis. Legacy worker-job enum values are historical only. |
-| A run needs `--run-analysis`. | No such current option exists; QA admission is automatic after current-version agent trials settle and the audit finishes. |
-| `backfill-analysis --trial X` analyzes only X. | It clears X's visible stored state, then starts task-wide QA over every eligible trial. |
+| A run needs `--run-analysis`. | `run` has no such option; QA admission is automatic after current-version agent trials settle and the audit finishes. (`ls --run-analysis` exists, but only as a listing filter.) |
+| `backfill-analysis --trial X` analyzes only X. | It starts task-wide QA over every eligible trial; with `--force` it also clears X's visible stored state first (without `--force` nothing is cleared). |
 | Omitting `--force` reuses old classifications. | Every replacement QA pass rereads and reclassifies the eligible set; `--force` controls which stored fields are cleared before it starts. |
 | `cancel --qa` affects only the classifier. | The task QA cancellation endpoint cancels live `qa` and `audit` trials. |
 | A replacement QA run immediately hides the old verdict. | The last successful verdict can remain published while the replacement is queued or running. |
 | Every command supports `--json` except logs. | JSON support is declared per command; link and probe paths also lack it. |
 | `run --json` returns a guaranteed `experiment_id`. | It returns the experiment name and URL; retain task IDs and parse the URL only if a caller explicitly accepts that coupling. |
-| Publishing always needs a full-scope key. | An admin-created `tasks` key can publish; a member-created `tasks` key cannot. |
+| An admin-created `tasks` key can run `oddish publish`. | The `publish`/`unpublish` routes are admin-only: API keys need `full` scope regardless of who created them. The admin-created-`tasks`-key exception exists only for sweep-time auto-publish (`run --publish` / GitHub-attributed CI). |
 | A retry updates the old trial row. | It creates a new immutable trial and links the old row through `superseded_by_trial_id`. |
 | Worker job `BLOCKED` is unused. | Baseline gating actively holds paid `TRIAL` jobs in `BLOCKED` until baseline settlement. |
 

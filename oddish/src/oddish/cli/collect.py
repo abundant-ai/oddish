@@ -211,7 +211,7 @@ def collect(
         typer.Option("--api-url", "-u", help="API URL (uses configured URL if unset)."),
     ] = None,
 ):
-    """Gather selected-version trials into a read-only collection.
+    """Gather tasks' current-version trials into a read-only collection.
 
     oddish collect --task activiti-spring-boot-3-upgrade --task struts-rest-showcase-to-spring-mvc
     oddish collect --task my-task --no-publish -n "my rollup"

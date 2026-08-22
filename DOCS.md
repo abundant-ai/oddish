@@ -20,11 +20,11 @@ export ODDISH_API_KEY="ok_..."
 
 - `oddish run` - submit work, retry failed trials, or re-run task-level QA
 - `oddish upload` - register a task or upload existing trials
-- `oddish preflight` - validate local task structure and provenance without uploading
+- `oddish preflight` - run the local task checks that also gate `run` and `upload`
 - `oddish ls` - list uploaded tasks
 - `oddish status` - view progress
 - `oddish logs` - stream a running trial's live transcript and cost estimate
-- `oddish cancel` - stop in-flight task runs or task-level QA/audit analysis trials
+- `oddish cancel` - stop in-flight task runs, or just the QA/audit runs with `--qa`
 - `oddish backfill-analysis` - (re)run trial analysis for a trial, task, or experiment
 - `oddish costs` - view billable-spend accounting (org-wide, or per-user with `--user`)
 - `oddish admin concurrency` - inspect, set, or clear operator queue-key limits
@@ -34,21 +34,22 @@ export ODDISH_API_KEY="ok_..."
 - `oddish collect` - gather trials from tasks/trial IDs into a shareable read-only collection
 - `oddish experiment create` - build a collection experiment from explicit trial IDs
 - `oddish experiment add` / `oddish experiment remove` / `oddish experiment rename` - edit a collection in place; its share link keeps working
-- `oddish link task` / `oddish link trial` - construct dashboard deep links locally
-- `oddish delete` - delete task data (trial delete works on hosted Oddish; task/experiment delete is self-host only)
+- `oddish experiment rename-model` - alias a model id to a display name on an experiment's public share view
+- `oddish delete` - delete trials, tasks, or experiments (what's allowed depends on the deployment; see [Delete Data](#delete-data))
 - `oddish publish` / `oddish unpublish` - toggle public read-only sharing for an experiment
-- `oddish skill` - print or install the packaged SKILL.md agent guide
+- `oddish link` - print the dashboard URL for a task or trial (built locally; needs no API key)
 - `oddish probe` - internal probe-trial helpers (`oddish probe`, `oddish probe skill add`)
+- `oddish skill` - print or install the packaged SKILL.md agent guide
 
-Machine-readable output is declared per command through `--json`; run
-`oddish <command> --help` before scripting it. `logs`, `link`, and `probe` do
-not provide a JSON mode.
+Most commands accept `--json` for machine-readable output (CI / scripts /
+agents). The exceptions are `oddish logs`, `oddish link`, `oddish skill`, and
+the `oddish probe` helpers, which print human-readable output only.
 
 ### Lifecycle
 
 A typical run flows through these commands:
 
-1. `oddish run` submits a task, dataset, or sweep and returns task references plus an experiment URL. Task-mode `oddish upload` only registers a task version; import mode attaches already-executed Harbor trials. Task-level QA (per-trial trajectory classification, plus a task verdict when there are enough trials from enough distinct agents) runs automatically once every trial settles.
+1. `oddish run` — submit a task, dataset, or sweep. The output (including `--json`) carries the task IDs plus the experiment's name and dashboard URL. Task-level QA runs automatically once every trial settles: it classifies each trial's trajectory, and adds a task verdict when there are at least 5 eligible trials from at least 3 distinct agents. (`oddish upload` without `--task` only registers task files — no trials and no experiment are created; importing trials with `--task` does attach them to an experiment.)
 2. `oddish status` — discover what's in flight, then drill into a specific task or experiment to see trial-level progress and rewards.
 3. `oddish pull` — once you have a trial, task, or experiment ID, download its logs, results, trajectories, and artifact files to disk.
 4. `oddish run --retry` — re-queue failed trials or re-run task-level QA.
@@ -66,34 +67,22 @@ references for task/trial state, QA, CLI output/auth, and known contract traps.
 # Print the SKILL.md entrypoint to stdout
 oddish skill
 
-# Copy the complete skill into the first existing .agents, .codex, .claude,
-# or .kimi-code skills directory (project-local first), or pass --dir
+# Install the complete skill into a skills directory, or pass --dir
 oddish skill --install [--dir <skills_dir>]
 
 # Print the packaged file location
 oddish skill --path
 ```
 
+`--install` without `--dir` picks the first existing directory out of eight
+candidates: the project-local `.agents/skills`, `.codex/skills`,
+`.claude/skills`, `.kimi-code/skills`, then the same four under your home
+directory (`~/.agents/skills` first). If none exist it creates
+`~/.agents/skills`.
+
 This guide is about driving the CLI; it is unrelated to the probe skills
 library (`oddish probe skill add`). The command is local-only and needs no API
 key.
-
-## Validate Before Running
-
-`oddish preflight` checks local task integrity without uploading or starting a
-trial. It parses `task.toml`, requires a justification for open internet,
-rejects repository fetches or exposed `.git` data in the agent image, requires
-readable source rather than patch-only solutions, and rejects brittle
-source-scanning anti-cheat checks.
-
-```bash
-oddish preflight ./my-task
-oddish preflight ./my-dataset --json
-```
-
-`oddish run` and task-mode `oddish upload` apply the same gate automatically.
-Their `--force` option proceeds after printing failed findings; the standalone
-`preflight` command has no bypass option.
 
 ## Submit a Job
 
@@ -130,12 +119,12 @@ Options
 - `--task-name`, `-t TEXT` - Include task glob filter; can be passed multiple times
 - `--exclude-task-name`, `-x TEXT` - Exclude task glob filter; can be passed multiple times
 - `--n-tasks`, `-l INTEGER` - Limit the number of selected tasks after filtering
-- `--env`, `-e` - Execution environment: `docker`, `daytona`, `ec2`, `e2b`, `modal`, `runloop`, or `gke`. Hosted EC2 is opt-in and must be enabled by the deployment operator; Daytona remains the CPU default.
+- `--env`, `-e` - Execution environment. The flag accepts any Harbor environment name, but hosted Oddish honors only `modal`, `daytona`, `ec2`, and `gke` — anything else is coerced to `modal` with a warning. Hosted EC2 is opt-in and must be enabled by the deployment operator; Daytona remains the CPU default.
 - `--priority`, `-P TEXT` - Queue priority, typically `low` or `high`
 - `--experiment`, `-E TEXT` - Reuse or create an experiment ID/name
 - `--user`, `-u TEXT` - Override the author attached to the run. Defaults to the authenticated identity (Clerk-linked email for API keys / dashboard sessions); set this only to attribute a run to someone other than yourself.
 - `--github-user`, `-G TEXT` - GitHub user attribution for CI metadata. When omitted, the backend auto-fills this from the authenticated user's Clerk-linked GitHub username (if any) so CI-style attribution still works.
-- `--github-id TEXT` - Immutable GitHub user ID for CI attribution; survives handle renames
+- `--github-id TEXT` - GitHub user *id* attribution (immutable, so it survives handle renames). An id that isn't linked to an Oddish user is rejected before anything uploads.
 - `--github-meta TEXT` - JSON metadata blob to attach to the task
 - `--link TEXT` - Associate URL with the task.
 - `--publish/--no-publish` - Publish the experiment for public read-only access (off by default)
@@ -143,12 +132,11 @@ Options
 - `--background`, `--async`, `-b` - Submit and return immediately
 - `--quiet`, `-q` - Suppress startup logs
 - `--run-probe` - Auto-enqueue a probe trial for the task version (off by default)
-- `--baseline-gate/--no-baseline-gate` - Hold non-baseline trials until same-version, same-experiment nop/oracle trials validate the task (default: gated)
+- `--baseline-gate/--no-baseline-gate` - Hold LLM trials until the task's nop/oracle baselines validate it (on by default). `--no-baseline-gate` runs them immediately, ungated; the baselines themselves still run. Decided per run — retries choose afresh.
 - `--disable-verification/--enable-verification` - Skip task verification or tests
 - `--force-new-version` - Allocate a new task version even when the content is unchanged
 - `--overwrite-current-version` - Replace the selected current version in place; existing trials pinned to it will resolve to the replacement content
-- `--force` - Submit after printing failed preflight findings; unrelated to `--force-new-version`
-- `--submit-concurrency INTEGER` - Max parallel task uploads/submissions (default: adaptive)
+- `--submit-concurrency INTEGER` - Max parallel task uploads/submissions (default: adaptive; overrides `ODDISH_TASK_UPLOAD_CONCURRENCY`)
 - `--override-cpus INTEGER` - Override environment CPU count
 - `--override-memory-mb INTEGER` - Override environment memory
 - `--override-gpus INTEGER` - Override environment GPU count
@@ -165,8 +153,9 @@ Options
   Credentials authenticate sandbox image pulls, are encrypted across the queue, and are logged out on teardown.
   Docker Hub creds can also come from `ODDISH_DOCKERHUB_USERNAME` / `ODDISH_DOCKERHUB_TOKEN`.
   Prefer a Docker Hub access token over an account password.
+- `--force` - Submit even if the preflight checks fail; findings are still printed. (Unrelated to `--force-new-version`.)
 - `--retry` - Re-run an existing target instead of submitting new work (see below)
-- `--qa` - With `--retry`: create a replacement task-level QA trial (classify every eligible trial + synthesize the verdict when the evidence bar is met)
+- `--qa` - With `--retry`: re-run the task-level QA pass (classify every trial + synthesize the verdict) instead of retrying trials
 - `--yes`, `-y` - Skip confirmation prompts (used with `--retry`)
 - `--api TEXT` - Override the API URL
 - `--json` - Emit JSON for scripts and CI; implies `--background`
@@ -203,7 +192,7 @@ oddish run <task_id> --retry -y
 # Retry all failed trials across an experiment
 oddish run <experiment_id> --retry -y
 
-# Create a replacement task-level QA trial
+# Re-run the task-level QA pass (classify every trial + synthesize the verdict)
 oddish run <task_id> --retry --qa
 
 # Machine-readable summary of what was queued
@@ -211,11 +200,13 @@ oddish run <experiment_id> --retry -y --json
 ```
 
 - Default (`--retry` alone) re-queues failed trials. For task and experiment
-  targets, only trials currently in a `failed` state are retried.
-- `--qa` creates one replacement task-level QA trial: it reclassifies every
-  eligible trial and synthesizes a fresh task verdict when the evidence bar is
-  met. A trial-shaped id resolves to its parent
-  task; experiment targets run QA for each task.
+  targets, only trials currently in a `failed` state are retried — unless you
+  pass `--no-baseline-gate`, which also sweeps up trials the baseline gate
+  left in `skipped`.
+- `--qa` re-runs the single task-level QA pass: it re-classifies every live
+  trial and synthesizes a fresh task verdict, while the previously published
+  verdict stays visible until the replacement lands. A trial-shaped id resolves
+  to its parent task; experiment targets run QA for each task.
 - `--qa` requires `--retry`.
 - `-y, --yes` skips the confirmation prompt; `--json` is always non-interactive.
 
@@ -247,6 +238,36 @@ harbor:
 per trial, including the initial run. When omitted, Oddish keeps its default
 retry behavior.
 
+## Preflight Checks
+
+Use `oddish preflight` to check local task files for integrity problems before
+spending trials on them. It runs entirely locally — no API key needed. It
+parses `task.toml`, requires a justification for open internet access, rejects
+repository fetches or exposed `.git` data in the agent image, requires
+readable source rather than patch-only solutions, and rejects brittle
+source-scanning anti-cheat checks.
+
+```bash
+# Check a task or dataset directory
+oddish preflight ./my-task
+
+# Resolve tasks from a registry dataset
+oddish preflight --dataset swebench@1.0
+
+# Machine-readable findings for CI
+oddish preflight ./my-task --json
+```
+
+The same checks run automatically inside `oddish run` and `oddish upload` and
+block submission when they fail. Pass `--force` to those commands to submit
+anyway; the findings are still printed.
+
+Options
+
+- `PATH` (or `--path`) - Task or dataset directory to check
+- `--dataset TEXT` - Harbor dataset name to resolve tasks from
+- `--json` - Emit findings as JSON for CI consumers
+
 ## Upload Without Running
 
 Use `oddish upload` to register a task (or dataset of tasks) without submitting
@@ -276,17 +297,21 @@ Options
 - `--task TEXT` - Import mode: target task ID for the imported trials
 - `--experiment`, `-E TEXT` - Import mode: experiment to attach trials to (auto-generated if omitted)
 - `--skip-artifacts` - Import mode: import metadata without logs/trajectories
-- `--force` - Upload after printing failed preflight findings
 - `--priority`, `-P TEXT` - Task row priority (default `low`)
 - `--message`, `-M TEXT` - Task version description
 - `--overwrite-current-version` - Replace the selected current version in place; existing trials pinned to it will resolve to the replacement content
+- `--force` - Upload even if the preflight checks fail; findings are still printed
 - `--user`, `-u TEXT` - Author override
 - `--quiet`, `-q` / `--json` / `--api TEXT`
 
 ## List Tasks
 
-Use `oddish ls` to browse uploaded tasks with their selected default version, trial
-counts, reward summary, tags, last run time, and linked experiments.
+Use `oddish ls` to browse uploaded tasks with their current version, trial
+counts, reward summary, tags, last run time, and linked experiments. "Current
+version" is the task's user-selected default — not necessarily the
+highest-numbered one — and the trial counts cover that version's normal
+evaluation trials (not superseded rows, probes, or the platform's QA/audit
+runs).
 
 ```bash
 oddish ls
@@ -297,7 +322,7 @@ oddish ls --tool bash --tool-min bash=5 --trial-match all
 oddish ls --json
 ```
 
-Options
+Common options
 
 - `--query`, `-q TEXT` - Filter tasks by name
 - `--tag TEXT` - Require this tag (repeatable; AND semantics)
@@ -307,6 +332,11 @@ Options
 - `--offset INTEGER` - Number of tasks to skip
 - `--json` - Emit the raw task browser JSON response
 - `--api TEXT` - Override the API URL
+
+These are only the most common filters — `oddish ls` mirrors the dashboard's
+full task-browser filter set (status, date, model, trial-metric, tool-usage,
+and more, some 70 options in all). Run `oddish ls --help` for the complete
+list rather than relying on this page.
 
 ## Check Progress
 
@@ -343,6 +373,12 @@ oddish status <task_id> --json
 ```
 
 If a positional ID isn't found as a task, `status` automatically retries it as an experiment ID.
+
+One thing to know when scripting against `status <task_id> --json`: the
+response's `trials` list is every current-version trial, including the
+platform's own QA and audit runs (rows whose `kind` is `"qa"` or `"audit"`),
+and the top-level totals count them too. To count only evaluation attempts,
+filter on `trials[].kind == "agent"`.
 
 Options
 
@@ -425,7 +461,8 @@ oddish logs <trial_id> --follow
 Notes
 
 - Live transcripts exist only for supported agents (`claude-code`, `codex`,
-  `cursor-cli`, `mini-swe-agent`); other agents show no live events.
+  `cursor-cli`, `grok-build`, `tbh`, `mini-swe-agent`); other agents show no
+  live events.
 - Live events are short-lived: they are purged once the trial reaches a
   terminal state. For finished trials, use `oddish pull` (or
   `GET /trials/{id}/logs`) to fetch the permanent logs from S3.
@@ -442,28 +479,49 @@ Options
 
 Use `oddish cancel` to stop queued or running work without deleting the task
 itself. Completed trials are preserved. By default it cancels all active task
-runs; use `--qa` to cancel the task's live QA and pre-trial audit trials.
+runs. With `--qa` it leaves the agent trials alone and instead cancels the
+task's in-flight analysis work: the QA pass (classification + verdict) and any
+live pre-trial audit, marking half-finished per-trial classifications failed.
 
 ```bash
 # Cancel all active runs for a task
 oddish cancel <task_id>
 
-# Cancel in-flight QA and the pre-trial audit for the task
+# Cancel only the in-flight QA/audit runs (classification + verdict)
 oddish cancel <task_id> --qa
 oddish cancel <trial_id> --qa   # a trial id resolves to its parent task
 ```
 
 Options
 
-- `TASK_ID` - Task or trial ID to cancel; with `--qa`, a trial ID resolves to its parent task
-- `--qa` - Cancel the task's in-flight `qa` and `audit` analysis trials
+- `TASK_ID` - Task ID to cancel. A trial ID is only useful with `--qa`, where it resolves to its parent task; without `--qa` a trial ID matches nothing
+- `--qa` - Cancel only the task's in-flight QA and pre-trial audit runs, not its agent trials
 - `--force`, `-f` - Skip the confirmation prompt
 - `--api TEXT` - Override the API URL
 - `--json` - Emit the cancellation result as JSON (implies `--force`)
 
 ## Backfill Analysis
 
-Use `oddish backfill-analysis` to queue replacement task-level QA (LLM trajectory classification plus an optional task verdict) for an experiment, task, or trial selector. Pass exactly one of `--experiment`, `--task`, or `--trial`. Every replacement QA trial rereads and reclassifies the task's full eligible trial set. `--force` controls which stored analysis fields are cleared while the replacement is pending; it does not change the replacement QA input set. A `--trial` selector therefore still runs task-wide QA.
+Use `oddish backfill-analysis` to (re)run task-level QA — LLM trajectory
+classification plus the task verdict — for an experiment, a task, or a single
+trial. Pass exactly one of `--experiment`, `--task`, or `--trial`.
+
+QA is one pass per task, and each invocation queues a fresh pass that re-reads
+and re-classifies **every** live trial of the task and recomputes the verdict,
+whatever flags you pass. In particular, `--trial` does not analyze just that
+trial — it can't; the pass costs the same as a full task re-run. What `--trial`
+and `--force` actually control is which *stored* results are cleared up front
+(so the dashboard shows them as pending) rather than staying visible until the
+new results replace them:
+
+- default: nothing is cleared; new results overwrite old ones as they land.
+- `--force` with `--task` or `--experiment`: clears every live trial's stored
+  analysis first.
+- `--trial <id> --force`: clears just that trial's stored analysis first.
+
+A pass only starts once all of the task's trials are finished, and is refused
+while another QA pass or a pre-trial audit is live. The previously published
+verdict stays visible until the replacement lands.
 
 ```bash
 oddish backfill-analysis --task <task_id>
@@ -473,10 +531,10 @@ oddish backfill-analysis --experiment <experiment_id>
 
 Options
 
-- `--experiment TEXT` - Queue one task-wide QA replacement for every task in an experiment
-- `--task TEXT` - Queue task-wide QA for one task
-- `--trial TEXT` - Resolve the parent task and queue task-wide QA; clears only that trial's stored analysis when combined with `--force`
-- `--force` - Clear stored analysis before queueing the replacement (the QA trial still reclassifies every eligible trial)
+- `--experiment TEXT` - Queue a QA pass for every task in an experiment
+- `--task TEXT` - Queue a QA pass for one task
+- `--trial TEXT` - Queue a QA pass for the trial's parent task (with `--force`, only this trial's stored analysis is cleared first)
+- `--force` - Clear the targeted trials' stored analyses before the pass runs
 - `--json` - Emit machine-readable output.
 - `--api TEXT` - Override the API URL
 
@@ -579,7 +637,7 @@ Options
 - `--include-task-files` - Include task-level files for task or experiment targets
 - `--debug-files` - List a trial's raw S3 inventory (stored `trial_s3_key` vs computed prefix vs the objects that actually exist) instead of downloading. Trial targets only; useful for diagnosing "did the upload land where the DB thinks it did?"
 - `--watch`, `-w` - Keep pulling while the run is in progress
-- `--interval INTEGER` - Poll interval in seconds for `--watch`
+- `--interval INTEGER` - Poll interval in seconds for `--watch` (default: 5)
 - `--api TEXT` - Override the API URL
 - `--json` - Print the pull manifest as JSON instead of progress output
 
@@ -663,9 +721,10 @@ oddish collect --task <task_id> --json
 Options
 
 - `TRIAL_ID...` - Optional trial IDs to include (combine freely with `--task`)
-- `--task`, `-t TEXT` - Task ID or name whose current-version trials are linked (repeatable)
+- `--task`, `-t TEXT` - Task ID or name whose current-version trials are linked (repeatable; append `@<version>`, e.g. `mytask@16`, to link that version's trials instead)
 - `--name`, `-n TEXT` - Collection name (default `collection`)
-- `--publish/--no-publish` - Create a public read-only share link (default: publish). Publishing accepts a full-scope key or an admin-created tasks-scope key; member-created tasks keys cannot publish.
+- `--into TEXT` - Existing collection ID to edit instead of creating a new one; appends the given trials/tasks and/or renames it to `--name`
+- `--publish/--no-publish` - Create a public read-only share link (default: publish). Publishing requires a full-scope API key.
 - `--json` - Print the raw JSON response
 - `--api-url`, `-u TEXT` - Override the API URL
 
@@ -693,10 +752,22 @@ oddish experiment remove <collection_id> --task <task_id>
 
 # rename it
 oddish experiment rename <collection_id> --name "21-task rollup"
+
+# alias a model id on the public share view, or drop the alias again
+oddish experiment rename-model <experiment_id> --model v9-learnability --as 4.5
+oddish experiment rename-model <experiment_id> --remove v9-learnability
 ```
 
+`rename-model` works on any experiment, not just collections. Its aliases
+apply only to the public `/share` view — the real model id still drives cost
+accounting and shows in the org dashboard — and the experiment must be
+published for an alias to show. Run it with no flags to list the experiment's
+aliases.
+
 `remove` only unlinks — the trials stay in their home experiment with their
-artifacts intact. `add` needs a `TASKS`-scoped key; `remove` and `rename`
+artifacts intact. It prompts for confirmation; `--yes`/`-y` skips the prompt,
+and `--json` does **not** imply consent (scripted use needs `--yes --json`).
+`add` needs a `TASKS`-scoped key; `remove`, `rename`, and `rename-model`
 require an admin API key, the same gate `oddish delete` uses. `remove` refuses
 to take out the last of a collection's trials — if you want the collection
 gone, use `oddish delete` to remove it entirely. (This is a guard on the
@@ -706,9 +777,18 @@ with nothing to show.)
 
 ## Delete Data
 
-Use `oddish delete` to delete tasks, experiments, or trials. Against hosted
-Oddish (oddish.app), only trial deletion (`--trial`) is available; whole-task
-and whole-experiment deletion require a self-hosted instance.
+Use `oddish delete` to delete tasks, experiments, or trials. What each
+deployment allows:
+
+- **Trial deletion** (`--trial`) works against hosted Oddish (oddish.app). It
+  is admin-only — a full-scope API key — and removes the trial row plus its
+  stored artifacts.
+- **Whole-task and whole-experiment deletion** is refused by the CLI against
+  any Modal-hosted API (hosted oddish.app and Modal self-hosts alike); the
+  command exits with "Cleanup is not available for hosted Oddish instances."
+- A **standalone core server** has no delete endpoints at all: its API surface
+  is append-only by policy, and an operator removes data with the
+  `delete_{task,experiment,trial}_core` helpers instead.
 
 ```bash
 # Delete an experiment
@@ -723,9 +803,9 @@ oddish delete --trial <trial_id> --json
 
 Options
 
-- `TASK_ID` - Task ID to delete when not using `--experiment` (self-host only)
-- `--experiment`, `-e TEXT` - Delete an experiment instead of a task (self-host only)
-- `--trial`, `-t TEXT` - Delete one or more trials (repeatable); works against hosted Oddish
+- `TASK_ID` - Task ID to delete when not using `--experiment` (refused for Modal-hosted APIs)
+- `--experiment`, `-e TEXT` - Delete an experiment instead of a task (refused for Modal-hosted APIs)
+- `--trial`, `-t TEXT` - Delete one or more trials (repeatable); works against hosted Oddish (admin-only)
 - `--yes`, `-y` - Skip confirmation prompts
 - `--api-url`, `-u TEXT` - Override the API URL
 - `--json` - Emit the delete result as JSON (implies `--yes`)
@@ -733,9 +813,11 @@ Options
 ## Share an Experiment
 
 Use `oddish publish` to make an experiment publicly viewable (read-only) and
-get a shareable URL; `oddish unpublish` revokes it. Publishing exposes the
-experiment through hosted public endpoints, so do not publish sensitive task
-or trial data. (Both commands require a hosted/cloud deployment.)
+get a shareable URL; `oddish unpublish` revokes it. Both need a full-scope API
+key and a hosted/cloud deployment (the standalone core server has no share
+endpoints). Publishing from a run submission (`oddish run --publish`, or the
+auto-publish on GitHub-attributed CI runs) is less strict: an admin-created
+`tasks`-scope key works there, though a member-created `tasks` key does not.
 
 ```bash
 # Publish and print the public URL
@@ -769,14 +851,16 @@ The dialog accepts:
 - **Task only** → registers a new task version (or no-op when content
   is unchanged).
 - **Run only** → imports every Harbor trial in the zip into the target
-  task ID you provide.
+  task (ID or name; leave the field blank and the backend infers the task
+  from the run zip's job-dir name).
 - **Task + run** → uploads the task first, then imports the trials
   against it (the UI equivalent of `oddish upload ./jobs --path ./my-task`).
 
 The optional **Experiment name** field maps to `--experiment`; leaving
 it blank auto-generates a fresh experiment, matching the CLI default.
-**Skip artifacts** maps to `--skip-artifacts`. Re-uploading the same
-task content is idempotent — content-hash unchanged → no new version.
+The **Tags** picker attaches tags to the imported task (no CLI
+equivalent in `oddish upload`). Re-uploading the same task content is
+idempotent — content-hash unchanged → no new version.
 
 For very large archives or scripted/CI flows, prefer the CLI: the UI
 caps each uploaded zip at 1 GiB.
@@ -810,7 +894,7 @@ JSON
 
 ## Test Results (ctrf.json)
 
-Test-based tasks can expose passed, failed, skipped, pending, and other counts
+Test-based tasks can expose their `tests` (total), passed, failed, skipped, pending, and other counts
 by writing a [Common Test Report Format](https://ctrf.io/) report to
 `/logs/verifier/ctrf.json`. Current Harbor tasks commonly do this with
 `pytest-json-ctrf`:
@@ -824,6 +908,8 @@ Oddish keeps the full report with the trial artifacts and persists only its
 compact `results.summary` counts, `results.tool.name`, and the trial-relative
 report artifact path under the reserved `trial.result._verifier` key. The
 dashboard shows those counts as a small passed/total line in the trial
-drawer's summary. Missing, malformed, or oversized CTRF reports are ignored
-and never change the settled `reward`; verifiers without a test report simply
-show no test line.
+drawer's summary. `results.summary` must carry all six counts (`tests`,
+`passed`, `failed`, `skipped`, `pending`, `other`) as non-negative integers —
+a report missing any of them is dropped whole. Missing, malformed, or
+oversized CTRF reports are ignored and never change the settled `reward`;
+verifiers without a test report simply show no test line.

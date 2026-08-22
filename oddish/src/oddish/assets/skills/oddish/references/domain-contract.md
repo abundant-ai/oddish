@@ -59,9 +59,13 @@ Oddish treats names case-insensitively as baselines when they are exactly
 `nop` or `oracle`, start with `nop-` or `oracle-`, or start with `agent-nop` or
 `agent-oracle`. Their canonical queue key is `nop_oracle`.
 
-When a sweep contains both a baseline and a non-baseline agent, baseline
-gating is on by default. The decision is scoped to one task version and one
-experiment:
+Gating requires two switches: the deployment-level `gate_llm_on_baselines`
+setting (default off; hosted Oddish deploys enable it via
+`ODDISH_GATE_LLM_ON_BASELINES=1`) and the per-submission
+`--baseline-gate/--no-baseline-gate` option (default on). On a deployment with
+the global flag off, trials are never held regardless of the CLI flag. When
+both are on and a sweep contains a baseline and a non-baseline agent, the gate
+decision is scoped to one task version and one experiment:
 
 - every present oracle run must have reward exactly `1`;
 - every present nop run must have reward exactly `0`;

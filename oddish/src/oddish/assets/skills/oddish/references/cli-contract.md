@@ -14,11 +14,19 @@ The API base URL resolves in this order:
 API-backed commands require `ODDISH_API_KEY`, including reads. `oddish skill`
 and `oddish link task|trial` are local and do not require it.
 
-Hosted API-key scopes form `full > tasks > read`. Reads require `read`; normal
-task submission and QA mutations require `tasks`; operator/admin surfaces such
-as queue diagnostics, cost accounting, concurrency, and cost exclusions require
-`full`. Publishing accepts `full` or an admin-created `tasks` key. A
-member-created `tasks` key cannot publish.
+Hosted API-key scopes form `full > tasks > read`. Reads require `read`.
+Normal task submission requires `tasks`. QA mutations (`qa/retry`,
+`qa/backfill`, `qa/pre-trial`, analysis rerun, trajectory-summary refresh)
+require a `tasks` key that is NOT member-created; only `qa/cancel` accepts a
+member-created `tasks` key. Operator/admin surfaces — queue diagnostics, cost
+accounting, concurrency, cost exclusions, and every `delete` route — require
+`full`, and some queue diagnostics additionally require the configured
+operator organization (a `full` key outside it still gets 403 on part of
+`status --queue`). The `publish`/`unpublish` commands and `collect
+--publish` require `full` — a `tasks` key never works there, whoever created
+it. The one place an admin-created `tasks` key can publish is sweep-time
+auto-publish (`run --publish` or GitHub-attributed CI runs); a member-created
+`tasks` key cannot.
 
 ## Command surface
 
@@ -74,8 +82,8 @@ Task responses may embed `qa`, `audit`, or `summarize` trial rows. Filter
 ## Evidence and live data
 
 `oddish logs <trial_id> [--follow]` reads short-lived live transcript events.
-Supported live agents are claude-code, codex, cursor-cli, and
-mini-swe-agent. Terminal cleanup purges these events; a 24-hour cleanup pass
+Supported live agents are claude-code, codex, cursor-cli, grok-build, tbh,
+and mini-swe-agent. Terminal cleanup purges these events; a 24-hour cleanup pass
 removes leaks from hard-killed workers.
 
 `oddish pull` downloads the permanent stored record. For a diagnosis, prefer

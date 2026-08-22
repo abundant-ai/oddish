@@ -62,7 +62,7 @@ reference. The main commands are:
 
 - `oddish run` — submit local tasks, registry datasets, sweeps, retries, and task-level QA retries; `--env ec2` selects an operator-enabled ephemeral CPU VM while Daytona remains the hosted CPU default.
 - `oddish upload` — register task bundles or import off-oddish Harbor trial results; `--overwrite-current-version` corrects the selected version in place.
-- `oddish preflight` — validate local task structure and provenance without uploading.
+- `oddish preflight` — run the local task integrity checks that also gate `run` and `upload` (pass `--force` there to submit anyway).
 - `oddish ls` / `oddish status` — browse tasks (including model and trajectory-metric filters) and inspect progress. `oddish status <trial_id>` shows single-trial detail; `--detail`/`--versions` show a task's version history and cost rollups; `--queue` shows queue & worker scheduler diagnostics.
 - `oddish logs` — stream a running trial's live transcript and cost estimate (`--follow` to poll until it ends); finished trials are served by `oddish pull` instead.
 - `oddish costs` — billable-spend accounting (org-wide, or per-user with `--user`).
@@ -72,14 +72,14 @@ reference. The main commands are:
 - `oddish pull` — download logs, results, trajectories, and artifacts; `--debug-files` lists a trial's raw S3 inventory instead.
 - `oddish combine` — merge finished trials from multiple experiments.
 - `oddish collect` / `oddish experiment create` — build read-only trial collections; `collect` can auto-publish a share link.
-- `oddish link task` / `oddish link trial` — construct dashboard deep links without an API request.
-- `oddish delete` — delete trials (hosted) or tasks/experiments (self-host only).
+- `oddish link` — print the dashboard URL for a task or trial (built locally; needs no API key).
+- `oddish delete` — delete trials against hosted Oddish (admin key); whole-task/experiment deletes are refused for Modal-hosted APIs, and a standalone core server has no delete endpoints at all.
 - `oddish publish` / `oddish unpublish` — toggle public read-only experiment sharing.
 - `oddish backfill-analysis` and `oddish probe` — specialized QA/probe tools.
 - `oddish skill` — print the packaged SKILL.md or install the complete agent skill with its reference files.
 
-Machine-readable `--json` output is command-specific; check
-`oddish <command> --help`. `logs`, `link`, and `probe` do not provide it.
+Most commands support `--json` for machine-readable output; `oddish logs`,
+`oddish link`, `oddish skill`, and the `oddish probe` helpers do not.
 
 ## Typical Workflow
 
