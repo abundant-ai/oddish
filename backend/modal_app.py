@@ -301,14 +301,27 @@ def _gke_coords_snapshot(
 ) -> dict[str, str]:
     """Every ODDISH_GKE_* key resolved at deploy time, process env winning.
 
-    Must mirror the ENV_VARS filter exactly -- the file and the baked env
-    describe the same deploy, and a test pins them together.
+    Mirrors the ENV_VARS filter, plus one addition: when the deploy resolves
+    a cluster identity (explicit, or derived from the project id) but the
+    key itself is absent from the deploy env, the EFFECTIVE name is baked
+    anyway. The cluster name is the identity every deletion authorizes
+    against, and a key the snapshot does not carry is a key a runtime
+    secret can inject unopposed -- trials would target the secret's cluster
+    while teardown, correctly, refuses to clean it. Deploys that resolve no
+    identity at deploy time (GKE-less, or the flow where the credential
+    secret intentionally carries the coordinates) bake nothing, so the
+    secret stays the designed source there.
     """
-    return {
+    snapshot = {
         k: v
         for k, v in {**dotenv_vars, **environ}.items()
         if k.startswith("ODDISH_GKE_")
     }
+    if _GKE_CLUSTER_ENV not in snapshot:
+        effective = _effective_gke_cluster_name(environ, dotenv_vars)
+        if effective:
+            snapshot[_GKE_CLUSTER_ENV] = effective
+    return snapshot
 
 
 def _gke_enabled_flag(

@@ -89,3 +89,15 @@ def test_non_gke_keys_in_the_file_change_nothing(coords_file, monkeypatch):
     monkeypatch.delenv("ODDISH_API_URL", raising=False)
     before = Settings().api_url if hasattr(Settings(), "api_url") else None
     assert before is None or "smuggled" not in str(before)
+
+
+def test_the_identity_key_specifically_cannot_be_stolen_by_a_secret(
+    coords_file, monkeypatch
+):
+    """The cluster name is the identity every deletion authorizes against.
+    With the derived name baked, a runtime secret that injects
+    ODDISH_GKE_CLUSTER_NAME loses, and the theft is warned, not silent."""
+    coords_file({"ODDISH_GKE_CLUSTER_NAME": "dep-trials"})
+    monkeypatch.setenv("ODDISH_GKE_CLUSTER_NAME", "attacker-trials")
+    monkeypatch.setenv("ODDISH_GKE_PROJECT_ID", "p")
+    assert Settings().gke_cluster_name == "dep-trials"

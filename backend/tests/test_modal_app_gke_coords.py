@@ -22,6 +22,9 @@ def test_snapshot_keeps_only_gke_keys_and_process_env_wins():
     assert snapshot == {
         "ODDISH_GKE_REGION": "region-from-env",
         "ODDISH_GKE_PROJECT_ID": "p",
+        # The project id resolves an identity, so the derived name is baked
+        # too -- see test_a_derived_cluster_name_is_baked_when_the_deploy_resolves_one.
+        "ODDISH_GKE_CLUSTER_NAME": f"{modal_app.MODAL_APP_NAME}-trials",
     }
 
 
@@ -42,11 +45,51 @@ def test_module_snapshot_matches_the_baked_env_exactly():
     """Drift guard: the file and the image env must describe the same deploy.
 
     ENV_VARS bakes every ODDISH_GKE_* key from {dotenv, env}; the snapshot is
-    written from the same inputs. If either filter changes without the other,
-    the worker would warn about (or silently miss) divergence that is really
-    just the two bake sites disagreeing.
+    written from the same inputs. One deliberate addition is allowed: the
+    EFFECTIVE cluster name, baked even when the deploy derives it, because it
+    is the identity every deletion authorizes against.
     """
     baked = {
         k: v for k, v in modal_app.ENV_VARS.items() if k.startswith("ODDISH_GKE_")
     }
-    assert modal_app.GKE_COORDS_SNAPSHOT == baked
+    snapshot = dict(modal_app.GKE_COORDS_SNAPSHOT)
+    extra = set(snapshot) - set(baked)
+    assert extra <= {modal_app._GKE_CLUSTER_ENV}, (
+        f"snapshot carries keys the baked env does not: {sorted(extra)}"
+    )
+    if modal_app._GKE_CLUSTER_ENV in extra:
+        import os
+
+        assert snapshot.pop(modal_app._GKE_CLUSTER_ENV) == modal_app._effective_gke_cluster_name(
+            os.environ, modal_app.LOCAL_DOTENV_VARS
+        )
+    assert snapshot == {k: v for k, v in baked.items()}
+
+
+def test_a_derived_cluster_name_is_baked_when_the_deploy_resolves_one():
+    """The recommended path leaves the name unset and sets the project id.
+    Without this bake, that exact path leaves the identity key absent from
+    the file, and a runtime secret can inject it unopposed."""
+    snapshot = modal_app._gke_coords_snapshot(
+        {"ODDISH_GKE_PROJECT_ID": "p"}, {}
+    )
+    assert (
+        snapshot["ODDISH_GKE_CLUSTER_NAME"]
+        == f"{modal_app.MODAL_APP_NAME}-trials"
+    )
+
+
+def test_an_explicit_cluster_name_is_kept_not_rederived():
+    snapshot = modal_app._gke_coords_snapshot(
+        {"ODDISH_GKE_PROJECT_ID": "p", "ODDISH_GKE_CLUSTER_NAME": "explicit"}, {}
+    )
+    assert snapshot["ODDISH_GKE_CLUSTER_NAME"] == "explicit"
+
+
+def test_no_identity_is_baked_when_the_deploy_resolves_none():
+    """GKE-less deploys, and the flow where the credential secret carries
+    the coordinates by design, must not have a name invented for them --
+    baking one would register the backend, or fight the designed channel."""
+    assert "ODDISH_GKE_CLUSTER_NAME" not in modal_app._gke_coords_snapshot(
+        {"OTHER": "x"}, {}
+    )
