@@ -105,7 +105,7 @@ async def _gke_trial_activity() -> tuple[int, datetime | None]:
     return int(live or 0), last
 
 
-async def reap_idle_cluster() -> str:
+async def reap_idle_cluster(deploy_app_name: str | None = None) -> str:
     """Run one reap evaluation; returns the decision for logs."""
     import asyncio
 
@@ -113,6 +113,12 @@ async def reap_idle_cluster() -> str:
     cluster_name = settings.gke_cluster_name
     if not (cluster_name and settings.gke_region and settings.gke_project_id):
         return "skip: GKE not configured"
+    # Same ownership rule as teardown, checked before any cloud call: an
+    # idle, managed, SHARED cluster this deployment was merely pointed at
+    # must not be reaped either -- idleness here is judged from this
+    # deployment's own database, which knows nothing about the other users.
+    if not teardown_owns_cluster(cluster_name, _expected_app_name(deploy_app_name)):
+        return "skip: cluster name is not this deployment's derived name"
     if ttl <= 0:
         return "skip: reaper disabled (ttl<=0)"
 
@@ -236,19 +242,34 @@ def select_teardown_targets(
 
 
 def teardown_owns_cluster(cluster_name: str | None, app_name: str) -> bool:
-    """Whether teardown may touch this cluster name at all.
+    """Whether deletion may touch this cluster name at all.
 
-    Only the app-derived name -- what auto-provisioning would have created
-    for THIS deployment -- qualifies. An explicitly configured name is a
+    Only the app-derived name -- what auto-provisioning would create for
+    THIS deployment -- qualifies. A name that is not the derived one is a
     cluster the deployment was pointed at, not one it owns: a preview aimed
-    at a shared cluster must not delete it on close, and the managed label
-    cannot make that distinction because every provisioned cluster carries
-    it.
+    at a shared cluster must not delete it, and the managed label cannot
+    make that distinction because every provisioned cluster carries it. A
+    configured name that EQUALS the derived one is fine; it names the same
+    resource either way.
     """
     return bool(cluster_name) and cluster_name == f"{app_name}-trials"
 
 
-async def teardown_deployment_cluster() -> str:
+def _expected_app_name(deploy_app_name: str | None) -> str:
+    """The deployment identity deletion authorizes against.
+
+    Callers registered as Modal functions bind this at DEPLOY time as a
+    pickled default argument, because the runtime secret layer can overwrite
+    MODAL_APP_NAME in the container environment -- and an identity that env
+    can change is not an identity. The env fallback exists for direct calls
+    and tests only.
+    """
+    import os
+
+    return deploy_app_name or os.environ.get("MODAL_APP_NAME", "oddish")
+
+
+async def teardown_deployment_cluster(deploy_app_name: str | None = None) -> str:
     """Delete this deployment's auto-provisioned cluster(s), wherever they are.
 
     The scheduled idle reaper dies with the Modal app, so a closing preview
@@ -259,13 +280,10 @@ async def teardown_deployment_cluster() -> str:
     """
     import asyncio
 
-    import os
-
     cluster_name = settings.gke_cluster_name
     if not (cluster_name and settings.gke_project_id):
         return "skip: GKE not configured"
-    app_name = os.environ.get("MODAL_APP_NAME", "oddish")
-    if not teardown_owns_cluster(cluster_name, app_name):
+    if not teardown_owns_cluster(cluster_name, _expected_app_name(deploy_app_name)):
         return "skip: cluster name is not this deployment's derived name"
 
     from worker.runtime import _materialize_gcp_adc_credentials

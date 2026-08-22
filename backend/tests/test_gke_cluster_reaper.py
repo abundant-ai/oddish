@@ -76,7 +76,10 @@ def test_no_timestamps_at_all_skips():
 async def test_orchestration_skips_blind_when_pod_probe_fails(monkeypatch):
     import worker.gke_cluster_reaper as reaper
 
-    monkeypatch.setattr(reaper.settings, "gke_cluster_name", "c")
+    # The ownership guard runs first now, so the cluster name must be the
+    # app-derived one for this test to reach the pod probe it is about.
+    monkeypatch.setenv("MODAL_APP_NAME", "c-app")
+    monkeypatch.setattr(reaper.settings, "gke_cluster_name", "c-app-trials")
     monkeypatch.setattr(reaper.settings, "gke_region", "r")
     monkeypatch.setattr(reaper.settings, "gke_project_id", "p")
     monkeypatch.setattr(reaper.settings, "gke_idle_cluster_ttl_hours", 1.0)

@@ -31,6 +31,7 @@ import modal
 from observability import log_exception, span as _otel_span
 
 from modal_app import (
+    MODAL_APP_NAME,
     CLEANUP_INTERVAL_SECONDS,
     CLEANUP_TIMEOUT_SECONDS,
     DASHBOARD_PRECOMPUTE_INTERVAL_SECONDS,
@@ -796,10 +797,14 @@ def build_gke_image_builder_function(modal_app) -> object | None:
 GKE_IMAGE_BUILDER: object | None = build_gke_image_builder_function(app)
 
 
-async def _reap_idle_gke_cluster_entry() -> str:
+async def _reap_idle_gke_cluster_entry(app_name: str = MODAL_APP_NAME) -> str:
+    # ``app_name`` binds at DEPLOY time: with serialized=True the default is
+    # pickled with the function, so a runtime secret that overwrites
+    # MODAL_APP_NAME in the container cannot change which deployment this
+    # function believes it is. Deletion authorizes against this identity.
     from worker.gke_cluster_reaper import reap_idle_cluster
 
-    outcome = await reap_idle_cluster()
+    outcome = await reap_idle_cluster(deploy_app_name=app_name)
     console.print(f"[cyan]GKE cluster reaper[/cyan]: {outcome}")
     return outcome
 
@@ -826,10 +831,11 @@ def build_gke_cluster_reaper_function(modal_app) -> object | None:
 GKE_CLUSTER_REAPER: object | None = build_gke_cluster_reaper_function(app)
 
 
-async def _teardown_gke_cluster_entry() -> str:
+async def _teardown_gke_cluster_entry(app_name: str = MODAL_APP_NAME) -> str:
+    # Deploy-time identity, same reasoning as the reaper entry above.
     from worker.gke_cluster_reaper import teardown_deployment_cluster
 
-    outcome = await teardown_deployment_cluster()
+    outcome = await teardown_deployment_cluster(deploy_app_name=app_name)
     console.print(f"[cyan]GKE cluster teardown[/cyan]: {outcome}")
     return outcome
 

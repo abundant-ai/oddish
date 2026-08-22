@@ -69,3 +69,56 @@ async def test_the_wrapper_refuses_a_pointed_at_cluster(monkeypatch):
     )
     outcome = await mod.teardown_deployment_cluster()
     assert "derived name" in outcome
+
+
+@pytest.mark.asyncio
+async def test_the_reaper_refuses_a_pointed_at_cluster(monkeypatch):
+    """The hourly reaper judges idleness from THIS deployment's database,
+    which knows nothing about a shared cluster's other users. It must obey
+    the same ownership rule as close-time teardown, before any cloud call."""
+    from worker import gke_cluster_reaper as mod
+
+    monkeypatch.setenv("MODAL_APP_NAME", "dep")
+    monkeypatch.setattr(mod.settings, "gke_cluster_name", "shared-cluster")
+    monkeypatch.setattr(mod.settings, "gke_region", "r")
+    monkeypatch.setattr(mod.settings, "gke_project_id", "p")
+    monkeypatch.setattr(mod.settings, "gke_idle_cluster_ttl_hours", 1.0)
+
+    def _boom(*a, **k):
+        raise AssertionError("cloud APIs were touched for a non-owned cluster")
+
+    monkeypatch.setattr(
+        "worker.runtime._materialize_gcp_adc_credentials", _boom, raising=False
+    )
+    outcome = await mod.reap_idle_cluster()
+    assert "derived name" in outcome
+
+
+@pytest.mark.asyncio
+async def test_deploy_time_identity_beats_the_container_environment(monkeypatch):
+    """A runtime secret can overwrite the app name in the container env. The
+    identity a deletion authorizes against is the one bound at deploy time,
+    passed in explicitly, so the env value must be ignored when it is given."""
+    from worker import gke_cluster_reaper as mod
+
+    monkeypatch.setenv("MODAL_APP_NAME", "impostor")
+    monkeypatch.setattr(mod.settings, "gke_cluster_name", "real-trials")
+    monkeypatch.setattr(mod.settings, "gke_project_id", "p")
+    monkeypatch.setattr(mod.settings, "gke_region", "r")
+    monkeypatch.setattr(mod.settings, "gke_idle_cluster_ttl_hours", 1.0)
+
+    # With the deploy-bound name the cluster IS owned; the env impostor would
+    # have refused it. Stop at the next step (credentials) to prove we got
+    # past the guard.
+    sentinel = {"reached": False}
+
+    def _mark(*a, **k):
+        sentinel["reached"] = True
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(
+        "worker.runtime._materialize_gcp_adc_credentials", _mark, raising=False
+    )
+    with pytest.raises(RuntimeError, match="stop here"):
+        await mod.reap_idle_cluster(deploy_app_name="real")
+    assert sentinel["reached"], "the deploy-bound identity did not authorize"
