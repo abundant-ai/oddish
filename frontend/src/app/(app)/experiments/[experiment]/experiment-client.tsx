@@ -161,9 +161,8 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
         return null;
       const offset = pageIndex * TRIALS_BATCH_SIZE;
       // Phase 2 uses the dedicated slim-tasks endpoint: tasks with trimmed
-      // per-trial payloads (grid fields + cost). Full per-trial detail is
-      // fetched on click via /api/trials/{id} (see ExperimentDetailView's
-      // loadFullTrialOnOpen). The old /tasks proxy is left untouched.
+      // per-trial payloads (grid fields + cost). Trial controls preload the
+      // by-id resource before the drawer needs its omitted fields.
       return `/api/experiments/${encodedId}/slim-tasks?limit=${TRIALS_BATCH_SIZE}&offset=${offset}`;
     },
     [experimentId, encodedId]
@@ -267,7 +266,8 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
     hasMoreTrials && !isLoadingTrialPages && !isValidatingTrials;
   // hasMoreTrials only tracks successful pages, so a failed batch stalls
   // the chain here until the Retry alert's mutateTrials() refills it.
-  const trialsStalled = Boolean(trialsError) && trialsLoadedCount < totalTaskCount;
+  const trialsStalled =
+    Boolean(trialsError) && trialsLoadedCount < totalTaskCount;
 
   const refreshIntervalMs = useMemo(() => {
     if (tasksForExperiment.length === 0) return 5000;

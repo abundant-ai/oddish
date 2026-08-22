@@ -52,7 +52,7 @@ import {
   normalizedAgentModel,
   useTaskOpenReader,
 } from "@/lib/use-task-open-reader";
-import { useTrial } from "@/lib/use-trial";
+import { preloadTrial, useTrial } from "@/lib/use-trial";
 import {
   formatRelativeTime,
   prBadge,
@@ -499,6 +499,8 @@ function TrialChip({ trial, onClick }: { trial: Trial; onClick: () => void }) {
         <button
           type="button"
           onClick={onClick}
+          onPointerEnter={() => void preloadTrial("/api", trial.id)}
+          onFocus={() => void preloadTrial("/api", trial.id)}
           className={`flex h-[22px] w-[22px] items-center justify-center rounded-[4px] border font-mono leading-none font-semibold transition ${config.matrixClass} ${
             status === "partial"
               ? "text-[8px] tracking-[-0.03em]"

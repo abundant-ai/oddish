@@ -311,6 +311,7 @@ All routes require auth unless marked public.
 | POST | `/experiments/{experiment_id}/unpublish` | Unpublish experiment |
 | DELETE | `/experiments/{experiment_id}` | Soft-delete experiment + its trials and now-orphaned tasks (admin only) |
 | DELETE | `/experiments/{experiment_id}/tasks/{task_id}` | Unlink a shared task from one experiment (tombstones the join row + that experiment's trials; the task survives) |
+| POST | `/experiments/{experiment_id}/feedback` | Persist an agree/disagree vote for one trial's QA verdict or action item |
 
 ### Organization and auth
 

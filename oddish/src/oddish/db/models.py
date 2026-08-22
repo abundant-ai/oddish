@@ -2624,6 +2624,33 @@ class CostExcludedExperimentModel(TimestampedMixin, Base):
     created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
+class FeedbackModel(Base):
+    """An append-only agree/disagree vote on one trial's QA output."""
+
+    __tablename__ = "feedback"
+    __table_args__ = (
+        CheckConstraint(
+            "target IN ('qa_verdict', 'qa_action_item')", name="ck_feedback_target"
+        ),
+        CheckConstraint("vote IN ('agree', 'disagree')", name="ck_feedback_vote"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    experiment_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    trial_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    target: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    vote: Mapped[str] = mapped_column(String(16), nullable=False)
+    body: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
 from oddish.db.soft_delete import register_soft_delete_models
 
 register_soft_delete_models(

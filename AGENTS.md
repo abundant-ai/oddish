@@ -208,8 +208,14 @@ permanently. The output schema (`AgentCapabilitiesOutput` and sub-models) is
 preserved in `oddish.analyze.models`, and
 `oddish/src/oddish/analyze/prompts/agent_capabilities.txt` is kept, so the
 feature can return as a `'capabilities'` analysis trial.
-Shared trial drawers open on Summary and fetch a trajectory only after explicit
-user or URL intent. Collapsed trajectory steps must not mount their message,
+Shared trial drawers paint terminal trials from the slim row already owned by
+the task or experiment page while the authoritative `GET /trials/{id}` resource
+loads. Trial controls prefetch that resource on pointer or keyboard intent, and
+the drawer owns its SWR cache entry and passes the authoritative trial to the QA
+card, so one trial must never produce parallel detail requests. Drawers open on
+Summary and fetch trajectory and summary resources independently only after
+explicit user or URL intent. Collapsed trajectory steps must not mount their
+message,
 reasoning, tool, or observation bodies; those potentially large bodies mount
 only while the step is expanded. Trajectory summaries are written onto
 `trials.trajectory_summary` by the task's QA trial import or by a
@@ -418,6 +424,16 @@ The admin `GET /admin/costs` response includes analysis spend time series both
 by model (`series_qa_by_model`) and by analyzer job kind
 (`series_by_analysis_type`). The Cost breakdown chart exposes the latter as the
 `Analyzer` stack; analyzer spend does not belong on the people leaderboard.
+
+QA agree/disagree submissions live in the append-only core `feedback` table
+(`FeedbackModel`) and use the hosted backend's authenticated
+`POST /experiments/{id}/feedback` route. Every row requires a `trial_id`, a
+`target` (`qa_verdict` or `qa_action_item`), the verdict classification or
+action-item id as `target_key`, and an `agree` or `disagree` vote. Creation
+validates organization scope and experiment membership through the shared
+`trial_in_experiment` predicate. The dashboard waits for persistence, reports
+errors, and permits one successful submission per mounted control. There are
+no public, read, update, triage, snapshot, or notification paths.
 
 ### Task Identity
 

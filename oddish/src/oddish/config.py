@@ -45,8 +45,8 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
     "default",
 }
 
-# Analysis (QA + audit) trials run claude-code on GLM via Fireworks.
-ANALYSIS_MODEL = "fireworks/glm-5p2"
+# Analysis (QA + audit) trials run claude-code on Sonnet via Bedrock.
+ANALYSIS_MODEL = "claude-sonnet-4-6"
 # Model for the probe transcript summarizer -- the one direct LLM call that
 # remains outside the trial pipeline. Kept separate from ANALYSIS_MODEL
 # because run_probe_analyzer speaks the Anthropic API only; it must not

@@ -10,8 +10,9 @@ import {
   backendFetchHeaders,
 } from "@/lib/proxy-headers";
 
-// Full single-trial detail. The experiment grid loads only slim trials; the
-// detail panel fetches the full trial here when a cell is clicked.
+// Full single-trial detail for direct links, active-analysis polling, and
+// drawer fields omitted from compact list responses. Trial controls preload
+// this route so opening a drawer can consume the same cached request.
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ trial_id: string }> },
