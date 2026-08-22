@@ -44,26 +44,42 @@ def test_coords_file_lives_beside_the_secret_plan():
 def test_module_snapshot_matches_the_baked_env_exactly():
     """Drift guard: the file and the image env must describe the same deploy.
 
-    ENV_VARS bakes every ODDISH_GKE_* key from {dotenv, env}; the snapshot is
-    written from the same inputs. One deliberate addition is allowed: the
-    EFFECTIVE cluster name, baked even when the deploy derives it, because it
-    is the identity every deletion authorizes against.
+    ENV_VARS bakes every ODDISH_GKE_* key from {dotenv, env} by prefix; the
+    snapshot is written from the same inputs, with exactly one key allowed to
+    differ: the cluster name, which is the identity every deletion authorizes
+    against. Its full contract:
+
+      * equal to the baked value when the deploy wrote a real one;
+      * the EFFECTIVE (derived) name when the baked value is absent or empty
+        and the deploy resolves an identity;
+      * absent when the baked value is empty and nothing resolves -- an empty
+        identity is never shipped.
+
+    Any other divergence, on any key, is the two bake sites disagreeing.
     """
+    import os
+
     baked = {
         k: v for k, v in modal_app.ENV_VARS.items() if k.startswith("ODDISH_GKE_")
     }
     snapshot = dict(modal_app.GKE_COORDS_SNAPSHOT)
-    extra = set(snapshot) - set(baked)
-    assert extra <= {modal_app._GKE_CLUSTER_ENV}, (
-        f"snapshot carries keys the baked env does not: {sorted(extra)}"
-    )
-    if modal_app._GKE_CLUSTER_ENV in extra:
-        import os
+    name_key = modal_app._GKE_CLUSTER_ENV
 
-        assert snapshot.pop(modal_app._GKE_CLUSTER_ENV) == modal_app._effective_gke_cluster_name(
-            os.environ, modal_app.LOCAL_DOTENV_VARS
+    baked_name = baked.pop(name_key, None)
+    snap_name = snapshot.pop(name_key, None)
+    assert snapshot == baked, "a non-identity key diverged between the bake sites"
+
+    effective = modal_app._effective_gke_cluster_name(
+        os.environ, modal_app.LOCAL_DOTENV_VARS
+    )
+    if baked_name:
+        assert snap_name == baked_name
+    elif effective:
+        assert snap_name == effective, (
+            "the deploy resolves an identity but the snapshot does not carry it"
         )
-    assert snapshot == {k: v for k, v in baked.items()}
+    else:
+        assert snap_name is None, "an empty identity was shipped"
 
 
 def test_a_derived_cluster_name_is_baked_when_the_deploy_resolves_one():
