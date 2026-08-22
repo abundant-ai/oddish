@@ -1629,6 +1629,14 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _derive_gke_cluster_name(self) -> "Settings":
+        # Deploys that resolve an identity bake it into the coordinate
+        # snapshot, so this derivation normally never runs in a container.
+        # It still runs in the flow where the credential secret carries the
+        # coordinates, and there it reads a runtime app name that env can in
+        # principle overwrite. That residual is accepted: cluster DELETION
+        # never trusts this value -- it authorizes against the deploy-bound
+        # app identity -- so the worst case is a trial pointed at another
+        # name, not another deployment's cluster removed.
         if self.gke_project_id and not self.gke_cluster_name:
             app_name = os.environ.get("MODAL_APP_NAME", "oddish")
             self.gke_cluster_name = f"{app_name}-trials"

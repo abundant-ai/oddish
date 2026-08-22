@@ -317,10 +317,17 @@ def _gke_coords_snapshot(
         for k, v in {**dotenv_vars, **environ}.items()
         if k.startswith("ODDISH_GKE_")
     }
-    if _GKE_CLUSTER_ENV not in snapshot:
+    # Falsy, not merely absent: an empty ODDISH_GKE_CLUSTER_NAME in the
+    # deploy env must not block the bake, because the effective-name
+    # resolver treats empty as unset and the runtime would derive anyway.
+    if not snapshot.get(_GKE_CLUSTER_ENV):
         effective = _effective_gke_cluster_name(environ, dotenv_vars)
         if effective:
             snapshot[_GKE_CLUSTER_ENV] = effective
+        else:
+            # Never ship an empty identity for the runtime to re-derive from
+            # a mutable app name.
+            snapshot.pop(_GKE_CLUSTER_ENV, None)
     return snapshot
 
 

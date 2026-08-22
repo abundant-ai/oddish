@@ -90,6 +90,33 @@ def test_no_identity_is_baked_when_the_deploy_resolves_none():
     """GKE-less deploys, and the flow where the credential secret carries
     the coordinates by design, must not have a name invented for them --
     baking one would register the backend, or fight the designed channel."""
-    assert "ODDISH_GKE_CLUSTER_NAME" not in modal_app._gke_coords_snapshot(
-        {"OTHER": "x"}, {}
+    for deploy_env in (
+        {"OTHER": "x"},
+        # The enabled flag alone: coordinates ride the credential secret by
+        # design there, so no identity resolves at deploy time.
+        {"ODDISH_GKE_ENABLED": "true"},
+        # A GKE knob that is not an identity source must not trigger a bake.
+        {"ODDISH_GKE_REGION": "r"},
+    ):
+        snapshot = modal_app._gke_coords_snapshot(deploy_env, {})
+        assert "ODDISH_GKE_CLUSTER_NAME" not in snapshot, deploy_env
+
+
+def test_an_empty_name_in_the_deploy_env_does_not_block_the_bake():
+    """The resolver treats an empty name as unset, so the bake must too --
+    key presence alone would ship an empty identity for the runtime to
+    re-derive from a mutable app name."""
+    snapshot = modal_app._gke_coords_snapshot(
+        {"ODDISH_GKE_PROJECT_ID": "p", "ODDISH_GKE_CLUSTER_NAME": ""}, {}
     )
+    assert (
+        snapshot["ODDISH_GKE_CLUSTER_NAME"]
+        == f"{modal_app.MODAL_APP_NAME}-trials"
+    )
+
+
+def test_an_empty_name_with_no_identity_is_dropped_not_shipped():
+    snapshot = modal_app._gke_coords_snapshot(
+        {"ODDISH_GKE_CLUSTER_NAME": ""}, {}
+    )
+    assert "ODDISH_GKE_CLUSTER_NAME" not in snapshot
