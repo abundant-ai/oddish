@@ -7,7 +7,11 @@ from enum import Enum
 from typing import ClassVar
 
 from pydantic import Field, SecretStr, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
 
 from harbor.agents.utils import PROVIDER_KEYS
 from harbor.llms.utils import split_provider_model_name
@@ -17,6 +21,72 @@ from litellm.litellm_core_utils.get_llm_provider_logic import get_llm_provider
 from oddish.harbor_pin import load_harbor_pin as _load_harbor_pin
 
 logger = logging.getLogger(__name__)
+
+# Deploy-time ODDISH_GKE_* coordinate snapshot, baked into the worker image by
+# the Modal deploy (see the backend app's _GKE_COORDS_FILE). The coordinates
+# also reach the container as env -- from the baked image env AND, when GKE is
+# enabled, from the runtime secret that carries the credentials. A runtime
+# secret overwrites env at container init, so env alone cannot tell a deploy's
+# value from the secret's. This file can only have come from the deploy.
+from pathlib import Path as _Path
+
+_GKE_COORDS_PATH = _Path("/opt/oddish/gke_coords.json")
+
+
+def _load_gke_coords() -> dict[str, str]:
+    """The baked snapshot, or {} outside the image (local runs, tests)."""
+    try:
+        raw = json.loads(_GKE_COORDS_PATH.read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(k): str(v) for k, v in raw.items() if str(k).startswith("ODDISH_GKE_")
+    }
+
+
+class _GkeCoordsSource(PydanticBaseSettingsSource):
+    """Settings source for the baked GKE coordinates, ranked above env.
+
+    A source rather than a validator so the values flow through ordinary
+    field coercion -- the file holds strings, and a bool or int field must
+    come out typed. Only keys with the ODDISH_GKE_ prefix are loaded, so no
+    other setting can be steered through the file. Divergence from the
+    effective environment is warned with both values named; the settings
+    object is a process singleton, so the warning fires once.
+    """
+
+    def __init__(self, settings_cls: type[BaseSettings]):
+        super().__init__(settings_cls)
+        self._coords = _load_gke_coords()
+
+    def get_field_value(self, field, field_name: str):
+        env_name = f"ODDISH_{field_name.upper()}"
+        if env_name in self._coords:
+            return self._coords[env_name], field_name, False
+        return None, field_name, False
+
+    def __call__(self) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for field_name in self.settings_cls.model_fields:
+            value, key, _ = self.get_field_value(None, field_name)
+            if value is None:
+                continue
+            env_name = f"ODDISH_{field_name.upper()}"
+            env_value = os.environ.get(env_name)
+            if env_value is not None and env_value != value:
+                logger.warning(
+                    "GKE coordinate %s: the image was built with %r but the "
+                    "container environment says %r (a runtime secret can "
+                    "inject env at container init); using the image value.",
+                    env_name,
+                    value,
+                    env_value,
+                )
+            out[key] = value
+        return out
+
 
 
 _FIXED_AGENT_PROVIDERS: dict[str, str] = {
@@ -1158,6 +1228,26 @@ class Settings(BaseSettings):
         env_prefix="ODDISH_",
         extra="ignore",
     )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls,
+        init_settings,
+        env_settings,
+        dotenv_settings,
+        file_secret_settings,
+    ):
+        # The baked GKE coordinate snapshot sits between explicit constructor
+        # arguments (which must stay authoritative, e.g. in tests) and the
+        # environment (which a runtime secret may have overwritten).
+        return (
+            init_settings,
+            _GkeCoordsSource(settings_cls),
+            env_settings,
+            dotenv_settings,
+            file_secret_settings,
+        )
 
     # ==========================================================================
     # Defaults — all configurable via ODDISH_<FIELD> env vars
