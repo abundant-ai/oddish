@@ -800,6 +800,12 @@ _ANTHROPIC_TO_BEDROCK_MODEL_IDS: dict[str, str] = {
     "claude-fable-5": "global.anthropic.claude-fable-5",
     "claude-opus-5": "global.anthropic.claude-opus-5",
     "claude-opus-4-8": "global.anthropic.claude-opus-4-8",
+    # Sonnet 5 follows the dateless "global.anthropic.claude-<model>" spelling
+    # the other current models use; only the older 4-x entries below still
+    # carry a date and a "-v1:0" suffix. Without this key `-m claude-sonnet-5`
+    # never reaches Bedrock at all: to_bedrock_model_id() raises on an
+    # unmapped Claude id, and the submission path surfaces that as a 500.
+    "claude-sonnet-5": "global.anthropic.claude-sonnet-5",
     "claude-sonnet-4-6": "global.anthropic.claude-sonnet-4-6",
     "claude-haiku-4-5": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
     "claude-haiku-4-5-20251001": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
