@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
+import httpx
 import pytest
+from fastapi import FastAPI
+from httpx import ASGITransport
 from sqlalchemy.dialects import postgresql
 
 import dashboard_attribution
+from api.routers import dashboard as dashboard_router
+from auth import APIKeyScope, AuthContext, AuthMethod, require_auth
 from dashboard_attribution import (
     AttributionProfile,
     _baseline_profile,
@@ -16,9 +22,10 @@ from dashboard_attribution import (
     _row_has_strong_attribution_match,
     _schedule_profile_refresh,
     invalidate_attribution_cache,
+    resolve_partial_member_ids,
     resolve_search_authors,
 )
-from models import UserModel
+from models import UserModel, UserRole
 
 
 def _user(**overrides) -> UserModel:
@@ -294,8 +301,171 @@ async def test_match_authors_for_token_matches_email_or_name() -> None:
 
     assert [u.id for u in result] == ["user_d"]  # deduped by id across both queries
     sql = " ".join(_compiled(s) for s in session.statements)
-    assert "lower(users.email) = 'ada l'" in sql
-    assert "lower(users.name) = 'ada l'" in sql
+    assert "users.email ilike '%%ada l%%'" in sql
+    assert "users.name ilike '%%ada l%%'" in sql
+    assert "escape" in sql
+
+
+class _IdRowsResult:
+    def __init__(self, user_ids: list[str]) -> None:
+        self._user_ids = user_ids
+
+    def all(self) -> list[tuple[str]]:
+        return [(user_id,) for user_id in self._user_ids]
+
+
+class _CapturingIdSession:
+    def __init__(self, user_ids: list[str]) -> None:
+        self._user_ids = user_ids
+        self.statements: list[object] = []
+
+    async def execute(self, statement):  # noqa: ANN001
+        self.statements.append(statement)
+        return _IdRowsResult(self._user_ids)
+
+
+@pytest.mark.asyncio
+async def test_partial_member_ids_resolve_canonical_name() -> None:
+    session = _CapturingIdSession(["user_kyle"])
+
+    resolved = await resolve_partial_member_ids(
+        session,  # type: ignore[arg-type]
+        org_id="org_1",
+        tokens=("Kyl",),
+    )
+
+    assert resolved == {"kyl": ("user_kyle",)}
+    sql = _compiled(session.statements[0])
+    assert "users.name ilike '%%kyl%%'" in sql
+    assert "users.github_username ilike '%%kyl%%'" in sql
+    assert "escape" in sql
+    assert "users.email" not in sql
+
+
+@pytest.mark.asyncio
+async def test_partial_member_ids_are_scoped_to_one_organization() -> None:
+    session = _CapturingIdSession([])
+    await resolve_partial_member_ids(
+        session,  # type: ignore[arg-type]
+        org_id="org_current",
+        tokens=("kyl",),
+    )
+
+    assert "users.org_id = 'org_current'" in _compiled(session.statements[0])
+
+
+@pytest.mark.asyncio
+async def test_partial_member_ids_exclude_inactive_users() -> None:
+    session = _CapturingIdSession([])
+    await resolve_partial_member_ids(
+        session,  # type: ignore[arg-type]
+        org_id="org_1",
+        tokens=("kyl",),
+    )
+
+    assert "users.is_active = true" in _compiled(session.statements[0])
+
+
+@pytest.mark.asyncio
+async def test_partial_member_ids_escape_literal_wildcards() -> None:
+    session = _CapturingIdSession([])
+    await resolve_partial_member_ids(
+        session,  # type: ignore[arg-type]
+        org_id="org_1",
+        tokens=("100%_done",),
+    )
+
+    compiled = session.statements[0].compile(dialect=postgresql.dialect())
+    assert r"%100\%\_done%" in compiled.params.values()
+
+
+@pytest.mark.asyncio
+async def test_explicit_author_token_uses_partial_canonical_name() -> None:
+    user = _user(id="user_kyle", name="Kyle Smith", github_username="kyle")
+    session = _CapturingSession([user])
+
+    result = await dashboard_attribution._match_authors_for_token(
+        session,  # type: ignore[arg-type]
+        org_id="org_1",
+        token="kyl",
+    )
+
+    assert [matched.id for matched in result] == ["user_kyle"]
+    sql = " ".join(_compiled(statement) for statement in session.statements)
+    assert "users.name ilike '%%kyl%%'" in sql
+    assert "escape" in sql
+
+
+class _PeopleRows:
+    def all(self) -> list[tuple[str, str | None, str | None]]:
+        return [
+            ("user_kyle", "Kyle", "kyle"),
+            ("user_handle", None, "handle-only"),
+        ]
+
+
+class _PeopleSession:
+    def __init__(self) -> None:
+        self.statements: list[object] = []
+
+    async def execute(self, statement):  # noqa: ANN001
+        self.statements.append(statement)
+        return _PeopleRows()
+
+
+@pytest.mark.asyncio
+async def test_people_search_is_member_visible_and_never_serializes_email(
+    monkeypatch,
+) -> None:
+    session = _PeopleSession()
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield session
+
+    monkeypatch.setattr(dashboard_router, "get_session", fake_get_session)
+    app = FastAPI()
+    app.include_router(dashboard_router.router)
+    app.dependency_overrides[require_auth] = lambda: AuthContext(
+        method=AuthMethod.CLERK_JWT,
+        org_id="org_current",
+        user_id="ordinary_member",
+        user_role=UserRole.MEMBER,
+        scope=APIKeyScope.READ,
+    )
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/people/search?q=kyl&limit=999")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "items": [
+            {
+                "id": "user_kyle",
+                "display_name": "Kyle",
+                "github_username": "kyle",
+            },
+            {
+                "id": "user_handle",
+                "display_name": "@handle-only",
+                "github_username": "handle-only",
+            },
+        ]
+    }
+    assert "email" not in response.text
+    assert "@example.com" not in response.text
+
+    sql = _compiled(session.statements[0])
+    assert "users.org_id = 'org_current'" in sql
+    assert "users.is_active is true" in sql
+    assert "users.name ilike '%%kyl%%'" in sql
+    assert "users.github_username ilike '%%kyl%%'" in sql
+    assert "escape" in sql
+    assert "users.id = 'kyl'" in sql
+    assert "limit 25" in sql
+    assert "users.email" not in sql
 
 
 @pytest.mark.asyncio
