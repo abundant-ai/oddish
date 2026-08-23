@@ -212,6 +212,7 @@ async def _finalize_sweep(
     registry_auth,
     reservation: Reservation | None,
     idempotency_store: IdempotencyStore | None,
+    append_version_id: str | None = None,
 ) -> None:
     """Shared finalize tail for the append and create sweep branches.
 
@@ -240,6 +241,7 @@ async def _finalize_sweep(
             org_id=org_id,
             billed_user_id=billed_user_id,
             registry_auth=registry_auth,
+            task_version_id=append_version_id,
         )
     if reservation is not None and idempotency_store is not None and org_id is not None:
         # Flush so trial ids / timestamps are populated, then store the
@@ -706,6 +708,7 @@ async def create_task_sweep_core(
             registry_auth=submission.registry_auth,
             reservation=reservation,
             idempotency_store=idempotency_store,
+            append_version_id=append_version_id,
         )
         return task, new_trials, True, experiment
 

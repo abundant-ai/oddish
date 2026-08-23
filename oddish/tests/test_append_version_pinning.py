@@ -172,3 +172,55 @@ async def test_implicit_primary_experiment_keeps_the_task_default(effective_vers
 
     assert version_id == "task-a-v16"
     assert effective_versions.calls == []
+
+
+@pytest.mark.asyncio
+async def test_auto_probe_follows_the_pinned_version(monkeypatch):
+    """The probe must inspect the version the trials were pinned to.
+
+    Auto-probe defaults to ``task.current_version_id``. When an append pins an
+    older version, a probe on the default inspects content no trial ran, is
+    filtered out of the experiment grid, and leaves the pinned version
+    unprobed while marking the default as already probed.
+    """
+    from oddish.core.probe import auto_probe
+
+    seen: dict = {}
+
+    async def fake_already_probed(session, version_id):
+        seen["checked_version"] = version_id
+        return True  # stop before the skill lookup; the version is the assertion
+
+    monkeypatch.setattr(auto_probe, "_version_already_probed", fake_already_probed)
+
+    await auto_probe.maybe_enqueue_auto_probe(
+        None,
+        task=SimpleNamespace(id="task-a", current_version_id="task-a-v16"),
+        experiment=None,
+        org_id=None,
+        task_version_id="task-a-v15",
+    )
+
+    assert seen["checked_version"] == "task-a-v15"
+
+
+@pytest.mark.asyncio
+async def test_auto_probe_defaults_to_the_task_version(monkeypatch):
+    from oddish.core.probe import auto_probe
+
+    seen: dict = {}
+
+    async def fake_already_probed(session, version_id):
+        seen["checked_version"] = version_id
+        return True
+
+    monkeypatch.setattr(auto_probe, "_version_already_probed", fake_already_probed)
+
+    await auto_probe.maybe_enqueue_auto_probe(
+        None,
+        task=SimpleNamespace(id="task-a", current_version_id="task-a-v16"),
+        experiment=None,
+        org_id=None,
+    )
+
+    assert seen["checked_version"] == "task-a-v16"

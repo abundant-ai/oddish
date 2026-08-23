@@ -499,6 +499,14 @@ against older content. Submissions that carry content or name an experiment
 with no trials for the task also keep the task default. `create_task` is
 unaffected: a fresh task always runs its own upload.
 
+The resolved version is threaded on to `maybe_enqueue_auto_probe` through
+`_finalize_sweep`, so an auto-probe inspects the same content its sweep's
+trials ran. A probe left on `tasks.current_version_id` while the trials sit on
+an older pin would inspect content no trial used, be filtered out of the
+experiment grid, and mark the wrong version probed -- leaving the version that
+actually ran unprobed. Callers that pin nothing keep the task's current
+version.
+
 `use_default_version` on `TaskSweepSubmission` (`--use-default-version`, or
 `use_default_version: true` in a sweep config) is the opt-out for deliberately
 moving an experiment onto the task's current content. It resolves per task, so
