@@ -16,14 +16,20 @@ set -euo pipefail
 # until someone noticed. The cost is deliberate: every redeploy drops the
 # cluster and the next trial re-provisions it. Correct and billing-safe
 # beats warm.
-# A real teardown failure here is survivable, unlike the close path: the
-# redeploy that follows this stop installs a fresh app whose reaper owns
-# the same derived cluster name. Warn so the failure is visible, proceed.
+# On a real teardown failure the old app must KEEP RUNNING: the redeploy
+# that motivates this stop is not guaranteed to arrive (a migration
+# failure or a cancelled workflow ends the run first), a stopped app has
+# no scheduled reaper, and the stale-app pruner ignores stopped apps --
+# so stopping here would leave the undeleted cluster with no owner at
+# all. The deploy that does arrive replaces the app in place, reaper
+# included; skipping the stop only forgoes the reconnect-storm hygiene
+# for this one rare case.
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if ! modal run --env "$MODAL_ENVIRONMENT" \
   "$script_dir/teardown_gke_cluster.py" \
   --app-name "$MODAL_APP_NAME"; then
-  echo "::warning::GKE teardown failed before redeploy; the incoming deployment's reaper takes ownership of the cluster"
+  echo "::warning::GKE teardown failed; leaving $MODAL_APP_NAME running so its reaper still owns the cluster until the redeploy replaces it"
+  exit 0
 fi
 
 modal app stop -y --env "$MODAL_ENVIRONMENT" "$MODAL_APP_NAME" || true
