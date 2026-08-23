@@ -111,7 +111,10 @@ async def reap_idle_cluster(deploy_app_name: str | None = None) -> str:
 
     ttl = settings.gke_idle_cluster_ttl_hours
     cluster_name = settings.gke_cluster_name
-    if not (cluster_name and settings.gke_region and settings.gke_project_id):
+    # Same gate as teardown: identity and project suffice. Discovery lists
+    # every location and the pod probe uses each cluster's own location, so
+    # a home region is not required to reap.
+    if not (cluster_name and settings.gke_project_id):
         return "skip: GKE not configured"
     # Same ownership rule as teardown, checked before any cloud call: an
     # idle, managed, SHARED cluster this deployment was merely pointed at

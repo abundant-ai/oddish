@@ -144,7 +144,9 @@ async def test_an_out_of_region_cluster_is_found_and_reaped(monkeypatch):
 
     monkeypatch.setenv("MODAL_APP_NAME", "c-app")
     monkeypatch.setattr(reaper.settings, "gke_cluster_name", "c-app-trials")
-    monkeypatch.setattr(reaper.settings, "gke_region", "home-region")
+    # An empty home region must not matter: discovery is all-locations and
+    # the probe runs against the cluster's own location.
+    monkeypatch.setattr(reaper.settings, "gke_region", "")
     monkeypatch.setattr(reaper.settings, "gke_project_id", "p")
     monkeypatch.setattr(reaper.settings, "gke_idle_cluster_ttl_hours", 1.0)
 
