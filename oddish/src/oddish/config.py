@@ -41,9 +41,7 @@ def _load_gke_coords() -> dict[str, str]:
         return {}
     if not isinstance(raw, dict):
         return {}
-    return {
-        str(k): str(v) for k, v in raw.items() if str(k).startswith("ODDISH_GKE_")
-    }
+    return {str(k): str(v) for k, v in raw.items() if str(k).startswith("ODDISH_GKE_")}
 
 
 class _GkeCoordsSource(PydanticBaseSettingsSource):
@@ -86,7 +84,6 @@ class _GkeCoordsSource(PydanticBaseSettingsSource):
                 )
             out[key] = value
         return out
-
 
 
 _FIXED_AGENT_PROVIDERS: dict[str, str] = {
@@ -1669,6 +1666,24 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"ODDISH_GKE_PROVISIONING_MODE={self.gke_provisioning_mode!r} "
                 f"is not a provisioning mode. Valid values are: {valid}."
+            )
+        # The two removed boolean knobs must fail as loudly as a bad mode.
+        # The fields are gone, so pydantic ignores their env keys silently
+        # (extra="ignore") -- a deployment still exporting ODDISH_GKE_SPOT
+        # would otherwise fall back to the flex-start default and change
+        # provisioning modes without a word. Environment only: that is the
+        # channel deployments and runtime secrets actually use.
+        removed = {"ODDISH_GKE_SPOT": "spot", "ODDISH_GKE_FLEX_START": "flex-start"}
+        stale = [key for key in removed if os.getenv(key) is not None]
+        if stale:
+            hints = "; ".join(
+                f"{key} is removed -- if it was enabled, set "
+                f"ODDISH_GKE_PROVISIONING_MODE='{removed[key]}', otherwise "
+                "drop the variable"
+                for key in stale
+            )
+            raise ValueError(
+                "Removed GKE provisioning variables are still set: " + hints + "."
             )
         return self
 

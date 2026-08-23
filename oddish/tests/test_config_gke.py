@@ -92,3 +92,23 @@ def test_gke_provisioning_mode_error_lists_the_valid_values(monkeypatch) -> None
         Settings(_env_file=None)
     for mode in GKE_PROVISIONING_MODES:
         assert repr(mode) in str(excinfo.value)
+
+
+def test_removed_boolean_mode_variables_fail_loudly(monkeypatch) -> None:
+    """The removed knobs must not be silently ignored: a deployment still
+    exporting one would otherwise fall back to the flex-start default and
+    change provisioning modes without a word (Bugbot finding on this PR)."""
+    monkeypatch.setenv("ODDISH_GKE_SPOT", "true")
+    with pytest.raises(ValidationError, match="ODDISH_GKE_SPOT is removed"):
+        Settings(_env_file=None)
+
+
+def test_both_removed_variables_are_named_together(monkeypatch) -> None:
+    monkeypatch.setenv("ODDISH_GKE_SPOT", "false")
+    monkeypatch.setenv("ODDISH_GKE_FLEX_START", "true")
+    with pytest.raises(ValidationError) as err:
+        Settings(_env_file=None)
+    message = str(err.value)
+    assert "ODDISH_GKE_SPOT" in message
+    assert "ODDISH_GKE_FLEX_START" in message
+    assert "ODDISH_GKE_PROVISIONING_MODE" in message
