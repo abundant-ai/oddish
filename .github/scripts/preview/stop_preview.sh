@@ -18,11 +18,17 @@ is_configured_vercel() {
 
 # The app must delete its own auto-provisioned trials cluster BEFORE it is
 # stopped: the credentials live only inside the app, and its scheduled idle
-# reaper dies with it. Best-effort -- a preview without GKE, or one deployed
-# before the teardown function existed, prints a skip.
-modal run --env "$MODAL_ENVIRONMENT" \
+# reaper dies with it. A missing function or a missing cluster is a skip; a
+# REAL teardown failure must not be followed by the stop, because stopping
+# the app would destroy the one remaining owner that can still delete the
+# cluster. Fail the close job instead -- the app and its reaper stay alive,
+# and re-running the workflow retries the teardown.
+if ! modal run --env "$MODAL_ENVIRONMENT" \
   "$GITHUB_WORKSPACE/.github/scripts/preview/teardown_gke_cluster.py" \
-  --app-name "$MODAL_APP_NAME" || true
+  --app-name "$MODAL_APP_NAME"; then
+  echo "::error::GKE teardown failed; leaving $MODAL_APP_NAME running so its reaper still owns the cluster"
+  exit 1
+fi
 
 modal app stop -y --env "$MODAL_ENVIRONMENT" "$MODAL_APP_NAME" || true
 # -y matters: `modal secret delete` click.confirm()s without it, which in a
