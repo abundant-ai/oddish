@@ -1264,8 +1264,11 @@ async def append_trials_to_task(
 
     from oddish.workers.analysis_trials import maybe_enqueue_audit_trial
 
+    # Audit the version these trials run, not the task default: an append
+    # pinned to an older version would otherwise audit content no trial
+    # used and mark the wrong version audited.
     await maybe_enqueue_audit_trial(
-        session, task=task, task_version_id=task.current_version_id
+        session, task=task, task_version_id=current_version_id
     )
 
     # The replacement rows must exist before the self-referential FK can point

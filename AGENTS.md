@@ -505,7 +505,8 @@ trials ran. A probe left on `tasks.current_version_id` while the trials sit on
 an older pin would inspect content no trial used, be filtered out of the
 experiment grid, and mark the wrong version probed -- leaving the version that
 actually ran unprobed. Callers that pin nothing keep the task's current
-version.
+version. The pre-trial audit trial enqueued inside `append_trials_to_task`
+follows the same pin for the same reason.
 
 `use_default_version` on `TaskSweepSubmission` (`--use-default-version`, or
 `use_default_version: true` in a sweep config) is the opt-out for deliberately

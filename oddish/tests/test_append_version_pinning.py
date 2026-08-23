@@ -224,3 +224,43 @@ async def test_auto_probe_defaults_to_the_task_version(monkeypatch):
     )
 
     assert seen["checked_version"] == "task-a-v16"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content_hash", [None, "deadbeef"])
+@pytest.mark.parametrize("experiment_id", [None, "exp-1"])
+async def test_use_default_version_is_main_behaviour(
+    effective_versions, content_hash, experiment_id
+):
+    """With the flag set the resolved version is the task default, always.
+
+    Every downstream consumer -- the reconcile scope, the trial stamp, and the
+    auto-probe -- reads this one value, so pinning it to ``current_version_id``
+    across the whole input space is what makes the flag a faithful opt-out.
+    """
+    effective_versions.mapping["task-a"] = "task-a-v15"
+
+    version_id = await sweep_mod.resolve_append_version_id(
+        None,
+        task=_task(current_version_id="task-a-v16"),
+        experiment_id=experiment_id,
+        uploaded_content_hash=content_hash,
+        use_default_version=True,
+    )
+
+    assert version_id == "task-a-v16"
+    assert effective_versions.calls == []
+
+
+@pytest.mark.asyncio
+async def test_use_default_version_on_a_versionless_task(effective_versions):
+    """``None`` in, ``None`` out -- matching the unpinned guard on every leg."""
+    version_id = await sweep_mod.resolve_append_version_id(
+        None,
+        task=_task(current_version_id=None),
+        experiment_id="exp-1",
+        uploaded_content_hash=None,
+        use_default_version=True,
+    )
+
+    assert version_id is None
