@@ -112,3 +112,15 @@ def test_both_removed_variables_are_named_together(monkeypatch) -> None:
     assert "ODDISH_GKE_SPOT" in message
     assert "ODDISH_GKE_FLEX_START" in message
     assert "ODDISH_GKE_PROVISIONING_MODE" in message
+
+
+def test_removed_variables_are_rejected_from_dotenv_files(
+    tmp_path, monkeypatch
+) -> None:
+    """The rejection must cover every settings source, not just the process
+    environment: a dotenv holder would otherwise fall back to the default
+    mode silently."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("ODDISH_GKE_FLEX_START=true\n")
+    with pytest.raises(ValidationError, match="ODDISH_GKE_FLEX_START is removed"):
+        Settings(_env_file=str(env_file))
