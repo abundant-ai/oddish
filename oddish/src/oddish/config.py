@@ -1393,6 +1393,13 @@ class Settings(BaseSettings):
     # still applies as the idle backstop.
     daytona_ephemeral: bool = True
 
+    # Numinous Cloud backend (opt-in). When enabled it registers cheap-first,
+    # ahead of Daytona, so capability negotiation routes plain-CPU trials to
+    # it. Requires NUMINOUS_API_URL / NUMINOUS_API_KEY and a Harbor pin that
+    # includes EnvironmentType.NUMINOUS (companion Harbor branch
+    # `numinous-environment`).
+    numinous_enabled: bool = False
+
     ec2_enabled: bool = False
     ec2_region: str | None = None
     ec2_ami_id: str | None = None
