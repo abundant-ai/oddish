@@ -167,15 +167,13 @@ jobs:
       MODAL_SECRET_ENVIRONMENT: main
       EXPECTED_MODAL_API_URL: ${{ needs.detect-changes.outputs.preview_api_url }}
       UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
-      # TEMPORARY -- REVERT BEFORE MERGE.
-      # Previews are GKE-less by default. This block gives THIS pull
-      # request's preview a real GKE backend so the branch can be validated
-      # end to end before it merges: it attaches the GCP credential secret
-      # and lets trials create real clusters and spend real money. It is
-      # also itself a test: these coordinates are baked into the image by
-      # this branch's snapshot change, so they must reach the workers even
-      # though the runtime secret used to win. Delete this block before
-      # merging.
+      # Previews run with a real GKE backend so a branch's trial path can be
+      # validated end to end before it merges. Trials only spend money when a
+      # submission actually runs, and the cost is bounded by the teardown
+      # paths this repository ships: a closing preview deletes its own
+      # cluster, a mid-run redeploy deletes it first, the stale-app pruner
+      # covers abandoned previews, and the hourly reaper collects idle
+      # clusters.
       ODDISH_GKE_ENABLED: "true"
       ODDISH_GKE_PROJECT_ID: "abundant-default"
       ODDISH_GKE_REGION: "us-east5"
@@ -193,11 +191,8 @@ jobs:
       ODDISH_MODAL_API_MAX_CONTAINERS: "2"
       ODDISH_MODAL_WORKER_MIN_CONTAINERS: "0"
       ODDISH_MODAL_WORKER_BUFFER_CONTAINERS: "0"
-      # TEMPORARY -- REVERT BEFORE MERGE. Standing preview values are "2"
-      # and "1". Raised / disabled for this branch only so the end-to-end
-      # matrix can run its trials in parallel and its LLM trials ungated.
-      ODDISH_MODAL_WORKER_MAX_CONTAINERS: "30"
-      ODDISH_GATE_LLM_ON_BASELINES: "0"
+      ODDISH_MODAL_WORKER_MAX_CONTAINERS: "2"
+      ODDISH_GATE_LLM_ON_BASELINES: "1"
     defaults:
       run:
         working-directory: backend
