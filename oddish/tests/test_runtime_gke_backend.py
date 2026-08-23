@@ -82,8 +82,7 @@ def test_gke_env_kwargs_inject_settings_defaults() -> None:
     assert merged["namespace"] == settings.gke_namespace
     assert merged["registry_location"] == settings.gke_registry_location
     assert merged["registry_name"] == settings.gke_registry_name
-    assert merged["flex_start"] == settings.gke_flex_start
-    assert merged["spot"] == settings.gke_spot
+    assert merged["provisioning_mode"] == settings.gke_provisioning_mode
     assert merged["auto_build_missing_image"] == settings.gke_auto_build_missing_image
     assert merged["auto_provision_cluster"] == settings.gke_auto_provision_cluster
     assert merged["pod_ready_timeout_sec"] == settings.gke_pod_ready_timeout_sec
@@ -161,67 +160,37 @@ def test_gke_registered_after_modal_when_cluster_configured() -> None:
     assert names.index("modal") < names.index("gke")
 
 
-def test_gke_env_kwargs_explicit_spot_clears_a_flex_default() -> None:
-    """The two flags encode ONE choice, and Harbor rejects both-true.
-
-    A deployment defaulting to flex-start would otherwise turn a plain
-    ``spot=true`` submission into a deterministic both-true error, repeated
-    for every trial attempt.
-    """
-    merged = GkeBackend().harbor_env_kwargs({"spot": True})
-    assert merged["spot"] is True
-    assert merged["flex_start"] is False
-
-
-def test_gke_env_kwargs_explicit_flex_clears_a_spot_default(monkeypatch) -> None:
-    """The deployment default MUST be spot for this to prove anything.
-
-    With the shipped default (spot off) the assertion below holds whether or
-    not the normalization exists, so the test passed while the branch it
-    covers could be deleted freely.
-    """
-    monkeypatch.setattr(settings, "gke_spot", True)
-    monkeypatch.setattr(settings, "gke_flex_start", False)
-    merged = GkeBackend().harbor_env_kwargs({"flex_start": True})
-    assert merged["flex_start"] is True
-    assert merged["spot"] is False
-
-
-def test_gke_env_kwargs_spot_default_survives_an_unrelated_override(
+def test_gke_env_kwargs_caller_mode_overrides_the_deployment_default(
     monkeypatch,
 ) -> None:
-    """A spot-default deployment keeps spot when the caller names neither flag."""
-    monkeypatch.setattr(settings, "gke_spot", True)
-    monkeypatch.setattr(settings, "gke_flex_start", False)
+    """One key, so the spread is the whole reconciliation.
+
+    The deployment default must differ from the requested mode for this to
+    prove anything: with both set to flex-start the assertion holds whether or
+    not the caller's value is read at all.
+    """
+    monkeypatch.setattr(settings, "gke_provisioning_mode", "flex-start")
+    merged = GkeBackend().harbor_env_kwargs({"provisioning_mode": "spot"})
+    assert merged["provisioning_mode"] == "spot"
+
+
+def test_gke_env_kwargs_mode_default_survives_an_unrelated_override(
+    monkeypatch,
+) -> None:
+    """A caller who names no mode keeps the deployment's."""
+    monkeypatch.setattr(settings, "gke_provisioning_mode", "spot")
     merged = GkeBackend().harbor_env_kwargs({"namespace": "custom-ns"})
-    assert merged["spot"] is True
-    assert merged["flex_start"] is False
+    assert merged["provisioning_mode"] == "spot"
 
 
-def test_gke_env_kwargs_flex_false_does_not_disable_a_spot_default(
-    monkeypatch,
-) -> None:
-    """Mirror of the spot=false case: normalization keys on a True, not a False."""
-    monkeypatch.setattr(settings, "gke_spot", True)
-    monkeypatch.setattr(settings, "gke_flex_start", False)
-    merged = GkeBackend().harbor_env_kwargs({"flex_start": False})
-    assert merged["flex_start"] is False
-    assert merged["spot"] is True
+def test_gke_env_kwargs_never_emits_the_removed_booleans() -> None:
+    """Harbor rejects flex_start and spot outright, by name.
 
-
-def test_gke_env_kwargs_explicit_pair_is_left_alone() -> None:
-    """A caller who names both keys owns the outcome, including a bad one.
-
-    Harbor raises on both-true. Silently repairing it here would hide a real
-    configuration mistake behind a mode the caller never asked for.
+    Re-introducing either here -- as a compatibility alias, or by restoring
+    the old reconciliation -- fails every GKE trial at environment
+    construction with GKEConfigurationError, before the pod is built. The
+    merged bag must carry the mode and nothing else.
     """
-    merged = GkeBackend().harbor_env_kwargs({"spot": True, "flex_start": True})
-    assert merged["spot"] is True
-    assert merged["flex_start"] is True
-
-
-def test_gke_env_kwargs_spot_false_does_not_disable_a_flex_default() -> None:
-    """Normalization keys on PRESENCE of a True, never on a False."""
-    merged = GkeBackend().harbor_env_kwargs({"spot": False})
-    assert merged["spot"] is False
-    assert merged["flex_start"] == settings.gke_flex_start
+    merged = GkeBackend().harbor_env_kwargs({})
+    assert "flex_start" not in merged
+    assert "spot" not in merged
