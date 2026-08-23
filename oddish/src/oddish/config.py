@@ -1418,10 +1418,8 @@ class Settings(BaseSettings):
     gke_namespace: str = "oddish-trials"
     gke_registry_location: str | None = None
     gke_registry_name: str | None = None
-    # Which capacity an accelerator pod asks GKE for. One name, three values,
-    # replacing the gke_flex_start / gke_spot boolean pair: the pair could
-    # express a fourth state (both true) that no node pool can serve, so
-    # Harbor rejected it and a config validator here had to catch it first.
+    # Which capacity an accelerator pod asks GKE for: one name, three
+    # values, so no combination can ask for a node pool that cannot exist.
     #
     #   flex-start  DWS provisions TPU capacity on demand, so a pod can sit
     #               Pending while the node is created; the readiness wait is
