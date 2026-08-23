@@ -127,79 +127,99 @@ async def reap_idle_cluster(deploy_app_name: str | None = None) -> str:
     _materialize_gcp_adc_credentials()
 
     import google.auth
-    from google.api_core import exceptions as gcp_exceptions
     from google.cloud import container_v1
 
     creds, _ = google.auth.default(
         scopes=["https://www.googleapis.com/auth/cloud-platform"]
     )
     manager = container_v1.ClusterManagerClient(credentials=creds)
-    name = (
-        f"projects/{settings.gke_project_id}/locations/{settings.gke_region}"
-        f"/clusters/{cluster_name}"
-    )
-    try:
-        cluster = await asyncio.to_thread(manager.get_cluster, name=name)
-    except gcp_exceptions.NotFound:
-        cluster = None
+    # Same discovery rule as teardown: a per-submission region override can
+    # put the owned cluster outside settings.gke_region, and a cluster the
+    # reaper cannot see is a cluster that bills until stop/teardown runs.
+    # List every location and judge each owned, managed cluster where it is.
+    parent = f"projects/{settings.gke_project_id}/locations/-"
+    listing = await asyncio.to_thread(manager.list_clusters, parent=parent)
+    candidates = [
+        c
+        for c in listing.clusters
+        if c.name == cluster_name
+        and dict(c.resource_labels or {}).get("harbor-managed") == "true"
+    ]
+    if not candidates:
+        if any(c.name == cluster_name for c in listing.clusters):
+            return "skip: cluster exists but is not harbor-managed"
+        return "skip: no cluster"
 
-    cluster_managed = False
-    created_at: datetime | None = None
-    if cluster is not None:
-        cluster_managed = (
-            dict(cluster.resource_labels or {}).get("harbor-managed") == "true"
-        )
-        created_at = _parse_cluster_created(cluster.create_time)
-
+    # Trial activity is deployment-wide, deliberately: the database does not
+    # say which region a live trial's cluster is in, so any live GKE trial
+    # keeps every cluster of this deployment alive. Conservative and cheap.
     live, last_activity = await _gke_trial_activity()
     now = datetime.now(timezone.utc)
 
-    # Phase 1: every cheap guard, assuming an empty cluster. Anything that
-    # skips here never touches the Kubernetes API at all -- unmanaged
-    # clusters, live deployments, and young clusters cost one get_cluster.
-    pre = decide(
-        now=now,
-        ttl_hours=ttl,
-        live_gke_trials=live,
-        last_gke_activity=last_activity,
-        cluster_exists=cluster is not None,
-        cluster_created_at=created_at,
-        cluster_managed=cluster_managed,
-        pods_in_namespace=0,
-    )
-    if pre.action != "reap":
-        return f"skip: {pre.reason}"
+    outcomes = []
+    for cluster in candidates:
+        location = cluster.location
+        path = (
+            f"projects/{settings.gke_project_id}/locations/{location}"
+            f"/clusters/{cluster_name}"
+        )
+        created_at = _parse_cluster_created(cluster.create_time)
 
-    # Phase 2: the one side-effectful probe, attempted for ANY existing
-    # cluster state (RECONCILING/DEGRADED can still host pods). A failed
-    # listing means pods are UNKNOWN -- fail safe and skip.
-    pods_count = await _probe_pods()
-    if pods_count is None:
-        return "skip: pod listing failed; refusing to reap blind"
+        # Phase 1: every cheap guard, assuming an empty cluster. Anything
+        # that skips here never touches the Kubernetes API at all.
+        pre = decide(
+            now=now,
+            ttl_hours=ttl,
+            live_gke_trials=live,
+            last_gke_activity=last_activity,
+            cluster_exists=True,
+            cluster_created_at=created_at,
+            cluster_managed=True,
+            pods_in_namespace=0,
+        )
+        if pre.action != "reap":
+            outcomes.append(f"skip {location}: {pre.reason}")
+            continue
 
-    # Refresh the DB view after the probe so the verdict sees trials that
-    # went live meanwhile. The residual instant between this read and the
-    # delete is retry-covered: a racing trial's attempt fails against the
-    # deleting cluster and its retry re-provisions.
-    live, last_activity = await _gke_trial_activity()
-    decision = decide(
-        now=now,
-        ttl_hours=ttl,
-        live_gke_trials=live,
-        last_gke_activity=last_activity,
-        cluster_exists=True,
-        cluster_created_at=created_at,
-        cluster_managed=cluster_managed,
-        pods_in_namespace=pods_count,
-    )
-    if decision.action == "reap":
-        await asyncio.to_thread(manager.delete_cluster, name=name)
-        return f"reaped {cluster_name}: {decision.reason}"
-    return f"skip: {decision.reason}"
+        # Phase 2: the one side-effectful probe, attempted for ANY existing
+        # cluster state (RECONCILING/DEGRADED can still host pods). A failed
+        # listing means pods are UNKNOWN -- fail safe and skip this cluster.
+        pods_count = await _probe_pods(location)
+        if pods_count is None:
+            outcomes.append(
+                f"skip {location}: pod listing failed; refusing to reap blind"
+            )
+            continue
+
+        # Refresh the DB view after the probe so the verdict sees trials
+        # that went live meanwhile. The residual instant between this read
+        # and the delete is retry-covered: a racing trial's attempt fails
+        # against the deleting cluster and its retry re-provisions.
+        live, last_activity = await _gke_trial_activity()
+        decision = decide(
+            now=now,
+            ttl_hours=ttl,
+            live_gke_trials=live,
+            last_gke_activity=last_activity,
+            cluster_exists=True,
+            cluster_created_at=created_at,
+            cluster_managed=True,
+            pods_in_namespace=pods_count,
+        )
+        if decision.action == "reap":
+            await asyncio.to_thread(manager.delete_cluster, name=path)
+            outcomes.append(f"reaped {location}: {decision.reason}")
+        else:
+            outcomes.append(f"skip {location}: {decision.reason}")
+    return f"{cluster_name}: " + "; ".join(outcomes)
 
 
-async def _probe_pods() -> int | None:
-    """Count pods in the trials namespace; None when the probe fails."""
+async def _probe_pods(location: str | None = None) -> int | None:
+    """Count pods in the trials namespace; None when the probe fails.
+
+    ``location`` is the cluster's actual location from the listing; the
+    deployment region is only a fallback so old callers keep working.
+    """
     import asyncio
 
     try:
@@ -208,7 +228,7 @@ async def _probe_pods() -> int | None:
         api = await asyncio.to_thread(
             build_core_api,
             settings.gke_cluster_name,
-            settings.gke_region,
+            location or settings.gke_region,
             settings.gke_project_id,
         )
         pods = await asyncio.to_thread(
