@@ -137,9 +137,9 @@ def test_parse_cluster_created_accepts_string_datetime_and_junk():
 
 
 async def test_an_out_of_region_cluster_is_found_and_reaped(monkeypatch):
-    """The cursor finding: a per-submission region override creates the owned
-    cluster outside the deployment region, and the reaper must judge it where
-    it is instead of concluding "no cluster" from the home region alone."""
+    """A per-submission region override creates the owned cluster outside
+    the deployment region, and the reaper must judge it where it is instead
+    of concluding "no cluster" from the home region alone."""
     import worker.gke_cluster_reaper as reaper
 
     monkeypatch.setenv("MODAL_APP_NAME", "c-app")

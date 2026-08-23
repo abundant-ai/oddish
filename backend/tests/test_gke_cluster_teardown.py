@@ -198,10 +198,10 @@ async def test_teardown_waits_until_the_cluster_is_gone(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_slow_delete_does_not_starve_the_other_clusters_wait(monkeypatch):
-    """Bugbot finding: one shared 240s deadline consumed sequentially means
-    the first slow delete leaves later clusters with no wait at all. The wait
-    must poll every deleted cluster each round under the one budget, so a
-    cluster that becomes absent while another is still deleting is seen."""
+    """One shared deadline consumed sequentially means the first slow delete
+    leaves later clusters with no wait at all. The wait must poll every
+    deleted cluster each round under the one budget, so a cluster that
+    becomes absent while another is still deleting is seen."""
     from google.api_core import exceptions as gcp_exceptions
     from worker import gke_cluster_reaper as mod
 
