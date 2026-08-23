@@ -41,6 +41,11 @@ def main(app_name: str) -> None:
         try:
             print(f"gke teardown: {fn.remote()}")
             return
+        except modal.exception.NotFoundError:
+            # Function.from_name is lazy: a missing function surfaces HERE,
+            # on the first call, not at lookup. Same skip as above.
+            print("gke teardown: skip (app has no teardown function)")
+            return
         except Exception as exc:  # noqa: BLE001 -- classified by the caller
             last = exc
             print(
