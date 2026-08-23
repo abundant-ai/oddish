@@ -53,9 +53,9 @@ jobs:
       # sample (see pr-preview.yml for why it is not ODDISH_DATABASE_URL).
       PREVIEW_SAMPLE_SOURCE_DB_URL: ${{ secrets.ODDISH_DATABASE_URL }}
       # GKE parity with pr-preview.yml: a reset must redeploy the same
-      # preview it replaces. pr-preview.yml documents why previews carry a
-      # real GKE backend; test_pr_preview_workflow.py asserts the ODDISH_*
-      # env of both workflows stays identical.
+      # preview it replaces, so the ODDISH_* env of the two deploy jobs
+      # must stay identical. pr-preview.yml documents why previews carry a
+      # real GKE backend.
       ODDISH_GKE_ENABLED: "true"
       ODDISH_GKE_PROJECT_ID: "abundant-default"
       ODDISH_GKE_REGION: "us-east5"

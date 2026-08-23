@@ -96,24 +96,21 @@ def _pinned_oddish_requirement() -> str | None:
     try:
         return f"oddish=={version('oddish')}"
     except PackageNotFoundError:
-        logger.warning(
-            "pre-trial: oddish not installed in orchestrator; skipping pin"
-        )
+        logger.warning("pre-trial: oddish not installed in orchestrator; skipping pin")
         return None
 
 
 class OddishClaudeCode(ClaudeCode):
     """Stock Claude Code under an Oddish-owned name.
 
-    Oddish used to override Harbor's ``_build_claude_command`` seam here to keep
-    the prompt off ``claude``'s argv. Harbor now does that natively -- it hands
-    the instruction to the agent's stdin and tees the stream-json output to
-    ``/logs/agent/claude-code.txt`` -- so the override is gone and this subclass
-    adds no behaviour.
-
-    It still exists because its import path is a routing key: the agent-config
-    wrapper selects it by name (``_ODDISH_CLAUDE_CODE_IMPORT_PATH``), the
-    restricted-network compatibility profiles are keyed on it, and
+    Harbor keeps the prompt off ``claude``'s argv itself: it hands the
+    instruction to the agent's stdin through a transient environment
+    variable and tees the stream-json output to
+    ``/logs/agent/claude-code.txt``. This subclass therefore adds no
+    behaviour; it exists because its import path is a routing key -- the
+    agent-config wrapper selects it by name
+    (``_ODDISH_CLAUDE_CODE_IMPORT_PATH``), the restricted-network
+    compatibility profiles are keyed on it, and
     :class:`OddishProbeClaudeCode` derives from it.
     """
 

@@ -40,7 +40,7 @@ class GkeBackend:
         )
 
     def harbor_env_kwargs(self, base_kwargs: dict[str, Any]) -> dict[str, Any]:
-        # Precedence, stated exactly because it has been misread twice:
+        # Precedence, stated exactly:
         # a submission kwarg (--environment-kwarg) beats the deployment
         # setting, because base_kwargs is spread last. A task.toml
         # [environment.kwargs] key CANNOT beat the deployment setting on this
