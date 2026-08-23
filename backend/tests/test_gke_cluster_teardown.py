@@ -32,7 +32,11 @@ def test_another_deployments_cluster_is_never_touched():
 
 
 def test_a_managed_label_with_the_wrong_value_does_not_count():
-    cluster = ("dep-trials", {"harbor-managed": "yes"}, "projects/p/locations/l/clusters/dep-trials")
+    cluster = (
+        "dep-trials",
+        {"harbor-managed": "yes"},
+        "projects/p/locations/l/clusters/dep-trials",
+    )
     assert select_teardown_targets([cluster], "dep-trials") == []
 
 
@@ -190,3 +194,85 @@ async def test_teardown_waits_until_the_cluster_is_gone(monkeypatch):
     outcome = await mod.teardown_deployment_cluster()
     assert outcome == "deleted 1 cluster(s)"
     assert polls["n"] >= 3, "the delete was not awaited to absence"
+
+
+@pytest.mark.asyncio
+async def test_a_slow_delete_does_not_starve_the_other_clusters_wait(monkeypatch):
+    """Bugbot finding: one shared 240s deadline consumed sequentially means
+    the first slow delete leaves later clusters with no wait at all. The wait
+    must poll every deleted cluster each round under the one budget, so a
+    cluster that becomes absent while another is still deleting is seen."""
+    from google.api_core import exceptions as gcp_exceptions
+    from worker import gke_cluster_reaper as mod
+
+    monkeypatch.setenv("MODAL_APP_NAME", "dep")
+    monkeypatch.setattr(mod.settings, "gke_cluster_name", "dep-trials")
+    monkeypatch.setattr(mod.settings, "gke_project_id", "p")
+    monkeypatch.setattr(
+        "worker.runtime._materialize_gcp_adc_credentials", lambda: None, raising=False
+    )
+    # Two polls' worth of budget, shrunk to milliseconds: the sequential
+    # wait would spend all of it on the never-gone first cluster and probe
+    # the second exactly once, before its delete lands.
+    monkeypatch.setattr(mod, "_TEARDOWN_POLL_SEC", 0.01)
+    monkeypatch.setattr(mod, "_TEARDOWN_WAIT_SEC", 0.02)
+
+    def _cluster(location):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            name="dep-trials",
+            resource_labels={"harbor-managed": "true"},
+            location=location,
+        )
+
+    slow = "projects/p/locations/slow/clusters/dep-trials"
+    fast = "projects/p/locations/fast/clusters/dep-trials"
+    probes = {slow: 0, fast: 0}
+
+    class _Manager:
+        def list_clusters(self, parent):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(clusters=[_cluster("slow"), _cluster("fast")])
+
+        def delete_cluster(self, name):
+            return None
+
+        def get_cluster(self, name):
+            probes[name] += 1
+            # The fast cluster is gone from its second probe on; the slow
+            # one never disappears inside the budget.
+            if name == fast and probes[name] >= 2:
+                raise gcp_exceptions.NotFound("gone")
+            return _cluster(name)
+
+    class _CV1:
+        @staticmethod
+        def ClusterManagerClient(credentials=None):
+            return _Manager()
+
+    import google.auth
+
+    monkeypatch.setattr(google.auth, "default", lambda scopes=None: (object(), "p"))
+    import sys
+    from types import SimpleNamespace
+
+    monkeypatch.setitem(
+        sys.modules, "google.cloud.container_v1", SimpleNamespace(**vars(_CV1))
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "google.cloud",
+        SimpleNamespace(container_v1=SimpleNamespace(**vars(_CV1))),
+    )
+
+    async def _no_sleep(_):
+        return None
+
+    monkeypatch.setattr("asyncio.sleep", _no_sleep)
+
+    outcome = await mod.teardown_deployment_cluster()
+    assert "2 cluster(s)" in outcome
+    assert "1 gone" in outcome
+    assert probes[fast] >= 2, "the second cluster's delete was never awaited"

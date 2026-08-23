@@ -356,20 +356,28 @@ async def teardown_deployment_cluster(deploy_app_name: str | None = None) -> str
         except gcp_exceptions.NotFound:
             pass
 
-    gone = 0
+    # One wall-clock budget, every cluster polled every round. A sequential
+    # per-cluster wait under a shared deadline starves the later clusters
+    # when the first delete is slow -- with region overrides the same owned
+    # name can exist in several locations, and an unawaited path hands the
+    # STOPPING race straight back to the next trial.
+    gone: set[str] = set()
     loop = asyncio.get_event_loop()
     deadline = loop.time() + _TEARDOWN_WAIT_SEC
-    for path in deleted:
-        while True:
+    pending = list(deleted)
+    while pending:
+        remaining = []
+        for path in pending:
             try:
                 await asyncio.to_thread(manager.get_cluster, name=path)
+                remaining.append(path)
             except gcp_exceptions.NotFound:
-                gone += 1
-                break
-            if loop.time() >= deadline:
-                break
-            await asyncio.sleep(_TEARDOWN_POLL_SEC)
+                gone.add(path)
+        pending = remaining
+        if not pending or loop.time() >= deadline:
+            break
+        await asyncio.sleep(_TEARDOWN_POLL_SEC)
 
-    if gone == len(deleted):
-        return f"deleted {gone} cluster(s)"
-    return f"deleting {len(deleted)} cluster(s) ({gone} gone, rest in progress)"
+    if len(gone) == len(deleted):
+        return f"deleted {len(gone)} cluster(s)"
+    return f"deleting {len(deleted)} cluster(s) ({len(gone)} gone, rest in progress)"
