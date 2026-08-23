@@ -1441,13 +1441,6 @@ class Settings(BaseSettings):
     # what hosted TPU trials have always run and what the accelerator quota in
     # this project is shaped for.
     gke_provisioning_mode: str = "flex-start"
-    # The two removed boolean knobs exist only to be rejected: declaring them
-    # binds every settings source (process env, dotenv files, constructor
-    # arguments, secret files), where an environ-only check would let a
-    # dotenv holder fall back to the flex-start default without a word. The
-    # mode validator raises whenever either is set.
-    gke_spot: str | None = None
-    gke_flex_start: str | None = None
     # Auto-build missing task images via the Cloud Build SDK instead of
     # failing on require_prebuilt_image. Spends minutes of the attempt's
     # budget on first-run tasks, so hosted deployments opt in explicitly.
@@ -1672,23 +1665,6 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"ODDISH_GKE_PROVISIONING_MODE={self.gke_provisioning_mode!r} "
                 f"is not a provisioning mode. Valid values are: {valid}."
-            )
-        # The removed boolean knobs must fail as loudly as a bad mode, from
-        # every source a value can arrive by (see the field declarations).
-        removed = {
-            "ODDISH_GKE_SPOT": ("spot", self.gke_spot),
-            "ODDISH_GKE_FLEX_START": ("flex-start", self.gke_flex_start),
-        }
-        stale = [key for key, (_, value) in removed.items() if value is not None]
-        if stale:
-            hints = "; ".join(
-                f"{key} is removed -- if it was enabled, set "
-                f"ODDISH_GKE_PROVISIONING_MODE='{removed[key][0]}', otherwise "
-                "drop the variable"
-                for key in stale
-            )
-            raise ValueError(
-                "Removed GKE provisioning variables are still set: " + hints + "."
             )
         return self
 

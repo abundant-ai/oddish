@@ -19,8 +19,6 @@ _GKE_ENV = (
     "ODDISH_GKE_REGISTRY_NAME",
     "ODDISH_GKE_PROVISIONING_MODE",
     "ODDISH_GKE_POD_READY_TIMEOUT_SEC",
-    "ODDISH_GKE_SPOT",
-    "ODDISH_GKE_FLEX_START",
 )
 
 
@@ -94,35 +92,3 @@ def test_gke_provisioning_mode_error_lists_the_valid_values(monkeypatch) -> None
         Settings(_env_file=None)
     for mode in GKE_PROVISIONING_MODES:
         assert repr(mode) in str(excinfo.value)
-
-
-def test_removed_boolean_mode_variables_fail_loudly(monkeypatch) -> None:
-    """The removed knobs must not be silently ignored: a deployment still
-    exporting one would otherwise fall back to the flex-start default and
-    change provisioning modes without a word."""
-    monkeypatch.setenv("ODDISH_GKE_SPOT", "true")
-    with pytest.raises(ValidationError, match="ODDISH_GKE_SPOT is removed"):
-        Settings(_env_file=None)
-
-
-def test_both_removed_variables_are_named_together(monkeypatch) -> None:
-    monkeypatch.setenv("ODDISH_GKE_SPOT", "false")
-    monkeypatch.setenv("ODDISH_GKE_FLEX_START", "true")
-    with pytest.raises(ValidationError) as err:
-        Settings(_env_file=None)
-    message = str(err.value)
-    assert "ODDISH_GKE_SPOT" in message
-    assert "ODDISH_GKE_FLEX_START" in message
-    assert "ODDISH_GKE_PROVISIONING_MODE" in message
-
-
-def test_removed_variables_are_rejected_from_dotenv_files(
-    tmp_path, monkeypatch
-) -> None:
-    """The rejection must cover every settings source, not just the process
-    environment: a dotenv holder would otherwise fall back to the default
-    mode silently."""
-    env_file = tmp_path / ".env"
-    env_file.write_text("ODDISH_GKE_FLEX_START=true\n")
-    with pytest.raises(ValidationError, match="ODDISH_GKE_FLEX_START is removed"):
-        Settings(_env_file=str(env_file))
