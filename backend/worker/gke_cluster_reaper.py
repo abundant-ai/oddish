@@ -142,6 +142,12 @@ async def reap_idle_cluster(deploy_app_name: str | None = None) -> str:
     # List every location and judge each owned, managed cluster where it is.
     parent = f"projects/{settings.gke_project_id}/locations/-"
     listing = await asyncio.to_thread(manager.list_clusters, parent=parent)
+    # An unreachable location arrives as missing_zones, not as an error. A
+    # cluster hiding there must not read as absent: skip and let the next
+    # scheduled run retry.
+    missing = list(getattr(listing, "missing_zones", []) or [])
+    if missing:
+        return f"skip: cluster listing incomplete (unreachable: {missing})"
     candidates = [
         c
         for c in listing.clusters
@@ -335,6 +341,16 @@ async def teardown_deployment_cluster(deploy_app_name: str | None = None) -> str
     manager = container_v1.ClusterManagerClient(credentials=creds)
     parent = f"projects/{settings.gke_project_id}/locations/-"
     listing = await asyncio.to_thread(manager.list_clusters, parent=parent)
+    # An unreachable location arrives as missing_zones, not as an error. The
+    # owned cluster could be hiding there, so "no cluster" cannot be
+    # concluded from an incomplete listing -- raise, and the teardown
+    # helper's retry/failure handling keeps the app (the cluster's one
+    # remaining owner) alive instead of stopping it blind.
+    missing = list(getattr(listing, "missing_zones", []) or [])
+    if missing:
+        raise RuntimeError(
+            f"cluster listing incomplete; unreachable locations: {missing}"
+        )
     seen = [
         (
             c.name,

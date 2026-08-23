@@ -193,3 +193,37 @@ async def test_an_out_of_region_cluster_is_found_and_reaped(monkeypatch):
     assert "reaped override-region" in out
     assert deleted == ["projects/p/locations/override-region/clusters/c-app-trials"]
     assert probed_locations == ["override-region"]
+
+
+async def test_an_incomplete_listing_makes_the_reaper_skip(monkeypatch):
+    """The reaper must not read an unreachable location as an absent
+    cluster; it skips fail-safe and the next scheduled run retries."""
+    import worker.gke_cluster_reaper as reaper
+
+    monkeypatch.setenv("MODAL_APP_NAME", "c-app")
+    monkeypatch.setattr(reaper.settings, "gke_cluster_name", "c-app-trials")
+    monkeypatch.setattr(reaper.settings, "gke_project_id", "p")
+    monkeypatch.setattr(reaper.settings, "gke_idle_cluster_ttl_hours", 1.0)
+    monkeypatch.setattr("worker.runtime._materialize_gcp_adc_credentials", lambda: None)
+
+    import sys
+    from types import SimpleNamespace
+
+    import google.auth
+    import google.cloud
+
+    monkeypatch.setattr(google.auth, "default", lambda scopes: (object(), "p"))
+    fake_mgr = SimpleNamespace(
+        list_clusters=lambda parent: SimpleNamespace(
+            clusters=[], missing_zones=["zone-b"]
+        ),
+        delete_cluster=lambda name: (_ for _ in ()).throw(
+            AssertionError("must not delete from an incomplete listing")
+        ),
+    )
+    fake_container = SimpleNamespace(ClusterManagerClient=lambda credentials: fake_mgr)
+    monkeypatch.setitem(sys.modules, "google.cloud.container_v1", fake_container)
+    monkeypatch.setattr(google.cloud, "container_v1", fake_container, raising=False)
+
+    out = await reaper.reap_idle_cluster()
+    assert "listing incomplete" in out

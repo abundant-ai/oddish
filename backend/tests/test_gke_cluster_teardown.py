@@ -276,3 +276,52 @@ async def test_a_slow_delete_does_not_starve_the_other_clusters_wait(monkeypatch
     assert "2 cluster(s)" in outcome
     assert "1 gone" in outcome
     assert probes[fast] >= 2, "the second cluster's delete was never awaited"
+
+
+@pytest.mark.asyncio
+async def test_an_incomplete_listing_is_a_failure_not_an_absence(monkeypatch):
+    """An unreachable location arrives as missing_zones, not as an error.
+    The owned cluster could be hiding there, so teardown must raise -- the
+    helper's failure handling then keeps the app alive as the cluster's
+    owner -- instead of concluding "no cluster" and letting the stop
+    proceed."""
+    from worker import gke_cluster_reaper as mod
+
+    monkeypatch.setenv("MODAL_APP_NAME", "dep")
+    monkeypatch.setattr(mod.settings, "gke_cluster_name", "dep-trials")
+    monkeypatch.setattr(mod.settings, "gke_project_id", "p")
+    monkeypatch.setattr(
+        "worker.runtime._materialize_gcp_adc_credentials", lambda: None, raising=False
+    )
+
+    class _Manager:
+        def list_clusters(self, parent):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(clusters=[], missing_zones=["zone-a"])
+
+        def delete_cluster(self, name):
+            raise AssertionError("must not delete from an incomplete listing")
+
+    class _CV1:
+        @staticmethod
+        def ClusterManagerClient(credentials=None):
+            return _Manager()
+
+    import google.auth
+
+    monkeypatch.setattr(google.auth, "default", lambda scopes=None: (object(), "p"))
+    import sys
+    from types import SimpleNamespace
+
+    monkeypatch.setitem(
+        sys.modules, "google.cloud.container_v1", SimpleNamespace(**vars(_CV1))
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "google.cloud",
+        SimpleNamespace(container_v1=SimpleNamespace(**vars(_CV1))),
+    )
+
+    with pytest.raises(RuntimeError, match="listing incomplete"):
+        await mod.teardown_deployment_cluster()
