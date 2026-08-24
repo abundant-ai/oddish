@@ -47,11 +47,18 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
 import { ExperimentsSkeleton } from "./experiments-skeleton";
 import type {
   DashboardExperiment,
   DashboardExperimentAuthor,
-  OrgUser,
 } from "@/lib/types";
 import { fetcher } from "@/lib/api";
 import {
@@ -132,20 +139,137 @@ function formatTaskAuthor(author: DashboardExperimentAuthor | null): string {
   return author.name;
 }
 
-function memberDisplayName(member: OrgUser): string {
-  return member.name || member.github_username || member.email;
-}
+type PeopleSearchItem = {
+  id: string;
+  display_name: string;
+  github_username: string | null;
+};
 
-// Org member roster for the experiments owner filter. The backend gates
-// GET /users on admin/owner role, so non-admins simply get an empty list
-// and fall back to the Org / Mine toggle. Errors are swallowed for the
-// same reason -- the picker is progressive enhancement, not required.
-function useOrgMembers(): OrgUser[] {
-  const { data } = useSWR<OrgUser[]>("/api/users", fetcher, {
-    revalidateOnFocus: false,
-    shouldRetryOnError: false,
-  });
-  return Array.isArray(data) ? data : [];
+type PeopleSearchResponse = {
+  items: PeopleSearchItem[];
+};
+
+function MemberFilterTypeahead({
+  selectedUserId,
+  onSelect,
+}: {
+  selectedUserId: string | null;
+  onSelect: (userId: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(
+      () => setDebouncedQuery(query.trim()),
+      250
+    );
+    return () => window.clearTimeout(timeoutId);
+  }, [query]);
+
+  const selectedLookupPath = selectedUserId
+    ? `/api/people/search?q=${encodeURIComponent(selectedUserId)}&limit=1`
+    : null;
+  const { data: selectedResponse } = useSWR<PeopleSearchResponse>(
+    selectedLookupPath,
+    fetcher,
+    { revalidateOnFocus: false, shouldRetryOnError: false }
+  );
+  const searchPath = open
+    ? `/api/people/search?q=${encodeURIComponent(debouncedQuery)}&limit=10`
+    : null;
+  const { data: searchResponse, isLoading } = useSWR<PeopleSearchResponse>(
+    searchPath,
+    fetcher,
+    {
+      revalidateOnFocus: false,
+      shouldRetryOnError: false,
+    }
+  );
+
+  const selectedPerson = selectedResponse?.items.find(
+    (person) => person.id === selectedUserId
+  );
+  const queryIsSettled = query.trim() === debouncedQuery;
+  const people = queryIsSettled ? (searchResponse?.items ?? []) : [];
+  const isSearching = !queryIsSettled || isLoading;
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(nextOpen) => {
+        setOpen(nextOpen);
+        if (!nextOpen) setQuery("");
+      }}
+    >
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant={selectedUserId ? "secondary" : "outline"}
+          size="sm"
+          className="h-8 w-full justify-between border-[#6f88b4]/20 sm:w-[180px]"
+          role="combobox"
+          aria-expanded={open}
+          aria-label="Filter experiments by member"
+        >
+          <span className="flex min-w-0 items-center gap-1.5">
+            <Users className="h-3.5 w-3.5 shrink-0 opacity-60" />
+            <span className="truncate">
+              {selectedPerson?.display_name ?? "Members"}
+            </span>
+          </span>
+          <ChevronDown className="h-4 w-4 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-[260px] p-0">
+        <Command shouldFilter={false}>
+          <CommandInput
+            value={query}
+            onValueChange={setQuery}
+            placeholder="Search members…"
+          />
+          <CommandList>
+            {isSearching ? (
+              <div className="text-muted-foreground py-6 text-center text-sm">
+                Searching…
+              </div>
+            ) : (
+              <CommandEmpty>No members found.</CommandEmpty>
+            )}
+            <CommandGroup>
+              {people.map((person) => (
+                <CommandItem
+                  key={person.id}
+                  value={person.id}
+                  onSelect={() => {
+                    onSelect(person.id);
+                    setOpen(false);
+                    setQuery("");
+                  }}
+                >
+                  <Check
+                    className={cn(
+                      "mr-2 h-4 w-4",
+                      selectedUserId === person.id ? "opacity-100" : "opacity-0"
+                    )}
+                  />
+                  <span className="flex min-w-0 flex-col">
+                    <span className="truncate">{person.display_name}</span>
+                    {person.github_username && (
+                      <span className="text-muted-foreground truncate text-[10px]">
+                        @{person.github_username}
+                      </span>
+                    )}
+                  </span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
 }
 
 function CommandSnippet({ command }: { command: string }) {
@@ -641,7 +765,6 @@ function RecentTasksCard({
   onStatusFilterChange,
   authorFilter,
   onAuthorFilterChange,
-  members,
   currentExperimentsPage,
   onPreviousExperimentsPage,
   onNextExperimentsPage,
@@ -656,7 +779,6 @@ function RecentTasksCard({
   onStatusFilterChange: (value: string) => void;
   authorFilter: string;
   onAuthorFilterChange: (value: string) => void;
-  members: OrgUser[];
   currentExperimentsPage: number;
   onPreviousExperimentsPage: () => void;
   onNextExperimentsPage: () => void;
@@ -667,12 +789,6 @@ function RecentTasksCard({
   const statusFilterLabel =
     STATUS_FILTER_OPTIONS.find((option) => option.value === statusFilter)
       ?.label ?? "Filter status";
-  const selectedMember = isMemberSelected
-    ? members.find((member) => member.id === authorFilter)
-    : undefined;
-  const memberFilterLabel = selectedMember
-    ? memberDisplayName(selectedMember)
-    : "Members";
 
   return (
     <Card className="col-span-5 border-[#6f88b4]/20 shadow-xs">
@@ -704,48 +820,10 @@ function RecentTasksCard({
               Mine
             </Button>
           </div>
-          {members.length > 0 && (
-            <DropdownMenu modal={false}>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  type="button"
-                  variant={isMemberSelected ? "secondary" : "outline"}
-                  size="sm"
-                  className="h-8 w-full justify-between border-[#6f88b4]/20 sm:w-[180px]"
-                >
-                  <span className="flex min-w-0 items-center gap-1.5">
-                    <Users className="h-3.5 w-3.5 shrink-0 opacity-60" />
-                    <span className="truncate">{memberFilterLabel}</span>
-                  </span>
-                  <ChevronDown className="h-4 w-4 opacity-50" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                align="end"
-                className="max-h-[320px] w-[240px] overflow-y-auto"
-              >
-                <DropdownMenuRadioGroup
-                  value={isMemberSelected ? authorFilter : ""}
-                  onValueChange={onAuthorFilterChange}
-                >
-                  {members.map((member) => (
-                    <DropdownMenuRadioItem key={member.id} value={member.id}>
-                      <span className="flex min-w-0 flex-col">
-                        <span className="truncate">
-                          {memberDisplayName(member)}
-                        </span>
-                        {member.github_username && (
-                          <span className="text-muted-foreground truncate text-[10px]">
-                            @{member.github_username}
-                          </span>
-                        )}
-                      </span>
-                    </DropdownMenuRadioItem>
-                  ))}
-                </DropdownMenuRadioGroup>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
+          <MemberFilterTypeahead
+            selectedUserId={isMemberSelected ? authorFilter : null}
+            onSelect={onAuthorFilterChange}
+          />
           <div className="relative w-full sm:w-[220px]">
             <Input
               value={searchQuery}
@@ -1079,8 +1157,6 @@ export function DashboardClient({
 
   // Local, editable search text; navigation (below) commits it to the URL.
   const [searchQuery, setSearchQuery] = useState(initialQuery);
-  const members = useOrgMembers();
-
   // Keying the Suspense boundary on the committed (server) params makes it
   // re-suspend — and show the skeleton — on every content change.
   const trialFilterKey = TRIAL_FILTER_PARAM_KEYS.map(
@@ -1180,7 +1256,6 @@ export function DashboardClient({
         onStatusFilterChange={handleStatusFilterChange}
         authorFilter={authorFilter}
         onAuthorFilterChange={handleAuthorFilterChange}
-        members={members}
         currentExperimentsPage={currentExperimentsPage}
         onPreviousExperimentsPage={handlePreviousExperimentsPage}
         onNextExperimentsPage={handleNextExperimentsPage}

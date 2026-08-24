@@ -15,6 +15,7 @@ from auth.types import AuthContext
 from models import APIKeyModel, UserModel
 from oddish.core.admin import GithubIdentity
 from oddish.core.dashboard import UNRESOLVED_EXPERIMENTS_OWNER
+from oddish.core.helpers import escape_like
 from oddish.db import TaskModel, get_session
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,7 @@ __all__ = [
     "AttributionProfile",
     "resolve_experiments_author",
     "resolve_github_users",
+    "resolve_partial_member_ids",
     "resolve_search_authors",
     "invalidate_attribution_cache",
 ]
@@ -37,6 +39,7 @@ def _handle_key(value: str | None) -> str | None:
     ``_normalize_github_handle`` -- or a leading ``@`` costs us the match.
     """
     return (value or "").strip().lstrip("@").lower() or None
+
 
 _MEMORY_TTL_SECONDS = 15 * 60
 _DB_TTL_SECONDS = 24 * 60 * 60
@@ -515,15 +518,16 @@ async def _match_authors_for_token(
     ):
         matched[user.id] = user
 
-    token_lower = token.strip().lower()
-    if token_lower:
+    normalized_token = token.strip()
+    if normalized_token:
+        partial = f"%{escape_like(normalized_token)}%"
         alias_rows = await session.execute(
             select(UserModel).where(
                 UserModel.org_id == org_id,
                 UserModel.is_active == True,  # noqa: E712
                 or_(
-                    func.lower(UserModel.email) == token_lower,
-                    func.lower(UserModel.name) == token_lower,
+                    UserModel.email.ilike(partial, escape="\\"),
+                    UserModel.name.ilike(partial, escape="\\"),
                 ),
             )
         )
@@ -531,6 +535,43 @@ async def _match_authors_for_token(
             matched.setdefault(user.id, user)
 
     return list(matched.values())
+
+
+async def resolve_partial_member_ids(
+    session: AsyncSession,
+    *,
+    org_id: str,
+    tokens: Sequence[str],
+) -> dict[str, tuple[str, ...]]:
+    """Resolve each bare search token to active members in one organization.
+
+    Bare experiment search deliberately considers only the two safe, public
+    identity fields: canonical display name and GitHub username. Email aliases
+    remain available only through the explicit author/user/github qualifier.
+    """
+    resolved: dict[str, tuple[str, ...]] = {}
+    for raw_token in tokens:
+        token = (raw_token or "").strip()
+        normalized = token.lower()
+        if not normalized or normalized in resolved:
+            continue
+        partial = f"%{escape_like(token)}%"
+        github_token = _normalize_github_handle(token) or token
+        github_partial = f"%{escape_like(github_token)}%"
+        rows = await session.execute(
+            select(UserModel.id)
+            .where(
+                UserModel.org_id == org_id,
+                UserModel.is_active == True,  # noqa: E712
+                or_(
+                    UserModel.name.ilike(partial, escape="\\"),
+                    UserModel.github_username.ilike(github_partial, escape="\\"),
+                ),
+            )
+            .order_by(UserModel.id)
+        )
+        resolved[normalized] = tuple(row[0] for row in rows.all())
+    return resolved
 
 
 async def resolve_search_authors(
