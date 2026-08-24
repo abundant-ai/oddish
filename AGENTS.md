@@ -1141,7 +1141,10 @@ silently breaks throughput or correctness — read before touching
    harbor identity for a stable variant (`variant_id == "gke"`): a trial
    queued across a pin bump executes whatever the deployment now ships. The
    claim path (`_refresh_stable_variant_pin`, trial_handler) rewrites the
-   recorded pin to the deployed blessed variant so the row matches execution,
+   recorded pin to what the claiming runtime EXECUTES -- read from the
+   imported harbor's PEP 610 installation metadata, so a Modal variant
+   image stamps its blessed pin, the default image stamps the locked
+   default, and self-host or local workers stamp whatever is installed --
    logging one supersession warning. Consequence for readers: pin filters and
    audit queries over `harbor_sha` see the EXECUTING revision for stable
    variants (the `gke` blessed pin, or the locked default pin for every
@@ -1150,9 +1153,8 @@ silently breaks throughput or correctness — read before touching
    out-of-process against the recorded source/SHA -- and the projection is
    reconciled at claim for every harbor-running trial, healing retry/
    combine/import copies persisted without it. Local (self-host) mode
-   applies the same refresh with the installed default descriptor for EVERY
-   stable-family trial regardless of variant label -- it has no variant
-   images, so the installed default is what executes.
+   routes through the same refresh and needs no override: the metadata of
+   the harbor it imports is what it executes.
 
 ### Local Development
 

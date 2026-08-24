@@ -22,6 +22,10 @@ oddish run -d swebench@1.0 -a codex -m openai/gpt-5.2 --n-trials 3
 # Explicitly use an operator-enabled ephemeral EC2 backend
 # oddish run ./my-task --env ec2 -a codex -m openai/gpt-5.2
 
+# Append trials to a task an experiment already runs; add
+# --use-default-version to target the task's default version instead
+# oddish run --task <task_id> -E <experiment> -a codex --n-trials 2
+
 # List and watch progress
 oddish ls
 oddish status
