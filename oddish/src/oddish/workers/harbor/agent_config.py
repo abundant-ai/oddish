@@ -146,6 +146,28 @@ def _to_litellm_claude_model_id(model: str | None) -> str | None:
     return api_id
 
 
+def _is_opencode_agent(agent_config: AgentConfig) -> bool:
+    if agent_config.import_path == _ODDISH_OPENCODE_IMPORT_PATH:
+        return True
+    return (agent_config.name or "").strip().lower() == "opencode"
+
+
+def _to_litellm_gemini_model_id(model: str | None) -> str | None:
+    """Map Oddish's ``google/`` Gemini prefix to litellm's ``gemini/``.
+
+    Oddish routes ``google/<id>`` and ``gemini/<id>`` identically, but litellm
+    has no ``google`` provider and rejects the id with "LLM Provider NOT
+    provided". Only the ``google/`` prefix is rewritten; everything else
+    passes through unchanged.
+    """
+    if not model:
+        return model
+    prefix, _, bare = model.partition("/")
+    if prefix.strip().lower() == "google" and bare:
+        return f"gemini/{bare}"
+    return model
+
+
 def _apply_anthropic_compat_env(
     agent_config: AgentConfig,
     *,
@@ -623,6 +645,12 @@ def _build_agent_config(
         # litellm-based agents need a "provider/model" id; claude-code is the
         # only agent that consumes the bare Bedrock inference-profile id.
         agent_config.model_name = _to_litellm_claude_model_id(agent_config.model_name)
+        # opencode runs on the Vercel AI SDK, whose Gemini provider is literally
+        # ``google``; every other non-claude-code agent hands the id to litellm.
+        if not _is_opencode_agent(agent_config):
+            agent_config.model_name = _to_litellm_gemini_model_id(
+                agent_config.model_name
+            )
     elif _claude_code_forces_direct_api(is_probe):
         agent_config.model_name = to_anthropic_api_model_id(agent_config.model_name)
     elif _agent_uses_bedrock():
