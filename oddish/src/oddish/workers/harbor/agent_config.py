@@ -146,10 +146,24 @@ def _to_litellm_claude_model_id(model: str | None) -> str | None:
     return api_id
 
 
-def _is_opencode_agent(agent_config: AgentConfig) -> bool:
-    if agent_config.import_path == _ODDISH_OPENCODE_IMPORT_PATH:
-        return True
-    return (agent_config.name or "").strip().lower() == "opencode"
+# Agents that hand the model id to litellm for inference. Vercel AI SDK agents
+# (opencode, pi, mimo, eve) spell the Gemini provider ``google`` and vendor CLIs
+# ignore the prefix, so only these need the litellm ``gemini/`` spelling.
+_LITELLM_MODEL_ID_AGENTS: frozenset[str] = frozenset(
+    {
+        "terminus",
+        "terminus-1",
+        "terminus-2",
+        "mini-swe-agent",
+        "computer-1",
+        "openhands-sdk",
+        "swe-agent",
+    }
+)
+
+
+def _is_litellm_model_id_agent(agent_config: AgentConfig) -> bool:
+    return (agent_config.name or "").strip().lower() in _LITELLM_MODEL_ID_AGENTS
 
 
 def _to_litellm_gemini_model_id(model: str | None) -> str | None:
@@ -645,9 +659,7 @@ def _build_agent_config(
         # litellm-based agents need a "provider/model" id; claude-code is the
         # only agent that consumes the bare Bedrock inference-profile id.
         agent_config.model_name = _to_litellm_claude_model_id(agent_config.model_name)
-        # opencode runs on the Vercel AI SDK, whose Gemini provider is literally
-        # ``google``; every other non-claude-code agent hands the id to litellm.
-        if not _is_opencode_agent(agent_config):
+        if _is_litellm_model_id_agent(agent_config):
             agent_config.model_name = _to_litellm_gemini_model_id(
                 agent_config.model_name
             )

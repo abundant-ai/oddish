@@ -2316,18 +2316,19 @@ def test_build_agent_config_litellm_agent_google_prefix_becomes_gemini(monkeypat
         assert agent_config.model_name == "gemini/gemini-3.7-flash"
 
 
-def test_build_agent_config_opencode_keeps_google_prefix(monkeypatch):
-    """opencode's AI SDK provider is named ``google``, so its id stays as-is."""
+def test_build_agent_config_ai_sdk_agents_keep_google_prefix(monkeypatch):
+    """Vercel AI SDK agents name the Gemini provider ``google``; their id stays
+    as-is."""
     monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
     monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
 
-    agent_config = harbor_runner._build_agent_config(
-        agent="opencode",
-        model="google/gemini-3.7-flash",
-        raw_harbor_config={},
-    )
-
-    assert agent_config.model_name == "google/gemini-3.7-flash"
+    for agent in ("opencode", "pi"):
+        agent_config = harbor_runner._build_agent_config(
+            agent=agent,
+            model="google/gemini-3.7-flash",
+            raw_harbor_config={},
+        )
+        assert agent_config.model_name == "google/gemini-3.7-flash"
 
 
 def test_build_agent_config_claude_code_keeps_bare_bedrock_id(monkeypatch):
