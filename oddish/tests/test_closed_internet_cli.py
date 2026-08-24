@@ -67,13 +67,7 @@ def test_web_tool_kwargs_for_agent_antigravity_cli():
 def test_build_sweep_payload_closed_internet_flags():
     payload = build_sweep_payload(
         task_id="task",
-        configs=[
-            {
-                "agent": "claude-code",
-                "model": "anthropic/claude-opus-4-8",
-                "n_trials": 1,
-            }
-        ],
+        configs=[{"agent": "claude-code", "model": "anthropic/claude-opus-4-8", "n_trials": 1}],
         environment=None,
         user=None,
         priority="low",
