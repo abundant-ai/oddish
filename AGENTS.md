@@ -790,15 +790,10 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   `moonshot/`, `fireworks/`, `xai/`, `meta/`, and `anthropic-hdo/`. Add or
   change provider aliases in `config.py`, then update env injection in the
   Harbor runner and the network allowlist notes.
-- `gemini/<id>` is the canonical Gemini model id; `google/<id>` is accepted as
-  an alias and routes identically (key, egress, queue key). The agent sees the
-  spelling its LLM client expects: litellm-backed agents
-  (`_LITELLM_MODEL_ID_AGENTS` in `agent_config.py`: terminus family,
-  mini-swe-agent, computer-1, openhands-sdk, swe-agent) get `gemini/<id>`
-  because litellm has no `google` provider; Vercel AI SDK agents
-  (`_AI_SDK_MODEL_ID_AGENTS`: opencode, pi, mimo, eve) get `google/<id>`
-  because that is their provider name; vendor CLIs ignore the prefix. Add a
-  new agent to whichever set matches its LLM client.
+- Gemini model ids use the `gemini/<id>` prefix. `_build_agent_config` hands
+  each agent the spelling its LLM client expects (litellm agents in
+  `_LITELLM_MODEL_ID_AGENTS`, Vercel AI SDK agents in
+  `_AI_SDK_MODEL_ID_AGENTS`); add a new agent to the set matching its client.
 - Provider secrets are referenced by env var name (`AWS_BEARER_TOKEN_BEDROCK`,
   `ANTHROPIC_HDO_API_KEY`, `ZAI_API_KEY`, `MINIMAX_API_KEY`, `MOONSHOT_API_KEY`,
   `FIREWORKS_API_KEY`, `XAI_API_KEY`, `META_API_KEY`) and must not be persisted
