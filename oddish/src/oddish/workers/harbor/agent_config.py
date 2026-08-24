@@ -146,6 +146,52 @@ def _to_litellm_claude_model_id(model: str | None) -> str | None:
     return api_id
 
 
+# Agents that hand the model id to litellm, whose Gemini provider is ``gemini``.
+_LITELLM_MODEL_ID_AGENTS: frozenset[str] = frozenset(
+    {
+        "terminus",
+        "terminus-1",
+        "terminus-2",
+        "mini-swe-agent",
+        "computer-1",
+        "openhands-sdk",
+        "swe-agent",
+    }
+)
+
+
+def _is_litellm_model_id_agent(agent_config: AgentConfig) -> bool:
+    return (agent_config.name or "").strip().lower() in _LITELLM_MODEL_ID_AGENTS
+
+
+# Agents built on the Vercel AI SDK, whose Gemini provider is named ``google``.
+_AI_SDK_MODEL_ID_AGENTS: frozenset[str] = frozenset({"opencode", "pi", "mimo", "eve"})
+
+
+def _is_ai_sdk_model_id_agent(agent_config: AgentConfig) -> bool:
+    return (agent_config.name or "").strip().lower() in _AI_SDK_MODEL_ID_AGENTS
+
+
+def _to_ai_sdk_gemini_model_id(model: str | None) -> str | None:
+    """Map the ``gemini/`` prefix to the AI SDK's ``google/``."""
+    if not model:
+        return model
+    prefix, _, bare = model.partition("/")
+    if prefix.strip().lower() == "gemini" and bare:
+        return f"google/{bare}"
+    return model
+
+
+def _to_litellm_gemini_model_id(model: str | None) -> str | None:
+    """Map the ``google/`` prefix to litellm's ``gemini/``."""
+    if not model:
+        return model
+    prefix, _, bare = model.partition("/")
+    if prefix.strip().lower() == "google" and bare:
+        return f"gemini/{bare}"
+    return model
+
+
 def _apply_anthropic_compat_env(
     agent_config: AgentConfig,
     *,
@@ -623,6 +669,14 @@ def _build_agent_config(
         # litellm-based agents need a "provider/model" id; claude-code is the
         # only agent that consumes the bare Bedrock inference-profile id.
         agent_config.model_name = _to_litellm_claude_model_id(agent_config.model_name)
+        if _is_litellm_model_id_agent(agent_config):
+            agent_config.model_name = _to_litellm_gemini_model_id(
+                agent_config.model_name
+            )
+        elif _is_ai_sdk_model_id_agent(agent_config):
+            agent_config.model_name = _to_ai_sdk_gemini_model_id(
+                agent_config.model_name
+            )
     elif _claude_code_forces_direct_api(is_probe):
         agent_config.model_name = to_anthropic_api_model_id(agent_config.model_name)
     elif _agent_uses_bedrock():
