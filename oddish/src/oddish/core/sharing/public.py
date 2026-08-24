@@ -525,6 +525,7 @@ async def get_public_task_file_content(
     file_path: str,
     presign: bool = Query(False),
     version: int | None = Query(None, description="Task version number"),
+    max_bytes: int | None = Query(None, ge=1),
 ) -> dict:
     """Get content of a specific public task file from S3."""
     async with get_session() as session:
@@ -541,4 +542,5 @@ async def get_public_task_file_content(
         presign=presign,
         task_s3_prefix=task_s3_prefix,
         version=version,
+        max_bytes=max_bytes,
     )

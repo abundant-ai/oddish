@@ -326,6 +326,32 @@ function mergeTreeLevel(current: TreeNode[], incoming: TreeNode[]): TreeNode[] {
   return sortTreeLevel([...byPath.values()]);
 }
 
+function includeSelectedPathChild(
+  nodes: TreeNode[],
+  parentPath: string,
+  selectedPath: string | null
+): TreeNode[] {
+  if (!selectedPath) return nodes;
+
+  const parentPrefix = parentPath ? `${parentPath}/` : "";
+  if (!selectedPath.startsWith(parentPrefix)) return nodes;
+  const remainder = selectedPath.slice(parentPrefix.length);
+  if (!remainder) return nodes;
+
+  const [name, ...descendants] = remainder.split("/");
+  const childPath = parentPrefix ? `${parentPrefix}${name}` : name;
+  if (nodes.some((node) => node.path === childPath)) return nodes;
+
+  return sortTreeLevel([
+    ...nodes,
+    {
+      name,
+      path: childPath,
+      type: descendants.length > 0 ? "dir" : "file",
+    },
+  ]);
+}
+
 function findNodeByPath(nodes: TreeNode[], path: string): TreeNode | null {
   for (const node of nodes) {
     if (node.path === path) {
@@ -586,12 +612,6 @@ export function TaskFilesPanel({
   const copiedFileContentTimeoutRef = useRef<number | null>(null);
   const listingGenerationRef = useRef(0);
   const activeDirectoryRequestsRef = useRef<Set<string>>(new Set());
-  // Mirrors initialFilePath for the async listing loader: applyListing
-  // runs in a fetch closure that would otherwise capture a stale value.
-  const initialFilePathRef = useRef(initialFilePath);
-  useEffect(() => {
-    initialFilePathRef.current = initialFilePath;
-  }, [initialFilePath]);
   const verdictTaskKey =
     isOpen && taskId ? `${baseUrl}/tasks/${taskId}?include_trials=false` : null;
   const { data: verdictTask } = useSWR<Task>(verdictTaskKey, fetcher, {
@@ -610,8 +630,15 @@ export function TaskFilesPanel({
   const shouldScopeFilesToVersion = taskVersion !== undefined || !filesUrl;
   const rootListing = directoryListings[""];
   const visibleTree = useMemo(
-    () => (loadsTaskTreeByDirectory ? (rootListing?.nodes ?? []) : fileTree),
-    [fileTree, loadsTaskTreeByDirectory, rootListing?.nodes]
+    () =>
+      loadsTaskTreeByDirectory
+        ? includeSelectedPathChild(
+            rootListing?.nodes ?? [],
+            "",
+            selectedFilePath
+          )
+        : fileTree,
+    [fileTree, loadsTaskTreeByDirectory, rootListing?.nodes, selectedFilePath]
   );
   const listedSelectedFile = selectedFilePath
     ? loadsTaskTreeByDirectory
@@ -680,7 +707,7 @@ export function TaskFilesPanel({
     previewRequestKey,
     async () => {
       if (!selectedFile) throw new Error("No file selected");
-      const size = selectedFile.size ?? null;
+      let size = selectedFile.size ?? null;
 
       if (isBinaryRendererFile(selectedFile.name)) {
         const url = buildSelectedFileUrl(true);
@@ -718,7 +745,7 @@ export function TaskFilesPanel({
       if (content === null) {
         const url = buildSelectedFileUrl(
           false,
-          loadFilesLazily && shouldTruncate ? TRUNCATE_THRESHOLD : undefined
+          loadFilesLazily ? TRUNCATE_THRESHOLD : undefined
         );
         if (!url) throw new Error("File content unavailable");
         const res = await fetch(url);
@@ -729,9 +756,11 @@ export function TaskFilesPanel({
           const data = (await res.json()) as {
             content?: string;
             is_truncated?: boolean;
+            size?: number;
           };
           content = data.content ?? "";
           isTruncated = data.is_truncated ?? isTruncated;
+          size = data.size ?? size;
         }
       }
 
@@ -1168,21 +1197,61 @@ export function TaskFilesPanel({
     loadsTaskTreeByDirectory,
   ]);
 
-  // Paint a default file in file-only panes such as trial files.
+  // Paint a default file in file-only panes such as public task shares and
+  // trial files.
   //
   // A deep-linked initialFilePath owns the first selection: letting the
   // default land first would report the wrong path upward and clear the
   // link's line anchor before the target file is applied.
   useEffect(() => {
-    if (activePane !== "file" || taskPaneExists) return;
-    if (initialFilePathRef.current || selectedFilePath) return;
+    if (!isOpen || activePane !== "file" || taskPaneExists) return;
+    if (initialFilePath || selectedFilePath) return;
     if (!visibleTree.length) return;
+
+    if (loadsTaskTreeByDirectory) {
+      const directoryPath = [...expandedDirs].sort(
+        (left, right) => right.split("/").length - left.split("/").length
+      )[0];
+      const listing = directoryListings[directoryPath ?? ""];
+      if (!listing || listing.status === "loading") return;
+
+      const defaultFile =
+        findNodeBySuffix(listing.nodes, "instruction.md") ??
+        listing.nodes.find((node) => node.type === "file");
+      if (defaultFile) {
+        setSelectedFilePath(defaultFile.path);
+        return;
+      }
+
+      const firstDirectory = listing.nodes.find((node) => node.type === "dir");
+      if (!firstDirectory) return;
+      setExpandedDirs((current) => {
+        if (current.has(firstDirectory.path)) return current;
+        return new Set(current).add(firstDirectory.path);
+      });
+      if (!directoryListings[firstDirectory.path]) {
+        void loadDirectoryPage(firstDirectory.path);
+      }
+      return;
+    }
+
     const defaultFile =
       findNodeBySuffix(visibleTree, "instruction.md") ??
       visibleTree.find((node) => node.type === "file") ??
       findFirstFile(visibleTree);
     if (defaultFile) setSelectedFilePath(defaultFile.path);
-  }, [activePane, taskPaneExists, visibleTree, selectedFilePath]);
+  }, [
+    activePane,
+    directoryListings,
+    expandedDirs,
+    initialFilePath,
+    isOpen,
+    loadDirectoryPage,
+    loadsTaskTreeByDirectory,
+    selectedFilePath,
+    taskPaneExists,
+    visibleTree,
+  ]);
 
   // Load full file content (when user clicks "Load full file")
   async function loadFullFile() {
@@ -1381,7 +1450,11 @@ export function TaskFilesPanel({
         ? directoryListings[node.path]
         : undefined;
       const children = loadsTaskTreeByDirectory
-        ? directory?.nodes
+        ? includeSelectedPathChild(
+            directory?.nodes ?? [],
+            node.path,
+            selectedFilePath
+          )
         : node.children;
       const isSelected =
         activePane === "file" && selectedFile?.path === node.path;
