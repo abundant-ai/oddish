@@ -33,11 +33,7 @@ def _mock_clerk_orgs(monkeypatch, org_ids: list[str]) -> None:
 
 
 async def _purge(
-    *,
-    org_ids: list[str],
-    user_ids: list[str],
-    clerk_user_ids: list[str],
-    clerk_org_ids: list[str] | None = None,
+    *, org_ids: list[str], user_ids: list[str], clerk_user_ids: list[str]
 ) -> None:
     async with get_session() as session:
         if user_ids:
@@ -64,65 +60,6 @@ async def _purge(
                     OrganizationModel.id.in_(org_ids)
                 )
             )
-        if clerk_org_ids:
-            await session.execute(
-                OrganizationModel.__table__.delete().where(
-                    OrganizationModel.clerk_org_id.in_(clerk_org_ids)
-                )
-            )
-
-
-@requires_db
-@pytest.mark.asyncio
-async def test_active_unknown_org_is_created_in_preview(monkeypatch) -> None:
-    suffix = uuid.uuid4().hex[:8]
-    clerk_user_id = f"clerk_preview_{suffix}"
-    clerk_org_id = f"org_preview_{suffix}"
-    _mock_refresh(monkeypatch)
-    monkeypatch.setenv("MODAL_APP_NAME", "oddish-pr-123")
-    monkeypatch.setattr(prov, "_DEFAULT_JIT_ROLE", UserRole.ADMIN)
-
-    try:
-        async with get_session() as session:
-            result = await get_or_create_user_from_clerk(
-                session,
-                clerk_user_id,
-                clerk_org_id,
-                f"preview_{suffix}@example.com",
-                None,
-            )
-        assert result is not None
-        user, org = result
-        assert org.clerk_org_id == clerk_org_id
-        assert user.org_id == org.id
-        assert user.role == UserRole.ADMIN
-    finally:
-        await _purge(
-            org_ids=[],
-            user_ids=[],
-            clerk_user_ids=[clerk_user_id],
-            clerk_org_ids=[clerk_org_id],
-        )
-
-
-@requires_db
-@pytest.mark.asyncio
-async def test_active_unknown_org_stays_fail_closed_outside_preview(
-    monkeypatch,
-) -> None:
-    suffix = uuid.uuid4().hex[:8]
-    _mock_refresh(monkeypatch)
-    monkeypatch.setenv("MODAL_APP_NAME", "oddish")
-
-    async with get_session() as session:
-        result = await get_or_create_user_from_clerk(
-            session,
-            f"clerk_prod_{suffix}",
-            f"org_prod_{suffix}",
-            f"prod_{suffix}@example.com",
-            None,
-        )
-    assert result is None
 
 
 @requires_db

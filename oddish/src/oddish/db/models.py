@@ -226,9 +226,11 @@ class WorkerJobKind(str, Enum):
 class WorkerJobStatus(str, Enum):
     """Single state machine for every kind of worker job.
 
-    `BLOCKED` is reserved for future M-of-N dependency gating; v1 keeps
-    stage transitions driven by application-level enqueue helpers and
-    does not enter BLOCKED.
+    `BLOCKED` parks a job the dispatcher must not claim yet. Today only
+    the nop/oracle baseline gate uses it: LLM trial jobs sit BLOCKED
+    until the baselines settle, then are released to QUEUED or cancelled
+    (their trial rows marked SKIPPED). Other stage transitions stay
+    driven by application-level enqueue helpers.
     """
 
     QUEUED = "QUEUED"
@@ -658,7 +660,7 @@ class TaskModel(TimestampedMixin, Base):
     )  # Original local path or task name
     task_s3_key: Mapped[str | None] = mapped_column(
         Text, nullable=True
-    )  # S3 prefix for task files (mirrors latest version)
+    )  # S3 prefix for task files (mirrors the selected default version)
     tags: Mapped[dict] = mapped_column(JSONB, default=dict)
     # Materialized read projection — see `oddish.core.tags_projection`.
     effective_tag_ids: Mapped[list[str]] = mapped_column(
@@ -1123,6 +1125,7 @@ class TrialModel(TimestampedMixin, Base):
     total_tool_calls: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tool_counts: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    llm_key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Per-phase timing breakdown (from Harbor's TrialResult TimingInfo)
     phase_timing: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
@@ -2593,6 +2596,24 @@ class TagProjectionSweepStateModel(Base):
     )
 
 
+class CostExcludedLlmKeyModel(TimestampedMixin, Base):
+    __tablename__ = "cost_excluded_llm_keys"
+    __table_args__ = (
+        Index(
+            "idx_cost_excluded_llm_keys_hash_live",
+            "key_hash",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    key_hint: Mapped[str] = mapped_column(String(8), nullable=False, server_default="")
+    label: Mapped[str] = mapped_column(String(255), nullable=False, server_default="")
+    created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
 class CostExcludedModelModel(TimestampedMixin, Base):
     __tablename__ = "cost_excluded_models"
     __table_args__ = (
@@ -2630,6 +2651,33 @@ class CostExcludedExperimentModel(TimestampedMixin, Base):
     created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
+class FeedbackModel(Base):
+    """An append-only agree/disagree vote on one trial's QA output."""
+
+    __tablename__ = "feedback"
+    __table_args__ = (
+        CheckConstraint(
+            "target IN ('qa_verdict', 'qa_action_item')", name="ck_feedback_target"
+        ),
+        CheckConstraint("vote IN ('agree', 'disagree')", name="ck_feedback_vote"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    experiment_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    trial_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    target: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    vote: Mapped[str] = mapped_column(String(16), nullable=False)
+    body: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
 from oddish.db.soft_delete import register_soft_delete_models
 
 register_soft_delete_models(
@@ -2643,6 +2691,7 @@ register_soft_delete_models(
     SavedTagFilterModel,
     SkillModel,
     DocumentModel,
+    CostExcludedLlmKeyModel,
     CostExcludedModelModel,
     CostExcludedExperimentModel,
 )

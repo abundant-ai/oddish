@@ -1,5 +1,8 @@
-export const fetcher = async <T>(url: string): Promise<T> => {
-  const res = await fetch(url, { credentials: "include" });
+export const fetcher = async <T>(
+  url: string,
+  init?: RequestInit
+): Promise<T> => {
+  const res = await fetch(url, { credentials: "include", ...init });
   let data: unknown = null;
 
   try {
@@ -9,10 +12,15 @@ export const fetcher = async <T>(url: string): Promise<T> => {
   }
 
   if (!res.ok) {
+    const errorData =
+      typeof data === "object" && data
+        ? (data as { detail?: unknown; error?: unknown })
+        : null;
     const message =
-      typeof data === "object" && data && "error" in data
-        ? String((data as { error?: string }).error)
-        : res.statusText || "Request failed";
+      (typeof errorData?.detail === "string" && errorData.detail) ||
+      (typeof errorData?.error === "string" && errorData.error) ||
+      res.statusText ||
+      "Request failed";
     const err = new Error(message);
     (err as Error & { status?: number; info?: unknown }).status = res.status;
     (err as Error & { status?: number; info?: unknown }).info = data;

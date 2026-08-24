@@ -7,7 +7,11 @@ from enum import Enum
 from typing import ClassVar
 
 from pydantic import Field, SecretStr, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
 
 from harbor.agents.utils import PROVIDER_KEYS
 from harbor.llms.utils import split_provider_model_name
@@ -17,6 +21,69 @@ from litellm.litellm_core_utils.get_llm_provider_logic import get_llm_provider
 from oddish.harbor_pin import load_harbor_pin as _load_harbor_pin
 
 logger = logging.getLogger(__name__)
+
+# Deploy-time ODDISH_GKE_* coordinate snapshot, baked into the worker image by
+# the Modal deploy (see the backend app's _GKE_COORDS_FILE). The coordinates
+# also reach the container as env -- from the baked image env AND, when GKE is
+# enabled, from the runtime secret that carries the credentials. A runtime
+# secret overwrites env at container init, so env alone cannot tell a deploy's
+# value from the secret's. This file can only have come from the deploy.
+from pathlib import Path as _Path
+
+_GKE_COORDS_PATH = _Path("/opt/oddish/gke_coords.json")
+
+
+def _load_gke_coords() -> dict[str, str]:
+    """The baked snapshot, or {} outside the image (local runs, tests)."""
+    try:
+        raw = json.loads(_GKE_COORDS_PATH.read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): str(v) for k, v in raw.items() if str(k).startswith("ODDISH_GKE_")}
+
+
+class _GkeCoordsSource(PydanticBaseSettingsSource):
+    """Settings source for the baked GKE coordinates, ranked above env.
+
+    A source rather than a validator so the values flow through ordinary
+    field coercion -- the file holds strings, and a bool or int field must
+    come out typed. Only keys with the ODDISH_GKE_ prefix are loaded, so no
+    other setting can be steered through the file. Divergence from the
+    effective environment is warned with both values named; the settings
+    object is a process singleton, so the warning fires once.
+    """
+
+    def __init__(self, settings_cls: type[BaseSettings]):
+        super().__init__(settings_cls)
+        self._coords = _load_gke_coords()
+
+    def get_field_value(self, field, field_name: str):
+        env_name = f"ODDISH_{field_name.upper()}"
+        if env_name in self._coords:
+            return self._coords[env_name], field_name, False
+        return None, field_name, False
+
+    def __call__(self) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for field_name in self.settings_cls.model_fields:
+            value, key, _ = self.get_field_value(None, field_name)
+            if value is None:
+                continue
+            env_name = f"ODDISH_{field_name.upper()}"
+            env_value = os.environ.get(env_name)
+            if env_value is not None and env_value != value:
+                logger.warning(
+                    "GKE coordinate %s: the image was built with %r but the "
+                    "container environment says %r (a runtime secret can "
+                    "inject env at container init); using the image value.",
+                    env_name,
+                    value,
+                    env_value,
+                )
+            out[key] = value
+        return out
 
 
 _FIXED_AGENT_PROVIDERS: dict[str, str] = {
@@ -45,8 +112,8 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
     "default",
 }
 
-# Analysis (QA + audit) trials run claude-code on GLM via Fireworks.
-ANALYSIS_MODEL = "fireworks/glm-5p2"
+# Analysis (QA + audit) trials run claude-code on Sonnet via Bedrock.
+ANALYSIS_MODEL = "claude-sonnet-4-6"
 # Model for the probe transcript summarizer -- the one direct LLM call that
 # remains outside the trial pipeline. Kept separate from ANALYSIS_MODEL
 # because run_probe_analyzer speaks the Anthropic API only; it must not
@@ -226,6 +293,12 @@ def resolve_harbor_layers(
 OPENAI_PROVIDER_AZURE = "azure"
 OPENAI_PROVIDER_OPENAI = "openai"
 _OPENAI_PROVIDERS: set[str] = {OPENAI_PROVIDER_AZURE, OPENAI_PROVIDER_OPENAI}
+
+# The capacity a GKE accelerator pod can ask for. Mirrors
+# ``harbor.environments.gke.GKEProvisioningMode`` -- written out rather than
+# imported because this module loads wherever oddish loads, including the API
+# and worker images that carry the lean default Harbor with no ``gke`` extra.
+GKE_PROVISIONING_MODES: tuple[str, ...] = ("on-demand", "spot", "flex-start")
 
 # Cross-region inference profile prefixes used for AWS Bedrock model ids, e.g.
 # "global.anthropic.claude-haiku-4-5-20251001-v1:0".
@@ -724,6 +797,12 @@ _ANTHROPIC_TO_BEDROCK_MODEL_IDS: dict[str, str] = {
     "claude-fable-5": "global.anthropic.claude-fable-5",
     "claude-opus-5": "global.anthropic.claude-opus-5",
     "claude-opus-4-8": "global.anthropic.claude-opus-4-8",
+    # Sonnet 5 follows the dateless "global.anthropic.claude-<model>" spelling
+    # the other current models use; only the older 4-x entries below still
+    # carry a date and a "-v1:0" suffix. Without this key `-m claude-sonnet-5`
+    # never reaches Bedrock at all: to_bedrock_model_id() raises on an
+    # unmapped Claude id, and the submission path surfaces that as a 500.
+    "claude-sonnet-5": "global.anthropic.claude-sonnet-5",
     "claude-sonnet-4-6": "global.anthropic.claude-sonnet-4-6",
     "claude-haiku-4-5": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
     "claude-haiku-4-5-20251001": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
@@ -1159,6 +1238,26 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls,
+        init_settings,
+        env_settings,
+        dotenv_settings,
+        file_secret_settings,
+    ):
+        # The baked GKE coordinate snapshot sits between explicit constructor
+        # arguments (which must stay authoritative, e.g. in tests) and the
+        # environment (which a runtime secret may have overwritten).
+        return (
+            init_settings,
+            _GkeCoordsSource(settings_cls),
+            env_settings,
+            dotenv_settings,
+            file_secret_settings,
+        )
+
     # ==========================================================================
     # Defaults — all configurable via ODDISH_<FIELD> env vars
     # ==========================================================================
@@ -1168,7 +1267,7 @@ class Settings(BaseSettings):
 
     pending_trial_reservation_usd: Decimal = Decimal("1.00")
     default_daily_quota_usd: Decimal = Decimal("200.00")
-    quota_pause_remaining_percent: Decimal = Field(Decimal("80"), ge=0, le=100)
+    quota_pause_remaining_percent: Decimal = Field(Decimal("5"), ge=0, le=100)
     quota_pause_remaining_usd: Decimal | None = Field(None, ge=0)
     quota_pause_poll_seconds: float = Field(1.0, gt=0)
     quota_pause_refresh_seconds: float = Field(30.0, gt=0)
@@ -1324,18 +1423,27 @@ class Settings(BaseSettings):
     gke_namespace: str = "oddish-trials"
     gke_registry_location: str | None = None
     gke_registry_name: str | None = None
-    # DWS flex-start provisions TPU capacity on demand, so a pod can sit Pending
-    # while the node is created; the readiness wait is generous to match.
-    gke_flex_start: bool = True
-    # Spot draws on the SAME preemptible quota as flex-start but is offered in
-    # every zone the accelerator exists in, not just the few that serve
-    # flex-start, so it reaches regions flex-start cannot -- notably us-east1
-    # for TPU v6e, which holds 1536 preemptible v6e and no CT6E chip cap
-    # against us-east5's 256 and cap of 8. It does not queue: capacity now or
-    # nothing, and the node can be reclaimed at any time. Mutually exclusive
-    # with gke_flex_start; Dynamic Workload Scheduler does not support Spot
-    # VMs and Harbor rejects the pair.
-    gke_spot: bool = False
+    # Which capacity an accelerator pod asks GKE for: one name, three
+    # values, so no combination can ask for a node pool that cannot exist.
+    #
+    #   flex-start  DWS provisions TPU capacity on demand, so a pod can sit
+    #               Pending while the node is created; the readiness wait is
+    #               generous to match. Offered in only a few zones per
+    #               accelerator.
+    #   spot        Draws on preemptible quota and is offered in every zone
+    #               the accelerator exists in, so it reaches regions
+    #               flex-start cannot. That reachability is the whole
+    #               advantage: v6e quota is a per-zone default applied to
+    #               every zone equally, so no zone holds more than another.
+    #               It does not
+    #               queue: capacity now or nothing, and the node can be
+    #               reclaimed at any time.
+    #   on-demand   Reserved/standard capacity. No queue, no preemption.
+    #
+    # Harbor's own default is on-demand; oddish keeps flex-start, which is
+    # what hosted TPU trials have always run and what the accelerator quota in
+    # this project is shaped for.
+    gke_provisioning_mode: str = "flex-start"
     # Auto-build missing task images via the Cloud Build SDK instead of
     # failing on require_prebuilt_image. Spends minutes of the attempt's
     # budget on first-run tasks, so hosted deployments opt in explicitly.
@@ -1526,33 +1634,40 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _derive_gke_cluster_name(self) -> "Settings":
+        # Deploys that resolve an identity bake it into the coordinate
+        # snapshot, so this derivation normally never runs in a container.
+        # It still runs in the flow where the credential secret carries the
+        # coordinates, and there it reads a runtime app name that env can in
+        # principle overwrite. That residual is accepted: cluster DELETION
+        # never trusts this value -- it authorizes against the deploy-bound
+        # app identity -- so the worst case is a trial pointed at another
+        # name, not another deployment's cluster removed.
         if self.gke_project_id and not self.gke_cluster_name:
             app_name = os.environ.get("MODAL_APP_NAME", "oddish")
             self.gke_cluster_name = f"{app_name}-trials"
         return self
 
     @model_validator(mode="after")
-    def _reject_both_gke_provisioning_modes(self) -> "Settings":
-        """A deployment cannot ask for flex-start and Spot at once.
+    def _validate_gke_provisioning_mode(self) -> "Settings":
+        """The deployment default must be a mode Harbor actually accepts.
 
-        The two settings encode ONE three-valued choice and Harbor rejects the
-        pair. Caught here rather than per trial: ``gke_flex_start`` defaults to
-        True, so an operator who sets only ODDISH_GKE_SPOT=true leaves both
-        true, and every GKE trial then fails the same way -- retried to
-        exhaustion, because the failure is permanent but classified as
-        retryable. Failing at config load turns that into one loud error at
-        deploy.
+        Checked here rather than per trial because the value is a free string
+        off the environment: ODDISH_GKE_PROVISIONING_MODE=flexstart reaches
+        Harbor unread, raises GKEConfigurationError inside every GKE
+        environment construction, and stops each trial outright with a message
+        nobody is watching for. Failing at config load turns that into one
+        loud error at deploy.
 
-        Per-submission kwargs are normalized separately in ``GkeBackend``:
-        naming one mode there clears the other. This guard is only about the
-        deployment defaults, which have no caller to disambiguate them.
+        The three values mirror ``harbor.environments.gke.GKEProvisioningMode``
+        and are written out rather than imported: this module loads in the API
+        and worker containers, which carry the lean default Harbor with no GKE
+        extra, and only the ``gke`` variant image has that enum to import.
         """
-        if self.gke_flex_start and self.gke_spot:
+        if self.gke_provisioning_mode not in GKE_PROVISIONING_MODES:
+            valid = ", ".join(repr(m) for m in GKE_PROVISIONING_MODES)
             raise ValueError(
-                "ODDISH_GKE_FLEX_START and ODDISH_GKE_SPOT cannot both be "
-                "true: Dynamic Workload Scheduler does not support Spot VMs. "
-                "Set ODDISH_GKE_FLEX_START=false to run Spot, or "
-                "ODDISH_GKE_SPOT=false to run flex-start."
+                f"ODDISH_GKE_PROVISIONING_MODE={self.gke_provisioning_mode!r} "
+                f"is not a provisioning mode. Valid values are: {valid}."
             )
         return self
 

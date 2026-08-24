@@ -1,8 +1,8 @@
 """--environment-kwarg values must carry JSON-literal types, not raw strings.
 
-A boolean kwarg like flex_start=false previously reached the harbor
-environment constructor as the truthy string "false", making boolean and
-numeric kwargs impossible to set per-submission.
+A boolean kwarg like require_prebuilt_image=false previously reached the
+harbor environment constructor as the truthy string "false", making boolean
+and numeric kwargs impossible to set per-submission.
 """
 
 from oddish.cli.api import _coerce_kwarg_values
@@ -10,9 +10,13 @@ from oddish.cli.api import _coerce_kwarg_values
 
 def test_booleans_and_null_become_typed():
     coerced = _coerce_kwarg_values(
-        {"flex_start": "false", "other": "true", "maybe": "null"}
+        {"require_prebuilt_image": "false", "other": "true", "maybe": "null"}
     )
-    assert coerced == {"flex_start": False, "other": True, "maybe": None}
+    assert coerced == {
+        "require_prebuilt_image": False,
+        "other": True,
+        "maybe": None,
+    }
 
 
 def test_numbers_become_typed():

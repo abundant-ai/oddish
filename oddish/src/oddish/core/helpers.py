@@ -474,7 +474,11 @@ def build_trial_response(
         cost_is_estimated=cost_is_estimated,
         is_billed=trial.billed_user_id is not None,
         cost_exclusion_reason=(
-            exclusions.reason_for(model=trial.model, experiment_id=trial.experiment_id)
+            exclusions.reason_for(
+                llm_key_hash=trial.llm_key_hash,
+                model=trial.model,
+                experiment_id=trial.experiment_id,
+            )
             if exclusions
             else None
         ),
@@ -561,7 +565,11 @@ def build_compact_trial_response(
         cost_is_estimated=cost_is_estimated,
         is_billed=trial.billed_user_id is not None,
         cost_exclusion_reason=(
-            exclusions.reason_for(model=trial.model, experiment_id=trial.experiment_id)
+            exclusions.reason_for(
+                llm_key_hash=trial.llm_key_hash,
+                model=trial.model,
+                experiment_id=trial.experiment_id,
+            )
             if exclusions
             else None
         ),
@@ -1148,6 +1156,7 @@ SLIM_TRIAL_RESPONSE_COLUMNS = (
     TrialModel.output_tokens,
     TrialModel.cost_usd,
     TrialModel.billed_user_id,
+    TrialModel.llm_key_hash,
     TrialModel.superseded_by_trial_id,
     TrialModel.created_at,
     TrialModel.started_at,
@@ -1212,7 +1221,11 @@ def build_slim_trial_response(
         finished_at=trial.finished_at,
         qa_cost_usd=qa_cost_usd,
         cost_exclusion_reason=(
-            exclusions.reason_for(model=trial.model, experiment_id=trial.experiment_id)
+            exclusions.reason_for(
+                llm_key_hash=trial.llm_key_hash,
+                model=trial.model,
+                experiment_id=trial.experiment_id,
+            )
             if exclusions
             else None
         ),

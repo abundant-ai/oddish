@@ -813,7 +813,7 @@ async def browse_tasks(
         ),
     ),
 ) -> TaskBrowseResponse:
-    """Browse latest task versions for the authenticated organization."""
+    """Browse selected default versions for the authenticated organization."""
     auth.require_scope(APIKeyScope.READ)
 
     async with get_session() as session:
@@ -1399,10 +1399,12 @@ async def set_experiment_model_rename(
 
     async with get_session() as session:
         result = await session.execute(
-            select(ExperimentModel).where(
+            select(ExperimentModel)
+            .where(
                 ExperimentModel.id == experiment_id,
                 ExperimentModel.org_id == auth.org_id,
             )
+            .with_for_update()
         )
         experiment = result.scalar_one_or_none()
         if not experiment:
@@ -1526,8 +1528,7 @@ async def retry_task_qa(
     task_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict:
-    """(Re)run the single task-level QA job: classify every trial, then
-    synthesize the task verdict."""
+    """Create replacement task-level QA over every eligible agent trial."""
     auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
 
     async with get_session() as session:
@@ -1540,10 +1541,10 @@ async def backfill_task_qa(
     body: BackfillQARequest,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict:
-    """Backfill trial analysis for a task: fill trials with no successful analysis yet.
+    """Create replacement task-level QA over every eligible agent trial.
 
-    Default fills only missing/never-analyzed trials; ``force`` re-runs
-    (optionally only ``trial_ids``).
+    ``force`` and ``trial_ids`` choose which stored analysis fields are cleared
+    first; they do not narrow the replacement trial's input set.
     """
     auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
 
@@ -1580,7 +1581,7 @@ async def cancel_task_qa(
     task_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict:
-    """Cancel a task's in-flight QA job."""
+    """Cancel a task's live qa-kind and audit-kind analysis trials."""
     auth.require_scope(APIKeyScope.TASKS)
 
     async with get_session() as session:

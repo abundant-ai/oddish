@@ -59,6 +59,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { mutate } from "swr";
 import type { Task, Trial, AnalysisClassification } from "@/lib/types";
 import { isAgentTrial } from "@/lib/types";
+import { preloadTrial } from "@/lib/use-trial";
 import {
   costEstimateMarks,
   formatCostUsd,
@@ -2600,6 +2601,11 @@ export function ExperimentTrialsTable({
                                       <Button
                                         type="button"
                                         variant="unstyled"
+                                        onPointerDown={() => {
+                                          if (!readOnly && !trial.is_probe) {
+                                            void preloadTrial("/api", trial.id);
+                                          }
+                                        }}
                                         onClick={() => {
                                           if (trial.is_probe) {
                                             if (onProbeSelect) {

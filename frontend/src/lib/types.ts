@@ -638,17 +638,6 @@ export interface DashboardExperimentAuthor {
   source: "github" | "api" | "member";
 }
 
-export interface OrgUser {
-  id: string;
-  email: string;
-  name: string | null;
-  github_username: string | null;
-  github_id: string | null;
-  role: string;
-  org_id: string;
-  created_at: string;
-}
-
 export interface QuotaUsage {
   user_id: string;
   limit_usd: number;

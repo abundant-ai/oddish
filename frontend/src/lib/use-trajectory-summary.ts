@@ -5,54 +5,100 @@ import useSWR from "swr";
 import useSWRMutation from "swr/mutation";
 import type { TrajectorySummary } from "@/lib/types";
 
-type PendingSummaryStatus = "queued" | "running" | "retrying" | "settling";
+type ActiveRefreshStatus = "queued" | "running" | "retrying" | "settling";
 
-export type TrajectorySummaryResource =
-  | { status: "ready"; summary: TrajectorySummary }
-  | { status: "missing" }
-  | {
-      status: PendingSummaryStatus;
-      summary: null;
-      jobId: string;
-      retryAfterMs: number;
-    };
+export type TrajectorySummaryResource = {
+  summary: TrajectorySummary | null;
+  refresh:
+    | null
+    | {
+        status: ActiveRefreshStatus;
+        jobId: string;
+        retryAfterMs: number;
+      }
+    | {
+        status: "failed";
+        jobId: string;
+        detail: string;
+      };
+};
 
-const pendingStatuses = new Set<PendingSummaryStatus>([
+const activeRefreshStatuses = new Set<ActiveRefreshStatus>([
   "queued",
   "running",
   "retrying",
   "settling",
 ]);
 
+function parseRefreshPayload(
+  refresh: object
+): NonNullable<TrajectorySummaryResource["refresh"]> {
+  const status = "status" in refresh ? refresh.status : null;
+  const jobId = "job_id" in refresh ? refresh.job_id : null;
+  if (typeof status !== "string" || typeof jobId !== "string" || !jobId) {
+    throw new Error("Malformed trajectory summary refresh response");
+  }
+  if (status === "failed") {
+    const detail = "detail" in refresh ? refresh.detail : null;
+    if (typeof detail !== "string" || !detail) {
+      throw new Error("Malformed trajectory summary refresh response");
+    }
+    return { status, jobId, detail };
+  }
+  const retryAfterMs =
+    "retry_after_ms" in refresh ? refresh.retry_after_ms : null;
+  if (
+    !activeRefreshStatuses.has(status as ActiveRefreshStatus) ||
+    typeof retryAfterMs !== "number" ||
+    !Number.isFinite(retryAfterMs) ||
+    retryAfterMs <= 0
+  ) {
+    throw new Error("Malformed trajectory summary refresh response");
+  }
+  return {
+    status: status as ActiveRefreshStatus,
+    jobId,
+    retryAfterMs,
+  };
+}
+
 export function parseTrajectorySummaryResponse(
   response: Pick<Response, "ok" | "status" | "statusText">,
   body: unknown
 ): TrajectorySummaryResource {
-  if (response.status === 404) return { status: "missing" };
-  if (response.status === 202) {
-    if (!body || typeof body !== "object" || Array.isArray(body)) {
-      throw new Error("Malformed trajectory summary pending response");
-    }
-    const status = "status" in body ? body.status : null;
-    const jobId = "job_id" in body ? body.job_id : null;
-    const retryAfterMs = "retry_after_ms" in body ? body.retry_after_ms : null;
+  if (response.status === 404) return { summary: null, refresh: null };
+  if (
+    body &&
+    typeof body === "object" &&
+    !Array.isArray(body) &&
+    "refresh" in body
+  ) {
+    const summary = "summary" in body ? body.summary : undefined;
+    const refresh = body.refresh;
     if (
-      typeof status !== "string" ||
-      !pendingStatuses.has(status as PendingSummaryStatus) ||
-      typeof jobId !== "string" ||
-      jobId.length === 0 ||
-      typeof retryAfterMs !== "number" ||
-      !Number.isFinite(retryAfterMs) ||
-      retryAfterMs <= 0
+      (summary !== null &&
+        (typeof summary !== "object" || Array.isArray(summary))) ||
+      (refresh !== null &&
+        (typeof refresh !== "object" || Array.isArray(refresh)))
     ) {
-      throw new Error("Malformed trajectory summary pending response");
+      throw new Error("Malformed trajectory summary response");
+    }
+    if (refresh === null) {
+      if (summary === undefined) {
+        throw new Error("Malformed trajectory summary response");
+      }
+      return { summary: summary as TrajectorySummary | null, refresh: null };
     }
     return {
-      status: status as PendingSummaryStatus,
-      summary: null,
-      jobId,
-      retryAfterMs,
+      summary: summary as TrajectorySummary | null,
+      refresh: parseRefreshPayload(refresh),
     };
+  }
+  // During a rolling deploy, an older backend can still return the original
+  // top-level HTTP 202 payload. It represents a refresh lifecycle, not a
+  // published TrajectorySummary, and must keep the resource polling.
+  if (response.status === 202 && body && typeof body === "object") {
+    return { summary: null, refresh: parseRefreshPayload(body) };
   }
   if (!response.ok) {
     const error = new Error(
@@ -66,7 +112,8 @@ export function parseTrajectorySummaryResponse(
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     throw new Error("Malformed trajectory summary response");
   }
-  return { status: "ready", summary: body as TrajectorySummary };
+  // Public share endpoints intentionally remain plain stored-column reads.
+  return { summary: body as TrajectorySummary, refresh: null };
 }
 
 async function readTrajectorySummaryResponse(
@@ -108,38 +155,56 @@ export function useTrajectorySummary({
       revalidateOnFocus: false,
     }
   );
-  const resource = summaryQuery.data;
+  const activeRefresh =
+    summaryQuery.data?.refresh?.status === "failed"
+      ? null
+      : summaryQuery.data?.refresh;
+  const pollingJobId = activeRefresh?.jobId ?? null;
+  const initialPollDelay = activeRefresh?.retryAfterMs ?? null;
   const revalidateSummary = summaryQuery.mutate;
-  const pendingResource =
-    resource && resource.status !== "ready" && resource.status !== "missing"
-      ? resource
-      : null;
   useEffect(() => {
-    if (!summaryUrl || !pendingResource || summaryQuery.error) return;
+    if (
+      !summaryUrl ||
+      !pollingJobId ||
+      initialPollDelay === null ||
+      summaryQuery.error
+    ) {
+      return;
+    }
 
     let cancelled = false;
     let timer: number | undefined;
     function schedulePoll(afterMs: number) {
       timer = window.setTimeout(async () => {
-        const next = await revalidateSummary();
-        if (
-          cancelled ||
-          !next ||
-          next.status === "ready" ||
-          next.status === "missing"
-        ) {
-          return;
+        try {
+          const next = await revalidateSummary();
+          const nextRefresh =
+            next?.refresh?.status === "failed" ? null : next?.refresh;
+          if (cancelled || !nextRefresh || nextRefresh.jobId !== pollingJobId) {
+            return;
+          }
+          // If SWR considers two responses equal, React will not rerender and
+          // restart this effect. Continue the same lifecycle from the response.
+          schedulePoll(nextRefresh.retryAfterMs);
+        } catch {
+          // SWR exposes the request error through summaryQuery.error. Stop this
+          // lifecycle until the user explicitly retries the read.
         }
-        schedulePoll(next.retryAfterMs);
       }, afterMs);
     }
 
-    schedulePoll(pendingResource.retryAfterMs);
+    schedulePoll(initialPollDelay);
     return () => {
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [pendingResource, revalidateSummary, summaryQuery.error, summaryUrl]);
+  }, [
+    initialPollDelay,
+    pollingJobId,
+    revalidateSummary,
+    summaryQuery.error,
+    summaryUrl,
+  ]);
 
   const refreshMutation = useSWRMutation<TrajectorySummaryResource>(
     canRegenerate ? summaryUrl : null,
@@ -154,9 +219,14 @@ export function useTrajectorySummary({
       throw new Error("Trajectory summary regeneration is not available");
     }
     const resource = await refreshMutation.trigger(undefined, {
+      // The effect below owns every GET in this lifecycle. The mutation
+      // default would revalidate the same SWR key before this POST response is
+      // published, allowing an older response to be overwritten out of order.
+      revalidate: false,
       throwOnError: false,
     });
     if (!resource) return undefined;
+    // Publishing the POST response starts the effect-owned polling lifecycle.
     await summaryQuery.mutate(resource, { revalidate: false });
     return resource;
   }

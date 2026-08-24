@@ -145,8 +145,17 @@ def test_daytona_teardown_gets_and_deletes_then_closes(monkeypatch) -> None:
             calls["closed"] = True
 
     fake_daytona = types.ModuleType("daytona")
+    fake_daytona.__path__ = []
     fake_daytona.AsyncDaytona = lambda: _FakeClient()
+    fake_daytona_common = types.ModuleType("daytona.common")
+    fake_daytona_common.__path__ = []
+    fake_daytona_errors = types.ModuleType("daytona.common.errors")
+    fake_daytona_errors.DaytonaNotFoundError = type(
+        "DaytonaNotFoundError", (Exception,), {}
+    )
     monkeypatch.setitem(sys.modules, "daytona", fake_daytona)
+    monkeypatch.setitem(sys.modules, "daytona.common", fake_daytona_common)
+    monkeypatch.setitem(sys.modules, "daytona.common.errors", fake_daytona_errors)
 
     result = asyncio.run(DaytonaBackend().teardown("dt-1"))
     assert result is True

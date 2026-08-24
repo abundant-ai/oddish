@@ -20,20 +20,6 @@ def upgrade() -> None:
     op.execute(
         "ALTER TABLE experiments ADD COLUMN IF NOT EXISTS public_model_renames JSONB"
     )
-    op.execute(
-        """
-        WITH aliases AS (
-            SELECT jsonb_object_agg(model_name, display_name) AS renames
-            FROM model_display_names
-            WHERE deleted_at IS NULL
-        )
-        UPDATE experiments
-        SET public_model_renames = aliases.renames
-            || COALESCE(experiments.public_model_renames, '{}'::jsonb)
-        FROM aliases
-        WHERE aliases.renames IS NOT NULL
-        """
-    )
     op.execute("DROP TABLE IF EXISTS model_display_names")
 
 

@@ -45,6 +45,7 @@ apps=$(modal app list --env "$MODAL_ENVIRONMENT" --json \
   | { grep -E '^oddish-pr-[0-9]+$' || true; })
 
 stopped=0
+teardown_failures=0
 for app in $apps; do
   pr="${app#oddish-pr-}"
 
@@ -97,9 +98,26 @@ for app in $apps; do
   fi
 
   echo "stopping $app — $reason"
+  # Same rule as the close path: the app deletes its own trials cluster
+  # before it is stopped, because the credentials live only inside it. A
+  # stale app is exactly the one whose stop workflow never ran, so this is
+  # the last chance to avoid an orphaned cluster -- which is why a REAL
+  # teardown failure skips the stop for this app and keeps its reaper
+  # alive, instead of destroying the only remaining owner.
+  if ! modal run --env "$MODAL_ENVIRONMENT" \
+    "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/teardown_gke_cluster.py" \
+    --app-name "$app"; then
+    echo "::error::GKE teardown failed for $app; leaving it running so its reaper still owns the cluster"
+    teardown_failures=$((teardown_failures + 1))
+    continue
+  fi
   modal app stop -y --env "$MODAL_ENVIRONMENT" "$app" || true
   modal secret delete -y --env "$MODAL_ENVIRONMENT" "$app-db" || true
   stopped=$((stopped + 1))
 done
 
 echo "stopped $stopped preview app(s)"
+if [ "$teardown_failures" -gt 0 ]; then
+  echo "::error::$teardown_failures app(s) kept running because their GKE teardown failed"
+  exit 1
+fi

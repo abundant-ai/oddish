@@ -453,12 +453,7 @@ Write exactly one file: /logs/{SUMMARIZE_RESULT_FILENAME}
 The file must be valid JSON. Do not write anything else to /logs."""
 
 
-_LIVE_TRIAL_STATUSES = (
-    TrialStatus.PENDING,
-    TrialStatus.QUEUED,
-    TrialStatus.RUNNING,
-    TrialStatus.RETRYING,
-)
+_LIVE_TRIAL_STATUSES = tuple(ACTIVE_TRIAL_STATUSES)
 _ADOPTABLE_SUMMARIZE_STATUSES = (*_LIVE_TRIAL_STATUSES, TrialStatus.SUCCESS)
 
 

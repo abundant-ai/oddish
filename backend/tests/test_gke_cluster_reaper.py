@@ -76,7 +76,10 @@ def test_no_timestamps_at_all_skips():
 async def test_orchestration_skips_blind_when_pod_probe_fails(monkeypatch):
     import worker.gke_cluster_reaper as reaper
 
-    monkeypatch.setattr(reaper.settings, "gke_cluster_name", "c")
+    # The ownership guard runs first now, so the cluster name must be the
+    # app-derived one for this test to reach the pod probe it is about.
+    monkeypatch.setenv("MODAL_APP_NAME", "c-app")
+    monkeypatch.setattr(reaper.settings, "gke_cluster_name", "c-app-trials")
     monkeypatch.setattr(reaper.settings, "gke_region", "r")
     monkeypatch.setattr(reaper.settings, "gke_project_id", "p")
     monkeypatch.setattr(reaper.settings, "gke_idle_cluster_ttl_hours", 1.0)
@@ -86,7 +89,7 @@ async def test_orchestration_skips_blind_when_pod_probe_fails(monkeypatch):
 
     monkeypatch.setattr(reaper, "_gke_trial_activity", no_activity)
 
-    async def probe_fails():
+    async def probe_fails(location=None):
         return None
 
     monkeypatch.setattr(reaper, "_probe_pods", probe_fails)
@@ -101,12 +104,14 @@ async def test_orchestration_skips_blind_when_pod_probe_fails(monkeypatch):
     monkeypatch.setattr(google.auth, "default", lambda scopes: (object(), "p"))
 
     fake_cluster = SimpleNamespace(
+        name="c-app-trials",
+        location="r",
         resource_labels={"harbor-managed": "true"},
         create_time="2026-07-09T00:00:00+00:00",
         status=SimpleNamespace(name="RECONCILING"),
     )
     fake_mgr = SimpleNamespace(
-        get_cluster=lambda name: fake_cluster,
+        list_clusters=lambda parent: SimpleNamespace(clusters=[fake_cluster]),
         delete_cluster=lambda name: (_ for _ in ()).throw(
             AssertionError("must not delete when pods are unknown")
         ),
@@ -129,3 +134,96 @@ def test_parse_cluster_created_accepts_string_datetime_and_junk():
     assert d is not None and d.tzinfo is not None  # naive -> UTC
     assert _parse_cluster_created("") is None
     assert _parse_cluster_created(None) is None
+
+
+async def test_an_out_of_region_cluster_is_found_and_reaped(monkeypatch):
+    """A per-submission region override creates the owned cluster outside
+    the deployment region, and the reaper must judge it where it is instead
+    of concluding "no cluster" from the home region alone."""
+    import worker.gke_cluster_reaper as reaper
+
+    monkeypatch.setenv("MODAL_APP_NAME", "c-app")
+    monkeypatch.setattr(reaper.settings, "gke_cluster_name", "c-app-trials")
+    # An empty home region must not matter: discovery is all-locations and
+    # the probe runs against the cluster's own location.
+    monkeypatch.setattr(reaper.settings, "gke_region", "")
+    monkeypatch.setattr(reaper.settings, "gke_project_id", "p")
+    monkeypatch.setattr(reaper.settings, "gke_idle_cluster_ttl_hours", 1.0)
+
+    async def no_activity():
+        return 0, NOW - timedelta(hours=9)
+
+    monkeypatch.setattr(reaper, "_gke_trial_activity", no_activity)
+
+    probed_locations = []
+
+    async def probe_empty(location=None):
+        probed_locations.append(location)
+        return 0
+
+    monkeypatch.setattr(reaper, "_probe_pods", probe_empty)
+    monkeypatch.setattr("worker.runtime._materialize_gcp_adc_credentials", lambda: None)
+
+    import sys
+    from types import SimpleNamespace
+
+    import google.auth
+    import google.cloud
+
+    monkeypatch.setattr(google.auth, "default", lambda scopes: (object(), "p"))
+
+    fake_cluster = SimpleNamespace(
+        name="c-app-trials",
+        location="override-region",
+        resource_labels={"harbor-managed": "true"},
+        create_time="2026-07-09T00:00:00+00:00",
+        status=SimpleNamespace(name="RUNNING"),
+    )
+    deleted = []
+    fake_mgr = SimpleNamespace(
+        list_clusters=lambda parent: SimpleNamespace(clusters=[fake_cluster]),
+        delete_cluster=lambda name: deleted.append(name),
+    )
+    fake_container = SimpleNamespace(ClusterManagerClient=lambda credentials: fake_mgr)
+    monkeypatch.setitem(sys.modules, "google.cloud.container_v1", fake_container)
+    monkeypatch.setattr(google.cloud, "container_v1", fake_container, raising=False)
+
+    out = await reaper.reap_idle_cluster()
+
+    assert "reaped override-region" in out
+    assert deleted == ["projects/p/locations/override-region/clusters/c-app-trials"]
+    assert probed_locations == ["override-region"]
+
+
+async def test_an_incomplete_listing_makes_the_reaper_skip(monkeypatch):
+    """The reaper must not read an unreachable location as an absent
+    cluster; it skips fail-safe and the next scheduled run retries."""
+    import worker.gke_cluster_reaper as reaper
+
+    monkeypatch.setenv("MODAL_APP_NAME", "c-app")
+    monkeypatch.setattr(reaper.settings, "gke_cluster_name", "c-app-trials")
+    monkeypatch.setattr(reaper.settings, "gke_project_id", "p")
+    monkeypatch.setattr(reaper.settings, "gke_idle_cluster_ttl_hours", 1.0)
+    monkeypatch.setattr("worker.runtime._materialize_gcp_adc_credentials", lambda: None)
+
+    import sys
+    from types import SimpleNamespace
+
+    import google.auth
+    import google.cloud
+
+    monkeypatch.setattr(google.auth, "default", lambda scopes: (object(), "p"))
+    fake_mgr = SimpleNamespace(
+        list_clusters=lambda parent: SimpleNamespace(
+            clusters=[], missing_zones=["zone-b"]
+        ),
+        delete_cluster=lambda name: (_ for _ in ()).throw(
+            AssertionError("must not delete from an incomplete listing")
+        ),
+    )
+    fake_container = SimpleNamespace(ClusterManagerClient=lambda credentials: fake_mgr)
+    monkeypatch.setitem(sys.modules, "google.cloud.container_v1", fake_container)
+    monkeypatch.setattr(google.cloud, "container_v1", fake_container, raising=False)
+
+    out = await reaper.reap_idle_cluster()
+    assert "listing incomplete" in out

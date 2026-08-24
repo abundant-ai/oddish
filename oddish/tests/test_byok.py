@@ -108,9 +108,9 @@ async def test_resolve_byok_resolver_crash_fails_open():
 def test_harbor_config_is_ephemeral_gates_byok():
     """BYOK is skipped for ephemeral trials, so the user key never reaches the
     out-of-process child (where it can't route and would be persisted)."""
-    from oddish.workers.queue.trial_handler import _harbor_config_is_ephemeral
+    from oddish.workers.queue.byok import harbor_config_is_ephemeral
 
-    assert _harbor_config_is_ephemeral({"variant_id": "ephemeral"}) is True
-    assert _harbor_config_is_ephemeral({"variant_id": "default"}) is False
-    assert _harbor_config_is_ephemeral({}) is False
-    assert _harbor_config_is_ephemeral(None) is False
+    assert harbor_config_is_ephemeral({"variant_id": "ephemeral"}) is True
+    assert harbor_config_is_ephemeral({"variant_id": "default"}) is False
+    assert harbor_config_is_ephemeral({}) is False
+    assert harbor_config_is_ephemeral(None) is False

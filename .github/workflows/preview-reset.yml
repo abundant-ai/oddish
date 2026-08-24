@@ -52,6 +52,18 @@ jobs:
       # Read-only source of the schema snapshot, Alembic pointers, and seed
       # sample (see pr-preview.yml for why it is not ODDISH_DATABASE_URL).
       PREVIEW_SAMPLE_SOURCE_DB_URL: ${{ secrets.ODDISH_DATABASE_URL }}
+      # GKE parity with pr-preview.yml: a reset must redeploy the same
+      # preview it replaces, so the ODDISH_* env of the two deploy jobs
+      # must stay identical. pr-preview.yml documents why previews carry a
+      # real GKE backend.
+      ODDISH_GKE_ENABLED: "true"
+      ODDISH_GKE_PROJECT_ID: "abundant-default"
+      ODDISH_GKE_REGION: "us-east5"
+      ODDISH_GKE_REGISTRY_LOCATION: "us-east5"
+      ODDISH_GKE_REGISTRY_NAME: "oddish-envs"
+      ODDISH_GKE_AUTO_PROVISION_CLUSTER: "true"
+      ODDISH_GKE_PROVISIONING_MODE: "flex-start"
+      ODDISH_GKE_AUTO_BUILD_MISSING_IMAGE: "true"
       ODDISH_MODAL_API_MIN_CONTAINERS: "0"
       ODDISH_MODAL_API_BUFFER_CONTAINERS: "0"
       ODDISH_MODAL_API_MAX_CONTAINERS: "2"

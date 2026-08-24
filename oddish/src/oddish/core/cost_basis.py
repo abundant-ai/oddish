@@ -29,6 +29,7 @@ from sqlalchemy import and_, case, func, or_
 from oddish.config import settings
 from oddish.core.cost_exclusions import (
     not_excluded_experiment_filter,
+    not_excluded_llm_key_filter,
     not_excluded_model_filter,
 )
 from oddish.db import AGENT_TRIAL_KIND, TrialModel, TrialOrigin
@@ -89,6 +90,7 @@ def first_party_spend_filter():
         TrialModel.origin == TrialOrigin.ODDISH,
         TrialModel.kind == AGENT_TRIAL_KIND,
         not_combine_copy_filter(),
+        not_excluded_llm_key_filter(),
         not_excluded_model_filter(),
         not_excluded_experiment_filter(),
     )
@@ -99,10 +101,10 @@ def analysis_spend_filter():
 
     The complement of :func:`first_party_spend_filter`'s kind clause, for the
     QA-cost surfaces. Written as an inequality (not an enumeration of analysis
-    kinds) so new kinds are counted automatically. No consumer exists yet --
-    the analysis-trial pipeline that writes non-agent rows lands next; this
-    ships with the ``trials.kind`` column so both sides of the split are
-    defined in one place from the start.
+    kinds) so new kinds are counted automatically. The QA-cost queries in
+    ``endpoints/qa_cost.py`` currently apply the same ``kind != 'agent'``
+    predicate inline; this lives next to ``first_party_spend_filter`` so both
+    sides of the split stay defined in one place.
     """
     return TrialModel.kind != AGENT_TRIAL_KIND
 

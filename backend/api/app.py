@@ -175,6 +175,16 @@ async def lifespan(_api: FastAPI):
         await _assert_quota_schema_or_force_off()
         role_defaults_task = asyncio.create_task(_apply_role_defaults_bg())
 
+        # ODDISH_LOCAL_MODE executes trials inside this API process instead of
+        # importing worker.functions, where hosted workers normally register
+        # the backend BYOK resolver. Register the same resolver here before a
+        # local sweep can dispatch, so the local runner receives and accounts
+        # for the credential that actually funds the trial.
+        if settings.local_mode:
+            from worker.byok_resolver import install_byok_resolver
+
+            install_byok_resolver()
+
         # Route the dashboard's whole-``trials``-table queue/pipeline slice
         # through a shared Modal Dict so a cold container reads a warm entry
         # instead of re-running the multi-second scan. Best-effort: falls back
@@ -246,9 +256,11 @@ def create_app() -> FastAPI:
         byok,
         clerk_webhooks,
         cost_excluded_experiments,
+        cost_excluded_keys,
         cost_excluded_models,
         dashboard,
         documents,
+        feedback,
         github_linkage,
         github_webhooks,
         imports,
@@ -278,12 +290,14 @@ def create_app() -> FastAPI:
     api.include_router(load.router)
     api.include_router(skills.router)
     api.include_router(documents.router)
+    api.include_router(feedback.router)
     api.include_router(public.router)
     api.include_router(public_analysis.router)
     api.include_router(slack.router)
     api.include_router(admin.router)
     api.include_router(cost_excluded_models.router)
     api.include_router(cost_excluded_experiments.router)
+    api.include_router(cost_excluded_keys.router)
     api.include_router(tags.router)
 
     return api

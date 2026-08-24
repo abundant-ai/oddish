@@ -85,7 +85,7 @@ def test_get_returns_stored_summary_when_no_refresh_is_current(client):
     ):
         response = client.get("/trials/t-1/trajectory/summary")
     assert response.status_code == 200
-    assert response.json() == summary
+    assert response.json() == {"summary": summary, "refresh": None}
 
 
 def test_get_returns_missing_resource_when_nothing_is_published(client):
@@ -115,11 +115,14 @@ def test_get_reports_current_live_refresh_before_stored_summary(
         patch("api.routers.trials.get_session", new=lambda: _session(refresh)),
     ):
         response = client.get("/trials/t-1/trajectory/summary")
-    assert response.status_code == 202
+    assert response.status_code == 200
     assert response.json() == {
-        "status": wire_status,
-        "job_id": refresh.id,
-        "retry_after_ms": 3000,
+        "summary": {"stale": True},
+        "refresh": {
+            "status": wire_status,
+            "job_id": refresh.id,
+            "retry_after_ms": 3000,
+        },
     }
 
 
@@ -134,7 +137,7 @@ def test_get_reports_successful_unimported_refresh_as_settling(client):
     ):
         response = client.get("/trials/t-1/trajectory/summary")
     assert response.status_code == 202
-    assert response.json()["status"] == "settling"
+    assert response.json()["refresh"]["status"] == "settling"
 
 
 def test_get_reports_current_failed_refresh(client):
@@ -149,8 +152,17 @@ def test_get_reports_current_failed_refresh(client):
         patch("api.routers.trials.get_session", new=lambda: _session(refresh)),
     ):
         response = client.get("/trials/t-1/trajectory/summary")
-    assert response.status_code == 409
-    assert response.json()["job_id"] == refresh.id
+    assert response.status_code == 200
+    assert response.json() == {
+        "summary": {"stale": True},
+        "refresh": {
+            "status": "failed",
+            "job_id": refresh.id,
+            "detail": (
+                "Trajectory summary refresh failed; start a new refresh to retry"
+            ),
+        },
+    }
 
 
 def test_get_reports_cancelled_refresh_as_failed_even_if_trial_status_is_success(
@@ -191,8 +203,15 @@ def test_post_adopts_existing_refresh(tasks_client):
         patch("api.routers.trials.get_session", new=lambda: _session()),
     ):
         response = tasks_client.post("/trials/t-1/trajectory/summary")
-    assert response.status_code == 202
-    assert response.json()["job_id"] == refresh.id
+    assert response.status_code == 200
+    assert response.json() == {
+        "summary": {"stale": True},
+        "refresh": {
+            "status": "running",
+            "job_id": refresh.id,
+            "retry_after_ms": 3000,
+        },
+    }
     session = get_or_create.await_args.args[0]
     get_or_create.assert_awaited_once_with(session, target_trial_id="t-1")
 

@@ -7,7 +7,6 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -361,26 +360,6 @@ async def get_org_from_clerk_id(
     return org_result.scalar_one_or_none()
 
 
-async def get_or_create_preview_org(
-    session: AsyncSession, clerk_org_id: str
-) -> OrganizationModel | None:
-    org = await get_org_from_clerk_id(session, clerk_org_id)
-    if org or not os.environ.get("MODAL_APP_NAME", "").startswith("oddish-pr-"):
-        return org
-
-    await session.execute(
-        pg_insert(OrganizationModel)
-        .values(
-            id=generate_id(),
-            name="Preview Organization",
-            slug=f"preview-{clerk_org_id}",
-            clerk_org_id=clerk_org_id,
-        )
-        .on_conflict_do_nothing()
-    )
-    return await get_org_from_clerk_id(session, clerk_org_id)
-
-
 async def get_or_create_personal_org(
     session: AsyncSession, clerk_user_id: str
 ) -> OrganizationModel:
@@ -482,7 +461,7 @@ async def get_or_create_user_from_clerk(
     If no org is found locally, returns None (org must be provisioned first).
     """
     if clerk_org_id:
-        org = await get_or_create_preview_org(session, clerk_org_id)
+        org = await get_org_from_clerk_id(session, clerk_org_id)
         if not org:
             return None
         user = await get_or_create_user_in_org(

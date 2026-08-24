@@ -64,15 +64,15 @@ export function TrajectorySummary({
     return () => clearTimeout(timer);
   }, [isLoading]);
 
-  // A failed request must not replace a summary that was already published.
-  // The SWR resource remains the source of truth; request errors are rendered
-  // as retryable status alongside that resource.
-  const blockingError =
-    resource?.status === "ready" ? undefined : (regenerationError ?? error);
-  if (blockingError) {
-    const retryRefresh =
-      regenerationError != null ||
-      (blockingError as { status?: number }).status === 409;
+  const data = resource?.summary ?? null;
+  const refresh = resource?.refresh ?? null;
+  const activeRefresh = refresh?.status === "failed" ? null : refresh;
+  const failedRefresh = refresh?.status === "failed" ? refresh : null;
+  const requestError = regenerationError ?? error;
+  const blockingMessage = data
+    ? null
+    : (failedRefresh?.detail ?? requestError?.message);
+  if (blockingMessage) {
     return (
       <Card className="my-3 border-red-200">
         <CardHeader className="pb-2">
@@ -82,13 +82,15 @@ export function TrajectorySummary({
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
-          <p className="text-muted-foreground text-xs">
-            {blockingError.message}
-          </p>
+          <p className="text-muted-foreground text-xs">{blockingMessage}</p>
           <Button
             size="sm"
             variant="outline"
-            onClick={retryRefresh && canRegenerate ? onRegenerate : onRetry}
+            onClick={
+              (failedRefresh || regenerationError) && canRegenerate
+                ? onRegenerate
+                : onRetry
+            }
             disabled={isStartingRegeneration}
           >
             {isStartingRegeneration && (
@@ -101,10 +103,7 @@ export function TrajectorySummary({
     );
   }
 
-  const waitingForGeneration =
-    resource != null &&
-    resource.status !== "ready" &&
-    resource.status !== "missing";
+  const waitingForGeneration = data === null && activeRefresh !== null;
 
   if (isLoading || waitingForGeneration) {
     return (
@@ -123,7 +122,7 @@ export function TrajectorySummary({
         <CardContent className="text-muted-foreground flex items-center gap-2 text-sm">
           <Loader2 className="h-4 w-4 animate-spin" />
           {waitingForGeneration
-            ? resource.status === "settling"
+            ? activeRefresh?.status === "settling"
               ? "Publishing summary…"
               : "Generating summary…"
             : slow
@@ -134,7 +133,7 @@ export function TrajectorySummary({
     );
   }
 
-  if (resource?.status === "missing") {
+  if (resource && data === null && refresh === null) {
     if (!canRegenerate) return null;
     return (
       <Card className="my-3">
@@ -160,8 +159,7 @@ export function TrajectorySummary({
     );
   }
 
-  if (!resource || resource.status !== "ready") return null;
-  const data = resource.summary;
+  if (!data) return null;
 
   // Same segment → color assignment as the Activity card and step groups, so
   // a highlight's underline matches its component everywhere.
@@ -175,7 +173,12 @@ export function TrajectorySummary({
         <CardTitle className="flex items-center gap-2 text-sm font-medium">
           <Sparkles className="h-4 w-4" /> Summary
         </CardTitle>
-        {canRegenerate && (
+        {canRegenerate && activeRefresh ? (
+          <Button size="sm" variant="outline" disabled>
+            <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+            Regenerating
+          </Button>
+        ) : canRegenerate ? (
           <Button
             size="sm"
             variant="outline"
@@ -189,10 +192,10 @@ export function TrajectorySummary({
             )}
             Regenerate
           </Button>
-        )}
+        ) : null}
       </CardHeader>
       <CardContent className="space-y-3">
-        {(regenerationError || error) && (
+        {(failedRefresh || requestError) && (
           <div
             role="alert"
             className="flex items-start justify-between gap-3 rounded-md border border-red-200 p-3"
@@ -200,19 +203,21 @@ export function TrajectorySummary({
             <div className="space-y-1">
               <p className="flex items-center gap-1.5 text-xs font-medium text-red-600">
                 <AlertCircle className="h-3.5 w-3.5" />
-                {regenerationError
+                {failedRefresh || regenerationError
                   ? "Couldn’t regenerate the summary"
                   : "Couldn’t check for a newer summary"}
               </p>
               <p className="text-muted-foreground text-xs">
-                {(regenerationError ?? error)?.message} The published summary is
-                still shown below.
+                {failedRefresh?.detail ?? requestError?.message} The published
+                summary is still shown below.
               </p>
             </div>
             <Button
               size="sm"
               variant="outline"
-              onClick={regenerationError ? onRegenerate : onRetry}
+              onClick={
+                failedRefresh || regenerationError ? onRegenerate : onRetry
+              }
               disabled={isStartingRegeneration}
             >
               {isStartingRegeneration && (

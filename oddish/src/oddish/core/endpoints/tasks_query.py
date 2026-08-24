@@ -228,6 +228,7 @@ async def list_tasks_core(
                 TrialModel.tool_counts,
                 TrialModel.cost_usd,
                 TrialModel.billed_user_id,
+                TrialModel.llm_key_hash,
                 TrialModel.superseded_by_trial_id,
                 TrialModel.created_at,
                 TrialModel.started_at,
