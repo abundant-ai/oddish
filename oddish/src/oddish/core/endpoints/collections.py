@@ -247,22 +247,30 @@ async def _load_collection(
     silently no-op for trials owned via ``trials.experiment_id``, and mutating
     a running experiment's membership races the dispatcher.
 
-    ``FOR UPDATE`` on the experiment row serializes concurrent mutations: the
-    remove path reads the member set, evaluates the would-this-empty-it guard,
-    and only then issues its UPDATE, so under READ COMMITTED two sessions
-    removing disjoint halves would both pass the guard and empty the
-    collection. Every caller here is a mutation and collections are
-    low-traffic, so the lock costs nothing in practice.
+    The transaction advisory lock serializes concurrent mutations: the remove
+    path reads the member set, evaluates the would-this-empty-it guard, and
+    only then issues its UPDATE, so under READ COMMITTED two sessions removing
+    disjoint halves cannot both pass the guard and empty the collection. It
+    uses the latest-runner projection's lock namespace because membership
+    writes refresh that projection in a database trigger. Taking one shared
+    lock first avoids a row-lock/advisory-lock inversion with concurrent trial
+    inserts.
     """
+    await session.execute(
+        text(
+            "SELECT pg_advisory_xact_lock("
+            "hashtextextended('experiment-runner:' || "
+            "CAST(:experiment_id AS text), 0))"
+        ),
+        {"experiment_id": experiment_id},
+    )
     experiment = (
         (
             await session.execute(
-                select(ExperimentModel)
-                .where(
+                select(ExperimentModel).where(
                     ExperimentModel.id == experiment_id,
                     ExperimentModel.org_id == org_id,
                 )
-                .with_for_update()
             )
         )
         .scalars()

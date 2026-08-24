@@ -431,6 +431,20 @@ class ExperimentModel(TimestampedMixin, Base):
             text("id ASC"),
             postgresql_where=text("deleted_at IS NULL"),
         ),
+        # Latest-runner search must filter before dashboard pagination. Keep
+        # the derived user next to the existing recent-activity ordering so a
+        # person seek can return the first page without scanning trials.
+        Index(
+            "idx_experiments_org_last_runner_activity_live",
+            "org_id",
+            "last_runner_user_id",
+            text("last_activity_at DESC NULLS LAST"),
+            text("id ASC"),
+            postgresql_where=text(
+                "deleted_at IS NULL AND shadow_of IS NULL "
+                "AND last_runner_user_id IS NOT NULL"
+            ),
+        ),
         # Mirror the partial-unique pattern used on ``tasks`` so a
         # soft-deleted experiment doesn't take its name slot with it.
         # Experiments don't currently have a name uniqueness constraint,
@@ -469,6 +483,17 @@ class ExperimentModel(TimestampedMixin, Base):
 
     # Primary owner for dashboard Mine filter (stamped from the first task submit).
     owner_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # Durable latest-runner projection. The source trial id and timestamp own
+    # the invariant and make drift directly auditable. The projection includes
+    # home trials and active ``experiment_trials`` collection memberships,
+    # excludes soft-deleted and superseded trials, and orders ties by trial id
+    # after ``created_at``.
+    last_runner_trial_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    last_runner_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_runner_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Per-experiment provenance, stamped set-once from the creating run's
     # submitter. Unlike the shared, mutable ``task.link`` / ``task.tags`` (which
@@ -872,9 +897,7 @@ class TaskVersionModelMetricsModel(Base):
     agent: Mapped[str] = mapped_column(String(128), primary_key=True)
     # Older trials carry no model; "" keeps them addressable in the primary key
     # rather than dropping them or inventing a name.
-    model: Mapped[str] = mapped_column(
-        String(256), primary_key=True, server_default=""
-    )
+    model: Mapped[str] = mapped_column(String(256), primary_key=True, server_default="")
     task_id: Mapped[str] = mapped_column(
         String(128), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
     )
@@ -1405,8 +1428,8 @@ sa_event.listen(
         # the view before the historical column ALTERs later in the chain,
         # and Postgres refuses to alter a column a view depends on. The
         # chain creates the view itself at analysisspend01.
-        callable_=lambda ddl, target, bind, **kw: not os.environ.get(
-            "ODDISH_ALEMBIC_RUNNING"
+        callable_=lambda ddl, target, bind, **kw: (
+            not os.environ.get("ODDISH_ALEMBIC_RUNNING")
         )
     ),
 )

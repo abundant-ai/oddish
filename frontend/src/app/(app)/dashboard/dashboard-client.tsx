@@ -1134,7 +1134,7 @@ type DashboardClientProps = {
   initialOffset?: number;
 };
 
-export function DashboardClient({
+function DashboardClientContent({
   experimentsPromise,
   initialAuthor = DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR,
   initialStatus = "all",
@@ -1157,6 +1157,15 @@ export function DashboardClient({
 
   // Local, editable search text; navigation (below) commits it to the URL.
   const [searchQuery, setSearchQuery] = useState(initialQuery);
+  const searchCommitTimer = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (searchCommitTimer.current !== null) {
+        window.clearTimeout(searchCommitTimer.current);
+      }
+    },
+    []
+  );
   // Keying the Suspense boundary on the committed (server) params makes it
   // re-suspend — and show the skeleton — on every content change.
   const trialFilterKey = TRIAL_FILTER_PARAM_KEYS.map(
@@ -1171,11 +1180,12 @@ export function DashboardClient({
     author?: string;
     status?: string;
     page?: number;
+    query?: string;
   }) => {
     const author = overrides.author ?? authorFilter;
     const status = overrides.status ?? statusFilter;
     const page = overrides.page ?? 1;
-    const query = searchQuery.trim();
+    const query = (overrides.query ?? searchQuery).trim();
     const params = new URLSearchParams(searchParams.toString());
     params.delete("author");
     params.delete("status");
@@ -1203,7 +1213,12 @@ export function DashboardClient({
     author?: string;
     status?: string;
     page?: number;
+    query?: string;
   }) => {
+    if (searchCommitTimer.current !== null) {
+      window.clearTimeout(searchCommitTimer.current);
+      searchCommitTimer.current = null;
+    }
     startTransition(() =>
       router.push(buildFilterHref(overrides), { scroll: false })
     );
@@ -1224,23 +1239,23 @@ export function DashboardClient({
     router.refresh();
   };
 
-  // Debounce the search box, then commit it to the URL (page reset to 1).
-  // Skips the first render so a deep-linked search isn't immediately re-pushed.
-  const isInitialSearchMount = useRef(true);
-  useEffect(() => {
-    if (isInitialSearchMount.current) {
-      isInitialSearchMount.current = false;
+  const handleSearchQueryChange = (value: string) => {
+    setSearchQuery(value);
+    if (searchCommitTimer.current !== null) {
+      window.clearTimeout(searchCommitTimer.current);
+    }
+    if (value.trim() === initialQuery.trim()) {
+      searchCommitTimer.current = null;
       return;
     }
-    const handle = window.setTimeout(() => {
-      if (searchQuery.trim() === initialQuery.trim()) return;
-      navigateToFilters({ page: 1 });
+    // The input event owns the debounce. The only effect here cleans up the
+    // external timer on unmount; URL state is changed by an explicit event,
+    // not by an effect watching local React state.
+    searchCommitTimer.current = window.setTimeout(() => {
+      searchCommitTimer.current = null;
+      navigateToFilters({ page: 1, query: value });
     }, 400);
-    return () => window.clearTimeout(handle);
-    // navigateToFilters/initialQuery are intentionally excluded: they are
-    // rebuilt every render and we only want to react to search edits.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchQuery]);
+  };
 
   return (
     <div className="space-y-4">
@@ -1251,7 +1266,7 @@ export function DashboardClient({
         experimentsPromise={experimentsPromise}
         paramsKey={paramsKey}
         searchQuery={searchQuery}
-        onSearchQueryChange={setSearchQuery}
+        onSearchQueryChange={handleSearchQueryChange}
         statusFilter={statusFilter}
         onStatusFilterChange={handleStatusFilterChange}
         authorFilter={authorFilter}
@@ -1264,4 +1279,11 @@ export function DashboardClient({
       />
     </div>
   );
+}
+
+export function DashboardClient(props: DashboardClientProps) {
+  // A committed URL query is the reset boundary for the editable draft. This
+  // covers back/forward navigation without mirroring the prop through an
+  // effect. The child owns the draft and its pending debounce timer.
+  return <DashboardClientContent key={props.initialQuery ?? ""} {...props} />;
 }

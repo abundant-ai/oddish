@@ -532,6 +532,20 @@ usage across every trial owned by the experiment, including older versions,
 superseded retries, probes, and soft-deleted trials. Its `billed_*` cost and
 token fields are the billed-user subset used by the frontend's New spend tile.
 
+### Experiment Latest Runner
+
+`experiments.last_runner_trial_id`, `last_runner_user_id`, and
+`last_runner_at` are one durable projection used by dashboard display and
+member-name search. The source population includes live, non-superseded home
+trials and live `experiment_trials` collection memberships; newest means
+`(trials.created_at DESC, trials.id DESC)`. PostgreSQL statement triggers on
+`trials` and `experiment_trials` refresh affected experiments in the writer's
+transaction through `refresh_experiment_latest_runners(text[])`. Keep search
+queries on the projection; do not restore a per-experiment correlated trial
+scan. Any semantic change to trial eligibility, collection membership, or the
+ordering must update the function, migration backfill, model comments, and
+dashboard tests together.
+
 ### Task Browser Summary
 
 The default `GET /tasks/browse` path selects and paginates tasks before card

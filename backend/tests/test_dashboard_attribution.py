@@ -307,21 +307,27 @@ async def test_match_authors_for_token_matches_email_or_name() -> None:
 
 
 class _IdRowsResult:
-    def __init__(self, user_ids: list[str]) -> None:
-        self._user_ids = user_ids
+    def __init__(self, rows: list[tuple[str, str]]) -> None:
+        self._rows = rows
 
-    def all(self) -> list[tuple[str]]:
-        return [(user_id,) for user_id in self._user_ids]
+    def all(self) -> list[tuple[str, str]]:
+        return self._rows
 
 
 class _CapturingIdSession:
-    def __init__(self, user_ids: list[str]) -> None:
-        self._user_ids = user_ids
+    def __init__(
+        self,
+        user_ids: list[str],
+        *,
+        token: str = "kyl",
+        rows: list[tuple[str, str]] | None = None,
+    ) -> None:
+        self._rows = rows or [(token, user_id) for user_id in user_ids]
         self.statements: list[object] = []
 
     async def execute(self, statement):  # noqa: ANN001
         self.statements.append(statement)
-        return _IdRowsResult(self._user_ids)
+        return _IdRowsResult(self._rows)
 
 
 @pytest.mark.asyncio
@@ -336,15 +342,16 @@ async def test_partial_member_ids_resolve_canonical_name() -> None:
 
     assert resolved == {"kyl": ("user_kyle",)}
     sql = _compiled(session.statements[0])
-    assert "users.name ilike '%%kyl%%'" in sql
-    assert "users.github_username ilike '%%kyl%%'" in sql
+    assert "('kyl', '%%kyl%%', '%%kyl%%')" in sql
+    assert "users.name ilike member_search_tokens.name_pattern" in sql
+    assert "users.github_username ilike member_search_tokens.github_pattern" in sql
     assert "escape" in sql
     assert "users.email" not in sql
 
 
 @pytest.mark.asyncio
 async def test_partial_member_ids_normalize_prefixed_github_handle() -> None:
-    session = _CapturingIdSession(["user_kyle"])
+    session = _CapturingIdSession(["user_kyle"], token="@kyl")
 
     resolved = await resolve_partial_member_ids(
         session,  # type: ignore[arg-type]
@@ -356,6 +363,29 @@ async def test_partial_member_ids_normalize_prefixed_github_handle() -> None:
     compiled = session.statements[0].compile(dialect=postgresql.dialect())
     assert "%@Kyl%" in compiled.params.values()  # display-name pattern stays literal
     assert "%Kyl%" in compiled.params.values()  # stored handles omit leading @
+
+
+@pytest.mark.asyncio
+async def test_partial_member_ids_batch_tokens_in_one_query() -> None:
+    session = _CapturingIdSession(
+        [],
+        rows=[
+            ("ada", "user_ada"),
+            ("kyl", "user_kyle"),
+            ("kyl", "user_kylie"),
+        ],
+    )
+    resolved = await resolve_partial_member_ids(
+        session,  # type: ignore[arg-type]
+        org_id="org_1",
+        tokens=("Kyl", "Ada", "kyl"),
+    )
+
+    assert resolved == {
+        "kyl": ("user_kyle", "user_kylie"),
+        "ada": ("user_ada",),
+    }
+    assert len(session.statements) == 1
 
 
 @pytest.mark.asyncio

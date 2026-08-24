@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import String, column, func, or_, select, values
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth.types import AuthContext
@@ -549,29 +549,54 @@ async def resolve_partial_member_ids(
     identity fields: canonical display name and GitHub username. Email aliases
     remain available only through the explicit author/user/github qualifier.
     """
-    resolved: dict[str, tuple[str, ...]] = {}
+    token_rows: list[tuple[str, str, str]] = []
+    seen: set[str] = set()
     for raw_token in tokens:
         token = (raw_token or "").strip()
         normalized = token.lower()
-        if not normalized or normalized in resolved:
+        if not normalized or normalized in seen:
             continue
+        seen.add(normalized)
         partial = f"%{escape_like(token)}%"
         github_token = _normalize_github_handle(token) or token
         github_partial = f"%{escape_like(github_token)}%"
-        rows = await session.execute(
-            select(UserModel.id)
-            .where(
-                UserModel.org_id == org_id,
-                UserModel.is_active == True,  # noqa: E712
-                or_(
-                    UserModel.name.ilike(partial, escape="\\"),
-                    UserModel.github_username.ilike(github_partial, escape="\\"),
-                ),
-            )
-            .order_by(UserModel.id)
+        token_rows.append((normalized, partial, github_partial))
+
+    if not token_rows:
+        return {}
+
+    search_tokens = (
+        values(
+            column("token", String),
+            column("name_pattern", String),
+            column("github_pattern", String),
+            name="member_search_tokens",
         )
-        resolved[normalized] = tuple(row[0] for row in rows.all())
-    return resolved
+        .data(token_rows)
+        .alias("member_search_tokens")
+    )
+    rows = await session.execute(
+        select(search_tokens.c.token, UserModel.id)
+        .select_from(search_tokens)
+        .join(
+            UserModel,
+            or_(
+                UserModel.name.ilike(search_tokens.c.name_pattern, escape="\\"),
+                UserModel.github_username.ilike(
+                    search_tokens.c.github_pattern, escape="\\"
+                ),
+            ),
+        )
+        .where(
+            UserModel.org_id == org_id,
+            UserModel.is_active == True,  # noqa: E712
+        )
+        .order_by(search_tokens.c.token, UserModel.id)
+    )
+    matched: dict[str, list[str]] = {token: [] for token, _, _ in token_rows}
+    for token, user_id in rows.all():
+        matched[str(token)].append(str(user_id))
+    return {token: tuple(user_ids) for token, user_ids in matched.items()}
 
 
 async def resolve_search_authors(

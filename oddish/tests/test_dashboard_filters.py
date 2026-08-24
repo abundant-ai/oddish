@@ -285,15 +285,12 @@ def test_experiment_freetext_matches_resolved_owner_and_latest_runner() -> None:
     ).lower()
 
     assert "experiments.owner_user_id in ('user_kyle')" in sql
-    assert "trials.billed_user_id" in sql
-    assert "trials.experiment_id = experiments.id" in sql
-    assert "experiment_trials" in sql
-    assert "experiment_trials.deleted_at is null" in sql
-    assert "trials.superseded_by_trial_id is null" in sql
-    assert "trials.created_at desc" in sql
-    assert "trials.id desc" in sql
-    assert "limit 1" in sql
-    assert "trials.org_id = 'org_1'" in sql
+    assert "experiments.last_runner_user_id in ('user_kyle')" in sql
+    # The person branch must remain a direct experiments-table predicate.
+    # Reintroducing either trial table here makes each bare search token scan
+    # the organization's trial history before dashboard pagination.
+    assert "trials.billed_user_id" not in sql
+    assert "experiment_trials" not in sql
 
 
 def test_search_author_filter_matches_handle_via_primary_task() -> None:

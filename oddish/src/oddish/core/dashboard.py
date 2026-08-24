@@ -700,36 +700,10 @@ def _experiment_freetext_match(
 
     resolved_user_ids = tuple(dict.fromkeys(person_user_ids))
     if resolved_user_ids:
-        gathered_membership = exists(
-            select(experiment_trials.c.trial_id).where(
-                experiment_trials.c.experiment_id == ExperimentModel.id,
-                experiment_trials.c.trial_id == TrialModel.id,
-                experiment_trials.c.deleted_at.is_(None),
-            )
-        )
-        latest_runner_user_id = (
-            select(TrialModel.billed_user_id)
-            .where(
-                or_(
-                    TrialModel.experiment_id == ExperimentModel.id,
-                    gathered_membership,
-                ),
-                TrialModel.deleted_at.is_(None),
-                TrialModel.superseded_by_trial_id.is_(None),
-            )
-            .order_by(TrialModel.created_at.desc(), TrialModel.id.desc())
-            .limit(1)
-            .correlate(ExperimentModel)
-            .scalar_subquery()
-        )
-        if org_id is not None:
-            latest_runner_user_id = latest_runner_user_id.where(
-                TrialModel.org_id == org_id
-            )
         alternatives.extend(
             (
                 ExperimentModel.owner_user_id.in_(resolved_user_ids),
-                latest_runner_user_id.in_(resolved_user_ids),
+                ExperimentModel.last_runner_user_id.in_(resolved_user_ids),
             )
         )
 
@@ -1187,6 +1161,7 @@ async def load_dashboard_experiments(
         ExperimentModel.last_activity_at.label("last_activity_at"),
         ExperimentModel.owner.label("experiment_owner"),
         ExperimentModel.owner_user_id.label("experiment_owner_user_id"),
+        ExperimentModel.last_runner_user_id.label("last_runner_user_id"),
         ExperimentModel.link.label("experiment_link"),
     ).where(ExperimentModel.shadow_of.is_(None))
     if org_id is not None:
@@ -1380,65 +1355,6 @@ async def load_dashboard_experiments(
     latest_task_rows = (await session.execute(latest_task_query)).mappings().all()
     primary_task_by_id = {str(row["experiment_id"]): row for row in primary_task_rows}
     latest_task_by_id = {str(row["experiment_id"]): row for row in latest_task_rows}
-
-    # Latest trial's ``billed_user_id`` per experiment: the per-run identity for
-    # the "Last run" column. Task-level attribution strings (``tasks.user`` /
-    # the ``github_username`` tag) are stamped set-once at task creation, so an
-    # APPEND to a shared task never updates them and the latest-task fallback
-    # above shows the task's *original* creator. ``billed_user_id`` is stamped
-    # on every trial at submission time, so it is correct across appends. May
-    # be NULL for legacy/pre-quota trials -- the hosted layer only overrides
-    # ``last_runner`` when this id resolves to a named org member.
-    #
-    # Trial membership mirrors the aggregate semantics in
-    # ``_build_aggregates_for_experiment_ids``: a trial belongs to its home
-    # ``TrialModel.experiment_id`` OR to a collection via ``experiment_trials``
-    # (gathered trials keep their home experiment_id, so filtering on the home
-    # column alone would leave collections permanently unresolved), and
-    # superseded retry attempts are excluded so they can't drive the label.
-    runner_member = (
-        select(
-            TrialModel.experiment_id.label("experiment_id"),
-            TrialModel.id.label("trial_id"),
-        )
-        .where(TrialModel.experiment_id.in_(experiment_ids))
-        .union(
-            select(
-                experiment_trials.c.experiment_id.label("experiment_id"),
-                experiment_trials.c.trial_id.label("trial_id"),
-            ).where(
-                experiment_trials.c.experiment_id.in_(experiment_ids),
-                experiment_trials.c.deleted_at.is_(None),
-            )
-        )
-        .subquery()
-    )
-    latest_trial_runner_query = (
-        select(
-            runner_member.c.experiment_id.label("experiment_id"),
-            TrialModel.billed_user_id.label("billed_user_id"),
-        )
-        .select_from(runner_member)
-        .join(TrialModel, TrialModel.id == runner_member.c.trial_id)
-        .where(TrialModel.superseded_by_trial_id.is_(None))
-        .order_by(
-            runner_member.c.experiment_id.asc(),
-            TrialModel.created_at.desc(),
-            TrialModel.id.desc(),
-        )
-        .distinct(runner_member.c.experiment_id)
-    )
-    if org_id is not None:
-        latest_trial_runner_query = latest_trial_runner_query.where(
-            TrialModel.org_id == org_id
-        )
-    latest_trial_runner_rows = (
-        (await session.execute(latest_trial_runner_query)).mappings().all()
-    )
-    last_runner_user_id_by_experiment = {
-        str(row["experiment_id"]): row["billed_user_id"]
-        for row in latest_trial_runner_rows
-    }
 
     # ------------------------------------------------------------------
     # Step 2: aggregate task / trial counts for just this page.
@@ -1666,7 +1582,7 @@ async def load_dashboard_experiments(
                 "author": author,
                 "owner_user_id": owner_user_id,
                 "last_runner": last_runner,
-                "last_runner_user_id": last_runner_user_id_by_experiment.get(exp_id),
+                "last_runner_user_id": page_row["last_runner_user_id"],
                 "last_author": last_runner,
                 "user_tags": merged.get("user_tags", []),
                 "last_pr_url": last_pr_url,
