@@ -87,15 +87,16 @@ def test_scoped_model_env_gemini_publishes_both_google_key_names() -> None:
 
 
 def test_scoped_model_env_antigravity_mints_gemini_keys() -> None:
-    # Test that antigravity-cli resolves to gemini via the real agent mapping.
-    # The real chain: get_provider_for_trial → get_provider_for_agent →
-    # agent_to_provider (built by _build_agent_provider_map which does
-    # providers.update(_FIXED_AGENT_PROVIDERS)). This test must fail if that
-    # .update() is removed, proving the real path is exercised.
+    # Verifies key-minting behavior for provider "gemini": both GEMINI_API_KEY
+    # and GOOGLE_GENERATIVE_AI_API_KEY are exported (least-privilege).
+    # Provider resolution is stubbed per this file's convention; real resolution
+    # in the companion map test below.
     settings = _fake_settings(gemini_api_key="g-key", anthropic_api_key="sk-ant")
     # Stub provider for antigravity-cli to "gemini" (the real agent_to_provider
     # map will resolve it; here we hardcode it to focus on key minting).
-    settings.get_provider_for_trial = lambda agent, model: "gemini" if agent == "antigravity-cli" else _provider_of(model)
+    settings.get_provider_for_trial = (
+        lambda agent, model: "gemini" if agent == "antigravity-cli" else _provider_of(model)
+    )
     env = job_tokens.scoped_model_env(
         agent="antigravity-cli", model=None, settings=settings
     )
@@ -105,11 +106,10 @@ def test_scoped_model_env_antigravity_mints_gemini_keys() -> None:
 
 
 def test_build_agent_provider_map_includes_antigravity_cli() -> None:
-    # Direct test of the real agent provider map building function.
-    # This test exercises the real _build_agent_provider_map() which does:
-    #   providers.update(_FIXED_AGENT_PROVIDERS)
-    # If that .update() line is removed, antigravity-cli will be missing and
-    # this test will fail, proving the real path is exercised.
+    # Fails if the "antigravity-cli": "gemini" entry is removed from
+    # _FIXED_AGENT_PROVIDERS (config.py:92). The map builder consults that dict
+    # both via its comprehension and its update call, so the entry is the
+    # load-bearing thing.
     from oddish.config import _build_agent_provider_map
 
     agent_map = _build_agent_provider_map()

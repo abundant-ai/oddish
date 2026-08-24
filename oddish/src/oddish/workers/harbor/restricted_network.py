@@ -782,7 +782,7 @@ _COMPATIBILITY_PROFILES: dict[str, _RestrictedAgentSpec] = {
     "oddish.workers.agents.codex:AzureCompatibleCodex": _RestrictedAgentSpec(
         _codex_profile, _openai_base_url_keys
     ),
-    # grok-build and gemini-cli are transport-authoritative in exactly the sense
+    # grok-build, gemini-cli, and antigravity-cli are transport-authoritative in exactly the sense
     # Cursor is: their profiles pin egress to xAI / Gemini (infer_model=False),
     # so the worker-private Azure deployment id must not be substituted for the
     # running model -- the sandbox would carry that identity while only being
