@@ -575,7 +575,12 @@ async def _run_harbor_trial(trial_id: str) -> None:
         task_path_str = task.task_path
         task_s3_key = task.task_s3_key
         task_db_id = task.id
-        harbor_config = trial.harbor_config or {}
+        # Local mode executes the installed default harbor; refresh the
+        # record the same way the hosted claim path does (worker-runtime
+        # invariant 7) so the row matches what actually runs.
+        from oddish.workers.queue.trial_handler import _refresh_stable_variant_pin
+
+        harbor_config = _refresh_stable_variant_pin(trial) or {}
         agent_name = trial.agent
         model_name = trial.model
         trial_org_id = trial.org_id

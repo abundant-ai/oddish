@@ -1144,8 +1144,13 @@ silently breaks throughput or correctness — read before touching
    recorded pin to the deployed blessed variant so the row matches execution,
    logging one supersession warning. Consequence for readers: pin filters and
    audit queries over `harbor_sha` see the EXECUTING revision for stable
-   variants, never a stale submission-time value; only `ephemeral` exact-pin
-   trials keep their submission pin verbatim (they run it in-process).
+   variants (the `gke` blessed pin, or the locked default pin for every
+   non-registered variant), never a stale submission-time value. `ephemeral`
+   exact-pin trials keep their submission pin verbatim -- they run it
+   out-of-process against the recorded source/SHA -- and the projection is
+   reconciled at claim for every harbor-running trial, healing retry/
+   combine/import copies persisted without it. Local (self-host) mode
+   applies the same refresh; it executes the installed default harbor.
 
 ### Local Development
 
