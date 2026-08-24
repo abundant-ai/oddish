@@ -86,6 +86,39 @@ def test_scoped_model_env_gemini_publishes_both_google_key_names() -> None:
     assert "ANTHROPIC_API_KEY" not in env
 
 
+def test_scoped_model_env_antigravity_mints_gemini_keys() -> None:
+    # Test that antigravity-cli resolves to gemini via the fixed agent mapping,
+    # not model inference. We use model=None so _provider_of returns "anthropic"
+    # (the default), forcing resolution to fall back to the agent mapping.
+    def _get_provider_with_fallback(agent: str, model: str | None) -> str:
+        m = (model or "").lower()
+        if m.startswith("anthropic-hdo/"):
+            return "anthropic-hdo"
+        if "claude" in m or "anthropic" in m:
+            return "anthropic"
+        if "gpt" in m or "openai" in m:
+            return "openai"
+        if "gemini" in m:
+            return "gemini"
+        if m.startswith("meta/"):
+            return "meta"
+        # Fall back to agent-based resolution for the fixed providers
+        from oddish.config import _FIXED_AGENT_PROVIDERS
+
+        if agent in _FIXED_AGENT_PROVIDERS:
+            return _FIXED_AGENT_PROVIDERS[agent]
+        return "anthropic"
+
+    settings = _fake_settings(gemini_api_key="g-key", anthropic_api_key="sk-ant")
+    settings.get_provider_for_trial = _get_provider_with_fallback
+    env = job_tokens.scoped_model_env(
+        agent="antigravity-cli", model=None, settings=settings
+    )
+    assert env.get("GEMINI_API_KEY") == "g-key"
+    assert env.get("GOOGLE_GENERATIVE_AI_API_KEY") == "g-key"
+    assert "ANTHROPIC_API_KEY" not in env
+
+
 def test_scoped_model_env_anthropic_hdo_uses_hdo_key_not_platform() -> None:
     settings = _fake_settings(
         anthropic_api_key="sk-platform",
