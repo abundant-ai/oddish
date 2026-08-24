@@ -93,7 +93,7 @@ Use `oddish run` to launch a task, dataset, or multi-agent sweep.
 oddish run ./my-task -a claude-code -m anthropic/claude-sonnet-4-5 --n-trials 5
 
 # Append trials to an existing task
-oddish run --task <task_id> -a gemini-cli -m google/gemini-3.1-pro-preview
+oddish run --task <task_id> -a gemini-cli -m gemini/gemini-3.1-pro-preview
 
 # Complex sweep from config
 oddish run ./my-task -c sweep.yaml
@@ -661,7 +661,7 @@ export ODDISH_API_KEY=ok_pr-35_…
 
 # 3. Run as usual — every command now hits the preview Modal +
 #    Supabase branch DB.
-oddish run /path/to/task --agent gemini-cli --model google/gemini-3.1-pro-preview
+oddish run /path/to/task --agent gemini-cli --model gemini/gemini-3.1-pro-preview
 oddish status
 ```
 
