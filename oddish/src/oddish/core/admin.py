@@ -368,7 +368,7 @@ async def get_orphaned_state_core(
                                     SELECT 1 FROM trials tr
                                     WHERE tr.task_id = t.id
                                       AND tr.deleted_at IS NULL
-                                      AND tr.status IN ('QUEUED', 'RUNNING', 'RETRYING')
+                                      AND tr.status IN ('QUEUED', 'RUNNING', 'PAUSED', 'RETRYING')
                                 )
                             ) OR (
                                 t.status = 'ANALYZING'
@@ -449,7 +449,7 @@ async def get_orphaned_state_core(
                             SELECT 1 FROM trials tr
                             WHERE tr.task_id = t.id
                               AND tr.deleted_at IS NULL
-                              AND tr.status IN ('QUEUED', 'RUNNING', 'RETRYING')
+                              AND tr.status IN ('QUEUED', 'RUNNING', 'PAUSED', 'RETRYING')
                         )
                     ) OR (
                         t.status = 'ANALYZING'

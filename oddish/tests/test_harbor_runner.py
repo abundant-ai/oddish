@@ -3602,6 +3602,43 @@ def test_store_trial_results_skips_retry_for_non_retryable_exception(monkeypatch
     assert trial.attempts == 1
 
 
+def test_store_trial_results_skips_retry_for_quota_pause_outcome(monkeypatch):
+    """The Harbor runner returns quota-pause control failures as outcomes.
+
+    Retrying cannot repair a snapshot or resume failure, so the outcome path
+    must make the trial terminal just like the direct-exception path does.
+    """
+
+    trial = _make_retry_decision_trial(attempts=1, max_attempts=6)
+    _install_retry_decision_session_fakes(monkeypatch, trial)
+
+    outcome = harbor_runner.HarborOutcome(
+        reward=None,
+        error="QuotaPauseControlError: snapshot failed",
+        exit_code=-1,
+        duration_sec=5.0,
+        job_result_path=None,
+        job_dir=None,
+        exception_type=trial_handler.QuotaPauseControlError.__name__,
+    )
+
+    stored = asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id="trial-1",
+            outcome=outcome,
+            trial_s3_key=None,
+            execution_error=None,
+            trial_attempt=trial.attempts,
+        )
+    )
+
+    assert trial.status == trial_handler.TrialStatus.FAILED
+    assert trial.finished_at is not None
+    assert trial.error_message == "QuotaPauseControlError: snapshot failed"
+    assert trial.attempts == 1
+    assert stored == (True, True)
+
+
 def test_store_trial_results_still_retries_unknown_exception(monkeypatch):
     """Exception types we don't explicitly mark as terminal still go through
     the existing attempts < max_attempts retry path."""
@@ -3812,6 +3849,7 @@ def test_non_retryable_set_includes_known_terminal_failures():
     expected = {
         "AddTestsDirError",
         "AgentTimeoutError",
+        "QuotaPauseControlError",
         "VerifierTimeoutError",
         "RewardFileNotFoundError",
         "RewardFileEmptyError",

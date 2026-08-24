@@ -329,11 +329,17 @@ def _is_agent_timeout_error_message(error: str | None) -> bool:
 # failure mode for the same upstream reason.
 # A broken override ref (bad source/sha, dep/import mismatch) can't be fixed by
 # a fresh sandbox either, so the ephemeral engine's terminal failure joins the
-# set: it blocks re-queue of attempts 2..max without burning the already-counted
-# first attempt.
+# set. Quota pause control failures are also terminal because the Harbor runner
+# returns snapshot/resume failures as HarborOutcome values instead of raising
+# them through ``_execute_trial``. These entries block re-queue of attempts
+# 2..max without burning the already-counted first attempt.
 _NON_RETRYABLE_EXCEPTION_TYPES: frozenset[str] = frozenset(
     RetryConfig.model_fields["exclude_exceptions"].default_factory() or set()
-) | {"AddTestsDirError", HarborOverrideImportError.__name__}
+) | {
+    "AddTestsDirError",
+    HarborOverrideImportError.__name__,
+    QuotaPauseControlError.__name__,
+}
 
 
 def _is_non_retryable_outcome(outcome: HarborOutcome | None) -> bool:
