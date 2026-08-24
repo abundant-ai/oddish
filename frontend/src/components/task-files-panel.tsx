@@ -585,6 +585,7 @@ export function TaskFilesPanel({
   const copiedTaskNameTimeoutRef = useRef<number | null>(null);
   const copiedFileContentTimeoutRef = useRef<number | null>(null);
   const listingGenerationRef = useRef(0);
+  const activeDirectoryRequestsRef = useRef<Set<string>>(new Set());
   // Mirrors initialFilePath for the async listing loader: applyListing
   // runs in a fetch closure that would otherwise capture a stale value.
   const initialFilePathRef = useRef(initialFilePath);
@@ -995,54 +996,58 @@ export function TaskFilesPanel({
     }
   }, [baseUrl, effectiveChecksTaskId, checksRerunning, mutateChecks]);
 
-  async function loadDirectoryPage(
-    path: string | null,
-    cursor?: string | null
-  ) {
-    if (!loadsTaskTreeByDirectory) return;
+  const loadDirectoryPage = useCallback(
+    async (path: string | null, cursor?: string | null) => {
+      if (!loadsTaskTreeByDirectory) return;
 
-    const directoryKey = path ?? "";
-    if (directoryListings[directoryKey]?.status === "loading") return;
-    const generation = listingGenerationRef.current;
-    setDirectoryListings((listings) => ({
-      ...listings,
-      [directoryKey]: {
-        nodes: listings[directoryKey]?.nodes ?? [],
-        cursor: listings[directoryKey]?.cursor ?? null,
-        status: "loading",
-      },
-    }));
-
-    try {
-      const res = await fetch(
-        buildListingUrl(path ?? undefined, cursor ?? undefined)
-      );
-      if (!res.ok) throw new Error("Failed to fetch files");
-      const data = (await res.json()) as FilesListingResponse;
-      if (listingGenerationRef.current !== generation) return;
-
-      const page = buildDirectoryPage(data);
+      const directoryKey = path ?? "";
+      const generation = listingGenerationRef.current;
+      const requestKey = `${generation}:${directoryKey}`;
+      if (activeDirectoryRequestsRef.current.has(requestKey)) return;
+      activeDirectoryRequestsRef.current.add(requestKey);
       setDirectoryListings((listings) => ({
         ...listings,
         [directoryKey]: {
-          nodes: mergeTreeLevel(listings[directoryKey]?.nodes ?? [], page),
-          cursor: data.cursor ?? null,
-          status: "ready",
+          nodes: listings[directoryKey]?.nodes ?? [],
+          cursor: listings[directoryKey]?.cursor ?? null,
+          status: "loading",
         },
       }));
-    } catch {
-      if (listingGenerationRef.current === generation) {
+
+      try {
+        const res = await fetch(
+          buildListingUrl(path ?? undefined, cursor ?? undefined)
+        );
+        if (!res.ok) throw new Error("Failed to fetch files");
+        const data = (await res.json()) as FilesListingResponse;
+        if (listingGenerationRef.current !== generation) return;
+
+        const page = buildDirectoryPage(data);
         setDirectoryListings((listings) => ({
           ...listings,
           [directoryKey]: {
-            nodes: listings[directoryKey]?.nodes ?? [],
-            cursor: listings[directoryKey]?.cursor ?? null,
-            status: "error",
+            nodes: mergeTreeLevel(listings[directoryKey]?.nodes ?? [], page),
+            cursor: data.cursor ?? null,
+            status: "ready",
           },
         }));
+      } catch {
+        if (listingGenerationRef.current === generation) {
+          setDirectoryListings((listings) => ({
+            ...listings,
+            [directoryKey]: {
+              nodes: listings[directoryKey]?.nodes ?? [],
+              cursor: listings[directoryKey]?.cursor ?? null,
+              status: "error",
+            },
+          }));
+        }
+      } finally {
+        activeDirectoryRequestsRef.current.delete(requestKey);
       }
-    }
-  }
+    },
+    [buildListingUrl, loadsTaskTreeByDirectory]
+  );
 
   // Fetch root file list when panel opens
   useEffect(() => {
@@ -1118,13 +1123,14 @@ export function TaskFilesPanel({
           if (cancelled) return;
           if (loadsTaskTreeByDirectory) {
             paintedTree = true;
-            setDirectoryListings({
+            setDirectoryListings((listings) => ({
+              ...listings,
               "": {
                 nodes: buildDirectoryPage(data),
                 cursor: data.cursor ?? null,
                 status: "ready",
               },
-            });
+            }));
           } else {
             applyListing(buildTreeFromListing(data.files || []));
           }
@@ -1265,9 +1271,9 @@ export function TaskFilesPanel({
     }
   }, [isOpen, taskId]);
 
-  // Navigate to a specific file when initialFilePath changes (suffix match)
+  // Synchronize a deep-linked file with its selection and directory pages.
   useEffect(() => {
-    if (!initialFilePath) return;
+    if (!isOpen || activePane !== "file" || !initialFilePath) return;
     if (!loadsTaskTreeByDirectory && fileTree.length === 0) return;
 
     const node = loadsTaskTreeByDirectory
@@ -1287,12 +1293,29 @@ export function TaskFilesPanel({
       });
     }
 
+    if (loadsTaskTreeByDirectory) {
+      for (const ancestorPath of ancestorPaths) {
+        if (!directoryListings[ancestorPath]) {
+          void loadDirectoryPage(ancestorPath);
+        }
+      }
+    }
+
     if (node?.type === "dir") return;
 
     // A file URL is already an exact resource address. Selecting it does not
     // depend on whether its containing directory page happens to include it.
     if (selectedFilePath !== targetPath) setSelectedFilePath(targetPath);
-  }, [initialFilePath, fileTree, loadsTaskTreeByDirectory, selectedFilePath]);
+  }, [
+    activePane,
+    directoryListings,
+    fileTree,
+    initialFilePath,
+    isOpen,
+    loadDirectoryPage,
+    loadsTaskTreeByDirectory,
+    selectedFilePath,
+  ]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -1647,7 +1670,7 @@ export function TaskFilesPanel({
             <p className="text-muted-foreground text-xs">{listingError}</p>
           </div>
         </div>
-      ) : fileTree.length === 0 && !taskPaneExists ? (
+      ) : visibleTree.length === 0 && !taskPaneExists ? (
         <div className="flex flex-1 items-center justify-center p-4 sm:p-6">
           <div className="space-y-2 text-center">
             <p className="text-muted-foreground text-sm">No files found</p>
