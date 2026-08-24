@@ -2,5 +2,6 @@
 # trial provenance stamps. Edit this file, then run:
 #   cd oddish && uv run python scripts/sync_harbor_pin.py
 # and regenerate both oddish/uv.lock and backend/uv.lock.
-git = "https://github.com/abundant-ai/harbor"
-rev = "aecf68ac1fe6c18dea9c396364cdd92f94b81fe1"
+# TEMPORARY: PR branch of abundant-ai/harbor#36; flip back to https://github.com/abundant-ai/harbor at the merge SHA once #36 lands.
+git = "https://github.com/dot-agi/harbor"
+rev = "70ba54d126abcf2a24bd5b59e5f735276fffc284"
