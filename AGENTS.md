@@ -795,10 +795,10 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   spelling depending on its LLM client: litellm-backed agents
   (`_LITELLM_MODEL_ID_AGENTS` in `agent_config.py`: terminus family,
   mini-swe-agent, computer-1, openhands-sdk, swe-agent) get `gemini/<id>`
-  because litellm has no `google` provider; Vercel AI SDK agents (opencode,
-  pi, mimo, eve) keep `google/<id>` because that is their provider name;
-  vendor CLIs ignore the prefix. Add an agent to that set when it hands the id
-  to litellm.
+  because litellm has no `google` provider; Vercel AI SDK agents
+  (`_AI_SDK_MODEL_ID_AGENTS`: opencode, pi, mimo, eve) get `google/<id>`
+  because that is their provider name; vendor CLIs ignore the prefix. Add a
+  new agent to whichever set matches its LLM client.
 - Provider secrets are referenced by env var name (`AWS_BEARER_TOKEN_BEDROCK`,
   `ANTHROPIC_HDO_API_KEY`, `ZAI_API_KEY`, `MINIMAX_API_KEY`, `MOONSHOT_API_KEY`,
   `FIREWORKS_API_KEY`, `XAI_API_KEY`, `META_API_KEY`) and must not be persisted
