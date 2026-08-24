@@ -778,6 +778,15 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   `moonshot/`, `fireworks/`, `xai/`, `meta/`, and `anthropic-hdo/`. Add or
   change provider aliases in `config.py`, then update env injection in the
   Harbor runner and the network allowlist notes.
+- Gemini accepts two prefixes, `gemini/` and `google/`; Oddish routes both to
+  the `gemini` provider (key, egress, queue key). The agent sees a different
+  spelling depending on its LLM client: litellm-backed agents
+  (`_LITELLM_MODEL_ID_AGENTS` in `agent_config.py`: terminus family,
+  mini-swe-agent, computer-1, openhands-sdk, swe-agent) get `gemini/<id>`
+  because litellm has no `google` provider; Vercel AI SDK agents (opencode,
+  pi, mimo, eve) keep `google/<id>` because that is their provider name;
+  vendor CLIs ignore the prefix. Add an agent to that set when it hands the id
+  to litellm.
 - Provider secrets are referenced by env var name (`AWS_BEARER_TOKEN_BEDROCK`,
   `ANTHROPIC_HDO_API_KEY`, `ZAI_API_KEY`, `MINIMAX_API_KEY`, `MOONSHOT_API_KEY`,
   `FIREWORKS_API_KEY`, `XAI_API_KEY`, `META_API_KEY`) and must not be persisted
