@@ -498,6 +498,35 @@ cleanup cannot expose the prior expansion. The replacement clears derived-file
 bookkeeping and pre-trial audit state before re-enqueuing expansion. Existing
 trials pinned to that version resolve to the replacement content.
 
+Sweep appends resolve their own version through `resolve_append_version_id`
+(`oddish/core/endpoints/sweep.py`). A submission whose `content_hash` is `None`
+uploaded no task directory, so it pins new trials -- and scopes its
+failed-trial reconciliation -- to the target experiment's effective version
+rather than `tasks.current_version_id`. This keeps a top-up on the version the
+experiment grid already displays instead of pivoting the whole row onto a
+default that an unrelated run advanced. Only an experiment the submission names
+explicitly counts: an append that falls back to the task's implicit primary
+experiment keeps the task default, so probes and task-page top-ups never run
+against older content. Submissions that carry content or name an experiment
+with no trials for the task also keep the task default. `create_task` is
+unaffected: a fresh task always runs its own upload.
+
+The resolved version is threaded on to `maybe_enqueue_auto_probe` through
+`_finalize_sweep`, so an auto-probe inspects the same content its sweep's
+trials ran. A probe left on `tasks.current_version_id` while the trials sit on
+an older pin would inspect content no trial used, be filtered out of the
+experiment grid, and mark the wrong version probed -- leaving the version that
+actually ran unprobed. Callers that pin nothing keep the task's current
+version. The pre-trial audit trial enqueued inside `append_trials_to_task`
+follows the same pin for the same reason.
+
+`use_default_version` on `TaskSweepSubmission` (`--use-default-version`, or
+`use_default_version: true` in a sweep config) is the opt-out for deliberately
+moving an experiment onto the task's current content. It resolves per task, so
+one flag covers a sweep whose tasks sit on different versions. It pins to the
+task default rather than the numerically highest version, so the appended
+trials are the ones the grid pivots to and stay visible.
+
 `GET /experiments/{experiment_id}/cost-totals` reports both cost and token
 usage across every trial owned by the experiment, including older versions,
 superseded retries, probes, and soft-deleted trials. Its `billed_*` cost and
@@ -1117,6 +1146,27 @@ silently breaks throughput or correctness — read before touching
    trial to `RETRYING` and another worker may run it concurrently — no fencing
    token. The window is a deliberate trade-off (raised from 10 after an incident);
    shrink with care.
+
+7. **A stable-variant harbor pin is REWRITTEN at claim time.** A trial's
+   `harbor_config.resolved_sha`/`source` (and the indexed `trials.harbor_sha`
+   projection) are stamped at submission, but the deployment is the unit of
+   harbor identity for a stable variant (`variant_id == "gke"`): a trial
+   queued across a pin bump executes whatever the deployment now ships. The
+   claim path (`_refresh_stable_variant_pin`, trial_handler) rewrites the
+   recorded pin to what the claiming runtime EXECUTES -- read from the
+   imported harbor's PEP 610 installation metadata, so a Modal variant
+   image stamps its blessed pin, the default image stamps the locked
+   default, and self-host or local workers stamp whatever is installed --
+   logging one supersession warning. Consequence for readers: pin filters and
+   audit queries over `harbor_sha` see the EXECUTING revision for stable
+   variants (the `gke` blessed pin, or the locked default pin for every
+   non-registered variant), never a stale submission-time value. `ephemeral`
+   exact-pin trials keep their submission pin verbatim -- they run it
+   out-of-process against the recorded source/SHA -- and the projection is
+   reconciled at claim for every harbor-running trial, healing retry/
+   combine/import copies persisted without it. Local (self-host) mode
+   routes through the same refresh and needs no override: the metadata of
+   the harbor it imports is what it executes.
 
 ### Local Development
 

@@ -110,6 +110,7 @@ Options
 - `--path`, `-p PATH` - Harbor-compatible path flag for a local task or dataset directory
 - `--dataset`, `-d TEXT` - Registry dataset such as `swebench@1.0`
 - `--task TEXT` - Append trials to an existing task ID instead of uploading task files
+- `--use-default-version` - When appending to an existing task, pin new trials to the task's current default version instead of the version the target experiment is already running (no effect when the run uploads task files)
 - `--config`, `-c PATH` - YAML or JSON config for multi-agent sweeps
 - `--agent`, `-a TEXT` - Agent name for simple single-agent runs (defaults to `claude-code`)
 - `--model`, `-m TEXT` - Model override for the selected agent

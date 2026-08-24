@@ -10,11 +10,11 @@ outcomes it returns VALID or FAULTY plus a human-readable reason. The scheduling
 side effects (unblock vs. cancel) live in ``oddish.queue``.
 
 Decision rule -- every baseline run must land cleanly; errors count against it:
-  - oracle must score exactly ``1.0`` on *every* run (it applies the known
-    solution, so anything short of a full pass means the solution/verifier is
-    broken) and nop must score exactly ``0.0`` on *every* run (it does nothing,
-    so *any* nonzero reward means the task hands out credit for free -- an
-    over-lenient verifier). Partial credit on either baseline is a faulty task.
+  - oracle must score above ``0.0`` on *every* run (it applies the known
+    solution, so a zero means the solution/verifier is broken; partial credit
+    still counts as the solution working) and nop must score exactly ``0.0``
+    on *every* run (it does nothing, so *any* nonzero reward means the task
+    hands out credit for free -- an over-lenient verifier).
   - A run that errored (``reward is None``) is NOT ignored: we can't confirm it
     landed cleanly, so any error makes the task FAULTY. (This is stricter than
     the earlier "ignore infra errors" rule -- we now require *all* oracle runs
@@ -79,10 +79,11 @@ def evaluate_baseline_gate(
 
     for kind, rewards in present.items():
         # Every run of a present baseline kind must land cleanly at its extreme.
-        # An infra error (reward is None) is NOT ignored -- ``None == 1`` /
-        # ``None == 0`` are both False, so any error fails the check just like a
-        # wrong verdict does.
-        if kind == AgentName.ORACLE.value and not all(r == 1 for r in rewards):
+        # An infra error (reward is None) is NOT ignored -- ``None`` fails both
+        # checks below just like a wrong verdict does.
+        if kind == AgentName.ORACLE.value and not all(
+            r is not None and r > 0 for r in rewards
+        ):
             return GateOutcome.FAULTY, GATE_SKIP_MESSAGE
         if kind == AgentName.NOP.value and not all(r == 0 for r in rewards):
             return GateOutcome.FAULTY, GATE_SKIP_MESSAGE

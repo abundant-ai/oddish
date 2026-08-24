@@ -511,6 +511,14 @@ class TaskSweepSubmission(BaseModel):
         None,
         description="Deterministic hash of task directory contents (set by CLI during upload)",
     )
+    use_default_version: bool = Field(
+        False,
+        description=(
+            "On append, pin new trials to the task's current default version "
+            "instead of the version the target experiment already runs. Ignored "
+            "when the submission uploads task content, which sets its own version."
+        ),
+    )
     link: str | None = Field(
         None,
         description="URL to associate with this task (e.g. PR, issue, CI run)",

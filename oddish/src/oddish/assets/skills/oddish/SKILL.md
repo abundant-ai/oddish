@@ -57,6 +57,10 @@ not authorize a later mutation.
    oddish run ./task -c sweep.yaml --json
    ```
 
+   Appends to an existing task stay on the version the target experiment
+   already runs; pass `--use-default-version` to pin new trials to the
+   task's current default version instead.
+
    Include nop, oracle, and paid model trials in the same sweep. `run --json`
    implies background mode. Preserve `tasks[].id` and `experiment_url` from
    the output; the `experiment` field is the experiment name, not a guaranteed

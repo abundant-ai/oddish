@@ -48,7 +48,12 @@ from oddish.core.harbor_artifacts import cache_write_tokens_from_trajectory
 from oddish.core.llm_key_fingerprint import trial_llm_key_hash
 from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
-from oddish.db.models import WorkerJobKind, WorkerJobModel, WorkerJobStatus
+from oddish.db.models import (
+    TaskVersionModel,
+    WorkerJobKind,
+    WorkerJobModel,
+    WorkerJobStatus,
+)
 from oddish.db.storage import resolve_task_directory
 from oddish.model_pricing import is_native_cost_trusted, settle_cost_usd
 from oddish.observability import log_unpriced_trial_if_needed
@@ -574,8 +579,22 @@ async def _run_harbor_trial(trial_id: str) -> None:
             )
         task_path_str = task.task_path
         task_s3_key = task.task_s3_key
+        # A version-stable append pins the trial to an older task version;
+        # the hosted claim path resolves that version's files, and local
+        # mode must run the same bytes -- the task row only knows the
+        # current default.
+        if trial.task_version_id:
+            tv = await session.get(TaskVersionModel, trial.task_version_id)
+            if tv:
+                task_path_str = tv.task_path or task_path_str
+                task_s3_key = tv.task_s3_key or task_s3_key
         task_db_id = task.id
-        harbor_config = trial.harbor_config or {}
+        # Stamp the record with what this process actually executes
+        # (worker-runtime invariant 7); the refresh reads the imported
+        # harbor's installation metadata, so local mode needs no override.
+        from oddish.workers.queue.trial_handler import _refresh_stable_variant_pin
+
+        harbor_config = _refresh_stable_variant_pin(trial) or {}
         agent_name = trial.agent
         model_name = trial.model
         trial_org_id = trial.org_id

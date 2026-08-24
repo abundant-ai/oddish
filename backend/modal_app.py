@@ -241,6 +241,13 @@ _GKE_ENABLED_ENV = "ODDISH_GKE_ENABLED"
 # (e.g. one carrying ODDISH_GKE_*) cannot pollute into a dependency-count drift.
 # See _resolve_gke_secret_plan and _build_worker_image. Not operator-facing.
 _GKE_PLAN_FILE = "/opt/oddish/gke_secret_plan"
+# Deploy-time ODDISH_GKE_* coordinate snapshot, baked as JSON into the image.
+# The coordinates also ride the image env (ENV_VARS) and, when GKE is enabled,
+# the oddish-gcp runtime secret -- and a runtime secret overwrites env at
+# container init, so a preview's env block silently loses to whatever the
+# secret carries. A file is the one channel a secret cannot write; settings
+# prefer it and warn when the effective env disagrees. Not operator-facing.
+_GKE_COORDS_FILE = "/opt/oddish/gke_coords.json"
 
 _EC2_ENABLED_ENV = "ODDISH_EC2_ENABLED"
 _EC2_CONTROL_SECRET_NAME_ENV = "ODDISH_EC2_CONTROL_SECRET_NAME"
@@ -287,6 +294,41 @@ def _effective_gke_cluster_name(
     if project:
         return f"{MODAL_APP_NAME}-trials"
     return None
+
+
+def _gke_coords_snapshot(
+    environ: Mapping[str, str], dotenv_vars: Mapping[str, str]
+) -> dict[str, str]:
+    """Every ODDISH_GKE_* key resolved at deploy time, process env winning.
+
+    Mirrors the ENV_VARS filter, plus one addition: when the deploy resolves
+    a cluster identity (explicit, or derived from the project id) but the
+    key itself is absent from the deploy env, the EFFECTIVE name is baked
+    anyway. The cluster name is the identity every deletion authorizes
+    against, and a key the snapshot does not carry is a key a runtime
+    secret can inject unopposed -- trials would target the secret's cluster
+    while teardown, correctly, refuses to clean it. Deploys that resolve no
+    identity at deploy time (GKE-less, or the flow where the credential
+    secret intentionally carries the coordinates) bake nothing, so the
+    secret stays the designed source there.
+    """
+    snapshot = {
+        k: v
+        for k, v in {**dotenv_vars, **environ}.items()
+        if k.startswith("ODDISH_GKE_")
+    }
+    # Falsy, not merely absent: an empty ODDISH_GKE_CLUSTER_NAME in the
+    # deploy env must not block the bake, because the effective-name
+    # resolver treats empty as unset and the runtime would derive anyway.
+    if not snapshot.get(_GKE_CLUSTER_ENV):
+        effective = _effective_gke_cluster_name(environ, dotenv_vars)
+        if effective:
+            snapshot[_GKE_CLUSTER_ENV] = effective
+        else:
+            # Never ship an empty identity for the runtime to re-derive from
+            # a mutable app name.
+            snapshot.pop(_GKE_CLUSTER_ENV, None)
+    return snapshot
 
 
 def _gke_enabled_flag(
@@ -531,6 +573,7 @@ if SAURON_AWS_SECRET_NAME:
 # list is identical at deploy time and at in-container recompute. See
 # _gke_runtime_secret_names.
 GKE_SECRET_PLAN = _resolve_gke_secret_plan(os.environ, LOCAL_DOTENV_VARS)
+GKE_COORDS_SNAPSHOT = _gke_coords_snapshot(os.environ, LOCAL_DOTENV_VARS)
 for _gke_secret_name in GKE_SECRET_PLAN:
     runtime_secrets.append(
         modal.Secret.from_name(
@@ -925,6 +968,8 @@ def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal
         f"mkdir -p {os.path.dirname(_GKE_PLAN_FILE)} && "
         f"printf '%s' '{','.join(GKE_SECRET_PLAN)}' > {_GKE_PLAN_FILE}",
         f"printf %s {shlex.quote(ec2_plan_json)} > {shlex.quote(_EC2_PLAN_FILE)}",
+        f"printf %s {shlex.quote(json.dumps(GKE_COORDS_SNAPSHOT, separators=(',', ':')))} "
+        f"> {shlex.quote(_GKE_COORDS_FILE)}",
     )
     if harbor_override is not None:
         # Swap the variant's Harbor into the synced venv AFTER uv_sync. The sync

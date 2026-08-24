@@ -253,9 +253,16 @@ async def test_auto_probe_forwards_billed_user_id_to_append(monkeypatch):
         return 0
 
     async def fake_append_trials_to_task(
-        session, *, task, submission, experiment_id=None, billed_user_id=None
+        session,
+        *,
+        task,
+        submission,
+        experiment_id=None,
+        billed_user_id=None,
+        task_version_id=None,
     ):
         captured_append_kwargs["billed_user_id"] = billed_user_id
+        captured_append_kwargs["task_version_id"] = task_version_id
         return []
 
     monkeypatch.setattr(

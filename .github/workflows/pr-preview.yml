@@ -167,6 +167,25 @@ jobs:
       MODAL_SECRET_ENVIRONMENT: main
       EXPECTED_MODAL_API_URL: ${{ needs.detect-changes.outputs.preview_api_url }}
       UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
+      # Previews run with a real GKE backend so a branch's trial path can be
+      # validated end to end before it merges. Trials only spend money when a
+      # submission actually runs, and the cost is bounded by the teardown
+      # paths this repository ships: a closing preview deletes its own
+      # cluster, a mid-run redeploy deletes it first, the stale-app pruner
+      # covers abandoned previews, and the hourly reaper collects idle
+      # clusters.
+      ODDISH_GKE_ENABLED: "true"
+      ODDISH_GKE_PROJECT_ID: "abundant-default"
+      ODDISH_GKE_REGION: "us-east5"
+      ODDISH_GKE_REGISTRY_LOCATION: "us-east5"
+      ODDISH_GKE_REGISTRY_NAME: "oddish-envs"
+      ODDISH_GKE_AUTO_PROVISION_CLUSTER: "true"
+      ODDISH_GKE_PROVISIONING_MODE: "flex-start"
+      # Matches the other deploy workflows. The backend hardcodes
+      # require_prebuilt_image for hosted trials, so without this a preview
+      # that enables GKE hard-fails any task whose image is not already in
+      # the registry instead of building it.
+      ODDISH_GKE_AUTO_BUILD_MISSING_IMAGE: "true"
       ODDISH_MODAL_API_MIN_CONTAINERS: "0"
       ODDISH_MODAL_API_BUFFER_CONTAINERS: "0"
       ODDISH_MODAL_API_MAX_CONTAINERS: "2"
