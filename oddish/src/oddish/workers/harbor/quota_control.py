@@ -63,45 +63,58 @@ async def control_job_quota_pause(
     _requests.setdefault(trial_id, False)
     try:
         while not stop.is_set():
-            action = "check quota state"
-            try:
-                now = time.monotonic()
-                if now - last_refresh >= settings.quota_pause_refresh_seconds:
-                    action = "refresh quota state"
+            now = time.monotonic()
+            if now - last_refresh >= settings.quota_pause_refresh_seconds:
+                last_refresh = now
+                try:
                     await _refresh_request(trial_id, org_id, billed_user_id)
-                    last_refresh = now
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception(
+                        "Failed to refresh quota state for trial_id=%s; "
+                        "preserving requested=%s",
+                        trial_id,
+                        _requests[trial_id],
+                    )
 
-                requested = _requests[trial_id]
-                if requested and not paused:
-                    action = "pause Harbor job"
-                    logger.warning("metric=quota.job_pausing trial_id=%s", trial_id)
-                    await job.pause()
-                    paused = True
-                    await _record_pause_state(trial_id, True)
+            requested = _requests[trial_id]
+            if requested != paused:
+                action = "pause Harbor job" if requested else "resume Harbor job"
+                try:
+                    if requested:
+                        logger.warning(
+                            "metric=quota.job_pausing trial_id=%s", trial_id
+                        )
+                        await job.pause()
+                    else:
+                        await job.resume()
+                except asyncio.CancelledError:
+                    raise
+                except NotImplementedError:
+                    logger.warning(
+                        "Harbor environment does not support quota pause/resume "
+                        "for trial_id=%s",
+                        trial_id,
+                    )
+                    return
+                except Exception as exc:
+                    logger.exception(
+                        "Quota pause control failed for trial_id=%s action=%s",
+                        trial_id,
+                        action,
+                    )
+                    raise QuotaPauseControlError(
+                        f"Failed to {action} for trial {trial_id}: {exc}"
+                    ) from exc
+
+                paused = requested
+                await _record_pause_state(trial_id, paused)
+                if paused:
                     last_refresh = now
                     logger.warning("metric=quota.job_paused trial_id=%s", trial_id)
-                elif paused and not requested:
-                    action = "resume Harbor job"
-                    await job.resume()
-                    paused = False
-                    await _record_pause_state(trial_id, False)
+                else:
                     logger.info("metric=quota.job_resumed trial_id=%s", trial_id)
-            except asyncio.CancelledError:
-                raise
-            except NotImplementedError:
-                logger.warning(
-                    "Quota pause requested for an environment that does not support it"
-                )
-                return
-            except Exception as exc:
-                logger.exception(
-                    "Quota pause control failed for trial_id=%s action=%s",
-                    trial_id,
-                    action,
-                )
-                raise QuotaPauseControlError(
-                    f"Failed to {action} for trial {trial_id}: {exc}"
-                ) from exc
 
             try:
                 await asyncio.wait_for(
