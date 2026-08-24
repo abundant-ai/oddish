@@ -359,12 +359,15 @@ async def list_task_files_s3(
     presign: bool,
     version: int | None = None,
     inline: bool = True,
+    task_s3_prefix: str | None = None,
+    lookup_task_s3_prefix: bool = True,
 ) -> dict:
     """List files in a task's S3 directory."""
     storage = get_storage_client()
 
     try:
-        task_s3_prefix = await _task_version_s3_prefix(task_id, version)
+        if lookup_task_s3_prefix:
+            task_s3_prefix = await _task_version_s3_prefix(task_id, version)
         return await storage.list_task_files(
             task_id=task_id,
             prefix=prefix,
@@ -390,6 +393,8 @@ async def stream_task_files_s3(
     cursor: str | None,
     presign: bool,
     version: int | None = None,
+    task_s3_prefix: str | None = None,
+    lookup_task_s3_prefix: bool = True,
 ):
     """Stream a task file listing chunk-by-chunk (tree first, then contents).
 
@@ -398,7 +403,8 @@ async def stream_task_files_s3(
     falls back to per-file fetches for missing bodies.
     """
     storage = get_storage_client()
-    task_s3_prefix = await _task_version_s3_prefix(task_id, version)
+    if lookup_task_s3_prefix:
+        task_s3_prefix = await _task_version_s3_prefix(task_id, version)
 
     stream = storage.stream_task_files(
         task_id=task_id,
@@ -460,12 +466,15 @@ async def get_task_file_content_s3(
     presign: bool,
     version: int | None = None,
     max_bytes: int | None = None,
+    task_s3_prefix: str | None = None,
+    lookup_task_s3_prefix: bool = True,
 ) -> dict:
     """Get content of a specific task file from S3."""
     storage = get_storage_client()
 
     try:
-        task_s3_prefix = await _task_version_s3_prefix(task_id, version)
+        if lookup_task_s3_prefix:
+            task_s3_prefix = await _task_version_s3_prefix(task_id, version)
         return await storage.get_task_file_content(
             task_id=task_id,
             file_path=file_path,

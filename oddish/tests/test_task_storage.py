@@ -871,6 +871,140 @@ async def test_expanded_tree_listing_skips_contents_and_urls(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_expanded_directory_page_is_bounded_and_keeps_cursor(monkeypatch):
+    storage = storage_mod.StorageClient()
+    storage._client = object()
+    expanded_prefix = "tasks/task-123/v2-files/"
+    list_calls: list[dict[str, object]] = []
+
+    async def fake_object_exists(s3_key: str) -> bool:
+        return s3_key == f"{expanded_prefix}.oddish-manifest.json"
+
+    async def fake_list_objects(
+        prefix: str,
+        *,
+        delimiter: str,
+        max_keys: int,
+        continuation_token: str | None,
+    ) -> dict:
+        list_calls.append(
+            {
+                "prefix": prefix,
+                "delimiter": delimiter,
+                "max_keys": max_keys,
+                "continuation_token": continuation_token,
+            }
+        )
+        return {
+            "objects": [
+                {
+                    "key": f"{expanded_prefix}environment/Dockerfile",
+                    "size": 24,
+                    "last_modified": None,
+                }
+            ],
+            "common_prefixes": [f"{expanded_prefix}environment/repo/"],
+            "next_token": "page-2",
+            "is_truncated": True,
+        }
+
+    monkeypatch.setattr(storage, "object_exists", fake_object_exists)
+    monkeypatch.setattr(storage, "list_objects", fake_list_objects)
+
+    listing = await storage.list_task_files(
+        task_id="task-123",
+        prefix="environment",
+        recursive=False,
+        limit=100,
+        cursor="page-1",
+        presign=False,
+        version=2,
+        inline=False,
+    )
+
+    assert list_calls == [
+        {
+            "prefix": f"{expanded_prefix}environment/",
+            "delimiter": "/",
+            "max_keys": 100,
+            "continuation_token": "page-1",
+        }
+    ]
+    assert listing["files"] == [
+        {
+            "path": "environment/Dockerfile",
+            "key": f"{expanded_prefix}environment/Dockerfile",
+            "size": 24,
+            "last_modified": None,
+        }
+    ]
+    assert listing["dirs"] == [{"path": "environment/repo"}]
+    assert listing["cursor"] == "page-2"
+    assert listing["truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_archive_directory_pages_apply_limit_and_cursor(monkeypatch):
+    archive_bytes = _make_task_archive(
+        {
+            "a.txt": "a\n",
+            "environment/one.txt": "one\n",
+            "environment/two.txt": "two\n",
+            "z.txt": "z\n",
+        }
+    )
+    storage = storage_mod.StorageClient()
+    storage._client = object()
+
+    async def fake_object_exists(s3_key: str) -> bool:
+        if s3_key.endswith("/.oddish-manifest.json"):
+            return False
+        return s3_key == "tasks/task-123/v1/.oddish-task.tar.gz"
+
+    async def fake_load_task_archive(s3_key: str):
+        return (archive_bytes, *storage_mod._parse_task_archive(archive_bytes))
+
+    monkeypatch.setattr(storage, "object_exists", fake_object_exists)
+    monkeypatch.setattr(storage, "_load_task_archive", fake_load_task_archive)
+
+    first = await storage.list_task_files(
+        task_id="task-123",
+        prefix=None,
+        recursive=False,
+        limit=2,
+        cursor=None,
+        presign=False,
+        version=1,
+        inline=False,
+    )
+    second = await storage.list_task_files(
+        task_id="task-123",
+        prefix=None,
+        recursive=False,
+        limit=2,
+        cursor=first["cursor"],
+        presign=False,
+        version=1,
+        inline=False,
+    )
+
+    assert first["files"] == [
+        next(
+            entry
+            for entry in storage_mod._parse_task_archive(archive_bytes)[0]
+            if entry["path"] == "a.txt"
+        )
+    ]
+    assert first["dirs"] == [{"path": "environment"}]
+    assert first["cursor"] == "2"
+    assert first["truncated"] is True
+    assert [entry["path"] for entry in second["files"]] == ["z.txt"]
+    assert second["dirs"] == []
+    assert second["cursor"] is None
+    assert second["truncated"] is False
+
+
+@pytest.mark.asyncio
 async def test_list_task_files_expanded_layout_inlines_small_contents(monkeypatch):
     """Recursive expanded-layout listings fetch small text objects
     server-side and attach their contents; binary objects are left to the
