@@ -656,6 +656,53 @@ def _gemini_profile(
     )
 
 
+def _antigravity_profile(
+    agent_class: type[Any],
+    agent_config: AgentConfig,
+    resolved_env: Mapping[str, str],
+) -> RestrictedNetworkProfile:
+    env = dict(resolved_env)
+    uses_oauth = bool(env.get("GEMINI_OAUTH_CREDS_PATH")) or env.get(
+        "GEMINI_FORCE_OAUTH", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    uses_vertex = env.get("GOOGLE_GENAI_USE_VERTEXAI", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    has_custom_base_url = any(env.get(key, "").strip() for key in _GEMINI_BASE_URL_KEYS)
+    if uses_oauth:
+        raise RestrictedNetworkProfileError(
+            "Restricted Antigravity CLI phases do not support OAuth transport; "
+            "use GEMINI_API_KEY auth (agy headless mode) with bounded hosts."
+        )
+    if uses_vertex and not has_custom_base_url:
+        raise RestrictedNetworkProfileError(
+            "Restricted Antigravity CLI phases require an explicit "
+            "GOOGLE_GEMINI_BASE_URL when Vertex routing is requested; note the "
+            "agy agent itself ignores Vertex variables and runs API-key auth."
+        )
+    hosts = _selected_transport_hosts(
+        agent_config,
+        resolved_env,
+        base_url_keys=_consumed_base_url_keys_for_class(agent_class, agent_config),
+        # agy is transport-authoritative like gemini-cli: modelProvider=gemini
+        # fronts the Gemini API (or the explicit base URL), so pin the host and
+        # do not let model-id inference substitute another provider's host.
+        default_hosts=_GEMINI_RUNTIME_HOSTS,
+        infer_model=False,
+    )
+    return RestrictedNetworkProfile(
+        outbound_hosts=hosts,
+        # No kwarg_overrides / env_overrides: agy has no settings-level web-tool
+        # exclusion (OddishAntigravityCli docstring); the allowlist above is the
+        # only web bound. server_web_disabled stays False until E2E confirms agy
+        # exposes no provider-side web tools in headless API-key mode.
+        server_web_disabled=False,
+    )
+
+
 def _unattested_stock_harness_profile(
     agent_class: type[Any],
     agent_config: AgentConfig,
@@ -695,6 +742,11 @@ _COMPATIBILITY_PROFILES: dict[str, _RestrictedAgentSpec] = {
     "harbor.agents.installed.grok_build:GrokBuild": _RestrictedAgentSpec(
         _unattested_stock_harness_profile,
         _no_base_url_keys,
+        pins_own_transport=True,
+    ),
+    "harbor.agents.installed.antigravity_cli:AntigravityCli": _RestrictedAgentSpec(
+        _unattested_stock_harness_profile,
+        _gemini_base_url_keys,
         pins_own_transport=True,
     ),
     "harbor.agents.nop:NopAgent": _RestrictedAgentSpec(
@@ -742,6 +794,9 @@ _COMPATIBILITY_PROFILES: dict[str, _RestrictedAgentSpec] = {
     ),
     "oddish.workers.agents.gemini_cli:OddishGeminiCli": _RestrictedAgentSpec(
         _gemini_profile, _gemini_base_url_keys, pins_own_transport=True
+    ),
+    "oddish.workers.agents.antigravity_cli:OddishAntigravityCli": _RestrictedAgentSpec(
+        _antigravity_profile, _gemini_base_url_keys, pins_own_transport=True
     ),
     "oddish.workers.agents.cursor_cli:OddishCursorCli": _RestrictedAgentSpec(
         _cursor_profile,
