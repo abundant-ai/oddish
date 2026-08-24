@@ -47,6 +47,8 @@ from oddish.db import (
 )
 from oddish.core.llm_key_fingerprint import trial_llm_key_hash
 from oddish.core.task_browse_summary import refresh_task_browse_summaries
+from oddish.config import HARBOR_DEFAULT_SHA, HARBOR_DEFAULT_SOURCE
+from oddish.core.harbor_source import HARBOR_VARIANTS
 from oddish.db.storage import get_storage_client, resolve_task_directory
 from oddish.model_pricing import is_native_cost_trusted, settle_cost_usd
 from oddish.observability import (
@@ -101,6 +103,72 @@ from oddish.workers.queue.worker_job_single_job import (
 logger = logging.getLogger(__name__)
 
 TRIAL_HEARTBEAT_INTERVAL_SECONDS = 30
+
+
+def _refresh_stable_variant_pin(
+    trial, *, executing: tuple[str, str] | None = None
+) -> dict | None:
+    """Refresh a stable-variant trial's recorded harbor pin at claim time.
+
+    The deployment is the unit of harbor identity for stable variants: the
+    ``gke`` variant image bakes the blessed gke pin, and every other worker
+    executes the locked default pin -- so a trial queued across a pin bump
+    executes whatever the deployment now ships, and the pin stamped at
+    submission can go stale while it waits. Rewrite the record the moment
+    the worker claims the job so the row matches execution; the trial's own
+    lock.json already told the truth, this makes the database agree with it.
+
+    The indexed ``trials.harbor_sha`` projection is reconciled even when the
+    pin itself already matches: immutable retry, combine, and import all
+    persist ``harbor_config`` without the projection, and sha filters query
+    only the projection.
+
+    Left untouched: ``ephemeral`` exact-pin trials (they run the sha they
+    recorded, out of process) beyond the projection sync, and configs with
+    no harbor identity at all (audit/analysis payloads execute no pin).
+    """
+    harbor_config = getattr(trial, "harbor_config", None)
+    if not isinstance(harbor_config, dict):
+        return harbor_config
+    variant_id = harbor_config.get("variant_id")
+    if variant_id is None and "resolved_sha" not in harbor_config:
+        return harbor_config
+    if variant_id != "ephemeral":
+        # ``executing`` is what the claiming runtime actually runs. Hosted
+        # workers omit it: a variant job only ever claims inside its own
+        # variant image, so the registry entry (or the locked default) IS the
+        # executing harbor. Local mode passes the installed default
+        # descriptor explicitly, because it executes that for every
+        # stable-family trial regardless of the trial's variant label.
+        if executing is not None:
+            source, sha = executing
+        else:
+            variant = HARBOR_VARIANTS.get(variant_id)
+            if variant is not None:
+                source, sha = variant.source, variant.sha
+            else:
+                source, sha = HARBOR_DEFAULT_SOURCE, HARBOR_DEFAULT_SHA
+        if (
+            harbor_config.get("resolved_sha") != sha
+            or harbor_config.get("source") != source
+        ):
+            logger.warning(
+                "trial %s: recorded harbor pin %s superseded by the deployed %s "
+                "at claim",
+                getattr(trial, "id", "?"),
+                harbor_config.get("resolved_sha"),
+                sha,
+            )
+            harbor_config = {
+                **harbor_config,
+                "source": source,
+                "resolved_sha": sha,
+            }
+            trial.harbor_config = harbor_config
+    resolved = harbor_config.get("resolved_sha")
+    if hasattr(trial, "harbor_sha") and trial.harbor_sha != resolved:
+        trial.harbor_sha = resolved
+    return harbor_config
 
 
 def _extract_trial_index(trial_id: str, task_id: str) -> int:
@@ -577,7 +645,7 @@ async def _prepare_trial_run(
         if trial.queue_key != canonical_queue_key:
             trial.queue_key = canonical_queue_key
         trial_environment = trial.environment
-        trial_harbor_config = trial.harbor_config
+        trial_harbor_config = _refresh_stable_variant_pin(trial)
         trial.current_worker_id = worker_id
         trial.current_queue_slot = queue_slot
         trial.claimed_at = utcnow()
@@ -1023,11 +1091,7 @@ async def _run_post_trial_hooks(trial_id: str) -> None:
                 # own start, yet is exactly the kind that must go. Probes are the
                 # one exception; ``_store_trial_results`` writes their
                 # classification during settlement, above.
-                if (
-                    trial.attempts > 1
-                    and not trial.is_probe
-                    and trial.analysis_status
-                ):
+                if trial.attempts > 1 and not trial.is_probe and trial.analysis_status:
                     trial.analysis = None
                     trial.analysis_status = None
                     trial.analysis_error = None
@@ -1833,7 +1897,9 @@ async def run_trial_job(
                 )
                 oddish_uploaded = True
             except Exception as e:
-                message = f"Failed to upload trial results to S3: {type(e).__name__}: {e}"
+                message = (
+                    f"Failed to upload trial results to S3: {type(e).__name__}: {e}"
+                )
                 console.print(f"[yellow]{message}[/yellow]")
                 if is_analysis_kind(trial_mode):
                     artifact_upload_error = message
