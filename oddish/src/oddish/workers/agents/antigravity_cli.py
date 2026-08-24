@@ -8,6 +8,7 @@ from harbor.agents.installed.antigravity_cli import AntigravityCli
 
 from oddish.workers.harbor.model_hosts import (
     ANTIGRAVITY_INSTALL_HOSTS,
+    ANTIGRAVITY_RUNTIME_HOSTS,
     outbound_hosts_for_model,
 )
 
@@ -34,7 +35,9 @@ class OddishAntigravityCli(AntigravityCli):
         model_name: str | None = None,
         kwargs: dict[str, Any] | None = None,
     ) -> list[str]:
-        domains: set[str] = set(ANTIGRAVITY_INSTALL_HOSTS)
+        domains: set[str] = set(ANTIGRAVITY_INSTALL_HOSTS) | set(
+            ANTIGRAVITY_RUNTIME_HOSTS
+        )
         for host in outbound_hosts_for_model(
             model_name, agent_kwargs=kwargs, infer_bare_provider=True
         ):

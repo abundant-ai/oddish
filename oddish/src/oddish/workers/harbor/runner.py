@@ -71,6 +71,7 @@ from .agent_config import (
 )
 from .model_hosts import (
     ANTIGRAVITY_INSTALL_HOSTS,
+    ANTIGRAVITY_RUNTIME_HOSTS,
     GEMINI_BASE_URL_KEYS,
     GEMINI_OAUTH_ENV_KEYS,
     OPENCODE_INSTALL_HOSTS,
@@ -1195,7 +1196,12 @@ def _antigravity_environment_hosts(agent_config: HarborAgentConfig) -> list[str]
     """
     return [
         *ANTIGRAVITY_INSTALL_HOSTS,
-        *outbound_hosts_for_model(agent_config.model_name, agent_env=agent_config.env),
+        *ANTIGRAVITY_RUNTIME_HOSTS,
+        *outbound_hosts_for_model(
+            agent_config.model_name,
+            agent_kwargs=agent_config.kwargs,
+            agent_env=agent_config.env,
+        ),
     ]
 
 

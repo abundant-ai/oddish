@@ -154,10 +154,31 @@ ANTIGRAVITY_INSTALL_HOSTS: tuple[str, ...] = (
     "antigravity-cli-auto-updater-974169037036.us-central1.run.app",  # manifest
     "storage.googleapis.com",  # binary tarball (antigravity-public bucket)
 )
+# Runtime endpoints the agy binary dials on every invocation, captured live
+# from agy 1.1.19 through a CONNECT-logging proxy. The Unleash feature-flag
+# host is contacted before any model call, and an egress filter that silently
+# DROPS its SYNs stalls startup through kernel retries until the agent
+# timeout — allowing it is an availability requirement, not a nicety. The
+# Playwright CDNs back agy's bundled browser tooling and play.googleapis.com
+# carries its telemetry; both are probed at startup with the same stall risk.
+ANTIGRAVITY_RUNTIME_HOSTS: tuple[str, ...] = (
+    *_GEMINI_HOSTS,
+    "antigravity-unleash.goog",
+    "play.googleapis.com",
+    "playwright.azureedge.net",
+    "playwright-akamai.azureedge.net",
+    "playwright-verizon.azureedge.net",
+)
 _AGENT_RUNTIME_HOSTS: dict[str, tuple[str, ...]] = {
     "tbh": _TBH_RUNTIME_HOSTS,
     "dsh": _DSH_INSTALL_HOSTS + _DSH_DEEPSEEK_RUNTIME_HOSTS,
-    "antigravity-cli": _GEMINI_HOSTS,
+    "antigravity-cli": ANTIGRAVITY_RUNTIME_HOSTS,
+}
+# Import-path-shaped configs reach the registry through the lowercased class
+# basename (wrappers null ``name``); map those spellings back to the agent key.
+_CLASS_BASENAME_RUNTIME_KEYS: dict[str, str] = {
+    "oddishantigravitycli": "antigravity-cli",
+    "antigravitycli": "antigravity-cli",
 }
 
 _DEFAULT_BEDROCK_REGION = "us-east-1"
@@ -252,6 +273,7 @@ def agent_runtime_hosts(
     if not key and import_path:
         # Oddish wrappers null the name and set an import path instead.
         key = import_path.rsplit(":", 1)[-1].strip().lower()
+        key = _CLASS_BASENAME_RUNTIME_KEYS.get(key, key)
     hosts = list(_AGENT_RUNTIME_HOSTS.get(key, ()))
     if not hosts:
         return []
