@@ -4,18 +4,20 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import APIKeyScope, AuthContext, require_auth
 from dashboard_attribution import (
     resolve_experiments_author,
     resolve_github_users,
+    resolve_partial_member_ids,
     resolve_search_authors,
 )
 from models import UserModel
 from oddish.core.admin import CostLeaderboardUser, get_cost_leaderboard_core
 from oddish.core.dashboard import get_dashboard_core
+from oddish.core.helpers import escape_like, parse_search_query
 from oddish.db import get_session
 from oddish.filters.trial_metrics import TrialMetricFilter
 from oddish.timing import TimingRecorder, add_server_timing_metric, elapsed_ms, now
@@ -31,6 +33,76 @@ class CostLeaderboardEntry(BaseModel):
 
 class CostLeaderboardResponse(BaseModel):
     leaders: list[CostLeaderboardEntry]
+
+
+class PeopleSearchItem(BaseModel):
+    id: str
+    display_name: str
+    github_username: str | None
+
+
+class PeopleSearchResponse(BaseModel):
+    items: list[PeopleSearchItem]
+
+
+@router.get("/people/search", response_model=PeopleSearchResponse)
+async def search_people(
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    q: str = Query("", max_length=200),
+    limit: int = Query(10),
+) -> PeopleSearchResponse:
+    """Return active organization members using only safe identity fields."""
+    auth.require_scope(APIKeyScope.READ)
+    effective_limit = min(25, max(1, limit))
+    normalized_query = q.strip()
+    partial = f"%{escape_like(normalized_query)}%"
+    github_query = normalized_query.lstrip("@") or normalized_query
+    github_partial = f"%{escape_like(github_query)}%"
+
+    async with get_session() as session:
+        rows = await session.execute(
+            select(
+                UserModel.id,
+                UserModel.name,
+                UserModel.github_username,
+            )
+            .where(
+                UserModel.org_id == auth.org_id,
+                UserModel.is_active.is_(True),
+                or_(
+                    func.length(func.btrim(UserModel.name)) > 0,
+                    func.length(func.btrim(UserModel.github_username)) > 0,
+                ),
+                or_(
+                    UserModel.id == normalized_query,
+                    UserModel.name.ilike(partial, escape="\\"),
+                    UserModel.github_username.ilike(github_partial, escape="\\"),
+                ),
+            )
+            .order_by(
+                case((UserModel.id == normalized_query, 0), else_=1),
+                UserModel.name.asc().nulls_last(),
+                UserModel.github_username.asc().nulls_last(),
+                UserModel.id.asc(),
+            )
+            .limit(effective_limit)
+        )
+
+    items: list[PeopleSearchItem] = []
+    for user_id, name, github_username in rows.all():
+        safe_name = (name or "").strip()
+        safe_handle = (github_username or "").strip().lstrip("@")
+        display_name = safe_name or (f"@{safe_handle}" if safe_handle else "")
+        if not display_name:
+            continue
+        items.append(
+            PeopleSearchItem(
+                id=user_id,
+                display_name=display_name,
+                github_username=safe_handle or None,
+            )
+        )
+    return PeopleSearchResponse(items=items)
 
 
 def _leaderboard_name(
@@ -355,6 +427,20 @@ async def get_dashboard(
             author_github_usernames,
             author_emails,
         ) = await resolve_experiments_author(session, auth, experiments_author)
+        parsed_search = parse_search_query(experiments_query or "")
+        member_search_tokens = tuple(
+            dict.fromkeys(
+                (
+                    *(needle for group in parsed_search.include for needle in group),
+                    *parsed_search.exclude,
+                )
+            )
+        )
+        search_person_user_ids = await resolve_partial_member_ids(
+            session,
+            org_id=auth.org_id,
+            tokens=member_search_tokens,
+        )
         search_tokens = [
             token.strip()
             for token in (experiments_author_query or "").split(",")
@@ -421,6 +507,7 @@ async def get_dashboard(
             experiments_search_author_user_ids=search_author_user_ids,
             experiments_search_author_github_usernames=search_author_github_usernames,
             experiments_search_author_emails=search_author_emails,
+            experiments_search_person_user_ids=search_person_user_ids,
             usage_minutes=usage_minutes,
             include_queues=include_queues,
             include_tasks=include_tasks,
