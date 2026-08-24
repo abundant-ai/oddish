@@ -343,6 +343,22 @@ async def test_partial_member_ids_resolve_canonical_name() -> None:
 
 
 @pytest.mark.asyncio
+async def test_partial_member_ids_normalize_prefixed_github_handle() -> None:
+    session = _CapturingIdSession(["user_kyle"])
+
+    resolved = await resolve_partial_member_ids(
+        session,  # type: ignore[arg-type]
+        org_id="org_1",
+        tokens=("@Kyl",),
+    )
+
+    assert resolved == {"@kyl": ("user_kyle",)}
+    compiled = session.statements[0].compile(dialect=postgresql.dialect())
+    assert "%@Kyl%" in compiled.params.values()  # display-name pattern stays literal
+    assert "%Kyl%" in compiled.params.values()  # stored handles omit leading @
+
+
+@pytest.mark.asyncio
 async def test_partial_member_ids_are_scoped_to_one_organization() -> None:
     session = _CapturingIdSession([])
     await resolve_partial_member_ids(
@@ -437,7 +453,7 @@ async def test_people_search_is_member_visible_and_never_serializes_email(
     async with httpx.AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
-        response = await client.get("/people/search?q=kyl&limit=999")
+        response = await client.get("/people/search?q=@kyl&limit=999")
 
     assert response.status_code == 200
     assert response.json() == {
@@ -460,10 +476,10 @@ async def test_people_search_is_member_visible_and_never_serializes_email(
     sql = _compiled(session.statements[0])
     assert "users.org_id = 'org_current'" in sql
     assert "users.is_active is true" in sql
-    assert "users.name ilike '%%kyl%%'" in sql
+    assert "users.name ilike '%%@kyl%%'" in sql
     assert "users.github_username ilike '%%kyl%%'" in sql
     assert "escape" in sql
-    assert "users.id = 'kyl'" in sql
+    assert "users.id = '@kyl'" in sql
     assert "limit 25" in sql
     assert "users.email" not in sql
 

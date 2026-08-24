@@ -556,6 +556,8 @@ async def resolve_partial_member_ids(
         if not normalized or normalized in resolved:
             continue
         partial = f"%{escape_like(token)}%"
+        github_token = _normalize_github_handle(token) or token
+        github_partial = f"%{escape_like(github_token)}%"
         rows = await session.execute(
             select(UserModel.id)
             .where(
@@ -563,7 +565,7 @@ async def resolve_partial_member_ids(
                 UserModel.is_active == True,  # noqa: E712
                 or_(
                     UserModel.name.ilike(partial, escape="\\"),
-                    UserModel.github_username.ilike(partial, escape="\\"),
+                    UserModel.github_username.ilike(github_partial, escape="\\"),
                 ),
             )
             .order_by(UserModel.id)

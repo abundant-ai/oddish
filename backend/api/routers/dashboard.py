@@ -56,6 +56,8 @@ async def search_people(
     effective_limit = min(25, max(1, limit))
     normalized_query = q.strip()
     partial = f"%{escape_like(normalized_query)}%"
+    github_query = normalized_query.lstrip("@") or normalized_query
+    github_partial = f"%{escape_like(github_query)}%"
 
     async with get_session() as session:
         rows = await session.execute(
@@ -74,7 +76,7 @@ async def search_people(
                 or_(
                     UserModel.id == normalized_query,
                     UserModel.name.ilike(partial, escape="\\"),
-                    UserModel.github_username.ilike(partial, escape="\\"),
+                    UserModel.github_username.ilike(github_partial, escape="\\"),
                 ),
             )
             .order_by(
