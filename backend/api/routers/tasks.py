@@ -17,7 +17,7 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse
 from harbor.models.environment_type import EnvironmentType
-from sqlalchemy import and_, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -74,6 +74,7 @@ from oddish.core.sharing.helpers import (
     make_task_files_ndjson_response,
     stream_task_files_s3,
 )
+from oddish.core.task_files import resolve_task_file_source
 from oddish.core.idempotency import (
     IdempotencyReplay,
     SWEEP_ROUTE,
@@ -107,7 +108,6 @@ from oddish.core.model_display_names import canonical_model_key
 from oddish.db import (
     ExperimentModel,
     TaskModel,
-    TaskVersionModel,
     get_read_session,
     get_session,
     utcnow,
@@ -1723,45 +1723,6 @@ def _build_task_file_etag(archive_etag: str, file_path: str) -> str:
     return f'W/"{normalized}:{file_path}"'
 
 
-async def _resolve_task_file_source(
-    session: AsyncSession,
-    *,
-    task_id: str,
-    org_id: str,
-    version: int | None,
-) -> tuple[int | None, str | None]:
-    """Resolve file authorization, version, and storage key in one query.
-
-    The previous route loaded ``TaskModel`` and its current-version
-    relationship, then ``list_task_files_s3`` opened a second session to read
-    ``TaskVersionModel.task_s3_key``. Keeping the selected version in this
-    organization-scoped query removes those repeated database round trips.
-    """
-    version_join = (
-        TaskVersionModel.id == TaskModel.current_version_id
-        if version is None
-        else and_(
-            TaskVersionModel.task_id == TaskModel.id,
-            TaskVersionModel.version == version,
-        )
-    )
-    row = (
-        await session.execute(
-            select(
-                TaskModel.id,
-                TaskVersionModel.version,
-                TaskVersionModel.task_s3_key,
-            )
-            .outerjoin(TaskVersionModel, version_join)
-            .where(TaskModel.id == task_id, TaskModel.org_id == org_id)
-        )
-    ).one_or_none()
-    if row is None:
-        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-    resolved_version = version if version is not None else row.version
-    return resolved_version, str(row.task_s3_key) if row.task_s3_key else None
-
-
 @router.get("/tasks/{task_id}/files")
 async def list_task_files(
     task_id: str,
@@ -1792,7 +1753,7 @@ async def list_task_files(
     auth.require_scope(APIKeyScope.READ)
 
     async with get_read_session() as session:
-        version, task_s3_prefix = await _resolve_task_file_source(
+        version, task_s3_prefix = await resolve_task_file_source(
             session,
             task_id=task_id,
             org_id=auth.org_id,
@@ -1810,7 +1771,6 @@ async def list_task_files(
                 presign=presign,
                 version=version,
                 task_s3_prefix=task_s3_prefix,
-                lookup_task_s3_prefix=False,
             )
         )
 
@@ -1824,7 +1784,6 @@ async def list_task_files(
         version=version,
         inline=inline,
         task_s3_prefix=task_s3_prefix,
-        lookup_task_s3_prefix=False,
     )
 
 
@@ -1849,7 +1808,7 @@ async def get_task_file_content(
     auth.require_scope(APIKeyScope.READ)
 
     async with get_read_session() as session:
-        version, task_s3_prefix = await _resolve_task_file_source(
+        version, task_s3_prefix = await resolve_task_file_source(
             session,
             task_id=task_id,
             org_id=auth.org_id,
@@ -1864,7 +1823,6 @@ async def get_task_file_content(
             version=version,
             max_bytes=max_bytes,
             task_s3_prefix=task_s3_prefix,
-            lookup_task_s3_prefix=False,
         )
     except HTTPException as exc:
         if exc.status_code != status.HTTP_404_NOT_FOUND:

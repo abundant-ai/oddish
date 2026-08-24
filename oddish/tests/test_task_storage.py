@@ -4,6 +4,7 @@ import io
 from pathlib import Path
 import sys
 import tarfile
+from unittest.mock import AsyncMock
 
 from fastapi import HTTPException
 import pytest
@@ -875,27 +876,12 @@ async def test_expanded_directory_page_is_bounded_and_keeps_cursor(monkeypatch):
     storage = storage_mod.StorageClient()
     storage._client = object()
     expanded_prefix = "tasks/task-123/v2-files/"
-    list_calls: list[dict[str, object]] = []
 
     async def fake_object_exists(s3_key: str) -> bool:
         return s3_key == f"{expanded_prefix}.oddish-manifest.json"
 
-    async def fake_list_objects(
-        prefix: str,
-        *,
-        delimiter: str,
-        max_keys: int,
-        continuation_token: str | None,
-    ) -> dict:
-        list_calls.append(
-            {
-                "prefix": prefix,
-                "delimiter": delimiter,
-                "max_keys": max_keys,
-                "continuation_token": continuation_token,
-            }
-        )
-        return {
+    list_objects = AsyncMock(
+        return_value={
             "objects": [
                 {
                     "key": f"{expanded_prefix}environment/Dockerfile",
@@ -907,9 +893,10 @@ async def test_expanded_directory_page_is_bounded_and_keeps_cursor(monkeypatch):
             "next_token": "page-2",
             "is_truncated": True,
         }
+    )
 
     monkeypatch.setattr(storage, "object_exists", fake_object_exists)
-    monkeypatch.setattr(storage, "list_objects", fake_list_objects)
+    monkeypatch.setattr(storage, "list_objects", list_objects)
 
     listing = await storage.list_task_files(
         task_id="task-123",
@@ -922,14 +909,12 @@ async def test_expanded_directory_page_is_bounded_and_keeps_cursor(monkeypatch):
         inline=False,
     )
 
-    assert list_calls == [
-        {
-            "prefix": f"{expanded_prefix}environment/",
-            "delimiter": "/",
-            "max_keys": 100,
-            "continuation_token": "page-1",
-        }
-    ]
+    list_objects.assert_awaited_once_with(
+        f"{expanded_prefix}environment/",
+        delimiter="/",
+        max_keys=100,
+        continuation_token="page-1",
+    )
     assert listing["files"] == [
         {
             "path": "environment/Dockerfile",

@@ -74,7 +74,6 @@ interface FilesListingResponse {
   files?: TaskFile[];
   dirs?: Array<{ path: string }>;
   cursor?: string | null;
-  truncated?: boolean;
 }
 
 /**
@@ -116,13 +115,15 @@ interface TreeNode {
   path: string;
   type: "file" | "dir";
   children?: TreeNode[];
-  childrenLoaded?: boolean;
-  nextCursor?: string | null;
-  isLoading?: boolean;
-  loadError?: string | null;
   content?: string;
   url?: string; // Presigned S3 URL for direct access
   size?: number; // File size in bytes
+}
+
+interface DirectoryListing {
+  nodes: TreeNode[];
+  cursor: string | null;
+  status: "ready" | "loading" | "error";
 }
 
 type FilePreview =
@@ -299,15 +300,11 @@ function sortTreeLevel(nodes: TreeNode[]): TreeNode[] {
   );
 }
 
-/** Build one directory level from the bounded non-recursive API response. */
 function buildDirectoryPage(listing: FilesListingResponse): TreeNode[] {
   const dirs = (listing.dirs ?? []).map((dir) => ({
     name: getNodeName(dir.path),
     path: dir.path,
     type: "dir" as const,
-    children: [],
-    childrenLoaded: false,
-    nextCursor: null,
   }));
   const files = (listing.files ?? []).map((file) => ({
     name: getNodeName(file.path),
@@ -327,54 +324,6 @@ function mergeTreeLevel(current: TreeNode[], incoming: TreeNode[]): TreeNode[] {
     byPath.set(node.path, existing ? { ...node, ...existing } : node);
   }
   return sortTreeLevel([...byPath.values()]);
-}
-
-function updateDirectoryNode(
-  nodes: TreeNode[],
-  path: string,
-  update: (node: TreeNode) => TreeNode
-): TreeNode[] {
-  let changed = false;
-  const next = nodes.map((node) => {
-    if (node.path === path) {
-      changed = true;
-      return update(node);
-    }
-    if (node.children) {
-      const children = updateDirectoryNode(node.children, path, update);
-      if (children !== node.children) {
-        changed = true;
-        return { ...node, children };
-      }
-    }
-    return node;
-  });
-  return changed ? next : nodes;
-}
-
-function ensureDirectoryPaths(nodes: TreeNode[], paths: string[]): TreeNode[] {
-  let tree = nodes;
-  for (const path of paths) {
-    if (findNodeByPath(tree, path)) continue;
-    const parentPath = path.includes("/")
-      ? path.slice(0, path.lastIndexOf("/"))
-      : null;
-    const placeholder: TreeNode = {
-      name: getNodeName(path),
-      path,
-      type: "dir",
-      children: [],
-      childrenLoaded: false,
-      nextCursor: null,
-    };
-    tree = parentPath
-      ? updateDirectoryNode(tree, parentPath, (parent) => ({
-          ...parent,
-          children: mergeTreeLevel(parent.children ?? [], [placeholder]),
-        }))
-      : mergeTreeLevel(tree, [placeholder]);
-  }
-  return tree;
 }
 
 function findNodeByPath(nodes: TreeNode[], path: string): TreeNode | null {
@@ -623,10 +572,10 @@ export function TaskFilesPanel({
   const [isRunningQA, setIsRunningQA] = useState(false);
   const [qaActionError, setQAActionError] = useState<string | null>(null);
   const [fileTree, setFileTree] = useState<TreeNode[]>([]);
+  const [directoryListings, setDirectoryListings] = useState<
+    Record<string, DirectoryListing>
+  >({});
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
-  const [rootCursor, setRootCursor] = useState<string | null>(null);
-  const [isLoadingRootPage, setIsLoadingRootPage] = useState(false);
-  const [rootPageError, setRootPageError] = useState<string | null>(null);
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [loadingFullFile, setLoadingFullFile] = useState(false);
   const [viewMode, setViewMode] = useState<"rendered" | "raw">("rendered");
@@ -635,8 +584,6 @@ export function TaskFilesPanel({
   const contentRef = useRef<HTMLDivElement>(null);
   const copiedTaskNameTimeoutRef = useRef<number | null>(null);
   const copiedFileContentTimeoutRef = useRef<number | null>(null);
-  const loadingDirectoryPathsRef = useRef<Set<string>>(new Set());
-  const loadedDirectoryPathsRef = useRef<Set<string>>(new Set());
   const listingGenerationRef = useRef(0);
   // Mirrors initialFilePath for the async listing loader: applyListing
   // runs in a fetch closure that would otherwise capture a stale value.
@@ -660,8 +607,24 @@ export function TaskFilesPanel({
       : ((verdictTask ?? task)?.current_version ?? null);
   const currentContentHash = checksVersion?.content_hash ?? null;
   const shouldScopeFilesToVersion = taskVersion !== undefined || !filesUrl;
+  const rootListing = directoryListings[""];
+  const visibleTree = useMemo(
+    () => (loadsTaskTreeByDirectory ? (rootListing?.nodes ?? []) : fileTree),
+    [fileTree, loadsTaskTreeByDirectory, rootListing?.nodes]
+  );
+  const listedSelectedFile = selectedFilePath
+    ? loadsTaskTreeByDirectory
+      ? Object.values(directoryListings)
+          .flatMap((listing) => listing.nodes)
+          .find((node) => node.path === selectedFilePath)
+      : findNodeByPath(fileTree, selectedFilePath)
+    : null;
   const selectedFile = selectedFilePath
-    ? findNodeByPath(fileTree, selectedFilePath)
+    ? (listedSelectedFile ?? {
+        name: getNodeName(selectedFilePath),
+        path: selectedFilePath,
+        type: "file" as const,
+      })
     : null;
 
   const buildSelectedFileUrl = (presign = false, maxBytes?: number) => {
@@ -1032,100 +995,54 @@ export function TaskFilesPanel({
     }
   }, [baseUrl, effectiveChecksTaskId, checksRerunning, mutateChecks]);
 
-  const loadDirectoryPage = useCallback(
-    async (path: string, cursor?: string | null) => {
-      if (!loadsTaskTreeByDirectory) return null;
-      if (!cursor && loadedDirectoryPathsRef.current.has(path)) return null;
+  async function loadDirectoryPage(
+    path: string | null,
+    cursor?: string | null
+  ) {
+    if (!loadsTaskTreeByDirectory) return;
 
-      const requestKey = `${path}\n${cursor ?? ""}`;
-      if (loadingDirectoryPathsRef.current.has(requestKey)) return null;
-      loadingDirectoryPathsRef.current.add(requestKey);
-      const generation = listingGenerationRef.current;
-      setFileTree((tree) =>
-        updateDirectoryNode(tree, path, (node) => ({
-          ...node,
-          isLoading: true,
-          loadError: null,
-        }))
-      );
-
-      try {
-        const res = await fetch(buildListingUrl(path, cursor ?? undefined));
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          throw new Error(
-            data.detail || `Failed to fetch files: ${res.statusText}`
-          );
-        }
-        const data = (await res.json()) as FilesListingResponse;
-        if (listingGenerationRef.current !== generation) return null;
-
-        const page = buildDirectoryPage(data);
-        loadedDirectoryPathsRef.current.add(path);
-        setFileTree((tree) =>
-          updateDirectoryNode(tree, path, (node) => ({
-            ...node,
-            children: mergeTreeLevel(node.children ?? [], page),
-            childrenLoaded: true,
-            nextCursor: data.cursor ?? null,
-            isLoading: false,
-            loadError: null,
-          }))
-        );
-        return data;
-      } catch (err) {
-        if (listingGenerationRef.current === generation) {
-          setFileTree((tree) =>
-            updateDirectoryNode(tree, path, (node) => ({
-              ...node,
-              isLoading: false,
-              loadError:
-                err instanceof Error ? err.message : "Failed to fetch files",
-            }))
-          );
-        }
-        return null;
-      } finally {
-        loadingDirectoryPathsRef.current.delete(requestKey);
-      }
-    },
-    [buildListingUrl, loadsTaskTreeByDirectory]
-  );
-
-  const loadMoreRoot = useCallback(async () => {
-    if (!loadsTaskTreeByDirectory || !rootCursor || isLoadingRootPage) return;
+    const directoryKey = path ?? "";
+    if (directoryListings[directoryKey]?.status === "loading") return;
     const generation = listingGenerationRef.current;
-    setIsLoadingRootPage(true);
-    setRootPageError(null);
+    setDirectoryListings((listings) => ({
+      ...listings,
+      [directoryKey]: {
+        nodes: listings[directoryKey]?.nodes ?? [],
+        cursor: listings[directoryKey]?.cursor ?? null,
+        status: "loading",
+      },
+    }));
+
     try {
-      const res = await fetch(buildListingUrl(undefined, rootCursor));
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(
-          data.detail || `Failed to fetch files: ${res.statusText}`
-        );
-      }
+      const res = await fetch(
+        buildListingUrl(path ?? undefined, cursor ?? undefined)
+      );
+      if (!res.ok) throw new Error("Failed to fetch files");
       const data = (await res.json()) as FilesListingResponse;
       if (listingGenerationRef.current !== generation) return;
-      setFileTree((tree) => mergeTreeLevel(tree, buildDirectoryPage(data)));
-      setRootCursor(data.cursor ?? null);
-    } catch (err) {
+
+      const page = buildDirectoryPage(data);
+      setDirectoryListings((listings) => ({
+        ...listings,
+        [directoryKey]: {
+          nodes: mergeTreeLevel(listings[directoryKey]?.nodes ?? [], page),
+          cursor: data.cursor ?? null,
+          status: "ready",
+        },
+      }));
+    } catch {
       if (listingGenerationRef.current === generation) {
-        setRootPageError(
-          err instanceof Error ? err.message : "Failed to fetch files"
-        );
-      }
-    } finally {
-      if (listingGenerationRef.current === generation) {
-        setIsLoadingRootPage(false);
+        setDirectoryListings((listings) => ({
+          ...listings,
+          [directoryKey]: {
+            nodes: listings[directoryKey]?.nodes ?? [],
+            cursor: listings[directoryKey]?.cursor ?? null,
+            status: "error",
+          },
+        }));
       }
     }
-  }, [
-    buildListingUrl,
-    isLoadingRootPage,
-    loadsTaskTreeByDirectory,
-    rootCursor,
-  ]);
+  }
 
   // Fetch root file list when panel opens
   useEffect(() => {
@@ -1142,13 +1059,9 @@ export function TaskFilesPanel({
       setLoading(true);
       setError(null);
       setFileTree([]);
+      setDirectoryListings({});
       setSelectedFilePath(null);
       setExpandedDirs(new Set());
-      setRootCursor(null);
-      setRootPageError(null);
-      setIsLoadingRootPage(false);
-      loadingDirectoryPathsRef.current.clear();
-      loadedDirectoryPathsRef.current.clear();
 
       // Once the tree is painted, later stream failures must not replace
       // a usable tree with an error state — missing bodies just fall back
@@ -1204,8 +1117,14 @@ export function TaskFilesPanel({
           const data: FilesListingResponse = await res.json();
           if (cancelled) return;
           if (loadsTaskTreeByDirectory) {
-            applyListing(buildDirectoryPage(data));
-            setRootCursor(data.cursor ?? null);
+            paintedTree = true;
+            setDirectoryListings({
+              "": {
+                nodes: buildDirectoryPage(data),
+                cursor: data.cursor ?? null,
+                status: "ready",
+              },
+            });
           } else {
             applyListing(buildTreeFromListing(data.files || []));
           }
@@ -1251,13 +1170,13 @@ export function TaskFilesPanel({
   useEffect(() => {
     if (activePane !== "file" || taskPaneExists) return;
     if (initialFilePathRef.current || selectedFilePath) return;
-    if (!fileTree.length) return;
+    if (!visibleTree.length) return;
     const defaultFile =
-      findNodeBySuffix(fileTree, "instruction.md") ??
-      fileTree.find((node) => node.type === "file") ??
-      findFirstFile(fileTree);
+      findNodeBySuffix(visibleTree, "instruction.md") ??
+      visibleTree.find((node) => node.type === "file") ??
+      findFirstFile(visibleTree);
     if (defaultFile) setSelectedFilePath(defaultFile.path);
-  }, [activePane, taskPaneExists, fileTree, selectedFilePath]);
+  }, [activePane, taskPaneExists, visibleTree, selectedFilePath]);
 
   // Load full file content (when user clicks "Load full file")
   async function loadFullFile() {
@@ -1336,14 +1255,10 @@ export function TaskFilesPanel({
   useEffect(() => {
     if (!isOpen) {
       setFileTree([]);
+      setDirectoryListings({});
       setSelectedFilePath(null);
       setError(null);
       setExpandedDirs(new Set());
-      setRootCursor(null);
-      setRootPageError(null);
-      setIsLoadingRootPage(false);
-      loadingDirectoryPathsRef.current.clear();
-      loadedDirectoryPathsRef.current.clear();
       setLoadingFullFile(false);
       setQAActionError(null);
       setIsRunningQA(false);
@@ -1352,15 +1267,18 @@ export function TaskFilesPanel({
 
   // Navigate to a specific file when initialFilePath changes (suffix match)
   useEffect(() => {
-    if (!initialFilePath || fileTree.length === 0) return;
+    if (!initialFilePath) return;
+    if (!loadsTaskTreeByDirectory && fileTree.length === 0) return;
 
-    const node =
-      findNodeByPath(fileTree, initialFilePath) ??
-      findNodeBySuffix(fileTree, initialFilePath);
+    const node = loadsTaskTreeByDirectory
+      ? null
+      : (findNodeByPath(fileTree, initialFilePath) ??
+        findNodeBySuffix(fileTree, initialFilePath));
     const targetPath = node?.path ?? initialFilePath;
     const ancestorPaths = getAncestorPaths(targetPath);
     if (ancestorPaths.length > 0) {
       setExpandedDirs((prev) => {
+        if (ancestorPaths.every((path) => prev.has(path))) return prev;
         const next = new Set(prev);
         for (const ancestorPath of ancestorPaths) {
           next.add(ancestorPath);
@@ -1369,37 +1287,12 @@ export function TaskFilesPanel({
       });
     }
 
-    if (node?.type === "file") {
-      setSelectedFilePath(node.path);
-      return;
-    }
+    if (node?.type === "dir") return;
 
-    // A paged tree initially contains only the root. Load each ancestor in
-    // order for a deep link, then let the selected path resolve from the
-    // resulting tree. The loaded-path ref prevents repeated requests as this
-    // effect reruns after each directory page arrives.
-    if (loadsTaskTreeByDirectory && ancestorPaths.length > 0) {
-      let cancelled = false;
-      // A root can itself have more than 100 entries. Materialize the known
-      // ancestor chain from the URL so the direct prefix requests below have
-      // nodes to attach to even when an ancestor is beyond the first page.
-      setFileTree((tree) => ensureDirectoryPaths(tree, ancestorPaths));
-      void (async () => {
-        for (const ancestorPath of ancestorPaths) {
-          if (cancelled) return;
-          await loadDirectoryPage(ancestorPath);
-        }
-        if (!cancelled) setSelectedFilePath(initialFilePath);
-      })();
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    // Recursive consumers still have the complete tree, so a miss means the
-    // path does not exist in this listing.
-    return;
-  }, [initialFilePath, fileTree, loadDirectoryPage, loadsTaskTreeByDirectory]);
+    // A file URL is already an exact resource address. Selecting it does not
+    // depend on whether its containing directory page happens to include it.
+    if (selectedFilePath !== targetPath) setSelectedFilePath(targetPath);
+  }, [initialFilePath, fileTree, loadsTaskTreeByDirectory, selectedFilePath]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -1438,28 +1331,35 @@ export function TaskFilesPanel({
     onNavigateToFirstTrial,
   ]);
 
-  const toggleDir = useCallback(
-    (node: TreeNode) => {
-      const isExpanded = expandedDirs.has(node.path);
-      setExpandedDirs((prev) => {
-        const next = new Set(prev);
-        if (isExpanded) {
-          next.delete(node.path);
-        } else {
-          next.add(node.path);
-        }
-        return next;
-      });
-      if (!isExpanded && loadsTaskTreeByDirectory && !node.childrenLoaded) {
-        void loadDirectoryPage(node.path);
+  function toggleDir(node: TreeNode) {
+    const isExpanded = expandedDirs.has(node.path);
+    setExpandedDirs((prev) => {
+      const next = new Set(prev);
+      if (isExpanded) {
+        next.delete(node.path);
+      } else {
+        next.add(node.path);
       }
-    },
-    [expandedDirs, loadDirectoryPage, loadsTaskTreeByDirectory]
-  );
+      return next;
+    });
+    if (
+      !isExpanded &&
+      loadsTaskTreeByDirectory &&
+      !directoryListings[node.path]
+    ) {
+      void loadDirectoryPage(node.path);
+    }
+  }
 
   const renderFileTree = (nodes: TreeNode[], depth = 0) => {
     return nodes.map((node) => {
       const isExpanded = expandedDirs.has(node.path);
+      const directory = loadsTaskTreeByDirectory
+        ? directoryListings[node.path]
+        : undefined;
+      const children = loadsTaskTreeByDirectory
+        ? directory?.nodes
+        : node.children;
       const isSelected =
         activePane === "file" && selectedFile?.path === node.path;
       const Icon =
@@ -1511,8 +1411,8 @@ export function TaskFilesPanel({
           </Button>
           {node.type === "dir" && isExpanded && (
             <div>
-              {node.children ? renderFileTree(node.children, depth + 1) : null}
-              {node.isLoading ? (
+              {children ? renderFileTree(children, depth + 1) : null}
+              {directory?.status === "loading" ? (
                 <div
                   className="text-muted-foreground flex items-center gap-1.5 py-1 text-xs"
                   style={{ paddingLeft: `${(depth + 1) * 12 + 8}px` }}
@@ -1521,25 +1421,25 @@ export function TaskFilesPanel({
                   Loading…
                 </div>
               ) : null}
-              {node.loadError ? (
+              {directory?.status === "error" ? (
                 <button
                   type="button"
                   className="text-destructive hover:text-destructive/80 py-1 text-left text-xs"
                   style={{ paddingLeft: `${(depth + 1) * 12 + 8}px` }}
                   onClick={() =>
-                    void loadDirectoryPage(node.path, node.nextCursor)
+                    void loadDirectoryPage(node.path, directory.cursor)
                   }
                 >
                   Unable to load. Retry
                 </button>
               ) : null}
-              {node.nextCursor && !node.isLoading ? (
+              {directory?.cursor && directory.status !== "loading" ? (
                 <button
                   type="button"
                   className="text-muted-foreground hover:text-foreground py-1 text-left text-xs"
                   style={{ paddingLeft: `${(depth + 1) * 12 + 8}px` }}
                   onClick={() =>
-                    void loadDirectoryPage(node.path, node.nextCursor)
+                    void loadDirectoryPage(node.path, directory.cursor)
                   }
                 >
                   Load more
@@ -1822,27 +1722,29 @@ export function TaskFilesPanel({
                 <p className="text-muted-foreground px-2 py-2 text-xs">
                   Unable to load files: {listingError}
                 </p>
-              ) : fileTree.length === 0 ? (
+              ) : visibleTree.length === 0 ? (
                 <p className="text-muted-foreground px-2 py-2 text-xs">
                   No files found
                 </p>
               ) : (
                 <>
-                  {renderFileTree(fileTree)}
-                  {rootCursor ? (
+                  {renderFileTree(visibleTree)}
+                  {rootListing?.cursor ? (
                     <button
                       type="button"
                       className="text-muted-foreground hover:text-foreground flex items-center gap-1.5 px-2 py-1 text-xs"
-                      onClick={() => void loadMoreRoot()}
-                      disabled={isLoadingRootPage}
+                      onClick={() =>
+                        void loadDirectoryPage(null, rootListing.cursor)
+                      }
+                      disabled={rootListing.status === "loading"}
                     >
-                      {isLoadingRootPage ? (
+                      {rootListing.status === "loading" ? (
                         <Loader2 className="h-3 w-3 animate-spin" />
                       ) : null}
                       Load more
                     </button>
                   ) : null}
-                  {rootPageError ? (
+                  {rootListing?.status === "error" ? (
                     <p className="text-destructive px-2 py-1 text-xs">
                       Unable to load the next page. Retry with Load more.
                     </p>

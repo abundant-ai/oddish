@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -12,7 +11,6 @@ from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from api.app import create_app
-from api.routers.tasks import _resolve_task_file_source
 
 
 @pytest.fixture
@@ -52,7 +50,7 @@ def test_tree_only_listing_forwards_inline_and_presign_flags(client):
 
     with (
         patch("api.routers.tasks.get_read_session", new=fake_get_read_session),
-        patch("api.routers.tasks._resolve_task_file_source", new=resolve_source),
+        patch("api.routers.tasks.resolve_task_file_source", new=resolve_source),
         patch("api.routers.tasks.list_task_files_s3", new=list_files),
     ):
         response = client.get(
@@ -71,30 +69,7 @@ def test_tree_only_listing_forwards_inline_and_presign_flags(client):
         version=3,
         inline=False,
         task_s3_prefix="tasks/task-1/v3/",
-        lookup_task_s3_prefix=False,
     )
-
-
-@pytest.mark.asyncio
-async def test_file_source_resolves_current_version_in_one_query():
-    result = SimpleNamespace(
-        one_or_none=lambda: SimpleNamespace(
-            version=4,
-            task_s3_key="tasks/task-1/v4-revisions/revision-7/",
-        )
-    )
-    session = SimpleNamespace(execute=AsyncMock(return_value=result))
-
-    version, task_s3_prefix = await _resolve_task_file_source(
-        session,
-        task_id="task-1",
-        org_id="org-1",
-        version=None,
-    )
-
-    assert version == 4
-    assert task_s3_prefix == "tasks/task-1/v4-revisions/revision-7/"
-    session.execute.assert_awaited_once()
 
 
 def test_directory_page_forwards_prefix_limit_and_cursor(client):
@@ -117,7 +92,7 @@ def test_directory_page_forwards_prefix_limit_and_cursor(client):
 
     with (
         patch("api.routers.tasks.get_read_session", new=fake_get_read_session),
-        patch("api.routers.tasks._resolve_task_file_source", new=resolve_source),
+        patch("api.routers.tasks.resolve_task_file_source", new=resolve_source),
         patch("api.routers.tasks.list_task_files_s3", new=list_files),
     ):
         response = client.get(
@@ -137,7 +112,6 @@ def test_directory_page_forwards_prefix_limit_and_cursor(client):
         version=3,
         inline=False,
         task_s3_prefix="tasks/task-1/v3/",
-        lookup_task_s3_prefix=False,
     )
 
 
@@ -158,7 +132,7 @@ def test_selected_file_forwards_preview_limit(client):
 
     with (
         patch("api.routers.tasks.get_read_session", new=fake_get_read_session),
-        patch("api.routers.tasks._resolve_task_file_source", new=resolve_source),
+        patch("api.routers.tasks.resolve_task_file_source", new=resolve_source),
         patch("api.routers.tasks.get_task_file_content_s3", new=get_file),
     ):
         response = client.get(
@@ -174,7 +148,6 @@ def test_selected_file_forwards_preview_limit(client):
         version=3,
         max_bytes=102400,
         task_s3_prefix="tasks/task-1/v3/",
-        lookup_task_s3_prefix=False,
     )
 
 
@@ -209,7 +182,7 @@ def test_selected_file_http_error_handling(
 
     with (
         patch("api.routers.tasks.get_read_session", new=fake_get_read_session),
-        patch("api.routers.tasks._resolve_task_file_source", new=resolve_source),
+        patch("api.routers.tasks.resolve_task_file_source", new=resolve_source),
         patch("api.routers.tasks.get_task_file_content_s3", new=get_file),
     ):
         response = client.get("/tasks/task-1/files/test.sh?version=3")
