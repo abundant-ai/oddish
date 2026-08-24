@@ -75,6 +75,30 @@ async def test_teardown_verifies_proof(monkeypatch) -> None:
     assert await NuminousBackend().teardown("sbx_1") is True
 
 
+@pytest.mark.asyncio
+async def test_teardown_200_without_proof_is_success(monkeypatch) -> None:
+    """A 2xx terminate is success even if verified_absent is false/absent —
+    the shared contract only asks whether teardown was issued/gone, and
+    orphan cleanup must not treat a real termination as a failure."""
+    import httpx
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"id": "sbx_2", "state": "terminated",
+                       "teardown_proof": {"verified_absent": False}}
+        )
+
+    transport = httpx.MockTransport(handler)
+    orig_client = httpx.AsyncClient
+
+    def client_factory(**kwargs):
+        kwargs["transport"] = transport
+        return orig_client(**kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client_factory)
+    assert await NuminousBackend().teardown("sbx_2") is True
+
+
 def test_capture_diagnostics_is_noop(tmp_path) -> None:
     with NuminousBackend().capture_diagnostics(tmp_path) as log:
         assert log is None

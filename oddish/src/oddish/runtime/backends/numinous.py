@@ -82,14 +82,18 @@ class NuminousBackend:
                     )
                     return True
                 r.raise_for_status()
+                # The terminate was accepted (2xx): teardown succeeded, matching
+                # the shared backend contract (orphan cleanup / strict harvest
+                # only need "is it gone"). verified_absent is extra proof we log
+                # but do not gate on — a running-state teardown can legitimately
+                # return proof=false while still having terminated the sandbox.
                 proof = (r.json().get("teardown_proof") or {})
-                verified = bool(proof.get("verified_absent"))
                 logger.info(
                     "NuminousBackend.teardown: terminated %s verified_absent=%s",
                     external_id,
-                    verified,
+                    bool(proof.get("verified_absent")),
                 )
-                return verified
+                return True
         except Exception:
             logger.exception(
                 "NuminousBackend.teardown: failed to terminate %s", external_id
