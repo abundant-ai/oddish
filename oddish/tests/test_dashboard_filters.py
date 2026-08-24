@@ -275,6 +275,27 @@ def test_experiment_freetext_matches_name_author_and_tag() -> None:
     assert "escape" in sql
 
 
+def test_experiment_freetext_matches_resolved_owner_and_latest_runner() -> None:
+    sql = _compile_sql(
+        _experiment_freetext_match(
+            "kyl",
+            org_id="org_1",
+            person_user_ids=("user_kyle",),
+        )
+    ).lower()
+
+    assert "experiments.owner_user_id in ('user_kyle')" in sql
+    assert "trials.billed_user_id" in sql
+    assert "trials.experiment_id = experiments.id" in sql
+    assert "experiment_trials" in sql
+    assert "experiment_trials.deleted_at is null" in sql
+    assert "trials.superseded_by_trial_id is null" in sql
+    assert "trials.created_at desc" in sql
+    assert "trials.id desc" in sql
+    assert "limit 1" in sql
+    assert "trials.org_id = 'org_1'" in sql
+
+
 def test_search_author_filter_matches_handle_via_primary_task() -> None:
     clause = _build_experiments_search_author_filter((), ("Bob",), org_id="org_1")
     sql = _compile_sql(clause)
@@ -457,3 +478,30 @@ def test_search_author_works_with_org_selected() -> None:
     page_sql = _compile_sql(session.statements[-1]).lower()
     assert "bob" in page_sql  # github:bob is the only author predicate
     assert "exists" in page_sql  # via the primary-task fallback
+
+
+def test_bare_member_mapping_preserves_or_and_exclusion_grammar() -> None:
+    session = _CapturingExpSession(tag_rows=[])
+    asyncio.run(
+        load_dashboard_experiments(
+            session,
+            org_id="org_1",
+            experiments_limit=10,
+            experiments_offset=0,
+            experiments_query='kyl OR alex agent -"sam smith"',
+            experiments_status="all",
+            experiments_search_person_user_ids={
+                "kyl": ("user_kyle",),
+                "alex": ("user_alex", "user_alexandra"),
+                "sam smith": ("user_sam",),
+            },
+        )
+    )
+
+    page_sql = _compile_sql(session.statements[-1]).lower()
+    assert "user_kyle" in page_sql
+    assert "user_alex" in page_sql and "user_alexandra" in page_sql
+    assert "user_sam" in page_sql
+    assert "not" in page_sql
+    assert page_sql.index("user_kyle") < page_sql.index("order by")
+    assert page_sql.index("user_kyle") < page_sql.index("limit")
