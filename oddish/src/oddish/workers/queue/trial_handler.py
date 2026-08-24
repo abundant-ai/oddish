@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import functools
 from functools import partial
 import json
 import logging
@@ -48,7 +49,6 @@ from oddish.db import (
 from oddish.core.llm_key_fingerprint import trial_llm_key_hash
 from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.config import HARBOR_DEFAULT_SHA, HARBOR_DEFAULT_SOURCE
-from oddish.core.harbor_source import HARBOR_VARIANTS
 from oddish.db.storage import get_storage_client, resolve_task_directory
 from oddish.model_pricing import is_native_cost_trusted, settle_cost_usd
 from oddish.observability import (
@@ -105,6 +105,32 @@ logger = logging.getLogger(__name__)
 TRIAL_HEARTBEAT_INTERVAL_SECONDS = 30
 
 
+
+@functools.lru_cache(maxsize=1)
+def _installed_harbor_descriptor() -> tuple[str, str]:
+    """The source and commit of the harbor THIS process imports.
+
+    Read from the installed distribution's PEP 610 ``direct_url.json``, which
+    records the resolved VCS URL and commit for a git install -- the one
+    answer that is correct in every runtime: variant image, default image,
+    self-host dispatcher, or local mode. Falls back to the locked default pin
+    when the metadata is unavailable (a non-git install), which is what such
+    an environment executes.
+    """
+    try:
+        import importlib.metadata
+        import json as _json
+
+        raw = importlib.metadata.distribution("harbor").read_text("direct_url.json")
+        info = _json.loads(raw or "")
+        url = str(info.get("url") or "").removeprefix("git+").removesuffix(".git")
+        sha = str((info.get("vcs_info") or {}).get("commit_id") or "")
+        if url and sha:
+            return url, sha
+    except Exception:  # noqa: BLE001 -- any metadata shape falls back
+        pass
+    return HARBOR_DEFAULT_SOURCE, HARBOR_DEFAULT_SHA
+
 def _refresh_stable_variant_pin(
     trial, *, executing: tuple[str, str] | None = None
 ) -> dict | None:
@@ -134,20 +160,16 @@ def _refresh_stable_variant_pin(
     if variant_id is None and "resolved_sha" not in harbor_config:
         return harbor_config
     if variant_id != "ephemeral":
-        # ``executing`` is what the claiming runtime actually runs. Hosted
-        # workers omit it: a variant job only ever claims inside its own
-        # variant image, so the registry entry (or the locked default) IS the
-        # executing harbor. Local mode passes the installed default
-        # descriptor explicitly, because it executes that for every
-        # stable-family trial regardless of the trial's variant label.
-        if executing is not None:
-            source, sha = executing
-        else:
-            variant = HARBOR_VARIANTS.get(variant_id)
-            if variant is not None:
-                source, sha = variant.source, variant.sha
-            else:
-                source, sha = HARBOR_DEFAULT_SOURCE, HARBOR_DEFAULT_SHA
+        # ``executing`` is what the claiming runtime actually runs. When the
+        # caller does not say, ask the runtime itself: the imported harbor's
+        # installation metadata carries the resolved source and commit, which
+        # is exact in every mode -- a Modal variant image bakes its blessed
+        # pin, the default image bakes the locked default, and a self-host
+        # or local worker executes whatever is installed, regardless of the
+        # trial's variant label.
+        if executing is None:
+            executing = _installed_harbor_descriptor()
+        source, sha = executing
         if (
             harbor_config.get("resolved_sha") != sha
             or harbor_config.get("source") != source

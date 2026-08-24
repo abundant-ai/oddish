@@ -23,7 +23,9 @@ def _trial(harbor_config, harbor_sha=None):
     return SimpleNamespace(id="t-1", harbor_config=harbor_config, harbor_sha=harbor_sha)
 
 
-def test_a_stale_gke_pin_is_rewritten_to_the_deployed_one():
+def test_a_stale_gke_pin_is_rewritten_to_what_the_gke_image_executes():
+    """Inside the gke variant image the installed harbor IS the blessed pin;
+    simulate that runtime with the explicit executing descriptor."""
     trial = _trial(
         {
             "variant_id": GKE_VARIANT_ID,
@@ -32,7 +34,9 @@ def test_a_stale_gke_pin_is_rewritten_to_the_deployed_one():
             "mode": "run",
         }
     )
-    refreshed = _refresh_stable_variant_pin(trial)
+    refreshed = _refresh_stable_variant_pin(
+        trial, executing=(_BLESSED.source, _BLESSED.sha)
+    )
     assert refreshed["resolved_sha"] == _BLESSED.sha
     assert refreshed["source"] == _BLESSED.source
     assert refreshed["mode"] == "run"
@@ -40,21 +44,36 @@ def test_a_stale_gke_pin_is_rewritten_to_the_deployed_one():
     assert trial.harbor_sha == _BLESSED.sha
 
 
-def test_a_stale_default_pin_is_rewritten_to_the_locked_one():
-    """Every non-registered variant executes the locked default pin, so a
-    'default' (or absent) variant id must be refreshed the same way -- the
-    default worker image is just as deploy-locked as the gke image."""
+def test_the_default_resolution_is_the_installed_harbor(monkeypatch):
+    """When no executing descriptor is given, the refresh asks the runtime
+    itself -- the imported harbor's installation metadata -- which is what
+    every worker without a variant image actually executes."""
+    import oddish.workers.queue.trial_handler as th
+
+    monkeypatch.setattr(
+        th, "_installed_harbor_descriptor", lambda: ("https://x/installed", "i" * 40)
+    )
     trial = _trial(
         {
-            "variant_id": "default",
-            "source": HARBOR_DEFAULT_SOURCE,
-            "resolved_sha": "0" * 40,
+            "variant_id": GKE_VARIANT_ID,
+            "source": _BLESSED.source,
+            "resolved_sha": _BLESSED.sha,
         }
     )
     refreshed = _refresh_stable_variant_pin(trial)
-    assert refreshed["resolved_sha"] == HARBOR_DEFAULT_SHA
-    assert refreshed["source"] == HARBOR_DEFAULT_SOURCE
-    assert trial.harbor_sha == HARBOR_DEFAULT_SHA
+    assert refreshed["resolved_sha"] == "i" * 40
+    assert refreshed["source"] == "https://x/installed"
+    assert trial.harbor_sha == "i" * 40
+
+
+def test_the_installed_descriptor_reads_pep610_metadata():
+    """Against this repo's own venv the metadata resolves to the locked
+    default pin -- the ground truth the fallback also names."""
+    from oddish.workers.queue.trial_handler import _installed_harbor_descriptor
+
+    source, sha = _installed_harbor_descriptor()
+    assert source == HARBOR_DEFAULT_SOURCE
+    assert sha == HARBOR_DEFAULT_SHA
 
 
 def test_a_matching_pin_still_reconciles_the_projection():
@@ -67,7 +86,10 @@ def test_a_matching_pin_still_reconciles_the_projection():
         "resolved_sha": _BLESSED.sha,
     }
     trial = _trial(config, harbor_sha=None)
-    assert _refresh_stable_variant_pin(trial) is config
+    result = _refresh_stable_variant_pin(
+        trial, executing=(_BLESSED.source, _BLESSED.sha)
+    )
+    assert result is config
     assert trial.harbor_sha == _BLESSED.sha
 
 
@@ -91,25 +113,6 @@ def test_a_config_with_no_harbor_identity_is_left_alone():
     assert _refresh_stable_variant_pin(trial) is config
     assert "resolved_sha" not in trial.harbor_config
     assert trial.harbor_sha is None
-
-
-def test_local_mode_stamps_what_it_executes_not_the_blessed_pin():
-    """Local mode executes the installed default harbor even for a trial
-    labelled with a registered variant; stamping the blessed variant pin
-    there would recreate the record-vs-execution skew this module cures."""
-    trial = _trial(
-        {
-            "variant_id": GKE_VARIANT_ID,
-            "source": _BLESSED.source,
-            "resolved_sha": _BLESSED.sha,
-        }
-    )
-    refreshed = _refresh_stable_variant_pin(
-        trial, executing=(HARBOR_DEFAULT_SOURCE, HARBOR_DEFAULT_SHA)
-    )
-    assert refreshed["resolved_sha"] == HARBOR_DEFAULT_SHA
-    assert refreshed["source"] == HARBOR_DEFAULT_SOURCE
-    assert trial.harbor_sha == HARBOR_DEFAULT_SHA
 
 
 def test_a_missing_or_malformed_config_is_left_alone():
