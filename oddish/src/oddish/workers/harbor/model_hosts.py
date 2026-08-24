@@ -144,9 +144,20 @@ OPENCODE_INSTALL_HOSTS: tuple[str, ...] = (
     "nodejs.org",  # Node runtime downloaded by nvm
     "registry.npmjs.org",  # npm metadata + package tarballs
 )
+# agy has no pre-baked worker image: Harbor's ``AntigravityCli.install``
+# fetches install.sh from antigravity.google, which resolves a manifest on
+# the auto-updater Cloud Run host and downloads the binary tarball from GCS.
+# Installs run during agent SETUP (environment baseline) — the runner's
+# antigravity arm merges these, mirroring OPENCODE_INSTALL_HOSTS above.
+ANTIGRAVITY_INSTALL_HOSTS: tuple[str, ...] = (
+    "antigravity.google",  # install.sh
+    "antigravity-cli-auto-updater-974169037036.us-central1.run.app",  # manifest
+    "storage.googleapis.com",  # binary tarball (antigravity-public bucket)
+)
 _AGENT_RUNTIME_HOSTS: dict[str, tuple[str, ...]] = {
     "tbh": _TBH_RUNTIME_HOSTS,
     "dsh": _DSH_INSTALL_HOSTS + _DSH_DEEPSEEK_RUNTIME_HOSTS,
+    "antigravity-cli": _GEMINI_HOSTS,
 }
 
 _DEFAULT_BEDROCK_REGION = "us-east-1"

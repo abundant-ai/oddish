@@ -1,3 +1,4 @@
+from oddish.workers.harbor import model_hosts
 from oddish.workers.harbor.model_hosts import (
     agent_runtime_hosts,
     outbound_hosts_for_model,
@@ -140,3 +141,18 @@ def test_an_oddish_wrapper_import_path_still_resolves_its_agent():
     assert agent_runtime_hosts(
         agent_name=None, import_path="oddish.workers.agents.tbh:Tbh"
     ) == ["api.meta.ai"]
+
+
+def test_antigravity_install_hosts_and_runtime_registration():
+    # agy has no pre-baked worker image: install fetches from antigravity.google,
+    # the auto-updater Cloud Run host, and GCS -- mirroring OPENCODE_INSTALL_HOSTS.
+    assert model_hosts.ANTIGRAVITY_INSTALL_HOSTS == (
+        "antigravity.google",
+        "antigravity-cli-auto-updater-974169037036.us-central1.run.app",
+        "storage.googleapis.com",
+    )
+    # Registered as a runtime host so restricted agent phases get the Gemini
+    # endpoint even without model inference.
+    assert "generativelanguage.googleapis.com" in model_hosts.agent_runtime_hosts(
+        agent_name="antigravity-cli"
+    )
