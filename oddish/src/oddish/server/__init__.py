@@ -7,9 +7,8 @@ from pathlib import Path
 
 from fastapi import Body, FastAPI, Header, HTTPException, Query, Response, status
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import select, text
+from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import selectinload
 from typing import Annotated, cast
 import uvicorn
 from rich.console import Console
@@ -52,6 +51,7 @@ from oddish.core.sharing.helpers import (
     make_task_files_ndjson_response,
     stream_task_files_s3,
 )
+from oddish.core.task_files import resolve_task_file_source
 from oddish.core.trial_io import (
     read_trial_agent_file,
     read_trial_logs,
@@ -84,7 +84,6 @@ from oddish.core.ingest.trial_imports import (
 from oddish.config import settings
 from oddish.db import (
     ExperimentModel,
-    TaskModel,
     TrialModel,
     get_session,
     init_db,
@@ -878,17 +877,9 @@ async def list_task_files(
 ):
     """List all files in a task's S3 directory with optional presigned URLs."""
     async with get_session() as session:
-        task = (
-            await session.execute(
-                select(TaskModel)
-                .where(TaskModel.id == task_id)
-                .options(selectinload(TaskModel.current_version))
-            )
-        ).scalar_one_or_none()
-        if not task:
-            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-        if version is None and task.current_version:
-            version = task.current_version.version
+        version, task_s3_prefix = await resolve_task_file_source(
+            session, task_id=task_id, version=version
+        )
 
     if stream:
         return await make_task_files_ndjson_response(
@@ -899,6 +890,7 @@ async def list_task_files(
                 limit=limit,
                 cursor=cursor,
                 presign=presign,
+                task_s3_prefix=task_s3_prefix,
                 version=version,
             )
         )
@@ -910,6 +902,7 @@ async def list_task_files(
         limit=limit,
         cursor=cursor,
         presign=presign,
+        task_s3_prefix=task_s3_prefix,
         version=version,
         inline=inline,
     )
@@ -925,22 +918,15 @@ async def get_task_file_content(
 ) -> dict:
     """Get content of a specific task file from S3."""
     async with get_session() as session:
-        task = (
-            await session.execute(
-                select(TaskModel)
-                .where(TaskModel.id == task_id)
-                .options(selectinload(TaskModel.current_version))
-            )
-        ).scalar_one_or_none()
-        if not task:
-            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-        if version is None and task.current_version:
-            version = task.current_version.version
+        version, task_s3_prefix = await resolve_task_file_source(
+            session, task_id=task_id, version=version
+        )
 
     return await get_task_file_content_s3(
         task_id=task_id,
         file_path=file_path,
         presign=presign,
+        task_s3_prefix=task_s3_prefix,
         version=version,
         max_bytes=max_bytes,
     )
