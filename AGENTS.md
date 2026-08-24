@@ -1135,6 +1135,18 @@ silently breaks throughput or correctness — read before touching
    token. The window is a deliberate trade-off (raised from 10 after an incident);
    shrink with care.
 
+7. **A stable-variant harbor pin is REWRITTEN at claim time.** A trial's
+   `harbor_config.resolved_sha`/`source` (and the indexed `trials.harbor_sha`
+   projection) are stamped at submission, but the deployment is the unit of
+   harbor identity for a stable variant (`variant_id == "gke"`): a trial
+   queued across a pin bump executes whatever the deployment now ships. The
+   claim path (`_refresh_stable_variant_pin`, trial_handler) rewrites the
+   recorded pin to the deployed blessed variant so the row matches execution,
+   logging one supersession warning. Consequence for readers: pin filters and
+   audit queries over `harbor_sha` see the EXECUTING revision for stable
+   variants, never a stale submission-time value; only `ephemeral` exact-pin
+   trials keep their submission pin verbatim (they run it in-process).
+
 ### Local Development
 
 ```bash
