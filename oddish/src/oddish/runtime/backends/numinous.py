@@ -51,7 +51,7 @@ class NuminousBackend:
             gpu=None,  # GPU lane ships behind a separate flag
             private_registry_pull=True,
             network_egress="configurable",
-            persistent_volumes=False,
+            persistent_volumes=True,  # named volumes, idempotent create, $0.10/GiB-mo
             streaming_logs=True,
             memory_snapshot_fork=True,  # firecracker plane; docker driver approximates
             cold_start="seconds",
