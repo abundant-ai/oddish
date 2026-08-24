@@ -47,6 +47,7 @@ from oddish.db import (
 )
 from oddish.core.llm_key_fingerprint import trial_llm_key_hash
 from oddish.core.task_browse_summary import refresh_task_browse_summaries
+from oddish.core.harbor_source import HARBOR_VARIANTS
 from oddish.db.storage import get_storage_client, resolve_task_directory
 from oddish.model_pricing import is_native_cost_trusted, settle_cost_usd
 from oddish.observability import (
@@ -101,6 +102,45 @@ from oddish.workers.queue.worker_job_single_job import (
 logger = logging.getLogger(__name__)
 
 TRIAL_HEARTBEAT_INTERVAL_SECONDS = 30
+
+
+def _refresh_stable_variant_pin(trial) -> dict | None:
+    """Refresh a stable-variant trial's recorded harbor pin at claim time.
+
+    The deployment is the unit of harbor identity for a stable variant: a
+    trial queued across a pin bump executes whatever the deployment now
+    ships, so the pin stamped at submission can go stale while the trial
+    waits. Rewrite the record the moment the worker claims the job, so the
+    row always matches execution -- lock.json already told the truth, this
+    makes the database agree with it. Ephemeral (exact-pin) trials run the
+    sha they recorded and are left untouched.
+    """
+    harbor_config = getattr(trial, "harbor_config", None)
+    if not isinstance(harbor_config, dict):
+        return harbor_config
+    variant = HARBOR_VARIANTS.get(harbor_config.get("variant_id"))
+    if variant is None:
+        return harbor_config
+    if (
+        harbor_config.get("resolved_sha") == variant.sha
+        and harbor_config.get("source") == variant.source
+    ):
+        return harbor_config
+    logger.warning(
+        "trial %s: recorded harbor pin %s superseded by the deployed %s at claim",
+        getattr(trial, "id", "?"),
+        harbor_config.get("resolved_sha"),
+        variant.sha,
+    )
+    refreshed = {
+        **harbor_config,
+        "source": variant.source,
+        "resolved_sha": variant.sha,
+    }
+    trial.harbor_config = refreshed
+    if hasattr(trial, "harbor_sha"):
+        trial.harbor_sha = variant.sha
+    return refreshed
 
 
 def _extract_trial_index(trial_id: str, task_id: str) -> int:
@@ -577,7 +617,7 @@ async def _prepare_trial_run(
         if trial.queue_key != canonical_queue_key:
             trial.queue_key = canonical_queue_key
         trial_environment = trial.environment
-        trial_harbor_config = trial.harbor_config
+        trial_harbor_config = _refresh_stable_variant_pin(trial)
         trial.current_worker_id = worker_id
         trial.current_queue_slot = queue_slot
         trial.claimed_at = utcnow()
@@ -1023,11 +1063,7 @@ async def _run_post_trial_hooks(trial_id: str) -> None:
                 # own start, yet is exactly the kind that must go. Probes are the
                 # one exception; ``_store_trial_results`` writes their
                 # classification during settlement, above.
-                if (
-                    trial.attempts > 1
-                    and not trial.is_probe
-                    and trial.analysis_status
-                ):
+                if trial.attempts > 1 and not trial.is_probe and trial.analysis_status:
                     trial.analysis = None
                     trial.analysis_status = None
                     trial.analysis_error = None
@@ -1833,7 +1869,9 @@ async def run_trial_job(
                 )
                 oddish_uploaded = True
             except Exception as e:
-                message = f"Failed to upload trial results to S3: {type(e).__name__}: {e}"
+                message = (
+                    f"Failed to upload trial results to S3: {type(e).__name__}: {e}"
+                )
                 console.print(f"[yellow]{message}[/yellow]")
                 if is_analysis_kind(trial_mode):
                     artifact_upload_error = message
