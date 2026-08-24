@@ -420,6 +420,18 @@ that contract. Each row also carries its spend rank so the rare row with no
 safe display label (e.g. a payer outside the auth org) drops without
 renumbering everyone else.
 
+Dashboard experiment free text resolves every parsed bare token against active
+members in the authenticated organization before the experiment page query
+runs. `backend/dashboard_attribution.py` may search `users.name` and
+`users.github_username`, then passes only the token-to-stable-user-id mapping
+into `oddish.core.dashboard`; the self-hostable core must not import the hosted
+`UserModel`. Each token's owner and latest-runner alternatives belong in the
+page predicate before ordering and pagination so AND, OR, exclusion, and quoted
+phrase semantics stay intact. The mapping is part of the experiments cache key.
+`GET /people/search` is the ordinary READ-scope typeahead endpoint: it is
+active-user and organization scoped, returns only `id`, `display_name`, and
+`github_username`, and must never search or serialize email addresses.
+
 The admin `GET /admin/costs` response includes analysis spend time series both
 by model (`series_qa_by_model`) and by analyzer job kind
 (`series_by_analysis_type`). The Cost breakdown chart exposes the latter as the
