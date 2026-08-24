@@ -14,7 +14,9 @@ Python `3.13` is required for `oddish` and `backend`. Node.js `20+` and `pnpm` a
 
 - Keep `DOCS.md` focused on end-user CLI workflows; keep `oddish/README.md` as a short package quick start.
 - Put `oddish` implementation details, architecture notes, and local development guidance here.
-- If you change the CLI surface in `oddish/src/oddish/cli/`, update `DOCS.md` and the command list in `oddish/README.md`.
+- If you change the CLI surface in `oddish/src/oddish/cli/`, update `DOCS.md`,
+  the command list in `oddish/README.md`, and the packaged agent skill under
+  `oddish/src/oddish/assets/skills/oddish/` (served by `oddish skill`).
 - If you change API contracts, queue behavior, or storage layout, update this file.
 - If you change `backend/` auth, deployment, or worker orchestration, update this file.
 - If you change `frontend/` routing, API proxy structure, or auth behavior, update this file.
@@ -52,7 +54,7 @@ backend/                        # Hosted cloud layer (Modal deployment)
 ├── api/
 │   ├── app.py                  # FastAPI app factory and lifespan wiring
 │   ├── schemas.py              # Pydantic models for org/auth/share responses
-│   ├── services/               # hosted services (agent capabilities, summaries, …)
+│   ├── services/               # hosted service helpers (Slack unfurls, shared query helpers)
 │   └── routers/                # tasks, trials, dashboard, documents, tags, skills,
 │                               # admin, orgs, api_keys, imports, load, webhooks
 ├── auth/                       # header parsing (auth/__init__.py), API key + Clerk JWT
@@ -146,11 +148,11 @@ High-level flow:
    QA trials, not `T × (N + 1)`. The pre-trial audit is an `audit`-kind trial
    created once per task version at sweep time.
    Non-'agent' kinds are excluded from cost, quota, leaderboard, facet, and
-   public surfaces (see `oddish.filters.EligibleTrialScope`).
+   public surfaces (see `oddish.filters.trial_predicates.EligibleTrialScope`).
 5. While a trial runs, a worker-side tailer (`oddish.workers.harbor.live_tail`,
    on by default via `live_tail_enabled` / `live_tail_interval_sec`) polls the
    agent's log file inside the sandbox for supported agents (claude-code,
-   codex, cursor-cli, mini-swe-agent), folds token usage, checkpoints live
+   codex, cursor-cli, grok-build, tbh, mini-swe-agent), folds token usage, checkpoints live
    tokens/cost onto the trial row (`UPDATE … WHERE finished_at IS NULL`, so
    inflight quota reservations only tighten), and appends transcript events to
    `trial_events` (PK `(trial_id, attempt, seq)`, capped at 5000 events).
@@ -200,14 +202,20 @@ High-level flow:
    injected `EligibleTrialScope` rather than reimplementing Any/All logic.
 
 Agent capability analysis (the successful-vs-failing cohort comparison) has
-been removed: its endpoints, cohort blocks, and UI pane are gone, and a queued
-`ANALYZER` job with `payload.mode = "agent_capabilities"` now fails
-permanently. The output schema (`AgentCapabilitiesOutput` and sub-models) is
+been removed: its endpoints, cohort blocks, and UI pane are gone, and nothing
+enqueues or handles `ANALYZER` jobs any more (the enum value survives only so
+historical rows stay readable). The output schema (`AgentCapabilitiesOutput` and sub-models) is
 preserved in `oddish.analyze.models`, and
 `oddish/src/oddish/analyze/prompts/agent_capabilities.txt` is kept, so the
 feature can return as a `'capabilities'` analysis trial.
-Shared trial drawers open on Summary and fetch a trajectory only after explicit
-user or URL intent. Collapsed trajectory steps must not mount their message,
+Shared trial drawers paint terminal trials from the slim row already owned by
+the task or experiment page while the authoritative `GET /trials/{id}` resource
+loads. Trial controls prefetch that resource on pointer or keyboard intent, and
+the drawer owns its SWR cache entry and passes the authoritative trial to the QA
+card, so one trial must never produce parallel detail requests. Drawers open on
+Summary and fetch trajectory and summary resources independently only after
+explicit user or URL intent. Collapsed trajectory steps must not mount their
+message,
 reasoning, tool, or observation bodies; those potentially large bodies mount
 only while the step is expanded. Trajectory summaries are written onto
 `trials.trajectory_summary` by the task's QA trial import or by a
@@ -276,7 +284,7 @@ violates the pinned contract becomes FAILED while the target pointer remains,
 so GET reports 409 and the next POST replaces it instead of adopting a SUCCESS
 trial that can never publish.
 
-Trajectory summaries use schema v5. Each taxonomy-valued `components` entry
+Trajectory summaries use schema v6. Each taxonomy-valued `components` entry
 contains its `step_ids`, summary, and deterministic `tool_count` and
 `duration_ms` metadata. Step count is the length of `step_ids`; the other
 analytics are computed from the immutable
@@ -292,7 +300,7 @@ QA analyzer prompts are **not** stored in the database. They ship as packaged
 files under `oddish/src/oddish/analyze/`: `prompts/pre_trial_qa.txt` drives the
 source audit, `classify_prompt.txt` drives the per-trial log classifier,
 `verdict_prompt.txt` drives verdict synthesis, and
-`prompts/trajectory_summary.txt` drives schema-v5 trajectory summaries; the
+`prompts/trajectory_summary.txt` drives schema-v6 trajectory summaries; the
 summary template must retain the `{{taxonomy}}` placeholder, rendered by the
 QA-trial brief builder (`oddish.workers.analysis_trials`). Editing a prompt is
 a code change that ships with a deploy.
@@ -412,10 +420,32 @@ that contract. Each row also carries its spend rank so the rare row with no
 safe display label (e.g. a payer outside the auth org) drops without
 renumbering everyone else.
 
+Dashboard experiment free text resolves every parsed bare token against active
+members in the authenticated organization before the experiment page query
+runs. `backend/dashboard_attribution.py` may search `users.name` and
+`users.github_username`, then passes only the token-to-stable-user-id mapping
+into `oddish.core.dashboard`; the self-hostable core must not import the hosted
+`UserModel`. Each token's owner and latest-runner alternatives belong in the
+page predicate before ordering and pagination so AND, OR, exclusion, and quoted
+phrase semantics stay intact. The mapping is part of the experiments cache key.
+`GET /people/search` is the ordinary READ-scope typeahead endpoint: it is
+active-user and organization scoped, returns only `id`, `display_name`, and
+`github_username`, and must never search or serialize email addresses.
+
 The admin `GET /admin/costs` response includes analysis spend time series both
 by model (`series_qa_by_model`) and by analyzer job kind
 (`series_by_analysis_type`). The Cost breakdown chart exposes the latter as the
 `Analyzer` stack; analyzer spend does not belong on the people leaderboard.
+
+QA agree/disagree submissions live in the append-only core `feedback` table
+(`FeedbackModel`) and use the hosted backend's authenticated
+`POST /experiments/{id}/feedback` route. Every row requires a `trial_id`, a
+`target` (`qa_verdict` or `qa_action_item`), the verdict classification or
+action-item id as `target_key`, and an `agree` or `disagree` vote. Creation
+validates organization scope and experiment membership through the shared
+`trial_in_experiment` predicate. The dashboard waits for persistence, reports
+errors, and permits one successful submission per mounted control. There are
+no public, read, update, triage, snapshot, or notification paths.
 
 ### Task Identity
 
@@ -467,6 +497,35 @@ manifest only when its `archive_key` matches that selected source, so failed
 cleanup cannot expose the prior expansion. The replacement clears derived-file
 bookkeeping and pre-trial audit state before re-enqueuing expansion. Existing
 trials pinned to that version resolve to the replacement content.
+
+Sweep appends resolve their own version through `resolve_append_version_id`
+(`oddish/core/endpoints/sweep.py`). A submission whose `content_hash` is `None`
+uploaded no task directory, so it pins new trials -- and scopes its
+failed-trial reconciliation -- to the target experiment's effective version
+rather than `tasks.current_version_id`. This keeps a top-up on the version the
+experiment grid already displays instead of pivoting the whole row onto a
+default that an unrelated run advanced. Only an experiment the submission names
+explicitly counts: an append that falls back to the task's implicit primary
+experiment keeps the task default, so probes and task-page top-ups never run
+against older content. Submissions that carry content or name an experiment
+with no trials for the task also keep the task default. `create_task` is
+unaffected: a fresh task always runs its own upload.
+
+The resolved version is threaded on to `maybe_enqueue_auto_probe` through
+`_finalize_sweep`, so an auto-probe inspects the same content its sweep's
+trials ran. A probe left on `tasks.current_version_id` while the trials sit on
+an older pin would inspect content no trial used, be filtered out of the
+experiment grid, and mark the wrong version probed -- leaving the version that
+actually ran unprobed. Callers that pin nothing keep the task's current
+version. The pre-trial audit trial enqueued inside `append_trials_to_task`
+follows the same pin for the same reason.
+
+`use_default_version` on `TaskSweepSubmission` (`--use-default-version`, or
+`use_default_version: true` in a sweep config) is the opt-out for deliberately
+moving an experiment onto the task's current content. It resolves per task, so
+one flag covers a sweep whose tasks sit on different versions. It pins to the
+task default rather than the numerically highest version, so the appended
+trials are the ones the grid pivots to and stay visible.
 
 `GET /experiments/{experiment_id}/cost-totals` reports both cost and token
 usage across every trial owned by the experiment, including older versions,
@@ -825,7 +884,7 @@ fed by the same endpoints in `oddish/src/oddish/core/sharing/public.py`, so the
 filtering lives at the **data layer** (don't return `is_probe` trials), not just
 the UI:
 
-- `get_public_task` (`sharing/helpers.py`) strips `is_probe` trials from the
+- `get_public_task_for_experiment` (`sharing/helpers.py`) strips `is_probe` trials from the
   loaded task, covering `get_public_task_status`.
 - `list_public_experiment_tasks` excludes `is_probe` when filtering each task's
   trials.
@@ -1088,6 +1147,27 @@ silently breaks throughput or correctness — read before touching
    token. The window is a deliberate trade-off (raised from 10 after an incident);
    shrink with care.
 
+7. **A stable-variant harbor pin is REWRITTEN at claim time.** A trial's
+   `harbor_config.resolved_sha`/`source` (and the indexed `trials.harbor_sha`
+   projection) are stamped at submission, but the deployment is the unit of
+   harbor identity for a stable variant (`variant_id == "gke"`): a trial
+   queued across a pin bump executes whatever the deployment now ships. The
+   claim path (`_refresh_stable_variant_pin`, trial_handler) rewrites the
+   recorded pin to what the claiming runtime EXECUTES -- read from the
+   imported harbor's PEP 610 installation metadata, so a Modal variant
+   image stamps its blessed pin, the default image stamps the locked
+   default, and self-host or local workers stamp whatever is installed --
+   logging one supersession warning. Consequence for readers: pin filters and
+   audit queries over `harbor_sha` see the EXECUTING revision for stable
+   variants (the `gke` blessed pin, or the locked default pin for every
+   non-registered variant), never a stale submission-time value. `ephemeral`
+   exact-pin trials keep their submission pin verbatim -- they run it
+   out-of-process against the recorded source/SHA -- and the projection is
+   reconciled at claim for every harbor-running trial, healing retry/
+   combine/import copies persisted without it. Local (self-host) mode
+   routes through the same refresh and needs no override: the metadata of
+   the harbor it imports is what it executes.
+
 ### Local Development
 
 ```bash
@@ -1227,7 +1307,9 @@ attach response bodies, request payloads, credentials, or SQL parameter values.
 The frontend is a Next.js 16 / React 19 App Router app. Browser code calls
 `src/app/api/*` route handlers, which forward to the backend from
 `NEXT_PUBLIC_API_URL` and preserve auth. Public routes are `/`, `/share/*`,
-`/datasets/*`, and `/api/public/*`; everything else is Clerk-protected.
+`/datasets/*`, `/api/public/*`, `/sign-in`, `/sign-up`, `/api/client-traces`,
+and — deliberately, for link-unfurl bots — `/experiments/*`; everything else
+is Clerk-protected.
 
 Authenticated proxy routes forward incoming `traceparent`, `tracestate`, and
 `baggage` headers to the backend and join the backend's `Server-Timing` value

@@ -1203,6 +1203,7 @@ def build_sweep_payload(
     artifact_paths: list[str] | None = None,
     append_to_task: bool = False,
     content_hash: str | None = None,
+    use_default_version: bool = False,
     harbor_config: dict[str, Any] | None = None,
     environment_kwargs: list[str] | None = None,
     extra_instructions: str | None = None,
@@ -1291,6 +1292,8 @@ def build_sweep_payload(
         payload["append_to_task"] = True
     if content_hash:
         payload["content_hash"] = content_hash
+    if use_default_version:
+        payload["use_default_version"] = True
     if extra_instructions:
         payload["extra_instructions"] = extra_instructions
     if result_focus:
@@ -2005,6 +2008,8 @@ def load_sweep_config(config_path: Path) -> dict:
         priority: low
         experiment_id: exp_123
         max_trial_attempts: 3           # optional total Oddish attempts per trial
+        use_default_version: true       # append on the task default, not the
+                                        # version the experiment already runs
     """
     if not config_path.exists():
         error_console.print(f"[red]Config file not found:[/red] {config_path}")

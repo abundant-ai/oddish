@@ -691,3 +691,22 @@ class TestBranchIsReusedAcrossPushes:
             f"supabase/migrations/ is no longer empty ({files}); revisit "
             "whether MIGRATIONS_FAILED should be terminal again."
         )
+
+
+def test_reset_redeploys_the_same_preview_it_replaces():
+    """Preview Reset must carry the exact ODDISH_* env of pr-preview's deploy.
+
+    The reset workflow stops the app and redeploys through the same script,
+    so any ODDISH_* coordinate present in one workflow but not the other
+    silently redeploys a DIFFERENT preview (a reset without the GKE block
+    would strip the preview's GKE backend until the next push). Compare the
+    full ODDISH_-prefixed env of both jobs, values included, in both
+    directions.
+    """
+    deploy_env = _wf()["jobs"]["deploy-preview-backend"].get("env") or {}
+    reset_env = yaml.safe_load(RESET_WORKFLOW.read_text())["jobs"]["reset"].get(
+        "env"
+    ) or {}
+    deploy_oddish = {k: v for k, v in deploy_env.items() if k.startswith("ODDISH_")}
+    reset_oddish = {k: v for k, v in reset_env.items() if k.startswith("ODDISH_")}
+    assert deploy_oddish == reset_oddish

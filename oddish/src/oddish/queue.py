@@ -1145,10 +1145,14 @@ async def append_trials_to_task(
     experiment_id: str | None = None,
     billed_user_id: str | None = None,
     supersede_failed_trial_ids: Sequence[Sequence[str]] | None = None,
+    task_version_id: str | None = None,
 ) -> list[TrialModel]:
     """Append new queued trials to an existing task.
 
-    New trials are pinned to the task's ``current_version_id``. When
+    New trials are pinned to ``task_version_id`` when given, else to the task's
+    ``current_version_id``. Callers pass the override to keep an append on the
+    version the target experiment already runs, instead of pulling the
+    experiment onto a newer default nothing there has run. When
     ``experiment_id`` is given, new trials use that experiment and the
     task is auto-linked to it via ``task_experiments`` (matching the
     implicit behavior of the old single-FK world).
@@ -1175,7 +1179,7 @@ async def append_trials_to_task(
     existing_trials = list(trial_rows.scalars().all())
     next_index = _get_next_trial_index(task.id, existing_trials)
 
-    current_version_id = task.current_version_id
+    current_version_id = task_version_id or task.current_version_id
 
     # Pick the target experiment: explicit argument wins, otherwise fall back
     # to the first linked experiment (the task's "primary" association).
@@ -1260,8 +1264,11 @@ async def append_trials_to_task(
 
     from oddish.workers.analysis_trials import maybe_enqueue_audit_trial
 
+    # Audit the version these trials run, not the task default: an append
+    # pinned to an older version would otherwise audit content no trial
+    # used and mark the wrong version audited.
     await maybe_enqueue_audit_trial(
-        session, task=task, task_version_id=task.current_version_id
+        session, task=task, task_version_id=current_version_id
     )
 
     # The replacement rows must exist before the self-referential FK can point
@@ -1671,11 +1678,11 @@ async def maybe_gate_llm_trials(session: AsyncSession, trial_id: str) -> bool:
     and its authoritative worker job for that task version in that experiment
     are terminal, evaluates them and — if they validate the task (oracle passes,
     nop fails) — releases that scope's BLOCKED LLM trials to QUEUED; otherwise
-    cancels them and mirrors them to FAILED so the task can advance. Scoping by
-    experiment keeps concurrent sweeps in different experiments from sharing
-    each other's gate timing or verdict; scoping by task version keeps an older
-    version's baselines from validating a newer version's (different code) LLM
-    trials.
+    cancels them and marks their trial rows SKIPPED so the task can advance.
+    Scoping by experiment keeps concurrent sweeps in different experiments
+    from sharing each other's gate timing or verdict; scoping by task version
+    keeps an older version's baselines from validating a newer version's
+    (different code) LLM trials.
 
     A no-op when there are no BLOCKED LLM trials in this scope (the gate was
     never armed) or other baselines are still running. Uses SELECT FOR UPDATE on

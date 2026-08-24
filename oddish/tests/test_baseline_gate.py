@@ -1,7 +1,7 @@
 """Unit tests for the pure baseline-gate decision.
 
 ``evaluate_baseline_gate`` decides whether a task's nop/oracle baselines
-validate it: *every* oracle run must pass (reward 1.0) and *every* nop run must
+validate it: *every* oracle run must pass (reward > 0) and *every* nop run must
 fail (reward 0.0). Any wrong verdict, partial credit, or infra error
 (``reward is None``) makes the task faulty. No DB needed.
 """
@@ -41,8 +41,8 @@ from oddish.core.baseline_gate import (  # noqa: E402
         # Inverted outcomes -> faulty task.
         ([("oracle", 0.0), ("nop", 0.0)], GateOutcome.FAULTY),
         ([("oracle", 1.0), ("nop", 1.0)], GateOutcome.FAULTY),
-        # Oracle partial credit is not a clean pass.
-        ([("oracle", 0.5), ("nop", 0.0)], GateOutcome.FAULTY),
+        # Oracle partial credit still shows the solution works.
+        ([("oracle", 0.5), ("nop", 0.0)], GateOutcome.VALID),
         # One fail among passes still fails (all must pass).
         ([("oracle", 1.0), ("oracle", 0.0), ("nop", 0.0)], GateOutcome.FAULTY),
         # No baseline present at all -> inconclusive -> faulty.

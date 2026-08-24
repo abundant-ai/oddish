@@ -5,7 +5,6 @@ import {
   countSince,
   holdCountedResponses,
   recordRequests,
-  STRICT_MODE_ABORT_MS,
 } from "./network-log";
 
 /**
@@ -16,14 +15,13 @@ import {
  *  1. Loading the page issues exactly one task-shells request. The shells
  *     used to be fetched twice, once during the server render and once
  *     again on mount.
- *  2. Opening a trial issues exactly one GET /api/trials/{id}. The drawer
- *     and the analysis card each used to fetch the same trial separately.
+ *  2. Hovering and opening a trial issues one GET /api/trials/{id}. The
+ *     preload and drawer share the same SWR cache entry.
  *  3. No task-files request uses stream=1 during this flow. Opening a
  *     trial used to download the task's entire file contents behind a
  *     pane that showed only the overview. No stream request of any kind
  *     may happen until a file view is on screen.
- *  4. The trial refetches every few seconds while its analysis is active
- *     and stops once it finishes.
+ *  4. Tab resources remain gated on the tab the user selected.
  *
  * Like tasks-view.spec.ts, this needs a running dev stack and Clerk dev
  * credentials, and it skips when they are missing. The experiment needs
@@ -59,10 +57,10 @@ const TRIAL_FILES_STREAM_RE = /\/api\/trials\/[^/]+\/files\?[^#]*\bstream=1\b/;
 test.describe("experiment page network shape", () => {
   test.skip(
     !hasClerkEnv,
-    "needs E2E_CLERK_EMAIL + CLERK_SECRET_KEY + NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY",
+    "needs E2E_CLERK_EMAIL + CLERK_SECRET_KEY + NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY"
   );
 
-  test("one fetch per resource, bodies on demand, polling gated on analysis", async ({
+  test("trial detail preloads once and tab bodies load on demand", async ({
     page,
   }) => {
     test.setTimeout(120_000);
@@ -71,40 +69,13 @@ test.describe("experiment page network shape", () => {
     await page.goto("/");
     await clerk.signIn({ page, emailAddress: CLERK_EMAIL! });
 
-    // The trial-detail endpoint is not in this list: its analysis-status
-    // override route below fulfills directly (no fallback), so it applies
-    // the hold itself.
     await holdCountedResponses(page, [
       TASK_SHELLS_RE,
+      TRIAL_DETAIL_RE,
       TASK_FILES_RE,
       TRIAL_FILES_STREAM_RE,
     ]);
     const log = recordRequests(page);
-
-    // This rewrites the fetched trial's analysis_status to "running" so
-    // the refetching behavior can be tested on any seed data. It is
-    // flipped to "success" later in the test to check that the refetching
-    // stops. The glob only matches /api/trials/{id} itself, and requests
-    // to subpaths pass through unchanged.
-    let analysisStatusOverride: string | null = "running";
-    await page.route("**/api/trials/*", async (route) => {
-      if (route.request().method() !== "GET" || analysisStatusOverride === null)
-        return route.fallback();
-      // Same hold as holdCountedResponses, applied here because this
-      // handler fulfills instead of falling back.
-      await new Promise((resolve) => setTimeout(resolve, STRICT_MODE_ABORT_MS));
-      const response = await route.fetch();
-      const body = (await response.json()) as Record<string, unknown>;
-      await route.fulfill({
-        response,
-        json: {
-          ...body,
-          analysis_status: analysisStatusOverride,
-          analysis: null,
-          analysis_error: null,
-        },
-      });
-    });
 
     // Phase 1 — load the experiment page, let the grid settle.
     if (EXPERIMENT_ID) {
@@ -119,13 +90,15 @@ test.describe("experiment page network shape", () => {
       // test strict instead.
       await page.goto("/dashboard");
       const experimentLink = page.locator('a[href^="/experiments/"]').first();
-      const hasExperiment = await experimentLink.waitFor({ timeout: 15_000 }).then(
-        () => true,
-        () => false,
-      );
+      const hasExperiment = await experimentLink
+        .waitFor({ timeout: 15_000 })
+        .then(
+          () => true,
+          () => false
+        );
       test.skip(
         !hasExperiment,
-        "no experiment to open in this environment — set E2E_EXPERIMENT_ID",
+        "no experiment to open in this environment — set E2E_EXPERIMENT_ID"
       );
       await experimentLink.click();
     }
@@ -138,21 +111,22 @@ test.describe("experiment page network shape", () => {
       // trial cells.
       const hasTrialCell = await trialCell.waitFor({ timeout: 30_000 }).then(
         () => true,
-        () => false,
+        () => false
       );
       test.skip(
         !hasTrialCell,
-        "discovered experiment has no non-probe trials — set E2E_EXPERIMENT_ID",
+        "discovered experiment has no non-probe trials — set E2E_EXPERIMENT_ID"
       );
     }
 
     expect(countSince(log, 0, TASK_SHELLS_RE)).toBe(1);
     expect(countSince(log, 0, TRIAL_DETAIL_RE)).toBe(0);
 
-    // Phase 2 — open a trial. Exactly one detail fetch happens, shared by
-    // the drawer and the analysis card. The visible task pane fetches its
-    // plain tree listing, and nothing downloads file contents.
+    // Phase 2 — hover and open a trial. The preload and mounted drawer share
+    // one request. The visible task pane fetches its plain tree listing, and
+    // nothing downloads file contents.
     const openMark = Date.now();
+    await trialCell.hover();
     await trialCell.click();
     await expect(page.getByRole("tab", { name: "Summary" })).toBeVisible({
       timeout: 15_000,
@@ -161,10 +135,7 @@ test.describe("experiment page network shape", () => {
       .poll(() => countSince(log, openMark, TRIAL_DETAIL_RE), {
         timeout: 10_000,
       })
-      .toBeGreaterThanOrEqual(1);
-    // Less than the 5-second refetch interval has passed, so a second
-    // request at this point would mean two components are fetching the
-    // same trial, not that refetching started.
+      .toBe(1);
     await page.waitForTimeout(1_500);
     expect(countSince(log, openMark, TRIAL_DETAIL_RE)).toBe(1);
     await expect
@@ -174,30 +145,7 @@ test.describe("experiment page network shape", () => {
       .toBe(1);
     expect(countSince(log, openMark, ANY_FILES_STREAM_RE)).toBe(0);
 
-    // Phase 3 — the analysis reads as active, so the trial must be
-    // refetched on an interval.
-    const pollMark = Date.now();
-    await expect
-      .poll(() => countSince(log, pollMark, TRIAL_DETAIL_RE), {
-        timeout: 8_000,
-      })
-      .toBeGreaterThanOrEqual(1);
-
-    // Phase 4 — flip the analysis to success. The next refetch delivers
-    // it, and after that no detail request may appear for a full refetch
-    // interval.
-    analysisStatusOverride = "success";
-    const terminalMark = Date.now();
-    await expect
-      .poll(() => countSince(log, terminalMark, TRIAL_DETAIL_RE), {
-        timeout: 8_000,
-      })
-      .toBeGreaterThanOrEqual(1);
-    const quietMark = Date.now();
-    await page.waitForTimeout(6_500);
-    expect(countSince(log, quietMark, TRIAL_DETAIL_RE)).toBe(0);
-
-    // Phase 5 — the file-view listing fires only once the Files tab is
+    // Phase 3 — the file-view listing fires only once the Files tab is
     // actually shown. The panel sends this listing with stream=1, and the
     // trial-files endpoint ignores that parameter and answers with a
     // plain listing.

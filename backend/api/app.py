@@ -260,6 +260,7 @@ def create_app() -> FastAPI:
         cost_excluded_models,
         dashboard,
         documents,
+        feedback,
         github_linkage,
         github_webhooks,
         imports,
@@ -289,6 +290,7 @@ def create_app() -> FastAPI:
     api.include_router(load.router)
     api.include_router(skills.router)
     api.include_router(documents.router)
+    api.include_router(feedback.router)
     api.include_router(public.router)
     api.include_router(public_analysis.router)
     api.include_router(slack.router)

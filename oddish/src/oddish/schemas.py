@@ -511,6 +511,14 @@ class TaskSweepSubmission(BaseModel):
         None,
         description="Deterministic hash of task directory contents (set by CLI during upload)",
     )
+    use_default_version: bool = Field(
+        False,
+        description=(
+            "On append, pin new trials to the task's current default version "
+            "instead of the version the target experiment already runs. Ignored "
+            "when the submission uploads task content, which sets its own version."
+        ),
+    )
     link: str | None = Field(
         None,
         description="URL to associate with this task (e.g. PR, issue, CI run)",
@@ -1211,7 +1219,7 @@ class TrialResponse(BaseModel):
 class UserTagRef(BaseModel):
     """Effective tag on a task, surfaced to API/CLI/frontend.
 
-    ``current=True`` -> tag is on the latest task version (primary chip).
+    ``current=True`` -> tag is on the selected default version (primary chip).
     ``older=True``   -> tag exists only on older versions (de-emphasized).
     """
 
@@ -2238,5 +2246,44 @@ class DocumentResponse(BaseModel):
     raw_filename: str | None = None
     created_at: datetime
     updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+FEEDBACK_BODY_MAX_CHARS = 20_000
+FeedbackTarget = Literal["qa_verdict", "qa_action_item"]
+FeedbackVote = Literal["agree", "disagree"]
+
+
+class FeedbackCreate(BaseModel):
+    """Agree or disagree with one QA verdict or action item."""
+
+    body: str = Field(default="", max_length=FEEDBACK_BODY_MAX_CHARS)
+    target: FeedbackTarget
+    target_key: str = Field(min_length=1, max_length=160)
+    vote: FeedbackVote
+    trial_id: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def normalize_text(self) -> "FeedbackCreate":
+        self.body = self.body.strip()
+        self.target_key = self.target_key.strip()
+        self.trial_id = self.trial_id.strip()
+        if not self.target_key or not self.trial_id:
+            raise ValueError("target_key and trial_id cannot be blank")
+        return self
+
+
+class FeedbackResponse(BaseModel):
+    """The persisted QA vote returned by the create endpoint."""
+
+    id: str
+    experiment_id: str
+    trial_id: str
+    target: FeedbackTarget
+    target_key: str
+    vote: FeedbackVote
+    body: str
+    created_at: datetime
 
     model_config = {"from_attributes": True}
