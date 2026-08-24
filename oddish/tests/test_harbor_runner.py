@@ -247,6 +247,42 @@ def test_gemini_ambient_credentials_enter_redaction_map(monkeypatch):
     assert replacements["goog-secret-456"] == "[REDACTED]"
 
 
+def test_antigravity_ambient_credentials_enter_redaction_map(monkeypatch):
+    # agy (antigravity-cli) is the Gemini-family Oddish wrapper: it forwards
+    # the same base-URL + secret env the stock gemini-cli agent does, so
+    # ambient Gemini credentials (used when job-scoped injection is off) must
+    # fold into the trial transport env the same way, for the same reason --
+    # so their raw values are redacted from live-tail / lifecycle / scrubbed
+    # artifacts.
+    monkeypatch.setenv("GEMINI_API_KEY", "gm-secret-123")
+    monkeypatch.setenv("GOOGLE_API_KEY", "goog-secret-456")
+    monkeypatch.setenv("GOOGLE_GEMINI_BASE_URL", "https://relay.corp/v1")
+    agent_config = HarborAgentConfig(
+        name="antigravity-cli", model_name="google/gemini-3.7-flash"
+    )
+
+    runtime_env = harbor_runner._resolved_runtime_transport_env(
+        {}, agent_config=agent_config
+    )
+    assert runtime_env.get("GEMINI_API_KEY") == "gm-secret-123"
+    assert runtime_env.get("GOOGLE_API_KEY") == "goog-secret-456"
+    assert runtime_env.get("GOOGLE_GEMINI_BASE_URL") == "https://relay.corp/v1"
+
+    replacements = harbor_runner._runtime_transport_redactions(runtime_env)
+    assert replacements["gm-secret-123"] == "[REDACTED]"
+    assert replacements["goog-secret-456"] == "[REDACTED]"
+
+    # A non-antigravity, non-gemini agent must not fold these ambient Google
+    # credentials -- folding is keyed on the effective harness, not merely on
+    # ambient env being present.
+    other_env = harbor_runner._resolved_runtime_transport_env(
+        {}, agent_config=HarborAgentConfig(name="codex", model_name="openai/gpt-5")
+    )
+    assert "GEMINI_API_KEY" not in other_env
+    assert "GOOGLE_API_KEY" not in other_env
+    assert "GOOGLE_GEMINI_BASE_URL" not in other_env
+
+
 def test_opencode_google_model_folds_ai_sdk_credential(monkeypatch):
     # opencode has no agent-specific branch: it authenticates through the
     # general provider-driven fold, keyed on the model's canonical provider
@@ -564,6 +600,137 @@ def test_gemini_profile_pins_its_transport_instead_of_inferring():
             )
         )
     assert routed_profile.outbound_hosts == ("relay.corp",)
+
+
+def test_antigravity_wrapper_swaps_stock_class_for_oddish_wrapper():
+    """The Compose-profile swap site routes agy through its attested wrapper.
+
+    Mirrors the gemini-cli swap
+    (test_route_drop_runs_after_the_gemini_wrapper_swaps_the_class):
+    _apply_antigravity_cli_oddish_wrapper is called only from
+    _apply_daytona_compose_restricted_network_profile, never unconditionally
+    at config-build time (unlike opencode) and never from
+    _ensure_web_tool_wrapper_when_disabling (agy has no disable_web_tools
+    kwarg) -- see test_antigravity_wrapper_is_not_swapped_by_the_web_tool_gate
+    below.
+
+    Unlike the gemini/cursor swaps, this cannot assert a returned profile:
+    _antigravity_profile currently hard-codes ``server_web_disabled=False``
+    (task-O3, pending E2E confirmation that agy exposes no provider-side web
+    tools), so the pipeline still fails closed after the swap. The class swap
+    runs BEFORE that profile resolution, so the ordering guarantee -- and
+    O4's scope -- is independently verifiable via the raised error.
+    """
+    from pathlib import Path
+    from unittest.mock import patch
+
+    agent_config = HarborAgentConfig(
+        name="antigravity-cli", model_name="google/gemini-3.7-flash"
+    )
+    with (
+        patch.object(
+            harbor_runner,
+            "_supports_daytona_compose_restricted_agent_network",
+            return_value=True,
+        ),
+        pytest.raises(harbor_runner.RestrictedNetworkProfileError),
+    ):
+        harbor_runner._apply_daytona_compose_restricted_network_profile(
+            task_path=Path("/tmp"),
+            environment_config=None,
+            agent_config=agent_config,
+            runtime_transport_env={},
+        )
+
+    assert agent_config.name is None
+    assert (
+        agent_config.import_path
+        == "oddish.workers.agents.antigravity_cli:OddishAntigravityCli"
+    )
+
+
+def test_antigravity_wrapper_leaves_explicit_import_path_alone():
+    """An agent_config already carrying an import_path is never touched.
+
+    Direct unit test of the wrapper's own no-op guard (``if
+    agent_config.import_path is not None: return``), same as the applier
+    functions it sits beside (_apply_gemini_cli_oddish_wrapper /
+    _apply_cursor_cli_oddish_wrapper have no dedicated direct test of their
+    own either -- their coverage rides the Compose-profile integration tests
+    above). Deliberately does not route through
+    _apply_daytona_compose_restricted_network_profile: an arbitrary
+    import_path's own profile factory (or _antigravity_profile's current
+    fail-closed status -- see the swap test above) has nothing to do with
+    this guard clause, and would only make the test's pass/fail depend on
+    unrelated profile machinery.
+    """
+    from oddish.workers.harbor.agent_config import (
+        _apply_antigravity_cli_oddish_wrapper,
+    )
+
+    explicit_import_path = "some.other.module:SomeOtherAgent"
+    agent_config = HarborAgentConfig(
+        name="antigravity-cli",
+        import_path=explicit_import_path,
+        model_name="google/gemini-3.7-flash",
+    )
+    _apply_antigravity_cli_oddish_wrapper(agent_config)
+
+    assert agent_config.name == "antigravity-cli"
+    assert agent_config.import_path == explicit_import_path
+
+
+def test_antigravity_wrapper_is_not_swapped_by_the_web_tool_gate():
+    """agy has no ``disable_web_tools`` kwarg, unlike cursor-cli / gemini-cli.
+
+    ``_ensure_web_tool_wrapper_when_disabling`` swaps in the Oddish wrapper
+    whenever a trial disables web tools, but only ``OddishCursorCli`` /
+    ``OddishGeminiCli`` honor that switch. agy's wrapper must NOT be swapped
+    in from this site -- only from the Compose-profile site above -- or a
+    non-Compose trial would silently start requesting a kwarg
+    ``OddishAntigravityCli`` does not support.
+    """
+    agent_config = HarborAgentConfig(
+        name="antigravity-cli",
+        model_name="google/gemini-3.7-flash",
+        kwargs={"disable_web_tools": True},
+    )
+    harbor_runner._ensure_web_tool_wrapper_when_disabling(agent_config)
+
+    assert agent_config.name == "antigravity-cli"
+    assert agent_config.import_path is None
+
+
+def test_antigravity_cli_keeps_public_model_identity():
+    """agy pins its egress to the Gemini API, exactly like gemini-cli.
+
+    agent_keeps_public_model_identity is a restricted_network.py registry
+    lookup (_COMPATIBILITY_PROFILES keyed on the resolved class path), not a
+    name-set/predicate in this module -- both the stock
+    ``harbor.agents.installed.antigravity_cli:AntigravityCli`` class and the
+    Oddish ``OddishAntigravityCli`` wrapper are already registered there with
+    ``pins_own_transport=True`` (feat(restricted-network): attested
+    antigravity-cli profile, landed separately), so this gate already returns
+    True for antigravity-cli with no code change in this module -- this test
+    pins that behavior down. gemini-cli's own equivalent lives in
+    test_transport_authoritative_agents_keep_their_model_identity
+    (test_restricted_network_profile.py); there is no antigravity-cli analog
+    in *this* file yet, so this is that direct test for test_harbor_runner.py.
+    """
+    from oddish.workers.harbor.restricted_network import (
+        agent_keeps_public_model_identity,
+    )
+
+    by_name = HarborAgentConfig(
+        name="antigravity-cli", model_name="google/gemini-3.7-flash"
+    )
+    assert agent_keeps_public_model_identity(by_name)
+
+    by_import_path = HarborAgentConfig(
+        import_path="oddish.workers.agents.antigravity_cli:OddishAntigravityCli",
+        model_name="google/gemini-3.7-flash",
+    )
+    assert agent_keeps_public_model_identity(by_import_path)
 
 
 def test_both_azure_provider_spellings_fold_ambient_credentials(monkeypatch):
@@ -4586,3 +4753,23 @@ def test_opencode_environment_hosts_follow_custom_base_url():
 
     assert "gateway.internal.example" in hosts
     assert "raw.githubusercontent.com" in hosts
+
+
+def test_antigravity_environment_hosts_span_install_and_model():
+    """agy self-installs at agent-setup, same lifecycle shape as opencode.
+
+    install.sh -> manifest (Cloud Run auto-updater) -> GCS tarball must all be
+    reachable during the environment-baseline setup phase, and the Gemini
+    model transport host must still resolve for legacy closed tasks --
+    exactly like _opencode_environment_hosts above.
+    """
+    hosts = harbor_runner._antigravity_environment_hosts(
+        HarborAgentConfig(name="antigravity-cli", model_name="google/gemini-3.7-flash")
+    )
+
+    assert "antigravity.google" in hosts  # install.sh
+    assert (
+        "antigravity-cli-auto-updater-974169037036.us-central1.run.app" in hosts
+    )  # manifest
+    assert "storage.googleapis.com" in hosts  # binary tarball
+    assert "generativelanguage.googleapis.com" in hosts  # ...and inference works
