@@ -94,6 +94,7 @@ oddish run ./my-task -a claude-code -m anthropic/claude-sonnet-4-5 --n-trials 5
 
 # Append trials to an existing task
 oddish run --task <task_id> -a gemini-cli -m google/gemini-3.1-pro-preview
+oddish run --task <task_id> -a antigravity-cli -m google/gemini-3.7-flash
 
 # Complex sweep from config
 oddish run ./my-task -c sweep.yaml
@@ -664,6 +665,9 @@ export ODDISH_API_KEY=ok_pr-35_…
 oddish run /path/to/task --agent gemini-cli --model google/gemini-3.1-pro-preview
 oddish status
 ```
+
+`antigravity-cli` (Google Antigravity CLI, agy) is also available here with the
+same `GEMINI_API_KEY` secrets as `gemini-cli`.
 
 API URL resolution order is `ODDISH_API_URL` (explicit) >
 `ODDISH_PREVIEW_PR` (derived) > prod default. Forks change the URL
