@@ -1123,10 +1123,7 @@ silently breaks throughput or correctness — read before touching
    `nop_oracle` id (`is_nop_oracle_agent`); z.ai / MiniMax / Moonshot / xAI map
    to `<provider>/<id>`. ⚠️ Known gap: Gemini isn't canonicalized — a bare
    `gemini-…` becomes `google/…` while `gemini/…` stays `gemini/…`, splitting one
-   model across two buckets. `antigravity-cli` is fixed to the `gemini` provider
-   in `_FIXED_AGENT_PROVIDERS` (same key minting as `gemini-cli`: it reads
-   `GEMINI_API_KEY`, with `GOOGLE_API_KEY` accepted upstream as an alias), so it
-   shares this same Gemini canonicalization gap.
+   model across two buckets.
 
 5. **No provider-level concurrency cap.** Each Bedrock/Gemini model id is its own
    bucket, but they share one AWS/Google account quota — the sum of per-model

@@ -56,7 +56,6 @@ GKE_VARIANT_ID = "gke"
 # reads this same registry). Any allowlisted pin not registered here runs
 # out-of-process as ``ephemeral``.
 HARBOR_VARIANTS: dict[str, HarborVariant] = {
-    # agy 1.1.x port branch (abundant-ai/harbor-gke#19).
     GKE_VARIANT_ID: HarborVariant(
         variant_id=GKE_VARIANT_ID,
         source="https://github.com/abundant-ai/harbor-gke",

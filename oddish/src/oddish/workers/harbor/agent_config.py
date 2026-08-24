@@ -407,7 +407,7 @@ def _apply_gemini_cli_oddish_wrapper(agent_config: AgentConfig) -> None:
 
 
 def _apply_antigravity_cli_oddish_wrapper(agent_config: AgentConfig) -> None:
-    """Route Antigravity CLI (agy) through the attested Oddish wrapper."""
+    """Route Antigravity CLI through the attested Oddish wrapper."""
     if agent_config.import_path is not None:
         return
     if (agent_config.name or "").strip().lower() != "antigravity-cli":

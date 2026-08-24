@@ -666,9 +666,6 @@ oddish run /path/to/task --agent gemini-cli --model google/gemini-3.1-pro-previe
 oddish status
 ```
 
-`antigravity-cli` (Google Antigravity CLI, agy) is also available here with the
-same `GEMINI_API_KEY` secrets as `gemini-cli`.
-
 API URL resolution order is `ODDISH_API_URL` (explicit) >
 `ODDISH_PREVIEW_PR` (derived) > prod default. Forks change the URL
 pattern by setting `ODDISH_PREVIEW_URL_TEMPLATE` (with `{n}` for the
