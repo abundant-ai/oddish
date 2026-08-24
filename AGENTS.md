@@ -1150,7 +1150,9 @@ silently breaks throughput or correctness — read before touching
    out-of-process against the recorded source/SHA -- and the projection is
    reconciled at claim for every harbor-running trial, healing retry/
    combine/import copies persisted without it. Local (self-host) mode
-   applies the same refresh; it executes the installed default harbor.
+   applies the same refresh with the installed default descriptor for EVERY
+   stable-family trial regardless of variant label -- it has no variant
+   images, so the installed default is what executes.
 
 ### Local Development
 

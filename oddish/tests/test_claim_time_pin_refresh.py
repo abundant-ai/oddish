@@ -93,6 +93,25 @@ def test_a_config_with_no_harbor_identity_is_left_alone():
     assert trial.harbor_sha is None
 
 
+def test_local_mode_stamps_what_it_executes_not_the_blessed_pin():
+    """Local mode executes the installed default harbor even for a trial
+    labelled with a registered variant; stamping the blessed variant pin
+    there would recreate the record-vs-execution skew this module cures."""
+    trial = _trial(
+        {
+            "variant_id": GKE_VARIANT_ID,
+            "source": _BLESSED.source,
+            "resolved_sha": _BLESSED.sha,
+        }
+    )
+    refreshed = _refresh_stable_variant_pin(
+        trial, executing=(HARBOR_DEFAULT_SOURCE, HARBOR_DEFAULT_SHA)
+    )
+    assert refreshed["resolved_sha"] == HARBOR_DEFAULT_SHA
+    assert refreshed["source"] == HARBOR_DEFAULT_SOURCE
+    assert trial.harbor_sha == HARBOR_DEFAULT_SHA
+
+
 def test_a_missing_or_malformed_config_is_left_alone():
     assert _refresh_stable_variant_pin(_trial(None)) is None
     trial = _trial("not-a-dict")

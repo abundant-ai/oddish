@@ -575,12 +575,21 @@ async def _run_harbor_trial(trial_id: str) -> None:
         task_path_str = task.task_path
         task_s3_key = task.task_s3_key
         task_db_id = task.id
-        # Local mode executes the installed default harbor; refresh the
-        # record the same way the hosted claim path does (worker-runtime
-        # invariant 7) so the row matches what actually runs.
+        # Local mode executes the installed default harbor for every
+        # stable-family trial regardless of its variant label -- there is no
+        # variant image or interpreter switch here -- so the record must be
+        # stamped with the installed default descriptor (worker-runtime
+        # invariant 7), never a blessed variant pin this process is not
+        # running.
+        from oddish.config import HARBOR_DEFAULT_SHA, HARBOR_DEFAULT_SOURCE
         from oddish.workers.queue.trial_handler import _refresh_stable_variant_pin
 
-        harbor_config = _refresh_stable_variant_pin(trial) or {}
+        harbor_config = (
+            _refresh_stable_variant_pin(
+                trial, executing=(HARBOR_DEFAULT_SOURCE, HARBOR_DEFAULT_SHA)
+            )
+            or {}
+        )
         agent_name = trial.agent
         model_name = trial.model
         trial_org_id = trial.org_id

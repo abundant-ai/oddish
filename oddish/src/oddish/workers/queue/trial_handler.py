@@ -105,7 +105,9 @@ logger = logging.getLogger(__name__)
 TRIAL_HEARTBEAT_INTERVAL_SECONDS = 30
 
 
-def _refresh_stable_variant_pin(trial) -> dict | None:
+def _refresh_stable_variant_pin(
+    trial, *, executing: tuple[str, str] | None = None
+) -> dict | None:
     """Refresh a stable-variant trial's recorded harbor pin at claim time.
 
     The deployment is the unit of harbor identity for stable variants: the
@@ -132,11 +134,20 @@ def _refresh_stable_variant_pin(trial) -> dict | None:
     if variant_id is None and "resolved_sha" not in harbor_config:
         return harbor_config
     if variant_id != "ephemeral":
-        variant = HARBOR_VARIANTS.get(variant_id)
-        if variant is not None:
-            source, sha = variant.source, variant.sha
+        # ``executing`` is what the claiming runtime actually runs. Hosted
+        # workers omit it: a variant job only ever claims inside its own
+        # variant image, so the registry entry (or the locked default) IS the
+        # executing harbor. Local mode passes the installed default
+        # descriptor explicitly, because it executes that for every
+        # stable-family trial regardless of the trial's variant label.
+        if executing is not None:
+            source, sha = executing
         else:
-            source, sha = HARBOR_DEFAULT_SOURCE, HARBOR_DEFAULT_SHA
+            variant = HARBOR_VARIANTS.get(variant_id)
+            if variant is not None:
+                source, sha = variant.source, variant.sha
+            else:
+                source, sha = HARBOR_DEFAULT_SOURCE, HARBOR_DEFAULT_SHA
         if (
             harbor_config.get("resolved_sha") != sha
             or harbor_config.get("source") != source
