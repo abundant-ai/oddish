@@ -8,7 +8,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.dispatch.backends.fake import FakeDispatcher
 from oddish.dispatch.cycle import run_dispatch_cycle
+from oddish.db import ACTIVE_WORKER_JOB_KINDS
 from oddish.workers.queue import worker_job_dispatcher as wjd
+
+
+_ACTIVE_KIND_VALUES = tuple(kind.value for kind in ACTIVE_WORKER_JOB_KINDS)
 
 
 class _FakePool:
@@ -45,12 +49,17 @@ def test_stamp_dispatch_stage_marks_spawned_and_reasons(monkeypatch) -> None:
     spawn_calls = [c for c in pool.calls if "spawned_at = NOW()" in c[0]]
     reason_calls = [c for c in pool.calls if "admission_reason = $2" in c[0]]
     assert len(spawn_calls) == 1
+    assert all("kind::text = ANY" in sql for sql, _args in pool.calls)
     # one LIMITed stamp per queue_key, carrying its per-key spawn count (2)
-    assert spawn_calls[0][1] == ("gpt-4o", 2)
+    assert spawn_calls[0][1] == ("gpt-4o", 2, _ACTIVE_KIND_VALUES)
     assert "spawned_at IS NULL" in spawn_calls[0][0]
     assert "LIMIT" in spawn_calls[0][0]
     assert len(reason_calls) == 1
-    assert reason_calls[0][1] == ("busy", "waiting for slot (limit 2, running 2)")
+    assert reason_calls[0][1] == (
+        "busy",
+        "waiting for slot (limit 2, running 2)",
+        _ACTIVE_KIND_VALUES,
+    )
 
 
 def test_stamp_dispatch_stage_stamps_only_per_key_spawn_count(monkeypatch) -> None:

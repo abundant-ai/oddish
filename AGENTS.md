@@ -790,6 +790,10 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   `moonshot/`, `fireworks/`, `xai/`, `meta/`, and `anthropic-hdo/`. Add or
   change provider aliases in `config.py`, then update env injection in the
   Harbor runner and the network allowlist notes.
+- Gemini model ids use the `gemini/<id>` prefix. `_build_agent_config` hands
+  each agent the spelling its LLM client expects (litellm agents in
+  `_LITELLM_MODEL_ID_AGENTS`, Vercel AI SDK agents in
+  `_AI_SDK_MODEL_ID_AGENTS`); add a new agent to the set matching its client.
 - Provider secrets are referenced by env var name (`AWS_BEARER_TOKEN_BEDROCK`,
   `ANTHROPIC_HDO_API_KEY`, `ZAI_API_KEY`, `MINIMAX_API_KEY`, `MOONSHOT_API_KEY`,
   `FIREWORKS_API_KEY`, `XAI_API_KEY`, `META_API_KEY`) and must not be persisted
