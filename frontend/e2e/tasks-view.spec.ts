@@ -277,7 +277,9 @@ test.describe("authenticated task view", () => {
 
     const response = await listingResponse;
     const url = new URL(response.url());
-    expect(url.searchParams.get("recursive")).toBe("1");
+    expect(url.searchParams.get("recursive")).toBe("0");
+    expect(url.searchParams.get("limit")).toBe("100");
+    expect(url.searchParams.get("prefix")).toBeNull();
     expect(url.searchParams.get("inline")).toBe("0");
     expect(url.searchParams.get("presign")).toBe("0");
 
