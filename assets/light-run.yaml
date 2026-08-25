@@ -8,6 +8,9 @@ agents:
   - name: gemini-cli
     model_name: gemini/gemini-3.1-flash-lite-preview
     n_trials: 3
+  - name: antigravity-cli
+    model_name: google/gemini-3.1-flash-lite-preview
+    n_trials: 3
   - name: nop
     model_name: default
     n_trials: 3

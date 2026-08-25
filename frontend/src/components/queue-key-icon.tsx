@@ -126,13 +126,17 @@ function matchProviderFromSource(raw: string): KnownProvider {
   if (probe.includes("anthropic") || probe.includes("claude")) {
     return "anthropic";
   }
-  // Gemini / Google — `google/`, `gemini-...`, `gemma-...`.
+  // Gemini / Google — `google/`, `gemini-...`, `gemma-...`. `antigravity-cli`
+  // is fixed to the gemini provider (_FIXED_AGENT_PROVIDERS) but its agent
+  // name carries no "gemini"/"google" substring, so it needs its own token
+  // check for the agent-only resolution path (no model/queueKey available).
   if (
     probe.includes("gemini") ||
     probe.includes("google/") ||
     probe.includes("google ") ||
     probe.startsWith("google/") ||
-    hasToken(probe, "gemma")
+    hasToken(probe, "gemma") ||
+    hasToken(probe, "antigravity")
   ) {
     return "gemini";
   }

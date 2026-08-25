@@ -94,6 +94,7 @@ oddish run ./my-task -a claude-code -m anthropic/claude-sonnet-4-5 --n-trials 5
 
 # Append trials to an existing task
 oddish run --task <task_id> -a gemini-cli -m gemini/gemini-3.1-pro-preview
+oddish run --task <task_id> -a antigravity-cli -m google/gemini-3.7-flash
 
 # Complex sweep from config
 oddish run ./my-task -c sweep.yaml

@@ -2,6 +2,7 @@ from oddish.cli.api import build_sweep_payload
 from oddish.cli.closed_internet import (
     apply_allow_agent_hosts,
     apply_disable_web_tools,
+    web_tool_kwargs_for_agent,
 )
 
 
@@ -42,6 +43,25 @@ def test_apply_disable_web_tools_claude_and_codex():
         agent_config={"kwargs": {"disable_web_tools": False}},
     )
     assert cursor_override["kwargs"]["disable_web_tools"] is False
+
+
+def test_web_tool_kwargs_for_agent_antigravity_cli():
+    # antigravity-cli (agy) has no settings-level web-tool exclusion; its
+    # closed-internet bound is the network allowlist only, so no kwarg.
+    assert (
+        web_tool_kwargs_for_agent(agent_name="antigravity-cli", import_path=None) == {}
+    )
+    # Also test path-based matching
+    assert (
+        web_tool_kwargs_for_agent(
+            agent_name=None, import_path="foo.antigravity_cli.bar"
+        )
+        == {}
+    )
+    # Ensure gemini-cli still gets its kwarg.
+    assert web_tool_kwargs_for_agent(agent_name="gemini-cli", import_path=None) == {
+        "disable_web_tools": True
+    }
 
 
 def test_build_sweep_payload_closed_internet_flags():

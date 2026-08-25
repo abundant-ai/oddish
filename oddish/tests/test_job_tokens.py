@@ -86,6 +86,36 @@ def test_scoped_model_env_gemini_publishes_both_google_key_names() -> None:
     assert "ANTHROPIC_API_KEY" not in env
 
 
+def test_scoped_model_env_antigravity_mints_gemini_keys() -> None:
+    # Verifies key-minting behavior for provider "gemini": both GEMINI_API_KEY
+    # and GOOGLE_GENERATIVE_AI_API_KEY are exported (least-privilege).
+    # Provider resolution is stubbed per this file's convention; real resolution
+    # in the companion map test below.
+    settings = _fake_settings(gemini_api_key="g-key", anthropic_api_key="sk-ant")
+    # Stub provider for antigravity-cli to "gemini" (the real agent_to_provider
+    # map will resolve it; here we hardcode it to focus on key minting).
+    settings.get_provider_for_trial = (
+        lambda agent, model: "gemini" if agent == "antigravity-cli" else _provider_of(model)
+    )
+    env = job_tokens.scoped_model_env(
+        agent="antigravity-cli", model=None, settings=settings
+    )
+    assert env.get("GEMINI_API_KEY") == "g-key"
+    assert env.get("GOOGLE_GENERATIVE_AI_API_KEY") == "g-key"
+    assert "ANTHROPIC_API_KEY" not in env
+
+
+def test_build_agent_provider_map_includes_antigravity_cli() -> None:
+    # Fails if the "antigravity-cli": "gemini" entry is removed from
+    # _FIXED_AGENT_PROVIDERS (config.py:92). The map builder consults that dict
+    # both via its comprehension and its update call, so the entry is the
+    # load-bearing thing.
+    from oddish.config import _build_agent_provider_map
+
+    agent_map = _build_agent_provider_map()
+    assert agent_map.get("antigravity-cli") == "gemini"
+
+
 def test_scoped_model_env_anthropic_hdo_uses_hdo_key_not_platform() -> None:
     settings = _fake_settings(
         anthropic_api_key="sk-platform",
