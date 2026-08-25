@@ -406,9 +406,7 @@ test.describe("authenticated task view", () => {
     await page.goto(`/tasks/${TASK_ID}?drawer=task`);
     await page.getByRole("button", { name: "Files", exact: true }).click();
     await wrapperRequestStarted;
-    await expect(
-      page.getByText("Loading task files…", { exact: true })
-    ).toBeVisible();
+    await expect(page.getByText("Loading…", { exact: true })).toBeVisible();
     await expect(page.getByText("task-archive", { exact: true })).toHaveCount(
       0
     );
