@@ -16,7 +16,10 @@ import os
 import threading
 from collections.abc import Mapping, Sequence
 from contextlib import nullcontext
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from oddish.db import WorkerJobKind, WorkerJobStatus
 
 logger = logging.getLogger(__name__)
 
@@ -29,10 +32,9 @@ _queue_slots_gauge = None
 _dispatch_workers_spawned_counter = None
 _dispatch_cycles_counter = None
 _dispatch_duration_histogram = None
+_last_dispatch_queue_keys: set[str] = set()
 
 _AGGREGATE_QUEUE_KEY = "__all__"
-_WORKER_JOB_KINDS = frozenset({"TRIAL", "TASK_EXPAND", "TAG_PROJECT"})
-_WORKER_JOB_OUTCOMES = frozenset({"SUCCESS", "RETRYING", "FAILED"})
 
 
 def configure_observability(service_name: str) -> bool:
@@ -212,8 +214,8 @@ def mark_observability_configured() -> None:
 
 def record_worker_job_transition(
     *,
-    kind: str,
-    outcome: str,
+    kind: WorkerJobKind,
+    outcome: WorkerJobStatus,
     queue_key: str,
     execution_lane: str,
     duration_seconds: float,
@@ -226,13 +228,6 @@ def record_worker_job_transition(
     """
     global _worker_job_transitions_counter, _worker_job_duration_histogram
     if not _configured:
-        return
-    if kind not in _WORKER_JOB_KINDS or outcome not in _WORKER_JOB_OUTCOMES:
-        logger.warning(
-            "skipping worker-job metric with unsupported kind=%r outcome=%r",
-            kind,
-            outcome,
-        )
         return
 
     try:
@@ -259,8 +254,8 @@ def record_worker_job_transition(
         return
 
     attributes = {
-        "kind": kind,
-        "outcome": outcome,
+        "kind": kind.value,
+        "outcome": outcome.value,
         "queue_key": queue_key,
         "execution_lane": execution_lane,
     }
@@ -269,9 +264,7 @@ def record_worker_job_transition(
     except Exception:
         logger.warning("failed to record worker-job transition metric", exc_info=True)
     try:
-        _worker_job_duration_histogram.record(
-            max(0.0, float(duration_seconds)), attributes
-        )
+        _worker_job_duration_histogram.record(duration_seconds, attributes)
     except Exception:
         logger.warning("failed to record worker-job duration metric", exc_info=True)
 
@@ -288,9 +281,10 @@ def record_dispatch_snapshot(
 
     ``queue_key="__all__"`` is the aggregate series. Every discovered queue key
     also receives queued, running, held, and limit observations, using zero for
-    a value absent from one of the plan's mappings.
+    a value absent from one of the plan's mappings. A queue that disappears from
+    the next plan receives one final zero for jobs and held slots.
     """
-    global _queue_jobs_gauge, _queue_slots_gauge
+    global _queue_jobs_gauge, _queue_slots_gauge, _last_dispatch_queue_keys
     if not _configured:
         return
 
@@ -316,58 +310,65 @@ def record_dispatch_snapshot(
         logger.warning("failed to create dispatch snapshot metrics", exc_info=True)
         return
 
-    discovered_queue_keys = sorted(
+    current_queue_keys = (
         set(queue_keys)
         | set(queued_by_queue)
         | set(running_by_queue_key)
         | set(held_by_queue_key)
         | set(concurrency_limits)
     )
+    with _lock:
+        departed_queue_keys = _last_dispatch_queue_keys - current_queue_keys
+        _last_dispatch_queue_keys = current_queue_keys
+
+    observed_queue_keys = sorted(current_queue_keys | departed_queue_keys)
     job_observations = [
         (
-            sum(int(value or 0) for value in queued_by_queue.values()),
+            sum(queued_by_queue.values()),
             {"state": "queued", "queue_key": _AGGREGATE_QUEUE_KEY},
         ),
         (
-            sum(int(value or 0) for value in running_by_queue_key.values()),
+            sum(running_by_queue_key.values()),
             {"state": "running", "queue_key": _AGGREGATE_QUEUE_KEY},
         ),
     ]
     slot_observations = [
         (
-            sum(int(value or 0) for value in held_by_queue_key.values()),
+            sum(held_by_queue_key.values()),
             {"state": "held", "queue_key": _AGGREGATE_QUEUE_KEY},
         ),
         (
-            sum(int(value or 0) for value in concurrency_limits.values()),
+            sum(concurrency_limits.values()),
             {"state": "limit", "queue_key": _AGGREGATE_QUEUE_KEY},
         ),
     ]
-    for queue_key in discovered_queue_keys:
+    for queue_key in observed_queue_keys:
         job_observations.extend(
             (
                 (
-                    int(queued_by_queue.get(queue_key, 0) or 0),
+                    queued_by_queue.get(queue_key, 0),
                     {"state": "queued", "queue_key": queue_key},
                 ),
                 (
-                    int(running_by_queue_key.get(queue_key, 0) or 0),
+                    running_by_queue_key.get(queue_key, 0),
                     {"state": "running", "queue_key": queue_key},
                 ),
             )
         )
-        slot_observations.extend(
+    for queue_key in observed_queue_keys:
+        slot_observations.append(
             (
-                (
-                    int(held_by_queue_key.get(queue_key, 0) or 0),
-                    {"state": "held", "queue_key": queue_key},
-                ),
-                (
-                    int(concurrency_limits.get(queue_key, 0) or 0),
-                    {"state": "limit", "queue_key": queue_key},
-                ),
+                held_by_queue_key.get(queue_key, 0),
+                {"state": "held", "queue_key": queue_key},
             )
         )
+        if queue_key in current_queue_keys:
+            slot_observations.append(
+                (
+                    concurrency_limits.get(queue_key, 0),
+                    {"state": "limit", "queue_key": queue_key},
+                )
+            )
 
     for value, attributes in job_observations:
         try:
@@ -388,7 +389,7 @@ def record_dispatch_cycle(
     duration_seconds: float,
     outcome: Literal["success", "error"],
 ) -> None:
-    """Record one completed or failed dispatcher cycle and its successful spawns."""
+    """Record one dispatcher cycle and spawns from fully successful cycles."""
     global _dispatch_workers_spawned_counter
     global _dispatch_cycles_counter, _dispatch_duration_histogram
     if not _configured:
@@ -402,7 +403,7 @@ def record_dispatch_cycle(
                 _dispatch_workers_spawned_counter = logfire.metric_counter(
                     "oddish.dispatch.workers_spawned",
                     unit="{worker}",
-                    description="Workers successfully spawned by dispatch cycles",
+                    description="Workers spawned by successful dispatch cycles",
                 )
             if _dispatch_cycles_counter is None:
                 _dispatch_cycles_counter = logfire.metric_counter(
@@ -422,13 +423,14 @@ def record_dispatch_cycle(
 
     attributes = {
         "outcome": outcome,
-        "spawn_cap_reached": bool(spawn_cap_reached),
+        "spawn_cap_reached": spawn_cap_reached,
     }
-    observations = (
-        (_dispatch_workers_spawned_counter.add, max(0, int(workers_spawned))),
+    observations = [
         (_dispatch_cycles_counter.add, 1),
-        (_dispatch_duration_histogram.record, max(0.0, float(duration_seconds))),
-    )
+        (_dispatch_duration_histogram.record, duration_seconds),
+    ]
+    if outcome == "success":
+        observations.append((_dispatch_workers_spawned_counter.add, workers_spawned))
     for observe, value in observations:
         try:
             observe(value, attributes)

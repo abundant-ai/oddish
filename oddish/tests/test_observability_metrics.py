@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from oddish import observability
+from oddish.db import WorkerJobKind, WorkerJobStatus
 
 
 @dataclass
@@ -51,6 +52,7 @@ def metric_instruments(monkeypatch):
         "_dispatch_duration_histogram",
     ):
         monkeypatch.setattr(observability, name, None)
+    monkeypatch.setattr(observability, "_last_dispatch_queue_keys", set())
     return instruments, definitions
 
 
@@ -66,8 +68,8 @@ def test_recording_functions_are_noops_when_logfire_is_not_configured(
     monkeypatch.setitem(sys.modules, "logfire", fake_logfire)
 
     observability.record_worker_job_transition(
-        kind="TRIAL",
-        outcome="SUCCESS",
+        kind=WorkerJobKind.TRIAL,
+        outcome=WorkerJobStatus.SUCCESS,
         queue_key="openai/gpt-5",
         execution_lane="default",
         duration_seconds=1.0,
@@ -87,17 +89,17 @@ def test_recording_functions_are_noops_when_logfire_is_not_configured(
     )
 
 
-def test_worker_metrics_have_bounded_attributes_and_nonnegative_duration(
+def test_worker_metrics_have_bounded_attributes_and_measured_duration(
     metric_instruments,
 ):
     instruments, definitions = metric_instruments
 
     observability.record_worker_job_transition(
-        kind="TRIAL",
-        outcome="RETRYING",
+        kind=WorkerJobKind.TRIAL,
+        outcome=WorkerJobStatus.RETRYING,
         queue_key="openai/gpt-5",
         execution_lane="default",
-        duration_seconds=-3.5,
+        duration_seconds=3.5,
     )
 
     transition = instruments["oddish.worker_job.transitions"].observations
@@ -113,7 +115,7 @@ def test_worker_metrics_have_bounded_attributes_and_nonnegative_duration(
             },
         )
     ]
-    assert duration == [(0.0, transition[0][1])]
+    assert duration == [(3.5, transition[0][1])]
     assert set(transition[0][1]) == {
         "kind",
         "outcome",
@@ -150,9 +152,16 @@ def test_dispatch_snapshot_emits_plan_values_and_empty_aggregate_zero(
         held_by_queue_key={},
         concurrency_limits={},
     )
-    assert jobs[-2:] == [
+    assert jobs[-4:] == [
         (0, {"state": "queued", "queue_key": "__all__"}),
         (0, {"state": "running", "queue_key": "__all__"}),
+        (0, {"state": "queued", "queue_key": "openai/gpt-5"}),
+        (0, {"state": "running", "queue_key": "openai/gpt-5"}),
+    ]
+    assert slots[-3:] == [
+        (0, {"state": "held", "queue_key": "__all__"}),
+        (0, {"state": "limit", "queue_key": "__all__"}),
+        (0, {"state": "held", "queue_key": "openai/gpt-5"}),
     ]
 
 
@@ -173,5 +182,7 @@ def test_logfire_observation_failure_does_not_escape(metric_instruments):
         outcome="error",
     )
 
-    assert instruments["oddish.dispatch.workers_spawned"].observations[-1][0] == 1
+    assert instruments["oddish.dispatch.workers_spawned"].observations == [
+        (2, {"outcome": "success", "spawn_cap_reached": True})
+    ]
     assert instruments["oddish.dispatch.duration"].observations[-1][0] == 0.5

@@ -10,10 +10,10 @@ Oddish React application does not copy, poll, aggregate, or graph these values.
 | Metric | Instrument and unit | Definition |
 |---|---|---|
 | `oddish.worker_job.transitions` | Counter, `{transition}` | Guarded `worker_jobs` updates that changed one row to `SUCCESS`, `RETRYING`, or `FAILED`. |
-| `oddish.worker_job.duration` | Histogram, `s` | Seconds from the accepted job claim to the same accepted durable transition. Negative clock differences are recorded as zero. |
-| `oddish.queue.jobs` | Gauge, `{job}` | Queued and running `worker_jobs` rows observed in one dispatch plan. |
+| `oddish.worker_job.duration` | Histogram, `s` | Seconds on the worker's monotonic clock from receiving the accepted claim through `_record_outcome` returning the accepted durable transition. |
+| `oddish.queue.jobs` | Gauge, `{job}` | Queued and running `worker_jobs` rows observed in one dispatch plan. A queue absent from the next plan receives one final zero-valued observation. |
 | `oddish.queue.slots` | Gauge, `{slot}` | Held `queue_slots` leases and configured concurrency limits observed in that plan. |
-| `oddish.dispatch.workers_spawned` | Counter, `{worker}` | Workers whose host spawn operation completed successfully. |
+| `oddish.dispatch.workers_spawned` | Counter, `{worker}` | Workers returned by dispatch cycles whose complete host spawn operation succeeded. Error cycles emit cycle metrics but no worker count because the dispatcher interface does not expose partial results. |
 | `oddish.dispatch.cycles` | Counter, `{cycle}` | Dispatcher cycles labeled `success` or `error`. |
 | `oddish.dispatch.duration` | Histogram, `s` | Wall-clock duration of the same completed or failed dispatch cycle. |
 

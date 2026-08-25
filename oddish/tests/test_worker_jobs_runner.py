@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import types
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -525,7 +526,7 @@ async def test_run_single_worker_job_returns_false_when_queue_empty(monkeypatch)
 
 @pytest.mark.asyncio
 async def test_run_single_worker_job_records_success(monkeypatch):
-    job = _make_claimed()
+    job = _make_claimed(kind=WorkerJobKind.TRIAL)
     handler = _FakeHandler(job.kind, outcome=JobOutcome.ok({"answer": 42}))
     register(handler)
 
@@ -536,6 +537,12 @@ async def test_run_single_worker_job_records_success(monkeypatch):
         worker_job_single_job,
         "record_worker_job_transition",
         lambda **values: metric_calls.append(values),
+    )
+    monotonic_values = iter((10.0, 15.0))
+    monkeypatch.setattr(
+        worker_job_single_job,
+        "time",
+        types.SimpleNamespace(monotonic=lambda: next(monotonic_values)),
     )
 
     result = await worker_job_single_job.run_single_worker_job(
@@ -551,13 +558,14 @@ async def test_run_single_worker_job_records_success(monkeypatch):
     assert recorded["outcome"].success is not None
     assert recorded["outcome"].success.result_summary == {"answer": 42}
     assert len(metric_calls) == 1
-    assert metric_calls[0]["outcome"] == WorkerJobStatus.SUCCESS.value
-    assert metric_calls[0]["duration_seconds"] >= 0
+    assert metric_calls[0]["kind"] == WorkerJobKind.TRIAL
+    assert metric_calls[0]["outcome"] == WorkerJobStatus.SUCCESS
+    assert metric_calls[0]["duration_seconds"] == 5.0
 
 
 @pytest.mark.asyncio
 async def test_run_single_worker_job_records_retryable_on_exception(monkeypatch):
-    job = _make_claimed(attempts=2, max_attempts=5)
+    job = _make_claimed(kind=WorkerJobKind.TRIAL, attempts=2, max_attempts=5)
     handler = _FakeHandler(job.kind, raise_exc=RuntimeError("boom"))
     register(handler)
 
@@ -578,9 +586,7 @@ async def test_run_single_worker_job_records_retryable_on_exception(monkeypatch)
     assert recorded["outcome"].failure is not None
     assert recorded["outcome"].failure.retryable is True
     assert "RuntimeError" in recorded["outcome"].failure.error_message
-    assert [call["outcome"] for call in metric_calls] == [
-        WorkerJobStatus.RETRYING.value
-    ]
+    assert [call["outcome"] for call in metric_calls] == [WorkerJobStatus.RETRYING]
 
 
 @pytest.mark.asyncio
@@ -617,6 +623,12 @@ async def test_run_single_worker_job_handles_missing_handler(monkeypatch):
 
     _install_fake_claim(monkeypatch, job)
     captured = _capture_record_outcome(monkeypatch)
+    metric_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        worker_job_single_job,
+        "record_worker_job_transition",
+        lambda **values: metric_calls.append(values),
+    )
 
     result = await worker_job_single_job.run_single_worker_job(
         "default", worker_id="w-1", queue_slot=0
@@ -627,6 +639,7 @@ async def test_run_single_worker_job_handles_missing_handler(monkeypatch):
     assert recorded["outcome"].failure is not None
     # No-handler failures are permanent -- retrying can't help.
     assert recorded["outcome"].failure.retryable is False
+    assert [call["outcome"] for call in metric_calls] == [WorkerJobStatus.FAILED]
 
 
 @pytest.mark.asyncio
