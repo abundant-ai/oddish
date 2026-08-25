@@ -1927,6 +1927,7 @@ export function TaskFilesPanel({
               ) : !fileRouteServesBytes ? (
                 <>
                   {pagedTaskWrapperCandidate &&
+                  !pagedTaskWrapper &&
                   (!pagedTaskWrapperListing ||
                     pagedTaskWrapperListing.status === "loading") ? (
                     <div className="text-muted-foreground flex items-center gap-1.5 px-2 py-1 text-xs">
