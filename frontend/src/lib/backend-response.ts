@@ -14,6 +14,102 @@ type BackendJsonResult = {
   status: number;
 };
 
+const PASSTHROUGH_RESPONSE_HEADERS = [
+  "cache-control",
+  "content-encoding",
+  "content-disposition",
+  "content-length",
+  "content-type",
+  "etag",
+  "last-modified",
+  "server-timing",
+  "traceparent",
+  "tracestate",
+  "x-request-id",
+] as const;
+
+function forwardBackendResponse(upstream: Response): NextResponse {
+  const headers = new Headers();
+  for (const name of PASSTHROUGH_RESPONSE_HEADERS) {
+    const value = upstream.headers.get(name);
+    if (value) headers.set(name, value);
+  }
+  return new NextResponse(upstream.body, {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers,
+  });
+}
+
+async function fetchBackendResponse({
+  request,
+  path,
+  headers,
+  signal,
+}: {
+  request: Request;
+  path: string;
+  headers?: HeadersInit;
+  signal?: AbortSignal;
+}): Promise<NextResponse> {
+  const upstream = await fetch(getBackendUrl(path), {
+    cache: "no-store",
+    headers: backendFetchHeaders(request, headers),
+    signal: signal ?? request.signal,
+  });
+  return forwardBackendResponse(upstream);
+}
+
+/** Authenticated, body-preserving proxy for bounded read resources. */
+export async function proxyBackendResponse({
+  request,
+  path,
+  signal,
+}: {
+  request: Request;
+  path: string;
+  signal?: AbortSignal;
+}): Promise<NextResponse> {
+  try {
+    const { getToken } = await auth();
+    const token = await getClerkToken(getToken);
+    if (!token) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    return fetchBackendResponse({
+      request,
+      path,
+      headers: getAuthHeaders(token),
+      signal,
+    });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Unknown error" },
+      { status: 503 },
+    );
+  }
+}
+
+/** Public, body-preserving proxy. This function never attempts Clerk auth. */
+export async function proxyPublicBackendResponse({
+  request,
+  path,
+  signal,
+}: {
+  request: Request;
+  path: string;
+  signal?: AbortSignal;
+}): Promise<NextResponse> {
+  try {
+    return await fetchBackendResponse({ request, path, signal });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Unknown error" },
+      { status: 503 },
+    );
+  }
+}
+
 export async function readBackendJson(
   response: Response,
   fallbackError: string

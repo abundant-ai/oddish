@@ -1698,6 +1698,134 @@ class TaskOpenResponse(BaseModel):
     trials_has_more: bool = False
 
 
+class ExperimentOpenSummary(BaseModel):
+    """Exact experiment totals independent of task/trial pagination."""
+
+    task_count: int = 0
+    trial_count: int = 0
+    success_count: int = 0
+    failed_count: int = 0
+    skipped_count: int = 0
+    active_count: int = 0
+    reward_success: int = 0
+    reward_sum: float = 0.0
+    reward_total: int = 0
+
+
+class ExperimentTaskShell(BaseModel):
+    """Bounded task fields needed before an experiment's trial grid loads."""
+
+    id: str
+    name: str
+    status: TaskStatus
+    priority: Priority
+    user: str
+    github_username: str | None = None
+    github_meta: dict[str, str] | None = None
+    link: str | None = None
+    task_path: str
+    experiment_id: str
+    experiment_name: str
+    experiment_is_public: bool = False
+    experiment_created_at: datetime | None = None
+    experiment_owner: str | None = None
+    experiment_link: str | None = None
+    experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
+    current_version: int | None = None
+    current_version_id: str | None = None
+    trial_version: int | None = None
+    trial_version_id: str | None = None
+    total: int = 0
+    completed: int = 0
+    failed: int = 0
+    skipped: int = 0
+    progress: str = "0/0 completed"
+    reward_success: int = 0
+    reward_sum: float = 0.0
+    reward_total: int = 0
+    run_analysis: bool = False
+    run_probe: bool = False
+    verdict_status: VerdictStatus | None = None
+    user_tags: list[UserTagRef] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+class ExperimentSlimTrial(BaseModel):
+    """Trial fields used by the experiment grid; large detail bodies are absent."""
+
+    id: str
+    name: str
+    task_id: str
+    task_path: str
+    task_version: int | None = None
+    task_version_id: str | None = None
+    experiment_id: str | None = None
+    agent: str
+    provider: str
+    queue_key: str
+    model: str | None = None
+    environment: str | None = None
+    status: TrialStatus
+    attempts: int
+    max_attempts: int
+    harbor_stage: str | None = None
+    reward: float | None = None
+    kind: str = "agent"
+    input_tokens: int | None = None
+    cache_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_usd: float | None = None
+    cost_is_estimated: bool | None = None
+    is_billed: bool = False
+    cost_exclusion_reason: str | None = None
+    has_trajectory: bool = False
+    analysis_status: AnalysisStatus | None = None
+    analysis_classification: str | None = None
+    analysis_subtype: str | None = None
+    analysis_started_at: datetime | None = None
+    analysis_finished_at: datetime | None = None
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+class ExperimentTrialTask(ExperimentTaskShell):
+    trials: list[ExperimentSlimTrial] = Field(default_factory=list)
+
+
+class ExperimentOpenResponse(BaseModel):
+    """Bounded first-paint resource shared by member and public pages."""
+
+    experiment_id: str
+    name: str
+    description: str | None = None
+    description_truncated: bool = False
+    revision: str
+    has_active_trials: bool
+    summary: ExperimentOpenSummary = Field(default_factory=ExperimentOpenSummary)
+    tasks: list[ExperimentTaskShell] = Field(default_factory=list)
+    next_cursor: str | None = None
+
+
+class ExperimentTrialPageResponse(BaseModel):
+    """A bounded page of slim grid trials grouped by task."""
+
+    revision: str
+    tasks: list[ExperimentTrialTask] = Field(default_factory=list)
+    trial_count: int = 0
+    next_cursor: str | None = None
+
+
+class ExperimentRevisionResponse(BaseModel):
+    """Small polling resource for an experiment that still has active work."""
+
+    revision: str
+    has_active_trials: bool
+
+
 # =============================================================================
 # Trial Import (off-oddish Harbor runs -> existing task)
 # =============================================================================

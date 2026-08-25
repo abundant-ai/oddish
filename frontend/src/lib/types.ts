@@ -164,6 +164,10 @@ export interface Trial {
   analysis_error?: string | null;
   analysis_started_at?: string | null;
   analysis_finished_at?: string | null;
+  /** Scalar experiment-grid projection; normalized into `analysis` by the
+   * shared experiment page without transferring the full analysis JSON. */
+  analysis_classification?: string | null;
+  analysis_subtype?: string | null;
   superseded_by_trial_id?: string | null;
   jobs?: VisibleWorkerJob[];
   queue_info?: TrialQueueInfo | null;
@@ -277,6 +281,42 @@ export interface Task {
   updated_at: string;
   started_at?: string | null;
   finished_at?: string | null;
+}
+
+export interface ExperimentOpenSummary {
+  task_count: number;
+  trial_count: number;
+  success_count: number;
+  failed_count: number;
+  skipped_count: number;
+  active_count: number;
+  reward_success: number;
+  reward_sum: number;
+  reward_total: number;
+}
+
+export interface ExperimentOpenResponse {
+  experiment_id: string;
+  name: string;
+  description?: string | null;
+  description_truncated: boolean;
+  revision: string;
+  has_active_trials: boolean;
+  summary: ExperimentOpenSummary;
+  tasks: Task[];
+  next_cursor?: string | null;
+}
+
+export interface ExperimentTrialPageResponse {
+  revision: string;
+  tasks: Task[];
+  trial_count: number;
+  next_cursor?: string | null;
+}
+
+export interface ExperimentRevisionResponse {
+  revision: string;
+  has_active_trials: boolean;
 }
 
 interface TaskBrowseExperiment {

@@ -66,6 +66,42 @@ test("adopts trial data once both loading phases agree on the version", () => {
   expect(merged.trials?.map((trial) => trial.id)).toEqual(["trial-v1"]);
 });
 
+test("combines one task split across bounded trial pages", () => {
+  const shell = task({
+    current_version: 1,
+    current_version_id: "task-1-v1",
+    trial_version: 1,
+    trial_version_id: "task-1-v1",
+  });
+  const firstPage = task({
+    current_version: 1,
+    current_version_id: "task-1-v1",
+    trial_version: 1,
+    trial_version_id: "task-1-v1",
+    trials: [{ id: "trial-1" } as Trial],
+  });
+  const secondPage = task({
+    current_version: 1,
+    current_version_id: "task-1-v1",
+    trial_version: 1,
+    trial_version_id: "task-1-v1",
+    trials: [
+      { id: "trial-1" } as Trial,
+      { id: "trial-2" } as Trial,
+    ],
+  });
+
+  const [merged] = mergeExperimentTaskPages(
+    [shell],
+    [[firstPage], [secondPage]],
+  );
+
+  expect(merged.trials?.map((trial) => trial.id)).toEqual([
+    "trial-1",
+    "trial-2",
+  ]);
+});
+
 test("uses fresh trial data when the shell cache still has the old version", () => {
   const staleShell = task({
     current_version: 1,

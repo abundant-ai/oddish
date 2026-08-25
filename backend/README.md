@@ -313,6 +313,9 @@ All routes require auth unless marked public.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
+| GET | `/experiments/{experiment_id}/open` | Bounded member metadata, exact summary, and at most 100 task shells |
+| GET | `/experiments/{experiment_id}/trial-page` | Cursor-paged member grid trials, capped at 250 projected rows |
+| GET | `/experiments/{experiment_id}/revision` | Small activity revision polled only while experiment work is active |
 | GET | `/experiments/{experiment_id}/share` | Get publish/share state |
 | PATCH | `/experiments/{experiment_id}` | Update experiment name and/or description (each independently optional) |
 | POST | `/experiments/{experiment_id}/publish` | Publish experiment |
@@ -341,7 +344,9 @@ All routes require auth unless marked public.
 |--------|----------|-------------|
 | GET | `/public/experiments/{public_token}` | Public experiment metadata |
 | GET | `/public/experiments` | Deliberately returns an empty list — public share links must be entered directly, never enumerated |
-| GET | `/public/experiments/{public_token}/tasks` | Public tasks and trials for a shared experiment |
+| GET | `/public/experiments/{public_token}/open` | Bounded metadata, exact summary, and lightweight task shells for a shared experiment |
+| GET | `/public/experiments/{public_token}/trial-page` | Cursor-paged slim trials, capped at 250 rows and stripped of detail-only bodies |
+| GET | `/public/experiments/{public_token}/revision` | Small activity revision polled only while shared work is active |
 | GET | `/public/experiments/{public_token}/tasks/{task_id}` | Public task status within a shared experiment |
 | GET | `/public/experiments/{public_token}/tasks/{task_id}/trials` | Public trial list within a shared experiment |
 | GET | `/public/experiments/{public_token}/trials/{trial_id}/live` | Public live transcript and running usage |

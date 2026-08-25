@@ -484,9 +484,19 @@ on lightweight task shells that omit trial rows.
 numerically latest version. In an experiment view, `trial_version_id` uses that
 default when the experiment has a non-superseded, non-probe trial for it;
 otherwise it falls back to the highest version represented by such trials. The
-`task-shells` and `slim-tasks` endpoints must apply the same trial-version rule
-so progressive loading cannot change the files/counts pivot or mix one
-version's trials with another's artifacts.
+bounded `GET /experiments/{id}/open` and `GET
+/experiments/{id}/trial-page` resources, plus their public-token equivalents,
+must apply the same trial-version rule so progressive loading cannot change the
+files/counts pivot or mix one version's trials with another's artifacts.
+`/open` returns exact experiment totals and no more than 100 task shells in a
+response below 50 KB. `/trial-page` returns no more than 250 projected trials
+and must never select or serialize trial `analysis`, `phase_timing`, `result`,
+`harbor_config`, or full error text. Member and public routes resolve different
+access scopes and then call the same core readers in
+`oddish.core.endpoints.experiment_open`; public scope filters tags to PUBLIC,
+applies experiment model aliases, and omits billing/exclusion labels. Completed
+experiments do not poll. Active pages poll only `/revision`, then revalidate the
+bounded pages already visible when that revision changes.
 
 `overwrite_current_version` replaces the archive and metadata for
 `tasks.current_version_id` without changing its ID or version number. Uploads

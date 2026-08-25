@@ -53,6 +53,14 @@ from oddish.core.endpoints.task_detail import (
 )
 from oddish.core.endpoints.task_open import get_task_open_core
 from oddish.core.endpoints.experiment_cost import get_experiment_cost_totals
+from oddish.core.endpoints.experiment_open import (
+    ExperimentReadScope,
+    get_experiment_open,
+    get_experiment_revision,
+    get_experiment_trial_page,
+    resolve_member_experiment_read_scope,
+    resolve_public_experiment_read_scope,
+)
 from oddish.core.endpoints.qa_cost import (
     ExperimentQaCostTotals,
     QaCostTotals,
@@ -84,6 +92,7 @@ from oddish.core.endpoints.trials import (
 
 __all__ = [
     "ExperimentQaCostTotals",
+    "ExperimentReadScope",
     "QaCostTotals",
     "SweepAttribution",
     "USER_CANCELLED_MESSAGE",
@@ -106,6 +115,9 @@ __all__ = [
     "delete_task_core",
     "delete_trial_core",
     "get_experiment_cost_totals",
+    "get_experiment_open",
+    "get_experiment_revision",
+    "get_experiment_trial_page",
     "get_experiment_qa_cost_totals",
     "get_task_detail_core",
     "get_task_open_core",
@@ -126,6 +138,8 @@ __all__ = [
     "list_task_versions_core",
     "list_tasks_core",
     "rerun_pre_trial_audit_core",
+    "resolve_member_experiment_read_scope",
+    "resolve_public_experiment_read_scope",
     "rerun_task_qa_core",
     "rerun_trial_analysis_core",
     "replay_has_retryable_failed_trials",

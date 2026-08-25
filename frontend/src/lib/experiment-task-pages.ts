@@ -53,7 +53,31 @@ export function mergeExperimentTaskPages(
   const enrichedById = new Map<string, Task>();
   for (const page of trialPages ?? []) {
     for (const task of page ?? []) {
-      enrichedById.set(task.id, task);
+      const previous = enrichedById.get(task.id);
+      if (!previous) {
+        enrichedById.set(task.id, task);
+        continue;
+      }
+      if (!hasSameVersion(previous, task)) {
+        enrichedById.set(
+          task.id,
+          preferEnrichedVersion(previous, task) ? task : previous,
+        );
+        continue;
+      }
+      const trialsById = new Map(
+        (previous.trials ?? []).map((trial) => [trial.id, trial]),
+      );
+      for (const trial of task.trials ?? []) trialsById.set(trial.id, trial);
+      enrichedById.set(task.id, {
+        ...previous,
+        ...task,
+        user_tags:
+          (task.user_tags?.length ?? 0) > 0
+            ? task.user_tags
+            : previous.user_tags,
+        trials: [...trialsById.values()],
+      });
     }
   }
 
@@ -62,8 +86,17 @@ export function mergeExperimentTaskPages(
   for (const shell of shells ?? []) {
     seenIds.add(shell.id);
     const enriched = enrichedById.get(shell.id);
+    if (!enriched || !preferEnrichedVersion(shell, enriched)) {
+      merged.push(shell);
+      continue;
+    }
+    const needsShellTags =
+      (shell.user_tags?.length ?? 0) > 0 &&
+      (enriched.user_tags?.length ?? 0) === 0;
     merged.push(
-      enriched && preferEnrichedVersion(shell, enriched) ? enriched : shell
+      needsShellTags
+        ? { ...shell, ...enriched, user_tags: shell.user_tags }
+        : enriched,
     );
   }
 

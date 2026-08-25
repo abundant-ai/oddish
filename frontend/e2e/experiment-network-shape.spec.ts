@@ -12,7 +12,7 @@ import {
  * experiment page makes. Each assertion encodes a bug that was measured
  * in production and then fixed:
  *
- *  1. Loading the page issues exactly one task-shells request. The shells
+ *  1. Loading the page issues exactly one bounded open request. The shells
  *     used to be fetched twice, once during the server render and once
  *     again on mount.
  *  2. Hovering and opening a trial issues one GET /api/trials/{id}. The
@@ -41,7 +41,7 @@ const EXPERIMENT_ID = process.env.E2E_EXPERIMENT_ID;
 
 const hasClerkEnv = !!CLERK_EMAIL && !!CLERK_SECRET && !!CLERK_PUBLISHABLE;
 
-const TASK_SHELLS_RE = /\/api\/experiments\/[^/]+\/task-shells/;
+const EXPERIMENT_OPEN_RE = /\/api\/experiments\/[^/]+\/open/;
 // Matches the trial-detail endpoint only. Subpaths like /files, /live, and
 // /trajectory are separate resources and must not count here.
 const TRIAL_DETAIL_RE = /\/api\/trials\/[^/?]+(\?.*)?$/;
@@ -69,7 +69,7 @@ test.describe("experiment page network shape", () => {
     await clerk.signIn({ page, emailAddress: CLERK_EMAIL! });
 
     await holdCountedResponses(page, [
-      TASK_SHELLS_RE,
+      EXPERIMENT_OPEN_RE,
       TRIAL_DETAIL_RE,
       TASK_FILES_RE,
       TRIAL_FILES_STREAM_RE,
@@ -118,7 +118,7 @@ test.describe("experiment page network shape", () => {
       );
     }
 
-    expect(countSince(log, 0, TASK_SHELLS_RE)).toBe(1);
+    expect(countSince(log, 0, EXPERIMENT_OPEN_RE)).toBe(1);
     expect(countSince(log, 0, TRIAL_DETAIL_RE)).toBe(0);
 
     // Phase 2 — hover and open a trial. The preload and mounted drawer share

@@ -38,6 +38,7 @@ import {
 } from "@/lib/trial-aggregation";
 import type {
   ExperimentCostTotals,
+  ExperimentOpenSummary,
   Task,
   Trial,
   UserTagRef,
@@ -122,8 +123,9 @@ interface ExperimentDetailViewProps {
   // understates cost while pages are unloaded.
   costTotals?: ExperimentCostTotals;
   // True while the rollup is still in flight, so the cost tiles show a
-  // placeholder instead of the (wrong) client sum. See experiment-client.
+  // placeholder instead of the (wrong) client sum. See experiment-page-client.
   costTotalsPending?: boolean;
+  exactSummary?: ExperimentOpenSummary;
   isLoading: boolean;
   isLoadingTrials?: boolean;
   hasError?: boolean;
@@ -134,17 +136,11 @@ interface ExperimentDetailViewProps {
   headerRight?: React.ReactNode;
   headerDescription?: React.ReactNode;
   inlineAlert?: React.ReactNode;
-  readOnly?: boolean;
-  allowRetry?: boolean;
-  showAnalysis?: boolean;
+  mode: "member" | "public";
   apiBaseUrl?: string;
   onTaskUnlink?: (task: Task) => Promise<void>;
   onTrialDelete?: (trial: Trial, task: Task | null) => Promise<void>;
   onRerun?: (taskIds?: string[]) => void;
-  // Logged-in exp page sends slim trials, so set true to fetch a clicked
-  // trial's full detail on open. Public share page omits it (it passes full
-  // trials and can't use the authed /api/trials route).
-  loadFullTrialOnOpen?: boolean;
 }
 
 const AGENT_SUMMARY_STORAGE_PREFIX = "oddish:experiment-agent-summaries:";
@@ -991,6 +987,7 @@ export function ExperimentDetailView({
   tasksForExperiment,
   costTotals,
   costTotalsPending = false,
+  exactSummary,
   isLoading,
   isLoadingTrials = false,
   hasError = false,
@@ -1001,15 +998,18 @@ export function ExperimentDetailView({
   headerRight,
   headerDescription,
   inlineAlert,
-  readOnly = false,
-  allowRetry = true,
-  showAnalysis = true,
+  mode,
   apiBaseUrl = "/api",
   onTaskUnlink,
   onTrialDelete,
   onRerun,
-  loadFullTrialOnOpen = false,
 }: ExperimentDetailViewProps) {
+  const readOnly = mode === "public";
+  const allowRetry = mode === "member";
+  const showAnalysis = mode === "member";
+  // Both bounded experiment pages fetch detail on intent. Public detail uses
+  // the token-scoped apiBaseUrl and member detail uses the authenticated one.
+  const loadFullTrialOnOpen = true;
   const searchParams = useSearchParams();
   // The experiment's own direct tags (the header editor chips); fetched
   // separately because no experiment payload carries them.
@@ -1593,7 +1593,20 @@ export function ExperimentDetailView({
   // understates spend on both counts. Non-cost fields stay client-side --
   // they describe the visible rows, which is what they should describe.
   const summary = useMemo(() => {
-    const base = buildExperimentSummary(deferredTasksForDerivedData);
+    const derived = buildExperimentSummary(deferredTasksForDerivedData);
+    const base = exactSummary
+      ? {
+          ...derived,
+          rewardSuccess: exactSummary.reward_success,
+          rewardSum: exactSummary.reward_sum,
+          rewardTotal: exactSummary.reward_total,
+          totalTrials: exactSummary.trial_count,
+          completedTrials: exactSummary.success_count,
+          failedTrials: exactSummary.failed_count,
+          skippedTrials: exactSummary.skipped_count,
+          pendingCount: exactSummary.active_count,
+        }
+      : derived;
     if (!costTotals) return base;
     return {
       ...base,
@@ -1626,7 +1639,7 @@ export function ExperimentDetailView({
       ownedExcludedCostUsd: costTotals.owned_excluded_cost_usd ?? 0,
       experimentCostExcluded: costTotals.experiment_cost_excluded ?? false,
     };
-  }, [deferredTasksForDerivedData, costTotals]);
+  }, [deferredTasksForDerivedData, exactSummary, costTotals]);
 
   // Task-level QA rollup for the summary bar. Null when no task in the
   // grid ever ran QA, so non-QA experiments keep their five tiles.
@@ -1777,7 +1790,7 @@ export function ExperimentDetailView({
           </div>
 
           <ExperimentSummaryBar
-            taskCount={tasksForExperiment.length}
+            taskCount={exactSummary?.task_count ?? tasksForExperiment.length}
             summary={summary}
             isInitialLoading={isInitialLoading}
             isLoadingTrials={isLoadingTrials}
