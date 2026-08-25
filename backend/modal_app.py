@@ -1057,3 +1057,4 @@ def harbor_variant_images() -> dict[str, modal.Image]:
     """
     return dict(_HARBOR_VARIANT_IMAGES)
 # preview worker fleet sized for benchmark sweeps (see pr-preview.yml env)
+# redeploy 1787643321: restore dispatcher + apply 64-worker fleet
