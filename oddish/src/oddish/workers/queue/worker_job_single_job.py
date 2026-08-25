@@ -286,13 +286,11 @@ async def heartbeat_worker_job(
     current_worker_id: str | None = None,
     pending_failure_count: int = 0,
     pending_last_error: str | None = None,
-) -> None:
+) -> bool:
     """Update a RUNNING worker_job's heartbeat timestamp.
 
-    No-ops for terminal rows so a late heartbeat after SUCCESS / FAILED
-    / CANCELLED can't resurrect a row. Follows the same failure-folding
-    pattern as the trial heartbeat so a pooler blip produces a
-    diagnostic breadcrumb rather than a silent stale-reap.
+    Returns whether the worker still owns a running row. Terminal rows remain
+    untouched so a late heartbeat cannot resurrect them.
     """
     connection = await _open_connection()
     try:
@@ -341,7 +339,8 @@ async def heartbeat_worker_job(
                   AND lease.locked_by = wj.current_worker_id
                 RETURNING lease.slot
             )
-            SELECT (SELECT execution_lane FROM running_job) AS execution_lane,
+            SELECT EXISTS (SELECT 1 FROM running_job) AS still_owned,
+                   (SELECT execution_lane FROM running_job) AS execution_lane,
                    EXISTS (SELECT 1 FROM renewed) AS capacity_renewed
             """,
             job_id,
@@ -356,6 +355,7 @@ async def heartbeat_worker_job(
             raise SandboxCapacityLeaseLostError(
                 f"EC2 worker_job {job_id} lost its global capacity lease"
             )
+        return bool(capacity_heartbeat and capacity_heartbeat["still_owned"])
     finally:
         await connection.close()
 

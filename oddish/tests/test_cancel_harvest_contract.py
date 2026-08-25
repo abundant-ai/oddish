@@ -31,8 +31,9 @@ from oddish.queue import cancel_tasks_runs  # noqa: E402
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("trial_status", [TrialStatus.RUNNING, TrialStatus.PAUSED])
 async def test_cancel_core_returns_harvest_and_never_terminates_in_txn(
-    monkeypatch, session
+    monkeypatch, session, trial_status
 ):
     calls: list[tuple] = []
 
@@ -72,7 +73,7 @@ async def test_cancel_core_returns_harvest_and_never_terminates_in_txn(
             is_probe=False,
             max_attempts=6,
             attempts=1,
-            status=TrialStatus.RUNNING,
+            status=trial_status,
         )
     )
     session.add(

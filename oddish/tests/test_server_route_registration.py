@@ -5,7 +5,6 @@ must expose it (backend/api/routers/tasks.py has the hosted twin).
 """
 
 from contextlib import asynccontextmanager
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -21,21 +20,17 @@ def test_experiment_options_route_mounted() -> None:
 
 @pytest.mark.asyncio
 async def test_task_tree_forwards_inline_flag() -> None:
-    session = SimpleNamespace(
-        execute=AsyncMock(
-            return_value=SimpleNamespace(
-                scalar_one_or_none=lambda: SimpleNamespace(current_version=None)
-            )
-        )
-    )
+    session = object()
 
     @asynccontextmanager
     async def fake_get_session():
         yield session
 
     list_files = AsyncMock(return_value={"files": []})
+    resolve_source = AsyncMock(return_value=(3, "tasks/task-1/v3/"))
     with (
         patch("oddish.server.get_session", new=fake_get_session),
+        patch("oddish.server.resolve_task_file_source", new=resolve_source),
         patch("oddish.server.list_task_files_s3", new=list_files),
     ):
         await list_task_files(
@@ -57,6 +52,7 @@ async def test_task_tree_forwards_inline_flag() -> None:
         limit=1000,
         cursor=None,
         presign=False,
+        task_s3_prefix="tasks/task-1/v3/",
         version=3,
         inline=False,
     )

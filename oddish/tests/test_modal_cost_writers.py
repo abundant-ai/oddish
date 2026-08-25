@@ -288,6 +288,75 @@ async def test_terminal_hook_closes_cost_span_before_ownership_guard(
 
 
 @pytest.mark.asyncio
+async def test_archil_provisioned_event_uses_worker_job_without_ec2_ledger(
+    monkeypatch,
+) -> None:
+    statements = []
+
+    class Session:
+        async def execute(self, statement):
+            statements.append(statement)
+
+    @asynccontextmanager
+    async def trial_session(*args, **kwargs):
+        yield Session(), SimpleNamespace(
+            superseded_by_trial_id=None,
+            error_message=None,
+            status=TrialStatus.RUNNING,
+            max_attempts=6,
+            attempts=1,
+            harbor_stage="environment_setup",
+        )
+
+    async def owns(*args, **kwargs):
+        return True
+
+    async def unexpected_ec2_ledger_call(*args, **kwargs):
+        raise AssertionError("Archil must not use the EC2 ownership ledger")
+
+    monkeypatch.setattr(trial_handler, "_trial_session", trial_session)
+    monkeypatch.setattr(trial_handler, "_worker_still_owns_trial", owns)
+    monkeypatch.setattr(
+        trial_handler, "mark_environment_provisioned", unexpected_ec2_ledger_call
+    )
+
+    await trial_handler._handle_harbor_event(
+        SimpleNamespace(
+            event=TrialEvent.ENVIRONMENT_PROVISIONED,
+            timestamp=datetime.now(timezone.utc),
+            environment=None,
+            environment_provider="archil",
+            environment_external_id="sandbox-1",
+            result=None,
+        ),
+        trial_id="trial-1",
+        worker_id="worker-1",
+        worker_job_id="job-1",
+        worker_job_attempt=1,
+    )
+
+    assert len(statements) == 1
+
+
+@pytest.mark.asyncio
+async def test_ec2_provisioned_event_still_requires_sandbox_ledger() -> None:
+    with pytest.raises(RuntimeError, match="EC2.*without a sandbox ledger row"):
+        await trial_handler._handle_harbor_event(
+            SimpleNamespace(
+                event=TrialEvent.ENVIRONMENT_PROVISIONED,
+                timestamp=datetime.now(timezone.utc),
+                environment=None,
+                environment_provider="ec2",
+                environment_external_id=(
+                    "ec2://123456789012/us-east-1/i-1234567890abcdef0"
+                ),
+                result=None,
+            ),
+            trial_id="trial-1",
+        )
+
+
+@pytest.mark.asyncio
 async def test_worker_span_uses_claim_and_outcome_boundaries(monkeypatch) -> None:
     claimed_at = datetime(2026, 7, 22, 5, tzinfo=timezone.utc)
     job = ClaimedWorkerJob(

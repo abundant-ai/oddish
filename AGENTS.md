@@ -420,6 +420,18 @@ that contract. Each row also carries its spend rank so the rare row with no
 safe display label (e.g. a payer outside the auth org) drops without
 renumbering everyone else.
 
+Dashboard experiment free text resolves every parsed bare token against active
+members in the authenticated organization before the experiment page query
+runs. `backend/dashboard_attribution.py` may search `users.name` and
+`users.github_username`, then passes only the token-to-stable-user-id mapping
+into `oddish.core.dashboard`; the self-hostable core must not import the hosted
+`UserModel`. Each token's owner and latest-runner alternatives belong in the
+page predicate before ordering and pagination so AND, OR, exclusion, and quoted
+phrase semantics stay intact. The mapping is part of the experiments cache key.
+`GET /people/search` is the ordinary READ-scope typeahead endpoint: it is
+active-user and organization scoped, returns only `id`, `display_name`, and
+`github_username`, and must never search or serialize email addresses.
+
 The admin `GET /admin/costs` response includes analysis spend time series both
 by model (`series_qa_by_model`) and by analyzer job kind
 (`series_by_analysis_type`). The Cost breakdown chart exposes the latter as the
@@ -778,6 +790,10 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   `moonshot/`, `fireworks/`, `xai/`, `meta/`, and `anthropic-hdo/`. Add or
   change provider aliases in `config.py`, then update env injection in the
   Harbor runner and the network allowlist notes.
+- Gemini model ids use the `gemini/<id>` prefix. `_build_agent_config` hands
+  each agent the spelling its LLM client expects (litellm agents in
+  `_LITELLM_MODEL_ID_AGENTS`, Vercel AI SDK agents in
+  `_AI_SDK_MODEL_ID_AGENTS`); add a new agent to the set matching its client.
 - Provider secrets are referenced by env var name (`AWS_BEARER_TOKEN_BEDROCK`,
   `ANTHROPIC_HDO_API_KEY`, `ZAI_API_KEY`, `MINIMAX_API_KEY`, `MOONSHOT_API_KEY`,
   `FIREWORKS_API_KEY`, `XAI_API_KEY`, `META_API_KEY`) and must not be persisted
@@ -1092,6 +1108,12 @@ silently breaks throughput or correctness — read before touching
    open session spanning the run: it pins one idle connection per running trial
    and exhausts the Supavisor/PgBouncer cap. (The API keeps a warm `QueuePool`
    only because it's short-lived — that reasoning doesn't transfer to workers.)
+   Quota pause signals come from live cost checkpoints. The owning worker calls
+   Harbor `Job.pause()` / `Job.resume()` without holding a database session. A
+   paused trial's `trials.status` becomes `PAUSED`, while its owning
+   `worker_jobs` row stays `RUNNING`; it retains its queue slot and keeps
+   heartbeating. Running and paused jobs periodically open a short session so
+   they react to spend reported by sibling trials and to quota changes.
 
 2. **`queue_slots` is the real concurrency gate.** Per-queue-key concurrency is
    enforced by leasing a `queue_slots` row (`acquire_queue_slot`, `FOR UPDATE

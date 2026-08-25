@@ -143,6 +143,7 @@ const TRIAL_STATUS_OPTIONS: Option[] = [
   { value: "SUCCESS", label: "Success" },
   { value: "FAILED", label: "Failed" },
   { value: "RUNNING", label: "Running" },
+  { value: "PAUSED", label: "Paused" },
   { value: "QUEUED", label: "Queued" },
   { value: "RETRYING", label: "Retrying" },
 ];

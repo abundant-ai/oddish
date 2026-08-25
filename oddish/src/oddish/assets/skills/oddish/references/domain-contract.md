@@ -42,7 +42,9 @@ trials, so do not use raw `len(trials)` as the evaluation-attempt count.
 
 Trial statuses are:
 
-- `pending`, `queued`, `running`, `retrying`: nonterminal execution states.
+- `pending`, `queued`, `running`, `paused`, `retrying`: nonterminal execution
+  states. A paused trial still owns its running worker job while Oddish saves or
+  restores its Harbor environment.
 - `success`: execution completed and produced a result. It does not mean the
   verifier passed; inspect `reward` separately.
 - `failed`: the harness, infrastructure, API, timeout, or execution path failed.

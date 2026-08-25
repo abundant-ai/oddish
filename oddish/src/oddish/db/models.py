@@ -126,6 +126,7 @@ class JobStatus(str, Enum):
     PENDING = "pending"
     QUEUED = "queued"
     RUNNING = "running"
+    PAUSED = "paused"
     SUCCESS = "success"  # Execution completed (regardless of test result)
     FAILED = "failed"  # Execution error (harness/infrastructure failure)
     RETRYING = "retrying"  # Only used by trials
@@ -140,6 +141,30 @@ class JobStatus(str, Enum):
 TrialStatus = JobStatus
 AnalysisStatus = JobStatus
 VerdictStatus = JobStatus
+
+WORKER_OWNED_TRIAL_STATUSES = frozenset(
+    {
+        TrialStatus.RUNNING,
+        TrialStatus.PAUSED,
+    }
+)
+ACTIVE_TRIAL_STATUSES = frozenset(
+    {
+        TrialStatus.PENDING,
+        TrialStatus.QUEUED,
+        TrialStatus.RUNNING,
+        TrialStatus.PAUSED,
+        TrialStatus.RETRYING,
+    }
+)
+
+
+def is_active_trial_status(status: TrialStatus | str) -> bool:
+    return status in ACTIVE_TRIAL_STATUSES
+
+
+def is_worker_owned_trial_status(status: TrialStatus | str) -> bool:
+    return status in WORKER_OWNED_TRIAL_STATUSES
 
 
 class Priority(str, Enum):
@@ -167,7 +192,8 @@ class WorkerJobKind(str, Enum):
     """Kind of work represented by a `worker_jobs` row.
 
     The polymorphism discriminator for the unified queue table. Handlers
-    register against a kind; the dispatcher is kind-agnostic.
+    register against a kind; the scheduler admits the kinds listed in
+    ``ACTIVE_WORKER_JOB_KINDS``.
     """
 
     TRIAL = "TRIAL"
@@ -196,6 +222,15 @@ class WorkerJobKind(str, Enum):
     # and ``dropblocks01``.
     ANALYZER = "ANALYZER"
     ANALYZER_BLOCK = "ANALYZER_BLOCK"
+
+
+# Scheduler-facing kinds. Historical enum-only kinds stay queryable through
+# admin diagnostics but must not consume dispatch capacity.
+ACTIVE_WORKER_JOB_KINDS = (
+    WorkerJobKind.TRIAL,
+    WorkerJobKind.TASK_EXPAND,
+    WorkerJobKind.TAG_PROJECT,
+)
 
 
 class WorkerJobStatus(str, Enum):

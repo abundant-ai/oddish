@@ -13,6 +13,7 @@ from oddish.core.endpoints._common import (
 )
 from oddish.core.verdict_state import cancel_verdict
 from oddish.db import (
+    ACTIVE_TRIAL_STATUSES,
     AGENT_TRIAL_KIND,
     AnalysisStatus,
     TaskModel,
@@ -249,12 +250,6 @@ async def _count_active_trials(
     task_version_id: str | None,
 ) -> int:
     """Count non-terminal, non-superseded agent trials for one task version."""
-    active_statuses = [
-        TrialStatus.PENDING,
-        TrialStatus.QUEUED,
-        TrialStatus.RUNNING,
-        TrialStatus.RETRYING,
-    ]
     count = await session.scalar(
         select(func.count(TrialModel.id)).where(
             TrialModel.task_id == task_id,
@@ -265,7 +260,7 @@ async def _count_active_trials(
             ),
             TrialModel.kind == AGENT_TRIAL_KIND,
             TrialModel.superseded_by_trial_id.is_(None),
-            TrialModel.status.in_(active_statuses),
+            TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
         )
     )
     return int(count or 0)

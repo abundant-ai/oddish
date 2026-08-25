@@ -1,11 +1,9 @@
 """Dispatcher helpers that read from the unified `worker_jobs` table.
 
 Replaces the three-way union the legacy dispatcher used to do over
-trials / trial-analyses / task-verdicts. The whole point of the
-unified queue is that we stop growing the dispatcher every time a new
-kind is added -- a new ``WorkerJobKind`` just shows up in the
-``DISTINCT queue_key`` / ``GROUP BY queue_key`` rows here without any
-change to this module.
+trials / trial-analyses / task-verdicts. Active kinds share the same
+``DISTINCT queue_key`` / ``GROUP BY queue_key`` queries; historical enum-only
+kinds are excluded by the shared ``ACTIVE_WORKER_JOB_KINDS`` definition.
 
 Fairness model
 --------------
@@ -28,7 +26,10 @@ from collections import Counter
 from typing import Any
 
 from oddish.config import settings
-from oddish.db import get_pool
+from oddish.db import ACTIVE_WORKER_JOB_KINDS, get_pool
+
+
+_ACTIVE_KIND_VALUES = tuple(kind.value for kind in ACTIVE_WORKER_JOB_KINDS)
 
 
 __all__ = [
@@ -99,9 +100,11 @@ async def stamp_dispatch_stage(
             SET    admission_reason = $2
             WHERE  queue_key = $1
               AND  status::text IN ('QUEUED', 'RETRYING')
+              AND  kind::text = ANY($3::text[])
             """,
             queue_key,
             reason,
+            _ACTIVE_KIND_VALUES,
         )
 
     # Count workers spawned per queue_key (the spawn plan's multiplicity) so we
@@ -117,6 +120,7 @@ async def stamp_dispatch_stage(
                 FROM   worker_jobs
                 WHERE  queue_key = $1
                   AND  status::text IN ('QUEUED', 'RETRYING')
+                  AND  kind::text = ANY($3::text[])
                   AND  spawned_at IS NULL
                 ORDER  BY priority DESC, created_at ASC
                 LIMIT  $2
@@ -128,6 +132,7 @@ async def stamp_dispatch_stage(
             """,
             queue_key,
             spawned,
+            _ACTIVE_KIND_VALUES,
         )
 
 
@@ -137,7 +142,7 @@ async def discover_active_worker_job_queue_keys() -> tuple[tuple[str, str, str],
     The Harbor variant is part of the effective dispatch key, so discovery
     surfaces it alongside the queue_key: the dispatcher spawns a worker per
     ``(queue_key, variant)`` (default + ephemeral on the default image, blessed
-    ids on their own image). Single query across every kind, gated by
+    ids on their own image). Single query across every active kind, gated by
     ``available_after`` so scheduled-in-the-future rows don't wake the
     dispatcher early. The queue_key is normalized (raw + ``normalize_queue_key``
     forms, each paired with the variant).
@@ -149,7 +154,9 @@ async def discover_active_worker_job_queue_keys() -> tuple[tuple[str, str, str],
         FROM   worker_jobs
         WHERE  status::text IN ('QUEUED', 'RETRYING', 'RUNNING')
           AND  available_after <= NOW()
-        """
+          AND  kind::text = ANY($1::text[])
+        """,
+        _ACTIVE_KIND_VALUES,
     )
 
     discovered: set[tuple[str, str, str]] = set()
@@ -203,9 +210,11 @@ async def get_worker_job_org_queue_counts(
         WHERE  queue_key = ANY($1)
           AND  status::text IN ('QUEUED', 'RETRYING')
           AND  available_after <= NOW()
+          AND  kind::text = ANY($2::text[])
         GROUP BY org_id, queue_key, harbor_variant_id, execution_lane
         """,
         list(queue_keys),
+        _ACTIVE_KIND_VALUES,
     )
     for row in queued_rows:
         count = int(row["queued"] or 0)
@@ -221,9 +230,11 @@ async def get_worker_job_org_queue_counts(
         FROM   worker_jobs
         WHERE  queue_key = ANY($1)
           AND  status::text = 'RUNNING'
+          AND  kind::text = ANY($2::text[])
         GROUP BY queue_key, harbor_variant_id, execution_lane
         """,
         list(queue_keys),
+        _ACTIVE_KIND_VALUES,
     )
     for row in running_rows:
         variant = str(row["harbor_variant_id"] or "default")

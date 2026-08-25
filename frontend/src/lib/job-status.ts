@@ -3,6 +3,7 @@ import { isAgentTrial } from "@/lib/types";
 
 const ACTIVE_TRIAL_STATUSES = [
   "running",
+  "paused",
   "queued",
   "retrying",
   "pending",
@@ -15,9 +16,21 @@ const ACTIVE_VISIBLE_JOB_STATUSES = [
   "blocked",
 ] as const;
 
-function isActiveTrialStatus(status: string | null | undefined): boolean {
+const WORKER_OWNED_TRIAL_STATUSES = ["running", "paused"] as const;
+
+export function isActiveTrialStatus(
+  status: string | null | undefined,
+): boolean {
   return ACTIVE_TRIAL_STATUSES.includes(
     status as (typeof ACTIVE_TRIAL_STATUSES)[number],
+  );
+}
+
+export function isWorkerOwnedTrialStatus(
+  status: string | null | undefined,
+): boolean {
+  return WORKER_OWNED_TRIAL_STATUSES.includes(
+    status as (typeof WORKER_OWNED_TRIAL_STATUSES)[number],
   );
 }
 
