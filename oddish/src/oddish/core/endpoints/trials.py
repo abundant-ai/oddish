@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 from fastapi import HTTPException
-from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.core.endpoints._common import (
@@ -135,100 +135,6 @@ async def rerun_trial_analysis_core(
         "trial_id": trial_id,
         "task_id": str(task_id),
     }
-
-
-async def get_trial_analysis_log_core(
-    session: AsyncSession,
-    *,
-    trial_id: str,
-    org_id: str | None = None,
-) -> dict:
-    """The log of the trial's current/most recent analysis run.
-
-    Served on its own endpoint (not on TrialResponse) so trial lists never
-    carry it. ``queue_position`` is the 1-based position of the waiting
-    analysis job in the QA queue, else None.
-    """
-    result = await session.execute(
-        select(
-            TrialModel.analysis_log,
-            TrialModel.task_id,
-            TaskModel.org_id,
-        )
-        .join(TaskModel, TaskModel.id == TrialModel.task_id)
-        .where(TrialModel.id == trial_id)
-    )
-    row = result.first()
-    if not row:
-        raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
-    analysis_log, task_id, task_org_id = row
-    if org_id is not None and task_org_id != org_id:
-        raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
-    return {
-        "log": analysis_log,
-        "queue_position": await _qa_queue_position(session, task_id=task_id),
-    }
-
-
-async def _qa_queue_position(session: AsyncSession, *, task_id: str) -> int | None:
-    """1-based position of the task's waiting QA trial in its queue.
-
-    The task's analysis is carried by its live qa-kind trial's TRIAL job.
-    Ordering matches the worker's claim query: ``priority DESC,
-    created_at ASC`` within the job's queue_key. None when no job is
-    waiting (already running, finished, or never enqueued).
-    """
-    waiting = [WorkerJobStatus.QUEUED, WorkerJobStatus.RETRYING]
-
-    qa_trial_ids = select(TrialModel.id).where(
-        TrialModel.task_id == task_id,
-        TrialModel.kind == "qa",
-        TrialModel.superseded_by_trial_id.is_(None),
-    )
-    job = (
-        await session.execute(
-            select(
-                WorkerJobModel.queue_key,
-                WorkerJobModel.priority,
-                WorkerJobModel.created_at,
-                (WorkerJobModel.available_after > func.now()).label("in_backoff"),
-            )
-            .where(
-                WorkerJobModel.kind == WorkerJobKind.TRIAL,
-                WorkerJobModel.subject_table == "trials",
-                WorkerJobModel.subject_id.in_(qa_trial_ids),
-                WorkerJobModel.status.in_(waiting),
-            )
-            .order_by(WorkerJobModel.created_at.asc())
-            .limit(1)
-        )
-    ).first()
-    if job is None:
-        return None
-    queue_key, priority, created_at, in_backoff = job
-    # Mirror the worker's claim query: a job in retry backoff is not claimable
-    # yet, so it must not inflate the position of a claimable job. When the
-    # subject job itself is in backoff, every claimable job runs first
-    # regardless of order, so the position condition drops the ordering.
-    conditions = [
-        WorkerJobModel.queue_key == queue_key,
-        WorkerJobModel.status.in_(waiting),
-        WorkerJobModel.available_after <= func.now(),
-    ]
-    if not in_backoff:
-        conditions.append(
-            or_(
-                WorkerJobModel.priority > priority,
-                and_(
-                    WorkerJobModel.priority == priority,
-                    WorkerJobModel.created_at < created_at,
-                ),
-            )
-        )
-    ahead = await session.scalar(
-        select(func.count(WorkerJobModel.id)).where(*conditions)
-    )
-    return int(ahead or 0) + 1
 
 
 async def get_trial_response_for_org_core(
