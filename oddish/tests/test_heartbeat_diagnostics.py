@@ -128,7 +128,9 @@ async def test_heartbeat_writes_worker_jobs_after_trial_goes_terminal(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_heartbeat_cancels_execution_after_worker_job_is_cancelled(monkeypatch):
+async def test_heartbeat_interrupts_execution_after_worker_job_is_cancelled(
+    monkeypatch,
+):
     async def fake_touch(**kwargs):
         return False
 
@@ -141,7 +143,7 @@ async def test_heartbeat_cancels_execution_after_worker_job_is_cancelled(monkeyp
     )
     monkeypatch.setattr(trial_handler, "TRIAL_HEARTBEAT_INTERVAL_SECONDS", 0)
 
-    fatal_error = asyncio.get_running_loop().create_future()
+    heartbeat_interrupt = asyncio.get_running_loop().create_future()
     await asyncio.wait_for(
         trial_handler._heartbeat_trial_execution(
             trial_id="trial-1",
@@ -149,12 +151,14 @@ async def test_heartbeat_cancels_execution_after_worker_job_is_cancelled(monkeyp
             queue_slot=3,
             stop_event=asyncio.Event(),
             worker_job_id="wj-1",
-            fatal_error=fatal_error,
+            heartbeat_interrupt=heartbeat_interrupt,
         ),
         timeout=1.0,
     )
 
-    assert fatal_error.cancelled()
+    assert heartbeat_interrupt.done()
+    assert not heartbeat_interrupt.cancelled()
+    assert heartbeat_interrupt.result() is None
 
 
 @pytest.mark.asyncio

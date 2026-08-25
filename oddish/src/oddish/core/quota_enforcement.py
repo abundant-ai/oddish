@@ -425,7 +425,7 @@ async def enforce_trial_quotas(
     after_gate_release: Callable[[list[str]], Awaitable[None]] | None = None,
     quota_pause_callback: Callable[[bool], None] | None = None,
 ) -> int | None:
-    pause_requested = False
+    pause_requested: bool | None = None
     try:
         async with get_session() as session:
             result = await cancel_trials_if_quota_reached(
@@ -461,7 +461,7 @@ async def enforce_trial_quotas(
         return None
 
     try:
-        if quota_pause_callback is not None:
+        if quota_pause_callback is not None and pause_requested is not None:
             quota_pause_callback(pause_requested)
         if after_gate_release is not None:
             await after_gate_release(list(result["released_trial_ids"]))

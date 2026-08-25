@@ -14,6 +14,11 @@ from oddish.core.quotas import quota_pause_limit_usd
 from oddish.workers.harbor import quota_control
 
 
+@asynccontextmanager
+async def _empty_session():
+    yield object()
+
+
 def test_pause_limit_uses_five_percent_remaining(monkeypatch):
     monkeypatch.setattr(settings, "quota_pause_remaining_percent", Decimal("5"))
     monkeypatch.setattr(settings, "quota_pause_remaining_usd", None)
@@ -113,22 +118,25 @@ async def test_record_pause_state_preserves_worker_ownership(monkeypatch):
 @pytest.mark.asyncio
 async def test_quota_control_pauses_and_resumes(monkeypatch):
     stop = quota_control.asyncio.Event()
+    controller = quota_control.QuotaPauseController()
     job = SimpleNamespace(pause=AsyncMock(), resume=AsyncMock())
     monkeypatch.setattr(settings, "quota_pause_poll_seconds", 0.001)
     monkeypatch.setattr(settings, "quota_pause_refresh_seconds", 1000)
-    monkeypatch.setattr(quota_control, "_refresh_request", AsyncMock())
+    monkeypatch.setattr(quota_control, "get_session", _empty_session)
+    monkeypatch.setattr(
+        quota_control, "quota_pause_requested", AsyncMock(return_value=True)
+    )
     record_pause_state = AsyncMock()
     monkeypatch.setattr(quota_control, "_record_pause_state", record_pause_state)
 
     async def finish_after_resume():
         while not job.pause.await_count:
             await quota_control.asyncio.sleep(0)
-        quota_control.set_quota_pause_requested("trial-1", False)
+        controller.requested = False
         while not job.resume.await_count:
             await quota_control.asyncio.sleep(0)
         stop.set()
 
-    quota_control.set_quota_pause_requested("trial-1", True)
     await quota_control.asyncio.gather(
         quota_control.control_job_quota_pause(
             job,
@@ -136,6 +144,7 @@ async def test_quota_control_pauses_and_resumes(monkeypatch):
             org_id="org-1",
             billed_user_id="user-1",
             stop=stop,
+            controller=controller,
         ),
         finish_after_resume(),
     )
@@ -151,15 +160,14 @@ async def test_quota_control_pauses_and_resumes(monkeypatch):
 @pytest.mark.asyncio
 async def test_quota_control_polls_while_running(monkeypatch):
     stop = quota_control.asyncio.Event()
+    controller = quota_control.QuotaPauseController()
     job = SimpleNamespace(pause=AsyncMock(), resume=AsyncMock())
     monkeypatch.setattr(settings, "quota_pause_poll_seconds", 0.001)
     monkeypatch.setattr(settings, "quota_pause_refresh_seconds", 0.001)
-
-    async def request_pause(trial_id, _org_id, _billed_user_id):
-        quota_control.set_quota_pause_requested(trial_id, True)
-
-    refresh = AsyncMock(side_effect=request_pause)
-    monkeypatch.setattr(quota_control, "_refresh_request", refresh)
+    monkeypatch.setattr(quota_control, "get_session", _empty_session)
+    refresh = AsyncMock(return_value=True)
+    monkeypatch.setattr(quota_control, "quota_pause_requested", refresh)
+    monkeypatch.setattr(quota_control, "_record_pause_state", AsyncMock())
 
     async def stop_after_pause():
         while not job.pause.await_count:
@@ -173,6 +181,7 @@ async def test_quota_control_polls_while_running(monkeypatch):
             org_id="org-1",
             billed_user_id="user-1",
             stop=stop,
+            controller=controller,
         ),
         stop_after_pause(),
     )
@@ -197,8 +206,10 @@ async def test_quota_control_failure_cancels_job(monkeypatch):
         resume=AsyncMock(),
     )
     monkeypatch.setattr(settings, "quota_pause_poll_seconds", 0.001)
-    monkeypatch.setattr(quota_control, "_refresh_request", AsyncMock())
-    quota_control.set_quota_pause_requested("trial-1", True)
+    monkeypatch.setattr(quota_control, "get_session", _empty_session)
+    monkeypatch.setattr(
+        quota_control, "quota_pause_requested", AsyncMock(return_value=True)
+    )
 
     with pytest.raises(quota_control.QuotaPauseControlError, match="snapshot failed"):
         await quota_control.run_job_with_quota_control(
@@ -209,7 +220,7 @@ async def test_quota_control_failure_cancels_job(monkeypatch):
         )
 
     assert run_cancelled.is_set()
-    assert "trial-1" not in quota_control._requests
+    assert "trial-1" not in quota_control._controllers
 
 
 @pytest.mark.asyncio
@@ -234,8 +245,10 @@ async def test_quota_control_failure_does_not_wait_forever_for_job(monkeypatch):
     )
     monkeypatch.setattr(settings, "quota_pause_poll_seconds", 0.001)
     monkeypatch.setattr(settings, "quota_pause_cancel_timeout_seconds", 0.001)
-    monkeypatch.setattr(quota_control, "_refresh_request", AsyncMock())
-    quota_control.set_quota_pause_requested("trial-1", True)
+    monkeypatch.setattr(quota_control, "get_session", _empty_session)
+    monkeypatch.setattr(
+        quota_control, "quota_pause_requested", AsyncMock(return_value=True)
+    )
 
     with pytest.raises(quota_control.QuotaPauseControlError, match="snapshot failed"):
         await quota_control.run_job_with_quota_control(
@@ -247,7 +260,7 @@ async def test_quota_control_failure_does_not_wait_forever_for_job(monkeypatch):
 
     assert run_cancelled.is_set()
     assert not cleanup_finished.is_set()
-    assert "trial-1" not in quota_control._requests
+    assert "trial-1" not in quota_control._controllers
 
     release_cleanup.set()
     await quota_control.asyncio.wait_for(cleanup_finished.wait(), timeout=1)

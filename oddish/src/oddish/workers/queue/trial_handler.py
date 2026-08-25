@@ -107,7 +107,6 @@ logger = logging.getLogger(__name__)
 TRIAL_HEARTBEAT_INTERVAL_SECONDS = 30
 
 
-
 @functools.lru_cache(maxsize=1)
 def _installed_harbor_descriptor() -> tuple[str, str]:
     """The source and commit of the harbor THIS process imports.
@@ -132,6 +131,7 @@ def _installed_harbor_descriptor() -> tuple[str, str]:
     except Exception:  # noqa: BLE001 -- any metadata shape falls back
         pass
     return HARBOR_DEFAULT_SOURCE, HARBOR_DEFAULT_SHA
+
 
 def _refresh_stable_variant_pin(
     trial, *, executing: tuple[str, str] | None = None
@@ -512,7 +512,7 @@ async def _heartbeat_trial_execution(
     queue_slot: int | None,
     stop_event: asyncio.Event,
     worker_job_id: str | None = None,
-    fatal_error: asyncio.Future[TrialExecutionResult] | None = None,
+    heartbeat_interrupt: asyncio.Future[None] | None = None,
 ) -> None:
     """Periodically write heartbeat_at to keep the trial out of stale-reap.
 
@@ -536,6 +536,9 @@ async def _heartbeat_trial_execution(
     next successful write so operators can tell after the fact whether a
     stale-heartbeat reap was caused by (a) the worker dying silently or
     (b) the DB/pooler being unreachable for a stretch.
+
+    ``heartbeat_interrupt`` completes normally when worker-job ownership is
+    lost and carries an exception only when the capacity lease fails.
     """
     consecutive_failures = 0
     pending_failure_count = 0
@@ -574,8 +577,11 @@ async def _heartbeat_trial_execution(
                         f"[yellow]Trial {trial_id} worker job was cancelled; "
                         "stopping execution[/yellow]"
                     )
-                    if fatal_error is not None and not fatal_error.done():
-                        fatal_error.cancel()
+                    if (
+                        heartbeat_interrupt is not None
+                        and not heartbeat_interrupt.done()
+                    ):
+                        heartbeat_interrupt.set_result(None)
                     return
             if consecutive_failures > 0:
                 console.print(
@@ -588,8 +594,8 @@ async def _heartbeat_trial_execution(
             pending_last_error_at = None
         except SandboxCapacityLeaseLostError as exc:
             console.print(f"[red]Trial {trial_id} capacity lease lost: {exc}[/red]")
-            if fatal_error is not None and not fatal_error.done():
-                fatal_error.set_exception(exc)
+            if heartbeat_interrupt is not None and not heartbeat_interrupt.done():
+                heartbeat_interrupt.set_exception(exc)
             return
         except Exception as exc:
             consecutive_failures += 1
@@ -1862,7 +1868,7 @@ async def run_trial_job(
     execution: TrialExecutionResult | None = None
     trial_terminal = False
     heartbeat_stop = asyncio.Event()
-    heartbeat_fatal_error: asyncio.Future[TrialExecutionResult] = (
+    heartbeat_interrupt: asyncio.Future[None] = (
         asyncio.get_running_loop().create_future()
     )
     heartbeat_task = asyncio.create_task(
@@ -1872,7 +1878,7 @@ async def run_trial_job(
             queue_slot=queue_slot,
             stop_event=heartbeat_stop,
             worker_job_id=worker_job_id,
-            fatal_error=heartbeat_fatal_error,
+            heartbeat_interrupt=heartbeat_interrupt,
         )
     )
     try:
@@ -1907,13 +1913,13 @@ async def run_trial_job(
             )
         )
         completed, _ = await asyncio.wait(
-            {execution_task, heartbeat_fatal_error},
+            {execution_task, heartbeat_interrupt},
             return_when=asyncio.FIRST_COMPLETED,
         )
-        if heartbeat_fatal_error in completed:
+        if heartbeat_interrupt in completed:
             execution_task.cancel()
             await asyncio.gather(execution_task, return_exceptions=True)
-            heartbeat_fatal_error.result()
+            heartbeat_interrupt.result()
         execution = await execution_task
         await _settle_compute_costs(cost_state, execution.outcome)
 
@@ -2032,10 +2038,10 @@ async def run_trial_job(
         )
     finally:
         heartbeat_stop.set()
-        if not heartbeat_fatal_error.done():
-            heartbeat_fatal_error.cancel()
-        elif not heartbeat_fatal_error.cancelled():
-            heartbeat_fatal_error.exception()
+        if not heartbeat_interrupt.done():
+            heartbeat_interrupt.cancel()
+        elif not heartbeat_interrupt.cancelled():
+            heartbeat_interrupt.exception()
         await asyncio.gather(heartbeat_task, return_exceptions=True)
         if sandbox_launch is not None:
             try:
