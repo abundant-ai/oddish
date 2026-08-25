@@ -134,7 +134,9 @@ def test_run_dispatch_cycle_spawns_admitted_plan() -> None:
     assert [h.queue_key for h in dispatcher.spawned] == result.admitted
 
 
-def test_run_dispatch_cycle_records_existing_plan_and_actual_spawns(monkeypatch) -> None:
+def test_run_dispatch_cycle_records_existing_plan_and_actual_spawns(
+    monkeypatch,
+) -> None:
     from oddish.dispatch import cycle
 
     dispatcher = FakeDispatcher()
@@ -215,6 +217,79 @@ def test_run_dispatch_cycle_records_spawn_error(monkeypatch) -> None:
 
     assert len(cycle_outcomes) == 1
     assert cycle_outcomes[0]["workers_spawned"] == 0
+    assert cycle_outcomes[0]["spawn_cap_reached"] is True
+    assert cycle_outcomes[0]["outcome"] == "error"
+
+
+def test_run_dispatch_cycle_records_cancellation(monkeypatch) -> None:
+    from oddish.dispatch import cycle
+
+    class CancelledDispatcher(FakeDispatcher):
+        async def spawn(self, *, spawn_plan):
+            raise asyncio.CancelledError
+
+    cycle_outcomes: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        cycle,
+        "record_dispatch_cycle",
+        lambda **values: cycle_outcomes.append(values),
+    )
+
+    async def _go():
+        return await run_dispatch_cycle(
+            CancelledDispatcher(),
+            max_workers=1,
+            concurrency_limits_for=_fake_limits(1),
+            _discover=_fake_discover([("gpt-5", "default", "default")]),
+            _counts=_fake_counts(
+                {(None, "gpt-5", "default", "default"): 1},
+                {},
+            ),
+            _held=_fake_held({}),
+        )
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(_go())
+
+    assert len(cycle_outcomes) == 1
+    assert cycle_outcomes[0]["workers_spawned"] == 0
+    assert cycle_outcomes[0]["spawn_cap_reached"] is True
+    assert cycle_outcomes[0]["outcome"] == "error"
+
+
+def test_run_dispatch_cycle_records_post_spawn_error(monkeypatch) -> None:
+    from oddish.dispatch import cycle
+
+    cycle_outcomes: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        cycle,
+        "record_dispatch_cycle",
+        lambda **values: cycle_outcomes.append(values),
+    )
+
+    def fail_post_spawn(*_args, **_kwargs):
+        raise RuntimeError("post-spawn failed")
+
+    monkeypatch.setattr(cycle, "compute_post_spawn_why_waiting", fail_post_spawn)
+
+    async def _go():
+        return await run_dispatch_cycle(
+            FakeDispatcher(),
+            max_workers=1,
+            concurrency_limits_for=_fake_limits(1),
+            _discover=_fake_discover([("gpt-5", "default", "default")]),
+            _counts=_fake_counts(
+                {(None, "gpt-5", "default", "default"): 1},
+                {},
+            ),
+            _held=_fake_held({}),
+        )
+
+    with pytest.raises(RuntimeError, match="post-spawn failed"):
+        asyncio.run(_go())
+
+    assert len(cycle_outcomes) == 1
+    assert cycle_outcomes[0]["workers_spawned"] == 1
     assert cycle_outcomes[0]["spawn_cap_reached"] is True
     assert cycle_outcomes[0]["outcome"] == "error"
 
