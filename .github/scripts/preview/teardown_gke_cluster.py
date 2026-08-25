@@ -19,6 +19,49 @@ app = modal.App("preview-gke-teardown-helper")
 
 _ATTEMPTS = 3
 _BACKOFF_SEC = 10.0
+# The remote function has its own 10-minute execution cap, but callers run
+# inside larger workflows with other required work. Waiting for that full cap
+# (and then retrying) can consume the preview database job's 20-minute budget.
+# Five minutes covers the remote teardown's ordinary 240-second delete wait
+# plus startup slack. On expiry the remote call keeps running, while the caller
+# preserves the old app as the cluster's owner and continues its workflow.
+_CALL_TIMEOUT_SEC = 300.0
+
+
+def _invoke_teardown(
+    fn,
+    *,
+    attempts: int = _ATTEMPTS,
+    backoff_sec: float = _BACKOFF_SEC,
+    call_timeout_sec: float = _CALL_TIMEOUT_SEC,
+) -> str | None:
+    last: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            call = fn.spawn()
+            return call.get(timeout=call_timeout_sec)
+        except modal.exception.NotFoundError:
+            # Function.from_name is lazy: a missing function surfaces on the
+            # first call rather than at lookup.
+            return None
+        except modal.exception.TimeoutError as exc:
+            # Do not spawn a duplicate deletion. The first remote call may
+            # still finish, and the caller must retain the app in the meantime.
+            raise RuntimeError(
+                f"GKE cluster teardown did not finish within "
+                f"{call_timeout_sec:g}s; remote deletion may still be running"
+            ) from exc
+        except Exception as exc:  # noqa: BLE001 -- classified by the caller
+            last = exc
+            print(
+                f"gke teardown: attempt {attempt}/{attempts} failed: {exc}",
+                file=sys.stderr,
+            )
+            if attempt < attempts:
+                time.sleep(backoff_sec)
+    raise RuntimeError(
+        f"GKE cluster teardown failed after {attempts} attempts: {last}"
+    )
 
 
 @app.local_entrypoint()
@@ -31,31 +74,15 @@ def main(app_name: str) -> None:
     except modal.exception.NotFoundError:
         print("gke teardown: skip (app has no teardown function)")
         return
-    # A missing function is the only skippable shape; the remote call itself
-    # failing means the cluster may still exist, and the caller is about to
-    # stop the one app whose scheduled reaper could still delete it. Retry
-    # here, and hand a real failure to the caller as a distinct exit code so
-    # it can keep that owner alive instead of stopping it blind.
-    last: Exception | None = None
-    for attempt in range(1, _ATTEMPTS + 1):
-        try:
-            print(f"gke teardown: {fn.remote()}")
-            return
-        except modal.exception.NotFoundError:
-            # Function.from_name is lazy: a missing function surfaces HERE,
-            # on the first call, not at lookup. Same skip as above.
-            print("gke teardown: skip (app has no teardown function)")
-            return
-        except Exception as exc:  # noqa: BLE001 -- classified by the caller
-            last = exc
-            print(
-                f"gke teardown: attempt {attempt}/{_ATTEMPTS} failed: {exc}",
-                file=sys.stderr,
-            )
-            if attempt < _ATTEMPTS:
-                time.sleep(_BACKOFF_SEC)
-    print(
-        f"::error::GKE cluster teardown failed after {_ATTEMPTS} attempts: {last}",
-        file=sys.stderr,
-    )
-    sys.exit(2)
+    # A missing function is the only skippable shape. A failed or timed-out
+    # remote call means the cluster may still exist, so return a distinct
+    # failure and let the caller keep the app's scheduled reaper alive.
+    try:
+        outcome = _invoke_teardown(fn)
+    except RuntimeError as exc:
+        print(f"::error::{exc}", file=sys.stderr)
+        sys.exit(2)
+    if outcome is None:
+        print("gke teardown: skip (app has no teardown function)")
+        return
+    print(f"gke teardown: {outcome}")
