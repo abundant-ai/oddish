@@ -41,10 +41,15 @@ def test_remote_teardown_uses_a_bounded_result_wait():
 
 def test_timeout_does_not_spawn_a_duplicate_delete():
     spawned = 0
+    cancelled = 0
 
     class Call:
         def get(self, *, timeout):
             raise modal.exception.TimeoutError("still running")
+
+        def cancel(self):
+            nonlocal cancelled
+            cancelled += 1
 
     class Function:
         def spawn(self):
@@ -58,3 +63,4 @@ def test_timeout_does_not_spawn_a_duplicate_delete():
         )
 
     assert spawned == 1
+    assert cancelled == 1

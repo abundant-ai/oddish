@@ -23,8 +23,8 @@ _BACKOFF_SEC = 10.0
 # inside larger workflows with other required work. Waiting for that full cap
 # (and then retrying) can consume the preview database job's 20-minute budget.
 # Five minutes covers the remote teardown's ordinary 240-second delete wait
-# plus startup slack. On expiry the remote call keeps running, while the caller
-# preserves the old app as the cluster's owner and continues its workflow.
+# plus startup slack. On expiry the specific remote call is cancelled and the
+# caller preserves the old app so its scheduled reaper retains ownership.
 _CALL_TIMEOUT_SEC = 300.0
 
 
@@ -46,10 +46,14 @@ def _invoke_teardown(
             return None
         except modal.exception.TimeoutError as exc:
             # Do not spawn a duplicate deletion. The first remote call may
-            # still finish, and the caller must retain the app in the meantime.
+            # keep ``modal run`` alive after get() times out, so cancel that
+            # call before returning failure. The caller retains the old app
+            # and its scheduled reaper instead of stopping it without proof
+            # that the cluster is gone.
+            call.cancel()
             raise RuntimeError(
                 f"GKE cluster teardown did not finish within "
-                f"{call_timeout_sec:g}s; remote deletion may still be running"
+                f"{call_timeout_sec:g}s; timed-out call was cancelled"
             ) from exc
         except Exception as exc:  # noqa: BLE001 -- classified by the caller
             last = exc
