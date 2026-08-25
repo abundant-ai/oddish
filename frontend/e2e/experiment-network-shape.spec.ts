@@ -42,9 +42,8 @@ const EXPERIMENT_ID = process.env.E2E_EXPERIMENT_ID;
 const hasClerkEnv = !!CLERK_EMAIL && !!CLERK_SECRET && !!CLERK_PUBLISHABLE;
 
 const TASK_SHELLS_RE = /\/api\/experiments\/[^/]+\/task-shells/;
-// Matches the trial-detail endpoint only. Subpaths like /files,
-// /analysis-log, /live, and /trajectory are separate resources and must
-// not count here.
+// Matches the trial-detail endpoint only. Subpaths like /files, /live, and
+// /trajectory are separate resources and must not count here.
 const TRIAL_DETAIL_RE = /\/api\/trials\/[^/?]+(\?.*)?$/;
 const TASK_FILES_RE = /\/api\/tasks\/[^/]+\/files\?/;
 const TASK_FILES_STREAM_RE = /\/api\/tasks\/[^/]+\/files\?[^#]*\bstream=1\b/;
