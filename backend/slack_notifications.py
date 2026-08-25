@@ -24,11 +24,13 @@ from oddish.core.cost_basis import (
 )
 from oddish.core.endpoints._common import USER_CANCELLED_MESSAGE
 from oddish.db import (
+    ACTIVE_TRIAL_STATUSES,
     ExperimentModel,
     TaskModel,
     TrialModel,
     TrialStatus,
     VerdictStatus,
+    WORKER_OWNED_TRIAL_STATUSES,
     close_database_connections,
     get_session,
 )
@@ -613,20 +615,14 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
     # module-scope read would pin whatever was set when it first woke up.
     settings = await read_alert_settings()
     user_prefs = await read_prefs_by_email()
-    active_statuses = [
-        TrialStatus.PENDING,
-        TrialStatus.QUEUED,
-        TrialStatus.RUNNING,
-        TrialStatus.RETRYING,
-    ]
     active_trial = and_(
         TrialModel.deleted_at.is_(None),
-        TrialModel.status.in_(active_statuses),
+        TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
     )
     live_trial = and_(
         TrialModel.deleted_at.is_(None),
         TrialModel.finished_at.is_(None),
-        TrialModel.status.in_([TrialStatus.RUNNING, TrialStatus.RETRYING]),
+        TrialModel.status.in_((*WORKER_OWNED_TRIAL_STATUSES, TrialStatus.RETRYING)),
     )
 
     async with get_session() as session:
@@ -865,7 +861,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                 )
                 .having(
                     func.count(TrialModel.id).filter(
-                        TrialModel.status.in_(active_statuses)
+                        TrialModel.status.in_(ACTIVE_TRIAL_STATUSES)
                     )
                     == 0
                 )

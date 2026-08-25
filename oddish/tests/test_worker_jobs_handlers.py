@@ -22,6 +22,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.db import (  # noqa: E402
+    ACTIVE_WORKER_JOB_KINDS,
     TrialStatus,
     WorkerJobKind,
     WorkerJobStatus,
@@ -199,16 +200,14 @@ async def test_trial_handler_rejects_missing_subject_id(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_all_three_handlers_register_against_builtin_registry():
+def test_active_worker_job_kinds_register_against_builtin_registry():
     from oddish.workers.jobs import (
         HANDLERS,
         ensure_builtin_handlers_registered,
     )
 
     ensure_builtin_handlers_registered()
-    assert WorkerJobKind.TRIAL in HANDLERS
-    assert WorkerJobKind.TASK_EXPAND in HANDLERS
-    assert WorkerJobKind.TAG_PROJECT in HANDLERS
+    assert set(HANDLERS) == set(ACTIVE_WORKER_JOB_KINDS)
 
 
 def test_tag_project_handler_is_registered(monkeypatch):

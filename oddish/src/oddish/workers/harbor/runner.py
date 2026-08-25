@@ -1343,6 +1343,7 @@ async def run_harbor_trial_async(
     worker_job_id: str | None = None,
     harbor_config: dict[str, Any] | None = None,
     org_id: str | None = None,
+    billed_user_id: str | None = None,
     extra_agent_env: dict[str, str] | None = None,
     sandbox_launch: SandboxLaunchContext | None = None,
 ) -> HarborOutcome:
@@ -1383,6 +1384,7 @@ async def run_harbor_trial_async(
             worker_job_id=worker_job_id,
             harbor_config=harbor_config,
             org_id=org_id,
+            billed_user_id=billed_user_id,
             extra_agent_env=extra_agent_env,
             sandbox_launch=sandbox_launch,
             raw=raw,
@@ -1402,6 +1404,7 @@ async def _run_harbor_trial_async_impl(
     worker_job_id: str | None,
     harbor_config: dict[str, Any] | None,
     org_id: str | None,
+    billed_user_id: str | None,
     extra_agent_env: dict[str, str] | None,
     raw: dict[str, Any],
     hc: HarborConfig,
@@ -1845,11 +1848,22 @@ async def _run_harbor_trial_async_impl(
                     job.on_trial_ended(safe_hook_callback)
                     job.on_trial_cancelled(safe_hook_callback)
 
+                if trial_id is not None and org_id is not None:
+                    from .quota_control import run_job_with_quota_control
+
+                    run_job = run_job_with_quota_control(
+                        job,
+                        trial_id=trial_id,
+                        org_id=org_id,
+                        billed_user_id=billed_user_id,
+                    )
+                else:
+                    run_job = job.run()
                 with _capture_modal_output(
                     actual_job_dir, environment
                 ) as captured_log_path:
                     modal_debug_log_path = captured_log_path
-                    job_result = await job.run()
+                    job_result = await run_job
             finally:
                 if redaction_trial_id:
                     harbor_live_tail.clear_runtime_redactions(redaction_trial_id)

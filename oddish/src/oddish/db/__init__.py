@@ -1,4 +1,5 @@
 from oddish.db.models import (
+    ACTIVE_WORKER_JOB_KINDS,
     AGENT_TRIAL_KIND,
     AnalysisStatus,
     Base,
@@ -8,6 +9,10 @@ from oddish.db.models import (
     TaskStatus,
     TrialOrigin,
     TrialStatus,
+    ACTIVE_TRIAL_STATUSES as ACTIVE_TRIAL_STATUSES,
+    WORKER_OWNED_TRIAL_STATUSES as WORKER_OWNED_TRIAL_STATUSES,
+    is_active_trial_status as is_active_trial_status,
+    is_worker_owned_trial_status as is_worker_owned_trial_status,
     VerdictStatus,
     WorkerJobKind,
     WorkerJobStatus,
@@ -95,6 +100,7 @@ __all__ = [
     # Base
     "Base",
     # Constants
+    "ACTIVE_WORKER_JOB_KINDS",
     "AGENT_TRIAL_KIND",
     # Enums
     "TaskStatus",

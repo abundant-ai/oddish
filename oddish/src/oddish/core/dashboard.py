@@ -47,6 +47,7 @@ from oddish.core.tags.projection import (
 )
 from oddish.config import normalize_model_id
 from oddish.db import (
+    ACTIVE_TRIAL_STATUSES,
     ExperimentModel,
     TagAssignmentModel,
     TagAssignmentScope,
@@ -61,6 +62,7 @@ from oddish.db import (
     VerdictStatus,
     WorkerJobModel,
     WorkerJobStatus,
+    WORKER_OWNED_TRIAL_STATUSES,
     experiment_trials,
     get_session,
     task_experiments,
@@ -495,14 +497,7 @@ def _build_aggregates_for_experiment_ids(
             func.count(
                 case(
                     (
-                        TrialModel.status.in_(
-                            [
-                                TrialStatus.PENDING,
-                                TrialStatus.QUEUED,
-                                TrialStatus.RUNNING,
-                                TrialStatus.RETRYING,
-                            ]
-                        ),
+                        TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
                         1,
                     )
                 )
@@ -636,7 +631,12 @@ def _absent_legacy_user_clause():
     )
 
 
-def _experiment_freetext_match(needle: str, *, org_id: str | None):
+def _experiment_freetext_match(
+    needle: str,
+    *,
+    org_id: str | None,
+    person_user_ids: Sequence[str] = (),
+):
     """Broad match for one bare (un-prefixed) search needle on an experiment.
 
     Matches the experiment name/id, OR any of its live tasks' author fields
@@ -686,12 +686,49 @@ def _experiment_freetext_match(needle: str, *, org_id: str | None):
         .correlate(ExperimentModel)
     )
 
-    return or_(
+    alternatives = [
         ExperimentModel.name.ilike(pattern, escape="\\"),
         ExperimentModel.id.ilike(pattern, escape="\\"),
         author_exists.exists(),
         tag_exists.exists(),
-    )
+    ]
+
+    resolved_user_ids = tuple(dict.fromkeys(person_user_ids))
+    if resolved_user_ids:
+        gathered_membership = exists(
+            select(experiment_trials.c.trial_id).where(
+                experiment_trials.c.experiment_id == ExperimentModel.id,
+                experiment_trials.c.trial_id == TrialModel.id,
+                experiment_trials.c.deleted_at.is_(None),
+            )
+        )
+        latest_runner_user_id = (
+            select(TrialModel.billed_user_id)
+            .where(
+                or_(
+                    TrialModel.experiment_id == ExperimentModel.id,
+                    gathered_membership,
+                ),
+                TrialModel.deleted_at.is_(None),
+                TrialModel.superseded_by_trial_id.is_(None),
+            )
+            .order_by(TrialModel.created_at.desc(), TrialModel.id.desc())
+            .limit(1)
+            .correlate(ExperimentModel)
+            .scalar_subquery()
+        )
+        if org_id is not None:
+            latest_runner_user_id = latest_runner_user_id.where(
+                TrialModel.org_id == org_id
+            )
+        alternatives.extend(
+            (
+                ExperimentModel.owner_user_id.in_(resolved_user_ids),
+                latest_runner_user_id.in_(resolved_user_ids),
+            )
+        )
+
+    return or_(*alternatives)
 
 
 def _dashboard_author_from_task(
@@ -1102,6 +1139,7 @@ async def load_dashboard_experiments(
     experiments_search_author_user_ids: Sequence[str] | None = None,
     experiments_search_author_github_usernames: Sequence[str] | None = None,
     experiments_search_author_emails: Sequence[str] | None = None,
+    experiments_search_person_user_ids: Mapping[str, Sequence[str]] | None = None,
     record_timing: TimingRecorder | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Load experiment summaries for the dashboard.
@@ -1135,6 +1173,7 @@ async def load_dashboard_experiments(
         )
 
     normalized_query = (experiments_query or "").strip()
+    person_user_ids_by_token = experiments_search_person_user_ids or {}
 
     page_query = select(
         ExperimentModel.id.label("experiment_id"),
@@ -1154,11 +1193,28 @@ async def load_dashboard_experiments(
         terms = parse_search_query(normalized_query)
         for group in terms.include:
             page_query = page_query.where(
-                or_(*(_experiment_freetext_match(n, org_id=org_id) for n in group))
+                or_(
+                    *(
+                        _experiment_freetext_match(
+                            needle,
+                            org_id=org_id,
+                            person_user_ids=person_user_ids_by_token.get(
+                                needle.strip().lower(), ()
+                            ),
+                        )
+                        for needle in group
+                    )
+                )
             )
         for needle in terms.exclude:
             page_query = page_query.where(
-                ~_experiment_freetext_match(needle, org_id=org_id)
+                ~_experiment_freetext_match(
+                    needle,
+                    org_id=org_id,
+                    person_user_ids=person_user_ids_by_token.get(
+                        needle.strip().lower(), ()
+                    ),
+                )
             )
     # Owner filter ("My experiments" / per-member picker): keep only
     # experiments whose primary (oldest) live task belongs to the target author.
@@ -1669,7 +1725,7 @@ async def get_model_usage_core(
         # silently counting as $0 like a raw SUM(cost_usd) would. Requires
         # grouping by TrialModel.model (below) so the per-row estimate resolves.
         *settled_cost_columns(),
-        func.count(case((TrialModel.status == TrialStatus.RUNNING, 1))).label(
+        func.count(case((TrialModel.status.in_(WORKER_OWNED_TRIAL_STATUSES), 1))).label(
             "running"
         ),
         func.count(case((TrialModel.status == TrialStatus.RETRYING, 1))).label(
@@ -1894,6 +1950,7 @@ async def get_dashboard_core(
     experiments_search_author_user_ids: Sequence[str] | None = None,
     experiments_search_author_github_usernames: Sequence[str] | None = None,
     experiments_search_author_emails: Sequence[str] | None = None,
+    experiments_search_person_user_ids: Mapping[str, Sequence[str]] | None = None,
     usage_minutes: int | None = None,
     include_queues: bool = True,
     include_tasks: bool = True,
@@ -1935,6 +1992,7 @@ async def get_dashboard_core(
         f"{','.join(experiments_search_author_user_ids or ())}:"
         f"{','.join(experiments_search_author_github_usernames or ())}:"
         f"{','.join(experiments_search_author_emails or ())}:"
+        f"{sorted((token, tuple(user_ids)) for token, user_ids in (experiments_search_person_user_ids or {}).items())}:"
         f"{experiments_tags}:{experiments_tags_any}:{experiments_tags_none}"
         f":{','.join(experiments_models or ())}:{experiments_min_steps}:{experiments_max_steps}"
         f":{experiments_min_duration_seconds}:{experiments_max_duration_seconds}"
@@ -2086,6 +2144,7 @@ async def get_dashboard_core(
                 experiments_search_author_user_ids=experiments_search_author_user_ids,
                 experiments_search_author_github_usernames=experiments_search_author_github_usernames,
                 experiments_search_author_emails=experiments_search_author_emails,
+                experiments_search_person_user_ids=experiments_search_person_user_ids,
                 record_timing=record_timing,
             )
         if record_timing is not None:

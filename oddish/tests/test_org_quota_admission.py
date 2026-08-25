@@ -91,6 +91,8 @@ def _enforce_mode(monkeypatch):
     # unless a test overrides it.
     monkeypatch.setattr(settings, "default_daily_quota_usd", Decimal("1000"))
     monkeypatch.setattr(settings, "default_org_monthly_quota_usd", Decimal("0.30"))
+    monkeypatch.setattr(settings, "quota_pause_remaining_percent", Decimal(0))
+    monkeypatch.setattr(settings, "quota_pause_remaining_usd", None)
 
 
 async def _make_billed_task(cleanup_task_ids, *, n_trials, billed_user, org_id):

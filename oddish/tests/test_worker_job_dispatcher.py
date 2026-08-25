@@ -19,18 +19,49 @@ dispatch tuple used in production.
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from oddish.db import ACTIVE_WORKER_JOB_KINDS  # noqa: E402
+from oddish.workers.queue import worker_job_dispatcher as dispatcher_module  # noqa: E402
 from oddish.workers.queue.worker_job_dispatcher import (  # noqa: E402
     build_spawn_plan,
+    discover_active_worker_job_queue_keys,
+    get_worker_job_org_queue_counts,
     select_job_function,
 )
 
 _D = "default"  # the default variant, used by every non-override fixture
+
+
+def test_dispatch_queries_only_count_active_worker_job_kinds(monkeypatch):
+    class _Pool:
+        def __init__(self):
+            self.calls = []
+
+        async def fetch(self, sql, *args):
+            self.calls.append((" ".join(sql.split()), args))
+            return []
+
+    pool = _Pool()
+
+    async def _get_pool():
+        return pool
+
+    monkeypatch.setattr(dispatcher_module, "get_pool", _get_pool)
+
+    asyncio.run(discover_active_worker_job_queue_keys())
+    asyncio.run(get_worker_job_org_queue_counts(("anthropic/claude-sonnet-5",)))
+
+    active_kinds = tuple(kind.value for kind in ACTIVE_WORKER_JOB_KINDS)
+    assert "QA" not in active_kinds
+    assert len(pool.calls) == 3
+    assert all("kind::text = ANY" in sql for sql, _args in pool.calls)
+    assert all(args[-1] == active_kinds for _sql, args in pool.calls)
 
 
 def _limits_for(queued_by_org_queue: dict, default: int = 32) -> dict[str, int]:

@@ -240,3 +240,79 @@ async def test_last_runner_user_id_none_without_trials(session):
 
     assert len(rows) == 1
     assert rows[0]["last_runner_user_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_resolved_member_owner_search_filters_before_pagination(session):
+    now = utcnow()
+    newer_unrelated = ExperimentModel(
+        name=f"newer-unrelated-{_ORG}",
+        org_id=_ORG,
+        owner_user_id="user_alex",
+        last_activity_at=now,
+    )
+    older_kyle = ExperimentModel(
+        name=f"older-member-owned-{_ORG}",
+        org_id=_ORG,
+        owner_user_id="user_kyle",
+        last_activity_at=now - timedelta(days=1),
+    )
+    session.add_all([newer_unrelated, older_kyle])
+    await session.flush()
+
+    rows, has_more = await load_dashboard_experiments(
+        session,
+        org_id=_ORG,
+        experiments_limit=1,
+        experiments_offset=0,
+        experiments_query="kyl",
+        experiments_status="all",
+        experiments_search_person_user_ids={"kyl": ("user_kyle",)},
+    )
+
+    assert [row["id"] for row in rows] == [older_kyle.id]
+    assert has_more is False
+
+
+@pytest.mark.asyncio
+async def test_resolved_member_search_matches_latest_visible_runner(session):
+    now = utcnow()
+    task = TaskModel(
+        name=f"member-runner-search-task-{_ORG}",
+        org_id=_ORG,
+        user="original-owner",
+        task_path="s3://tasks/member-runner-search",
+    )
+    session.add(task)
+    await session.flush()
+
+    experiment = ExperimentModel(
+        name=f"runner-search-unrelated-name-{_ORG}",
+        org_id=_ORG,
+        owner_user_id="user_alex",
+        last_activity_at=now,
+    )
+    session.add(experiment)
+    await session.flush()
+    session.add(
+        _trial(
+            task,
+            experiment,
+            billed_user_id="user_kyle",
+            created_at=now,
+        )
+    )
+    await session.flush()
+
+    rows, _has_more = await load_dashboard_experiments(
+        session,
+        org_id=_ORG,
+        experiments_limit=1,
+        experiments_offset=0,
+        experiments_query="kyl",
+        experiments_status="all",
+        experiments_search_person_user_ids={"kyl": ("user_kyle",)},
+    )
+
+    assert [row["id"] for row in rows] == [experiment.id]
+    assert rows[0]["last_runner_user_id"] == "user_kyle"

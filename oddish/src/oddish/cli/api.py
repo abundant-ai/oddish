@@ -2154,6 +2154,7 @@ def format_trial_status(status: str, harbor_stage: str | None = None) -> str:
         "pending": "dim",
         "queued": "yellow",
         "running": "blue",
+        "paused": "yellow",
         "retrying": "yellow",
         "success": "green",
         "failed": "red",
@@ -2197,6 +2198,9 @@ def format_trial_status_detail(trial: dict[str, Any]) -> str:
     if status == "running" and harbor_stage:
         detail = escape(_format_status_detail_text(harbor_stage))
         return f"[blue]{detail}[/blue]"
+
+    if status == "paused":
+        return "[yellow]paused[/yellow]"
 
     if status == "failed" and error_message:
         detail = escape(_format_status_detail_text(error_message))
@@ -2603,6 +2607,8 @@ def print_final_results(result: dict) -> None:
             status_str = "[red]failed[/red]"
         elif status == "running":
             status_str = "[blue]running[/blue]"
+        elif status == "paused":
+            status_str = "[yellow]paused[/yellow]"
         else:
             status_str = f"[dim]{status}[/dim]"
 

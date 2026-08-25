@@ -79,6 +79,7 @@ async def test_public_file_list_errors_are_sanitized(monkeypatch):
             limit=1000,
             cursor=None,
             presign=True,
+            task_s3_prefix=None,
         )
     assert task_exc.value.detail == "Failed to list files"
 

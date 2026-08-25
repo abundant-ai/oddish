@@ -17,6 +17,7 @@ from oddish.core.model_display_names import (
 )
 from oddish.core.tags.projection import list_effective_user_tags_for_task_versions
 from oddish.core.trial_live import read_trial_live
+from oddish.core.task_files import resolve_task_file_source
 from oddish.core.trial_io import (
     read_trial_agent_file,
     read_trial_logs,
@@ -484,14 +485,12 @@ async def list_public_task_files(
 ):
     """List all files in a public task's S3 directory."""
     async with get_session() as session:
-        resolved = await get_public_task_for_experiment(
-            session, public_token, task_id, load_current_version=True
-        )
+        resolved = await get_public_task_for_experiment(session, public_token, task_id)
         if not resolved:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-        _, task, _ = resolved
-        if version is None and task.current_version:
-            version = task.current_version.version
+        version, task_s3_prefix = await resolve_task_file_source(
+            session, task_id=task_id, version=version
+        )
 
     if stream:
         return await make_task_files_ndjson_response(
@@ -502,6 +501,7 @@ async def list_public_task_files(
                 limit=limit,
                 cursor=cursor,
                 presign=presign,
+                task_s3_prefix=task_s3_prefix,
                 version=version,
             )
         )
@@ -513,6 +513,7 @@ async def list_public_task_files(
         limit=limit,
         cursor=cursor,
         presign=presign,
+        task_s3_prefix=task_s3_prefix,
         version=version,
     )
 
@@ -524,21 +525,22 @@ async def get_public_task_file_content(
     file_path: str,
     presign: bool = Query(False),
     version: int | None = Query(None, description="Task version number"),
+    max_bytes: int | None = Query(None, ge=1),
 ) -> dict:
     """Get content of a specific public task file from S3."""
     async with get_session() as session:
-        resolved = await get_public_task_for_experiment(
-            session, public_token, task_id, load_current_version=True
-        )
+        resolved = await get_public_task_for_experiment(session, public_token, task_id)
         if not resolved:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-        _, task, _ = resolved
-        if version is None and task.current_version:
-            version = task.current_version.version
+        version, task_s3_prefix = await resolve_task_file_source(
+            session, task_id=task_id, version=version
+        )
 
     return await get_task_file_content_s3(
         task_id=task_id,
         file_path=file_path,
         presign=presign,
+        task_s3_prefix=task_s3_prefix,
         version=version,
+        max_bytes=max_bytes,
     )

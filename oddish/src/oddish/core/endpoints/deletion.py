@@ -23,6 +23,7 @@ from oddish.db import (
     TrialModel,
     TrialStatus,
     VerdictStatus,
+    is_active_trial_status,
     task_experiments,
     utcnow,
 )
@@ -40,14 +41,7 @@ def _task_has_active_analysis(task: TaskModel) -> bool:
 
 def _task_has_active_trials(task: TaskModel) -> bool:
     return any(
-        trial.superseded_by_trial_id is None
-        and trial.status
-        in (
-            TrialStatus.PENDING,
-            TrialStatus.QUEUED,
-            TrialStatus.RUNNING,
-            TrialStatus.RETRYING,
-        )
+        trial.superseded_by_trial_id is None and is_active_trial_status(trial.status)
         for trial in task.trials or []
     )
 
@@ -869,7 +863,7 @@ async def combine_experiments_core(
        experiment is fully self-contained, or point the copy at the source
        artifacts in place when ``copy_artifacts=False``.
 
-    Non-terminal source trials (still pending/queued/running) have no
+    Non-terminal source trials (still pending/queued/running/paused) have no
     result to combine and are skipped; the count is surfaced in the
     response. No worker jobs are enqueued -- combined trials land already
     terminal, exactly like imported ones.

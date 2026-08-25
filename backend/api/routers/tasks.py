@@ -46,7 +46,6 @@ from oddish.core.endpoints import (
     get_experiment_cost_totals,
     get_task_detail_core,
     get_task_open_core,
-    get_task_for_org_core,
     get_task_status_core,
     get_task_version_core,
     list_experiment_slim_tasks,
@@ -75,6 +74,7 @@ from oddish.core.sharing.helpers import (
     make_task_files_ndjson_response,
     stream_task_files_s3,
 )
+from oddish.core.task_files import resolve_task_file_source
 from oddish.core.idempotency import (
     IdempotencyReplay,
     SWEEP_ROUTE,
@@ -1752,15 +1752,13 @@ async def list_task_files(
     """
     auth.require_scope(APIKeyScope.READ)
 
-    async with get_session() as session:
-        task = await get_task_for_org_core(
+    async with get_read_session() as session:
+        version, task_s3_prefix = await resolve_task_file_source(
             session,
             task_id=task_id,
             org_id=auth.org_id,
-            load_current_version=True,
+            version=version,
         )
-        if version is None and task.current_version:
-            version = task.current_version.version
 
     if stream:
         return await make_task_files_ndjson_response(
@@ -1772,6 +1770,7 @@ async def list_task_files(
                 cursor=cursor,
                 presign=presign,
                 version=version,
+                task_s3_prefix=task_s3_prefix,
             )
         )
 
@@ -1784,6 +1783,7 @@ async def list_task_files(
         presign=presign,
         version=version,
         inline=inline,
+        task_s3_prefix=task_s3_prefix,
     )
 
 
@@ -1807,15 +1807,13 @@ async def get_task_file_content(
     """
     auth.require_scope(APIKeyScope.READ)
 
-    async with get_session() as session:
-        task = await get_task_for_org_core(
+    async with get_read_session() as session:
+        version, task_s3_prefix = await resolve_task_file_source(
             session,
             task_id=task_id,
             org_id=auth.org_id,
-            load_current_version=True,
+            version=version,
         )
-        if version is None and task.current_version:
-            version = task.current_version.version
 
     try:
         result = await get_task_file_content_s3(
@@ -1824,6 +1822,7 @@ async def get_task_file_content(
             presign=presign,
             version=version,
             max_bytes=max_bytes,
+            task_s3_prefix=task_s3_prefix,
         )
     except HTTPException as exc:
         if exc.status_code != status.HTTP_404_NOT_FOUND:

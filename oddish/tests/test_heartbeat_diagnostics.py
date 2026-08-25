@@ -48,6 +48,7 @@ async def test_heartbeat_also_writes_worker_jobs_when_job_id_provided(monkeypatc
 
     async def fake_heartbeat_worker_job(job_id, **kwargs):
         wj_calls.append({"job_id": job_id, **kwargs})
+        return True
 
     monkeypatch.setattr(trial_handler, "_touch_trial_execution", fake_touch)
     monkeypatch.setattr(
@@ -96,6 +97,7 @@ async def test_heartbeat_writes_worker_jobs_after_trial_goes_terminal(monkeypatc
 
     async def fake_heartbeat_worker_job(job_id, **kwargs):
         wj_calls.append(job_id)
+        return True
 
     monkeypatch.setattr(trial_handler, "_touch_trial_execution", fake_touch)
     monkeypatch.setattr(
@@ -123,6 +125,40 @@ async def test_heartbeat_writes_worker_jobs_after_trial_goes_terminal(monkeypatc
     await asyncio.wait_for(task, timeout=1.0)
 
     assert wj_calls and wj_calls[0] == "wj-1"
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_interrupts_execution_after_worker_job_is_cancelled(
+    monkeypatch,
+):
+    async def fake_touch(**kwargs):
+        return False
+
+    async def fake_heartbeat_worker_job(job_id, **kwargs):
+        return False
+
+    monkeypatch.setattr(trial_handler, "_touch_trial_execution", fake_touch)
+    monkeypatch.setattr(
+        trial_handler, "heartbeat_worker_job", fake_heartbeat_worker_job
+    )
+    monkeypatch.setattr(trial_handler, "TRIAL_HEARTBEAT_INTERVAL_SECONDS", 0)
+
+    heartbeat_interrupt = asyncio.get_running_loop().create_future()
+    await asyncio.wait_for(
+        trial_handler._heartbeat_trial_execution(
+            trial_id="trial-1",
+            worker_id="worker-1",
+            queue_slot=3,
+            stop_event=asyncio.Event(),
+            worker_job_id="wj-1",
+            heartbeat_interrupt=heartbeat_interrupt,
+        ),
+        timeout=1.0,
+    )
+
+    assert heartbeat_interrupt.done()
+    assert not heartbeat_interrupt.cancelled()
+    assert heartbeat_interrupt.result() is None
 
 
 @pytest.mark.asyncio
@@ -244,14 +280,17 @@ async def test_heartbeat_accumulates_failures_and_flushes_on_recovery(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_touch_trial_execution_flushes_pending_failure_metadata(monkeypatch):
+@pytest.mark.parametrize("status", ["RUNNING", "PAUSED"])
+async def test_touch_trial_execution_flushes_pending_failure_metadata(
+    monkeypatch, status
+):
     """_touch_trial_execution persists pending failure info onto the row."""
 
     from oddish.db import TrialStatus
 
     trial = SimpleNamespace(
         id="trial-1",
-        status=TrialStatus.RUNNING,
+        status=TrialStatus[status],
         current_worker_id=None,
         current_queue_slot=None,
         claimed_at=None,

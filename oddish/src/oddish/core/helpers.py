@@ -23,6 +23,7 @@ from oddish.db import (
     TrialStatus,
     WorkerJobModel,
     WorkerJobStatus,
+    is_worker_owned_trial_status,
 )
 from oddish.core.cost_basis import is_combine_copy
 from oddish.core.cost_exclusions import CostExclusions
@@ -101,7 +102,12 @@ def _has_fetchable_trajectory(trial: TrialModel) -> bool:
 _ANALYSIS_SUMMARY_UNSET = object()
 _VERSION_ID_UNSET: object = object()
 _QUEUE_PENDING_STATUSES = {TrialStatus.QUEUED, TrialStatus.RETRYING}
-_QUEUE_ACTIVE_STATUSES = _QUEUE_PENDING_STATUSES | {TrialStatus.RUNNING}
+_QUEUE_ACTIVE_STATUSES = {
+    TrialStatus.QUEUED,
+    TrialStatus.RUNNING,
+    TrialStatus.PAUSED,
+    TrialStatus.RETRYING,
+}
 _VISIBLE_ACTIVE_WORKER_JOB_STATUSES = {
     WorkerJobStatus.QUEUED,
     WorkerJobStatus.RUNNING,
@@ -142,7 +148,7 @@ def _build_trial_queue_info_snapshot(
         running_count = 0
 
         for trial in queue_trials:
-            if trial.status == TrialStatus.RUNNING:
+            if is_worker_owned_trial_status(trial.status):
                 running_count += 1
                 running_by_fairness[trial.fairness_key] += 1
                 continue
