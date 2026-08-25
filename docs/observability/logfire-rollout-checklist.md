@@ -29,10 +29,7 @@ the `LOGFIRE_TOKEN` value into this file, GitHub, Slack, or a chat.
   saturation, and missing dispatcher telemetry alerts.
 - [x] Update the Logfire setup and verification runbook.
 - [x] Run targeted Python tests, Ruff, and `git diff --check`.
-  - Backend dispatcher and preview workflow: `50 passed in 17.51s`.
-  - Core dispatch, metrics, worker outcome, and race tests:
-    `55 passed in 1.18s`.
-  - Post-format recorder tests: `8 passed in 1.26s`.
+  - Current staging dependencies: `105 passed in 17.67s`.
   - Ruff 0.8.4 imports/unused variables: `All checks passed!`.
   - Ruff 0.8.4 format check: `9 files already formatted`.
   - Logfire API contract: installed version `4.33.0`; all three factory and
