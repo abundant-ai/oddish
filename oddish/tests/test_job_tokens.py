@@ -147,7 +147,7 @@ def test_scoped_model_env_claude_code_bedrock_uses_routing_flag() -> None:
     assert env == {"CLAUDE_CODE_USE_BEDROCK": "1"}
 
 
-def test_scoped_model_env_single_llm_keeps_the_bedrock_route() -> None:
+def test_scoped_model_env_single_llm_uses_direct_anthropic_key() -> None:
     settings = _fake_settings(anthropic_api_key="sk-ant")
     settings.get_provider_for_trial = lambda agent, model: "bedrock"
 
@@ -157,7 +157,7 @@ def test_scoped_model_env_single_llm_keeps_the_bedrock_route() -> None:
         settings=settings,
     )
 
-    assert env == {"CLAUDE_CODE_USE_BEDROCK": "1"}
+    assert env == {"ANTHROPIC_API_KEY": "sk-ant"}
 
 
 def test_s3_write_prefix_scopes_to_the_trial() -> None:

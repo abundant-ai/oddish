@@ -108,23 +108,13 @@ async def maybe_enqueue_auto_probe(
             billed_user_id,
             count=len(expanded.trials),
         )
-        new_trials = await append_trials_to_task(
+        await append_trials_to_task(
             session,
             task=task,
             submission=expanded,
             experiment_id=submission.experiment_id,
             billed_user_id=billed_user_id,
         )
-
-        from oddish.config import settings
-
-        if settings.local_mode:
-            import asyncio
-
-            from oddish.worker.local_runner import run_trial_locally
-
-            for trial in new_trials:
-                asyncio.create_task(run_trial_locally(trial.id, dry_run=False))
     except Exception:  # noqa: BLE001 — best-effort; never fail the real sweep
         logger.exception(
             "auto-probe enqueue failed for task %s", getattr(task, "id", "?")

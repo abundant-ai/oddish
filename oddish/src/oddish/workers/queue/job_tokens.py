@@ -80,10 +80,6 @@ def _agent_is_claude_code(agent: str | None) -> bool:
     return "claude-code" in (agent or "").strip().lower()
 
 
-def _agent_invokes_bedrock(agent: str | None) -> bool:
-    return _agent_is_claude_code(agent) or (agent or "").strip().lower() == "single-llm"
-
-
 def scoped_model_env(*, agent: str, model: str | None, settings: Any) -> dict[str, str]:
     """Least-privilege model env for the job's provider only.
 
@@ -111,12 +107,12 @@ def scoped_model_env(*, agent: str, model: str | None, settings: Any) -> dict[st
         # over the direct Anthropic API as ``anthropic/<id>`` (see
         # _to_litellm_claude_model_id), so scope the matching ANTHROPIC_API_KEY
         # rather than the Bedrock routing flag they can't use.
-        if not _agent_invokes_bedrock(agent):
+        if not _agent_is_claude_code(agent):
             key = getattr(settings, "anthropic_api_key", None)
             return {"ANTHROPIC_API_KEY": key} if key else {}
-        # claude-code and SingleLLMAgent invoke Bedrock with AWS credentials,
-        # not a single API key; scoping those needs STS (a future enhancement).
-        # Carry only the routing flag; dual-read keeps ambient AWS credentials.
+        # claude-code invokes Bedrock with AWS credentials, not a single API
+        # key; scoping those needs STS (a future enhancement). Carry only the
+        # routing flag; dual-read keeps ambient AWS credentials.
         return {"CLAUDE_CODE_USE_BEDROCK": "1"}
     if provider == "gemini":
         key = getattr(settings, "gemini_api_key", None)

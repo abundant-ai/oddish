@@ -170,6 +170,8 @@ async def lifespan(_api: FastAPI):
     connection close) don't appear as orphan spans on container cold start
     / cycle.
     """
+    local_worker_task: asyncio.Task[None] | None = None
+
     with _otel_span("app.startup"):
         Path(settings.harbor_jobs_dir).mkdir(parents=True, exist_ok=True)
         await _assert_quota_schema_or_force_off()
@@ -178,12 +180,14 @@ async def lifespan(_api: FastAPI):
         # ODDISH_LOCAL_MODE executes trials inside this API process instead of
         # importing worker.functions, where hosted workers normally register
         # the backend BYOK resolver. Register the same resolver here before a
-        # local sweep can dispatch, so the local runner receives and accounts
-        # for the credential that actually funds the trial.
+        # local sweep can dispatch, then run the shared queue worker in this
+        # process so it receives and accounts for the funding credential.
         if settings.local_mode:
             from worker.byok_resolver import install_byok_resolver
+            from oddish.workers.queue.queue_manager import run_polling_worker
 
             install_byok_resolver()
+            local_worker_task = asyncio.create_task(run_polling_worker())
 
         # Route the dashboard's whole-``trials``-table queue/pipeline slice
         # through a shared Modal Dict so a cold container reads a warm entry
@@ -204,6 +208,13 @@ async def lifespan(_api: FastAPI):
             await role_defaults_task
         except (asyncio.CancelledError, Exception):
             pass
+
+        if local_worker_task is not None:
+            local_worker_task.cancel()
+            try:
+                await local_worker_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
         try:
             await close_database_connections()

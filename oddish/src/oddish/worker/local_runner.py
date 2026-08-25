@@ -1,9 +1,8 @@
-"""Local in-process trial runner. Used when ``ODDISH_LOCAL_MODE=1``.
+"""Legacy direct trial runner retained for dry runs and focused tests.
 
-Bypasses the Modal queue and runs trials directly via Harbor's Python
-API, talking to a local Docker daemon for the env. State is written to
-the same Postgres rows the Modal worker would update, so the rest of
-the stack (FE, analysis pipeline) sees a normal trial.
+The live ``ODDISH_LOCAL_MODE=1`` path uses the canonical queue worker inside
+the API process. This helper bypasses that queue worker and invokes Harbor's
+Python API directly against a local Docker daemon.
 
 Task 8 wires ``_run_harbor_trial`` to actually invoke Harbor and adds
 the probe task-mutation overlay: when ``harbor_config.extra_instructions``
@@ -330,8 +329,8 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
     # only if no BLOCKED worker_job gates this trial. Two concurrent dispatches
     # of the same trial can't both win (the loser matches no row and returns),
     # and a gated (BLOCKED) LLM trial is skipped until the baseline gate
-    # releases it. ``run_trial_locally`` is the only dispatch entrypoint, so
-    # this claim is the single choke point that prevents double-dispatch.
+    # releases it. This claim is the direct runner's choke point that prevents
+    # double-dispatch when tests or dry runs invoke it concurrently.
     claimed_at = datetime.now(timezone.utc)
     async with get_session() as session:
         trial_to_claim = await session.get(TrialModel, trial_id)

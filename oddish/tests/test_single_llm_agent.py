@@ -215,4 +215,4 @@ def test_oddish_preserves_the_custom_agent_and_builds_a_litellm_model_id():
 
     assert agent_config.name is None
     assert agent_config.import_path.endswith(":SingleLLMAgent")
-    assert agent_config.model_name == "bedrock/global.anthropic.claude-sonnet-4-6"
+    assert agent_config.model_name == "anthropic/claude-sonnet-4-6"

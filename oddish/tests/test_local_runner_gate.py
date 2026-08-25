@@ -1,11 +1,10 @@
-"""Integration tests for the baseline gate on the ODDISH_LOCAL_MODE path.
+"""Integration tests for the legacy direct runner's baseline gate.
 
-The in-process ``run_trial_locally`` is local mode's only dispatch entrypoint
-and has no Modal dispatcher/reconciler behind it. These tests assert it (a)
-honors ``BLOCKED`` worker_jobs via an atomic self-claim so gated LLM trials
-don't run prematurely, (b) can't double-dispatch the same trial, and (c) drives
-the baseline gate on baseline completion -- releasing valid tasks' LLM trials
-and cancelling faulty ones -- exactly as the cloud trial handler does.
+The in-process ``run_trial_locally`` helper has no queue dispatcher/reconciler
+behind it. These tests assert it (a) honors ``BLOCKED`` worker_jobs via an
+atomic self-claim so gated LLM trials don't run prematurely, (b) can't
+double-dispatch the same trial, and (c) drives the baseline gate on baseline
+completion exactly as the canonical trial handler does.
 
 Runs against a real Postgres (``ODDISH_DATABASE_URL``), like the other queue
 tests.

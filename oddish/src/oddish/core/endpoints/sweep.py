@@ -210,22 +210,10 @@ async def _finalize_sweep(
 ) -> None:
     """Shared finalize tail for the append and create sweep branches.
 
-    Behavior-identical for both branches: local-mode dispatch, auto-probe
-    enqueue, and idempotency completion. ``is_append`` only selects the
-    response shape stored for replay.
+    Behavior-identical for both branches: auto-probe enqueue and idempotency
+    completion. ``is_append`` only selects the response shape stored for replay.
     """
-    from oddish.config import settings
     from oddish.core.probe.auto_probe import maybe_enqueue_auto_probe
-
-    # Local dev: when ODDISH_LOCAL_MODE=1, dispatch each probe trial
-    # to the in-process runner instead of going through the Modal queue.
-    if settings.local_mode:
-        import asyncio
-
-        from oddish.worker.local_runner import run_trial_locally
-
-        for trial in new_trials:
-            asyncio.create_task(run_trial_locally(trial.id, dry_run=False))
 
     if task.run_probe:
         await maybe_enqueue_auto_probe(

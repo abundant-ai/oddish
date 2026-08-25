@@ -25,7 +25,6 @@ from oddish.config import (
     is_moonshot_model,
     is_xai_model,
     is_zai_model,
-    looks_like_bedrock_model_id,
     to_meta_model_id,
     minimax_api_model_id,
     minimax_bare_model_id,
@@ -61,7 +60,6 @@ _ODDISH_MINI_SWE_IMPORT_PATH = "oddish.workers.agents.mini_swe_agent:OddishMiniS
 _ODDISH_META_MINI_SWE_IMPORT_PATH = (
     "oddish.workers.agents.mini_swe_agent:OddishMetaMiniSweAgent"
 )
-_SINGLE_LLM_IMPORT_PATH = "oddish.workers.harbor.single_llm_agent:SingleLLMAgent"
 _ANTHROPIC_MODEL_ALIAS_KEYS = (
     "ANTHROPIC_DEFAULT_HAIKU_MODEL",
     "ANTHROPIC_DEFAULT_SONNET_MODEL",
@@ -99,10 +97,6 @@ _KIMI_CLAUDE_CODE_RECOMMENDED_ENV: dict[str, str] = {
 
 def _is_claude_code_agent(agent_config: AgentConfig) -> bool:
     return "claude-code" in (agent_config.name or "").strip().lower()
-
-
-def _is_single_llm_agent(agent_config: AgentConfig) -> bool:
-    return agent_config.import_path == _SINGLE_LLM_IMPORT_PATH
 
 
 def _is_kimi_claude_code_agent(agent_config: AgentConfig) -> bool:
@@ -625,13 +619,6 @@ def _build_agent_config(
             bare = anthropic_hdo_bare_model_id(canonical or "")
             api_id = to_anthropic_api_model_id(bare) or bare
             agent_config.model_name = f"anthropic/{api_id}" if api_id else canonical
-    elif _is_single_llm_agent(agent_config) and looks_like_bedrock_model_id(
-        agent_config.model_name
-    ):
-        # This host-side agent calls LiteLLM directly. Preserve the stored
-        # Bedrock route and its queue/concurrency bucket; LiteLLM requires the
-        # provider prefix that claude-code's own Bedrock transport omits.
-        agent_config.model_name = f"bedrock/{agent_config.model_name}"
     elif not _is_claude_code_agent(agent_config):
         # litellm-based agents need a "provider/model" id; claude-code is the
         # only agent that consumes the bare Bedrock inference-profile id.
