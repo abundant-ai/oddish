@@ -23,9 +23,10 @@ class OddishAntigravityCli(AntigravityCli):
     ``_antigravity_environment_hosts``), exactly like the opencode arm.
 
     Unlike ``OddishGeminiCli`` there is no ``disable_web_tools`` switch: agy's
-    settings.json has no tool-exclusion layer, so provider-side web tools (if
-    any exist in headless API-key mode — E2E pending) can only be bounded by
-    the network allowlist. Behaviour is otherwise identical to the stock
+    settings.json has no tool-exclusion layer, so provider-side web tools cannot
+    ride around the network boundary: a live closed-network probe showed
+    agy's read_url_content and shell curl both fail closed under the egress
+    allowlist (agy 1.1.19 reported NO WEB ACCESS). Behaviour is otherwise identical to the stock
     harbor ``AntigravityCli``.
     """
 

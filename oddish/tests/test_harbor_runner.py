@@ -614,12 +614,11 @@ def test_antigravity_wrapper_swaps_stock_class_for_oddish_wrapper():
     kwarg) -- see test_antigravity_wrapper_is_not_swapped_by_the_web_tool_gate
     below.
 
-    Unlike the gemini/cursor swaps, this cannot assert a returned profile:
-    _antigravity_profile currently hard-codes ``server_web_disabled=False``
-    (task-O3, pending E2E confirmation that agy exposes no provider-side web
-    tools), so the pipeline still fails closed after the swap. The class swap
-    runs BEFORE that profile resolution, so the ordering guarantee -- and
-    O4's scope -- is independently verifiable via the raised error.
+    Since the E2E-evidenced ``server_web_disabled=True`` attestation, the
+    pipeline resolves a full profile after the swap, so this asserts both the
+    routing (class swap) and the resolved profile's load-bearing fields: the
+    attestation flag and the agy startup hosts (Gemini endpoint + the
+    Unleash feature-flag host the binary probes before any model call).
     """
     from pathlib import Path
     from unittest.mock import patch
@@ -627,15 +626,12 @@ def test_antigravity_wrapper_swaps_stock_class_for_oddish_wrapper():
     agent_config = HarborAgentConfig(
         name="antigravity-cli", model_name="google/gemini-3.7-flash"
     )
-    with (
-        patch.object(
-            harbor_runner,
-            "_supports_daytona_compose_restricted_agent_network",
-            return_value=True,
-        ),
-        pytest.raises(harbor_runner.RestrictedNetworkProfileError),
+    with patch.object(
+        harbor_runner,
+        "_supports_daytona_compose_restricted_agent_network",
+        return_value=True,
     ):
-        harbor_runner._apply_daytona_compose_restricted_network_profile(
+        routed_profile = harbor_runner._apply_daytona_compose_restricted_network_profile(
             task_path=Path("/tmp"),
             environment_config=None,
             agent_config=agent_config,
@@ -647,6 +643,10 @@ def test_antigravity_wrapper_swaps_stock_class_for_oddish_wrapper():
         agent_config.import_path
         == "oddish.workers.agents.antigravity_cli:OddishAntigravityCli"
     )
+    assert routed_profile is not None
+    assert routed_profile.server_web_disabled is True
+    assert "generativelanguage.googleapis.com" in routed_profile.outbound_hosts
+    assert "antigravity-unleash.goog" in routed_profile.outbound_hosts
 
 
 def test_antigravity_wrapper_leaves_explicit_import_path_alone():

@@ -566,6 +566,28 @@ def test_antigravity_vertex_requires_explicit_base_url(monkeypatch) -> None:
     assert profile.outbound_hosts == ("example.test",)
 
 
+def test_antigravity_profile_rejects_adc_auth():
+    """AGY_ADC_AUTH selects agy's enterprise ADC path, whose service hosts are
+    not bounded by this profile -- a restricted phase must fail closed rather
+    than hand an ADC run a Gemini-API-shaped allowlist."""
+    from oddish.workers.agents.antigravity_cli import OddishAntigravityCli
+    from oddish.workers.harbor.restricted_network import (
+        RestrictedNetworkProfileError,
+        _antigravity_profile,
+    )
+
+    config = AgentConfig(
+        import_path="oddish.workers.agents.antigravity_cli:OddishAntigravityCli",
+        model_name="google/gemini-3.7-flash",
+    )
+    with pytest.raises(RestrictedNetworkProfileError, match="ADC"):
+        _antigravity_profile(
+            OddishAntigravityCli,
+            config,
+            {"AGY_ADC_AUTH": "true", "GOOGLE_APPLICATION_CREDENTIALS": "/c.json"},
+        )
+
+
 def test_antigravity_profile_pins_gemini_host_with_no_overrides() -> None:
     # Direct factory call -- see the note in
     # test_antigravity_vertex_requires_explicit_base_url about why this cannot

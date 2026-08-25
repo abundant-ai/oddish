@@ -34,18 +34,38 @@ from oddish.workers.agents.network import normalize_domain_or_url
 
 from .model_hosts import (
     _ANTHROPIC_HOSTS as _ANTHROPIC_RUNTIME_HOSTS,
+)
+from .model_hosts import (
     _CURSOR_RUNTIME_HOSTS,
-    _GEMINI_HOSTS as _GEMINI_RUNTIME_HOSTS,
     ANTIGRAVITY_RUNTIME_HOSTS,
-    _OPENAI_HOSTS as _OPENAI_RUNTIME_HOSTS,
-    _XAI_HOSTS as _XAI_RUNTIME_HOSTS,
-    AZURE_BASE_URL_KEYS as _AZURE_BASE_URL_KEYS,
-    CURSOR_BASE_URL_KEYS as _CURSOR_BASE_URL_KEYS,
-    GEMINI_BASE_URL_KEYS as _GEMINI_BASE_URL_KEYS,
-    GEMINI_OAUTH_ENV_KEYS as _GEMINI_OAUTH_ENV_KEYS,
-    KNOWN_TRANSPORT_BASE_URL_KEYS as _KNOWN_TRANSPORT_BASE_URL_KEYS,
-    OPENAI_BASE_URL_KEYS as _STOCK_OPENAI_BASE_URL_KEYS,
     outbound_hosts_for_model,
+)
+from .model_hosts import (
+    _GEMINI_HOSTS as _GEMINI_RUNTIME_HOSTS,
+)
+from .model_hosts import (
+    _OPENAI_HOSTS as _OPENAI_RUNTIME_HOSTS,
+)
+from .model_hosts import (
+    _XAI_HOSTS as _XAI_RUNTIME_HOSTS,
+)
+from .model_hosts import (
+    AZURE_BASE_URL_KEYS as _AZURE_BASE_URL_KEYS,
+)
+from .model_hosts import (
+    CURSOR_BASE_URL_KEYS as _CURSOR_BASE_URL_KEYS,
+)
+from .model_hosts import (
+    GEMINI_BASE_URL_KEYS as _GEMINI_BASE_URL_KEYS,
+)
+from .model_hosts import (
+    GEMINI_OAUTH_ENV_KEYS as _GEMINI_OAUTH_ENV_KEYS,
+)
+from .model_hosts import (
+    KNOWN_TRANSPORT_BASE_URL_KEYS as _KNOWN_TRANSPORT_BASE_URL_KEYS,
+)
+from .model_hosts import (
+    OPENAI_BASE_URL_KEYS as _STOCK_OPENAI_BASE_URL_KEYS,
 )
 
 
@@ -684,14 +704,23 @@ def _antigravity_profile(
             "GOOGLE_GEMINI_BASE_URL when Vertex routing is requested; note the "
             "agy agent itself ignores Vertex variables and runs API-key auth."
         )
+    if env.get("AGY_ADC_AUTH", "").strip().lower() in {"1", "true", "yes", "on"}:
+        raise RestrictedNetworkProfileError(
+            "Restricted Antigravity CLI phases do not support ADC auth "
+            "(AGY_ADC_AUTH): the enterprise platform's service hosts are not "
+            "bounded by this profile. Use GEMINI_API_KEY auth."
+        )
     hosts = _selected_transport_hosts(
         agent_config,
         resolved_env,
         base_url_keys=_consumed_base_url_keys_for_class(agent_class, agent_config),
         # agy is transport-authoritative like gemini-cli: modelProvider=gemini
         # fronts the Gemini API (or the explicit base URL), so pin the host and
-        # do not let model-id inference substitute another provider's host.
-        default_hosts=_GEMINI_RUNTIME_HOSTS,
+        # do not let model-id inference substitute another provider's host. The
+        # full runtime set also covers the Unleash/telemetry/Playwright
+        # endpoints the binary probes at startup (stall-on-drop, captured live
+        # from agy 1.1.19).
+        default_hosts=ANTIGRAVITY_RUNTIME_HOSTS,
         infer_model=False,
     )
     return RestrictedNetworkProfile(
