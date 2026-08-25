@@ -101,7 +101,6 @@ async def _settle(
         trial.finished_at = started + timedelta(minutes=45)
         trial.analysis = _STALE
         trial.analysis_status = AnalysisStatus.SUCCESS
-        trial.analysis_log = "old log"
         trial.analysis_started_at = started - timedelta(hours=4)
         trial.analysis_finished_at = started - timedelta(hours=4)
         trial.is_probe = is_probe
@@ -144,7 +143,6 @@ async def test_stale_analysis_is_dropped_and_the_closed_task_reopens(
     assert trial.analysis is None
     assert trial.analysis_status is None
     assert trial.analysis_finished_at is None
-    assert trial.analysis_log is None
     # Reopened, so maybe_start_qa_stage can run again.
     assert task.status is not TaskStatus.COMPLETED
     assert task.verdict is None
