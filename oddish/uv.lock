@@ -8,7 +8,7 @@ resolution-markers = [
 ]
 
 [manifest]
-overrides = [{ name = "harbor", git = "https://github.com/abundant-ai/harbor?rev=cbed98a4cbed7a291f6fab1bfd796175cf0e6dc0" }]
+overrides = [{ name = "harbor", git = "https://github.com/abundant-ai/harbor?rev=138cb078439f4be67c9f3b59ca07aed15f65b97c" }]
 
 [[package]]
 name = "aioboto3"
@@ -934,7 +934,7 @@ wheels = [
 [[package]]
 name = "harbor"
 version = "0.20.0"
-source = { git = "https://github.com/abundant-ai/harbor?rev=cbed98a4cbed7a291f6fab1bfd796175cf0e6dc0#cbed98a4cbed7a291f6fab1bfd796175cf0e6dc0" }
+source = { git = "https://github.com/abundant-ai/harbor?rev=138cb078439f4be67c9f3b59ca07aed15f65b97c#138cb078439f4be67c9f3b59ca07aed15f65b97c" }
 dependencies = [
     { name = "dirhash" },
     { name = "dockerfile-parse" },
@@ -1725,7 +1725,7 @@ requires-dist = [
     { name = "dockerfile-parse", marker = "extra == 'worker'", specifier = ">=2.0.1" },
     { name = "fastapi", marker = "extra == 'server'", specifier = "==0.128.0" },
     { name = "google-generativeai", marker = "extra == 'worker'", specifier = "==0.8.6" },
-    { name = "harbor", git = "https://github.com/abundant-ai/harbor?rev=cbed98a4cbed7a291f6fab1bfd796175cf0e6dc0" },
+    { name = "harbor", git = "https://github.com/abundant-ai/harbor?rev=138cb078439f4be67c9f3b59ca07aed15f65b97c" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "jsonschema", specifier = ">=4.0" },
     { name = "litellm", specifier = "==1.83.14" },
@@ -2546,8 +2546,8 @@ name = "secretstorage"
 version = "3.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cryptography", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
-    { name = "jeepney", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "cryptography" },
+    { name = "jeepney" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/1c/03/e834bcd866f2f8a49a85eaff47340affa3bfa391ee9912a952a1faa68c7b/secretstorage-3.5.0.tar.gz", hash = "sha256:f04b8e4689cbce351744d5537bf6b1329c6fc68f91fa666f60a380edddcd11be", size = 19884, upload-time = "2025-11-23T19:02:53.191Z" }
 wheels = [
