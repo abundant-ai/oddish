@@ -1790,7 +1790,7 @@ async def _run_harbor_trial_async_impl(
         # raw_agent_config import_path is covered too.
         if (
             (agent or "").strip().lower() == "antigravity-cli"
-            or "antigravity_cli:" in (agent_config.import_path or "").strip().lower()
+            or "antigravity_cli:" in (getattr(agent_config, "import_path", None) or "").strip().lower()
         ) and not (
             _supports_daytona_compose_restricted_agent_network(
                 task_path=effective_task_path,
