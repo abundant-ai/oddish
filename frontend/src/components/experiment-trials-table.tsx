@@ -802,7 +802,8 @@ export function ExperimentTrialsTable({
       if (lower === "oracle") return 1;
       if (lower.startsWith("claude")) return 2;
       if (lower.startsWith("codex")) return 3;
-      if (lower.startsWith("gemini")) return 4;
+      if (lower.startsWith("gemini") || lower.startsWith("antigravity"))
+        return 4;
       return 5;
     };
 
