@@ -128,7 +128,8 @@ class TrialSpec(BaseModel):
     """
 
     agent: str = Field(
-        ..., description="Agent name (e.g., 'claude-code', 'codex', 'gemini-cli')"
+        ...,
+        description="Agent name (e.g., 'claude-code', 'codex', 'gemini-cli', 'antigravity-cli')",
     )
     model: str | None = Field(
         None, description="Model name (e.g., 'claude-sonnet-4-20250514')"

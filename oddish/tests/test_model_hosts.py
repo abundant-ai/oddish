@@ -1,3 +1,4 @@
+from oddish.workers.harbor import model_hosts
 from oddish.workers.harbor.model_hosts import (
     agent_runtime_hosts,
     outbound_hosts_for_model,
@@ -140,3 +141,47 @@ def test_an_oddish_wrapper_import_path_still_resolves_its_agent():
     assert agent_runtime_hosts(
         agent_name=None, import_path="oddish.workers.agents.tbh:Tbh"
     ) == ["api.meta.ai"]
+
+
+def test_antigravity_install_hosts_and_runtime_registration():
+    # agy has no pre-baked worker image: install fetches from antigravity.google,
+    # the auto-updater Cloud Run host, and GCS -- mirroring OPENCODE_INSTALL_HOSTS.
+    assert model_hosts.ANTIGRAVITY_INSTALL_HOSTS == (
+        "antigravity.google",
+        "antigravity-cli-auto-updater-974169037036.us-central1.run.app",
+        "storage.googleapis.com",
+    )
+    # Registered as a runtime host so restricted agent phases get the Gemini
+    # endpoint even without model inference.
+    assert "generativelanguage.googleapis.com" in model_hosts.agent_runtime_hosts(
+        agent_name="antigravity-cli"
+    )
+
+
+def test_antigravity_runtime_hosts_cover_agy_startup_probes():
+    # Captured live from agy 1.1.19: the Unleash feature-flag host is dialed
+    # before any model call; an egress filter that drops (not refuses) its
+    # SYNs stalls startup past the agent timeout. Playwright CDNs and the
+    # telemetry endpoint are probed the same way.
+    hosts = model_hosts.agent_runtime_hosts(agent_name="antigravity-cli")
+    for host in (
+        "generativelanguage.googleapis.com",
+        "antigravity-unleash.goog",
+        "play.googleapis.com",
+        "playwright.azureedge.net",
+        "playwright-akamai.azureedge.net",
+        "playwright-verizon.azureedge.net",
+    ):
+        assert host in hosts
+
+
+def test_antigravity_runtime_hosts_reachable_via_import_path_key():
+    # The wrapper applier nulls ``name`` and sets an import path; the registry
+    # key derivation lowercases the class basename, so both wrapper and stock
+    # class paths must normalize back to the "antigravity-cli" entry.
+    for path in (
+        "oddish.workers.agents.antigravity_cli:OddishAntigravityCli",
+        "harbor.agents.installed.antigravity_cli:AntigravityCli",
+    ):
+        hosts = model_hosts.agent_runtime_hosts(agent_name=None, import_path=path)
+        assert "antigravity-unleash.goog" in hosts, path

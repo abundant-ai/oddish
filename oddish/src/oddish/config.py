@@ -89,6 +89,7 @@ class _GkeCoordsSource(PydanticBaseSettingsSource):
 _FIXED_AGENT_PROVIDERS: dict[str, str] = {
     "claude-code": "bedrock",
     "gemini-cli": "gemini",
+    "antigravity-cli": "gemini",
     "codex": "openai",
     "grok-build": "xai",
 }
