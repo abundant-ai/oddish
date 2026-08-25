@@ -589,7 +589,7 @@ def test_antigravity_profile_pins_gemini_host_with_no_overrides() -> None:
     assert "ab.chatgpt.com" not in profile.outbound_hosts
     assert profile.kwarg_overrides == {}
     assert profile.env_overrides == {}
-    assert profile.server_web_disabled is False
+    assert profile.server_web_disabled is True
 
 
 def test_antigravity_registration_pins_transport_and_fails_closed_for_stock() -> None:

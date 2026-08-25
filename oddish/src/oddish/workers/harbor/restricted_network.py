@@ -698,9 +698,13 @@ def _antigravity_profile(
         outbound_hosts=hosts,
         # No kwarg_overrides / env_overrides: agy has no settings-level web-tool
         # exclusion (OddishAntigravityCli docstring); the allowlist above is the
-        # only web bound. server_web_disabled stays False until E2E confirms agy
-        # exposes no provider-side web tools in headless API-key mode.
-        server_web_disabled=False,
+        # only web bound — and E2E proved it sufficient: under a task-level
+        # allowlist bounded to ANTIGRAVITY_RUNTIME_HOSTS, agy's read_url_content
+        # tool and shell curl both failed closed (agy 1.1.19 wrote "NO WEB
+        # ACCESS"), so its web tooling executes inside the container where the
+        # network boundary governs it. No server-side web capability bypasses
+        # the allowlist, which is what this flag attests.
+        server_web_disabled=True,
     )
 
 
