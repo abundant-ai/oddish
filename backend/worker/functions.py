@@ -21,6 +21,7 @@ Settings.db_use_null_pool = True
 
 import asyncio
 import time
+from typing import Literal
 from uuid import uuid4
 
 import modal
@@ -69,6 +70,7 @@ from oddish.config import settings
 from oddish.costs.recorder import WorkerBillingSpec
 from oddish.core.model_concurrency import get_model_concurrency_overrides
 from oddish.db import close_database_connections, get_session, WorkerJobKind
+from oddish.observability import record_dispatch_cycle, record_dispatch_snapshot
 from oddish.runtime.backends.daytona import reap_stale_daytona_sandboxes
 from oddish.workers.jobs import ensure_builtin_handlers_registered
 from oddish.workers.queue.cleanup import cleanup_orphaned_queue_state
@@ -898,6 +900,10 @@ async def poll_queue():
     # Open the span FIRST so the storage-path setup, discovery, and
     # spawn-plan queries all nest under one named
     # ``worker.poll_queue_cycle`` parent per tick.
+    cycle_started_at = time.monotonic()
+    cycle_outcome: Literal["success", "error"] = "error"
+    workers_spawned = 0
+    spawn_cap_reached = False
     cycle_span = _otel_span("worker.poll_queue_cycle")
     cycle_span.__enter__()
     try:
@@ -919,6 +925,13 @@ async def poll_queue():
                 EC2_TRIAL_EXECUTION_LANE: ec2_capacity_limit,
             },
             held_by_lane={EC2_TRIAL_EXECUTION_LANE: held_ec2_capacity},
+        )
+        record_dispatch_snapshot(
+            queue_keys=plan.queue_keys,
+            queued_by_queue=plan.queued_by_queue,
+            running_by_queue_key=plan.running_by_queue_key,
+            held_by_queue_key=plan.held_by_queue_key,
+            concurrency_limits=plan.concurrency_limits,
         )
 
         for queue_key in plan.queue_keys:
@@ -973,6 +986,7 @@ async def poll_queue():
         )
 
         spawn_plan = plan.unit_plan
+        spawn_cap_reached = len(spawn_plan) >= MAX_WORKERS_PER_POLL
 
         # Persist a heartbeat the admin dashboard reads back so operators can
         # see the spawn rate (and whether it is pinned at the per-poll cap)
@@ -1008,6 +1022,7 @@ async def poll_queue():
             except Exception as stamp_err:  # noqa: BLE001 - telemetry is best-effort
                 console.print(f"[yellow]stage stamp skipped: {stamp_err}[/yellow]")
             console.print("[dim]No queue capacity available, exiting[/dim]")
+            cycle_outcome = "success"
             return
 
         console.print(f"[green]Spawning {len(spawn_plan)} job worker(s)...[/green]")
@@ -1027,6 +1042,8 @@ async def poll_queue():
             )
             spawn_calls.append(fn.spawn.aio(**spawn_kwargs))
         await asyncio.gather(*spawn_calls)
+        workers_spawned = len(spawn_plan)
+        cycle_outcome = "success"
         for i, (queue_key, variant, lane) in enumerate(spawn_plan, start=1):
             console.print(
                 f"[dim]Spawned worker {i}/{len(spawn_plan)} "
@@ -1059,6 +1076,12 @@ async def poll_queue():
         console.print(f"[red]Dispatcher error: {e}[/red]")
         raise
     finally:
+        record_dispatch_cycle(
+            workers_spawned=workers_spawned,
+            spawn_cap_reached=spawn_cap_reached,
+            duration_seconds=time.monotonic() - cycle_started_at,
+            outcome=cycle_outcome,
+        )
         await close_database_connections()
         import sys as _sys
 

@@ -33,6 +33,7 @@ from oddish.costs.recorder import (
     open_worker_span,
 )
 from oddish.db import WorkerJobKind, WorkerJobStatus
+from oddish.observability import record_worker_job_transition
 from oddish.workers.jobs.registry import (
     HANDLERS,
     JobOutcome,
@@ -452,7 +453,7 @@ async def _record_outcome(
     kind: WorkerJobKind | None = None,
     subject_table: str | None = None,
     subject_id: str | None = None,
-) -> bool:
+) -> WorkerJobStatus | None:
     def row_was_updated(command: str) -> bool:
         return command.endswith(" 1")
 
@@ -484,8 +485,8 @@ async def _record_outcome(
                 console.print(
                     f"[yellow]worker_job {job_id} outcome ignored; row is no longer RUNNING[/yellow]"
                 )
-                return False
-            return True
+                return None
+            return WorkerJobStatus.SUCCESS
 
         assert outcome.failure is not None
         # Decide against the CURRENT row, not the claim-time snapshot: an
@@ -546,7 +547,7 @@ async def _record_outcome(
                 console.print(
                     f"[yellow]worker_job {job_id} retry outcome ignored; row is no longer RUNNING[/yellow]"
                 )
-                return False
+                return None
             if (
                 kind == WorkerJobKind.TRIAL
                 and subject_table == "trials"
@@ -576,7 +577,7 @@ async def _record_outcome(
                 f"retry_reason={retry_reason} "
                 f"retry_delay_seconds={delay_seconds or 0:.2f}"
             )
-            return True
+            return WorkerJobStatus.RETRYING
         else:
             command = await connection.execute(
                 """
@@ -598,8 +599,8 @@ async def _record_outcome(
                 console.print(
                     f"[yellow]worker_job {job_id} failure outcome ignored; row is no longer RUNNING[/yellow]"
                 )
-                return False
-            return True
+                return None
+            return WorkerJobStatus.FAILED
     finally:
         await connection.close()
 
@@ -648,10 +649,12 @@ async def run_single_worker_job(
     if job is None:
         return False
 
+    attempt_started_at = job.claimed_at or datetime.now(timezone.utc)
+
     await open_worker_span(
         job,
         worker_billing_spec,
-        started_at=job.claimed_at or datetime.now(timezone.utc),
+        started_at=attempt_started_at,
     )
 
     console.print(
@@ -665,7 +668,7 @@ async def run_single_worker_job(
         # Fail the row instead of leaving it in RUNNING so cleanup
         # doesn't have to reap it via the stale-heartbeat sweep.
         outcome_at = datetime.now(timezone.utc)
-        outcome_recorded = await _record_outcome(
+        persisted_status = await _record_outcome(
             job_id=job.id,
             worker_id=worker_id,
             outcome=JobOutcome.fail(
@@ -678,7 +681,14 @@ async def run_single_worker_job(
             subject_table=job.subject_table,
             subject_id=job.subject_id,
         )
-        if outcome_recorded:
+        if persisted_status is not None:
+            record_worker_job_transition(
+                kind=job.kind.value,
+                outcome=persisted_status.value,
+                queue_key=job.queue_key,
+                execution_lane=job.execution_lane,
+                duration_seconds=(outcome_at - attempt_started_at).total_seconds(),
+            )
             await close_worker_span(job.id, job.attempts, finished_at=outcome_at)
         return True
 
@@ -712,14 +722,8 @@ async def run_single_worker_job(
             retryable=False,
         )
 
-    status = WorkerJobStatus.SUCCESS if outcome.success else WorkerJobStatus.FAILED
-    console.print(
-        f"[dim]worker_job {job.id} -> {status.value} "
-        f"(kind={job.kind.value}, queue_key={queue_key})[/dim]"
-    )
-
     outcome_at = datetime.now(timezone.utc)
-    outcome_recorded = await _record_outcome(
+    persisted_status = await _record_outcome(
         job_id=job.id,
         worker_id=worker_id,
         outcome=outcome,
@@ -729,12 +733,22 @@ async def run_single_worker_job(
         subject_table=job.subject_table,
         subject_id=job.subject_id,
     )
-    if outcome_recorded:
+    if persisted_status is not None:
+        console.print(
+            f"[dim]worker_job {job.id} -> {persisted_status.value} "
+            f"(kind={job.kind.value}, queue_key={queue_key})[/dim]"
+        )
+        record_worker_job_transition(
+            kind=job.kind.value,
+            outcome=persisted_status.value,
+            queue_key=job.queue_key,
+            execution_lane=job.execution_lane,
+            duration_seconds=(outcome_at - attempt_started_at).total_seconds(),
+        )
         await close_worker_span(job.id, job.attempts, finished_at=outcome_at)
 
     if (
-        outcome_recorded
-        and outcome.success is not None
+        persisted_status == WorkerJobStatus.SUCCESS
         and post_success_hooks
         and job.subject_id
     ):

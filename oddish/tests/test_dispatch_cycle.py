@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 import sys
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -129,6 +132,91 @@ def test_run_dispatch_cycle_spawns_admitted_plan() -> None:
     assert result.admitted == ["gpt-4o", "gpt-4o", "gpt-4o"]
     assert [h.queue_key for h in result.handles] == result.admitted
     assert [h.queue_key for h in dispatcher.spawned] == result.admitted
+
+
+def test_run_dispatch_cycle_records_existing_plan_and_actual_spawns(monkeypatch) -> None:
+    from oddish.dispatch import cycle
+
+    dispatcher = FakeDispatcher()
+    snapshots: list[dict[str, Any]] = []
+    cycle_outcomes: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        cycle,
+        "record_dispatch_snapshot",
+        lambda **values: snapshots.append(values),
+    )
+    monkeypatch.setattr(
+        cycle,
+        "record_dispatch_cycle",
+        lambda **values: cycle_outcomes.append(values),
+    )
+
+    async def _go():
+        return await run_dispatch_cycle(
+            dispatcher,
+            max_workers=3,
+            concurrency_limits_for=_fake_limits(5),
+            _discover=_fake_discover([("gpt-5", "default", "default")]),
+            _counts=_fake_counts(
+                {(None, "gpt-5", "default", "default"): 4},
+                {("gpt-5", "default", "default"): 1},
+            ),
+            _held=_fake_held({"gpt-5": 2}),
+        )
+
+    result = asyncio.run(_go())
+
+    assert len(result.handles) == 3
+    assert snapshots == [
+        {
+            "queue_keys": ("gpt-5",),
+            "queued_by_queue": {"gpt-5": 4},
+            "running_by_queue_key": {"gpt-5": 1},
+            "held_by_queue_key": {"gpt-5": 2},
+            "concurrency_limits": {"gpt-5": 5},
+        }
+    ]
+    assert len(cycle_outcomes) == 1
+    assert cycle_outcomes[0]["workers_spawned"] == 3
+    assert cycle_outcomes[0]["spawn_cap_reached"] is True
+    assert cycle_outcomes[0]["outcome"] == "success"
+    assert cycle_outcomes[0]["duration_seconds"] >= 0
+
+
+def test_run_dispatch_cycle_records_spawn_error(monkeypatch) -> None:
+    from oddish.dispatch import cycle
+
+    class FailingDispatcher(FakeDispatcher):
+        async def spawn(self, *, spawn_plan):
+            raise RuntimeError(f"spawn failed for {spawn_plan}")
+
+    cycle_outcomes: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        cycle,
+        "record_dispatch_cycle",
+        lambda **values: cycle_outcomes.append(values),
+    )
+
+    async def _go():
+        return await run_dispatch_cycle(
+            FailingDispatcher(),
+            max_workers=1,
+            concurrency_limits_for=_fake_limits(1),
+            _discover=_fake_discover([("gpt-5", "default", "default")]),
+            _counts=_fake_counts(
+                {(None, "gpt-5", "default", "default"): 1},
+                {},
+            ),
+            _held=_fake_held({}),
+        )
+
+    with pytest.raises(RuntimeError, match="spawn failed"):
+        asyncio.run(_go())
+
+    assert len(cycle_outcomes) == 1
+    assert cycle_outcomes[0]["workers_spawned"] == 0
+    assert cycle_outcomes[0]["spawn_cap_reached"] is True
+    assert cycle_outcomes[0]["outcome"] == "error"
 
 
 def test_build_dispatch_plan_preserves_variant_units_and_counts_held_slots() -> None:

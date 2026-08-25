@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 
 import oddish.workers.queue.worker_job_single_job as wjs
+from oddish.db import WorkerJobStatus
 from oddish.workers.jobs.registry import JobFailure, JobOutcome
 from oddish.workers.queue.worker_job_single_job import _record_outcome
 
@@ -35,7 +36,7 @@ def _run(outcome_kwargs, *, snapshot, current, monkeypatch):
         return conn
 
     monkeypatch.setattr(wjs, "_open_connection", _fake_open)
-    ok = asyncio.run(
+    status = asyncio.run(
         _record_outcome(
             job_id="j1",
             worker_id="w1",
@@ -46,19 +47,23 @@ def _run(outcome_kwargs, *, snapshot, current, monkeypatch):
             max_attempts=snapshot[1],
         )
     )
-    return ok, conn
+    return status, conn
 
 
 def test_mid_flight_cap_makes_failure_terminal(monkeypatch):
     # Claim snapshot said 1/6 (retry allowed); the row was capped to 1/1 while
     # the attempt ran. The failure must be TERMINAL, not retried.
-    ok, conn = _run({}, snapshot=(1, 6), current=(1, 1), monkeypatch=monkeypatch)
-    assert ok is True
+    status, conn = _run(
+        {}, snapshot=(1, 6), current=(1, 1), monkeypatch=monkeypatch
+    )
+    assert status == WorkerJobStatus.FAILED
     assert any("'FAILED'" in sql or "= 'FAILED'" in sql for sql in conn.executed)
     assert not any("'RETRYING'" in sql for sql in conn.executed)
 
 
 def test_uncapped_failure_still_retries(monkeypatch):
-    ok, conn = _run({}, snapshot=(1, 6), current=(1, 6), monkeypatch=monkeypatch)
-    assert ok is True
+    status, conn = _run(
+        {}, snapshot=(1, 6), current=(1, 6), monkeypatch=monkeypatch
+    )
+    assert status == WorkerJobStatus.RETRYING
     assert any("'RETRYING'" in sql for sql in conn.executed)
