@@ -107,6 +107,15 @@ test("public trial drawers defer trajectory work", async ({ page }) => {
           reward_success: 0,
           reward_sum: 0.5,
           reward_total: 1,
+          pass_count: 0,
+          partial_count: 1,
+          fail_count: 0,
+          harness_error_count: 0,
+          avg_score: 0.5,
+          qa_accepted: 0,
+          qa_rejected: 0,
+          qa_running: 0,
+          qa_failed: 0,
         },
         tasks: [{ ...publicTask, trials: null }],
         next_cursor: null,
@@ -135,7 +144,7 @@ test("public trial drawers defer trajectory work", async ({ page }) => {
   });
   await page.route(
     `**/api/public/experiments/${token}/trials/task-1-2`,
-    (route) => route.fulfill({ json: publicTrial }),
+    (route) => route.fulfill({ json: publicTrial })
   );
   await page.route(
     `**/api/public/experiments/${token}/tasks/task-1/files?*`,

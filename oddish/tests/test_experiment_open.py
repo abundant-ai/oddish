@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from fastapi import HTTPException
 
 from oddish.core.endpoints.experiment_open import (
     OPEN_MAX_BYTES,
@@ -19,6 +20,7 @@ from oddish.db import (
     TaskVersionModel,
     TrialModel,
     TrialStatus,
+    VerdictStatus,
     task_experiments,
 )
 from oddish.timing import begin_request_timing, reset_request_timing
@@ -116,14 +118,19 @@ async def test_experiment_open_is_bounded_projected_and_shared_by_audience(sessi
     assert opened.summary.trial_count == 500
     assert opened.summary.success_count == 500
     assert opened.summary.active_count == 0
+    assert opened.summary.pass_count == 500
+    assert opened.summary.partial_count == 0
+    assert opened.summary.fail_count == 0
+    assert opened.summary.harness_error_count == 0
+    assert opened.summary.avg_score == 1.0
     assert opened.has_active_trials is False
     assert 0 < len(opened.tasks) <= 100
     assert opened.next_cursor is not None
     assert {task.id for task in opened.tasks}.issubset(set(task_ids))
-    assert "\"analysis\":" not in opened_json
-    assert "\"phase_timing\":" not in opened_json
-    assert "\"harbor_config\":" not in opened_json
-    assert "\"error_message\":" not in opened_json
+    assert '"analysis":' not in opened_json
+    assert '"phase_timing":' not in opened_json
+    assert '"harbor_config":' not in opened_json
+    assert '"error_message":' not in opened_json
 
     opened_page_2 = await get_experiment_open(
         session, scope=member_scope, cursor=opened.next_cursor
@@ -136,11 +143,11 @@ async def test_experiment_open_is_bounded_projected_and_shared_by_audience(sessi
     assert member_page.next_cursor is not None
     assert member_page.trial_count <= TRIAL_PAGE_MAX_TRIALS
     assert len(member_json.encode("utf-8")) <= TRIAL_PAGE_MAX_BYTES
-    assert "\"analysis\":" not in member_json
-    assert "\"phase_timing\":" not in member_json
-    assert "\"result\"" not in member_json
-    assert "\"harbor_config\":" not in member_json
-    assert "\"error_message\":" not in member_json
+    assert '"analysis":' not in member_json
+    assert '"phase_timing":' not in member_json
+    assert '"result"' not in member_json
+    assert '"harbor_config":' not in member_json
+    assert '"error_message":' not in member_json
 
     member_page_2 = await get_experiment_trial_page(
         session, scope=member_scope, cursor=member_page.next_cursor
@@ -163,22 +170,142 @@ async def test_experiment_open_is_bounded_projected_and_shared_by_audience(sessi
         session, scope=public_scope, cursor=public_page.next_cursor
     )
 
-    assert [task.id for task in public_open.tasks] == [
-        task.id for task in opened.tasks
+    assert [task.id for task in public_open.tasks] == [task.id for task in opened.tasks]
+    assert [trial.id for task in public_page.tasks for trial in task.trials] == [
+        trial.id for task in member_page.tasks for trial in task.trials
     ]
-    assert [
-        trial.id for task in public_page.tasks for trial in task.trials
-    ] == [trial.id for task in member_page.tasks for trial in task.trials]
-    assert [
-        trial.id for task in public_page_2.tasks for trial in task.trials
-    ] == [trial.id for task in member_page_2.tasks for trial in task.trials]
-    assert {
-        trial.model for task in public_page.tasks for trial in task.trials
-    } == {"Model A"}
+    assert [trial.id for task in public_page_2.tasks for trial in task.trials] == [
+        trial.id for task in member_page_2.tasks for trial in task.trials
+    ]
+    assert {trial.model for task in public_page.tasks for trial in task.trials} == {
+        "Model A"
+    }
     assert "openai/gpt-5.6" not in public_page.model_dump_json(exclude_none=True)
     assert all(
-        trial.is_billed is False
-        and trial.cost_exclusion_reason is None
+        trial.is_billed is False and trial.cost_exclusion_reason is None
         for task in public_page.tasks
         for trial in task.trials
     )
+
+
+@pytest.mark.asyncio
+async def test_experiment_open_rejects_one_task_shell_over_the_byte_limit(session):
+    experiment = ExperimentModel(
+        id=_id("oversized-experiment"),
+        name="Oversized experiment",
+        org_id="org-oversized",
+    )
+    task = TaskModel(
+        id=_id("oversized-task"),
+        name="Oversized task",
+        org_id=experiment.org_id,
+        user="tester",
+        task_path=f"s3://tasks/{'x' * OPEN_MAX_BYTES}",
+    )
+    session.add_all([experiment, task])
+    await session.flush()
+    await session.execute(
+        task_experiments.insert().values(task_id=task.id, experiment_id=experiment.id)
+    )
+    await session.flush()
+
+    scope = await resolve_member_experiment_read_scope(
+        session, experiment_id=experiment.id, org_id=experiment.org_id
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        await get_experiment_open(session, scope=scope)
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == (
+        "One task shell exceeds the experiment open byte limit"
+    )
+
+
+@pytest.mark.asyncio
+async def test_experiment_open_summary_is_exact_before_trial_pages_load(session):
+    experiment = ExperimentModel(
+        id=_id("summary-experiment"),
+        name="Exact summary",
+        org_id="org-summary",
+    )
+    session.add(experiment)
+    await session.flush()
+
+    accepted_task = TaskModel(
+        id=_id("accepted-task"),
+        name="Accepted task",
+        org_id=experiment.org_id,
+        user="tester",
+        task_path="s3://tasks/accepted",
+        verdict_status=VerdictStatus.SUCCESS,
+        verdict={"verdict": "accept", "is_good": True},
+    )
+    failed_qa_task = TaskModel(
+        id=_id("failed-qa-task"),
+        name="Failed QA task",
+        org_id=experiment.org_id,
+        user="tester",
+        task_path="s3://tasks/failed-qa",
+        verdict_status=VerdictStatus.FAILED,
+    )
+    session.add_all([accepted_task, failed_qa_task])
+    await session.flush()
+
+    for task in (accepted_task, failed_qa_task):
+        version = TaskVersionModel(
+            id=f"{task.id}-v1",
+            task_id=task.id,
+            version=1,
+            task_path=task.task_path,
+        )
+        session.add(version)
+        await session.flush()
+        task.current_version_id = version.id
+        await session.execute(
+            task_experiments.insert().values(
+                task_id=task.id, experiment_id=experiment.id
+            )
+        )
+
+    trial_specs = [
+        (accepted_task, "codex", TrialStatus.SUCCESS, 1.0),
+        (accepted_task, "codex", TrialStatus.SUCCESS, 0.5),
+        # Baselines remain in the outcome distribution but do not affect the
+        # per-task mean shown as Avg score.
+        (accepted_task, "nop", TrialStatus.SUCCESS, 0.0),
+        (failed_qa_task, "codex", TrialStatus.FAILED, None),
+    ]
+    for index, (task, agent, status, reward) in enumerate(trial_specs):
+        session.add(
+            TrialModel(
+                id=_id(f"summary-trial-{index}"),
+                name=f"summary-trial-{index}",
+                task_id=task.id,
+                task_version_id=task.current_version_id,
+                experiment_id=experiment.id,
+                org_id=experiment.org_id,
+                agent=agent,
+                provider="openai",
+                queue_key="openai/gpt-5.6",
+                model="openai/gpt-5.6",
+                status=status,
+                reward=reward,
+            )
+        )
+    await session.flush()
+
+    scope = await resolve_member_experiment_read_scope(
+        session, experiment_id=experiment.id, org_id=experiment.org_id
+    )
+    opened = await get_experiment_open(session, scope=scope)
+
+    assert opened.summary.trial_count == 4
+    assert opened.summary.pass_count == 1
+    assert opened.summary.partial_count == 1
+    assert opened.summary.fail_count == 1
+    assert opened.summary.harness_error_count == 1
+    assert opened.summary.avg_score == pytest.approx(0.75)
+    assert opened.summary.qa_accepted == 1
+    assert opened.summary.qa_rejected == 0
+    assert opened.summary.qa_running == 0
+    assert opened.summary.qa_failed == 1

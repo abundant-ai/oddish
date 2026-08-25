@@ -118,13 +118,13 @@ function ExperimentPageContent({
   const getOpenPageKey = useCallback(
     (
       pageIndex: number,
-      previousPage: ExperimentOpenResponse | null,
+      previousPage: ExperimentOpenResponse | null
     ): string | null => {
       if (pageIndex === 0) return `${apiBase}/open`;
       if (!previousPage?.next_cursor) return null;
       return `${apiBase}/open?cursor=${encodeURIComponent(previousPage.next_cursor)}`;
     },
-    [apiBase],
+    [apiBase]
   );
   const {
     data: openPages,
@@ -140,7 +140,7 @@ function ExperimentPageContent({
       revalidateOnFocus: false,
       revalidateFirstPage: false,
       persistSize: true,
-    },
+    }
   );
   const open = openPages?.[0];
   const lastOpenPage = openPages?.[openPages.length - 1];
@@ -156,14 +156,14 @@ function ExperimentPageContent({
   const getTrialPageKey = useCallback(
     (
       pageIndex: number,
-      previousPage: ExperimentTrialPageResponse | null,
+      previousPage: ExperimentTrialPageResponse | null
     ): string | null => {
       if (!open) return null;
       if (pageIndex === 0) return `${apiBase}/trial-page`;
       if (!previousPage?.next_cursor) return null;
       return `${apiBase}/trial-page?cursor=${encodeURIComponent(previousPage.next_cursor)}`;
     },
-    [apiBase, open],
+    [apiBase, open]
   );
   const {
     data: trialResponses,
@@ -179,17 +179,17 @@ function ExperimentPageContent({
       revalidateOnFocus: false,
       revalidateFirstPage: false,
       persistSize: true,
-    },
+    }
   );
   const firstTrialPage = trialResponses?.[0];
   const lastTrialPage = trialResponses?.[trialResponses.length - 1];
   const trialTaskPages = useMemo(
     () => trialResponses?.map((page) => page.tasks),
-    [trialResponses],
+    [trialResponses]
   );
   const tasksForExperiment = useMemo(
     () => mergeExperimentTaskPages(taskShells, trialTaskPages),
-    [taskShells, trialTaskPages],
+    [taskShells, trialTaskPages]
   );
 
   const costKey =
@@ -207,13 +207,14 @@ function ExperimentPageContent({
   const costTotalsPending =
     costKey !== null && costTotals === undefined && !costError;
 
-  const shareKey =
-    access.kind === "member" && firstTrialPage ? `${apiBase}/share` : null;
-  const { data: experimentShare } = useSWR<ExperimentShareInfo>(
-    shareKey,
-    fetcher,
-    { revalidateOnFocus: false },
-  );
+  // `/open` may truncate the description to protect the first-paint byte
+  // budget. The authenticated `/share` resource owns editable metadata and
+  // therefore loads independently of trial pagination.
+  const shareKey = access.kind === "member" && open ? `${apiBase}/share` : null;
+  const { data: experimentShare, mutate: mutateExperimentShare } =
+    useSWR<ExperimentShareInfo>(shareKey, fetcher, {
+      revalidateOnFocus: false,
+    });
 
   const revisionKey = open?.has_active_trials ? `${apiBase}/revision` : null;
   useSWR<ExperimentRevisionResponse>(revisionKey, fetcher, {
@@ -263,7 +264,7 @@ function ExperimentPageContent({
         window.clearTimeout(copiedTimeoutRef.current);
       }
     },
-    [],
+    []
   );
 
   const experimentId =
@@ -271,7 +272,7 @@ function ExperimentPageContent({
   const displayName = open?.name || "Experiment";
   const probeHostTask = useMemo(
     () => resolveProbeHostTask(tasksForExperiment),
-    [tasksForExperiment],
+    [tasksForExperiment]
   );
 
   const refreshVisibleResources = useCallback(async () => {
@@ -298,7 +299,7 @@ function ExperimentPageContent({
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name: nextName }),
-        },
+        }
       );
       if (!response.ok) {
         const body = (await response.json().catch(() => ({}))) as {
@@ -317,7 +318,7 @@ function ExperimentPageContent({
               experiment_name: nextName,
             })),
           })),
-        { revalidate: false },
+        { revalidate: false }
       );
       setIsEditingName(false);
       void refreshVisibleResources();
@@ -332,7 +333,7 @@ function ExperimentPageContent({
     if (access.kind !== "member") return;
     const response = await fetch(
       `${apiBase}/tasks/${encodeURIComponent(task.id)}`,
-      { method: "DELETE" },
+      { method: "DELETE" }
     );
     if (!response.ok) throw new Error("Failed to unlink task from experiment");
     await mutateOpenPages(
@@ -341,7 +342,7 @@ function ExperimentPageContent({
           ...page,
           tasks: page.tasks.filter((item) => item.id !== task.id),
         })),
-      { revalidate: false },
+      { revalidate: false }
     );
     await mutateTrialPages(
       (pages) =>
@@ -349,16 +350,19 @@ function ExperimentPageContent({
           ...page,
           tasks: page.tasks.filter((item) => item.id !== task.id),
         })),
-      { revalidate: false },
+      { revalidate: false }
     );
     void refreshVisibleResources();
   }
 
   async function handleDeleteTrial(trial: Trial) {
     if (access.kind !== "member") return;
-    const response = await fetch(`/api/trials/${encodeURIComponent(trial.id)}`, {
-      method: "DELETE",
-    });
+    const response = await fetch(
+      `/api/trials/${encodeURIComponent(trial.id)}`,
+      {
+        method: "DELETE",
+      }
+    );
     if (!response.ok) throw new Error("Failed to delete trial");
     await mutateTrialPages(
       (pages) =>
@@ -369,7 +373,7 @@ function ExperimentPageContent({
             trials: task.trials?.filter((item) => item.id !== trial.id),
           })),
         })),
-      { revalidate: false },
+      { revalidate: false }
     );
     void refreshVisibleResources();
   }
@@ -387,14 +391,24 @@ function ExperimentPageContent({
   }
 
   const isLoadingTrials = Boolean(
-    open && !firstTrialPage && (isLoadingTrialPages || isValidatingTrials),
+    open && !firstTrialPage && (isLoadingTrialPages || isValidatingTrials)
   );
   const loadedTrialCount = (trialResponses ?? []).reduce(
     (total, page) => total + page.trial_count,
-    0,
+    0
   );
   const trialsStalled = Boolean(trialError && !firstTrialPage);
   const hasFatalError = Boolean(openError && !open);
+  const description = isPublic
+    ? (open?.description ?? null)
+    : experimentShare === undefined
+      ? (open?.description ?? null)
+      : experimentShare.description;
+  const fullDescriptionUnavailable = Boolean(
+    access.kind === "member" &&
+    open?.description_truncated &&
+    experimentShare === undefined
+  );
 
   const headerLeft = isPublic ? (
     <h1 className="truncate pb-1 font-mono text-[26px] leading-[1.25] font-semibold tracking-[-0.02em] text-[color:var(--paper-ink)]">
@@ -408,7 +422,11 @@ function ExperimentPageContent({
         className="h-10 w-[320px]"
         placeholder="Experiment name"
       />
-      <Button size="sm" onClick={() => void handleRename()} disabled={isSavingName}>
+      <Button
+        size="sm"
+        onClick={() => void handleRename()}
+        disabled={isSavingName}
+      >
         {isSavingName ? "Saving..." : "Save"}
       </Button>
       <Button
@@ -514,19 +532,18 @@ function ExperimentPageContent({
         headerDescription={
           <ExperimentDescription
             experimentId={experimentId}
-            description={open?.description ?? null}
-            readOnly={isPublic}
+            description={description}
+            readOnly={isPublic || fullDescriptionUnavailable}
             onSaved={
               access.kind === "member"
-                ? (next) =>
-                    void mutateOpenPages(
-                      (pages) =>
-                        pages?.map((page) => ({
-                          ...page,
-                          description: next,
-                        })),
-                      { revalidate: false },
-                    )
+                ? (next) => {
+                    void mutateExperimentShare(
+                      (current) =>
+                        current ? { ...current, description: next } : current,
+                      { revalidate: false }
+                    );
+                    void mutateOpenPages();
+                  }
                 : undefined
             }
           />
@@ -561,9 +578,7 @@ function ExperimentPageContent({
         }
         mode={access.kind}
         apiBaseUrl={apiBase}
-        onTaskUnlink={
-          access.kind === "member" ? handleUnlinkTask : undefined
-        }
+        onTaskUnlink={access.kind === "member" ? handleUnlinkTask : undefined}
         onTrialDelete={
           access.kind === "member"
             ? (trial) => handleDeleteTrial(trial)

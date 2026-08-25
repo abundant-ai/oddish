@@ -9,8 +9,8 @@ import { Textarea } from "@/components/ui/textarea";
 
 const MarkdownRenderer = dynamic(() =>
   import("@/components/renderers/markdown-renderer").then(
-    (mod) => mod.MarkdownRenderer,
-  ),
+    (mod) => mod.MarkdownRenderer
+  )
 );
 
 interface ExperimentDescriptionProps {
@@ -45,7 +45,7 @@ function extractErrorMessage(data: unknown): string | null {
         typeof d === "object" &&
         typeof (d as { msg?: unknown }).msg === "string"
           ? (d as { msg: string }).msg
-          : null,
+          : null
       )
       .filter((m): m is string => Boolean(m));
     if (msgs.length) return msgs.join("; ");
@@ -63,7 +63,10 @@ export function ExperimentDescription({
   const [isEditing, setIsEditing] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
   const [isOverflowing, setIsOverflowing] = useState(false);
-  const [draft, setDraft] = useState(description ?? "");
+  // The draft exists only after the edit event establishes a reset boundary.
+  // Keeping the display prop out of draft state avoids a second source of
+  // truth while the component is read-only.
+  const [draft, setDraft] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -110,13 +113,13 @@ export function ExperimentDescription({
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ description: trimmed }),
-        },
+        }
       );
 
       if (!res.ok) {
         const data = await res.json().catch(() => null);
         throw new Error(
-          extractErrorMessage(data) || "Failed to save description",
+          extractErrorMessage(data) || "Failed to save description"
         );
       }
 
@@ -148,7 +151,7 @@ export function ExperimentDescription({
           className="min-h-[140px] rounded-[10px] border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] font-mono text-[13px] leading-relaxed"
         />
         {error ? (
-          <span className="text-xs text-destructive">{error}</span>
+          <span className="text-destructive text-xs">{error}</span>
         ) : null}
         <div className="flex items-center gap-2">
           <Button
@@ -220,7 +223,7 @@ export function ExperimentDescription({
             type="button"
             onClick={() => setIsExpanded((value) => !value)}
             aria-expanded={isExpanded}
-            className={`${META_TEXT_CLASS} mb-3 ml-4 mt-1`}
+            className={`${META_TEXT_CLASS} mt-1 mb-3 ml-4`}
           >
             {collapsed ? "see more" : "see less"}
           </button>
@@ -231,7 +234,7 @@ export function ExperimentDescription({
             variant="ghost"
             size="icon"
             onClick={startEditing}
-            className="absolute right-2 top-2 h-6 w-6 rounded-sm text-[color:var(--paper-ink-3)] opacity-0 transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] group-hover:opacity-100"
+            className="absolute top-2 right-2 h-6 w-6 rounded-sm text-[color:var(--paper-ink-3)] opacity-0 transition group-hover:opacity-100 hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]"
             aria-label="Edit description"
             title="Edit description"
           >

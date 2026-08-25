@@ -293,6 +293,15 @@ export interface ExperimentOpenSummary {
   reward_success: number;
   reward_sum: number;
   reward_total: number;
+  pass_count: number;
+  partial_count: number;
+  fail_count: number;
+  harness_error_count: number;
+  avg_score: number | null;
+  qa_accepted: number;
+  qa_rejected: number;
+  qa_running: number;
+  qa_failed: number;
 }
 
 export interface ExperimentOpenResponse {

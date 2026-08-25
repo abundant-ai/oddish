@@ -1710,6 +1710,15 @@ class ExperimentOpenSummary(BaseModel):
     reward_success: int = 0
     reward_sum: float = 0.0
     reward_total: int = 0
+    pass_count: int = 0
+    partial_count: int = 0
+    fail_count: int = 0
+    harness_error_count: int = 0
+    avg_score: float | None = None
+    qa_accepted: int = 0
+    qa_rejected: int = 0
+    qa_running: int = 0
+    qa_failed: int = 0
 
 
 class ExperimentTaskShell(BaseModel):

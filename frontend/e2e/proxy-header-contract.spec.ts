@@ -5,6 +5,7 @@ import {
   backendFetchHeaders,
 } from "../src/lib/proxy-headers";
 import { proxyPublicBackendResponse } from "../src/lib/backend-response";
+import { GET as getPublicTrialDetail } from "../src/app/api/public/experiments/[token]/trials/[trial_id]/route";
 
 test.describe("backend proxy header contract", () => {
   test("forwards W3C trace context without copying unrelated browser headers", () => {
@@ -93,7 +94,7 @@ test.describe("backend proxy header contract", () => {
             traceparent:
               "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
           },
-        },
+        }
       );
       const response = await proxyPublicBackendResponse({
         request,
@@ -101,18 +102,46 @@ test.describe("backend proxy header contract", () => {
       });
 
       expect(upstreamHeaders?.get("traceparent")).toBe(
-        "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+        "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"
       );
       expect(response.headers.get("server-timing")).toBe(
-        "backend_total;dur=42.0",
+        "backend_total;dur=42.0"
       );
-      expect(response.headers.get("cache-control")).toBe(
-        "public, max-age=30",
-      );
-      expect(response.headers.get("content-type")).toBe(
-        "application/x-ndjson",
-      );
+      expect(response.headers.get("cache-control")).toBe("public, max-age=30");
+      expect(response.headers.get("content-type")).toBe("application/x-ndjson");
       expect(await response.text()).toBe('{"exact":"bytes"}\n');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("public trial detail route proxies the token-scoped backend resource", async () => {
+    const originalFetch = globalThis.fetch;
+    let upstreamUrl = "";
+    globalThis.fetch = async (input) => {
+      upstreamUrl = String(input);
+      return Response.json({ id: "trial/one", result: { reward: 0.5 } });
+    };
+    try {
+      const response = await getPublicTrialDetail(
+        new Request(
+          "https://oddish.example/api/public/experiments/share%2Ftoken/trials/trial%2Fone"
+        ),
+        {
+          params: Promise.resolve({
+            token: "share/token",
+            trial_id: "trial/one",
+          }),
+        }
+      );
+
+      expect(upstreamUrl).toContain(
+        "/public/experiments/share%2Ftoken/trials/trial%2Fone"
+      );
+      expect(await response.json()).toMatchObject({
+        id: "trial/one",
+        result: { reward: 0.5 },
+      });
     } finally {
       globalThis.fetch = originalFetch;
     }

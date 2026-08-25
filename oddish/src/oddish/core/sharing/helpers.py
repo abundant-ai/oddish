@@ -168,6 +168,45 @@ async def get_public_trial_for_experiment(
     return result.scalar_one_or_none()
 
 
+async def get_public_trial_response_for_experiment(
+    session: AsyncSession,
+    public_token: str,
+    trial_id: str,
+) -> TrialResponse | None:
+    """Return one full trial through the same token-scoped policy as artifacts."""
+    experiment = await get_public_experiment(session, public_token)
+    if experiment is None:
+        return None
+    trial = await get_public_trial_for_experiment(
+        session, public_token, trial_id, experiment=experiment
+    )
+    if trial is None:
+        return None
+
+    task_path = await session.scalar(
+        select(TaskModel.task_path).where(TaskModel.id == trial.task_id)
+    )
+    if task_path is None:
+        return None
+    queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=[trial])
+    response = build_trial_response(
+        trial,
+        task_path,
+        queue_info=queue_info_by_trial_id.get(trial.id),
+    )
+    # A gathered trial may belong to a private home experiment. Public detail
+    # addresses it through the collection token, so serialize that public
+    # experiment as its context instead of exposing the private home id.
+    response.experiment_id = experiment.id
+    # Billing attribution is an authenticated concern. Public detail keeps the
+    # execution cost already shown by public grids, but carries no payer label.
+    response.is_billed = False
+    response.cost_exclusion_reason = None
+    response.qa_cost_usd = None
+    apply_model_display_names([response], experiment_display_names(experiment))
+    return response
+
+
 async def get_task_status_counts(
     session: AsyncSession,
     task_id: str,

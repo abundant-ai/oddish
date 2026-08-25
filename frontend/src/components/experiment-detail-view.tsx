@@ -1588,10 +1588,10 @@ export function ExperimentDetailView({
     cancelPendingDeepLink,
   ]);
 
-  // Prefer the server-side rollup for cost: ``buildExperimentSummary`` sums
-  // only the loaded pages, and only the trials the grid renders, so it
-  // understates spend on both counts. Non-cost fields stay client-side --
-  // they describe the visible rows, which is what they should describe.
+  // The header describes the whole experiment, so its totals and outcome
+  // distribution come from `/open.summary`, independent of trial pagination.
+  // The client fold remains the fallback for callers without that resource;
+  // spend comes from its separate whole-experiment aggregate below.
   const summary = useMemo(() => {
     const derived = buildExperimentSummary(deferredTasksForDerivedData);
     const base = exactSummary
@@ -1605,6 +1605,11 @@ export function ExperimentDetailView({
           failedTrials: exactSummary.failed_count,
           skippedTrials: exactSummary.skipped_count,
           pendingCount: exactSummary.active_count,
+          passCount: exactSummary.pass_count,
+          partialCount: exactSummary.partial_count,
+          failCount: exactSummary.fail_count,
+          harnessErrorCount: exactSummary.harness_error_count,
+          avgScore: exactSummary.avg_score,
         }
       : derived;
     if (!costTotals) return base;
@@ -1644,6 +1649,15 @@ export function ExperimentDetailView({
   // Task-level QA rollup for the summary bar. Null when no task in the
   // grid ever ran QA, so non-QA experiments keep their five tiles.
   const qaRollup = useMemo(() => {
+    if (exactSummary) {
+      const rollup = {
+        accepted: exactSummary.qa_accepted,
+        rejected: exactSummary.qa_rejected,
+        running: exactSummary.qa_running,
+        failed: exactSummary.qa_failed,
+      };
+      return Object.values(rollup).some((count) => count > 0) ? rollup : null;
+    }
     let accepted = 0;
     let rejected = 0;
     let running = 0;
@@ -1664,7 +1678,7 @@ export function ExperimentDetailView({
     }
     if (accepted + rejected + running + failed === 0) return null;
     return { accepted, rejected, running, failed };
-  }, [deferredTasksForDerivedData]);
+  }, [deferredTasksForDerivedData, exactSummary]);
 
   const closeDrawer = () => {
     cancelPendingDeepLink();
@@ -1793,7 +1807,7 @@ export function ExperimentDetailView({
             taskCount={exactSummary?.task_count ?? tasksForExperiment.length}
             summary={summary}
             isInitialLoading={isInitialLoading}
-            isLoadingTrials={isLoadingTrials}
+            isLoadingTrials={isLoadingTrials && !exactSummary}
             // The owned-vs-gathered spend split (and the billing attribution
             // in its tooltip) is internal; keep it off the public share view
             // (the only readOnly consumer).

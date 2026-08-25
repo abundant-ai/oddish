@@ -30,6 +30,7 @@ from oddish.core.sharing.helpers import (
     get_public_experiment,
     get_public_task_for_experiment,
     get_public_trial_for_experiment,
+    get_public_trial_response_for_experiment,
     list_task_trials_for_public_experiment,
     list_experiment_trials_for_org,
     list_task_files_s3,
@@ -572,6 +573,9 @@ async def test_get_public_trial_for_experiment_resolves_home_public(session):
     await session.flush()
 
     t1 = _trial(task, home, org_id=None, is_probe=False)
+    t1.result = {"reward": 0.5, "detail": "public result"}
+    t1.error_message = "public error detail"
+    t1.phase_timing = {"agent_execution": {"duration_sec": 12.5}}
     session.add(t1)
     await session.flush()
 
@@ -585,6 +589,17 @@ async def test_get_public_trial_for_experiment_resolves_home_public(session):
     resolved = await get_public_trial_for_experiment(session, public_token, t1.id)
     assert resolved is not None
     assert resolved.id == t1.id
+
+    response = await get_public_trial_response_for_experiment(
+        session, public_token, t1.id
+    )
+    assert response is not None
+    assert response.id == t1.id
+    assert response.result == t1.result
+    assert response.error_message == t1.error_message
+    assert response.phase_timing == t1.phase_timing
+    assert response.is_billed is False
+    assert response.cost_exclusion_reason is None
 
 
 @pytest.mark.asyncio

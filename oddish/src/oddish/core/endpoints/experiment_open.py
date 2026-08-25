@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from oddish.config import settings
+from oddish.core.baseline_gate import baseline_agent_clause
 from oddish.core.cost_exclusions import load_cost_exclusions
 from oddish.core.experiment_membership import trial_in_experiment
 from oddish.core.helpers import _parse_github_meta, _resolve_trial_cost
@@ -28,6 +29,7 @@ from oddish.db import (
     TaskVersionModel,
     TrialModel,
     TrialStatus,
+    VerdictStatus,
     task_experiments,
 )
 from oddish.schemas import (
@@ -170,6 +172,7 @@ def _ranked_effective_versions(scope: ExperimentReadScope):
         .where(
             trial_in_experiment(scope.experiment_id),
             TrialModel.is_probe.is_(False),
+            TrialModel.kind == "agent",
             TrialModel.superseded_by_trial_id.is_(None),
             TrialModel.deleted_at.is_(None),
         )
@@ -187,6 +190,11 @@ def _ranked_effective_versions(scope: ExperimentReadScope):
 
 
 def _experiment_task_stats(scope: ExperimentReadScope, effective_versions):
+    scored_trial = and_(
+        TrialModel.status == TrialStatus.SUCCESS,
+        TrialModel.reward.is_not(None),
+        ~baseline_agent_clause(TrialModel.agent),
+    )
     return (
         select(
             TrialModel.task_id.label("task_id"),
@@ -202,9 +210,45 @@ def _experiment_task_stats(scope: ExperimentReadScope, effective_versions):
             ),
             func.count(case((TrialModel.reward == 1, 1))).label("reward_success"),
             func.coalesce(func.sum(TrialModel.reward), 0.0).label("reward_sum"),
-            func.count(case((TrialModel.reward.is_not(None), 1))).label(
-                "reward_total"
+            func.count(case((TrialModel.reward.is_not(None), 1))).label("reward_total"),
+            func.count(
+                case(
+                    (
+                        and_(
+                            TrialModel.status == TrialStatus.SUCCESS,
+                            TrialModel.reward == 1,
+                        ),
+                        1,
+                    )
+                )
+            ).label("pass_count"),
+            func.count(
+                case(
+                    (
+                        and_(
+                            TrialModel.status == TrialStatus.SUCCESS,
+                            TrialModel.reward.is_not(None),
+                            TrialModel.reward.not_in((0, 1)),
+                        ),
+                        1,
+                    )
+                )
+            ).label("partial_count"),
+            func.count(
+                case(
+                    (
+                        and_(
+                            TrialModel.status == TrialStatus.SUCCESS,
+                            TrialModel.reward == 0,
+                        ),
+                        1,
+                    )
+                )
+            ).label("fail_count"),
+            func.count(case((TrialModel.status == TrialStatus.FAILED, 1))).label(
+                "harness_error_count"
             ),
+            func.avg(case((scored_trial, TrialModel.reward))).label("avg_score"),
         )
         .join(
             effective_versions,
@@ -218,6 +262,7 @@ def _experiment_task_stats(scope: ExperimentReadScope, effective_versions):
         .where(
             trial_in_experiment(scope.experiment_id),
             TrialModel.is_probe.is_(False),
+            TrialModel.kind == "agent",
             TrialModel.superseded_by_trial_id.is_(None),
             TrialModel.deleted_at.is_(None),
         )
@@ -245,6 +290,45 @@ def _task_projection(scope: ExperimentReadScope, effective_versions, stats):
             TaskModel.run_analysis.label("run_analysis"),
             TaskModel.run_probe.label("run_probe"),
             TaskModel.verdict_status.label("verdict_status"),
+            case(
+                (
+                    and_(
+                        TaskModel.verdict_status == VerdictStatus.SUCCESS,
+                        TaskModel.verdict["is_good"].astext == "true",
+                    ),
+                    1,
+                ),
+                else_=0,
+            ).label("qa_accepted"),
+            case(
+                (
+                    and_(
+                        TaskModel.verdict_status == VerdictStatus.SUCCESS,
+                        TaskModel.verdict["is_good"].astext == "false",
+                    ),
+                    1,
+                ),
+                else_=0,
+            ).label("qa_rejected"),
+            case(
+                (
+                    or_(
+                        TaskModel.status == TaskStatus.VERDICT_PENDING,
+                        TaskModel.verdict_status.in_(
+                            (
+                                VerdictStatus.PENDING,
+                                VerdictStatus.QUEUED,
+                                VerdictStatus.RUNNING,
+                            )
+                        ),
+                    ),
+                    1,
+                ),
+                else_=0,
+            ).label("qa_running"),
+            case((TaskModel.verdict_status == VerdictStatus.FAILED, 1), else_=0).label(
+                "qa_failed"
+            ),
             TaskModel.created_at.label("task_created_at"),
             TaskModel.updated_at.label("task_updated_at"),
             TaskModel.started_at.label("task_started_at"),
@@ -256,6 +340,11 @@ def _task_projection(scope: ExperimentReadScope, effective_versions, stats):
             func.coalesce(stats.c.reward_success, 0).label("reward_success"),
             func.coalesce(stats.c.reward_sum, 0.0).label("reward_sum"),
             func.coalesce(stats.c.reward_total, 0).label("reward_total"),
+            func.coalesce(stats.c.pass_count, 0).label("pass_count"),
+            func.coalesce(stats.c.partial_count, 0).label("partial_count"),
+            func.coalesce(stats.c.fail_count, 0).label("fail_count"),
+            func.coalesce(stats.c.harness_error_count, 0).label("harness_error_count"),
+            stats.c.avg_score.label("avg_score"),
         )
         .select_from(TaskModel)
         .join(
@@ -286,10 +375,11 @@ def _decode_cursor(value: str) -> dict[str, str]:
         padded = value + "=" * (-len(value) % 4)
         decoded = json.loads(base64.urlsafe_b64decode(padded).decode())
     except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise HTTPException(status_code=400, detail="Invalid experiment cursor") from exc
+        raise HTTPException(
+            status_code=400, detail="Invalid experiment cursor"
+        ) from exc
     if not isinstance(decoded, dict) or not all(
-        isinstance(key, str) and isinstance(item, str)
-        for key, item in decoded.items()
+        isinstance(key, str) and isinstance(item, str) for key, item in decoded.items()
     ):
         raise HTTPException(status_code=400, detail="Invalid experiment cursor")
     return decoded
@@ -405,9 +495,7 @@ async def get_experiment_open(
                     "success_count"
                 ),
                 func.coalesce(func.sum(all_tasks.c.failed), 0).label("failed_count"),
-                func.coalesce(func.sum(all_tasks.c.skipped), 0).label(
-                    "skipped_count"
-                ),
+                func.coalesce(func.sum(all_tasks.c.skipped), 0).label("skipped_count"),
                 func.coalesce(
                     func.sum(
                         all_tasks.c.total
@@ -426,6 +514,23 @@ async def get_experiment_open(
                 func.coalesce(func.sum(all_tasks.c.reward_total), 0).label(
                     "reward_total"
                 ),
+                func.coalesce(func.sum(all_tasks.c.pass_count), 0).label("pass_count"),
+                func.coalesce(func.sum(all_tasks.c.partial_count), 0).label(
+                    "partial_count"
+                ),
+                func.coalesce(func.sum(all_tasks.c.fail_count), 0).label("fail_count"),
+                func.coalesce(func.sum(all_tasks.c.harness_error_count), 0).label(
+                    "harness_error_count"
+                ),
+                func.avg(all_tasks.c.avg_score).label("avg_score"),
+                func.coalesce(func.sum(all_tasks.c.qa_accepted), 0).label(
+                    "qa_accepted"
+                ),
+                func.coalesce(func.sum(all_tasks.c.qa_rejected), 0).label(
+                    "qa_rejected"
+                ),
+                func.coalesce(func.sum(all_tasks.c.qa_running), 0).label("qa_running"),
+                func.coalesce(func.sum(all_tasks.c.qa_failed), 0).label("qa_failed"),
             ).select_from(all_tasks)
         )
     ).one()
@@ -439,6 +544,17 @@ async def get_experiment_open(
         reward_success=int(summary_row.reward_success or 0),
         reward_sum=float(summary_row.reward_sum or 0.0),
         reward_total=int(summary_row.reward_total or 0),
+        pass_count=int(summary_row.pass_count or 0),
+        partial_count=int(summary_row.partial_count or 0),
+        fail_count=int(summary_row.fail_count or 0),
+        harness_error_count=int(summary_row.harness_error_count or 0),
+        avg_score=(
+            float(summary_row.avg_score) if summary_row.avg_score is not None else None
+        ),
+        qa_accepted=int(summary_row.qa_accepted or 0),
+        qa_rejected=int(summary_row.qa_rejected or 0),
+        qa_running=int(summary_row.qa_running or 0),
+        qa_failed=int(summary_row.qa_failed or 0),
     )
 
     query = _task_projection(scope, effective_versions, stats)
@@ -448,7 +564,9 @@ async def get_experiment_open(
             task_created_at = datetime.fromisoformat(decoded["task_created_at"])
             task_id = decoded["task_id"]
         except (KeyError, ValueError) as exc:
-            raise HTTPException(status_code=400, detail="Invalid experiment cursor") from exc
+            raise HTTPException(
+                status_code=400, detail="Invalid experiment cursor"
+            ) from exc
         query = query.where(
             or_(
                 TaskModel.created_at < task_created_at,
@@ -496,18 +614,22 @@ async def get_experiment_open(
             tasks=[*tasks, candidate],
             next_cursor=_task_cursor(row),
         )
-        if (
-            tasks
-            and len(
-                candidate_response.model_dump_json(exclude_none=True).encode("utf-8")
-            )
-            > OPEN_MAX_BYTES
-        ):
+        candidate_size = len(
+            candidate_response.model_dump_json(exclude_none=True).encode("utf-8")
+        )
+        if candidate_size > OPEN_MAX_BYTES:
+            if not tasks:
+                raise HTTPException(
+                    status_code=500,
+                    detail="One task shell exceeds the experiment open byte limit",
+                )
             more_rows = True
             break
         tasks.append(candidate)
 
-    next_cursor = _task_cursor(page_rows[len(tasks) - 1]) if tasks and more_rows else None
+    next_cursor = (
+        _task_cursor(page_rows[len(tasks) - 1]) if tasks and more_rows else None
+    )
     return ExperimentOpenResponse(
         experiment_id=scope.experiment_id,
         name=scope.name,
@@ -592,6 +714,7 @@ async def get_experiment_trial_page(
         .where(
             trial_in_experiment(scope.experiment_id),
             TrialModel.is_probe.is_(False),
+            TrialModel.kind == "agent",
             TrialModel.superseded_by_trial_id.is_(None),
             TrialModel.deleted_at.is_(None),
         )
@@ -604,7 +727,9 @@ async def get_experiment_trial_page(
             trial_created_at = datetime.fromisoformat(decoded["trial_created_at"])
             trial_id = decoded["trial_id"]
         except (KeyError, ValueError) as exc:
-            raise HTTPException(status_code=400, detail="Invalid experiment cursor") from exc
+            raise HTTPException(
+                status_code=400, detail="Invalid experiment cursor"
+            ) from exc
         query = query.where(
             or_(
                 task_rows.c.task_created_at < task_created_at,
@@ -726,7 +851,9 @@ async def get_experiment_trial_page(
             revision=scope.revision,
             tasks=list(tasks_by_id.values()),
             trial_count=len(page_rows),
-            next_cursor=_trial_cursor(page_rows[-1]) if page_rows and has_more else None,
+            next_cursor=_trial_cursor(page_rows[-1])
+            if page_rows and has_more
+            else None,
         )
 
     response = build_response(selected_rows)
