@@ -195,6 +195,20 @@ wheels = [
 ]
 
 [[package]]
+name = "archil"
+version = "0.11.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "synchronicity" },
+    { name = "websockets" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b2/86/0a12a0d0c130f4cedf447f4f9cc813d24d3af1a33bbc81a6b82101e8f671/archil-0.11.0.tar.gz", hash = "sha256:11b52c0a1fbba6f6280f7fcf4b7a8b1b5f85d1782ce09faba2d12cf271f683e0", size = 65706, upload-time = "2026-08-19T00:30:40.237Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a9/53/908fa38e2be21d1e7b2b9f95706cad75271c935f6ce2f07fd74d1355684c/archil-0.11.0-py3-none-any.whl", hash = "sha256:ff904b38873cadd0bbf22bcae27a8d1c0d5116be162e9712fd0f36db5224c3ec", size = 77776, upload-time = "2026-08-19T00:30:38.974Z" },
+]
+
+[[package]]
 name = "asgiref"
 version = "3.11.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1609,6 +1623,7 @@ all = [
     { name = "aioboto3" },
     { name = "alembic" },
     { name = "anthropic" },
+    { name = "archil" },
     { name = "asyncpg" },
     { name = "better-profanity" },
     { name = "boto3" },
@@ -1635,6 +1650,7 @@ requires-dist = [
     { name = "aioboto3", marker = "extra == 'server'", specifier = "==15.5.0" },
     { name = "alembic", marker = "extra == 'server'", specifier = "==1.18.1" },
     { name = "anthropic", marker = "extra == 'worker'", specifier = "==0.76.0" },
+    { name = "archil", marker = "extra == 'worker'", specifier = "==0.11.0" },
     { name = "asyncpg", marker = "extra == 'server'", specifier = "==0.31.0" },
     { name = "better-profanity", marker = "extra == 'server'", specifier = ">=0.7.0,<1.0" },
     { name = "boto3", marker = "extra == 'worker'", specifier = "==1.40.61" },
