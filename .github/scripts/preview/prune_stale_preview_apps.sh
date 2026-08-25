@@ -26,6 +26,7 @@ set -euo pipefail
 MODAL_ENVIRONMENT="${MODAL_ENVIRONMENT:-preview}"
 MAX_AGE_DAYS="${MAX_AGE_DAYS:-7}"
 DRY_RUN="${DRY_RUN:-false}"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 case "$MAX_AGE_DAYS" in
   '' | *[!0-9]*)
@@ -104,9 +105,7 @@ for app in $apps; do
   # the last chance to avoid an orphaned cluster -- which is why a REAL
   # teardown failure skips the stop for this app and keeps its reaper
   # alive, instead of destroying the only remaining owner.
-  if ! modal run --env "$MODAL_ENVIRONMENT" \
-    "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/teardown_gke_cluster.py" \
-    --app-name "$app"; then
+  if ! "$script_dir/run_gke_teardown.sh" "$app"; then
     echo "::error::GKE teardown failed for $app; leaving it running so its reaper still owns the cluster"
     teardown_failures=$((teardown_failures + 1))
     continue

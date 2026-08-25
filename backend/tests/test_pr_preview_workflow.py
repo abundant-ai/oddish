@@ -19,6 +19,7 @@ PREPARE = PREVIEW / "prepare_preview_database.sh"
 COMPUTE_PLAN = PREVIEW / "compute_deployment_plan.sh"
 DEPLOY = PREVIEW / "deploy_preview_backend.sh"
 PRUNE = PREVIEW / "prune_stale_supabase_branches.sh"
+GKE_TEARDOWN_RUNNER = PREVIEW / "run_gke_teardown.sh"
 MODAL_APP = REPO / "backend/modal_app.py"
 
 URL_FRAGMENT = "abundant-ai-preview--oddish-pr-{0}-api.modal.run"
@@ -139,6 +140,25 @@ def test_prepare_stops_before_supabase_wait():
     s = PREPARE.read_text()
     assert "stop_modal_preview_app.sh" in s
     assert s.index("stop_modal_preview_app.sh") < s.index("wait_for_supabase_branch.sh")
+
+
+def test_every_gke_teardown_uses_the_bounded_runner():
+    for caller in (
+        PREVIEW / "stop_modal_preview_app.sh",
+        PREVIEW / "stop_preview.sh",
+        PREVIEW / "prune_stale_preview_apps.sh",
+    ):
+        source = caller.read_text()
+        assert "run_gke_teardown.sh" in source
+        assert "modal run" not in source
+
+
+def test_gke_teardown_bounds_the_entire_modal_process():
+    source = GKE_TEARDOWN_RUNNER.read_text()
+    assert "GKE_TEARDOWN_TIMEOUT_SECONDS:-300" in source
+    assert "timeout --foreground --kill-after=15s" in source
+    assert "modal run" in source
+    assert os.access(GKE_TEARDOWN_RUNNER, os.X_OK)
 
 
 def _run_prepare(
