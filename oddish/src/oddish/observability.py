@@ -319,67 +319,74 @@ def record_dispatch_snapshot(
     )
     with _lock:
         departed_queue_keys = _last_dispatch_queue_keys - current_queue_keys
-        _last_dispatch_queue_keys = current_queue_keys
-
-    observed_queue_keys = sorted(current_queue_keys | departed_queue_keys)
-    job_observations = [
-        (
-            sum(queued_by_queue.values()),
-            {"state": "queued", "queue_key": _AGGREGATE_QUEUE_KEY},
-        ),
-        (
-            sum(running_by_queue_key.values()),
-            {"state": "running", "queue_key": _AGGREGATE_QUEUE_KEY},
-        ),
-    ]
-    slot_observations = [
-        (
-            sum(held_by_queue_key.values()),
-            {"state": "held", "queue_key": _AGGREGATE_QUEUE_KEY},
-        ),
-        (
-            sum(concurrency_limits.values()),
-            {"state": "limit", "queue_key": _AGGREGATE_QUEUE_KEY},
-        ),
-    ]
-    for queue_key in observed_queue_keys:
-        job_observations.extend(
+        observed_queue_keys = sorted(current_queue_keys | departed_queue_keys)
+        job_observations = [
             (
-                (
-                    queued_by_queue.get(queue_key, 0),
-                    {"state": "queued", "queue_key": queue_key},
-                ),
-                (
-                    running_by_queue_key.get(queue_key, 0),
-                    {"state": "running", "queue_key": queue_key},
-                ),
-            )
-        )
-    for queue_key in observed_queue_keys:
-        slot_observations.append(
+                sum(queued_by_queue.values()),
+                {"state": "queued", "queue_key": _AGGREGATE_QUEUE_KEY},
+            ),
             (
-                held_by_queue_key.get(queue_key, 0),
-                {"state": "held", "queue_key": queue_key},
-            )
-        )
-        if queue_key in current_queue_keys:
-            slot_observations.append(
+                sum(running_by_queue_key.values()),
+                {"state": "running", "queue_key": _AGGREGATE_QUEUE_KEY},
+            ),
+        ]
+        slot_observations = [
+            (
+                sum(held_by_queue_key.values()),
+                {"state": "held", "queue_key": _AGGREGATE_QUEUE_KEY},
+            ),
+            (
+                sum(concurrency_limits.values()),
+                {"state": "limit", "queue_key": _AGGREGATE_QUEUE_KEY},
+            ),
+        ]
+        for queue_key in observed_queue_keys:
+            job_observations.extend(
                 (
-                    concurrency_limits.get(queue_key, 0),
-                    {"state": "limit", "queue_key": queue_key},
+                    (
+                        queued_by_queue.get(queue_key, 0),
+                        {"state": "queued", "queue_key": queue_key},
+                    ),
+                    (
+                        running_by_queue_key.get(queue_key, 0),
+                        {"state": "running", "queue_key": queue_key},
+                    ),
                 )
             )
+        for queue_key in observed_queue_keys:
+            slot_observations.append(
+                (
+                    held_by_queue_key.get(queue_key, 0),
+                    {"state": "held", "queue_key": queue_key},
+                )
+            )
+            if queue_key in current_queue_keys:
+                slot_observations.append(
+                    (
+                        concurrency_limits.get(queue_key, 0),
+                        {"state": "limit", "queue_key": queue_key},
+                    )
+                )
 
-    for value, attributes in job_observations:
-        try:
-            _queue_jobs_gauge.set(value, attributes)
-        except Exception:
-            logger.warning("failed to record queue-jobs metric", exc_info=True)
-    for value, attributes in slot_observations:
-        try:
-            _queue_slots_gauge.set(value, attributes)
-        except Exception:
-            logger.warning("failed to record queue-slots metric", exc_info=True)
+        failed_departed_queue_keys: set[str] = set()
+        for value, attributes in job_observations:
+            try:
+                _queue_jobs_gauge.set(value, attributes)
+            except Exception:
+                queue_key = attributes["queue_key"]
+                if queue_key in departed_queue_keys:
+                    failed_departed_queue_keys.add(queue_key)
+                logger.warning("failed to record queue-jobs metric", exc_info=True)
+        for value, attributes in slot_observations:
+            try:
+                _queue_slots_gauge.set(value, attributes)
+            except Exception:
+                queue_key = attributes["queue_key"]
+                if queue_key in departed_queue_keys:
+                    failed_departed_queue_keys.add(queue_key)
+                logger.warning("failed to record queue-slots metric", exc_info=True)
+
+        _last_dispatch_queue_keys = current_queue_keys | failed_departed_queue_keys
 
 
 def record_dispatch_cycle(

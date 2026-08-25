@@ -1043,7 +1043,6 @@ async def poll_queue():
             spawn_calls.append(fn.spawn.aio(**spawn_kwargs))
         await asyncio.gather(*spawn_calls)
         workers_spawned = len(spawn_plan)
-        cycle_outcome = "success"
         for i, (queue_key, variant, lane) in enumerate(spawn_plan, start=1):
             console.print(
                 f"[dim]Spawned worker {i}/{len(spawn_plan)} "
@@ -1065,6 +1064,7 @@ async def poll_queue():
             await stamp_dispatch_stage(spawned_queue_keys, why_waiting)
         except Exception as stamp_err:  # noqa: BLE001 - telemetry is best-effort
             console.print(f"[yellow]stage stamp skipped: {stamp_err}[/yellow]")
+        cycle_outcome = "success"
 
     except OSError as e:
         # Transient network/DNS errors (e.g. socket.gaierror) should not

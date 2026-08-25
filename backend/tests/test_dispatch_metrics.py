@@ -11,7 +11,7 @@ from worker import functions as worker_functions
 
 
 @pytest.mark.asyncio
-async def test_modal_poll_records_plan_and_successful_spawn(monkeypatch) -> None:
+async def test_modal_poll_records_success_and_post_spawn_failure(monkeypatch) -> None:
     plan = DispatchPlan(
         queue_units=(("gpt-5", "default", "default"),),
         queue_keys=("gpt-5",),
@@ -37,9 +37,7 @@ async def test_modal_poll_records_plan_and_successful_spawn(monkeypatch) -> None
         spawn_kwargs.append(kwargs)
         return object()
 
-    spawn_function = types.SimpleNamespace(
-        spawn=types.SimpleNamespace(aio=spawn_aio)
-    )
+    spawn_function = types.SimpleNamespace(spawn=types.SimpleNamespace(aio=spawn_aio))
 
     monkeypatch.setattr(worker_functions, "_otel_span", lambda *_a, **_k: nullcontext())
     monkeypatch.setattr(worker_functions, "configure_storage_paths", no_op)
@@ -82,3 +80,26 @@ async def test_modal_poll_records_plan_and_successful_spawn(monkeypatch) -> None
     assert cycles[0]["spawn_cap_reached"] is True
     assert cycles[0]["outcome"] == "success"
     assert cycles[0]["duration_seconds"] >= 0
+
+    why_waiting_calls = 0
+
+    def fail_after_spawn(*_args, **_kwargs):
+        nonlocal why_waiting_calls
+        why_waiting_calls += 1
+        if why_waiting_calls == 2:
+            raise RuntimeError("post-spawn failed")
+        return {}
+
+    monkeypatch.setattr(
+        worker_functions,
+        "compute_post_spawn_why_waiting",
+        fail_after_spawn,
+    )
+
+    with pytest.raises(RuntimeError, match="post-spawn failed"):
+        await worker_functions.poll_queue.get_raw_f()()
+
+    assert len(cycles) == 2
+    assert cycles[1]["workers_spawned"] == 1
+    assert cycles[1]["spawn_cap_reached"] is True
+    assert cycles[1]["outcome"] == "error"

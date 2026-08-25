@@ -165,6 +165,54 @@ def test_dispatch_snapshot_emits_plan_values_and_empty_aggregate_zero(
     ]
 
 
+def test_dispatch_snapshot_retries_failed_departed_queue_zero(metric_instruments):
+    instruments, _definitions = metric_instruments
+    queue_key = "openai/gpt-5"
+
+    observability.record_dispatch_snapshot(
+        queue_keys=(queue_key,),
+        queued_by_queue={queue_key: 4},
+        running_by_queue_key={queue_key: 2},
+        held_by_queue_key={queue_key: 3},
+        concurrency_limits={queue_key: 8},
+    )
+
+    jobs = instruments["oddish.queue.jobs"]
+    jobs.failure = RuntimeError("export failed")
+    observability.record_dispatch_snapshot(
+        queue_keys=(),
+        queued_by_queue={},
+        running_by_queue_key={},
+        held_by_queue_key={},
+        concurrency_limits={},
+    )
+    assert observability._last_dispatch_queue_keys == {queue_key}
+
+    jobs.failure = None
+    observability.record_dispatch_snapshot(
+        queue_keys=(),
+        queued_by_queue={},
+        running_by_queue_key={},
+        held_by_queue_key={},
+        concurrency_limits={},
+    )
+    assert observability._last_dispatch_queue_keys == set()
+    assert jobs.observations[-2:] == [
+        (0, {"state": "queued", "queue_key": queue_key}),
+        (0, {"state": "running", "queue_key": queue_key}),
+    ]
+
+    observation_count = len(jobs.observations)
+    observability.record_dispatch_snapshot(
+        queue_keys=(),
+        queued_by_queue={},
+        running_by_queue_key={},
+        held_by_queue_key={},
+        concurrency_limits={},
+    )
+    assert len(jobs.observations) == observation_count + 2
+
+
 def test_logfire_observation_failure_does_not_escape(metric_instruments):
     instruments, _definitions = metric_instruments
     observability.record_dispatch_cycle(
