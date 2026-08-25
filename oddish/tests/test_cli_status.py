@@ -50,3 +50,13 @@ def test_running_trial_detail_uses_harbor_stage() -> None:
 
 def test_cancelled_status_gets_yellow_status_style() -> None:
     assert format_trial_status("cancelled") == "[yellow]cancelled[/yellow]"
+
+
+def test_paused_status_gets_yellow_status_style() -> None:
+    assert format_trial_status("paused") == "[yellow]paused[/yellow]"
+    assert (
+        format_trial_status_detail(
+            {"status": "paused", "harbor_stage": "agent_running"}
+        )
+        == "[yellow]paused[/yellow]"
+    )

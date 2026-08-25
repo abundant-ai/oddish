@@ -30,6 +30,7 @@ function probeLabel(t: ProbeTrial): string {
 function statusLabel(t: ProbeTrial): string {
   if (t.status === "queued" || t.status === "pending") return "queued";
   if (t.status === "running") return "running";
+  if (t.status === "paused") return "paused";
   if (t.status === "success") return "done";
   if (t.status === "failed") return "failed";
   return t.status;

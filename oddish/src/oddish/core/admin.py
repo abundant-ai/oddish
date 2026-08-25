@@ -371,7 +371,7 @@ async def get_orphaned_state_core(
                                     SELECT 1 FROM trials tr
                                     WHERE tr.task_id = t.id
                                       AND tr.deleted_at IS NULL
-                                      AND tr.status IN ('QUEUED', 'RUNNING', 'RETRYING')
+                                      AND tr.status IN ('QUEUED', 'RUNNING', 'PAUSED', 'RETRYING')
                                 )
                             ) OR (
                                 t.status = 'ANALYZING'
@@ -452,7 +452,7 @@ async def get_orphaned_state_core(
                             SELECT 1 FROM trials tr
                             WHERE tr.task_id = t.id
                               AND tr.deleted_at IS NULL
-                              AND tr.status IN ('QUEUED', 'RUNNING', 'RETRYING')
+                              AND tr.status IN ('QUEUED', 'RUNNING', 'PAUSED', 'RETRYING')
                         )
                     ) OR (
                         t.status = 'ANALYZING'
@@ -1828,9 +1828,10 @@ async def _qa_cost_time_series(
 _COMPUTE_PROVIDER_LABELS = {
     "modal": "Modal",
     "daytona": "Daytona",
+    "archil": "Archil",
     "other": "Other",
 }
-_KNOWN_COMPUTE_PROVIDERS = ("modal", "daytona")
+_KNOWN_COMPUTE_PROVIDERS = ("modal", "daytona", "archil")
 
 
 def _normalize_compute_provider(raw: str | None) -> str:
@@ -2526,7 +2527,7 @@ async def get_cost_breakdown_core(
         compute_query = compute_query.where(ModalCostSpanModel.org_id == org_id)
     compute_rows = (await session.execute(compute_query)).all()
     compute_cost_total = round(sum(float(row.cost_usd) for row in compute_rows), 4)
-    # Fold raw providers into the modal / daytona / other buckets.
+    # Fold raw providers into the known provider buckets or other.
     compute_by_provider_totals: dict[str, float] = {}
     compute_by_provider_spans: dict[str, int] = {}
     for row in compute_rows:

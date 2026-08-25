@@ -3,4 +3,4 @@
 #   cd oddish && uv run python scripts/sync_harbor_pin.py
 # and regenerate both oddish/uv.lock and backend/uv.lock.
 git = "https://github.com/abundant-ai/harbor"
-rev = "5c3434ed0eb81a1b8e36dcc498f930c70fe0ed07"
+rev = "fac0d02a3a3b283043a647f0531a9a4957a1ad77"

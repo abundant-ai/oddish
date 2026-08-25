@@ -74,6 +74,7 @@ import {
 } from "@/lib/experiment-agent-grouping";
 import {
   isActivePipelineStatus,
+  isActiveTrialStatus,
   taskHasActiveAnalysis,
   taskHasActiveVerdict,
   taskHasCancellableWork,
@@ -183,6 +184,7 @@ const LOADING_AGENT_COLUMNS: AgentSummary[] = Array.from(
 const STATUS_FILTER_ORDER: MatrixStatus[] = [
   "queued",
   "running",
+  "paused",
   "pass",
   "partial",
   "fail",
@@ -538,7 +540,7 @@ function groupTrialsByAgent(
 }
 
 function hasLiveQueueSnapshot(trial: Trial): boolean {
-  return ["queued", "retrying", "running", "pending"].includes(trial.status);
+  return isActiveTrialStatus(trial.status);
 }
 
 function getTrialTitle(trial: Trial, status: MatrixStatus) {
@@ -679,7 +681,8 @@ export function ExperimentTrialsTable({
               value === "scoreless" ||
               value === "skipped" ||
               value === "queued" ||
-              value === "running"
+              value === "running" ||
+              value === "paused"
           )
       );
       setDimmedStatuses(next);

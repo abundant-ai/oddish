@@ -1,6 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
+import { isActiveTrialStatus } from "@/lib/job-status";
 import {
   type ProbeTrial,
   normalizeMetric,
@@ -72,10 +73,7 @@ export function ProbeRunSummary({
   const summary = trial.analysis;
   const analysisFailed =
     trial.analysis_status === "FAILED" || trial.analysis_status === "failed";
-  const pending =
-    trial.status === "running" ||
-    trial.status === "queued" ||
-    trial.status === "pending";
+  const pending = isActiveTrialStatus(trial.status);
 
   if (!summary) {
     if (analysisFailed) {

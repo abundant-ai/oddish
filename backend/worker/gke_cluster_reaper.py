@@ -22,10 +22,15 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, or_, select
 
 from oddish.config import settings
-from oddish.db import get_session
-from oddish.db.models import TrialModel
+from oddish.db import TrialModel, TrialStatus, get_session
 
-_LIVE_STATUSES = ("queued", "running", "retrying")
+
+_LIVE_STATUSES = (
+    TrialStatus.QUEUED,
+    TrialStatus.RUNNING,
+    TrialStatus.PAUSED,
+    TrialStatus.RETRYING,
+)
 
 
 @dataclass(frozen=True)

@@ -954,10 +954,8 @@ def test_restricted_cursor_gets_transport_hosts_and_web_hardening(tmp_path):
         model_name="cursor/composer",
         **agent_config.kwargs,
     )
-    assert agent.build_cli_flags() == (
-        "--exclude-tools web_search_tool_call "
-        "--exclude-tools web_fetch_tool_call"
-    )
+    assert agent.build_cli_flags() == ""
+    assert agent._oddish_disable_web_tools is True
 
 
 @pytest.mark.parametrize("shape", ["public-compose", "restricted-kube"])
@@ -2094,7 +2092,11 @@ def test_run_harbor_trial_async_skips_temp_root_preflight_without_task_patch(
     monkeypatch.setattr(
         harbor_runner, "validate_task_timeout_config", lambda path: None
     )
-    monkeypatch.setattr(harbor_runner, "_build_agent_config", lambda **kwargs: object())
+    monkeypatch.setattr(
+        harbor_runner,
+        "_build_agent_config",
+        lambda **kwargs: SimpleNamespace(kwargs={}),
+    )
     monkeypatch.setattr(harbor_runner, "TaskConfig", lambda path: path)
     monkeypatch.setattr(harbor_runner, "JobConfig", lambda **kwargs: kwargs)
     monkeypatch.setattr(harbor_runner, "Job", _FakeJob)
@@ -3798,6 +3800,43 @@ def test_store_trial_results_skips_retry_for_non_retryable_exception(monkeypatch
     assert trial.attempts == 1
 
 
+def test_store_trial_results_skips_retry_for_quota_pause_outcome(monkeypatch):
+    """The Harbor runner returns quota-pause control failures as outcomes.
+
+    Retrying cannot repair a snapshot or resume failure, so the outcome path
+    must make the trial terminal just like the direct-exception path does.
+    """
+
+    trial = _make_retry_decision_trial(attempts=1, max_attempts=6)
+    _install_retry_decision_session_fakes(monkeypatch, trial)
+
+    outcome = harbor_runner.HarborOutcome(
+        reward=None,
+        error="QuotaPauseControlError: snapshot failed",
+        exit_code=-1,
+        duration_sec=5.0,
+        job_result_path=None,
+        job_dir=None,
+        exception_type=trial_handler.QuotaPauseControlError.__name__,
+    )
+
+    stored = asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id="trial-1",
+            outcome=outcome,
+            trial_s3_key=None,
+            execution_error=None,
+            trial_attempt=trial.attempts,
+        )
+    )
+
+    assert trial.status == trial_handler.TrialStatus.FAILED
+    assert trial.finished_at is not None
+    assert trial.error_message == "QuotaPauseControlError: snapshot failed"
+    assert trial.attempts == 1
+    assert stored == (True, True)
+
+
 def test_store_trial_results_still_retries_unknown_exception(monkeypatch):
     """Exception types we don't explicitly mark as terminal still go through
     the existing attempts < max_attempts retry path."""
@@ -3926,6 +3965,27 @@ def test_store_trial_results_retries_execution_exception_without_outcome(monkeyp
     assert stored == (False, False)
 
 
+def test_store_trial_results_fails_non_retryable_execution_exception(monkeypatch):
+    trial = _make_retry_decision_trial(attempts=1, max_attempts=6)
+    _install_retry_decision_session_fakes(monkeypatch, trial)
+
+    stored = asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id="trial-1",
+            outcome=None,
+            trial_s3_key=None,
+            execution_error="QuotaPauseControlError: snapshot failed",
+            execution_retryable=False,
+            trial_attempt=trial.attempts,
+        )
+    )
+
+    assert trial.status == trial_handler.TrialStatus.FAILED
+    assert trial.finished_at is not None
+    assert trial.error_message == "QuotaPauseControlError: snapshot failed"
+    assert stored == (True, True)
+
+
 def test_store_trial_results_retries_runtime_cancel_with_budget(monkeypatch):
     """Harbor runtime CANCEL is retryable unless an external cancel won the row."""
 
@@ -3987,6 +4047,7 @@ def test_non_retryable_set_includes_known_terminal_failures():
     expected = {
         "AddTestsDirError",
         "AgentTimeoutError",
+        "QuotaPauseControlError",
         "VerifierTimeoutError",
         "RewardFileNotFoundError",
         "RewardFileEmptyError",

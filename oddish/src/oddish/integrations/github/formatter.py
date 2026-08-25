@@ -19,7 +19,7 @@ class TrialSummary:
     trial_id: str
     agent: str
     model: str | None
-    status: str  # queued, running, success, failed
+    status: str  # queued, running, paused, success, failed
     reward: float | None
     duration_seconds: float | None
     analysis_status: str | None  # queued, running, success, failed, None
@@ -87,6 +87,8 @@ def _trial_status_cell(trial: TrialSummary) -> str:
         return "\u23f3 Queued"
     if trial.status == "running":
         return "\U0001f504 Running"
+    if trial.status == "paused":
+        return "\u23f8 Paused"
     if trial.status == "skipped":
         return "\u2298 Skipped"
     if trial.status == "failed":

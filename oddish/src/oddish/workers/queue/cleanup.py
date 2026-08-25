@@ -1241,7 +1241,7 @@ async def _advance_running_tasks_to_analysis(
                   AND tr.kind = 'agent'
                 GROUP BY t.id
                 HAVING COUNT(*) FILTER (
-                    WHERE tr.status IN ('PENDING', 'QUEUED', 'RUNNING', 'RETRYING')
+                    WHERE tr.status IN ('PENDING', 'QUEUED', 'RUNNING', 'PAUSED', 'RETRYING')
                 ) = 0
                 """
             )
@@ -1300,7 +1300,7 @@ async def _advance_running_tasks_to_analysis(
                              base.experiment_id
                     HAVING COUNT(*) FILTER (
                         WHERE base.status IN (
-                            'PENDING', 'QUEUED', 'RUNNING', 'RETRYING'
+                            'PENDING', 'QUEUED', 'RUNNING', 'PAUSED', 'RETRYING'
                         )
                         OR EXISTS (
                             SELECT 1
@@ -1630,7 +1630,7 @@ async def _unwedge_stuck_analyzing(session) -> tuple[int, int, int]:
                         AND  a.deleted_at IS NULL
                         AND  a.superseded_by_trial_id IS NULL
                         AND  (
-                            a.status IN ('PENDING', 'QUEUED', 'RUNNING', 'RETRYING')
+                            a.status IN ('PENDING', 'QUEUED', 'RUNNING', 'PAUSED', 'RETRYING')
                             OR a.analysis_status IN ('PENDING', 'QUEUED', 'RUNNING')
                         )
                   )

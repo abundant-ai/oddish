@@ -1709,6 +1709,38 @@ async def test_summarize_creation_accepts_only_agent_targets_and_imports_only_su
 
 
 @pytest.mark.asyncio
+async def test_paused_summarize_trial_is_adopted_instead_of_replaced():
+    """Needs PostgreSQL. A paused refresh still owns its worker and target."""
+    if not URL:
+        pytest.skip("ODDISH_DATABASE_URL not set")
+    from oddish.db import TrialStatus, get_session, init_db
+    from oddish.workers.analysis_trials import get_or_create_summarize_trial
+
+    await init_db()
+    _, ids = await _seed_summarize_targets(
+        "summarize-paused", [("agent", "agent", True)]
+    )
+    target_id = ids["agent"]
+    async with get_session() as session:
+        created = await get_or_create_summarize_trial(
+            session, target_trial_id=target_id
+        )
+        assert created is not None
+        summarize_id = created.id
+
+    async with get_session() as session:
+        summarize = await session.get(TrialModel, summarize_id)
+        summarize.status = TrialStatus.PAUSED
+
+    async with get_session() as session:
+        adopted = await get_or_create_summarize_trial(
+            session, target_trial_id=target_id
+        )
+        assert adopted is not None
+        assert adopted.id == summarize_id
+
+
+@pytest.mark.asyncio
 async def test_missing_summarize_artifact_fails_refresh_and_allows_replacement(
     monkeypatch,
 ):

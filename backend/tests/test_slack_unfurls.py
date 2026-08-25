@@ -75,6 +75,7 @@ def test_outcome_symbols_match_oddish_matrix_semantics():
     assert glyph(_trial(status="success", reward=None)) == ":heavy_minus_sign:"
     assert glyph(_trial(status="queued", reward=None)) == ":clock3:"
     assert glyph(_trial(status="running", reward=None)) == ":arrows_counterclockwise:"
+    assert glyph(_trial(status="paused", reward=None)) == ":double_vertical_bar:"
     assert glyph(_trial(status="retrying", reward=None)) == ":white_circle:"
     assert glyph(_trial(status="skipped", error_message="gated")) == ":no_entry_sign:"
     failed = _trial(status="failed", error_message="boom")

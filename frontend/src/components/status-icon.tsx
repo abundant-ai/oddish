@@ -105,6 +105,21 @@ export function StatusIcon({
       </svg>
     );
   }
+  if (status === "paused") {
+    return (
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={2.8}
+        strokeLinecap="round"
+        className={iconClass}
+        aria-hidden="true"
+      >
+        <path d="M9 6v12M15 6v12" />
+      </svg>
+    );
+  }
   if (status === "scoreless") {
     return (
       <svg

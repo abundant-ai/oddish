@@ -126,6 +126,7 @@ class JobStatus(str, Enum):
     PENDING = "pending"
     QUEUED = "queued"
     RUNNING = "running"
+    PAUSED = "paused"
     SUCCESS = "success"  # Execution completed (regardless of test result)
     FAILED = "failed"  # Execution error (harness/infrastructure failure)
     RETRYING = "retrying"  # Only used by trials
@@ -140,6 +141,30 @@ class JobStatus(str, Enum):
 TrialStatus = JobStatus
 AnalysisStatus = JobStatus
 VerdictStatus = JobStatus
+
+WORKER_OWNED_TRIAL_STATUSES = frozenset(
+    {
+        TrialStatus.RUNNING,
+        TrialStatus.PAUSED,
+    }
+)
+ACTIVE_TRIAL_STATUSES = frozenset(
+    {
+        TrialStatus.PENDING,
+        TrialStatus.QUEUED,
+        TrialStatus.RUNNING,
+        TrialStatus.PAUSED,
+        TrialStatus.RETRYING,
+    }
+)
+
+
+def is_active_trial_status(status: TrialStatus | str) -> bool:
+    return status in ACTIVE_TRIAL_STATUSES
+
+
+def is_worker_owned_trial_status(status: TrialStatus | str) -> bool:
+    return status in WORKER_OWNED_TRIAL_STATUSES
 
 
 class Priority(str, Enum):
@@ -1145,10 +1170,6 @@ class TrialModel(TimestampedMixin, Base):
     analysis_finished_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    # The analyzer's live event log for the current/most recent analysis
-    # run. Written by the QA worker every few seconds so the UI can show
-    # what the analyzer is doing. One short line per event, so it stays small.
-    analysis_log: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Immutable-trial rerun pointer. When a user retries a trial we
     # don't reset this row; instead we insert a fresh trial that copies

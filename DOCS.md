@@ -93,8 +93,14 @@ Use `oddish run` to launch a task, dataset, or multi-agent sweep.
 oddish run ./my-task -a claude-code -m anthropic/claude-sonnet-4-5 --n-trials 5
 
 # Append trials to an existing task
+<<<<<<< HEAD
 oddish run --task <task_id> -a gemini-cli -m gemini/gemini-3.1-pro-preview
 oddish run --task <task_id> -a antigravity-cli -m google/gemini-3.7-flash
+||||||| 6b1733eda
+oddish run --task <task_id> -a gemini-cli -m google/gemini-3.1-pro-preview
+=======
+oddish run --task <task_id> -a gemini-cli -m gemini/gemini-3.1-pro-preview
+>>>>>>> origin/staging
 
 # Complex sweep from config
 oddish run ./my-task -c sweep.yaml
@@ -121,7 +127,7 @@ Options
 - `--task-name`, `-t TEXT` - Include task glob filter; can be passed multiple times
 - `--exclude-task-name`, `-x TEXT` - Exclude task glob filter; can be passed multiple times
 - `--n-tasks`, `-l INTEGER` - Limit the number of selected tasks after filtering
-- `--env`, `-e` - Execution environment. The flag accepts any Harbor environment name, but hosted Oddish honors only `modal`, `daytona`, `ec2`, and `gke` — anything else is coerced to `modal` with a warning. Hosted EC2 is opt-in and must be enabled by the deployment operator; Daytona remains the CPU default.
+- `--env`, `-e` - Execution environment. The flag accepts any Harbor environment name, but hosted Oddish honors only `modal`, `daytona`, `ec2`, `gke`, and `archil` — anything else is coerced to `modal` with a warning. Hosted EC2 is opt-in and must be enabled by the deployment operator; Daytona remains the CPU default.
 - `--priority`, `-P TEXT` - Queue priority, typically `low` or `high`
 - `--experiment`, `-E TEXT` - Reuse or create an experiment ID/name
 - `--user`, `-u TEXT` - Override the author attached to the run. Defaults to the authenticated identity (Clerk-linked email for API keys / dashboard sessions); set this only to attribute a run to someone other than yourself.
