@@ -603,6 +603,13 @@ export function TaskFilesPanel({
   >({});
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
+  const selectFilePath = useCallback(
+    (path: string) => {
+      setSelectedFilePath(path);
+      onSelectedFileChange?.(path);
+    },
+    [onSelectedFileChange]
+  );
   const [loadingFullFile, setLoadingFullFile] = useState(false);
   const [viewMode, setViewMode] = useState<"rendered" | "raw">("rendered");
   const [copiedTaskName, setCopiedTaskName] = useState(false);
@@ -1219,7 +1226,7 @@ export function TaskFilesPanel({
         findNodeBySuffix(listing.nodes, "instruction.md") ??
         listing.nodes.find((node) => node.type === "file");
       if (defaultFile) {
-        setSelectedFilePath(defaultFile.path);
+        selectFilePath(defaultFile.path);
         return;
       }
 
@@ -1239,7 +1246,7 @@ export function TaskFilesPanel({
       findNodeBySuffix(visibleTree, "instruction.md") ??
       visibleTree.find((node) => node.type === "file") ??
       findFirstFile(visibleTree);
-    if (defaultFile) setSelectedFilePath(defaultFile.path);
+    if (defaultFile) selectFilePath(defaultFile.path);
   }, [
     activePane,
     directoryListings,
@@ -1248,6 +1255,7 @@ export function TaskFilesPanel({
     isOpen,
     loadDirectoryPage,
     loadsTaskTreeByDirectory,
+    selectFilePath,
     selectedFilePath,
     taskPaneExists,
     visibleTree,
@@ -1312,20 +1320,6 @@ export function TaskFilesPanel({
     }
   }, [selectedFilePath]);
 
-  // Report file selection changes upward for URL sync. Null selections are
-  // never reported: every null write is a transient reset (listing reload,
-  // panel close) — no user gesture deselects a file — and reporting one
-  // would wipe a live ?file= / ?lines= anchor that the next listing is
-  // about to resolve (e.g. keeping the same file across trial navigation).
-  const onSelectedFileChangeRef = useRef(onSelectedFileChange);
-  useEffect(() => {
-    onSelectedFileChangeRef.current = onSelectedFileChange;
-  });
-  useEffect(() => {
-    if (selectedFilePath === null) return;
-    onSelectedFileChangeRef.current?.(selectedFilePath);
-  }, [selectedFilePath]);
-
   // Reset state when panel closes or task changes
   useEffect(() => {
     if (!isOpen) {
@@ -1374,7 +1368,7 @@ export function TaskFilesPanel({
 
     // A file URL is already an exact resource address. Selecting it does not
     // depend on whether its containing directory page happens to include it.
-    if (selectedFilePath !== targetPath) setSelectedFilePath(targetPath);
+    if (selectedFilePath !== targetPath) selectFilePath(targetPath);
   }, [
     activePane,
     directoryListings,
@@ -1383,6 +1377,7 @@ export function TaskFilesPanel({
     isOpen,
     loadDirectoryPage,
     loadsTaskTreeByDirectory,
+    selectFilePath,
     selectedFilePath,
   ]);
 
@@ -1475,7 +1470,7 @@ export function TaskFilesPanel({
               if (node.type === "dir") {
                 toggleDir(node);
               } else {
-                setSelectedFilePath(node.path);
+                selectFilePath(node.path);
                 onActivePaneChange?.("file");
               }
             }}
