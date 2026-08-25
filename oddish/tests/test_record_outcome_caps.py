@@ -53,17 +53,13 @@ def _run(outcome_kwargs, *, snapshot, current, monkeypatch):
 def test_mid_flight_cap_makes_failure_terminal(monkeypatch):
     # Claim snapshot said 1/6 (retry allowed); the row was capped to 1/1 while
     # the attempt ran. The failure must be TERMINAL, not retried.
-    status, conn = _run(
-        {}, snapshot=(1, 6), current=(1, 1), monkeypatch=monkeypatch
-    )
+    status, conn = _run({}, snapshot=(1, 6), current=(1, 1), monkeypatch=monkeypatch)
     assert status == WorkerJobStatus.FAILED
     assert any("'FAILED'" in sql or "= 'FAILED'" in sql for sql in conn.executed)
     assert not any("'RETRYING'" in sql for sql in conn.executed)
 
 
 def test_uncapped_failure_still_retries(monkeypatch):
-    status, conn = _run(
-        {}, snapshot=(1, 6), current=(1, 6), monkeypatch=monkeypatch
-    )
+    status, conn = _run({}, snapshot=(1, 6), current=(1, 6), monkeypatch=monkeypatch)
     assert status == WorkerJobStatus.RETRYING
     assert any("'RETRYING'" in sql for sql in conn.executed)

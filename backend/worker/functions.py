@@ -21,7 +21,6 @@ Settings.db_use_null_pool = True
 
 import asyncio
 import time
-from typing import Literal
 from uuid import uuid4
 
 import modal
@@ -70,7 +69,11 @@ from oddish.config import settings
 from oddish.costs.recorder import WorkerBillingSpec
 from oddish.core.model_concurrency import get_model_concurrency_overrides
 from oddish.db import close_database_connections, get_session, WorkerJobKind
-from oddish.observability import record_dispatch_cycle, record_dispatch_snapshot
+from oddish.observability import (
+    DispatchCycleOutcome,
+    record_dispatch_cycle,
+    record_dispatch_snapshot,
+)
 from oddish.runtime.backends.daytona import reap_stale_daytona_sandboxes
 from oddish.workers.jobs import ensure_builtin_handlers_registered
 from oddish.workers.queue.cleanup import cleanup_orphaned_queue_state
@@ -901,7 +904,7 @@ async def poll_queue():
     # spawn-plan queries all nest under one named
     # ``worker.poll_queue_cycle`` parent per tick.
     cycle_started_at = time.monotonic()
-    cycle_outcome: Literal["success", "error"] = "error"
+    cycle_outcome: DispatchCycleOutcome = "error"
     workers_spawned = 0
     spawn_cap_reached = False
     cycle_span = _otel_span("worker.poll_queue_cycle")
@@ -1069,6 +1072,7 @@ async def poll_queue():
     except OSError as e:
         # Transient network/DNS errors (e.g. socket.gaierror) should not
         # crash the scheduled function -- the next poll in 3 minutes will retry.
+        cycle_outcome = "skipped"
         console.print(
             f"[yellow]Dispatcher skipped (transient network error): {e}[/yellow]"
         )

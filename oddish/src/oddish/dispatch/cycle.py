@@ -21,10 +21,11 @@ import logging
 import time
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable, Collection, Literal, Sequence
+from typing import Awaitable, Callable, Collection, Sequence
 
 from oddish.dispatch.ports import Dispatcher, WorkerHandle
 from oddish.observability import (
+    DispatchCycleOutcome,
     record_dispatch_cycle,
     record_dispatch_snapshot,
     span,
@@ -322,7 +323,7 @@ async def _run_dispatch_cycle(
     capacity_by_lane: LaneCapacityFn | None = None,
 ) -> DispatchCycleResult:
     cycle_started_at = time.monotonic()
-    cycle_outcome: Literal["success", "error"] = "error"
+    cycle_outcome: DispatchCycleOutcome = "error"
     spawn_cap_reached = False
     handles: list[WorkerHandle] = []
     try:
@@ -394,6 +395,12 @@ async def _run_dispatch_cycle(
         )
         cycle_outcome = "success"
         return result
+    except OSError:
+        # The surrounding standalone loop already retries every failed cycle.
+        # Distinguish recognized network/filesystem transients from unexpected
+        # failures so the dispatcher-error alert does not page on this path.
+        cycle_outcome = "skipped"
+        raise
     finally:
         record_dispatch_cycle(
             workers_spawned=len(handles),

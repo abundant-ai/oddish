@@ -23,8 +23,9 @@ is_configured_vercel() {
 # the app would destroy the one remaining owner that can still delete the
 # cluster. Fail the close job instead -- the app and its reaper stay alive,
 # and re-running the workflow retries the teardown.
-if ! "$GITHUB_WORKSPACE/.github/scripts/preview/run_gke_teardown.sh" \
-  "$MODAL_APP_NAME"; then
+if ! modal run --env "$MODAL_ENVIRONMENT" \
+  "$GITHUB_WORKSPACE/.github/scripts/preview/teardown_gke_cluster.py" \
+  --app-name "$MODAL_APP_NAME"; then
   echo "::error::GKE teardown failed; leaving $MODAL_APP_NAME running so its reaper still owns the cluster"
   exit 1
 fi

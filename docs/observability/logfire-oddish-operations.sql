@@ -91,7 +91,9 @@ WHERE metric_name = 'oddish.worker_job.transitions'
 GROUP BY x, outcome
 ORDER BY x;
 
--- 4. Retry percentage
+-- 4. Retrying attempt share
+-- One job may contribute multiple RETRYING attempts followed by one SUCCESS.
+-- This is the share of persisted attempt outcomes, not the share of unique jobs.
 WITH transitions AS (
     SELECT
         time_bucket($resolution, recorded_timestamp) AS x,
@@ -111,12 +113,14 @@ WITH transitions AS (
 SELECT
     x,
     100 * SUM(CASE WHEN outcome = 'RETRYING' THEN transition_count ELSE 0 END)
-        / NULLIF(SUM(transition_count), 0) AS retry_percentage
+        / NULLIF(SUM(transition_count), 0) AS retrying_attempt_share
 FROM transitions
 GROUP BY x
 ORDER BY x;
 
--- 5. Terminal-failure percentage
+-- 5. Terminal-failure attempt share
+-- The denominator is every persisted SUCCESS, RETRYING, or FAILED attempt
+-- outcome in the bucket; it is not a unique-job failure percentage.
 WITH transitions AS (
     SELECT
         time_bucket($resolution, recorded_timestamp) AS x,
@@ -136,7 +140,7 @@ WITH transitions AS (
 SELECT
     x,
     100 * SUM(CASE WHEN outcome = 'FAILED' THEN transition_count ELSE 0 END)
-        / NULLIF(SUM(transition_count), 0) AS terminal_failure_percentage
+        / NULLIF(SUM(transition_count), 0) AS terminal_failure_attempt_share
 FROM transitions
 GROUP BY x
 ORDER BY x;
@@ -206,5 +210,38 @@ WHERE metric_name = 'oddish.dispatch.cycles'
   AND deployment_environment = $deployment_environment
   AND service_name = $service_name
   AND attributes->>'spawn_cap_reached' = 'true'
+GROUP BY x
+ORDER BY x;
+
+-- 9. Dispatch cycles by outcome
+SELECT
+    time_bucket($resolution, recorded_timestamp) AS x,
+    attributes->>'outcome' AS outcome,
+    metric_increase(value, recorded_timestamp) AS cycles
+FROM metrics
+WHERE metric_name = 'oddish.dispatch.cycles'
+  AND deployment_environment = $deployment_environment
+  AND service_name = $service_name
+GROUP BY x, outcome
+ORDER BY x;
+
+-- 10. Dispatcher error percentage
+-- The denominator includes successful, transiently skipped, and errored cycles.
+WITH cycles AS (
+    SELECT
+        time_bucket($resolution, recorded_timestamp) AS x,
+        attributes->>'outcome' AS outcome,
+        metric_increase(value, recorded_timestamp) AS cycle_count
+    FROM metrics
+    WHERE metric_name = 'oddish.dispatch.cycles'
+      AND deployment_environment = $deployment_environment
+      AND service_name = $service_name
+    GROUP BY x, outcome
+)
+SELECT
+    x,
+    100 * SUM(CASE WHEN outcome = 'error' THEN cycle_count ELSE 0 END)
+        / NULLIF(SUM(cycle_count), 0) AS dispatcher_error_percentage
+FROM cycles
 GROUP BY x
 ORDER BY x;

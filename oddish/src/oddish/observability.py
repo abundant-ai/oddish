@@ -35,6 +35,7 @@ _dispatch_duration_histogram = None
 _last_dispatch_queue_keys: set[str] = set()
 
 _AGGREGATE_QUEUE_KEY = "__all__"
+DispatchCycleOutcome = Literal["success", "skipped", "error"]
 
 
 def configure_observability(service_name: str) -> bool:
@@ -394,9 +395,16 @@ def record_dispatch_cycle(
     workers_spawned: int,
     spawn_cap_reached: bool,
     duration_seconds: float,
-    outcome: Literal["success", "error"],
+    outcome: DispatchCycleOutcome,
 ) -> None:
-    """Record one dispatcher cycle and spawns from fully successful cycles."""
+    """Record one dispatcher cycle and spawns from fully successful cycles.
+
+    ``skipped`` means a recognized transient condition, currently ``OSError``,
+    prevented completion and the polling host will retry. ``error`` is reserved
+    for unexpected failures. The workers-spawned counter remains limited to
+    ``success`` cycles because a failed fan-out does not expose a trustworthy
+    partial spawn count on every dispatcher host.
+    """
     global _dispatch_workers_spawned_counter
     global _dispatch_cycles_counter, _dispatch_duration_histogram
     if not _configured:
@@ -416,7 +424,10 @@ def record_dispatch_cycle(
                 _dispatch_cycles_counter = logfire.metric_counter(
                     "oddish.dispatch.cycles",
                     unit="{cycle}",
-                    description="Completed and failed dispatcher cycles",
+                    description=(
+                        "Successful, transiently skipped, and failed dispatcher "
+                        "cycles"
+                    ),
                 )
             if _dispatch_duration_histogram is None:
                 _dispatch_duration_histogram = logfire.metric_histogram(

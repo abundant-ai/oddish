@@ -234,3 +234,20 @@ def test_logfire_observation_failure_does_not_escape(metric_instruments):
         (2, {"outcome": "success", "spawn_cap_reached": True})
     ]
     assert instruments["oddish.dispatch.duration"].observations[-1][0] == 0.5
+
+
+def test_dispatch_cycle_records_skipped_without_spawn_count(metric_instruments):
+    instruments, definitions = metric_instruments
+
+    observability.record_dispatch_cycle(
+        workers_spawned=0,
+        spawn_cap_reached=False,
+        duration_seconds=0.75,
+        outcome="skipped",
+    )
+
+    attributes = {"outcome": "skipped", "spawn_cap_reached": False}
+    assert instruments["oddish.dispatch.cycles"].observations == [(1, attributes)]
+    assert instruments["oddish.dispatch.duration"].observations == [(0.75, attributes)]
+    assert instruments["oddish.dispatch.workers_spawned"].observations == []
+    assert definitions["oddish.dispatch.cycles"][0] == "{cycle}"

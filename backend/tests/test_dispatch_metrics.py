@@ -103,3 +103,32 @@ async def test_modal_poll_records_success_and_post_spawn_failure(monkeypatch) ->
     assert cycles[1]["workers_spawned"] == 1
     assert cycles[1]["spawn_cap_reached"] is True
     assert cycles[1]["outcome"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_modal_poll_records_transient_oserror_as_skipped(monkeypatch) -> None:
+    cycles: list[dict[str, Any]] = []
+
+    async def no_op(*_args, **_kwargs):
+        return None
+
+    async def fail_plan(**_kwargs):
+        raise OSError("temporary DNS failure")
+
+    monkeypatch.setattr(worker_functions, "_otel_span", lambda *_a, **_k: nullcontext())
+    monkeypatch.setattr(worker_functions, "configure_storage_paths", no_op)
+    monkeypatch.setattr(worker_functions, "build_dispatch_plan", fail_plan)
+    monkeypatch.setattr(worker_functions, "close_database_connections", no_op)
+    monkeypatch.setattr(worker_functions.settings, "ec2_enabled", False)
+    monkeypatch.setattr(
+        worker_functions,
+        "record_dispatch_cycle",
+        lambda **values: cycles.append(values),
+    )
+
+    await worker_functions.poll_queue.get_raw_f()()
+
+    assert len(cycles) == 1
+    assert cycles[0]["workers_spawned"] == 0
+    assert cycles[0]["spawn_cap_reached"] is False
+    assert cycles[0]["outcome"] == "skipped"

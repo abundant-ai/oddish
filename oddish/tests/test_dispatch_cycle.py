@@ -221,6 +221,67 @@ def test_run_dispatch_cycle_records_spawn_error(monkeypatch) -> None:
     assert cycle_outcomes[0]["outcome"] == "error"
 
 
+def test_run_dispatch_cycle_records_transient_oserror_as_skipped(monkeypatch) -> None:
+    from oddish.dispatch import cycle
+
+    cycle_outcomes: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        cycle,
+        "record_dispatch_cycle",
+        lambda **values: cycle_outcomes.append(values),
+    )
+
+    async def fail_discovery():
+        raise OSError("temporary DNS failure")
+
+    async def _go():
+        return await run_dispatch_cycle(
+            FakeDispatcher(),
+            max_workers=1,
+            concurrency_limits_for=_fake_limits(1),
+            _discover=fail_discovery,
+            _counts=_fake_counts({}, {}),
+            _held=_fake_held({}),
+        )
+
+    with pytest.raises(OSError, match="temporary DNS failure"):
+        asyncio.run(_go())
+
+    assert len(cycle_outcomes) == 1
+    assert cycle_outcomes[0]["workers_spawned"] == 0
+    assert cycle_outcomes[0]["spawn_cap_reached"] is False
+    assert cycle_outcomes[0]["outcome"] == "skipped"
+
+
+def test_run_dispatch_cycle_records_empty_plan_as_success(monkeypatch) -> None:
+    from oddish.dispatch import cycle
+
+    cycle_outcomes: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        cycle,
+        "record_dispatch_cycle",
+        lambda **values: cycle_outcomes.append(values),
+    )
+
+    async def _go():
+        return await run_dispatch_cycle(
+            FakeDispatcher(),
+            max_workers=1,
+            concurrency_limits_for=_fake_limits(1),
+            _discover=_fake_discover([]),
+            _counts=_fake_counts({}, {}),
+            _held=_fake_held({}),
+        )
+
+    result = asyncio.run(_go())
+
+    assert result.handles == []
+    assert len(cycle_outcomes) == 1
+    assert cycle_outcomes[0]["workers_spawned"] == 0
+    assert cycle_outcomes[0]["spawn_cap_reached"] is False
+    assert cycle_outcomes[0]["outcome"] == "success"
+
+
 def test_run_dispatch_cycle_records_cancellation(monkeypatch) -> None:
     from oddish.dispatch import cycle
 

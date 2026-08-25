@@ -25,7 +25,9 @@ set -euo pipefail
 # included; skipping the stop only forgoes the reconnect-storm hygiene
 # for this one rare case.
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if ! "$script_dir/run_gke_teardown.sh" "$MODAL_APP_NAME"; then
+if ! modal run --env "$MODAL_ENVIRONMENT" \
+  "$script_dir/teardown_gke_cluster.py" \
+  --app-name "$MODAL_APP_NAME"; then
   echo "::warning::GKE teardown failed; leaving $MODAL_APP_NAME running so its reaper still owns the cluster until the redeploy replaces it"
   exit 0
 fi
