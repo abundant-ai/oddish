@@ -1636,7 +1636,7 @@ export function TaskFilesPanel({
               }`}
             />
             <span className="min-w-0 flex-1 truncate">{node.name}</span>
-            {node.type === "file" && node.size !== undefined ? (
+            {node.type === "file" && node.size != null ? (
               <span className="text-muted-foreground shrink-0 pl-2 text-[10px] tabular-nums">
                 {formatFileSize(node.size)}
               </span>
@@ -1926,7 +1926,9 @@ export function TaskFilesPanel({
                 </p>
               ) : !fileRouteServesBytes ? (
                 <>
-                  {pagedTaskWrapperCandidate && !pagedTaskWrapperListing ? (
+                  {pagedTaskWrapperCandidate &&
+                  (!pagedTaskWrapperListing ||
+                    pagedTaskWrapperListing.status === "loading") ? (
                     <div className="text-muted-foreground flex items-center gap-1.5 px-2 py-1 text-xs">
                       <Loader2 className="h-3 w-3 animate-spin" />
                       Loading task files…

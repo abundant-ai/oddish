@@ -304,6 +304,14 @@ test.describe("authenticated task view", () => {
 
     const filesPath = `/api/tasks/${TASK_ID}/files`;
     const requestedPrefixes: string[] = [];
+    let signalWrapperRequest!: () => void;
+    const wrapperRequestStarted = new Promise<void>((resolve) => {
+      signalWrapperRequest = resolve;
+    });
+    let releaseWrapperRequest!: () => void;
+    const wrapperRequestGate = new Promise<void>((resolve) => {
+      releaseWrapperRequest = resolve;
+    });
     await page.route(`**${filesPath}**`, async (route) => {
       const url = new URL(route.request().url());
       if (url.pathname !== filesPath) {
@@ -319,6 +327,8 @@ test.describe("authenticated task view", () => {
         return;
       }
       if (prefix === "task-archive") {
+        signalWrapperRequest();
+        await wrapperRequestGate;
         await route.fulfill({
           json: {
             dirs: [
@@ -395,6 +405,14 @@ test.describe("authenticated task view", () => {
 
     await page.goto(`/tasks/${TASK_ID}?drawer=task`);
     await page.getByRole("button", { name: "Files", exact: true }).click();
+    await wrapperRequestStarted;
+    await expect(
+      page.getByText("Loading task files…", { exact: true })
+    ).toBeVisible();
+    await expect(page.getByText("task-archive", { exact: true })).toHaveCount(
+      0
+    );
+    releaseWrapperRequest();
 
     await expect(page.getByText("Prompt", { exact: true })).toBeVisible();
     await expect(
