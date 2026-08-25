@@ -39,6 +39,10 @@ def web_tool_kwargs_for_agent(
         return {"web_search": "disabled"}
     if "grok-build" in name or "grok_build" in path:
         return {"disable_web_search": True}
+    # antigravity-cli (agy) has no settings-level web-tool exclusion; its
+    # closed-internet bound is the network allowlist only, so no kwarg.
+    if name == "antigravity-cli" or "antigravity_cli" in path:
+        return {}
     # cursor-cli and gemini-cli both accept a ``disable_web_tools`` bool that
     # their wrappers translate into the vendor-specific exclusion (cursor:
     # ``--exclude-tools web_search_tool_call/web_fetch_tool_call``; gemini:
