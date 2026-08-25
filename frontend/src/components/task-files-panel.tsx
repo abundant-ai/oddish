@@ -685,6 +685,12 @@ export function TaskFilesPanel({
     )
       ? pagedTaskWrapperCandidate
       : null;
+  const pagedTaskWrapperLoadTarget =
+    pagedTaskWrapperCandidate &&
+    !pagedTaskWrapper &&
+    pagedTaskWrapperListing?.status !== "ready"
+      ? pagedTaskWrapperCandidate
+      : null;
   const taskSectionRootPath = pagedTaskWrapper?.path ?? "";
   const taskSectionRootListing = pagedTaskWrapper
     ? directoryListings[pagedTaskWrapper.path]
@@ -1927,37 +1933,29 @@ export function TaskFilesPanel({
                 </p>
               ) : !fileRouteServesBytes ? (
                 <>
-                  {pagedTaskWrapperCandidate &&
-                  !pagedTaskWrapper &&
-                  (!pagedTaskWrapperListing ||
-                    pagedTaskWrapperListing.status === "loading") ? (
-                    <div className="text-muted-foreground flex items-center gap-1.5 px-2 py-1 text-xs">
-                      <Loader2 className="h-3 w-3 animate-spin" />
-                      Loading task files…
-                    </div>
-                  ) : (
-                    taskFileSections.map((section) => {
-                      const SectionIcon = TASK_FILE_SECTION_ICONS[section.id];
-                      return (
-                        <section key={section.id} className="mb-3 last:mb-0">
-                          <h3 className="text-muted-foreground flex items-center gap-2 px-2 py-1.5 font-mono text-[10px] font-semibold tracking-wider uppercase sm:text-xs">
-                            <SectionIcon
-                              className="h-3.5 w-3.5 shrink-0"
-                              aria-hidden="true"
-                            />
-                            <span>{section.label}</span>
-                          </h3>
-                          {section.items.map((item) => (
-                            <div key={item.node.path}>
-                              {item.kind === "directory"
-                                ? renderDirectoryContents(item.node, 0)
-                                : renderFileTree([item.node])}
-                            </div>
-                          ))}
-                        </section>
-                      );
-                    })
-                  )}
+                  {pagedTaskWrapperLoadTarget
+                    ? renderDirectoryContents(pagedTaskWrapperLoadTarget, 0)
+                    : taskFileSections.map((section) => {
+                        const SectionIcon = TASK_FILE_SECTION_ICONS[section.id];
+                        return (
+                          <section key={section.id} className="mb-3 last:mb-0">
+                            <h3 className="text-muted-foreground flex items-center gap-2 px-2 py-1.5 font-mono text-[10px] font-semibold tracking-wider uppercase sm:text-xs">
+                              <SectionIcon
+                                className="h-3.5 w-3.5 shrink-0"
+                                aria-hidden="true"
+                              />
+                              <span>{section.label}</span>
+                            </h3>
+                            {section.items.map((item) => (
+                              <div key={item.node.path}>
+                                {item.kind === "directory"
+                                  ? renderDirectoryContents(item.node, 0)
+                                  : renderFileTree([item.node])}
+                              </div>
+                            ))}
+                          </section>
+                        );
+                      })}
                   {taskSectionRootListing?.cursor ? (
                     <button
                       type="button"
