@@ -102,4 +102,7 @@ Dashboard users can vote on QA output. Votes persist in the append-only core
 experiment. The hosted route is `POST /experiments/{experiment_id}/feedback`
 (a `tasks`-scope key suffices; 404 when the named trial is not in that
 experiment). Votes never alter the stored verdict or classifications — they
-are review signal only, and there is no CLI command for them.
+are review signal only. Ordinary users cannot read them back. The hosted,
+operator-only `oddish export-qa-benchmark` command selects unconflicted verdict
+votes tied to the current QA run and downloads the corresponding solver and
+grader trials for offline evaluation; it never exports reviewer identity.

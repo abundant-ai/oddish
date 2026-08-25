@@ -314,6 +314,21 @@ def _pull_trial(
         "errors": 0,
     }
 
+    detail_payload = _get_json(client, f"/trials/{trial_id}", None)
+    if not isinstance(detail_payload, dict):
+        task_id = _trial_task_id(trial_id)
+        _head, _sep, index = trial_id.rpartition("-")
+        if task_id is not None:
+            detail_payload = _get_json(
+                client,
+                f"/tasks/{task_id}/trials/{index}",
+                None,
+            )
+    if isinstance(detail_payload, dict):
+        _write_json(trial_root / "trial.json", detail_payload)
+    else:
+        summary["errors"] = int(summary["errors"]) + 1
+
     if include_logs:
         if status_update:
             status_update(f"Pulling trial {trial_id}: fetching logs")
@@ -356,6 +371,17 @@ def _pull_trial(
     )
     if isinstance(trajectory_payload, dict):
         _write_json(trial_root / "trajectory.json", trajectory_payload)
+
+    # Summaries are stored in Postgres and deliberately have their own read
+    # endpoint. A trial may legitimately have no summary, so a 404 is omitted
+    # without turning an otherwise complete pull into an error.
+    summary_payload = _get_json(
+        client,
+        f"/trials/{trial_id}/trajectory/summary",
+        None,
+    )
+    if isinstance(summary_payload, dict):
+        _write_json(trial_root / "trajectory_summary.json", summary_payload)
 
     if include_files:
         if status_update:

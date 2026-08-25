@@ -40,6 +40,10 @@ Treat these as separate mutations:
 Read-only inspection through `status`, `ls`, `logs`, `pull`, and `link` does
 not authorize a later mutation.
 
+`export-qa-benchmark` is also read-only, but its human-label selection route is
+restricted to a full-scope key in the operator organization. It writes local
+trial evidence and an optional archive; it does not publish an experiment.
+
 ## Normal workflow
 
 1. Validate a local task before submitting it:
@@ -97,6 +101,15 @@ not authorize a later mutation.
    Read the result and verifier artifacts before the log and trajectory.
    Live transcript events are temporary; pulled storage artifacts are the
    permanent record.
+
+   For an explicitly requested offline human-review dataset:
+
+   ```bash
+   oddish export-qa-benchmark --limit 300 --out ./qa-benchmark-300
+   ```
+
+   Do not substitute `collect`: it creates a production collection and does
+   not export the append-only human feedback rows.
 
 6. Retry only the intended immutable attempt:
 

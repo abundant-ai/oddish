@@ -86,9 +86,16 @@ Supported live agents are claude-code, codex, cursor-cli, grok-build, tbh,
 and mini-swe-agent. Terminal cleanup purges these events; a 24-hour cleanup pass
 removes leaks from hard-killed workers.
 
-`oddish pull` downloads the permanent stored record. For a diagnosis, prefer
+`oddish pull` downloads the permanent stored record, including `trial.json` and
+the separately stored trajectory summary when present. For a diagnosis, prefer
 structured result/verifier artifacts first, then the trial log and trajectory.
 `pull` accepts a trial, task, or experiment target and auto-detects the type.
+
+`oddish export-qa-benchmark --limit N` is a hosted, operator-only read. It
+selects unconflicted `qa_verdict` feedback tied to the current analysis run and
+downloads both the solver trial and its `analysis._graded_by` QA trial. It
+fails rather than silently returning fewer than `N` labels unless
+`--allow-fewer` is explicit. It creates no Oddish experiment or share link.
 
 `oddish link task` and `oddish link trial` only construct dashboard URLs. They
 do not read the API or mutate the task.

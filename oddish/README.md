@@ -73,7 +73,8 @@ reference. The main commands are:
 - `oddish admin concurrency` — inspect, set, or clear operator queue-key concurrency overrides with verified readback.
 - `oddish cost-exclusions` — hide spend for models and experiments that were never really paid for.
 - `oddish cancel` — cancel active runs or task-level QA.
-- `oddish pull` — download logs, results, trajectories, and artifacts; `--debug-files` lists a trial's raw S3 inventory instead.
+- `oddish pull` — download trial metadata, stored summaries, logs, results, trajectories, and artifacts; `--debug-files` lists a trial's raw S3 inventory instead.
+- `oddish export-qa-benchmark` — create an operator-only offline bundle of human-reviewed solver trials and the QA trials that graded them.
 - `oddish combine` — merge finished trials from multiple experiments.
 - `oddish collect` / `oddish experiment create` — build read-only trial collections; `collect` can auto-publish a share link.
 - `oddish link` — print the dashboard URL for a task or trial (built locally; needs no API key).

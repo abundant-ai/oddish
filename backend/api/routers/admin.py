@@ -43,6 +43,10 @@ from oddish.core.admin import (
     update_model_concurrency_core,
 )
 from oddish.core.trial_facets import rebuild_trial_facets_core
+from oddish.core.qa_feedback_export import (
+    QaFeedbackExportResponse,
+    export_qa_feedback_core,
+)
 from oddish.db import TaskModel, TaskVersionModel, get_session
 from oddish.queue import enqueue_task_expand_worker_job
 
@@ -362,6 +366,28 @@ async def get_operator_access(
     auth: Annotated[AuthContext, Depends(require_admin)],
 ) -> OperatorAccessResponse:
     return OperatorAccessResponse(allowed=is_operator_org(auth))
+
+
+@router.get("/qa-feedback-export", response_model=QaFeedbackExportResponse)
+async def get_qa_feedback_export(
+    auth: Annotated[AuthContext, Depends(require_admin)],
+    limit: int = Query(300, ge=1, le=1000),
+) -> QaFeedbackExportResponse:
+    """Select human-reviewed solver trials for an offline QA benchmark.
+
+    The response contains labels and stable trial identifiers only. Trial
+    logs, trajectories, summaries, and results remain on their ordinary
+    read-only endpoints so the CLI can download them without copying large
+    payloads through this database query.
+    """
+
+    require_operator_org(auth)
+    async with get_session() as session:
+        return await export_qa_feedback_core(
+            session,
+            org_id=auth.org_id,
+            limit=limit,
+        )
 
 
 class TrialFacetsRefreshResponse(BaseModel):

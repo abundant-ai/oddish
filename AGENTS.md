@@ -445,7 +445,18 @@ action-item id as `target_key`, and an `agree` or `disagree` vote. Creation
 validates organization scope and experiment membership through the shared
 `trial_in_experiment` predicate. The dashboard waits for persistence, reports
 errors, and permits one successful submission per mounted control. There are
-no public, read, update, triage, snapshot, or notification paths.
+no public, user-facing read, update, triage, snapshot, or notification paths.
+
+The operator-only `GET /admin/qa-feedback-export` route is the sole read path
+for building an offline human-review benchmark. It returns labels and the
+solver/QA trial identifiers needed by `oddish export-qa-benchmark`; large logs,
+results, trajectories, and summaries remain on the normal trial endpoints.
+The route requires a full-scope key or admin session in the configured operator
+organization. It exports only unconflicted `qa_verdict` votes that still match
+the trial's current classification and were created after the current analysis
+finished, preventing a vote from being paired with a later replacement QA run.
+It also excludes probes, superseded rows, and solver or grader trials missing a
+stored trajectory or current-schema summary. It never serializes reviewer identity.
 
 ### Task Identity
 

@@ -10,6 +10,7 @@ from oddish.cli.cost_exclusions import cost_exclusions_app
 from oddish.cli.costs import costs
 from oddish.cli.delete import delete
 from oddish.cli.experiment import experiment_app
+from oddish.cli.export_qa_benchmark import export_qa_benchmark
 from oddish.cli.link import link_app
 from oddish.cli.logs import logs
 from oddish.cli.ls import ls
@@ -39,6 +40,7 @@ app.command(help="Stream a running trial's live transcript and running cost.")(l
 app.command()(cancel)
 app.command()(combine)
 app.command()(costs)
+app.command(name="export-qa-benchmark")(export_qa_benchmark)
 app.add_typer(cost_exclusions_app, name="cost-exclusions")
 app.command()(collect)
 app.command()(delete)

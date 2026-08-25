@@ -29,7 +29,8 @@ export ODDISH_API_KEY="ok_..."
 - `oddish costs` - view billable-spend accounting (org-wide, or per-user with `--user`)
 - `oddish admin concurrency` - inspect, set, or clear operator queue-key limits
 - `oddish cost-exclusions` - hide spend for models and experiments that were never really paid for
-- `oddish pull` - download logs and artifacts
+- `oddish pull` - download trial metadata, stored summaries, logs, and artifacts
+- `oddish export-qa-benchmark` - export human-reviewed solver and QA judge trials
 - `oddish combine` - merge several experiments into a new one
 - `oddish collect` - gather trials from tasks/trial IDs into a shareable read-only collection
 - `oddish experiment create` - build a collection experiment from explicit trial IDs
@@ -611,7 +612,8 @@ trials of its own.
 
 ## Download Outputs
 
-Use `oddish pull` to download logs and artifacts from Oddish to local files.
+Use `oddish pull` to download trial metadata, stored trajectory summaries,
+logs, results, trajectories, and artifacts from Oddish to local files.
 
 ```bash
 # Pull a single trial
@@ -641,6 +643,40 @@ Options
 - `--interval INTEGER` - Poll interval in seconds for `--watch` (default: 5)
 - `--api TEXT` - Override the API URL
 - `--json` - Print the pull manifest as JSON instead of progress output
+
+## Export a Human-Reviewed QA Benchmark
+
+`oddish export-qa-benchmark` creates an offline dataset from the append-only
+human QA votes stored by the dashboard. It downloads each selected solver trial
+and the distinct `qa` trial named by its current `analysis._graded_by` value, so
+one task-wide judge run is stored once even when it graded several exported
+solver trials.
+
+```bash
+# Production is the default API target.
+oddish export-qa-benchmark --limit 300 --out ./tyrin-qa-300
+
+# Export the available set even when it contains fewer than 300 labels.
+oddish export-qa-benchmark --limit 300 --allow-fewer --no-archive --json
+```
+
+The output contains a standalone `README.md`, `samples.jsonl` (human label plus
+solver/judge paths), `selection.json` (the server selection response),
+`manifest.json`, and one directory per unique trial under `trials/`. Each trial
+directory contains
+`trial.json`, `logs.txt`, `logs_structured.json`, `result.json`,
+`trajectory.json`, and `trajectory_summary.json` when the resource exists.
+The command does not download arbitrary trial artifact files.
+
+Selection excludes action-item votes, conflicting verdict votes, probes,
+superseded trials, missing trajectories or current-schema summaries, and votes
+invalidated by a later QA rerun. By default the command fails when fewer than `--limit`
+eligible labels exist; `--allow-fewer` makes that shortfall explicit.
+
+The hosted selection route requires a full-scope API key in the configured
+operator organization. The command is read-only and is unavailable on the
+standalone core server. A staging deployment reads staging labels; use the
+production API target to export production reviews.
 
 ## Targeting a PR Preview
 
