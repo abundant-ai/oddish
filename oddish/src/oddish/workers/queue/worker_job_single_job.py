@@ -715,7 +715,8 @@ async def run_single_worker_job(
         subject_id=job.subject_id,
     )
     attempt_duration_seconds = time.monotonic() - attempt_started_monotonic
-    if persisted_status is not None:
+    outcome_recorded = bool(persisted_status)
+    if isinstance(persisted_status, WorkerJobStatus):
         console.print(
             f"[dim]worker_job {job.id} -> {persisted_status.value} "
             f"(kind={job.kind.value}, queue_key={queue_key})[/dim]"
@@ -727,10 +728,13 @@ async def run_single_worker_job(
             execution_lane=job.execution_lane,
             duration_seconds=attempt_duration_seconds,
         )
+
+    if outcome_recorded:
         await close_worker_span(job.id, job.attempts, finished_at=outcome_at)
 
     if (
-        persisted_status == WorkerJobStatus.SUCCESS
+        outcome_recorded
+        and outcome.success is not None
         and post_success_hooks
         and job.subject_id
     ):
