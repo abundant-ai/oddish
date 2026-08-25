@@ -28,10 +28,18 @@ import {
   Code,
   Copy,
   Check,
+  Lightbulb,
+  Package,
+  Wrench,
 } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { fetcher } from "@/lib/api";
 import { formatFileSize } from "@/lib/format";
+import {
+  buildTaskFileSections,
+  taskFileSectionIdForRootNode,
+  type TaskFileSectionId,
+} from "@/lib/task-file-sections";
 import type { LineRange } from "@/lib/line-range";
 import {
   FileRenderer,
@@ -119,6 +127,16 @@ interface TreeNode {
   url?: string; // Presigned S3 URL for direct access
   size?: number; // File size in bytes
 }
+
+const TASK_FILE_SECTION_ICONS = {
+  prompt: FileText,
+  solution: Lightbulb,
+  verification: Microscope,
+  environment: Package,
+  metadata: FileCode,
+  tooling: Wrench,
+  other: FolderOpen,
+} satisfies Record<TaskFileSectionId, typeof File>;
 
 interface DirectoryListing {
   nodes: TreeNode[];
@@ -647,6 +665,51 @@ export function TaskFilesPanel({
         : fileTree,
     [fileTree, loadsTaskTreeByDirectory, rootListing?.nodes, selectedFilePath]
   );
+  const pagedTaskWrapperCandidate =
+    !fileRouteServesBytes &&
+    loadsTaskTreeByDirectory &&
+    rootListing?.status === "ready" &&
+    rootListing.cursor === null &&
+    rootListing.nodes.length === 1 &&
+    rootListing.nodes[0].type === "dir" &&
+    taskFileSectionIdForRootNode(rootListing.nodes[0]) === "other"
+      ? rootListing.nodes[0]
+      : null;
+  const pagedTaskWrapperListing = pagedTaskWrapperCandidate
+    ? directoryListings[pagedTaskWrapperCandidate.path]
+    : undefined;
+  const pagedTaskWrapper =
+    pagedTaskWrapperCandidate &&
+    pagedTaskWrapperListing?.nodes.some(
+      (node) => taskFileSectionIdForRootNode(node) !== "other"
+    )
+      ? pagedTaskWrapperCandidate
+      : null;
+  const taskSectionRootPath = pagedTaskWrapper?.path ?? "";
+  const taskSectionRootListing = pagedTaskWrapper
+    ? directoryListings[pagedTaskWrapper.path]
+    : rootListing;
+  const taskSectionRootNodes = pagedTaskWrapper
+    ? includeSelectedPathChild(
+        taskSectionRootListing?.nodes ?? [],
+        pagedTaskWrapper.path,
+        selectedFilePath
+      )
+    : visibleTree;
+  const taskFileSections = useMemo(
+    () =>
+      fileRouteServesBytes ? [] : buildTaskFileSections(taskSectionRootNodes),
+    [fileRouteServesBytes, taskSectionRootNodes]
+  );
+  const taskSectionDirectoryPaths = useMemo(
+    () =>
+      taskFileSections.flatMap((section) =>
+        section.items.flatMap((item) =>
+          item.kind === "directory" ? [item.node.path] : []
+        )
+      ),
+    [taskFileSections]
+  );
   const listedSelectedFile = selectedFilePath
     ? loadsTaskTreeByDirectory
       ? Object.values(directoryListings)
@@ -1085,6 +1148,42 @@ export function TaskFilesPanel({
     [buildListingUrl, loadsTaskTreeByDirectory]
   );
 
+  // Conventional task directories are presented as section contents rather
+  // than folder rows. Fetch only those directory pages, using the same bounded
+  // listing path and cursor state as an explicitly expanded folder. A neutral
+  // one-directory archive wrapper is resolved first, then its task-root
+  // children determine which semantic directories need pages.
+  useEffect(() => {
+    if (
+      !isOpen ||
+      activePane !== "file" ||
+      !loadsTaskTreeByDirectory ||
+      fileRouteServesBytes
+    ) {
+      return;
+    }
+
+    const directoryPaths =
+      pagedTaskWrapperCandidate && !pagedTaskWrapperListing
+        ? [pagedTaskWrapperCandidate.path]
+        : taskSectionDirectoryPaths;
+    for (const directoryPath of directoryPaths) {
+      if (!directoryListings[directoryPath]) {
+        void loadDirectoryPage(directoryPath);
+      }
+    }
+  }, [
+    activePane,
+    directoryListings,
+    fileRouteServesBytes,
+    isOpen,
+    loadDirectoryPage,
+    loadsTaskTreeByDirectory,
+    pagedTaskWrapperCandidate,
+    pagedTaskWrapperListing,
+    taskSectionDirectoryPaths,
+  ]);
+
   // Fetch root file list when panel opens
   useEffect(() => {
     if (!isOpen || activePane !== "file" || (!taskId && !filesUrl)) {
@@ -1438,19 +1537,57 @@ export function TaskFilesPanel({
     }
   }
 
-  const renderFileTree = (nodes: TreeNode[], depth = 0) => {
+  function renderDirectoryContents(node: TreeNode, depth: number) {
+    const directory = loadsTaskTreeByDirectory
+      ? directoryListings[node.path]
+      : undefined;
+    const children = loadsTaskTreeByDirectory
+      ? includeSelectedPathChild(
+          directory?.nodes ?? [],
+          node.path,
+          selectedFilePath
+        )
+      : node.children;
+
+    return (
+      <div>
+        {children ? renderFileTree(children, depth) : null}
+        {directory?.status === "loading" ? (
+          <div
+            className="text-muted-foreground flex items-center gap-1.5 py-1 text-xs"
+            style={{ paddingLeft: `${depth * 12 + 8}px` }}
+          >
+            <Loader2 className="h-3 w-3 animate-spin" />
+            Loading…
+          </div>
+        ) : null}
+        {directory?.status === "error" ? (
+          <button
+            type="button"
+            className="text-destructive hover:text-destructive/80 py-1 text-left text-xs"
+            style={{ paddingLeft: `${depth * 12 + 8}px` }}
+            onClick={() => void loadDirectoryPage(node.path, directory.cursor)}
+          >
+            Unable to load. Retry
+          </button>
+        ) : null}
+        {directory?.cursor && directory.status !== "loading" ? (
+          <button
+            type="button"
+            className="text-muted-foreground hover:text-foreground py-1 text-left text-xs"
+            style={{ paddingLeft: `${depth * 12 + 8}px` }}
+            onClick={() => void loadDirectoryPage(node.path, directory.cursor)}
+          >
+            Load more
+          </button>
+        ) : null}
+      </div>
+    );
+  }
+
+  function renderFileTree(nodes: TreeNode[], depth = 0) {
     return nodes.map((node) => {
       const isExpanded = expandedDirs.has(node.path);
-      const directory = loadsTaskTreeByDirectory
-        ? directoryListings[node.path]
-        : undefined;
-      const children = loadsTaskTreeByDirectory
-        ? includeSelectedPathChild(
-            directory?.nodes ?? [],
-            node.path,
-            selectedFilePath
-          )
-        : node.children;
       const isSelected =
         activePane === "file" && selectedFile?.path === node.path;
       const Icon =
@@ -1498,50 +1635,20 @@ export function TaskFilesPanel({
                   : "text-muted-foreground"
               }`}
             />
-            <span className="truncate">{node.name}</span>
+            <span className="min-w-0 flex-1 truncate">{node.name}</span>
+            {node.type === "file" && node.size !== undefined ? (
+              <span className="text-muted-foreground shrink-0 pl-2 text-[10px] tabular-nums">
+                {formatFileSize(node.size)}
+              </span>
+            ) : null}
           </Button>
-          {node.type === "dir" && isExpanded && (
-            <div>
-              {children ? renderFileTree(children, depth + 1) : null}
-              {directory?.status === "loading" ? (
-                <div
-                  className="text-muted-foreground flex items-center gap-1.5 py-1 text-xs"
-                  style={{ paddingLeft: `${(depth + 1) * 12 + 8}px` }}
-                >
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  Loading…
-                </div>
-              ) : null}
-              {directory?.status === "error" ? (
-                <button
-                  type="button"
-                  className="text-destructive hover:text-destructive/80 py-1 text-left text-xs"
-                  style={{ paddingLeft: `${(depth + 1) * 12 + 8}px` }}
-                  onClick={() =>
-                    void loadDirectoryPage(node.path, directory.cursor)
-                  }
-                >
-                  Unable to load. Retry
-                </button>
-              ) : null}
-              {directory?.cursor && directory.status !== "loading" ? (
-                <button
-                  type="button"
-                  className="text-muted-foreground hover:text-foreground py-1 text-left text-xs"
-                  style={{ paddingLeft: `${(depth + 1) * 12 + 8}px` }}
-                  onClick={() =>
-                    void loadDirectoryPage(node.path, directory.cursor)
-                  }
-                >
-                  Load more
-                </button>
-              ) : null}
-            </div>
-          )}
+          {node.type === "dir" && isExpanded
+            ? renderDirectoryContents(node, depth + 1)
+            : null}
         </div>
       );
     });
-  };
+  }
 
   const renderFileContent = () => {
     if (!selectedFile) {
@@ -1817,6 +1924,69 @@ export function TaskFilesPanel({
                 <p className="text-muted-foreground px-2 py-2 text-xs">
                   No files found
                 </p>
+              ) : !fileRouteServesBytes ? (
+                <>
+                  {pagedTaskWrapperCandidate && !pagedTaskWrapperListing ? (
+                    <div className="text-muted-foreground flex items-center gap-1.5 px-2 py-1 text-xs">
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      Loading task files…
+                    </div>
+                  ) : (
+                    taskFileSections.map((section) => {
+                      const SectionIcon = TASK_FILE_SECTION_ICONS[section.id];
+                      return (
+                        <section key={section.id} className="mb-3 last:mb-0">
+                          <h3 className="text-muted-foreground flex items-center gap-2 px-2 py-1.5 font-mono text-[10px] font-semibold tracking-wider uppercase sm:text-xs">
+                            <SectionIcon
+                              className="h-3.5 w-3.5 shrink-0"
+                              aria-hidden="true"
+                            />
+                            <span>{section.label}</span>
+                          </h3>
+                          {section.items.map((item) => (
+                            <div key={item.node.path}>
+                              {item.kind === "directory"
+                                ? renderDirectoryContents(item.node, 0)
+                                : renderFileTree([item.node])}
+                            </div>
+                          ))}
+                        </section>
+                      );
+                    })
+                  )}
+                  {taskSectionRootListing?.cursor ? (
+                    <button
+                      type="button"
+                      className="text-muted-foreground hover:text-foreground flex items-center gap-1.5 px-2 py-1 text-xs"
+                      onClick={() =>
+                        void loadDirectoryPage(
+                          taskSectionRootPath || null,
+                          taskSectionRootListing.cursor
+                        )
+                      }
+                      disabled={taskSectionRootListing.status === "loading"}
+                    >
+                      {taskSectionRootListing.status === "loading" ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : null}
+                      Load more
+                    </button>
+                  ) : null}
+                  {taskSectionRootListing?.status === "error" ? (
+                    <button
+                      type="button"
+                      className="text-destructive hover:text-destructive/80 px-2 py-1 text-left text-xs"
+                      onClick={() =>
+                        void loadDirectoryPage(
+                          taskSectionRootPath || null,
+                          taskSectionRootListing.cursor
+                        )
+                      }
+                    >
+                      Unable to load. Retry
+                    </button>
+                  ) : null}
+                </>
               ) : (
                 <>
                   {renderFileTree(visibleTree)}
