@@ -1211,43 +1211,6 @@ export function TaskFilesPanel({
   // default land first would report the wrong path upward and clear the
   // link's line anchor before the target file is applied.
   useEffect(() => {
-<<<<<<< HEAD
-    if (!isOpen || activePane !== "file" || taskPaneExists) return;
-    if (initialFilePath || selectedFilePath) return;
-    if (!visibleTree.length) return;
-
-    if (loadsTaskTreeByDirectory) {
-      const directoryPath = [...expandedDirs].sort(
-        (left, right) => right.split("/").length - left.split("/").length
-      )[0];
-      const listing = directoryListings[directoryPath ?? ""];
-      if (!listing || listing.status === "loading") return;
-
-      const defaultFile =
-        findNodeBySuffix(listing.nodes, "instruction.md") ??
-        listing.nodes.find((node) => node.type === "file");
-      if (defaultFile) {
-        setSelectedFilePath(defaultFile.path);
-        return;
-      }
-
-      const firstDirectory = listing.nodes.find((node) => node.type === "dir");
-      if (!firstDirectory) return;
-      setExpandedDirs((current) => {
-        if (current.has(firstDirectory.path)) return current;
-        return new Set(current).add(firstDirectory.path);
-      });
-      if (!directoryListings[firstDirectory.path]) {
-        void loadDirectoryPage(firstDirectory.path);
-      }
-      return;
-    }
-
-||||||| 6b1733eda
-    if (activePane !== "file" || taskPaneExists) return;
-    if (initialFilePathRef.current || selectedFilePath) return;
-    if (!fileTree.length) return;
-=======
     if (!isOpen || activePane !== "file" || taskPaneExists) return;
     if (initialFilePath || selectedFilePath) return;
     if (!visibleTree.length) return;
@@ -1279,32 +1242,7 @@ export function TaskFilesPanel({
       return;
     }
 
->>>>>>> origin/staging
     const defaultFile =
-<<<<<<< HEAD
-      findNodeBySuffix(visibleTree, "instruction.md") ??
-      visibleTree.find((node) => node.type === "file") ??
-      findFirstFile(visibleTree);
-    if (defaultFile) setSelectedFilePath(defaultFile.path);
-  }, [
-    activePane,
-    directoryListings,
-    expandedDirs,
-    initialFilePath,
-    isOpen,
-    loadDirectoryPage,
-    loadsTaskTreeByDirectory,
-    selectedFilePath,
-    taskPaneExists,
-    visibleTree,
-  ]);
-||||||| 6b1733eda
-      findNodeBySuffix(fileTree, "instruction.md") ??
-      fileTree.find((node) => node.type === "file") ??
-      findFirstFile(fileTree);
-    if (defaultFile) setSelectedFilePath(defaultFile.path);
-  }, [activePane, taskPaneExists, fileTree, selectedFilePath]);
-=======
       findNodeBySuffix(visibleTree, "instruction.md") ??
       visibleTree.find((node) => node.type === "file") ??
       findFirstFile(visibleTree);
@@ -1322,7 +1260,6 @@ export function TaskFilesPanel({
     taskPaneExists,
     visibleTree,
   ]);
->>>>>>> origin/staging
 
   // Load full file content (when user clicks "Load full file")
   async function loadFullFile() {
@@ -1427,26 +1364,6 @@ export function TaskFilesPanel({
       }
     }
 
-<<<<<<< HEAD
-    if (node?.type === "dir") return;
-
-    // A file URL is already an exact resource address. Selecting it does not
-    // depend on whether its containing directory page happens to include it.
-    if (selectedFilePath !== targetPath) setSelectedFilePath(targetPath);
-  }, [
-    activePane,
-    directoryListings,
-    fileTree,
-    initialFilePath,
-    isOpen,
-    loadDirectoryPage,
-    loadsTaskTreeByDirectory,
-    selectedFilePath,
-  ]);
-||||||| 6b1733eda
-    setSelectedFilePath(node.path);
-  }, [initialFilePath, fileTree]);
-=======
     if (node?.type === "dir") return;
 
     // A file URL is already an exact resource address. Selecting it does not
@@ -1463,7 +1380,6 @@ export function TaskFilesPanel({
     selectFilePath,
     selectedFilePath,
   ]);
->>>>>>> origin/staging
 
   useEffect(() => {
     if (!isOpen) return;
