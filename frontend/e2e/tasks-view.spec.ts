@@ -293,6 +293,211 @@ test.describe("authenticated task view", () => {
     ).toBe(true);
   });
 
+  test("task file sections resolve a shallow archive wrapper and page semantic directories", async ({
+    page,
+  }) => {
+    test.skip(!TASK_ID, "needs E2E_TASK_ID");
+
+    await setupClerkTestingToken({ page });
+    await page.goto("/");
+    await clerk.signIn({ page, emailAddress: CLERK_EMAIL! });
+
+    const filesPath = `/api/tasks/${TASK_ID}/files`;
+    const requestedPrefixes: string[] = [];
+    let signalWrapperRequest!: () => void;
+    const wrapperRequestStarted = new Promise<void>((resolve) => {
+      signalWrapperRequest = resolve;
+    });
+    let releaseWrapperRequest!: () => void;
+    const wrapperRequestGate = new Promise<void>((resolve) => {
+      releaseWrapperRequest = resolve;
+    });
+    await page.route(`**${filesPath}**`, async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname !== filesPath) {
+        await route.continue();
+        return;
+      }
+
+      const prefix = url.searchParams.get("prefix") ?? "";
+      const cursor = url.searchParams.get("cursor");
+      requestedPrefixes.push(`${prefix}:${cursor ?? "first"}`);
+      if (prefix === "") {
+        await route.fulfill({ json: { dirs: [{ path: "task-archive" }] } });
+        return;
+      }
+      if (prefix === "task-archive") {
+        signalWrapperRequest();
+        await wrapperRequestGate;
+        await route.fulfill({
+          json: {
+            dirs: [
+              { path: "task-archive/environment" },
+              { path: "task-archive/solution" },
+              { path: "task-archive/tests" },
+            ],
+            files: [
+              {
+                path: "task-archive/instruction.md",
+                key: "instruction.md",
+                size: 256,
+              },
+              {
+                path: "task-archive/task.toml",
+                key: "task.toml",
+                size: 128,
+              },
+            ],
+          },
+        });
+        return;
+      }
+      if (prefix === "task-archive/solution") {
+        await route.fulfill({
+          json: cursor
+            ? {
+                files: [
+                  {
+                    path: "task-archive/solution/explanation.md",
+                    key: "explanation.md",
+                    size: 2048,
+                  },
+                ],
+              }
+            : {
+                files: [
+                  {
+                    path: "task-archive/solution/solve.sh",
+                    key: "solve.sh",
+                    size: 1024,
+                  },
+                ],
+                cursor: "solution-page-2",
+              },
+        });
+        return;
+      }
+      if (prefix === "task-archive/tests") {
+        await route.fulfill({
+          json: {
+            files: [
+              {
+                path: "task-archive/tests/test.sh",
+                key: "test.sh",
+                size: 512,
+              },
+            ],
+          },
+        });
+        return;
+      }
+      if (prefix === "task-archive/environment") {
+        await route.fulfill({
+          json: { dirs: [{ path: "task-archive/environment/app" }] },
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 404,
+        json: { error: "unexpected prefix" },
+      });
+    });
+
+    await page.goto(`/tasks/${TASK_ID}?drawer=task`);
+    await page.getByRole("button", { name: "Files", exact: true }).click();
+    await wrapperRequestStarted;
+    await expect(page.getByText("Loading…", { exact: true })).toBeVisible();
+    await expect(page.getByText("task-archive", { exact: true })).toHaveCount(
+      0
+    );
+    releaseWrapperRequest();
+
+    await expect(page.getByText("Prompt", { exact: true })).toBeVisible();
+    await expect(
+      page.getByText("Reference solution", { exact: true })
+    ).toBeVisible();
+    await expect(page.getByText("Verification", { exact: true })).toBeVisible();
+    await expect(
+      page.getByText("Agent environment", { exact: true })
+    ).toBeVisible();
+    await expect(
+      page.getByText("Task metadata", { exact: true })
+    ).toBeVisible();
+    await expect(page.getByText("task-archive", { exact: true })).toHaveCount(
+      0
+    );
+    await expect(page.getByText("solve.sh", { exact: true })).toBeVisible();
+    await expect(page.getByText("1.0 KB", { exact: true })).toBeVisible();
+
+    const solutionSection = page
+      .locator("section")
+      .filter({ hasText: "Reference solution" });
+    await solutionSection.getByRole("button", { name: "Load more" }).click();
+    await expect(
+      solutionSection.getByText("explanation.md", { exact: true })
+    ).toBeVisible();
+    expect(requestedPrefixes).toContain("task-archive:first");
+    expect(requestedPrefixes).toContain("task-archive/solution:first");
+    expect(requestedPrefixes).toContain(
+      "task-archive/solution:solution-page-2"
+    );
+  });
+
+  test("semantic task sections retain root listing pagination", async ({
+    page,
+  }) => {
+    test.skip(!TASK_ID, "needs E2E_TASK_ID");
+
+    await setupClerkTestingToken({ page });
+    await page.goto("/");
+    await clerk.signIn({ page, emailAddress: CLERK_EMAIL! });
+
+    const filesPath = `/api/tasks/${TASK_ID}/files`;
+    await page.route(`**${filesPath}**`, async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname !== filesPath) {
+        await route.continue();
+        return;
+      }
+      const prefix = url.searchParams.get("prefix");
+      if (prefix === "solution") {
+        await route.fulfill({
+          json: {
+            files: [{ path: "solution/solve.sh", key: "solve.sh", size: 10 }],
+          },
+        });
+        return;
+      }
+      if (url.searchParams.get("cursor") === "root-page-2") {
+        await route.fulfill({
+          json: {
+            files: [{ path: "task.toml", key: "task.toml", size: 20 }],
+          },
+        });
+        return;
+      }
+      await route.fulfill({
+        json: {
+          dirs: [{ path: "solution" }],
+          files: [{ path: "instruction.md", key: "instruction.md", size: 30 }],
+          cursor: "root-page-2",
+        },
+      });
+    });
+
+    await page.goto(`/tasks/${TASK_ID}?drawer=task`);
+    await page.getByRole("button", { name: "Files", exact: true }).click();
+    await expect(page.getByText("Prompt", { exact: true })).toBeVisible();
+    await expect(
+      page.getByText("Reference solution", { exact: true })
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Load more" }).last().click();
+    await expect(
+      page.getByText("Task metadata", { exact: true })
+    ).toBeVisible();
+    await expect(page.getByText("task.toml", { exact: true })).toBeVisible();
+  });
+
   test("binary preview waits for its own presigned URL", async ({ page }) => {
     test.skip(!TASK_ID, "needs E2E_TASK_ID");
 
