@@ -1552,7 +1552,8 @@ export function TaskFilesPanel({
     return (
       <div>
         {children ? renderFileTree(children, depth) : null}
-        {directory?.status === "loading" ? (
+        {loadsTaskTreeByDirectory &&
+        (!directory || directory.status === "loading") ? (
           <div
             className="text-muted-foreground flex items-center gap-1.5 py-1 text-xs"
             style={{ paddingLeft: `${depth * 12 + 8}px` }}
