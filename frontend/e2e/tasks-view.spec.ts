@@ -304,6 +304,22 @@ test.describe("authenticated task view", () => {
 
     const filesPath = `/api/tasks/${TASK_ID}/files`;
     const requestedPrefixes: string[] = [];
+    let signalWrapperRequest!: () => void;
+    const wrapperRequestStarted = new Promise<void>((resolve) => {
+      signalWrapperRequest = resolve;
+    });
+    let releaseWrapperRequest!: () => void;
+    const wrapperRequestGate = new Promise<void>((resolve) => {
+      releaseWrapperRequest = resolve;
+    });
+    let signalWrapperNextPage!: () => void;
+    const wrapperNextPageStarted = new Promise<void>((resolve) => {
+      signalWrapperNextPage = resolve;
+    });
+    let releaseWrapperNextPage!: () => void;
+    const wrapperNextPageGate = new Promise<void>((resolve) => {
+      releaseWrapperNextPage = resolve;
+    });
     await page.route(`**${filesPath}**`, async (route) => {
       const url = new URL(route.request().url());
       if (url.pathname !== filesPath) {
@@ -319,6 +335,24 @@ test.describe("authenticated task view", () => {
         return;
       }
       if (prefix === "task-archive") {
+        if (cursor === "wrapper-page-2") {
+          signalWrapperNextPage();
+          await wrapperNextPageGate;
+          await route.fulfill({
+            json: {
+              files: [
+                {
+                  path: "task-archive/notes.txt",
+                  key: "notes.txt",
+                  size: 64,
+                },
+              ],
+            },
+          });
+          return;
+        }
+        signalWrapperRequest();
+        await wrapperRequestGate;
         await route.fulfill({
           json: {
             dirs: [
@@ -338,6 +372,7 @@ test.describe("authenticated task view", () => {
                 size: 128,
               },
             ],
+            cursor: "wrapper-page-2",
           },
         });
         return;
@@ -395,6 +430,14 @@ test.describe("authenticated task view", () => {
 
     await page.goto(`/tasks/${TASK_ID}?drawer=task`);
     await page.getByRole("button", { name: "Files", exact: true }).click();
+    await wrapperRequestStarted;
+    await expect(
+      page.getByText("Loading task files…", { exact: true })
+    ).toBeVisible();
+    await expect(page.getByText("task-archive", { exact: true })).toHaveCount(
+      0
+    );
+    releaseWrapperRequest();
 
     await expect(page.getByText("Prompt", { exact: true })).toBeVisible();
     await expect(
@@ -425,6 +468,18 @@ test.describe("authenticated task view", () => {
     expect(requestedPrefixes).toContain(
       "task-archive/solution:solution-page-2"
     );
+
+    await page.getByRole("button", { name: "Load more" }).last().click();
+    await wrapperNextPageStarted;
+    await expect(page.getByText("Prompt", { exact: true })).toBeVisible();
+    await expect(page.getByText("solve.sh", { exact: true })).toBeVisible();
+    await expect(
+      page.getByText("Loading task files…", { exact: true })
+    ).toHaveCount(0);
+    releaseWrapperNextPage();
+    await expect(page.getByText("Other files", { exact: true })).toBeVisible();
+    await expect(page.getByText("notes.txt", { exact: true })).toBeVisible();
+    expect(requestedPrefixes).toContain("task-archive:wrapper-page-2");
   });
 
   test("semantic task sections retain root listing pagination", async ({
