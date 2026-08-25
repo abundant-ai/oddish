@@ -1149,7 +1149,6 @@ async def _run_post_trial_hooks(trial_id: str) -> None:
                     trial.analysis_error = None
                     trial.analysis_started_at = None
                     trial.analysis_finished_at = None
-                    trial.analysis_log = None
                     # ``maybe_start_task_qa_stage`` only fires from
                     # PENDING/RUNNING. If QA already closed this task out while
                     # the attempt was still running, nothing would re-enqueue it
