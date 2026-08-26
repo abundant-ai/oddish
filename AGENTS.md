@@ -721,6 +721,21 @@ Settings are loaded from `oddish/.env`; see `oddish/env.example`,
 Keep these routing rules in sync with `oddish/src/oddish/config.py` and
 `oddish/src/oddish/workers/harbor/runner.py`:
 
+- Numinous is opt-in and **enabled on staging only**. `ODDISH_NUMINOUS_ENABLED=1`
+  registers it, and `oddish/src/oddish/runtime/registry.py` joins it FIRST, so
+  plain-CPU trials route to it ahead of Daytona. Production deliberately leaves
+  the flag unset: the single-container restricted-network bridge
+  (`workers/harbor/runner.py::_supports_auto_restricted_agent_network`) admits
+  only Daytona and Modal, so a restricted trial routed to Numinous would run
+  with no model/agent host injection, and `runtime/backends/numinous.py`
+  declares `network_egress="configurable"` without implementing a restricted
+  path of its own. Enable prod by restoring the variable in
+  `.github/workflows/modal-deploy.yml` once that bridge covers Numinous.
+  Disabling is safe in one direction only: `backend/modal_app.py` attaches the
+  `oddish-numinous` secret solely when the flag is set, and
+  `oddish/src/oddish/queue.py` persists the selected environment at submission,
+  so a deployment that has already routed trials to Numinous must drain or
+  migrate them before the flag is removed.
 - EC2 is an explicit, opt-in Harbor backend: `ODDISH_EC2_ENABLED=true` registers
   it and permits hosted `environment=ec2`, but capability ordering keeps Daytona
   as the CPU default. V1 launches one ephemeral CPU instance per trial and uses
