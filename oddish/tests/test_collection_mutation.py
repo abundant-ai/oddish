@@ -84,9 +84,7 @@ async def test_from_experiment_ids_includes_gathered_trials(session):
     await session.flush()
 
     await session.execute(
-        insert(experiment_trials).values(
-            experiment_id=source.id, trial_id=gathered.id
-        )
+        insert(experiment_trials).values(experiment_id=source.id, trial_id=gathered.id)
     )
 
     trials, _ = await resolve_collection_sources(
@@ -387,6 +385,49 @@ async def test_remove_tombstones_membership_not_the_trial(session):
 
 
 @pytest.mark.asyncio
+async def test_collection_task_unlink_revokes_qa_before_membership_write(monkeypatch):
+    from oddish.core.endpoints.collections import _unlink_task_from_collection
+
+    events: list[str] = []
+
+    class _Session:
+        async def scalar(self, *_args, **_kwargs):
+            events.append("load-org")
+            return "org1"
+
+        async def execute(self, statement, *_args, **_kwargs):
+            events.append(f"write-{statement.table.name}")
+
+    async def _revoke(
+        _session, *, experiment_id: str, org_id: str | None = None
+    ) -> bool:
+        events.append(f"revoke-{experiment_id}-{org_id}")
+        return True
+
+    async def _project(*_args, **_kwargs) -> None:
+        events.append("project-tags")
+
+    import oddish.core.qa_reports as qa_reports
+    import oddish.queue as queue
+
+    monkeypatch.setattr(qa_reports, "revoke_public_qa_report_core", _revoke)
+    monkeypatch.setattr(
+        queue, "_recompute_tag_projection_on_membership_removed", _project
+    )
+
+    await _unlink_task_from_collection(
+        _Session(), task_id="task-1", experiment_id="collection-1"
+    )
+
+    assert events == [
+        "load-org",
+        "revoke-collection-1-org1",
+        "write-task_experiments",
+        "project-tags",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_remove_unlinks_task_when_its_last_trial_leaves(session):
     """PROVE-RED: dropping the unlink step leaves a stale task_experiments row,
     which the grid reaches gathered trials through and the cost rollup prices."""
@@ -412,6 +453,123 @@ async def test_remove_unlinks_task_when_its_last_trial_leaves(session):
 
     assert resp.tasks_unlinked == 1
     assert await _live_task_links(session, coll_id) == {task_a.id}
+
+
+@pytest.mark.asyncio
+async def test_remove_and_readd_task_never_revives_old_collection_qa_link(session):
+    from oddish.core.endpoints.collections import (
+        add_to_collection_core,
+        remove_from_collection_core,
+    )
+    from oddish.core.qa_reports import (
+        create_qa_report_core,
+        get_public_qa_report_core,
+        get_public_qa_token_for_experiment,
+        publish_qa_report_core,
+    )
+    from oddish.db import QAReportModel
+
+    removed_task = _task("rm-qa-revoke")
+    keeper_task = _task("rm-qa-keeper")
+    session.add_all([removed_task, keeper_task])
+    await session.flush()
+    home = _experiment("rm-qa-home")
+    session.add(home)
+    await session.flush()
+    removed_trial = _trial(removed_task, home)
+    keeper_trial = _trial(keeper_task, home)
+    session.add_all([removed_trial, keeper_trial])
+    await session.flush()
+
+    coll_id = await _make_collection(
+        session,
+        trials=[removed_trial, keeper_trial],
+        name="published collection",
+    )
+    collection = (
+        await session.execute(
+            select(ExperimentModel).where(ExperimentModel.id == coll_id)
+        )
+    ).scalar_one()
+    collection.is_public = True
+    collection.public_token = f"experiment-{generate_id()}"
+    await session.flush()
+
+    draft = await create_qa_report_core(
+        session,
+        experiment_id=coll_id,
+        org_id="org1",
+        created_by_user_id="curator",
+    )
+    published = await publish_qa_report_core(
+        session,
+        experiment_id=coll_id,
+        org_id="org1",
+        published_by_user_id="curator",
+        expected_draft_version=draft.draft_version,
+        expected_public_token=None,
+    )
+    old_qa_token = published.public_token
+    assert old_qa_token is not None
+    assert collection.public_token is not None
+    assert (
+        await get_public_qa_report_core(
+            session,
+            experiment_token=collection.public_token,
+            qa_token=old_qa_token,
+        )
+        is not None
+    )
+
+    removed = await remove_from_collection_core(
+        session,
+        experiment_id=coll_id,
+        trial_ids=[removed_trial.id],
+        org_id="org1",
+    )
+    await session.flush()
+    assert removed.tasks_unlinked == 1
+    revoked_is_public, revoked_token = (
+        await session.execute(
+            select(QAReportModel.is_public, QAReportModel.public_token).where(
+                QAReportModel.experiment_id == coll_id
+            )
+        )
+    ).one()
+    assert revoked_is_public is False
+    assert revoked_token is None
+    assert (
+        await get_public_qa_report_core(
+            session,
+            experiment_token=collection.public_token,
+            qa_token=old_qa_token,
+        )
+        is None
+    )
+
+    added = await add_to_collection_core(
+        session,
+        experiment_id=coll_id,
+        trial_ids=[removed_trial.id],
+        org_id="org1",
+    )
+    await session.flush()
+    assert added.tasks_linked == 1
+    assert await _live_task_links(session, coll_id) == {
+        removed_task.id,
+        keeper_task.id,
+    }
+    assert (
+        await get_public_qa_token_for_experiment(session, experiment_id=coll_id) is None
+    )
+    assert (
+        await get_public_qa_report_core(
+            session,
+            experiment_token=collection.public_token,
+            qa_token=old_qa_token,
+        )
+        is None
+    )
 
 
 @pytest.mark.asyncio

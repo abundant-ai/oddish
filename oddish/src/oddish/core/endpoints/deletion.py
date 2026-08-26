@@ -13,6 +13,10 @@ from oddish.core.endpoints._common import (
     get_trial_for_org_core,
     _reset_task_verdict,
 )
+from oddish.core.qa_reports import (
+    revoke_public_qa_report_core,
+    revoke_public_qa_reports_for_task_core,
+)
 from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.db import (
     AGENT_TRIAL_KIND,
@@ -114,6 +118,11 @@ async def delete_task_core(
 
     # Unscoped: tombstone the task and all its trials.
     if experiment_id is None:
+        await revoke_public_qa_reports_for_task_core(
+            session,
+            task_id=resolved_task_id,
+            org_id=org_id,
+        )
         scoped_trial_ids = [
             row[0]
             for row in (
@@ -193,6 +202,12 @@ async def delete_task_core(
             status_code=404,
             detail=(f"Task {task_id} has no trials in experiment {experiment_id}"),
         )
+
+    await revoke_public_qa_report_core(
+        session,
+        experiment_id=experiment_id,
+        org_id=org_id,
+    )
 
     # Cancel live worker_jobs for those trials so workers release slots.
     harvest = _CancelHarvest()
@@ -329,6 +344,12 @@ async def unlink_task_from_experiment_core(
             status_code=404,
             detail=(f"Task {task_id} is not a member of experiment {experiment_id}"),
         )
+
+    await revoke_public_qa_report_core(
+        session,
+        experiment_id=experiment_id,
+        org_id=org_id,
+    )
 
     # Tombstone this experiment's trials for the task (cancel their live
     # worker_jobs first so workers stop heart-beating and release slots).
@@ -663,6 +684,12 @@ async def delete_experiment_core(
         raise HTTPException(
             status_code=404, detail=f"Experiment {experiment_id} not found"
         )
+
+    await revoke_public_qa_report_core(
+        session,
+        experiment_id=experiment_id,
+        org_id=org_id,
+    )
 
     # Tasks linked to this experiment -- snapshot them now so we can check
     # which ones orphan out after the scoped trial tombstone + link drop.

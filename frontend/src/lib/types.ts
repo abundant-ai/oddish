@@ -1235,6 +1235,8 @@ export interface PublicExperimentInfo {
   name: string;
   public_token: string;
   description: string | null;
+  /** Present only while this experiment has a published QA snapshot. */
+  qa_token?: string | null;
 }
 
 export interface ExperimentShareInfo {
@@ -1246,4 +1248,139 @@ export interface ExperimentShareInfo {
   // grades; a graded experiment points at its shadow.
   shadow_of?: string | null;
   qa_report_experiment_id?: string | null;
+}
+
+export type ExperimentQaSourceType = "pre_trial" | "verdict" | "trial_analysis";
+
+export interface ExperimentQaItemContent {
+  source_type: ExperimentQaSourceType;
+  title: string;
+  summary: string | null;
+  recommendation: string | null;
+  tier: string | null;
+  dimension: string | null;
+  file: string | null;
+  line_start: number | null;
+  line_end: number | null;
+  evidence: string | null;
+  outcome: string | null;
+  confidence: string | null;
+}
+
+export interface ExperimentQaItem extends ExperimentQaItemContent {
+  id: string;
+  source_ref: string;
+  source_label: string;
+  source_completed_at: string | null;
+  source_title: string;
+  source_summary: string | null;
+  source_recommendation: string | null;
+  source_evidence: string | null;
+  customer_note: string | null;
+  internal_note: string | null;
+  include_evidence: boolean;
+  is_visible: boolean;
+  sort_order: number;
+}
+
+export interface ExperimentQaTask {
+  id: string;
+  task_id: string;
+  task_version_id: string | null;
+  name: string;
+  summary: string | null;
+  internal_note: string | null;
+  is_visible: boolean;
+  sort_order: number;
+  items: ExperimentQaItem[];
+}
+
+export interface ExperimentQaAvailableItem extends ExperimentQaItemContent {
+  /** Stable candidate key. It is not a private report-item id. */
+  id: string;
+  source_ref: string;
+  source_label: string;
+  source_completed_at: string | null;
+  source_title: string;
+  source_summary: string | null;
+  source_recommendation: string | null;
+  source_evidence: string | null;
+  internal_note: string | null;
+  include_evidence: boolean;
+  task_id: string;
+  task_version_id: string | null;
+  task_name: string;
+}
+
+export interface ExperimentQaReport {
+  id: string;
+  experiment_id: string;
+  title: string;
+  summary: string;
+  conclusion: string;
+  customer_note: string | null;
+  internal_note: string | null;
+  draft_version: number;
+  is_public: boolean;
+  public_token: string | null;
+  published_at: string | null;
+  has_unpublished_changes: boolean;
+  scope_stale: boolean;
+  tasks: ExperimentQaTask[];
+  available_items: ExperimentQaAvailableItem[];
+  new_item_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PublicExperimentQaItem extends ExperimentQaItemContent {
+  customer_note: string | null;
+}
+
+export interface PublicExperimentQaTask {
+  name: string;
+  summary: string | null;
+  items: PublicExperimentQaItem[];
+}
+
+export interface PublicExperimentQaReport {
+  title: string;
+  summary: string;
+  conclusion: string;
+  customer_note: string | null;
+  published_at: string;
+  experiment: {
+    name: string;
+    description: string | null;
+  };
+  tasks: PublicExperimentQaTask[];
+}
+
+export interface ExperimentQaPatch {
+  expected_draft_version: number;
+  title?: string;
+  summary?: string;
+  conclusion?: string;
+  customer_note?: string | null;
+  internal_note?: string | null;
+  tasks?: Array<{
+    id: string;
+    name?: string;
+    summary?: string | null;
+    internal_note?: string | null;
+    is_visible?: boolean;
+    sort_order?: number;
+  }>;
+  items?: Array<{
+    id: string;
+    title?: string;
+    summary?: string | null;
+    recommendation?: string | null;
+    evidence?: string | null;
+    customer_note?: string | null;
+    internal_note?: string | null;
+    include_evidence?: boolean;
+    is_visible?: boolean;
+    sort_order?: number;
+  }>;
 }

@@ -692,6 +692,7 @@ extensions) — see `backend/README.md`.
 | Tasks | `GET /tasks`, `GET /tasks/browse`, `GET /tasks/browse/experiment-options` (typeahead for the experiment filter; `facets.experiments` is deprecated/always empty; the other facet lists are served from the `trial_facets` vocabulary — write-through on trial creation plus a periodic rebuild sweep, see `oddish/src/oddish/core/trial_facets.py`), `GET /tasks/{task_id}`, `GET /tasks/{task_id}/open`, `GET /tasks/{task_id}/detail`, `GET /tasks/{task_id}/versions[/{version}]`, `PUT /tasks/{task_id}/versions/{version}/default`, `POST /tasks/cancel` (optional `experiment_id` scopes the cancel to that experiment's trials so shared tasks keep running elsewhere) |
 | Task QA | `POST /tasks/{task_id}/qa/retry`, `POST /tasks/{task_id}/qa/cancel`, `POST /tasks/{task_id}/qa/backfill` |
 | Experiments | `POST /experiments/combine`, `PATCH /experiments/{experiment_id}` |
+| Curated experiment QA (hosted) | `GET/POST/PATCH /experiments/{experiment_id}/qa`, `POST /experiments/{experiment_id}/qa/sync`, `GET /experiments/{experiment_id}/qa/preview`, `POST /experiments/{experiment_id}/qa/publish`, `POST /experiments/{experiment_id}/qa/unpublish` |
 | Trials | `GET /tasks/{task_id}/trials/{index}`, `POST /trials/{trial_id}/retry` (optional `registry_auth` body), `GET /trials/{trial_id}/live` ((attempt, seq)-cursor live transcript), `GET /trials/{trial_id}/logs[/structured]`, `GET /trials/{trial_id}/trajectory`, `GET /trials/{trial_id}/result` |
 | Files | `GET /tasks/{task_id}/files[/{path}]` (`inline=false` omits listing bodies; `presign=false` omits URLs; `max_bytes=N` caps archive-backed file reads), `GET /trials/{trial_id}/files[/{path}]`, `GET /trials/{trial_id}/debug-files` |
 | Admin diagnostics | `GET /admin/slots`, `GET /admin/queue-status`, `GET /admin/orphaned-state`, `GET /admin/queue-health` |
@@ -709,6 +710,31 @@ no share tokens. Public task/trial/live/file routes must stay scoped under
 experiment; do not reintroduce `/public/tasks/{task_id}` or
 `/public/trials/{trial_id}` ID-only access. Unpublishing an experiment clears
 `public_token`, so republishing mints a fresh link and old URLs stay revoked.
+Curated QA has its own 256-bit token. Its public read is
+`GET /public/experiments/{experiment_token}/qa/{qa_token}` and requires both
+tokens. One live `qa_reports` row is allowed per experiment. Private task and
+item rows keep editable customer copy and separate source/internal text.
+New QA items start hidden and with evidence excluded. A curator must opt them
+into the public draft before publish.
+`qa_report_publications` is append-only: publish copies only the approved
+public fields into an immutable JSON snapshot, and the public route reads only
+that snapshot. It keeps private `scope_task_ids` beside the snapshot so public
+reads can confirm every published task is still in the experiment. Draft sort
+positions and hidden-row gaps are not part of the public response. Editing or
+syncing a draft never changes the live snapshot.
+Edit, publish, and unpublish require the reviewed `expected_draft_version`.
+Publish and unpublish must also match the reviewed `expected_public_token`
+(which is null before the first publish). Publish requires the experiment to
+be public first. Unpublish clears the QA token; the next publish mints a new
+token. Removing or deleting a task, and unpublishing or deleting its experiment,
+also clears the QA token. Re-linking or republishing never revives an old QA
+URL; a curator must publish QA again. A shared task's task-wide QA grader may
+live under another experiment's hidden shadow. A trial result is accepted only
+when that grader's fixed coverage names the exact trial. A task verdict is
+accepted only when all covered trials belong to the report experiment.
+Generic public task and trial responses must omit raw
+verdict, analysis, QA cost, job, and error fields so hidden QA cannot be read
+outside the curated report.
 Capability evidence links on a share page must remain inside `/share/{token}`;
 they select the shared task and trial, open the trajectory tab, and retain the
 cited step anchor. They must never point signed-out readers at authenticated

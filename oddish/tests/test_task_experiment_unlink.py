@@ -55,7 +55,8 @@ class _FakeUnlinkSession:
       2. scoped trial-id projection (``all``)
       3. UPDATE trials   SET deleted_at
       4. UPDATE task_experiments SET deleted_at
-      5. task reload (``scalar_one_or_none`` -> task ORM stand-in)
+      5. UPDATE experiment_trials SET deleted_at
+      6. task reload (``scalar_one_or_none`` -> task ORM stand-in)
     The single ``scalar`` call is the live-membership count.
     """
 
@@ -75,7 +76,7 @@ class _FakeUnlinkSession:
             return _FakeRowsResult(one_or_none_value=self.task_row)
         if idx == 2:
             return _FakeRowsResult(rows=self.trial_rows)
-        if idx == 5:
+        if idx == 6:
             return _FakeRowsResult(scalar_one_or_none_value=self.task_obj)
         return _FakeRowsResult()
 
@@ -92,21 +93,29 @@ class _FakeUnlinkSession:
 
 @pytest.fixture
 def _patched_side_effects(monkeypatch):
+    revoked_experiments: list[str] = []
+
     async def _noop_cancel_trials(*_args, **_kwargs):
         return []
 
     async def _noop_tag_hook(*_args, **_kwargs):
         return None
 
+    async def _record_qa_revoke(*_args, experiment_id: str, **_kwargs):
+        revoked_experiments.append(experiment_id)
+        return True
+
     monkeypatch.setattr(
         _deletion, "_cancel_worker_jobs_for_trials", _noop_cancel_trials
     )
+    monkeypatch.setattr(_deletion, "revoke_public_qa_report_core", _record_qa_revoke)
     # Lazy-imported inside the core function from oddish.queue.
     import oddish.queue as _queue
 
     monkeypatch.setattr(
         _queue, "_recompute_tag_projection_on_membership_removed", _noop_tag_hook
     )
+    return revoked_experiments
 
 
 @pytest.mark.asyncio
@@ -120,7 +129,7 @@ async def test_unlink_tombstones_link_and_scoped_trials_only(_patched_side_effec
     )
     session = _FakeUnlinkSession(
         task_row=("task-123", "org-1"),
-        trial_rows=[("task-123-0",), ("task-123-1",)],
+        trial_rows=[("task-123-0", None), ("task-123-1", None)],
         link_count=1,
         task_obj=task_obj,
     )
@@ -145,18 +154,19 @@ async def test_unlink_tombstones_link_and_scoped_trials_only(_patched_side_effec
         "worker_targets": [],
     }
     assert session.delete_called is False
+    assert _patched_side_effects == ["exp-9"]
     # Verdict cache cleared because the live trial set shrank.
     assert task_obj.verdict is None
 
-    # Only two writes: UPDATE trials and UPDATE task_experiments. Crucially,
-    # no UPDATE against the tasks table -- the task is never tombstoned.
+    # The scoped trial, direct membership, and gathered memberships are
+    # tombstoned. The shared task itself is never tombstoned.
     writes = [
         stmt
         for stmt in session.execute_statements
         if getattr(stmt, "__visit_name__", None) == "update"
     ]
     write_tables = [stmt.table.name for stmt in writes]
-    assert write_tables == ["trials", "task_experiments"]
+    assert write_tables == ["trials", "task_experiments", "experiment_trials"]
     assert "tasks" not in write_tables
     # Bulk trial UPDATE stays cheap; the soft-delete filter handles reads.
     trials_update = next(s for s in writes if s.table.name == "trials")
@@ -184,13 +194,17 @@ async def test_unlink_with_no_trials_drops_only_the_association(_patched_side_ef
 
     assert result["deleted"]["trials_deleted"] == 0
     assert result["unlinked"] is True
+    assert _patched_side_effects == ["exp-9"]
     writes = [
         stmt
         for stmt in session.execute_statements
         if getattr(stmt, "__visit_name__", None) == "update"
     ]
-    # No trials -> no UPDATE trials; just the association is dropped.
-    assert [stmt.table.name for stmt in writes] == ["task_experiments"]
+    # No direct trials means only direct and gathered memberships are updated.
+    assert [stmt.table.name for stmt in writes] == [
+        "task_experiments",
+        "experiment_trials",
+    ]
 
 
 @pytest.mark.asyncio
