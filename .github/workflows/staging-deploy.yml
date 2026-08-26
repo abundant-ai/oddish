@@ -48,6 +48,10 @@ jobs:
       # Hold LLM trials until a task's nop/oracle baselines validate it (mirrors
       # modal-deploy.yml's prod setting).
       ODDISH_GATE_LLM_ON_BASELINES: "1"
+      # Numinous Cloud execution backend (merged in #1344, opt-in). Staging
+      # runs it enabled so the routing ships to main only after soaking here.
+      # Attaches the oddish-numinous secret (env main): API URL + key.
+      ODDISH_NUMINOUS_ENABLED: "1"
       # GKE (TPU) execution backend, mirroring modal-deploy.yml's prod block.
       # backend/modal_app.py only bakes env vars prefixed ODDISH_GKE_ into the
       # deployed image (its ENV_VARS dict filters on that prefix); an unprefixed
