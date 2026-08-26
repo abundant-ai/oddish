@@ -27,9 +27,9 @@ from oddish.db import (  # noqa: E402
     WorkerJobKind,
     WorkerJobStatus,
 )
-from oddish.queue import TaskQAStageAdmission  # noqa: E402
 from oddish.workers.jobs import handlers as handlers_module  # noqa: E402
 from oddish.workers.jobs.handlers import TrialJobHandler  # noqa: E402
+from oddish.workers.queue.trial_handler import TrialJobResult  # noqa: E402
 from oddish.workers.queue.worker_job_single_job import ClaimedWorkerJob  # noqa: E402
 
 
@@ -62,13 +62,14 @@ def _fake_get_session_factory(
     return _get_session
 
 
-def _patch_run(monkeypatch, fn_name: str):
+def _patch_run(monkeypatch, fn_name: str, *, result=None):
     """Install a no-op stub for the underlying ``run_*_job`` call."""
     called = {"args": None, "kwargs": None}
 
     async def _stub(*args, **kwargs):
         called["args"] = args
         called["kwargs"] = kwargs
+        return result
 
     monkeypatch.setattr(handlers_module, fn_name, _stub)
     return called
@@ -141,17 +142,18 @@ async def test_trial_handler_preserves_structured_retry_schedule(monkeypatch):
     trial_row = SimpleNamespace(
         status=TrialStatus.RETRYING,
         error_message="Claude provider API failure (http_status=529)",
-        result={
-            "harbor_exception": {
-                "retry_reason": "provider_overload",
-                "retry_after_seconds": 75.0,
-            }
-        },
     )
     monkeypatch.setattr(
         handlers_module, "get_session", _fake_get_session_factory(trial_row)
     )
-    _patch_run(monkeypatch, "run_trial_job")
+    _patch_run(
+        monkeypatch,
+        "run_trial_job",
+        result=TrialJobResult(
+            retry_reason="provider_overload",
+            retry_after_seconds=75.0,
+        ),
+    )
 
     outcome = await TrialJobHandler().run(_trial_claim())
 

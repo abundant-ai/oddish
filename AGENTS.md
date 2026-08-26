@@ -134,21 +134,24 @@ High-level flow:
    collections, and combined experiments follow the same create-only owner rule.
 3. Workers claim one `worker_jobs` row at a time, dispatch to the registered
    handler for its kind, write heartbeats, and exit.
-   Agent failures cross from Harbor into Oddish through
-   `oddish.workers.harbor.failure_info`, which writes a structured
-   `trials.result.harbor_exception` payload containing the failure category,
-   phase, stable code, and retry decision. Claude Code's Oddish wrapper retries
-   transient installer transport exits three times in the existing sandbox.
-   During execution it reads Claude's final stream-JSON result: HTTP 429/5xx
-   and confirmed unstatused transient API failures with a session id are
-   resumed in the same sandbox and exact Claude session up to five times,
-   preserving the working tree and session transcript. If those attempts are
-   exhausted, the worker-job retry uses the structured reason and provider
-   `retry_after` hint for its bounded fresh-sandbox backoff. Permanent provider
-   4xx and unstatused failures that Harbor identifies as authentication, model,
-   usage-limit, or safety errors do not consume a new sandbox attempt. Modal
-   diagnostic logs add neutral runtime-diagnostic guidance; only Modal's exact
-   `Image build for im-… failed` error is labeled an image-build failure.
+   Agent failures cross from Harbor into Oddish through one policy in
+   `oddish.workers.harbor.failure_info`. A provider adapter may write a bounded,
+   versioned `provider-failure.json` sidecar for its final failed process
+   invocation; the Claude adapter clears stale evidence at logical-run start and
+   never infers failure from an earlier result in its appended transcript. The
+   worker classifies that sidecar and Harbor's exception before S3 cleanup. The
+   resulting `FailureInfo` drives terminal/retry state, the diagnostic
+   `trials.result.harbor_exception` payload, and worker-job backoff directly;
+   scheduling must not read its decision back from the diagnostic JSON. Claude
+   Code's wrapper retries transient installer transport exits three times. It
+   resumes structured HTTP 429/5xx errors and typed unstatused connection errors
+   in the existing sandbox up to five times, always using the first failed
+   invocation's session id so the working tree and transcript stay continuous.
+   A final transient failure passes its bounded provider `retry_after` hint to a
+   fresh-sandbox attempt. Permanent provider 4xx and authentication, model,
+   usage-limit, or safety errors do not consume another sandbox. Modal diagnostic
+   logs add neutral runtime-diagnostic guidance; only the exact Modal error
+   `Image build for im-… failed` is labeled an image-build failure.
 4. Trajectory analysis is **task-scoped** and runs as a trial: when every
    agent trial of a task is terminal, one QA trial (`trials.kind = 'qa'`)
    is created on the same task. Its agent classifies

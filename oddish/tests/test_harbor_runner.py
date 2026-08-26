@@ -30,6 +30,11 @@ from oddish.workers.agents.grok_build_trajectory import (  # noqa: E402
 from oddish.workers.harbor import runner as harbor_runner  # noqa: E402
 from oddish.workers.harbor import agent_config as harbor_agent_config  # noqa: E402
 from oddish.workers.harbor import storage as harbor_storage  # noqa: E402
+from oddish.workers.harbor.failure_info import (  # noqa: E402
+    PROVIDER_FAILURE_FILENAME,
+    ProviderFailureEvidence,
+    classify_harbor_failure,
+)
 from oddish.workers.harbor.restricted_network import (  # noqa: E402
     RUNTIME_ALLOWED_HOSTS_ATTR,
     RUNTIME_MODEL_NAME_ATTR,
@@ -3806,16 +3811,16 @@ def test_store_trial_results_honors_structured_permanent_provider_failure(
     """A structured provider 400 must not consume fresh-sandbox attempts."""
     trial = _make_retry_decision_trial(attempts=1, max_attempts=6)
     _install_retry_decision_session_fakes(monkeypatch, trial)
-    agent_log = tmp_path / "trial" / "agent" / "claude-code.txt"
+    agent_log = tmp_path / "trial" / "agent" / PROVIDER_FAILURE_FILENAME
     agent_log.parent.mkdir(parents=True)
     agent_log.write_text(
         json.dumps(
-            {
-                "type": "result",
-                "terminal_reason": "api_error",
-                "api_error_status": 400,
-                "session_id": "session-bad-request",
-            }
+            ProviderFailureEvidence(
+                provider="claude-code",
+                terminal_reason="api_error",
+                http_status=400,
+                resume_token="session-bad-request",
+            ).as_dict()
         ),
         encoding="utf-8",
     )
@@ -3845,35 +3850,33 @@ def test_store_trial_results_honors_structured_permanent_provider_failure(
     assert trial.result["harbor_exception"]["http_status"] == 400
 
 
-def test_store_trial_results_retries_unstatused_provider_api_failure(
+def test_store_trial_results_retries_unstatused_typed_provider_failure(
     monkeypatch, tmp_path
 ):
     """A confirmed unstatused API error retains its fresh-sandbox attempt."""
     trial = _make_retry_decision_trial(attempts=1, max_attempts=6)
     _install_retry_decision_session_fakes(monkeypatch, trial)
-    agent_log = tmp_path / "trial" / "agent" / "claude-code.txt"
+    agent_log = tmp_path / "trial" / "agent" / PROVIDER_FAILURE_FILENAME
     agent_log.parent.mkdir(parents=True)
     agent_log.write_text(
         json.dumps(
-            {
-                "type": "result",
-                "subtype": "success",
-                "is_error": True,
-                "terminal_reason": "api_error",
-                "session_id": "session-disconnected",
-                "result": "API Error: upstream disconnected",
-            }
+            ProviderFailureEvidence(
+                provider="claude-code",
+                terminal_reason="api_error",
+                resume_token="session-disconnected",
+                summary="API Error: Connection closed mid-response",
+            ).as_dict()
         ),
         encoding="utf-8",
     )
     outcome = harbor_runner.HarborOutcome(
         reward=None,
-        error="UnknownApiError: upstream disconnected",
+        error="ApiConnectionClosedError: upstream disconnected",
         exit_code=-1,
         duration_sec=5.0,
         job_result_path=None,
         job_dir=tmp_path,
-        exception_type="UnknownApiError",
+        exception_type="ApiConnectionClosedError",
     )
 
     asyncio.run(
@@ -4145,7 +4148,17 @@ def test_non_retryable_set_includes_known_terminal_failures():
         "RewardFileEmptyError",
         "VerifierOutputParseError",
     }
-    assert expected <= trial_handler._NON_RETRYABLE_EXCEPTION_TYPES
+    for exception_type in expected:
+        failure = classify_harbor_failure(
+            SimpleNamespace(
+                error=f"{exception_type}: terminal failure",
+                exception_type=exception_type,
+                phase_timing={},
+                job_dir=None,
+            )
+        )
+        assert failure is not None
+        assert failure.retryable is False, exception_type
 
 
 def test_extract_outcome_from_job_result_carries_exception_type(monkeypatch):

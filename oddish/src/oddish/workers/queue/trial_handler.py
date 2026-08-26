@@ -14,7 +14,6 @@ import uuid
 from pathlib import Path
 
 from harbor.models.environment_type import EnvironmentType
-from harbor.models.job.config import RetryConfig
 from harbor.trial.hooks import TrialEvent, TrialHookEvent
 
 # Only the abundant-ai Harbor fork defines ENVIRONMENT_PROVISIONED; against
@@ -79,8 +78,7 @@ from oddish.worker.probe_staging import (
     stage_cli_mount,
 )
 from oddish.workers.analysis_trials import is_analysis_kind
-from oddish.workers.harbor.ephemeral import HarborOverrideImportError
-from oddish.workers.harbor.failure_info import classify_harbor_failure
+from oddish.workers.harbor.failure_info import FailureInfo, classify_harbor_failure
 from oddish.workers.harbor.outcome import merged_trial_result
 from oddish.workers.harbor.quota_control import QuotaPauseControlError
 from oddish.workers.harbor.runner import (
@@ -296,6 +294,14 @@ class TrialExecutionResult:
     tailed_attempt: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class TrialJobResult:
+    """Retry scheduling metadata returned directly to ``TrialJobHandler``."""
+
+    retry_reason: str | None = None
+    retry_after_seconds: float | None = None
+
+
 @dataclass(slots=True)
 class SandboxCostState:
     resources: SpanResources
@@ -319,34 +325,6 @@ def _is_agent_timeout_error_message(error: str | None) -> bool:
     if not error:
         return False
     return "AgentTimeoutError" in error or "Agent execution timed out" in error
-
-
-# Source of truth for "the trial finished with an error that retrying in a
-# fresh sandbox cannot fix" lives in Harbor's RetryConfig. We resolve the
-# default exclude set at import time and treat any HarborOutcome whose
-# exception_type lands in here as terminal — without this, a dying-sandbox
-# AddTestsDirError on a 10h ruby-rust-port trial gets re-queued up to
-# ``trial.max_attempts`` times against fresh sandboxes that hit the same
-# failure mode for the same upstream reason.
-# A broken override ref (bad source/sha, dep/import mismatch) can't be fixed by
-# a fresh sandbox either, so the ephemeral engine's terminal failure joins the
-# set. Quota pause control failures are also terminal because the Harbor runner
-# returns snapshot/resume failures as HarborOutcome values instead of raising
-# them through ``_execute_trial``. These entries block re-queue of attempts
-# 2..max without burning the already-counted first attempt.
-_NON_RETRYABLE_EXCEPTION_TYPES: frozenset[str] = frozenset(
-    RetryConfig.model_fields["exclude_exceptions"].default_factory() or set()
-) | {
-    "AddTestsDirError",
-    HarborOverrideImportError.__name__,
-    QuotaPauseControlError.__name__,
-}
-
-
-def _is_non_retryable_outcome(outcome: HarborOutcome | None) -> bool:
-    if outcome is None or outcome.exception_type is None:
-        return False
-    return outcome.exception_type in _NON_RETRYABLE_EXCEPTION_TYPES
 
 
 def _expects_no_reward(trial: object) -> bool:
@@ -902,6 +880,7 @@ async def _store_trial_results(
     execution_error: str | None,
     artifact_upload_error: str | None = None,
     execution_retryable: bool = True,
+    failure_info: FailureInfo | None = None,
     probe_analysis: dict | None = None,
     worker_id: str | None = None,
     worker_job_id: str | None = None,
@@ -961,7 +940,7 @@ async def _store_trial_results(
             return False, False
 
         if outcome:
-            failure_info = classify_harbor_failure(outcome)
+            failure_info = failure_info or classify_harbor_failure(outcome)
             is_timeout = _is_agent_timeout_error_message(outcome.error)
             # Analysis importers read their required result from durable storage.
             # A verifier reward is not a successful analysis run when that
@@ -1007,7 +986,7 @@ async def _store_trial_results(
                 outcome.error,
                 outcome.exception_type,
                 outcome.verifier_summary,
-                failure_info,
+                failure_info.as_dict() if failure_info is not None else None,
             )
 
             trial.has_trajectory = outcome.has_trajectory
@@ -1032,10 +1011,7 @@ async def _store_trial_results(
                     console.print(
                         f"[red]Trial {trial_id} FAILED (Modal image build)[/red]"
                     )
-                elif _is_non_retryable_outcome(outcome) or (
-                    failure_info is not None
-                    and failure_info.get("retryable") is False
-                ):
+                elif failure_info is not None and not failure_info.retryable:
                     trial.status = TrialStatus.FAILED
                     trial.finished_at = utcnow()
                     console.print(
@@ -1682,7 +1658,7 @@ async def run_trial_job(
     modal_function_call_id: str | None = None,
     worker_job_id: str | None = None,
     worker_job_attempt: int | None = None,
-) -> None:
+) -> TrialJobResult | None:
     """
     Execute a claimed trial.
 
@@ -1709,7 +1685,7 @@ async def run_trial_job(
             console.print(
                 f"[yellow]Trial {trial_id} already processed (idempotent), skipping[/yellow]"
             )
-            return
+            return None
 
     prepared_trial = await _prepare_trial_run(
         trial_id=trial_id,
@@ -1718,7 +1694,7 @@ async def run_trial_job(
         modal_function_call_id=modal_function_call_id,
     )
     if prepared_trial is None:
-        return
+        return None
 
     byok_resolution = None
     if byok.byok_resolver_registered() and not byok.harbor_config_is_ephemeral(
@@ -1750,7 +1726,7 @@ async def run_trial_job(
             claim.values(llm_key_hash=funding_key_hash, updated_at=utcnow())
         )
     if not getattr(claimed, "rowcount", 0):
-        return
+        return None
 
     # Determine task path: download from S3 if needed, or use local path
     temp_task_dir = None
@@ -1889,6 +1865,8 @@ async def run_trial_job(
     )
 
     execution: TrialExecutionResult | None = None
+    failure_info: FailureInfo | None = None
+    job_result: TrialJobResult | None = None
     trial_terminal = False
     heartbeat_stop = asyncio.Event()
     heartbeat_interrupt: asyncio.Future[None] = (
@@ -1944,6 +1922,10 @@ async def run_trial_job(
             await asyncio.gather(execution_task, return_exceptions=True)
             heartbeat_interrupt.result()
         execution = await execution_task
+        if execution.outcome is not None:
+            # Classify while the local Harbor artifacts still exist. S3-backed
+            # workers delete the uploaded job directory before settlement.
+            failure_info = classify_harbor_failure(execution.outcome)
         await _settle_compute_costs(cost_state, execution.outcome)
 
         # Upload trial results to S3.
@@ -2048,6 +2030,7 @@ async def run_trial_job(
                 execution_error=execution.execution_error,
                 artifact_upload_error=artifact_upload_error,
                 execution_retryable=execution.retryable,
+                failure_info=failure_info,
                 probe_analysis=probe_analysis,
                 worker_id=worker_id,
                 worker_job_id=worker_job_id,
@@ -2060,6 +2043,11 @@ async def run_trial_job(
             billed_user_id=prepared_trial.billed_user_id,
             run_post_trial_hooks=run_post_trial_hooks,
         )
+        if not trial_terminal and failure_info is not None:
+            job_result = TrialJobResult(
+                retry_reason=failure_info.retry_reason,
+                retry_after_seconds=failure_info.retry_after_seconds,
+            )
     finally:
         heartbeat_stop.set()
         if not heartbeat_interrupt.done():
@@ -2108,3 +2096,4 @@ async def run_trial_job(
         # Same for the job-scoped credential token (revoke on terminal status).
         if job_scoped_bundle is not None and worker_job_id:
             await _revoke_job_credentials(worker_job_id, trial_id)
+    return job_result

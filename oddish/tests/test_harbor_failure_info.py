@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+from oddish.workers.agents.claude_code import parse_claude_provider_failure
 from oddish.workers.harbor.failure_info import (
+    PROVIDER_FAILURE_FILENAME,
+    ProviderFailureEvidence,
     classify_harbor_failure,
-    parse_claude_provider_failure,
+    classify_provider_failure,
 )
 
 
@@ -31,10 +34,14 @@ def test_parse_structured_claude_overload_preserves_provider_identifiers():
     assert failure is not None
     assert failure.http_status == 529
     assert failure.request_id == "req-456"
-    assert failure.session_id == "session-123"
+    assert failure.resume_token == "session-123"
     assert failure.retry_after_seconds == 12.5
-    assert failure.retry_reason == "provider_overload"
-    assert failure.exception_class.__name__ == "ApiOverloadedError"
+    decision = classify_provider_failure(
+        failure,
+        exception_type="ApiOverloadedError",
+    )
+    assert decision.retry_reason == "provider_overload"
+    assert decision.retryable is True
 
 
 def test_parse_uses_final_result_event_after_a_resumed_success():
@@ -56,6 +63,18 @@ def test_parse_uses_final_result_event_after_a_resumed_success():
     assert parse_claude_provider_failure(stream) is None
 
 
+def test_stdout_terminal_result_takes_precedence_over_json_stderr():
+    success = json.dumps(
+        {
+            "type": "result",
+            "is_error": False,
+            "terminal_reason": "completed",
+        }
+    )
+
+    assert parse_claude_provider_failure(success, _event()) is None
+
+
 def test_success_result_text_mentioning_529_is_not_a_failure():
     success = json.dumps(
         {
@@ -75,9 +94,11 @@ def test_authentication_failure_is_permanent_and_typed():
     failure = parse_claude_provider_failure(_event(api_error_status=401))
 
     assert failure is not None
-    assert failure.retryable is False
-    assert failure.exception_class.__name__ == "AgentAuthenticationError"
-    assert failure.as_failure_info()["retryable"] is False
+    decision = classify_provider_failure(
+        failure,
+        exception_type="AgentAuthenticationError",
+    )
+    assert decision.retryable is False
 
 
 def test_parse_status_from_structured_result_message_fallback():
@@ -87,7 +108,6 @@ def test_parse_status_from_structured_result_message_fallback():
 
     assert failure is not None
     assert failure.http_status == 529
-    assert failure.retry_reason == "provider_overload"
 
 
 def test_parse_permanent_status_from_confirmed_api_error_message():
@@ -97,18 +117,38 @@ def test_parse_permanent_status_from_confirmed_api_error_message():
 
     assert failure is not None
     assert failure.http_status == 400
-    assert failure.retryable is False
+    assert (
+        classify_provider_failure(failure, exception_type="UnknownApiError").retryable
+        is False
+    )
 
 
-def test_unstatused_api_error_defaults_to_retryable():
+def test_unstatused_unknown_api_error_is_not_assumed_transient():
     failure = parse_claude_provider_failure(
         _event(api_error_status=None, result="API Error: upstream disconnected")
     )
 
     assert failure is not None
     assert failure.http_status is None
-    assert failure.retryable is True
-    assert failure.exception_class.__name__ == "UnknownApiError"
+    decision = classify_provider_failure(failure, exception_type="UnknownApiError")
+    assert decision.retryable is False
+
+
+def test_unstatused_typed_connection_error_is_retryable():
+    failure = parse_claude_provider_failure(
+        _event(
+            api_error_status=None,
+            result="API Error: Connection closed mid-response",
+        )
+    )
+
+    assert failure is not None
+    decision = classify_provider_failure(
+        failure,
+        exception_type="ApiConnectionClosedError",
+    )
+    assert decision.retryable is True
+    assert decision.retry_reason == "provider_server_error"
 
 
 def test_classify_agent_setup_transport_failure():
@@ -119,7 +159,10 @@ def test_classify_agent_setup_transport_failure():
         job_dir=None,
     )
 
-    assert classify_harbor_failure(outcome) == {
+    failure = classify_harbor_failure(outcome)
+    assert failure is not None
+    assert failure.as_dict() == {
+        "schema_version": 1,
         "category": "agent_install",
         "phase": "agent_setup",
         "code": "NetworkConnectionError",
@@ -139,15 +182,32 @@ def test_classify_exact_modal_image_build_failure_as_permanent():
     failure = classify_harbor_failure(outcome)
 
     assert failure is not None
-    assert failure["category"] == "environment_build"
-    assert failure["phase"] == "environment_setup"
-    assert failure["retryable"] is False
+    assert failure.category == "environment_build"
+    assert failure.phase == "environment_setup"
+    assert failure.retryable is False
+
+
+def test_image_build_mention_without_exact_failure_remains_retryable():
+    outcome = SimpleNamespace(
+        error="RuntimeError: Image build for im-abc123 timed out",
+        exception_type="RuntimeError",
+        phase_timing={"environment_setup": {}},
+        job_dir=None,
+    )
+
+    failure = classify_harbor_failure(outcome)
+
+    assert failure is not None
+    assert failure.category == "environment_build"
+    assert failure.retryable is True
 
 
 def test_classify_reads_structured_provider_failure_from_job_artifact(tmp_path):
-    log = tmp_path / "trial" / "agent" / "claude-code.txt"
+    log = tmp_path / "trial" / "agent" / PROVIDER_FAILURE_FILENAME
     log.parent.mkdir(parents=True)
-    log.write_text(_event(), encoding="utf-8")
+    failure = parse_claude_provider_failure(_event())
+    assert failure is not None
+    log.write_text(json.dumps(failure.as_dict()), encoding="utf-8")
     outcome = SimpleNamespace(
         error="UnknownApiError: command failed",
         exception_type="UnknownApiError",
@@ -157,26 +217,36 @@ def test_classify_reads_structured_provider_failure_from_job_artifact(tmp_path):
 
     failure = classify_harbor_failure(outcome)
 
-    assert failure == {
+    assert failure is not None
+    assert failure.as_dict() == {
         "category": "provider_api",
         "phase": "agent_execution",
         "code": "http_529",
+        "schema_version": 1,
         "retryable": True,
         "retry_reason": "provider_overload",
+        "provider": "claude-code",
         "terminal_reason": "api_error",
         "http_status": 529,
         "request_id": "req-456",
         "session_id": "session-123",
         "retry_after_seconds": 12.5,
-        "message": "API Error: 529 Overloaded",
+        "summary": "API Error: 529 Overloaded",
     }
 
 
 def test_classify_unstatused_known_permanent_provider_failure(tmp_path):
-    log = tmp_path / "trial" / "agent" / "claude-code.txt"
+    log = tmp_path / "trial" / "agent" / PROVIDER_FAILURE_FILENAME
     log.parent.mkdir(parents=True)
     log.write_text(
-        _event(api_error_status=None, result="API Error: Not logged in"),
+        json.dumps(
+            ProviderFailureEvidence(
+                provider="claude-code",
+                terminal_reason="api_error",
+                resume_token="session-123",
+                summary="API Error: Not logged in",
+            ).as_dict()
+        ),
         encoding="utf-8",
     )
     outcome = SimpleNamespace(
@@ -189,5 +259,37 @@ def test_classify_unstatused_known_permanent_provider_failure(tmp_path):
     failure = classify_harbor_failure(outcome)
 
     assert failure is not None
-    assert "http_status" not in failure
-    assert failure["retryable"] is False
+    assert "http_status" not in failure.as_dict()
+    assert failure.retryable is False
+
+
+def test_provider_failure_artifact_bounds_untrusted_fields():
+    payload = ProviderFailureEvidence(
+        provider="p" * 200,
+        terminal_reason="r" * 200,
+        request_id="i" * 400,
+        resume_token="s" * 400,
+        retry_after_seconds=100_000,
+        summary="m" * 2_000,
+    ).as_dict()
+
+    assert len(payload["provider"]) == 120
+    assert len(payload["terminal_reason"]) == 120
+    assert len(payload["request_id"]) == 256
+    assert len(payload["resume_token"]) == 256
+    assert payload["retry_after_seconds"] == 960.0
+    assert len(payload["summary"]) == 500
+
+
+def test_oddish_specific_terminal_failure_is_consistent_in_metadata():
+    outcome = SimpleNamespace(
+        error="QuotaPauseControlError: snapshot failed",
+        exception_type="QuotaPauseControlError",
+        phase_timing={},
+        job_dir=None,
+    )
+
+    failure = classify_harbor_failure(outcome)
+
+    assert failure is not None
+    assert failure.retryable is False

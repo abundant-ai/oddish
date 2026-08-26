@@ -25,17 +25,18 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import shlex
 from importlib.metadata import Distribution, PackageNotFoundError, version
-from typing import Any, override
+from typing import Any, cast, override
 
 from harbor.agents.installed.base import (
-    ApiConnectionClosedError,
+    AgentAuthenticationError,
     ApiInternalServerError,
     ApiOverloadedError,
     ApiRateLimitError,
-    ApiResponseStalledError,
     BaseEnvironment,
+    ModelNotFoundError,
     NetworkConnectionError,
     NonZeroAgentExitCodeError,
     UnknownApiError,
@@ -44,8 +45,10 @@ from harbor.agents.installed.claude_code import ClaudeCode
 
 from oddish.core.harbor_source import harbor_sandbox_requirement
 from oddish.workers.harbor.failure_info import (
-    ClaudeProviderFailure,
-    parse_claude_provider_failure,
+    PROVIDER_FAILURE_FILENAME,
+    FailureInfo,
+    ProviderFailureEvidence,
+    classify_provider_failure,
 )
 
 logger = logging.getLogger(__name__)
@@ -60,14 +63,118 @@ _RESUME_PROMPT = (
     "The previous request failed with a transient provider API error. "
     "Continue the original task from where you left off."
 )
-_TRANSIENT_PROVIDER_ERRORS = (
-    ApiRateLimitError,
-    ApiInternalServerError,
-    ApiOverloadedError,
-    ApiConnectionClosedError,
-    ApiResponseStalledError,
-    UnknownApiError,
-)
+_API_ERROR_MESSAGE_RE = re.compile(r"\bAPI error\b", re.IGNORECASE)
+_API_STATUS_MESSAGE_RE = re.compile(r"\b(?:API error:\s*)?([45]\d\d)\b", re.IGNORECASE)
+
+
+def _coerce_http_status(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        status = int(value)
+    except (TypeError, ValueError):
+        return None
+    return status if 100 <= status <= 599 else None
+
+
+def _coerce_retry_after_seconds(event: dict[str, Any]) -> float | None:
+    milliseconds = event.get("retry_after_ms", event.get("retryAfterMs"))
+    try:
+        if milliseconds is not None:
+            return max(0.0, float(milliseconds) / 1000.0)
+        seconds = event.get("retry_after", event.get("retryAfter"))
+        return max(0.0, float(seconds)) if seconds is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _event_string(event: dict[str, Any], *keys: str) -> str | None:
+    for key in keys:
+        value = event.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _claude_result_failure(event: Any) -> ProviderFailureEvidence | None:
+    if not isinstance(event, dict) or event.get("type") != "result":
+        return None
+
+    is_error = event.get("is_error", event.get("isError"))
+    terminal_reason = event.get("terminal_reason", event.get("terminalReason"))
+    status = _coerce_http_status(
+        event.get(
+            "api_error_status",
+            event.get("apiErrorStatus", event.get("http_status")),
+        )
+    )
+    message = event.get("result")
+    if not isinstance(message, str):
+        error = event.get("error")
+        message = _event_string(error, "message") if isinstance(error, dict) else None
+
+    if is_error is False:
+        return None
+    has_api_error_signal = (
+        terminal_reason == "api_error"
+        or status is not None
+        or is_error is True
+        and message is not None
+        and _API_ERROR_MESSAGE_RE.search(message) is not None
+    )
+    if not has_api_error_signal:
+        return None
+
+    if status is None and message:
+        match = _API_STATUS_MESSAGE_RE.search(message)
+        if match:
+            status = int(match.group(1))
+    return ProviderFailureEvidence(
+        provider="claude-code",
+        terminal_reason=str(terminal_reason or "api_error"),
+        http_status=status,
+        request_id=_event_string(event, "request_id", "requestId"),
+        resume_token=_event_string(event, "session_id", "sessionId"),
+        retry_after_seconds=_coerce_retry_after_seconds(event),
+        summary=message,
+    )
+
+
+def parse_claude_provider_failure(
+    *streams: str | None,
+) -> ProviderFailureEvidence | None:
+    """Parse only the final Claude result event from one process invocation."""
+    for stream in streams:
+        last_result: dict[str, Any] | None = None
+        for raw_line in (stream or "").splitlines():
+            line = raw_line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(event, dict) and event.get("type") == "result":
+                last_result = event
+        if last_result is not None:
+            return _claude_result_failure(last_result)
+    return None
+
+
+def _provider_exception_class(
+    failure: ProviderFailureEvidence,
+) -> type[NonZeroAgentExitCodeError]:
+    if failure.http_status in {401, 403}:
+        return cast(type[NonZeroAgentExitCodeError], AgentAuthenticationError)
+    if failure.http_status == 404:
+        return cast(type[NonZeroAgentExitCodeError], ModelNotFoundError)
+    if failure.http_status == 429:
+        return cast(type[NonZeroAgentExitCodeError], ApiRateLimitError)
+    if failure.http_status == 529:
+        return cast(type[NonZeroAgentExitCodeError], ApiOverloadedError)
+    if failure.http_status is not None and 500 <= failure.http_status < 600:
+        return cast(type[NonZeroAgentExitCodeError], ApiInternalServerError)
+    return cast(type[NonZeroAgentExitCodeError], UnknownApiError)
 
 
 def _installed_harbor_git_pin() -> tuple[str, str] | None:
@@ -150,9 +257,12 @@ class OddishClaudeCode(ClaudeCode):
     :class:`OddishProbeClaudeCode` derives from it.
     """
 
+    _resume: bool
+
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        self._last_provider_failure: ClaudeProviderFailure | None = None
+        self._last_provider_failure: ProviderFailureEvidence | None = None
+        self._last_provider_decision: FailureInfo | None = None
         self._resume_session_id: str | None = None
         self._append_stream_log = False
 
@@ -189,18 +299,70 @@ class OddishClaudeCode(ClaudeCode):
             return super()._classify_exec_error(command, result)
 
         self._last_provider_failure = failure
-        exception_class = failure.exception_class
+        exception_class = _provider_exception_class(failure)
         if failure.http_status is None:
             text_error = super()._classify_exec_error(command, result)
             if type(text_error) is not NonZeroAgentExitCodeError:
                 exception_class = type(text_error)
+        self._last_provider_decision = classify_provider_failure(
+            failure,
+            exception_type=exception_class.__name__,
+        )
+        summary_fields = [f"terminal_reason={failure.terminal_reason}"]
+        if failure.http_status is not None:
+            summary_fields.append(f"http_status={failure.http_status}")
+        if failure.request_id:
+            summary_fields.append(f"request_id={failure.request_id}")
+        if failure.resume_token:
+            summary_fields.append(f"session_id={failure.resume_token}")
         detail = (
             f"Command failed (exit {result.return_code}): {command}\n"
             f"stdout: {self._truncate_output(result.stdout)}\n"
             f"stderr: {self._truncate_output(result.stderr)}\n"
-            f"{failure.summary()}"
+            f"Claude provider API failure ({', '.join(summary_fields)})"
         )
         return exception_class(detail, return_code=result.return_code)
+
+    async def _persist_final_provider_failure(
+        self,
+        environment: BaseEnvironment,
+        failure: ProviderFailureEvidence,
+    ) -> None:
+        """Write only the final failed invocation's normalized provider facts."""
+        payload = json.dumps(failure.as_dict(), sort_keys=True)
+        try:
+            self.logs_dir.mkdir(parents=True, exist_ok=True)
+            path = self.logs_dir / PROVIDER_FAILURE_FILENAME
+            temporary = path.with_suffix(".tmp")
+            temporary.write_text(payload, encoding="utf-8")
+            temporary.replace(path)
+        except OSError:
+            logger.warning("Could not persist provider failure sidecar locally")
+
+        # Non-mounted Harbor environments download /logs/agent after the agent
+        # phase. Mirror the sidecar there so that download cannot discard the
+        # locally written copy. Failure classification remains best-effort; the
+        # original provider exception must always be the one Harbor records.
+        try:
+            await environment.exec(
+                command=(
+                    "mkdir -p /logs/agent && "
+                    f"printf %s {shlex.quote(payload)} > "
+                    f"/logs/agent/{PROVIDER_FAILURE_FILENAME}"
+                )
+            )
+        except Exception:
+            logger.warning("Could not mirror provider failure sidecar into sandbox")
+
+    async def _clear_provider_failure(self, environment: BaseEnvironment) -> None:
+        """Remove evidence left by an earlier logical run in this log directory."""
+        (self.logs_dir / PROVIDER_FAILURE_FILENAME).unlink(missing_ok=True)
+        try:
+            await environment.exec(
+                command=f"rm -f /logs/agent/{PROVIDER_FAILURE_FILENAME}"
+            )
+        except Exception:
+            logger.debug("Could not clear provider failure sidecar in sandbox")
 
     @override
     async def run(
@@ -211,20 +373,31 @@ class OddishClaudeCode(ClaudeCode):
         original_session_id = self._resume_session_id
         original_append = self._append_stream_log
         next_instruction = instruction
+        canonical_session_id: str | None = None
         try:
+            await self._clear_provider_failure(environment)
             for resume_count in range(_PROVIDER_MAX_RESUMES + 1):
                 self._last_provider_failure = None
+                self._last_provider_decision = None
                 try:
                     await super().run(next_instruction, environment, context)
                     return
-                except _TRANSIENT_PROVIDER_ERRORS:
+                except NonZeroAgentExitCodeError:
                     failure = self._last_provider_failure
+                    decision = self._last_provider_decision
+                    if canonical_session_id is None and failure is not None:
+                        canonical_session_id = failure.resume_token
                     if (
                         failure is None
-                        or not failure.retryable
-                        or not failure.session_id
+                        or decision is None
+                        or not decision.retryable
+                        or not canonical_session_id
                         or resume_count == _PROVIDER_MAX_RESUMES
                     ):
+                        if failure is not None:
+                            await self._persist_final_provider_failure(
+                                environment, failure
+                            )
                         raise
 
                     delay = failure.retry_after_seconds
@@ -235,14 +408,14 @@ class OddishClaudeCode(ClaudeCode):
                         "Claude provider failure %s; resuming session %s in %.1fs "
                         "(%s/%s)",
                         failure.http_status or failure.terminal_reason,
-                        failure.session_id,
+                        canonical_session_id,
                         delay,
                         resume_count + 1,
                         _PROVIDER_MAX_RESUMES,
                     )
                     await asyncio.sleep(delay)
                     self._resume = True
-                    self._resume_session_id = failure.session_id
+                    self._resume_session_id = canonical_session_id
                     self._append_stream_log = True
                     next_instruction = _RESUME_PROMPT
         finally:
@@ -252,7 +425,10 @@ class OddishClaudeCode(ClaudeCode):
 
     @override
     def _build_claude_command(self, escaped_instruction: str, extra_flags: str) -> str:
-        command = super()._build_claude_command(escaped_instruction, extra_flags)
+        command = cast(
+            str,
+            super()._build_claude_command(escaped_instruction, extra_flags),
+        )
         if self._resume_session_id:
             command = command.replace(
                 "--continue ",

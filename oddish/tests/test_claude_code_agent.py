@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 from harbor.agents.installed.base import (
     AgentAuthenticationError,
+    ApiConnectionClosedError,
     ApiOverloadedError,
     NetworkConnectionError,
     UnknownApiError,
@@ -21,7 +22,11 @@ from oddish.workers.agents.claude_code import (
     OddishProbeClaudeCode,
     _pinned_harbor_requirement,
 )
-from oddish.workers.harbor.failure_info import ClaudeProviderFailure
+from oddish.workers.harbor.failure_info import (
+    PROVIDER_FAILURE_FILENAME,
+    ProviderFailureEvidence,
+    classify_provider_failure,
+)
 
 
 @pytest.mark.asyncio
@@ -254,7 +259,8 @@ def test_unstatused_overload_uses_harbor_text_classification(tmp_path):
 
     assert isinstance(error, ApiOverloadedError)
     assert agent._last_provider_failure is not None
-    assert agent._last_provider_failure.retryable is True
+    assert agent._last_provider_decision is not None
+    assert agent._last_provider_decision.retryable is True
 
 
 def test_unstatused_authentication_error_stays_permanent(tmp_path):
@@ -297,12 +303,17 @@ async def test_provider_overload_resumes_same_session_and_honors_retry_hint(
             )
         )
         if len(calls) == 1:
-            agent._last_provider_failure = ClaudeProviderFailure(
+            agent._last_provider_failure = ProviderFailureEvidence(
+                provider="claude-code",
                 terminal_reason="api_error",
                 http_status=529,
                 request_id="req-1",
-                session_id="session-1",
+                resume_token="session-1",
                 retry_after_seconds=17.0,
+            )
+            agent._last_provider_decision = classify_provider_failure(
+                agent._last_provider_failure,
+                exception_type="ApiOverloadedError",
             )
             raise ApiOverloadedError("overloaded", return_code=1)
 
@@ -328,7 +339,43 @@ async def test_provider_overload_resumes_same_session_and_honors_retry_hint(
 
 
 @pytest.mark.asyncio
-async def test_unstatused_unknown_api_error_resumes_same_session(tmp_path, monkeypatch):
+async def test_multiple_provider_resumes_keep_first_session_id(tmp_path, monkeypatch):
+    agent = OddishClaudeCode(logs_dir=tmp_path)
+    sessions: list[str | None] = []
+    delays: list[float] = []
+
+    async def _run(_self, _instruction, _environment, _context):
+        sessions.append(agent._resume_session_id)
+        if len(sessions) <= 2:
+            evidence = ProviderFailureEvidence(
+                provider="claude-code",
+                terminal_reason="api_error",
+                http_status=529,
+                resume_token=f"session-{len(sessions)}",
+            )
+            agent._last_provider_failure = evidence
+            agent._last_provider_decision = classify_provider_failure(
+                evidence,
+                exception_type="ApiOverloadedError",
+            )
+            raise ApiOverloadedError("overloaded", return_code=1)
+
+    async def _sleep(delay):
+        delays.append(delay)
+
+    monkeypatch.setattr(ClaudeCode, "run", _run)
+    monkeypatch.setattr(claude_code_agent.asyncio, "sleep", _sleep)
+
+    await agent.run("original task", environment=object(), context=object())
+
+    assert sessions == [None, "session-1", "session-1"]
+    assert delays == [60.0, 120.0]
+
+
+@pytest.mark.asyncio
+async def test_unstatused_typed_connection_error_resumes_same_session(
+    tmp_path, monkeypatch
+):
     agent = OddishClaudeCode(logs_dir=tmp_path)
     calls = 0
     delays: list[float] = []
@@ -337,12 +384,17 @@ async def test_unstatused_unknown_api_error_resumes_same_session(tmp_path, monke
         nonlocal calls
         calls += 1
         if calls == 1:
-            agent._last_provider_failure = ClaudeProviderFailure(
+            agent._last_provider_failure = ProviderFailureEvidence(
+                provider="claude-code",
                 terminal_reason="api_error",
-                session_id="session-unknown",
-                message="API Error: upstream disconnected",
+                resume_token="session-unknown",
+                summary="API Error: Connection closed mid-response",
             )
-            raise UnknownApiError("provider API error", return_code=1)
+            agent._last_provider_decision = classify_provider_failure(
+                agent._last_provider_failure,
+                exception_type="ApiConnectionClosedError",
+            )
+            raise ApiConnectionClosedError("provider API error", return_code=1)
 
     async def _sleep(delay):
         delays.append(delay)
@@ -365,11 +417,16 @@ async def test_permanent_unknown_api_error_does_not_resume(tmp_path, monkeypatch
     async def _run(_self, _instruction, _environment, _context):
         nonlocal calls
         calls += 1
-        agent._last_provider_failure = ClaudeProviderFailure(
+        agent._last_provider_failure = ProviderFailureEvidence(
+            provider="claude-code",
             terminal_reason="api_error",
             http_status=400,
-            session_id="session-invalid-request",
-            message="API Error: 400 invalid request",
+            resume_token="session-invalid-request",
+            summary="API Error: 400 invalid request",
+        )
+        agent._last_provider_decision = classify_provider_failure(
+            agent._last_provider_failure,
+            exception_type="UnknownApiError",
         )
         raise UnknownApiError("invalid request", return_code=1)
 
@@ -384,6 +441,65 @@ async def test_permanent_unknown_api_error_does_not_resume(tmp_path, monkeypatch
 
     assert calls == 1
     assert delays == []
+    payload = json.loads((tmp_path / PROVIDER_FAILURE_FILENAME).read_text())
+    assert payload["http_status"] == 400
+    assert payload["resume_token"] == "session-invalid-request"
+
+
+@pytest.mark.asyncio
+async def test_final_generic_crash_does_not_persist_stale_resumed_failure(
+    tmp_path, monkeypatch
+):
+    agent = OddishClaudeCode(logs_dir=tmp_path)
+    calls = 0
+
+    async def _run(_self, _instruction, _environment, _context):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            evidence = ProviderFailureEvidence(
+                provider="claude-code",
+                terminal_reason="api_error",
+                http_status=529,
+                resume_token="session-1",
+            )
+            agent._last_provider_failure = evidence
+            agent._last_provider_decision = classify_provider_failure(
+                evidence,
+                exception_type="ApiOverloadedError",
+            )
+            raise ApiOverloadedError("overloaded", return_code=1)
+        raise UnknownApiError("process exited without a result event", return_code=1)
+
+    async def _sleep(_delay):
+        return None
+
+    monkeypatch.setattr(ClaudeCode, "run", _run)
+    monkeypatch.setattr(claude_code_agent.asyncio, "sleep", _sleep)
+
+    with pytest.raises(UnknownApiError):
+        await agent.run("original task", environment=object(), context=object())
+
+    assert calls == 2
+    assert not (tmp_path / PROVIDER_FAILURE_FILENAME).exists()
+
+
+@pytest.mark.asyncio
+async def test_success_clears_provider_failure_from_previous_logical_run(
+    tmp_path, monkeypatch
+):
+    sidecar = tmp_path / PROVIDER_FAILURE_FILENAME
+    sidecar.write_text('{"stale": true}', encoding="utf-8")
+    agent = OddishClaudeCode(logs_dir=tmp_path)
+
+    async def _run(_self, _instruction, _environment, _context):
+        return None
+
+    monkeypatch.setattr(ClaudeCode, "run", _run)
+
+    await agent.run("original task", environment=object(), context=object())
+
+    assert not sidecar.exists()
 
 
 def test_resume_command_uses_exact_session_and_appends_stream_log(tmp_path):
