@@ -34,17 +34,39 @@ from oddish.workers.agents.network import normalize_domain_or_url
 
 from .model_hosts import (
     _ANTHROPIC_HOSTS as _ANTHROPIC_RUNTIME_HOSTS,
+)
+from .model_hosts import (
     _CURSOR_RUNTIME_HOSTS,
-    _GEMINI_HOSTS as _GEMINI_RUNTIME_HOSTS,
-    _OPENAI_HOSTS as _OPENAI_RUNTIME_HOSTS,
-    _XAI_HOSTS as _XAI_RUNTIME_HOSTS,
-    AZURE_BASE_URL_KEYS as _AZURE_BASE_URL_KEYS,
-    CURSOR_BASE_URL_KEYS as _CURSOR_BASE_URL_KEYS,
-    GEMINI_BASE_URL_KEYS as _GEMINI_BASE_URL_KEYS,
-    GEMINI_OAUTH_ENV_KEYS as _GEMINI_OAUTH_ENV_KEYS,
-    KNOWN_TRANSPORT_BASE_URL_KEYS as _KNOWN_TRANSPORT_BASE_URL_KEYS,
-    OPENAI_BASE_URL_KEYS as _STOCK_OPENAI_BASE_URL_KEYS,
+    ANTIGRAVITY_RUNTIME_HOSTS,
+    ANTIGRAVITY_STARTUP_HOSTS,
     outbound_hosts_for_model,
+)
+from .model_hosts import (
+    _GEMINI_HOSTS as _GEMINI_RUNTIME_HOSTS,
+)
+from .model_hosts import (
+    _OPENAI_HOSTS as _OPENAI_RUNTIME_HOSTS,
+)
+from .model_hosts import (
+    _XAI_HOSTS as _XAI_RUNTIME_HOSTS,
+)
+from .model_hosts import (
+    AZURE_BASE_URL_KEYS as _AZURE_BASE_URL_KEYS,
+)
+from .model_hosts import (
+    CURSOR_BASE_URL_KEYS as _CURSOR_BASE_URL_KEYS,
+)
+from .model_hosts import (
+    GEMINI_BASE_URL_KEYS as _GEMINI_BASE_URL_KEYS,
+)
+from .model_hosts import (
+    GEMINI_OAUTH_ENV_KEYS as _GEMINI_OAUTH_ENV_KEYS,
+)
+from .model_hosts import (
+    KNOWN_TRANSPORT_BASE_URL_KEYS as _KNOWN_TRANSPORT_BASE_URL_KEYS,
+)
+from .model_hosts import (
+    OPENAI_BASE_URL_KEYS as _STOCK_OPENAI_BASE_URL_KEYS,
 )
 
 
@@ -656,6 +678,69 @@ def _gemini_profile(
     )
 
 
+def _antigravity_profile(
+    agent_class: type[Any],
+    agent_config: AgentConfig,
+    resolved_env: Mapping[str, str],
+) -> RestrictedNetworkProfile:
+    env = dict(resolved_env)
+    uses_oauth = bool(env.get("GEMINI_OAUTH_CREDS_PATH")) or env.get(
+        "GEMINI_FORCE_OAUTH", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    uses_vertex = env.get("GOOGLE_GENAI_USE_VERTEXAI", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    has_custom_base_url = any(env.get(key, "").strip() for key in _GEMINI_BASE_URL_KEYS)
+    if uses_oauth:
+        raise RestrictedNetworkProfileError(
+            "Restricted Antigravity CLI phases do not support OAuth transport; "
+            "use GEMINI_API_KEY auth (agy headless mode) with bounded hosts."
+        )
+    if uses_vertex and not has_custom_base_url:
+        raise RestrictedNetworkProfileError(
+            "Restricted Antigravity CLI phases require an explicit "
+            "GOOGLE_GEMINI_BASE_URL when Vertex routing is requested; note the "
+            "agy agent itself ignores Vertex variables and runs API-key auth."
+        )
+    if env.get("AGY_ADC_AUTH", "").strip().lower() in {"1", "true", "yes", "on"}:
+        raise RestrictedNetworkProfileError(
+            "Restricted Antigravity CLI phases do not support ADC auth "
+            "(AGY_ADC_AUTH): the enterprise platform's service hosts are not "
+            "bounded by this profile. Use GEMINI_API_KEY auth."
+        )
+    hosts = _selected_transport_hosts(
+        agent_config,
+        resolved_env,
+        base_url_keys=_consumed_base_url_keys_for_class(agent_class, agent_config),
+        # agy is transport-authoritative like gemini-cli: modelProvider=gemini
+        # fronts the Gemini API (or the explicit base URL), so pin the host and
+        # do not let model-id inference substitute another provider's host.
+        default_hosts=ANTIGRAVITY_RUNTIME_HOSTS,
+        infer_model=False,
+    )
+    # A configured base URL REPLACES the resolved transport, so the startup
+    # probes have to be unioned back on rather than passed as a default: they
+    # are not transport at all, and agy stalls to the agent deadline if their
+    # SYNs are dropped. Without this, a custom Gemini endpoint silently
+    # narrowed the allowlist to that one host.
+    hosts = tuple(dict.fromkeys((*hosts, *ANTIGRAVITY_STARTUP_HOSTS)))
+    return RestrictedNetworkProfile(
+        outbound_hosts=hosts,
+        # No kwarg_overrides / env_overrides: agy has no settings-level web-tool
+        # exclusion (OddishAntigravityCli docstring); the allowlist above is the
+        # only web bound — and E2E proved it sufficient: under a task-level
+        # allowlist bounded to ANTIGRAVITY_RUNTIME_HOSTS, agy's read_url_content
+        # tool and shell curl both failed closed (agy 1.1.19 wrote "NO WEB
+        # ACCESS"), so its web tooling executes inside the container where the
+        # network boundary governs it. No server-side web capability bypasses
+        # the allowlist, which is what this flag attests.
+        server_web_disabled=True,
+    )
+
+
 def _unattested_stock_harness_profile(
     agent_class: type[Any],
     agent_config: AgentConfig,
@@ -697,6 +782,11 @@ _COMPATIBILITY_PROFILES: dict[str, _RestrictedAgentSpec] = {
         _no_base_url_keys,
         pins_own_transport=True,
     ),
+    "harbor.agents.installed.antigravity_cli:AntigravityCli": _RestrictedAgentSpec(
+        _unattested_stock_harness_profile,
+        _gemini_base_url_keys,
+        pins_own_transport=True,
+    ),
     "harbor.agents.nop:NopAgent": _RestrictedAgentSpec(
         _transport_free_profile, _no_base_url_keys
     ),
@@ -730,7 +820,7 @@ _COMPATIBILITY_PROFILES: dict[str, _RestrictedAgentSpec] = {
     "oddish.workers.agents.codex:AzureCompatibleCodex": _RestrictedAgentSpec(
         _codex_profile, _openai_base_url_keys
     ),
-    # grok-build and gemini-cli are transport-authoritative in exactly the sense
+    # grok-build, gemini-cli, and antigravity-cli are transport-authoritative in exactly the sense
     # Cursor is: their profiles pin egress to xAI / Gemini (infer_model=False),
     # so the worker-private Azure deployment id must not be substituted for the
     # running model -- the sandbox would carry that identity while only being
@@ -742,6 +832,9 @@ _COMPATIBILITY_PROFILES: dict[str, _RestrictedAgentSpec] = {
     ),
     "oddish.workers.agents.gemini_cli:OddishGeminiCli": _RestrictedAgentSpec(
         _gemini_profile, _gemini_base_url_keys, pins_own_transport=True
+    ),
+    "oddish.workers.agents.antigravity_cli:OddishAntigravityCli": _RestrictedAgentSpec(
+        _antigravity_profile, _gemini_base_url_keys, pins_own_transport=True
     ),
     "oddish.workers.agents.cursor_cli:OddishCursorCli": _RestrictedAgentSpec(
         _cursor_profile,

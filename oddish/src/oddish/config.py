@@ -89,6 +89,7 @@ class _GkeCoordsSource(PydanticBaseSettingsSource):
 _FIXED_AGENT_PROVIDERS: dict[str, str] = {
     "claude-code": "bedrock",
     "gemini-cli": "gemini",
+    "antigravity-cli": "gemini",
     "codex": "openai",
     "grok-build": "xai",
 }
@@ -1393,6 +1394,13 @@ class Settings(BaseSettings):
     # still applies as the idle backstop.
     daytona_ephemeral: bool = True
 
+    # Numinous Cloud backend (opt-in). When enabled it registers cheap-first,
+    # ahead of Daytona, so capability negotiation routes plain-CPU trials to
+    # it. Requires NUMINOUS_API_URL / NUMINOUS_API_KEY and a Harbor pin that
+    # includes EnvironmentType.NUMINOUS (companion Harbor branch
+    # `numinous-environment`).
+    numinous_enabled: bool = False
+
     ec2_enabled: bool = False
     ec2_region: str | None = None
     ec2_ami_id: str | None = None
@@ -1443,7 +1451,10 @@ class Settings(BaseSettings):
     # Harbor's own default is on-demand; oddish keeps flex-start, which is
     # what hosted TPU trials have always run and what the accelerator quota in
     # this project is shaped for.
-    gke_provisioning_mode: str = "flex-start"
+    # No default: the mode ships to trials only when a deployment states
+    # one, and a silent fleet-wide default is exactly what overrode every
+    # task's own choice. None means "not configured".
+    gke_provisioning_mode: str | None = None
     # Auto-build missing task images via the Cloud Build SDK instead of
     # failing on require_prebuilt_image. Spends minutes of the attempt's
     # budget on first-run tasks, so hosted deployments opt in explicitly.
@@ -1663,7 +1674,10 @@ class Settings(BaseSettings):
         and worker containers, which carry the lean default Harbor with no GKE
         extra, and only the ``gke`` variant image has that enum to import.
         """
-        if self.gke_provisioning_mode not in GKE_PROVISIONING_MODES:
+        if (
+            self.gke_provisioning_mode is not None
+            and self.gke_provisioning_mode not in GKE_PROVISIONING_MODES
+        ):
             valid = ", ".join(repr(m) for m in GKE_PROVISIONING_MODES)
             raise ValueError(
                 f"ODDISH_GKE_PROVISIONING_MODE={self.gke_provisioning_mode!r} "

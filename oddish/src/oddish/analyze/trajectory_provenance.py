@@ -44,6 +44,14 @@ from oddish.analyze.trajectory_tool_calls import (
 _WRITE_TOOLS: dict[str, frozenset[str]] = {
     "claude-code": frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"}),
     "gemini-cli": frozenset({"write_file", "replace"}),
+    "antigravity-cli": frozenset(
+        {
+            "write_to_file",
+            "edit_file",
+            "replace_file_content",
+            "multi_replace_file_content",
+        }
+    ),
     "grok-build": frozenset({"write", "search_replace"}),
     "opencode": frozenset({"write", "edit"}),
 }

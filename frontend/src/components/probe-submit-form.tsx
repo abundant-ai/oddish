@@ -18,6 +18,7 @@ const AGENTS = [
   { value: "claude-code", label: "claude-code" },
   { value: "codex", label: "codex" },
   { value: "gemini-cli", label: "gemini-cli" },
+  { value: "antigravity-cli", label: "antigravity-cli" },
 ];
 
 const MODELS_BY_AGENT: Record<string, { value: string; label: string }[]> = {
@@ -28,6 +29,9 @@ const MODELS_BY_AGENT: Record<string, { value: string; label: string }[]> = {
   codex: [{ value: "openai/gpt-5.4-codex", label: "gpt-5.4-codex" }],
   "gemini-cli": [
     { value: "google/gemini-3.1-pro-preview", label: "gemini-3.1-pro-preview" },
+  ],
+  "antigravity-cli": [
+    { value: "google/gemini-3.7-flash", label: "gemini-3.7-flash" },
   ],
 };
 

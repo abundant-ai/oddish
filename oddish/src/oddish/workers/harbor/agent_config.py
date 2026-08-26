@@ -57,6 +57,9 @@ _ODDISH_CURSOR_CLI_IMPORT_PATH = "oddish.workers.agents.cursor_cli:OddishCursorC
 _ODDISH_GROK_BUILD_IMPORT_PATH = "oddish.workers.agents.grok_build:OddishGrokBuild"
 _ODDISH_OPENCODE_IMPORT_PATH = "oddish.workers.agents.opencode:OddishOpenCode"
 _ODDISH_GEMINI_CLI_IMPORT_PATH = "oddish.workers.agents.gemini_cli:OddishGeminiCli"
+_ODDISH_ANTIGRAVITY_CLI_IMPORT_PATH = (
+    "oddish.workers.agents.antigravity_cli:OddishAntigravityCli"
+)
 _ODDISH_MINI_SWE_IMPORT_PATH = "oddish.workers.agents.mini_swe_agent:OddishMiniSweAgent"
 _ODDISH_META_MINI_SWE_IMPORT_PATH = (
     "oddish.workers.agents.mini_swe_agent:OddishMetaMiniSweAgent"
@@ -455,6 +458,17 @@ def _apply_gemini_cli_oddish_wrapper(agent_config: AgentConfig) -> None:
     agent_config.import_path = _ODDISH_GEMINI_CLI_IMPORT_PATH
 
 
+def _apply_antigravity_cli_oddish_wrapper(agent_config: AgentConfig) -> None:
+    """Route Antigravity CLI through the attested Oddish wrapper."""
+    if agent_config.import_path is not None:
+        return
+    if (agent_config.name or "").strip().lower() != "antigravity-cli":
+        return
+
+    agent_config.name = None
+    agent_config.import_path = _ODDISH_ANTIGRAVITY_CLI_IMPORT_PATH
+
+
 def _apply_cursor_cli_oddish_wrapper(agent_config: AgentConfig) -> None:
     """Route Cursor through the restricted-Compose compatibility wrapper."""
     if agent_config.import_path is not None:
@@ -706,14 +720,14 @@ def _build_agent_config(
 
     # Gate on agent_keeps_public_model_identity: a harness that routes the model
     # through its own service (Cursor) or pins its egress to one provider
-    # (gemini-cli -> Gemini, grok-build -> xAI) never talks to the OpenAI/Azure
-    # endpoint, so its model must NOT be rewritten to the private Azure
-    # deployment id -- it needs the public model identity, and a pinned
-    # transport could never resolve a worker-private deployment id anyway.
-    # Agents that talk to OpenAI directly (codex, mini-swe on an openai model --
-    # prefixed or bare) still get the rewrite. This is the source the runner's
-    # runtime-model swap later undoes for serialization/redaction; both gate the
-    # same way.
+    # (gemini-cli / antigravity-cli -> Gemini, grok-build -> xAI) never talks
+    # to the OpenAI/Azure endpoint, so its model must NOT be rewritten to the
+    # private Azure deployment id -- it needs the public model identity, and a
+    # pinned transport could never resolve a worker-private deployment id
+    # anyway. Agents that talk to OpenAI directly (codex, mini-swe on an
+    # openai model -- prefixed or bare) still get the rewrite. This is the
+    # source the runner's runtime-model swap later undoes for
+    # serialization/redaction; both gate the same way.
     if _agent_uses_openai_provider(
         agent_config
     ) and not agent_keeps_public_model_identity(agent_config):

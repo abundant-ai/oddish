@@ -875,6 +875,24 @@ def _log_trial_metering_integrity(
     )
 
 
+def _artifact_subprefix(harbor_config: dict | None) -> str | None:
+    """Analysis trials upload under a self-labeling segment.
+
+    QA, audit, and summarize trials share the subject task's trial-id
+    sequence and, by design, its storage neighborhood -- and trial ids
+    repeat across environments that share a bucket. Without the label, an
+    analysis agent's session under a colliding prefix reads as the subject
+    trial's own execution (a real misdiagnosis: an imported audit's sandbox
+    log was mistaken for a TPU trial's runtime).
+    """
+    if not isinstance(harbor_config, dict):
+        return None
+    mode = harbor_config.get("mode")
+    if mode in ("qa", "audit", "summarize"):
+        return f"analysis-{mode}"
+    return None
+
+
 async def _store_trial_results(
     *,
     trial_id: str,
@@ -1949,6 +1967,7 @@ async def run_trial_job(
                         if job_scoped_bundle is not None
                         else None
                     ),
+                    subprefix=_artifact_subprefix(prepared_trial.trial_harbor_config),
                 )
                 console.print(
                     f"[dim]Uploaded trial results to S3: {trial_s3_key}[/dim]"

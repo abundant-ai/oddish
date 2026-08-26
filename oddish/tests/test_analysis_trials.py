@@ -2246,6 +2246,58 @@ def test_the_importer_stamps_derived_facts_onto_the_summary():
     assert component["revisits_own_edits"] is True
 
 
+def test_antigravity_provenance_reads_agys_pascalcase_path_argument():
+    """agy records its write path as ``TargetFile``, and its own tool names.
+
+    Harbor's ATIF writer copies agy's tool name AND its argument dict through
+    unchanged, so both spellings below are what a real trajectory holds --
+    the shapes here are taken from a recorded agy 1.1.19 run. Before
+    ``TargetFile`` was a known path key, every agy write resolved to no path:
+    the agent was reported provenance-CAPABLE while never attributing a single
+    file, which reads as "it did not revisit its own work" rather than "we
+    cannot see". ``edit_file`` and ``multi_replace_file_content`` cover the
+    other half -- a write tool absent from the map is a revisit that never
+    counts. Each of the three writes a DISTINCT path, so every name has to be
+    recognized for the final set to be complete.
+    """
+    from oddish.analyze.trajectory_provenance import authored_paths_by_step
+
+    def write(step_id: int, name: str, path: str) -> dict:
+        return {
+            "step_id": step_id,
+            "tool_calls": [{"function_name": name, "arguments": {"TargetFile": path}}],
+        }
+
+    trajectory = {
+        "agent": "antigravity-cli",
+        "steps": [
+            {
+                "step_id": 1,
+                "tool_calls": [
+                    {
+                        "function_name": "write_to_file",
+                        "arguments": {
+                            "CodeContent": "Hello, world!\n",
+                            "Overwrite": True,
+                            "TargetFile": "/app/hello.txt",
+                        },
+                    }
+                ],
+            },
+            write(2, "edit_file", "/app/edited.py"),
+            write(3, "multi_replace_file_content", "/app/multi.py"),
+            {"step_id": 4, "tool_calls": []},
+        ],
+    }
+
+    prior = authored_paths_by_step(trajectory)
+    # Strictly "before": the step that creates a file is authoring it.
+    assert prior[1] == set()
+    assert prior[2] == {"/app/hello.txt"}
+    assert prior[3] == {"/app/hello.txt", "/app/edited.py"}
+    assert prior[4] == {"/app/hello.txt", "/app/edited.py", "/app/multi.py"}
+
+
 @pytest.mark.asyncio
 async def test_no_analysis_trial_is_created_for_a_deleted_task():
     """Needs a database. A tombstoned task must never get analysis spend."""

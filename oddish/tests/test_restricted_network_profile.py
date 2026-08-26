@@ -15,6 +15,8 @@ from harbor.agents.installed.gemini_cli import GeminiCli
 
 from oddish.workers.harbor import agent_config as agent_config_builder
 from oddish.workers.harbor import runner
+from oddish.workers.agents.antigravity_cli import OddishAntigravityCli
+from oddish.workers.harbor.model_hosts import ANTIGRAVITY_STARTUP_HOSTS
 from oddish.workers.agents.codex import OddishCodex
 from oddish.workers.agents.gemini_cli import OddishGeminiCli
 from oddish.workers.harbor.restricted_network import (
@@ -490,6 +492,192 @@ async def test_gemini_installs_authoritative_system_web_tool_policy(
     assert "google_web_search" in command
     assert "web_fetch" in command
     assert "chmod 0444" in command
+
+
+@pytest.mark.parametrize(
+    "resolved_env",
+    [
+        {"GEMINI_FORCE_OAUTH": "1"},
+        {"GEMINI_OAUTH_CREDS_PATH": "/x"},
+    ],
+)
+def test_antigravity_oauth_transport_fails_closed(monkeypatch, resolved_env) -> None:
+    for key in (
+        "GEMINI_FORCE_OAUTH",
+        "GEMINI_OAUTH_CREDS_PATH",
+        "GOOGLE_GENAI_USE_VERTEXAI",
+        "GOOGLE_GEMINI_BASE_URL",
+        "GEMINI_API_BASE_URL",
+        "GOOGLE_API_BASE_URL",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    config = AgentConfig(
+        import_path="oddish.workers.agents.antigravity_cli:OddishAntigravityCli",
+        model_name="google/model",
+    )
+
+    with pytest.raises(RestrictedNetworkProfileError) as exc_info:
+        restricted_network_profile_for_config(config, resolved_env=resolved_env)
+
+    assert "Antigravity" in str(exc_info.value)
+    assert "OAuth transport" in str(exc_info.value)
+
+
+def test_antigravity_vertex_requires_explicit_base_url(monkeypatch) -> None:
+    for key in (
+        "GEMINI_FORCE_OAUTH",
+        "GEMINI_OAUTH_CREDS_PATH",
+        "GOOGLE_GENAI_USE_VERTEXAI",
+        "GOOGLE_GEMINI_BASE_URL",
+        "GEMINI_API_BASE_URL",
+        "GOOGLE_API_BASE_URL",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    config = AgentConfig(
+        import_path="oddish.workers.agents.antigravity_cli:OddishAntigravityCli",
+        model_name="google/model",
+    )
+
+    with pytest.raises(RestrictedNetworkProfileError) as exc_info:
+        restricted_network_profile_for_config(
+            config, resolved_env={"GOOGLE_GENAI_USE_VERTEXAI": "true"}
+        )
+    assert "Antigravity" in str(exc_info.value)
+    assert "Vertex routing" in str(exc_info.value)
+
+    # An explicit base URL alongside Vertex routing is accepted: agy ignores
+    # Vertex variables and always runs API-key auth against the pinned host.
+    # This calls the profile factory directly rather than through
+    # restricted_network_profile_for_config: _coerce_profile unconditionally
+    # requires server_web_disabled=True on any non-raising return, but this
+    # profile deliberately reports False (see _antigravity_profile), so the
+    # dispatch path would fail closed here even on a legitimate route. Direct
+    # invocation is the only way to observe a successful antigravity profile
+    # until that constant flips to True post-E2E.
+    from oddish.workers.harbor.restricted_network import _antigravity_profile
+
+    profile = _antigravity_profile(
+        OddishAntigravityCli,
+        config,
+        {
+            "GOOGLE_GENAI_USE_VERTEXAI": "true",
+            "GOOGLE_GEMINI_BASE_URL": "https://example.test",
+        },
+    )
+    # The custom endpoint replaces the MODEL host only; agy's startup probes
+    # are not transport and must survive, or the CLI stalls to its deadline.
+    assert profile.outbound_hosts[0] == "example.test"
+    assert "generativelanguage.googleapis.com" not in profile.outbound_hosts
+    for host in ANTIGRAVITY_STARTUP_HOSTS:
+        assert host in profile.outbound_hosts
+
+
+def test_antigravity_profile_keeps_startup_hosts_with_custom_base_url():
+    """A custom Gemini endpoint must not narrow the allowlist to one host.
+
+    ``_selected_transport_hosts`` returns only the configured base URL when one
+    is present, so the startup probes have to be unioned back on afterwards.
+    Dropping them reproduces the live stall this agent was fixed for.
+    """
+    from oddish.workers.harbor.restricted_network import _antigravity_profile
+
+    config = AgentConfig(
+        import_path="oddish.workers.agents.antigravity_cli:OddishAntigravityCli",
+        model_name="google/gemini-3.7-flash",
+    )
+    profile = _antigravity_profile(
+        OddishAntigravityCli,
+        config,
+        {"GOOGLE_GEMINI_BASE_URL": "https://proxy.example"},
+    )
+    assert "proxy.example" in profile.outbound_hosts
+    for host in ANTIGRAVITY_STARTUP_HOSTS:
+        assert host in profile.outbound_hosts
+    # Order-preserving union, no duplicates.
+    assert len(profile.outbound_hosts) == len(set(profile.outbound_hosts))
+
+
+def test_antigravity_profile_rejects_adc_auth():
+    """AGY_ADC_AUTH selects agy's enterprise ADC path, whose service hosts are
+    not bounded by this profile -- a restricted phase must fail closed rather
+    than hand an ADC run a Gemini-API-shaped allowlist."""
+    from oddish.workers.agents.antigravity_cli import OddishAntigravityCli
+    from oddish.workers.harbor.restricted_network import (
+        RestrictedNetworkProfileError,
+        _antigravity_profile,
+    )
+
+    config = AgentConfig(
+        import_path="oddish.workers.agents.antigravity_cli:OddishAntigravityCli",
+        model_name="google/gemini-3.7-flash",
+    )
+    with pytest.raises(RestrictedNetworkProfileError, match="ADC"):
+        _antigravity_profile(
+            OddishAntigravityCli,
+            config,
+            {"AGY_ADC_AUTH": "true", "GOOGLE_APPLICATION_CREDENTIALS": "/c.json"},
+        )
+
+
+def test_antigravity_profile_pins_gemini_host_with_no_overrides() -> None:
+    # Direct factory call -- see the note in
+    # test_antigravity_vertex_requires_explicit_base_url about why this cannot
+    # go through restricted_network_profile_for_config.
+    from oddish.workers.harbor.restricted_network import _antigravity_profile
+
+    config = AgentConfig(
+        import_path="oddish.workers.agents.antigravity_cli:OddishAntigravityCli",
+        # Even an OpenAI-named model must not substitute another provider's
+        # host: agy is transport-authoritative (infer_model=False) exactly
+        # like gemini-cli.
+        model_name="openai/gpt-4o",
+    )
+
+    profile = _antigravity_profile(
+        OddishAntigravityCli, config, {"GEMINI_API_KEY": "test-key"}
+    )
+
+    assert "generativelanguage.googleapis.com" in profile.outbound_hosts
+    assert "api.openai.com" not in profile.outbound_hosts
+    assert "ab.chatgpt.com" not in profile.outbound_hosts
+    assert profile.kwarg_overrides == {}
+    assert profile.env_overrides == {}
+    assert profile.server_web_disabled is True
+
+
+def test_antigravity_registration_pins_transport_and_fails_closed_for_stock() -> None:
+    from oddish.workers.harbor.restricted_network import (
+        _COMPATIBILITY_PROFILES,
+        _antigravity_profile,
+        _gemini_base_url_keys,
+        _unattested_stock_harness_profile,
+    )
+
+    stock_spec = _COMPATIBILITY_PROFILES[
+        "harbor.agents.installed.antigravity_cli:AntigravityCli"
+    ]
+    assert stock_spec.factory is _unattested_stock_harness_profile
+    assert stock_spec.base_url_keys is _gemini_base_url_keys
+    assert stock_spec.pins_own_transport is True
+
+    wrapper_spec = _COMPATIBILITY_PROFILES[
+        "oddish.workers.agents.antigravity_cli:OddishAntigravityCli"
+    ]
+    assert wrapper_spec.factory is _antigravity_profile
+    assert wrapper_spec.base_url_keys is _gemini_base_url_keys
+    assert wrapper_spec.pins_own_transport is True
+
+    # The stock class stays identity-only and must keep failing closed exactly
+    # like the other stock harnesses (mirrors
+    # test_stock_harnesses_are_identity_only_and_still_fail_closed).
+    with pytest.raises(RestrictedNetworkProfileError):
+        restricted_network_profile_for_config(
+            AgentConfig(
+                import_path="harbor.agents.installed.antigravity_cli:AntigravityCli",
+                model_name="google/model",
+            ),
+            resolved_env={},
+        )
 
 
 @pytest.mark.parametrize(
