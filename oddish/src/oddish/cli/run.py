@@ -59,9 +59,11 @@ _HOSTED_PASSTHROUGH_ENVIRONMENTS = {
     EnvironmentType.DAYTONA,
     EnvironmentType.EC2,
     EnvironmentType.GKE,
-    EnvironmentType.ARCHIL,
     EnvironmentType.NUMINOUS,
 }
+# Public Harbor releases may lag fork-only environments.
+if hasattr(EnvironmentType, "ARCHIL"):
+    _HOSTED_PASSTHROUGH_ENVIRONMENTS.add(EnvironmentType.ARCHIL)
 
 
 def _task_config_requests_gpu(task_path: Path) -> bool:
