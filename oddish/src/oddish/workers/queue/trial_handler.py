@@ -46,6 +46,7 @@ from oddish.db import (
     is_worker_owned_trial_status,
     utcnow,
 )
+from oddish.core.harbor_artifacts import build_trial_result
 from oddish.core.llm_key_fingerprint import trial_llm_key_hash
 from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.config import HARBOR_DEFAULT_SHA, HARBOR_DEFAULT_SOURCE
@@ -78,8 +79,11 @@ from oddish.worker.probe_staging import (
     stage_cli_mount,
 )
 from oddish.workers.analysis_trials import is_analysis_kind
-from oddish.workers.harbor.failure_info import FailureInfo, classify_harbor_failure
-from oddish.workers.harbor.outcome import merged_trial_result
+from oddish.workers.harbor.failure_info import (
+    MODAL_IMAGE_BUILD_FAILURE_CODE,
+    FailureInfo,
+    classify_harbor_failure,
+)
 from oddish.workers.harbor.quota_control import QuotaPauseControlError
 from oddish.workers.harbor.runner import (
     HarborOutcome,
@@ -91,10 +95,6 @@ from oddish.workers.harbor.runner import (
 from oddish.workers.harbor import live_tail
 from oddish.workers.queue.db_helpers import _trial_session
 from oddish.workers.queue.shared import console
-from oddish.workers.queue.trial_failures import (
-    MODAL_IMAGE_BUILD_FAILED_STAGE,
-    is_modal_image_build_failure,
-)
 from oddish.workers.queue import byok, job_tokens
 from oddish.workers.queue.worker_job_single_job import (
     SandboxCapacityLeaseLostError,
@@ -104,6 +104,7 @@ from oddish.workers.queue.worker_job_single_job import (
 logger = logging.getLogger(__name__)
 
 TRIAL_HEARTBEAT_INTERVAL_SECONDS = 30
+MODAL_IMAGE_BUILD_FAILED_STAGE = "image_build_failed"
 
 
 @functools.lru_cache(maxsize=1)
@@ -292,14 +293,6 @@ class TrialExecutionResult:
     execution_error: str | None
     retryable: bool = True
     tailed_attempt: int | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class TrialJobResult:
-    """Retry scheduling metadata returned directly to ``TrialJobHandler``."""
-
-    retry_reason: str | None = None
-    retry_after_seconds: float | None = None
 
 
 @dataclass(slots=True)
@@ -904,10 +897,6 @@ async def _store_trial_results(
             )
             return trial.finished_at is not None, False
 
-        is_modal_image_build_error = bool(
-            outcome and is_modal_image_build_failure(outcome.error)
-        )
-
         user_cancelled = trial.error_message == "Cancelled by user" or (
             trial.status == TrialStatus.FAILED and trial.max_attempts <= trial.attempts
         )
@@ -981,11 +970,11 @@ async def _store_trial_results(
             # Verifier-reported benchmark metrics (the metrics.json contract),
             # compact CTRF test counts, plus a harbor_exception marker when a
             # phase raised quietly.
-            trial.result = merged_trial_result(
+            trial.result = build_trial_result(
                 outcome.metrics,
+                outcome.verifier_summary,
                 outcome.error,
                 outcome.exception_type,
-                outcome.verifier_summary,
                 failure_info.as_dict() if failure_info is not None else None,
             )
 
@@ -1004,7 +993,10 @@ async def _store_trial_results(
                     f"[green]Trial {trial_id} SUCCESS[/green] (no reward expected)"
                 )
             else:
-                if is_modal_image_build_error:
+                if (
+                    failure_info is not None
+                    and failure_info.code == MODAL_IMAGE_BUILD_FAILURE_CODE
+                ):
                     trial.status = TrialStatus.FAILED
                     trial.harbor_stage = MODAL_IMAGE_BUILD_FAILED_STAGE
                     trial.finished_at = utcnow()
@@ -1659,7 +1651,7 @@ async def run_trial_job(
     modal_function_call_id: str | None = None,
     worker_job_id: str | None = None,
     worker_job_attempt: int | None = None,
-) -> TrialJobResult | None:
+) -> FailureInfo | None:
     """
     Execute a claimed trial.
 
@@ -1878,7 +1870,6 @@ async def run_trial_job(
 
     execution: TrialExecutionResult | None = None
     failure_info: FailureInfo | None = None
-    job_result: TrialJobResult | None = None
     trial_terminal = False
     heartbeat_stop = asyncio.Event()
     heartbeat_interrupt: asyncio.Future[None] = (
@@ -2055,11 +2046,6 @@ async def run_trial_job(
             billed_user_id=prepared_trial.billed_user_id,
             run_post_trial_hooks=run_post_trial_hooks,
         )
-        if not trial_terminal and failure_info is not None:
-            job_result = TrialJobResult(
-                retry_reason=failure_info.retry_reason,
-                retry_after_seconds=failure_info.retry_after_seconds,
-            )
     finally:
         heartbeat_stop.set()
         if not heartbeat_interrupt.done():
@@ -2108,4 +2094,4 @@ async def run_trial_job(
         # Same for the job-scoped credential token (revoke on terminal status).
         if job_scoped_bundle is not None and worker_job_id:
             await _revoke_job_credentials(worker_job_id, trial_id)
-    return job_result
+    return failure_info if not trial_terminal else None

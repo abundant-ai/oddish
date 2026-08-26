@@ -39,24 +39,6 @@ class WorkerJobLike:
     modal_function_call_id: str | None
 
 
-def _fail_retryable(
-    message: str,
-    *,
-    retry_reason: str | None = None,
-    retry_after_seconds: float | None = None,
-) -> JobOutcome:
-    return JobOutcome.fail(
-        message,
-        retryable=True,
-        retry_reason=retry_reason,
-        retry_after_seconds=retry_after_seconds,
-    )
-
-
-def _fail_permanent(message: str) -> JobOutcome:
-    return JobOutcome.fail(message, retryable=False)
-
-
 class TrialJobHandler:
     kind = WorkerJobKind.TRIAL
 
@@ -74,7 +56,7 @@ class TrialJobHandler:
         try:
             creds = decrypt_credentials((job.payload or {}).get("registry_auth_enc"))
         except RegistryAuthDecryptError as exc:
-            return _fail_permanent(str(exc))
+            return JobOutcome.fail(str(exc), retryable=False)
         cred_token = current_registry_credentials.set(creds or None)
         try:
             trial_run = await run_trial_job(
@@ -92,11 +74,13 @@ class TrialJobHandler:
         async with get_session() as session:
             trial = await session.get(TrialModel, trial_id)
             if trial is None:
-                return _fail_permanent(f"Trial {trial_id} vanished mid-run")
+                return JobOutcome.fail(
+                    f"Trial {trial_id} vanished mid-run", retryable=False
+                )
             if trial.status == TrialStatus.SUCCESS:
                 return JobOutcome.ok()
             if trial.status == TrialStatus.RETRYING:
-                return _fail_retryable(
+                return JobOutcome.fail(
                     trial.error_message or f"Trial {trial_id} marked RETRYING",
                     retry_reason=(trial_run.retry_reason if trial_run else None),
                     retry_after_seconds=(
@@ -105,8 +89,8 @@ class TrialJobHandler:
                 )
             if trial.status == TrialStatus.FAILED:
                 error_message = trial.error_message or f"Trial {trial_id} marked FAILED"
-                return _fail_permanent(error_message)
-            return _fail_retryable(
+                return JobOutcome.fail(error_message, retryable=False)
+            return JobOutcome.fail(
                 f"Trial {trial_id} left in non-terminal status {trial.status!r}"
             )
 

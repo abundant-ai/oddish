@@ -661,7 +661,7 @@ Behavior:
 
 Auxiliary modules (`concurrency_controller.py` (deprecated — see admin
 overrides), `db_helpers.py`, `job_tokens.py`, `runtime_status.py`, `shared.py`,
-`trial_failures.py`) support these.
+`provider_failures.py`) support these.
 
 Handler registration lives in `oddish.workers.jobs` (`registry.py`,
 `handlers.py`). Both the standalone worker and the backend call

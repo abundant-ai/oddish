@@ -46,7 +46,6 @@ from harbor.agents.installed.claude_code import ClaudeCode
 from oddish.core.harbor_source import harbor_sandbox_requirement
 from oddish.workers.harbor.failure_info import (
     PROVIDER_FAILURE_FILENAME,
-    FailureInfo,
     ProviderFailureEvidence,
     classify_provider_failure,
 )
@@ -262,9 +261,7 @@ class OddishClaudeCode(ClaudeCode):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._last_provider_failure: ProviderFailureEvidence | None = None
-        self._last_provider_decision: FailureInfo | None = None
         self._resume_session_id: str | None = None
-        self._append_stream_log = False
 
     @override
     async def install(self, environment: BaseEnvironment) -> None:
@@ -304,10 +301,6 @@ class OddishClaudeCode(ClaudeCode):
             text_error = super()._classify_exec_error(command, result)
             if type(text_error) is not NonZeroAgentExitCodeError:
                 exception_class = type(text_error)
-        self._last_provider_decision = classify_provider_failure(
-            failure,
-            exception_type=exception_class.__name__,
-        )
         summary_fields = [f"terminal_reason={failure.terminal_reason}"]
         if failure.http_status is not None:
             summary_fields.append(f"http_status={failure.http_status}")
@@ -371,20 +364,25 @@ class OddishClaudeCode(ClaudeCode):
         """Resume structured transient API failures before Harbor stops the sandbox."""
         original_resume = self._resume
         original_session_id = self._resume_session_id
-        original_append = self._append_stream_log
         next_instruction = instruction
         canonical_session_id: str | None = None
         try:
             await self._clear_provider_failure(environment)
             for resume_count in range(_PROVIDER_MAX_RESUMES + 1):
                 self._last_provider_failure = None
-                self._last_provider_decision = None
                 try:
                     await super().run(next_instruction, environment, context)
                     return
-                except NonZeroAgentExitCodeError:
+                except NonZeroAgentExitCodeError as exc:
                     failure = self._last_provider_failure
-                    decision = self._last_provider_decision
+                    decision = (
+                        classify_provider_failure(
+                            failure,
+                            exception_type=type(exc).__name__,
+                        )
+                        if failure is not None
+                        else None
+                    )
                     if canonical_session_id is None and failure is not None:
                         canonical_session_id = failure.resume_token
                     if (
@@ -416,12 +414,10 @@ class OddishClaudeCode(ClaudeCode):
                     await asyncio.sleep(delay)
                     self._resume = True
                     self._resume_session_id = canonical_session_id
-                    self._append_stream_log = True
                     next_instruction = _RESUME_PROMPT
         finally:
             self._resume = original_resume
             self._resume_session_id = original_session_id
-            self._append_stream_log = original_append
 
     @override
     def _build_claude_command(self, escaped_instruction: str, extra_flags: str) -> str:
@@ -435,7 +431,6 @@ class OddishClaudeCode(ClaudeCode):
                 f"--resume {shlex.quote(self._resume_session_id)} ",
                 1,
             )
-        if self._append_stream_log:
             command = command.replace(
                 "| tee /logs/agent/claude-code.txt",
                 "| tee -a /logs/agent/claude-code.txt",

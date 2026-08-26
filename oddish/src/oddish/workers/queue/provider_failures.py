@@ -1,7 +1,7 @@
 """Which provider-API errors are worth retrying.
 
-Sibling of ``trial_failures``: a narrow, string-matched predicate the job
-handlers use to pick ``retryable`` on a ``JobOutcome``.
+A narrow, string-matched predicate the job handlers use to pick ``retryable``
+on a ``JobOutcome``.
 
 Only authorization-class failures (HTTP 403 / ``PermissionDeniedError``) count
 as permanent. A permission block is a property of the credential or the

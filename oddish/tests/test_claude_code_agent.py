@@ -25,7 +25,6 @@ from oddish.workers.agents.claude_code import (
 from oddish.workers.harbor.failure_info import (
     PROVIDER_FAILURE_FILENAME,
     ProviderFailureEvidence,
-    classify_provider_failure,
 )
 
 
@@ -259,8 +258,6 @@ def test_unstatused_overload_uses_harbor_text_classification(tmp_path):
 
     assert isinstance(error, ApiOverloadedError)
     assert agent._last_provider_failure is not None
-    assert agent._last_provider_decision is not None
-    assert agent._last_provider_decision.retryable is True
 
 
 def test_unstatused_authentication_error_stays_permanent(tmp_path):
@@ -290,7 +287,7 @@ async def test_provider_overload_resumes_same_session_and_honors_retry_hint(
     tmp_path, monkeypatch
 ):
     agent = OddishClaudeCode(logs_dir=tmp_path)
-    calls: list[tuple[str, bool, str | None, bool]] = []
+    calls: list[tuple[str, bool, str | None]] = []
     delays: list[float] = []
 
     async def _run(_self, instruction, _environment, _context):
@@ -299,7 +296,6 @@ async def test_provider_overload_resumes_same_session_and_honors_retry_hint(
                 instruction,
                 agent._resume,
                 agent._resume_session_id,
-                agent._append_stream_log,
             )
         )
         if len(calls) == 1:
@@ -310,10 +306,6 @@ async def test_provider_overload_resumes_same_session_and_honors_retry_hint(
                 request_id="req-1",
                 resume_token="session-1",
                 retry_after_seconds=17.0,
-            )
-            agent._last_provider_decision = classify_provider_failure(
-                agent._last_provider_failure,
-                exception_type="ApiOverloadedError",
             )
             raise ApiOverloadedError("overloaded", return_code=1)
 
@@ -326,16 +318,14 @@ async def test_provider_overload_resumes_same_session_and_honors_retry_hint(
     await agent.run("original task", environment=object(), context=object())
 
     assert delays == [17.0]
-    assert calls[0] == ("original task", False, None, False)
+    assert calls[0] == ("original task", False, None)
     assert calls[1] == (
         claude_code_agent._RESUME_PROMPT,
         True,
         "session-1",
-        True,
     )
     assert agent._resume is False
     assert agent._resume_session_id is None
-    assert agent._append_stream_log is False
 
 
 @pytest.mark.asyncio
@@ -354,10 +344,6 @@ async def test_multiple_provider_resumes_keep_first_session_id(tmp_path, monkeyp
                 resume_token=f"session-{len(sessions)}",
             )
             agent._last_provider_failure = evidence
-            agent._last_provider_decision = classify_provider_failure(
-                evidence,
-                exception_type="ApiOverloadedError",
-            )
             raise ApiOverloadedError("overloaded", return_code=1)
 
     async def _sleep(delay):
@@ -390,10 +376,6 @@ async def test_unstatused_typed_connection_error_resumes_same_session(
                 resume_token="session-unknown",
                 summary="API Error: Connection closed mid-response",
             )
-            agent._last_provider_decision = classify_provider_failure(
-                agent._last_provider_failure,
-                exception_type="ApiConnectionClosedError",
-            )
             raise ApiConnectionClosedError("provider API error", return_code=1)
 
     async def _sleep(delay):
@@ -423,10 +405,6 @@ async def test_permanent_unknown_api_error_does_not_resume(tmp_path, monkeypatch
             http_status=400,
             resume_token="session-invalid-request",
             summary="API Error: 400 invalid request",
-        )
-        agent._last_provider_decision = classify_provider_failure(
-            agent._last_provider_failure,
-            exception_type="UnknownApiError",
         )
         raise UnknownApiError("invalid request", return_code=1)
 
@@ -464,10 +442,6 @@ async def test_final_generic_crash_does_not_persist_stale_resumed_failure(
                 resume_token="session-1",
             )
             agent._last_provider_failure = evidence
-            agent._last_provider_decision = classify_provider_failure(
-                evidence,
-                exception_type="ApiOverloadedError",
-            )
             raise ApiOverloadedError("overloaded", return_code=1)
         raise UnknownApiError("process exited without a result event", return_code=1)
 
@@ -506,7 +480,6 @@ def test_resume_command_uses_exact_session_and_appends_stream_log(tmp_path):
     agent = OddishClaudeCode(logs_dir=tmp_path)
     agent._resume = True
     agent._resume_session_id = "session-1"
-    agent._append_stream_log = True
 
     command = agent._build_claude_command("ignored", "--continue ")
 

@@ -14,12 +14,15 @@ import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 from harbor.models.job.config import RetryConfig
 
+from oddish.workers.harbor.outcome import HarborOutcome
+
 PROVIDER_FAILURE_FILENAME = "provider-failure.json"
 FAILURE_INFO_SCHEMA_VERSION = 1
+MODAL_IMAGE_BUILD_FAILURE_CODE = "modal_image_build_failed"
 
 _MAX_CODE_LENGTH = 120
 _MAX_IDENTIFIER_LENGTH = 256
@@ -138,23 +141,12 @@ class ProviderFailureEvidence:
             return None
         if value.get("schema_version") != FAILURE_INFO_SCHEMA_VERSION:
             return None
-        provider = _bounded_string(value.get("provider"), _MAX_CODE_LENGTH)
-        terminal_reason = _bounded_string(
-            value.get("terminal_reason"), _MAX_CODE_LENGTH
-        )
-        if provider is None or terminal_reason is None:
+        fields = dict(value)
+        fields.pop("schema_version")
+        try:
+            return cls(**fields)
+        except (TypeError, ValueError):
             return None
-        return cls(
-            provider=provider,
-            terminal_reason=terminal_reason,
-            http_status=_optional_http_status(value.get("http_status")),
-            request_id=_bounded_string(value.get("request_id"), _MAX_IDENTIFIER_LENGTH),
-            resume_token=_bounded_string(
-                value.get("resume_token"), _MAX_IDENTIFIER_LENGTH
-            ),
-            retry_after_seconds=_optional_float(value.get("retry_after_seconds")),
-            summary=_bounded_string(value.get("summary"), _MAX_SUMMARY_LENGTH),
-        )
 
 
 @dataclass(frozen=True)
@@ -184,32 +176,18 @@ class FailureInfo:
             "retry_reason": self.retry_reason,
         }
         optional = {
-            "provider": _bounded_string(self.provider, _MAX_CODE_LENGTH),
-            "terminal_reason": _bounded_string(self.terminal_reason, _MAX_CODE_LENGTH),
-            "http_status": _optional_http_status(self.http_status),
-            "request_id": _bounded_string(self.request_id, _MAX_IDENTIFIER_LENGTH),
-            "session_id": _bounded_string(self.session_id, _MAX_IDENTIFIER_LENGTH),
-            "retry_after_seconds": _optional_float(self.retry_after_seconds),
-            "summary": _bounded_string(self.summary, _MAX_SUMMARY_LENGTH),
+            "provider": self.provider,
+            "terminal_reason": self.terminal_reason,
+            "http_status": self.http_status,
+            "request_id": self.request_id,
+            "session_id": self.session_id,
+            "retry_after_seconds": self.retry_after_seconds,
+            "summary": self.summary,
         }
         result.update(
             {key: value for key, value in optional.items() if value is not None}
         )
         return result
-
-
-class HarborOutcomeLike(Protocol):
-    @property
-    def error(self) -> str | None: ...
-
-    @property
-    def exception_type(self) -> str | None: ...
-
-    @property
-    def phase_timing(self) -> dict[str, Any] | None: ...
-
-    @property
-    def job_dir(self) -> Path | None: ...
 
 
 def is_modal_image_build_failure(error: str | None) -> bool:
@@ -221,8 +199,6 @@ def _read_provider_failure(job_dir: Path | None) -> ProviderFailureEvidence | No
     if job_dir is None or not job_dir.exists():
         return None
     candidates = sorted(job_dir.rglob(f"agent/{PROVIDER_FAILURE_FILENAME}"))
-    if not candidates:
-        candidates = sorted(job_dir.rglob(PROVIDER_FAILURE_FILENAME))
     for path in reversed(candidates):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
@@ -240,7 +216,7 @@ def classify_provider_failure(
     exception_type: str,
 ) -> FailureInfo:
     """Apply shared retry policy to structured provider evidence."""
-    status = _optional_http_status(evidence.http_status)
+    status = evidence.http_status
     if status == 429:
         retryable, retry_reason = True, "rate_limit"
     elif status == 529:
@@ -266,12 +242,12 @@ def classify_provider_failure(
         http_status=status,
         request_id=evidence.request_id,
         session_id=evidence.resume_token,
-        retry_after_seconds=_optional_float(evidence.retry_after_seconds),
+        retry_after_seconds=evidence.retry_after_seconds,
         summary=evidence.summary,
     )
 
 
-def classify_harbor_failure(outcome: HarborOutcomeLike) -> FailureInfo | None:
+def classify_harbor_failure(outcome: HarborOutcome) -> FailureInfo | None:
     """Normalize one failed Harbor outcome into a stable application contract."""
     if not outcome.error and not outcome.exception_type:
         return None
@@ -315,7 +291,9 @@ def classify_harbor_failure(outcome: HarborOutcomeLike) -> FailureInfo | None:
     return FailureInfo(
         category=category,
         phase=phase,
-        code=exception_type,
+        code=(
+            MODAL_IMAGE_BUILD_FAILURE_CODE if image_build_failure else exception_type
+        ),
         retryable=retryable,
         retry_reason=category,
     )

@@ -29,7 +29,7 @@ from oddish.db import (  # noqa: E402
 )
 from oddish.workers.jobs import handlers as handlers_module  # noqa: E402
 from oddish.workers.jobs.handlers import TrialJobHandler  # noqa: E402
-from oddish.workers.queue.trial_handler import TrialJobResult  # noqa: E402
+from oddish.workers.harbor.failure_info import FailureInfo  # noqa: E402
 from oddish.workers.queue.worker_job_single_job import ClaimedWorkerJob  # noqa: E402
 
 
@@ -149,7 +149,11 @@ async def test_trial_handler_preserves_structured_retry_schedule(monkeypatch):
     _patch_run(
         monkeypatch,
         "run_trial_job",
-        result=TrialJobResult(
+        result=FailureInfo(
+            category="provider_api",
+            phase="agent_execution",
+            code="http_529",
+            retryable=True,
             retry_reason="provider_overload",
             retry_after_seconds=75.0,
         ),

@@ -7,7 +7,6 @@ from typing import Any
 from harbor.models.job.result import JobResult
 
 from oddish.core.harbor_artifacts import (
-    build_trial_result,
     detect_trajectory,
     extract_ctrf_summary,
     extract_trajectory_metrics,
@@ -67,32 +66,6 @@ class HarborOutcome:
     # trial-level retries on outcomes Harbor's own RetryConfig already marks
     # as non-retryable.
     exception_type: str | None = None
-
-
-def merged_trial_result(
-    metrics: dict[str, Any] | None,
-    error: str | None,
-    exception_type: str | None,
-    verifier_summary: dict[str, Any] | None = None,
-    failure_info: dict[str, Any] | None = None,
-) -> dict[str, Any] | None:
-    """Trial ``result`` payload: verifier metrics plus a quiet-exception marker.
-
-    A trial can complete (verifier ran, reward recorded) even though a phase
-    raised -- e.g. the agent exited non-zero on an invalid model id. Status
-    alone then reads as an ordinary reward-0 eval. When Harbor recorded an
-    exception, merge a ``harbor_exception`` marker into the result payload so
-    hard failures are distinguishable from legitimate zero-reward runs without
-    parsing error strings. The key is reserved: a task metric of the same name
-    is overwritten.
-    """
-    return build_trial_result(
-        metrics,
-        verifier_summary,
-        error,
-        exception_type,
-        failure_info,
-    )
 
 
 def _detect_trajectory(job_dir: Path) -> bool:

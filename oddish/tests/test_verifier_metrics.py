@@ -15,6 +15,7 @@ from pathlib import Path
 from oddish.core.harbor_artifacts import (
     VERIFIER_CTRF_MAX_BYTES,
     VERIFIER_METRICS_MAX_BYTES,
+    build_trial_result,
     extract_ctrf_summary,
     extract_verifier_metrics,
 )
@@ -87,18 +88,15 @@ def test_invalid_candidate_does_not_mask_later_valid_metrics(tmp_path):
     assert extract_verifier_metrics(tmp_path) == good
 
 
-def test_merged_result_passthrough_without_exception():
-    from oddish.workers.harbor.outcome import merged_trial_result
-
-    assert merged_trial_result({"a": 1}, None, None) == {"a": 1}
-    assert merged_trial_result(None, None, None) is None
+def test_build_trial_result_passthrough_without_exception():
+    assert build_trial_result({"a": 1}, None, None, None) == {"a": 1}
+    assert build_trial_result(None, None, None, None) is None
 
 
-def test_merged_result_marks_quiet_exception():
-    from oddish.workers.harbor.outcome import merged_trial_result
-
-    merged = merged_trial_result(
+def test_build_trial_result_marks_quiet_exception():
+    merged = build_trial_result(
         {"gates": {}, "failure_reason": "port.py missing"},
+        None,
         "Command failed (exit 1): gemini --model=bad",
         "NonZeroAgentExitCodeError",
     )
@@ -107,10 +105,9 @@ def test_merged_result_marks_quiet_exception():
     assert "exit 1" in merged["harbor_exception"]["error"]
 
 
-def test_merged_result_includes_structured_failure_metadata():
-    from oddish.workers.harbor.outcome import merged_trial_result
-
-    merged = merged_trial_result(
+def test_build_trial_result_includes_structured_failure_metadata():
+    merged = build_trial_result(
+        None,
         None,
         "UnknownApiError: failed",
         "UnknownApiError",
@@ -140,10 +137,8 @@ def test_merged_result_includes_structured_failure_metadata():
     }
 
 
-def test_merged_result_marker_only_when_no_metrics():
-    from oddish.workers.harbor.outcome import merged_trial_result
-
-    merged = merged_trial_result(None, "boom", "AgentSetupTimeoutError")
+def test_build_trial_result_marker_only_when_no_metrics():
+    merged = build_trial_result(None, None, "boom", "AgentSetupTimeoutError")
     assert merged == {
         "harbor_exception": {
             "exception_type": "AgentSetupTimeoutError",
@@ -152,10 +147,8 @@ def test_merged_result_marker_only_when_no_metrics():
     }
 
 
-def test_merged_result_truncates_long_errors():
-    from oddish.workers.harbor.outcome import merged_trial_result
-
-    merged = merged_trial_result(None, "x" * 1000, "SomeError")
+def test_build_trial_result_truncates_long_errors():
+    merged = build_trial_result(None, None, "x" * 1000, "SomeError")
     assert len(merged["harbor_exception"]["error"]) == 300
 
 
@@ -247,9 +240,7 @@ def test_oversized_ctrf_is_ignored_without_an_unbounded_read(tmp_path, monkeypat
     assert extract_ctrf_summary(tmp_path) is None
 
 
-def test_merged_result_includes_compact_verifier_summary():
-    from oddish.workers.harbor.outcome import merged_trial_result
-
+def test_build_trial_result_includes_compact_verifier_summary():
     verifier = {
         "format": "ctrf",
         "tests": 2,
@@ -259,15 +250,13 @@ def test_merged_result_includes_compact_verifier_summary():
         "pending": 0,
         "other": 0,
     }
-    assert merged_trial_result({"latency_ms": 12}, None, None, verifier) == {
+    assert build_trial_result({"latency_ms": 12}, verifier, None, None) == {
         "latency_ms": 12,
         "_verifier": verifier,
     }
 
 
-def test_merged_result_discards_task_authored_verifier_summary():
-    from oddish.workers.harbor.outcome import merged_trial_result
-
+def test_build_trial_result_discards_task_authored_verifier_summary():
     spoofed = {
         "format": "ctrf",
         "tests": 100,
@@ -278,14 +267,12 @@ def test_merged_result_discards_task_authored_verifier_summary():
         "other": 0,
     }
 
-    assert merged_trial_result(
-        {"latency_ms": 12, "_verifier": spoofed}, None, None
+    assert build_trial_result(
+        {"latency_ms": 12, "_verifier": spoofed}, None, None, None
     ) == {"latency_ms": 12}
 
 
 def test_real_verifier_summary_replaces_task_authored_value():
-    from oddish.workers.harbor.outcome import merged_trial_result
-
     real = {
         "format": "ctrf",
         "tests": 2,
@@ -296,7 +283,7 @@ def test_real_verifier_summary_replaces_task_authored_value():
         "other": 0,
     }
 
-    assert merged_trial_result({"_verifier": {"passed": 999}}, None, None, real) == {
+    assert build_trial_result({"_verifier": {"passed": 999}}, real, None, None) == {
         "_verifier": real
     }
 
