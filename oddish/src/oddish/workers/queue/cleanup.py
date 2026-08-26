@@ -483,10 +483,8 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
             task.verdict_error = row["error_message"]
         return None
 
-    # ANALYZER jobs have no domain row to mirror into: the reports feature
-    # that owned the ``analyzers`` table was removed, and the remaining
-    # enqueuer (agent capabilities, removed in PR B) tracks state in its own
-    # columns.
+    # Every other kind is enum-only: nothing enqueues it, so there is no
+    # domain row to mirror into.
     return None
 
 

@@ -224,10 +224,10 @@ def configure_stdlib_log_bridge(
     The Modal worker never calls ``basicConfig`` and ``logfire.configure`` runs
     with ``console=False`` and no stdlib bridge, so the root logger sits at
     WARNING with no handler. Records from ``logging.getLogger("oddish.*")`` --
-    e.g. the analyzer block's prefixed ``[analyzer/task_verdict]`` progress
-    lines -- fall through to ``logging.lastResort`` (stderr, WARNING+) and are
-    dropped at INFO/DEBUG. Failures still surface (WARNING/ERROR via lastResort)
-    but the happy path leaves no log trace at all.
+    e.g. the queue worker's progress lines -- fall through to
+    ``logging.lastResort`` (stderr, WARNING+) and are dropped at INFO/DEBUG.
+    Failures still surface (WARNING/ERROR via lastResort) but the happy path
+    leaves no log trace at all.
 
     Attach handlers on the ``oddish`` logger (not root) so third-party INFO
     noise -- asyncpg, httpx, litellm -- stays out:

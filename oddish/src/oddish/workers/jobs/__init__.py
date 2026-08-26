@@ -11,7 +11,7 @@ state. This package is the seam: it owns
 - ``handlers``: per-kind adapters (``TrialJobHandler`` /
   ``TaskExpandJobHandler`` / ``TagProjectJobHandler``) that delegate to the
   existing ``run_*_job`` bodies and map terminal domain state back onto a
-  ``JobOutcome``. QA, audits, and analyzer reports run as trials.
+  ``JobOutcome``. QA and audits run as trials.
 
 ``ensure_builtin_handlers_registered()`` wires every built-in handler
 into the global registry. Both the standalone worker and the backend

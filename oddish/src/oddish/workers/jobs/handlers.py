@@ -3,7 +3,7 @@
 These are thin adapters: they delegate to the existing
 ``run_trial_job`` / ``run_task_expand_job`` / ``run_tag_project_job`` bodies
 and translate the resulting domain state into a ``JobOutcome`` for the
-runner to record. QA, audits, and analyzer reports run as trials.
+runner to record. QA and audits run as trials.
 
 Keeping the handlers in one module lets tests monkey-patch the
 ``get_session`` / ``run_*_job`` module globals without reaching into

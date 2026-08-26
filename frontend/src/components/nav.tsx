@@ -29,7 +29,6 @@ import {
   FileText,
   LogOut,
   Menu,
-  SearchCheck,
   Shield,
   Trophy,
   User,
@@ -70,12 +69,6 @@ const navSwitcherAppearance = {
   },
 };
 
-/**
- * @deprecated Agents and Analyzers are no longer shown in the primary header.
- * Keep their links here while the legacy routes remain directly accessible.
- */
-const SHOW_DEPRECATED_AGENT_AND_ANALYZER_NAV = false;
-
 const DOCS_URL = "https://github.com/abundant-ai/oddish/blob/main/DOCS.md";
 
 type NavLink = {
@@ -100,16 +93,6 @@ const PRIMARY_NAV_LINKS: NavLink[] = [
     ),
   },
   { href: "/tasks", label: "Tasks", icon: <FileText className="h-4 w-4" /> },
-  ...(SHOW_DEPRECATED_AGENT_AND_ANALYZER_NAV
-    ? [
-        {
-          href: "/qa",
-          label: "Agents",
-          icon: <SearchCheck className="h-4 w-4" />,
-          prefix: true,
-        },
-      ]
-    : []),
   {
     href: "/leaderboard",
     label: "Leaderboard",
