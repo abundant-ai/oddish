@@ -56,12 +56,16 @@ jobs:
       MODAL_ENVIRONMENT: main
       # Hold LLM trials until a task's nop/oracle baselines validate it.
       ODDISH_GATE_LLM_ON_BASELINES: "1"
-      # Numinous Cloud execution backend (merged in #1344). Enabled in prod:
-      # plain-CPU trials (and QA/analysis trials) route to Numinous first,
-      # then Daytona, then Modal. Attaches the oddish-numinous secret
-      # (env main: NUMINOUS_API_URL + NUMINOUS_API_KEY). Rollback: delete
-      # this line; the next deploy reverts routing to daytona -> modal.
-      ODDISH_NUMINOUS_ENABLED: "1"
+      # Numinous Cloud execution backend (merged in #1344). Deliberately NOT
+      # enabled in prod yet: registering it puts it first in the cheap-first
+      # lane (runtime/registry.py), but the single-container restricted-network
+      # bridge admits only Daytona and Modal
+      # (workers/harbor/runner.py::_supports_auto_restricted_agent_network), so
+      # a restricted trial routed to Numinous would run with no model/agent
+      # host injection. Re-enable by restoring
+      # `ODDISH_NUMINOUS_ENABLED: "1"` once that bridge covers Numinous; the
+      # oddish-numinous secret (env main: NUMINOUS_API_URL + NUMINOUS_API_KEY)
+      # attaches with it. Staging keeps the flag on so the soak continues.
       # Enable the GKE (TPU) execution backend in prod. The SA credential
       # rides in the oddish-gcp secret (attached when ODDISH_GKE_ENABLED is
       # set); the non-secret cluster/registry coordinates are declared here
