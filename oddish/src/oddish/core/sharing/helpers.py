@@ -492,6 +492,9 @@ async def list_trial_files_s3(
             cursor=cursor,
             presign=presign,
             presign_expiration=presign_expiration,
+            # The same root the content endpoint resolves against, so listed
+            # relative paths round-trip without doubling the analysis segment.
+            root_prefix=_get_trial_s3_prefix(trial),
         )
     except HTTPException:
         raise
