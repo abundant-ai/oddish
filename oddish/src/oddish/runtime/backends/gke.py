@@ -66,14 +66,13 @@ class GkeBackend:
         # flex-start default. Harbor removed the booleans, so that state is
         # unrepresentable and the reconciliation has nothing left to
         # reconcile.
-        return {
+        kwargs: dict[str, Any] = {
             "cluster_name": settings.gke_cluster_name,
             "region": settings.gke_region,
             "project_id": settings.gke_project_id,
             "namespace": settings.gke_namespace,
             "registry_location": settings.gke_registry_location,
             "registry_name": settings.gke_registry_name,
-            "provisioning_mode": settings.gke_provisioning_mode,
             "auto_build_missing_image": settings.gke_auto_build_missing_image,
             "auto_provision_cluster": settings.gke_auto_provision_cluster,
             "pod_ready_timeout_sec": settings.gke_pod_ready_timeout_sec,
@@ -83,8 +82,20 @@ class GkeBackend:
             # "image not found" instead. The hosted model builds/pushes task
             # images ahead of the run, so a miss is an error, not a build cue.
             "require_prebuilt_image": True,
-            **base_kwargs,
         }
+        # The provisioning mode ships only when the deployment explicitly
+        # configured one. Every job kwarg COVERS its task.toml counterpart
+        # (harbor merges task kwargs under job kwargs), so unconditionally
+        # shipping the settings default silently overrode every task's own
+        # mode -- a task pinning zones outside the default mode's
+        # availability could never run. A deployment that wants a forced
+        # fleet-wide mode still sets the variable; one that does not leaves
+        # tasks to steer themselves, with harbor's own default for tasks
+        # that name no mode.
+        if "gke_provisioning_mode" in settings.model_fields_set:
+            kwargs["provisioning_mode"] = settings.gke_provisioning_mode
+        kwargs.update(base_kwargs)
+        return kwargs
 
     async def teardown(self, external_id: str) -> bool:
         try:
