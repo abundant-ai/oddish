@@ -96,21 +96,14 @@ def test_gke_env_kwargs_inject_settings_defaults() -> None:
     assert "provisioning_mode" not in merged
 
 
-def test_gke_env_kwargs_ship_the_mode_only_when_configured() -> None:
-    """An explicitly configured deployment mode ships (and covers tasks); an
-    unconfigured one leaves the key out so task.toml modes take effect."""
-    fields_set = set(settings.__pydantic_fields_set__)
-    settings.__pydantic_fields_set__.discard("gke_provisioning_mode")
-    try:
-        assert "provisioning_mode" not in GkeBackend().harbor_env_kwargs({})
-        settings.gke_provisioning_mode = settings.gke_provisioning_mode
-        assert (
-            GkeBackend().harbor_env_kwargs({})["provisioning_mode"]
-            == settings.gke_provisioning_mode
-        )
-    finally:
-        settings.__pydantic_fields_set__.clear()
-        settings.__pydantic_fields_set__ |= fields_set
+def test_gke_env_kwargs_ship_the_mode_only_when_configured(monkeypatch) -> None:
+    """A configured deployment mode ships (and covers tasks); an
+    unconfigured one (None -- the default) leaves the key out so task.toml
+    modes take effect."""
+    monkeypatch.setattr(settings, "gke_provisioning_mode", None)
+    assert "provisioning_mode" not in GkeBackend().harbor_env_kwargs({})
+    monkeypatch.setattr(settings, "gke_provisioning_mode", "spot")
+    assert GkeBackend().harbor_env_kwargs({})["provisioning_mode"] == "spot"
 
 
 def test_gke_env_kwargs_caller_overrides_win() -> None:

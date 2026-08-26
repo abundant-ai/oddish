@@ -92,7 +92,7 @@ class GkeBackend:
         # fleet-wide mode still sets the variable; one that does not leaves
         # tasks to steer themselves, with harbor's own default for tasks
         # that name no mode.
-        if "gke_provisioning_mode" in settings.model_fields_set:
+        if settings.gke_provisioning_mode is not None:
             kwargs["provisioning_mode"] = settings.gke_provisioning_mode
         kwargs.update(base_kwargs)
         return kwargs
