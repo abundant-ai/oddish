@@ -108,3 +108,21 @@ def test_registry_excludes_numinous_by_default() -> None:
     from oddish.runtime.registry import REGISTERED_BACKENDS
 
     assert "numinous" not in REGISTERED_BACKENDS
+
+
+def test_gpu_trial_never_routes_to_numinous(monkeypatch) -> None:
+    """Numinous declares gpu=None (GPU lane behind a separate flag), so a GPU
+    trial must skip it even when it is registered cheap-first. Guards against
+    wiring GPU work to Numinous before the GPU lane is ready."""
+    from oddish.runtime import routing
+    from oddish.runtime.backends.numinous import NuminousBackend
+    from oddish.runtime.backends.daytona import DaytonaBackend
+    from oddish.runtime.backends.modal import ModalBackend
+
+    order = [NuminousBackend(), DaytonaBackend(), ModalBackend()]
+    monkeypatch.setattr(routing, "ordered_backends", lambda: order)
+
+    # Plain CPU trial: cheap-first hands it to Numinous.
+    assert routing.select_backend(requires_gpu=False).name == "numinous"
+    # GPU trial: Numinous (gpu=None) is skipped; it lands on Modal, never us.
+    assert routing.select_backend(requires_gpu=True).name == "modal"
