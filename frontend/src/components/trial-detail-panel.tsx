@@ -646,7 +646,7 @@ function hasLiveQueueSnapshot(trial: Trial): boolean {
   return isActiveTrialStatus(trial.status);
 }
 
-type SandboxBackendId = "daytona" | "modal" | "archil" | "ec2";
+type SandboxBackendId = "daytona" | "modal" | "archil" | "ec2" | "numinous";
 
 type SandboxBackend = {
   id: SandboxBackendId;
@@ -680,6 +680,12 @@ const SANDBOX_BACKENDS: Record<
     id: "ec2",
     label: "EC2",
   },
+  numinous: {
+    id: "numinous",
+    label: "Numinous Cloud",
+    logoSrc: "/numinous-logo.png",
+    logoWidth: 10,
+  },
 };
 
 function normalizeSandboxBackend(
@@ -690,7 +696,8 @@ function normalizeSandboxBackend(
     normalized === "daytona" ||
     normalized === "modal" ||
     normalized === "archil" ||
-    normalized === "ec2"
+    normalized === "ec2" ||
+    normalized === "numinous"
   ) {
     return normalized;
   }
