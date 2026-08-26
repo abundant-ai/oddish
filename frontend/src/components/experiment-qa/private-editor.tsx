@@ -143,7 +143,12 @@ export function ExperimentQaPrivateEditor({
     .map((task) => ({
       ...task,
       items: task.items.filter((item) => item.is_visible),
-    }));
+    }))
+    .filter((task) => task.items.length > 0);
+  const includedItemCount = includedTasks.reduce(
+    (count, task) => count + task.items.length,
+    0
+  );
   const status = report.is_public
     ? report.has_unpublished_changes
       ? "changed"
@@ -227,13 +232,19 @@ export function ExperimentQaPrivateEditor({
                 formAction={publishAction}
                 size="sm"
                 className="h-8"
-                disabled={!experimentPublicToken || report.scope_stale}
+                disabled={
+                  !experimentPublicToken ||
+                  report.scope_stale ||
+                  includedItemCount === 0
+                }
                 title={
                   report.scope_stale
                     ? "Sync QA before publishing this changed experiment scope"
-                    : experimentPublicToken
-                      ? undefined
-                      : "Publish the experiment before publishing its QA report"
+                    : includedItemCount === 0
+                      ? "Select at least one QA check before publishing"
+                      : experimentPublicToken
+                        ? undefined
+                        : "Publish the experiment before publishing its QA report"
                 }
               >
                 {report.is_public && report.has_unpublished_changes

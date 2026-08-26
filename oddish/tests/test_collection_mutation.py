@@ -467,7 +467,7 @@ async def test_remove_and_readd_task_never_revives_old_collection_qa_link(sessio
         get_public_qa_token_for_experiment,
         publish_qa_report_core,
     )
-    from oddish.db import QAReportModel
+    from oddish.db import QAReportItemModel, QAReportModel
 
     removed_task = _task("rm-qa-revoke")
     keeper_task = _task("rm-qa-keeper")
@@ -501,6 +501,24 @@ async def test_remove_and_readd_task_never_revives_old_collection_qa_link(sessio
         org_id="org1",
         created_by_user_id="curator",
     )
+    removed_section = next(
+        section for section in draft.tasks if section.task_id == removed_task.id
+    )
+    session.add(
+        QAReportItemModel(
+            report_id=draft.id,
+            report_task_id=removed_section.id,
+            source_type="trial_analysis",
+            source_ref=f"trial_analysis:{removed_trial.id}",
+            source_label="Completed trial QA",
+            source_title="Customer-safe check",
+            title="Customer-safe check",
+            is_visible=True,
+            include_evidence=False,
+            sort_order=0,
+        )
+    )
+    await session.flush()
     published = await publish_qa_report_core(
         session,
         experiment_id=coll_id,

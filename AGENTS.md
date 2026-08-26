@@ -715,7 +715,9 @@ Curated QA has its own 256-bit token. Its public read is
 tokens. One live `qa_reports` row is allowed per experiment. Private task and
 item rows keep editable customer copy and separate source/internal text.
 New QA items start hidden and with evidence excluded. A curator must opt them
-into the public draft before publish.
+into the public draft before publish. A public snapshot includes a task only
+when that task has at least one selected QA item. Publishing requires at least
+one selected QA item, so a customer never sees an empty task section.
 `qa_report_publications` is append-only: publish copies only the approved
 public fields into an immutable JSON snapshot, and the public route reads only
 that snapshot. It keeps private `scope_task_ids` beside the snapshot so public

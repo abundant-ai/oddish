@@ -386,6 +386,18 @@ async def test_report_source_scope_sync_snapshot_and_token_lifecycle(session) ->
     assert "FOREIGN-SECRET" not in source_wire
     assert "UNCOVERED-SECRET" not in source_wire
 
+    with pytest.raises(HTTPException) as empty_publish:
+        await publish_qa_report_core(
+            session,
+            experiment_id=parent.id,
+            org_id=org_id,
+            published_by_user_id="user",
+            expected_draft_version=created.draft_version,
+            expected_public_token=None,
+        )
+    assert empty_publish.value.status_code == 409
+    assert "at least one QA check" in str(empty_publish.value.detail)
+
     first = items[0]
     await patch_qa_report_core(
         session,
@@ -486,6 +498,8 @@ async def test_report_source_scope_sync_snapshot_and_token_lifecycle(session) ->
         "tasks",
     }
     preview_wire = json.dumps(preview.model_dump(mode="json"), sort_keys=True)
+    assert preview.tasks
+    assert all(section.items for section in preview.tasks)
     assert "Customer-safe title" in preview_wire
     assert "INTERNAL-SECRET" not in preview_wire
     assert "CURATED-EVIDENCE" not in preview_wire
@@ -537,6 +551,8 @@ async def test_report_source_scope_sync_snapshot_and_token_lifecycle(session) ->
         qa_token=old_token,
     )
     assert public is not None
+    assert public.tasks
+    assert all(section.items for section in public.tasks)
     assert (
         await get_public_qa_report_core(
             session,

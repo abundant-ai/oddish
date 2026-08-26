@@ -21,10 +21,14 @@ export function ExperimentQaPublishConfirmation({
   canPublish: boolean;
   error?: string | null;
 }) {
-  const visibleTasks = report.tasks.filter((task) => task.is_visible);
-  const visibleItems = visibleTasks.flatMap((task) =>
-    task.items.filter((item) => item.is_visible)
-  );
+  const visibleTasks = report.tasks
+    .filter((task) => task.is_visible)
+    .map((task) => ({
+      ...task,
+      items: task.items.filter((item) => item.is_visible),
+    }))
+    .filter((task) => task.items.length > 0);
+  const visibleItems = visibleTasks.flatMap((task) => task.items);
   const evidenceCount = visibleItems.filter(
     (item) => item.include_evidence && item.evidence
   ).length;
@@ -96,6 +100,12 @@ export function ExperimentQaPublishConfirmation({
         </p>
       ) : null}
 
+      {mode === "publish" && visibleItems.length === 0 ? (
+        <p className="text-paper-fail mt-4 text-[12px]">
+          Select at least one QA check before publishing.
+        </p>
+      ) : null}
+
       <div className="mt-5 flex justify-end gap-2">
         <Button variant="outline" asChild>
           <Link href={cancelHref}>Cancel</Link>
@@ -114,7 +124,10 @@ export function ExperimentQaPublishConfirmation({
           <Button
             type="submit"
             variant={mode === "unpublish" ? "destructive" : "default"}
-            disabled={mode === "publish" && (!canPublish || report.scope_stale)}
+            disabled={
+              mode === "publish" &&
+              (!canPublish || report.scope_stale || visibleItems.length === 0)
+            }
           >
             {mode === "publish" ? (
               <Link2 className="size-4" aria-hidden="true" />

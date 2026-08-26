@@ -1158,7 +1158,9 @@ async def _build_public_snapshot(
         if item.is_visible:
             visible_items.setdefault(item.report_task_id, []).append(_public_item(item))
     included_rows = [
-        row for row in task_rows if row.is_visible and row.task_id in live_task_ids
+        row
+        for row in task_rows
+        if row.is_visible and row.task_id in live_task_ids and visible_items.get(row.id)
     ]
     tasks = [
         PublicQAReportTask(
@@ -1236,7 +1238,7 @@ async def publish_qa_report_core(
     live_task_ids = await _live_experiment_task_ids(
         session, experiment_id=experiment_id, org_id=org_id
     )
-    task_rows, _item_rows = await _draft_rows(session, report.id)
+    task_rows, item_rows = await _draft_rows(session, report.id)
     stale_visible_tasks = [
         row.name
         for row in task_rows
@@ -1247,11 +1249,21 @@ async def publish_qa_report_core(
             status_code=409,
             detail="The experiment task list changed. Sync and review QA first.",
         )
+    task_ids_with_visible_items = {
+        row.report_task_id for row in item_rows if row.is_visible
+    }
     scope_task_ids = [
         row.task_id
         for row in task_rows
-        if row.is_visible and row.task_id in live_task_ids
+        if row.is_visible
+        and row.task_id in live_task_ids
+        and row.id in task_ids_with_visible_items
     ]
+    if not scope_task_ids:
+        raise HTTPException(
+            status_code=409,
+            detail="Select at least one QA check before publishing.",
+        )
     current = await _selected_publication(session, report)
     if (
         report.is_public
