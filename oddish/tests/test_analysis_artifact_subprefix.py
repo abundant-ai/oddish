@@ -29,3 +29,18 @@ def test_the_uploader_nests_the_segment_under_the_trial_prefix():
     nested = f"{base.rstrip('/')}/analysis-audit/"
     assert nested.startswith(base.rstrip("/"))
     assert nested.endswith("/analysis-audit/")
+
+
+def test_listing_and_content_share_the_authoritative_root():
+    """A listed relative path must resolve at the content endpoint without
+    doubling the analysis segment: both sides root at trial_s3_key."""
+    from types import SimpleNamespace
+
+    from oddish.core.sharing.helpers import _get_trial_s3_prefix
+
+    nested = "tasks/t-1/trials/t-1-90/analysis-audit/"
+    trial = SimpleNamespace(id="t-1-90", trial_s3_key=nested)
+    root = _get_trial_s3_prefix(trial)
+    assert root == nested
+    listed_relative = "agent/claude-code.txt"
+    assert f"{root}{listed_relative}".count("analysis-audit/") == 1

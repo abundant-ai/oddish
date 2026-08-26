@@ -1213,9 +1213,17 @@ class StorageClient:
         cursor: str | None,
         presign: bool,
         presign_expiration: int = 900,
+        root_prefix: str | None = None,
     ) -> dict:
-        """List files in a trial's S3 directory."""
-        root_prefix = self._trial_prefix(trial_id)
+        """List files in a trial's S3 directory.
+
+        ``root_prefix`` is the trial's authoritative storage prefix when the
+        caller knows it (``trial_s3_key`` -- nested for analysis trials).
+        Listing and content resolution must share one root, or a listed
+        relative path fed back to the content endpoint doubles the nested
+        segment and misses.
+        """
+        root_prefix = root_prefix or self._trial_prefix(trial_id)
         relative_prefix = normalize_s3_relative_path(prefix)
         if relative_prefix and not relative_prefix.endswith("/"):
             relative_prefix = f"{relative_prefix}/"
