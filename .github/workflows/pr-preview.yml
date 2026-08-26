@@ -174,24 +174,28 @@ jobs:
       # cluster, a mid-run redeploy deletes it first, the stale-app pruner
       # covers abandoned previews, and the hourly reaper collects idle
       # clusters.
-      # GKE disabled for this PR (numinous is the subject, not GKE). The
-      # coordinate vars are removed too, on purpose: _effective_gke_cluster_name
-      # keys off ODDISH_GKE_PROJECT_ID, so leaving it set would still attach the
-      # oddish-gcp secret and make the deployment teardown try to delete this
-      # preview's wedged GKE cluster -- which hangs the preview DB job for its
-      # full 20-minute budget. With no coordinates, the teardown fast-skips
-      # ("GKE not configured") and no cluster is provisioned.
-      ODDISH_GKE_ENABLED: "false"
-      # Enable the opt-in Numinous Cloud backend on previews so its trial path
-      # can be validated end to end. Attaches the oddish-numinous Modal secret
-      # (NUMINOUS_API_URL + NUMINOUS_API_KEY); registers cheap-first.
+      ODDISH_GKE_ENABLED: "true"
+      ODDISH_GKE_PROJECT_ID: "abundant-default"
+      ODDISH_GKE_REGION: "us-east5"
+      ODDISH_GKE_REGISTRY_LOCATION: "us-east5"
+      ODDISH_GKE_REGISTRY_NAME: "oddish-envs"
+      ODDISH_GKE_AUTO_PROVISION_CLUSTER: "true"
+      ODDISH_GKE_PROVISIONING_MODE: "flex-start"
+      # Matches the other deploy workflows. The backend hardcodes
+      # require_prebuilt_image for hosted trials, so without this a preview
+      # that enables GKE hard-fails any task whose image is not already in
+      # the registry instead of building it.
+      ODDISH_GKE_AUTO_BUILD_MISSING_IMAGE: "true"
+      # Enable the opt-in Numinous Cloud backend on previews so its trial
+      # path is validated end to end. Attaches the oddish-numinous Modal
+      # secret (NUMINOUS_API_URL + NUMINOUS_API_KEY); registers cheap-first.
       ODDISH_NUMINOUS_ENABLED: "1"
       ODDISH_MODAL_API_MIN_CONTAINERS: "0"
       ODDISH_MODAL_API_BUFFER_CONTAINERS: "0"
-      ODDISH_MODAL_API_MAX_CONTAINERS: "8"
+      ODDISH_MODAL_API_MAX_CONTAINERS: "2"
       ODDISH_MODAL_WORKER_MIN_CONTAINERS: "0"
       ODDISH_MODAL_WORKER_BUFFER_CONTAINERS: "0"
-      ODDISH_MODAL_WORKER_MAX_CONTAINERS: "64"
+      ODDISH_MODAL_WORKER_MAX_CONTAINERS: "2"
       ODDISH_GATE_LLM_ON_BASELINES: "1"
     defaults:
       run:
