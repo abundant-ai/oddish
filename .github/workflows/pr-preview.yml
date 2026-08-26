@@ -180,7 +180,6 @@ jobs:
       ODDISH_GKE_REGISTRY_LOCATION: "us-east5"
       ODDISH_GKE_REGISTRY_NAME: "oddish-envs"
       ODDISH_GKE_AUTO_PROVISION_CLUSTER: "true"
-      ODDISH_GKE_PROVISIONING_MODE: "flex-start"
       # Matches the other deploy workflows. The backend hardcodes
       # require_prebuilt_image for hosted trials, so without this a preview
       # that enables GKE hard-fails any task whose image is not already in
