@@ -13,6 +13,7 @@ from oddish.runtime.backends.daytona import DaytonaBackend
 from oddish.runtime.backends.ec2 import Ec2Backend
 from oddish.runtime.backends.gke import GkeBackend
 from oddish.runtime.backends.modal import ModalBackend
+from oddish.runtime.backends.numinous import NuminousBackend
 from oddish.runtime.ports import ExecutionBackend
 
 # Singleton instances; backends are stateless w.r.t. trial dispatch.
@@ -20,9 +21,15 @@ _MODAL = ModalBackend()
 _DAYTONA = DaytonaBackend()
 _ARCHIL = ArchilBackend()
 
-REGISTERED_BACKENDS: dict[str, ExecutionBackend] = {
-    _DAYTONA.name: _DAYTONA,
-}
+REGISTERED_BACKENDS: dict[str, ExecutionBackend] = {}
+
+# Numinous joins FIRST (cheapest CPU lane) when enabled, so cheap-first
+# negotiation hands plain-CPU trials to it before Daytona.
+if settings.numinous_enabled:
+    _NUMINOUS = NuminousBackend()
+    REGISTERED_BACKENDS[_NUMINOUS.name] = _NUMINOUS
+
+REGISTERED_BACKENDS[_DAYTONA.name] = _DAYTONA
 
 if settings.ec2_enabled:
     _EC2 = Ec2Backend()
