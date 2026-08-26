@@ -19,6 +19,10 @@ PREPARE = PREVIEW / "prepare_preview_database.sh"
 COMPUTE_PLAN = PREVIEW / "compute_deployment_plan.sh"
 DEPLOY = PREVIEW / "deploy_preview_backend.sh"
 PRUNE = PREVIEW / "prune_stale_supabase_branches.sh"
+PRUNE_APPS = PREVIEW / "prune_stale_preview_apps.sh"
+RUN_GKE_TEARDOWN = PREVIEW / "run_gke_teardown.sh"
+STOP_MODAL_APP = PREVIEW / "stop_modal_preview_app.sh"
+STOP_PREVIEW = PREVIEW / "stop_preview.sh"
 MODAL_APP = REPO / "backend/modal_app.py"
 
 URL_FRAGMENT = "abundant-ai-preview--oddish-pr-{0}-api.modal.run"
@@ -139,6 +143,62 @@ def test_prepare_stops_before_supabase_wait():
     s = PREPARE.read_text()
     assert "stop_modal_preview_app.sh" in s
     assert s.index("stop_modal_preview_app.sh") < s.index("wait_for_supabase_branch.sh")
+
+
+def test_every_gke_teardown_uses_bounded_helper():
+    for script in (STOP_MODAL_APP, STOP_PREVIEW, PRUNE_APPS):
+        source = script.read_text()
+        assert "run_gke_teardown.sh" in source, f"{script.name} bypasses the helper"
+        assert "teardown_gke_cluster.py" not in source, (
+            f"{script.name} invokes the Python teardown directly"
+        )
+
+
+def test_gke_teardown_deadline_is_300_seconds():
+    source = RUN_GKE_TEARDOWN.read_text()
+    assert "timeout --foreground --kill-after=15s 300s" in source
+    assert "modal run --env \"$MODAL_ENVIRONMENT\"" in source
+
+
+def test_only_bounded_helper_invokes_gke_teardown_python():
+    direct_invokers = [
+        script
+        for script in PREVIEW.glob("*.sh")
+        if "teardown_gke_cluster.py" in script.read_text()
+    ]
+    assert direct_invokers == [RUN_GKE_TEARDOWN]
+
+
+@needs_bash
+def test_pre_redeploy_timeout_keeps_existing_modal_app_running():
+    tmp = Path(tempfile.mkdtemp())
+    preview = tmp / "preview"
+    preview.mkdir()
+    shutil.copy(STOP_MODAL_APP, preview / STOP_MODAL_APP.name)
+    helper = preview / RUN_GKE_TEARDOWN.name
+    helper.write_text("#!/usr/bin/env bash\nexit 124\n")
+    helper.chmod(0o755)
+    modal_calls = tmp / "modal-calls"
+    fake_modal = tmp / "modal"
+    fake_modal.write_text(f'#!/usr/bin/env bash\necho "$*" >> "{modal_calls}"\n')
+    fake_modal.chmod(0o755)
+
+    proc = subprocess.run(
+        ["bash", str(preview / STOP_MODAL_APP.name)],
+        env={
+            **os.environ,
+            "PATH": f"{tmp}:{os.environ['PATH']}",
+            "MODAL_ENVIRONMENT": "preview",
+            "MODAL_APP_NAME": "oddish-pr-1366",
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "GKE teardown failed" in proc.stdout
+    assert "leaving oddish-pr-1366 running" in proc.stdout
+    assert not modal_calls.exists(), "modal app stop ran after teardown timed out"
 
 
 def _run_prepare(
