@@ -272,6 +272,22 @@ def _experiment_task_stats(scope: ExperimentReadScope, effective_versions):
     )
 
 
+def _active_trial_exists(scope: ExperimentReadScope):
+    """Whether any visible trial in the experiment still has live work."""
+
+    return (
+        select(1)
+        .where(
+            trial_in_experiment(scope.experiment_id),
+            TrialModel.is_probe.is_(False),
+            TrialModel.superseded_by_trial_id.is_(None),
+            TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
+            TrialModel.deleted_at.is_(None),
+        )
+        .exists()
+    )
+
+
 def _task_projection(scope: ExperimentReadScope, effective_versions, stats):
     current_version = aliased(TaskVersionModel)
     query = (
@@ -556,6 +572,7 @@ async def get_experiment_open(
                 ),
                 func.coalesce(func.sum(all_tasks.c.qa_running), 0).label("qa_running"),
                 func.coalesce(func.sum(all_tasks.c.qa_failed), 0).label("qa_failed"),
+                _active_trial_exists(scope).label("has_active_trials"),
             ).select_from(all_tasks)
         )
     ).one()
@@ -634,7 +651,7 @@ async def get_experiment_open(
             description=description,
             description_truncated=description_truncated,
             revision=scope.revision,
-            has_active_trials=summary.active_count > 0,
+            has_active_trials=bool(summary_row.has_active_trials),
             summary=summary,
             tasks=[*tasks, candidate],
             next_cursor=_task_cursor(row),
@@ -661,7 +678,7 @@ async def get_experiment_open(
         description=description,
         description_truncated=description_truncated,
         revision=scope.revision,
-        has_active_trials=summary.active_count > 0,
+        has_active_trials=bool(summary_row.has_active_trials),
         summary=summary,
         tasks=tasks,
         next_cursor=next_cursor,
@@ -912,19 +929,7 @@ async def get_experiment_revision(
 ) -> ExperimentRevisionResponse:
     """Return only the activity revision and whether visible trials are active."""
 
-    active = await session.scalar(
-        select(
-            select(1)
-            .where(
-                trial_in_experiment(scope.experiment_id),
-                TrialModel.is_probe.is_(False),
-                TrialModel.superseded_by_trial_id.is_(None),
-                TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
-                TrialModel.deleted_at.is_(None),
-            )
-            .exists()
-        )
-    )
+    active = await session.scalar(select(_active_trial_exists(scope)))
     return ExperimentRevisionResponse(
         revision=scope.revision,
         has_active_trials=bool(active),

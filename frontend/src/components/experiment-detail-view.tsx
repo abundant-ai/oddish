@@ -128,6 +128,8 @@ interface ExperimentDetailViewProps {
   exactSummary?: ExperimentOpenSummary;
   isLoading: boolean;
   isLoadingTrials?: boolean;
+  hasMoreExperimentData?: boolean;
+  onLoadMoreExperimentData?: () => void;
   hasError?: boolean;
   errorTitle?: string;
   errorDescription?: string;
@@ -990,6 +992,8 @@ export function ExperimentDetailView({
   exactSummary,
   isLoading,
   isLoadingTrials = false,
+  hasMoreExperimentData = false,
+  onLoadMoreExperimentData,
   hasError = false,
   errorTitle = "Failed to load experiment",
   errorDescription = "Check the API connection and try again.",
@@ -1008,7 +1012,7 @@ export function ExperimentDetailView({
   const allowRetry = mode === "member";
   const showAnalysis = mode === "member";
   // Both bounded experiment pages fetch detail on intent. Public detail uses
-  // the token-scoped apiBaseUrl and member detail uses the authenticated one.
+  // the token-scoped apiBaseUrl; member detail uses the authenticated /api base.
   const loadFullTrialOnOpen = true;
   const searchParams = useSearchParams();
   // The experiment's own direct tags (the header editor chips); fetched
@@ -1473,9 +1477,7 @@ export function ExperimentDetailView({
   );
 
   // Resolve a pending deep-link trial from grid data as it streams in. This
-  // is the only resolution path public share pages have (they can't use the
-  // authed by-id route), and it also covers the authed page whenever the
-  // direct fetch below is slow or failed transiently.
+  // can beat the by-id request and avoids waiting for its retry backoff.
   useEffect(() => {
     if (pendingUrlTrialId == null) return;
     for (const host of tasksForExperiment) {
@@ -1485,10 +1487,6 @@ export function ExperimentDetailView({
         return;
       }
     }
-    // Public share pages have no by-id fetch, so this scan is their only
-    // resolution source: once everything the page will ever have is loaded
-    // and the id still isn't there, the deep link is dead — give it up so
-    // URL sync can drop the stale param.
     if (!loadFullTrialOnOpen && !isLoading && !isLoadingTrials) {
       setPendingUrlTrialId(null);
     }
@@ -1549,8 +1547,7 @@ export function ExperimentDetailView({
   // Open a directly-fetched deep-link trial. The trial is the source of
   // truth: its task_id names the host task, so the link works even when the
   // ?task= param is missing or names the wrong task. Waits for the host
-  // task's shell to arrive if it hasn't yet (shells cover the whole
-  // experiment in one request).
+  // task's shell to arrive if it hasn't yet.
   useEffect(() => {
     if (!resolvedUrlTrial) return;
     // A cancelled deep link stays cancelled: an in-flight fetch can write
@@ -1566,12 +1563,10 @@ export function ExperimentDetailView({
       (t) => t.id === resolvedUrlTrial.task_id
     );
     if (!host) {
-      // Shells cover the whole experiment in one request, but slim-task
-      // pages can still merge in hosts the shells never returned (shells
-      // are capped, and the trials merge appends enriched-only tasks). So
-      // the deep link only gives up once BOTH loads are done and the host
-      // still isn't there — then it truly belongs to another experiment
-      // or an unlinked task, and URL sync may drop the stale params.
+      if (hasMoreExperimentData) {
+        onLoadMoreExperimentData?.();
+        return;
+      }
       if (!isLoading && !isLoadingTrials && tasksForExperiment.length > 0) {
         cancelPendingDeepLink();
       }
@@ -1583,6 +1578,8 @@ export function ExperimentDetailView({
     pendingUrlTrialId,
     tasksForExperiment,
     openDeepLinkTrial,
+    hasMoreExperimentData,
+    onLoadMoreExperimentData,
     isLoading,
     isLoadingTrials,
     cancelPendingDeepLink,

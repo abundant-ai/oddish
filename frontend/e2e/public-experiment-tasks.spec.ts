@@ -395,3 +395,197 @@ test("a failed later public trial page exposes Retry and preserves loaded rows",
   await expect(alert).toHaveCount(0);
   expect(laterPageRequests).toBe(2);
 });
+
+test("public pages fetch full metadata only when the open description is truncated", async ({
+  page,
+}) => {
+  const token = "public-full-description";
+  const truncated = "a".repeat(8_000);
+  const fullDescription = `${truncated}\nFULL_DESCRIPTION_TAIL`;
+  let metadataRequests = 0;
+
+  await page.route(`**/api/public/experiments/${token}/open`, (route) =>
+    route.fulfill({
+      json: {
+        experiment_id: "exp-description",
+        name: "Long description test",
+        description: truncated,
+        description_truncated: true,
+        revision: "settled-revision",
+        has_active_trials: false,
+        summary: summary({ task_count: 0, trial_count: 0 }),
+        tasks: [],
+        next_cursor: null,
+      },
+    })
+  );
+  await page.route(
+    `**/api/public/experiments/${token}/trial-page`,
+    (route) =>
+      route.fulfill({
+        json: {
+          revision: "settled-revision",
+          tasks: [],
+          trial_count: 0,
+          next_cursor: null,
+        },
+      })
+  );
+  await page.route(
+    new RegExp(`/api/public/experiments/${token}$`),
+    (route) => {
+      metadataRequests += 1;
+      return route.fulfill({
+        json: {
+          name: "Long description test",
+          public_token: token,
+          description: fullDescription,
+        },
+      });
+    }
+  );
+
+  await page.goto(`/share/${token}`);
+  await expect(page.getByText("FULL_DESCRIPTION_TAIL")).toBeVisible();
+  expect(metadataRequests).toBe(1);
+});
+
+test("a deep-linked trial loads task pages until its host shell arrives", async ({
+  page,
+}) => {
+  const token = "public-deep-link-pages";
+  const firstTask = task({ id: "task-first", name: "First task" });
+  const hostTask = task({ id: "task-late", name: "Late host task" });
+  const deepLinkedTrial = {
+    id: "trial-late",
+    name: "Late trial",
+    task_id: hostTask.id,
+    task_path: hostTask.task_path,
+    experiment_id: "exp-deep-link",
+    agent: "codex",
+    provider: "openai",
+    model: "masked-model",
+    status: "success",
+    attempts: 1,
+    max_attempts: 1,
+    harbor_stage: "completed",
+    reward: 1,
+    created_at: "2026-07-14T00:00:00Z",
+  } satisfies Trial;
+  let laterOpenRequests = 0;
+
+  await page.addInitScript(() => {
+    window.IntersectionObserver = class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    } as unknown as typeof IntersectionObserver;
+  });
+  await page.route(
+    new RegExp(`/api/public/experiments/${token}/open(?:\\?|$)`),
+    (route) => {
+      const cursor = new URL(route.request().url()).searchParams.get("cursor");
+      if (!cursor) {
+        return route.fulfill({
+          json: {
+            experiment_id: "exp-deep-link",
+            name: "Deep link pagination test",
+            description: null,
+            description_truncated: false,
+            revision: "settled-revision",
+            has_active_trials: false,
+            summary: summary({ task_count: 2, trial_count: 1 }),
+            tasks: [{ ...firstTask, trials: null }],
+            next_cursor: "late-task-page",
+          },
+        });
+      }
+      laterOpenRequests += 1;
+      return route.fulfill({
+        json: {
+          experiment_id: "exp-deep-link",
+          name: "Deep link pagination test",
+          description: null,
+          description_truncated: false,
+          revision: "settled-revision",
+          has_active_trials: false,
+          summary: summary({ task_count: 2, trial_count: 1 }),
+          tasks: [{ ...hostTask, trials: null }],
+          next_cursor: null,
+        },
+      });
+    }
+  );
+  await page.route(`**/api/public/experiments/${token}/trial-page`, (route) =>
+    route.fulfill({
+      json: {
+        revision: "settled-revision",
+        tasks: [{ ...firstTask, trials: [] }],
+        trial_count: 0,
+        next_cursor: null,
+      },
+    })
+  );
+  await page.route(
+    `**/api/public/experiments/${token}/trials/${deepLinkedTrial.id}`,
+    (route) => route.fulfill({ json: deepLinkedTrial })
+  );
+  await page.route(
+    `**/api/public/experiments/${token}/tasks/${hostTask.id}/files?*`,
+    (route) => route.fulfill({ json: { files: [] } })
+  );
+  await page.route(
+    `**/api/public/experiments/${token}/trials/${deepLinkedTrial.id}/trajectory/summary`,
+    (route) => route.fulfill({ status: 404, json: { detail: "not found" } })
+  );
+
+  await page.goto(`/share/${token}?trial=${deepLinkedTrial.id}`);
+  await expect(page.getByRole("tab", { name: "Summary" })).toBeVisible();
+  expect(laterOpenRequests).toBe(1);
+});
+
+test("dataset links use the bounded public experiment reader", async ({ page }) => {
+  const token = "bounded-dataset-page";
+  let removedTaskListRequests = 0;
+
+  await page.route(`**/api/public/experiments/${token}/open`, (route) =>
+    route.fulfill({
+      json: {
+        experiment_id: "exp-dataset",
+        name: "Bounded dataset test",
+        description: null,
+        description_truncated: false,
+        revision: "settled-revision",
+        has_active_trials: false,
+        summary: summary({ task_count: 0, trial_count: 0 }),
+        tasks: [],
+        next_cursor: null,
+      },
+    })
+  );
+  await page.route(
+    `**/api/public/experiments/${token}/trial-page`,
+    (route) =>
+      route.fulfill({
+        json: {
+          revision: "settled-revision",
+          tasks: [],
+          trial_count: 0,
+          next_cursor: null,
+        },
+      })
+  );
+  await page.route(
+    `**/api/public/experiments/${token}/tasks?*`,
+    (route) => {
+      removedTaskListRequests += 1;
+      return route.fulfill({ json: [] });
+    }
+  );
+
+  await page.goto(`/datasets/${token}`);
+  await expect(
+    page.getByRole("heading", { name: "Bounded dataset test" })
+  ).toBeVisible();
+  expect(removedTaskListRequests).toBe(0);
+});

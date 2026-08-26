@@ -4,7 +4,6 @@ import uuid
 
 import pytest
 from fastapi import HTTPException
-
 from oddish.core.endpoints.experiment_open import (
     OPEN_MAX_BYTES,
     TRIAL_PAGE_MAX_BYTES,
@@ -233,6 +232,97 @@ async def test_experiment_open_is_bounded_projected_and_shared_by_audience(sessi
         for task in public_page.tasks
         for trial in task.trials
     )
+
+
+@pytest.mark.asyncio
+async def test_experiment_activity_includes_analysis_trials_in_open_and_revision(
+    session,
+):
+    experiment = ExperimentModel(
+        id=_id("activity-experiment"),
+        name="Analysis activity",
+        org_id="org-activity",
+    )
+    task = TaskModel(
+        id=_id("activity-task"),
+        name="Activity task",
+        org_id=experiment.org_id,
+        user="tester",
+        task_path="s3://tasks/activity",
+    )
+    session.add_all([experiment, task])
+    await session.flush()
+    version = TaskVersionModel(
+        id=f"{task.id}-v1",
+        task_id=task.id,
+        version=1,
+        task_path=task.task_path,
+    )
+    session.add(version)
+    await session.flush()
+    task.current_version_id = version.id
+    await session.execute(
+        task_experiments.insert().values(
+            task_id=task.id,
+            experiment_id=experiment.id,
+        )
+    )
+    qa_trial = TrialModel(
+        id=_id("queued-qa"),
+        name="Queued QA trial",
+        task_id=task.id,
+        task_version_id=version.id,
+        experiment_id=experiment.id,
+        org_id=experiment.org_id,
+        agent="codex",
+        provider="openai",
+        queue_key="openai/gpt-5.6",
+        model="openai/gpt-5.6",
+        kind="qa",
+        status=TrialStatus.QUEUED,
+    )
+    session.add_all(
+        [
+            TrialModel(
+                id=_id("settled-agent"),
+                name="Settled agent trial",
+                task_id=task.id,
+                task_version_id=version.id,
+                experiment_id=experiment.id,
+                org_id=experiment.org_id,
+                agent="codex",
+                provider="openai",
+                queue_key="openai/gpt-5.6",
+                model="openai/gpt-5.6",
+                kind="agent",
+                status=TrialStatus.SUCCESS,
+                reward=1.0,
+            ),
+            qa_trial,
+        ]
+    )
+    await session.flush()
+
+    scope = await resolve_member_experiment_read_scope(
+        session,
+        experiment_id=experiment.id,
+        org_id=experiment.org_id,
+    )
+    opened = await get_experiment_open(session, scope=scope)
+    revision = await get_experiment_revision(session, scope=scope)
+
+    assert opened.summary.active_count == 0
+    assert opened.has_active_trials is True
+    assert revision.has_active_trials is True
+
+    qa_trial.status = TrialStatus.SUCCESS
+    await session.flush()
+
+    settled_open = await get_experiment_open(session, scope=scope)
+    settled_revision = await get_experiment_revision(session, scope=scope)
+    assert settled_open.revision == opened.revision
+    assert settled_open.has_active_trials is False
+    assert settled_revision.has_active_trials is False
 
 
 @pytest.mark.asyncio

@@ -1,52 +1,21 @@
 "use client";
 
-import { useMemo } from "react";
-import useSWR from "swr";
 import { useParams } from "next/navigation";
-import { DatasetDetailView } from "@/components/dataset-detail-view";
+import { ExperimentPageClient } from "@/components/experiment-page-client";
 import { Nav } from "@/components/nav";
-import type { Task, PublicExperimentInfo } from "@/lib/types";
-import { fetcher } from "@/lib/api";
-import { PUBLIC_API_URL } from "@/lib/utils";
 
 export default function PublicDatasetPage() {
   const params = useParams();
   const token = Array.isArray(params.token) ? params.token[0] : params.token;
-
-  const { data: experimentInfo, error: experimentError } =
-    useSWR<PublicExperimentInfo>(
-      token ? `${PUBLIC_API_URL}/experiments/${token}` : null,
-      fetcher,
-    );
-
-  const { data, error, isLoading } = useSWR<Task[]>(
-    token ? `${PUBLIC_API_URL}/experiments/${token}/tasks?limit=200` : null,
-    fetcher,
-    { refreshInterval: 30000, revalidateOnFocus: false },
-  );
-
-  const tasks = useMemo(() => {
-    const taskList = Array.isArray(data) ? [...data] : [];
-    return taskList.sort(
-      (a, b) =>
-        new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
-    );
-  }, [data]);
-
-  const datasetName = experimentInfo?.name || "Public Dataset";
-  const hasError = Boolean(experimentError || error);
 
   return (
     <>
       <Nav />
 
       <main className="mx-auto w-full max-w-(--breakpoint-2xl) px-4 py-4">
-        <DatasetDetailView
-          datasetName={datasetName}
-          tasks={tasks}
-          isLoading={isLoading}
-          hasError={hasError}
-        />
+        {token ? (
+          <ExperimentPageClient access={{ kind: "public", token }} />
+        ) : null}
       </main>
     </>
   );

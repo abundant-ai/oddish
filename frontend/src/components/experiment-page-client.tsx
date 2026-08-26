@@ -34,6 +34,7 @@ import { isOrgAdminRole } from "@/lib/org-roles";
 import type {
   ExperimentCostTotals,
   ExperimentOpenResponse,
+  PublicExperimentInfo,
   ExperimentRevisionResponse,
   ExperimentShareInfo,
   ExperimentTrialPageResponse,
@@ -114,6 +115,7 @@ function ExperimentPageContent({
   const apiBase = isPublic
     ? `/api/public/experiments/${resourceId}`
     : `/api/experiments/${resourceId}`;
+  const detailApiBase = isPublic ? apiBase : "/api";
 
   const getOpenPageKey = useCallback(
     (
@@ -215,6 +217,13 @@ function ExperimentPageContent({
     useSWR<ExperimentShareInfo>(shareKey, fetcher, {
       revalidateOnFocus: false,
     });
+  const publicInfoKey =
+    access.kind === "public" && open?.description_truncated ? apiBase : null;
+  const { data: publicExperimentInfo } = useSWR<PublicExperimentInfo>(
+    publicInfoKey,
+    fetcher,
+    { revalidateOnFocus: false }
+  );
 
   const refreshVisibleResources = useCallback(async () => {
     await Promise.all([
@@ -243,14 +252,22 @@ function ExperimentPageContent({
   const canLoadMoreTaskShells = hasMoreTaskShells && !isValidatingOpen;
   const canLoadMoreTrials = hasMoreTrials && !isValidatingTrials && !trialError;
   const canLoadMore = canLoadMoreTaskShells || canLoadMoreTrials;
+  const loadMore = useCallback(() => {
+    if (canLoadMoreTaskShells) void setOpenSize((size) => size + 1);
+    if (canLoadMoreTrials) void setTrialSize((size) => size + 1);
+  }, [
+    canLoadMoreTaskShells,
+    canLoadMoreTrials,
+    setOpenSize,
+    setTrialSize,
+  ]);
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const target = loadMoreRef.current;
     if (!target || !canLoadMore) return;
     const observer = new IntersectionObserver((entries) => {
       if (!entries.some((entry) => entry.isIntersecting)) return;
-      if (canLoadMoreTaskShells) void setOpenSize((size) => size + 1);
-      if (canLoadMoreTrials) void setTrialSize((size) => size + 1);
+      loadMore();
     });
     observer.observe(target);
     return () => observer.disconnect();
@@ -258,8 +275,7 @@ function ExperimentPageContent({
     canLoadMore,
     canLoadMoreTaskShells,
     canLoadMoreTrials,
-    setOpenSize,
-    setTrialSize,
+    loadMore,
   ]);
 
   const [isEditingName, setIsEditingName] = useState(false);
@@ -402,7 +418,9 @@ function ExperimentPageContent({
   const hasTrialPageError = Boolean(trialError);
   const hasFatalError = Boolean(openError && !open);
   const description = isPublic
-    ? (open?.description ?? null)
+    ? publicExperimentInfo === undefined
+      ? (open?.description ?? null)
+      : publicExperimentInfo.description
     : experimentShare === undefined
       ? (open?.description ?? null)
       : experimentShare.description;
@@ -482,6 +500,8 @@ function ExperimentPageContent({
         exactSummary={open?.summary}
         isLoading={isLoadingOpen}
         isLoadingTrials={isLoadingTrials}
+        hasMoreExperimentData={hasMoreTaskShells || hasMoreTrials}
+        onLoadMoreExperimentData={canLoadMore ? loadMore : undefined}
         hasError={hasFatalError}
         errorTitle="Failed to load experiment"
         errorDescription={
@@ -583,7 +603,7 @@ function ExperimentPageContent({
           ) : null
         }
         mode={access.kind}
-        apiBaseUrl={apiBase}
+        apiBaseUrl={detailApiBase}
         onTaskUnlink={access.kind === "member" ? handleUnlinkTask : undefined}
         onTrialDelete={
           access.kind === "member"
@@ -603,10 +623,7 @@ function ExperimentPageContent({
             type="button"
             variant="ghost"
             size="sm"
-            onClick={() => {
-              if (hasMoreTaskShells) void setOpenSize((size) => size + 1);
-              if (hasMoreTrials) void setTrialSize((size) => size + 1);
-            }}
+            onClick={loadMore}
           >
             Load more
           </Button>
