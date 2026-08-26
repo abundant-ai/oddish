@@ -80,6 +80,7 @@ from oddish.worker.probe_staging import (
 )
 from oddish.workers.analysis_trials import is_analysis_kind
 from oddish.workers.harbor.ephemeral import HarborOverrideImportError
+from oddish.workers.harbor.failure_info import classify_harbor_failure
 from oddish.workers.harbor.outcome import merged_trial_result
 from oddish.workers.harbor.quota_control import QuotaPauseControlError
 from oddish.workers.harbor.runner import (
@@ -960,6 +961,7 @@ async def _store_trial_results(
             return False, False
 
         if outcome:
+            failure_info = classify_harbor_failure(outcome)
             is_timeout = _is_agent_timeout_error_message(outcome.error)
             # Analysis importers read their required result from durable storage.
             # A verifier reward is not a successful analysis run when that
@@ -1005,6 +1007,7 @@ async def _store_trial_results(
                 outcome.error,
                 outcome.exception_type,
                 outcome.verifier_summary,
+                failure_info,
             )
 
             trial.has_trajectory = outcome.has_trajectory
@@ -1029,7 +1032,10 @@ async def _store_trial_results(
                     console.print(
                         f"[red]Trial {trial_id} FAILED (Modal image build)[/red]"
                     )
-                elif _is_non_retryable_outcome(outcome):
+                elif _is_non_retryable_outcome(outcome) or (
+                    failure_info is not None
+                    and failure_info.get("retryable") is False
+                ):
                     trial.status = TrialStatus.FAILED
                     trial.finished_at = utcnow()
                     console.print(

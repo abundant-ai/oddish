@@ -107,6 +107,39 @@ def test_merged_result_marks_quiet_exception():
     assert "exit 1" in merged["harbor_exception"]["error"]
 
 
+def test_merged_result_includes_structured_failure_metadata():
+    from oddish.workers.harbor.outcome import merged_trial_result
+
+    merged = merged_trial_result(
+        None,
+        "UnknownApiError: failed",
+        "UnknownApiError",
+        failure_info={
+            "category": "provider_api",
+            "phase": "agent_execution",
+            "code": "http_529",
+            "retryable": True,
+            "retry_reason": "provider_overload",
+            "request_id": "req-1",
+            "session_id": "session-1",
+        },
+    )
+
+    assert merged == {
+        "harbor_exception": {
+            "exception_type": "UnknownApiError",
+            "error": "UnknownApiError: failed",
+            "category": "provider_api",
+            "phase": "agent_execution",
+            "code": "http_529",
+            "retryable": True,
+            "retry_reason": "provider_overload",
+            "request_id": "req-1",
+            "session_id": "session-1",
+        }
+    }
+
+
 def test_merged_result_marker_only_when_no_metrics():
     from oddish.workers.harbor.outcome import merged_trial_result
 

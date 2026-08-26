@@ -74,6 +74,7 @@ def merged_trial_result(
     error: str | None,
     exception_type: str | None,
     verifier_summary: dict[str, Any] | None = None,
+    failure_info: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Trial ``result`` payload: verifier metrics plus a quiet-exception marker.
 
@@ -85,7 +86,13 @@ def merged_trial_result(
     parsing error strings. The key is reserved: a task metric of the same name
     is overwritten.
     """
-    return build_trial_result(metrics, verifier_summary, error, exception_type)
+    return build_trial_result(
+        metrics,
+        verifier_summary,
+        error,
+        exception_type,
+        failure_info,
+    )
 
 
 def _detect_trajectory(job_dir: Path) -> bool:

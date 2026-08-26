@@ -6,7 +6,8 @@ routes every claimed row through the handler registered for its kind.
 
 ``JobOutcome`` is the only shape a handler is allowed to return: either
 ``success`` (with an optional small ``result_summary`` blob) or
-``failure`` (with an error message and a retryable flag). The
+``failure`` (with an error message, retry decision, and optional structured
+retry schedule). The
 ``exactly-one-set`` invariant is enforced in ``__post_init__`` so a
 buggy handler can't stall a row in ``RUNNING``.
 """
@@ -40,6 +41,8 @@ class JobFailure:
 
     error_message: str
     retryable: bool = True
+    retry_reason: str | None = None
+    retry_after_seconds: float | None = None
 
 
 @dataclass
@@ -61,12 +64,26 @@ class JobOutcome:
             )
 
     @classmethod
-    def ok(cls, result_summary: dict[str, Any] | None = None) -> "JobOutcome":
+    def ok(cls, result_summary: dict[str, Any] | None = None) -> JobOutcome:
         return cls(success=JobSuccess(result_summary=result_summary))
 
     @classmethod
-    def fail(cls, error_message: str, *, retryable: bool = True) -> "JobOutcome":
-        return cls(failure=JobFailure(error_message=error_message, retryable=retryable))
+    def fail(
+        cls,
+        error_message: str,
+        *,
+        retryable: bool = True,
+        retry_reason: str | None = None,
+        retry_after_seconds: float | None = None,
+    ) -> JobOutcome:
+        return cls(
+            failure=JobFailure(
+                error_message=error_message,
+                retryable=retryable,
+                retry_reason=retry_reason,
+                retry_after_seconds=retry_after_seconds,
+            )
+        )
 
 
 @runtime_checkable

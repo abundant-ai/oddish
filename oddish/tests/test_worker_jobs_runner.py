@@ -303,6 +303,32 @@ def test_trial_retry_backoff_uses_longer_rate_limit_base():
     )
 
 
+def test_trial_retry_backoff_recognizes_provider_overload():
+    delay = worker_job_single_job.calculate_trial_retry_delay_seconds(
+        attempts=1,
+        error_message="Claude failed with HTTP 529: Overloaded",
+        jitter=0.0,
+    )
+
+    assert delay == 60.0
+    assert (
+        worker_job_single_job.classify_retry_reason("API Error: 529 Overloaded")
+        == "provider_overload"
+    )
+
+
+def test_trial_retry_backoff_honors_structured_retry_hint():
+    delay = worker_job_single_job.calculate_trial_retry_delay_seconds(
+        attempts=1,
+        error_message="provider overloaded",
+        retry_reason="provider_overload",
+        retry_after_seconds=90.0,
+        jitter=0.0,
+    )
+
+    assert delay == 90.0
+
+
 def test_trial_retry_backoff_is_capped_after_jitter():
     delay = worker_job_single_job.calculate_trial_retry_delay_seconds(
         attempts=10,

@@ -9,7 +9,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from harbor.models.environment_type import EnvironmentType
 
 from oddish.runtime.backends.modal import ModalBackend
-from oddish.workers.harbor.modal_debug import _capture_modal_output
+from oddish.workers.harbor.modal_debug import (
+    _capture_modal_output,
+    _maybe_add_modal_debug_hint,
+)
 
 
 def _install_fake_modal(monkeypatch) -> dict:
@@ -69,3 +72,13 @@ def test_capture_modal_output_delegates_to_modal_backend(
     with _capture_modal_output(job_dir, EnvironmentType.MODAL) as log_path:
         assert log_path == job_dir / "modal-output.log"
     assert (job_dir / "modal-output.log").exists()
+
+
+def test_modal_debug_hint_does_not_claim_every_failure_is_an_image_build(tmp_path):
+    hint = _maybe_add_modal_debug_hint(
+        "NetworkConnectionError: curl: (56) unexpected eof",
+        tmp_path / "modal-output.log",
+    )
+
+    assert "runtime diagnostics" in hint
+    assert "image build failure" not in hint

@@ -169,16 +169,20 @@ def build_trial_result(
     verifier_summary: dict[str, Any] | None,
     error: str | None,
     exception_type: str | None,
+    failure_info: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Merge verifier metrics, a compact report, and a quiet exception marker."""
     result: dict[str, Any] = sanitize_task_result(metrics) or {}
     if verifier_summary is not None:
         result["_verifier"] = verifier_summary
-    if exception_type is not None:
-        result["harbor_exception"] = {
+    if exception_type is not None or failure_info is not None:
+        exception_marker: dict[str, Any] = {
             "exception_type": exception_type,
             "error": error[:300] if error else None,
         }
+        if failure_info is not None:
+            exception_marker.update(failure_info)
+        result["harbor_exception"] = exception_marker
     return result or None
 
 

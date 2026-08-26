@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
+
 import pytest
+from harbor.agents.installed.base import ApiOverloadedError, NetworkConnectionError
+from harbor.agents.installed.claude_code import ClaudeCode
 
 from oddish.config import HARBOR_DEFAULT_SHA, HARBOR_DEFAULT_SOURCE
 from oddish.workers.agents import claude_code as claude_code_agent
@@ -11,6 +16,7 @@ from oddish.workers.agents.claude_code import (
     OddishProbeClaudeCode,
     _pinned_harbor_requirement,
 )
+from oddish.workers.harbor.failure_info import ClaudeProviderFailure
 
 
 @pytest.mark.asyncio
@@ -150,3 +156,148 @@ async def test_install_is_best_effort_on_failure(tmp_path, monkeypatch):
     # Must NOT raise -- a harbor-install failure can't be allowed to fail the
     # whole probe trial.
     await agent.install(environment=object())
+
+
+@pytest.mark.asyncio
+async def test_install_retries_curl_56_with_bounded_exponential_backoff(
+    tmp_path, monkeypatch
+):
+    agent = OddishClaudeCode(logs_dir=tmp_path)
+    attempts = 0
+    delays: list[float] = []
+
+    async def _install(_self, _environment):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise NetworkConnectionError("curl: (56) unexpected eof", return_code=56)
+
+    async def _sleep(delay):
+        delays.append(delay)
+
+    monkeypatch.setattr(ClaudeCode, "install", _install)
+    monkeypatch.setattr(claude_code_agent.asyncio, "sleep", _sleep)
+
+    await agent.install(environment=object())
+
+    assert attempts == 3
+    assert delays == [2.0, 4.0]
+
+
+@pytest.mark.asyncio
+async def test_install_does_not_retry_non_transport_http_failure(tmp_path, monkeypatch):
+    agent = OddishClaudeCode(logs_dir=tmp_path)
+    attempts = 0
+
+    async def _install(_self, _environment):
+        nonlocal attempts
+        attempts += 1
+        raise NetworkConnectionError("curl: (22) HTTP 403", return_code=22)
+
+    monkeypatch.setattr(ClaudeCode, "install", _install)
+
+    with pytest.raises(NetworkConnectionError):
+        await agent.install(environment=object())
+
+    assert attempts == 1
+
+
+def test_structured_529_is_classified_as_overload(tmp_path):
+    agent = OddishClaudeCode(logs_dir=tmp_path)
+    result = SimpleNamespace(
+        return_code=1,
+        stdout=json.dumps(
+            {
+                "type": "result",
+                "terminal_reason": "api_error",
+                "api_error_status": 529,
+                "session_id": "session-1",
+                "request_id": "req-1",
+            }
+        ),
+        stderr="",
+    )
+
+    error = agent._classify_exec_error("claude --print", result)
+
+    assert isinstance(error, ApiOverloadedError)
+    assert "http_status=529" in str(error)
+    assert "request_id=req-1" in str(error)
+    assert "session_id=session-1" in str(error)
+
+
+@pytest.mark.asyncio
+async def test_provider_overload_resumes_same_session_and_honors_retry_hint(
+    tmp_path, monkeypatch
+):
+    agent = OddishClaudeCode(logs_dir=tmp_path)
+    calls: list[tuple[str, bool, str | None, bool]] = []
+    delays: list[float] = []
+
+    async def _run(_self, instruction, _environment, _context):
+        calls.append(
+            (
+                instruction,
+                agent._resume,
+                agent._resume_session_id,
+                agent._append_stream_log,
+            )
+        )
+        if len(calls) == 1:
+            agent._last_provider_failure = ClaudeProviderFailure(
+                terminal_reason="api_error",
+                http_status=529,
+                request_id="req-1",
+                session_id="session-1",
+                retry_after_seconds=17.0,
+            )
+            raise ApiOverloadedError("overloaded", return_code=1)
+
+    async def _sleep(delay):
+        delays.append(delay)
+
+    monkeypatch.setattr(ClaudeCode, "run", _run)
+    monkeypatch.setattr(claude_code_agent.asyncio, "sleep", _sleep)
+
+    await agent.run("original task", environment=object(), context=object())
+
+    assert delays == [17.0]
+    assert calls[0] == ("original task", False, None, False)
+    assert calls[1] == (
+        claude_code_agent._RESUME_PROMPT,
+        True,
+        "session-1",
+        True,
+    )
+    assert agent._resume is False
+    assert agent._resume_session_id is None
+    assert agent._append_stream_log is False
+
+
+def test_resume_command_uses_exact_session_and_appends_stream_log(tmp_path):
+    agent = OddishClaudeCode(logs_dir=tmp_path)
+    agent._resume = True
+    agent._resume_session_id = "session-1"
+    agent._append_stream_log = True
+
+    command = agent._build_claude_command("ignored", "--continue ")
+
+    assert "--resume session-1" in command
+    assert "--continue" not in command
+    assert "| tee -a /logs/agent/claude-code.txt" in command
+
+
+def test_cost_parser_sums_each_process_result_after_resume(tmp_path):
+    stream = tmp_path / "claude-code.txt"
+    stream.write_text(
+        "\n".join(
+            [
+                json.dumps({"type": "result", "total_cost_usd": 1.25}),
+                json.dumps({"type": "result", "total_cost_usd": 3.75}),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    agent = OddishClaudeCode(logs_dir=tmp_path)
+
+    assert agent._parse_total_cost_from_stream_json() == 5.0

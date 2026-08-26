@@ -137,6 +137,30 @@ async def test_trial_handler_returns_retryable_fail_on_retrying(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_trial_handler_preserves_structured_retry_schedule(monkeypatch):
+    trial_row = SimpleNamespace(
+        status=TrialStatus.RETRYING,
+        error_message="Claude provider API failure (http_status=529)",
+        result={
+            "harbor_exception": {
+                "retry_reason": "provider_overload",
+                "retry_after_seconds": 75.0,
+            }
+        },
+    )
+    monkeypatch.setattr(
+        handlers_module, "get_session", _fake_get_session_factory(trial_row)
+    )
+    _patch_run(monkeypatch, "run_trial_job")
+
+    outcome = await TrialJobHandler().run(_trial_claim())
+
+    assert outcome.failure is not None
+    assert outcome.failure.retry_reason == "provider_overload"
+    assert outcome.failure.retry_after_seconds == 75.0
+
+
+@pytest.mark.asyncio
 async def test_trial_handler_returns_permanent_fail_on_failed_with_budget(monkeypatch):
     trial_row = SimpleNamespace(
         status=TrialStatus.FAILED,

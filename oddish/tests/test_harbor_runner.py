@@ -3800,6 +3800,51 @@ def test_store_trial_results_skips_retry_for_non_retryable_exception(monkeypatch
     assert trial.attempts == 1
 
 
+def test_store_trial_results_honors_structured_permanent_provider_failure(
+    monkeypatch, tmp_path
+):
+    """A structured provider 400 must not consume fresh-sandbox attempts."""
+    trial = _make_retry_decision_trial(attempts=1, max_attempts=6)
+    _install_retry_decision_session_fakes(monkeypatch, trial)
+    agent_log = tmp_path / "trial" / "agent" / "claude-code.txt"
+    agent_log.parent.mkdir(parents=True)
+    agent_log.write_text(
+        json.dumps(
+            {
+                "type": "result",
+                "terminal_reason": "api_error",
+                "api_error_status": 400,
+                "session_id": "session-bad-request",
+            }
+        ),
+        encoding="utf-8",
+    )
+    outcome = harbor_runner.HarborOutcome(
+        reward=None,
+        error="UnknownApiError: Claude provider rejected the request",
+        exit_code=-1,
+        duration_sec=5.0,
+        job_result_path=None,
+        job_dir=tmp_path,
+        exception_type="UnknownApiError",
+    )
+
+    asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id="trial-1",
+            outcome=outcome,
+            trial_s3_key=None,
+            execution_error=None,
+            trial_attempt=trial.attempts,
+        )
+    )
+
+    assert trial.status == trial_handler.TrialStatus.FAILED
+    assert trial.finished_at is not None
+    assert trial.result["harbor_exception"]["retryable"] is False
+    assert trial.result["harbor_exception"]["http_status"] == 400
+
+
 def test_store_trial_results_skips_retry_for_quota_pause_outcome(monkeypatch):
     """The Harbor runner returns quota-pause control failures as outcomes.
 

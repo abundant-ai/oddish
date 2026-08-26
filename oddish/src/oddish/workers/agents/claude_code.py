@@ -22,17 +22,46 @@ The wrappers are selected by ``_apply_claude_code_oddish_wrapper`` in
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import shlex
 from importlib.metadata import Distribution, PackageNotFoundError, version
+from typing import Any, override
 
-from harbor.agents.installed.base import BaseEnvironment
+from harbor.agents.installed.base import (
+    ApiInternalServerError,
+    ApiOverloadedError,
+    ApiRateLimitError,
+    BaseEnvironment,
+    NetworkConnectionError,
+    NonZeroAgentExitCodeError,
+)
 from harbor.agents.installed.claude_code import ClaudeCode
 
 from oddish.core.harbor_source import harbor_sandbox_requirement
+from oddish.workers.harbor.failure_info import (
+    ClaudeProviderFailure,
+    parse_claude_provider_failure,
+)
 
 logger = logging.getLogger(__name__)
+
+_INSTALL_TRANSIENT_EXIT_CODES = frozenset({18, 28, 35, 52, 55, 56, 92})
+_INSTALL_MAX_ATTEMPTS = 3
+_INSTALL_RETRY_BASE_DELAY_SEC = 2.0
+_PROVIDER_MAX_RESUMES = 5
+_PROVIDER_RETRY_BASE_DELAY_SEC = 60.0
+_PROVIDER_RETRY_MAX_DELAY_SEC = 960.0
+_RESUME_PROMPT = (
+    "The previous request failed with a transient provider API error. "
+    "Continue the original task from where you left off."
+)
+_TRANSIENT_PROVIDER_ERRORS = (
+    ApiRateLimitError,
+    ApiInternalServerError,
+    ApiOverloadedError,
+)
 
 
 def _installed_harbor_git_pin() -> tuple[str, str] | None:
@@ -101,18 +130,154 @@ def _pinned_oddish_requirement() -> str | None:
 
 
 class OddishClaudeCode(ClaudeCode):
-    """Stock Claude Code under an Oddish-owned name.
+    """Claude Code with Oddish-owned transport and continuation policy.
 
     Harbor keeps the prompt off ``claude``'s argv itself: it hands the
     instruction to the agent's stdin through a transient environment
     variable and tees the stream-json output to
-    ``/logs/agent/claude-code.txt``. This subclass therefore adds no
-    behaviour; it exists because its import path is a routing key -- the
-    agent-config wrapper selects it by name
-    (``_ODDISH_CLAUDE_CODE_IMPORT_PATH``), the restricted-network
+    ``/logs/agent/claude-code.txt``. The app wrapper retries transient CLI
+    installation downloads before discarding a sandbox, classifies structured
+    provider result events, and resumes provider-interrupted sessions in the
+    same workspace. Its import path is also a routing key: agent config
+    selects it (``_ODDISH_CLAUDE_CODE_IMPORT_PATH``), the restricted-network
     compatibility profiles are keyed on it, and
     :class:`OddishProbeClaudeCode` derives from it.
     """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._last_provider_failure: ClaudeProviderFailure | None = None
+        self._resume_session_id: str | None = None
+        self._append_stream_log = False
+
+    @override
+    async def install(self, environment: BaseEnvironment) -> None:
+        """Retry only transport failures from Claude's idempotent installer."""
+        for attempt in range(1, _INSTALL_MAX_ATTEMPTS + 1):
+            try:
+                await super().install(environment)
+                return
+            except NetworkConnectionError as exc:
+                if (
+                    exc.return_code not in _INSTALL_TRANSIENT_EXIT_CODES
+                    or attempt == _INSTALL_MAX_ATTEMPTS
+                ):
+                    raise
+                delay = _INSTALL_RETRY_BASE_DELAY_SEC * (2 ** (attempt - 1))
+                logger.warning(
+                    "Claude Code installer transport failed with exit %s; "
+                    "retrying in %.1fs (%s/%s)",
+                    exc.return_code,
+                    delay,
+                    attempt,
+                    _INSTALL_MAX_ATTEMPTS,
+                )
+                await asyncio.sleep(delay)
+
+    @override
+    def _classify_exec_error(
+        self, command: str, result: Any
+    ) -> NonZeroAgentExitCodeError:
+        failure = parse_claude_provider_failure(result.stdout, result.stderr)
+        if failure is None:
+            return super()._classify_exec_error(command, result)
+
+        self._last_provider_failure = failure
+        detail = (
+            f"Command failed (exit {result.return_code}): {command}\n"
+            f"stdout: {self._truncate_output(result.stdout)}\n"
+            f"stderr: {self._truncate_output(result.stderr)}\n"
+            f"{failure.summary()}"
+        )
+        return failure.exception_class(detail, return_code=result.return_code)
+
+    @override
+    async def run(
+        self, instruction: str, environment: BaseEnvironment, context: Any
+    ) -> None:
+        """Resume structured transient API failures before Harbor stops the sandbox."""
+        original_resume = self._resume
+        original_session_id = self._resume_session_id
+        original_append = self._append_stream_log
+        next_instruction = instruction
+        try:
+            for resume_count in range(_PROVIDER_MAX_RESUMES + 1):
+                self._last_provider_failure = None
+                try:
+                    await super().run(next_instruction, environment, context)
+                    return
+                except _TRANSIENT_PROVIDER_ERRORS:
+                    failure = self._last_provider_failure
+                    if (
+                        failure is None
+                        or not failure.session_id
+                        or resume_count == _PROVIDER_MAX_RESUMES
+                    ):
+                        raise
+
+                    delay = failure.retry_after_seconds
+                    if delay is None:
+                        delay = _PROVIDER_RETRY_BASE_DELAY_SEC * (2**resume_count)
+                    delay = min(max(delay, 0.0), _PROVIDER_RETRY_MAX_DELAY_SEC)
+                    logger.warning(
+                        "Claude provider failure %s; resuming session %s in %.1fs "
+                        "(%s/%s)",
+                        failure.http_status or failure.terminal_reason,
+                        failure.session_id,
+                        delay,
+                        resume_count + 1,
+                        _PROVIDER_MAX_RESUMES,
+                    )
+                    await asyncio.sleep(delay)
+                    self._resume = True
+                    self._resume_session_id = failure.session_id
+                    self._append_stream_log = True
+                    next_instruction = _RESUME_PROMPT
+        finally:
+            self._resume = original_resume
+            self._resume_session_id = original_session_id
+            self._append_stream_log = original_append
+
+    @override
+    def _build_claude_command(self, escaped_instruction: str, extra_flags: str) -> str:
+        command = super()._build_claude_command(escaped_instruction, extra_flags)
+        if self._resume_session_id:
+            command = command.replace(
+                "--continue ",
+                f"--resume {shlex.quote(self._resume_session_id)} ",
+                1,
+            )
+        if self._append_stream_log:
+            command = command.replace(
+                "| tee /logs/agent/claude-code.txt",
+                "| tee -a /logs/agent/claude-code.txt",
+                1,
+            )
+        return command
+
+    @override
+    def _parse_total_cost_from_stream_json(self) -> float | None:
+        """Sum per-process result costs when one logical run used resume."""
+        stream_path = self.logs_dir / "claude-code.txt"
+        try:
+            lines = stream_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return None
+        total = 0.0
+        found_result = False
+        for line in lines:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict) or event.get("type") != "result":
+                continue
+            try:
+                total += float(event["total_cost_usd"])
+                found_result = True
+            except (KeyError, TypeError, ValueError):
+                continue
+        return total if found_result else None
 
 
 class OddishProbeClaudeCode(OddishClaudeCode):

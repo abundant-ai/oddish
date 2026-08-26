@@ -52,6 +52,7 @@ logger = logging.getLogger(__name__)
 PostSuccessHooks = dict[WorkerJobKind, Callable[[str], Awaitable[None]]]
 
 TRIAL_RETRY_BASE_DELAY_SECONDS = 30.0
+TRIAL_PROVIDER_OVERLOAD_RETRY_BASE_DELAY_SECONDS = 60.0
 TRIAL_RATE_LIMIT_RETRY_BASE_DELAY_SECONDS = 300.0
 TRIAL_RETRY_MAX_DELAY_SECONDS = 1800.0
 TRIAL_RETRY_JITTER_FRACTION = 0.25
@@ -68,6 +69,10 @@ _RATE_LIMIT_RE = re.compile(
     r"tokens per minute|"
     r"throttl(?:ed|ing)?"
     r")\b",
+    re.IGNORECASE,
+)
+_PROVIDER_OVERLOAD_RE = re.compile(
+    r"\b(529|overload(?:ed)?|service unavailable|bad gateway|gateway timeout)\b",
     re.IGNORECASE,
 )
 
@@ -99,6 +104,8 @@ def classify_retry_reason(error_message: str | None) -> str:
     """Return a coarse retry reason for scheduling/telemetry."""
     if error_message and _RATE_LIMIT_RE.search(error_message):
         return "rate_limit"
+    if error_message and _PROVIDER_OVERLOAD_RE.search(error_message):
+        return "provider_overload"
     return "transient"
 
 
@@ -107,6 +114,8 @@ def calculate_trial_retry_delay_seconds(
     attempts: int,
     error_message: str | None,
     jitter: float | None = None,
+    retry_reason: str | None = None,
+    retry_after_seconds: float | None = None,
 ) -> float:
     """Return bounded exponential trial retry delay with multiplicative jitter.
 
@@ -115,24 +124,23 @@ def calculate_trial_retry_delay_seconds(
     start at a higher base because immediately retrying usually makes the
     provider-side contention worse.
     """
-    retry_reason = classify_retry_reason(error_message)
-    base_delay = (
-        TRIAL_RATE_LIMIT_RETRY_BASE_DELAY_SECONDS
-        if retry_reason == "rate_limit"
-        else TRIAL_RETRY_BASE_DELAY_SECONDS
-    )
+    retry_reason = retry_reason or classify_retry_reason(error_message)
+    if retry_reason == "rate_limit":
+        base_delay = TRIAL_RATE_LIMIT_RETRY_BASE_DELAY_SECONDS
+    elif retry_reason in {"provider_overload", "provider_server_error"}:
+        base_delay = TRIAL_PROVIDER_OVERLOAD_RETRY_BASE_DELAY_SECONDS
+    else:
+        base_delay = TRIAL_RETRY_BASE_DELAY_SECONDS
     exponential_delay = base_delay * (2 ** max(attempts - 1, 0))
     capped_delay = min(exponential_delay, TRIAL_RETRY_MAX_DELAY_SECONDS)
     jitter_value = (
         random.uniform(0.0, TRIAL_RETRY_JITTER_FRACTION) if jitter is None else jitter
     )
     jitter_value = max(0.0, min(jitter_value, TRIAL_RETRY_JITTER_FRACTION))
-    return float(
-        min(
-            capped_delay * (1.0 + jitter_value),
-            TRIAL_RETRY_MAX_DELAY_SECONDS,
-        )
-    )
+    scheduled_delay = capped_delay * (1.0 + jitter_value)
+    if retry_after_seconds is not None:
+        scheduled_delay = max(scheduled_delay, max(0.0, retry_after_seconds))
+    return float(min(scheduled_delay, TRIAL_RETRY_MAX_DELAY_SECONDS))
 
 
 # ---------------------------------------------------------------------------
@@ -502,12 +510,16 @@ async def _record_outcome(
         retry = outcome.failure.retryable and attempts < max_attempts
         if retry:
             retry_at: datetime | None = None
-            retry_reason = classify_retry_reason(outcome.failure.error_message)
+            retry_reason = outcome.failure.retry_reason or classify_retry_reason(
+                outcome.failure.error_message
+            )
             delay_seconds: float | None = None
             if kind == WorkerJobKind.TRIAL:
                 delay_seconds = calculate_trial_retry_delay_seconds(
                     attempts=attempts,
                     error_message=outcome.failure.error_message,
+                    retry_reason=retry_reason,
+                    retry_after_seconds=outcome.failure.retry_after_seconds,
                 )
                 retry_at = datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
 

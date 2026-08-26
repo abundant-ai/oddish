@@ -56,7 +56,7 @@ def _maybe_add_modal_debug_hint(error_message: str, debug_log_path: Path | None)
         return error_message
     return (
         f"{error_message} Captured Modal SDK output in {debug_log_path.name}; "
-        "open the trial logs to inspect the image build failure."
+        "open the trial logs to inspect the runtime diagnostics."
     )
 
 
