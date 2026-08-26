@@ -68,7 +68,8 @@ network_mode = "{agent_mode}"
 
 
 @pytest.mark.parametrize(
-    "environment_type", [EnvironmentType.DAYTONA, EnvironmentType.MODAL]
+    "environment_type",
+    [EnvironmentType.DAYTONA, EnvironmentType.MODAL, EnvironmentType.NUMINOUS],
 )
 def test_inject_restricted_agent_model_hosts_for_restricted_direct_task(
     monkeypatch, tmp_path, environment_type
