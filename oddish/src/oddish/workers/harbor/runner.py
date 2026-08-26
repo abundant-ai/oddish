@@ -969,7 +969,17 @@ def _supports_auto_restricted_agent_network(
     """Whether the existing single-container phase bridge applies."""
     if environment_config.import_path is not None:
         return False
-    if environment_config.type not in (EnvironmentType.DAYTONA, EnvironmentType.MODAL):
+    if environment_config.type not in (
+        EnvironmentType.DAYTONA,
+        EnvironmentType.MODAL,
+        EnvironmentType.NUMINOUS,
+    ):
+        # Numinous is a single-container sandbox with a server-enforced egress
+        # allowlist (harbor.environments.numinous applies egress=allowlist +
+        # allowed_hosts at boot), so the same model/agent-host injection that
+        # keeps Daytona/Modal restricted trials reaching their LLM applies. Its
+        # absence here was why a restricted trial on Numinous ran with no host
+        # injection and stalled at the model call.
         return False
 
     environment_dir = task_path / "environment"
