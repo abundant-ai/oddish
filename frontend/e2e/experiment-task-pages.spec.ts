@@ -85,21 +85,43 @@ test("combines one task split across bounded trial pages", () => {
     current_version_id: "task-1-v1",
     trial_version: 1,
     trial_version_id: "task-1-v1",
-    trials: [
-      { id: "trial-1" } as Trial,
-      { id: "trial-2" } as Trial,
-    ],
+    trials: [{ id: "trial-1" } as Trial, { id: "trial-2" } as Trial],
   });
 
   const [merged] = mergeExperimentTaskPages(
     [shell],
-    [[firstPage], [secondPage]],
+    [[firstPage], [secondPage]]
   );
 
   expect(merged.trials?.map((trial) => trial.id)).toEqual([
     "trial-1",
     "trial-2",
   ]);
+});
+
+test("normalizes bounded analysis scalars for grid consumers", () => {
+  const shell = task({
+    current_version: 1,
+    current_version_id: "task-1-v1",
+  });
+  const enriched = task({
+    current_version: 1,
+    current_version_id: "task-1-v1",
+    trials: [
+      {
+        id: "trial-1",
+        analysis_classification: "GOOD_SUCCESS",
+        analysis_subtype: "correct",
+      } as Trial,
+    ],
+  });
+
+  const [merged] = mergeExperimentTaskPages([shell], [[enriched]]);
+
+  expect(merged.trials?.[0]?.analysis).toEqual({
+    classification: "GOOD_SUCCESS",
+    subtype: "correct",
+  });
 });
 
 test("uses fresh trial data when the shell cache still has the old version", () => {

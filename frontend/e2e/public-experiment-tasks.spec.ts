@@ -24,6 +24,30 @@ function task(overrides: Partial<Task>): Task {
   };
 }
 
+function summary(overrides: Record<string, number | null> = {}) {
+  return {
+    task_count: 1,
+    trial_count: 1,
+    success_count: 1,
+    failed_count: 0,
+    skipped_count: 0,
+    active_count: 0,
+    reward_success: 0,
+    reward_sum: 0.5,
+    reward_total: 1,
+    pass_count: 0,
+    partial_count: 1,
+    fail_count: 0,
+    harness_error_count: 0,
+    avg_score: 0.5,
+    qa_accepted: 0,
+    qa_rejected: 0,
+    qa_running: 0,
+    qa_failed: 0,
+    ...overrides,
+  };
+}
+
 test("summary polling preserves the durable backend job state", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () =>
@@ -97,26 +121,7 @@ test("public trial drawers defer trajectory work", async ({ page }) => {
         description_truncated: false,
         revision: "2026-07-14T00:01:00Z",
         has_active_trials: false,
-        summary: {
-          task_count: 1,
-          trial_count: 1,
-          success_count: 1,
-          failed_count: 0,
-          skipped_count: 0,
-          active_count: 0,
-          reward_success: 0,
-          reward_sum: 0.5,
-          reward_total: 1,
-          pass_count: 0,
-          partial_count: 1,
-          fail_count: 0,
-          harness_error_count: 0,
-          avg_score: 0.5,
-          qa_accepted: 0,
-          qa_rejected: 0,
-          qa_running: 0,
-          qa_failed: 0,
-        },
+        summary: summary(),
         tasks: [{ ...publicTask, trials: null }],
         next_cursor: null,
       },
@@ -217,4 +222,176 @@ test("public trial drawers defer trajectory work", async ({ page }) => {
   expect(openRequests).toBe(1);
   expect(trialPageRequests).toBe(1);
   expect(revisionRequests).toBe(0);
+});
+
+test("public revision polling stops when active work finishes without a new revision", async ({
+  page,
+}) => {
+  const token = "public-finished-poll";
+  const publicTask = task({
+    current_version: 1,
+    current_version_id: "task-1-v1",
+    trial_version: 1,
+    trial_version_id: "task-1-v1",
+  });
+  let openRequests = 0;
+  let revisionRequests = 0;
+
+  await page.route(`**/api/public/experiments/${token}/open`, (route) => {
+    openRequests += 1;
+    const active = openRequests === 1;
+    return route.fulfill({
+      json: {
+        experiment_id: "exp-1",
+        name: "Polling completion test",
+        description: null,
+        description_truncated: false,
+        revision: "unchanged-revision",
+        has_active_trials: active,
+        summary: summary({
+          trial_count: active ? 1 : 0,
+          success_count: 0,
+          active_count: active ? 1 : 0,
+        }),
+        tasks: [{ ...publicTask, trials: null }],
+        next_cursor: null,
+      },
+    });
+  });
+  await page.route(`**/api/public/experiments/${token}/trial-page`, (route) =>
+    route.fulfill({
+      json: {
+        revision: "unchanged-revision",
+        tasks: [{ ...publicTask, trials: [] }],
+        trial_count: 0,
+        next_cursor: null,
+      },
+    })
+  );
+  await page.route(`**/api/public/experiments/${token}/revision`, (route) => {
+    revisionRequests += 1;
+    return route.fulfill({
+      json: {
+        revision: "unchanged-revision",
+        has_active_trials: false,
+      },
+    });
+  });
+
+  await page.goto(`/share/${token}`);
+  await expect(
+    page.getByRole("heading", { name: "Polling completion test" })
+  ).toBeVisible();
+  await expect.poll(() => revisionRequests).toBe(1);
+  await expect.poll(() => openRequests).toBe(2);
+
+  await page.waitForTimeout(5_500);
+  expect(revisionRequests).toBe(1);
+});
+
+test("a failed later public trial page exposes Retry and preserves loaded rows", async ({
+  page,
+}) => {
+  const token = "public-page-retry";
+  const firstTrial = {
+    id: "trial-1",
+    name: "First trial",
+    task_id: "task-1",
+    task_path: "tasks/task-1",
+    experiment_id: "exp-1",
+    agent: "claude-code",
+    provider: "anthropic",
+    model: "masked-model",
+    status: "success",
+    attempts: 1,
+    max_attempts: 1,
+    harbor_stage: "completed",
+    reward: 1,
+    created_at: "2026-07-14T00:00:00Z",
+  } satisfies Trial;
+  const secondTrial = {
+    ...firstTrial,
+    id: "trial-2",
+    name: "Second trial",
+    created_at: "2026-07-14T00:01:00Z",
+  } satisfies Trial;
+  const publicTask = task({
+    current_version: 1,
+    current_version_id: "task-1-v1",
+    trial_version: 1,
+    trial_version_id: "task-1-v1",
+    total: 2,
+    completed: 2,
+  });
+  let laterPageRequests = 0;
+
+  await page.route(`**/api/public/experiments/${token}/open`, (route) =>
+    route.fulfill({
+      json: {
+        experiment_id: "exp-1",
+        name: "Later page retry test",
+        description: null,
+        description_truncated: false,
+        revision: "settled-revision",
+        has_active_trials: false,
+        summary: summary({
+          trial_count: 2,
+          success_count: 2,
+          pass_count: 2,
+          partial_count: 0,
+          avg_score: 1,
+        }),
+        tasks: [{ ...publicTask, trials: null }],
+        next_cursor: null,
+      },
+    })
+  );
+  await page.route(
+    new RegExp(`/api/public/experiments/${token}/trial-page(?:\\?|$)`),
+    (route) => {
+      const cursor = new URL(route.request().url()).searchParams.get("cursor");
+      if (!cursor) {
+        return route.fulfill({
+          json: {
+            revision: "settled-revision",
+            tasks: [{ ...publicTask, trials: [firstTrial] }],
+            trial_count: 1,
+            next_cursor: "later-page",
+          },
+        });
+      }
+      laterPageRequests += 1;
+      if (laterPageRequests === 1) {
+        return route.fulfill({
+          status: 503,
+          json: { detail: "temporary later-page failure" },
+        });
+      }
+      return route.fulfill({
+        json: {
+          revision: "settled-revision",
+          tasks: [{ ...publicTask, trials: [secondTrial] }],
+          trial_count: 1,
+          next_cursor: null,
+        },
+      });
+    }
+  );
+
+  await page.goto(`/share/${token}`);
+  await expect(
+    page.getByRole("heading", { name: "Later page retry test" })
+  ).toBeVisible();
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  const alert = page
+    .getByRole("alert")
+    .filter({ hasText: "Some trial results failed to load" });
+  await expect(alert).toContainText("Some trial results failed to load");
+  const firstTrialButton = page.getByRole("button", { name: /^Trial 1/ });
+  await expect(firstTrialButton).toBeVisible();
+
+  await alert.getByRole("button", { name: "Retry" }).click();
+  await expect(page.getByRole("button", { name: /^Trial 2/ })).toBeVisible();
+  await expect(alert).toHaveCount(0);
+  expect(laterPageRequests).toBe(2);
 });

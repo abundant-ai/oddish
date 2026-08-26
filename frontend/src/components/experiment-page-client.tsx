@@ -216,38 +216,48 @@ function ExperimentPageContent({
       revalidateOnFocus: false,
     });
 
+  const refreshVisibleResources = useCallback(async () => {
+    await Promise.all([
+      mutateOpenPages(),
+      mutateTrialPages(),
+      mutateCostTotals(),
+    ]);
+  }, [mutateCostTotals, mutateOpenPages, mutateTrialPages]);
+
   const revisionKey = open?.has_active_trials ? `${apiBase}/revision` : null;
   useSWR<ExperimentRevisionResponse>(revisionKey, fetcher, {
-    refreshInterval: 5_000,
+    refreshInterval: (latest) =>
+      latest?.has_active_trials === false ? 0 : 5_000,
     revalidateOnFocus: false,
     onSuccess(next) {
-      if (!open || next.revision === open.revision) return;
-      void mutateOpenPages();
-      void mutateTrialPages();
+      if (!open) return;
+      const activeWorkFinished =
+        open.has_active_trials && !next.has_active_trials;
+      if (!activeWorkFinished && next.revision === open.revision) return;
+      void refreshVisibleResources();
     },
   });
 
   const hasMoreTaskShells = Boolean(lastOpenPage?.next_cursor);
   const hasMoreTrials = Boolean(lastTrialPage?.next_cursor);
-  const canLoadMore =
-    (hasMoreTaskShells || hasMoreTrials) &&
-    !isValidatingOpen &&
-    !isValidatingTrials;
+  const canLoadMoreTaskShells = hasMoreTaskShells && !isValidatingOpen;
+  const canLoadMoreTrials = hasMoreTrials && !isValidatingTrials && !trialError;
+  const canLoadMore = canLoadMoreTaskShells || canLoadMoreTrials;
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const target = loadMoreRef.current;
     if (!target || !canLoadMore) return;
     const observer = new IntersectionObserver((entries) => {
       if (!entries.some((entry) => entry.isIntersecting)) return;
-      if (hasMoreTaskShells) void setOpenSize((size) => size + 1);
-      if (hasMoreTrials) void setTrialSize((size) => size + 1);
+      if (canLoadMoreTaskShells) void setOpenSize((size) => size + 1);
+      if (canLoadMoreTrials) void setTrialSize((size) => size + 1);
     });
     observer.observe(target);
     return () => observer.disconnect();
   }, [
     canLoadMore,
-    hasMoreTaskShells,
-    hasMoreTrials,
+    canLoadMoreTaskShells,
+    canLoadMoreTrials,
     setOpenSize,
     setTrialSize,
   ]);
@@ -274,14 +284,6 @@ function ExperimentPageContent({
     () => resolveProbeHostTask(tasksForExperiment),
     [tasksForExperiment]
   );
-
-  const refreshVisibleResources = useCallback(async () => {
-    await Promise.all([
-      mutateOpenPages(),
-      mutateTrialPages(),
-      mutateCostTotals(),
-    ]);
-  }, [mutateCostTotals, mutateOpenPages, mutateTrialPages]);
 
   async function handleRename() {
     if (access.kind !== "member") return;
@@ -397,7 +399,7 @@ function ExperimentPageContent({
     (total, page) => total + page.trial_count,
     0
   );
-  const trialsStalled = Boolean(trialError && !firstTrialPage);
+  const hasTrialPageError = Boolean(trialError);
   const hasFatalError = Boolean(openError && !open);
   const description = isPublic
     ? (open?.description ?? null)
@@ -554,9 +556,13 @@ function ExperimentPageContent({
               <AlertTitle>Rename failed</AlertTitle>
               <AlertDescription>{nameError}</AlertDescription>
             </Alert>
-          ) : trialsStalled ? (
+          ) : hasTrialPageError ? (
             <Alert variant="destructive">
-              <AlertTitle>Trial results failed to load</AlertTitle>
+              <AlertTitle>
+                {firstTrialPage
+                  ? "Some trial results failed to load"
+                  : "Trial results failed to load"}
+              </AlertTitle>
               <AlertDescription>
                 <Button
                   size="sm"

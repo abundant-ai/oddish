@@ -10,6 +10,7 @@ from oddish.core.endpoints.experiment_open import (
     TRIAL_PAGE_MAX_BYTES,
     TRIAL_PAGE_MAX_TRIALS,
     get_experiment_open,
+    get_experiment_revision,
     get_experiment_trial_page,
     resolve_member_experiment_read_scope,
     resolve_public_experiment_read_scope,
@@ -21,6 +22,7 @@ from oddish.db import (
     TrialModel,
     TrialStatus,
     VerdictStatus,
+    experiment_trials,
     task_experiments,
 )
 from oddish.timing import begin_request_timing, reset_request_timing
@@ -41,11 +43,17 @@ async def test_experiment_open_is_bounded_projected_and_shared_by_audience(sessi
         public_model_renames={"openai/gpt-5.6": "Model A"},
         description="Experiment description",
     )
-    session.add(experiment)
+    private_home = ExperimentModel(
+        id=_id("private-home"),
+        name="Private home experiment",
+        org_id=experiment.org_id,
+    )
+    session.add_all([experiment, private_home])
     await session.flush()
 
     task_ids: list[str] = []
     trial_ids: list[str] = []
+    gathered_trial_id: str | None = None
     for task_index in range(100):
         task = TaskModel(
             id=_id(f"task-{task_index}"),
@@ -72,13 +80,18 @@ async def test_experiment_open_is_bounded_projected_and_shared_by_audience(sessi
         )
         for trial_index in range(5):
             trial_id = _id(f"trial-{task_index}-{trial_index}")
+            trial_experiment_id = (
+                private_home.id
+                if task_index == 0 and trial_index == 0
+                else experiment.id
+            )
             session.add(
                 TrialModel(
                     id=trial_id,
                     name=trial_id,
                     task_id=task.id,
                     task_version_id=version.id,
-                    experiment_id=experiment.id,
+                    experiment_id=trial_experiment_id,
                     org_id=experiment.org_id,
                     agent="codex",
                     provider="openai",
@@ -91,15 +104,29 @@ async def test_experiment_open_is_bounded_projected_and_shared_by_audience(sessi
                     has_trajectory=True,
                     # These payloads prove the bounded readers do not serialize
                     # detail-only trial columns even when the database rows have them.
-                    analysis={"classification": "GOOD_SUCCESS", "body": "a" * 20_000},
+                    analysis={
+                        "classification": "GOOD_SUCCESS",
+                        "subtype": "correct",
+                        "body": "a" * 20_000,
+                    },
                     phase_timing={"body": "p" * 20_000},
                     result={"body": "r" * 20_000},
                     harbor_config={"body": "h" * 20_000},
                     error_message="e" * 20_000,
                 )
             )
+            if trial_experiment_id == private_home.id:
+                gathered_trial_id = trial_id
             trial_ids.append(trial_id)
         task_ids.append(task.id)
+    await session.flush()
+    assert gathered_trial_id is not None
+    await session.execute(
+        experiment_trials.insert().values(
+            experiment_id=experiment.id,
+            trial_id=gathered_trial_id,
+        )
+    )
     await session.flush()
 
     timing, *tokens = begin_request_timing()
@@ -124,6 +151,8 @@ async def test_experiment_open_is_bounded_projected_and_shared_by_audience(sessi
     assert opened.summary.harness_error_count == 0
     assert opened.summary.avg_score == 1.0
     assert opened.has_active_trials is False
+    revision = await get_experiment_revision(session, scope=member_scope)
+    assert revision.has_active_trials is False
     assert 0 < len(opened.tasks) <= 100
     assert opened.next_cursor is not None
     assert {task.id for task in opened.tasks}.issubset(set(task_ids))
@@ -154,12 +183,22 @@ async def test_experiment_open_is_bounded_projected_and_shared_by_audience(sessi
     )
     assert member_page_2.trial_count == 250
     assert member_page_2.next_cursor is None
-    assert {
-        trial.id
+    member_trials = [
+        trial
         for page in (member_page, member_page_2)
         for task in page.tasks
         for trial in task.trials
-    } == set(trial_ids)
+    ]
+    assert {trial.id for trial in member_trials} == set(trial_ids)
+    assert {trial.experiment_id for trial in member_trials} == {
+        experiment.id,
+        private_home.id,
+    }
+    assert all(
+        trial.analysis_classification == "GOOD_SUCCESS"
+        and trial.analysis_subtype == "correct"
+        for trial in member_trials
+    )
 
     public_scope = await resolve_public_experiment_read_scope(
         session, public_token=experiment.public_token
@@ -177,6 +216,14 @@ async def test_experiment_open_is_bounded_projected_and_shared_by_audience(sessi
     assert [trial.id for task in public_page_2.tasks for trial in task.trials] == [
         trial.id for task in member_page_2.tasks for trial in task.trials
     ]
+    assert {
+        trial.experiment_id
+        for page in (public_page, public_page_2)
+        for task in page.tasks
+        for trial in task.trials
+    } == {experiment.id}
+    assert private_home.id not in public_page.model_dump_json(exclude_none=True)
+    assert private_home.id not in public_page_2.model_dump_json(exclude_none=True)
     assert {trial.model for task in public_page.tasks for trial in task.trials} == {
         "Model A"
     }
@@ -238,7 +285,12 @@ async def test_experiment_open_summary_is_exact_before_trial_pages_load(session)
         user="tester",
         task_path="s3://tasks/accepted",
         verdict_status=VerdictStatus.SUCCESS,
-        verdict={"verdict": "accept", "is_good": True},
+        verdict={
+            "verdict": "accept",
+            "is_good": True,
+            "confidence": "high",
+            "reasoning": "private detail" * 2_000,
+        },
     )
     failed_qa_task = TaskModel(
         id=_id("failed-qa-task"),
@@ -309,3 +361,9 @@ async def test_experiment_open_summary_is_exact_before_trial_pages_load(session)
     assert opened.summary.qa_rejected == 0
     assert opened.summary.qa_running == 0
     assert opened.summary.qa_failed == 1
+    accepted_shell = next(task for task in opened.tasks if task.id == accepted_task.id)
+    assert accepted_shell.verdict is not None
+    assert accepted_shell.verdict.verdict == "accept"
+    assert accepted_shell.verdict.is_good is True
+    assert accepted_shell.verdict.confidence == "high"
+    assert "private detail" not in opened.model_dump_json(exclude_none=True)

@@ -38,6 +38,7 @@ from oddish.schemas import (
     ExperimentRevisionResponse,
     ExperimentSlimTrial,
     ExperimentTaskShell,
+    ExperimentTaskVerdict,
     ExperimentTrialPageResponse,
     ExperimentTrialTask,
     TaskBrowseExperiment,
@@ -290,6 +291,13 @@ def _task_projection(scope: ExperimentReadScope, effective_versions, stats):
             TaskModel.run_analysis.label("run_analysis"),
             TaskModel.run_probe.label("run_probe"),
             TaskModel.verdict_status.label("verdict_status"),
+            TaskModel.verdict["verdict"].astext.label("verdict_label"),
+            case(
+                (TaskModel.verdict["is_good"].astext == "true", True),
+                (TaskModel.verdict["is_good"].astext == "false", False),
+                else_=None,
+            ).label("verdict_is_good"),
+            TaskModel.verdict["confidence"].astext.label("verdict_confidence"),
             case(
                 (
                     and_(
@@ -431,6 +439,22 @@ def _task_shell(
     completed = int(row.completed or 0)
     total = int(row.total or 0)
     tags = row.task_tags or {}
+    verdict_label = (
+        row.verdict_label if row.verdict_label in ("accept", "reject") else None
+    )
+    verdict = (
+        ExperimentTaskVerdict(
+            verdict=verdict_label,
+            is_good=row.verdict_is_good,
+            confidence=str(row.verdict_confidence)[:32]
+            if row.verdict_confidence is not None
+            else None,
+        )
+        if verdict_label is not None
+        or row.verdict_is_good is not None
+        or row.verdict_confidence is not None
+        else None
+    )
     return ExperimentTaskShell(
         id=str(row.task_id),
         name=str(row.task_name),
@@ -463,6 +487,7 @@ def _task_shell(
         run_analysis=bool(row.run_analysis),
         run_probe=bool(row.run_probe),
         verdict_status=row.verdict_status,
+        verdict=verdict,
         user_tags=_user_tag_refs(user_tags_by_task.get(str(row.task_id), [])),
         created_at=row.task_created_at,
         updated_at=row.task_updated_at,
@@ -695,6 +720,10 @@ async def get_experiment_trial_page(
             TrialModel.llm_key_hash.label("trial_llm_key_hash"),
             TrialModel.has_trajectory.label("trial_has_trajectory"),
             TrialModel.analysis_status.label("trial_analysis_status"),
+            TrialModel.analysis["classification"].astext.label(
+                "trial_analysis_classification"
+            ),
+            TrialModel.analysis["subtype"].astext.label("trial_analysis_subtype"),
             TrialModel.analysis_started_at.label("trial_analysis_started_at"),
             TrialModel.analysis_finished_at.label("trial_analysis_finished_at"),
             TrialModel.created_at.label("trial_created_at"),
@@ -805,7 +834,11 @@ async def get_experiment_trial_page(
                     task_path=str(row.task_path),
                     task_version=row.trial_version,
                     task_version_id=row.trial_version_id,
-                    experiment_id=row.trial_experiment_id,
+                    experiment_id=(
+                        scope.experiment_id
+                        if scope.audience == "public"
+                        else row.trial_experiment_id
+                    ),
                     agent=str(row.trial_agent),
                     provider=str(row.trial_provider),
                     queue_key=_mask_queue_key(
@@ -840,6 +873,8 @@ async def get_experiment_trial_page(
                     ),
                     has_trajectory=bool(row.trial_has_trajectory),
                     analysis_status=row.trial_analysis_status,
+                    analysis_classification=row.trial_analysis_classification,
+                    analysis_subtype=row.trial_analysis_subtype,
                     analysis_started_at=row.trial_analysis_started_at,
                     analysis_finished_at=row.trial_analysis_finished_at,
                     created_at=row.trial_created_at,

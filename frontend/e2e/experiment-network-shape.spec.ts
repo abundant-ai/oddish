@@ -6,6 +6,7 @@ import {
   holdCountedResponses,
   recordRequests,
 } from "./network-log";
+import type { Task, Trial } from "../src/lib/types";
 
 /**
  * Each test here checks the number and kind of network requests the
@@ -159,5 +160,178 @@ test.describe("experiment page network shape", () => {
     // Across the whole journey, the task's file contents were never
     // streamed: every task-files listing must be a plain one.
     expect(countSince(log, 0, TASK_FILES_STREAM_RE)).toBe(0);
+  });
+
+  test("a revision refresh includes the deferred cost rollup", async ({
+    page,
+  }) => {
+    test.setTimeout(60_000);
+
+    await setupClerkTestingToken({ page });
+    await page.goto("/");
+    await clerk.signIn({ page, emailAddress: CLERK_EMAIL! });
+
+    const experimentId = "revision-cost-test";
+    const trial = {
+      id: "revision-cost-trial",
+      name: "Revision cost trial",
+      task_id: "revision-cost-task",
+      task_path: "tasks/revision-cost-task",
+      experiment_id: experimentId,
+      agent: "codex",
+      provider: "openai",
+      model: "gpt-5",
+      status: "success",
+      attempts: 1,
+      max_attempts: 1,
+      harbor_stage: "completed",
+      reward: 1,
+      analysis_status: "success",
+      analysis_classification: "GOOD_SUCCESS",
+      analysis_subtype: "correct",
+      created_at: "2026-08-25T00:00:00Z",
+    } satisfies Trial;
+    const experimentTask = {
+      id: "revision-cost-task",
+      name: "Revision cost task",
+      status: "completed",
+      priority: "low",
+      user: "tester",
+      task_path: "tasks/revision-cost-task",
+      experiment_id: experimentId,
+      experiment_name: "Revision cost test",
+      experiment_is_public: false,
+      total: 1,
+      completed: 1,
+      failed: 0,
+      skipped: 0,
+      run_analysis: true,
+      verdict_status: "success",
+      verdict: {
+        verdict: "accept",
+        is_good: true,
+        confidence: "high",
+      },
+      current_version: 1,
+      current_version_id: "revision-cost-task-v1",
+      trial_version: 1,
+      trial_version_id: "revision-cost-task-v1",
+      trials: [trial],
+      created_at: "2026-08-25T00:00:00Z",
+      updated_at: "2026-08-25T00:00:00Z",
+    } satisfies Task;
+    let openRequests = 0;
+    let costRequests = 0;
+    let revisionRequests = 0;
+
+    await page.route(`**/api/experiments/${experimentId}/open`, (route) => {
+      openRequests += 1;
+      const active = openRequests === 1;
+      return route.fulfill({
+        json: {
+          experiment_id: experimentId,
+          name: "Revision cost test",
+          description: null,
+          description_truncated: false,
+          revision: "unchanged-revision",
+          has_active_trials: active,
+          summary: {
+            task_count: 1,
+            trial_count: 1,
+            success_count: 1,
+            failed_count: 0,
+            skipped_count: 0,
+            active_count: active ? 1 : 0,
+            reward_success: 1,
+            reward_sum: 1,
+            reward_total: 1,
+            pass_count: 1,
+            partial_count: 0,
+            fail_count: 0,
+            harness_error_count: 0,
+            avg_score: 1,
+            qa_accepted: 1,
+            qa_rejected: 0,
+            qa_running: 0,
+            qa_failed: 0,
+          },
+          tasks: [{ ...experimentTask, trials: null }],
+          next_cursor: null,
+        },
+      });
+    });
+    await page.route(`**/api/experiments/${experimentId}/trial-page`, (route) =>
+      route.fulfill({
+        json: {
+          revision: "unchanged-revision",
+          tasks: [experimentTask],
+          trial_count: 1,
+          next_cursor: null,
+        },
+      })
+    );
+    await page.route(`**/api/experiments/${experimentId}/share`, (route) =>
+      route.fulfill({
+        json: {
+          name: "Revision cost test",
+          is_public: false,
+          public_token: null,
+          description: null,
+        },
+      })
+    );
+    await page.route(
+      `**/api/experiments/${experimentId}/cost-totals`,
+      (route) => {
+        costRequests += 1;
+        return route.fulfill({
+          json: {
+            cost_usd: costRequests,
+            cost_trial_count: costRequests,
+            cost_has_estimated: false,
+            cost_has_native: true,
+            token_count: 0,
+            token_trial_count: 0,
+            owned_cost_usd: costRequests,
+            owned_trial_count: costRequests,
+            owned_has_estimated: false,
+            owned_has_native: true,
+            owned_token_count: 0,
+            owned_token_trial_count: 0,
+            billed_cost_usd: costRequests,
+            billed_trial_count: costRequests,
+            billed_has_estimated: false,
+            billed_has_native: true,
+            billed_token_count: 0,
+            billed_token_trial_count: 0,
+            total_trials: costRequests,
+          },
+        });
+      }
+    );
+    await page.route(
+      `**/api/experiments/${experimentId}/revision`,
+      async (route) => {
+        revisionRequests += 1;
+        await expect.poll(() => costRequests).toBe(1);
+        return route.fulfill({
+          json: {
+            revision: "unchanged-revision",
+            has_active_trials: false,
+          },
+        });
+      }
+    );
+
+    await page.goto(`/experiments/${experimentId}`);
+    await expect(
+      page.getByRole("heading", { name: "Revision cost test" })
+    ).toBeVisible();
+    await expect.poll(() => revisionRequests).toBe(1);
+    await expect.poll(() => openRequests).toBe(2);
+    await expect.poll(() => costRequests).toBe(2);
+    const trialButton = page.getByRole("button", { name: /^Trial 1/ });
+    await expect(trialButton).toHaveAttribute("title", /Good success: correct/);
+    await expect(page.getByText("Accepted", { exact: true })).toBeVisible();
   });
 });

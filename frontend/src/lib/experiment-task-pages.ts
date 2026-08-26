@@ -38,6 +38,22 @@ function preferEnrichedVersion(shell: Task, enriched: Task): boolean {
   return Number.isFinite(shellRevision) && enrichedRevision > shellRevision;
 }
 
+function withProjectedTrialAnalysis(task: Task): Task {
+  let changed = false;
+  const trials = task.trials?.map((trial) => {
+    if (trial.analysis || !trial.analysis_classification) return trial;
+    changed = true;
+    return {
+      ...trial,
+      analysis: {
+        classification: trial.analysis_classification,
+        subtype: trial.analysis_subtype ?? "",
+      },
+    };
+  });
+  return changed ? { ...task, trials } : task;
+}
+
 /**
  * Combine the fast task shells with progressively loaded trial pages.
  *
@@ -53,28 +69,30 @@ export function mergeExperimentTaskPages(
   const enrichedById = new Map<string, Task>();
   for (const page of trialPages ?? []) {
     for (const task of page ?? []) {
-      const previous = enrichedById.get(task.id);
+      const enriched = withProjectedTrialAnalysis(task);
+      const previous = enrichedById.get(enriched.id);
       if (!previous) {
-        enrichedById.set(task.id, task);
+        enrichedById.set(enriched.id, enriched);
         continue;
       }
-      if (!hasSameVersion(previous, task)) {
+      if (!hasSameVersion(previous, enriched)) {
         enrichedById.set(
-          task.id,
-          preferEnrichedVersion(previous, task) ? task : previous,
+          enriched.id,
+          preferEnrichedVersion(previous, enriched) ? enriched : previous
         );
         continue;
       }
       const trialsById = new Map(
-        (previous.trials ?? []).map((trial) => [trial.id, trial]),
+        (previous.trials ?? []).map((trial) => [trial.id, trial])
       );
-      for (const trial of task.trials ?? []) trialsById.set(trial.id, trial);
-      enrichedById.set(task.id, {
+      for (const trial of enriched.trials ?? [])
+        trialsById.set(trial.id, trial);
+      enrichedById.set(enriched.id, {
         ...previous,
-        ...task,
+        ...enriched,
         user_tags:
-          (task.user_tags?.length ?? 0) > 0
-            ? task.user_tags
+          (enriched.user_tags?.length ?? 0) > 0
+            ? enriched.user_tags
             : previous.user_tags,
         trials: [...trialsById.values()],
       });
@@ -96,7 +114,7 @@ export function mergeExperimentTaskPages(
     merged.push(
       needsShellTags
         ? { ...shell, ...enriched, user_tags: shell.user_tags }
-        : enriched,
+        : enriched
     );
   }
 

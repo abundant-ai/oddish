@@ -490,19 +490,25 @@ must apply the same trial-version rule so progressive loading cannot change the
 files/counts pivot or mix one version's trials with another's artifacts.
 `/open` returns exact experiment totals, outcome counts, average score, and QA
 verdict counts plus no more than 100 task shells in a response below 50 KB; a
-single shell that cannot fit is rejected instead of violating that ceiling.
-`/trial-page` returns no more than 250 projected trials and must never select or
-serialize trial `analysis`, `phase_timing`, `result`, `harbor_config`, or full
-error text. The drawer fetches omitted fields from the single-trial detail
-resource; public drawers use `GET
+task shell carries only the verdict label, `is_good`, and confidence needed by
+the grid. A single shell that cannot fit is rejected instead of violating that
+ceiling. `/trial-page` returns no more than 250 projected trials and must never
+select or serialize the full trial `analysis`, `phase_timing`, `result`,
+`harbor_config`, or error text; it projects only the analysis classification and
+subtype needed by grid indicators. Public pages replace a gathered trial's home
+`experiment_id` with the shared experiment id before serialization. The drawer
+fetches omitted fields from the single-trial detail resource; public drawers use `GET
 /public/experiments/{public_token}/trials/{trial_id}`, which applies the same
 token-scoped membership, probe, and agent-kind policy as public artifact
 routes. Member and public routes resolve different access scopes and then call
 the same core readers in
 `oddish.core.endpoints.experiment_open`; public scope filters tags to PUBLIC,
 applies experiment model aliases, and omits billing/exclusion labels. Completed
-experiments do not poll. Active pages poll only `/revision`, then revalidate the
-bounded pages already visible when that revision changes.
+experiments do not poll. Active pages poll only `/revision`, which reports both
+the activity revision and whether visible trials remain active. A revision
+change revalidates `/open`, `/trial-page`, and member `/cost-totals`; an active
+to settled transition does the same even if the revision string is unchanged,
+then stops the poll.
 
 `overwrite_current_version` replaces the archive and metadata for
 `tasks.current_version_id` without changing its ID or version number. Uploads

@@ -1722,6 +1722,14 @@ class ExperimentOpenSummary(BaseModel):
     qa_failed: int = 0
 
 
+class ExperimentTaskVerdict(BaseModel):
+    """Small task verdict projection rendered by the experiment grid."""
+
+    verdict: Literal["accept", "reject"] | None = None
+    is_good: bool | None = None
+    confidence: str | None = None
+
+
 class ExperimentTaskShell(BaseModel):
     """Bounded task fields needed before an experiment's trial grid loads."""
 
@@ -1756,6 +1764,7 @@ class ExperimentTaskShell(BaseModel):
     run_analysis: bool = False
     run_probe: bool = False
     verdict_status: VerdictStatus | None = None
+    verdict: ExperimentTaskVerdict | None = None
     user_tags: list[UserTagRef] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime

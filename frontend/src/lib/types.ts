@@ -166,7 +166,7 @@ export interface Trial {
   analysis_finished_at?: string | null;
   /** Scalar experiment-grid projection; normalized into `analysis` by the
    * shared experiment page without transferring the full analysis JSON. */
-  analysis_classification?: string | null;
+  analysis_classification?: AnalysisClassification | null;
   analysis_subtype?: string | null;
   superseded_by_trial_id?: string | null;
   jobs?: VisibleWorkerJob[];
