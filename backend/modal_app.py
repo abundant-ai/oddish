@@ -858,6 +858,13 @@ ENV_VARS = {
         for k, v in {**LOCAL_DOTENV_VARS, **os.environ}.items()
         if k in _EC2_PUBLIC_ENV_NAMES
     },
+    # Numinous opt-in flag, baked like ODDISH_EC2_ENABLED: runtime registration
+    # (settings.numinous_enabled in oddish.runtime.registry) and secret
+    # attachment (NUMINOUS_SECRET_PLAN above) resolve from the same deploy-time
+    # value, so a secret that carries only NUMINOUS_API_URL + NUMINOUS_API_KEY
+    # still registers the backend. Without the bake, workers only saw the flag
+    # if the secret happened to re-inject it.
+    _NUMINOUS_ENABLED_ENV: str(_NUMINOUS_ENABLED).lower(),
 }
 
 

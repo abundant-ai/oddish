@@ -25,6 +25,11 @@ def test_archil_has_its_own_compute_provider_label() -> None:
     assert _COMPUTE_PROVIDER_LABELS["archil"] == "Archil"
 
 
+def test_numinous_has_its_own_compute_provider_label() -> None:
+    assert _normalize_compute_provider(" Numinous ") == "numinous"
+    assert _COMPUTE_PROVIDER_LABELS["numinous"] == "Numinous Cloud"
+
+
 def _breakdown_map(result):
     return {
         row.provider: (row.cost_usd, row.span_count)
