@@ -1247,6 +1247,33 @@ source of truth for the full list and defaults (e.g.
 `ODDISH_MODAL_MAX_WORKERS_PER_POLL=256`,
 `ODDISH_MODAL_WORKER_MAX_CONTAINERS=2688`).
 
+### GKE Placement Contract
+
+The pinned Harbor (harbor-gke `6ec8e946`+) requires explicit placement for
+every GKE TPU trial — there is no default provisioning mode, no table-derived
+zone pool, and `accelerator_region_prefixes` is inert. A trial missing any
+required field fails at environment construction with an error naming the
+field and the served zones; it does not sit in a scheduling wait.
+
+Required fields and where they come from:
+
+- **`provisioning_mode`** (`on-demand` | `spot` | `flex-start`) — from the
+  task's `[environment.kwargs]` or a per-submission
+  `--environment-kwarg provisioning_mode=...`. A deployment MAY force a
+  fleet-wide mode by setting `ODDISH_GKE_PROVISIONING_MODE`; the backend
+  ships it only when configured (unset means "not configured", and each
+  task/submission states its own). Deployment-shipped kwargs override the
+  task's in Harbor's merge — a deployment that forces a mode overrides every
+  task's choice, which is why previews deliberately leave it unset.
+- **`[environment.tpu] zones`** — from the task only. Validated against the
+  mode's served-zone table, scoped to the region. A single-zone pool is
+  pinned through the node selector; multi-zone pools use affinity.
+- **`region`** — from deployment coordinates (`ODDISH_GKE_REGION`) or a
+  per-submission kwarg override.
+
+Migration: GKE tasks written before this contract (no mode, no zones) stop
+scheduling and fail with the requiredness error until updated.
+
 ### Preview Branch Preserved Rows
 
 Each preview branch database holds a schema named `preview_preserved` with one
