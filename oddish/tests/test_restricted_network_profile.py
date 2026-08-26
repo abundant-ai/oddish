@@ -16,6 +16,7 @@ from harbor.agents.installed.gemini_cli import GeminiCli
 from oddish.workers.harbor import agent_config as agent_config_builder
 from oddish.workers.harbor import runner
 from oddish.workers.agents.antigravity_cli import OddishAntigravityCli
+from oddish.workers.harbor.model_hosts import ANTIGRAVITY_STARTUP_HOSTS
 from oddish.workers.agents.codex import OddishCodex
 from oddish.workers.agents.gemini_cli import OddishGeminiCli
 from oddish.workers.harbor.restricted_network import (
@@ -563,7 +564,37 @@ def test_antigravity_vertex_requires_explicit_base_url(monkeypatch) -> None:
             "GOOGLE_GEMINI_BASE_URL": "https://example.test",
         },
     )
-    assert profile.outbound_hosts == ("example.test",)
+    # The custom endpoint replaces the MODEL host only; agy's startup probes
+    # are not transport and must survive, or the CLI stalls to its deadline.
+    assert profile.outbound_hosts[0] == "example.test"
+    assert "generativelanguage.googleapis.com" not in profile.outbound_hosts
+    for host in ANTIGRAVITY_STARTUP_HOSTS:
+        assert host in profile.outbound_hosts
+
+
+def test_antigravity_profile_keeps_startup_hosts_with_custom_base_url():
+    """A custom Gemini endpoint must not narrow the allowlist to one host.
+
+    ``_selected_transport_hosts`` returns only the configured base URL when one
+    is present, so the startup probes have to be unioned back on afterwards.
+    Dropping them reproduces the live stall this agent was fixed for.
+    """
+    from oddish.workers.harbor.restricted_network import _antigravity_profile
+
+    config = AgentConfig(
+        import_path="oddish.workers.agents.antigravity_cli:OddishAntigravityCli",
+        model_name="google/gemini-3.7-flash",
+    )
+    profile = _antigravity_profile(
+        OddishAntigravityCli,
+        config,
+        {"GOOGLE_GEMINI_BASE_URL": "https://proxy.example"},
+    )
+    assert "proxy.example" in profile.outbound_hosts
+    for host in ANTIGRAVITY_STARTUP_HOSTS:
+        assert host in profile.outbound_hosts
+    # Order-preserving union, no duplicates.
+    assert len(profile.outbound_hosts) == len(set(profile.outbound_hosts))
 
 
 def test_antigravity_profile_rejects_adc_auth():

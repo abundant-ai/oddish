@@ -154,20 +154,26 @@ ANTIGRAVITY_INSTALL_HOSTS: tuple[str, ...] = (
     "antigravity-cli-auto-updater-974169037036.us-central1.run.app",  # manifest
     "storage.googleapis.com",  # binary tarball (antigravity-public bucket)
 )
-# Runtime endpoints the agy binary dials on every invocation, captured live
-# from agy 1.1.19 through a CONNECT-logging proxy. The Unleash feature-flag
-# host is contacted before any model call, and an egress filter that silently
-# DROPS its SYNs stalls startup through kernel retries until the agent
-# timeout — allowing it is an availability requirement, not a nicety. The
+# Non-transport endpoints the agy binary dials on every invocation, captured
+# live from agy 1.1.19 through a CONNECT-logging proxy. The Unleash
+# feature-flag host is contacted before any model call, and an egress filter
+# that silently DROPS its SYNs stalls startup through kernel retries until the
+# agent timeout — allowing it is an availability requirement, not a nicety. The
 # Playwright CDNs back agy's bundled browser tooling and play.googleapis.com
 # carries its telemetry; both are probed at startup with the same stall risk.
-ANTIGRAVITY_RUNTIME_HOSTS: tuple[str, ...] = (
-    *_GEMINI_HOSTS,
+# None of them follow from the model endpoint, so they must survive a custom
+# Gemini base URL: that setting replaces the MODEL host and nothing else.
+ANTIGRAVITY_STARTUP_HOSTS: tuple[str, ...] = (
     "antigravity-unleash.goog",
     "play.googleapis.com",
     "playwright.azureedge.net",
     "playwright-akamai.azureedge.net",
     "playwright-verizon.azureedge.net",
+)
+# Default agent-phase set: the Gemini transport plus those startup probes.
+ANTIGRAVITY_RUNTIME_HOSTS: tuple[str, ...] = (
+    *_GEMINI_HOSTS,
+    *ANTIGRAVITY_STARTUP_HOSTS,
 )
 _AGENT_RUNTIME_HOSTS: dict[str, tuple[str, ...]] = {
     "tbh": _TBH_RUNTIME_HOSTS,
