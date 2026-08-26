@@ -162,7 +162,7 @@ def _ranked_effective_versions(scope: ExperimentReadScope):
                         (TrialModel.task_version_id == TaskModel.current_version_id, 0),
                         else_=1,
                     ).asc(),
-                    TaskVersionModel.version.desc(),
+                    TaskVersionModel.version.desc().nulls_last(),
                     TrialModel.task_version_id.desc(),
                 ),
             )

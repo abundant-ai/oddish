@@ -162,6 +162,128 @@ test.describe("experiment page network shape", () => {
     expect(countSince(log, 0, TASK_FILES_STREAM_RE)).toBe(0);
   });
 
+  test("cost totals load independently when the first trial page fails", async ({
+    page,
+  }) => {
+    test.setTimeout(60_000);
+
+    await setupClerkTestingToken({ page });
+    await page.goto("/");
+    await clerk.signIn({ page, emailAddress: CLERK_EMAIL! });
+
+    const experimentId = "failed-trial-page-cost-test";
+    const experimentTask = {
+      id: "failed-trial-page-cost-task",
+      name: "Failed trial-page cost task",
+      status: "completed",
+      priority: "low",
+      user: "tester",
+      task_path: "tasks/failed-trial-page-cost-task",
+      experiment_id: experimentId,
+      experiment_name: "Independent cost totals",
+      experiment_is_public: false,
+      total: 1,
+      completed: 1,
+      failed: 0,
+      skipped: 0,
+      current_version: 1,
+      current_version_id: "failed-trial-page-cost-task-v1",
+      trial_version: 1,
+      trial_version_id: "failed-trial-page-cost-task-v1",
+      trials: null,
+      created_at: "2026-08-26T00:00:00Z",
+      updated_at: "2026-08-26T00:00:00Z",
+    } satisfies Task;
+    let costRequests = 0;
+
+    await page.route(`**/api/experiments/${experimentId}/open`, (route) =>
+      route.fulfill({
+        json: {
+          experiment_id: experimentId,
+          name: "Independent cost totals",
+          description: null,
+          description_truncated: false,
+          revision: "settled-revision",
+          has_active_trials: false,
+          summary: {
+            task_count: 1,
+            trial_count: 1,
+            success_count: 1,
+            failed_count: 0,
+            skipped_count: 0,
+            active_count: 0,
+            reward_success: 1,
+            reward_sum: 1,
+            reward_total: 1,
+            pass_count: 1,
+            partial_count: 0,
+            fail_count: 0,
+            harness_error_count: 0,
+            avg_score: 1,
+            qa_accepted: 0,
+            qa_rejected: 0,
+            qa_running: 0,
+            qa_failed: 0,
+          },
+          tasks: [experimentTask],
+          next_cursor: null,
+        },
+      })
+    );
+    await page.route(`**/api/experiments/${experimentId}/trial-page`, (route) =>
+      route.fulfill({
+        status: 500,
+        json: { detail: "deliberate trial-page failure" },
+      })
+    );
+    await page.route(`**/api/experiments/${experimentId}/share`, (route) =>
+      route.fulfill({
+        json: {
+          name: "Independent cost totals",
+          is_public: false,
+          public_token: null,
+          description: null,
+        },
+      })
+    );
+    await page.route(
+      `**/api/experiments/${experimentId}/cost-totals`,
+      (route) => {
+        costRequests += 1;
+        return route.fulfill({
+          json: {
+            cost_usd: 9.99,
+            cost_trial_count: 1,
+            cost_has_estimated: false,
+            cost_has_native: true,
+            token_count: 0,
+            token_trial_count: 0,
+            owned_cost_usd: 9.99,
+            owned_trial_count: 1,
+            owned_has_estimated: false,
+            owned_has_native: true,
+            owned_token_count: 0,
+            owned_token_trial_count: 0,
+            billed_cost_usd: 9.99,
+            billed_trial_count: 1,
+            billed_has_estimated: false,
+            billed_has_native: true,
+            billed_token_count: 0,
+            billed_token_trial_count: 0,
+            total_trials: 1,
+          },
+        });
+      }
+    );
+
+    await page.goto(`/experiments/${experimentId}`);
+    await expect(
+      page.getByRole("heading", { name: "Independent cost totals" })
+    ).toBeVisible();
+    await expect(page.getByText("Trial results failed to load")).toBeVisible();
+    await expect.poll(() => costRequests).toBe(1);
+  });
+
   test("a revision refresh includes the deferred cost rollup", async ({
     page,
   }) => {

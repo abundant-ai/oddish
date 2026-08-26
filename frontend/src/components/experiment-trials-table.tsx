@@ -129,7 +129,7 @@ type ExperimentTrialsTableProps = {
   agentSummaries: AgentSummary[];
   modelScopedAgents: ReadonlySet<string>;
   isLoading: boolean;
-  isLoadingTrials?: boolean;
+  hasUnloadedTrials?: boolean;
   showPassAtK?: boolean;
   /** Scope bulk cancel to this experiment so shared tasks stay intact elsewhere. */
   experimentId?: string;
@@ -571,7 +571,7 @@ export function ExperimentTrialsTable({
   agentSummaries,
   modelScopedAgents,
   isLoading,
-  isLoadingTrials = false,
+  hasUnloadedTrials = false,
   showPassAtK = false,
   experimentId,
   onTaskUnlink,
@@ -823,7 +823,7 @@ export function ExperimentTrialsTable({
     [sortedAgentSummaries, hiddenAgents]
   );
   const showLoadingMatrixColumns =
-    isLoadingTrials && visibleAgents.length === 0;
+    hasUnloadedTrials && visibleAgents.length === 0;
   const renderedAgents = showLoadingMatrixColumns
     ? LOADING_AGENT_COLUMNS
     : visibleAgents;
@@ -2325,7 +2325,8 @@ export function ExperimentTrialsTable({
                   const index = row.index;
                   if (!task) return null;
                   const isTrialDataPending =
-                    isLoadingTrials && task.trials == null;
+                    hasUnloadedTrials &&
+                    (task.trials?.length ?? 0) < task.total;
                   const context = getTaskContext(task);
                   const grouped =
                     context?.groupedTrialsByAgent ?? EMPTY_TRIAL_MAP;
@@ -2544,17 +2545,10 @@ export function ExperimentTrialsTable({
                               width: getDisplayedWidth(agent.key),
                             }}
                           >
-                            {trials.length === 0 ? (
-                              isTrialDataPending ? (
-                                <div className="flex items-center justify-center gap-1">
-                                  <Skeleton className="h-5 w-5 rounded-sm" />
-                                  <Skeleton className="h-5 w-5 rounded-sm" />
-                                </div>
-                              ) : (
-                                <span className="text-muted-foreground text-xs">
-                                  —
-                                </span>
-                              )
+                            {trials.length === 0 && !isTrialDataPending ? (
+                              <span className="text-muted-foreground text-xs">
+                                —
+                              </span>
                             ) : (
                               <div className="flex flex-wrap justify-center gap-[3px]">
                                 {trials.map((trial, trialIndex) => {
@@ -2646,6 +2640,12 @@ export function ExperimentTrialsTable({
                                     </span>
                                   );
                                 })}
+                                {isTrialDataPending ? (
+                                  <Skeleton
+                                    className="h-5 w-5 rounded-sm"
+                                    aria-label={`More trials loading for ${task.name}`}
+                                  />
+                                ) : null}
                               </div>
                             )}
                           </TableCell>

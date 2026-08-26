@@ -326,6 +326,100 @@ async def test_experiment_activity_includes_analysis_trials_in_open_and_revision
 
 
 @pytest.mark.asyncio
+async def test_experiment_version_fallback_prefers_real_version_over_legacy_null(
+    session,
+):
+    experiment = ExperimentModel(
+        id=_id("version-fallback-experiment"),
+        name="Version fallback",
+        org_id="org-version-fallback",
+    )
+    task = TaskModel(
+        id=_id("version-fallback-task"),
+        name="Version fallback task",
+        org_id=experiment.org_id,
+        user="tester",
+        task_path="s3://tasks/version-fallback",
+    )
+    session.add_all([experiment, task])
+    await session.flush()
+
+    represented_version = TaskVersionModel(
+        id=f"{task.id}-v1",
+        task_id=task.id,
+        version=1,
+        task_path=task.task_path,
+    )
+    current_version = TaskVersionModel(
+        id=f"{task.id}-v2",
+        task_id=task.id,
+        version=2,
+        task_path=task.task_path,
+    )
+    session.add_all([represented_version, current_version])
+    await session.flush()
+    task.current_version_id = current_version.id
+    await session.execute(
+        task_experiments.insert().values(
+            task_id=task.id,
+            experiment_id=experiment.id,
+        )
+    )
+
+    represented_trial = TrialModel(
+        id=_id("represented-version-trial"),
+        name="Represented version trial",
+        task_id=task.id,
+        task_version_id=represented_version.id,
+        experiment_id=experiment.id,
+        org_id=experiment.org_id,
+        agent="codex",
+        provider="openai",
+        queue_key="openai/gpt-5.6",
+        model="openai/gpt-5.6",
+        status=TrialStatus.SUCCESS,
+        reward=1.0,
+    )
+    session.add_all(
+        [
+            represented_trial,
+            TrialModel(
+                id=_id("legacy-null-version-trial"),
+                name="Legacy null-version trial",
+                task_id=task.id,
+                task_version_id=None,
+                experiment_id=experiment.id,
+                org_id=experiment.org_id,
+                agent="codex",
+                provider="openai",
+                queue_key="openai/gpt-5.6",
+                model="openai/gpt-5.6",
+                status=TrialStatus.FAILED,
+            ),
+        ]
+    )
+    await session.flush()
+
+    scope = await resolve_member_experiment_read_scope(
+        session,
+        experiment_id=experiment.id,
+        org_id=experiment.org_id,
+    )
+    opened = await get_experiment_open(session, scope=scope)
+    trial_page = await get_experiment_trial_page(session, scope=scope)
+
+    assert opened.summary.trial_count == 1
+    assert opened.summary.success_count == 1
+    assert opened.summary.failed_count == 0
+    assert opened.tasks[0].current_version_id == current_version.id
+    assert opened.tasks[0].trial_version_id == represented_version.id
+    assert opened.tasks[0].trial_version == 1
+    assert [trial.id for item in trial_page.tasks for trial in item.trials] == [
+        represented_trial.id
+    ]
+
+
+@pytest.mark.asyncio
 async def test_experiment_open_rejects_one_task_shell_over_the_byte_limit(session):
     experiment = ExperimentModel(
         id=_id("oversized-experiment"),

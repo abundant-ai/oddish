@@ -195,9 +195,7 @@ function ExperimentPageContent({
   );
 
   const costKey =
-    access.kind === "member" && firstTrialPage
-      ? `${apiBase}/cost-totals`
-      : null;
+    access.kind === "member" && open ? `${apiBase}/cost-totals` : null;
   const {
     data: costTotals,
     error: costError,
@@ -415,6 +413,9 @@ function ExperimentPageContent({
     (total, page) => total + page.trial_count,
     0
   );
+  const hasUnloadedTrials = Boolean(
+    open && loadedTrialCount < open.summary.trial_count
+  );
   const hasTrialPageError = Boolean(trialError);
   const hasFatalError = Boolean(openError && !open);
   const description = isPublic
@@ -500,6 +501,7 @@ function ExperimentPageContent({
         exactSummary={open?.summary}
         isLoading={isLoadingOpen}
         isLoadingTrials={isLoadingTrials}
+        hasUnloadedTrials={hasUnloadedTrials}
         hasMoreExperimentData={hasMoreTaskShells || hasMoreTrials}
         onLoadMoreExperimentData={canLoadMore ? loadMore : undefined}
         hasError={hasFatalError}

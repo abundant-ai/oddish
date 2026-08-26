@@ -396,6 +396,118 @@ test("a failed later public trial page exposes Retry and preserves loaded rows",
   expect(laterPageRequests).toBe(2);
 });
 
+test("a partial trial page marks the task incomplete until the next page arrives", async ({
+  page,
+}) => {
+  const token = "public-partial-trial-page";
+  const firstTrial = {
+    id: "partial-page-trial-1",
+    name: "First paged trial",
+    task_id: "partial-page-task",
+    task_path: "tasks/partial-page-task",
+    experiment_id: "partial-page-experiment",
+    agent: "codex",
+    provider: "openai",
+    model: "masked-model",
+    status: "success",
+    attempts: 1,
+    max_attempts: 1,
+    harbor_stage: "completed",
+    reward: 1,
+    created_at: "2026-08-26T00:00:00Z",
+  } satisfies Trial;
+  const secondTrial = {
+    ...firstTrial,
+    id: "partial-page-trial-2",
+    name: "Second paged trial",
+    created_at: "2026-08-25T00:00:00Z",
+  } satisfies Trial;
+  const pagedTask = task({
+    id: firstTrial.task_id,
+    name: "Partially loaded task",
+    task_path: firstTrial.task_path,
+    experiment_id: firstTrial.experiment_id,
+    experiment_name: "Partial trial page",
+    total: 2,
+    completed: 2,
+    reward_success: 2,
+    reward_sum: 2,
+    reward_total: 2,
+    trials: null,
+  });
+  let releaseLaterPage!: () => void;
+  const laterPageMayFinish = new Promise<void>((resolve) => {
+    releaseLaterPage = resolve;
+  });
+
+  await page.route(`**/api/public/experiments/${token}/open`, (route) =>
+    route.fulfill({
+      json: {
+        experiment_id: firstTrial.experiment_id,
+        name: "Partial trial page",
+        description: null,
+        description_truncated: false,
+        revision: "settled-revision",
+        has_active_trials: false,
+        summary: summary({
+          task_count: 1,
+          trial_count: 2,
+          success_count: 2,
+          reward_success: 2,
+          reward_sum: 2,
+          reward_total: 2,
+          pass_count: 2,
+          partial_count: 0,
+          avg_score: 1,
+        }),
+        tasks: [pagedTask],
+        next_cursor: null,
+      },
+    })
+  );
+  await page.route(
+    new RegExp(`/api/public/experiments/${token}/trial-page(?:\\?|$)`),
+    async (route) => {
+      const cursor = new URL(route.request().url()).searchParams.get("cursor");
+      if (!cursor) {
+        return route.fulfill({
+          json: {
+            revision: "settled-revision",
+            tasks: [{ ...pagedTask, trials: [firstTrial] }],
+            trial_count: 1,
+            next_cursor: "later-trial-page",
+          },
+        });
+      }
+      await laterPageMayFinish;
+      return route.fulfill({
+        json: {
+          revision: "settled-revision",
+          tasks: [{ ...pagedTask, trials: [secondTrial] }],
+          trial_count: 1,
+          next_cursor: null,
+        },
+      });
+    }
+  );
+
+  await page.goto(`/share/${token}`);
+  await expect(
+    page.getByRole("button", { name: "Trial 1 Pass" })
+  ).toBeVisible();
+  await expect(
+    page.getByLabel("More trials loading for Partially loaded task")
+  ).toBeVisible();
+
+  releaseLaterPage();
+  await expect(
+    page.getByRole("button", { name: "Trial 2 Pass" })
+  ).toBeVisible();
+  await expect(
+    page.getByLabel("More trials loading for Partially loaded task")
+  ).toHaveCount(0);
+});
+
 test("public pages fetch full metadata only when the open description is truncated", async ({
   page,
 }) => {

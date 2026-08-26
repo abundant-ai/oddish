@@ -128,6 +128,7 @@ interface ExperimentDetailViewProps {
   exactSummary?: ExperimentOpenSummary;
   isLoading: boolean;
   isLoadingTrials?: boolean;
+  hasUnloadedTrials?: boolean;
   hasMoreExperimentData?: boolean;
   onLoadMoreExperimentData?: () => void;
   hasError?: boolean;
@@ -992,6 +993,7 @@ export function ExperimentDetailView({
   exactSummary,
   isLoading,
   isLoadingTrials = false,
+  hasUnloadedTrials = false,
   hasMoreExperimentData = false,
   onLoadMoreExperimentData,
   hasError = false,
@@ -1827,7 +1829,7 @@ export function ExperimentDetailView({
                 agentSummaries={displayAgentSummaries}
                 modelScopedAgents={displayModelScopedAgents}
                 isLoading={isLoading}
-                isLoadingTrials={isLoadingTrials}
+                hasUnloadedTrials={hasUnloadedTrials}
                 showPassAtK={showPassAtK}
                 experimentId={experimentId}
                 onTaskUnlink={onTaskUnlink}
@@ -1907,7 +1909,7 @@ export function ExperimentDetailView({
               task={drawerState.task}
               staticChecksTaskId={drawerState.task.id}
               onOpenTrial={handleOpenTrialFromOverview}
-              overviewTrialsLoading={isLoadingTrials}
+              overviewTrialsLoading={hasUnloadedTrials}
               filesUrl={`${apiBaseUrl}/tasks/${drawerState.task.id}/files`}
               taskVersion={resolveExperimentTaskVersion(drawerState.task)}
               initialFilePath={taskPaneFile}
@@ -1956,7 +1958,7 @@ export function ExperimentDetailView({
                   : undefined
               }
               onOpenTrial={handleOpenTrialFromOverview}
-              overviewTrialsLoading={isLoadingTrials}
+              overviewTrialsLoading={hasUnloadedTrials}
               initialFilePath={taskPaneFile}
               selectedLines={taskPaneLines}
               onSelectLinesChange={setTaskPaneLines}
