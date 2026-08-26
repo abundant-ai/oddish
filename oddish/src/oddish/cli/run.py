@@ -60,6 +60,7 @@ _HOSTED_PASSTHROUGH_ENVIRONMENTS = {
     EnvironmentType.EC2,
     EnvironmentType.GKE,
     EnvironmentType.ARCHIL,
+    EnvironmentType.NUMINOUS,
 }
 
 
@@ -915,7 +916,7 @@ def run(
     ):
         console.print(
             "[yellow]Oddish Cloud supports --env modal, --env daytona, --env ec2, "
-            "--env gke, and --env archil; forcing --env modal[/yellow]"
+            "--env gke, --env archil, and --env numinous; forcing --env modal[/yellow]"
         )
         environment = EnvironmentType.MODAL
 

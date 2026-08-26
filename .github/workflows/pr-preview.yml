@@ -186,6 +186,10 @@ jobs:
       # that enables GKE hard-fails any task whose image is not already in
       # the registry instead of building it.
       ODDISH_GKE_AUTO_BUILD_MISSING_IMAGE: "true"
+      # Enable the opt-in Numinous Cloud backend on previews so its trial
+      # path is validated end to end. Attaches the oddish-numinous Modal
+      # secret (NUMINOUS_API_URL + NUMINOUS_API_KEY); registers cheap-first.
+      ODDISH_NUMINOUS_ENABLED: "1"
       ODDISH_MODAL_API_MIN_CONTAINERS: "0"
       ODDISH_MODAL_API_BUFFER_CONTAINERS: "0"
       ODDISH_MODAL_API_MAX_CONTAINERS: "2"
