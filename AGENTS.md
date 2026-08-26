@@ -272,14 +272,24 @@ telemetry: neither may block or fail the artifact import. The Activity card
 degrades rather than hides when a trial has steps but no stored summary — a
 single gray ungrouped band with real totals — once the summary fetch settles.
 
-The `summarize` trial kind is the LLM path for one trial's summary: its
-brief embeds the same packaged taxonomy prompt the QA brief uses, its agent
-writes `summary_result.json` (`{target_trial_id, trajectory_summary}`,
-validated in-sandbox and at import by the shared checker), and its importer
-overwrites only the target's `trials.trajectory_summary` — no verdict, task,
-or analysis state. Only `kind = 'agent'` trials with `has_trajectory` can be
-summarize targets; QA, audit, and summarize runs keep their deterministic own
-summaries. The target's nullable
+The `summarize` trial kind is the LLM path for one trial's summary. At worker
+pickup, `materialize_summarize_brief` reads the target's trajectory,
+instruction, and verifier output directly through `oddish.core.trial_io`, then
+removes empty steps, images, oversized text, embedded subagent trajectories,
+and as much of the middle as needed to keep the serialized trajectory below
+400,000 characters. The worker stages that bounded prompt instead of giving
+the sandbox an oddish-query CLI, Oddish API credential, or internet access.
+Harbor loads `SingleLLMAgent` through `AgentConfig.import_path`; the agent uses
+Harbor's `LiteLLM` once, writes `summary_result.json`
+(`{target_trial_id, trajectory_summary}`), and emits an ATIF trajectory with
+one LLM step plus one deterministic artifact-write step. Harbor's normal trial
+result therefore remains the source for status, timing, tokens, cost, logs,
+verification, retries, and S3 artifacts. The result is validated in-sandbox
+and at import by the shared checker, and its importer overwrites only the
+target's `trials.trajectory_summary` — no verdict, task, or analysis state.
+Only `kind = 'agent'` trials with `has_trajectory` can be summarize targets;
+QA and audit remain tool-using claude-code trials, while QA, audit, and
+summarize runs keep their deterministic own summaries. The target's nullable
 `trials.trajectory_summary_refresh_trial_id` is the durable identity of the
 summarize trial responsible for its next published summary; `harbor_config`'s
 `target_trial_id` remains an artifact-validation boundary, not job discovery.
@@ -1254,6 +1264,33 @@ directly by `backend/modal_app.py` from `ODDISH_MODAL_*` /
 source of truth for the full list and defaults (e.g.
 `ODDISH_MODAL_MAX_WORKERS_PER_POLL=256`,
 `ODDISH_MODAL_WORKER_MAX_CONTAINERS=2688`).
+
+### GKE Placement Contract
+
+The pinned Harbor (harbor-gke `6ec8e946`+) requires explicit placement for
+every GKE TPU trial — there is no default provisioning mode, no table-derived
+zone pool, and `accelerator_region_prefixes` is inert. A trial missing any
+required field fails at environment construction with an error naming the
+field and the served zones; it does not sit in a scheduling wait.
+
+Required fields and where they come from:
+
+- **`provisioning_mode`** (`on-demand` | `spot` | `flex-start`) — from the
+  task's `[environment.kwargs]` or a per-submission
+  `--environment-kwarg provisioning_mode=...`. A deployment MAY force a
+  fleet-wide mode by setting `ODDISH_GKE_PROVISIONING_MODE`; the backend
+  ships it only when configured (unset means "not configured", and each
+  task/submission states its own). Deployment-shipped kwargs override the
+  task's in Harbor's merge — a deployment that forces a mode overrides every
+  task's choice, which is why previews deliberately leave it unset.
+- **`[environment.tpu] zones`** — from the task only. Validated against the
+  mode's served-zone table, scoped to the region. A single-zone pool is
+  pinned through the node selector; multi-zone pools use affinity.
+- **`region`** — from deployment coordinates (`ODDISH_GKE_REGION`) or a
+  per-submission kwarg override.
+
+Migration: GKE tasks written before this contract (no mode, no zones) stop
+scheduling and fail with the requiredness error until updated.
 
 ### Preview Branch Preserved Rows
 
