@@ -36,7 +36,7 @@ def test_gke_settings_defaults(monkeypatch) -> None:
     assert settings.gke_namespace == "oddish-trials"
     assert settings.gke_registry_location is None
     assert settings.gke_registry_name is None
-    assert settings.gke_provisioning_mode == "flex-start"
+    assert settings.gke_provisioning_mode is None
     assert settings.gke_pod_ready_timeout_sec == 3600
 
 
