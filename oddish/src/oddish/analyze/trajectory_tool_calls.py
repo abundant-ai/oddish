@@ -19,6 +19,14 @@ PATH_ARGUMENT_KEYS = (
     "file",
     "target_file",
     "absolute_path",
+    # agy spells its write path in PascalCase, and Harbor's ATIF writer copies
+    # the argument dict through verbatim, so this is the key a real
+    # antigravity-cli trajectory records. Without it every agy write resolved
+    # to no path at all: provenance reported the agent CAPABLE while never
+    # attributing a single file, which reads as "it did not revisit its own
+    # work" rather than "we cannot see" -- the exact confusion the
+    # trajectory_provenance docstring exists to prevent.
+    "TargetFile",
 )
 
 

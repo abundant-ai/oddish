@@ -1117,6 +1117,22 @@ Handler registration happens at container load via
 which refreshes the whole PR comment (per-trial classifications + task
 verdict) in one update.
 
+### Trial Storage Layout
+
+Trial artifacts live under ``tasks/<task_id>/trials/<trial_id>/`` with each
+harbor attempt in its own ``task-<name>__<rand>/`` directory. Analysis
+trials (QA, audit, summarize) upload under a self-labeling
+``analysis-<kind>/`` child of that prefix: they share the subject task's
+trial-id sequence and its storage neighborhood by design, and trial ids
+repeat across environments that share a bucket, so an unlabeled analysis
+agent session reads as the subject trial's own execution. Reader rules:
+artifact readers locate analysis results by filename suffix across the
+whole prefix (nesting-agnostic); the file LISTING and file CONTENT
+endpoints both root at the trial's authoritative prefix
+(``trials.trial_s3_key`` when set -- the nested prefix for analysis
+trials -- else the id-derived prefix), so listed relative paths round-trip
+to the content endpoint without doubling the segment.
+
 ### Worker Runtime Invariants & Pitfalls
 
 Load-bearing properties, several learned from incidents. Changing them naively

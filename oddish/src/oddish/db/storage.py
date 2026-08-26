@@ -637,6 +637,7 @@ class StorageClient:
         harbor_job_dir: Path,
         *,
         authorized_prefix: str | None = None,
+        subprefix: str | None = None,
     ) -> str:
         """
         Upload Harbor trial results to S3.
@@ -648,12 +649,20 @@ class StorageClient:
                 S3 write prefix the worker is allowed to write under; any key that
                 would escape it (e.g. a path-traversal in the relative path) is
                 refused. ``None`` (default) uploads with no extra restriction.
+            subprefix: Optional path segment nested under the trial prefix.
+                Analysis trials (QA, audit, summarize) upload under a
+                self-labeling ``analysis-<kind>`` segment so their agent
+                sessions can never be mistaken for the subject trial's own
+                execution -- trial ids repeat across environments that share
+                a bucket, and analysis artifacts co-locate by design.
 
         Returns:
             S3 key prefix for the uploaded trial
         """
         await self._ensure_client()
         s3_prefix = self._trial_prefix(trial_id)
+        if subprefix:
+            s3_prefix = f"{s3_prefix.rstrip('/')}/{subprefix.strip('/')}/"
 
         if not harbor_job_dir.exists():
             raise ValueError(f"Harbor job directory does not exist: {harbor_job_dir}")
@@ -1204,9 +1213,17 @@ class StorageClient:
         cursor: str | None,
         presign: bool,
         presign_expiration: int = 900,
+        root_prefix: str | None = None,
     ) -> dict:
-        """List files in a trial's S3 directory."""
-        root_prefix = self._trial_prefix(trial_id)
+        """List files in a trial's S3 directory.
+
+        ``root_prefix`` is the trial's authoritative storage prefix when the
+        caller knows it (``trial_s3_key`` -- nested for analysis trials).
+        Listing and content resolution must share one root, or a listed
+        relative path fed back to the content endpoint doubles the nested
+        segment and misses.
+        """
+        root_prefix = root_prefix or self._trial_prefix(trial_id)
         relative_prefix = normalize_s3_relative_path(prefix)
         if relative_prefix and not relative_prefix.endswith("/"):
             relative_prefix = f"{relative_prefix}/"

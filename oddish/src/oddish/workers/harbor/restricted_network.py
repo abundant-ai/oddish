@@ -38,6 +38,7 @@ from .model_hosts import (
 from .model_hosts import (
     _CURSOR_RUNTIME_HOSTS,
     ANTIGRAVITY_RUNTIME_HOSTS,
+    ANTIGRAVITY_STARTUP_HOSTS,
     outbound_hosts_for_model,
 )
 from .model_hosts import (
@@ -716,13 +717,16 @@ def _antigravity_profile(
         base_url_keys=_consumed_base_url_keys_for_class(agent_class, agent_config),
         # agy is transport-authoritative like gemini-cli: modelProvider=gemini
         # fronts the Gemini API (or the explicit base URL), so pin the host and
-        # do not let model-id inference substitute another provider's host. The
-        # full runtime set also covers the Unleash/telemetry/Playwright
-        # endpoints the binary probes at startup (stall-on-drop, captured live
-        # from agy 1.1.19).
+        # do not let model-id inference substitute another provider's host.
         default_hosts=ANTIGRAVITY_RUNTIME_HOSTS,
         infer_model=False,
     )
+    # A configured base URL REPLACES the resolved transport, so the startup
+    # probes have to be unioned back on rather than passed as a default: they
+    # are not transport at all, and agy stalls to the agent deadline if their
+    # SYNs are dropped. Without this, a custom Gemini endpoint silently
+    # narrowed the allowlist to that one host.
+    hosts = tuple(dict.fromkeys((*hosts, *ANTIGRAVITY_STARTUP_HOSTS)))
     return RestrictedNetworkProfile(
         outbound_hosts=hosts,
         # No kwarg_overrides / env_overrides: agy has no settings-level web-tool
