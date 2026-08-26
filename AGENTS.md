@@ -139,15 +139,16 @@ High-level flow:
    `trials.result.harbor_exception` payload containing the failure category,
    phase, stable code, and retry decision. Claude Code's Oddish wrapper retries
    transient installer transport exits three times in the existing sandbox.
-   During execution it reads Claude's final stream-JSON result: HTTP 429 and
-   5xx failures with a session id are resumed in the same sandbox and exact
-   Claude session up to five times, preserving the working tree and session
-   transcript. If those attempts are exhausted, the worker-job retry uses the
-   structured reason and provider `retry_after` hint for its bounded
-   fresh-sandbox backoff. Permanent provider 4xx failures do not consume a new
-   sandbox attempt. Modal diagnostic logs add neutral runtime-diagnostic
-   guidance; only Modal's exact `Image build for im-… failed` error is labeled
-   an image-build failure.
+   During execution it reads Claude's final stream-JSON result: HTTP 429/5xx
+   and confirmed unstatused transient API failures with a session id are
+   resumed in the same sandbox and exact Claude session up to five times,
+   preserving the working tree and session transcript. If those attempts are
+   exhausted, the worker-job retry uses the structured reason and provider
+   `retry_after` hint for its bounded fresh-sandbox backoff. Permanent provider
+   4xx and unstatused failures that Harbor identifies as authentication, model,
+   usage-limit, or safety errors do not consume a new sandbox attempt. Modal
+   diagnostic logs add neutral runtime-diagnostic guidance; only Modal's exact
+   `Image build for im-… failed` error is labeled an image-build failure.
 4. Trajectory analysis is **task-scoped** and runs as a trial: when every
    agent trial of a task is terminal, one QA trial (`trials.kind = 'qa'`)
    is created on the same task. Its agent classifies

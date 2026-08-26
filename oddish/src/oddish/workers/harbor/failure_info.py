@@ -25,6 +25,21 @@ from harbor.agents.installed.base import (
 )
 from harbor.models.job.config import RetryConfig
 
+_API_ERROR_MESSAGE_RE = re.compile(r"\bAPI error\b", re.IGNORECASE)
+_API_STATUS_MESSAGE_RE = re.compile(
+    r"\b(?:API error:\s*)?([45]\d\d)\b", re.IGNORECASE
+)
+_RETRY_EXCLUDED_EXCEPTION_TYPES = frozenset(
+    RetryConfig.model_fields["exclude_exceptions"].default_factory() or set()
+)
+_UNSTATUS_RETRY_REASON_BY_EXCEPTION = {
+    "ApiRateLimitError": "rate_limit",
+    "ApiOverloadedError": "provider_overload",
+    "ApiInternalServerError": "provider_server_error",
+    "ApiConnectionClosedError": "provider_server_error",
+    "ApiResponseStalledError": "provider_server_error",
+}
+
 
 @dataclass(frozen=True)
 class ClaudeProviderFailure:
@@ -41,7 +56,7 @@ class ClaudeProviderFailure:
     def retryable(self) -> bool:
         """Whether a second provider request can change the outcome."""
         if self.http_status is None:
-            return False
+            return True
         return self.http_status == 429 or self.http_status >= 500
 
     @property
@@ -147,6 +162,7 @@ def _event_failure(event: Any) -> ClaudeProviderFailure | None:
     if not isinstance(event, dict) or event.get("type") != "result":
         return None
 
+    is_error = event.get("is_error", event.get("isError"))
     terminal_reason = event.get("terminal_reason", event.get("terminalReason"))
     status = _coerce_int(
         event.get(
@@ -158,14 +174,27 @@ def _event_failure(event: Any) -> ClaudeProviderFailure | None:
     message = message_value if isinstance(message_value, str) else None
     if message is None:
         message = _nested_string(event.get("error"), "message")
+
+    # Claude uses subtype="success" for a clean protocol shutdown even when
+    # the final result is an API failure. ``is_error`` is the success/failure
+    # discriminator; terminal_reason/status retain compatibility with result
+    # frames from CLI versions that did not emit it.
+    if is_error is False:
+        return None
+    has_api_error_signal = (
+        terminal_reason == "api_error"
+        or status is not None
+        or is_error is True
+        and message is not None
+        and _API_ERROR_MESSAGE_RE.search(message) is not None
+    )
+    if not has_api_error_signal:
+        return None
+
     if status is None and message:
-        status_match = re.search(
-            r"\b(?:API error:\s*)?(429|5\d\d)\b", message, re.IGNORECASE
-        )
+        status_match = _API_STATUS_MESSAGE_RE.search(message)
         if status_match:
             status = int(status_match.group(1))
-    if terminal_reason != "api_error" and status is None:
-        return None
     return ClaudeProviderFailure(
         terminal_reason=str(terminal_reason or "api_error"),
         http_status=status,
@@ -215,11 +244,20 @@ def classify_harbor_failure(outcome: HarborOutcomeLike) -> dict[str, Any] | None
     if not outcome.error and not outcome.exception_type:
         return None
 
+    exception_type = outcome.exception_type or "UnknownError"
     provider_failure = read_claude_provider_failure(outcome.job_dir)
     if provider_failure is not None:
-        return provider_failure.as_failure_info()
+        failure_info = provider_failure.as_failure_info()
+        if provider_failure.http_status is None:
+            failure_info["retryable"] = (
+                exception_type not in _RETRY_EXCLUDED_EXCEPTION_TYPES
+            )
+            failure_info["retry_reason"] = (
+                _UNSTATUS_RETRY_REASON_BY_EXCEPTION.get(exception_type)
+                or failure_info["retry_reason"]
+            )
+        return failure_info
 
-    exception_type = outcome.exception_type or "UnknownError"
     timing = outcome.phase_timing or {}
     error = outcome.error or ""
     is_permanent_image_build = "Image build for im-" in error
@@ -245,11 +283,11 @@ def classify_harbor_failure(outcome: HarborOutcomeLike) -> dict[str, Any] | None
     else:
         category, phase = "runtime_lifecycle", "runtime"
 
-    excluded = RetryConfig.model_fields["exclude_exceptions"].default_factory() or set()
     return {
         "category": category,
         "phase": phase,
         "code": exception_type,
-        "retryable": exception_type not in excluded and not is_permanent_image_build,
+        "retryable": exception_type not in _RETRY_EXCLUDED_EXCEPTION_TYPES
+        and not is_permanent_image_build,
         "retry_reason": category,
     }

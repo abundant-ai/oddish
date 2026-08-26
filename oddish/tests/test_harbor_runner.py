@@ -3845,6 +3845,53 @@ def test_store_trial_results_honors_structured_permanent_provider_failure(
     assert trial.result["harbor_exception"]["http_status"] == 400
 
 
+def test_store_trial_results_retries_unstatused_provider_api_failure(
+    monkeypatch, tmp_path
+):
+    """A confirmed unstatused API error retains its fresh-sandbox attempt."""
+    trial = _make_retry_decision_trial(attempts=1, max_attempts=6)
+    _install_retry_decision_session_fakes(monkeypatch, trial)
+    agent_log = tmp_path / "trial" / "agent" / "claude-code.txt"
+    agent_log.parent.mkdir(parents=True)
+    agent_log.write_text(
+        json.dumps(
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": True,
+                "terminal_reason": "api_error",
+                "session_id": "session-disconnected",
+                "result": "API Error: upstream disconnected",
+            }
+        ),
+        encoding="utf-8",
+    )
+    outcome = harbor_runner.HarborOutcome(
+        reward=None,
+        error="UnknownApiError: upstream disconnected",
+        exit_code=-1,
+        duration_sec=5.0,
+        job_result_path=None,
+        job_dir=tmp_path,
+        exception_type="UnknownApiError",
+    )
+
+    asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id="trial-1",
+            outcome=outcome,
+            trial_s3_key=None,
+            execution_error=None,
+            trial_attempt=trial.attempts,
+        )
+    )
+
+    assert trial.status == trial_handler.TrialStatus.RETRYING
+    assert trial.finished_at is None
+    assert trial.result["harbor_exception"]["retryable"] is True
+    assert "http_status" not in trial.result["harbor_exception"]
+
+
 def test_store_trial_results_skips_retry_for_quota_pause_outcome(monkeypatch):
     """The Harbor runner returns quota-pause control failures as outcomes.
 

@@ -12,6 +12,8 @@ from oddish.workers.harbor.failure_info import (
 def _event(**overrides) -> str:
     event = {
         "type": "result",
+        "subtype": "success",
+        "is_error": True,
         "terminal_reason": "api_error",
         "api_error_status": 529,
         "session_id": "session-123",
@@ -43,6 +45,8 @@ def test_parse_uses_final_result_event_after_a_resumed_success():
                 {
                     "type": "result",
                     "subtype": "success",
+                    "is_error": False,
+                    "terminal_reason": "completed",
                     "session_id": "session-123",
                 }
             ),
@@ -50,6 +54,21 @@ def test_parse_uses_final_result_event_after_a_resumed_success():
     )
 
     assert parse_claude_provider_failure(stream) is None
+
+
+def test_success_result_text_mentioning_529_is_not_a_failure():
+    success = json.dumps(
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "terminal_reason": "completed",
+            "result": "Handled API Error: 529 in the retry documentation.",
+            "session_id": "session-123",
+        }
+    )
+
+    assert parse_claude_provider_failure(success) is None
 
 
 def test_authentication_failure_is_permanent_and_typed():
@@ -69,6 +88,27 @@ def test_parse_status_from_structured_result_message_fallback():
     assert failure is not None
     assert failure.http_status == 529
     assert failure.retry_reason == "provider_overload"
+
+
+def test_parse_permanent_status_from_confirmed_api_error_message():
+    failure = parse_claude_provider_failure(
+        _event(api_error_status=None, result="API Error: 400 invalid request")
+    )
+
+    assert failure is not None
+    assert failure.http_status == 400
+    assert failure.retryable is False
+
+
+def test_unstatused_api_error_defaults_to_retryable():
+    failure = parse_claude_provider_failure(
+        _event(api_error_status=None, result="API Error: upstream disconnected")
+    )
+
+    assert failure is not None
+    assert failure.http_status is None
+    assert failure.retryable is True
+    assert failure.exception_class.__name__ == "UnknownApiError"
 
 
 def test_classify_agent_setup_transport_failure():
@@ -130,3 +170,24 @@ def test_classify_reads_structured_provider_failure_from_job_artifact(tmp_path):
         "retry_after_seconds": 12.5,
         "message": "API Error: 529 Overloaded",
     }
+
+
+def test_classify_unstatused_known_permanent_provider_failure(tmp_path):
+    log = tmp_path / "trial" / "agent" / "claude-code.txt"
+    log.parent.mkdir(parents=True)
+    log.write_text(
+        _event(api_error_status=None, result="API Error: Not logged in"),
+        encoding="utf-8",
+    )
+    outcome = SimpleNamespace(
+        error="AgentAuthenticationError: Not logged in",
+        exception_type="AgentAuthenticationError",
+        phase_timing={"agent_execution": {}},
+        job_dir=tmp_path,
+    )
+
+    failure = classify_harbor_failure(outcome)
+
+    assert failure is not None
+    assert "http_status" not in failure
+    assert failure["retryable"] is False

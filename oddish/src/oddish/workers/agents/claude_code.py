@@ -30,12 +30,15 @@ from importlib.metadata import Distribution, PackageNotFoundError, version
 from typing import Any, override
 
 from harbor.agents.installed.base import (
+    ApiConnectionClosedError,
     ApiInternalServerError,
     ApiOverloadedError,
     ApiRateLimitError,
+    ApiResponseStalledError,
     BaseEnvironment,
     NetworkConnectionError,
     NonZeroAgentExitCodeError,
+    UnknownApiError,
 )
 from harbor.agents.installed.claude_code import ClaudeCode
 
@@ -61,6 +64,9 @@ _TRANSIENT_PROVIDER_ERRORS = (
     ApiRateLimitError,
     ApiInternalServerError,
     ApiOverloadedError,
+    ApiConnectionClosedError,
+    ApiResponseStalledError,
+    UnknownApiError,
 )
 
 
@@ -183,13 +189,18 @@ class OddishClaudeCode(ClaudeCode):
             return super()._classify_exec_error(command, result)
 
         self._last_provider_failure = failure
+        exception_class = failure.exception_class
+        if failure.http_status is None:
+            text_error = super()._classify_exec_error(command, result)
+            if type(text_error) is not NonZeroAgentExitCodeError:
+                exception_class = type(text_error)
         detail = (
             f"Command failed (exit {result.return_code}): {command}\n"
             f"stdout: {self._truncate_output(result.stdout)}\n"
             f"stderr: {self._truncate_output(result.stderr)}\n"
             f"{failure.summary()}"
         )
-        return failure.exception_class(detail, return_code=result.return_code)
+        return exception_class(detail, return_code=result.return_code)
 
     @override
     async def run(
@@ -210,6 +221,7 @@ class OddishClaudeCode(ClaudeCode):
                     failure = self._last_provider_failure
                     if (
                         failure is None
+                        or not failure.retryable
                         or not failure.session_id
                         or resume_count == _PROVIDER_MAX_RESUMES
                     ):
