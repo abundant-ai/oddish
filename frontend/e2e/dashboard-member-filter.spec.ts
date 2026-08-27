@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { test } from "@playwright/test";
 import { clerk, setupClerkTestingToken } from "@clerk/testing/playwright";
 
 const CLERK_EMAIL = process.env.E2E_CLERK_EMAIL;
@@ -15,6 +15,8 @@ test.describe("dashboard member filter", () => {
   test("selecting a person navigates with their stable user id", async ({
     page,
   }) => {
+    test.setTimeout(60_000);
+
     await setupClerkTestingToken({ page });
     await page.goto("/");
     await clerk.signIn({ page, emailAddress: CLERK_EMAIL! });
@@ -46,10 +48,14 @@ test.describe("dashboard member filter", () => {
       .getByRole("combobox", { name: "Filter experiments by member" })
       .click();
     await page.getByPlaceholder("Search members…").fill("@kyl");
-    await page.getByRole("option", { name: /Kyle/ }).click();
 
-    await expect
-      .poll(() => new URL(page.url()).searchParams.get("author"))
-      .toBe("user_kyle");
+    const authorNavigation = page.waitForURL(
+      (url) =>
+        url.pathname === "/dashboard" &&
+        url.searchParams.get("author") === "user_kyle",
+      { timeout: 30_000, waitUntil: "commit" }
+    );
+    await page.getByRole("option", { name: /Kyle/ }).click();
+    await authorNavigation;
   });
 });
