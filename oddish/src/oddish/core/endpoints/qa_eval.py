@@ -16,6 +16,7 @@ from oddish.core.idempotency import (
     compute_request_hash,
     reserve_idempotency_slot,
 )
+from oddish.core.quota_admission import admit_trials
 from oddish.db import (
     ExperimentModel,
     TaskModel,
@@ -41,6 +42,7 @@ async def create_qa_eval_core(
     request: QAEvalCreateRequest,
     org_id: str | None,
     owner_user_id: str | None,
+    billed_user_id: str | None,
     idempotency_key: str | None = None,
     idempotency_store: IdempotencyStore | None = None,
     request_hash: str | None = None,
@@ -139,6 +141,10 @@ async def create_qa_eval_core(
             detail="QA replay rejected; fix these source rows: " + "; ".join(invalid),
         )
 
+    await admit_trials(
+        session, org_id, billed_user_id, count=len(request.source_trial_ids)
+    )
+
     canonical_model = settings.normalize_trial_model(
         "claude-code", request.model or settings.analysis_model
     )
@@ -179,6 +185,7 @@ async def create_qa_eval_core(
             task_version_id=task_version_id,
             experiment_id=experiment.id,
             model=canonical_model,
+            billed_user_id=billed_user_id,
             payload={
                 "source_trial_id": source.id,
                 "trial_ids": [source.id],

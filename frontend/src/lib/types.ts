@@ -271,6 +271,7 @@ export interface Task {
   current_version_id?: string | null;
   trial_version?: number | null;
   trial_version_id?: string | null;
+  active_qa_trial?: Trial | null;
   trials?: Trial[] | null;
   user_tags?: UserTagRef[];
   created_at: string;
@@ -477,6 +478,7 @@ export interface TaskOpenTrialRef {
   agent: string;
   provider: string;
   model: string | null;
+  kind: TrialKind;
   status: TrialStatus;
   reward: number | null;
   error_kind?: string | null;
@@ -499,6 +501,7 @@ export interface TaskOpenResponse {
   default_version?: TaskOpenVersionRef | null;
   selected_version?: TaskOpenVersionSummary | null;
   totals: TaskOpenTotals;
+  active_qa_trial?: TaskOpenTrialRef | null;
   trials: TaskOpenTrialRef[];
   trials_has_more: boolean;
 }

@@ -251,6 +251,7 @@ async def create_analysis_trial(
     payload: dict | None = None,
     experiment_id: str | None = None,
     model: str | None = None,
+    billed_user_id: str | None = None,
 ) -> TrialModel:
     from oddish.queue import enqueue_trial_worker_job, reserve_next_trial_index
 
@@ -306,7 +307,7 @@ async def create_analysis_trial(
         task_version_id=task_version_id or task.current_version_id,
         experiment_id=experiment_id,
         org_id=task.org_id,
-        billed_user_id=None,
+        billed_user_id=billed_user_id,
         agent=analysis_agent,
         provider=settings.get_provider_for_trial(analysis_agent, normalized_model),
         queue_key=settings.get_queue_key_for_trial(analysis_agent, normalized_model),

@@ -8,12 +8,14 @@ from pathlib import Path
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.config import settings  # noqa: E402
 from oddish.core.quotas import (  # noqa: E402
+    _inflight_predicates,
+    _org_inflight_predicates,
     effective_limits_by_org_user_all_orgs,
     quota_window_start,
     start_of_month_utc,
@@ -202,6 +204,34 @@ async def _make_billed_task(cleanup_task_ids, *, n_trials, billed_user, org_id):
         )
         await session.flush()
     return task_id
+
+
+def test_inflight_analysis_reservations_follow_composite_setting(monkeypatch):
+    monkeypatch.setattr(settings, "quota_counts_analysis_and_compute", False)
+    predicate_sets = (
+        _inflight_predicates("org-1", "user-1"),
+        _org_inflight_predicates("org-1"),
+    )
+
+    for predicates in predicate_sets:
+        sql = str(
+            select(TrialModel.id)
+            .where(*predicates)
+            .compile(compile_kwargs={"literal_binds": True})
+        )
+        assert "trials.kind = 'agent'" in sql
+
+    monkeypatch.setattr(settings, "quota_counts_analysis_and_compute", True)
+    for predicates in (
+        _inflight_predicates("org-1", "user-1"),
+        _org_inflight_predicates("org-1"),
+    ):
+        sql = str(
+            select(TrialModel.id)
+            .where(*predicates)
+            .compile(compile_kwargs={"literal_binds": True})
+        )
+        assert "trials.kind = 'agent'" not in sql
 
 
 @pytest.mark.asyncio

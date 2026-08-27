@@ -32,6 +32,7 @@ async def create_qa_eval(
                 request=payload,
                 org_id=auth.org_id,
                 owner_user_id=auth.user_id,
+                billed_user_id=auth.user_id,
                 idempotency_key=idempotency_key,
                 idempotency_store=SubmissionIdempotencyStore(session),
                 request_hash=compute_request_hash(payload),
