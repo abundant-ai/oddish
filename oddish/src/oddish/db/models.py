@@ -1032,8 +1032,8 @@ class TrialModel(TimestampedMixin, Base):
     )
 
     # What kind of run this row is: ``'agent'`` (the default) is a normal
-    # evaluation run; ``'qa'``, ``'audit'``, and ``'summarize'`` are platform
-    # analysis-agent runs created by the analysis-trial pipeline.
+    # evaluation run; ``'qa'``, ``'qa_eval'``, ``'audit'``, and ``'summarize'``
+    # are platform analysis-agent runs created by the analysis-trial pipeline.
     kind: Mapped[str] = mapped_column(
         String(32),
         default=AGENT_TRIAL_KIND,

@@ -12,6 +12,8 @@ the normal `TRIAL` worker-job kind:
   `audit_result.json`.
 - `kind = "qa"` reviews the eligible agent-trial set for one task version and
   writes `qa_result.json`.
+- `kind = "qa_eval"` applies one caller-supplied candidate classification
+  prompt to one exact historical solver trial and writes `qa_eval_result.json`.
 - `kind = "summarize"` refreshes one agent trial's trajectory summary on demand
   and writes `summary_result.json`.
 
@@ -21,6 +23,13 @@ remain readable. Do not wait for or enqueue those job kinds.
 
 Every analysis trial has at most 3 attempts and a 60-minute timeout. Its own
 cost is analysis spend, not an additional evaluation attempt.
+
+`qa_eval` is separate from production task QA. It homes the candidate result
+on a new evaluation trial and never changes the source trial's historical
+analysis, reward, result, artifacts, task verdict, or task-version pre-trial
+findings. The source solver does not rerun. Its exact task-version ID and the
+prompt name, SHA-256, and canonical model ID are pinned in the evaluation
+trial's `harbor_config.analysis_payload`.
 
 ## Automatic task QA
 

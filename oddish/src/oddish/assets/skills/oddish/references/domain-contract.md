@@ -34,6 +34,7 @@ evidence.
   comparisons, and normal retry decisions.
 - `audit`: the pre-trial source review for one task version.
 - `qa`: the task-wide classifier and optional verdict synthesizer.
+- `qa_eval`: one isolated candidate-prompt replay over a historical solver trial.
 - `summarize`: an on-demand trajectory-summary refresh for one agent trial.
 
 Normal user-facing eligibility means `kind == "agent"`, not a probe,

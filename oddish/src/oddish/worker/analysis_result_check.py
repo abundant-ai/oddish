@@ -229,6 +229,25 @@ def _check_qa(data: dict, expected: dict) -> list[str]:
     return errors
 
 
+def _check_qa_eval(data: dict, expected: dict) -> list[str]:
+    errors: list[str] = []
+    source_trial_id = data.get("source_trial_id")
+    expected_source_trial_id = expected.get("source_trial_id")
+    if _missing(source_trial_id):
+        errors.append('"source_trial_id" must be a non-empty string')
+    elif expected_source_trial_id and source_trial_id != expected_source_trial_id:
+        errors.append(f'"source_trial_id" must be {expected_source_trial_id!r}')
+    for key in ("subtype", "evidence", "root_cause", "recommendation"):
+        if _missing(data.get(key)):
+            errors.append(f'"{key}" must be a non-empty string')
+    if not isinstance(data.get("action_items"), list):
+        errors.append('"action_items" must be a list')
+    if not isinstance(data.get("exploitation"), list):
+        errors.append('"exploitation" must be a list')
+    errors.extend(_check_classification(data, expected, "qa_eval_result"))
+    return errors
+
+
 def _check_audit(data: dict, expected: dict) -> list[str]:
     items = data.get("items")
     if not isinstance(items, list):
@@ -262,6 +281,8 @@ def check_analysis_result(data: object, expected: dict) -> list[str]:
     kind = expected.get("kind")
     if kind == "qa":
         return _check_qa(data, expected)
+    if kind == "qa_eval":
+        return _check_qa_eval(data, expected)
     if kind == "audit":
         return _check_audit(data, expected)
     if kind == "summarize":

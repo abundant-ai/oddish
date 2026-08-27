@@ -156,6 +156,13 @@ High-level flow:
    verdict. A sweep of `T` tasks × `N` trials therefore creates `T`
    QA trials, not `T × (N + 1)`. The pre-trial audit is an `audit`-kind trial
    created once per task version at sweep time.
+   Historical prompt evaluation is separate: `POST /qa-evals` creates one
+   normal output experiment and one `qa_eval` analysis trial per exact source
+   solver trial. Each replay pins the source task-version id, prompt name and
+   SHA-256, and canonical model id in `harbor_config.analysis_payload`. Its
+   importer writes the candidate artifact only to the new evaluation trial's
+   `analysis`; it never changes source-trial state, task verdict state, or
+   task-version pre-trial findings.
    Non-'agent' kinds are excluded from cost, quota, leaderboard, facet, and
    public surfaces (see `oddish.filters.trial_predicates.EligibleTrialScope`).
 5. While a trial runs, a worker-side tailer (`oddish.workers.harbor.live_tail`,
@@ -328,9 +335,9 @@ a code change that ships with a deploy.
 
 `WorkerJobKind` (in `oddish.db.models`):
 
-- **Active**: `TRIAL` (Harbor trial execution — including `qa`, `audit`, and
-  `summarize` kind trials), `TASK_EXPAND` (sweep expansion), `TAG_PROJECT`
-  (tag recompute).
+- **Active**: `TRIAL` (Harbor trial execution — including `qa`, `qa_eval`,
+  `audit`, and `summarize` kind trials), `TASK_EXPAND` (sweep expansion),
+  `TAG_PROJECT` (tag recompute).
 - **Legacy, enum-only**: `QA`, `VERDICT`, `ANALYSIS`, `QA_REVIEW`,
   `ANALYZER`, `ANALYZER_BLOCK`. QA/audit/analyzer work runs as trials now;
   no handler claims these kinds (workers claim only registered kinds), and

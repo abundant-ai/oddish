@@ -26,6 +26,7 @@ export ODDISH_API_KEY="ok_..."
 - `oddish logs` - stream a running trial's live transcript and cost estimate
 - `oddish cancel` - stop in-flight task runs, or just the QA/audit runs with `--qa`
 - `oddish backfill-analysis` - (re)run trial analysis for a trial, task, or experiment
+- `oddish qa-eval run` / `oddish qa-eval collect` - replay candidate QA prompts over historical trials and export comparisons
 - `oddish costs` - view billable-spend accounting (org-wide, or per-user with `--user`)
 - `oddish admin concurrency` - inspect, set, or clear operator queue-key limits
 - `oddish cost-exclusions` - hide spend for models and experiments that were never really paid for
@@ -539,6 +540,49 @@ Options
 - `--force` - Clear the targeted trials' stored analyses before the pass runs
 - `--json` - Emit machine-readable output.
 - `--api TEXT` - Override the API URL
+
+## Replay Candidate QA Prompts
+
+Use `oddish qa-eval run` to apply local candidate prompt text to exact stored
+solver trials. Oddish creates a new output experiment for each prompt and
+queues one `kind = "qa_eval"` analysis trial per source trial. The solver does
+not rerun. The CLI uploads no task bundle or solver artifact; the analysis
+trial reads the stored result, trajectory, logs, and exact task-version files
+through `oddish-query`.
+
+The cases CSV must contain `source_trial_id`. Other columns, including the
+researcher's issue text, stay local and are not sent to the analysis agent.
+
+```bash
+oddish qa-eval run \
+  --cases cases/researcher-feedback-v1.csv \
+  --prompt candidate-1=prompts/candidate-1.txt \
+  --name qa-feedback-candidate-1
+
+oddish qa-eval run \
+  --cases cases/researcher-feedback-v1.csv \
+  --prompt candidate-1=prompts/candidate-1.txt \
+  --prompt candidate-2=prompts/candidate-2.txt
+```
+
+Omit `--model` to use the deployed production QA model. A supplied `--model`
+uses the same provider and queue routing as other `claude-code` analysis
+trials.
+
+After the replay trials settle, collect the historical and candidate outputs:
+
+```bash
+oddish qa-eval collect \
+  qa-feedback-candidate-1 \
+  --labels cases/researcher-feedback-v1.csv \
+  --out qa-feedback-candidate-1.csv
+```
+
+The output contains `source_trial_id`, `task_name`, the researcher issue, both
+QA classifications and root causes, `researcher_issue_caught`,
+`qa_response_valid`, and `failure_stage`. Because the replay never sees the
+researcher issue, `researcher_issue_caught` is copied from the labels CSV when
+present or left blank for review.
 
 ## View Costs
 

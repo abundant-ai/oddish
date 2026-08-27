@@ -7,7 +7,7 @@ appear inconsistent.
 |---|---|
 | The latest numbered task version is active. | `tasks.current_version_id` is the user-selected default and can point to an older version. |
 | `current_version_id` on an experiment response identifies the trial rows shown. | `current_version_id` remains the task default; `trial_version_id` is the experiment's trial-selection pivot. |
-| Every row in task `trials[]` is an evaluation attempt. | Only `kind == "agent"` is a user evaluation attempt; `qa`, `audit`, and `summarize` are platform analysis trials. |
+| Every row in task `trials[]` is an evaluation attempt. | Only `kind == "agent"` is a user evaluation attempt; `qa`, `qa_eval`, `audit`, and `summarize` are platform analysis trials. |
 | Trial `status == "success"` means the verifier passed. | `success` means execution completed; verifier credit is in `reward`. |
 | Trial `status == "failed"` means the agent produced a bad solution. | `failed` means an execution/harness error; an ordinary completed zero-reward run can still have `status == "success"`. |
 | A gate-skipped model is a model failure. | `skipped` means nop/oracle validation rejected that task version and experiment before the paid trial ran. |
