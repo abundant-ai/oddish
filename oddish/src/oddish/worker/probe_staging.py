@@ -69,11 +69,16 @@ exit 0
 
 # An analysis trial runs on OUR task image, not the audited one: that image
 # is an unknown (may lack python/node/network) and its verifier grades
-# task-solving. The agent reads the audited task via the oddish-query CLI.
+# task-solving. QA and audit read stored data through oddish-query. Summarize
+# receives a bounded prompt from the worker and only needs Python for validation.
 _ANALYSIS_DOCKERFILE = """FROM python:3.13-slim
 RUN apt-get update \\
     && apt-get install -y --no-install-recommends nodejs curl procps ca-certificates \\
     && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+"""
+
+_SINGLE_LLM_ANALYSIS_DOCKERFILE = """FROM python:3.13-slim
 WORKDIR /app
 """
 
@@ -92,13 +97,17 @@ timeout_sec = 60
 
 
 def apply_analysis_overlay(
-    work_task_dir: Path, *, brief: str, artifact: str, check_payload: dict
+    work_task_dir: Path,
+    *,
+    brief: str,
+    artifact: str,
+    check_payload: dict,
+    needs_query_cli: bool = True,
 ) -> None:
     """Replace the staged task with the analysis task: the brief as the
     instruction, our image, and the artifact verifier as the tests. Nothing
-    of the audited task remains -- its trials, logs, and files reach the
-    agent through the oddish-query CLI, the same way the gold harness
-    audits from artifacts.
+    of the audited task remains. QA and audit fetch its trials, logs, and files
+    through oddish-query; summarize receives its target trajectory in ``brief``.
 
     ``check_payload`` is the artifact contract for this trial
     (``analysis_check_payload``): it is staged as ``tests/expected.json``
@@ -120,7 +129,9 @@ def apply_analysis_overlay(
     (work_task_dir / "task.toml").write_text(_ANALYSIS_TASK_TOML)
     env_dir = work_task_dir / "environment"
     env_dir.mkdir(parents=True)
-    (env_dir / "Dockerfile").write_text(_ANALYSIS_DOCKERFILE)
+    (env_dir / "Dockerfile").write_text(
+        _ANALYSIS_DOCKERFILE if needs_query_cli else _SINGLE_LLM_ANALYSIS_DOCKERFILE
+    )
     tests_dir = work_task_dir / "tests"
     tests_dir.mkdir(parents=True)
     (tests_dir / "expected.json").write_text(json.dumps(check_payload, indent=1))
