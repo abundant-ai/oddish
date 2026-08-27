@@ -79,6 +79,20 @@ test('task cat fetches a task source file without adding a solution prefix', () 
   assert.match(out, /TASK-INSTRUCTIONS/);
 });
 
+test('task file reads use the pinned task version', () => {
+  const out = runApi(
+    ['task', 'cat', 'instruction.md'],
+    {
+      '/tasks/task-123/files/instruction.md?version=7': {
+        path: 'instruction.md',
+        content: 'VERSION-SEVEN',
+      },
+    },
+    { ODDISH_PROBE_TASK_VERSION: '7' },
+  );
+  assert.match(out, /VERSION-SEVEN/);
+});
+
 test('task fetch downloads the complete source tree into --into', () => {
   const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'task-dest-'));
   const out = runApi(['task', 'fetch', '--into', dest],
