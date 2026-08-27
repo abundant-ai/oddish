@@ -746,30 +746,46 @@ def to_anthropic_hdo_model_id(model: str | None) -> str | None:
     return f"{ANTHROPIC_HDO_PROVIDER}/{anthropic_hdo_bare_model_id(model)}"
 
 
-# Gemini queue-key canonicalization. One Gemini model reaches Oddish under three
-# spellings: ``gemini/<id>`` (litellm's provider name), ``google/<id>`` (the
-# aggregator vendor namespace, and Oddish's own provider slug), and the bare
-# ``gemini-...`` id. Without a canonicalizer they became separate queue keys, so
-# one model split across several concurrency buckets and could starve in one of
-# them.
+# Gemini canonicalization. One Gemini model reaches Oddish under three spellings:
+# ``gemini/<id>`` (litellm's provider name), ``google/<id>`` (the aggregator
+# vendor namespace), and the bare ``gemini-...`` id. All three are accepted
+# input. Without a canonicalizer they became separate queue keys, so one model
+# split across several concurrency buckets and could starve in one of them.
 #
-# The canonical bucket is ``google/<id>``, not ``gemini/<id>``:
+# This is canonicalized in TWO layers, because the model id and the queue key
+# answer different questions:
+#
+#   * Stored / displayed model id -> ``gemini/<id>`` (``to_gemini_model_id``,
+#     applied in ``normalize_trial_model``). ``gemini/`` is the canonical model
+#     id in AGENTS.md, it is a real litellm provider, and this matches the eight
+#     sibling provider branches that all store ``<provider>/<id>``.
+#   * Queue key / concurrency bucket -> ``google/<id>`` (``to_gemini_queue_key``,
+#     applied in ``normalize_queue_key``). This is the bucket, not the identity.
+#
+# The two layers already diverge elsewhere: a bare ``gpt-5.2`` stores as
+# ``gpt-5.2`` and queues as ``openai/gpt-5.2``. ``get_queue_key_for_trial``
+# composes them (``normalize_queue_key(normalize_trial_model(...))``), so a trial
+# stores ``gemini/<id>`` and queues on ``google/<id>``.
+#
+# The bucket is ``google/<id>``, not ``gemini/<id>``:
 #   1. ``google/`` is the existing majority bucket. A bare ``gemini-...`` id that
 #      litellm does not know already infers to ``google/`` in
 #      ``_infer_provider_prefix``, so this spelling moves the fewest stored rows.
 #   2. ``google/`` is the bucket production serves. The ``gemini/`` bucket
-#      starved in an incident and the reason is not established, so
-#      canonicalizing onto ``gemini/`` would risk a wider outage.
+#      starved in an incident and the reason is not established, so bucketing on
+#      ``gemini/`` would risk a wider outage.
 #   3. The queue key is internal bucketing only. ``_build_agent_config`` gives
 #      each agent the spelling its own LLM client needs at the last hop, so this
 #      choice does not constrain agent correctness.
 #
-# ``vertex_ai/`` is deliberately excluded. Vertex AI is a different endpoint
-# (regional ``*-aiplatform.googleapis.com``), a different tenancy, and different
-# credentials (ADC plus ``VERTEXAI_PROJECT``). It keeps its own queue key.
+# ``vertex_ai/`` is deliberately excluded from both layers. Vertex AI is a
+# different endpoint (regional ``*-aiplatform.googleapis.com``), a different
+# tenancy, and different credentials (ADC plus ``VERTEXAI_PROJECT``). It keeps
+# its own model id and its own queue key.
 #
-# The queue prefix is ``google``, but the canonical *provider* for cost and
-# rate-limit attribution stays ``gemini`` (see ``_MODEL_PROVIDER_ALIASES``).
+# The canonical *provider* for cost and rate-limit attribution is ``gemini`` for
+# every spelling (see ``_MODEL_PROVIDER_ALIASES``).
+GEMINI_MODEL_PREFIX = "gemini"
 GEMINI_QUEUE_PREFIX = "google"
 _GEMINI_PROVIDER_PREFIXES: frozenset[str] = frozenset({"gemini", "google"})
 
@@ -806,11 +822,27 @@ def gemini_bare_model_id(model: str) -> str:
 
 
 def to_gemini_model_id(model: str | None) -> str | None:
-    """Canonicalize a Gemini reference to ``google/<bare-id>``.
+    """Canonicalize a Gemini reference to the stored id ``gemini/<bare-id>``.
 
-    ``gemini/x``, ``google/x``, and a bare ``x`` all collapse to one id, so one
-    model gets one queue key. ``vertex_ai/x`` and non-Gemini models are returned
-    unchanged.
+    ``gemini/x``, ``google/x``, and a bare ``x`` all collapse to one stored id,
+    so the dashboard and cost aggregation show one model rather than three.
+    ``gemini/`` is the canonical model id in AGENTS.md and a real litellm
+    provider. ``vertex_ai/x`` and non-Gemini models are returned unchanged.
+
+    The queue key is a separate question -- see ``to_gemini_queue_key``.
+    """
+    if not is_gemini_model(model):
+        return model
+    assert model is not None
+    return f"{GEMINI_MODEL_PREFIX}/{gemini_bare_model_id(model)}"
+
+
+def to_gemini_queue_key(model: str | None) -> str | None:
+    """Canonicalize a Gemini reference to the queue key ``google/<bare-id>``.
+
+    The concurrency bucket, not the model identity: every spelling shares one
+    bucket so a model can never split across two and starve in one of them.
+    ``vertex_ai/x`` and non-Gemini models are returned unchanged.
     """
     if not is_gemini_model(model):
         return model
@@ -1955,11 +1987,10 @@ class Settings(BaseSettings):
             return to_moonshot_model_id(cleaned)
         if is_deepseek_model(cleaned):
             return to_deepseek_model_id(cleaned)
-        # Collapse every Gemini spelling onto one ``google/<id>`` queue key.
-        # A bare id must be canonicalized here rather than left to
-        # ``normalize_queue_key``: litellm classifies a known bare ``gemini-...``
-        # id as ``vertex_ai``, which would put an AI Studio model in the Vertex
-        # bucket. An explicit ``vertex_ai/`` prefix is untouched.
+        # Collapse every Gemini spelling onto the one stored id ``gemini/<id>``,
+        # the canonical model id, exactly like the branches above store
+        # ``<provider>/<id>``. ``normalize_queue_key`` then buckets it on
+        # ``google/<id>``. An explicit ``vertex_ai/`` prefix is untouched.
         if is_gemini_model(cleaned):
             return to_gemini_model_id(cleaned)
         # Explicit ``anthropic-hdo/`` keeps Claude on the direct Anthropic API
@@ -1989,12 +2020,16 @@ class Settings(BaseSettings):
         normalized = _to_bedrock_model_id_if_known(normalized)
         if looks_like_bedrock_model_id(normalized):
             return normalized
-        # Same collapse as ``normalize_trial_model``, applied here too because
-        # this function owns the bucket for every other caller: admin concurrency
-        # overrides, ``queue_key_buckets``, the Queue Health reads, and
-        # ``backfill_queue_keys``. Without it an override written against
-        # ``gemini/<id>`` would miss the ``google/<id>`` bucket the trials use.
-        normalized = to_gemini_model_id(normalized) or normalized
+        # The second Gemini layer: the stored id is ``gemini/<id>``, the bucket is
+        # ``google/<id>``. Every spelling folds here, so one model can never hold
+        # two buckets and starve in one. This is also the single point every other
+        # caller goes through -- admin concurrency overrides, ``queue_key_buckets``,
+        # the Queue Health reads, and ``backfill_queue_keys`` -- so an override
+        # written against any spelling lands on the bucket the trials use. A bare
+        # id must fold here rather than fall through to ``_infer_provider_prefix``,
+        # where litellm classifies a known bare ``gemini-...`` id as ``vertex_ai``
+        # and would put an AI Studio model in the Vertex bucket.
+        normalized = to_gemini_queue_key(normalized) or normalized
         if "/" in normalized:
             provider_prefix, canonical = normalized.split("/", 1)
             if (

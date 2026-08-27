@@ -2501,6 +2501,42 @@ def test_build_agent_config_ai_sdk_agents_get_google_prefix(monkeypatch):
             assert agent_config.model_name == "google/gemini-3.7-flash"
 
 
+def test_both_gemini_spellings_route_end_to_end(monkeypatch):
+    """The whole contract in one test: ``gemini/`` and ``google/`` are both
+    accepted input, they share one queue key so neither can starve, and each
+    agent still receives the spelling its own LLM client needs."""
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    settings = harbor_runner.settings
+
+    litellm_agents = ("mini-swe-agent", "terminus-2", "openhands", "dspy-rlm")
+    google_id_agents = ("opencode", "pi", "hermes", "fx")
+
+    for raw in (
+        "gemini/gemini-3.7-flash",
+        "google/gemini-3.7-flash",
+        "gemini-3.7-flash",
+    ):
+        stored = settings.normalize_trial_model("mini-swe-agent", raw)
+        assert stored == "gemini/gemini-3.7-flash", raw
+        assert (
+            settings.get_queue_key_for_trial("mini-swe-agent", raw)
+            == "google/gemini-3.7-flash"
+        ), raw
+
+        # The runner receives the stored id, not the caller's spelling.
+        for agent in litellm_agents:
+            agent_config = harbor_runner._build_agent_config(
+                agent=agent, model=stored, raw_harbor_config={}
+            )
+            assert agent_config.model_name == "gemini/gemini-3.7-flash", (raw, agent)
+        for agent in google_id_agents:
+            agent_config = harbor_runner._build_agent_config(
+                agent=agent, model=stored, raw_harbor_config={}
+            )
+            assert agent_config.model_name == "google/gemini-3.7-flash", (raw, agent)
+
+
 def test_build_agent_config_openhands_and_dspy_rlm_get_gemini_prefix(monkeypatch):
     """openhands sets ``LLM_MODEL`` verbatim and dspy-rlm passes the id to
     ``dspy.LM``. Both reach litellm, which rejects ``google/``."""

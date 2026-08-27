@@ -4,7 +4,11 @@ Revision ID: gemini_queue_key_001
 Revises: quota_pause_status_001
 Create Date: 2026-08-27
 
-Every Gemini spelling now normalizes to one queue key, ``google/<id>``.
+Every Gemini spelling now normalizes to one queue key, ``google/<id>``. This
+table is keyed by queue key, so it follows the queue-key layer, not the model-id
+layer -- a Gemini trial stores the model id ``gemini/<id>`` but queues on
+``google/<id>``, and an override governs the bucket.
+
 ``get_model_concurrency_overrides`` reads this table by the *normalized* key, so
 a row still stored under ``gemini/<id>`` would stop matching after the deploy and
 the queue would fall back to the deploy-time default. An admin override that

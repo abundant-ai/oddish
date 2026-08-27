@@ -337,46 +337,72 @@ def test_meta_model_routes_to_meta_for_mini_swe_agent(monkeypatch):
 def test_every_gemini_spelling_collapses_to_one_queue_key(monkeypatch):
     settings = _settings(monkeypatch, clear_openai_env=False)
 
-    # One model must get one queue key. ``gemini/``, ``google/`` and the bare id
-    # all name the same served model, so they share one concurrency bucket
-    # instead of splitting the model's quota across several.
-    canonical = "google/gemini-3.7-flash"
+    # Two layers, two answers. The stored id is ``gemini/<id>`` -- the canonical
+    # model id, and what the dashboard and cost aggregation show. The queue key
+    # is ``google/<id>`` -- the concurrency bucket. Every accepted spelling must
+    # reach BOTH of those single values, or one model holds two buckets and can
+    # starve in one of them.
+    stored = "gemini/gemini-3.7-flash"
+    bucket = "google/gemini-3.7-flash"
     for raw in (
         "gemini/gemini-3.7-flash",
         "google/gemini-3.7-flash",
         "gemini-3.7-flash",
     ):
-        assert settings.normalize_trial_model("mini-swe-agent", raw) == canonical, raw
-        assert settings.get_queue_key_for_trial("mini-swe-agent", raw) == canonical, raw
+        assert settings.normalize_trial_model("mini-swe-agent", raw) == stored, raw
+        assert settings.get_queue_key_for_trial("mini-swe-agent", raw) == bucket, raw
         assert settings.get_provider_for_trial("mini-swe-agent", raw) == "gemini", raw
-        assert settings.normalize_queue_key(raw) == canonical, raw
+        assert settings.normalize_queue_key(raw) == bucket, raw
 
     # Free-text spellings clean up through ``normalize_model_id`` first, then
-    # land on the same key.
+    # land on the same pair.
     messy = " Gemini / Gemini-3.7-Flash "
     assert normalize_model_id(messy) == "gemini/gemini-3.7-flash"
-    assert settings.normalize_trial_model("mini-swe-agent", messy) == canonical
-    assert settings.get_queue_key_for_trial("mini-swe-agent", messy) == canonical
+    assert settings.normalize_trial_model("mini-swe-agent", messy) == stored
+    assert settings.get_queue_key_for_trial("mini-swe-agent", messy) == bucket
+
+
+def test_stored_gemini_id_is_not_the_queue_key(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    # The two layers are deliberately different values. Guard the split so a
+    # later change cannot quietly collapse storage onto the bucket spelling.
+    # This is not novel: a bare OpenAI id already stores bare and queues
+    # prefixed.
+    stored = settings.normalize_trial_model("mini-swe-agent", "google/gemini-3.7-flash")
+    bucket = settings.get_queue_key_for_trial(
+        "mini-swe-agent", "google/gemini-3.7-flash"
+    )
+
+    assert stored == "gemini/gemini-3.7-flash"
+    assert bucket == "google/gemini-3.7-flash"
+    assert stored != bucket
+    # The bucket is derived from the stored id, so composing them is stable.
+    assert settings.normalize_queue_key(stored) == bucket
+
+    assert settings.normalize_trial_model("codex", "gpt-5.2") == "gpt-5.2"
+    assert settings.get_queue_key_for_trial("codex", "gpt-5.2") == "openai/gpt-5.2"
 
 
 def test_bare_gemini_id_unknown_to_litellm_also_collapses(monkeypatch):
     settings = _settings(monkeypatch, clear_openai_env=False)
 
     # A bare id litellm knows and one it does not take different rungs of
-    # ``_infer_provider_prefix``. Both must still land on the one key.
-    canonical = "google/gemini-9-ultra"
+    # ``_infer_provider_prefix``. Both must still land on the one pair.
+    stored = "gemini/gemini-9-ultra"
+    bucket = "google/gemini-9-ultra"
     for raw in ("gemini/gemini-9-ultra", "google/gemini-9-ultra", "gemini-9-ultra"):
-        assert settings.normalize_trial_model("mini-swe-agent", raw) == canonical, raw
-        assert settings.get_queue_key_for_trial("mini-swe-agent", raw) == canonical, raw
-        assert settings.normalize_queue_key(raw) == canonical, raw
+        assert settings.normalize_trial_model("mini-swe-agent", raw) == stored, raw
+        assert settings.get_queue_key_for_trial("mini-swe-agent", raw) == bucket, raw
+        assert settings.normalize_queue_key(raw) == bucket, raw
 
 
-def test_vertex_ai_keeps_its_own_queue_key(monkeypatch):
+def test_vertex_ai_keeps_its_own_model_id_and_queue_key(monkeypatch):
     settings = _settings(monkeypatch, clear_openai_env=False)
 
     # Vertex AI is a different endpoint, a different tenancy and different
     # credentials. It must never share a bucket with AI Studio, or the two
-    # transports bill and throttle as one.
+    # transports bill and throttle as one. Neither layer may touch it.
     model = "vertex_ai/gemini-3.7-flash"
 
     assert settings.normalize_trial_model("mini-swe-agent", model) == model
