@@ -160,10 +160,17 @@ High-level flow:
    creates one output experiment and one `qa_eval` trial per exact source
    solver trial. Each new trial stores its source-trial id and prompt hash,
    reuses the normal QA brief and `qa_result.json`, and writes the candidate
-   analysis only to the new trial. Callers retain the returned trial ids and
-   read results through the existing single-trial endpoint.
-   Non-'agent' kinds are excluded from cost, quota, leaderboard, facet, and
-   public surfaces (see `oddish.filters.trial_predicates.EligibleTrialScope`).
+   analysis only to the new trial. Hosted creation resolves the authenticated
+   caller as the payer, admits the validated replay count once, and stamps that
+   payer on every new `qa_eval` trial. When
+   `ODDISH_QUOTA_COUNTS_ANALYSIS_AND_COMPUTE` is on,
+   queued analysis trials reserve quota through the same inflight predicates as
+   solver trials; automatic QA, audit, and summarize trials remain org-level
+   spend with a null payer. Callers retain the returned trial ids and read
+   results through the existing single-trial endpoint.
+   Non-'agent' kinds are excluded from solver cost, leaderboard, facet, and
+   public surfaces (see `oddish.filters.trial_predicates.EligibleTrialScope`);
+   their separate cost and optional quota basis comes from `analysis_spend`.
 5. While a trial runs, a worker-side tailer (`oddish.workers.harbor.live_tail`,
    on by default via `live_tail_enabled` / `live_tail_interval_sec`) polls the
    agent's log file inside the sandbox for supported agents (claude-code,

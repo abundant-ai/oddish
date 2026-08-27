@@ -175,6 +175,10 @@ async def test_create_adds_one_pointer_trial_without_moving_the_source(monkeypat
     source = _source()
     session = _CreateSession(source)
     captured = {}
+    admitted = []
+
+    async def fake_admit_trials(_session, org_id, billed_user_id, count):
+        admitted.append((org_id, billed_user_id, count))
 
     async def fake_create_analysis_trial(_session, **kwargs):
         captured.update(kwargs)
@@ -183,6 +187,10 @@ async def test_create_adds_one_pointer_trial_without_moving_the_source(monkeypat
     monkeypatch.setattr(
         "oddish.core.endpoints.qa_eval.create_analysis_trial",
         fake_create_analysis_trial,
+    )
+    monkeypatch.setattr(
+        "oddish.core.endpoints.qa_eval.admit_trials",
+        fake_admit_trials,
     )
     response = await create_qa_eval_core(
         session,
@@ -194,14 +202,17 @@ async def test_create_adds_one_pointer_trial_without_moving_the_source(monkeypat
         ),
         org_id="org-1",
         owner_user_id="user-1",
+        billed_user_id="user-1",
     )
 
     assert response.experiment_id == "replay-experiment"
     assert response.trials[0].qa_eval_trial_id == "qa-eval-1"
     assert captured["experiment_id"] == "replay-experiment"
     assert captured["task_version_id"] == "version-1"
+    assert captured["billed_user_id"] == "user-1"
     assert captured["payload"]["source_trial_id"] == "source-1"
     assert captured["payload"]["trial_ids"] == ["source-1"]
+    assert admitted == [("org-1", "user-1", 1)]
     assert source.experiment_id == "original-experiment"
     assert source.analysis == {"classification": "BAD_FAILURE"}
 
@@ -220,6 +231,7 @@ async def test_create_rejects_the_whole_request_when_a_source_is_ineligible():
             ),
             org_id="org-1",
             owner_user_id="user-1",
+            billed_user_id="user-1",
         )
     assert session.added_experiment is None
 

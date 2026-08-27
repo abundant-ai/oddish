@@ -42,6 +42,7 @@ async def test_post_qa_evals_passes_org_and_owner_to_shared_core(monkeypatch):
         request,
         org_id: str | None,
         owner_user_id: str | None,
+        billed_user_id: str | None,
         idempotency_key,
         idempotency_store,
         request_hash,
@@ -50,6 +51,7 @@ async def test_post_qa_evals_passes_org_and_owner_to_shared_core(monkeypatch):
             request=request,
             org_id=org_id,
             owner_user_id=owner_user_id,
+            billed_user_id=billed_user_id,
             idempotency_key=idempotency_key,
             idempotency_store=idempotency_store,
             request_hash=request_hash,
@@ -96,6 +98,7 @@ async def test_post_qa_evals_passes_org_and_owner_to_shared_core(monkeypatch):
     assert response.status_code == 200, response.text
     assert captured["org_id"] == "org-1"
     assert captured["owner_user_id"] == "user-1"
+    assert captured["billed_user_id"] == "user-1"
     assert captured["request"].source_trial_ids == ["source-1"]
     assert captured["idempotency_key"] == "stable-key"
     assert captured["request_hash"]
