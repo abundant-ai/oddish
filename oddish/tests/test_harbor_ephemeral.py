@@ -466,9 +466,11 @@ def test_read_outcome_with_result_json_uses_extractor(tmp_path, monkeypatch):
 
 
 def test_harbor_override_import_error_is_non_retryable():
-    from oddish.workers.queue.trial_handler import _NON_RETRYABLE_EXCEPTION_TYPES
+    from oddish.workers.queue.trial_handler import (
+        _NON_HARBOR_RETRYABLE_EXCEPTION_TYPES,
+    )
 
-    assert HarborOverrideImportError.__name__ in _NON_RETRYABLE_EXCEPTION_TYPES
+    assert HarborOverrideImportError.__name__ in _NON_HARBOR_RETRYABLE_EXCEPTION_TYPES
 
 
 def test_spawn_args_requests_daytona_extra_for_daytona_env():
@@ -523,9 +525,7 @@ def test_ephemeral_daytona_forces_ownership_labels():
 
 
 def test_spawn_args_requests_ec2_extra_for_ec2_env():
-    args = harbor_ephemeral._spawn_args(
-        _SOURCE, _SHA, environment=EnvironmentType.EC2
-    )
+    args = harbor_ephemeral._spawn_args(_SOURCE, _SHA, environment=EnvironmentType.EC2)
     req = args[args.index("--with") + 1]
     assert req == harbor_git_requirement(_SOURCE, _SHA, extras=["ec2"])
 
@@ -768,9 +768,7 @@ async def test_failed_ephemeral_child_cannot_expose_payload_in_job_artifacts(
 
     assert outcome.exception_type == "HarborOverrideImportError"
     assert outcome.job_dir is not None
-    observation = json.loads(
-        (outcome.job_dir / "payload-observation.json").read_text()
-    )
+    observation = json.loads((outcome.job_dir / "payload-observation.json").read_text())
     payload_path = Path(observation["payload_path"])
     assert payload_path.parent != outcome.job_dir
     assert observation["payload_mode"] == 0o600
@@ -832,9 +830,7 @@ async def test_ephemeral_child_uses_key_path_without_inheriting_private_key_secr
         harbor_config=_EPHEMERAL_HC,
     )
 
-    child_state = json.loads(
-        (next(jobs_dir.iterdir()) / "child-env.json").read_text()
-    )
+    child_state = json.loads((next(jobs_dir.iterdir()) / "child-env.json").read_text())
     assert child_state == {
         "secret": None,
         "access": None,

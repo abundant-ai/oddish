@@ -118,7 +118,7 @@ oddish-docstore-mcp = "oddish.mcp.docstore_server:main"
 
 [tool.uv.sources]
 # Mirror src/oddish/harbor-pin.toml (run scripts/sync_harbor_pin.py after edits).
-harbor = { git = "https://github.com/abundant-ai/harbor", rev = "01561a258aaead9e649383389f4ccad8dab6416f" }
+harbor = { git = "https://github.com/abundant-ai/harbor", rev = "f6fe08e1dad9b88762cdaada8b374eaad2caadae" }
 
 [tool.uv]
 override-dependencies = ["harbor==0.16.1"]

@@ -134,6 +134,15 @@ High-level flow:
    collections, and combined experiments follow the same create-only owner rule.
 3. Workers claim one `worker_jobs` row at a time, dispatch to the registered
    handler for its kind, write heartbeats, and exit.
+   Harbor's `RetryConfig` owns exception include/exclude policy and backoff for
+   both retry scopes. `Trial` first retries typed installer transport failures
+   and transient provider `ApiError` failures in the active sandbox, up to
+   `max_in_place_retries`; resumable agents continue their session, while other
+   agents rerun the original instruction in the existing working tree. A final
+   failure crosses the result boundary once through `ExceptionInfo`, including
+   optional HTTP status, request ID, session ID, and retry-after metadata.
+   Harbor's `TrialQueue` still owns whole-trial retries, and Oddish
+   `worker_jobs` owns durable fresh-sandbox retries across worker processes.
 4. Trajectory analysis is **task-scoped** and runs as a trial: when every
    agent trial of a task is terminal, one QA trial (`trials.kind = 'qa'`)
    is created on the same task. Its agent classifies

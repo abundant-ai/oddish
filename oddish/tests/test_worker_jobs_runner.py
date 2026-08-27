@@ -314,6 +314,17 @@ def test_trial_retry_backoff_is_capped_after_jitter():
     assert delay == worker_job_single_job.TRIAL_RETRY_MAX_DELAY_SECONDS
 
 
+def test_trial_retry_backoff_honors_harbor_retry_after_hint():
+    delay = worker_job_single_job.calculate_trial_retry_delay_seconds(
+        attempts=1,
+        error_message="provider overloaded",
+        jitter=0.0,
+        retry_after_seconds=90.0,
+    )
+
+    assert delay == 90.0
+
+
 class _FakeConnection:
     def __init__(self, *, update_result: str = "UPDATE 1") -> None:
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
