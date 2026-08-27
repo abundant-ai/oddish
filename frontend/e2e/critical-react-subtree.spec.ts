@@ -214,6 +214,25 @@ const canonicalTaskOpen = {
       }
     : null,
 };
+const activeQaTaskOpen = {
+  ...canonicalTaskOpen,
+  task: {
+    ...canonicalTaskOpen.task,
+    verdict_status: "running",
+  },
+  active_qa_trial: {
+    ...canonicalTaskOpen.trials[0],
+    id: `${TASK_ID}-qa`,
+    name: "qa-p1",
+    experiment_id: "qa-shadow",
+    agent: "claude-code",
+    provider: "anthropic",
+    model: "anthropic/claude-sonnet-4-6",
+    kind: "qa",
+    status: "running",
+    reward: null,
+  },
+};
 
 const taskDetail: TaskDetailResponse = {
   task: {
@@ -319,6 +338,7 @@ test.describe("critical task and trial subtree", () => {
     const trialDetailGate = deferred();
     const analysisRerunGate = deferred();
     let holdAnalysisRerun = false;
+    let taskQaInProgress = false;
     let failTrialRevalidation = false;
     const requests: string[] = [];
     let summaryGetCount = 0;
@@ -366,7 +386,9 @@ test.describe("critical task and trial subtree", () => {
       new RegExp(`/api/tasks/${TASK_ID}/open(?:\\?|$)`),
       async (route) => {
         await taskOpenGate.pending;
-        await route.fulfill({ json: canonicalTaskOpen });
+        await route.fulfill({
+          json: taskQaInProgress ? activeQaTaskOpen : canonicalTaskOpen,
+        });
       }
     );
     await page.route(
@@ -407,6 +429,7 @@ test.describe("critical task and trial subtree", () => {
       new RegExp(`/api/trials/${TRIAL_ID}/analysis/rerun(?:\\?|$)`),
       async (route) => {
         if (holdAnalysisRerun) await analysisRerunGate.pending;
+        taskQaInProgress = true;
         await route.fulfill({ status: 202, json: {} });
       }
     );
@@ -693,6 +716,7 @@ test.describe("critical task and trial subtree", () => {
     const secondTrialPattern = new RegExp(
       `/api/trials/${SECOND_TRIAL_ID}(?:\\?|$)`
     );
+    await page.clock.install();
     holdAnalysisRerun = true;
     const queuedAnalysisRequest = page.waitForRequest(
       new RegExp(`/api/trials/${TRIAL_ID}/analysis/rerun(?:\\?|$)`)
@@ -706,22 +730,30 @@ test.describe("critical task and trial subtree", () => {
       page.locator("p.sr-only").filter({ hasText: SECOND_TRIAL_ID })
     ).toHaveText(SECOND_TRIAL_ID);
     await page.waitForTimeout(2_100);
+    const activeTaskQaResponse = page.waitForResponse(taskOpenPattern);
     analysisRerunGate.release();
-    await page.waitForTimeout(300);
+    await activeTaskQaResponse;
     expect(requestCount(requests, secondTrialPattern)).toBe(1);
 
     await page.getByRole("button", { name: "Previous trial" }).click();
     await expect(
       page.locator("p.sr-only").filter({ hasText: TRIAL_ID })
     ).toHaveText(TRIAL_ID);
-    // The analysis mutation revalidates the canonical trial. A transient
-    // failure keeps that canonical row and must not relock other mutations.
+    await expect(
+      page.getByRole("button", { name: "Re-run analysis" })
+    ).toBeDisabled();
+    // Task-level QA writes the finished report onto this terminal agent row.
+    // Its settlement ends task-open polling and triggers one final trial-detail
+    // revalidation. A transient failure keeps the canonical row usable.
     failTrialRevalidation = true;
+    taskQaInProgress = false;
+    const settledTaskQaResponse = page.waitForResponse(taskOpenPattern);
     const failedTrialRevalidation = page.waitForResponse(
       (response) =>
         trialDetailPattern.test(response.url()) && response.status() === 503
     );
-    await page.getByRole("button", { name: "Re-run analysis" }).click();
+    await page.clock.fastForward(30_000);
+    await settledTaskQaResponse;
     await failedTrialRevalidation;
     await expect(
       page.getByRole("button", { name: "Retry Trial" })
