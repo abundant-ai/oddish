@@ -37,12 +37,22 @@ async def test_post_qa_evals_passes_org_and_owner_to_shared_core(monkeypatch):
         yield session
 
     async def fake_create_core(
-        _session, *, request, org_id: str | None, owner_user_id: str | None
+        _session,
+        *,
+        request,
+        org_id: str | None,
+        owner_user_id: str | None,
+        idempotency_key,
+        idempotency_store,
+        request_hash,
     ):
         captured.update(
             request=request,
             org_id=org_id,
             owner_user_id=owner_user_id,
+            idempotency_key=idempotency_key,
+            idempotency_store=idempotency_store,
+            request_hash=request_hash,
         )
         return QAEvalCreateResponse(
             experiment_id="experiment-1",
@@ -50,11 +60,15 @@ async def test_post_qa_evals_passes_org_and_owner_to_shared_core(monkeypatch):
             prompt_name=request.prompt_name,
             prompt_sha256="abc",
             model="canonical-model",
+            requested_count=1,
+            queued_count=1,
+            skipped_count=0,
             trials=[
                 QAEvalTrialResponse(
                     source_trial_id="source-1", qa_eval_trial_id="eval-1"
                 )
             ],
+            skipped_sources=[],
         )
 
     monkeypatch.setattr(qa_eval, "get_session", fake_get_session)
@@ -74,6 +88,7 @@ async def test_post_qa_evals_passes_org_and_owner_to_shared_core(monkeypatch):
     ) as client:
         response = await client.post(
             "/qa-evals",
+            headers={"Idempotency-Key": "stable-key"},
             json={
                 "name": "candidate experiment",
                 "source_trial_ids": ["source-1"],
@@ -86,4 +101,6 @@ async def test_post_qa_evals_passes_org_and_owner_to_shared_core(monkeypatch):
     assert captured["org_id"] == "org-1"
     assert captured["owner_user_id"] == "user-1"
     assert captured["request"].source_trial_ids == ["source-1"]
+    assert captured["idempotency_key"] == "stable-key"
+    assert captured["request_hash"]
     assert session.committed is True

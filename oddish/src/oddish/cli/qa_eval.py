@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -9,6 +10,8 @@ import typer
 from rich.console import Console
 
 from oddish.cli.config import get_api_url, get_auth_headers, print_json, require_api_key
+from oddish.core.idempotency import compute_request_hash
+from oddish.schemas import QAEvalCreateRequest
 
 console = Console()
 qa_eval_app = typer.Typer(
@@ -18,12 +21,23 @@ qa_eval_app = typer.Typer(
 
 _COLLECT_COLUMNS = [
     "source_trial_id",
+    "qa_eval_trial_id",
     "task_name",
     "researcher_issue",
+    "prompt_name",
+    "prompt_sha256",
+    "model",
+    "historical_qa_response_valid",
     "historical_qa_classification",
     "historical_qa_root_cause",
     "candidate_qa_classification",
+    "candidate_qa_subtype",
+    "candidate_qa_evidence",
     "candidate_qa_root_cause",
+    "candidate_qa_recommendation",
+    "candidate_qa_action_items_json",
+    "candidate_qa_exploitation_json",
+    "candidate_qa_output_json",
     "researcher_issue_caught",
     "qa_response_valid",
     "failure_stage",
@@ -35,9 +49,7 @@ def _read_cases(path: Path) -> list[str]:
         reader = csv.DictReader(handle)
         if not reader.fieldnames or "source_trial_id" not in reader.fieldnames:
             raise ValueError("cases CSV must contain a source_trial_id column")
-        values = [
-            str(row.get("source_trial_id") or "").strip() for row in reader
-        ]
+        values = [str(row.get("source_trial_id") or "").strip() for row in reader]
     trial_ids = list(dict.fromkeys(value for value in values if value))
     if not trial_ids:
         raise ValueError("cases CSV contains no source_trial_id values")
@@ -49,7 +61,9 @@ def _read_prompt_spec(spec: str) -> tuple[str, str]:
     prompt_name = prompt_name.strip()
     raw_path = raw_path.strip()
     if not separator or not prompt_name or not raw_path:
-        raise ValueError("--prompt must use NAME=PATH, for example candidate-1=prompt.txt")
+        raise ValueError(
+            "--prompt must use NAME=PATH, for example candidate-1=prompt.txt"
+        )
     path = Path(raw_path).expanduser()
     if not path.is_file():
         raise ValueError(f"prompt file does not exist: {path}")
@@ -124,16 +138,18 @@ def run_qa_eval(
     with httpx.Client(timeout=120.0, headers=get_auth_headers(api_url)) as client:
         for prompt_name, prompt_text in parsed_prompts:
             experiment_name = _experiment_name(name, prompt_name, len(parsed_prompts))
+            payload = QAEvalCreateRequest(
+                name=experiment_name,
+                source_trial_ids=source_trial_ids,
+                prompt_name=prompt_name,
+                prompt_text=prompt_text,
+                model=(model or "").strip() or None,
+            )
             try:
                 response = client.post(
                     f"{api_url}/qa-evals",
-                    json={
-                        "name": experiment_name,
-                        "source_trial_ids": source_trial_ids,
-                        "prompt_name": prompt_name,
-                        "prompt_text": prompt_text,
-                        "model": (model or "").strip() or None,
-                    },
+                    json=payload.model_dump(mode="json"),
+                    headers={"Idempotency-Key": compute_request_hash(payload)},
                 )
             except httpx.RequestError as exc:
                 failures.append({"prompt_name": prompt_name, "error": str(exc)})
@@ -155,7 +171,8 @@ def run_qa_eval(
     else:
         for result in results:
             console.print(
-                f"[green]Queued[/green] {len(result['trials'])} replay(s) in "
+                f"[green]Queued[/green] {result['queued_count']} replay(s); "
+                f"skipped {result['skipped_count']} in "
                 f"{result['experiment_name']} ({result['experiment_id']}) using "
                 f"{result['model']}"
             )
@@ -229,27 +246,46 @@ def collect_qa_eval(
         rows.append(
             {
                 "source_trial_id": result["source_trial_id"],
+                "qa_eval_trial_id": result["qa_eval_trial_id"],
                 "task_name": result["task_name"],
                 "researcher_issue": label.get("researcher_issue", ""),
+                "prompt_name": result["prompt_name"],
+                "prompt_sha256": result["prompt_sha256"],
+                "model": result["model"],
+                "historical_qa_response_valid": str(
+                    result["historical_qa_response_valid"]
+                ).lower(),
                 "historical_qa_classification": result.get(
                     "historical_qa_classification"
                 )
                 or "",
-                "historical_qa_root_cause": result.get(
-                    "historical_qa_root_cause"
-                )
+                "historical_qa_root_cause": result.get("historical_qa_root_cause")
                 or "",
-                "candidate_qa_classification": result.get(
-                    "candidate_qa_classification"
-                )
+                "candidate_qa_classification": result.get("candidate_qa_classification")
                 or "",
-                "candidate_qa_root_cause": result.get("candidate_qa_root_cause")
+                "candidate_qa_subtype": result.get("candidate_qa_subtype") or "",
+                "candidate_qa_evidence": result.get("candidate_qa_evidence") or "",
+                "candidate_qa_root_cause": result.get("candidate_qa_root_cause") or "",
+                "candidate_qa_recommendation": result.get("candidate_qa_recommendation")
                 or "",
+                "candidate_qa_action_items_json": json.dumps(
+                    result.get("candidate_qa_action_items") or [],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                "candidate_qa_exploitation_json": json.dumps(
+                    result.get("candidate_qa_exploitation") or [],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                "candidate_qa_output_json": json.dumps(
+                    result.get("candidate_qa_output") or {},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
                 # The replay never sees researcher_issue, so this remains a
                 # researcher label unless the input CSV already supplies it.
-                "researcher_issue_caught": label.get(
-                    "researcher_issue_caught", ""
-                ),
+                "researcher_issue_caught": label.get("researcher_issue_caught", ""),
                 "qa_response_valid": str(result["qa_response_valid"]).lower(),
                 "failure_stage": result.get("failure_stage") or "",
             }

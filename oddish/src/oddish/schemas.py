@@ -23,6 +23,7 @@ from harbor.models.trial.config import (
     VerifierConfig as HarborVerifierConfig,
 )
 
+from oddish.analyze.models import ActionItem, ExploitationAssessment
 from oddish.config import is_nop_oracle_agent, normalize_model_id
 from oddish.db import (
     AnalysisStatus,
@@ -1457,13 +1458,34 @@ class QAEvalTrialResponse(BaseModel):
     qa_eval_trial_id: str
 
 
+QAEvalSkipReason = Literal[
+    "not_found_or_not_accessible",
+    "not_solver_trial",
+    "superseded",
+    "not_terminal",
+    "missing_task_version",
+    "missing_task_files",
+    "missing_trajectory",
+]
+
+
+class QAEvalSkippedSource(BaseModel):
+    source_trial_id: str
+    reason_code: QAEvalSkipReason
+    detail: str
+
+
 class QAEvalCreateResponse(BaseModel):
     experiment_id: str
     experiment_name: str
     prompt_name: str
     prompt_sha256: str
     model: str
+    requested_count: int
+    queued_count: int
+    skipped_count: int
     trials: list[QAEvalTrialResponse]
+    skipped_sources: list[QAEvalSkippedSource] = Field(default_factory=list)
 
 
 class QAEvalResultRow(BaseModel):
@@ -1471,10 +1493,22 @@ class QAEvalResultRow(BaseModel):
     qa_eval_trial_id: str
     task_name: str
     status: TrialStatus
+    prompt_name: str
+    prompt_sha256: str
+    model: str
+    historical_qa_response_valid: bool = False
     historical_qa_classification: str | None = None
     historical_qa_root_cause: str | None = None
     candidate_qa_classification: str | None = None
+    candidate_qa_subtype: str | None = None
+    candidate_qa_evidence: str | None = None
     candidate_qa_root_cause: str | None = None
+    candidate_qa_recommendation: str | None = None
+    candidate_qa_action_items: list[ActionItem] = Field(default_factory=list)
+    candidate_qa_exploitation: list[ExploitationAssessment] = Field(
+        default_factory=list
+    )
+    candidate_qa_output: dict | None = None
     qa_response_valid: bool = False
     failure_stage: str | None = None
 

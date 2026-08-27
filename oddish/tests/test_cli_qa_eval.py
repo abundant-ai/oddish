@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 
 import httpx
 from typer.testing import CliRunner
@@ -22,8 +23,8 @@ class _RunClient:
     def __exit__(self, *args):
         return None
 
-    def post(self, url: str, json: dict):
-        self.posted.append({"url": url, "json": json})
+    def post(self, url: str, json: dict, headers: dict):
+        self.posted.append({"url": url, "json": json, "headers": headers})
         index = len(self.posted)
         return httpx.Response(
             200,
@@ -33,6 +34,9 @@ class _RunClient:
                 "prompt_name": json["prompt_name"],
                 "prompt_sha256": "abc",
                 "model": "deployed-model",
+                "requested_count": len(json["source_trial_ids"]),
+                "queued_count": len(json["source_trial_ids"]),
+                "skipped_count": 0,
                 "trials": [
                     {
                         "source_trial_id": source_id,
@@ -40,6 +44,7 @@ class _RunClient:
                     }
                     for source_id in json["source_trial_ids"]
                 ],
+                "skipped_sources": [],
             },
             request=httpx.Request("POST", url),
         )
@@ -87,6 +92,11 @@ def test_run_submits_each_prompt_without_case_contents(monkeypatch, tmp_path):
     ]
     assert _RunClient.posted[0]["json"]["prompt_text"] == "first candidate"
     assert "researcher_issue" not in _RunClient.posted[0]["json"]
+    assert len(_RunClient.posted[0]["headers"]["Idempotency-Key"]) == 64
+    assert (
+        _RunClient.posted[0]["headers"]["Idempotency-Key"]
+        != _RunClient.posted[1]["headers"]["Idempotency-Key"]
+    )
 
 
 def test_collect_writes_the_requested_columns(monkeypatch, tmp_path):
@@ -109,10 +119,27 @@ def test_collect_writes_the_requested_columns(monkeypatch, tmp_path):
                         "qa_eval_trial_id": "eval-1",
                         "task_name": "task-one",
                         "status": "success",
+                        "prompt_name": "candidate-1",
+                        "prompt_sha256": "prompt-hash",
+                        "model": "claude-sonnet-5",
+                        "historical_qa_response_valid": True,
                         "historical_qa_classification": "GOOD_FAILURE",
                         "historical_qa_root_cause": "Old cause.",
                         "candidate_qa_classification": "BAD_FAILURE",
+                        "candidate_qa_subtype": "reference_implementation_exposed",
+                        "candidate_qa_evidence": "The solver invoked /usr/bin/indent.",
                         "candidate_qa_root_cause": "New cause.",
+                        "candidate_qa_recommendation": "Remove the binary.",
+                        "candidate_qa_action_items": [
+                            {"id": "finding-1", "title": "Remove the binary"}
+                        ],
+                        "candidate_qa_exploitation": [
+                            {"links_to": "finding-1", "exploited": True}
+                        ],
+                        "candidate_qa_output": {
+                            "classification": "BAD_FAILURE",
+                            "subtype": "reference_implementation_exposed",
+                        },
                         "qa_response_valid": True,
                         "failure_stage": None,
                     }
@@ -141,17 +168,24 @@ def test_collect_writes_the_requested_columns(monkeypatch, tmp_path):
     assert result.exit_code == 0, result.output
     with out.open(newline="") as handle:
         rows = list(csv.DictReader(handle))
-    assert rows == [
-        {
-            "source_trial_id": "source-1",
-            "task_name": "task-one",
-            "researcher_issue": "The grader missed the root cause",
-            "historical_qa_classification": "GOOD_FAILURE",
-            "historical_qa_root_cause": "Old cause.",
-            "candidate_qa_classification": "BAD_FAILURE",
-            "candidate_qa_root_cause": "New cause.",
-            "researcher_issue_caught": "yes",
-            "qa_response_valid": "true",
-            "failure_stage": "",
-        }
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["source_trial_id"] == "source-1"
+    assert row["qa_eval_trial_id"] == "eval-1"
+    assert row["prompt_name"] == "candidate-1"
+    assert row["prompt_sha256"] == "prompt-hash"
+    assert row["model"] == "claude-sonnet-5"
+    assert row["historical_qa_response_valid"] == "true"
+    assert row["candidate_qa_subtype"] == "reference_implementation_exposed"
+    assert row["candidate_qa_evidence"] == "The solver invoked /usr/bin/indent."
+    assert row["candidate_qa_recommendation"] == "Remove the binary."
+    assert json.loads(row["candidate_qa_action_items_json"]) == [
+        {"id": "finding-1", "title": "Remove the binary"}
     ]
+    assert json.loads(row["candidate_qa_exploitation_json"]) == [
+        {"exploited": True, "links_to": "finding-1"}
+    ]
+    assert json.loads(row["candidate_qa_output_json"]) == {
+        "classification": "BAD_FAILURE",
+        "subtype": "reference_implementation_exposed",
+    }

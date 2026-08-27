@@ -9,6 +9,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import is_nop_oracle_agent, settings
+from oddish.core.idempotency import (
+    IdempotencyConflict,
+    IdempotencyStore,
+    Reservation,
+    compute_request_hash,
+    reserve_idempotency_slot,
+)
 from oddish.db import (
     ACTIVE_TRIAL_STATUSES,
     ExperimentModel,
@@ -23,6 +30,8 @@ from oddish.schemas import (
     QAEvalCreateResponse,
     QAEvalResultRow,
     QAEvalResultsResponse,
+    QAEvalSkipReason,
+    QAEvalSkippedSource,
     QAEvalTrialResponse,
 )
 from oddish.workers.analysis_trials import (
@@ -31,6 +40,7 @@ from oddish.workers.analysis_trials import (
 )
 
 _QA_EVAL_SOURCE_STATUSES = (TrialStatus.SUCCESS, TrialStatus.FAILED)
+_QA_EVAL_ROUTE = "POST /qa-evals"
 
 
 async def create_qa_eval_core(
@@ -39,8 +49,25 @@ async def create_qa_eval_core(
     request: QAEvalCreateRequest,
     org_id: str | None,
     owner_user_id: str | None,
+    idempotency_key: str | None = None,
+    idempotency_store: IdempotencyStore | None = None,
+    request_hash: str | None = None,
 ) -> QAEvalCreateResponse:
     """Queue one candidate-prompt replay for each exact source trial ID."""
+    reservation: Reservation | None = None
+    if idempotency_store is not None and idempotency_key and org_id:
+        try:
+            reservation = await reserve_idempotency_slot(
+                idempotency_store,
+                org_id=org_id,
+                route=_QA_EVAL_ROUTE,
+                raw_key=idempotency_key,
+                request_hash=request_hash or compute_request_hash(request),
+                now=utcnow(),
+            )
+        except IdempotencyConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     source_rows = (
         (
             await session.execute(
@@ -54,18 +81,11 @@ async def create_qa_eval_core(
         .all()
     )
     source_by_id = {row.id: row for row in source_rows}
-    missing = [
-        trial_id
+    ordered_sources = [
+        source_by_id[trial_id]
         for trial_id in request.source_trial_ids
-        if trial_id not in source_by_id
+        if trial_id in source_by_id
     ]
-    if missing:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Source trials not found in organization: {', '.join(missing)}",
-        )
-
-    ordered_sources = [source_by_id[trial_id] for trial_id in request.source_trial_ids]
     task_ids = list(dict.fromkeys(row.task_id for row in ordered_sources))
     version_ids = list(
         dict.fromkeys(
@@ -97,34 +117,86 @@ async def create_qa_eval_core(
     task_by_id = {row.id: row for row in tasks}
     version_by_id = {row.id: row for row in versions}
 
-    for source in ordered_sources:
-        reason: str | None = None
-        if source.kind != "agent" or source.is_probe or is_nop_oracle_agent(source.agent):
-            reason = "is not an ordinary solver trial"
-        elif source.superseded_by_trial_id is not None:
-            reason = "has been superseded"
-        elif source.status not in _QA_EVAL_SOURCE_STATUSES:
-            reason = f"is not terminal (status={source.status.value})"
-        elif source.task_version_id is None:
-            reason = "has no exact task-version ID"
-        elif source.task_id not in task_by_id:
-            reason = "has no live task in the caller's organization"
-        elif source.task_version_id not in version_by_id:
-            reason = "has no live task-version row"
-        elif version_by_id[source.task_version_id].task_id != source.task_id:
-            reason = "references a task version owned by another task"
-        elif not version_by_id[source.task_version_id].task_s3_key:
-            reason = "has no stored exact task-version files"
-        elif not source.has_trajectory:
-            reason = "has no stored trajectory"
-        elif not isinstance(source.analysis, dict) or not source.analysis.get(
-            "classification"
-        ):
-            reason = "has no historical QA analysis for comparison"
-        if reason is not None:
-            raise HTTPException(
-                status_code=409, detail=f"Source trial {source.id} {reason}"
+    eligible_sources: list[TrialModel] = []
+    skipped_sources: list[QAEvalSkippedSource] = []
+    for source_trial_id in request.source_trial_ids:
+        source = source_by_id.get(source_trial_id)
+        skip: tuple[QAEvalSkipReason, str] | None = None
+        if source is None:
+            skip = (
+                "not_found_or_not_accessible",
+                "The source trial was not found or is not accessible.",
             )
+        elif (
+            source.kind != "agent"
+            or source.is_probe
+            or is_nop_oracle_agent(source.agent)
+        ):
+            skip = (
+                "not_solver_trial",
+                "The source trial is not an ordinary solver trial.",
+            )
+        elif source.superseded_by_trial_id is not None:
+            skip = (
+                "superseded",
+                "The source trial has been superseded by a newer attempt.",
+            )
+        elif source.status not in _QA_EVAL_SOURCE_STATUSES:
+            skip = (
+                "not_terminal",
+                f"The source trial is not terminal (status={source.status.value}).",
+            )
+        elif source.task_version_id is None:
+            skip = (
+                "missing_task_version",
+                "The source trial has no exact task-version ID.",
+            )
+        elif source.task_id not in task_by_id:
+            skip = (
+                "missing_task_version",
+                "The source trial has no accessible live task.",
+            )
+        elif source.task_version_id not in version_by_id:
+            skip = (
+                "missing_task_version",
+                "The source trial has no live exact task-version row.",
+            )
+        elif version_by_id[source.task_version_id].task_id != source.task_id:
+            skip = (
+                "missing_task_version",
+                "The source trial's task version belongs to another task.",
+            )
+        elif not version_by_id[source.task_version_id].task_s3_key:
+            skip = (
+                "missing_task_files",
+                "The source trial's exact task version has no stored files.",
+            )
+        elif not source.has_trajectory:
+            skip = (
+                "missing_trajectory",
+                "The source trial has no stored trajectory.",
+            )
+
+        if skip is not None:
+            reason_code, detail = skip
+            skipped_sources.append(
+                QAEvalSkippedSource(
+                    source_trial_id=source_trial_id,
+                    reason_code=reason_code,
+                    detail=detail,
+                )
+            )
+        else:
+            eligible_sources.append(source)
+
+    if not eligible_sources:
+        detail = "; ".join(
+            f"{row.source_trial_id}: {row.reason_code}" for row in skipped_sources
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=f"No source trials are eligible for QA replay. {detail}",
+        )
 
     canonical_model = settings.normalize_trial_model(
         "claude-code", request.model or settings.analysis_model
@@ -146,9 +218,11 @@ async def create_qa_eval_core(
     # unordered first non-shadow member is still used as the fallback target
     # when later solver trials are appended to a task.
     created: list[QAEvalTrialResponse] = []
-    for source in ordered_sources:
+    for source in eligible_sources:
+        task_version_id = source.task_version_id
+        assert task_version_id is not None
         task = task_by_id[source.task_id]
-        version = version_by_id[source.task_version_id]
+        version = version_by_id[task_version_id]
         pre_trial_items = (
             (version.pre_trial or {}).get("items")
             if isinstance(version.pre_trial, dict)
@@ -164,31 +238,42 @@ async def create_qa_eval_core(
                 candidate_prompt=request.prompt_text,
                 pre_trial_items=pre_trial_items,
             ),
-            task_version_id=source.task_version_id,
+            task_version_id=task_version_id,
             experiment_id=experiment.id,
             model=canonical_model,
             payload={
                 "source_trial_id": source.id,
-                "source_task_version_id": source.task_version_id,
+                "source_task_version_id": task_version_id,
                 "prompt_name": request.prompt_name,
                 "prompt_sha256": prompt_sha256,
                 "model": canonical_model,
             },
         )
         created.append(
-            QAEvalTrialResponse(
-                source_trial_id=source.id, qa_eval_trial_id=trial.id
-            )
+            QAEvalTrialResponse(source_trial_id=source.id, qa_eval_trial_id=trial.id)
         )
 
-    return QAEvalCreateResponse(
+    response = QAEvalCreateResponse(
         experiment_id=experiment.id,
         experiment_name=experiment.name,
         prompt_name=request.prompt_name,
         prompt_sha256=prompt_sha256,
         model=canonical_model,
+        requested_count=len(request.source_trial_ids),
+        queued_count=len(created),
+        skipped_count=len(skipped_sources),
         trials=created,
+        skipped_sources=skipped_sources,
     )
+    if reservation is not None and idempotency_store is not None and org_id is not None:
+        await session.flush()
+        await idempotency_store.complete(
+            org_id,
+            _QA_EVAL_ROUTE,
+            reservation.key_hash,
+            response.model_dump(mode="json"),
+        )
+    return response
 
 
 async def get_qa_eval_results_core(
@@ -266,8 +351,11 @@ async def get_qa_eval_results_core(
     for eval_trial, source_id in zip(eval_trials, source_ids, strict=True):
         source_pair = source_by_id.get(source_id)
         source = source_pair[0] if source_pair else None
-        historical = source.analysis if source and isinstance(source.analysis, dict) else {}
+        historical = (
+            source.analysis if source and isinstance(source.analysis, dict) else {}
+        )
         candidate = eval_trial.analysis if isinstance(eval_trial.analysis, dict) else {}
+        metadata = (eval_trial.harbor_config or {}).get("analysis_payload") or {}
         valid = bool(candidate)
         if valid:
             failure_stage = None
@@ -283,10 +371,20 @@ async def get_qa_eval_results_core(
                 qa_eval_trial_id=eval_trial.id,
                 task_name=source_pair[1] if source_pair else eval_trial.task_id,
                 status=eval_trial.status,
+                prompt_name=str(metadata.get("prompt_name") or ""),
+                prompt_sha256=str(metadata.get("prompt_sha256") or ""),
+                model=eval_trial.model,
+                historical_qa_response_valid=bool(historical.get("classification")),
                 historical_qa_classification=historical.get("classification"),
                 historical_qa_root_cause=historical.get("root_cause"),
                 candidate_qa_classification=candidate.get("classification"),
+                candidate_qa_subtype=candidate.get("subtype"),
+                candidate_qa_evidence=candidate.get("evidence"),
                 candidate_qa_root_cause=candidate.get("root_cause"),
+                candidate_qa_recommendation=candidate.get("recommendation"),
+                candidate_qa_action_items=candidate.get("action_items") or [],
+                candidate_qa_exploitation=candidate.get("exploitation") or [],
+                candidate_qa_output=candidate or None,
                 qa_response_valid=valid,
                 failure_stage=failure_stage,
             )

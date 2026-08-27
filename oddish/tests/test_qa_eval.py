@@ -8,7 +8,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from oddish.core.endpoints.qa_eval import create_qa_eval_core
+from oddish.core.endpoints.qa_eval import (
+    create_qa_eval_core,
+    get_qa_eval_results_core,
+)
+from oddish.core.idempotency import IdempotencyReplay
 from oddish.db import AnalysisStatus, TaskModel, TaskVersionModel, TrialStatus
 from oddish.db.models import TrialModel
 from oddish.schemas import QAEvalCreateRequest
@@ -108,6 +112,23 @@ async def test_create_does_not_link_replay_as_a_source_task_experiment(monkeypat
         status=TrialStatus.SUCCESS,
         is_probe=False,
         has_trajectory=True,
+        analysis=None,
+    )
+    source_without_trajectory = TrialModel(
+        id="source-2",
+        name="source-2",
+        task_id="task-1",
+        task_version_id="version-1",
+        experiment_id="original-experiment",
+        org_id="org-1",
+        agent="codex",
+        provider="openai",
+        queue_key="codex:model",
+        model="model",
+        kind="agent",
+        status=TrialStatus.SUCCESS,
+        is_probe=False,
+        has_trajectory=False,
         analysis={"classification": "BAD_FAILURE"},
     )
     task = TaskModel(
@@ -143,7 +164,7 @@ async def test_create_does_not_link_replay_as_a_source_task_experiment(monkeypat
                 )
             entity = descriptions[0].get("entity")
             rows_by_entity = {
-                TrialModel: [source],
+                TrialModel: [source, source_without_trajectory],
                 TaskModel: [task],
                 TaskVersionModel: [version],
             }
@@ -155,30 +176,168 @@ async def test_create_does_not_link_replay_as_a_source_task_experiment(monkeypat
         async def flush(self):
             self.added_experiment.id = "replay-experiment"
 
+    created_trials: list[str] = []
+
     async def fake_create_analysis_trial(_session, **kwargs):
         assert kwargs["task"] is task
         assert kwargs["experiment_id"] == "replay-experiment"
+        created_trials.append(kwargs["payload"]["source_trial_id"])
         return SimpleNamespace(id="qa-eval-1")
+
+    class MemoryIdempotencyStore:
+        record = None
+
+        async def begin(
+            self,
+            _org_id,
+            _route,
+            _key_hash,
+            request_hash,
+            _now,
+            expires_at,
+        ):
+            if self.record is not None:
+                return False
+            self.record = SimpleNamespace(
+                request_hash=request_hash,
+                status="in_progress",
+                response_json=None,
+                expires_at=expires_at,
+            )
+            return True
+
+        async def get(self, _org_id, _route, _key_hash):
+            return self.record
+
+        async def complete(self, _org_id, _route, _key_hash, response_json):
+            self.record.status = "completed"
+            self.record.response_json = response_json
+
+        async def discard(self, *_args):
+            self.record = None
 
     monkeypatch.setattr(
         "oddish.core.endpoints.qa_eval.create_analysis_trial",
         fake_create_analysis_trial,
     )
 
+    request = QAEvalCreateRequest(
+        name="candidate replay",
+        source_trial_ids=["source-1", "source-2"],
+        prompt_name="candidate-1",
+        prompt_text="Classify the stored solver evidence.",
+    )
+    idempotency_store = MemoryIdempotencyStore()
     response = await create_qa_eval_core(
         FakeSession(),
-        request=QAEvalCreateRequest(
-            name="candidate replay",
-            source_trial_ids=["source-1"],
-            prompt_name="candidate-1",
-            prompt_text="Classify the stored solver evidence.",
-        ),
+        request=request,
         org_id="org-1",
         owner_user_id="user-1",
+        idempotency_key="stable-key",
+        idempotency_store=idempotency_store,
+        request_hash="request-hash",
     )
 
     assert response.experiment_id == "replay-experiment"
+    assert response.requested_count == 2
+    assert response.queued_count == 1
+    assert response.skipped_count == 1
     assert response.trials[0].qa_eval_trial_id == "qa-eval-1"
+    assert response.skipped_sources[0].source_trial_id == "source-2"
+    assert response.skipped_sources[0].reason_code == "missing_trajectory"
+    assert created_trials == ["source-1"]
+
+    with pytest.raises(IdempotencyReplay) as replay:
+        await create_qa_eval_core(
+            FakeSession(),
+            request=request,
+            org_id="org-1",
+            owner_user_id="user-1",
+            idempotency_key="stable-key",
+            idempotency_store=idempotency_store,
+            request_hash="request-hash",
+        )
+    assert replay.value.response_json["experiment_id"] == "replay-experiment"
+    assert created_trials == ["source-1"]
+
+
+@pytest.mark.asyncio
+async def test_results_preserve_complete_candidate_analysis_and_prompt_metadata():
+    experiment = SimpleNamespace(id="experiment-1", name="feedback")
+    source = TrialModel(
+        id="source-1",
+        name="source-1",
+        task_id="task-1",
+        org_id="org-1",
+        agent="codex",
+        provider="openai",
+        queue_key="codex:model",
+        model="solver-model",
+        kind="agent",
+        status=TrialStatus.SUCCESS,
+        analysis=None,
+    )
+    candidate = _artifact()
+    eval_trial = TrialModel(
+        id="eval-1",
+        name="eval-1",
+        task_id="task-1",
+        experiment_id="experiment-1",
+        org_id="org-1",
+        agent="claude-code",
+        provider="anthropic",
+        queue_key="claude-code:model",
+        model="claude-sonnet-5",
+        kind="qa_eval",
+        status=TrialStatus.SUCCESS,
+        analysis=candidate,
+        harbor_config={
+            "analysis_payload": {
+                "source_trial_id": "source-1",
+                "prompt_name": "candidate-1",
+                "prompt_sha256": "prompt-hash",
+            }
+        },
+    )
+
+    class FakeResult:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def scalars(self):
+            return self
+
+        def all(self):
+            return self.rows
+
+    class FakeSession:
+        execute_count = 0
+
+        async def scalar(self, _statement):
+            return experiment
+
+        async def execute(self, _statement):
+            self.execute_count += 1
+            if self.execute_count == 1:
+                return FakeResult([eval_trial])
+            return FakeResult([(source, "task-one")])
+
+    response = await get_qa_eval_results_core(
+        FakeSession(), experiment_ref="experiment-1", org_id="org-1"
+    )
+
+    row = response.rows[0]
+    assert row.qa_eval_trial_id == "eval-1"
+    assert row.prompt_name == "candidate-1"
+    assert row.prompt_sha256 == "prompt-hash"
+    assert row.model == "claude-sonnet-5"
+    assert row.historical_qa_response_valid is False
+    assert row.candidate_qa_subtype == candidate["subtype"]
+    assert row.candidate_qa_evidence == candidate["evidence"]
+    assert row.candidate_qa_recommendation == candidate["recommendation"]
+    assert row.candidate_qa_action_items == []
+    assert row.candidate_qa_exploitation == []
+    assert row.candidate_qa_output == candidate
 
 
 @pytest.mark.asyncio
