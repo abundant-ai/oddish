@@ -53,6 +53,7 @@ from oddish.core.endpoints.task_detail import (
 )
 from oddish.core.endpoints.task_open import get_task_open_core
 from oddish.core.endpoints.experiment_cost import get_experiment_cost_totals
+from oddish.core.endpoints.experiment_page import get_experiment_open_core
 from oddish.core.endpoints.qa_cost import (
     ExperimentQaCostTotals,
     QaCostTotals,
@@ -106,6 +107,7 @@ __all__ = [
     "delete_task_core",
     "delete_trial_core",
     "get_experiment_cost_totals",
+    "get_experiment_open_core",
     "get_experiment_qa_cost_totals",
     "get_task_detail_core",
     "get_task_open_core",
