@@ -611,7 +611,9 @@ async def cleanup_orphaned_queue_state(
 
         for reimport_trial_id in analysis_reimport_trial_ids:
             try:
-                await handle_analysis_trial_settled(reimport_trial_id)
+                await handle_analysis_trial_settled(
+                    reimport_trial_id, source="cleanup"
+                )
                 stale_analysis_imports_healed += 1
             except Exception:  # noqa: BLE001 -- next sweep retries
                 logger.exception(

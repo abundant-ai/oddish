@@ -11,11 +11,14 @@ shim shares the same in-process logfire singleton.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import threading
+import time
 from collections.abc import Mapping, Sequence
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
@@ -32,10 +35,171 @@ _queue_slots_gauge = None
 _dispatch_workers_spawned_counter = None
 _dispatch_cycles_counter = None
 _dispatch_duration_histogram = None
+_analysis_stage_duration_histogram = None
 _last_dispatch_queue_keys: set[str] = set()
 
 _AGGREGATE_QUEUE_KEY = "__all__"
 DispatchCycleOutcome = Literal["success", "skipped", "cancelled", "error"]
+AnalysisStageOutcome = Literal["success", "cancelled", "error"]
+AnalysisTelemetrySource = Literal["worker", "cleanup"]
+ANALYSIS_KINDS = frozenset({"qa", "audit", "summarize"})
+
+ANALYSIS_DURATION_STAGES = frozenset(
+    {
+        "prepare",
+        "environment_setup",
+        "agent_setup",
+        "agent_execution",
+        "verifier",
+        "artifact_upload",
+        "result_store",
+        "import",
+        "end_to_end",
+        "activity.fetching_trial_data",
+        "activity.reading_files",
+        "activity.inspecting_data",
+        "activity.reasoning",
+        "activity.delegating",
+        "activity.writing_result",
+    }
+)
+
+
+def analysis_target_bucket(target_count: int) -> str:
+    """Return the bounded workload bucket used by analysis metrics."""
+    count = max(int(target_count), 0)
+    if count <= 1:
+        return str(count)
+    if count <= 5:
+        return "2-5"
+    if count <= 10:
+        return "6-10"
+    if count <= 25:
+        return "11-25"
+    if count <= 50:
+        return "26-50"
+    return "51+"
+
+
+def record_analysis_stage_duration(
+    *,
+    analysis_kind: str,
+    stage: str,
+    outcome: AnalysisStageOutcome,
+    queue_key: str,
+    target_count: int,
+    retried: bool,
+    source: AnalysisTelemetrySource,
+    duration_seconds: float,
+) -> None:
+    """Record one analysis-stage duration with bounded metric dimensions.
+
+    Trial, task, worker-job, organization, user, and error values deliberately
+    do not enter the attributes. Those per-record values belong on spans, while
+    this histogram remains safe to aggregate across every analysis run.
+    """
+    global _analysis_stage_duration_histogram
+    if not _configured:
+        return
+    if analysis_kind not in ANALYSIS_KINDS or stage not in ANALYSIS_DURATION_STAGES:
+        logger.warning(
+            "refusing unknown analysis metric dimensions kind=%r stage=%r",
+            analysis_kind,
+            stage,
+        )
+        return
+
+    try:
+        import logfire
+
+        with _lock:
+            if _analysis_stage_duration_histogram is None:
+                _analysis_stage_duration_histogram = logfire.metric_histogram(
+                    "oddish.analysis.stage.duration",
+                    unit="s",
+                    description="Seconds spent in one analysis-trial stage",
+                )
+    except Exception:
+        logger.warning("failed to create analysis-stage metric", exc_info=True)
+        return
+
+    attributes = {
+        "analysis_kind": analysis_kind,
+        "stage": stage,
+        "outcome": outcome,
+        "queue_key": queue_key,
+        "target_bucket": analysis_target_bucket(target_count),
+        "retried": retried,
+        "source": source,
+    }
+    try:
+        _analysis_stage_duration_histogram.record(
+            max(float(duration_seconds), 0.0), attributes
+        )
+    except Exception:
+        logger.warning("failed to record analysis-stage metric", exc_info=True)
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisTelemetry:
+    """One analysis run's stable metric dimensions and trace identifiers."""
+
+    analysis_kind: str
+    queue_key: str
+    target_count: int
+    retried: bool
+    source: AnalysisTelemetrySource
+    trial_id: str
+    task_id: str
+    attempt: int
+    worker_job_id: str | None = None
+
+    def record(
+        self,
+        stage: str,
+        duration_seconds: float,
+        *,
+        outcome: AnalysisStageOutcome = "success",
+    ) -> None:
+        record_analysis_stage_duration(
+            analysis_kind=self.analysis_kind,
+            stage=stage,
+            outcome=outcome,
+            queue_key=self.queue_key,
+            target_count=self.target_count,
+            retried=self.retried,
+            source=self.source,
+            duration_seconds=duration_seconds,
+        )
+
+    @contextmanager
+    def stage(self, stage: str):
+        """Measure a synchronous block, including blocks awaiting async work."""
+        started_at = time.monotonic()
+        outcome: AnalysisStageOutcome = "success"
+        try:
+            with span(
+                f"analysis.{stage}",
+                analysis_kind=self.analysis_kind,
+                analysis_stage=stage,
+                analysis_target_count=self.target_count,
+                queue_key=self.queue_key,
+                retried=self.retried,
+                trial_id=self.trial_id,
+                task_id=self.task_id,
+                worker_job_id=self.worker_job_id,
+                attempt=self.attempt,
+                source=self.source,
+            ):
+                yield
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            raise
+        except Exception:
+            outcome = "error"
+            raise
+        finally:
+            self.record(stage, time.monotonic() - started_at, outcome=outcome)
 
 
 def configure_observability(service_name: str) -> bool:

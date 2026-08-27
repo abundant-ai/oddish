@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import functools
@@ -53,6 +54,7 @@ from oddish.config import HARBOR_DEFAULT_SHA, HARBOR_DEFAULT_SOURCE
 from oddish.db.storage import get_storage_client, resolve_task_directory
 from oddish.model_pricing import is_native_cost_trusted, settle_cost_usd
 from oddish.observability import (
+    AnalysisTelemetry,
     log_missing_trial_metering_if_needed,
     log_unpriced_trial_if_needed,
 )
@@ -77,7 +79,7 @@ from oddish.worker.probe_staging import (
     apply_probe_overlay,
     stage_cli_mount,
 )
-from oddish.workers.analysis_trials import is_analysis_kind
+from oddish.workers.analysis_trials import analysis_target_count, is_analysis_kind
 from oddish.workers.harbor.ephemeral import HarborOverrideImportError
 from oddish.workers.harbor.outcome import merged_trial_result
 from oddish.workers.harbor.quota_control import QuotaPauseControlError
@@ -1927,22 +1929,29 @@ async def _settle_trial_attempt(
     trial_s3_key: str | None = None,
     artifact_upload_error: str | None = None,
     probe_analysis: dict | None = None,
+    analysis_telemetry: AnalysisTelemetry | None = None,
 ) -> bool:
     """Persist one attempt result and run its terminal lifecycle exactly once."""
-    trial_terminal, run_post_trial_hooks = await asyncio.shield(
-        _store_trial_results(
-            trial_id=trial_id,
-            outcome=execution.outcome,
-            trial_s3_key=trial_s3_key,
-            execution_error=execution.execution_error,
-            artifact_upload_error=artifact_upload_error,
-            execution_retryable=execution.retryable,
-            probe_analysis=probe_analysis,
-            worker_id=worker_id,
-            worker_job_id=worker_job_id,
-            trial_attempt=prepared_trial.trial_attempt,
-        )
+    result_store_stage = (
+        analysis_telemetry.stage("result_store")
+        if analysis_telemetry is not None
+        else nullcontext()
     )
+    with result_store_stage:
+        trial_terminal, run_post_trial_hooks = await asyncio.shield(
+            _store_trial_results(
+                trial_id=trial_id,
+                outcome=execution.outcome,
+                trial_s3_key=trial_s3_key,
+                execution_error=execution.execution_error,
+                artifact_upload_error=artifact_upload_error,
+                execution_retryable=execution.retryable,
+                probe_analysis=probe_analysis,
+                worker_id=worker_id,
+                worker_job_id=worker_job_id,
+                trial_attempt=prepared_trial.trial_attempt,
+            )
+        )
     await _finish_trial_settlement(
         trial_id=trial_id,
         org_id=prepared_trial.org_id,
@@ -1950,6 +1959,33 @@ async def _settle_trial_attempt(
         run_post_trial_hooks=run_post_trial_hooks,
     )
     return trial_terminal
+
+
+def _record_analysis_harbor_phase_durations(
+    telemetry: AnalysisTelemetry | None,
+    execution: TrialExecutionResult,
+) -> None:
+    """Export Harbor's completed phase durations for an analysis trial."""
+    if telemetry is None or execution.outcome is None:
+        return
+    phase_timing = execution.outcome.phase_timing
+    if not isinstance(phase_timing, dict):
+        return
+    for stage in (
+        "environment_setup",
+        "agent_setup",
+        "agent_execution",
+        "verifier",
+    ):
+        phase = phase_timing.get(stage)
+        if not isinstance(phase, dict):
+            continue
+        duration_seconds = phase.get("duration_sec")
+        if isinstance(duration_seconds, bool) or not isinstance(
+            duration_seconds, (int, float)
+        ):
+            continue
+        telemetry.record(stage, duration_seconds)
 
 
 async def run_trial_job(
@@ -1999,14 +2035,37 @@ async def run_trial_job(
     if prepared_trial is None:
         return
 
-    try:
-        prepared_attempt = await _prepare_claimed_trial_attempt(
+    trial_mode = (prepared_trial.trial_harbor_config or {}).get("mode")
+    analysis_telemetry = None
+    if is_analysis_kind(trial_mode):
+        analysis_telemetry = AnalysisTelemetry(
+            analysis_kind=trial_mode,
+            queue_key=queue_key,
+            target_count=analysis_target_count(
+                trial_mode, prepared_trial.trial_harbor_config
+            ),
+            retried=prepared_trial.trial_attempt > 1,
+            source="worker",
             trial_id=trial_id,
-            prepared_trial=prepared_trial,
-            worker_id=worker_id,
+            task_id=prepared_trial.task_id,
+            attempt=prepared_trial.trial_attempt,
             worker_job_id=worker_job_id,
-            worker_job_attempt=worker_job_attempt,
         )
+
+    try:
+        prepare_stage = (
+            analysis_telemetry.stage("prepare")
+            if analysis_telemetry is not None
+            else nullcontext()
+        )
+        with prepare_stage:
+            prepared_attempt = await _prepare_claimed_trial_attempt(
+                trial_id=trial_id,
+                prepared_trial=prepared_trial,
+                worker_id=worker_id,
+                worker_job_id=worker_job_id,
+                worker_job_attempt=worker_job_attempt,
+            )
     except asyncio.CancelledError:
         raise
     except Exception as exc:
@@ -2024,6 +2083,7 @@ async def run_trial_job(
             ),
             worker_id=worker_id,
             worker_job_id=worker_job_id,
+            analysis_telemetry=analysis_telemetry,
         )
         return
     if prepared_attempt is None:
@@ -2099,6 +2159,7 @@ async def run_trial_job(
             await asyncio.gather(execution_task, return_exceptions=True)
             heartbeat_interrupt.result()
         execution = await execution_task
+        _record_analysis_harbor_phase_durations(analysis_telemetry, execution)
         await _settle_compute_costs(cost_state, execution.outcome)
 
         # Upload trial results to S3.
@@ -2107,17 +2168,25 @@ async def run_trial_job(
         artifact_upload_error = None
         if should_upload_to_s3 and execution.outcome and execution.outcome.job_dir:
             try:
-                storage = get_storage_client()
-                trial_s3_key = await storage.upload_trial_results(
-                    trial_id,
-                    execution.outcome.job_dir,
-                    authorized_prefix=(
-                        job_scoped_bundle.s3_write_prefix
-                        if job_scoped_bundle is not None
-                        else None
-                    ),
-                    subprefix=_artifact_subprefix(prepared_trial.trial_harbor_config),
+                artifact_upload_stage = (
+                    analysis_telemetry.stage("artifact_upload")
+                    if analysis_telemetry is not None
+                    else nullcontext()
                 )
+                with artifact_upload_stage:
+                    storage = get_storage_client()
+                    trial_s3_key = await storage.upload_trial_results(
+                        trial_id,
+                        execution.outcome.job_dir,
+                        authorized_prefix=(
+                            job_scoped_bundle.s3_write_prefix
+                            if job_scoped_bundle is not None
+                            else None
+                        ),
+                        subprefix=_artifact_subprefix(
+                            prepared_trial.trial_harbor_config
+                        ),
+                    )
                 console.print(
                     f"[dim]Uploaded trial results to S3: {trial_s3_key}[/dim]"
                 )
@@ -2140,6 +2209,10 @@ async def run_trial_job(
                 "Failed to upload trial results to S3: Harbor produced no job "
                 "directory to upload"
             )
+            if analysis_telemetry is not None:
+                analysis_telemetry.record(
+                    "artifact_upload", 0.0, outcome="error"
+                )
 
         # Mirror to sauron's AWS S3 (best-effort). This targets sauron's own
         # observability bucket (settings.sauron_s3_bucket) with its own prefix
@@ -2204,6 +2277,7 @@ async def run_trial_job(
             trial_s3_key=trial_s3_key,
             artifact_upload_error=artifact_upload_error,
             probe_analysis=probe_analysis,
+            analysis_telemetry=analysis_telemetry,
         )
     finally:
         heartbeat_stop.set()

@@ -69,6 +69,7 @@ from oddish.db import (
     utcnow,
 )
 from oddish.db.storage import get_storage_client, resolve_trial_s3_prefix
+from oddish.observability import AnalysisTelemetry, AnalysisTelemetrySource
 from oddish.worker.analysis_result_check import check_analysis_result
 
 logger = logging.getLogger(__name__)
@@ -97,6 +98,17 @@ SUMMARY_MAX_TOKENS = 16_384
 
 def is_analysis_kind(kind: str | None) -> bool:
     return kind in ANALYSIS_TRIAL_KINDS
+
+
+def analysis_target_count(kind: str | None, harbor_config: dict | None) -> int:
+    """Return how many solver trials one analysis run is expected to inspect."""
+    payload = (harbor_config or {}).get("analysis_payload") or {}
+    if kind == "qa":
+        trial_ids = payload.get("trial_ids")
+        return len(trial_ids) if isinstance(trial_ids, list) else 0
+    if kind == "summarize":
+        return 1 if payload.get("target_trial_id") else 0
+    return 0
 
 
 def analysis_check_payload(kind: str, harbor_config: dict | None) -> dict:
@@ -832,7 +844,7 @@ async def read_own_trajectory(trial: TrialModel) -> dict | None:
 
 async def store_analysis_self_summary(
     trial: TrialModel, trajectory: dict | None
-) -> None:
+) -> dict | None:
     """Write the analysis trial's own ``trajectory_summary``.
 
     QA and summarize agents summarize their targets; this is the same telemetry
@@ -842,7 +854,7 @@ async def store_analysis_self_summary(
     still shows what its agent did.
     """
     if trajectory is None:
-        return
+        return None
     payload = (trial.harbor_config or {}).get("analysis_payload") or {}
     artifact_name = ANALYSIS_ARTIFACTS.get(trial.kind or "", "the result artifact")
     async with get_session() as session:
@@ -858,7 +870,7 @@ async def store_analysis_self_summary(
             trajectory=trajectory,
         )
         if summary is None:
-            return
+            return None
         enriched = enrich_trajectory_summary(
             summary,
             trajectory=trajectory,
@@ -871,6 +883,33 @@ async def store_analysis_self_summary(
         row = await session.get(TrialModel, trial.id)
         if row is not None:
             row.trajectory_summary = enriched
+        return enriched
+
+
+def record_analysis_activity_durations(
+    telemetry: AnalysisTelemetry,
+    summary: dict | None,
+    *,
+    outcome: str,
+) -> None:
+    """Record one summed duration per deterministic activity label in a run."""
+    durations_ms: dict[str, float] = {}
+    for component in (summary or {}).get("components") or []:
+        if not isinstance(component, dict):
+            continue
+        label = component.get("trajectory_component")
+        duration_ms = component.get("duration_ms")
+        if not isinstance(label, str) or not isinstance(duration_ms, (int, float)):
+            continue
+        durations_ms[label] = durations_ms.get(label, 0.0) + max(
+            float(duration_ms), 0.0
+        )
+    for label, duration_ms in durations_ms.items():
+        telemetry.record(
+            f"activity.{label}",
+            duration_ms / 1000,
+            outcome="success" if outcome == TrialStatus.SUCCESS.value else "error",
+        )
 
 
 async def _qa_import_still_current(
@@ -1290,7 +1329,9 @@ async def _import_summarize_result(trial: TrialModel) -> None:
     logger.info("summarize trial %s: stored summary for trial %s", trial.id, target_id)
 
 
-async def handle_analysis_trial_settled(trial_id: str) -> None:
+async def handle_analysis_trial_settled(
+    trial_id: str, *, source: AnalysisTelemetrySource = "worker"
+) -> None:
     """Importer dispatch. Runs after a non-'agent' trial reaches a terminal
     status. Idempotent per kind: each importer either checks current ownership
     or overwrites the same columns, so a double-fire is harmless."""
@@ -1298,6 +1339,7 @@ async def handle_analysis_trial_settled(trial_id: str) -> None:
         trial = await session.get(TrialModel, trial_id)
         if (
             trial is None
+            or not is_analysis_kind(trial.kind)
             or trial.superseded_by_trial_id is not None
             or trial.harbor_stage == "cancelled"
             or trial.status
@@ -1306,27 +1348,58 @@ async def handle_analysis_trial_settled(trial_id: str) -> None:
             return
         kind = trial.kind
         status = trial.status.value
+    telemetry = AnalysisTelemetry(
+        analysis_kind=kind or "analysis",
+        queue_key=trial.queue_key,
+        target_count=analysis_target_count(kind, trial.harbor_config),
+        retried=trial.attempts > 1,
+        source=source,
+        trial_id=trial.id,
+        task_id=trial.task_id,
+        attempt=trial.attempts,
+    )
     logger.info("importing %s trial %s (status=%s)", kind, trial_id, status)
-    # One trajectory read serves both the self-summary and the graded-step
-    # anchors. Both are telemetry: a failure in either must not stop the
-    # artifact import, and the import must run even with no trajectory.
-    own_trajectory = await read_own_trajectory(trial)
     try:
-        await store_analysis_self_summary(trial, own_trajectory)
-    except Exception:  # noqa: BLE001
-        logger.exception("self-summary for %s trial %s failed", kind, trial_id)
-    if kind == "qa":
-        await _import_qa_result(trial, own_trajectory=own_trajectory)
-        await _fire_qa_imported(trial.task_id)
-    elif kind == "summarize":
-        await _import_summarize_result(trial)
-    elif kind == "audit":
-        await _import_audit_result(trial)
-        # QA admission defers while this audit is live (the QA brief embeds
-        # the audit findings at creation). This settlement is what unblocks
-        # it: without the re-entry, a task whose last agent trial settled
-        # mid-audit would never start QA.
-        from oddish.queue import maybe_start_task_qa_stage
+        with telemetry.stage("import"):
+            # One trajectory read serves both the self-summary and the
+            # graded-step anchors. Both are telemetry: a failure in either must
+            # not stop the artifact import, and the import must run even with
+            # no trajectory.
+            own_trajectory = await read_own_trajectory(trial)
+            own_summary = None
+            try:
+                own_summary = await store_analysis_self_summary(
+                    trial, own_trajectory
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("self-summary for %s trial %s failed", kind, trial_id)
+            record_analysis_activity_durations(
+                telemetry, own_summary, outcome=status
+            )
+            if kind == "qa":
+                await _import_qa_result(trial, own_trajectory=own_trajectory)
+                await _fire_qa_imported(trial.task_id)
+            elif kind == "summarize":
+                await _import_summarize_result(trial)
+            elif kind == "audit":
+                await _import_audit_result(trial)
+                # QA admission defers while this audit is live (the QA brief
+                # embeds the audit findings at creation). This settlement is
+                # what unblocks it: without the re-entry, a task whose last
+                # agent trial settled mid-audit would never start QA.
+                from oddish.queue import maybe_start_task_qa_stage
 
-        async with get_session() as session:
-            await maybe_start_task_qa_stage(session, trial.task_id)
+                async with get_session() as session:
+                    await maybe_start_task_qa_stage(session, trial.task_id)
+    except (Exception, asyncio.CancelledError):
+        telemetry.record(
+            "end_to_end",
+            (utcnow() - trial.created_at).total_seconds(),
+            outcome="error",
+        )
+        raise
+    telemetry.record(
+        "end_to_end",
+        (utcnow() - trial.created_at).total_seconds(),
+        outcome="success" if status == TrialStatus.SUCCESS.value else "error",
+    )

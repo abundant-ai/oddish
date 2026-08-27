@@ -39,6 +39,33 @@ from oddish.workers.queue import trial_handler  # noqa: E402
 _DISK_USAGE = namedtuple("DiskUsage", ["total", "used", "free"])
 
 
+def test_analysis_harbor_phase_metrics_use_completed_runtime_timings_only():
+    observations = []
+
+    class Telemetry:
+        def record(self, stage, duration_seconds):
+            observations.append((stage, duration_seconds))
+
+    execution = SimpleNamespace(
+        outcome=SimpleNamespace(
+            phase_timing={
+                "environment_setup": {"duration_sec": 4.5},
+                "agent_setup": {"duration_sec": True},
+                "agent_execution": {"duration_sec": 12},
+                "verifier": {"duration_sec": "invalid"},
+                "dynamic-stage-name": {"duration_sec": 100},
+            }
+        )
+    )
+
+    trial_handler._record_analysis_harbor_phase_durations(Telemetry(), execution)
+
+    assert observations == [
+        ("environment_setup", 4.5),
+        ("agent_execution", 12),
+    ]
+
+
 def _write_network_policy_task(
     tmp_path: Path,
     *,
