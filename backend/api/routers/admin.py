@@ -32,6 +32,7 @@ from oddish.core.admin import (
     OrphanedStateResponse,
     UserCostBreakdownResponse,
     WorkerJobsResponse,
+    WorkerJobsSample,
     get_cost_breakdown_core,
     get_model_concurrency_setting_core,
     get_queue_health_core,
@@ -134,6 +135,7 @@ async def get_worker_jobs(
     auth: Annotated[AuthContext, Depends(require_admin)],
     stale_after_minutes: int = Query(15, ge=1, le=240),
     sample_limit: int = Query(200, ge=1, le=500),
+    sample: WorkerJobsSample = Query("active"),
 ) -> WorkerJobsResponse:
     """Return current execution work and recent failures with run context."""
     async with get_session() as session:
@@ -141,6 +143,7 @@ async def get_worker_jobs(
             session,
             stale_after_minutes=stale_after_minutes,
             sample_limit=sample_limit,
+            sample=sample,
             org_id=auth.org_id,
         )
 

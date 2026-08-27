@@ -167,7 +167,7 @@ export function WorkerJobsCard() {
   const [view, setView] = useState<"active" | "attention">("active");
   const [query, setQuery] = useState("");
   const { data, error, isLoading, mutate } = useSWR<WorkerJobsResponse>(
-    "/api/admin/worker-jobs",
+    `/api/admin/worker-jobs?sample=${view}`,
     fetcher,
     { refreshInterval: 10000 }
   );
@@ -184,11 +184,6 @@ export function WorkerJobsCard() {
     : 0;
   const needle = query.trim().toLowerCase();
   const jobs = (data?.jobs ?? []).filter((job) => {
-    const belongsInView =
-      view === "active"
-        ? job.status !== "FAILED"
-        : job.is_stale || job.status === "BLOCKED" || job.status === "FAILED";
-    if (!belongsInView) return false;
     if (!needle) return true;
     return [
       job.kind,

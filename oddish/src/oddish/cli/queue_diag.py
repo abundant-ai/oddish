@@ -32,7 +32,7 @@ _ADMIN_ENDPOINTS: list[tuple[str, str, dict[str, Any]]] = [
     ("queue_status", "/admin/queue-status", {}),
     ("slots", "/admin/slots", {}),
     ("orphaned_state", "/admin/orphaned-state", {}),
-    ("worker_jobs", "/admin/worker-jobs", {}),
+    ("worker_jobs", "/admin/worker-jobs", {"sample": "failures"}),
 ]
 
 

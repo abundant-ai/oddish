@@ -6,7 +6,7 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StringConstraints
 from sqlalchemy import and_, func, or_, select, text
@@ -186,6 +186,9 @@ class WorkerJobSample(BaseModel):
     is_stale: bool
 
 
+WorkerJobsSample = Literal["active", "attention", "failures"]
+
+
 class WorkerJobsResponse(BaseModel):
     """Current execution work and recent failures with domain context."""
 
@@ -207,6 +210,28 @@ _EFFECTIVE_WORKER_KIND_SQL = """
         ELSE lower(wj.kind::text)
     END
 """
+
+_STALE_WORKER_JOB_SQL = """
+    wj.status::text = 'RUNNING'
+    AND (
+        wj.heartbeat_at IS NULL
+        OR wj.heartbeat_at < NOW() - make_interval(mins => :stale_after_minutes)
+    )
+"""
+
+_WORKER_JOB_SAMPLE_SQL: dict[WorkerJobsSample, str] = {
+    "active": "wj.status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')",
+    "attention": f"""
+        ({_STALE_WORKER_JOB_SQL})
+        OR wj.status::text = 'BLOCKED'
+        OR (wj.status::text = 'FAILED'
+            AND wj.finished_at >= NOW() - INTERVAL '1 hour')
+    """,
+    "failures": """
+        wj.status::text = 'FAILED'
+        AND wj.finished_at >= NOW() - INTERVAL '1 hour'
+    """,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -530,11 +555,13 @@ async def get_worker_jobs_admin_core(
     *,
     stale_after_minutes: int = 15,
     sample_limit: int = 200,
+    sample: WorkerJobsSample = "active",
     org_id: str | None = None,
 ) -> WorkerJobsResponse:
     """Return current work and recent failures with trial/task context."""
     now = utcnow()
     active_kinds = [kind.value for kind in ACTIVE_WORKER_JOB_KINDS]
+    sample_sql = _WORKER_JOB_SAMPLE_SQL[sample]
 
     summary_rows = (
         await session.execute(
@@ -572,11 +599,10 @@ async def get_worker_jobs_admin_core(
                        ) AS scheduled,
                        COUNT(*) FILTER (WHERE status = 'BLOCKED') AS blocked,
                        COUNT(*) FILTER (
-                           WHERE status = 'RUNNING'
-                             AND (
-                                 heartbeat_at IS NULL
-                                 OR heartbeat_at < NOW() - make_interval(mins => :stale_after_minutes)
-                             )
+                           WHERE status = 'RUNNING' AND (
+                               heartbeat_at IS NULL
+                               OR heartbeat_at < NOW() - make_interval(mins => :stale_after_minutes)
+                           )
                        ) AS stale,
                        COUNT(*) FILTER (WHERE status = 'FAILED') AS failed_last_hour
                 FROM effective_jobs
@@ -651,13 +677,7 @@ async def get_worker_jobs_admin_core(
                        wj.last_heartbeat_error,
                        wj.current_worker_id,
                        wj.current_queue_slot,
-                       (
-                           wj.status::text = 'RUNNING'
-                           AND (
-                               wj.heartbeat_at IS NULL
-                               OR wj.heartbeat_at < NOW() - make_interval(mins => :stale_after_minutes)
-                           )
-                       ) AS is_stale,
+                       ({_STALE_WORKER_JOB_SQL}) AS is_stale,
                        COUNT(*) OVER () AS total_jobs
                 FROM worker_jobs wj
                 LEFT JOIN trials tr
@@ -676,18 +696,10 @@ async def get_worker_jobs_admin_core(
                  AND experiment.deleted_at IS NULL
                 WHERE wj.kind::text = ANY(CAST(:active_kinds AS TEXT[]))
                   AND (CAST(:org_id AS TEXT) IS NULL OR wj.org_id = CAST(:org_id AS TEXT))
-                  AND (
-                       wj.status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
-                    OR (wj.status::text = 'FAILED'
-                        AND wj.finished_at >= NOW() - INTERVAL '1 hour')
-                  )
+                  AND ({sample_sql})
                 ORDER BY
                     CASE
-                        WHEN wj.status::text = 'RUNNING'
-                         AND (
-                             wj.heartbeat_at IS NULL
-                             OR wj.heartbeat_at < NOW() - make_interval(mins => :stale_after_minutes)
-                         ) THEN 0
+                        WHEN ({_STALE_WORKER_JOB_SQL}) THEN 0
                         WHEN wj.status::text = 'BLOCKED' THEN 1
                         WHEN wj.status::text = 'FAILED' THEN 2
                         WHEN wj.status::text = 'RUNNING' THEN 3

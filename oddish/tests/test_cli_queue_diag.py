@@ -65,7 +65,9 @@ def _invoke(routes: dict[str, tuple[int, dict]], extra: list[str] | None = None)
     runner = CliRunner()
     with patch("oddish.cli.queue_diag.httpx.Client", fake_client):
         with patch("oddish.cli.status.require_api_key"):
-            with patch("oddish.cli.status.get_api_url", return_value="http://localhost"):
+            with patch(
+                "oddish.cli.status.get_api_url", return_value="http://localhost"
+            ):
                 with patch("oddish.cli.queue_diag.get_auth_headers", return_value={}):
                     result = runner.invoke(app, ["--queue", *(extra or [])])
     return result, calls
@@ -100,7 +102,12 @@ _ORPHANED = {
 }
 _STATUS = {
     "queues": [
-        {"kind": "TRIAL", "queue_key": "openai/gpt-5.3-codex", "queued": 1, "running": 1},
+        {
+            "kind": "TRIAL",
+            "queue_key": "openai/gpt-5.3-codex",
+            "queued": 1,
+            "running": 1,
+        },
         {"kind": "QA", "queue_key": "qa", "queued": 2, "running": 0},
     ],
     "trial_queues": [],
@@ -227,7 +234,7 @@ def test_queue_diag_auth_error_exits_nonzero():
 
 
 def test_queue_diag_stale_after_forwarded():
-    captured_params: list[dict] = []
+    captured_params: dict[str, dict] = {}
 
     class _Resp:
         status_code = 200
@@ -251,7 +258,10 @@ def test_queue_diag_stale_after_forwarded():
 
         def get(self, url, params=None):
             if url.endswith("/admin/orphaned-state"):
-                captured_params.append(dict(params or {}))
+                captured_params["orphaned_state"] = dict(params or {})
+                return _Resp()
+            if url.endswith("/admin/worker-jobs"):
+                captured_params["worker_jobs"] = dict(params or {})
                 return _Resp()
             # Everything else: minimal valid empties.
             if url.endswith("/admin/queue-health"):
@@ -286,9 +296,14 @@ def test_queue_diag_stale_after_forwarded():
     runner = CliRunner()
     with patch("oddish.cli.queue_diag.httpx.Client", _Client):
         with patch("oddish.cli.status.require_api_key"):
-            with patch("oddish.cli.status.get_api_url", return_value="http://localhost"):
+            with patch(
+                "oddish.cli.status.get_api_url", return_value="http://localhost"
+            ):
                 with patch("oddish.cli.queue_diag.get_auth_headers", return_value={}):
                     result = runner.invoke(app, ["--queue", "--stale-after", "42"])
     assert result.exit_code == 0, result.output
-    assert captured_params
-    assert captured_params[0].get("stale_after_minutes") == 42
+    assert captured_params["orphaned_state"] == {"stale_after_minutes": 42}
+    assert captured_params["worker_jobs"] == {
+        "sample": "failures",
+        "stale_after_minutes": 42,
+    }

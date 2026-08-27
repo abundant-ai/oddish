@@ -423,7 +423,11 @@ the Worker Jobs tab. It counts only active scheduler kinds plus failures from
 the last hour, maps `TRIAL` jobs through `trials.kind`, and joins trials, tasks,
 and experiments only for display context. Scheduling status, heartbeat,
 admission reason, and worker ownership must continue to come from
-`worker_jobs`; domain tables do not reconstruct them.
+`worker_jobs`; domain tables do not reconstruct them. Its bounded `jobs` list
+is selected before `LIMIT` by `sample=active|attention|failures`. The Admin UI
+puts its selected tab in that request identity, while the CLI requests the
+failure-only sample; consumers must not recover a view by filtering a differently
+prioritized bounded sample in memory.
 
 Admin cost exclusions (`oddish/core/cost_exclusions.py`) name spend that was
 never really paid for, along three axes: a **model** (`cost_excluded_models`,

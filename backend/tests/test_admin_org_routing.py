@@ -35,7 +35,11 @@ async def test_admin_diagnostics_pass_active_org(monkeypatch):
         (
             admin.get_worker_jobs,
             "get_worker_jobs_admin_core",
-            {"stale_after_minutes": 10, "sample_limit": 5},
+            {
+                "stale_after_minutes": 10,
+                "sample_limit": 5,
+                "sample": "attention",
+            },
         ),
     ):
         monkeypatch.setattr(admin, core_name, fake)
@@ -45,7 +49,12 @@ async def test_admin_diagnostics_pass_active_org(monkeypatch):
         {"org_id": "org-a"},
         {"org_id": "org-a", "include_global_details": False},
         {"stale_after_minutes": 10, "org_id": "org-a"},
-        {"stale_after_minutes": 10, "sample_limit": 5, "org_id": "org-a"},
+        {
+            "stale_after_minutes": 10,
+            "sample_limit": 5,
+            "sample": "attention",
+            "org_id": "org-a",
+        },
     ]
 
 
@@ -178,6 +187,4 @@ def test_operator_org_default_matches_live_abundant(monkeypatch):
     )
     # Bare value is an id match: a tenant that names "8ebde5d0" as its own slug
     # must not gain operator access.
-    assert not is_operator_org(
-        SimpleNamespace(org_id="org_evil", org_slug="8ebde5d0")
-    )
+    assert not is_operator_org(SimpleNamespace(org_id="org_evil", org_slug="8ebde5d0"))

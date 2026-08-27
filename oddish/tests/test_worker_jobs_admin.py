@@ -4,6 +4,8 @@ import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from oddish.core.admin import get_worker_jobs_admin_core
 from oddish.db import ACTIVE_WORKER_JOB_KINDS
 
@@ -155,3 +157,32 @@ def test_worker_jobs_snapshot_handles_an_idle_queue():
     assert response.pipeline_issues == []
     assert response.total_jobs == 0
     assert response.truncated is False
+
+
+@pytest.mark.parametrize(
+    ("sample", "expected_filter"),
+    [
+        (
+            "active",
+            "wj.status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')",
+        ),
+        ("attention", "OR wj.status::text = 'BLOCKED'"),
+        ("failures", "wj.status::text = 'FAILED'"),
+    ],
+)
+def test_worker_jobs_filters_the_requested_sample_before_limit(sample, expected_filter):
+    session = _Session([], [], [])
+
+    asyncio.run(get_worker_jobs_admin_core(session, org_id="org-1", sample=sample))
+
+    sample_query = session.calls[1][0]
+    sample_where = sample_query.split("WHERE wj.kind::text", 1)[1].split("ORDER BY", 1)[
+        0
+    ]
+    assert expected_filter in sample_where
+    assert sample_query.index(expected_filter) < sample_query.index(
+        "LIMIT :sample_limit"
+    )
+    if sample == "failures":
+        assert "'BLOCKED'" not in sample_where
+        assert "heartbeat_at" not in sample_where
