@@ -32,12 +32,9 @@ import {
   formatTokenCount,
   hasDisplayableCostUsd,
 } from "@/lib/format";
-import {
-  EMPTY_TRIAL_AGGREGATE,
-  accumulateTrial,
-} from "@/lib/trial-aggregation";
 import type {
   ExperimentCostTotals,
+  ExperimentPageSummary,
   Task,
   Trial,
   UserTagRef,
@@ -52,11 +49,9 @@ import {
 import {
   buildExperimentAgentSummaries,
   getExperimentAgentKey,
-  isBaselineAgentName,
   type ExperimentAgentSummary,
 } from "@/lib/experiment-agent-grouping";
 import { resolveExperimentTaskVersion } from "@/lib/experiment-task-version";
-import { taskHasActiveVerdict } from "@/lib/job-status";
 import {
   formatLineRange,
   parseLineRange,
@@ -64,6 +59,7 @@ import {
 } from "@/lib/line-range";
 import { sameFilePath } from "@/lib/file-path";
 import { expandTrialParam } from "@/lib/trial-url";
+import { useTrial } from "@/lib/use-trial";
 
 type DrawerMode = "task" | "trial";
 
@@ -116,7 +112,12 @@ type DrawerState = {
 
 interface ExperimentDetailViewProps {
   experimentId?: string;
+  experimentCreatedAt?: string | null;
+  experimentOwner?: string | null;
+  experimentLink?: string | null;
   tasksForExperiment: Task[];
+  exactSummary: ExperimentPageSummary;
+  incompleteTaskIds: ReadonlySet<string>;
   // Server-side spend rollup for the whole experiment. Omit (as the public
   // share view does) to fall back to summing the loaded trials, which
   // understates cost while pages are unloaded.
@@ -141,10 +142,6 @@ interface ExperimentDetailViewProps {
   onTaskUnlink?: (task: Task) => Promise<void>;
   onTrialDelete?: (trial: Trial, task: Task | null) => Promise<void>;
   onRerun?: (taskIds?: string[]) => void;
-  // Logged-in exp page sends slim trials, so set true to fetch a clicked
-  // trial's full detail on open. Public share page omits it (it passes full
-  // trials and can't use the authed /api/trials route).
-  loadFullTrialOnOpen?: boolean;
 }
 
 const AGENT_SUMMARY_STORAGE_PREFIX = "oddish:experiment-agent-summaries:";
@@ -203,103 +200,6 @@ type ExperimentSummary = {
   ownedExcludedCostUsd: number;
   experimentCostExcluded: boolean;
 };
-
-function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
-  const acc = { ...EMPTY_TRIAL_AGGREGATE };
-  // ``rewardSuccess`` mirrors ``passCount`` from the trials path but folds in
-  // task-level fallbacks for tasks whose trials aren't loaded yet.
-  let rewardSuccess = 0;
-  let totalTrialsFallback = 0;
-  let completedFallback = 0;
-  let failedFallback = 0;
-  let skippedFallback = 0;
-  let rewardSumFallback = 0;
-  let rewardTotalFallback = 0;
-  // Per-task mean reward over scored trials (baselines excluded); the avg
-  // score is the mean of these so every task carries equal weight
-  // regardless of how many trials it ran.
-  let taskScoreSum = 0;
-  let taskScoreCount = 0;
-
-  for (const task of tasksForExperiment) {
-    const trials = (task.trials ?? []).filter((t) => !t.is_probe);
-    if (trials.length > 0) {
-      // task.experiment_id is the viewing experiment (set by the backend
-      // builders); trials homed elsewhere count as cost (they price the work
-      // shown) but not as owned/new spend.
-      for (const trial of trials)
-        accumulateTrial(
-          acc,
-          trial,
-          trial.experiment_id == null ||
-            trial.experiment_id === task.experiment_id
-        );
-
-      let scoredRewardSum = 0;
-      let scoredCount = 0;
-      for (const trial of trials) {
-        if (isBaselineAgentName(trial.agent)) continue;
-        if (trial.status !== "success" || trial.reward == null) continue;
-        scoredRewardSum += trial.reward;
-        scoredCount += 1;
-      }
-      if (scoredCount > 0) {
-        taskScoreSum += scoredRewardSum / scoredCount;
-        taskScoreCount += 1;
-      }
-    } else {
-      rewardSuccess += task.reward_success ?? 0;
-      rewardSumFallback += task.reward_sum ?? task.reward_success ?? 0;
-      rewardTotalFallback += task.reward_total ?? 0;
-      totalTrialsFallback += task.total;
-      completedFallback += task.completed;
-      failedFallback += task.failed;
-      skippedFallback += task.skipped ?? 0;
-    }
-  }
-
-  return {
-    rewardSuccess: rewardSuccess + acc.passCount,
-    rewardSum: acc.rewardSum + rewardSumFallback,
-    rewardTotal: acc.rewardTotal + rewardTotalFallback,
-    avgScore: taskScoreCount > 0 ? taskScoreSum / taskScoreCount : null,
-    totalTrials: acc.trialCount + totalTrialsFallback,
-    completedTrials: acc.completed + completedFallback,
-    failedTrials: acc.failed + failedFallback,
-    skippedTrials: acc.skipped + skippedFallback,
-    passCount: acc.passCount,
-    partialCount: acc.partialCount,
-    failCount: acc.failCount,
-    harnessErrorCount: acc.harnessErrorCount,
-    pendingCount: acc.pendingCount,
-    costUsd: acc.costUsd,
-    costTrialCount: acc.costTrialCount,
-    costHasEstimated: acc.costHasEstimated,
-    costHasNative: acc.costHasNative,
-    // QA has no client-side fold -- it rides in only via the server rollup
-    // (the ``costTotals`` override below), so the base value is always zero.
-    qaCostUsd: 0,
-    ownedQaCostUsd: 0,
-    qaHasEstimated: false,
-    ownedCostUsd: acc.ownedCostUsd,
-    ownedTrialCount: acc.ownedTrialCount,
-    ownedHasEstimated: acc.ownedHasEstimated,
-    ownedHasNative: acc.ownedHasNative,
-    tokenCount: acc.tokenCount,
-    tokenTrialCount: acc.tokenTrialCount,
-    ownedTokenCount: acc.ownedTokenCount,
-    ownedTokenTrialCount: acc.ownedTokenTrialCount,
-    billedCostUsd: acc.billedCostUsd,
-    billedTrialCount: acc.billedTrialCount,
-    billedHasEstimated: acc.billedHasEstimated,
-    billedHasNative: acc.billedHasNative,
-    billedTokenCount: acc.billedTokenCount,
-    billedTokenTrialCount: acc.billedTokenTrialCount,
-    excludedCostUsd: 0,
-    ownedExcludedCostUsd: 0,
-    experimentCostExcluded: false,
-  };
-}
 
 function ExperimentHeaderMeta({
   isLoading,
@@ -385,12 +285,18 @@ function formatRelativeTime(iso: string): string {
   });
 }
 
-function pickExperimentCreationMeta(tasks: Task[]): {
+function pickExperimentCreationMeta(
+  tasks: Task[],
+  createdAt?: string | null,
+  owner?: string | null
+): {
   createdAt: string | null;
   author: string | null;
 } {
-  if (tasks.length === 0) return { createdAt: null, author: null };
-  const experimentCreatedAt =
+  if (tasks.length === 0) {
+    return { createdAt: createdAt ?? null, author: owner ?? null };
+  }
+  const taskExperimentCreatedAt =
     tasks.find((task) => task.experiment_created_at)?.experiment_created_at ??
     null;
   let earliest: Task = tasks[0];
@@ -405,16 +311,23 @@ function pickExperimentCreationMeta(tasks: Task[]): {
   // Prefer the experiment's own owner (the creating run's submitter, stamped
   // on the experiment). Fall back to the earliest task's author for
   // experiments with no stamped owner.
-  const experimentOwner =
+  const taskExperimentOwner =
     tasks.find((task) => task.experiment_owner)?.experiment_owner ?? null;
   return {
-    createdAt: experimentCreatedAt ?? earliest.created_at,
+    createdAt: createdAt ?? taskExperimentCreatedAt ?? earliest.created_at,
     author:
-      experimentOwner ?? earliest.github_username ?? earliest.user ?? null,
+      owner ??
+      taskExperimentOwner ??
+      earliest.github_username ??
+      earliest.user ??
+      null,
   };
 }
 
-function pickExperimentPr(tasks: Task[]): {
+function pickExperimentPr(
+  tasks: Task[],
+  link?: string | null
+): {
   prUrl: string | null;
   prTitle: string | null;
   prNumber: string | null;
@@ -423,7 +336,7 @@ function pickExperimentPr(tasks: Task[]): {
   // run); it is immune to other experiments re-running a shared task. Fall back
   // to the task-derived link for experiments with no stamped link.
   const experimentLink =
-    tasks.find((t) => t.experiment_link)?.experiment_link ?? null;
+    link ?? tasks.find((t) => t.experiment_link)?.experiment_link ?? null;
   if (experimentLink) {
     return {
       prUrl: experimentLink,
@@ -447,13 +360,15 @@ function pickExperimentPr(tasks: Task[]): {
 // that carries one. Renders nothing when no PR metadata is present.
 function ExperimentPrLink({
   tasks,
+  experimentLink,
   isInitialLoading,
 }: {
   tasks: Task[];
+  experimentLink?: string | null;
   isInitialLoading: boolean;
 }) {
   if (isInitialLoading) return null;
-  const { prUrl, prTitle, prNumber } = pickExperimentPr(tasks);
+  const { prUrl, prTitle, prNumber } = pickExperimentPr(tasks, experimentLink);
   if (!prUrl) {
     return (
       <span
@@ -492,11 +407,15 @@ function ExperimentPrLink({
 
 function ExperimentMetaStrip({
   tasks,
+  experimentCreatedAt,
+  experimentOwner,
   isInitialLoading,
   experimentId,
   readOnly = false,
 }: {
   tasks: Task[];
+  experimentCreatedAt?: string | null;
+  experimentOwner?: string | null;
   isInitialLoading: boolean;
   experimentId?: string;
   readOnly?: boolean;
@@ -515,7 +434,11 @@ function ExperimentMetaStrip({
   }, [experimentId]);
 
   if (isInitialLoading) return null;
-  const { createdAt, author } = pickExperimentCreationMeta(tasks);
+  const { createdAt, author } = pickExperimentCreationMeta(
+    tasks,
+    experimentCreatedAt,
+    experimentOwner
+  );
   const showAuthor = Boolean(author) && !readOnly;
   if (!createdAt && !showAuthor && !experimentId) return null;
 
@@ -591,7 +514,6 @@ function ExperimentSummaryBar({
   taskCount,
   summary,
   isInitialLoading,
-  isLoadingTrials,
   showNewSpend,
   // True when cost came from the server rollup, which reports SPEND: every
   // trial that ran, including earlier task versions, superseded retries and
@@ -603,7 +525,6 @@ function ExperimentSummaryBar({
   taskCount: number;
   summary: ExperimentSummary;
   isInitialLoading: boolean;
-  isLoadingTrials: boolean;
   showNewSpend: boolean;
   costIsSpend: boolean;
   costPending: boolean;
@@ -670,16 +591,7 @@ function ExperimentSummaryBar({
         labelInfo="Average of per-task average reward, nop/oracle excluded"
       >
         <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
-          {isLoadingTrials ? (
-            // The score is computed from streamed trial pages; rendering an
-            // intermediate value would show a number that jumps once the
-            // remaining pages land.
-            <Loader2 className="h-5 w-5 animate-spin text-[color:var(--paper-ink-3)]" />
-          ) : scorePct != null ? (
-            `${scorePct.toFixed(1)}%`
-          ) : (
-            "—"
-          )}
+          {scorePct != null ? `${scorePct.toFixed(1)}%` : "—"}
         </span>
       </KpiTile>
       <KpiTile label="Completion">
@@ -988,7 +900,12 @@ function ExperimentSummaryBar({
 
 export function ExperimentDetailView({
   experimentId,
+  experimentCreatedAt,
+  experimentOwner,
+  experimentLink,
   tasksForExperiment,
+  exactSummary,
+  incompleteTaskIds,
   costTotals,
   costTotalsPending = false,
   isLoading,
@@ -1008,7 +925,6 @@ export function ExperimentDetailView({
   onTaskUnlink,
   onTrialDelete,
   onRerun,
-  loadFullTrialOnOpen = false,
 }: ExperimentDetailViewProps) {
   const searchParams = useSearchParams();
   // The experiment's own direct tags (the header editor chips); fetched
@@ -1151,21 +1067,34 @@ export function ExperimentDetailView({
     ExperimentAgentSummary[]
   >([]);
   const hydratedFromUrl = useRef(false);
-  // Deep-linked ?trial= that wasn't in the loaded data when the URL was read:
-  // trial pages stream in after the task shells, so on direct loads the trial
-  // is almost never there yet. Held here until it resolves from a streamed
-  // page or a direct /api/trials fetch.
-  const [pendingUrlTrialId, setPendingUrlTrialId] = useState<string | null>(
-    null
-  );
-  // A pending deep-link trial fetched directly by id, staged until its host
-  // task shell is available to open the drawer with.
-  const [resolvedUrlTrial, setResolvedUrlTrial] = useState<Trial | null>(null);
-  // Task drawer opened by hydration itself while a deep-link trial was still
-  // pending (possibly from a stale ?task= naming the wrong task). The
-  // resolver may replace this drawer; any other open drawer means the user
-  // navigated, and the deep link yields.
+  const deepLinkHandledRef = useRef(false);
+  // The resolver may replace only the task drawer opened from the same URL.
+  // Any other open drawer means the user navigated and the deep link yields.
   const hydrationTaskIdRef = useRef<string | null>(null);
+  const urlTaskId = searchParams.get("task");
+  const urlTask = urlTaskId
+    ? (tasksForExperiment.find((task) => task.id === urlTaskId) ??
+      tasksForExperiment.find((task) => task.name === urlTaskId))
+    : null;
+  const trialParam = searchParams.get("trial");
+  const addressedTrialId =
+    trialParam && /^\d+$/.test(trialParam) && !urlTask
+      ? null
+      : expandTrialParam(trialParam, urlTask?.id ?? urlTaskId);
+  const { data: linkedTrial } = useTrial(
+    deepLinkHandledRef.current ? null : addressedTrialId,
+    { apiBaseUrl }
+  );
+  const linkedTaskInPage = linkedTrial
+    ? tasksForExperiment.find((task) => task.id === linkedTrial.task_id)
+    : null;
+  const { data: linkedTask } = useSWR<Task>(
+    linkedTrial && !linkedTaskInPage
+      ? `${apiBaseUrl}/tasks/${encodeURIComponent(linkedTrial.task_id)}?include_trials=false`
+      : null,
+    fetcher,
+    { revalidateOnFocus: false }
+  );
   const isInitialLoading = isLoading && tasksForExperiment.length === 0;
   const deferredTasksForDerivedData = useDeferredValue(tasksForExperiment);
 
@@ -1264,7 +1193,7 @@ export function ExperimentDetailView({
       next.set("task", drawerState.task.id);
       if (drawerState.mode === "trial" && drawerState.trial) {
         next.set("trial", drawerState.trial.id);
-      } else if (pendingUrlTrialId == null) {
+      } else if (!addressedTrialId || deepLinkHandledRef.current) {
         // While a deep-linked trial is still resolving, the drawer is in task
         // mode but the ?trial= param must survive for the promotion to keep
         // the URL truthful.
@@ -1288,7 +1217,7 @@ export function ExperimentDetailView({
       } else {
         next.delete("taskLines");
       }
-    } else if (pendingUrlTrialId == null) {
+    } else if (!addressedTrialId || deepLinkHandledRef.current) {
       // Same pending guard as above: a trial-only deep link keeps the drawer
       // closed until the trial resolves, and stripping the params here would
       // destroy the address it's resolving from.
@@ -1309,8 +1238,8 @@ export function ExperimentDetailView({
     }
   }, [
     activeTaskPane,
+    addressedTrialId,
     drawerState,
-    pendingUrlTrialId,
     taskPaneFile,
     taskPaneLines,
   ]);
@@ -1319,20 +1248,15 @@ export function ExperimentDetailView({
     if (hydratedFromUrl.current || tasksForExperiment.length === 0) return;
     hydratedFromUrl.current = true;
 
-    const urlTaskId = searchParams.get("task");
-    const trialParam = searchParams.get("trial");
     if (!urlTaskId && !trialParam) return;
 
     // Fall back to task name so hand-written links like ?task=<name> work;
     // the URL-sync effect rewrites the param to the canonical id on open.
-    const task = urlTaskId
-      ? (tasksForExperiment.find((t) => t.id === urlTaskId) ??
-        tasksForExperiment.find((t) => t.name === urlTaskId))
-      : null;
+    const task = urlTask;
 
     // A hand-shortened ?trial= is an index against the task in the address;
     // the full id links carry passes through untouched.
-    const urlTrialId = expandTrialParam(trialParam, task?.id ?? urlTaskId);
+    const urlTrialId = addressedTrialId;
 
     if (urlTrialId) {
       // The trial id is the source of truth for its host task, so scan every
@@ -1355,6 +1279,7 @@ export function ExperimentDetailView({
             orderedTrials,
             trialGroups,
           });
+          deepLinkHandledRef.current = true;
           return;
         }
       }
@@ -1362,7 +1287,6 @@ export function ExperimentDetailView({
       // trial page or the direct /api/trials fetch. Remember which task
       // drawer hydration opens below so the resolver may replace it — it
       // must never replace one the user opened themselves.
-      setPendingUrlTrialId(urlTrialId);
       hydrationTaskIdRef.current = task?.id ?? null;
     }
 
@@ -1381,7 +1305,14 @@ export function ExperimentDetailView({
       orderedTrials,
       trialGroups,
     });
-  }, [tasksForExperiment, searchParams, buildTrialGroups]);
+  }, [
+    addressedTrialId,
+    buildTrialGroups,
+    tasksForExperiment,
+    trialParam,
+    urlTask,
+    urlTaskId,
+  ]);
 
   // Re-sync the open drawer with freshly-loaded trial data. On direct URL
   // loads the drawer opens as soon as the lightweight task shells arrive,
@@ -1428,17 +1359,15 @@ export function ExperimentDetailView({
 
   // Any drawer change the user makes themselves cancels an unresolved deep
   // link: a late resolve must never yank them away from where they went.
-  const cancelPendingDeepLink = useCallback(() => {
-    setPendingUrlTrialId(null);
-    setResolvedUrlTrial(null);
+  const cancelDeepLink = useCallback(() => {
+    deepLinkHandledRef.current = true;
     hydrationTaskIdRef.current = null;
   }, []);
 
   // Open a resolved deep-link trial. Yields if the user has navigated on
   // their own since hydration: only a closed drawer, the host task's own
   // task-mode drawer, or the task drawer hydration itself opened (possibly
-  // off a stale ?task=) may be replaced. Yielding still clears the pending
-  // state — a deep link never overrides the user.
+  // off a stale ?task=) may be replaced.
   const openDeepLinkTrial = useCallback(
     (host: Task, trial: Trial) => {
       setDrawerState((prev) => {
@@ -1466,195 +1395,87 @@ export function ExperimentDetailView({
           trialGroups,
         };
       });
-      setPendingUrlTrialId(null);
-      setResolvedUrlTrial(null);
+      deepLinkHandledRef.current = true;
     },
     [tasksForExperiment, buildTrialGroups]
   );
 
-  // Resolve a pending deep-link trial from grid data as it streams in. This
-  // is the only resolution path public share pages have (they can't use the
-  // authed by-id route), and it also covers the authed page whenever the
-  // direct fetch below is slow or failed transiently.
+  // A trial id identifies its host task. Fetch both resources directly so a
+  // URL can open a row whose task and trial pages have not been loaded.
   useEffect(() => {
-    if (pendingUrlTrialId == null) return;
-    for (const host of tasksForExperiment) {
-      const trial = (host.trials ?? []).find((t) => t.id === pendingUrlTrialId);
-      if (trial) {
-        openDeepLinkTrial(host, trial);
-        return;
-      }
-    }
-    // Public share pages have no by-id fetch, so this scan is their only
-    // resolution source: once everything the page will ever have is loaded
-    // and the id still isn't there, the deep link is dead — give it up so
-    // URL sync can drop the stale param.
-    if (!loadFullTrialOnOpen && !isLoading && !isLoadingTrials) {
-      setPendingUrlTrialId(null);
-    }
+    if (!addressedTrialId || deepLinkHandledRef.current) return;
+    if (!linkedTrial) return;
+    const host = linkedTaskInPage ?? linkedTask;
+    if (!host) return;
+    const hostWithTrial = (host.trials ?? []).some(
+      (trial) => trial.id === linkedTrial.id
+    )
+      ? host
+      : { ...host, trials: [...(host.trials ?? []), linkedTrial] };
+    openDeepLinkTrial(hostWithTrial, linkedTrial);
   }, [
-    pendingUrlTrialId,
-    tasksForExperiment,
+    addressedTrialId,
+    linkedTrial,
+    linkedTask,
+    linkedTaskInPage,
     openDeepLinkTrial,
-    loadFullTrialOnOpen,
-    isLoading,
-    isLoadingTrials,
   ]);
 
-  // A deep-linked trial can also point at data the grid will never stream in
-  // (a task beyond the prefetched pages, or a superseded trial), so resolve
-  // the pending id with a direct fetch too. The fetched trial is only staged
-  // here; the effect below opens it once its host task shell is known.
-  // Whichever source lands first wins: a resolve from the streamed path
-  // clears the pending id, which cancels this fetch. Transient failures
-  // retry with backoff (the streamed path keeps running meanwhile); a
-  // definitive 404 or exhausted retries give the deep link up so the
-  // pending state and stale URL params don't outlive their chances.
-  useEffect(() => {
-    if (pendingUrlTrialId == null || !loadFullTrialOnOpen) return;
-    let cancelled = false;
-    (async () => {
-      const MAX_ATTEMPTS = 3;
-      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-        try {
-          const res = await fetch(
-            `${apiBaseUrl}/trials/${encodeURIComponent(pendingUrlTrialId)}`,
-            { cache: "no-store" }
-          );
-          if (cancelled) return;
-          if (res.ok) {
-            const fetched = (await res.json()) as Trial;
-            if (!cancelled) setResolvedUrlTrial(fetched);
-            return;
-          }
-          if (res.status === 404) break;
-        } catch {
-          // Transient network failure — retry below.
-        }
-        if (cancelled) return;
-        if (attempt < MAX_ATTEMPTS) {
-          await new Promise((resolve) =>
-            setTimeout(resolve, 1000 * 2 ** (attempt - 1))
-          );
-          if (cancelled) return;
-        }
-      }
-      if (!cancelled) setPendingUrlTrialId(null);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [pendingUrlTrialId, loadFullTrialOnOpen, apiBaseUrl]);
+  const summary = useMemo<ExperimentSummary>(
+    () => ({
+      rewardSuccess: exactSummary.reward_success,
+      rewardSum: exactSummary.reward_sum,
+      rewardTotal: exactSummary.reward_total,
+      avgScore: exactSummary.average_score,
+      totalTrials: exactSummary.trial_count,
+      completedTrials: exactSummary.completed,
+      failedTrials: exactSummary.failed,
+      skippedTrials: exactSummary.skipped,
+      passCount: exactSummary.pass_count,
+      partialCount: exactSummary.partial_count,
+      failCount: exactSummary.fail_count,
+      harnessErrorCount: exactSummary.harness_error_count,
+      pendingCount: exactSummary.active,
+      costUsd: costTotals?.cost_usd ?? 0,
+      costTrialCount: costTotals?.cost_trial_count ?? 0,
+      costHasEstimated: costTotals?.cost_has_estimated ?? false,
+      costHasNative: costTotals?.cost_has_native ?? false,
+      qaCostUsd: costTotals?.qa_cost_usd ?? 0,
+      ownedQaCostUsd: costTotals?.owned_qa_cost_usd ?? 0,
+      qaHasEstimated: costTotals?.qa_has_estimated ?? false,
+      ownedCostUsd: costTotals?.owned_cost_usd ?? 0,
+      ownedTrialCount: costTotals?.owned_trial_count ?? 0,
+      ownedHasEstimated: costTotals?.owned_has_estimated ?? false,
+      ownedHasNative: costTotals?.owned_has_native ?? false,
+      tokenCount: costTotals?.token_count ?? 0,
+      tokenTrialCount: costTotals?.token_trial_count ?? 0,
+      ownedTokenCount: costTotals?.owned_token_count ?? 0,
+      ownedTokenTrialCount: costTotals?.owned_token_trial_count ?? 0,
+      billedCostUsd: costTotals?.billed_cost_usd ?? 0,
+      billedTrialCount: costTotals?.billed_trial_count ?? 0,
+      billedHasEstimated: costTotals?.billed_has_estimated ?? false,
+      billedHasNative: costTotals?.billed_has_native ?? false,
+      billedTokenCount: costTotals?.billed_token_count ?? 0,
+      billedTokenTrialCount: costTotals?.billed_token_trial_count ?? 0,
+      excludedCostUsd: costTotals?.excluded_cost_usd ?? 0,
+      ownedExcludedCostUsd: costTotals?.owned_excluded_cost_usd ?? 0,
+      experimentCostExcluded: costTotals?.experiment_cost_excluded ?? false,
+    }),
+    [costTotals, exactSummary]
+  );
 
-  // Open a directly-fetched deep-link trial. The trial is the source of
-  // truth: its task_id names the host task, so the link works even when the
-  // ?task= param is missing or names the wrong task. Waits for the host
-  // task's shell to arrive if it hasn't yet (shells cover the whole
-  // experiment in one request).
-  useEffect(() => {
-    if (!resolvedUrlTrial) return;
-    // A cancelled deep link stays cancelled: an in-flight fetch can write
-    // resolvedUrlTrial back after cancelPendingDeepLink cleared it (both
-    // updates land in the same batch, last write wins). The pending id is
-    // nulled by every cancel, so a mismatch means this value is a late
-    // revival — drop it instead of reopening a drawer the user closed.
-    if (pendingUrlTrialId !== resolvedUrlTrial.id) {
-      setResolvedUrlTrial(null);
-      return;
-    }
-    const host = tasksForExperiment.find(
-      (t) => t.id === resolvedUrlTrial.task_id
-    );
-    if (!host) {
-      // Shells cover the whole experiment in one request, but slim-task
-      // pages can still merge in hosts the shells never returned (shells
-      // are capped, and the trials merge appends enriched-only tasks). So
-      // the deep link only gives up once BOTH loads are done and the host
-      // still isn't there — then it truly belongs to another experiment
-      // or an unlinked task, and URL sync may drop the stale params.
-      if (!isLoading && !isLoadingTrials && tasksForExperiment.length > 0) {
-        cancelPendingDeepLink();
-      }
-      return;
-    }
-    openDeepLinkTrial(host, resolvedUrlTrial);
-  }, [
-    resolvedUrlTrial,
-    pendingUrlTrialId,
-    tasksForExperiment,
-    openDeepLinkTrial,
-    isLoading,
-    isLoadingTrials,
-    cancelPendingDeepLink,
-  ]);
-
-  // Prefer the server-side rollup for cost: ``buildExperimentSummary`` sums
-  // only the loaded pages, and only the trials the grid renders, so it
-  // understates spend on both counts. Non-cost fields stay client-side --
-  // they describe the visible rows, which is what they should describe.
-  const summary = useMemo(() => {
-    const base = buildExperimentSummary(deferredTasksForDerivedData);
-    if (!costTotals) return base;
-    return {
-      ...base,
-      costUsd: costTotals.cost_usd,
-      costTrialCount: costTotals.cost_trial_count,
-      costHasEstimated: costTotals.cost_has_estimated,
-      costHasNative: costTotals.cost_has_native,
-      qaCostUsd: costTotals.qa_cost_usd ?? 0,
-      ownedQaCostUsd: costTotals.owned_qa_cost_usd ?? 0,
-      qaHasEstimated: costTotals.qa_has_estimated ?? false,
-      tokenCount: costTotals.token_count,
-      tokenTrialCount: costTotals.token_trial_count,
-      // ?? base.*: deploy-skew guard — a backend that predates owned_* omits
-      // the fields; the client fold's partial owned sum beats a hard $0.00.
-      ownedCostUsd: costTotals.owned_cost_usd ?? base.ownedCostUsd,
-      ownedTrialCount: costTotals.owned_trial_count ?? base.ownedTrialCount,
-      ownedHasEstimated:
-        costTotals.owned_has_estimated ?? base.ownedHasEstimated,
-      ownedHasNative: costTotals.owned_has_native ?? base.ownedHasNative,
-      ownedTokenCount: costTotals.owned_token_count ?? base.ownedTokenCount,
-      ownedTokenTrialCount:
-        costTotals.owned_token_trial_count ?? base.ownedTokenTrialCount,
-      billedCostUsd: costTotals.billed_cost_usd,
-      billedTrialCount: costTotals.billed_trial_count,
-      billedHasEstimated: costTotals.billed_has_estimated,
-      billedHasNative: costTotals.billed_has_native,
-      billedTokenCount: costTotals.billed_token_count,
-      billedTokenTrialCount: costTotals.billed_token_trial_count,
-      excludedCostUsd: costTotals.excluded_cost_usd ?? 0,
-      ownedExcludedCostUsd: costTotals.owned_excluded_cost_usd ?? 0,
-      experimentCostExcluded: costTotals.experiment_cost_excluded ?? false,
-    };
-  }, [deferredTasksForDerivedData, costTotals]);
-
-  // Task-level QA rollup for the summary bar. Null when no task in the
-  // grid ever ran QA, so non-QA experiments keep their five tiles.
   const qaRollup = useMemo(() => {
-    let accepted = 0;
-    let rejected = 0;
-    let running = 0;
-    let failed = 0;
-    for (const task of deferredTasksForDerivedData) {
-      if (taskHasActiveVerdict(task)) {
-        running += 1;
-        continue;
-      }
-      const v = task.verdict;
-      if (v) {
-        const label = v.verdict ?? (v.is_good ? "accept" : "reject");
-        if (label === "accept") accepted += 1;
-        else rejected += 1;
-      } else if (task.verdict_status === "failed") {
-        failed += 1;
-      }
-    }
-    if (accepted + rejected + running + failed === 0) return null;
-    return { accepted, rejected, running, failed };
-  }, [deferredTasksForDerivedData]);
+    const qa = {
+      accepted: exactSummary.qa_accepted,
+      rejected: exactSummary.qa_rejected,
+      running: exactSummary.qa_running,
+      failed: exactSummary.qa_failed,
+    };
+    return qa.accepted + qa.rejected + qa.running + qa.failed > 0 ? qa : null;
+  }, [exactSummary]);
 
   const closeDrawer = () => {
-    cancelPendingDeepLink();
+    cancelDeepLink();
     setDrawerState(null);
   };
 
@@ -1663,7 +1484,7 @@ export function ExperimentDetailView({
     const firstGroup = drawerState.trialGroups[0];
     if (!firstGroup || firstGroup.trials.length === 0) return;
 
-    cancelPendingDeepLink();
+    cancelDeepLink();
     const firstTrial = firstGroup.trials[0];
     setDrawerState({
       ...drawerState,
@@ -1675,7 +1496,7 @@ export function ExperimentDetailView({
 
   const handleNavigateToTask = () => {
     if (!drawerState) return;
-    cancelPendingDeepLink();
+    cancelDeepLink();
     setDrawerState({
       ...drawerState,
       mode: "task",
@@ -1686,7 +1507,7 @@ export function ExperimentDetailView({
 
   const handleNavigateToTrial = (trial: Trial, trialIndex: number) => {
     if (!drawerState) return;
-    cancelPendingDeepLink();
+    cancelDeepLink();
     setDrawerState({
       ...drawerState,
       mode: "trial",
@@ -1705,7 +1526,7 @@ export function ExperimentDetailView({
       if (!drawerState) return false;
       const { trialGroups, orderedTrials } = buildTrialGroups(drawerState.task);
       const trialIndex = orderedTrials.findIndex((t) => t.id === trial.id);
-      cancelPendingDeepLink();
+      cancelDeepLink();
       setDrawerState({
         ...drawerState,
         mode: "trial",
@@ -1716,7 +1537,7 @@ export function ExperimentDetailView({
       });
       return true;
     },
-    [drawerState, buildTrialGroups, cancelPendingDeepLink]
+    [drawerState, buildTrialGroups, cancelDeepLink]
   );
 
   return (
@@ -1747,6 +1568,8 @@ export function ExperimentDetailView({
                 </div>
                 <ExperimentMetaStrip
                   tasks={tasksForExperiment}
+                  experimentCreatedAt={experimentCreatedAt}
+                  experimentOwner={experimentOwner}
                   isInitialLoading={isInitialLoading}
                   experimentId={experimentId}
                   readOnly={readOnly}
@@ -1766,6 +1589,7 @@ export function ExperimentDetailView({
                   readOnly ? undefined : (
                     <ExperimentPrLink
                       tasks={tasksForExperiment}
+                      experimentLink={experimentLink}
                       isInitialLoading={isInitialLoading}
                     />
                   )
@@ -1777,10 +1601,9 @@ export function ExperimentDetailView({
           </div>
 
           <ExperimentSummaryBar
-            taskCount={tasksForExperiment.length}
+            taskCount={exactSummary.task_count}
             summary={summary}
             isInitialLoading={isInitialLoading}
-            isLoadingTrials={isLoadingTrials}
             // The owned-vs-gathered spend split (and the billing attribution
             // in its tooltip) is internal; keep it off the public share view
             // (the only readOnly consumer).
@@ -1804,6 +1627,7 @@ export function ExperimentDetailView({
                 modelScopedAgents={displayModelScopedAgents}
                 isLoading={isLoading}
                 isLoadingTrials={isLoadingTrials}
+                incompleteTaskIds={incompleteTaskIds}
                 showPassAtK={showPassAtK}
                 experimentId={experimentId}
                 onTaskUnlink={onTaskUnlink}
@@ -1812,7 +1636,7 @@ export function ExperimentDetailView({
                 readOnly={readOnly}
                 showAnalysis={showAnalysis}
                 onTrialSelect={(trial, task, context) => {
-                  cancelPendingDeepLink();
+                  cancelDeepLink();
                   const taskIndex = tasksForExperiment.findIndex(
                     (t) => t.id === task.id
                   );
@@ -1829,11 +1653,11 @@ export function ExperimentDetailView({
                   });
                 }}
                 onProbeSelect={(trial, task) => {
-                  cancelPendingDeepLink();
+                  cancelDeepLink();
                   setProbeDrawer({ taskId: task.id, trialId: trial.id });
                 }}
                 onTaskSelect={(task, context) => {
-                  cancelPendingDeepLink();
+                  cancelDeepLink();
                   const { trialGroups, orderedTrials } = buildTrialGroups(task);
                   // Land on the task overview — task-level QA plus the
                   // aggregated trial QA — never on a specific trial. Trials
@@ -1915,7 +1739,7 @@ export function ExperimentDetailView({
               loadFilesLazily={readOnly}
               onNavigate={(nextTask, nextIndex) => {
                 if (!drawerState) return;
-                cancelPendingDeepLink();
+                cancelDeepLink();
                 const { trialGroups, orderedTrials } =
                   buildTrialGroups(nextTask);
                 setDrawerState({
@@ -1957,7 +1781,7 @@ export function ExperimentDetailView({
                 onDelete={onTrialDelete}
                 allowRetry={allowRetry}
                 showAnalysis={showAnalysis}
-                requireTrialDetail={loadFullTrialOnOpen}
+                requireTrialDetail
                 allowDelete={Boolean(onTrialDelete)}
                 apiBaseUrl={apiBaseUrl}
                 contentOnly={true}

@@ -576,6 +576,125 @@ export interface ExperimentCostTotals {
   experiment_cost_excluded?: boolean;
 }
 
+export type ExperimentAccess =
+  | { kind: "member"; experimentId: string }
+  | { kind: "public"; token: string };
+
+export interface ExperimentPageVerdict {
+  verdict?: "accept" | "reject" | string | null;
+  is_good?: boolean | null;
+  confidence?: string | null;
+}
+
+export type ExperimentTaskRow = Pick<
+  Task,
+  | "id"
+  | "name"
+  | "status"
+  | "priority"
+  | "user"
+  | "task_path"
+  | "current_version"
+  | "current_version_id"
+  | "trial_version"
+  | "trial_version_id"
+  | "total"
+  | "completed"
+  | "failed"
+  | "skipped"
+  | "reward_success"
+  | "reward_sum"
+  | "reward_total"
+  | "run_analysis"
+  | "verdict_status"
+  | "verdict_error"
+  | "created_at"
+  | "updated_at"
+> & { verdict?: ExperimentPageVerdict | null };
+
+export interface ExperimentPageSummary {
+  task_count: number;
+  trial_count: number;
+  completed: number;
+  failed: number;
+  skipped: number;
+  active: number;
+  reward_success: number;
+  reward_sum: number;
+  reward_total: number;
+  pass_count: number;
+  partial_count: number;
+  fail_count: number;
+  harness_error_count: number;
+  average_score: number | null;
+  qa_accepted: number;
+  qa_rejected: number;
+  qa_running: number;
+  qa_failed: number;
+}
+
+export interface ExperimentOpenResponse {
+  experiment_id: string;
+  name: string;
+  created_at: string;
+  owner?: string | null;
+  link?: string | null;
+  revision: string;
+  has_active_trials: boolean;
+  summary: ExperimentPageSummary;
+  tasks: ExperimentTaskRow[];
+  next_cursor: string | null;
+}
+
+export interface ExperimentTrialCellAnalysis {
+  status?: JobStatus | null;
+  classification?: AnalysisClassification | null;
+  subtype?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+}
+
+export type ExperimentTrialCell = Pick<
+  Trial,
+  | "id"
+  | "task_id"
+  | "task_version_id"
+  | "name"
+  | "agent"
+  | "model"
+  | "provider"
+  | "status"
+  | "attempts"
+  | "max_attempts"
+  | "harbor_stage"
+  | "reward"
+  | "input_tokens"
+  | "cache_tokens"
+  | "output_tokens"
+  | "cost_usd"
+  | "cost_is_estimated"
+  | "is_billed"
+  | "cost_exclusion_reason"
+  | "has_trajectory"
+  | "created_at"
+  | "started_at"
+  | "finished_at"
+> & {
+  owned_here?: boolean | null;
+  analysis: ExperimentTrialCellAnalysis;
+};
+
+export interface ExperimentTrialPageResponse {
+  revision: string;
+  trials: ExperimentTrialCell[];
+  next_cursor: string | null;
+}
+
+export interface ExperimentRevisionResponse {
+  revision: string;
+  has_active_trials: boolean;
+}
+
 export interface TaskDetailResponse {
   task: Task;
   versions: TaskVersionSummary[];

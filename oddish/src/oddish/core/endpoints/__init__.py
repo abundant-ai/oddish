@@ -67,8 +67,6 @@ from oddish.core.endpoints.tasks_query import (
     browse_task_facets_core,
     browse_tasks_core,
     get_task_status_core,
-    list_experiment_slim_tasks,
-    list_experiment_task_shells_core,
     list_tasks_core,
 )
 from oddish.core.endpoints.trials import (
@@ -121,8 +119,6 @@ __all__ = [
     "get_trial_response_for_org_core",
     "get_trial_result_core",
     "get_trial_trajectory_core",
-    "list_experiment_slim_tasks",
-    "list_experiment_task_shells_core",
     "list_task_versions_core",
     "list_tasks_core",
     "rerun_pre_trial_audit_core",

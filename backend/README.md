@@ -317,6 +317,9 @@ All routes require auth unless marked public.
 | PATCH | `/experiments/{experiment_id}` | Update experiment name and/or description (each independently optional) |
 | POST | `/experiments/{experiment_id}/publish` | Publish experiment |
 | POST | `/experiments/{experiment_id}/feedback` | Record an append-only QA review vote (`qa_verdict`/`qa_action_item`, `agree`/`disagree`) |
+| GET | `/experiments/{experiment_id}/open` | Exact totals plus one bounded task page (100 rows, under 50 KB) |
+| GET | `/experiments/{experiment_id}/trial-page` | One flat grid page of at most 250 projected trials |
+| GET | `/experiments/{experiment_id}/revision` | Experiment revision and active-work flag for conditional polling |
 | POST | `/experiments/{experiment_id}/unpublish` | Unpublish experiment |
 | DELETE | `/experiments/{experiment_id}` | Soft-delete experiment + its trials and now-orphaned tasks (admin only) |
 | DELETE | `/experiments/{experiment_id}/tasks/{task_id}` | Unlink a shared task from one experiment (tombstones the join row + that experiment's trials; the task survives) |
@@ -341,9 +344,12 @@ All routes require auth unless marked public.
 |--------|----------|-------------|
 | GET | `/public/experiments/{public_token}` | Public experiment metadata |
 | GET | `/public/experiments` | Deliberately returns an empty list — public share links must be entered directly, never enumerated |
-| GET | `/public/experiments/{public_token}/tasks` | Public tasks and trials for a shared experiment |
+| GET | `/public/experiments/{public_token}/open` | Exact totals plus one bounded public task page |
+| GET | `/public/experiments/{public_token}/trial-page` | One flat public grid page of at most 250 projected trials |
+| GET | `/public/experiments/{public_token}/revision` | Public revision and active-work flag |
 | GET | `/public/experiments/{public_token}/tasks/{task_id}` | Public task status within a shared experiment |
 | GET | `/public/experiments/{public_token}/tasks/{task_id}/trials` | Public trial list within a shared experiment |
+| GET | `/public/experiments/{public_token}/trials/{trial_id}` | Token-scoped full trial detail with public aliases and billing fields removed |
 | GET | `/public/experiments/{public_token}/trials/{trial_id}/live` | Public live transcript and running usage |
 | GET | `/public/experiments/{public_token}/trials/{trial_id}/logs` | Public trial logs |
 | GET | `/public/experiments/{public_token}/trials/{trial_id}/logs/structured` | Public structured logs |

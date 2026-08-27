@@ -90,7 +90,7 @@ export async function generateMetadata({
 }
 
 // This page deliberately fetches no data on the server. The browser
-// fetches the same task-shells URL faster than the server render could
+// fetches the same experiment-open URL faster than the server render could
 // stream it, and keeping a server copy and a client copy of the same
 // data caused staleness conflicts between them. The page shows its
 // skeleton immediately and the client fetches the data once.

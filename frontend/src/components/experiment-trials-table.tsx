@@ -130,6 +130,7 @@ type ExperimentTrialsTableProps = {
   modelScopedAgents: ReadonlySet<string>;
   isLoading: boolean;
   isLoadingTrials?: boolean;
+  incompleteTaskIds?: ReadonlySet<string>;
   showPassAtK?: boolean;
   /** Scope bulk cancel to this experiment so shared tasks stay intact elsewhere. */
   experimentId?: string;
@@ -409,8 +410,7 @@ function TaskVerdictChip({
       ? `QA rejected this task (${task.verdict.confidence} confidence)`
       : "QA rejected this task";
   } else {
-    chipClass =
-      "bg-[color:var(--paper-bg-2)] text-[color:var(--paper-ink-3)]";
+    chipClass = "bg-[color:var(--paper-bg-2)] text-[color:var(--paper-ink-3)]";
     label = "QA failed";
     tip = task.verdict_error
       ? `QA failed: ${task.verdict_error}`
@@ -572,6 +572,7 @@ export function ExperimentTrialsTable({
   modelScopedAgents,
   isLoading,
   isLoadingTrials = false,
+  incompleteTaskIds = new Set(),
   showPassAtK = false,
   experimentId,
   onTaskUnlink,
@@ -1313,9 +1314,7 @@ export function ExperimentTrialsTable({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           task_ids: taskIds,
-          ...(scopedExperimentId
-            ? { experiment_id: scopedExperimentId }
-            : {}),
+          ...(scopedExperimentId ? { experiment_id: scopedExperimentId } : {}),
         }),
       });
       if (!res.ok) {
@@ -2324,8 +2323,7 @@ export function ExperimentTrialsTable({
                   const task = row.task;
                   const index = row.index;
                   if (!task) return null;
-                  const isTrialDataPending =
-                    isLoadingTrials && task.trials == null;
+                  const isTrialDataPending = incompleteTaskIds.has(task.id);
                   const context = getTaskContext(task);
                   const grouped =
                     context?.groupedTrialsByAgent ?? EMPTY_TRIAL_MAP;

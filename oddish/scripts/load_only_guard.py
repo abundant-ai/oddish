@@ -82,8 +82,6 @@ _TASKS_QUERY_PATH = _PKG_ROOT / "core" / "endpoints" / "tasks_query.py"
 # (the tripwire fails until you do).
 _COVERAGE_UNITS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("list_tasks_core", ("build_task_status_response_compact",)),
-    ("list_experiment_task_shells_core", ("build_task_status_responses_from_counts",)),
-    ("list_experiment_slim_tasks", ("build_slim_task_status_response",)),
 )
 _COVERED_FUNCTIONS = frozenset(fn for fn, _ in _COVERAGE_UNITS)
 

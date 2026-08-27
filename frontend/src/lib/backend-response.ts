@@ -14,6 +14,85 @@ type BackendJsonResult = {
   status: number;
 };
 
+const PASSTHROUGH_RESPONSE_HEADERS = [
+  "cache-control",
+  "content-type",
+  "server-timing",
+  "traceparent",
+  "tracestate",
+  "x-request-id",
+] as const;
+
+async function forwardBackendResponse({
+  request,
+  path,
+  headers: upstreamHeaders,
+}: {
+  request: Request;
+  path: string;
+  headers?: HeadersInit;
+}): Promise<NextResponse> {
+  const response = await fetch(getBackendUrl(path), {
+    cache: "no-store",
+    signal: request.signal,
+    headers: backendFetchHeaders(request, upstreamHeaders),
+  });
+  const headers = new Headers();
+  for (const name of PASSTHROUGH_RESPONSE_HEADERS) {
+    const value = response.headers.get(name);
+    if (value) headers.set(name, value);
+  }
+  return new NextResponse(await response.arrayBuffer(), {
+    status: response.status,
+    headers,
+  });
+}
+
+/** Proxy a member resource without decoding or reshaping its response body. */
+export async function proxyBackendResponse({
+  request,
+  path,
+}: {
+  request: Request;
+  path: string;
+}): Promise<NextResponse> {
+  try {
+    const { getToken } = await auth();
+    const token = await getClerkToken(getToken);
+    if (!token) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    return forwardBackendResponse({
+      request,
+      path,
+      headers: getAuthHeaders(token),
+    });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Unknown error" },
+      { status: 503 }
+    );
+  }
+}
+
+/** Proxy a public resource without invoking Clerk or reshaping its body. */
+export async function proxyPublicBackendResponse({
+  request,
+  path,
+}: {
+  request: Request;
+  path: string;
+}): Promise<NextResponse> {
+  try {
+    return forwardBackendResponse({ request, path });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Unknown error" },
+      { status: 503 }
+    );
+  }
+}
+
 export async function readBackendJson(
   response: Response,
   fallbackError: string
@@ -91,7 +170,7 @@ export async function proxyBackendJson({
         request,
         sendsBody
           ? { "Content-Type": "application/json", ...getAuthHeaders(token) }
-          : getAuthHeaders(token),
+          : getAuthHeaders(token)
       ),
       body: sendsBody ? JSON.stringify(body) : undefined,
     });
@@ -103,7 +182,7 @@ export async function proxyBackendJson({
     if (parseError) {
       return attachUpstreamServerTiming(
         NextResponse.json(parseError, { status }),
-        res,
+        res
       );
     }
     if (!res.ok) {
@@ -111,14 +190,14 @@ export async function proxyBackendJson({
         NextResponse.json(backendErrorPayload(data, "Upstream error"), {
           status: res.status,
         }),
-        res,
+        res
       );
     }
     return attachUpstreamServerTiming(
       data === null
         ? NextResponse.json({ error: "Upstream error" }, { status: 502 })
         : NextResponse.json(data, { status: res.status }),
-      res,
+      res
     );
   } catch (error) {
     return NextResponse.json(

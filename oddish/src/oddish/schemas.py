@@ -4,6 +4,21 @@ from datetime import datetime
 from typing import Literal
 from urllib.parse import urlsplit
 
+from harbor.models.environment_type import EnvironmentType
+from harbor.models.job.config import RetryConfig as HarborRetryConfig
+from harbor.models.task.config import MCPServerConfig as MCPServerSpec
+from harbor.models.trial.config import (
+    AgentConfig as HarborAgentConfig,
+)
+from harbor.models.trial.config import (
+    ArtifactConfig as HarborArtifactConfig,
+)
+from harbor.models.trial.config import (
+    EnvironmentConfig as HarborEnvironmentConfig,
+)
+from harbor.models.trial.config import (
+    VerifierConfig as HarborVerifierConfig,
+)
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -11,16 +26,6 @@ from pydantic import (
     SecretStr,
     field_validator,
     model_validator,
-)
-
-from harbor.models.environment_type import EnvironmentType
-from harbor.models.job.config import RetryConfig as HarborRetryConfig
-from harbor.models.task.config import MCPServerConfig as MCPServerSpec
-from harbor.models.trial.config import (
-    AgentConfig as HarborAgentConfig,
-    ArtifactConfig as HarborArtifactConfig,
-    EnvironmentConfig as HarborEnvironmentConfig,
-    VerifierConfig as HarborVerifierConfig,
 )
 
 from oddish.config import is_nop_oracle_agent, normalize_model_id
@@ -34,7 +39,6 @@ from oddish.db import (
 )
 from oddish.registry_auth import normalize_registry_host
 from oddish.runtime.ec2_policy import validate_ec2_environment_config
-
 
 # =============================================================================
 # Harbor Execution Config (wraps Harbor's native types)
@@ -1000,6 +1004,135 @@ class ExperimentCostTotals(BaseModel):
     qa_has_estimated: bool = False
 
 
+class ExperimentPageVerdict(BaseModel):
+    """Task verdict fields rendered in the experiment grid."""
+
+    verdict: str | None = None
+    is_good: bool | None = None
+    confidence: str | None = None
+
+
+class ExperimentTaskRow(BaseModel):
+    """One bounded task row for an experiment page."""
+
+    id: str
+    name: str
+    status: TaskStatus
+    priority: Priority
+    user: str
+    task_path: str
+    current_version: int | None = None
+    current_version_id: str | None = None
+    trial_version: int | None = None
+    trial_version_id: str | None = None
+    total: int = 0
+    completed: int = 0
+    failed: int = 0
+    skipped: int = 0
+    reward_success: int = 0
+    reward_sum: float = 0.0
+    reward_total: int = 0
+    run_analysis: bool = False
+    verdict_status: VerdictStatus | None = None
+    verdict: ExperimentPageVerdict | None = None
+    verdict_error: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ExperimentPageSummary(BaseModel):
+    """Exact experiment totals, independent of loaded task or trial pages."""
+
+    task_count: int = 0
+    trial_count: int = 0
+    completed: int = 0
+    failed: int = 0
+    skipped: int = 0
+    active: int = 0
+    reward_success: int = 0
+    reward_sum: float = 0.0
+    reward_total: int = 0
+    pass_count: int = 0
+    partial_count: int = 0
+    fail_count: int = 0
+    harness_error_count: int = 0
+    average_score: float | None = None
+    qa_accepted: int = 0
+    qa_rejected: int = 0
+    qa_running: int = 0
+    qa_failed: int = 0
+
+
+class ExperimentOpenResponse(BaseModel):
+    """Bounded first-paint resource for an experiment page."""
+
+    experiment_id: str
+    name: str
+    created_at: datetime
+    owner: str | None = None
+    link: str | None = None
+    revision: datetime
+    has_active_trials: bool
+    summary: ExperimentPageSummary
+    tasks: list[ExperimentTaskRow] = Field(default_factory=list)
+    next_cursor: str | None = None
+
+
+class ExperimentTrialAnalysis(BaseModel):
+    """Compact QA state rendered inside one experiment grid cell."""
+
+    status: AnalysisStatus | None = None
+    classification: str | None = None
+    subtype: str | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+class ExperimentTrialCell(BaseModel):
+    """Flat trial projection for the experiment grid."""
+
+    id: str
+    task_id: str
+    task_version_id: str | None = None
+    name: str
+    agent: str
+    model: str | None = None
+    provider: str
+    status: TrialStatus
+    attempts: int
+    max_attempts: int
+    harbor_stage: str | None = None
+    reward: float | None = None
+    input_tokens: int | None = None
+    cache_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_usd: float | None = None
+    cost_is_estimated: bool | None = None
+    owned_here: bool | None = None
+    is_billed: bool | None = None
+    cost_exclusion_reason: str | None = None
+    has_trajectory: bool = False
+    analysis: ExperimentTrialAnalysis = Field(default_factory=ExperimentTrialAnalysis)
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+class ExperimentTrialPageResponse(BaseModel):
+    """One bounded flat page of experiment trials."""
+
+    revision: datetime
+    trials: list[ExperimentTrialCell] = Field(default_factory=list)
+    next_cursor: str | None = None
+
+
+class ExperimentRevisionResponse(BaseModel):
+    """Small polling resource for experiment invalidation and activity."""
+
+    revision: datetime
+    has_active_trials: bool
+
+
 class TaskDetailResponse(BaseModel):
     """Task detail bundle for ``GET /tasks/{task_id}/detail``."""
 
@@ -1012,7 +1145,7 @@ class VisibleWorkerJob(BaseModel):
     id: str
     kind: str
     status: str
-    queue_key: str
+    queue_key: str | None
     provider: str | None = None
     external_id: str | None = None
     subject_table: str | None = None
@@ -1044,7 +1177,7 @@ class TrialResponse(BaseModel):
     experiment_id: str | None = None
     agent: str
     provider: str
-    queue_key: str
+    queue_key: str | None
     model: str | None
     environment: str | None = Field(
         None,
@@ -1138,7 +1271,7 @@ class TrialResponse(BaseModel):
             "the runtime. Null when no cost is available."
         ),
     )
-    is_billed: bool = Field(
+    is_billed: bool | None = Field(
         False,
         description=(
             "True when the trial is attributed to a billed user "

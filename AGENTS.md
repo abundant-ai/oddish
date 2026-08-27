@@ -494,9 +494,15 @@ on lightweight task shells that omit trial rows.
 numerically latest version. In an experiment view, `trial_version_id` uses that
 default when the experiment has a non-superseded, non-probe trial for it;
 otherwise it falls back to the highest version represented by such trials. The
-`task-shells` and `slim-tasks` endpoints must apply the same trial-version rule
-so progressive loading cannot change the files/counts pivot or mix one
-version's trials with another's artifacts.
+The bounded `GET /experiments/{id}/open` and `GET
+/experiments/{id}/trial-page` resources, plus their public-token equivalents,
+must apply the same trial-version rule so progressive loading cannot change the
+files/counts pivot or mix one version's trials with another's artifacts.
+`/open` returns exact experiment totals plus at most 100 scalar task rows in a
+response below 50 KB. `/trial-page` returns at most 250 scalar trial rows and
+must not select full analysis, phase timing, result, Harbor config, or error
+text. Public trial drawers use the token-scoped
+`GET /public/experiments/{token}/trials/{trial_id}` resource.
 
 `overwrite_current_version` replaces the archive and metadata for
 `tasks.current_version_id` without changing its ID or version number. Uploads

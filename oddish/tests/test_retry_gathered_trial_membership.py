@@ -17,7 +17,10 @@ import pytest_asyncio
 from sqlalchemy import select, text
 
 from oddish.core.endpoints.collections import create_trial_collection_core
-from oddish.core.endpoints.tasks_query import list_experiment_slim_tasks
+from oddish.core.endpoints.experiment_page import (
+    read_experiment_trial_page,
+    resolve_member_experiment_scope,
+)
 from oddish.core.endpoints.trials import retry_trial_core
 from oddish.db import (
     ExperimentModel,
@@ -135,12 +138,11 @@ async def test_retry_keeps_replacement_in_the_gathering_collection(session, clea
     ).all()
     assert new_trial_id in gathered, "replacement trial was not gathered"
 
-    responses = await list_experiment_slim_tasks(
+    scope = await resolve_member_experiment_scope(
         session, experiment_id=collection_id, org_id="org1"
     )
-    by_task = {r.id: r for r in responses}
-    assert task.id in by_task, "task disappeared from the collection grid"
-    trial_ids = [t.id for t in (by_task[task.id].trials or [])]
+    page = await read_experiment_trial_page(session, scope=scope)
+    trial_ids = [trial.id for trial in page.trials if trial.task_id == task.id]
     assert new_trial_id in trial_ids, "retried trial disappeared from the collection"
     assert trial.id not in trial_ids, "superseded trial should be replaced, not kept"
 

@@ -5,6 +5,12 @@ import logging
 from datetime import datetime
 from typing import Annotated, cast
 
+from auth import APIKeyScope, AuthContext, require_admin, require_auth
+from cloud_policy import (
+    ALLOWED_CLOUD_ENVIRONMENTS,
+    get_default_cloud_environment,
+)
+from dashboard_attribution import resolve_search_authors
 from fastapi import (
     APIRouter,
     Depends,
@@ -17,25 +23,37 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse
 from harbor.models.environment_type import EnvironmentType
+from idempotency_store import SubmissionIdempotencyStore
 from sqlalchemy import or_, select
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
-from cloud_policy import (
-    ALLOWED_CLOUD_ENVIRONMENTS,
-    get_default_cloud_environment,
+from api.routers.task_submission import (
+    apply_github_attribution,
+    maybe_publish_experiment,
+    require_connected_github_user,
+    require_experiment_publish_scope,
+    resolve_actor_user_string,
+    resolve_submission_identity,
+    resolve_sweep_attribution,
 )
-from oddish.dispatch.backends.modal import ModalDispatcher
-from oddish.dispatch.ports import WorkerHandle
-from oddish.filters.trial_metrics import TrialMetricFilter
+from api.schemas import (
+    ExperimentShareResponse,
+    ExperimentUpdateRequest,
+    ExperimentUpdateResponse,
+    ModelRenameRequest,
+    ModelRenameResponse,
+)
+from oddish.core.dashboard import (
+    invalidate_dashboard_cache,
+)
 from oddish.core.endpoints import (
     SweepAttribution,
     backfill_task_analysis_core,
     browse_experiment_options_core,
     browse_task_facets_core,
     browse_tasks_core,
-    rerun_pre_trial_audit_core,
     build_task_sweep_response,
     cancel_task_qa_core,
     combine_experiments_core,
@@ -48,25 +66,38 @@ from oddish.core.endpoints import (
     get_task_open_core,
     get_task_status_core,
     get_task_version_core,
-    list_experiment_slim_tasks,
-    list_experiment_task_shells_core,
+    list_task_versions_core,
     list_tasks_core,
     replay_has_retryable_failed_trials,
-    list_task_versions_core,
+    rerun_pre_trial_audit_core,
     rerun_task_qa_core,
     set_task_default_version_core,
     unlink_task_from_experiment_core,
 )
-from oddish.core.helpers import terminate_run_harvest
-
-
-from oddish.core.dashboard import (
-    invalidate_dashboard_cache,
+from oddish.core.endpoints.collections import (
+    add_to_collection_core,
+    create_trial_collection_core,
+    remove_from_collection_core,
+    rename_collection_core,
+)
+from oddish.core.endpoints.experiment_page import (
+    read_experiment_open,
+    read_experiment_revision,
+    read_experiment_trial_page,
+    resolve_member_experiment_scope,
 )
 from oddish.core.experiments import (
     list_experiment_probes_core,
     list_org_probes_core,
 )
+from oddish.core.helpers import terminate_run_harvest
+from oddish.core.idempotency import (
+    SWEEP_ROUTE,
+    IdempotencyReplay,
+    compute_request_hash,
+    probe_completed_replay,
+)
+from oddish.core.model_display_names import canonical_model_key
 from oddish.core.sharing.helpers import (
     ensure_experiment_public,
     get_task_file_content_s3,
@@ -75,36 +106,10 @@ from oddish.core.sharing.helpers import (
     stream_task_files_s3,
 )
 from oddish.core.task_files import resolve_task_file_source
-from oddish.core.idempotency import (
-    IdempotencyReplay,
-    SWEEP_ROUTE,
-    compute_request_hash,
-    probe_completed_replay,
-)
-from idempotency_store import SubmissionIdempotencyStore
-from api.schemas import (
-    ExperimentShareResponse,
-    ExperimentUpdateRequest,
-    ExperimentUpdateResponse,
-    ModelRenameRequest,
-    ModelRenameResponse,
-)
-from auth import APIKeyScope, AuthContext, require_admin, require_auth
-from api.routers.task_submission import (
-    apply_github_attribution,
-    maybe_publish_experiment,
-    require_connected_github_user,
-    require_experiment_publish_scope,
-    resolve_actor_user_string,
-    resolve_sweep_attribution,
-    resolve_submission_identity,
-)
-from dashboard_attribution import resolve_search_authors
 from oddish.core.tasks import (
     complete_task_upload,
     initialize_task_upload,
 )
-from oddish.core.model_display_names import canonical_model_key
 from oddish.db import (
     ExperimentModel,
     TaskModel,
@@ -112,15 +117,11 @@ from oddish.db import (
     get_session,
     utcnow,
 )
-from oddish.timing import TimingRecorder, add_server_timing_metric
+from oddish.dispatch.backends.modal import ModalDispatcher
+from oddish.dispatch.ports import WorkerHandle
+from oddish.filters.trial_metrics import TrialMetricFilter
 from oddish.queue import (
     cancel_tasks_runs,
-)
-from oddish.core.endpoints.collections import (
-    add_to_collection_core,
-    create_trial_collection_core,
-    remove_from_collection_core,
-    rename_collection_core,
 )
 from oddish.schemas import (
     BackfillQARequest,
@@ -131,27 +132,31 @@ from oddish.schemas import (
     ExperimentCombineRequest,
     ExperimentCombineResponse,
     ExperimentCostTotals,
+    ExperimentOpenResponse,
     ExperimentOptionsResponse,
     ExperimentProbeRow,
+    ExperimentRevisionResponse,
+    ExperimentTrialPageResponse,
     OrgProbeRow,
+    TaskBatchCancelRequest,
     TaskBrowseFacets,
     TaskBrowseResponse,
-    TaskBatchCancelRequest,
     TaskDetailResponse,
     TaskOpenResponse,
-    TaskUploadCompleteRequest,
-    TaskUploadInitRequest,
-    TaskUploadInitResponse,
     TaskResponse,
     TaskStatusResponse,
     TaskSweepBatchRequest,
     TaskSweepBatchResponse,
     TaskSweepSubmission,
+    TaskUploadCompleteRequest,
+    TaskUploadInitRequest,
+    TaskUploadInitResponse,
     TaskVersionResponse,
     TrialCollectionRequest,
     TrialCollectionResponse,
     UploadResponse,
 )
+from oddish.timing import TimingRecorder, add_server_timing_metric
 
 router = APIRouter(tags=["Tasks"])
 logger = logging.getLogger(__name__)
@@ -575,35 +580,62 @@ async def list_tasks(
 
 
 @router.get(
-    "/experiments/{experiment_id}/task-shells",
-    response_model=list[TaskStatusResponse],
+    "/experiments/{experiment_id}/open",
+    response_model=ExperimentOpenResponse,
 )
-async def list_experiment_task_shells(
-    request: Request,
+async def get_experiment_open_route(
     experiment_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
-    limit: int = Query(2000, ge=1, le=2000),
-    offset: int = 0,
-) -> list[TaskStatusResponse]:
-    """Lightweight task shells for the experiment-details first paint.
-
-    A dedicated, trimmed alternative to ``GET /tasks?...&compact_tasks=true``
-    that additionally drops the per-task ``experiments`` fan-out. The generic
-    ``/tasks`` route (and ``list_tasks_core``) are intentionally left unchanged;
-    only the experiment-page first paint should call this.
-    """
+    cursor: str | None = None,
+    limit: int = Query(100, ge=1, le=100),
+) -> ExperimentOpenResponse:
+    """Return exact totals and one bounded task page for a member."""
     auth.require_scope(APIKeyScope.READ)
-
-    async with get_session() as session:
-        return await list_experiment_task_shells_core(
-            session,
-            experiment_id=experiment_id,
-            org_id=auth.org_id,
-            limit=limit,
-            offset=offset,
-            include_empty_rewards=True,
-            record_timing=_make_timing_recorder(request),
+    async with get_read_session() as session:
+        scope = await resolve_member_experiment_scope(
+            session, experiment_id=experiment_id, org_id=auth.org_id
         )
+        return await read_experiment_open(
+            session, scope=scope, cursor=cursor, limit=limit
+        )
+
+
+@router.get(
+    "/experiments/{experiment_id}/trial-page",
+    response_model=ExperimentTrialPageResponse,
+)
+async def get_experiment_trial_page_route(
+    experiment_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    cursor: str | None = None,
+    limit: int = Query(250, ge=1, le=250),
+) -> ExperimentTrialPageResponse:
+    """Return one flat bounded page of member-visible grid trials."""
+    auth.require_scope(APIKeyScope.READ)
+    async with get_read_session() as session:
+        scope = await resolve_member_experiment_scope(
+            session, experiment_id=experiment_id, org_id=auth.org_id
+        )
+        return await read_experiment_trial_page(
+            session, scope=scope, cursor=cursor, limit=limit
+        )
+
+
+@router.get(
+    "/experiments/{experiment_id}/revision",
+    response_model=ExperimentRevisionResponse,
+)
+async def get_experiment_revision_route(
+    experiment_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> ExperimentRevisionResponse:
+    """Return the member experiment's invalidation value and live-work flag."""
+    auth.require_scope(APIKeyScope.READ)
+    async with get_read_session() as session:
+        scope = await resolve_member_experiment_scope(
+            session, experiment_id=experiment_id, org_id=auth.org_id
+        )
+        return await read_experiment_revision(session, scope=scope)
 
 
 @router.get(
@@ -629,39 +661,6 @@ async def get_experiment_cost_totals_route(
     async with get_session() as session:
         return await get_experiment_cost_totals(
             session, experiment_id=experiment_id, org_id=auth.org_id
-        )
-
-
-@router.get(
-    "/experiments/{experiment_id}/slim-tasks",
-    response_model=list[TaskStatusResponse],
-)
-async def list_experiment_slim_tasks_route(
-    request: Request,
-    experiment_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
-    limit: int = Query(2000, ge=1, le=2000),
-    offset: int = 0,
-) -> list[TaskStatusResponse]:
-    """Phase-2 grid data with SLIM per-trial payloads for the experiment page.
-
-    Like the experiment-scoped ``GET /tasks?include_trials=true`` path, but
-    each trial carries only the fields the grid renders (+ cost). Heavy
-    per-trial detail is fetched on demand via ``GET /trials/{trial_id}`` when a
-    cell is clicked. The generic ``/tasks`` route is left unchanged; only the
-    experiment-page Phase-2 fetch should call this.
-    """
-    auth.require_scope(APIKeyScope.READ)
-
-    async with get_session() as session:
-        return await list_experiment_slim_tasks(
-            session,
-            experiment_id=experiment_id,
-            org_id=auth.org_id,
-            limit=limit,
-            offset=offset,
-            include_empty_rewards=True,
-            record_timing=_make_timing_recorder(request),
         )
 
 

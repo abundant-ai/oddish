@@ -77,6 +77,7 @@ async def get_public_experiment(
         select(ExperimentModel)
         .where(ExperimentModel.public_token == public_token)
         .where(ExperimentModel.is_public == True)  # noqa: E712
+        .where(ExperimentModel.deleted_at.is_(None))
     )
     return result.scalar_one_or_none()
 
@@ -163,6 +164,8 @@ async def get_public_trial_for_experiment(
         .where(TrialModel.id == trial_id)
         .where(TrialModel.is_probe.is_(False))
         .where(TrialModel.kind == "agent")
+        .where(TrialModel.superseded_by_trial_id.is_(None))
+        .where(TrialModel.deleted_at.is_(None))
         .where(trial_in_experiment(experiment.id))
     )
     return result.scalar_one_or_none()

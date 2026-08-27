@@ -5,9 +5,9 @@ Site 1 (export): ``list_experiment_trials_for_org`` must include trials
 gathered into a collection via ``experiment_trials``, not just trials whose
 home ``experiment_id`` matches.
 
-Site 2 (public/share): ``list_public_experiment_tasks`` must also admit
-gathered trials, but ``is_probe`` trials must still never appear -- gathered
-or not.
+Site 2 (public/share): the bounded public trial-page reader must also admit
+gathered trials, but ``is_probe`` trials must still never appear, gathered or
+not.
 """
 
 from __future__ import annotations
@@ -20,6 +20,11 @@ from fastapi import HTTPException
 
 from oddish.core.sharing import helpers as sharing_helpers
 from oddish.core.endpoints.collections import create_trial_collection_core
+from oddish.core.endpoints.experiment_page import (
+    read_experiment_open,
+    read_experiment_trial_page,
+    resolve_public_experiment_scope,
+)
 from oddish.core.sharing.helpers import (
     ensure_experiment_public,
     generate_public_token,
@@ -33,7 +38,6 @@ from oddish.core.sharing.helpers import (
 )
 from oddish.core.sharing.public import (
     get_public_task_status,
-    list_public_experiment_tasks,
     list_public_experiments,
 )
 from oddish.db import (
@@ -383,8 +387,12 @@ async def test_public_view_strips_gathered_probe():
             public_token = coll_exp.public_token
             # get_session() commits on clean exit.
 
-        tasks = await list_public_experiment_tasks(public_token)
-        ids = {tr.id for t in tasks for tr in t.trials}
+        async with get_session() as reader:
+            scope = await resolve_public_experiment_scope(
+                reader, public_token=public_token
+            )
+            page = await read_experiment_trial_page(reader, scope=scope)
+        ids = {trial.id for trial in page.trials}
         assert probe.id not in ids
     finally:
         await _cleanup(task_ids=task_ids, experiment_ids=experiment_ids)
@@ -426,8 +434,12 @@ async def test_public_view_includes_gathered_non_probe():
             await ensure_experiment_public(setup, coll_exp)
             public_token = coll_exp.public_token
 
-        tasks = await list_public_experiment_tasks(public_token)
-        ids = {tr.id for t in tasks for tr in t.trials}
+        async with get_session() as reader:
+            scope = await resolve_public_experiment_scope(
+                reader, public_token=public_token
+            )
+            page = await read_experiment_trial_page(reader, scope=scope)
+        ids = {trial.id for trial in page.trials}
         assert t1.id in ids
     finally:
         await _cleanup(task_ids=task_ids, experiment_ids=experiment_ids)
@@ -439,12 +451,9 @@ async def test_public_view_surfaces_gathered_old_version_trial():
     still appear in the public collection view, even after the task's
     current_version_id has moved on to a newer version.
 
-    ``list_public_experiment_tasks`` already unions gathered trials into
-    ``task.trials`` (Task 7), but it re-derived the "effective version" via
-    ``build_task_status_response`` without telling it which trials were
-    gathered -- so the resolver fell back to the task's current version and
-    filtered the gathered v1 trial right back out (the same double-filter,
-    now on the public surface)."""
+    The bounded reader must derive its displayed version from direct and
+    gathered membership together, or it filters the gathered v1 row back out.
+    """
     task_ids: list[str] = []
     experiment_ids: list[str] = []
     try:
@@ -494,13 +503,18 @@ async def test_public_view_surfaces_gathered_old_version_trial():
             public_token = coll_exp.public_token
             # get_session() commits on clean exit.
 
-        tasks = await list_public_experiment_tasks(public_token)
-        by_task = {t.id: t for t in tasks}
+        async with get_session() as reader:
+            scope = await resolve_public_experiment_scope(
+                reader, public_token=public_token
+            )
+            opened = await read_experiment_open(reader, scope=scope)
+            page = await read_experiment_trial_page(reader, scope=scope)
+        by_task = {row.id: row for row in opened.tasks}
         assert task.id in by_task
         public_task = by_task[task.id]
         assert public_task.current_version_id == v2.id
         assert public_task.trial_version_id == v1.id
-        trial_ids = {tr.id for tr in public_task.trials}
+        trial_ids = {trial.id for trial in page.trials}
         assert t1.id in trial_ids, (
             "gathered v1 trial was filtered out of the public view "
             "(gathered-unaware effective-version double-filter)"

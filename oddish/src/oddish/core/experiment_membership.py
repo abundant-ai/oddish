@@ -61,3 +61,19 @@ def trial_in_experiment(experiment_id: str):
             .exists(),
         ),
     )
+
+
+def visible_grid_trial_predicates(
+    experiment_id: str, *, org_id: str | None = None
+) -> tuple[Any, ...]:
+    """Canonical eligibility rule for rows rendered in an experiment grid."""
+    predicates: list[Any] = [
+        trial_in_experiment(experiment_id),
+        TrialModel.is_probe.is_(False),
+        TrialModel.kind == "agent",
+        TrialModel.superseded_by_trial_id.is_(None),
+        TrialModel.deleted_at.is_(None),
+    ]
+    if org_id is not None:
+        predicates.append(TrialModel.org_id == org_id)
+    return tuple(predicates)

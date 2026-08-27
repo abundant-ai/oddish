@@ -11,7 +11,7 @@ import {
   ServerTimingCollector,
 } from "@/lib/server-timing";
 
-// Whole-experiment cost rollup. The grid routes (`task-shells`, `slim-tasks`)
+// Whole-experiment cost rollup. The bounded grid routes (`open`, `trial-page`)
 // page their trials, so the page's cost tiles cannot be summed client-side
 // without loading every page. This proxies the backend's single grouped
 // aggregate instead. Takes no query params -- it is always the full experiment.

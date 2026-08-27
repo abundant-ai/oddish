@@ -1,16 +1,8 @@
 "use client";
 
-import {
-  Suspense,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
-import useSWRInfinite from "swr/infinite";
 import { useAuth } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,85 +14,17 @@ import {
 } from "@/components/probe-launch-button";
 import { ExperimentDetailView } from "@/components/experiment-detail-view";
 import { ExperimentDescription } from "@/components/experiment-description";
-import type {
-  Task,
-  Trial,
-  ExperimentShareInfo,
-  ExperimentCostTotals,
-} from "@/lib/types";
+import type { Task, Trial, ExperimentShareInfo } from "@/lib/types";
 import { fetcher } from "@/lib/api";
 import { isOrgAdminRole } from "@/lib/org-roles";
 import { Loader2, Pencil } from "lucide-react";
 import { encodeExperimentRouteParam } from "@/lib/utils";
-import {
-  fetchFreshExperimentTaskPage,
-  hasFatalExperimentTaskLoadError,
-  mergeExperimentTaskPages,
-} from "@/lib/experiment-task-pages";
 import { ExperimentPageSkeleton } from "@/components/experiment-page-skeleton";
+import { useExperimentPageResources } from "@/lib/use-experiment-page";
 
 // Shared by the experiment header action buttons so they render identically.
 const HEADER_ACTION_BUTTON_CLASS =
   "h-8 select-none gap-[7px] rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] leading-none text-[color:var(--paper-ink)] transition-colors hover:border-[color:var(--paper-ink-4)] hover:bg-[color:var(--paper-surface-2)]";
-
-const TRIALS_BATCH_SIZE = 250;
-const EXPERIMENT_TIMING_STORAGE_KEY = "oddish:experiment-table-timing";
-const ACTIVE_TASK_STATUSES = new Set([
-  "pending",
-  "queued",
-  "running",
-  "analyzing",
-  "verdict_pending",
-]);
-
-function isExperimentTimingEnabled(): boolean {
-  if (typeof window === "undefined") return false;
-  const params = new URLSearchParams(window.location.search);
-  return (
-    params.get("debug_timing") === "1" ||
-    window.localStorage.getItem(EXPERIMENT_TIMING_STORAGE_KEY) === "1"
-  );
-}
-
-async function fetchExperimentTasksPage(url: string): Promise<Task[]> {
-  const startedAt = performance.now();
-  const res = await fetchFreshExperimentTaskPage(url);
-  const responseAt = performance.now();
-  const serverTiming = res.headers.get("server-timing");
-  let data: unknown = null;
-
-  try {
-    data = await res.json();
-  } catch {
-    data = null;
-  }
-
-  const finishedAt = performance.now();
-  if (isExperimentTimingEnabled()) {
-    console.info("[oddish timing] experiment tasks fetch", {
-      url,
-      status: res.status,
-      networkMs: Math.round(responseAt - startedAt),
-      jsonMs: Math.round(finishedAt - responseAt),
-      totalMs: Math.round(finishedAt - startedAt),
-      rows: Array.isArray(data) ? data.length : null,
-      serverTiming,
-    });
-  }
-
-  if (!res.ok) {
-    const message =
-      typeof data === "object" && data && "error" in data
-        ? String((data as { error?: string }).error)
-        : res.statusText || "Request failed";
-    const err = new Error(message);
-    (err as Error & { status?: number; info?: unknown }).status = res.status;
-    (err as Error & { status?: number; info?: unknown }).info = data;
-    throw err;
-  }
-
-  return data as Task[];
-}
 
 type ExperimentClientPageProps = {
   experimentId: string;
@@ -134,80 +58,28 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
     ? encodeExperimentRouteParam(experimentId)
     : "";
 
-  // Phase 1: Fetch ALL tasks without trial data (lightweight).
-  // Populates the full task list immediately. Uses the dedicated
-  // ``task-shells`` endpoint, which drops the per-task ``experiments``
-  // fan-out. Phase 2 below uses the compact ``slim-tasks`` endpoint.
-  const allTasksUrl = experimentId
-    ? `/api/experiments/${encodedId}/task-shells?limit=2000&offset=0`
-    : null;
-
   const {
-    data: lightweightTasks,
-    error: lightweightError,
-    isLoading: isLoadingTasks,
-    mutate: mutateLightweight,
-  } = useSWR<Task[]>(allTasksUrl, fetchExperimentTasksPage, {
-    refreshInterval: 0,
-    revalidateOnFocus: false,
-    revalidateIfStale: true,
-  });
-
-  // Phase 2: Progressively fetch compact trial data in batches.
-  const getTrialsPageKey = useCallback(
-    (pageIndex: number, previousPageData: Task[] | null) => {
-      if (!experimentId || !encodedId) return null;
-      if (previousPageData && previousPageData.length < TRIALS_BATCH_SIZE)
-        return null;
-      const offset = pageIndex * TRIALS_BATCH_SIZE;
-      // Phase 2 uses the dedicated slim-tasks endpoint: tasks with trimmed
-      // per-trial payloads (grid fields + cost). Trial controls preload the
-      // by-id resource before the drawer needs its omitted fields.
-      return `/api/experiments/${encodedId}/slim-tasks?limit=${TRIALS_BATCH_SIZE}&offset=${offset}`;
-    },
-    [experimentId, encodedId]
-  );
-
-  const {
-    data: trialPages,
-    error: trialsError,
-    isLoading: isLoadingTrialPages,
-    isValidating: isValidatingTrials,
-    setSize: setTrialsSize,
-    mutate: mutateTrials,
-  } = useSWRInfinite<Task[]>(getTrialsPageKey, fetchExperimentTasksPage, {
-    refreshInterval: 0,
-    revalidateOnFocus: false,
-    revalidateFirstPage: false,
-    revalidateOnMount: true,
-    persistSize: true,
-  });
-  const trialsLastPage = trialPages?.[trialPages.length - 1] ?? null;
-  const hasMoreTrials = Boolean(
-    trialsLastPage && trialsLastPage.length === TRIALS_BATCH_SIZE
-  );
-
-  // What the experiment SPENT. Can't be derived from the trial pages above:
-  // they're paginated (so a client-side sum only covers what's loaded), and
-  // they're filtered to each task's current version (so they omit earlier
-  // versions, superseded retries and probes, all of which were still billed).
-  const costTotalsKey = experimentId
-    ? `/api/experiments/${encodedId}/cost-totals`
-    : null;
-  const {
-    data: costTotals,
-    error: costTotalsError,
-    mutate: mutateCostTotals,
-  } = useSWR<ExperimentCostTotals>(costTotalsKey, fetcher, {
-    refreshInterval: 0,
-    revalidateOnFocus: false,
-  });
-  // In flight. The tiles must not fall back to the client sum meanwhile: that
-  // number is wrong on two axes (loaded pages only, grid-filtered) and would
-  // visibly jump when the real total lands. Show a placeholder instead. On
-  // error we do fall back, so a failed rollup degrades rather than blanks.
-  const costTotalsPending =
-    costTotalsKey != null && costTotals === undefined && !costTotalsError;
+    open,
+    tasks: tasksForExperiment,
+    costTotals,
+    costTotalsPending,
+    isLoading,
+    isLoadingTrials,
+    fatalError,
+    openError,
+    trialError,
+    isValidatingOpen,
+    isValidatingTrials,
+    hasMoreTasks,
+    hasMoreTrials,
+    incompleteTaskIds,
+    loadedTrialCount,
+    loadMoreTasks,
+    loadMoreTrials,
+    retryOpen,
+    retryTrials,
+    refresh: refreshTaskPages,
+  } = useExperimentPageResources({ kind: "member", experimentId });
 
   // Experiment-level metadata (sharing + description) for the header.
   // Fetched eagerly so the description renders immediately; shares the SWR
@@ -220,117 +92,17 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
       revalidateOnFocus: false,
     });
 
-  // Merge lightweight task shells with trial-enriched data. The backend scopes
-  // trials and counts to the experiment-relevant version while always
-  // reporting the task's selected default as ``current_version``.
-  const tasksForExperiment = useMemo(() => {
-    const startedAt = isExperimentTimingEnabled() ? performance.now() : 0;
-    const merged = mergeExperimentTaskPages(lightweightTasks, trialPages);
-
-    if (isExperimentTimingEnabled()) {
-      const enrichedIds = new Set(
-        (trialPages ?? []).flatMap((page) =>
-          (page ?? []).map((task) => task.id)
-        )
-      );
-      console.info("[oddish timing] experiment task merge", {
-        baseRows: lightweightTasks?.length ?? 0,
-        enrichedRows: enrichedIds.size,
-        mergedRows: merged.length,
-        mergeMs: Math.round(performance.now() - startedAt),
-      });
-    }
-    return merged;
-  }, [lightweightTasks, trialPages]);
-  const hasFatalTaskLoadError = hasFatalExperimentTaskLoadError(
-    lightweightError,
-    tasksForExperiment
-  );
-
   const probeHostTask = useMemo(
     () => resolveProbeHostTask(tasksForExperiment),
     [tasksForExperiment]
   );
-
-  const isLoading = isLoadingTasks;
-  // hasMoreTrials keeps pending rows in skeleton state between batches.
-  const isLoadingTrials =
-    (lightweightTasks?.length ?? 0) > 0 &&
-    (isLoadingTrialPages || isValidatingTrials || hasMoreTrials);
-  const trialsLoadedCount = useMemo(() => {
-    if (!trialPages) return 0;
-    return trialPages.reduce((sum, page) => sum + (page?.length ?? 0), 0);
-  }, [trialPages]);
-  const totalTaskCount = lightweightTasks?.length ?? 0;
-  const canLoadMoreTrials =
-    hasMoreTrials && !isLoadingTrialPages && !isValidatingTrials;
-  // hasMoreTrials only tracks successful pages, so a failed batch stalls
-  // the chain here until the Retry alert's mutateTrials() refills it.
-  const trialsStalled =
-    Boolean(trialsError) && trialsLoadedCount < totalTaskCount;
-
-  const refreshIntervalMs = useMemo(() => {
-    if (tasksForExperiment.length === 0) return 5000;
-    const hasActiveTasks = tasksForExperiment.some((task) => {
-      // Subtract skipped: skipped trials are terminal (never ran), so they must
-      // not read as "active" — otherwise a done, gate-skipped task would poll at
-      // the fast interval forever.
-      const activeTrials = Math.max(
-        0,
-        task.total - task.completed - task.failed - (task.skipped ?? 0)
-      );
-      return activeTrials > 0 || ACTIVE_TASK_STATUSES.has(task.status);
-    });
-    // null disables the interval; refreshTaskPages restarts it when work resumes.
-    return hasActiveTasks ? 30000 : null;
-  }, [tasksForExperiment]);
-
-  const experimentName = tasksForExperiment[0]?.experiment_name ?? "";
-  const displayName = experimentName || experimentId || "Experiment";
-  const initialName = experimentName || experimentId || "";
+  const displayName = open?.name || experimentId || "Experiment";
+  const initialName = open?.name || experimentId || "";
   const canManageExperimentShare = isOrgAdminRole(orgRole);
   // The qa-report experiment is QA's machinery, not a product surface: the
   // verdict, reasoning, and per-trial grades are all inline on this page and
   // in the task overview. Only admins get the hop, for debugging QA itself.
   const canSeeQaReport = isOrgAdminRole(orgRole);
-
-  // Deletes below write the grid optimistically, so for one round trip the row
-  // is gone while the cost tiles still show the pre-delete rollup. Do NOT
-  // "fix" that by optimistically subtracting the removed trials' cost: the only
-  // trials on the client are the ones the grid renders, and the rollup also
-  // counts that task's probes, superseded retries and earlier-version trials.
-  // Subtracting the visible ones would leave the tile too LOW -- a spend number
-  // derived from the visible rows, which is the bug this endpoint exists to
-  // remove. Refetching is the correct (and self-healing) answer.
-  const refreshTaskPages = useCallback(
-    async (_taskIds?: string[]) => {
-      await Promise.all([
-        mutateLightweight(),
-        mutateTrials(),
-        mutateCostTotals(),
-      ]);
-    },
-    [mutateLightweight, mutateTrials, mutateCostTotals]
-  );
-
-  // Sequential: canLoadMoreTrials is false while a fetch is in flight.
-  useEffect(() => {
-    if (!canLoadMoreTrials) return;
-    void setTrialsSize((size) => size + 1);
-  }, [canLoadMoreTrials, setTrialsSize]);
-
-  useEffect(() => {
-    if (!isExperimentTimingEnabled() || tasksForExperiment.length === 0) return;
-    const frame = window.requestAnimationFrame(() => {
-      console.info("[oddish timing] experiment table first paint candidate", {
-        tasks: tasksForExperiment.length,
-        trialPages: trialPages?.length ?? 0,
-        trialsLoadedCount,
-        sinceNavigationMs: Math.round(performance.now()),
-      });
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [tasksForExperiment.length, trialPages?.length, trialsLoadedCount]);
 
   useEffect(() => {
     if (!isEditingName) {
@@ -354,34 +126,6 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
       }
     };
   }, []);
-
-  useEffect(() => {
-    if (!allTasksUrl || refreshIntervalMs == null) return;
-
-    const intervalId = window.setInterval(() => {
-      void mutateLightweight();
-      // Refresh every trial page that's been loaded so far -- not
-      // just the first. Polling only the first page caused later
-      // pages to age (e.g. trial status badges going stale on row
-      // 251+ until the user manually triggered a re-fetch).
-      // ``mutateTrials()`` re-runs every page key currently held by
-      // useSWRInfinite, in order, with the regular SWR dedup window.
-      void mutateTrials();
-      // Cheap grouped aggregate; refresh alongside so the cost tiles track
-      // trials finishing while the page is open.
-      void mutateCostTotals();
-    }, refreshIntervalMs);
-
-    return () => {
-      window.clearInterval(intervalId);
-    };
-  }, [
-    allTasksUrl,
-    refreshIntervalMs,
-    mutateLightweight,
-    mutateTrials,
-    mutateCostTotals,
-  ]);
 
   const handleRename = async () => {
     if (!experimentId) return;
@@ -412,19 +156,7 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
       }
 
       setIsEditingName(false);
-      await mutateLightweight(
-        (tasks) =>
-          tasks?.map((task) => ({ ...task, experiment_name: nextName })),
-        { revalidate: false }
-      );
-      await mutateTrials(
-        (pages) =>
-          pages?.map((page) =>
-            page?.map((task) => ({ ...task, experiment_name: nextName }))
-          ),
-        { revalidate: false }
-      );
-      void refreshTaskPages();
+      await refreshTaskPages();
     } catch (err) {
       setNameError(err instanceof Error ? err.message : "Rename failed");
     } finally {
@@ -449,15 +181,6 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
       );
     }
 
-    await mutateLightweight(
-      (tasks) => tasks?.filter((item) => item.id !== task.id),
-      { revalidate: false }
-    );
-    await mutateTrials(
-      (pages) =>
-        pages?.map((page) => page?.filter((item) => item.id !== task.id)),
-      { revalidate: false }
-    );
     await refreshTaskPages();
   };
 
@@ -473,18 +196,6 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
       );
     }
 
-    const filterTrials = (tasks: Task[] | undefined) =>
-      tasks?.map((task) =>
-        task.trials?.some((t) => t.id === trial.id)
-          ? { ...task, trials: task.trials.filter((t) => t.id !== trial.id) }
-          : task
-      );
-
-    await mutateLightweight(filterTrials, { revalidate: false });
-    await mutateTrials(
-      (pages) => pages?.map((page) => filterTrials(page) ?? page),
-      { revalidate: false }
-    );
     await refreshTaskPages();
   };
 
@@ -509,19 +220,31 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
             Select an experiment from the dashboard.
           </AlertDescription>
         </Alert>
+      ) : !open && isLoading ? (
+        <ExperimentPageSkeleton />
+      ) : !open ? (
+        <Alert variant="destructive">
+          <AlertTitle>Failed to load experiment</AlertTitle>
+          <AlertDescription>
+            {fatalError instanceof Error
+              ? fatalError.message
+              : "Check the API connection and try again."}
+          </AlertDescription>
+        </Alert>
       ) : (
         <ExperimentDetailView
           experimentId={experimentId}
+          experimentCreatedAt={open.created_at}
+          experimentOwner={open.owner}
+          experimentLink={open.link}
           tasksForExperiment={tasksForExperiment}
+          exactSummary={open.summary}
+          incompleteTaskIds={incompleteTaskIds}
           costTotals={costTotals}
           costTotalsPending={costTotalsPending}
           isLoading={isLoading}
           isLoadingTrials={isLoadingTrials}
-          // SWR retains successful fallback/revalidation data when a later
-          // request fails. Keep that usable grid visible instead of replacing
-          // it with the fatal error state during a transient backend failure.
-          hasError={hasFatalTaskLoadError}
-          loadFullTrialOnOpen
+          hasError={false}
           headerLeft={
             isEditingName ? (
               <div className="flex flex-wrap items-center gap-2">
@@ -596,10 +319,7 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
                 <Loader2 className="h-3 w-3 animate-spin" />
                 <span>
                   Loading trials
-                  {lightweightTasks
-                    ? ` ${trialsLoadedCount}/${lightweightTasks.length}`
-                    : ""}
-                  …
+                  {` ${loadedTrialCount}/${open.summary.trial_count}`}…
                 </span>
               </div>
             ) : experimentShare?.shadow_of && canSeeQaReport ? (
@@ -659,34 +379,66 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
                 <AlertTitle>Rename failed</AlertTitle>
                 <AlertDescription>{nameError}</AlertDescription>
               </Alert>
-            ) : trialsStalled ? (
-              // Outranks the refresh alert below: this one carries the only
-              // recovery control.
+            ) : trialError ? (
               <Alert variant="destructive">
                 <AlertTitle>Some trial results failed to load</AlertTitle>
                 <AlertDescription className="flex flex-wrap items-center gap-2">
                   <span>
-                    Loaded {trialsLoadedCount}/{totalTaskCount} tasks.
+                    Loaded {loadedTrialCount}/{open.summary.trial_count} trials.
                   </span>
                   <Button
                     type="button"
                     variant="secondary"
                     size="sm"
                     className="h-7"
-                    onClick={() => void mutateTrials()}
+                    onClick={() => void retryTrials()}
                     disabled={isValidatingTrials}
                   >
                     Retry
                   </Button>
                 </AlertDescription>
               </Alert>
-            ) : lightweightError && tasksForExperiment.length > 0 ? (
+            ) : openError && tasksForExperiment.length > 0 ? (
               <Alert>
                 <AlertTitle>Could not refresh experiment</AlertTitle>
-                <AlertDescription>
-                  Showing the most recently loaded task data.
+                <AlertDescription className="flex flex-wrap items-center gap-2">
+                  <span>Showing the most recently loaded task data.</span>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    className="h-7"
+                    onClick={() => void retryOpen()}
+                    disabled={isValidatingOpen}
+                  >
+                    Retry
+                  </Button>
                 </AlertDescription>
               </Alert>
+            ) : hasMoreTasks || hasMoreTrials ? (
+              <div className="flex flex-wrap items-center gap-2">
+                {hasMoreTasks && (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => void loadMoreTasks()}
+                  >
+                    Load more tasks
+                  </Button>
+                )}
+                {hasMoreTrials && (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => void loadMoreTrials()}
+                    disabled={isValidatingTrials}
+                  >
+                    Load more trials
+                  </Button>
+                )}
+              </div>
             ) : null
           }
           readOnly={false}

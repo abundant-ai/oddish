@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import re
-
 import heapq
 import json
 import logging
+import re
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -14,6 +13,11 @@ from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
+from oddish.core.cost_basis import is_combine_copy
+from oddish.core.cost_exclusions import CostExclusions
+from oddish.core.tags.projection import (
+    list_effective_user_tags_for_task_versions,
+)
 from oddish.db import (
     ExperimentModel,
     Priority,
@@ -25,11 +29,6 @@ from oddish.db import (
     WorkerJobStatus,
     is_worker_owned_trial_status,
 )
-from oddish.core.cost_basis import is_combine_copy
-from oddish.core.cost_exclusions import CostExclusions
-from oddish.core.tags.projection import (
-    list_effective_user_tags_for_task_versions,
-)
 from oddish.model_pricing import estimate_cost_usd
 from oddish.schemas import (
     TaskBrowseExperiment,
@@ -39,7 +38,6 @@ from oddish.schemas import (
     UserTagRef,
     VisibleWorkerJob,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -690,13 +688,75 @@ def resolve_effective_version_id(
     return max(candidates, key=_parse_version_number)
 
 
+def experiment_effective_versions_selectable(
+    *,
+    experiment_id: str,
+    task_ids: Sequence[str] | None = None,
+    org_id: str | None = None,
+):
+    """Return one displayed trial-version row per experiment task.
+
+    The selected task default wins when the experiment has a visible grid
+    trial for it. Otherwise the highest represented real task version wins.
+    Legacy trials with a null ``task_version_id`` sort after every stored
+    version. They still produce a null row when no real version exists, which
+    lets callers keep a legacy-only task visible.
+
+    This selectable is the single SQL definition used by the experiment page
+    and by :func:`fetch_experiment_effective_version_ids`.
+    """
+    from oddish.core.experiment_membership import visible_grid_trial_predicates
+    from oddish.db import TaskVersionModel  # local import: avoid cycle
+
+    ranked = (
+        select(
+            TrialModel.task_id.label("task_id"),
+            TrialModel.task_version_id.label("task_version_id"),
+            TaskVersionModel.version.label("task_version"),
+            func.row_number()
+            .over(
+                partition_by=TrialModel.task_id,
+                order_by=(
+                    case(
+                        (
+                            TrialModel.task_version_id
+                            == TaskModel.current_version_id,
+                            0,
+                        ),
+                        else_=1,
+                    ).asc(),
+                    TaskVersionModel.version.desc().nulls_last(),
+                    TrialModel.task_version_id.asc(),
+                ),
+            )
+            .label("version_rank"),
+        )
+        .join(TaskModel, TaskModel.id == TrialModel.task_id)
+        .outerjoin(TaskVersionModel, TaskVersionModel.id == TrialModel.task_version_id)
+        .where(*visible_grid_trial_predicates(experiment_id, org_id=org_id))
+    )
+    if task_ids is not None:
+        ranked = ranked.where(TrialModel.task_id.in_(list(task_ids)))
+
+    ranked_subquery = ranked.subquery("ranked_experiment_versions")
+    return (
+        select(
+            ranked_subquery.c.task_id,
+            ranked_subquery.c.task_version_id,
+            ranked_subquery.c.task_version,
+        )
+        .where(ranked_subquery.c.version_rank == 1)
+        .subquery("experiment_effective_versions")
+    )
+
+
 async def fetch_experiment_effective_version_ids(
     session: AsyncSession,
     *,
     experiment_id: str,
     task_ids: Sequence[str],
 ) -> dict[str, str]:
-    """SQL-backed version of :func:`resolve_effective_version_id` for many tasks.
+    """Execute the shared displayed-version query for a set of tasks.
 
     Used by paths that don't eagerly load ``task.trials`` (e.g. the lightweight
     counts-only task list). Returns a mapping of ``task_id`` to the task's
@@ -704,43 +764,23 @@ async def fetch_experiment_effective_version_ids(
     experiment, or the latest represented version otherwise. Tasks with no
     scoped trials are omitted.
 
-    Uses ``DISTINCT ON (task_id)`` joined to ``task_versions`` so the
-    server returns at most one row per task -- ordered by the *integer*
-    version number, which lexicographic sorting on ``task_version_id``
-    (``"{task_id}-v9"`` vs ``"{task_id}-v10"``) gets wrong. Replaces
-    the previous "fetch every trial row, sort in Python" path that
-    transferred ``len(task_ids) * trials_per_task`` rows just to keep
-    one per task.
+    The selectable ranks by the integer ``task_versions.version`` column, so
+    version 10 sorts after version 9. The database returns at most one row per
+    task instead of transferring every trial for Python to discard.
     """
     if not task_ids:
         return {}
 
-    from oddish.core.experiment_membership import trial_in_experiment
-    from oddish.db import TaskVersionModel  # local import: avoid cycle
-
-    stmt = (
-        select(TrialModel.task_id, TrialModel.task_version_id)
-        .join(TaskModel, TaskModel.id == TrialModel.task_id)
-        .join(TaskVersionModel, TaskVersionModel.id == TrialModel.task_version_id)
-        .where(
-            TrialModel.task_id.in_(list(task_ids)),
-            trial_in_experiment(experiment_id),
-            TrialModel.task_version_id.is_not(None),
-            TrialModel.is_probe.is_(False),
-            TrialModel.superseded_by_trial_id.is_(None),
-        )
-        .order_by(
-            TrialModel.task_id.asc(),
-            case(
-                (TrialModel.task_version_id == TaskModel.current_version_id, 0),
-                else_=1,
-            ).asc(),
-            TaskVersionModel.version.desc(),
-        )
-        .distinct(TrialModel.task_id)
+    effective_versions = experiment_effective_versions_selectable(
+        experiment_id=experiment_id,
+        task_ids=task_ids,
     )
-
-    result = await session.execute(stmt)
+    result = await session.execute(
+        select(
+            effective_versions.c.task_id,
+            effective_versions.c.task_version_id,
+        )
+    )
     return {
         str(task_id): str(version_id)
         for task_id, version_id in result.all()
