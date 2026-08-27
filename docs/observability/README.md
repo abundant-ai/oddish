@@ -16,6 +16,7 @@ Oddish React application does not copy, poll, aggregate, or graph these values.
 | `oddish.dispatch.workers_spawned` | Counter, `{worker}` | Workers returned by dispatch cycles whose complete host spawn operation succeeded. Skipped, cancelled, and error cycles emit cycle metrics but no worker count because the dispatcher interface does not expose trustworthy partial results. |
 | `oddish.dispatch.cycles` | Counter, `{cycle}` | Dispatcher cycles labeled `success`, `skipped`, `cancelled`, or `error`. |
 | `oddish.dispatch.duration` | Histogram, `s` | Wall-clock duration of the same successful, skipped, cancelled, or failed dispatch cycle. |
+| `oddish.analysis.stage.duration` | Histogram, `s` | One duration observation for a QA, pre-trial audit, or single-trial summarize stage. Runtime phases reuse Harbor's persisted `phase_timing`; Oddish measures preparation, artifact upload, result storage, import, and creation-to-import elapsed time at their owning boundaries. |
 
 `oddish.dispatch.duration` is included because a cycle-duration panel requires
 a histogram; the original six-name contract did not provide an instrument that
@@ -40,9 +41,30 @@ Metric attributes are limited to the following fields:
   `ec2_trial`.
 - `spawn_cap_reached`: whether the cycle's plan filled its configured per-cycle
   worker cap.
+- `analysis_kind`: `qa`, `audit`, or `summarize` for analysis-stage durations.
+- `stage`: one fixed stage from the analysis-stage table below.
+- `target_bucket`: the number of solver trials an analysis run inspects,
+  bucketed as `0`, `1`, `2-5`, `6-10`, `11-25`, `26-50`, or `51+`.
+- `retried`: whether the analysis trial is on its second or later attempt.
+- `source`: `worker` for the normal settlement importer or `cleanup` when the
+  cleanup healer retries a durable import.
 
 Do not attach worker-job IDs, trial IDs, organization IDs, user IDs, exception
 messages, or other per-record values to these metrics.
+
+Analysis spans are the drill-down path for one slow run. They carry
+`trial_id`, `task_id`, `worker_job_id`, and `attempt`; those identifiers do not
+appear on the histogram. The fixed stages have these meanings:
+
+| Stage | Boundary |
+|---|---|
+| `prepare` | Resolving BYOK credentials, materializing the task, applying the analysis overlay, and creating an external sandbox when configured. |
+| `environment_setup`, `agent_setup`, `agent_execution`, `verifier` | Completed Harbor runtime phases copied from the trial's `phase_timing` result. An absent or malformed phase is omitted rather than reported as zero. |
+| `artifact_upload` | Uploading the Harbor job directory to Oddish's permanent S3 trial prefix. A missing job directory emits a zero-duration error observation because no upload call ran. |
+| `result_store` | Persisting the attempt outcome onto the trial row. Post-trial hooks run after this measurement. |
+| `import` | Reading the analysis artifact and publishing its classification, verdict, audit, or trajectory summary into the columns read by Oddish. |
+| `end_to_end` | Seconds from `trials.created_at` through an importer attempt; this includes queue wait, retries, execution, upload, and import. |
+| `activity.*` | Deterministic durations derived from the analysis trial's own trajectory and summed once per activity label per run: fetching trial data, reading files, inspecting data, reasoning, delegating, or writing the result. |
 
 ## Dashboards
 
@@ -67,6 +89,15 @@ Create one custom **Oddish Operations** dashboard. The ten numbered queries in
 10. Dispatcher error percentage, where the denominator contains completed
     `success`, `skipped`, and `error` observations and excludes interrupted
     `cancelled` cycles.
+
+Create a separate **Oddish Analysis Performance** dashboard from
+`logfire-oddish-analysis.sql`. Keeping it separate prevents QA latency filters
+from changing the queue and dispatcher panels. Its four panels answer:
+
+1. How long analysis takes from creation through import, by analysis kind.
+2. Which runtime or persistence stage owns the latency.
+3. Which semantic activity inside the QA agent owns its execution time.
+4. How end-to-end latency changes with target count and retries.
 
 The two attempt-share panels count persisted attempt outcomes, not unique jobs.
 For example, one job that records `RETRYING`, `RETRYING`, then `SUCCESS`
@@ -145,6 +176,10 @@ names, and any SQL error in `logfire-rollout-checklist.md`. Do not record the
 token value. A missing `oddish.dispatch.workers_spawned` row can mean that no
 fully successful cycle has spawned a worker yet; run a workload with queued
 capacity before treating that absence as an export failure.
+
+After one QA, audit, or summarize trial reaches import, the same query must
+also contain `oddish.analysis.stage.duration`. That metric is absent until an
+analysis stage records a duration; an ordinary agent trial does not create it.
 
 ## Create and export the custom dashboard
 

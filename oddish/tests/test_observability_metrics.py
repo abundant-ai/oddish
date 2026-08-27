@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import types
 from dataclasses import dataclass, field
+from contextlib import nullcontext
 from typing import Any
 
 import pytest
@@ -39,6 +40,7 @@ def metric_instruments(monkeypatch):
         metric_counter=create,
         metric_histogram=create,
         metric_gauge=create,
+        span=lambda *_args, **_kwargs: nullcontext(),
     )
     monkeypatch.setitem(sys.modules, "logfire", fake_logfire)
     monkeypatch.setattr(observability, "_configured", True)
@@ -50,6 +52,7 @@ def metric_instruments(monkeypatch):
         "_dispatch_workers_spawned_counter",
         "_dispatch_cycles_counter",
         "_dispatch_duration_histogram",
+        "_analysis_stage_duration_histogram",
     ):
         monkeypatch.setattr(observability, name, None)
     monkeypatch.setattr(observability, "_last_dispatch_queue_keys", set())
@@ -87,6 +90,145 @@ def test_recording_functions_are_noops_when_logfire_is_not_configured(
         duration_seconds=1.0,
         outcome="success",
     )
+    observability.record_analysis_stage_duration(
+        analysis_kind="qa",
+        stage="prepare",
+        outcome="success",
+        queue_key="anthropic/claude-sonnet-4-5",
+        target_count=7,
+        retried=False,
+        source="worker",
+        duration_seconds=1.0,
+    )
+
+
+@pytest.mark.parametrize(
+    ("target_count", "expected"),
+    [
+        (-1, "0"),
+        (0, "0"),
+        (1, "1"),
+        (2, "2-5"),
+        (5, "2-5"),
+        (6, "6-10"),
+        (10, "6-10"),
+        (11, "11-25"),
+        (25, "11-25"),
+        (26, "26-50"),
+        (50, "26-50"),
+        (51, "51+"),
+    ],
+)
+def test_analysis_target_bucket_is_bounded(target_count, expected):
+    assert observability.analysis_target_bucket(target_count) == expected
+
+
+def test_analysis_stage_metric_has_only_bounded_attributes(metric_instruments):
+    instruments, definitions = metric_instruments
+
+    observability.record_analysis_stage_duration(
+        analysis_kind="qa",
+        stage="agent_execution",
+        outcome="success",
+        queue_key="anthropic/claude-sonnet-4-5",
+        target_count=7,
+        retried=True,
+        source="worker",
+        duration_seconds=12.5,
+    )
+
+    assert instruments["oddish.analysis.stage.duration"].observations == [
+        (
+            12.5,
+            {
+                "analysis_kind": "qa",
+                "stage": "agent_execution",
+                "outcome": "success",
+                "queue_key": "anthropic/claude-sonnet-4-5",
+                "target_bucket": "6-10",
+                "retried": True,
+                "source": "worker",
+            },
+        )
+    ]
+    assert definitions["oddish.analysis.stage.duration"][0] == "s"
+
+
+def test_analysis_stage_context_records_error_and_keeps_ids_on_span_only(
+    metric_instruments, monkeypatch
+):
+    instruments, _definitions = metric_instruments
+    opened_spans: list[tuple[str, dict[str, Any]]] = []
+
+    def open_span(name: str, **attributes):
+        opened_spans.append((name, attributes))
+        return nullcontext()
+
+    monkeypatch.setattr(observability, "span", open_span)
+    telemetry = observability.AnalysisTelemetry(
+        analysis_kind="summarize",
+        queue_key="openai/gpt-5",
+        target_count=1,
+        retried=False,
+        source="cleanup",
+        trial_id="trial-123",
+        task_id="task-456",
+        attempt=1,
+        worker_job_id="job-789",
+    )
+
+    with pytest.raises(RuntimeError, match="import failed"):
+        with telemetry.stage("import"):
+            raise RuntimeError("import failed")
+
+    metric_attributes = instruments[
+        "oddish.analysis.stage.duration"
+    ].observations[0][1]
+    assert metric_attributes["outcome"] == "error"
+    assert set(metric_attributes) == {
+        "analysis_kind",
+        "stage",
+        "outcome",
+        "queue_key",
+        "target_bucket",
+        "retried",
+        "source",
+    }
+    assert opened_spans == [
+        (
+            "analysis.import",
+            {
+                "analysis_kind": "summarize",
+                "analysis_stage": "import",
+                "analysis_target_count": 1,
+                "queue_key": "openai/gpt-5",
+                "retried": False,
+                "trial_id": "trial-123",
+                "task_id": "task-456",
+                "worker_job_id": "job-789",
+                "attempt": 1,
+                "source": "cleanup",
+            },
+        )
+    ]
+
+
+def test_unknown_analysis_stage_is_not_exported(metric_instruments, caplog):
+    instruments, _definitions = metric_instruments
+
+    observability.record_analysis_stage_duration(
+        analysis_kind="qa",
+        stage="trial-123",
+        outcome="success",
+        queue_key="openai/gpt-5",
+        target_count=5,
+        retried=False,
+        source="worker",
+        duration_seconds=1.0,
+    )
+
+    assert "oddish.analysis.stage.duration" not in instruments
+    assert "refusing unknown analysis metric dimensions" in caplog.text
 
 
 def test_worker_metrics_have_bounded_attributes_and_measured_duration(

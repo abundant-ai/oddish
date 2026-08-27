@@ -14,10 +14,12 @@ from oddish.filters.trial_predicates import EligibleTrialScope
 from oddish.core.trial_facets import facet_rows_for_trial
 from oddish.workers.analysis_trials import (
     _classification_from_analysis,
+    analysis_target_count,
     build_audit_brief,
     build_qa_brief,
     has_verdict_evidence,
     is_analysis_kind,
+    record_analysis_activity_durations,
 )
 
 URL = os.environ.get("ODDISH_DATABASE_URL")
@@ -41,6 +43,48 @@ def test_the_analysis_kinds_are_known():
         assert is_analysis_kind(kind)
     assert not is_analysis_kind("agent")
     assert not is_analysis_kind(None)
+
+
+def test_analysis_target_count_uses_each_kinds_pinned_worklist():
+    assert (
+        analysis_target_count(
+            "qa", {"analysis_payload": {"trial_ids": ["t-1", "t-2"]}}
+        )
+        == 2
+    )
+    assert (
+        analysis_target_count(
+            "summarize", {"analysis_payload": {"target_trial_id": "t-1"}}
+        )
+        == 1
+    )
+    assert analysis_target_count("audit", {"analysis_payload": {}}) == 0
+    assert analysis_target_count("qa", {"analysis_payload": {"trial_ids": "bad"}}) == 0
+
+
+def test_analysis_activity_durations_sum_each_label_once_per_run():
+    observations = []
+
+    class Telemetry:
+        def record(self, stage, duration_seconds, *, outcome):
+            observations.append((stage, duration_seconds, outcome))
+
+    record_analysis_activity_durations(
+        Telemetry(),
+        {
+            "components": [
+                {"trajectory_component": "reasoning", "duration_ms": 1250},
+                {"trajectory_component": "reading_files", "duration_ms": 500},
+                {"trajectory_component": "reasoning", "duration_ms": 250},
+            ]
+        },
+        outcome="success",
+    )
+
+    assert observations == [
+        ("activity.reasoning", 1.5, "success"),
+        ("activity.reading_files", 0.5, "success"),
+    ]
 
 
 def test_the_qa_brief_tells_the_agent_everything_it_needs():
