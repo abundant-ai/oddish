@@ -156,18 +156,6 @@ High-level flow:
    verdict. A sweep of `T` tasks × `N` trials therefore creates `T`
    QA trials, not `T × (N + 1)`. The pre-trial audit is an `audit`-kind trial
    created once per task version at sweep time.
-   Historical prompt evaluation is separate: `POST /qa-evals` creates one
-   output experiment and one `qa_eval` analysis trial per exact source solver
-   trial. The trials point to the output experiment through
-   `trials.experiment_id`; the source tasks are not joined to it through
-   `task_experiments`, so a replay cannot become a task's primary experiment.
-   Each replay pins the source task-version id, prompt name and SHA-256, and
-   canonical model id in `harbor_config.analysis_payload`. Its importer writes
-   the candidate artifact only to the new evaluation trial's `analysis`; it
-   never changes source-trial state, task verdict state, or task-version
-   pre-trial findings. A storage failure before that import commits leaves
-   `analysis_status` unfinished; the cleanup sweep selects those settled
-   `qa_eval` trials in bounded batches and re-runs the same idempotent importer.
    Non-'agent' kinds are excluded from cost, quota, leaderboard, facet, and
    public surfaces (see `oddish.filters.trial_predicates.EligibleTrialScope`).
 5. While a trial runs, a worker-side tailer (`oddish.workers.harbor.live_tail`,
@@ -340,9 +328,9 @@ a code change that ships with a deploy.
 
 `WorkerJobKind` (in `oddish.db.models`):
 
-- **Active**: `TRIAL` (Harbor trial execution — including `qa`, `qa_eval`,
-  `audit`, and `summarize` kind trials), `TASK_EXPAND` (sweep expansion),
-  `TAG_PROJECT` (tag recompute).
+- **Active**: `TRIAL` (Harbor trial execution — including `qa`, `audit`, and
+  `summarize` kind trials), `TASK_EXPAND` (sweep expansion), `TAG_PROJECT`
+  (tag recompute).
 - **Legacy, enum-only**: `QA`, `VERDICT`, `ANALYSIS`, `QA_REVIEW`,
   `ANALYZER`, `ANALYZER_BLOCK`. QA/audit/analyzer work runs as trials now;
   no handler claims these kinds (workers claim only registered kinds), and

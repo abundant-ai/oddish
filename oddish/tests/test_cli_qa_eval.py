@@ -34,9 +34,6 @@ class _RunClient:
                 "prompt_name": json["prompt_name"],
                 "prompt_sha256": "abc",
                 "model": "deployed-model",
-                "requested_count": len(json["source_trial_ids"]),
-                "queued_count": len(json["source_trial_ids"]),
-                "skipped_count": 0,
                 "trials": [
                     {
                         "source_trial_id": source_id,
@@ -44,7 +41,6 @@ class _RunClient:
                     }
                     for source_id in json["source_trial_ids"]
                 ],
-                "skipped_sources": [],
             },
             request=httpx.Request("POST", url),
         )
@@ -99,11 +95,11 @@ def test_run_submits_each_prompt_without_case_contents(monkeypatch, tmp_path):
     )
 
 
-def test_collect_writes_the_requested_columns(monkeypatch, tmp_path):
-    labels = tmp_path / "labels.csv"
-    labels.write_text(
-        "source_trial_id,researcher_issue,researcher_issue_caught\n"
-        "source-1,The grader missed the root cause,yes\n"
+def test_collect_preserves_input_columns_and_appends_the_new_qa(monkeypatch, tmp_path):
+    cases = tmp_path / "cases.csv"
+    cases.write_text(
+        "source_trial_id,researcher_issue,historical_qa_classification\n"
+        "source-1,The grader missed the root cause,GOOD_FAILURE\n"
     )
     out = tmp_path / "comparison.csv"
 
@@ -117,31 +113,25 @@ def test_collect_writes_the_requested_columns(monkeypatch, tmp_path):
                     {
                         "source_trial_id": "source-1",
                         "qa_eval_trial_id": "eval-1",
-                        "task_name": "task-one",
                         "status": "success",
                         "prompt_name": "candidate-1",
                         "prompt_sha256": "prompt-hash",
                         "model": "claude-sonnet-5",
-                        "historical_qa_response_valid": True,
-                        "historical_qa_classification": "GOOD_FAILURE",
-                        "historical_qa_root_cause": "Old cause.",
-                        "candidate_qa_classification": "BAD_FAILURE",
-                        "candidate_qa_subtype": "reference_implementation_exposed",
-                        "candidate_qa_evidence": "The solver invoked /usr/bin/indent.",
-                        "candidate_qa_root_cause": "New cause.",
-                        "candidate_qa_recommendation": "Remove the binary.",
-                        "candidate_qa_action_items": [
-                            {"id": "finding-1", "title": "Remove the binary"}
-                        ],
-                        "candidate_qa_exploitation": [
-                            {"links_to": "finding-1", "exploited": True}
-                        ],
-                        "candidate_qa_output": {
+                        "analysis_status": "success",
+                        "analysis_error": None,
+                        "analysis": {
                             "classification": "BAD_FAILURE",
                             "subtype": "reference_implementation_exposed",
+                            "evidence": "The solver invoked /usr/bin/indent.",
+                            "root_cause": "New cause.",
+                            "recommendation": "Remove the binary.",
+                            "action_items": [
+                                {"id": "finding-1", "title": "Remove the binary"}
+                            ],
+                            "exploitation": [
+                                {"links_to": "finding-1", "exploited": True}
+                            ],
                         },
-                        "qa_response_valid": True,
-                        "failure_stage": None,
                     }
                 ],
             },
@@ -155,9 +145,9 @@ def test_collect_writes_the_requested_columns(monkeypatch, tmp_path):
         [
             "qa-eval",
             "collect",
-            "feedback",
-            "--labels",
-            str(labels),
+            "experiment-1",
+            "--cases",
+            str(cases),
             "--out",
             str(out),
             "--api",
@@ -171,21 +161,22 @@ def test_collect_writes_the_requested_columns(monkeypatch, tmp_path):
     assert len(rows) == 1
     row = rows[0]
     assert row["source_trial_id"] == "source-1"
-    assert row["qa_eval_trial_id"] == "eval-1"
+    assert row["researcher_issue"] == "The grader missed the root cause"
+    assert row["historical_qa_classification"] == "GOOD_FAILURE"
+    assert row["new_qa_trial_id"] == "eval-1"
     assert row["prompt_name"] == "candidate-1"
     assert row["prompt_sha256"] == "prompt-hash"
-    assert row["model"] == "claude-sonnet-5"
-    assert row["historical_qa_response_valid"] == "true"
-    assert row["candidate_qa_subtype"] == "reference_implementation_exposed"
-    assert row["candidate_qa_evidence"] == "The solver invoked /usr/bin/indent."
-    assert row["candidate_qa_recommendation"] == "Remove the binary."
-    assert json.loads(row["candidate_qa_action_items_json"]) == [
+    assert row["qa_model"] == "claude-sonnet-5"
+    assert row["new_qa_subtype"] == "reference_implementation_exposed"
+    assert row["new_qa_evidence"] == "The solver invoked /usr/bin/indent."
+    assert row["new_qa_recommendation"] == "Remove the binary."
+    assert json.loads(row["new_qa_action_items_json"]) == [
         {"id": "finding-1", "title": "Remove the binary"}
     ]
-    assert json.loads(row["candidate_qa_exploitation_json"]) == [
+    assert json.loads(row["new_qa_exploitation_json"]) == [
         {"exploited": True, "links_to": "finding-1"}
     ]
-    assert json.loads(row["candidate_qa_output_json"]) == {
-        "classification": "BAD_FAILURE",
-        "subtype": "reference_implementation_exposed",
-    }
+    assert json.loads(row["new_qa_output_json"])["classification"] == "BAD_FAILURE"
+    assert json.loads(row["new_qa_output_json"])["subtype"] == (
+        "reference_implementation_exposed"
+    )

@@ -76,7 +76,6 @@ logger = logging.getLogger(__name__)
 
 ANALYSIS_TRIAL_KINDS = ("qa", "qa_eval", "audit", "summarize")
 QA_RESULT_FILENAME = "qa_result.json"
-QA_EVAL_RESULT_FILENAME = "qa_eval_result.json"
 AUDIT_RESULT_FILENAME = "audit_result.json"
 SUMMARIZE_RESULT_FILENAME = "summary_result.json"
 
@@ -84,7 +83,7 @@ SUMMARIZE_RESULT_FILENAME = "summary_result.json"
 # stages it under /logs/verifier so harbor collects it.
 ANALYSIS_ARTIFACTS = {
     "qa": QA_RESULT_FILENAME,
-    "qa_eval": QA_EVAL_RESULT_FILENAME,
+    "qa_eval": QA_RESULT_FILENAME,
     "audit": AUDIT_RESULT_FILENAME,
     "summarize": SUMMARIZE_RESULT_FILENAME,
 }
@@ -122,7 +121,7 @@ def analysis_check_payload(kind: str, harbor_config: dict | None) -> dict:
         "dimension_spellings": sorted(_DIMENSION_HEADING_SPELLINGS),
         "tiers": [t.value for t in ActionTier],
     }
-    if kind == "qa":
+    if kind in ("qa", "qa_eval"):
         payload = (harbor_config or {}).get("analysis_payload") or {}
         return {
             "kind": "qa",
@@ -135,14 +134,6 @@ def analysis_check_payload(kind: str, harbor_config: dict | None) -> dict:
             "confidences": list(
                 get_args(TaskVerdictModel.model_fields["confidence"].annotation)
             ),
-            **item_vocabulary,
-        }
-    if kind == "qa_eval":
-        payload = (harbor_config or {}).get("analysis_payload") or {}
-        return {
-            "kind": "qa_eval",
-            "source_trial_id": str(payload.get("source_trial_id") or ""),
-            "classifications": [c.value for c in Classification],
             **item_vocabulary,
         }
     if kind == "summarize":
@@ -383,8 +374,9 @@ def build_qa_brief(
     trial_ids: list[str],
     pre_trial_items: list[dict] | None,
     with_verdict: bool = True,
+    classification_prompt: str | None = None,
 ) -> str:
-    classify = _prompt("classify_prompt.txt")
+    classify = classification_prompt or _prompt("classify_prompt.txt")
     verdict = _prompt("verdict_prompt.txt")
     summary = render_summary_instructions(_prompt("prompts/trajectory_summary.txt"))
     pre_trial = (
@@ -448,50 +440,6 @@ Write exactly one file: /logs/{QA_RESULT_FILENAME}
 }}
 
 {verdict_schema}Every trial listed above must appear in "trials". The file must be valid JSON. Do not write anything else to /logs."""
-
-
-def build_qa_eval_brief(
-    *,
-    task_name: str,
-    source_trial_id: str,
-    candidate_prompt: str,
-    pre_trial_items: list[dict] | None,
-) -> str:
-    """Build an isolated replay brief for one historical solver trial."""
-    pre_trial = (
-        json.dumps(pre_trial_items, indent=1) if pre_trial_items else "(none recorded)"
-    )
-    return f"""You are evaluating one historical solver trial for the task `{task_name}`. You are in a clean analysis sandbox, not the task's own environment. Do not solve the task.
-
-Evaluate exactly this source trial:
-- {source_trial_id}
-
-The oddish-query CLI fetches trial data from the oddish API. Run these commands before judging the trial:
-`node /probe-harness/oddish-query trials result {source_trial_id} > /tmp/source-result.json`
-`node /probe-harness/oddish-query trials trajectory {source_trial_id} > /tmp/source-trajectory.json`
-`node /probe-harness/oddish-query trials logs {source_trial_id} > /tmp/source-logs.json`
-`node /probe-harness/oddish-query task fetch --into /tmp/source-task`
-Inspect those files. Do not use or copy the source trial's existing `analysis`; this replay must judge the stored solver evidence independently.
-
-Known pre-trial findings for the source trial's exact task version:
-{pre_trial}
-
-== CANDIDATE CLASSIFICATION PROMPT ==
-{candidate_prompt}
-
-== OUTPUT ==
-Write exactly one file: /logs/{QA_EVAL_RESULT_FILENAME}
-{{
-  "source_trial_id": "{source_trial_id}",
-  "classification": "GOOD_SUCCESS|BAD_SUCCESS|GOOD_FAILURE|BAD_FAILURE|HARNESS_ERROR",
-  "subtype": "...",
-  "evidence": "...",
-  "root_cause": "...",
-  "recommendation": "...",
-  "action_items": [],
-  "exploitation": []
-}}
-The file must be valid JSON. Do not write anything else to /logs."""
 
 
 def build_audit_brief(*, task_name: str) -> str:
@@ -1158,7 +1106,7 @@ async def _import_qa_eval_result(trial: TrialModel) -> None:
     """Store a replay result only on its newly-created evaluation trial."""
     artifact = None
     if trial.status == TrialStatus.SUCCESS:
-        artifact = await read_analysis_artifact(trial, QA_EVAL_RESULT_FILENAME)
+        artifact = await read_analysis_artifact(trial, QA_RESULT_FILENAME)
     expected = analysis_check_payload("qa_eval", trial.harbor_config)
     violations = (
         check_analysis_result(artifact, expected) if artifact is not None else None
@@ -1170,11 +1118,32 @@ async def _import_qa_eval_result(trial: TrialModel) -> None:
             f"{trial.error_message or 'no error recorded'}"
         )
     elif artifact is None:
-        detail = "produced no valid qa_eval_result.json"
+        detail = "produced no valid qa_result.json"
     elif violations:
         detail = "artifact violates the QA-eval contract: " + "; ".join(violations[:5])
     else:
         detail = None
+
+    analysis = None
+    if detail is None:
+        source_trial_id = str(
+            ((trial.harbor_config or {}).get("analysis_payload") or {}).get(
+                "source_trial_id"
+            )
+            or ""
+        )
+        entries = artifact.get("trials") if isinstance(artifact, dict) else None
+        entry = next(
+            (
+                item
+                for item in entries or []
+                if isinstance(item, dict) and item.get("trial_id") == source_trial_id
+            ),
+            None,
+        )
+        analysis = entry.get("analysis") if isinstance(entry, dict) else None
+        if not isinstance(analysis, dict):
+            detail = f"qa_result.json contains no analysis for {source_trial_id}"
 
     async with get_session() as session:
         row = await session.get(TrialModel, trial.id)
@@ -1185,7 +1154,7 @@ async def _import_qa_eval_result(trial: TrialModel) -> None:
             row.analysis_status = AnalysisStatus.FAILED
             row.analysis_error = detail
             return
-        row.analysis = artifact
+        row.analysis = analysis
         row.analysis_status = AnalysisStatus.SUCCESS
         row.analysis_error = None
     logger.info("qa-eval trial %s: stored candidate analysis", trial.id)

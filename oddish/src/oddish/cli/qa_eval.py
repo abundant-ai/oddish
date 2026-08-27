@@ -19,52 +19,51 @@ qa_eval_app = typer.Typer(
     no_args_is_help=True,
 )
 
-_COLLECT_COLUMNS = [
-    "source_trial_id",
-    "qa_eval_trial_id",
-    "task_name",
-    "researcher_issue",
+_NEW_RESULT_COLUMNS = [
+    "new_qa_trial_id",
+    "new_qa_status",
+    "new_qa_analysis_status",
+    "new_qa_classification",
+    "new_qa_subtype",
+    "new_qa_evidence",
+    "new_qa_root_cause",
+    "new_qa_recommendation",
+    "new_qa_action_items_json",
+    "new_qa_exploitation_json",
+    "new_qa_output_json",
+    "new_qa_error",
     "prompt_name",
     "prompt_sha256",
-    "model",
-    "historical_qa_response_valid",
-    "historical_qa_classification",
-    "historical_qa_root_cause",
-    "candidate_qa_classification",
-    "candidate_qa_subtype",
-    "candidate_qa_evidence",
-    "candidate_qa_root_cause",
-    "candidate_qa_recommendation",
-    "candidate_qa_action_items_json",
-    "candidate_qa_exploitation_json",
-    "candidate_qa_output_json",
-    "researcher_issue_caught",
-    "qa_response_valid",
-    "failure_stage",
+    "qa_model",
 ]
 
 
-def _read_cases(path: Path) -> list[str]:
+def _read_case_rows(path: Path) -> tuple[list[str], list[dict[str, str]]]:
     with path.open(newline="", encoding="utf-8-sig") as handle:
         reader = csv.DictReader(handle)
         if not reader.fieldnames or "source_trial_id" not in reader.fieldnames:
             raise ValueError("cases CSV must contain a source_trial_id column")
-        values = [str(row.get("source_trial_id") or "").strip() for row in reader]
-    trial_ids = list(dict.fromkeys(value for value in values if value))
-    if not trial_ids:
+        rows = [{key: str(value or "") for key, value in row.items()} for row in reader]
+    if not any(row["source_trial_id"].strip() for row in rows):
         raise ValueError("cases CSV contains no source_trial_id values")
-    return trial_ids
+    return list(reader.fieldnames), rows
+
+
+def _read_cases(path: Path) -> list[str]:
+    _, rows = _read_case_rows(path)
+    return list(
+        dict.fromkeys(
+            source_id for row in rows if (source_id := row["source_trial_id"].strip())
+        )
+    )
 
 
 def _read_prompt_spec(spec: str) -> tuple[str, str]:
     prompt_name, separator, raw_path = spec.partition("=")
     prompt_name = prompt_name.strip()
-    raw_path = raw_path.strip()
-    if not separator or not prompt_name or not raw_path:
-        raise ValueError(
-            "--prompt must use NAME=PATH, for example candidate-1=prompt.txt"
-        )
-    path = Path(raw_path).expanduser()
+    path = Path(raw_path.strip()).expanduser()
+    if not separator or not prompt_name or not raw_path.strip():
+        raise ValueError("--prompt must use NAME=PATH")
     if not path.is_file():
         raise ValueError(f"prompt file does not exist: {path}")
     text = path.read_text(encoding="utf-8").strip()
@@ -77,9 +76,7 @@ def _experiment_name(base_name: str | None, prompt_name: str, count: int) -> str
     base = (base_name or "").strip()
     if not base:
         return f"qa-eval-{prompt_name}"
-    if count == 1:
-        return base
-    return f"{base}-{prompt_name}"
+    return base if count == 1 else f"{base}-{prompt_name}"
 
 
 @qa_eval_app.command("run")
@@ -98,29 +95,23 @@ def run_qa_eval(
         Optional[list[str]],
         typer.Option(
             "--prompt",
-            help="Candidate prompt as NAME=PATH. Repeat to queue several prompts.",
+            help="Candidate prompt as NAME=PATH; repeat for several prompts.",
         ),
     ] = None,
     name: Annotated[
         Optional[str],
-        typer.Option(
-            "--name",
-            help="Output experiment name; prompt name is appended for multiple prompts.",
-        ),
+        typer.Option("--name", help="Experiment name or shared prefix."),
     ] = None,
     model: Annotated[
         Optional[str],
-        typer.Option(
-            "--model",
-            help="QA model override; omitted uses the deployed production QA model.",
-        ),
+        typer.Option("--model", help="QA model; omitted uses production QA."),
     ] = None,
     api_url: Annotated[str, typer.Option("--api", help="API URL")] = "",
     json_output: Annotated[
         bool, typer.Option("--json", help="Output machine-readable JSON.")
     ] = False,
 ) -> None:
-    """Queue candidate QA prompts without downloading solver artifacts."""
+    """Queue one pointer-based replay experiment per prompt."""
     try:
         source_trial_ids = _read_cases(cases)
         parsed_prompts = [_read_prompt_spec(spec) for spec in (prompts or [])]
@@ -133,13 +124,12 @@ def run_qa_eval(
 
     api_url = (api_url or get_api_url()).rstrip("/")
     require_api_key(api_url)
-    results: list[dict] = []
-    failures: list[dict] = []
+    queued = []
+    failures = []
     with httpx.Client(timeout=120.0, headers=get_auth_headers(api_url)) as client:
         for prompt_name, prompt_text in parsed_prompts:
-            experiment_name = _experiment_name(name, prompt_name, len(parsed_prompts))
             payload = QAEvalCreateRequest(
-                name=experiment_name,
+                name=_experiment_name(name, prompt_name, len(parsed_prompts)),
                 source_trial_ids=source_trial_ids,
                 prompt_name=prompt_name,
                 prompt_text=prompt_text,
@@ -163,18 +153,15 @@ def run_qa_eval(
                     }
                 )
                 continue
-            results.append(response.json())
+            queued.append(response.json())
 
-    output = {"queued": results, "failed": failures}
     if json_output:
-        print_json(output)
+        print_json({"queued": queued, "failed": failures})
     else:
-        for result in results:
+        for result in queued:
             console.print(
-                f"[green]Queued[/green] {result['queued_count']} replay(s); "
-                f"skipped {result['skipped_count']} in "
-                f"{result['experiment_name']} ({result['experiment_id']}) using "
-                f"{result['model']}"
+                f"[green]Queued[/green] {len(result['trials'])} replay(s) in "
+                f"{result['experiment_name']} ({result['experiment_id']})"
             )
         for failure in failures:
             console.print(
@@ -185,48 +172,34 @@ def run_qa_eval(
         raise typer.Exit(1)
 
 
-def _read_labels(path: Path) -> dict[str, dict[str, str]]:
-    with path.open(newline="", encoding="utf-8-sig") as handle:
-        reader = csv.DictReader(handle)
-        if not reader.fieldnames or "source_trial_id" not in reader.fieldnames:
-            raise ValueError("labels CSV must contain a source_trial_id column")
-        return {
-            source_id: {key: str(value or "") for key, value in row.items()}
-            for row in reader
-            if (source_id := str(row.get("source_trial_id") or "").strip())
-        }
-
-
 @qa_eval_app.command("collect")
 def collect_qa_eval(
-    experiment: Annotated[
-        str, typer.Argument(help="QA-eval experiment ID or exact experiment name.")
-    ],
-    labels: Annotated[
+    experiment_id: Annotated[str, typer.Argument(help="Exact QA-eval experiment ID.")],
+    cases: Annotated[
         Path,
         typer.Option(
-            "--labels",
+            "--cases",
             exists=True,
             dir_okay=False,
             readable=True,
-            help="Researcher-label CSV keyed by source_trial_id.",
+            help="Original CSV used to create the replay.",
         ),
     ],
-    out: Annotated[Path, typer.Option("--out", help="Comparison CSV path.")],
+    out: Annotated[Path, typer.Option("--out", help="Output CSV path.")],
     api_url: Annotated[str, typer.Option("--api", help="API URL")] = "",
 ) -> None:
-    """Write historical and candidate QA results beside researcher labels."""
+    """Preserve every input column and append the new QA response."""
     try:
-        label_by_id = _read_labels(labels)
+        input_columns, rows = _read_case_rows(cases)
     except (OSError, UnicodeError, ValueError) as exc:
-        console.print(f"[red]Invalid labels CSV:[/red] {exc}")
+        console.print(f"[red]Invalid cases CSV:[/red] {exc}")
         raise typer.Exit(1) from exc
 
     api_url = (api_url or get_api_url()).rstrip("/")
     require_api_key(api_url)
     try:
         response = httpx.get(
-            f"{api_url}/qa-evals/{experiment}",
+            f"{api_url}/qa-evals/{experiment_id}",
             timeout=120.0,
             headers=get_auth_headers(api_url),
         )
@@ -240,60 +213,54 @@ def collect_qa_eval(
         )
         raise typer.Exit(1)
 
-    rows: list[dict[str, str]] = []
-    for result in response.json()["rows"]:
-        label = label_by_id.get(result["source_trial_id"], {})
-        rows.append(
+    result_by_source = {
+        result["source_trial_id"]: result for result in response.json()["rows"]
+    }
+    output_rows = []
+    for source_row in rows:
+        source_id = source_row["source_trial_id"].strip()
+        result = result_by_source.get(source_id)
+        analysis = (result or {}).get("analysis") or {}
+        output_rows.append(
             {
-                "source_trial_id": result["source_trial_id"],
-                "qa_eval_trial_id": result["qa_eval_trial_id"],
-                "task_name": result["task_name"],
-                "researcher_issue": label.get("researcher_issue", ""),
-                "prompt_name": result["prompt_name"],
-                "prompt_sha256": result["prompt_sha256"],
-                "model": result["model"],
-                "historical_qa_response_valid": str(
-                    result["historical_qa_response_valid"]
-                ).lower(),
-                "historical_qa_classification": result.get(
-                    "historical_qa_classification"
-                )
-                or "",
-                "historical_qa_root_cause": result.get("historical_qa_root_cause")
-                or "",
-                "candidate_qa_classification": result.get("candidate_qa_classification")
-                or "",
-                "candidate_qa_subtype": result.get("candidate_qa_subtype") or "",
-                "candidate_qa_evidence": result.get("candidate_qa_evidence") or "",
-                "candidate_qa_root_cause": result.get("candidate_qa_root_cause") or "",
-                "candidate_qa_recommendation": result.get("candidate_qa_recommendation")
-                or "",
-                "candidate_qa_action_items_json": json.dumps(
-                    result.get("candidate_qa_action_items") or [],
+                **source_row,
+                "new_qa_trial_id": (result or {}).get("qa_eval_trial_id", ""),
+                "new_qa_status": (result or {}).get("status", ""),
+                "new_qa_analysis_status": (result or {}).get("analysis_status", ""),
+                "new_qa_classification": analysis.get("classification", ""),
+                "new_qa_subtype": analysis.get("subtype", ""),
+                "new_qa_evidence": analysis.get("evidence", ""),
+                "new_qa_root_cause": analysis.get("root_cause", ""),
+                "new_qa_recommendation": analysis.get("recommendation", ""),
+                "new_qa_action_items_json": json.dumps(
+                    analysis.get("action_items") or [],
                     ensure_ascii=False,
                     sort_keys=True,
                 ),
-                "candidate_qa_exploitation_json": json.dumps(
-                    result.get("candidate_qa_exploitation") or [],
+                "new_qa_exploitation_json": json.dumps(
+                    analysis.get("exploitation") or [],
                     ensure_ascii=False,
                     sort_keys=True,
                 ),
-                "candidate_qa_output_json": json.dumps(
-                    result.get("candidate_qa_output") or {},
-                    ensure_ascii=False,
-                    sort_keys=True,
+                "new_qa_output_json": json.dumps(
+                    analysis, ensure_ascii=False, sort_keys=True
                 ),
-                # The replay never sees researcher_issue, so this remains a
-                # researcher label unless the input CSV already supplies it.
-                "researcher_issue_caught": label.get("researcher_issue_caught", ""),
-                "qa_response_valid": str(result["qa_response_valid"]).lower(),
-                "failure_stage": result.get("failure_stage") or "",
+                "new_qa_error": (
+                    (result or {}).get("analysis_error")
+                    or ("no replay result returned" if result is None else "")
+                ),
+                "prompt_name": (result or {}).get("prompt_name", ""),
+                "prompt_sha256": (result or {}).get("prompt_sha256", ""),
+                "qa_model": (result or {}).get("model", ""),
             }
         )
 
+    output_columns = [
+        column for column in input_columns if column not in _NEW_RESULT_COLUMNS
+    ] + _NEW_RESULT_COLUMNS
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=_COLLECT_COLUMNS)
+        writer = csv.DictWriter(handle, fieldnames=output_columns)
         writer.writeheader()
-        writer.writerows(rows)
-    console.print(f"[green]Wrote[/green] {len(rows)} comparison row(s) to {out}")
+        writer.writerows(output_rows)
+    console.print(f"[green]Wrote[/green] {len(output_rows)} row(s) to {out}")

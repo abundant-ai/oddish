@@ -89,9 +89,6 @@ async function cmdExpTrials(a) {
   const data = await get(`/experiments/${a.id}/trials`);
   emitRows((Array.isArray(data) ? data : data.trials || data.items || []).map(trialRow));
 }
-async function cmdTrialResource(a, resource) {
-  out(JSON.stringify(await get(`/trials/${a.trialId}/${resource}`)));
-}
 async function cmdLogs(a) {
   const data = await get(`/trials/${a.trialId}/${a.trajectory ? 'trajectory' : 'logs'}`);
   let text = typeof data === 'string' ? data : JSON.stringify(data);
@@ -254,9 +251,6 @@ USAGE: node /probe-harness/oddish-query <group> <command> [args]
   tasks get <task_id>         task detail
   tasks trials <task_id>      a task's trials
   experiments trials <exp_id> trials in an experiment (trial_id, task, status, reward, is_probe)
-  trials result <trial_id>    a trial's complete stored Harbor result
-  trials trajectory <trial_id>
-                              a trial's complete stored ATIF trajectory
   trials logs <trial_id> [--trajectory] [--tail-bytes N]
                               a trial's logs, or its trajectory. --trajectory shows
                               the LAST N bytes (default 8000) — failures land at the
@@ -290,8 +284,6 @@ async function main() {
   if (group === 'tasks' && cmd === 'get') return cmdGet(a);
   if (group === 'tasks' && cmd === 'trials') return cmdTaskTrials(a);
   if (group === 'experiments' && cmd === 'trials') return cmdExpTrials(a);
-  if (group === 'trials' && cmd === 'result') return cmdTrialResource(a, 'result');
-  if (group === 'trials' && cmd === 'trajectory') return cmdTrialResource(a, 'trajectory');
   if (group === 'trials' && cmd === 'logs') return cmdLogs(a);
   if (group === 'task' && cmd === 'cat') return cmdTaskCat(a);
   if (group === 'task' && cmd === 'fetch') return await cmdTaskFetch({ into: opt.into });

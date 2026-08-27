@@ -899,7 +899,7 @@ def _artifact_subprefix(harbor_config: dict | None) -> str | None:
     if not isinstance(harbor_config, dict):
         return None
     mode = harbor_config.get("mode")
-    if is_analysis_kind(mode):
+    if mode in ("qa", "qa_eval", "audit", "summarize"):
         return f"analysis-{mode}"
     return None
 

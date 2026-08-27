@@ -543,18 +543,13 @@ Options
 
 ## Replay Candidate QA Prompts
 
-Use `oddish qa-eval run` to apply local candidate prompt text to exact stored
-solver trials. Oddish creates a new output experiment for each prompt and
-queues one `kind = "qa_eval"` analysis trial per source trial. The solver does
-not rerun. The CLI uploads no task bundle or solver artifact; the analysis
-trial reads the stored result, trajectory, logs, and exact task-version files
-through `oddish-query`.
+Use `oddish qa-eval run` to apply candidate prompt text to exact stored solver
+trials. Oddish creates one experiment per prompt and one `qa_eval` analysis
+trial per source trial. Solvers do not rerun and the CLI uploads no artifacts.
 
-The cases CSV must contain `source_trial_id`. Other columns, including the
-researcher's issue text, stay local and are not sent to the analysis agent.
-Sources without historical QA remain eligible. Sources that cannot be replayed,
-such as trials without stored trajectories, are returned as skipped rows while
-the eligible sources are queued.
+The cases CSV must contain `source_trial_id`. Other columns stay local. Oddish
+rejects the request before creating the experiment if any source cannot be
+replayed.
 
 ```bash
 oddish qa-eval run \
@@ -575,23 +570,17 @@ the experiment name, ordered source-trial IDs, prompt name and text, and model.
 Repeating an identical command replays the original submission response instead
 of creating another set of paid trials.
 
-After the replay trials settle, collect the historical and candidate outputs:
+After the replay trials settle, append the new QA output to the original CSV:
 
 ```bash
-oddish qa-eval collect \
-  qa-feedback-candidate-1 \
-  --labels cases/researcher-feedback-v1.csv \
+oddish qa-eval collect EXPERIMENT_ID \
+  --cases cases/researcher-feedback-v1.csv \
   --out qa-feedback-candidate-1.csv
 ```
 
-The output contains the source and QA-eval trial IDs, prompt name and hash,
-model, historical QA validity/classification/root cause, and the candidate QA's
-classification, subtype, evidence, root cause, recommendation, action items,
-and exploitation findings. `candidate_qa_output_json` retains the complete
-candidate response. Because the replay never sees the researcher issue,
-`researcher_issue_caught` is copied from the labels CSV when present or left
-blank for review. `qa_response_valid` and `failure_stage` identify replay or
-import failures.
+The output preserves every input column and appends the new QA classification,
+evidence, root cause, recommendation, action items, exploitation findings, raw
+response, prompt hash, model, and any replay error.
 
 ## View Costs
 

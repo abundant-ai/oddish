@@ -1,4 +1,4 @@
-"""Create isolated QA prompt replays over historical solver evidence."""
+"""Create QA prompt replays that point at historical solver trials."""
 
 from __future__ import annotations
 
@@ -17,7 +17,6 @@ from oddish.core.idempotency import (
     reserve_idempotency_slot,
 )
 from oddish.db import (
-    ACTIVE_TRIAL_STATUSES,
     ExperimentModel,
     TaskModel,
     TaskVersionModel,
@@ -30,14 +29,9 @@ from oddish.schemas import (
     QAEvalCreateResponse,
     QAEvalResultRow,
     QAEvalResultsResponse,
-    QAEvalSkipReason,
-    QAEvalSkippedSource,
     QAEvalTrialResponse,
 )
-from oddish.workers.analysis_trials import (
-    build_qa_eval_brief,
-    create_analysis_trial,
-)
+from oddish.workers.analysis_trials import build_qa_brief, create_analysis_trial
 
 _QA_EVAL_SOURCE_STATUSES = (TrialStatus.SUCCESS, TrialStatus.FAILED)
 _QA_EVAL_ROUTE = "POST /qa-evals"
@@ -53,7 +47,7 @@ async def create_qa_eval_core(
     idempotency_store: IdempotencyStore | None = None,
     request_hash: str | None = None,
 ) -> QAEvalCreateResponse:
-    """Queue one candidate-prompt replay for each exact source trial ID."""
+    """Create one replay experiment and one QA trial per source trial."""
     reservation: Reservation | None = None
     if idempotency_store is not None and idempotency_key and org_id:
         try:
@@ -81,16 +75,9 @@ async def create_qa_eval_core(
         .all()
     )
     source_by_id = {row.id: row for row in source_rows}
-    ordered_sources = [
-        source_by_id[trial_id]
-        for trial_id in request.source_trial_ids
-        if trial_id in source_by_id
-    ]
-    task_ids = list(dict.fromkeys(row.task_id for row in ordered_sources))
+    task_ids = list(dict.fromkeys(row.task_id for row in source_rows))
     version_ids = list(
-        dict.fromkeys(
-            row.task_version_id for row in ordered_sources if row.task_version_id
-        )
+        dict.fromkeys(row.task_version_id for row in source_rows if row.task_version_id)
     )
     tasks = (
         (
@@ -117,85 +104,41 @@ async def create_qa_eval_core(
     task_by_id = {row.id: row for row in tasks}
     version_by_id = {row.id: row for row in versions}
 
-    eligible_sources: list[TrialModel] = []
-    skipped_sources: list[QAEvalSkippedSource] = []
+    invalid: list[str] = []
     for source_trial_id in request.source_trial_ids:
         source = source_by_id.get(source_trial_id)
-        skip: tuple[QAEvalSkipReason, str] | None = None
+        reason = None
         if source is None:
-            skip = (
-                "not_found_or_not_accessible",
-                "The source trial was not found or is not accessible.",
-            )
+            reason = "not found or inaccessible"
         elif (
             source.kind != "agent"
             or source.is_probe
             or is_nop_oracle_agent(source.agent)
         ):
-            skip = (
-                "not_solver_trial",
-                "The source trial is not an ordinary solver trial.",
-            )
+            reason = "not an ordinary solver trial"
         elif source.superseded_by_trial_id is not None:
-            skip = (
-                "superseded",
-                "The source trial has been superseded by a newer attempt.",
-            )
+            reason = "superseded"
         elif source.status not in _QA_EVAL_SOURCE_STATUSES:
-            skip = (
-                "not_terminal",
-                f"The source trial is not terminal (status={source.status.value}).",
-            )
+            reason = f"not terminal ({source.status.value})"
         elif source.task_version_id is None:
-            skip = (
-                "missing_task_version",
-                "The source trial has no exact task-version ID.",
-            )
+            reason = "missing an exact task version"
         elif source.task_id not in task_by_id:
-            skip = (
-                "missing_task_version",
-                "The source trial has no accessible live task.",
-            )
+            reason = "missing its task"
         elif source.task_version_id not in version_by_id:
-            skip = (
-                "missing_task_version",
-                "The source trial has no live exact task-version row.",
-            )
+            reason = "missing its exact task version"
         elif version_by_id[source.task_version_id].task_id != source.task_id:
-            skip = (
-                "missing_task_version",
-                "The source trial's task version belongs to another task.",
-            )
+            reason = "task version belongs to another task"
         elif not version_by_id[source.task_version_id].task_s3_key:
-            skip = (
-                "missing_task_files",
-                "The source trial's exact task version has no stored files.",
-            )
+            reason = "exact task version has no stored files"
         elif not source.has_trajectory:
-            skip = (
-                "missing_trajectory",
-                "The source trial has no stored trajectory.",
-            )
+            reason = "missing a stored trajectory"
+        if reason:
+            invalid.append(f"{source_trial_id}: {reason}")
 
-        if skip is not None:
-            reason_code, detail = skip
-            skipped_sources.append(
-                QAEvalSkippedSource(
-                    source_trial_id=source_trial_id,
-                    reason_code=reason_code,
-                    detail=detail,
-                )
-            )
-        else:
-            eligible_sources.append(source)
-
-    if not eligible_sources:
-        detail = "; ".join(
-            f"{row.source_trial_id}: {row.reason_code}" for row in skipped_sources
-        )
+    if invalid:
         raise HTTPException(
             status_code=409,
-            detail=f"No source trials are eligible for QA replay. {detail}",
+            detail="QA replay rejected; fix these source rows: " + "; ".join(invalid),
         )
 
     canonical_model = settings.normalize_trial_model(
@@ -212,13 +155,9 @@ async def create_qa_eval_core(
     session.add(experiment)
     await session.flush()
 
-    # A QA-eval experiment owns its replay trials through
-    # ``TrialModel.experiment_id``. Do not add ``task_experiments`` rows here:
-    # that relationship represents ordinary experiment membership and its
-    # unordered first non-shadow member is still used as the fallback target
-    # when later solver trials are appended to a task.
     created: list[QAEvalTrialResponse] = []
-    for source in eligible_sources:
+    for source_trial_id in request.source_trial_ids:
+        source = source_by_id[source_trial_id]
         task_version_id = source.task_version_id
         assert task_version_id is not None
         task = task_by_id[source.task_id]
@@ -232,21 +171,22 @@ async def create_qa_eval_core(
             session,
             task=task,
             kind="qa_eval",
-            brief=build_qa_eval_brief(
+            brief=build_qa_brief(
                 task_name=task.name,
-                source_trial_id=source.id,
-                candidate_prompt=request.prompt_text,
+                trial_ids=[source.id],
                 pre_trial_items=pre_trial_items,
+                with_verdict=False,
+                classification_prompt=request.prompt_text,
             ),
             task_version_id=task_version_id,
             experiment_id=experiment.id,
             model=canonical_model,
             payload={
                 "source_trial_id": source.id,
-                "source_task_version_id": task_version_id,
+                "trial_ids": [source.id],
+                "with_verdict": False,
                 "prompt_name": request.prompt_name,
                 "prompt_sha256": prompt_sha256,
-                "model": canonical_model,
             },
         )
         created.append(
@@ -259,11 +199,7 @@ async def create_qa_eval_core(
         prompt_name=request.prompt_name,
         prompt_sha256=prompt_sha256,
         model=canonical_model,
-        requested_count=len(request.source_trial_ids),
-        queued_count=len(created),
-        skipped_count=len(skipped_sources),
         trials=created,
-        skipped_sources=skipped_sources,
     )
     if reservation is not None and idempotency_store is not None and org_id is not None:
         await session.flush()
@@ -282,27 +218,12 @@ async def get_qa_eval_results_core(
     experiment_ref: str,
     org_id: str | None,
 ) -> QAEvalResultsResponse:
-    """Return the historical/candidate comparison rows for one replay."""
+    """Return raw replay analyses for one exact experiment ID."""
     experiment = await session.scalar(
         select(ExperimentModel).where(
             ExperimentModel.id == experiment_ref, ExperimentModel.org_id == org_id
         )
     )
-    if experiment is None:
-        experiment = await session.scalar(
-            select(ExperimentModel)
-            .join(TrialModel, TrialModel.experiment_id == ExperimentModel.id)
-            .where(
-                ExperimentModel.name == experiment_ref,
-                ExperimentModel.org_id == org_id,
-                ExperimentModel.is_collection.isnot(True),
-                ExperimentModel.shadow_of.is_(None),
-                TrialModel.kind == "qa_eval",
-                TrialModel.org_id == org_id,
-            )
-            .order_by(ExperimentModel.created_at.desc())
-            .limit(1)
-        )
     if experiment is None:
         raise HTTPException(status_code=404, detail="QA evaluation not found")
 
@@ -325,68 +246,23 @@ async def get_qa_eval_results_core(
     if not eval_trials:
         raise HTTPException(
             status_code=409,
-            detail=f"Experiment {experiment.id} contains no QA-eval trials",
+            detail=f"Experiment {experiment.id} contains no QA replay trials",
         )
 
-    source_ids = [
-        str(
-            ((trial.harbor_config or {}).get("analysis_payload") or {}).get(
-                "source_trial_id"
-            )
-            or ""
-        )
-        for trial in eval_trials
-    ]
-    source_rows = (
-        await session.execute(
-            select(TrialModel, TaskModel.name)
-            .join(TaskModel, TaskModel.id == TrialModel.task_id)
-            .where(TrialModel.id.in_(source_ids), TrialModel.org_id == org_id)
-            .execution_options(include_deleted=True)
-        )
-    ).all()
-    source_by_id = {source.id: (source, task_name) for source, task_name in source_rows}
-
-    rows: list[QAEvalResultRow] = []
-    for eval_trial, source_id in zip(eval_trials, source_ids, strict=True):
-        source_pair = source_by_id.get(source_id)
-        source = source_pair[0] if source_pair else None
-        historical = (
-            source.analysis if source and isinstance(source.analysis, dict) else {}
-        )
-        candidate = eval_trial.analysis if isinstance(eval_trial.analysis, dict) else {}
-        metadata = (eval_trial.harbor_config or {}).get("analysis_payload") or {}
-        valid = bool(candidate)
-        if valid:
-            failure_stage = None
-        elif eval_trial.status in ACTIVE_TRIAL_STATUSES:
-            failure_stage = eval_trial.status.value
-        elif eval_trial.status != TrialStatus.SUCCESS:
-            failure_stage = eval_trial.harbor_stage or "trial_execution"
-        else:
-            failure_stage = "qa_eval_import"
+    rows = []
+    for trial in eval_trials:
+        metadata = (trial.harbor_config or {}).get("analysis_payload") or {}
         rows.append(
             QAEvalResultRow(
-                source_trial_id=source_id,
-                qa_eval_trial_id=eval_trial.id,
-                task_name=source_pair[1] if source_pair else eval_trial.task_id,
-                status=eval_trial.status,
+                source_trial_id=str(metadata.get("source_trial_id") or ""),
+                qa_eval_trial_id=trial.id,
+                status=trial.status,
                 prompt_name=str(metadata.get("prompt_name") or ""),
                 prompt_sha256=str(metadata.get("prompt_sha256") or ""),
-                model=eval_trial.model,
-                historical_qa_response_valid=bool(historical.get("classification")),
-                historical_qa_classification=historical.get("classification"),
-                historical_qa_root_cause=historical.get("root_cause"),
-                candidate_qa_classification=candidate.get("classification"),
-                candidate_qa_subtype=candidate.get("subtype"),
-                candidate_qa_evidence=candidate.get("evidence"),
-                candidate_qa_root_cause=candidate.get("root_cause"),
-                candidate_qa_recommendation=candidate.get("recommendation"),
-                candidate_qa_action_items=candidate.get("action_items") or [],
-                candidate_qa_exploitation=candidate.get("exploitation") or [],
-                candidate_qa_output=candidate or None,
-                qa_response_valid=valid,
-                failure_stage=failure_stage,
+                model=trial.model,
+                analysis=trial.analysis if isinstance(trial.analysis, dict) else None,
+                analysis_status=trial.analysis_status,
+                analysis_error=trial.analysis_error,
             )
         )
 
