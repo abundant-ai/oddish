@@ -17,8 +17,10 @@ the `LOGFIRE_TOKEN` value into this file, GitHub, Slack, or a chat.
 
 - [x] Fast-forward the worktree to the current PR head.
 - [x] Remove the unrelated GKE preview-teardown changes from the worktree diff.
-- [x] Define dispatch outcomes as `success`, `skipped`, and `error` in the
-  shared Oddish observability code.
+- [x] Define dispatch outcomes as `success`, `skipped`, `cancelled`, and `error`
+  in the shared Oddish observability code.
+- [x] Preserve task cancellation in the standalone and Modal dispatchers while
+  recording the interrupted cycle as `cancelled`.
 - [x] Record a handled transient `OSError` as `skipped` in the hosted Modal
   dispatcher and the standalone dispatcher.
 - [x] Keep worker transition metrics after the accepted PostgreSQL state change.
@@ -30,6 +32,9 @@ the `LOGFIRE_TOKEN` value into this file, GitHub, Slack, or a chat.
 - [x] Update the Logfire setup and verification runbook.
 - [x] Run targeted Python tests, Ruff, and `git diff --check`.
   - Current staging dependencies: `105 passed in 17.67s`.
+  - All seven test files changed by PR #1366 after the cancellation fix:
+    `64 passed in 0.45s`.
+  - Cancellation-focused dispatcher and metric tests: `32 passed in 0.40s`.
   - Ruff 0.8.4 imports/unused variables: `All checks passed!`.
   - Ruff 0.8.4 format check: `9 files already formatted`.
   - Logfire API contract: installed version `4.33.0`; all three factory and
@@ -106,7 +111,8 @@ Record non-secret evidence here:
 - [ ] Add panel 6: P50 and P95 worker-attempt duration.
 - [ ] Add panel 7: workers spawned per successful cycle.
 - [ ] Add panel 8: cycles reaching the spawn cap.
-- [ ] Add panel 9: dispatch cycles by `success`, `skipped`, and `error`.
+- [ ] Add panel 9: dispatch cycles by `success`, `skipped`, `cancelled`, and
+  `error`.
 - [ ] Add panel 10: dispatcher error percentage.
 - [ ] Confirm all ten panels run without SQL errors against real Oddish data.
 - [ ] Enable Logfire's standard `Web Server Metrics` dashboard.
@@ -143,6 +149,8 @@ recording webhook URLs, tokens, or recipient addresses.
 
 - [ ] After commit/push, PR #1366 contains no GKE preview-teardown diff.
 - [ ] A transient dispatch `OSError` appears as `outcome = 'skipped'`.
+- [ ] An externally interrupted dispatch cycle appears as
+  `outcome = 'cancelled'` and cancellation still propagates to the host.
 - [ ] An unexpected dispatcher failure appears as `outcome = 'error'`.
 - [ ] All seven metrics arrive in the chosen Logfire environment.
 - [ ] All ten dashboard panels return data without SQL errors.

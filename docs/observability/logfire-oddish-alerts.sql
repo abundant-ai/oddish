@@ -13,6 +13,7 @@
 -- 1. Unexpected dispatcher errors
 -- Suggested policy: evaluate every 5 minutes over the last 10 minutes and
 -- notify when this query returns a row. One unexpected cycle error is enough.
+-- Externally interrupted cycles use outcome='cancelled' and do not match.
 SELECT
     service_name,
     deployment_environment,

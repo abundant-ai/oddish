@@ -395,6 +395,9 @@ async def _run_dispatch_cycle(
         )
         cycle_outcome = "success"
         return result
+    except asyncio.CancelledError:
+        cycle_outcome = "cancelled"
+        raise
     except OSError:
         # The surrounding standalone loop already retries every failed cycle.
         # Distinguish recognized network/filesystem transients from unexpected

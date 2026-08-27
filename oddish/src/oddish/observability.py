@@ -35,7 +35,7 @@ _dispatch_duration_histogram = None
 _last_dispatch_queue_keys: set[str] = set()
 
 _AGGREGATE_QUEUE_KEY = "__all__"
-DispatchCycleOutcome = Literal["success", "skipped", "error"]
+DispatchCycleOutcome = Literal["success", "skipped", "cancelled", "error"]
 
 
 def configure_observability(service_name: str) -> bool:
@@ -400,10 +400,11 @@ def record_dispatch_cycle(
     """Record one dispatcher cycle and spawns from fully successful cycles.
 
     ``skipped`` means a recognized transient condition, currently ``OSError``,
-    prevented completion and the polling host will retry. ``error`` is reserved
-    for unexpected failures. The workers-spawned counter remains limited to
-    ``success`` cycles because a failed fan-out does not expose a trustworthy
-    partial spawn count on every dispatcher host.
+    prevented completion and the polling host will retry. ``cancelled`` means
+    the dispatch task was externally interrupted and is re-raised by the host.
+    ``error`` is reserved for unexpected failures. The workers-spawned counter
+    remains limited to ``success`` cycles because an incomplete fan-out does
+    not expose a trustworthy partial spawn count on every dispatcher host.
     """
     global _dispatch_workers_spawned_counter
     global _dispatch_cycles_counter, _dispatch_duration_histogram
@@ -425,8 +426,8 @@ def record_dispatch_cycle(
                     "oddish.dispatch.cycles",
                     unit="{cycle}",
                     description=(
-                        "Successful, transiently skipped, and failed dispatcher "
-                        "cycles"
+                        "Successful, transiently skipped, cancelled, and failed "
+                        "dispatcher cycles"
                     ),
                 )
             if _dispatch_duration_histogram is None:

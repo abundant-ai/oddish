@@ -227,6 +227,8 @@ ORDER BY x;
 
 -- 10. Dispatcher error percentage
 -- The denominator includes successful, transiently skipped, and errored cycles.
+-- Cancelled cycles did not complete and are excluded so they do not dilute the
+-- application and infrastructure failure rate.
 WITH cycles AS (
     SELECT
         time_bucket($resolution, recorded_timestamp) AS x,
@@ -236,6 +238,7 @@ WITH cycles AS (
     WHERE metric_name = 'oddish.dispatch.cycles'
       AND deployment_environment = $deployment_environment
       AND service_name = $service_name
+      AND attributes->>'outcome' IN ('success', 'skipped', 'error')
     GROUP BY x, outcome
 )
 SELECT

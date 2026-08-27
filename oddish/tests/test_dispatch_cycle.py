@@ -315,7 +315,8 @@ def test_run_dispatch_cycle_records_cancellation(monkeypatch) -> None:
     assert len(cycle_outcomes) == 1
     assert cycle_outcomes[0]["workers_spawned"] == 0
     assert cycle_outcomes[0]["spawn_cap_reached"] is True
-    assert cycle_outcomes[0]["outcome"] == "error"
+    assert cycle_outcomes[0]["outcome"] == "cancelled"
+    assert cycle_outcomes[0]["duration_seconds"] >= 0
 
 
 def test_run_dispatch_cycle_records_post_spawn_error(monkeypatch) -> None:

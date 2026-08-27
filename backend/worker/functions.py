@@ -1069,6 +1069,9 @@ async def poll_queue():
             console.print(f"[yellow]stage stamp skipped: {stamp_err}[/yellow]")
         cycle_outcome = "success"
 
+    except asyncio.CancelledError:
+        cycle_outcome = "cancelled"
+        raise
     except OSError as e:
         # Transient network/DNS errors (e.g. socket.gaierror) should not
         # crash the scheduled function -- the next poll in 3 minutes will retry.

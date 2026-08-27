@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import types
 from contextlib import nullcontext
 from typing import Any
@@ -132,3 +133,34 @@ async def test_modal_poll_records_transient_oserror_as_skipped(monkeypatch) -> N
     assert cycles[0]["workers_spawned"] == 0
     assert cycles[0]["spawn_cap_reached"] is False
     assert cycles[0]["outcome"] == "skipped"
+
+
+@pytest.mark.asyncio
+async def test_modal_poll_records_cancellation_and_propagates(monkeypatch) -> None:
+    cycles: list[dict[str, Any]] = []
+
+    async def no_op(*_args, **_kwargs):
+        return None
+
+    async def cancel_plan(**_kwargs):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(worker_functions, "_otel_span", lambda *_a, **_k: nullcontext())
+    monkeypatch.setattr(worker_functions, "configure_storage_paths", no_op)
+    monkeypatch.setattr(worker_functions, "build_dispatch_plan", cancel_plan)
+    monkeypatch.setattr(worker_functions, "close_database_connections", no_op)
+    monkeypatch.setattr(worker_functions.settings, "ec2_enabled", False)
+    monkeypatch.setattr(
+        worker_functions,
+        "record_dispatch_cycle",
+        lambda **values: cycles.append(values),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await worker_functions.poll_queue.get_raw_f()()
+
+    assert len(cycles) == 1
+    assert cycles[0]["workers_spawned"] == 0
+    assert cycles[0]["spawn_cap_reached"] is False
+    assert cycles[0]["outcome"] == "cancelled"
+    assert cycles[0]["duration_seconds"] >= 0

@@ -13,9 +13,9 @@ Oddish React application does not copy, poll, aggregate, or graph these values.
 | `oddish.worker_job.duration` | Histogram, `s` | Seconds on the worker's monotonic clock from receiving the accepted claim through `_record_outcome` returning the accepted durable transition. |
 | `oddish.queue.jobs` | Gauge, `{job}` | Queued and running `worker_jobs` rows observed in one dispatch plan. A queue absent from the next plan receives one final zero-valued observation. |
 | `oddish.queue.slots` | Gauge, `{slot}` | Held `queue_slots` leases and configured concurrency limits observed in that plan. |
-| `oddish.dispatch.workers_spawned` | Counter, `{worker}` | Workers returned by dispatch cycles whose complete host spawn operation succeeded. Skipped and error cycles emit cycle metrics but no worker count because the dispatcher interface does not expose partial results. |
-| `oddish.dispatch.cycles` | Counter, `{cycle}` | Dispatcher cycles labeled `success`, `skipped`, or `error`. |
-| `oddish.dispatch.duration` | Histogram, `s` | Wall-clock duration of the same successful, skipped, or failed dispatch cycle. |
+| `oddish.dispatch.workers_spawned` | Counter, `{worker}` | Workers returned by dispatch cycles whose complete host spawn operation succeeded. Skipped, cancelled, and error cycles emit cycle metrics but no worker count because the dispatcher interface does not expose trustworthy partial results. |
+| `oddish.dispatch.cycles` | Counter, `{cycle}` | Dispatcher cycles labeled `success`, `skipped`, `cancelled`, or `error`. |
+| `oddish.dispatch.duration` | Histogram, `s` | Wall-clock duration of the same successful, skipped, cancelled, or failed dispatch cycle. |
 
 `oddish.dispatch.duration` is included because a cycle-duration panel requires
 a histogram; the original six-name contract did not provide an instrument that
@@ -27,9 +27,11 @@ Metric attributes are limited to the following fields:
 
 - `kind`: the `TRIAL`, `TASK_EXPAND`, or `TAG_PROJECT` worker-job kind.
 - `outcome`: `SUCCESS`, `RETRYING`, or `FAILED` for worker transitions;
-  `success`, `skipped`, or `error` for dispatch cycles. `skipped` means a
-  recognized transient `OSError` prevented completion and the polling host will
-  retry. `error` means an unexpected failure prevented completion.
+  `success`, `skipped`, `cancelled`, or `error` for dispatch cycles. `skipped`
+  means a recognized transient `OSError` prevented completion and the polling
+  host will retry. `cancelled` means an external interruption stopped the
+  dispatch task; the task still propagates cancellation to its host. `error`
+  means an unexpected failure prevented completion.
 - `state`: `queued`, `running`, `held`, or `limit` for queue gauges.
 - `queue_key`: the configured worker queue key. The reserved value `__all__`
   identifies the aggregate observation emitted on every cycle, including an
@@ -61,8 +63,10 @@ Create one custom **Oddish Operations** dashboard. The ten numbered queries in
 6. P50 and P95 worker-job duration by kind.
 7. Workers successfully spawned per successful cycle.
 8. Dispatch cycles reaching the spawn cap.
-9. Dispatch cycles by `success`, `skipped`, and `error`.
-10. Dispatcher error percentage, where the denominator is every observed cycle.
+9. Dispatch cycles by `success`, `skipped`, `cancelled`, and `error`.
+10. Dispatcher error percentage, where the denominator contains completed
+    `success`, `skipped`, and `error` observations and excludes interrupted
+    `cancelled` cycles.
 
 The two attempt-share panels count persisted attempt outcomes, not unique jobs.
 For example, one job that records `RETRYING`, `RETRYING`, then `SUCCESS`

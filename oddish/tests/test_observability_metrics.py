@@ -251,3 +251,19 @@ def test_dispatch_cycle_records_skipped_without_spawn_count(metric_instruments):
     assert instruments["oddish.dispatch.duration"].observations == [(0.75, attributes)]
     assert instruments["oddish.dispatch.workers_spawned"].observations == []
     assert definitions["oddish.dispatch.cycles"][0] == "{cycle}"
+
+
+def test_dispatch_cycle_records_cancelled_without_spawn_count(metric_instruments):
+    instruments, _definitions = metric_instruments
+
+    observability.record_dispatch_cycle(
+        workers_spawned=0,
+        spawn_cap_reached=True,
+        duration_seconds=0.5,
+        outcome="cancelled",
+    )
+
+    attributes = {"outcome": "cancelled", "spawn_cap_reached": True}
+    assert instruments["oddish.dispatch.cycles"].observations == [(1, attributes)]
+    assert instruments["oddish.dispatch.duration"].observations == [(0.5, attributes)]
+    assert instruments["oddish.dispatch.workers_spawned"].observations == []
