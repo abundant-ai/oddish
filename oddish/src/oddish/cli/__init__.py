@@ -15,7 +15,6 @@ from oddish.cli.logs import logs
 from oddish.cli.ls import ls
 from oddish.cli.publish import publish, unpublish
 from oddish.cli.probe import probe_app
-from oddish.cli.qa_eval import qa_eval_app
 from oddish.cli.pull import pull
 from oddish.cli.preflight import preflight
 from oddish.cli.run import run
@@ -30,7 +29,6 @@ app = typer.Typer(
 
 app.command()(run)
 app.add_typer(probe_app, name="probe")
-app.add_typer(qa_eval_app, name="qa-eval")
 app.command(name="backfill-analysis")(backfill_analysis)
 app.command()(upload)
 app.command()(preflight)

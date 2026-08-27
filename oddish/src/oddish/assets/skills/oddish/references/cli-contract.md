@@ -32,15 +32,8 @@ auto-publish (`run --publish` or GitHub-attributed CI runs); a member-created
 
 Current top-level commands are `run`, `upload`, `preflight`, `ls`, `status`,
 `skill`, `logs`, `cancel`, `backfill-analysis`, `combine`, `costs`,
-`cost-exclusions`, `collect`, `qa-eval`, `delete`, `admin`, `experiment`,
-`link`, `pull`, `publish`, `unpublish`, and `probe`.
-
-`qa-eval run` requires an admin-created `tasks` key because it queues paid
-analysis trials. It queues eligible source trials, reports ineligible sources
-as skipped, and sends a stable idempotency key so an identical retry cannot
-duplicate paid trials. `qa-eval collect` is read-only, requires `read` scope,
-and exports the complete imported candidate QA response plus its prompt name,
-prompt hash, model, and QA-eval trial ID.
+`cost-exclusions`, `collect`, `delete`, `admin`, `experiment`, `link`, `pull`,
+`publish`, `unpublish`, and `probe`.
 
 Use `oddish <command> --help` for the exhaustive option list. Important
 submission controls include:

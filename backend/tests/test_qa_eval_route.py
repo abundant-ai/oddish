@@ -60,15 +60,11 @@ async def test_post_qa_evals_passes_org_and_owner_to_shared_core(monkeypatch):
             prompt_name=request.prompt_name,
             prompt_sha256="abc",
             model="canonical-model",
-            requested_count=1,
-            queued_count=1,
-            skipped_count=0,
             trials=[
                 QAEvalTrialResponse(
                     source_trial_id="source-1", qa_eval_trial_id="eval-1"
                 )
             ],
-            skipped_sources=[],
         )
 
     monkeypatch.setattr(qa_eval, "get_session", fake_get_session)
