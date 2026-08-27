@@ -356,6 +356,13 @@ a code change that ships with a deploy.
   result until a replacement QA pass succeeds or terminally fails
 - shared queue-slot leasing, per-queue-key concurrency limits, and
   per-user fairness on `TRIAL` claims
+- provider account-cap errors with a parsed future recovery time are terminal
+  for the current trial because workers reuse the same credential across
+  attempts. Ordinary HTTP 429 rate limits, low-credit responses, timeouts, and
+  provider availability errors retain the normal retry budget. Oddish does not
+  automatically fail over to another credential or model; that would change
+  credential selection, billing attribution, and the model that performs the
+  trial.
 - database-backed admin concurrency overrides; these take precedence over
   `ODDISH_MODEL_CONCURRENCY_OVERRIDES` and are read by both the dispatcher plan
   and each worker's slot acquisition. This is the supported way to change a
