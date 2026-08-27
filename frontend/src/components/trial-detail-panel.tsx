@@ -216,7 +216,7 @@ const OUTCOME_CARD_TONE: Record<MatrixStatus, string> = {
 // reopening the drawer.
 function TrialAnalysisCard({
   trial: trialProp,
-  task,
+  taskQaInProgress,
   apiBaseUrl,
   actionsReady,
   onQueued,
@@ -225,7 +225,7 @@ function TrialAnalysisCard({
   onFeedback,
 }: {
   trial: Trial;
-  task: Task | null;
+  taskQaInProgress: boolean;
   apiBaseUrl: string;
   actionsReady: boolean;
   onQueued?: () => void;
@@ -241,10 +241,7 @@ function TrialAnalysisCard({
   // QA is task-scoped: the rerun creates one qa trial that grades every
   // trial, and never stamps this row's analysis_status. Reading that field
   // alone showed "No analysis yet" while the run was live.
-  const trialAnalysisInProgress = isAnalysisStatusActive(
-    trial.analysis_status
-  );
-  const taskQaInProgress = taskHasActiveVerdict(task);
+  const trialAnalysisInProgress = isAnalysisStatusActive(trial.analysis_status);
   const inProgress = trialAnalysisInProgress || taskQaInProgress;
   // Tick the elapsed timer once a second while in progress.
   useEffect(() => {
@@ -741,10 +738,46 @@ export function TrialDetailPanel({
   contentOnly = false,
   paneAction,
 }: TrialDetailPanelProps) {
-  const { data: refreshedTrial } = useTrial(
+  const taskQaInProgress = taskHasActiveVerdict(task);
+  const { data: refreshedTrial, mutate: revalidateTrial } = useTrial(
     isOpen && requireTrialDetail ? selectedTrial?.id : null,
     { apiBaseUrl }
   );
+  const previousTaskQaRef = useRef({
+    taskId: task?.id ?? null,
+    inProgress: taskQaInProgress,
+  });
+
+  // A task-level QA trial writes analysis onto the selected agent trial when
+  // it settles. The agent trial is already terminal, so its own status cannot
+  // keep useTrial polling. Refetch it once when the task QA lifecycle ends;
+  // SWR still owns the request, cache key, deduplication, and retry policy.
+  useEffect(() => {
+    const previous = previousTaskQaRef.current;
+    const current = {
+      taskId: task?.id ?? null,
+      inProgress: taskQaInProgress,
+    };
+    previousTaskQaRef.current = current;
+
+    if (
+      isOpen &&
+      requireTrialDetail &&
+      selectedTrial?.id &&
+      previous.taskId === current.taskId &&
+      previous.inProgress &&
+      !current.inProgress
+    ) {
+      void revalidateTrial();
+    }
+  }, [
+    isOpen,
+    requireTrialDetail,
+    revalidateTrial,
+    selectedTrial?.id,
+    task?.id,
+    taskQaInProgress,
+  ]);
   const canonicalTrial =
     refreshedTrial?.id === selectedTrial?.id ? refreshedTrial : null;
   const actionsReady = !requireTrialDetail || canonicalTrial !== null;
@@ -1583,7 +1616,7 @@ export function TrialDetailPanel({
                 <TrialAnalysisCard
                   key={trial.id}
                   trial={trial}
-                  task={task}
+                  taskQaInProgress={taskQaInProgress}
                   apiBaseUrl={apiBaseUrl}
                   actionsReady={actionsReady}
                   activeQaTrial={activeQaTrial}
