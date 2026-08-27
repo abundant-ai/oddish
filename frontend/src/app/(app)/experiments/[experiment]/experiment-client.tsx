@@ -27,16 +27,14 @@ import type {
   Trial,
   ExperimentShareInfo,
   ExperimentCostTotals,
+  ExperimentOpenResponse,
+  ExperimentTrialCell,
+  ExperimentTrialPageResponse,
 } from "@/lib/types";
 import { fetcher } from "@/lib/api";
 import { isOrgAdminRole } from "@/lib/org-roles";
 import { Loader2, Pencil } from "lucide-react";
 import { encodeExperimentRouteParam } from "@/lib/utils";
-import {
-  fetchFreshExperimentTaskPage,
-  hasFatalExperimentTaskLoadError,
-  mergeExperimentTaskPages,
-} from "@/lib/experiment-task-pages";
 import { ExperimentPageSkeleton } from "@/components/experiment-page-skeleton";
 
 // Shared by the experiment header action buttons so they render identically.
@@ -44,62 +42,51 @@ const HEADER_ACTION_BUTTON_CLASS =
   "h-8 select-none gap-[7px] rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] leading-none text-[color:var(--paper-ink)] transition-colors hover:border-[color:var(--paper-ink-4)] hover:bg-[color:var(--paper-surface-2)]";
 
 const TRIALS_BATCH_SIZE = 250;
-const EXPERIMENT_TIMING_STORAGE_KEY = "oddish:experiment-table-timing";
-const ACTIVE_TASK_STATUSES = new Set([
-  "pending",
-  "queued",
-  "running",
-  "analyzing",
-  "verdict_pending",
-]);
 
-function isExperimentTimingEnabled(): boolean {
-  if (typeof window === "undefined") return false;
-  const params = new URLSearchParams(window.location.search);
-  return (
-    params.get("debug_timing") === "1" ||
-    window.localStorage.getItem(EXPERIMENT_TIMING_STORAGE_KEY) === "1"
-  );
+function trialFromCell(cell: ExperimentTrialCell): Trial {
+  const { analysis, ...trial } = cell;
+  return {
+    ...trial,
+    analysis_status: analysis.status,
+    analysis_started_at: analysis.started_at,
+    analysis_finished_at: analysis.finished_at,
+    analysis:
+      analysis.classification && analysis.subtype
+        ? {
+            classification: analysis.classification,
+            subtype: analysis.subtype,
+            evidence: analysis.evidence ?? undefined,
+          }
+        : null,
+  };
 }
 
-async function fetchExperimentTasksPage(url: string): Promise<Task[]> {
-  const startedAt = performance.now();
-  const res = await fetchFreshExperimentTaskPage(url);
-  const responseAt = performance.now();
-  const serverTiming = res.headers.get("server-timing");
-  let data: unknown = null;
-
-  try {
-    data = await res.json();
-  } catch {
-    data = null;
+function buildExperimentTasks(
+  openPages: ExperimentOpenResponse[] | undefined,
+  trialPages: ExperimentTrialPageResponse[] | undefined
+): Task[] {
+  const experiment = openPages?.[0];
+  if (!experiment) return [];
+  const trialsByTask = new Map<string, Trial[]>();
+  for (const page of trialPages ?? []) {
+    for (const cell of page.trials) {
+      const trials = trialsByTask.get(cell.task_id) ?? [];
+      trials.push(trialFromCell(cell));
+      trialsByTask.set(cell.task_id, trials);
+    }
   }
-
-  const finishedAt = performance.now();
-  if (isExperimentTimingEnabled()) {
-    console.info("[oddish timing] experiment tasks fetch", {
-      url,
-      status: res.status,
-      networkMs: Math.round(responseAt - startedAt),
-      jsonMs: Math.round(finishedAt - responseAt),
-      totalMs: Math.round(finishedAt - startedAt),
-      rows: Array.isArray(data) ? data.length : null,
-      serverTiming,
-    });
-  }
-
-  if (!res.ok) {
-    const message =
-      typeof data === "object" && data && "error" in data
-        ? String((data as { error?: string }).error)
-        : res.statusText || "Request failed";
-    const err = new Error(message);
-    (err as Error & { status?: number; info?: unknown }).status = res.status;
-    (err as Error & { status?: number; info?: unknown }).info = data;
-    throw err;
-  }
-
-  return data as Task[];
+  return openPages.flatMap((page) =>
+    page.tasks.map((task) => ({
+      ...task,
+      experiment_id: experiment.experiment_id,
+      experiment_name: experiment.name,
+      experiment_is_public: false,
+      experiment_created_at: experiment.created_at,
+      experiment_owner: experiment.owner,
+      experiment_link: experiment.link,
+      trials: trialsByTask.get(task.id),
+    }))
+  );
 }
 
 type ExperimentClientPageProps = {
@@ -134,38 +121,47 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
     ? encodeExperimentRouteParam(experimentId)
     : "";
 
-  // Phase 1: Fetch ALL tasks without trial data (lightweight).
-  // Populates the full task list immediately. Uses the dedicated
-  // ``task-shells`` endpoint, which drops the per-task ``experiments``
-  // fan-out. Phase 2 below uses the compact ``slim-tasks`` endpoint.
-  const allTasksUrl = experimentId
-    ? `/api/experiments/${encodedId}/task-shells?limit=2000&offset=0`
-    : null;
-
-  const {
-    data: lightweightTasks,
-    error: lightweightError,
-    isLoading: isLoadingTasks,
-    mutate: mutateLightweight,
-  } = useSWR<Task[]>(allTasksUrl, fetchExperimentTasksPage, {
-    refreshInterval: 0,
-    revalidateOnFocus: false,
-    revalidateIfStale: true,
-  });
-
-  // Phase 2: Progressively fetch compact trial data in batches.
-  const getTrialsPageKey = useCallback(
-    (pageIndex: number, previousPageData: Task[] | null) => {
-      if (!experimentId || !encodedId) return null;
-      if (previousPageData && previousPageData.length < TRIALS_BATCH_SIZE)
-        return null;
-      const offset = pageIndex * TRIALS_BATCH_SIZE;
-      // Phase 2 uses the dedicated slim-tasks endpoint: tasks with trimmed
-      // per-trial payloads (grid fields + cost). Trial controls preload the
-      // by-id resource before the drawer needs its omitted fields.
-      return `/api/experiments/${encodedId}/slim-tasks?limit=${TRIALS_BATCH_SIZE}&offset=${offset}`;
+  const getOpenPageKey = useCallback(
+    (pageIndex: number, previous: ExperimentOpenResponse | null) => {
+      if (!encodedId || (pageIndex > 0 && !previous?.next_task_id)) return null;
+      const query = new URLSearchParams({ limit: "100" });
+      if (previous?.next_created_at && previous.next_task_id) {
+        query.set("before_created_at", previous.next_created_at);
+        query.set("before_task_id", previous.next_task_id);
+      }
+      return `/api/experiments/${encodedId}/open?${query}`;
     },
-    [experimentId, encodedId]
+    [encodedId]
+  );
+  const {
+    data: openPages,
+    error: openError,
+    isLoading: isLoadingOpen,
+    isValidating: isValidatingOpen,
+    setSize: setOpenSize,
+    mutate: mutateOpen,
+  } = useSWRInfinite<ExperimentOpenResponse>(getOpenPageKey, fetcher, {
+    refreshInterval: (pages) => (pages?.[0]?.has_active_trials ? 30000 : 0),
+    revalidateOnFocus: false,
+    revalidateFirstPage: false,
+    persistSize: true,
+  });
+  const experimentOpen = openPages?.[0];
+  const openLastPage = openPages?.[openPages.length - 1];
+  const hasMoreTasks = Boolean(openLastPage?.next_task_id);
+
+  const getTrialsPageKey = useCallback(
+    (pageIndex: number, previous: ExperimentTrialPageResponse | null) => {
+      if (!encodedId || (pageIndex > 0 && !previous?.next_trial_id))
+        return null;
+      const query = new URLSearchParams({ limit: String(TRIALS_BATCH_SIZE) });
+      if (previous?.next_created_at && previous.next_trial_id) {
+        query.set("before_created_at", previous.next_created_at);
+        query.set("before_trial_id", previous.next_trial_id);
+      }
+      return `/api/experiments/${encodedId}/trial-page?${query}`;
+    },
+    [encodedId]
   );
 
   const {
@@ -175,17 +171,14 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
     isValidating: isValidatingTrials,
     setSize: setTrialsSize,
     mutate: mutateTrials,
-  } = useSWRInfinite<Task[]>(getTrialsPageKey, fetchExperimentTasksPage, {
-    refreshInterval: 0,
+  } = useSWRInfinite<ExperimentTrialPageResponse>(getTrialsPageKey, fetcher, {
+    refreshInterval: experimentOpen?.has_active_trials ? 30000 : 0,
     revalidateOnFocus: false,
     revalidateFirstPage: false,
-    revalidateOnMount: true,
     persistSize: true,
   });
   const trialsLastPage = trialPages?.[trialPages.length - 1] ?? null;
-  const hasMoreTrials = Boolean(
-    trialsLastPage && trialsLastPage.length === TRIALS_BATCH_SIZE
-  );
+  const hasMoreTrials = Boolean(trialsLastPage?.next_trial_id);
 
   // What the experiment SPENT. Can't be derived from the trial pages above:
   // they're paginated (so a client-side sum only covers what's loaded), and
@@ -199,7 +192,7 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
     error: costTotalsError,
     mutate: mutateCostTotals,
   } = useSWR<ExperimentCostTotals>(costTotalsKey, fetcher, {
-    refreshInterval: 0,
+    refreshInterval: experimentOpen?.has_active_trials ? 30000 : 0,
     revalidateOnFocus: false,
   });
   // In flight. The tiles must not fall back to the client sum meanwhile: that
@@ -220,72 +213,33 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
       revalidateOnFocus: false,
     });
 
-  // Merge lightweight task shells with trial-enriched data. The backend scopes
-  // trials and counts to the experiment-relevant version while always
-  // reporting the task's selected default as ``current_version``.
-  const tasksForExperiment = useMemo(() => {
-    const startedAt = isExperimentTimingEnabled() ? performance.now() : 0;
-    const merged = mergeExperimentTaskPages(lightweightTasks, trialPages);
-
-    if (isExperimentTimingEnabled()) {
-      const enrichedIds = new Set(
-        (trialPages ?? []).flatMap((page) =>
-          (page ?? []).map((task) => task.id)
-        )
-      );
-      console.info("[oddish timing] experiment task merge", {
-        baseRows: lightweightTasks?.length ?? 0,
-        enrichedRows: enrichedIds.size,
-        mergedRows: merged.length,
-        mergeMs: Math.round(performance.now() - startedAt),
-      });
-    }
-    return merged;
-  }, [lightweightTasks, trialPages]);
-  const hasFatalTaskLoadError = hasFatalExperimentTaskLoadError(
-    lightweightError,
-    tasksForExperiment
+  const tasksForExperiment = useMemo(
+    () => buildExperimentTasks(openPages, trialPages),
+    [openPages, trialPages]
   );
+  const hasFatalTaskLoadError = Boolean(openError) && !experimentOpen;
 
   const probeHostTask = useMemo(
     () => resolveProbeHostTask(tasksForExperiment),
     [tasksForExperiment]
   );
 
-  const isLoading = isLoadingTasks;
-  // hasMoreTrials keeps pending rows in skeleton state between batches.
+  const isLoading = isLoadingOpen && !experimentOpen;
   const isLoadingTrials =
-    (lightweightTasks?.length ?? 0) > 0 &&
-    (isLoadingTrialPages || isValidatingTrials || hasMoreTrials);
-  const trialsLoadedCount = useMemo(() => {
-    if (!trialPages) return 0;
-    return trialPages.reduce((sum, page) => sum + (page?.length ?? 0), 0);
-  }, [trialPages]);
-  const totalTaskCount = lightweightTasks?.length ?? 0;
+    hasMoreTasks ||
+    isValidatingOpen ||
+    ((experimentOpen?.summary.trial_count ?? 0) > 0 &&
+      (isLoadingTrialPages || isValidatingTrials || hasMoreTrials));
+  const trialsLoadedCount =
+    trialPages?.reduce((sum, page) => sum + page.trials.length, 0) ?? 0;
+  const totalTrialCount = experimentOpen?.summary.trial_count ?? 0;
+  const canLoadMoreTasks = hasMoreTasks && !isLoadingOpen && !isValidatingOpen;
   const canLoadMoreTrials =
     hasMoreTrials && !isLoadingTrialPages && !isValidatingTrials;
-  // hasMoreTrials only tracks successful pages, so a failed batch stalls
-  // the chain here until the Retry alert's mutateTrials() refills it.
   const trialsStalled =
-    Boolean(trialsError) && trialsLoadedCount < totalTaskCount;
+    Boolean(trialsError) && trialsLoadedCount < totalTrialCount;
 
-  const refreshIntervalMs = useMemo(() => {
-    if (tasksForExperiment.length === 0) return 5000;
-    const hasActiveTasks = tasksForExperiment.some((task) => {
-      // Subtract skipped: skipped trials are terminal (never ran), so they must
-      // not read as "active" — otherwise a done, gate-skipped task would poll at
-      // the fast interval forever.
-      const activeTrials = Math.max(
-        0,
-        task.total - task.completed - task.failed - (task.skipped ?? 0)
-      );
-      return activeTrials > 0 || ACTIVE_TASK_STATUSES.has(task.status);
-    });
-    // null disables the interval; refreshTaskPages restarts it when work resumes.
-    return hasActiveTasks ? 30000 : null;
-  }, [tasksForExperiment]);
-
-  const experimentName = tasksForExperiment[0]?.experiment_name ?? "";
+  const experimentName = experimentOpen?.name ?? "";
   const displayName = experimentName || experimentId || "Experiment";
   const initialName = experimentName || experimentId || "";
   const canManageExperimentShare = isOrgAdminRole(orgRole);
@@ -304,33 +258,20 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
   // remove. Refetching is the correct (and self-healing) answer.
   const refreshTaskPages = useCallback(
     async (_taskIds?: string[]) => {
-      await Promise.all([
-        mutateLightweight(),
-        mutateTrials(),
-        mutateCostTotals(),
-      ]);
+      await Promise.all([mutateOpen(), mutateTrials(), mutateCostTotals()]);
     },
-    [mutateLightweight, mutateTrials, mutateCostTotals]
+    [mutateOpen, mutateTrials, mutateCostTotals]
   );
 
-  // Sequential: canLoadMoreTrials is false while a fetch is in flight.
+  useEffect(() => {
+    if (!canLoadMoreTasks) return;
+    void setOpenSize((size) => size + 1);
+  }, [canLoadMoreTasks, setOpenSize]);
+
   useEffect(() => {
     if (!canLoadMoreTrials) return;
     void setTrialsSize((size) => size + 1);
   }, [canLoadMoreTrials, setTrialsSize]);
-
-  useEffect(() => {
-    if (!isExperimentTimingEnabled() || tasksForExperiment.length === 0) return;
-    const frame = window.requestAnimationFrame(() => {
-      console.info("[oddish timing] experiment table first paint candidate", {
-        tasks: tasksForExperiment.length,
-        trialPages: trialPages?.length ?? 0,
-        trialsLoadedCount,
-        sinceNavigationMs: Math.round(performance.now()),
-      });
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [tasksForExperiment.length, trialPages?.length, trialsLoadedCount]);
 
   useEffect(() => {
     if (!isEditingName) {
@@ -354,34 +295,6 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
       }
     };
   }, []);
-
-  useEffect(() => {
-    if (!allTasksUrl || refreshIntervalMs == null) return;
-
-    const intervalId = window.setInterval(() => {
-      void mutateLightweight();
-      // Refresh every trial page that's been loaded so far -- not
-      // just the first. Polling only the first page caused later
-      // pages to age (e.g. trial status badges going stale on row
-      // 251+ until the user manually triggered a re-fetch).
-      // ``mutateTrials()`` re-runs every page key currently held by
-      // useSWRInfinite, in order, with the regular SWR dedup window.
-      void mutateTrials();
-      // Cheap grouped aggregate; refresh alongside so the cost tiles track
-      // trials finishing while the page is open.
-      void mutateCostTotals();
-    }, refreshIntervalMs);
-
-    return () => {
-      window.clearInterval(intervalId);
-    };
-  }, [
-    allTasksUrl,
-    refreshIntervalMs,
-    mutateLightweight,
-    mutateTrials,
-    mutateCostTotals,
-  ]);
 
   const handleRename = async () => {
     if (!experimentId) return;
@@ -412,16 +325,8 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
       }
 
       setIsEditingName(false);
-      await mutateLightweight(
-        (tasks) =>
-          tasks?.map((task) => ({ ...task, experiment_name: nextName })),
-        { revalidate: false }
-      );
-      await mutateTrials(
-        (pages) =>
-          pages?.map((page) =>
-            page?.map((task) => ({ ...task, experiment_name: nextName }))
-          ),
+      await mutateOpen(
+        (pages) => pages?.map((page) => ({ ...page, name: nextName })),
         { revalidate: false }
       );
       void refreshTaskPages();
@@ -449,13 +354,20 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
       );
     }
 
-    await mutateLightweight(
-      (tasks) => tasks?.filter((item) => item.id !== task.id),
+    await mutateOpen(
+      (pages) =>
+        pages?.map((page) => ({
+          ...page,
+          tasks: page.tasks.filter((item) => item.id !== task.id),
+        })),
       { revalidate: false }
     );
     await mutateTrials(
       (pages) =>
-        pages?.map((page) => page?.filter((item) => item.id !== task.id)),
+        pages?.map((page) => ({
+          ...page,
+          trials: page.trials.filter((item) => item.task_id !== task.id),
+        })),
       { revalidate: false }
     );
     await refreshTaskPages();
@@ -473,16 +385,12 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
       );
     }
 
-    const filterTrials = (tasks: Task[] | undefined) =>
-      tasks?.map((task) =>
-        task.trials?.some((t) => t.id === trial.id)
-          ? { ...task, trials: task.trials.filter((t) => t.id !== trial.id) }
-          : task
-      );
-
-    await mutateLightweight(filterTrials, { revalidate: false });
     await mutateTrials(
-      (pages) => pages?.map((page) => filterTrials(page) ?? page),
+      (pages) =>
+        pages?.map((page) => ({
+          ...page,
+          trials: page.trials.filter((item) => item.id !== trial.id),
+        })),
       { revalidate: false }
     );
     await refreshTaskPages();
@@ -513,6 +421,7 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
         <ExperimentDetailView
           experimentId={experimentId}
           tasksForExperiment={tasksForExperiment}
+          pageSummary={experimentOpen?.summary}
           costTotals={costTotals}
           costTotalsPending={costTotalsPending}
           isLoading={isLoading}
@@ -596,8 +505,8 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
                 <Loader2 className="h-3 w-3 animate-spin" />
                 <span>
                   Loading trials
-                  {lightweightTasks
-                    ? ` ${trialsLoadedCount}/${lightweightTasks.length}`
+                  {experimentOpen
+                    ? ` ${trialsLoadedCount}/${totalTrialCount}`
                     : ""}
                   …
                 </span>
@@ -666,7 +575,7 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
                 <AlertTitle>Some trial results failed to load</AlertTitle>
                 <AlertDescription className="flex flex-wrap items-center gap-2">
                   <span>
-                    Loaded {trialsLoadedCount}/{totalTaskCount} tasks.
+                    Loaded {trialsLoadedCount}/{totalTrialCount} trials.
                   </span>
                   <Button
                     type="button"
@@ -680,7 +589,7 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
                   </Button>
                 </AlertDescription>
               </Alert>
-            ) : lightweightError && tasksForExperiment.length > 0 ? (
+            ) : openError && tasksForExperiment.length > 0 ? (
               <Alert>
                 <AlertTitle>Could not refresh experiment</AlertTitle>
                 <AlertDescription>

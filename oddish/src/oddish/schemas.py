@@ -1066,6 +1066,52 @@ class ExperimentOpenResponse(BaseModel):
     next_task_id: str | None = None
 
 
+class ExperimentTrialAnalysis(BaseModel):
+    status: AnalysisStatus | None = None
+    classification: str | None = None
+    subtype: str | None = None
+    evidence: str | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+class ExperimentTrialCell(BaseModel):
+    id: str
+    task_id: str
+    task_path: str
+    experiment_id: str | None = None
+    task_version_id: str | None = None
+    name: str
+    agent: str
+    model: str | None = None
+    provider: str
+    queue_key: str
+    status: TrialStatus
+    attempts: int
+    max_attempts: int
+    harbor_stage: str | None = None
+    reward: float | None = None
+    input_tokens: int | None = None
+    cache_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_usd: float | None = None
+    cost_is_estimated: bool | None = None
+    is_billed: bool = False
+    cost_exclusion_reason: str | None = None
+    has_trajectory: bool = False
+    analysis: ExperimentTrialAnalysis = Field(default_factory=ExperimentTrialAnalysis)
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+class ExperimentTrialPageResponse(BaseModel):
+    revision: datetime
+    trials: list[ExperimentTrialCell] = Field(default_factory=list)
+    next_created_at: datetime | None = None
+    next_trial_id: str | None = None
+
+
 class TaskDetailResponse(BaseModel):
     """Task detail bundle for ``GET /tasks/{task_id}/detail``."""
 

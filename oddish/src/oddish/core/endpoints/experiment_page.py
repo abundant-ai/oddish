@@ -7,11 +7,16 @@ from typing import Any
 from fastapi import HTTPException
 from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased
+from sqlalchemy.orm import aliased, load_only
 
 from oddish.core.baseline_gate import baseline_agent_clause
+from oddish.core.cost_exclusions import load_cost_exclusions
 from oddish.core.experiment_membership import visible_experiment_trial_predicates
-from oddish.core.helpers import experiment_effective_versions_selectable
+from oddish.core.helpers import (
+    SLIM_TRIAL_RESPONSE_COLUMNS,
+    build_slim_trial_response,
+    experiment_effective_versions_selectable,
+)
 from oddish.db import (
     ACTIVE_TRIAL_STATUSES,
     ExperimentModel,
@@ -28,14 +33,23 @@ from oddish.schemas import (
     ExperimentPageSummary,
     ExperimentPageVerdict,
     ExperimentTaskRow,
+    ExperimentTrialAnalysis,
+    ExperimentTrialCell,
+    ExperimentTrialPageResponse,
 )
 
 OPEN_MAX_TASKS = 100
 OPEN_MAX_BYTES = 50_000
+TRIAL_PAGE_MAX_TRIALS = 250
 _ACTIVE_VERDICT_STATUSES = (
     VerdictStatus.PENDING,
     VerdictStatus.QUEUED,
     VerdictStatus.RUNNING,
+)
+_TRIAL_PAGE_COLUMNS = tuple(
+    column
+    for column in SLIM_TRIAL_RESPONSE_COLUMNS
+    if column not in (TrialModel.analysis, TrialModel.error_message)
 )
 
 
@@ -340,4 +354,99 @@ async def get_experiment_open_core(
         has_more = True
         response.next_created_at = rows[-1]["created_at"]
         response.next_task_id = str(rows[-1]["task_id"])
+    return response
+
+
+async def get_experiment_trial_page_core(
+    session: AsyncSession,
+    *,
+    experiment_id: str,
+    org_id: str,
+    limit: int = TRIAL_PAGE_MAX_TRIALS,
+    before_created_at: datetime | None = None,
+    before_trial_id: str | None = None,
+) -> ExperimentTrialPageResponse:
+    if (before_created_at is None) != (before_trial_id is None):
+        raise HTTPException(
+            status_code=400, detail="Both trial page fields are required"
+        )
+    experiment = await _member_experiment(
+        session, experiment_id=experiment_id, org_id=org_id
+    )
+    effective = experiment_effective_versions_selectable(experiment_id=experiment_id)
+    query = (
+        select(
+            TrialModel,
+            TaskModel.task_path,
+            func.left(TrialModel.analysis["classification"].astext, 100),
+            func.left(TrialModel.analysis["subtype"].astext, 100),
+            func.left(TrialModel.analysis["evidence"].astext, 1_000),
+        )
+        .join(TaskModel, TaskModel.id == TrialModel.task_id)
+        .join(
+            effective,
+            and_(
+                effective.c.task_id == TrialModel.task_id,
+                effective.c.task_version_id == TrialModel.task_version_id,
+            ),
+        )
+        .where(
+            *visible_experiment_trial_predicates(experiment_id),
+            TaskModel.org_id == org_id,
+            TaskModel.deleted_at.is_(None),
+        )
+        .options(load_only(*_TRIAL_PAGE_COLUMNS))
+    )
+    if before_created_at is not None:
+        query = query.where(
+            or_(
+                TrialModel.created_at < before_created_at,
+                and_(
+                    TrialModel.created_at == before_created_at,
+                    TrialModel.id < before_trial_id,
+                ),
+            )
+        )
+    limit = max(1, min(limit, TRIAL_PAGE_MAX_TRIALS))
+    result = await session.execute(
+        query.order_by(TrialModel.created_at.desc(), TrialModel.id.desc()).limit(
+            limit + 1
+        )
+    )
+    rows = list(result.all())
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    exclusions = await load_cost_exclusions(session) if rows else None
+    trials = []
+    for trial, task_path, classification, subtype, evidence in rows:
+        analysis = {
+            "classification": classification,
+            "subtype": subtype,
+            "evidence": evidence,
+        }
+        slim = build_slim_trial_response(
+            trial,
+            str(task_path),
+            analysis=analysis,
+            error_message=None,
+            exclusions=exclusions,
+        )
+        values = slim.model_dump()
+        values.update(
+            analysis=ExperimentTrialAnalysis(
+                status=slim.analysis_status,
+                classification=classification,
+                subtype=subtype,
+                evidence=evidence,
+                started_at=slim.analysis_started_at,
+                finished_at=slim.analysis_finished_at,
+            ),
+        )
+        trials.append(ExperimentTrialCell.model_validate(values))
+    response = ExperimentTrialPageResponse(
+        revision=experiment["revision"], trials=trials
+    )
+    if has_more and rows:
+        response.next_created_at = rows[-1][0].created_at
+        response.next_trial_id = rows[-1][0].id
     return response
