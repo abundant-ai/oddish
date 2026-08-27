@@ -911,8 +911,9 @@ the UI:
 
 - `get_public_task_for_experiment` (`sharing/helpers.py`) strips `is_probe` trials from the
   loaded task, covering `get_public_task_status`.
-- `list_public_experiment_tasks` excludes `is_probe` when filtering each task's
-  trials.
+- The public `/open` and `/trial-page` resources reuse
+  `visible_experiment_trial_predicates`, which excludes probes before rows are
+  projected.
 - `list_public_task_trials` always passes `probe=False` (never honors a
   caller-supplied probe filter publicly).
 
@@ -923,7 +924,7 @@ guards alone are not enough, since the trials still ship to the browser.
 ### `list_tasks_core` `load_only` and MissingGreenlet
 
 `list_tasks_core` (`oddish/src/oddish/core/endpoints/tasks_query.py`) powers
-the generic and legacy task-list routes. Its **compact path**
+the generic task-list routes. Its **compact path**
 (`compact_trials=True`) restricts the trial/task/experiment selectin loads with
 `load_only(...)`, which makes *only* the enumerated columns eager and defers
 everything else. The bounded experiment `/trial-page` uses the separate

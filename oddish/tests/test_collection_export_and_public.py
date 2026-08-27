@@ -5,9 +5,8 @@ Site 1 (export): ``list_experiment_trials_for_org`` must include trials
 gathered into a collection via ``experiment_trials``, not just trials whose
 home ``experiment_id`` matches.
 
-Site 2 (public/share): ``list_public_experiment_tasks`` must also admit
-gathered trials, but ``is_probe`` trials must still never appear -- gathered
-or not.
+Site 2 (public/share): the bounded public resources must also admit gathered
+trials, but ``is_probe`` trials must still never appear.
 """
 
 from __future__ import annotations
@@ -32,8 +31,9 @@ from oddish.core.sharing.helpers import (
     list_trial_files_s3,
 )
 from oddish.core.sharing.public import (
+    get_public_experiment_open,
+    get_public_experiment_trial_page,
     get_public_task_status,
-    list_public_experiment_tasks,
     list_public_experiments,
 )
 from oddish.db import (
@@ -383,9 +383,8 @@ async def test_public_view_strips_gathered_probe():
             public_token = coll_exp.public_token
             # get_session() commits on clean exit.
 
-        tasks = await list_public_experiment_tasks(public_token)
-        ids = {tr.id for t in tasks for tr in t.trials}
-        assert probe.id not in ids
+        page = await get_public_experiment_trial_page(public_token)
+        assert probe.id not in {trial.id for trial in page.trials}
     finally:
         await _cleanup(task_ids=task_ids, experiment_ids=experiment_ids)
 
@@ -426,9 +425,8 @@ async def test_public_view_includes_gathered_non_probe():
             await ensure_experiment_public(setup, coll_exp)
             public_token = coll_exp.public_token
 
-        tasks = await list_public_experiment_tasks(public_token)
-        ids = {tr.id for t in tasks for tr in t.trials}
-        assert t1.id in ids
+        page = await get_public_experiment_trial_page(public_token)
+        assert t1.id in {trial.id for trial in page.trials}
     finally:
         await _cleanup(task_ids=task_ids, experiment_ids=experiment_ids)
 
@@ -439,12 +437,8 @@ async def test_public_view_surfaces_gathered_old_version_trial():
     still appear in the public collection view, even after the task's
     current_version_id has moved on to a newer version.
 
-    ``list_public_experiment_tasks`` already unions gathered trials into
-    ``task.trials`` (Task 7), but it re-derived the "effective version" via
-    ``build_task_status_response`` without telling it which trials were
-    gathered -- so the resolver fell back to the task's current version and
-    filtered the gathered v1 trial right back out (the same double-filter,
-    now on the public surface)."""
+    The bounded public resources must use the same gathered-aware version rule
+    as the authenticated experiment page."""
     task_ids: list[str] = []
     experiment_ids: list[str] = []
     try:
@@ -494,13 +488,14 @@ async def test_public_view_surfaces_gathered_old_version_trial():
             public_token = coll_exp.public_token
             # get_session() commits on clean exit.
 
-        tasks = await list_public_experiment_tasks(public_token)
-        by_task = {t.id: t for t in tasks}
+        opened = await get_public_experiment_open(public_token)
+        page = await get_public_experiment_trial_page(public_token)
+        by_task = {row.id: row for row in opened.tasks}
         assert task.id in by_task
         public_task = by_task[task.id]
         assert public_task.current_version_id == v2.id
         assert public_task.trial_version_id == v1.id
-        trial_ids = {tr.id for tr in public_task.trials}
+        trial_ids = {row.id for row in page.trials if row.task_id == task.id}
         assert t1.id in trial_ids, (
             "gathered v1 trial was filtered out of the public view "
             "(gathered-unaware effective-version double-filter)"

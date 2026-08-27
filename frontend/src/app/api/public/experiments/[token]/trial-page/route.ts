@@ -6,8 +6,9 @@ export async function GET(
   { params }: { params: Promise<{ token: string }> }
 ) {
   const { token } = await params;
+  const query = request.nextUrl.searchParams.toString();
   return proxyPublicBackendJson({
     request,
-    path: `public/experiments/${encodeURIComponent(token)}`,
+    path: `public/experiments/${encodeURIComponent(token)}/trial-page${query ? `?${query}` : ""}`,
   });
 }

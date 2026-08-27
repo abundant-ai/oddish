@@ -1,40 +1,40 @@
 "use client";
 
-import { useMemo } from "react";
 import useSWR from "swr";
 import { useParams } from "next/navigation";
 import { DatasetDetailView } from "@/components/dataset-detail-view";
 import { Nav } from "@/components/nav";
-import type { Task, PublicExperimentInfo } from "@/lib/types";
+import type { PublicExperimentInfo } from "@/lib/types";
 import { fetcher } from "@/lib/api";
+import { useExperimentPages } from "@/lib/use-experiment-pages";
 import { PUBLIC_API_URL } from "@/lib/utils";
 
 export default function PublicDatasetPage() {
   const params = useParams();
   const token = Array.isArray(params.token) ? params.token[0] : params.token;
+  const publicBase = token
+    ? `${PUBLIC_API_URL}/experiments/${encodeURIComponent(token)}`
+    : null;
 
   const { data: experimentInfo, error: experimentError } =
-    useSWR<PublicExperimentInfo>(
-      token ? `${PUBLIC_API_URL}/experiments/${token}` : null,
-      fetcher,
-    );
+    useSWR<PublicExperimentInfo>(publicBase, fetcher);
 
-  const { data, error, isLoading } = useSWR<Task[]>(
-    token ? `${PUBLIC_API_URL}/experiments/${token}/tasks?limit=200` : null,
-    fetcher,
-    { refreshInterval: 30000, revalidateOnFocus: false },
-  );
+  const {
+    experiment,
+    tasks,
+    openError,
+    trialError,
+    isLoading,
+    isLoadingPages,
+  } = useExperimentPages({
+    openUrl: publicBase ? `${publicBase}/open` : null,
+    trialPageUrl: publicBase ? `${publicBase}/trial-page` : null,
+    publicView: true,
+  });
 
-  const tasks = useMemo(() => {
-    const taskList = Array.isArray(data) ? [...data] : [];
-    return taskList.sort(
-      (a, b) =>
-        new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
-    );
-  }, [data]);
-
-  const datasetName = experimentInfo?.name || "Public Dataset";
-  const hasError = Boolean(experimentError || error);
+  const datasetName =
+    experimentInfo?.name || experiment?.name || "Public Dataset";
+  const hasError = Boolean(experimentError || openError || trialError);
 
   return (
     <>
@@ -44,7 +44,7 @@ export default function PublicDatasetPage() {
         <DatasetDetailView
           datasetName={datasetName}
           tasks={tasks}
-          isLoading={isLoading}
+          isLoading={isLoading || isLoadingPages}
           hasError={hasError}
         />
       </main>
