@@ -1676,6 +1676,7 @@ class TaskOpenTrialRef(BaseModel):
     agent: str
     provider: str
     model: str | None = None
+    kind: str = "agent"
     status: TrialStatus
     reward: float | None = None
     error_kind: str | None = None
@@ -1695,6 +1696,7 @@ class TaskOpenResponse(BaseModel):
     default_version: TaskOpenVersionRef | None = None
     selected_version: TaskOpenVersionSummary | None = None
     totals: TaskOpenTotals = Field(default_factory=TaskOpenTotals)
+    active_qa_trial: TaskOpenTrialRef | None = None
     trials: list[TaskOpenTrialRef] = Field(default_factory=list)
     trials_has_more: bool = False
 

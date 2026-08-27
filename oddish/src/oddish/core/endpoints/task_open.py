@@ -16,6 +16,7 @@ from oddish.core.endpoints.task_open_builders import (
     experiments,
     github_meta,
     tags,
+    trial_ref,
     trial_refs,
 )
 from oddish.core.endpoints.task_open_queries import (
@@ -125,6 +126,11 @@ async def get_task_open_core(
         default_version=default,
         selected_version=selected,
         totals=totals,
+        active_qa_trial=(
+            trial_ref(aggregate["active_qa_trial"])
+            if aggregate["active_qa_trial"] is not None
+            else None
+        ),
         trials=trial_refs(preview_rows),
         trials_has_more=len(preview_rows) > TASK_OPEN_TRIAL_LIMIT,
     )

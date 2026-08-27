@@ -99,7 +99,11 @@ export function isLiveAnalysisTrial(trial: Trial): boolean {
 export function taskHasLiveAnalysisTrial(
   task: Task | null | undefined,
 ): boolean {
-  return task?.trials?.some(isLiveAnalysisTrial) === true;
+  return (
+    (task?.active_qa_trial != null &&
+      isLiveAnalysisTrial(task.active_qa_trial)) ||
+    task?.trials?.some(isLiveAnalysisTrial) === true
+  );
 }
 
 // The qa kind specifically: verdict presentation must not read a live
@@ -116,7 +120,10 @@ export function isLiveQaTrial(trial: Trial): boolean {
 }
 
 export function taskHasLiveQaTrial(task: Task | null | undefined): boolean {
-  return task?.trials?.some(isLiveQaTrial) === true;
+  return (
+    (task?.active_qa_trial != null && isLiveQaTrial(task.active_qa_trial)) ||
+    task?.trials?.some(isLiveQaTrial) === true
+  );
 }
 
 export function taskHasActiveVerdict(task: Task | null | undefined): boolean {

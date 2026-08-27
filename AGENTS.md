@@ -476,9 +476,11 @@ experiments, and exact agent/model summaries use the requested version. Its
 experiment list is derived from that version's live, non-probe, non-superseded,
 non-combine trial population, matching `/detail`. Pre-trial audit metadata stays
 on `/detail` and is not serialized with the bounded version summary. The
-response also carries compact QA verdict
-presentation/control fields and caps the selected-version trial preview at 20
-lightweight refs. The handler uses at most three SQL statements, stays below the
+response also carries compact QA verdict presentation/control fields and one
+`active_qa_trial` lightweight ref for the task's live, non-superseded QA run.
+That ref is task-scoped rather than selected-version-scoped. Every lightweight
+trial ref carries `kind`, and the selected-version trial preview remains capped
+at 20 rows. The handler uses at most three SQL statements, stays below the
 50 KB response budget, and must not select trial `result`, `analysis`,
 `error_message`, jobs, or ORM relationships. `GET /tasks/{task_id}/detail`
 remains the compatibility bundle for CLI and drawer consumers during the soak;

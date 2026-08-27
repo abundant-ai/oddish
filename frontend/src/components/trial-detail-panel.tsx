@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 import Image from "next/image";
 import {
@@ -92,14 +91,13 @@ import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { StatusIcon } from "@/components/status-icon";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
 import { TrialNotRealSpendBadge } from "@/components/not-real-spend-badge";
-import { useSWRConfig } from "swr";
 import {
   isActiveTrialStatus,
   isLiveQaTrial,
   isWorkerOwnedTrialStatus,
   taskHasActiveVerdict,
 } from "@/lib/job-status";
-import { isAnalysisStatusActive, trialKey, useTrial } from "@/lib/use-trial";
+import { isAnalysisStatusActive, useTrial } from "@/lib/use-trial";
 import { embeddedCtrfSummary } from "@/lib/verifier-results";
 import { fetcher } from "@/lib/api";
 
@@ -175,7 +173,7 @@ interface TrialDetailPanelProps {
     model: string | null;
     trials: Trial[];
   }> | null;
-  onNavigate?: (trial: Trial, trialIndex: number) => void;
+  onNavigate?: (trial: Trial, trialIndex: number | null) => void;
   onNavigateToTask?: () => void;
   onRetry?: (taskIds?: string[]) => void;
   onDelete?: (trial: Trial, task: Task | null) => Promise<void>;
@@ -214,15 +212,16 @@ const OUTCOME_CARD_TONE: Record<MatrixStatus, string> = {
 
 // The QA assessment card. It renders before any analysis exists, so the
 // run button is reachable. It shows queued/running state with elapsed
-// time. While analysis is active it polls the trial, so the result
-// appears without reopening the drawer.
+// time. The drawer's useTrial resource makes the result appear without
+// reopening the drawer.
 function TrialAnalysisCard({
   trial: trialProp,
   task,
   apiBaseUrl,
   actionsReady,
   onQueued,
-  onOpenGrader,
+  activeQaTrial,
+  onOpenActiveQaTrial,
   onFeedback,
 }: {
   trial: Trial;
@@ -230,73 +229,23 @@ function TrialAnalysisCard({
   apiBaseUrl: string;
   actionsReady: boolean;
   onQueued?: () => void;
-  onOpenGrader?: (qaTrialId: string) => void;
+  activeQaTrial: Trial | null;
+  onOpenActiveQaTrial?: (qaTrial: Trial) => void;
   onFeedback?: (record: FeedbackRecord) => Promise<void>;
 }) {
-  // The global mutate writes to an explicitly named cache key. The bound
-  // mutation would write to whichever trial is currently showing, which is
-  // the wrong target when the user switches trials during a rerun request.
-  const { mutate: mutateByKey } = useSWRConfig();
   const trial = trialProp;
   const [queuing, setQueuing] = useState(false);
   const [queueError, setQueueError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
-  // Guards async completions: a response that lands after a trial switch
-  // must not write another trial's state onto the open card.
-  const trialIdRef = useRef(trialProp.id);
-  // The parent passes a brand-new onQueued function on every render. The
-  // effect below reads it through this ref so that the effect does not
-  // re-run every time the parent renders.
-  const onQueuedRef = useRef(onQueued);
-  useEffect(() => {
-    onQueuedRef.current = onQueued;
-  }, [onQueued]);
-
-  // When the user switches to a different trial, clear local action state.
-  // The trial data itself does not need clearing, because the cache stores it
-  // under each trial's id.
-  useEffect(() => {
-    trialIdRef.current = trialProp.id;
-    setQueuing(false);
-    setQueueError(null);
-  }, [trialProp.id]);
 
   // QA is task-scoped: the rerun creates one qa trial that grades every
   // trial, and never stamps this row's analysis_status. Reading that field
   // alone showed "No analysis yet" while the run was live.
-  const inProgress =
-    isAnalysisStatusActive(trial.analysis_status) || taskHasActiveVerdict(task);
-  // The qa trial doing the grading right now (kind qa specifically: a live
-  // pre-trial audit must not be linked as "the QA run"). Once it settles
-  // the importer stamps analysis._graded_by and the "graded by" link below
-  // takes over.
-  const liveQaTrialId = (task?.trials ?? []).find(isLiveQaTrial)?.id;
-
-  // When an analysis run that we were watching finishes, this tells the
-  // parent to refresh its lists, so the grid shows the result even after
-  // the drawer is closed. It only fires when this same trial moves from
-  // an active status to success or failed. It never fires when a trial
-  // that already finished is loaded for the first time.
-  const lastAnalysisRef = useRef<{
-    id: string;
-    status: Trial["analysis_status"];
-  } | null>(null);
-  useEffect(() => {
-    const prev = lastAnalysisRef.current;
-    lastAnalysisRef.current = {
-      id: trial.id,
-      status: trial.analysis_status,
-    };
-    if (!prev || prev.id !== trial.id) return;
-    if (
-      isAnalysisStatusActive(prev.status) &&
-      (trial.analysis_status === "success" ||
-        trial.analysis_status === "failed")
-    ) {
-      onQueuedRef.current?.();
-    }
-  }, [trial.id, trial.analysis_status]);
-
+  const trialAnalysisInProgress = isAnalysisStatusActive(
+    trial.analysis_status
+  );
+  const taskQaInProgress = taskHasActiveVerdict(task);
+  const inProgress = trialAnalysisInProgress || taskQaInProgress;
   // Tick the elapsed timer once a second while in progress.
   useEffect(() => {
     if (!inProgress) return;
@@ -307,9 +256,8 @@ function TrialAnalysisCard({
   const hasAnalysis =
     Boolean(trial.analysis_status || trial.analysis) || inProgress;
   // Always SHOW the button when the feature is on. Disable it (with the
-  // reason) when a run cannot be queued right now — a hidden button with
-  // no explanation is impossible to debug from the UI. The trigger is
-  // trial-level: only this trial's own active analysis blocks it.
+  // reason) when a run cannot be queued right now. The action targets this
+  // selected agent trial, while active task-level QA blocks concurrent runs.
   const showQueueButton = ENABLE_RERUN_ANALYSIS_BUTTON;
   // Mirrors _ANALYSIS_CLAIM_TTL_MINUTES: past the lease the backend treats
   // the worker as dead and allows a re-run, so the button must too. A
@@ -320,35 +268,30 @@ function TrialAnalysisCard({
     (trial.analysis_started_at == null ||
       now - new Date(trial.analysis_started_at).getTime() > 35 * 60_000);
   // Mirror the backend guards, so the button is disabled with the reason
-  // instead of failing the request. The backend refuses only while a full
-  // QA job RUNS — a queued one classifies this trial itself when it
-  // starts. The task's verdict status is the view this card has of that
-  // job.
-  const taskQaActive = task?.verdict_status === "running";
+  // instead of failing the request.
   let queueBlockedReason: string | null = null;
   if (!actionsReady) {
     queueBlockedReason = "Loading latest trial state.";
-  } else if (inProgress && !runStale) {
+  } else if (taskQaInProgress) {
+    queueBlockedReason = "Task-level QA is already running";
+  } else if (trialAnalysisInProgress && !runStale) {
     queueBlockedReason =
       trial.analysis_status === "running"
         ? "Analysis is already running for this trial"
         : "Analysis is already queued for this trial";
   } else if (trial.status !== "success" && trial.status !== "failed") {
     queueBlockedReason = "The trial must finish before analysis can run";
-  } else if (taskQaActive) {
-    queueBlockedReason = "Task-level QA is running; wait for it to finish";
   }
 
   if (!hasAnalysis && !showQueueButton) return null;
 
   const queueRun = async () => {
     if (queuing || !actionsReady || queueBlockedReason) return;
-    const requestTrialId = trial.id;
     setQueuing(true);
     setQueueError(null);
     try {
       const res = await fetch(
-        `${apiBaseUrl}/trials/${requestTrialId}/analysis/rerun`,
+        `${apiBaseUrl}/trials/${trial.id}/analysis/rerun`,
         { method: "POST" }
       );
       if (!res.ok) {
@@ -357,39 +300,15 @@ function TrialAnalysisCard({
           data.detail || data.error || "Failed to queue analysis"
         );
       }
-      // The server queued the run, so the parent list must refresh even
-      // when the user has switched trials; only the local card state below
-      // is scoped to the trial this request was for.
+      // The server created one task-level QA trial. Refresh the task-open
+      // resource so its active_qa_trial becomes the source of truth.
       onQueued?.();
-      // The server set analysis_status to queued before it responded, so
-      // the queued state is already true on the server. Writing it into
-      // the cache shows it immediately and starts the refetching, and
-      // the refetch then confirms it from the server. The write is
-      // addressed by the queued trial's own cache key, so it reaches the
-      // right entry even when the user switched to another trial while
-      // the request was in flight.
-      void mutateByKey(
-        trialKey(apiBaseUrl, requestTrialId),
-        {
-          ...trial,
-          analysis_status: "queued",
-          analysis: null,
-          analysis_error: null,
-          analysis_started_at: null,
-        },
-        { revalidate: true }
-      );
-      if (trialIdRef.current !== requestTrialId) return;
     } catch (err) {
-      if (trialIdRef.current === requestTrialId) {
-        setQueueError(
-          err instanceof Error ? err.message : "Failed to queue analysis"
-        );
-      }
+      setQueueError(
+        err instanceof Error ? err.message : "Failed to queue analysis"
+      );
     } finally {
-      if (trialIdRef.current === requestTrialId) {
-        setQueuing(false);
-      }
+      setQueuing(false);
     }
   };
 
@@ -499,15 +418,14 @@ function TrialAnalysisCard({
               raw={trial.analysis}
               onFeedback={onFeedback}
             />
-            {trial.analysis?._graded_by && onOpenGrader && (
+            {trial.analysis?._graded_by && (
               <p className="mt-2 flex flex-wrap items-baseline gap-x-2 font-mono text-[11px]">
-                <button
-                  type="button"
-                  onClick={() => onOpenGrader(trial.analysis!._graded_by!)}
+                <a
+                  href={`/tasks/${encodeURIComponent(trial.task_id)}?trial=${encodeURIComponent(trial.analysis._graded_by)}&tab=trajectory`}
                   className="text-muted-foreground hover:text-foreground underline decoration-dotted underline-offset-2"
                 >
                   graded by {trial.analysis._graded_by}
-                </button>
+                </a>
                 {(trial.analysis._graded_at_steps?.length ?? 0) > 0 && (
                   // A plain anchor on purpose: the trajectory viewer captures
                   // the #step- fragment at mount, which document navigation
@@ -547,15 +465,17 @@ function TrialAnalysisCard({
                       ? progressLine
                       : "The task's QA run grades every trial; this trial's result lands when it finishes."}
                   </span>
-                  {!trial.analysis_status && liveQaTrialId && onOpenGrader && (
-                    <button
-                      type="button"
-                      onClick={() => onOpenGrader(liveQaTrialId)}
-                      className="text-muted-foreground hover:text-foreground self-start font-mono text-[11px] underline decoration-dotted underline-offset-2"
-                    >
-                      view the QA run
-                    </button>
-                  )}
+                  {!trial.analysis_status &&
+                    activeQaTrial &&
+                    onOpenActiveQaTrial && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenActiveQaTrial(activeQaTrial)}
+                        className="text-muted-foreground hover:text-foreground self-start font-mono text-[11px] underline decoration-dotted underline-offset-2"
+                      >
+                        view the QA run
+                      </button>
+                    )}
                 </div>
               ) : hasAnalysis ? (
                 // Analysis state exists but produced no report (e.g. failed
@@ -830,7 +750,6 @@ export function TrialDetailPanel({
   const actionsReady = !requireTrialDetail || canonicalTrial !== null;
   const trial = canonicalTrial ?? selectedTrial;
   const verifierSummary = embeddedCtrfSummary(trial?.result);
-  const router = useRouter();
 
   // QA votes require authenticated routes and an experiment anchor. Public
   // share drawers use a different apiBaseUrl, so they do not render controls.
@@ -1120,6 +1039,8 @@ export function TrialDetailPanel({
     () => orderedTrials ?? task?.trials ?? [],
     [orderedTrials, task?.trials]
   );
+  const activeQaTrial =
+    task?.active_qa_trial ?? task?.trials?.find(isLiveQaTrial) ?? null;
   const resolvedIndex =
     typeof trialIndex === "number" && trialIndex >= 0
       ? trialIndex
@@ -1235,6 +1156,16 @@ export function TrialDetailPanel({
     const nextIndex = orderedList.findIndex((item) => item.id === nextTrial.id);
     if (nextIndex < 0) return;
     onNavigate(nextTrial, nextIndex);
+  };
+
+  const handleOpenActiveQaTrial = (qaTrial: Trial) => {
+    setActiveTab(
+      isWorkerOwnedTrialStatus(qaTrial.status) || qaTrial.status === "retrying"
+        ? "live"
+        : "summary"
+    );
+    const index = orderedList.findIndex((item) => item.id === qaTrial.id);
+    onNavigate?.(qaTrial, index >= 0 ? index : null);
   };
 
   const content = (
@@ -1650,29 +1581,19 @@ export function TrialDetailPanel({
                   button so analysis can be started even when it never ran. */}
               {showAnalysis && (
                 <TrialAnalysisCard
+                  key={trial.id}
                   trial={trial}
                   task={task}
                   apiBaseUrl={apiBaseUrl}
                   actionsReady={actionsReady}
+                  activeQaTrial={activeQaTrial}
                   onFeedback={
                     feedbackExperimentId ? handleQaFeedback : undefined
                   }
                   onQueued={() => onRetry?.(task ? [task.id] : undefined)}
-                  onOpenGrader={(qaTrialId) => {
-                    // The qa trial lives in the shadow experiment, so it is
-                    // usually absent from this host's list. Navigate in place
-                    // when it happens to be here, else deep-link the task page.
-                    const idx = orderedList.findIndex(
-                      (t) => t.id === qaTrialId
-                    );
-                    if (idx >= 0 && onNavigate) {
-                      onNavigate(orderedList[idx], idx);
-                      return;
-                    }
-                    router.push(
-                      `/tasks/${encodeURIComponent(trial.task_id)}?trial=${encodeURIComponent(qaTrialId)}`
-                    );
-                  }}
+                  onOpenActiveQaTrial={
+                    onNavigate ? handleOpenActiveQaTrial : undefined
+                  }
                 />
               )}
 
