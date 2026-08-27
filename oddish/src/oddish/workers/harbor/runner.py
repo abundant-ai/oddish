@@ -1862,7 +1862,7 @@ async def _run_harbor_trial_async_impl(
         runtime_env.update(_gemini_ai_sdk_alias_env(model))
         is_claude_code = "claude-code" in (agent or "").strip().lower()
         if is_claude_code and (
-            byok_anthropic_env or _claude_code_forces_direct_api(is_probe)
+            byok_anthropic_env or _claude_code_forces_direct_api(is_probe, model)
         ):
             # Harbor's _is_bedrock_mode() reads os.environ, and the Modal image
             # bakes in Bedrock credentials. Blank them when claude-code runs

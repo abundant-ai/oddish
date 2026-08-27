@@ -572,8 +572,10 @@ def _agent_uses_bedrock() -> bool:
     return False
 
 
-def _claude_code_forces_direct_api(is_probe: bool) -> bool:
+def _claude_code_forces_direct_api(is_probe: bool, model: str | None = None) -> bool:
     """Whether a claude-code agent must use the direct Anthropic API over Bedrock."""
+    if (model or "").strip().lower().startswith("anthropic/"):
+        return True
     if not os.environ.get("ANTHROPIC_API_KEY", "").strip():
         return False
     return is_probe or settings.claude_code_force_direct_api
@@ -704,7 +706,7 @@ def _build_agent_config(
             agent_config.model_name = _to_ai_sdk_gemini_model_id(
                 agent_config.model_name
             )
-    elif _claude_code_forces_direct_api(is_probe):
+    elif _claude_code_forces_direct_api(is_probe, agent_config.model_name):
         agent_config.model_name = to_anthropic_api_model_id(agent_config.model_name)
     elif _agent_uses_bedrock():
         agent_config.model_name = to_bedrock_model_id(agent_config.model_name)

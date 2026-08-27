@@ -97,7 +97,7 @@ def _runtime_env_overrides(
         env.update(settings.get_openai_agent_env(model=openai_model))
     if "claude-code" in (
         agent or ""
-    ).strip().lower() and _claude_code_forces_direct_api(is_probe):
+    ).strip().lower() and _claude_code_forces_direct_api(is_probe, model):
         env.update({var: "" for var in BEDROCK_ENV_VARS})
     return env
 
