@@ -43,9 +43,10 @@ the `LOGFIRE_TOKEN` value into this file, GitHub, Slack, or a chat.
 
 - [ ] Open the Logfire project that should receive Oddish telemetry.
 - [ ] Create or select a project write token.
-- [ ] In Modal's `main` environment, edit the `oddish-prod` secret.
-- [ ] Add `LOGFIRE_TOKEN=<Logfire project write token>` without copying the
-  value into this file or Git.
+- [ ] In Modal's `main` environment, create the dedicated `oddish-logfire`
+  secret without modifying the existing `oddish-prod` secret.
+- [ ] Add only `LOGFIRE_TOKEN=<Logfire project write token>` to
+  `oddish-logfire`, without copying the value into this file or Git.
 - [ ] Record only that the token is configured:
   - Configured: `yes / no`
   - Date checked: `YYYY-MM-DD`

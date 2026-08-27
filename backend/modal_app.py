@@ -9,9 +9,11 @@ import modal
 from dotenv import dotenv_values
 
 from modal_runtime import (
+    LOGFIRE_SECRET_NAME,
     MODAL_APP_NAME,
     MODAL_SECRET_ENVIRONMENT,
     RUNTIME_SECRET_NAME,
+    logfire_secret,
     runtime_secret,
 )
 from modal_runtime import app as app
@@ -550,7 +552,9 @@ def _validate_ec2_secret_isolation(
 
 
 _validate_ec2_dotenv_secret_isolation(LOCAL_DOTENV_VARS)
-runtime_secrets = [runtime_secret]
+# Logfire has a dedicated secret so rotating observability credentials cannot
+# replace the database, storage, and provider credentials in oddish-prod.
+runtime_secrets = [runtime_secret, logfire_secret]
 
 # AWS credentials for the sauron S3 mirror. Kept in a separate Modal
 # secret so it can be rotated independently of oddish-prod. Set
@@ -588,6 +592,7 @@ for _gke_secret_name in GKE_SECRET_PLAN:
 # plan so runtime-secret env injection cannot change Modal dependency counts.
 EC2_SECRET_PLAN = _resolve_ec2_secret_plan(os.environ, LOCAL_DOTENV_VARS)
 _broad_runtime_secret_names = {
+    LOGFIRE_SECRET_NAME,
     RUNTIME_SECRET_NAME,
     *GKE_SECRET_PLAN,
 }

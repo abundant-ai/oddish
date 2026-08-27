@@ -102,11 +102,12 @@ name is `oddish-pr-N`. The staging app's `oddish-staging-db` secret sets the
 explicit override `LOGFIRE_ENVIRONMENT=staging`. The standalone dispatcher configures
 `service_name=oddish-dispatcher`.
 
-The hosted Modal functions load their environment variables from the
-`oddish-prod` secret declared in `backend/modal_runtime.py`. In Modal's `main`
-environment, add `LOGFIRE_TOKEN` to that secret. The value must be a write token
-for the Logfire project that should receive these metrics. Do not store or paste
-the token in a repository file.
+The hosted Modal functions mount the dedicated `oddish-logfire` secret declared
+in `backend/modal_runtime.py` alongside the existing `oddish-prod` runtime
+secret. In Modal's `main` environment, create `oddish-logfire` with one field,
+`LOGFIRE_TOKEN`. The value must be a write token for the Logfire project that
+should receive these metrics. Do not modify `oddish-prod`, and do not store or
+paste the token in a repository file.
 
 After deploying and running at least one dispatcher cycle and one worker job,
 run this query in Logfire's SQL Workbench:

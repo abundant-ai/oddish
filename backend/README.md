@@ -199,9 +199,9 @@ Common optional settings:
 
 ### Observability (Pydantic Logfire)
 
-Optional. Provision a write token in Logfire and add it to the
-`oddish-prod` Modal secret so the API containers and workers both
-pick it up:
+Optional. Provision a write token in Logfire, then create the dedicated
+`oddish-logfire` secret in Modal's `main` environment so the API containers and
+workers both pick it up without modifying the `oddish-prod` secret:
 
 - `LOGFIRE_TOKEN` — Logfire write token (the only required value).
 - `LOGFIRE_ENVIRONMENT` *(optional)* — overrides the auto-detected
