@@ -68,7 +68,7 @@ class TrialJobHandler:
             return _fail_permanent(str(exc))
         cred_token = current_registry_credentials.set(creds or None)
         try:
-            await run_trial_job(
+            harbor_outcome = await run_trial_job(
                 trial_id,
                 queue_key=job.queue_key,
                 worker_id=job.worker_id,
@@ -87,8 +87,14 @@ class TrialJobHandler:
             if trial.status == TrialStatus.SUCCESS:
                 return JobOutcome.ok()
             if trial.status == TrialStatus.RETRYING:
-                return _fail_retryable(
-                    trial.error_message or f"Trial {trial_id} marked RETRYING"
+                return JobOutcome.fail(
+                    trial.error_message or f"Trial {trial_id} marked RETRYING",
+                    retryable=True,
+                    retry_after_seconds=(
+                        harbor_outcome.retry_after_seconds
+                        if harbor_outcome is not None
+                        else None
+                    ),
                 )
             if trial.status == TrialStatus.FAILED:
                 error_message = trial.error_message or f"Trial {trial_id} marked FAILED"
