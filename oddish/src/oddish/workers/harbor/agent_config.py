@@ -163,8 +163,10 @@ _LITELLM_MODEL_ID_AGENTS: frozenset[str] = frozenset(
         "terminus-2",
         "mini-swe-agent",
         "computer-1",
+        "openhands",
         "openhands-sdk",
         "swe-agent",
+        "dspy-rlm",
     }
 )
 
@@ -177,8 +179,18 @@ def _is_litellm_model_id_agent(agent_config: AgentConfig) -> bool:
 _AI_SDK_MODEL_ID_AGENTS: frozenset[str] = frozenset({"opencode", "pi", "mimo", "eve"})
 
 
-def _is_ai_sdk_model_id_agent(agent_config: AgentConfig) -> bool:
-    return (agent_config.name or "").strip().lower() in _AI_SDK_MODEL_ID_AGENTS
+# Agents that forward the whole model id to a model aggregator. An aggregator
+# names Gemini with the vendor namespace ``google/<id>``: OpenRouter for hermes,
+# the Vercel AI Gateway for fx and fx-dev. They need the same rewrite as the AI
+# SDK agents, but they are not AI SDK agents, so they get their own set rather
+# than widening one whose name would stop describing its members.
+_AGGREGATOR_MODEL_ID_AGENTS: frozenset[str] = frozenset({"hermes", "fx", "fx-dev"})
+
+
+def _is_google_gemini_id_agent(agent_config: AgentConfig) -> bool:
+    """Whether this agent needs the ``google/`` spelling of a Gemini id."""
+    name = (agent_config.name or "").strip().lower()
+    return name in _AI_SDK_MODEL_ID_AGENTS or name in _AGGREGATOR_MODEL_ID_AGENTS
 
 
 def _to_ai_sdk_gemini_model_id(model: str | None) -> str | None:
@@ -514,9 +526,7 @@ def _apply_mini_swe_agent(agent_config: AgentConfig) -> None:
         )
         set_runtime_model_name(agent_config, f"fireworks_ai/{api_model}")
         agent_config.env = dict(agent_config.env or {})
-        agent_config.env.setdefault(
-            "FIREWORKS_AI_API_KEY", "${FIREWORKS_API_KEY}"
-        )
+        agent_config.env.setdefault("FIREWORKS_AI_API_KEY", "${FIREWORKS_API_KEY}")
     agent_config.name = None
     agent_config.import_path = _ODDISH_MINI_SWE_IMPORT_PATH
 
@@ -700,7 +710,7 @@ def _build_agent_config(
             agent_config.model_name = _to_litellm_gemini_model_id(
                 agent_config.model_name
             )
-        elif _is_ai_sdk_model_id_agent(agent_config):
+        elif _is_google_gemini_id_agent(agent_config):
             agent_config.model_name = _to_ai_sdk_gemini_model_id(
                 agent_config.model_name
             )

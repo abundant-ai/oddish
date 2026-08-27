@@ -334,6 +334,94 @@ def test_meta_model_routes_to_meta_for_mini_swe_agent(monkeypatch):
     assert settings.normalize_queue_key(model) == model
 
 
+def test_every_gemini_spelling_collapses_to_one_queue_key(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    # One model must get one queue key. ``gemini/``, ``google/`` and the bare id
+    # all name the same served model, so they share one concurrency bucket
+    # instead of splitting the model's quota across several.
+    canonical = "google/gemini-3.7-flash"
+    for raw in (
+        "gemini/gemini-3.7-flash",
+        "google/gemini-3.7-flash",
+        "gemini-3.7-flash",
+    ):
+        assert settings.normalize_trial_model("mini-swe-agent", raw) == canonical, raw
+        assert settings.get_queue_key_for_trial("mini-swe-agent", raw) == canonical, raw
+        assert settings.get_provider_for_trial("mini-swe-agent", raw) == "gemini", raw
+        assert settings.normalize_queue_key(raw) == canonical, raw
+
+    # Free-text spellings clean up through ``normalize_model_id`` first, then
+    # land on the same key.
+    messy = " Gemini / Gemini-3.7-Flash "
+    assert normalize_model_id(messy) == "gemini/gemini-3.7-flash"
+    assert settings.normalize_trial_model("mini-swe-agent", messy) == canonical
+    assert settings.get_queue_key_for_trial("mini-swe-agent", messy) == canonical
+
+
+def test_bare_gemini_id_unknown_to_litellm_also_collapses(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    # A bare id litellm knows and one it does not take different rungs of
+    # ``_infer_provider_prefix``. Both must still land on the one key.
+    canonical = "google/gemini-9-ultra"
+    for raw in ("gemini/gemini-9-ultra", "google/gemini-9-ultra", "gemini-9-ultra"):
+        assert settings.normalize_trial_model("mini-swe-agent", raw) == canonical, raw
+        assert settings.get_queue_key_for_trial("mini-swe-agent", raw) == canonical, raw
+        assert settings.normalize_queue_key(raw) == canonical, raw
+
+
+def test_vertex_ai_keeps_its_own_queue_key(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    # Vertex AI is a different endpoint, a different tenancy and different
+    # credentials. It must never share a bucket with AI Studio, or the two
+    # transports bill and throttle as one.
+    model = "vertex_ai/gemini-3.7-flash"
+
+    assert settings.normalize_trial_model("mini-swe-agent", model) == model
+    assert settings.get_queue_key_for_trial("mini-swe-agent", model) == model
+    assert settings.normalize_queue_key(model) == model
+    assert settings.get_queue_key_for_trial(
+        "mini-swe-agent", "google/gemini-3.7-flash"
+    ) != settings.get_queue_key_for_trial("mini-swe-agent", model)
+
+
+def test_gemini_queue_key_has_one_concurrency_bucket(monkeypatch):
+    monkeypatch.setenv(
+        "ODDISH_MODEL_CONCURRENCY_OVERRIDES",
+        '{"gemini/gemini-3.7-flash": 12, "vertex_ai/gemini-3.7-flash": 3}',
+    )
+    settings = Settings(_env_file=None)
+
+    # An override written under any Gemini spelling applies to the one bucket
+    # the trials queue on; Vertex keeps its own limit.
+    assert settings.get_model_concurrency("google/gemini-3.7-flash") == 12
+    assert settings.get_model_concurrency("gemini/gemini-3.7-flash") == 12
+    assert settings.get_model_concurrency("gemini-3.7-flash") == 12
+    assert settings.get_model_concurrency("vertex_ai/gemini-3.7-flash") == 3
+
+
+def test_provider_only_gemini_aliases_stay_default(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    # ``gemini`` and ``google`` alone name a provider, not a model. They must
+    # not become ``google/gemini`` model buckets.
+    assert settings.normalize_queue_key("gemini") == "default"
+    assert settings.normalize_queue_key("google") == "default"
+
+
+def test_foreign_prefixed_gemini_model_is_not_hijacked(monkeypatch):
+    settings = _settings(monkeypatch)
+
+    # An explicit aggregator prefix keeps its own routing, the same way
+    # ``openrouter/`` Kimi is not stolen by the direct Moonshot path.
+    model = "openrouter/google/gemini-3.7-flash"
+
+    assert settings.normalize_trial_model("claude-code", model) == model
+    assert settings.get_queue_key_for_trial("claude-code", model) == model
+
+
 def test_meta_agent_env_includes_configured_session_controls(monkeypatch):
     monkeypatch.setenv("ODDISH_META_EVAL_NAME", "SWE Marathon")
     monkeypatch.setenv("ODDISH_META_SESSION_ID", "swe-marathon--123456")

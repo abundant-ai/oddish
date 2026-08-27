@@ -746,6 +746,78 @@ def to_anthropic_hdo_model_id(model: str | None) -> str | None:
     return f"{ANTHROPIC_HDO_PROVIDER}/{anthropic_hdo_bare_model_id(model)}"
 
 
+# Gemini queue-key canonicalization. One Gemini model reaches Oddish under three
+# spellings: ``gemini/<id>`` (litellm's provider name), ``google/<id>`` (the
+# aggregator vendor namespace, and Oddish's own provider slug), and the bare
+# ``gemini-...`` id. Without a canonicalizer they became separate queue keys, so
+# one model split across several concurrency buckets and could starve in one of
+# them.
+#
+# The canonical bucket is ``google/<id>``, not ``gemini/<id>``:
+#   1. ``google/`` is the existing majority bucket. A bare ``gemini-...`` id that
+#      litellm does not know already infers to ``google/`` in
+#      ``_infer_provider_prefix``, so this spelling moves the fewest stored rows.
+#   2. ``google/`` is the bucket production serves. The ``gemini/`` bucket
+#      starved in an incident and the reason is not established, so
+#      canonicalizing onto ``gemini/`` would risk a wider outage.
+#   3. The queue key is internal bucketing only. ``_build_agent_config`` gives
+#      each agent the spelling its own LLM client needs at the last hop, so this
+#      choice does not constrain agent correctness.
+#
+# ``vertex_ai/`` is deliberately excluded. Vertex AI is a different endpoint
+# (regional ``*-aiplatform.googleapis.com``), a different tenancy, and different
+# credentials (ADC plus ``VERTEXAI_PROJECT``). It keeps its own queue key.
+#
+# The queue prefix is ``google``, but the canonical *provider* for cost and
+# rate-limit attribution stays ``gemini`` (see ``_MODEL_PROVIDER_ALIASES``).
+GEMINI_QUEUE_PREFIX = "google"
+_GEMINI_PROVIDER_PREFIXES: frozenset[str] = frozenset({"gemini", "google"})
+
+
+def is_gemini_model(model: str | None) -> bool:
+    """Return True when *model* names a Google AI Studio Gemini model.
+
+    Matches an explicit ``gemini/`` or ``google/`` provider prefix, or a truly
+    bare ``gemini-...`` id. An explicit ``vertex_ai/`` prefix is NOT matched, so
+    Vertex keeps its own endpoint, tenancy, and queue key. A foreign prefix such
+    as ``openrouter/`` is not matched either, so aggregator-routed Gemini keeps
+    its own routing.
+    """
+    if not model:
+        return False
+    raw = model.strip().lower()
+    if not raw:
+        return False
+    provider_prefix, _ = split_provider_model_name(raw)
+    if provider_prefix:
+        return provider_prefix.strip().lower() in _GEMINI_PROVIDER_PREFIXES
+    # The hyphen keeps the provider-only alias ``gemini`` out of the match; every
+    # real Gemini id is ``gemini-<version>-<tier>``.
+    return raw.startswith("gemini-")
+
+
+def gemini_bare_model_id(model: str) -> str:
+    """Strip a ``gemini/`` or ``google/`` prefix, returning the bare model id."""
+    raw = model.strip()
+    provider_prefix, bare = split_provider_model_name(raw)
+    if provider_prefix and provider_prefix.strip().lower() in _GEMINI_PROVIDER_PREFIXES:
+        return str(bare).strip()
+    return raw
+
+
+def to_gemini_model_id(model: str | None) -> str | None:
+    """Canonicalize a Gemini reference to ``google/<bare-id>``.
+
+    ``gemini/x``, ``google/x``, and a bare ``x`` all collapse to one id, so one
+    model gets one queue key. ``vertex_ai/x`` and non-Gemini models are returned
+    unchanged.
+    """
+    if not is_gemini_model(model):
+        return model
+    assert model is not None
+    return f"{GEMINI_QUEUE_PREFIX}/{gemini_bare_model_id(model)}"
+
+
 def looks_like_bedrock_model_id(model: str | None) -> bool:
     """Return True if *model* is a Bedrock-style id that should route through AWS.
 
@@ -1883,6 +1955,13 @@ class Settings(BaseSettings):
             return to_moonshot_model_id(cleaned)
         if is_deepseek_model(cleaned):
             return to_deepseek_model_id(cleaned)
+        # Collapse every Gemini spelling onto one ``google/<id>`` queue key.
+        # A bare id must be canonicalized here rather than left to
+        # ``normalize_queue_key``: litellm classifies a known bare ``gemini-...``
+        # id as ``vertex_ai``, which would put an AI Studio model in the Vertex
+        # bucket. An explicit ``vertex_ai/`` prefix is untouched.
+        if is_gemini_model(cleaned):
+            return to_gemini_model_id(cleaned)
         # Explicit ``anthropic-hdo/`` keeps Claude on the direct Anthropic API
         # with ANTHROPIC_HDO_API_KEY — must win over the Bedrock chokepoint.
         if is_anthropic_hdo_model(cleaned):
@@ -1910,6 +1989,12 @@ class Settings(BaseSettings):
         normalized = _to_bedrock_model_id_if_known(normalized)
         if looks_like_bedrock_model_id(normalized):
             return normalized
+        # Same collapse as ``normalize_trial_model``, applied here too because
+        # this function owns the bucket for every other caller: admin concurrency
+        # overrides, ``queue_key_buckets``, the Queue Health reads, and
+        # ``backfill_queue_keys``. Without it an override written against
+        # ``gemini/<id>`` would miss the ``google/<id>`` bucket the trials use.
+        normalized = to_gemini_model_id(normalized) or normalized
         if "/" in normalized:
             provider_prefix, canonical = normalized.split("/", 1)
             if (
