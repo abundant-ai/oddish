@@ -268,6 +268,7 @@ class PreparedTrialRun:
     trial_model: str
     trial_environment: str | None
     trial_harbor_config: dict | None
+    task_version: int | None = None
     # Fields for sauron S3 mirror
     task_name: str = ""
     experiment_id: str = ""
@@ -680,11 +681,13 @@ async def _prepare_trial_run(
 
         task_path: str | None = None
         task_s3_key: str | None = None
+        task_version: int | None = None
         if trial.task_version_id:
             tv = await session.get(TaskVersionModel, trial.task_version_id)
             if tv:
                 task_path = tv.task_path
                 task_s3_key = tv.task_s3_key
+                task_version = tv.version
         if task_path is None and task:
             task_path = task.task_path
         if task_s3_key is None and task:
@@ -715,6 +718,7 @@ async def _prepare_trial_run(
             trial_model=trial_model,
             trial_environment=trial_environment,
             trial_harbor_config=trial_harbor_config,
+            task_version=task_version,
             task_name=task_name,
             experiment_id=experiment_id,
             experiment_name=experiment_name,
@@ -885,7 +889,7 @@ def _log_trial_metering_integrity(
 def _artifact_subprefix(harbor_config: dict | None) -> str | None:
     """Analysis trials upload under a self-labeling segment.
 
-    QA, audit, and summarize trials share the subject task's trial-id
+    Analysis trials share the subject task's trial-id
     sequence and, by design, its storage neighborhood -- and trial ids
     repeat across environments that share a bucket. Without the label, an
     analysis agent's session under a colliding prefix reads as the subject
@@ -895,7 +899,7 @@ def _artifact_subprefix(harbor_config: dict | None) -> str | None:
     if not isinstance(harbor_config, dict):
         return None
     mode = harbor_config.get("mode")
-    if mode in ("qa", "audit", "summarize"):
+    if mode in ("qa", "qa_eval", "audit", "summarize"):
         return f"analysis-{mode}"
     return None
 
@@ -1757,6 +1761,10 @@ async def _prepare_trial_task(
                     org_id=prepared_trial.org_id, trial_id=trial_id
                 )
                 probe_agent_env["ODDISH_PROBE_TASK_ID"] = prepared_trial.task_id
+                if prepared_trial.task_version is not None:
+                    probe_agent_env["ODDISH_PROBE_TASK_VERSION"] = str(
+                        prepared_trial.task_version
+                    )
                 probe_agent_env["ODDISH_PROBE_HARBOR_REPO"] = (
                     settings.harbor_source_repo
                 )
