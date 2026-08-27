@@ -60,6 +60,45 @@ async def test_summarize_materialization_failure_removes_task_copy(
 
 
 @pytest.mark.asyncio
+async def test_task_copy_failure_removes_owned_temp_root(monkeypatch, tmp_path):
+    source_task = tmp_path / "source-task"
+    source_task.mkdir()
+    prepared = trial_handler.PreparedTrialRun(
+        task_path=str(source_task),
+        task_s3_key=None,
+        task_id="task-1",
+        trial_agent="single-llm",
+        trial_model="anthropic/claude-sonnet-4-6",
+        trial_environment="docker",
+        trial_harbor_config={"extra_instructions": "prepare a writable copy"},
+        org_id="org-1",
+    )
+    copy_root = tmp_path / "failed-copy"
+
+    async def resolve_task_directory(**_kwargs):
+        return source_task, None, None
+
+    def make_temp_root(**_kwargs):
+        copy_root.mkdir()
+        return str(copy_root)
+
+    def fail_copy(*_args, **_kwargs):
+        raise OSError("task copy failed")
+
+    monkeypatch.setattr(trial_handler, "resolve_task_directory", resolve_task_directory)
+    monkeypatch.setattr(trial_handler.tempfile, "mkdtemp", make_temp_root)
+    monkeypatch.setattr(trial_handler.shutil, "copytree", fail_copy)
+
+    with pytest.raises(OSError, match="task copy failed"):
+        await trial_handler._prepare_trial_task(
+            trial_id="task-1-4", prepared_trial=prepared
+        )
+
+    assert source_task.exists()
+    assert not copy_root.exists()
+
+
+@pytest.mark.asyncio
 async def test_run_trial_job_settles_task_preparation_error(monkeypatch):
     trial_id = "task-1-4"
     prepared = trial_handler.PreparedTrialRun(

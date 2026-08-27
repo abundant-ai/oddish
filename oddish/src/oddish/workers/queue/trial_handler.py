@@ -1724,10 +1724,10 @@ async def _prepare_trial_task(
             # gets the same disposable copy as an S3-backed task.
             if temp_task_dir is None:
                 probe_copy_root = Path(tempfile.mkdtemp(prefix=f"probe-{trial_id}-"))
+                temp_task_dir = probe_copy_root
                 probe_copy_dir = probe_copy_root / task_path_to_run.name
                 shutil.copytree(task_path_to_run, probe_copy_dir, symlinks=True)
                 task_path_to_run = probe_copy_dir
-                temp_task_dir = probe_copy_root
 
             if is_analysis_kind(trial_mode):
                 from oddish.workers.analysis_trials import (
