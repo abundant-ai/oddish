@@ -172,6 +172,14 @@ _LITELLM_MODEL_ID_AGENTS: frozenset[str] = frozenset(
 
 
 def _is_litellm_model_id_agent(agent_config: AgentConfig) -> bool:
+    # ``SingleLLMAgent`` is identified by import_path, not by name: a config that
+    # arrives with an import_path keeps a blank name (``_build_agent_config``
+    # only fills the name when import_path is None), and analysis "summarize"
+    # trials are built exactly that way (``workers/analysis_trials.py:288-296``).
+    # It calls LiteLLM directly (``workers/harbor/single_llm_agent.py:90``), so
+    # it needs the ``gemini/`` spelling like every other LiteLLM agent.
+    if _is_single_llm_agent(agent_config):
+        return True
     return (agent_config.name or "").strip().lower() in _LITELLM_MODEL_ID_AGENTS
 
 

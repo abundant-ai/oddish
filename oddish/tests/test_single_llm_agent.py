@@ -216,3 +216,23 @@ def test_oddish_preserves_the_custom_agent_and_builds_a_litellm_model_id():
     assert agent_config.name is None
     assert agent_config.import_path.endswith(":SingleLLMAgent")
     assert agent_config.model_name == "bedrock/global.anthropic.claude-sonnet-4-6"
+
+
+def test_single_llm_agent_gets_the_litellm_gemini_prefix():
+    """A config that carries an import_path keeps a blank name, so this agent
+    cannot be classified by name. It calls litellm directly, so it still needs
+    ``gemini/<id>``; the canonical stored id ``google/<id>`` would be rejected."""
+    agent_config = _build_agent_config(
+        agent="single-llm",
+        model="google/gemini-3.7-flash",
+        raw_harbor_config={
+            "agent_config": {
+                "import_path": (
+                    "oddish.workers.harbor.single_llm_agent:SingleLLMAgent"
+                ),
+            }
+        },
+    )
+
+    assert agent_config.name is None
+    assert agent_config.model_name == "gemini/gemini-3.7-flash"
