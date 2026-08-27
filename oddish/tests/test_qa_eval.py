@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -17,6 +18,10 @@ from oddish.workers.analysis_trials import (
     analysis_check_payload,
     build_qa_eval_brief,
     is_analysis_kind,
+)
+from oddish.workers.queue.cleanup import (
+    STALE_ANALYSIS_IMPORT_BATCH_LIMIT,
+    _heal_stale_qa_eval_imports,
 )
 
 
@@ -173,7 +178,9 @@ async def test_create_does_not_link_replay_as_a_source_task_experiment(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_importer_writes_only_the_evaluation_trial(monkeypatch):
+async def test_importer_retries_storage_errors_and_writes_only_the_eval_trial(
+    monkeypatch,
+):
     eval_trial = TrialModel(
         id="eval-1",
         name="eval-1",
@@ -205,7 +212,13 @@ async def test_importer_writes_only_the_evaluation_trial(monkeypatch):
     async def fake_get_session():
         yield fake_session
 
+    read_attempts = 0
+
     async def fake_read_artifact(_trial, _filename):
+        nonlocal read_attempts
+        read_attempts += 1
+        if read_attempts == 1:
+            raise OSError("storage temporarily unavailable")
         return _artifact()
 
     monkeypatch.setattr(
@@ -214,6 +227,13 @@ async def test_importer_writes_only_the_evaluation_trial(monkeypatch):
     monkeypatch.setattr(
         "oddish.workers.analysis_trials.read_analysis_artifact", fake_read_artifact
     )
+
+    with pytest.raises(OSError, match="storage temporarily unavailable"):
+        await _import_qa_eval_result(eval_trial)
+
+    assert fake_session.requested_ids == []
+    assert eval_trial.analysis is None
+    assert eval_trial.analysis_status is None
 
     await _import_qa_eval_result(eval_trial)
 
@@ -225,3 +245,18 @@ async def test_importer_writes_only_the_evaluation_trial(monkeypatch):
         "reward": 0.0,
         "result": {"reward": 0.0},
     }
+
+
+@pytest.mark.asyncio
+async def test_cleanup_scan_requeues_unfinished_qa_eval_imports():
+    result = SimpleNamespace(all=lambda: [("qa-eval-1",)])
+    session = SimpleNamespace(execute=AsyncMock(return_value=result))
+
+    assert await _heal_stale_qa_eval_imports(session) == ["qa-eval-1"]
+    statement, params = session.execute.await_args.args
+    sql = str(statement)
+    assert "tr.kind = 'qa_eval'" in sql
+    assert "tr.status::text IN ('SUCCESS', 'FAILED', 'SKIPPED')" in sql
+    assert "tr.analysis_status IS NULL" in sql
+    assert params == {"batch_limit": STALE_ANALYSIS_IMPORT_BATCH_LIMIT}
+    assert STALE_ANALYSIS_IMPORT_BATCH_LIMIT == 200

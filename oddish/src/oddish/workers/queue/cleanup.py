@@ -113,6 +113,7 @@ STUCK_ANALYZING_BATCH_LIMIT = 200
 # stuck at QUEUED with nothing running still heal. Batched so a large backlog
 # drains over several ticks instead of one giant burst.
 STALE_VERDICT_PENDING_BATCH_LIMIT = 200
+STALE_ANALYSIS_IMPORT_BATCH_LIMIT = 200
 STALE_SUMMARIZE_IMPORT_BATCH_LIMIT = 200
 STUCK_ANALYZING_REASON = (
     "Analysis never produced a verdict for this trial; marked terminal by "
@@ -579,6 +580,7 @@ async def cleanup_orphaned_queue_state(
         ) = await _heal_stale_verdict_pending(session)
 
         analysis_reimport_trial_ids += await _heal_stale_audit_imports(session)
+        analysis_reimport_trial_ids += await _heal_stale_qa_eval_imports(session)
         summarize_reimport_trial_ids = await _heal_stale_summarize_imports(session)
         analysis_reimport_trial_ids += summarize_reimport_trial_ids
 
@@ -1548,7 +1550,7 @@ async def _heal_stale_audit_imports(session) -> list[str]:
                 LIMIT :batch_limit
                 """
             ),
-            {"batch_limit": STALE_VERDICT_PENDING_BATCH_LIMIT},
+            {"batch_limit": STALE_ANALYSIS_IMPORT_BATCH_LIMIT},
         )
     ).all()
 
@@ -1557,6 +1559,31 @@ async def _heal_stale_audit_imports(session) -> list[str]:
             "healer: settled audit trial %s never imported, queuing re-import",
             trial_id,
         )
+    return [str(trial_id) for (trial_id,) in stale]
+
+
+async def _heal_stale_qa_eval_imports(session) -> list[str]:
+    """Queue terminal QA-eval trials whose result import never finished."""
+    stale = (
+        await session.execute(
+            text(
+                """
+                SELECT tr.id
+                FROM trials tr
+                WHERE tr.kind = 'qa_eval'
+                  AND tr.deleted_at IS NULL
+                  AND tr.superseded_by_trial_id IS NULL
+                  AND COALESCE(tr.harbor_stage, '') != 'cancelled'
+                  AND tr.status::text IN ('SUCCESS', 'FAILED', 'SKIPPED')
+                  AND (tr.analysis_status IS NULL OR tr.analysis_status::text IN
+                       ('PENDING', 'QUEUED', 'RUNNING'))
+                ORDER BY tr.updated_at ASC
+                LIMIT :batch_limit
+                """
+            ),
+            {"batch_limit": STALE_ANALYSIS_IMPORT_BATCH_LIMIT},
+        )
+    ).all()
     return [str(trial_id) for (trial_id,) in stale]
 
 

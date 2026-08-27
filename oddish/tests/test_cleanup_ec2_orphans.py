@@ -250,6 +250,7 @@ def _patch_unrelated_cleanup_phases(
 
     monkeypatch.setattr(cleanup, "_heal_stale_verdict_pending", heal_nothing)
     monkeypatch.setattr(cleanup, "_heal_stale_audit_imports", no_reimports)
+    monkeypatch.setattr(cleanup, "_heal_stale_qa_eval_imports", no_reimports)
     monkeypatch.setattr(cleanup, "_unwedge_stuck_analyzing", unwedge)
     monkeypatch.setattr(cleanup, "_release_orphaned_slots", zero)
     monkeypatch.setattr(cleanup, "_reconcile_experiment_last_activity", zero)
