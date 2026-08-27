@@ -68,7 +68,6 @@ from oddish.worker.probe_analysis import (
 )
 from oddish.worker.local_offline_policy import enable_local_internet
 from oddish.worker.probe_creds import (
-    ProbeCredsError,
     mint_probe_creds,
     revoke_probe_creds,
 )
@@ -296,6 +295,17 @@ class TrialExecutionResult:
 
 
 @dataclass(slots=True)
+class PreparedTrialTask:
+    task_path: Path
+    temp_task_dir: Path | None
+    resolved_task_s3_key: str | None
+    probe_extra_instructions: str | None
+    probe_agent_env: dict[str, str] | None
+    probe_key_id: str | None
+    trial_mode: str | None
+
+
+@dataclass(slots=True)
 class SandboxCostState:
     resources: SpanResources
     verifier_resources: SpanResources | None
@@ -308,6 +318,14 @@ class SandboxCostState:
     worker_job_id: str | None
     worker_job_attempt: int | None
     terminal_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class PreparedTrialAttempt:
+    task: PreparedTrialTask
+    byok_env: dict[str, str] | None
+    sandbox_launch: SandboxLaunchContext | None
+    cost_state: SandboxCostState
 
 
 def _is_agent_timeout_exception(exc: object | None) -> bool:
@@ -1668,6 +1686,272 @@ async def _settle_compute_costs(
         )
 
 
+async def _prepare_trial_task(
+    *, trial_id: str, prepared_trial: PreparedTrialRun
+) -> PreparedTrialTask:
+    """Resolve and mutate the task copy consumed by one trial attempt.
+
+    This is the single pre-execution boundary for downloaded task bytes,
+    analysis/probe overlays, and probe credentials. Callers turn any exception
+    from this boundary into a normal ``TrialExecutionResult`` and settle it
+    through the same state machine as a Harbor execution failure.
+    """
+    temp_task_dir: Path | None = None
+    probe_key_id: str | None = None
+    try:
+        (
+            task_path_to_run,
+            temp_task_dir,
+            resolved_task_s3_key,
+        ) = await resolve_task_directory(
+            task_id=prepared_trial.task_id,
+            task_s3_key=prepared_trial.task_s3_key,
+            task_path=prepared_trial.task_path,
+        )
+        if temp_task_dir:
+            console.print(f"[dim]Downloaded task from S3: {resolved_task_s3_key}[/dim]")
+        else:
+            console.print(f"[dim]Using local task path: {task_path_to_run}[/dim]")
+
+        harbor_config = prepared_trial.trial_harbor_config or {}
+        probe_extra_instructions = harbor_config.get("extra_instructions")
+        probe_scope = harbor_config.get("probe_scope", "task")
+        trial_mode = harbor_config.get("mode")
+        probe_agent_env: dict[str, str] | None = None
+
+        if probe_extra_instructions:
+            # Every overlay mutates the task, so a mounted/canonical local path
+            # gets the same disposable copy as an S3-backed task.
+            if temp_task_dir is None:
+                probe_copy_root = Path(tempfile.mkdtemp(prefix=f"probe-{trial_id}-"))
+                temp_task_dir = probe_copy_root
+                probe_copy_dir = probe_copy_root / task_path_to_run.name
+                shutil.copytree(task_path_to_run, probe_copy_dir, symlinks=True)
+                task_path_to_run = probe_copy_dir
+
+            if is_analysis_kind(trial_mode):
+                from oddish.workers.analysis_trials import (
+                    ANALYSIS_ARTIFACTS,
+                    analysis_check_payload,
+                    materialize_summarize_brief,
+                )
+
+                if trial_mode == "summarize":
+                    probe_extra_instructions = await materialize_summarize_brief(
+                        harbor_config
+                    )
+                apply_analysis_overlay(
+                    task_path_to_run,
+                    brief=probe_extra_instructions,
+                    artifact=ANALYSIS_ARTIFACTS[trial_mode],
+                    check_payload=analysis_check_payload(trial_mode, harbor_config),
+                    needs_query_cli=trial_mode != "summarize",
+                )
+            else:
+                await apply_probe_overlay(
+                    task_path_to_run,
+                    task_id=prepared_trial.task_id,
+                    trial_id=trial_id,
+                    extra_instructions=probe_extra_instructions,
+                    probe_scope=probe_scope,
+                )
+
+            if trial_mode != "summarize":
+                # QA, audit, and operator probes use oddish-query inside the
+                # sandbox. Summarize receives its bounded input directly.
+                enable_local_internet(task_path_to_run)
+                probe_key_id, probe_agent_env = await mint_probe_creds(
+                    org_id=prepared_trial.org_id, trial_id=trial_id
+                )
+                probe_agent_env["ODDISH_PROBE_TASK_ID"] = prepared_trial.task_id
+                probe_agent_env["ODDISH_PROBE_HARBOR_REPO"] = (
+                    settings.harbor_source_repo
+                )
+                probe_agent_env["ODDISH_PROBE_HARBOR_REF"] = settings.harbor_source_ref
+
+        return PreparedTrialTask(
+            task_path=task_path_to_run,
+            temp_task_dir=temp_task_dir,
+            resolved_task_s3_key=resolved_task_s3_key,
+            probe_extra_instructions=probe_extra_instructions,
+            probe_agent_env=probe_agent_env,
+            probe_key_id=probe_key_id,
+            trial_mode=trial_mode,
+        )
+    except (Exception, asyncio.CancelledError):
+        if probe_key_id:
+            await revoke_probe_creds(probe_key_id, trial_id)
+        if temp_task_dir and temp_task_dir.exists():
+            shutil.rmtree(temp_task_dir, ignore_errors=True)
+        raise
+
+
+async def _release_prepared_trial_attempt(
+    *,
+    trial_id: str,
+    prepared_task: PreparedTrialTask,
+    sandbox_launch: SandboxLaunchContext | None,
+) -> None:
+    """Release every external or filesystem resource owned by an attempt."""
+    if sandbox_launch is not None:
+        try:
+            terminated = await asyncio.shield(
+                terminate_sandbox_run(sandbox_launch.sandbox_run_id)
+            )
+            if not terminated:
+                console.print(
+                    f"[red]EC2 sandbox teardown remains retryable "
+                    f"sandbox_run={sandbox_launch.sandbox_run_id}[/red]"
+                )
+        except Exception as exc:
+            console.print(
+                f"[red]EC2 sandbox teardown failed "
+                f"sandbox_run={sandbox_launch.sandbox_run_id}: {exc}[/red]"
+            )
+    if prepared_task.probe_key_id:
+        await revoke_probe_creds(prepared_task.probe_key_id, trial_id)
+    if prepared_task.temp_task_dir and prepared_task.temp_task_dir.exists():
+        shutil.rmtree(prepared_task.temp_task_dir, ignore_errors=True)
+
+
+async def _prepare_claimed_trial_attempt(
+    *,
+    trial_id: str,
+    prepared_trial: PreparedTrialRun,
+    worker_id: str | None,
+    worker_job_id: str | None,
+    worker_job_attempt: int | None,
+) -> PreparedTrialAttempt | None:
+    """Prepare all resources after domain ownership has been claimed.
+
+    Returning ``None`` means the claim was superseded before preparation.
+    Every raised exception is safe for the caller to settle as an attempt
+    failure because partial task, credential, and sandbox resources are
+    released here first.
+    """
+    prepared_task: PreparedTrialTask | None = None
+    sandbox_launch: SandboxLaunchContext | None = None
+    try:
+        byok_resolution = None
+        if byok.byok_resolver_registered() and not byok.harbor_config_is_ephemeral(
+            prepared_trial.trial_harbor_config
+        ):
+            byok_resolution = await byok.resolve_byok(
+                owner_user_id=prepared_trial.created_by_user_id,
+                org_id=prepared_trial.org_id,
+                experiment_name=prepared_trial.experiment_name,
+                model=prepared_trial.trial_model,
+                agent=prepared_trial.trial_agent,
+            )
+        byok_env = dict(byok_resolution.env) if byok_resolution else None
+        funding_key_hash = trial_llm_key_hash(
+            settings.get_provider_for_trial(
+                prepared_trial.trial_agent, prepared_trial.trial_model
+            ),
+            byok_env,
+        )
+        claim = update(TrialModel).where(
+            TrialModel.id == trial_id,
+            TrialModel.finished_at.is_(None),
+            TrialModel.attempts == prepared_trial.trial_attempt,
+        )
+        if worker_id is not None:
+            claim = claim.where(TrialModel.current_worker_id == worker_id)
+        async with get_session() as session:
+            claimed = await session.execute(
+                claim.values(llm_key_hash=funding_key_hash, updated_at=utcnow())
+            )
+        if not getattr(claimed, "rowcount", 0):
+            return None
+
+        prepared_task = await _prepare_trial_task(
+            trial_id=trial_id, prepared_trial=prepared_trial
+        )
+        os.makedirs(settings.harbor_jobs_dir, exist_ok=True)
+
+        span_provider = (
+            prepared_trial.trial_environment or settings.harbor_environment
+        ).lower()
+        if span_provider == "ec2":
+            if worker_job_id is None or worker_job_attempt is None:
+                raise RuntimeError("EC2 trial requires worker job attempt identity")
+            sandbox_launch = await create_ec2_sandbox_run(
+                worker_job_id=worker_job_id,
+                worker_job_attempt=worker_job_attempt,
+                trial_id=trial_id,
+            )
+
+        cost_state = SandboxCostState(
+            resources=capture_sandbox_resources(
+                prepared_task.task_path,
+                prepared_trial.trial_harbor_config,
+                span_provider,
+            ),
+            verifier_resources=capture_verifier_resources(
+                prepared_task.task_path,
+                prepared_trial.trial_harbor_config,
+                span_provider,
+            ),
+            provider=span_provider,
+            trial_id=trial_id,
+            attempt=prepared_trial.trial_attempt,
+            experiment_id=prepared_trial.experiment_id or None,
+            org_id=prepared_trial.org_id,
+            billed_user_id=prepared_trial.billed_user_id,
+            worker_job_id=worker_job_id,
+            worker_job_attempt=worker_job_attempt,
+        )
+        return PreparedTrialAttempt(
+            task=prepared_task,
+            byok_env=byok_env,
+            sandbox_launch=sandbox_launch,
+            cost_state=cost_state,
+        )
+    except (Exception, asyncio.CancelledError):
+        if prepared_task is not None:
+            await _release_prepared_trial_attempt(
+                trial_id=trial_id,
+                prepared_task=prepared_task,
+                sandbox_launch=sandbox_launch,
+            )
+        raise
+
+
+async def _settle_trial_attempt(
+    *,
+    trial_id: str,
+    prepared_trial: PreparedTrialRun,
+    execution: TrialExecutionResult,
+    worker_id: str | None,
+    worker_job_id: str | None,
+    trial_s3_key: str | None = None,
+    artifact_upload_error: str | None = None,
+    probe_analysis: dict | None = None,
+) -> bool:
+    """Persist one attempt result and run its terminal lifecycle exactly once."""
+    trial_terminal, run_post_trial_hooks = await asyncio.shield(
+        _store_trial_results(
+            trial_id=trial_id,
+            outcome=execution.outcome,
+            trial_s3_key=trial_s3_key,
+            execution_error=execution.execution_error,
+            artifact_upload_error=artifact_upload_error,
+            execution_retryable=execution.retryable,
+            probe_analysis=probe_analysis,
+            worker_id=worker_id,
+            worker_job_id=worker_job_id,
+            trial_attempt=prepared_trial.trial_attempt,
+        )
+    )
+    await _finish_trial_settlement(
+        trial_id=trial_id,
+        org_id=prepared_trial.org_id,
+        billed_user_id=prepared_trial.billed_user_id,
+        run_post_trial_hooks=run_post_trial_hooks,
+    )
+    return trial_terminal
+
+
 async def run_trial_job(
     trial_id: str,
     queue_key: str,
@@ -1715,184 +1999,49 @@ async def run_trial_job(
     if prepared_trial is None:
         return
 
-    byok_resolution = None
-    if byok.byok_resolver_registered() and not byok.harbor_config_is_ephemeral(
-        prepared_trial.trial_harbor_config
-    ):
-        byok_resolution = await byok.resolve_byok(
-            owner_user_id=prepared_trial.created_by_user_id,
-            org_id=prepared_trial.org_id,
-            experiment_name=prepared_trial.experiment_name,
-            model=prepared_trial.trial_model,
-            agent=prepared_trial.trial_agent,
-        )
-    byok_env = byok_resolution.env if byok_resolution else None
-    funding_key_hash = trial_llm_key_hash(
-        settings.get_provider_for_trial(
-            prepared_trial.trial_agent, prepared_trial.trial_model
-        ),
-        byok_env,
-    )
-    claim = update(TrialModel).where(
-        TrialModel.id == trial_id,
-        TrialModel.finished_at.is_(None),
-        TrialModel.attempts == prepared_trial.trial_attempt,
-    )
-    if worker_id is not None:
-        claim = claim.where(TrialModel.current_worker_id == worker_id)
-    async with get_session() as session:
-        claimed = await session.execute(
-            claim.values(llm_key_hash=funding_key_hash, updated_at=utcnow())
-        )
-    if not getattr(claimed, "rowcount", 0):
-        return
-
-    # Determine task path: download from S3 if needed, or use local path
-    temp_task_dir = None
-    (
-        task_path_to_run,
-        temp_task_dir,
-        resolved_task_s3_key,
-    ) = await resolve_task_directory(
-        task_id=prepared_trial.task_id,
-        task_s3_key=prepared_trial.task_s3_key,
-        task_path=prepared_trial.task_path,
-    )
-    if temp_task_dir:
-        console.print(f"[dim]Downloaded task from S3: {resolved_task_s3_key}[/dim]")
-    else:
-        console.print(f"[dim]Using local task path: {task_path_to_run}[/dim]")
-
-    # Probe overlay: for probe trials, prepend the operator directive, append
-    # the test/related-log sections, and pre-stage prior real-attempt logs.
-    # apply_probe_overlay mutates instruction.md in place, so the task dir
-    # must be writable. resolve_task_directory only returns a writable temp
-    # dir for the S3-download case; a mounted or canonical local path
-    # (temp_task_dir is None) must be copied first. Reusing temp_task_dir for
-    # the copy root means _execute_trial's finally block cleans it up.
-    probe_extra_instructions = (prepared_trial.trial_harbor_config or {}).get(
-        "extra_instructions"
-    )
-    probe_scope = (prepared_trial.trial_harbor_config or {}).get("probe_scope", "task")
-    # Read-only oddish CLI creds minted for a probe trial; injected into the
-    # agent env only (never persisted to harbor_config / S3). Best-effort
-    # deleted after the run.
-    probe_agent_env: dict[str, str] | None = None
-    probe_key_id: str | None = None
-    job_scoped_bundle: job_tokens.JobCredentialBundle | None = None
-    trial_mode = (prepared_trial.trial_harbor_config or {}).get("mode")
-    if probe_extra_instructions:
-        if temp_task_dir is None:
-            probe_copy_root = Path(tempfile.mkdtemp(prefix=f"probe-{trial_id}-"))
-            probe_copy_dir = probe_copy_root / task_path_to_run.name
-            shutil.copytree(task_path_to_run, probe_copy_dir, symlinks=True)
-            task_path_to_run = probe_copy_dir
-            temp_task_dir = probe_copy_root
-        if is_analysis_kind(trial_mode):
-            from oddish.workers.analysis_trials import (
-                ANALYSIS_ARTIFACTS,
-                analysis_check_payload,
-                materialize_summarize_brief,
-            )
-
-            if trial_mode == "summarize":
-                probe_extra_instructions = await materialize_summarize_brief(
-                    prepared_trial.trial_harbor_config
-                )
-            apply_analysis_overlay(
-                task_path_to_run,
-                brief=probe_extra_instructions,
-                artifact=ANALYSIS_ARTIFACTS[trial_mode],
-                check_payload=analysis_check_payload(
-                    trial_mode, prepared_trial.trial_harbor_config
-                ),
-                needs_query_cli=trial_mode != "summarize",
-            )
-        else:
-            await apply_probe_overlay(
-                task_path_to_run,
-                task_id=prepared_trial.task_id,
-                trial_id=trial_id,
-                extra_instructions=probe_extra_instructions,
-                probe_scope=probe_scope,
-            )
-        if trial_mode != "summarize":
-            # QA, audit, and operator probes use oddish-query inside the
-            # sandbox. Summarize already has its bounded input and needs no
-            # Oddish API credential or sandbox network access.
-            enable_local_internet(task_path_to_run)
-            try:
-                probe_key_id, probe_agent_env = await mint_probe_creds(
-                    org_id=prepared_trial.org_id, trial_id=trial_id
-                )
-                probe_agent_env["ODDISH_PROBE_TASK_ID"] = prepared_trial.task_id
-                probe_agent_env["ODDISH_PROBE_HARBOR_REPO"] = (
-                    settings.harbor_source_repo
-                )
-                probe_agent_env["ODDISH_PROBE_HARBOR_REF"] = settings.harbor_source_ref
-            except ProbeCredsError as exc:
-                # Record the failure on the trial row so the operator sees why
-                # the probe failed; _execute_trial never runs in this path.
-                logger.error(
-                    "trial %s failed before sandbox start: ProbeCredsError: %s",
-                    trial_id,
-                    exc,
-                )
-                _, run_post_trial_hooks = await asyncio.shield(
-                    _store_trial_results(
-                        trial_id=trial_id,
-                        outcome=None,
-                        trial_s3_key=None,
-                        execution_error=f"ProbeCredsError: {exc}",
-                        worker_id=worker_id,
-                        worker_job_id=worker_job_id,
-                        trial_attempt=prepared_trial.trial_attempt,
-                    )
-                )
-                await _finish_trial_settlement(
-                    trial_id=trial_id,
-                    org_id=prepared_trial.org_id,
-                    billed_user_id=prepared_trial.billed_user_id,
-                    run_post_trial_hooks=run_post_trial_hooks,
-                )
-                if temp_task_dir and temp_task_dir.exists():
-                    shutil.rmtree(temp_task_dir, ignore_errors=True)
-                raise
-
-    # Ensure Harbor scratch directories exist before execution starts.
-    os.makedirs(settings.harbor_jobs_dir, exist_ok=True)
-
-    should_upload_to_s3 = bool(resolved_task_s3_key)
-
-    span_provider = (
-        prepared_trial.trial_environment or settings.harbor_environment
-    ).lower()
-    sandbox_launch: SandboxLaunchContext | None = None
-    if span_provider == "ec2":
-        if worker_job_id is None or worker_job_attempt is None:
-            raise RuntimeError("EC2 trial requires worker job attempt identity")
-        sandbox_launch = await create_ec2_sandbox_run(
+    try:
+        prepared_attempt = await _prepare_claimed_trial_attempt(
+            trial_id=trial_id,
+            prepared_trial=prepared_trial,
+            worker_id=worker_id,
             worker_job_id=worker_job_id,
             worker_job_attempt=worker_job_attempt,
-            trial_id=trial_id,
         )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        execution_error = f"{type(exc).__name__}: {exc}"
+        logger.error(
+            "trial %s failed during task preparation: %s", trial_id, execution_error
+        )
+        await _settle_trial_attempt(
+            trial_id=trial_id,
+            prepared_trial=prepared_trial,
+            execution=TrialExecutionResult(
+                outcome=None,
+                execution_error=execution_error,
+                retryable=not isinstance(exc, QuotaPauseControlError),
+            ),
+            worker_id=worker_id,
+            worker_job_id=worker_job_id,
+        )
+        return
+    if prepared_attempt is None:
+        return
 
-    cost_state = SandboxCostState(
-        resources=capture_sandbox_resources(
-            task_path_to_run, prepared_trial.trial_harbor_config, span_provider
-        ),
-        verifier_resources=capture_verifier_resources(
-            task_path_to_run, prepared_trial.trial_harbor_config, span_provider
-        ),
-        provider=span_provider,
-        trial_id=trial_id,
-        attempt=prepared_trial.trial_attempt,
-        experiment_id=prepared_trial.experiment_id or None,
-        org_id=prepared_trial.org_id,
-        billed_user_id=prepared_trial.billed_user_id,
-        worker_job_id=worker_job_id,
-        worker_job_attempt=worker_job_attempt,
-    )
+    prepared_task = prepared_attempt.task
+    task_path_to_run = prepared_task.task_path
+    temp_task_dir = prepared_task.temp_task_dir
+    resolved_task_s3_key = prepared_task.resolved_task_s3_key
+    probe_extra_instructions = prepared_task.probe_extra_instructions
+    probe_agent_env = prepared_task.probe_agent_env
+    trial_mode = prepared_task.trial_mode
+    byok_env = prepared_attempt.byok_env
+    sandbox_launch = prepared_attempt.sandbox_launch
+    cost_state = prepared_attempt.cost_state
+    job_scoped_bundle: job_tokens.JobCredentialBundle | None = None
+
+    should_upload_to_s3 = bool(resolved_task_s3_key)
 
     execution: TrialExecutionResult | None = None
     trial_terminal = False
@@ -2046,25 +2195,15 @@ async def run_trial_job(
         if oddish_uploaded and execution.outcome and execution.outcome.job_dir:
             _cleanup_uploaded_job_dir(execution.outcome.job_dir, trial_id)
 
-        trial_terminal, run_post_trial_hooks = await asyncio.shield(
-            _store_trial_results(
-                trial_id=trial_id,
-                outcome=execution.outcome,
-                trial_s3_key=trial_s3_key,
-                execution_error=execution.execution_error,
-                artifact_upload_error=artifact_upload_error,
-                execution_retryable=execution.retryable,
-                probe_analysis=probe_analysis,
-                worker_id=worker_id,
-                worker_job_id=worker_job_id,
-                trial_attempt=prepared_trial.trial_attempt,
-            )
-        )
-        await _finish_trial_settlement(
+        trial_terminal = await _settle_trial_attempt(
             trial_id=trial_id,
-            org_id=prepared_trial.org_id,
-            billed_user_id=prepared_trial.billed_user_id,
-            run_post_trial_hooks=run_post_trial_hooks,
+            prepared_trial=prepared_trial,
+            execution=execution,
+            worker_id=worker_id,
+            worker_job_id=worker_job_id,
+            trial_s3_key=trial_s3_key,
+            artifact_upload_error=artifact_upload_error,
+            probe_analysis=probe_analysis,
         )
     finally:
         heartbeat_stop.set()
@@ -2073,21 +2212,11 @@ async def run_trial_job(
         elif not heartbeat_interrupt.cancelled():
             heartbeat_interrupt.exception()
         await asyncio.gather(heartbeat_task, return_exceptions=True)
-        if sandbox_launch is not None:
-            try:
-                terminated = await asyncio.shield(
-                    terminate_sandbox_run(sandbox_launch.sandbox_run_id)
-                )
-                if not terminated:
-                    console.print(
-                        f"[red]EC2 sandbox teardown remains retryable "
-                        f"sandbox_run={sandbox_launch.sandbox_run_id}[/red]"
-                    )
-            except Exception as exc:
-                console.print(
-                    f"[red]EC2 sandbox teardown failed "
-                    f"sandbox_run={sandbox_launch.sandbox_run_id}: {exc}[/red]"
-                )
+        await _release_prepared_trial_attempt(
+            trial_id=trial_id,
+            prepared_task=prepared_task,
+            sandbox_launch=sandbox_launch,
+        )
         # Purge the live transcript only once the trial is terminal. Doing it
         # inside _execute_trial's finally would race the S3 upload/store window
         # and blank the transcript while clients still see the trial running;
@@ -2107,10 +2236,6 @@ async def run_trial_job(
         # dev trials (S3 disabled) keep their harbor-jobs output on disk.
         if should_upload_to_s3:
             _cleanup_trial_wrapper_dirs(trial_id)
-        # Best-effort revoke the short-lived probe read key now that the run
-        # is done; it also auto-expires via its TTL if this fails.
-        if probe_key_id:
-            await revoke_probe_creds(probe_key_id, trial_id)
         # Same for the job-scoped credential token (revoke on terminal status).
         if job_scoped_bundle is not None and worker_job_id:
             await _revoke_job_credentials(worker_job_id, trial_id)
