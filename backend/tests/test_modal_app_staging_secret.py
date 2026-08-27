@@ -20,6 +20,7 @@ def _load_modal_app(monkeypatch, app_name: str):
     monkeypatch.setenv("MODAL_APP_NAME", app_name)
     monkeypatch.setenv("MODAL_ENVIRONMENT", "staging")
     sys.modules.pop("modal_app", None)
+    sys.modules.pop("modal_runtime", None)
     importlib.import_module("modal_app")
     return recorded
 
