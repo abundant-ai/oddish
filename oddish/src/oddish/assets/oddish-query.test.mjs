@@ -41,6 +41,23 @@ test('401 → credential expired', () => {
   assert.deepEqual(JSON.parse(out), { error: 'session credential expired', status: 401 });
 });
 
+test('trials result returns the complete stored result', () => {
+  const result = { reward: 0, verifier_result: { metrics: { passed: 12 } } };
+  const out = run(['trials', 'result', 'trial-1'], {
+    '/trials/trial-1/result': result,
+  });
+  assert.deepEqual(JSON.parse(out), result);
+});
+
+test('trials trajectory returns the complete trajectory without tail truncation', () => {
+  const trajectory = { steps: [{ observation: 'x'.repeat(9000) }] };
+  const out = run(['trials', 'trajectory', 'trial-1'], {
+    '/trials/trial-1/trajectory': trajectory,
+  });
+  assert.doesNotMatch(out, /trajectory truncated/);
+  assert.deepEqual(JSON.parse(out), trajectory);
+});
+
 test('solution cat fetches file content from the API behind the banner', () => {
   const out = runApi(['solution', 'cat', 'a.txt'],
     { '/tasks/task-123/files/solution/a.txt': { path: 'solution/a.txt', content: 'HELLO-SOLUTION' } });
@@ -77,6 +94,20 @@ test('task cat fetches a task source file without adding a solution prefix', () 
     { '/tasks/task-123/files/instruction.md': { path: 'instruction.md', content: 'TASK-INSTRUCTIONS' } });
   assert.match(out, /PROBE-ONLY/);
   assert.match(out, /TASK-INSTRUCTIONS/);
+});
+
+test('task file reads use the pinned task version', () => {
+  const out = runApi(
+    ['task', 'cat', 'instruction.md'],
+    {
+      '/tasks/task-123/files/instruction.md?version=7': {
+        path: 'instruction.md',
+        content: 'VERSION-SEVEN',
+      },
+    },
+    { ODDISH_PROBE_TASK_VERSION: '7' },
+  );
+  assert.match(out, /VERSION-SEVEN/);
 });
 
 test('task fetch downloads the complete source tree into --into', () => {
@@ -144,6 +175,8 @@ test('--help lists the command groups', () => {
   assert.match(out, /verifier/);
   assert.match(out, /verify run/);
   assert.match(out, /harbor src/);
+  assert.match(out, /trials result/);
+  assert.match(out, /trials trajectory/);
   assert.match(out, /trials logs/);
 });
 

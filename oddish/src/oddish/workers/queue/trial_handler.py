@@ -268,6 +268,7 @@ class PreparedTrialRun:
     trial_model: str
     trial_environment: str | None
     trial_harbor_config: dict | None
+    task_version: int | None = None
     # Fields for sauron S3 mirror
     task_name: str = ""
     experiment_id: str = ""
@@ -680,11 +681,13 @@ async def _prepare_trial_run(
 
         task_path: str | None = None
         task_s3_key: str | None = None
+        task_version: int | None = None
         if trial.task_version_id:
             tv = await session.get(TaskVersionModel, trial.task_version_id)
             if tv:
                 task_path = tv.task_path
                 task_s3_key = tv.task_s3_key
+                task_version = tv.version
         if task_path is None and task:
             task_path = task.task_path
         if task_s3_key is None and task:
@@ -715,6 +718,7 @@ async def _prepare_trial_run(
             trial_model=trial_model,
             trial_environment=trial_environment,
             trial_harbor_config=trial_harbor_config,
+            task_version=task_version,
             task_name=task_name,
             experiment_id=experiment_id,
             experiment_name=experiment_name,
@@ -1757,6 +1761,10 @@ async def _prepare_trial_task(
                     org_id=prepared_trial.org_id, trial_id=trial_id
                 )
                 probe_agent_env["ODDISH_PROBE_TASK_ID"] = prepared_trial.task_id
+                if prepared_trial.task_version is not None:
+                    probe_agent_env["ODDISH_PROBE_TASK_VERSION"] = str(
+                        prepared_trial.task_version
+                    )
                 probe_agent_env["ODDISH_PROBE_HARBOR_REPO"] = (
                     settings.harbor_source_repo
                 )

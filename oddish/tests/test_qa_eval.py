@@ -65,6 +65,10 @@ def test_qa_eval_is_an_analysis_kind_and_brief_pins_one_source():
     assert "Candidate rules go here." in brief
     assert "finding-1" in brief
     assert "qa_eval_result.json" in brief
+    assert "trials result source-1 > /tmp/source-result.json" in brief
+    assert "trials trajectory source-1 > /tmp/source-trajectory.json" in brief
+    assert "trials logs source-1 > /tmp/source-logs.json" in brief
+    assert "task fetch --into /tmp/source-task" in brief
     assert "Do not use or copy the source trial's existing `analysis`" in brief
 
 
@@ -221,9 +225,7 @@ async def test_importer_retries_storage_errors_and_writes_only_the_eval_trial(
             raise OSError("storage temporarily unavailable")
         return _artifact()
 
-    monkeypatch.setattr(
-        "oddish.workers.analysis_trials.get_session", fake_get_session
-    )
+    monkeypatch.setattr("oddish.workers.analysis_trials.get_session", fake_get_session)
     monkeypatch.setattr(
         "oddish.workers.analysis_trials.read_analysis_artifact", fake_read_artifact
     )

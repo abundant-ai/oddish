@@ -466,7 +466,12 @@ def build_qa_eval_brief(
 Evaluate exactly this source trial:
 - {source_trial_id}
 
-The oddish-query CLI fetches trial data from the oddish API. Run `node /probe-harness/oddish-query --help` first. Fetch the source trial's stored result, complete trajectory, logs, and exact task-version files before judging it. Do not use or copy the source trial's existing `analysis`; this replay must judge the stored solver evidence independently.
+The oddish-query CLI fetches trial data from the oddish API. Run these commands before judging the trial:
+`node /probe-harness/oddish-query trials result {source_trial_id} > /tmp/source-result.json`
+`node /probe-harness/oddish-query trials trajectory {source_trial_id} > /tmp/source-trajectory.json`
+`node /probe-harness/oddish-query trials logs {source_trial_id} > /tmp/source-logs.json`
+`node /probe-harness/oddish-query task fetch --into /tmp/source-task`
+Inspect those files. Do not use or copy the source trial's existing `analysis`; this replay must judge the stored solver evidence independently.
 
 Known pre-trial findings for the source trial's exact task version:
 {pre_trial}
@@ -1167,9 +1172,7 @@ async def _import_qa_eval_result(trial: TrialModel) -> None:
     elif artifact is None:
         detail = "produced no valid qa_eval_result.json"
     elif violations:
-        detail = "artifact violates the QA-eval contract: " + "; ".join(
-            violations[:5]
-        )
+        detail = "artifact violates the QA-eval contract: " + "; ".join(violations[:5])
     else:
         detail = None
 
