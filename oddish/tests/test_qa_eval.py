@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import pytest
 
-from oddish.db import AnalysisStatus, TrialStatus
+from oddish.core.endpoints.qa_eval import create_qa_eval_core
+from oddish.db import AnalysisStatus, TaskModel, TaskVersionModel, TrialStatus
 from oddish.db.models import TrialModel
 from oddish.schemas import QAEvalCreateRequest
 from oddish.worker.analysis_result_check import check_analysis_result
@@ -78,6 +80,96 @@ def test_qa_eval_validator_requires_exact_source_and_complete_analysis():
         "root_cause" in error
         for error in check_analysis_result(missing_root_cause, expected)
     )
+
+
+@pytest.mark.asyncio
+async def test_create_does_not_link_replay_as_a_source_task_experiment(monkeypatch):
+    source = TrialModel(
+        id="source-1",
+        name="source-1",
+        task_id="task-1",
+        task_version_id="version-1",
+        experiment_id="original-experiment",
+        org_id="org-1",
+        agent="codex",
+        provider="openai",
+        queue_key="codex:model",
+        model="model",
+        kind="agent",
+        status=TrialStatus.SUCCESS,
+        is_probe=False,
+        has_trajectory=True,
+        analysis={"classification": "BAD_FAILURE"},
+    )
+    task = TaskModel(
+        id="task-1",
+        name="task-1",
+        org_id="org-1",
+        current_version_id="version-1",
+    )
+    version = TaskVersionModel(
+        id="version-1",
+        task_id="task-1",
+        task_s3_key="tasks/task-1/version-1.tar.gz",
+    )
+
+    class FakeResult:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def scalars(self):
+            return self
+
+        def all(self):
+            return self.rows
+
+    class FakeSession:
+        added_experiment = None
+
+        async def execute(self, statement):
+            descriptions = getattr(statement, "column_descriptions", None)
+            if not descriptions:
+                raise AssertionError(
+                    "QA-eval creation must not write task_experiments membership"
+                )
+            entity = descriptions[0].get("entity")
+            rows_by_entity = {
+                TrialModel: [source],
+                TaskModel: [task],
+                TaskVersionModel: [version],
+            }
+            return FakeResult(rows_by_entity[entity])
+
+        def add(self, row):
+            self.added_experiment = row
+
+        async def flush(self):
+            self.added_experiment.id = "replay-experiment"
+
+    async def fake_create_analysis_trial(_session, **kwargs):
+        assert kwargs["task"] is task
+        assert kwargs["experiment_id"] == "replay-experiment"
+        return SimpleNamespace(id="qa-eval-1")
+
+    monkeypatch.setattr(
+        "oddish.core.endpoints.qa_eval.create_analysis_trial",
+        fake_create_analysis_trial,
+    )
+
+    response = await create_qa_eval_core(
+        FakeSession(),
+        request=QAEvalCreateRequest(
+            name="candidate replay",
+            source_trial_ids=["source-1"],
+            prompt_name="candidate-1",
+            prompt_text="Classify the stored solver evidence.",
+        ),
+        org_id="org-1",
+        owner_user_id="user-1",
+    )
+
+    assert response.experiment_id == "replay-experiment"
+    assert response.trials[0].qa_eval_trial_id == "qa-eval-1"
 
 
 @pytest.mark.asyncio

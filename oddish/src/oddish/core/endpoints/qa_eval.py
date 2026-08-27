@@ -140,13 +140,11 @@ async def create_qa_eval_core(
     session.add(experiment)
     await session.flush()
 
-    from oddish.queue import _link_task_to_experiment
-
-    for task_id in task_ids:
-        await _link_task_to_experiment(
-            session, task_id=task_id, experiment_id=experiment.id
-        )
-
+    # A QA-eval experiment owns its replay trials through
+    # ``TrialModel.experiment_id``. Do not add ``task_experiments`` rows here:
+    # that relationship represents ordinary experiment membership and its
+    # unordered first non-shadow member is still used as the fallback target
+    # when later solver trials are appended to a task.
     created: list[QAEvalTrialResponse] = []
     for source in ordered_sources:
         task = task_by_id[source.task_id]
