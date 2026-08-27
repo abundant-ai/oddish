@@ -63,7 +63,9 @@ class _FakeDeleteExperimentSession:
             return _FakeRowsResult(rowcount=1)
         if self.execute_calls == 6:
             return _FakeRowsResult(rowcount=1)
-        if self.execute_calls == 7:
+        if self.execute_calls in (7, 8):
+            return _FakeRowsResult()
+        if self.execute_calls == 9:
             return _FakeRowsResult(rowcount=1)
 
         raise AssertionError(f"Unexpected execute() call #{self.execute_calls}")
@@ -90,10 +92,17 @@ async def test_delete_experiment_core_soft_deletes_domain_rows(monkeypatch):
     async def _noop_cancel_trials(*_args, **_kwargs):
         return []
 
+    revoked_experiments: list[str] = []
+
+    async def _record_qa_revoke(*_args, experiment_id: str, **_kwargs):
+        revoked_experiments.append(experiment_id)
+        return True
+
     monkeypatch.setattr(_deletion, "_cancel_worker_jobs_for_task", _noop_cancel_task)
     monkeypatch.setattr(
         _deletion, "_cancel_worker_jobs_for_trials", _noop_cancel_trials
     )
+    monkeypatch.setattr(_deletion, "revoke_public_qa_report_core", _record_qa_revoke)
 
     session = _FakeDeleteExperimentSession()
 
@@ -114,8 +123,13 @@ async def test_delete_experiment_core_soft_deletes_domain_rows(monkeypatch):
         "worker_targets": [],
     }
     assert session.delete_called is False
+    assert revoked_experiments == ["exp-123"]
 
-    write_statements = session.execute_statements[3:]
+    write_statements = [
+        statement
+        for statement in session.execute_statements[3:]
+        if getattr(statement, "__visit_name__", None) == "update"
+    ]
     table_names = [stmt.table.name for stmt in write_statements]
     assert table_names == [
         "trials",

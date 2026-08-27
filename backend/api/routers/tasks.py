@@ -58,6 +58,7 @@ from oddish.core.endpoints import (
     unlink_task_from_experiment_core,
 )
 from oddish.core.helpers import terminate_run_harvest
+from oddish.core.qa_reports import revoke_public_qa_report_core
 
 
 from oddish.core.dashboard import (
@@ -1346,6 +1347,11 @@ async def unpublish_experiment(
         if not experiment:
             raise HTTPException(status_code=404, detail="Experiment not found")
 
+        await revoke_public_qa_report_core(
+            session,
+            experiment_id=experiment.id,
+            org_id=auth.org_id,
+        )
         experiment.is_public = False
         experiment.public_token = None
         await session.commit()

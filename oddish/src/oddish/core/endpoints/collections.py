@@ -407,7 +407,23 @@ async def _unlink_task_from_collection(
     cost rollup counts live ``experiment_trials`` rows, so a stale link would
     price trials the page no longer shows (see endpoints/deletion.py).
     """
+    # Keep these imports local. ``qa_reports`` reads experiment membership and
+    # the queue module owns the matching link hook, so importing either at
+    # module load would make this endpoint part of their import graph.
+    from oddish.core.qa_reports import revoke_public_qa_report_core
     from oddish.queue import _recompute_tag_projection_on_membership_removed
+
+    org_id = await session.scalar(
+        text("SELECT org_id FROM tasks WHERE id = :task_id"), {"task_id": task_id}
+    )
+    # Revoke before dropping the task link. Besides making the old URL dead for
+    # good, this takes the experiment row lock used by QA publish, so a publish
+    # racing this removal is either revoked here or sees the changed scope.
+    await revoke_public_qa_report_core(
+        session,
+        experiment_id=experiment_id,
+        org_id=org_id,
+    )
 
     await session.execute(
         update(task_experiments)
@@ -417,9 +433,6 @@ async def _unlink_task_from_collection(
             task_experiments.c.deleted_at.is_(None),
         )
         .values(deleted_at=utcnow())
-    )
-    org_id = await session.scalar(
-        text("SELECT org_id FROM tasks WHERE id = :task_id"), {"task_id": task_id}
     )
     await _recompute_tag_projection_on_membership_removed(
         session, task_id=task_id, experiment_id=experiment_id, org_id=org_id

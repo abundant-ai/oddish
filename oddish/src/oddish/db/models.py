@@ -17,6 +17,8 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
+    func,
     Index,
     Integer,
     Numeric,
@@ -575,6 +577,189 @@ class ExperimentModel(TimestampedMixin, Base):
     )
 
 
+class QAReportModel(TimestampedMixin, Base):
+    """One customer-facing QA draft for an experiment.
+
+    The editable rows below are private draft state. A public read never
+    builds from these rows. It reads an immutable ``QAReportPublicationModel``
+    snapshot selected by ``published_snapshot_id`` instead.
+    """
+
+    __tablename__ = "qa_reports"
+    __table_args__ = (
+        CheckConstraint(
+            "(is_public AND public_token IS NOT NULL "
+            "AND published_snapshot_id IS NOT NULL) "
+            "OR (NOT is_public AND public_token IS NULL)",
+            name="ck_qa_reports_public_state",
+        ),
+        Index(
+            "uq_qa_reports_experiment_live",
+            "experiment_id",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index(
+            "uq_qa_reports_public_token",
+            "public_token",
+            unique=True,
+            postgresql_where=text("public_token IS NOT NULL"),
+        ),
+        Index("idx_qa_reports_org_experiment", "org_id", "experiment_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    org_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    experiment_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("experiments.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    conclusion: Mapped[str | None] = mapped_column(Text, nullable=True)
+    customer_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    internal_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    draft_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+
+    is_public: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    public_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Deliberately no FK: the publication points back to this report, and this
+    # pointer only selects which immutable snapshot is live.
+    published_snapshot_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class QAReportTaskModel(TimestampedMixin, Base):
+    """A task section in a private QA report draft."""
+
+    __tablename__ = "qa_report_tasks"
+    __table_args__ = (
+        UniqueConstraint("report_id", "task_id", name="uq_qa_report_tasks_task"),
+        UniqueConstraint("id", "report_id", name="uq_qa_report_tasks_id_report"),
+        Index("idx_qa_report_tasks_report_order", "report_id", "sort_order"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    report_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("qa_reports.id", ondelete="CASCADE"), nullable=False
+    )
+    task_id: Mapped[str] = mapped_column(
+        String(128), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
+    )
+    task_version_id: Mapped[str | None] = mapped_column(
+        String(160), ForeignKey("task_versions.id", ondelete="SET NULL"), nullable=True
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    internal_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_visible: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    sort_order: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+
+
+class QAReportItemModel(TimestampedMixin, Base):
+    """One editable, source-linked QA item in a private draft."""
+
+    __tablename__ = "qa_report_items"
+    __table_args__ = (
+        CheckConstraint(
+            "source_type IN ('pre_trial', 'verdict', 'trial_analysis')",
+            name="ck_qa_report_items_source_type",
+        ),
+        UniqueConstraint("report_id", "source_ref", name="uq_qa_report_items_source"),
+        ForeignKeyConstraint(
+            ["report_task_id", "report_id"],
+            ["qa_report_tasks.id", "qa_report_tasks.report_id"],
+            name="fk_qa_report_items_task_report",
+            ondelete="CASCADE",
+        ),
+        Index("idx_qa_report_items_task_order", "report_task_id", "sort_order"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    report_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("qa_reports.id", ondelete="CASCADE"), nullable=False
+    )
+    report_task_id: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+    )
+    source_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    # Private provenance key used for idempotent sync. It is never copied to
+    # the public snapshot.
+    source_ref: Mapped[str] = mapped_column(String(512), nullable=False)
+    source_label: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    source_title: Mapped[str] = mapped_column(Text, nullable=False)
+    source_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_recommendation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_visible: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    include_evidence: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    sort_order: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recommendation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    customer_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    internal_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tier: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    dimension: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    file: Mapped[str | None] = mapped_column(Text, nullable=True)
+    line_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    line_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    outcome: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    confidence: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+
+class QAReportPublicationModel(Base):
+    """An append-only public snapshot of a QA report draft.
+
+    ``scope_task_ids`` stays private. Public reads use it to confirm that
+    every task in the saved snapshot is still a live experiment member.
+    """
+
+    __tablename__ = "qa_report_publications"
+    __table_args__ = (
+        Index("idx_qa_report_publications_report", "report_id", "published_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    report_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("qa_reports.id", ondelete="CASCADE"), nullable=False
+    )
+    draft_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    scope_task_ids: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    published_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    published_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
 class TaskModel(TimestampedMixin, Base):
     """Task database model (one Harbor task submission)."""
 
@@ -907,9 +1092,7 @@ class TaskVersionModelMetricsModel(Base):
     agent: Mapped[str] = mapped_column(String(128), primary_key=True)
     # Older trials carry no model; "" keeps them addressable in the primary key
     # rather than dropping them or inventing a name.
-    model: Mapped[str] = mapped_column(
-        String(256), primary_key=True, server_default=""
-    )
+    model: Mapped[str] = mapped_column(String(256), primary_key=True, server_default="")
     task_id: Mapped[str] = mapped_column(
         String(128), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
     )
@@ -1436,8 +1619,8 @@ sa_event.listen(
         # the view before the historical column ALTERs later in the chain,
         # and Postgres refuses to alter a column a view depends on. The
         # chain creates the view itself at analysisspend01.
-        callable_=lambda ddl, target, bind, **kw: not os.environ.get(
-            "ODDISH_ALEMBIC_RUNNING"
+        callable_=lambda ddl, target, bind, **kw: (
+            not os.environ.get("ODDISH_ALEMBIC_RUNNING")
         )
     ),
 )
@@ -2684,10 +2867,13 @@ class FeedbackModel(Base):
     )
 
 
-from oddish.db.soft_delete import register_soft_delete_models
+from oddish.db.soft_delete import register_soft_delete_models  # noqa: E402
 
 register_soft_delete_models(
     ExperimentModel,
+    QAReportModel,
+    QAReportTaskModel,
+    QAReportItemModel,
     TaskModel,
     TrialModel,
     TagModel,

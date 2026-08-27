@@ -1878,6 +1878,7 @@ class PublicExperimentResponse(BaseModel):
     name: str
     public_token: str
     description: str | None = None
+    qa_token: str | None = None
 
 
 class PublicExperimentListItem(BaseModel):
@@ -1888,6 +1889,259 @@ class PublicExperimentListItem(BaseModel):
     public_token: str
     task_count: int
     created_at: str
+
+
+# =============================================================================
+# Curated QA Report Models
+# =============================================================================
+
+
+QAReportSourceType = Literal["pre_trial", "verdict", "trial_analysis"]
+
+
+class QAReportItemResponse(BaseModel):
+    """One source finding plus its private curation state."""
+
+    id: str
+    source_type: QAReportSourceType
+    source_ref: str
+    source_label: str
+    source_completed_at: datetime | None = None
+    source_title: str
+    source_summary: str | None = None
+    source_recommendation: str | None = None
+    source_evidence: str | None = None
+    evidence: str | None = None
+    is_visible: bool
+    include_evidence: bool
+    sort_order: int
+    title: str
+    summary: str | None = None
+    recommendation: str | None = None
+    customer_note: str | None = None
+    internal_note: str | None = None
+    tier: str | None = None
+    dimension: str | None = None
+    file: str | None = None
+    line_start: int | None = None
+    line_end: int | None = None
+    outcome: str | None = None
+    confidence: str | None = None
+
+
+class QAReportTaskResponse(BaseModel):
+    id: str
+    task_id: str
+    task_version_id: str | None = None
+    name: str
+    summary: str | None = None
+    internal_note: str | None = None
+    is_visible: bool
+    sort_order: int
+    items: list[QAReportItemResponse] = Field(default_factory=list)
+
+
+class QAReportAvailableItemResponse(BaseModel):
+    """Experiment QA that has not been copied into the draft yet."""
+
+    id: str
+    task_id: str
+    task_version_id: str | None = None
+    task_name: str
+    source_type: QAReportSourceType
+    source_ref: str
+    source_label: str
+    source_completed_at: datetime | None = None
+    source_title: str
+    source_summary: str | None = None
+    source_recommendation: str | None = None
+    source_evidence: str | None = None
+    evidence: str | None = None
+    title: str
+    summary: str | None = None
+    recommendation: str | None = None
+    tier: str | None = None
+    dimension: str | None = None
+    file: str | None = None
+    line_start: int | None = None
+    line_end: int | None = None
+    outcome: str | None = None
+    confidence: str | None = None
+    internal_note: str | None = None
+    include_evidence: bool = False
+
+
+class QAReportResponse(BaseModel):
+    id: str
+    experiment_id: str
+    title: str
+    summary: str = ""
+    conclusion: str = ""
+    customer_note: str | None = None
+    internal_note: str | None = None
+    draft_version: int
+    is_public: bool
+    public_token: str | None = None
+    published_at: datetime | None = None
+    has_unpublished_changes: bool
+    scope_stale: bool = False
+    tasks: list[QAReportTaskResponse] = Field(default_factory=list)
+    available_items: list[QAReportAvailableItemResponse] = Field(default_factory=list)
+    new_item_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class QAReportCreateRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=255)
+    summary: str | None = Field(default=None, max_length=50_000)
+    conclusion: str | None = Field(default=None, max_length=50_000)
+    customer_note: str | None = Field(default=None, max_length=50_000)
+    internal_note: str | None = Field(default=None, max_length=50_000)
+
+    @field_validator("title")
+    @classmethod
+    def validate_optional_title(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("title cannot be empty")
+        return value
+
+
+class QAReportTaskPatch(BaseModel):
+    id: str
+    name: str | None = Field(default=None, max_length=255)
+    summary: str | None = Field(default=None, max_length=50_000)
+    internal_note: str | None = Field(default=None, max_length=50_000)
+    is_visible: bool | None = None
+    sort_order: int | None = Field(default=None, ge=0)
+
+    @field_validator("name")
+    @classmethod
+    def validate_optional_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("name cannot be empty")
+        return value
+
+    @model_validator(mode="after")
+    def reject_null_name(self) -> "QAReportTaskPatch":
+        if "name" in self.model_fields_set and self.name is None:
+            raise ValueError("name cannot be null")
+        return self
+
+
+class QAReportItemPatch(BaseModel):
+    id: str
+    title: str | None = Field(default=None, max_length=500)
+    summary: str | None = Field(default=None, max_length=50_000)
+    recommendation: str | None = Field(default=None, max_length=50_000)
+    evidence: str | None = Field(default=None, max_length=50_000)
+    customer_note: str | None = Field(default=None, max_length=50_000)
+    internal_note: str | None = Field(default=None, max_length=50_000)
+    include_evidence: bool | None = None
+    is_visible: bool | None = None
+    sort_order: int | None = Field(default=None, ge=0)
+
+    @field_validator("title")
+    @classmethod
+    def validate_item_title(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("title cannot be empty")
+        return value
+
+    @model_validator(mode="after")
+    def reject_null_title(self) -> "QAReportItemPatch":
+        if "title" in self.model_fields_set and self.title is None:
+            raise ValueError("title cannot be null")
+        return self
+
+
+class QAReportPatchRequest(BaseModel):
+    expected_draft_version: int = Field(ge=1)
+    title: str | None = Field(default=None, max_length=255)
+    summary: str | None = Field(default=None, max_length=50_000)
+    conclusion: str | None = Field(default=None, max_length=50_000)
+    customer_note: str | None = Field(default=None, max_length=50_000)
+    internal_note: str | None = Field(default=None, max_length=50_000)
+    tasks: list[QAReportTaskPatch] = Field(default_factory=list, max_length=2_000)
+    items: list[QAReportItemPatch] = Field(default_factory=list, max_length=20_000)
+
+    @field_validator("title")
+    @classmethod
+    def validate_report_title(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("title cannot be empty")
+        return value
+
+    @model_validator(mode="after")
+    def reject_duplicate_patch_ids(self) -> "QAReportPatchRequest":
+        if "title" in self.model_fields_set and self.title is None:
+            raise ValueError("title cannot be null")
+        task_ids = [row.id for row in self.tasks]
+        item_ids = [row.id for row in self.items]
+        if len(task_ids) != len(set(task_ids)):
+            raise ValueError("task ids must be unique")
+        if len(item_ids) != len(set(item_ids)):
+            raise ValueError("item ids must be unique")
+        return self
+
+
+class QAReportPublishRequest(BaseModel):
+    expected_draft_version: int = Field(ge=1)
+    expected_public_token: str | None = Field(min_length=32, max_length=128)
+
+
+class QAReportUnpublishRequest(BaseModel):
+    expected_draft_version: int = Field(ge=1)
+    expected_public_token: str = Field(min_length=32, max_length=128)
+
+
+class PublicQAReportExperiment(BaseModel):
+    name: str
+    description: str | None = None
+
+
+class PublicQAReportItem(BaseModel):
+    source_type: QAReportSourceType
+    title: str
+    summary: str | None = None
+    recommendation: str | None = None
+    customer_note: str | None = None
+    evidence: str | None = None
+    tier: str | None = None
+    dimension: str | None = None
+    file: str | None = None
+    line_start: int | None = None
+    line_end: int | None = None
+    outcome: str | None = None
+    confidence: str | None = None
+
+
+class PublicQAReportTask(BaseModel):
+    name: str
+    summary: str | None = None
+    items: list[PublicQAReportItem] = Field(default_factory=list)
+
+
+class PublicQAReportResponse(BaseModel):
+    title: str
+    summary: str = ""
+    conclusion: str = ""
+    customer_note: str | None = None
+    published_at: datetime
+    experiment: PublicQAReportExperiment
+    tasks: list[PublicQAReportTask] = Field(default_factory=list)
 
 
 class TagCreateRequest(BaseModel):

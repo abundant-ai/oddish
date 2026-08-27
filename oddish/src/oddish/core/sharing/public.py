@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Response
 from sqlalchemy import and_, select
@@ -10,6 +11,10 @@ from sqlalchemy.orm import selectinload
 
 from oddish.core.experiment_membership import gathered_trial_ids_select
 from oddish.core.helpers import build_task_status_response, fetch_trial_queue_info
+from oddish.core.qa_reports import (
+    get_public_qa_report_core,
+    get_public_qa_token_for_experiment,
+)
 from oddish.core.model_display_names import (
     apply_model_display_names,
     experiment_display_names,
@@ -47,6 +52,7 @@ from oddish.db import (
 from oddish.schemas import (
     PublicExperimentListItem,
     PublicExperimentResponse,
+    PublicQAReportResponse,
     TaskBrowseExperiment,
     TaskStatusResponse,
     TrialResponse,
@@ -54,6 +60,97 @@ from oddish.schemas import (
 )
 
 router = APIRouter(tags=["Public"])
+
+
+_PUBLIC_TASK_FIELDS = {
+    "id",
+    "name",
+    "status",
+    "priority",
+    "user",
+    "github_username",
+    "github_meta",
+    "link",
+    "task_path",
+    "experiment_id",
+    "experiment_name",
+    "experiment_is_public",
+    "experiment_created_at",
+    "experiment_owner",
+    "experiment_link",
+    "experiments",
+    "current_version",
+    "current_version_id",
+    "trial_version",
+    "trial_version_id",
+    "total",
+    "completed",
+    "failed",
+    "skipped",
+    "progress",
+    "reward_success",
+    "reward_sum",
+    "reward_total",
+    "user_tags",
+    "created_at",
+    "updated_at",
+    "started_at",
+    "finished_at",
+}
+
+_PUBLIC_TRIAL_FIELDS = {
+    "id",
+    "name",
+    "task_id",
+    "task_path",
+    "task_version",
+    "task_version_id",
+    "experiment_id",
+    "agent",
+    "provider",
+    "model",
+    "environment",
+    "status",
+    "origin",
+    "reward",
+    "result",
+    "harbor_sha",
+    "harbor_source",
+    "kind",
+    "is_probe",
+    "input_tokens",
+    "cache_tokens",
+    "output_tokens",
+    "total_steps",
+    "trajectory_duration_seconds",
+    "total_tool_calls",
+    "tool_counts",
+    "cost_usd",
+    "cost_is_estimated",
+    "phase_timing",
+    "has_trajectory",
+    "created_at",
+    "started_at",
+    "finished_at",
+}
+
+
+def _public_trial_payload(response: TrialResponse) -> dict[str, Any]:
+    """Return only the trial fields approved for an experiment share."""
+
+    return response.model_dump(mode="json", include=_PUBLIC_TRIAL_FIELDS)
+
+
+def _public_task_payload(response: TaskStatusResponse) -> dict[str, Any]:
+    """Return the public task allow-list, including safe trial projections."""
+
+    payload = response.model_dump(mode="json", include=_PUBLIC_TASK_FIELDS)
+    payload["trials"] = (
+        [_public_trial_payload(trial) for trial in (response.trials or [])]
+        if response.trials is not None
+        else None
+    )
+    return payload
 
 
 async def _hydrate_public_user_tags(session, *, task_ids: list[str]) -> dict:
@@ -148,7 +245,28 @@ async def get_public_experiment_info(public_token: str) -> PublicExperimentRespo
             name=experiment.name,
             public_token=experiment.public_token or public_token,
             description=experiment.description,
+            qa_token=await get_public_qa_token_for_experiment(
+                session, experiment_id=experiment.id
+            ),
         )
+
+
+@router.get(
+    "/public/experiments/{public_token}/qa/{qa_token}",
+    response_model=PublicQAReportResponse,
+)
+async def get_public_experiment_qa_report(
+    public_token: str, qa_token: str
+) -> PublicQAReportResponse:
+    """Read one curated, immutable QA snapshot through both share tokens."""
+
+    async with get_session() as session:
+        report = await get_public_qa_report_core(
+            session, experiment_token=public_token, qa_token=qa_token
+        )
+    if report is None:
+        raise HTTPException(status_code=404, detail="QA report not found")
+    return report
 
 
 async def _public_experiment_refs(
@@ -215,13 +333,13 @@ def _apply_public_experiments(
 
 
 @router.get(
-    "/public/experiments/{public_token}/tasks", response_model=list[TaskStatusResponse]
+    "/public/experiments/{public_token}/tasks", response_model=list[dict[str, Any]]
 )
 async def list_public_experiment_tasks(
     public_token: str,
     limit: int = 200,
     offset: int = 0,
-) -> list[TaskStatusResponse]:
+) -> list[dict[str, Any]]:
     """List tasks (with trials) for a public experiment."""
     async with get_session() as session:
         experiment = await get_public_experiment(session, public_token)
@@ -308,18 +426,18 @@ async def list_public_experiment_tasks(
             [trial for resp in responses for trial in (resp.trials or [])],
             experiment_display_names(experiment),
         )
-        return responses
+        return [_public_task_payload(response) for response in responses]
 
 
 @router.get(
     "/public/experiments/{public_token}/tasks/{task_id}",
-    response_model=TaskStatusResponse,
+    response_model=dict[str, Any],
 )
 async def get_public_task_status(
     public_token: str,
     task_id: str,
     include_trials: bool = True,
-) -> TaskStatusResponse:
+) -> dict[str, Any]:
     """Get task status for a public experiment."""
     async with get_session() as session:
         resolved = await get_public_task_for_experiment(session, public_token, task_id)
@@ -343,19 +461,17 @@ async def get_public_task_status(
         _apply_public_experiments(
             response, public_exps.get(task.id, []), preferred_id=exp.id
         )
-        apply_model_display_names(
-            response.trials or [], experiment_display_names(exp)
-        )
-        return response
+        apply_model_display_names(response.trials or [], experiment_display_names(exp))
+        return _public_task_payload(response)
 
 
 @router.get(
     "/public/experiments/{public_token}/tasks/{task_id}/trials",
-    response_model=list[TrialResponse],
+    response_model=list[dict[str, Any]],
 )
 async def list_public_task_trials(
     public_token: str, task_id: str
-) -> list[TrialResponse]:
+) -> list[dict[str, Any]]:
     """List real-attempt trials for a public task.
 
     Probes are experimental and never exposed publicly, so this always
@@ -367,7 +483,7 @@ async def list_public_task_trials(
         )
         if trials is None:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-        return trials
+        return [_public_trial_payload(trial) for trial in trials]
 
 
 @router.get("/public/experiments/{public_token}/trials/{trial_id}/logs")

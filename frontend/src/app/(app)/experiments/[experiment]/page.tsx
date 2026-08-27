@@ -5,7 +5,11 @@ import {
   getBackendUrl,
   getClerkToken,
 } from "@/lib/backend-config";
-import { decodeExperimentRouteParam } from "@/lib/utils";
+import { ExperimentSectionTabs } from "@/components/experiment-qa/experiment-section-tabs";
+import {
+  decodeExperimentRouteParam,
+  encodeExperimentRouteParam,
+} from "@/lib/utils";
 import { ExperimentClientPage } from "./experiment-client";
 
 async function getExperimentName(experimentId: string): Promise<string | null> {
@@ -102,5 +106,15 @@ export default async function ExperimentDetailPage({
   const { experiment } = await params;
   const experimentId = decodeExperimentRouteParam(experiment ?? "");
 
-  return <ExperimentClientPage experimentId={experimentId} />;
+  const encodedExperiment = encodeExperimentRouteParam(experimentId);
+  return (
+    <div className="space-y-4">
+      <ExperimentSectionTabs
+        active="experiment"
+        experimentHref={`/experiments/${encodedExperiment}`}
+        qaHref={`/experiments/${encodedExperiment}/qa`}
+      />
+      <ExperimentClientPage experimentId={experimentId} />
+    </div>
+  );
 }

@@ -66,7 +66,7 @@ class _FakeDeleteTaskSession:
 
 
 @pytest.mark.asyncio
-async def test_delete_task_core_soft_deletes_task_and_trials():
+async def test_delete_task_core_soft_deletes_task_and_trials(monkeypatch):
     """Unscoped delete tombstones both trials and the task in-place.
 
     Soft delete keeps S3 artifacts (the response carries an empty
@@ -78,6 +78,17 @@ async def test_delete_task_core_soft_deletes_task_and_trials():
     task_rows = [("task-123", "tasks/task-123/", "s3://tasks/task-123/")]
     trial_rows = [("task-123-0",), ("task-123-1",)]
     session = _FakeDeleteTaskSession(task_rows, trial_rows)
+    revoked_tasks: list[str] = []
+
+    async def _record_qa_revoke(*_args, task_id: str, **_kwargs):
+        revoked_tasks.append(task_id)
+        return 1
+
+    from oddish.core.endpoints import deletion as _deletion
+
+    monkeypatch.setattr(
+        _deletion, "revoke_public_qa_reports_for_task_core", _record_qa_revoke
+    )
 
     result = await endpoints.delete_task_core(session, task_id="task-123")
 
@@ -88,6 +99,7 @@ async def test_delete_task_core_soft_deletes_task_and_trials():
         "worker_targets": [],
     }
     assert session.delete_called is False
+    assert revoked_tasks == ["task-123"]
 
     # statements[0] task lookup, statements[1] trial lookup.
     write_statements = session.statements[2:]
