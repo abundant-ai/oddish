@@ -38,7 +38,10 @@ test.describe("dashboard member filter", () => {
       });
     });
 
-    await page.goto("/dashboard");
+    // The dashboard streams experiment rows behind Suspense, while this
+    // control is part of the first shell. Let the locator below own readiness
+    // instead of waiting for the unrelated stream to finish loading.
+    await page.goto("/dashboard", { waitUntil: "commit" });
     await page
       .getByRole("combobox", { name: "Filter experiments by member" })
       .click();
