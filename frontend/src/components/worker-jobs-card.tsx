@@ -1,13 +1,22 @@
 "use client";
 
-import useSWR from "swr";
 import Link from "next/link";
-import { useMemo, useState } from "react";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { useState } from "react";
+import useSWR from "swr";
+import {
+  Activity,
+  AlertCircle,
+  Clock3,
+  RefreshCw,
+  Workflow,
+} from "lucide-react";
+
+import { QueueKeyIcon } from "@/components/queue-key-icon";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 import {
   Table,
   TableBody,
@@ -16,557 +25,203 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { fetcher } from "@/lib/api";
 import type {
   WorkerJobKind,
   WorkerJobSample,
-  WorkerJobStatus,
   WorkerJobsResponse,
 } from "@/lib/types";
-import { fetcher } from "@/lib/api";
-import { QueueKeyIcon } from "@/components/queue-key-icon";
-import {
-  AlertCircle,
-  Beaker,
-  Gavel,
-  Microscope,
-  RefreshCw,
-  Workflow,
-} from "lucide-react";
+import { encodeExperimentRouteParam } from "@/lib/utils";
 
-// ---------------------------------------------------------------------------
-// Kinds & status — display config
-//
-// Kept as simple maps rather than an enum so new kinds (QA_REVIEW,
-// future) show up automatically with a sensible default treatment.
-// ---------------------------------------------------------------------------
-
-const KIND_ORDER: WorkerJobKind[] = [
-  "TRIAL",
-  "QA",
-  "VERDICT",
-  "ANALYSIS",
-  "QA_REVIEW",
-];
-
-const KIND_DISPLAY: Record<
-  string,
-  {
-    label: string;
-    description: string;
-    Icon: typeof Beaker;
-    accent: string;
-  }
-> = {
-  TRIAL: {
-    label: "Trials",
-    description: "Harbor runs for agent × model combinations",
-    Icon: Beaker,
-    accent: "text-blue-400",
-  },
-  QA: {
-    label: "Task QA",
-    description:
-      "One job per task: classifies every trial, then synthesizes the verdict",
-    Icon: Gavel,
-    accent: "text-amber-400",
-  },
-  VERDICT: {
-    label: "Task Verdict (legacy)",
-    description: "Folded into Task QA — no longer enqueued",
-    Icon: Gavel,
-    accent: "text-amber-400/70",
-  },
-  ANALYSIS: {
-    label: "Trial Analysis (legacy)",
-    description:
-      "Folded into Task QA — no longer enqueued; drains in-flight rows",
-    Icon: Microscope,
-    accent: "text-purple-400",
-  },
-  QA_REVIEW: {
-    label: "QA Review",
-    description: "Follow-up agent jobs reviewing completed work",
-    Icon: Workflow,
-    accent: "text-teal-400",
-  },
+const KIND_LABELS: Record<string, string> = {
+  agent: "Agent trial",
+  qa: "Task QA",
+  qa_eval: "QA evaluation",
+  audit: "Pre-trial audit",
+  summarize: "Trajectory summary",
+  task_expand: "Task expansion",
+  tag_project: "Tag projection",
 };
 
-// Status columns displayed in the kind × status matrix. ``SUCCESS`` is
-// excluded from the primary matrix because it dominates totals and
-// crowds out actionable numbers; it's surfaced in an aggregate footer.
-const STATUS_COLUMNS: WorkerJobStatus[] = [
-  "QUEUED",
-  "RUNNING",
-  "RETRYING",
-  "FAILED",
-  "CANCELLED",
-  "BLOCKED",
-];
-
-const STATUS_CELL_CLASS: Record<string, string> = {
-  QUEUED: "text-purple-400",
-  RUNNING: "text-blue-400",
-  RETRYING: "text-amber-400",
-  SUCCESS: "text-green-400",
-  FAILED: "text-red-400",
-  CANCELLED: "text-muted-foreground",
-  BLOCKED: "text-slate-400",
-};
-
-function formatAge(dateStr: string | null): string {
-  if (!dateStr) return "—";
-  const diffMs = Date.now() - new Date(dateStr).getTime();
-  if (diffMs <= 0) return "0s";
-  const totalSeconds = Math.floor(diffMs / 1000);
-  if (totalSeconds < 60) return `${totalSeconds}s`;
-  if (totalSeconds < 3600) return `${Math.floor(totalSeconds / 60)}m`;
-  if (totalSeconds < 86400) return `${Math.floor(totalSeconds / 3600)}h`;
-  return `${Math.floor(totalSeconds / 86400)}d`;
+function formatAge(value: string | null): string {
+  if (!value) return "no heartbeat";
+  const seconds = Math.max(
+    0,
+    Math.floor((Date.now() - new Date(value).getTime()) / 1000)
+  );
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${(seconds / 3600).toFixed(1)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
 }
 
-function formatSeconds(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds <= 0) return "0s";
-  if (seconds < 60) return `${Math.round(seconds)}s`;
-  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+function formatDelay(value: string): string {
+  const seconds = Math.max(
+    0,
+    Math.ceil((new Date(value).getTime() - Date.now()) / 1000)
+  );
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.ceil(seconds / 60)}m`;
   return `${(seconds / 3600).toFixed(1)}h`;
 }
 
-// ---------------------------------------------------------------------------
-// Kind × Status matrix
-// ---------------------------------------------------------------------------
+function kindLabel(kind: WorkerJobKind): string {
+  return KIND_LABELS[kind] ?? kind.replaceAll("_", " ");
+}
 
-function KindRow({
-  kind,
-  counts,
-  total,
-}: {
-  kind: WorkerJobKind;
-  counts: Partial<Record<WorkerJobStatus, number>>;
-  total: number;
-}) {
-  const display = KIND_DISPLAY[kind] ?? {
-    label: kind,
-    description: "Custom worker-job kind",
-    Icon: Workflow,
-    accent: "text-muted-foreground",
-  };
-  const Icon = display.Icon;
-
+function RunIdentityCell({ job }: { job: WorkerJobSample }) {
   return (
-    <TableRow>
-      <TableCell className="min-w-[220px]">
-        <div className="flex items-start gap-2">
-          <Icon className={`mt-0.5 h-4 w-4 ${display.accent}`} />
-          <div>
-            <div className="font-medium">{display.label}</div>
-            <div className="text-[11px] text-muted-foreground">
-              {display.description}
-            </div>
-          </div>
+    <div className="min-w-44 space-y-1">
+      <Badge variant="outline" className="font-mono text-[10px]">
+        {kindLabel(job.kind)}
+      </Badge>
+      <div className="text-xs">
+        {[job.agent, job.model].filter(Boolean).join(" · ") || "System work"}
+      </div>
+      {job.trial_id && (
+        <div className="text-muted-foreground max-w-64 truncate font-mono text-[10px]">
+          {job.trial_id}
         </div>
-      </TableCell>
-      {STATUS_COLUMNS.map((status) => {
-        const value = counts[status] ?? 0;
-        return (
-          <TableCell
-            key={status}
-            className={`text-right font-mono text-xs ${
-              value > 0 ? STATUS_CELL_CLASS[status] : "text-muted-foreground/40"
-            }`}
-          >
-            {value}
-          </TableCell>
-        );
-      })}
-      <TableCell className="text-right font-mono text-xs">
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span className="cursor-help">{total}</span>
-          </TooltipTrigger>
-          <TooltipContent>
-            Total {display.label.toLowerCase()} rows across every status
-          </TooltipContent>
-        </Tooltip>
-      </TableCell>
-    </TableRow>
+      )}
+    </div>
   );
 }
 
-function KindStatusMatrix({ data }: { data: WorkerJobsResponse }) {
-  const knownKinds = new Set<string>(Object.keys(data.counts));
-  const kindsToShow: WorkerJobKind[] = [
-    ...KIND_ORDER.filter((k) => knownKinds.has(k)),
-    ...Array.from(knownKinds).filter(
-      (k) => !KIND_ORDER.includes(k as WorkerJobKind),
-    ),
-  ];
-
-  if (kindsToShow.length === 0) {
+function JobStateCell({ job }: { job: WorkerJobSample }) {
+  if (job.is_stale) {
     return (
-      <div className="py-6 text-center text-sm text-muted-foreground">
-        No worker jobs yet. Submit a task to seed the queue.
+      <div className="min-w-48 space-y-1">
+        <div className="text-destructive text-xs font-medium">
+          Stale · heartbeat {formatAge(job.heartbeat_at)}
+        </div>
+        <div className="text-muted-foreground max-w-72 truncate text-[11px]">
+          {job.last_heartbeat_error ||
+            job.current_worker_id ||
+            "Worker stopped reporting"}
+        </div>
+      </div>
+    );
+  }
+
+  if (job.status === "FAILED") {
+    return (
+      <div className="min-w-48 space-y-1">
+        <div className="text-destructive text-xs font-medium">
+          Failed · {formatAge(job.finished_at)}
+        </div>
+        <div
+          className="text-muted-foreground max-w-72 truncate text-[11px]"
+          title={job.error_message ?? undefined}
+        >
+          {job.error_message || "No error message"}
+        </div>
+      </div>
+    );
+  }
+
+  if (job.status === "BLOCKED") {
+    return (
+      <div className="min-w-48 space-y-1">
+        <div className="text-xs font-medium text-amber-400">Blocked</div>
+        <div className="text-muted-foreground max-w-72 truncate text-[11px]">
+          {job.admission_reason || "Waiting for baseline trials"}
+        </div>
+      </div>
+    );
+  }
+
+  if (job.status === "QUEUED" || job.status === "RETRYING") {
+    const scheduled = new Date(job.available_after).getTime() > Date.now();
+    return (
+      <div className="min-w-48 space-y-1">
+        <div className="text-xs font-medium text-purple-400">
+          {scheduled
+            ? `${job.status === "RETRYING" ? "Retry" : "Scheduled"} in ${formatDelay(job.available_after)}`
+            : `${job.status === "RETRYING" ? "Retry ready" : "Ready"} · waiting ${formatAge(job.created_at).replace(" ago", "")}`}
+        </div>
+        <div className="text-muted-foreground max-w-72 truncate text-[11px]">
+          {job.admission_reason || "Waiting for a worker"}
+        </div>
       </div>
     );
   }
 
   return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead>Kind</TableHead>
-          {STATUS_COLUMNS.map((status) => (
-            <TableHead key={status} className="text-right text-[10px]">
-              {status}
-            </TableHead>
-          ))}
-          <TableHead className="text-right text-[10px]">Total</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {kindsToShow.map((kind) => {
-          const row = data.counts[kind] ?? {};
-          const total = Object.values(row).reduce<number>(
-            (sum, value) => sum + (value ?? 0),
-            0,
-          );
-          return <KindRow key={kind} kind={kind} counts={row} total={total} />;
-        })}
-      </TableBody>
-    </Table>
+    <div className="min-w-48 space-y-1">
+      <div className="text-xs font-medium text-blue-400">
+        Running
+        {job.harbor_stage ? ` · ${job.harbor_stage.replaceAll("_", " ")}` : ""}
+      </div>
+      <div className="text-muted-foreground max-w-72 truncate text-[11px]">
+        Heartbeat {formatAge(job.heartbeat_at)}
+        {job.current_worker_id ? ` · ${job.current_worker_id}` : ""}
+        {job.current_queue_slot !== null
+          ? ` · slot ${job.current_queue_slot}`
+          : ""}
+      </div>
+    </div>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Sample tables (stale RUNNING + recent failures)
-// ---------------------------------------------------------------------------
-
-function KindBadge({ kind }: { kind: WorkerJobKind }) {
-  const display = KIND_DISPLAY[kind];
-  const Icon = display?.Icon ?? Workflow;
-  const accent = display?.accent ?? "text-muted-foreground";
-  return (
-    <Badge
-      variant="outline"
-      className={`gap-1 font-mono text-[10px] ${accent}`}
-    >
-      <Icon className="h-3 w-3" />
-      {kind}
-    </Badge>
-  );
-}
-
-function SubjectCell({ sample }: { sample: WorkerJobSample }) {
-  if (!sample.subject_id) {
-    return <span className="text-muted-foreground">—</span>;
-  }
-  const href = `/tasks?query=${encodeURIComponent(sample.subject_id)}`;
-  return (
-    <Link
-      href={href}
-      className="font-mono text-[11px] text-[#5d77a5] transition-colors hover:text-[#526a95] dark:text-[#a8b8d2] dark:hover:text-[#c0cde1]"
-      title="Open matching task search"
-    >
-      <span className="text-muted-foreground">
-        {sample.subject_table ?? "?"}/
-      </span>
-      {sample.subject_id}
-    </Link>
-  );
-}
-
-function StaleRunningTable({ samples }: { samples: WorkerJobSample[] }) {
-  if (samples.length === 0) {
-    return (
-      <p className="py-3 text-xs text-muted-foreground">
-        No stale RUNNING jobs. Heartbeats are current.
-      </p>
-    );
-  }
-
-  return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead>Kind</TableHead>
-          <TableHead>Subject</TableHead>
-          <TableHead>Queue Key</TableHead>
-          <TableHead className="text-right">Attempt</TableHead>
-          <TableHead className="text-right">HB Age</TableHead>
-          <TableHead>HB Errors</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {samples.map((sample) => (
-          <TableRow key={sample.id}>
-            <TableCell>
-              <KindBadge kind={sample.kind} />
-            </TableCell>
-            <TableCell>
-              <SubjectCell sample={sample} />
-            </TableCell>
-            <TableCell>
-              <span className="inline-flex items-center gap-1.5">
-                <QueueKeyIcon queueKey={sample.queue_key} size={12} />
-                <span className="font-mono text-[11px]">
-                  {sample.queue_key}
-                </span>
-              </span>
-            </TableCell>
-            <TableCell className="text-right font-mono text-[11px]">
-              {sample.attempts}/{sample.max_attempts}
-            </TableCell>
-            <TableCell className="text-right font-mono text-[11px] text-amber-400">
-              {formatAge(sample.heartbeat_at)}
-            </TableCell>
-            <TableCell className="max-w-[280px] truncate text-[11px] text-muted-foreground">
-              {sample.heartbeat_failure_count > 0 ? (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span className="cursor-help">
-                      {sample.heartbeat_failure_count} failure
-                      {sample.heartbeat_failure_count === 1 ? "" : "s"}
-                      {sample.last_heartbeat_error
-                        ? ` · ${sample.last_heartbeat_error}`
-                        : ""}
-                    </span>
-                  </TooltipTrigger>
-                  {sample.last_heartbeat_error ? (
-                    <TooltipContent className="max-w-[480px]">
-                      {sample.last_heartbeat_error}
-                    </TooltipContent>
-                  ) : null}
-                </Tooltip>
-              ) : (
-                "—"
-              )}
-            </TableCell>
-          </TableRow>
-        ))}
-      </TableBody>
-    </Table>
-  );
-}
-
-function RecentFailuresTable({ samples }: { samples: WorkerJobSample[] }) {
-  if (samples.length === 0) {
-    return (
-      <p className="py-3 text-xs text-muted-foreground">
-        No recent failures or cancellations.
-      </p>
-    );
-  }
-
-  return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead>Kind</TableHead>
-          <TableHead>Status</TableHead>
-          <TableHead>Subject</TableHead>
-          <TableHead>Queue Key</TableHead>
-          <TableHead className="text-right">Attempt</TableHead>
-          <TableHead className="text-right">Age</TableHead>
-          <TableHead>Error</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {samples.map((sample) => (
-          <TableRow key={sample.id}>
-            <TableCell>
-              <KindBadge kind={sample.kind} />
-            </TableCell>
-            <TableCell>
-              <span
-                className={`font-mono text-[10px] ${
-                  STATUS_CELL_CLASS[sample.status] ?? "text-muted-foreground"
-                }`}
-              >
-                {sample.status}
-              </span>
-            </TableCell>
-            <TableCell>
-              <SubjectCell sample={sample} />
-            </TableCell>
-            <TableCell>
-              <span className="inline-flex items-center gap-1.5">
-                <QueueKeyIcon queueKey={sample.queue_key} size={12} />
-                <span className="font-mono text-[11px]">
-                  {sample.queue_key}
-                </span>
-              </span>
-            </TableCell>
-            <TableCell className="text-right font-mono text-[11px]">
-              {sample.attempts}/{sample.max_attempts}
-            </TableCell>
-            <TableCell className="text-right font-mono text-[11px] text-muted-foreground">
-              {formatAge(sample.finished_at)}
-            </TableCell>
-            <TableCell className="max-w-[360px] truncate text-[11px] text-muted-foreground">
-              {sample.error_message ? (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span className="cursor-help">{sample.error_message}</span>
-                  </TooltipTrigger>
-                  <TooltipContent className="max-w-[520px]">
-                    {sample.error_message}
-                  </TooltipContent>
-                </Tooltip>
-              ) : (
-                "—"
-              )}
-            </TableCell>
-          </TableRow>
-        ))}
-      </TableBody>
-    </Table>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Duration percentiles
-// ---------------------------------------------------------------------------
-
-function DurationsTable({
-  durations,
-}: {
-  durations: WorkerJobsResponse["durations_last_hour"];
-}) {
-  if (durations.length === 0) {
-    return (
-      <p className="py-3 text-xs text-muted-foreground">
-        No completed jobs in the last hour with enough samples for percentiles.
-      </p>
-    );
-  }
-
-  return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead>Kind</TableHead>
-          <TableHead>Queue Key</TableHead>
-          <TableHead className="text-right">Samples</TableHead>
-          <TableHead className="text-right">p50</TableHead>
-          <TableHead className="text-right">p95</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {durations.map((row) => (
-          <TableRow key={`${row.kind}-${row.queue_key}`}>
-            <TableCell>
-              <KindBadge kind={row.kind} />
-            </TableCell>
-            <TableCell>
-              <span className="inline-flex items-center gap-1.5">
-                <QueueKeyIcon queueKey={row.queue_key} size={12} />
-                <span className="font-mono text-[11px]">{row.queue_key}</span>
-              </span>
-            </TableCell>
-            <TableCell className="text-right font-mono text-[11px]">
-              {row.sample_count}
-            </TableCell>
-            <TableCell className="text-right font-mono text-[11px]">
-              {formatSeconds(row.p50_seconds)}
-            </TableCell>
-            <TableCell className="text-right font-mono text-[11px]">
-              {formatSeconds(row.p95_seconds)}
-            </TableCell>
-          </TableRow>
-        ))}
-      </TableBody>
-    </Table>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Top-level card
-// ---------------------------------------------------------------------------
 
 export function WorkerJobsCard() {
-  const [kindFilter, setKindFilter] = useState("");
-
+  const [view, setView] = useState<"active" | "attention">("active");
+  const [query, setQuery] = useState("");
   const { data, error, isLoading, mutate } = useSWR<WorkerJobsResponse>(
     "/api/admin/worker-jobs",
     fetcher,
-    { refreshInterval: 10000 },
+    { refreshInterval: 10000 }
   );
 
-  const filterNeedle = kindFilter.trim().toLowerCase();
-  const filteredStale = useMemo(() => {
-    if (!data) return [];
-    if (!filterNeedle) return data.stale_running;
-    return data.stale_running.filter(
-      (sample) =>
-        sample.kind.toLowerCase().includes(filterNeedle) ||
-        sample.queue_key.toLowerCase().includes(filterNeedle) ||
-        (sample.subject_id ?? "").toLowerCase().includes(filterNeedle),
-    );
-  }, [data, filterNeedle]);
-  const filteredFailures = useMemo(() => {
-    if (!data) return [];
-    if (!filterNeedle) return data.recent_failures;
-    return data.recent_failures.filter(
-      (sample) =>
-        sample.kind.toLowerCase().includes(filterNeedle) ||
-        sample.queue_key.toLowerCase().includes(filterNeedle) ||
-        (sample.subject_id ?? "").toLowerCase().includes(filterNeedle),
-    );
-  }, [data, filterNeedle]);
-  const filteredDurations = useMemo(() => {
-    if (!data) return [];
-    if (!filterNeedle) return data.durations_last_hour;
-    return data.durations_last_hour.filter(
-      (row) =>
-        row.kind.toLowerCase().includes(filterNeedle) ||
-        row.queue_key.toLowerCase().includes(filterNeedle),
-    );
-  }, [data, filterNeedle]);
-
-  const totalsByStatus = useMemo(() => {
-    if (!data) return null;
-    const totals: Record<string, number> = {};
-    for (const kind of Object.keys(data.counts)) {
-      const row = data.counts[kind as WorkerJobKind] ?? {};
-      for (const status of Object.keys(row)) {
-        totals[status] =
-          (totals[status] ?? 0) + (row[status as WorkerJobStatus] ?? 0);
-      }
-    }
-    return totals;
-  }, [data]);
+  const summary = data?.summary;
+  const activeCount = summary
+    ? summary.running + summary.ready + summary.scheduled + summary.blocked
+    : 0;
+  const attentionCount = summary
+    ? summary.stale +
+      summary.blocked +
+      summary.failed_last_hour +
+      (data?.pipeline_issue_count ?? 0)
+    : 0;
+  const needle = query.trim().toLowerCase();
+  const jobs = (data?.jobs ?? []).filter((job) => {
+    const belongsInView =
+      view === "active"
+        ? job.status !== "FAILED"
+        : job.is_stale || job.status === "BLOCKED" || job.status === "FAILED";
+    if (!belongsInView) return false;
+    if (!needle) return true;
+    return [
+      job.kind,
+      job.trial_id,
+      job.task_id,
+      job.task_name,
+      job.experiment_id,
+      job.experiment_name,
+      job.agent,
+      job.model,
+      job.queue_key,
+      job.harbor_stage,
+      job.admission_reason,
+      job.error_message,
+    ].some((value) => value?.toLowerCase().includes(needle));
+  });
 
   return (
     <Card>
       <CardHeader>
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <Workflow className="h-5 w-5" />
-            <CardTitle className="text-base">Worker Jobs</CardTitle>
-            {totalsByStatus && (
-              <div className="flex flex-wrap gap-1">
-                {STATUS_COLUMNS.filter(
-                  (status) => (totalsByStatus[status] ?? 0) > 0,
-                ).map((status) => (
-                  <Badge
-                    key={status}
-                    variant="outline"
-                    className={`text-[10px] ${STATUS_CELL_CLASS[status]}`}
-                  >
-                    {status.toLowerCase()} {totalsByStatus[status]}
-                  </Badge>
-                ))}
-              </div>
-            )}
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <Workflow className="h-5 w-5" />
+              <CardTitle className="text-base">Worker Jobs</CardTitle>
+            </div>
+            <p className="text-muted-foreground mt-1 text-xs">
+              What is running, what is waiting, and what needs attention.
+            </p>
           </div>
           <div className="flex items-center gap-2">
             {data && (
-              <span className="text-[10px] text-muted-foreground">
+              <span className="text-muted-foreground text-[10px]">
                 Updated {new Date(data.timestamp).toLocaleTimeString()}
               </span>
             )}
@@ -584,12 +239,6 @@ export function WorkerJobsCard() {
             </Button>
           </div>
         </div>
-        <p className="text-xs text-muted-foreground">
-          Every trial runs as its own queued worker job, and each task&apos;s
-          trajectory QA (classification + verdict) runs as one task-level job.
-          Counts below are live from the unified{" "}
-          <span className="font-mono">worker_jobs</span> table.
-        </p>
       </CardHeader>
       <CardContent className="space-y-5">
         {error ? (
@@ -599,52 +248,190 @@ export function WorkerJobsCard() {
             <AlertDescription>
               {error instanceof Error
                 ? error.message
-                : "Check if you have admin access."}
+                : "Check your admin access."}
             </AlertDescription>
           </Alert>
-        ) : !data ? (
+        ) : !data || !summary ? (
           <p className="text-muted-foreground">Loading...</p>
         ) : (
-          <TooltipProvider delayDuration={150}>
-            <Input
-              value={kindFilter}
-              onChange={(event) => setKindFilter(event.target.value)}
-              placeholder="Filter by kind, queue key, or subject id..."
-              className="h-8 text-xs"
-            />
-
-            <section className="space-y-2">
-              <h3 className="text-sm font-medium">Counts by kind × status</h3>
-              <KindStatusMatrix data={data} />
-            </section>
-
-            <section className="space-y-2">
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm font-medium">Stale RUNNING</h3>
-                <span className="text-[11px] text-muted-foreground">
-                  Heartbeat older than {data.stale_after_minutes} minutes
-                </span>
+          <>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div className="rounded-lg border p-3">
+                <div className="text-muted-foreground flex items-center gap-1.5 text-[11px] uppercase">
+                  <Activity className="h-3.5 w-3.5" /> Running
+                </div>
+                <div className="mt-1 text-2xl font-semibold">
+                  {summary.running}
+                </div>
+                <div className="text-muted-foreground mt-1 text-[11px]">
+                  {summary.by_kind
+                    .filter((row) => row.running > 0)
+                    .map(
+                      (row) =>
+                        `${row.running} ${kindLabel(row.kind).toLowerCase()}`
+                    )
+                    .join(" · ") || "No jobs running"}
+                </div>
               </div>
-              <StaleRunningTable samples={filteredStale} />
-            </section>
-
-            <section className="space-y-2">
-              <h3 className="text-sm font-medium">Recent failures & cancels</h3>
-              <RecentFailuresTable samples={filteredFailures} />
-            </section>
-
-            <section className="space-y-2">
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm font-medium">
-                  Duration percentiles (last hour)
-                </h3>
-                <span className="text-[11px] text-muted-foreground">
-                  claimed_at → finished_at, grouped by kind × queue_key
-                </span>
+              <div className="rounded-lg border p-3">
+                <div className="text-muted-foreground flex items-center gap-1.5 text-[11px] uppercase">
+                  <Clock3 className="h-3.5 w-3.5" /> Waiting
+                </div>
+                <div className="mt-1 text-2xl font-semibold">
+                  {summary.ready + summary.scheduled + summary.blocked}
+                </div>
+                <div className="text-muted-foreground mt-1 text-[11px]">
+                  {summary.ready} ready · {summary.scheduled} scheduled ·{" "}
+                  {summary.blocked} blocked
+                </div>
               </div>
-              <DurationsTable durations={filteredDurations} />
-            </section>
-          </TooltipProvider>
+              <div
+                className={`rounded-lg border p-3 ${
+                  attentionCount > 0 ? "border-amber-400/50" : ""
+                }`}
+              >
+                <div className="text-muted-foreground flex items-center gap-1.5 text-[11px] uppercase">
+                  <AlertCircle className="h-3.5 w-3.5" /> Needs attention
+                </div>
+                <div className="mt-1 text-2xl font-semibold">
+                  {attentionCount}
+                </div>
+                <div className="text-muted-foreground mt-1 text-[11px]">
+                  {summary.stale} stale · {summary.blocked} blocked ·{" "}
+                  {summary.failed_last_hour} failed in 1h ·{" "}
+                  {data.pipeline_issue_count} stuck tasks
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant={view === "active" ? "default" : "outline"}
+                size="sm"
+                className="h-8"
+                onClick={() => setView("active")}
+              >
+                Active {activeCount}
+              </Button>
+              <Button
+                variant={view === "attention" ? "default" : "outline"}
+                size="sm"
+                className="h-8"
+                onClick={() => setView("attention")}
+              >
+                Attention {attentionCount}
+              </Button>
+              <Input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search task, experiment, model, agent, or queue..."
+                className="h-8 min-w-64 flex-1 text-xs"
+              />
+            </div>
+
+            {view === "attention" && data.pipeline_issues.length > 0 && (
+              <Alert>
+                <AlertCircle className="h-4 w-4" />
+                <AlertTitle>
+                  {data.pipeline_issue_count} active task
+                  {data.pipeline_issue_count === 1 ? "" : "s"} without active
+                  work
+                </AlertTitle>
+                <AlertDescription className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
+                  {data.pipeline_issues.map((issue) => (
+                    <Link
+                      key={issue.task_id}
+                      href={`/tasks/${encodeURIComponent(issue.task_id)}`}
+                      className="underline underline-offset-2"
+                    >
+                      {issue.task_name} · {issue.status.toLowerCase()}
+                    </Link>
+                  ))}
+                </AlertDescription>
+              </Alert>
+            )}
+
+            <div className="overflow-x-auto">
+              <Table className="min-w-[980px]">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Run</TableHead>
+                    <TableHead>Task / experiment</TableHead>
+                    <TableHead>State</TableHead>
+                    <TableHead>Queue</TableHead>
+                    <TableHead className="text-right">Attempt</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {jobs.map((job) => (
+                    <TableRow key={job.id}>
+                      <TableCell>
+                        <RunIdentityCell job={job} />
+                      </TableCell>
+                      <TableCell>
+                        <div className="min-w-48 space-y-1 text-xs">
+                          {job.task_id ? (
+                            <Link
+                              href={`/tasks/${encodeURIComponent(job.task_id)}`}
+                              className="font-medium hover:underline"
+                            >
+                              {job.task_name || job.task_id}
+                            </Link>
+                          ) : (
+                            <span className="text-muted-foreground">
+                              No task
+                            </span>
+                          )}
+                          {job.experiment_id && (
+                            <div>
+                              <Link
+                                href={`/experiments/${encodeExperimentRouteParam(
+                                  job.experiment_id
+                                )}`}
+                                className="text-muted-foreground hover:underline"
+                              >
+                                {job.experiment_name || job.experiment_id}
+                              </Link>
+                            </div>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <JobStateCell job={job} />
+                      </TableCell>
+                      <TableCell>
+                        <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+                          <QueueKeyIcon queueKey={job.queue_key} size={12} />
+                          <span className="font-mono text-[11px]">
+                            {job.queue_key}
+                          </span>
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-right font-mono text-[11px]">
+                        {job.attempts}/{job.max_attempts}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+
+            {jobs.length === 0 && (
+              <p className="text-muted-foreground py-5 text-center text-sm">
+                {query
+                  ? "No jobs match this search."
+                  : view === "active"
+                    ? "No active jobs."
+                    : "Nothing needs attention."}
+              </p>
+            )}
+            {data.truncated && (
+              <p className="text-muted-foreground text-xs">
+                Showing the {data.jobs.length} highest-priority jobs of{" "}
+                {data.total_jobs}; exact totals above include every job.
+              </p>
+            )}
+          </>
         )}
       </CardContent>
     </Card>

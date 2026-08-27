@@ -417,6 +417,12 @@ that capability through `GET /admin/operator-access` and hides those controls
 for other orgs. `GET /admin/concurrency` reports the deploy, database override,
 deprecated-controller advisory, and actual effective limit for one canonical
 queue key; `PUT /admin/concurrency` sets or clears the database override.
+`GET /admin/worker-jobs` is the organization-scoped operational snapshot for
+the Worker Jobs tab. It counts only active scheduler kinds plus failures from
+the last hour, maps `TRIAL` jobs through `trials.kind`, and joins trials, tasks,
+and experiments only for display context. Scheduling status, heartbeat,
+admission reason, and worker ownership must continue to come from
+`worker_jobs`; domain tables do not reconstruct them.
 
 Admin cost exclusions (`oddish/core/cost_exclusions.py`) name spend that was
 never really paid for, along three axes: a **model** (`cost_excluded_models`,

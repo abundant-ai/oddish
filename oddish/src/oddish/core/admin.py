@@ -109,6 +109,7 @@ class OrphanedTrialSample(BaseModel):
 
 class OrphanedTaskSample(BaseModel):
     task_id: str
+    task_name: str
     status: str
     run_analysis: bool
     verdict_status: str | None
@@ -132,12 +133,28 @@ class OrphanedStateResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # worker_jobs admin
 #
-# Surfaces the unified queue table as a first-class admin view so
-# analysis/verdict look like their own "agent jobs" rather than sidecar
-# metadata on trials/tasks. Everything below reads from worker_jobs
-# only; it joins to domain tables only to display context (never to
-# reconstruct scheduling state).
+# Scheduler counts and state come from worker_jobs. Trial, task, and experiment
+# joins supply display context; the separate pipeline-issue query reads task
+# domain state to find tasks that should have active work but do not.
 # ---------------------------------------------------------------------------
+
+
+class WorkerJobKindSummary(BaseModel):
+    kind: str
+    running: int
+    ready: int
+    scheduled: int
+    blocked: int
+
+
+class WorkerJobsSummary(BaseModel):
+    running: int
+    ready: int
+    scheduled: int
+    blocked: int
+    stale: int
+    failed_last_hour: int
+    by_kind: list[WorkerJobKindSummary]
 
 
 class WorkerJobSample(BaseModel):
@@ -145,43 +162,51 @@ class WorkerJobSample(BaseModel):
     kind: str
     status: str
     queue_key: str
-    subject_table: str | None
-    subject_id: str | None
+    trial_id: str | None
+    task_id: str | None
+    task_name: str | None
+    experiment_id: str | None
+    experiment_name: str | None
+    agent: str | None
+    model: str | None
+    harbor_stage: str | None
     attempts: int
     max_attempts: int
+    created_at: datetime
+    available_after: datetime
     claimed_at: datetime | None
     heartbeat_at: datetime | None
-    stale_reaped_at: datetime | None
     finished_at: datetime | None
+    admission_reason: str | None
     error_message: str | None
     heartbeat_failure_count: int
     last_heartbeat_error: str | None
     current_worker_id: str | None
-    org_id: str | None
-
-
-class WorkerJobDurationStat(BaseModel):
-    kind: str
-    queue_key: str
-    sample_count: int
-    p50_seconds: float
-    p95_seconds: float
+    current_queue_slot: int | None
+    is_stale: bool
 
 
 class WorkerJobsResponse(BaseModel):
-    """Per-kind × status counts + recent stale/failed samples.
+    """Current execution work and recent failures with domain context."""
 
-    Counts are a dict-of-dicts so the frontend can iterate without
-    knowing the enum values in advance -- new kinds automatically show
-    up once they start producing rows.
-    """
-
-    counts: dict[str, dict[str, int]]
-    stale_running: list[WorkerJobSample]
-    recent_failures: list[WorkerJobSample]
-    durations_last_hour: list[WorkerJobDurationStat]
+    summary: WorkerJobsSummary
+    jobs: list[WorkerJobSample]
+    pipeline_issue_count: int
+    pipeline_issues: list[OrphanedTaskSample]
+    total_jobs: int
+    truncated: bool
     stale_after_minutes: int
     timestamp: str
+
+
+_EFFECTIVE_WORKER_KIND_SQL = """
+    CASE
+        WHEN wj.kind::text = 'TRIAL' THEN COALESCE(tr.kind, 'trial')
+        WHEN wj.kind::text = 'TASK_EXPAND' THEN 'task_expand'
+        WHEN wj.kind::text = 'TAG_PROJECT' THEN 'tag_project'
+        ELSE lower(wj.kind::text)
+    END
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +283,8 @@ async def get_queue_status_core(
                     CASE
                         WHEN wj.kind::text = 'TRIAL' AND tr.kind = 'qa'
                             THEN 'QA'
+                        WHEN wj.kind::text = 'TRIAL' AND tr.kind = 'qa_eval'
+                            THEN 'QA_EVAL'
                         WHEN wj.kind::text = 'TRIAL' AND tr.kind = 'audit'
                             THEN 'AUDIT'
                         WHEN wj.kind::text = 'TRIAL' AND tr.kind = 'summarize'
@@ -304,14 +331,12 @@ async def get_queue_status_core(
             # The task-level QA trial (classification + verdict).
             verdict_queued += queued
             verdict_running += running
-        elif kind in {"AUDIT", "SUMMARIZE"}:
-            # Pre-trial audits and requested trajectory summaries fill the
-            # legacy analysis slots.
+        elif kind in {"AUDIT", "QA_EVAL", "SUMMARIZE"}:
+            # Analysis-agent trials fill the legacy analysis slots.
             analysis_queued += queued
             analysis_running += running
-        # Unknown kinds silently ignored by this endpoint; the
-        # ``WorkerJobsCard`` admin panel surfaces them in the
-        # kind-agnostic matrix instead.
+        # Unknown kinds are still returned in ``queues``; only the legacy
+        # aggregate fields ignore them.
 
     return QueueStatusResponse(
         queues=queues,
@@ -321,6 +346,76 @@ async def get_queue_status_core(
         verdict_queued=verdict_queued,
         verdict_running=verdict_running,
         timestamp=now.isoformat(),
+    )
+
+
+async def _get_pipeline_issues(
+    session: AsyncSession,
+    *,
+    org_id: str | None,
+    limit: int = 20,
+) -> tuple[int, list[OrphanedTaskSample]]:
+    """Return tasks whose domain state says work should exist, but none does."""
+    rows = (
+        await session.execute(
+            text(
+                """
+                SELECT
+                    t.id AS task_id,
+                    t.name AS task_name,
+                    t.status::text AS status,
+                    t.run_analysis,
+                    t.verdict_status::text AS verdict_status,
+                    'active_task_without_active_trials'::text AS issue,
+                    t.updated_at,
+                    COUNT(*) OVER () AS total_count
+                FROM tasks t
+                WHERE t.deleted_at IS NULL
+                  AND (CAST(:org_id AS TEXT) IS NULL OR t.org_id = CAST(:org_id AS TEXT))
+                  AND (
+                    (
+                        t.status = 'RUNNING'
+                        AND NOT EXISTS (
+                            SELECT 1 FROM trials tr
+                            WHERE tr.task_id = t.id
+                              AND tr.deleted_at IS NULL
+                              AND tr.status IN ('QUEUED', 'RUNNING', 'PAUSED', 'RETRYING')
+                        )
+                    ) OR (
+                        t.status = 'ANALYZING'
+                        AND NOT EXISTS (
+                            SELECT 1 FROM trials tr
+                            WHERE tr.task_id = t.id
+                              AND tr.deleted_at IS NULL
+                              AND tr.analysis_status IN ('PENDING', 'QUEUED', 'RUNNING')
+                        )
+                    ) OR (
+                        t.status = 'VERDICT_PENDING'
+                        AND (t.verdict_status IS NULL
+                             OR t.verdict_status::text NOT IN ('QUEUED', 'RUNNING'))
+                    )
+                  )
+                ORDER BY t.updated_at ASC NULLS FIRST
+                LIMIT :limit
+                """
+            ),
+            {"org_id": org_id, "limit": limit},
+        )
+    ).all()
+    return (
+        int(rows[0].total_count or 0) if rows else 0,
+        [
+            OrphanedTaskSample(
+                task_id=row.task_id,
+                task_name=row.task_name,
+                status=row.status,
+                run_analysis=bool(row.run_analysis),
+                verdict_status=row.verdict_status,
+                issue=row.issue,
+                updated_at=row.updated_at,
+            )
+            for row in rows
+        ],
     )
 
 
@@ -343,51 +438,19 @@ async def get_orphaned_state_core(
     """
     now = utcnow()
 
-    counts_row = (
+    stale_count_row = (
         await session.execute(
             text(
                 """
-                SELECT
-                    (
-                        SELECT COUNT(*)
-                        FROM worker_jobs wj
-                        WHERE wj.kind::text = 'TRIAL'
-                          AND wj.status::text = 'RUNNING'
-                          AND (CAST(:org_id AS TEXT) IS NULL OR wj.org_id = CAST(:org_id AS TEXT))
-                          AND (
-                              wj.heartbeat_at IS NULL
-                              OR wj.heartbeat_at < NOW() - make_interval(mins => :stale_after_minutes)
-                          )
-                    ) AS running_stale_heartbeat,
-                    (
-                        SELECT COUNT(*)
-                        FROM tasks t
-                        WHERE t.deleted_at IS NULL
-                          AND (CAST(:org_id AS TEXT) IS NULL OR t.org_id = CAST(:org_id AS TEXT))
-                          AND (
-                            (
-                                t.status = 'RUNNING'
-                                AND NOT EXISTS (
-                                    SELECT 1 FROM trials tr
-                                    WHERE tr.task_id = t.id
-                                      AND tr.deleted_at IS NULL
-                                      AND tr.status IN ('QUEUED', 'RUNNING', 'PAUSED', 'RETRYING')
-                                )
-                            ) OR (
-                                t.status = 'ANALYZING'
-                                AND NOT EXISTS (
-                                    SELECT 1 FROM trials tr
-                                    WHERE tr.task_id = t.id
-                                      AND tr.deleted_at IS NULL
-                                      AND tr.analysis_status IN ('PENDING', 'QUEUED', 'RUNNING')
-                                )
-                            ) OR (
-                                t.status = 'VERDICT_PENDING'
-                                AND (t.verdict_status IS NULL
-                                     OR t.verdict_status::text NOT IN ('QUEUED', 'RUNNING'))
-                            )
-                          )
-                    ) AS active_tasks_without_active_trials
+                SELECT COUNT(*) AS running_stale_heartbeat
+                FROM worker_jobs wj
+                WHERE wj.kind::text = 'TRIAL'
+                  AND wj.status::text = 'RUNNING'
+                  AND (CAST(:org_id AS TEXT) IS NULL OR wj.org_id = CAST(:org_id AS TEXT))
+                  AND (
+                      wj.heartbeat_at IS NULL
+                      OR wj.heartbeat_at < NOW() - make_interval(mins => :stale_after_minutes)
+                  )
                 """
             ),
             {"stale_after_minutes": stale_after_minutes, "org_id": org_id},
@@ -431,57 +494,14 @@ async def get_orphaned_state_core(
         )
     ).all()
 
-    task_rows = (
-        await session.execute(
-            text(
-                """
-                SELECT
-                    t.id AS task_id,
-                    t.status::text AS status,
-                    t.run_analysis,
-                    t.verdict_status::text AS verdict_status,
-                    'active_task_without_active_trials'::text AS issue,
-                    t.updated_at
-                FROM tasks t
-                WHERE t.deleted_at IS NULL
-                  AND (CAST(:org_id AS TEXT) IS NULL OR t.org_id = CAST(:org_id AS TEXT))
-                  AND (
-                    (
-                        t.status = 'RUNNING'
-                        AND NOT EXISTS (
-                            SELECT 1 FROM trials tr
-                            WHERE tr.task_id = t.id
-                              AND tr.deleted_at IS NULL
-                              AND tr.status IN ('QUEUED', 'RUNNING', 'PAUSED', 'RETRYING')
-                        )
-                    ) OR (
-                        t.status = 'ANALYZING'
-                        AND NOT EXISTS (
-                            SELECT 1 FROM trials tr
-                            WHERE tr.task_id = t.id
-                              AND tr.deleted_at IS NULL
-                              AND tr.analysis_status IN ('PENDING', 'QUEUED', 'RUNNING')
-                        )
-                    ) OR (
-                        t.status = 'VERDICT_PENDING'
-                        AND (t.verdict_status IS NULL
-                             OR t.verdict_status::text NOT IN ('QUEUED', 'RUNNING'))
-                    )
-                  )
-                ORDER BY t.updated_at ASC NULLS FIRST
-                LIMIT 20
-                """
-            ),
-            {"org_id": org_id},
-        )
-    ).all()
+    pipeline_issue_count, pipeline_issues = await _get_pipeline_issues(
+        session, org_id=org_id
+    )
 
     return OrphanedStateResponse(
         counts=OrphanedStateCounts(
-            running_stale_heartbeat=int(counts_row.running_stale_heartbeat or 0),
-            active_tasks_without_active_trials=int(
-                counts_row.active_tasks_without_active_trials or 0
-            ),
+            running_stale_heartbeat=int(stale_count_row.running_stale_heartbeat or 0),
+            active_tasks_without_active_trials=pipeline_issue_count,
         ),
         trial_samples=[
             OrphanedTrialSample(
@@ -499,17 +519,7 @@ async def get_orphaned_state_core(
             )
             for row in trial_rows
         ],
-        task_samples=[
-            OrphanedTaskSample(
-                task_id=row.task_id,
-                status=row.status,
-                run_analysis=bool(row.run_analysis),
-                verdict_status=row.verdict_status,
-                issue=row.issue,
-                updated_at=row.updated_at,
-            )
-            for row in task_rows
-        ],
+        task_samples=pipeline_issues,
         stale_after_minutes=stale_after_minutes,
         timestamp=now.isoformat(),
     )
@@ -519,186 +529,228 @@ async def get_worker_jobs_admin_core(
     session: AsyncSession,
     *,
     stale_after_minutes: int = 15,
-    sample_limit: int = 25,
+    sample_limit: int = 200,
     org_id: str | None = None,
 ) -> WorkerJobsResponse:
-    """Summarize the unified ``worker_jobs`` table for the admin page.
-
-    Returns a matrix of ``{kind: {status: count}}`` plus recent
-    diagnostic samples: RUNNING rows with a stale heartbeat, the most
-    recently FAILED rows, and per-kind × queue_key duration
-    percentiles over the last hour. Everything is derived from
-    ``worker_jobs`` alone -- domain tables are not involved.
-    """
+    """Return current work and recent failures with trial/task context."""
     now = utcnow()
+    active_kinds = [kind.value for kind in ACTIVE_WORKER_JOB_KINDS]
 
-    # -- counts matrix -----------------------------------------------------
-    count_rows = (
+    summary_rows = (
         await session.execute(
             text(
-                """
-                SELECT kind::text AS kind,
-                       status::text AS status,
-                       COUNT(*) AS n
-                FROM   worker_jobs
-                WHERE  (CAST(:org_id AS TEXT) IS NULL OR org_id = CAST(:org_id AS TEXT))
-                GROUP  BY kind, status
-                """
-            ),
-            {"org_id": org_id},
-        )
-    ).all()
-    counts: dict[str, dict[str, int]] = {}
-    for row in count_rows:
-        counts.setdefault(row.kind, {})[row.status] = int(row.n or 0)
-
-    # -- stale RUNNING -----------------------------------------------------
-    stale_running_rows = (
-        await session.execute(
-            text(
-                """
-                SELECT id,
-                       kind::text AS kind,
-                       status::text AS status,
-                       queue_key,
-                       subject_table,
-                       subject_id,
-                       attempts,
-                       max_attempts,
-                       claimed_at,
-                       heartbeat_at,
-                       stale_reaped_at,
-                       finished_at,
-                       error_message,
-                       heartbeat_failure_count,
-                       last_heartbeat_error,
-                       current_worker_id,
-                       org_id
-                FROM   worker_jobs
-                WHERE  status::text = 'RUNNING'
-                  AND  (CAST(:org_id AS TEXT) IS NULL OR org_id = CAST(:org_id AS TEXT))
-                  AND  (
-                      heartbeat_at IS NULL
-                      OR heartbeat_at < NOW() - make_interval(mins => :stale_after_minutes)
-                  )
-                ORDER  BY heartbeat_at ASC NULLS FIRST
-                LIMIT  :sample_limit
+                f"""
+                WITH effective_jobs AS (
+                    SELECT {_EFFECTIVE_WORKER_KIND_SQL} AS kind,
+                           wj.status::text AS status,
+                           wj.available_after,
+                           wj.heartbeat_at,
+                           wj.finished_at
+                    FROM worker_jobs wj
+                    LEFT JOIN trials tr
+                      ON wj.kind::text = 'TRIAL'
+                     AND wj.subject_table = 'trials'
+                     AND tr.id = wj.subject_id
+                     AND tr.deleted_at IS NULL
+                    WHERE wj.kind::text = ANY(CAST(:active_kinds AS TEXT[]))
+                      AND (CAST(:org_id AS TEXT) IS NULL OR wj.org_id = CAST(:org_id AS TEXT))
+                      AND (
+                           wj.status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+                        OR (wj.status::text = 'FAILED'
+                            AND wj.finished_at >= NOW() - INTERVAL '1 hour')
+                      )
+                )
+                SELECT kind,
+                       COUNT(*) FILTER (WHERE status = 'RUNNING') AS running,
+                       COUNT(*) FILTER (
+                           WHERE status IN ('QUEUED', 'RETRYING')
+                             AND available_after <= NOW()
+                       ) AS ready,
+                       COUNT(*) FILTER (
+                           WHERE status IN ('QUEUED', 'RETRYING')
+                             AND available_after > NOW()
+                       ) AS scheduled,
+                       COUNT(*) FILTER (WHERE status = 'BLOCKED') AS blocked,
+                       COUNT(*) FILTER (
+                           WHERE status = 'RUNNING'
+                             AND (
+                                 heartbeat_at IS NULL
+                                 OR heartbeat_at < NOW() - make_interval(mins => :stale_after_minutes)
+                             )
+                       ) AS stale,
+                       COUNT(*) FILTER (WHERE status = 'FAILED') AS failed_last_hour
+                FROM effective_jobs
+                GROUP BY kind
                 """
             ),
             {
-                "stale_after_minutes": stale_after_minutes,
-                "sample_limit": sample_limit,
+                "active_kinds": active_kinds,
                 "org_id": org_id,
+                "stale_after_minutes": stale_after_minutes,
+            },
+        )
+    ).all()
+    kind_order = {
+        "agent": 0,
+        "qa": 1,
+        "qa_eval": 2,
+        "audit": 3,
+        "summarize": 4,
+        "task_expand": 5,
+        "tag_project": 6,
+    }
+    by_kind = sorted(
+        [
+            WorkerJobKindSummary(
+                kind=row.kind,
+                running=int(row.running or 0),
+                ready=int(row.ready or 0),
+                scheduled=int(row.scheduled or 0),
+                blocked=int(row.blocked or 0),
+            )
+            for row in summary_rows
+        ],
+        key=lambda row: (kind_order.get(row.kind, 99), row.kind),
+    )
+    summary = WorkerJobsSummary(
+        running=sum(int(row.running or 0) for row in summary_rows),
+        ready=sum(int(row.ready or 0) for row in summary_rows),
+        scheduled=sum(int(row.scheduled or 0) for row in summary_rows),
+        blocked=sum(int(row.blocked or 0) for row in summary_rows),
+        stale=sum(int(row.stale or 0) for row in summary_rows),
+        failed_last_hour=sum(int(row.failed_last_hour or 0) for row in summary_rows),
+        by_kind=by_kind,
+    )
+
+    job_rows = (
+        await session.execute(
+            text(
+                f"""
+                SELECT wj.id,
+                       {_EFFECTIVE_WORKER_KIND_SQL} AS kind,
+                       wj.status::text AS status,
+                       wj.queue_key,
+                       tr.id AS trial_id,
+                       task.id AS task_id,
+                       task.name AS task_name,
+                       experiment.id AS experiment_id,
+                       experiment.name AS experiment_name,
+                       tr.agent,
+                       tr.model,
+                       tr.harbor_stage,
+                       wj.attempts,
+                       wj.max_attempts,
+                       wj.created_at,
+                       wj.available_after,
+                       wj.claimed_at,
+                       wj.heartbeat_at,
+                       wj.finished_at,
+                       wj.admission_reason,
+                       wj.error_message,
+                       wj.heartbeat_failure_count,
+                       wj.last_heartbeat_error,
+                       wj.current_worker_id,
+                       wj.current_queue_slot,
+                       (
+                           wj.status::text = 'RUNNING'
+                           AND (
+                               wj.heartbeat_at IS NULL
+                               OR wj.heartbeat_at < NOW() - make_interval(mins => :stale_after_minutes)
+                           )
+                       ) AS is_stale,
+                       COUNT(*) OVER () AS total_jobs
+                FROM worker_jobs wj
+                LEFT JOIN trials tr
+                  ON wj.kind::text = 'TRIAL'
+                 AND wj.subject_table = 'trials'
+                 AND tr.id = wj.subject_id
+                 AND tr.deleted_at IS NULL
+                LEFT JOIN tasks task
+                  ON task.id = COALESCE(
+                       tr.task_id,
+                       CASE WHEN wj.subject_table = 'tasks' THEN wj.subject_id END
+                     )
+                 AND task.deleted_at IS NULL
+                LEFT JOIN experiments experiment
+                  ON experiment.id = tr.experiment_id
+                 AND experiment.deleted_at IS NULL
+                WHERE wj.kind::text = ANY(CAST(:active_kinds AS TEXT[]))
+                  AND (CAST(:org_id AS TEXT) IS NULL OR wj.org_id = CAST(:org_id AS TEXT))
+                  AND (
+                       wj.status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+                    OR (wj.status::text = 'FAILED'
+                        AND wj.finished_at >= NOW() - INTERVAL '1 hour')
+                  )
+                ORDER BY
+                    CASE
+                        WHEN wj.status::text = 'RUNNING'
+                         AND (
+                             wj.heartbeat_at IS NULL
+                             OR wj.heartbeat_at < NOW() - make_interval(mins => :stale_after_minutes)
+                         ) THEN 0
+                        WHEN wj.status::text = 'BLOCKED' THEN 1
+                        WHEN wj.status::text = 'FAILED' THEN 2
+                        WHEN wj.status::text = 'RUNNING' THEN 3
+                        WHEN wj.status::text = 'RETRYING' THEN 4
+                        ELSE 5
+                    END,
+                    CASE WHEN wj.status::text = 'FAILED' THEN wj.finished_at END DESC NULLS LAST,
+                    wj.created_at ASC
+                LIMIT :sample_limit
+                """
+            ),
+            {
+                "active_kinds": active_kinds,
+                "org_id": org_id,
+                "sample_limit": sample_limit,
+                "stale_after_minutes": stale_after_minutes,
             },
         )
     ).all()
 
-    # -- recent failures ---------------------------------------------------
-    recent_failure_rows = (
-        await session.execute(
-            text(
-                """
-                SELECT id,
-                       kind::text AS kind,
-                       status::text AS status,
-                       queue_key,
-                       subject_table,
-                       subject_id,
-                       attempts,
-                       max_attempts,
-                       claimed_at,
-                       heartbeat_at,
-                       stale_reaped_at,
-                       finished_at,
-                       error_message,
-                       heartbeat_failure_count,
-                       last_heartbeat_error,
-                       current_worker_id,
-                       org_id
-                FROM   worker_jobs
-                WHERE  status::text IN ('FAILED', 'CANCELLED')
-                  AND  (CAST(:org_id AS TEXT) IS NULL OR org_id = CAST(:org_id AS TEXT))
-                ORDER  BY finished_at DESC NULLS LAST
-                LIMIT  :sample_limit
-                """
-            ),
-            {"sample_limit": sample_limit, "org_id": org_id},
-        )
-    ).all()
-
-    def _sample(row) -> WorkerJobSample:
-        return WorkerJobSample(
+    jobs = [
+        WorkerJobSample(
             id=row.id,
             kind=row.kind,
             status=row.status,
             queue_key=settings.normalize_queue_key(row.queue_key),
-            subject_table=row.subject_table,
-            subject_id=row.subject_id,
+            trial_id=row.trial_id,
+            task_id=row.task_id,
+            task_name=row.task_name,
+            experiment_id=row.experiment_id,
+            experiment_name=row.experiment_name,
+            agent=row.agent,
+            model=row.model,
+            harbor_stage=row.harbor_stage,
             attempts=int(row.attempts or 0),
             max_attempts=int(row.max_attempts or 0),
+            created_at=row.created_at,
+            available_after=row.available_after,
             claimed_at=row.claimed_at,
             heartbeat_at=row.heartbeat_at,
-            stale_reaped_at=row.stale_reaped_at,
             finished_at=row.finished_at,
+            admission_reason=row.admission_reason,
             error_message=row.error_message,
             heartbeat_failure_count=int(row.heartbeat_failure_count or 0),
             last_heartbeat_error=row.last_heartbeat_error,
             current_worker_id=row.current_worker_id,
-            org_id=row.org_id,
+            current_queue_slot=row.current_queue_slot,
+            is_stale=bool(row.is_stale),
         )
-
-    stale_running = [_sample(r) for r in stale_running_rows]
-    recent_failures = [_sample(r) for r in recent_failure_rows]
-
-    # -- per-kind × queue_key duration percentiles ------------------------
-    # Only jobs that actually completed (claimed_at + finished_at) count
-    # toward the duration distribution. Percent_cont is exact on
-    # Postgres and doesn't need a window function -- we're already
-    # grouping.
-    duration_rows = (
-        await session.execute(
-            text(
-                """
-                SELECT kind::text AS kind,
-                       queue_key,
-                       COUNT(*) AS n,
-                       percentile_cont(0.50) WITHIN GROUP (
-                           ORDER BY EXTRACT(EPOCH FROM (finished_at - claimed_at))
-                       ) AS p50,
-                       percentile_cont(0.95) WITHIN GROUP (
-                           ORDER BY EXTRACT(EPOCH FROM (finished_at - claimed_at))
-                       ) AS p95
-                FROM   worker_jobs
-                WHERE  status::text IN ('SUCCESS', 'FAILED')
-                  AND  (CAST(:org_id AS TEXT) IS NULL OR org_id = CAST(:org_id AS TEXT))
-                  AND  claimed_at IS NOT NULL
-                  AND  finished_at IS NOT NULL
-                  AND  finished_at >= NOW() - INTERVAL '1 hour'
-                GROUP  BY kind, queue_key
-                HAVING COUNT(*) >= 3
-                ORDER  BY kind, queue_key
-                """
-            ),
-            {"org_id": org_id},
-        )
-    ).all()
-
-    durations_last_hour = [
-        WorkerJobDurationStat(
-            kind=row.kind,
-            queue_key=settings.normalize_queue_key(row.queue_key),
-            sample_count=int(row.n or 0),
-            p50_seconds=float(row.p50 or 0.0),
-            p95_seconds=float(row.p95 or 0.0),
-        )
-        for row in duration_rows
+        for row in job_rows
     ]
+    total_jobs = int(job_rows[0].total_jobs or 0) if job_rows else 0
+    pipeline_issue_count, pipeline_issues = await _get_pipeline_issues(
+        session, org_id=org_id
+    )
 
     return WorkerJobsResponse(
-        counts=counts,
-        stale_running=stale_running,
-        recent_failures=recent_failures,
-        durations_last_hour=durations_last_hour,
+        summary=summary,
+        jobs=jobs,
+        pipeline_issue_count=pipeline_issue_count,
+        pipeline_issues=pipeline_issues,
+        total_jobs=total_jobs,
+        truncated=total_jobs > len(jobs),
         stale_after_minutes=stale_after_minutes,
         timestamp=now.isoformat(),
     )
