@@ -189,6 +189,7 @@ PREVIEW_SQL = text(
       tr.created_at, tr.started_at, tr.finished_at
     FROM trials tr
     WHERE tr.task_id = :task_id AND tr.task_version_id = :version_id
+      AND tr.kind != 'qa_eval'
       AND tr.deleted_at IS NULL AND tr.superseded_by_trial_id IS NULL
       AND (tr.idempotency_key IS NULL OR tr.idempotency_key NOT LIKE 'combine:%')
       AND (CAST(:org_id AS text) IS NULL OR tr.org_id = :org_id OR tr.org_id IS NULL)
