@@ -27,8 +27,6 @@ from oddish.db import (
 from oddish.schemas import (
     QAEvalCreateRequest,
     QAEvalCreateResponse,
-    QAEvalResultRow,
-    QAEvalResultsResponse,
     QAEvalTrialResponse,
 )
 from oddish.workers.analysis_trials import build_qa_brief, create_analysis_trial
@@ -210,64 +208,3 @@ async def create_qa_eval_core(
             response.model_dump(mode="json"),
         )
     return response
-
-
-async def get_qa_eval_results_core(
-    session: AsyncSession,
-    *,
-    experiment_ref: str,
-    org_id: str | None,
-) -> QAEvalResultsResponse:
-    """Return raw replay analyses for one exact experiment ID."""
-    experiment = await session.scalar(
-        select(ExperimentModel).where(
-            ExperimentModel.id == experiment_ref, ExperimentModel.org_id == org_id
-        )
-    )
-    if experiment is None:
-        raise HTTPException(status_code=404, detail="QA evaluation not found")
-
-    eval_trials = (
-        (
-            await session.execute(
-                select(TrialModel)
-                .where(
-                    TrialModel.experiment_id == experiment.id,
-                    TrialModel.org_id == org_id,
-                    TrialModel.kind == "qa_eval",
-                    TrialModel.superseded_by_trial_id.is_(None),
-                )
-                .order_by(TrialModel.created_at, TrialModel.id)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    if not eval_trials:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Experiment {experiment.id} contains no QA replay trials",
-        )
-
-    rows = []
-    for trial in eval_trials:
-        metadata = (trial.harbor_config or {}).get("analysis_payload") or {}
-        rows.append(
-            QAEvalResultRow(
-                source_trial_id=str(metadata.get("source_trial_id") or ""),
-                qa_eval_trial_id=trial.id,
-                status=trial.status,
-                prompt_name=str(metadata.get("prompt_name") or ""),
-                prompt_sha256=str(metadata.get("prompt_sha256") or ""),
-                model=trial.model,
-                analysis=trial.analysis if isinstance(trial.analysis, dict) else None,
-                analysis_status=trial.analysis_status,
-                analysis_error=trial.analysis_error,
-            )
-        )
-
-    return QAEvalResultsResponse(
-        experiment_id=experiment.id,
-        experiment_name=experiment.name,
-        rows=rows,
-    )

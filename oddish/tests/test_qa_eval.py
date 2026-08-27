@@ -8,10 +8,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from oddish.core.endpoints.qa_eval import (
-    create_qa_eval_core,
-    get_qa_eval_results_core,
-)
+from oddish.core.endpoints.qa_eval import create_qa_eval_core
 from oddish.db import AnalysisStatus, TaskModel, TaskVersionModel, TrialStatus
 from oddish.db.models import TrialModel
 from oddish.schemas import QAEvalCreateRequest
@@ -225,50 +222,6 @@ async def test_create_rejects_the_whole_request_when_a_source_is_ineligible():
             owner_user_id="user-1",
         )
     assert session.added_experiment is None
-
-
-@pytest.mark.asyncio
-async def test_results_return_only_the_raw_replay_analysis():
-    experiment = SimpleNamespace(id="experiment-1", name="feedback")
-    candidate = _analysis()
-    eval_trial = TrialModel(
-        id="eval-1",
-        name="eval-1",
-        task_id="task-1",
-        experiment_id="experiment-1",
-        org_id="org-1",
-        agent="claude-code",
-        provider="anthropic",
-        queue_key="claude-code:model",
-        model="claude-sonnet-5",
-        kind="qa_eval",
-        status=TrialStatus.SUCCESS,
-        analysis=candidate,
-        analysis_status=AnalysisStatus.SUCCESS,
-        harbor_config={
-            "analysis_payload": {
-                "source_trial_id": "source-1",
-                "prompt_name": "candidate-1",
-                "prompt_sha256": "prompt-hash",
-            }
-        },
-    )
-
-    class FakeSession:
-        async def scalar(self, _statement):
-            return experiment
-
-        async def execute(self, _statement):
-            return _Result([eval_trial])
-
-    response = await get_qa_eval_results_core(
-        FakeSession(), experiment_ref="experiment-1", org_id="org-1"
-    )
-    row = response.rows[0]
-    assert row.source_trial_id == "source-1"
-    assert row.analysis == candidate
-    assert row.prompt_sha256 == "prompt-hash"
-    assert row.model == "claude-sonnet-5"
 
 
 @pytest.mark.asyncio

@@ -1466,24 +1466,6 @@ class QAEvalCreateResponse(BaseModel):
     trials: list[QAEvalTrialResponse]
 
 
-class QAEvalResultRow(BaseModel):
-    source_trial_id: str
-    qa_eval_trial_id: str
-    status: TrialStatus
-    prompt_name: str
-    prompt_sha256: str
-    model: str
-    analysis: dict | None = None
-    analysis_status: AnalysisStatus | None = None
-    analysis_error: str | None = None
-
-
-class QAEvalResultsResponse(BaseModel):
-    experiment_id: str
-    experiment_name: str
-    rows: list[QAEvalResultRow]
-
-
 class CollectionMutationResponse(BaseModel):
     """Result of editing an existing read-only collection in place."""
 

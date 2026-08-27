@@ -80,7 +80,6 @@ reference. The main commands are:
 - `oddish delete` — delete trials against hosted Oddish (admin key); whole-task/experiment deletes are refused for Modal-hosted APIs, and a standalone core server has no delete endpoints at all.
 - `oddish publish` / `oddish unpublish` — toggle public read-only experiment sharing.
 - `oddish backfill-analysis` and `oddish probe` — specialized QA/probe tools.
-- `oddish qa-eval run` / `oddish qa-eval collect` — replay candidate QA prompts over historical solver trials and append the new responses to the source CSV.
 - `oddish skill` — print the packaged SKILL.md or install the complete agent skill with its reference files.
 
 Most commands support `--json` for machine-readable output; `oddish logs`,
