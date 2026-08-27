@@ -113,8 +113,9 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
     "default",
 }
 
-# Analysis (QA + audit) trials run claude-code on Sonnet via Bedrock.
-ANALYSIS_MODEL = "claude-sonnet-4-6"
+# Analysis (QA + audit) trials run claude-code on Sonnet via the platform's
+# direct Anthropic API key.
+ANALYSIS_MODEL = "anthropic/claude-sonnet-4-6"
 # Model for the probe transcript summarizer -- the one direct LLM call that
 # remains outside the trial pipeline. Kept separate from ANALYSIS_MODEL
 # because run_probe_analyzer speaks the Anthropic API only; it must not
@@ -1851,8 +1852,10 @@ class Settings(BaseSettings):
           ``nop_oracle`` id (same string as the queue key) so the stored model,
           the queue key, and the concurrency bucket all agree -- one id, no
           model/queue drift in bookkeeping.
-        - Canonicalize Claude models to their Bedrock runtime id, since Oddish
-          runs Claude through Bedrock and persists the same id it executes.
+        - Preserve an explicit ``anthropic/`` model as a direct Anthropic API
+          route. QA uses this to keep its queue separate from Bedrock-shaped
+          Claude metadata while reusing Claude Code's force-direct runtime.
+        - Canonicalize bare Claude models to their Bedrock runtime id.
         - Otherwise return cleaned model (or None if missing).
         """
         cleaned = normalize_model_id(model)
@@ -1883,6 +1886,9 @@ class Settings(BaseSettings):
             return to_moonshot_model_id(cleaned)
         if is_deepseek_model(cleaned):
             return to_deepseek_model_id(cleaned)
+        provider_prefix, _ = split_provider_model_name(cleaned or "")
+        if provider_prefix and provider_prefix.strip().lower() == "anthropic":
+            return cleaned
         # Explicit ``anthropic-hdo/`` keeps Claude on the direct Anthropic API
         # with ANTHROPIC_HDO_API_KEY — must win over the Bedrock chokepoint.
         if is_anthropic_hdo_model(cleaned):
@@ -1898,15 +1904,18 @@ class Settings(BaseSettings):
     def normalize_queue_key(self, model: str) -> str:
         """Normalize queue keys.
 
-        Claude aliases collapse to the same Bedrock id that is persisted on the
-        trial, so queueing/concurrency and execution use one model id. For other
-        bare model inputs, infer a provider prefix as before.
+        Bare Claude aliases collapse to their persisted Bedrock id. An explicit
+        ``anthropic/`` reference keeps a direct-Anthropic queue. For other bare
+        model inputs, infer a provider prefix as before.
         """
         normalized = model.strip().lower().replace(" ", "_")
         if not normalized or normalized in _MODEL_ABSENT_ALIASES:
             return "default"
         if normalized in _PROVIDER_ONLY_QUEUE_ALIASES:
             return "default"
+        provider_prefix, _ = split_provider_model_name(normalized)
+        if provider_prefix and provider_prefix.strip().lower() == "anthropic":
+            return normalized
         normalized = _to_bedrock_model_id_if_known(normalized)
         if looks_like_bedrock_model_id(normalized):
             return normalized

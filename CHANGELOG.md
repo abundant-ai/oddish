@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-08-27]
+
+### Changed
+
+- QA, audit, and trajectory-summary trials now persist and queue Claude Sonnet 4.6 as `anthropic/claude-sonnet-4-6`. This separates their direct-Anthropic concurrency from the Bedrock-shaped Claude queue and caps the new queue at eight concurrent trials.
+
+---
+
 ## [2026-08-07]
 
 ### Changed

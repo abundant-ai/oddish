@@ -794,13 +794,12 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   slots forever; an inventory failure never authorizes this finalization.
   Inventory and termination failures stay visible in logs/metrics while the rest
   of queue cleanup continues.
-- Claude trials run through AWS Bedrock by default. `CLAUDE_CODE_USE_BEDROCK=1` is
-  baked into the Modal image, and Claude model aliases must normalize to an
-  invokable inference profile (`global.` / `us.` / ARN) via
-  `to_bedrock_model_id`. Opt into the direct Anthropic API with a separate key
-  via the explicit `anthropic-hdo/<model>` prefix: that route overwrites
-  `ANTHROPIC_API_KEY` with `ANTHROPIC_HDO_API_KEY` and blanks Bedrock routing
-  for the trial.
+- Bare Claude aliases continue to normalize to Bedrock inference-profile ids.
+  Analysis trials use `anthropic/claude-sonnet-4-6` as their stored provider
+  and queue identity; Claude Code's existing force-direct runtime sends them
+  through the platform `ANTHROPIC_API_KEY`. The explicit
+  `anthropic-hdo/<model>` route instead overwrites that key with
+  `ANTHROPIC_HDO_API_KEY`.
 - OpenAI-family jobs default to Azure OpenAI. Use
   `ODDISH_OPENAI_PROVIDER=openai` plus `OPENAI_API_KEY` only when intentionally
   routing to public OpenAI.
@@ -814,9 +813,9 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   `_LITELLM_MODEL_ID_AGENTS`, Vercel AI SDK agents in
   `_AI_SDK_MODEL_ID_AGENTS`); add a new agent to the set matching its client.
 - Provider secrets are referenced by env var name (`AWS_BEARER_TOKEN_BEDROCK`,
-  `ANTHROPIC_HDO_API_KEY`, `ZAI_API_KEY`, `MINIMAX_API_KEY`, `MOONSHOT_API_KEY`,
-  `FIREWORKS_API_KEY`, `XAI_API_KEY`, `META_API_KEY`) and must not be persisted
-  on trial rows.
+  `ANTHROPIC_API_KEY`, `ANTHROPIC_HDO_API_KEY`, `ZAI_API_KEY`,
+  `MINIMAX_API_KEY`, `MOONSHOT_API_KEY`, `FIREWORKS_API_KEY`, `XAI_API_KEY`,
+  `META_API_KEY`) and must not be persisted on trial rows.
 - `grok-build` (xAI) writes a Grok CLI config whose `[model.*]` blocks pin an
   `api_backend`. Upstream Harbor hardcodes `responses` (`POST /v1/responses`),
   but not every xAI model is served there — some (e.g. newer/unreleased models)
