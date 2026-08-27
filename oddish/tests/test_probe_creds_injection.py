@@ -85,15 +85,18 @@ async def test_mint_probe_creds_returns_env(monkeypatch):
 
     monkeypatch.setattr("oddish.worker.probe_creds.get_session", lambda: _FakeSession())
 
-    async def _mint(session, *, org_id, name, ttl_minutes):
+    async def _mint(session, *, org_id, name, ttl_minutes, bound_analysis_trial_id):
         assert org_id == "org-1"
         assert name == "probe:t1"
         assert ttl_minutes == PROBE_KEY_TTL_MINUTES
+        assert bound_analysis_trial_id == "t1"
         return ("key-id-123", "ok_rawsecret")
 
     monkeypatch.setattr("oddish.worker.probe_creds.mint_internal_read_key", _mint)
 
-    key_id, env = await mint_probe_creds(org_id="org-1", trial_id="t1")
+    key_id, env = await mint_probe_creds(
+        org_id="org-1", trial_id="t1", bound_analysis_trial_id="t1"
+    )
     assert key_id == "key-id-123"
     assert env == {
         "ODDISH_API_KEY": "ok_rawsecret",
@@ -116,7 +119,8 @@ async def test_probe_env_has_task_id_and_harbor_pin_no_stage_dir(monkeypatch):
 
     monkeypatch.setattr("oddish.worker.probe_creds.get_session", lambda: _FakeSession())
 
-    async def _mint(session, *, org_id, name, ttl_minutes):
+    async def _mint(session, *, org_id, name, ttl_minutes, bound_analysis_trial_id):
+        assert bound_analysis_trial_id is None
         return ("key-id-456", "secret456")
 
     monkeypatch.setattr("oddish.worker.probe_creds.mint_internal_read_key", _mint)

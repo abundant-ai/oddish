@@ -316,6 +316,15 @@ violates the pinned contract becomes FAILED while the target pointer remains,
 so GET reports 409 and the next POST replaces it instead of adopting a SUCCESS
 trial that can never publish.
 
+`trials.kind` is the canonical analysis-run discriminator. Worker preparation,
+analysis overlays, artifact filenames, query access, upload prefixes, summarize
+materialization, and Harbor's task-validation exception derive from that column.
+`harbor_config.mode` is reserved for the existing operator-probe value `probe`;
+analysis trials must not duplicate `qa`, `qa_eval`, `audit`, or `summarize` there.
+QA-eval source identity lives only in
+`harbor_config.analysis_payload.trial_ids`, which contains exactly one id for a
+QA-eval run.
+
 Trajectory summaries use schema v6. Each taxonomy-valued `components` entry
 contains its `step_ids`, summary, and deterministic `tool_count` and
 `duration_ms` metadata. Step count is the length of `step_ids`; the other
@@ -993,6 +1002,17 @@ There are exactly two org roles: `admin` (manage users/settings) and `member`
 
 Auth flow: read token → if `ok_` prefix validate API key → otherwise validate Clerk JWT and resolve org/user → return `AuthContext`.
 
+Short-lived internal READ keys may set `api_keys.bound_analysis_trial_id`. The
+binding stores only the requesting analysis trial id; every request derives its
+allowlist from that Trial row. QA and QA-eval keys may GET only Trial resources
+whose ids appear in `harbor_config.analysis_payload.trial_ids`. Audit keys may
+GET only `/tasks/{task_id}/files` resources for the analysis trial's exact
+`task_version_id`, and the request must carry that pinned version number.
+Summarize trials receive no query key. Bound keys fail closed on other routes
+and on every non-GET request. Ordinary operator-probe keys remain unbound and
+retain the existing organization-wide READ policy. Do not copy source ids or
+task ids onto API-key rows and do not add analysis-only mirror endpoints.
+
 API key creation is user-auth only (API-key auth is rejected so one key cannot
 mint another) and is self-service for every org — any `admin` or `member` user
 may create keys for their own org (`can_create_api_keys` /
@@ -1131,19 +1151,25 @@ verdict) in one update.
 
 ### Trial Storage Layout
 
-Trial artifacts live under ``tasks/<task_id>/trials/<trial_id>/`` with each
-harbor attempt in its own ``task-<name>__<rand>/`` directory. Analysis
-trials (QA, audit, summarize) upload under a self-labeling
-``analysis-<kind>/`` child of that prefix: they share the subject task's
-trial-id sequence and its storage neighborhood by design, and trial ids
-repeat across environments that share a bucket, so an unlabeled analysis
-agent session reads as the subject trial's own execution. Reader rules:
-artifact readers locate analysis results by filename suffix across the
-whole prefix (nesting-agnostic); the file LISTING and file CONTENT
-endpoints both root at the trial's authoritative prefix
-(``trials.trial_s3_key`` when set -- the nested prefix for analysis
-trials -- else the id-derived prefix), so listed relative paths round-trip
-to the content endpoint without doubling the segment.
+Trial artifacts live under ``tasks/<task_id>/trials/<trial_id>/``. Every upload
+uses an immutable retry prefix: ordinary agent and operator-probe attempts use
+``attempt-<attempt>/``; QA, QA-eval, audit, and summarize attempts use
+``analysis-<kind>/attempt-<attempt>/``. Harbor's randomly named trial directory
+lives below that attempt prefix. ``trials.trial_s3_key`` stores the exact
+attempt prefix returned by the uploader, so later retries never replace the
+manifest or leave the row pointing at a mixed set of attempt directories.
+
+The attempt root's Harbor ``result.json`` is the trajectory manifest. The
+canonical trajectory reader extracts ``trial_results[].trial_name``, sanitizes
+it with the same storage-key encoding used during upload, and reads only
+``<trial_s3_key>/<trial_name>/agent/trajectory.json``. If that manifest exists
+but the exact trajectory does not, the reader returns no trajectory; it never
+substitutes a different retry. A deterministic candidate/list fallback exists
+only for imported and historical layouts without a root manifest. The file
+LISTING and file CONTENT endpoints both root at ``trials.trial_s3_key`` when
+set, so listed relative paths round-trip without doubling an analysis or
+attempt segment. Analysis-result readers locate their one result artifact by
+filename suffix within that authoritative attempt prefix.
 
 ### Worker Runtime Invariants & Pitfalls
 

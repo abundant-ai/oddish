@@ -6,6 +6,7 @@ import logging
 import mimetypes
 import re
 import time
+from collections.abc import Hashable
 from pathlib import Path, PurePosixPath
 from typing import MutableMapping, TypeVar
 
@@ -19,6 +20,7 @@ from oddish.db.storage import (
     StorageClient,
     _cleanup_temp_directory,
     resolve_trial_directory,
+    sanitize_s3_key_chars,
 )
 from oddish.workers.agents.grok_build_trajectory import (
     convert_grok_build_json_text_to_trajectory,
@@ -28,12 +30,13 @@ from oddish.workers.agents.grok_build_trajectory import (
 _CACHE_TTL_SECONDS = 120.0
 _CACHE_MAX_ENTRIES = 128
 _STRUCTURED_LOGS_CACHE: dict[str, tuple[float, dict]] = {}
-_TRAJECTORY_CACHE: dict[str, tuple[float, dict | None]] = {}
+_TRAJECTORY_CACHE: dict[tuple[str, int, str | None], tuple[float, dict | None]] = {}
 _PROBE_ARTIFACTS_CACHE: dict[str, tuple[float, dict]] = {}
 _STRUCTURED_LOGS_LOCKS: dict[str, asyncio.Lock] = {}
-_TRAJECTORY_LOCKS: dict[str, asyncio.Lock] = {}
+_TRAJECTORY_LOCKS: dict[tuple[str, int, str | None], asyncio.Lock] = {}
 _PROBE_ARTIFACTS_LOCKS: dict[str, asyncio.Lock] = {}
 _T = TypeVar("_T")
+_K = TypeVar("_K", bound=Hashable)
 
 _EMPTY_PROBE_ARTIFACTS: dict = {
     "trajectory": None,
@@ -43,7 +46,7 @@ _EMPTY_PROBE_ARTIFACTS: dict = {
 }
 
 
-def _cache_get(cache: MutableMapping[str, tuple[float, _T]], key: str) -> _T | None:
+def _cache_get(cache: MutableMapping[_K, tuple[float, _T]], key: _K) -> _T | None:
     entry = cache.get(key)
     if not entry:
         return None
@@ -54,9 +57,7 @@ def _cache_get(cache: MutableMapping[str, tuple[float, _T]], key: str) -> _T | N
     return value
 
 
-def _cache_set(
-    cache: MutableMapping[str, tuple[float, _T]], key: str, value: _T
-) -> None:
+def _cache_set(cache: MutableMapping[_K, tuple[float, _T]], key: _K, value: _T) -> None:
     cache[key] = (time.monotonic(), value)
     if len(cache) <= _CACHE_MAX_ENTRIES:
         return
@@ -64,7 +65,7 @@ def _cache_set(
     cache.pop(oldest_key, None)
 
 
-def _get_lock(locks: dict[str, asyncio.Lock], key: str) -> asyncio.Lock:
+def _get_lock(locks: dict[_K, asyncio.Lock], key: _K) -> asyncio.Lock:
     lock = locks.get(key)
     if lock is None:
         lock = asyncio.Lock()
@@ -162,8 +163,8 @@ def _resolve_local_trial_paths(trial: TrialModel) -> TrialPaths | None:
     return None
 
 
-def _trajectory_candidate_keys(trial: TrialModel, s3_prefix: str) -> list[str]:
-    """Return likely S3 keys for trajectory without listing whole prefixes."""
+def _legacy_trajectory_candidate_keys(trial: TrialModel, s3_prefix: str) -> list[str]:
+    """Return deterministic candidate keys for pre-manifest trial layouts."""
     candidates: list[str] = [f"{s3_prefix}agent/trajectory.json"]
     if trial.name:
         candidates.append(f"{s3_prefix}{trial.name}/agent/trajectory.json")
@@ -172,7 +173,7 @@ def _trajectory_candidate_keys(trial: TrialModel, s3_prefix: str) -> list[str]:
     return list(dict.fromkeys(candidates))
 
 
-def _grok_build_candidate_keys(trial: TrialModel, s3_prefix: str) -> list[str]:
+def _legacy_grok_build_candidate_keys(trial: TrialModel, s3_prefix: str) -> list[str]:
     candidates: list[str] = [f"{s3_prefix}agent/grok-build.json"]
     if trial.name:
         candidates.append(f"{s3_prefix}{trial.name}/agent/grok-build.json")
@@ -553,17 +554,62 @@ async def _read_trial_trajectory_uncached(trial: TrialModel) -> dict | None:
     s3_prefix = trial.trial_s3_key or StorageClient._trial_prefix(trial.id)
     storage = get_storage_client()
 
-    # Prefer direct key lookups to avoid expensive prefix listings.
-    for trajectory_key in _trajectory_candidate_keys(trial, s3_prefix):
+    manifest_key = f"{s3_prefix}result.json"
+    manifest: dict | None = None
+    manifest_exists = await storage.object_exists(manifest_key)
+    if manifest_exists:
+        try:
+            manifest_text = await storage.download_text(manifest_key)
+            parsed_manifest = _json.loads(manifest_text)
+            if isinstance(parsed_manifest, dict):
+                manifest = parsed_manifest
+        except Exception:
+            return None
+
+    if manifest_exists:
+        if manifest is None:
+            return None
+        trial_results = manifest.get("trial_results")
+        if not isinstance(trial_results, list):
+            return None
+        trial_name = next(
+            (
+                item.get("trial_name").strip()
+                for item in trial_results
+                if isinstance(item, dict)
+                and isinstance(item.get("trial_name"), str)
+                and item.get("trial_name").strip()
+            ),
+            None,
+        )
+        if trial_name is None:
+            return None
+        trial_name_path = PurePosixPath(trial_name)
+        if trial_name_path.is_absolute() or ".." in trial_name_path.parts:
+            return None
+        trajectory_key = (
+            f"{s3_prefix}{sanitize_s3_key_chars(trial_name)}/agent/trajectory.json"
+        )
         try:
             content = await storage.download_text(trajectory_key)
             if content:
                 parsed: dict = _json.loads(content)
                 return parsed
         except Exception:
+            pass
+        return None
+
+    # Imported and historical trials may predate the root-manifest contract.
+    for trajectory_key in _legacy_trajectory_candidate_keys(trial, s3_prefix):
+        try:
+            content = await storage.download_text(trajectory_key)
+            if content:
+                parsed = _json.loads(content)
+                return parsed
+        except Exception:
             continue
 
-    for grok_key in _grok_build_candidate_keys(trial, s3_prefix):
+    for grok_key in _legacy_grok_build_candidate_keys(trial, s3_prefix):
         try:
             content = await storage.download_text(grok_key)
             if content:
@@ -577,7 +623,7 @@ async def _read_trial_trajectory_uncached(trial: TrialModel) -> dict | None:
             continue
 
     try:
-        files = await storage.list_keys(s3_prefix)
+        files = sorted(await storage.list_keys(s3_prefix))
         grok_build_keys: list[str] = []
         for f in files:
             if f.endswith("/agent/trajectory.json"):
@@ -644,7 +690,7 @@ async def _read_trial_trajectory_uncached(trial: TrialModel) -> dict | None:
 
 
 async def read_trial_trajectory(trial: TrialModel) -> dict | None:
-    cache_key = trial.id
+    cache_key = (trial.id, trial.attempts, trial.trial_s3_key)
     if _should_cache_trial(trial):
         cached = _cache_get(_TRAJECTORY_CACHE, cache_key)
         if cached is not None:

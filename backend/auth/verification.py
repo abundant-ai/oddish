@@ -60,6 +60,7 @@ class CachedAuthData:
     user_role: UserRole | None = None
     api_key_id: str | None = None
     api_key_created_by_role: str | None = None
+    bound_analysis_trial_id: str | None = None
     scope: APIKeyScope = APIKeyScope.FULL
 
 

@@ -39,6 +39,40 @@ from oddish.workers.queue import trial_handler  # noqa: E402
 _DISK_USAGE = namedtuple("DiskUsage", ["total", "used", "free"])
 
 
+def test_analysis_trial_kind_skips_ordinary_task_timeout_validation(
+    tmp_path, monkeypatch
+):
+    task_path = tmp_path / "analysis-task"
+    task_path.mkdir()
+    monkeypatch.setattr(harbor_runner, "apply_harbor_patches", lambda **_kwargs: None)
+    monkeypatch.setattr(harbor_runner, "get_backend", lambda _name: None)
+
+    def unexpected_validation(_path):
+        raise AssertionError("analysis trials must skip ordinary task validation")
+
+    monkeypatch.setattr(
+        harbor_runner,
+        "validate_task_timeout_config",
+        unexpected_validation,
+    )
+    monkeypatch.setattr(
+        harbor_runner,
+        "_check_local_storage_preflight",
+        lambda *_args, **_kwargs: "stop after validation boundary",
+    )
+
+    outcome = asyncio.run(
+        harbor_runner.run_harbor_trial_async(
+            task_path=task_path,
+            agent="claude-code",
+            jobs_dir=tmp_path / "jobs",
+            trial_kind="qa",
+        )
+    )
+
+    assert outcome.exception_type == "LocalStoragePreflightError"
+
+
 def _write_network_policy_task(
     tmp_path: Path,
     *,

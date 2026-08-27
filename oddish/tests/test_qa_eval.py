@@ -210,8 +210,8 @@ async def test_create_adds_one_pointer_trial_without_moving_the_source(monkeypat
     assert captured["experiment_id"] == "replay-experiment"
     assert captured["task_version_id"] == "version-1"
     assert captured["billed_user_id"] == "user-1"
-    assert captured["payload"]["source_trial_id"] == "source-1"
     assert captured["payload"]["trial_ids"] == ["source-1"]
+    assert "source_trial_id" not in captured["payload"]
     assert admitted == [("org-1", "user-1", 1)]
     assert source.experiment_id == "original-experiment"
     assert source.analysis == {"classification": "BAD_FAILURE"}
@@ -250,7 +250,6 @@ async def test_importer_extracts_one_standard_qa_analysis(monkeypatch):
         status=TrialStatus.SUCCESS,
         harbor_config={
             "analysis_payload": {
-                "source_trial_id": "source-1",
                 "trial_ids": ["source-1"],
                 "with_verdict": False,
             }
@@ -277,3 +276,46 @@ async def test_importer_extracts_one_standard_qa_analysis(monkeypatch):
     await _import_qa_eval_result(eval_trial)
     assert eval_trial.analysis == _analysis()
     assert eval_trial.analysis_status == AnalysisStatus.SUCCESS
+
+
+@pytest.mark.asyncio
+async def test_importer_requires_exactly_one_source_trial(monkeypatch):
+    eval_trial = TrialModel(
+        id="eval-1",
+        name="eval-1",
+        task_id="task-1",
+        agent="claude-code",
+        provider="anthropic",
+        queue_key="claude-code:model",
+        model="model",
+        kind="qa_eval",
+        status=TrialStatus.SUCCESS,
+        harbor_config={
+            "analysis_payload": {
+                "trial_ids": ["source-1", "source-2"],
+                "with_verdict": False,
+            }
+        },
+    )
+
+    class FakeSession:
+        async def get(self, _model, trial_id):
+            return eval_trial if trial_id == "eval-1" else None
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield FakeSession()
+
+    async def fake_read_artifact(_trial, _filename):
+        return _qa_artifact()
+
+    monkeypatch.setattr("oddish.workers.analysis_trials.get_session", fake_get_session)
+    monkeypatch.setattr(
+        "oddish.workers.analysis_trials.read_analysis_artifact", fake_read_artifact
+    )
+
+    await _import_qa_eval_result(eval_trial)
+
+    assert eval_trial.analysis is None
+    assert eval_trial.analysis_status == AnalysisStatus.FAILED
+    assert "exactly one" in eval_trial.analysis_error

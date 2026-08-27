@@ -175,6 +175,8 @@ def _gemini_ai_sdk_alias_env(model: str | None) -> dict[str, str]:
         if value := os.environ.get(source):
             return {_AI_SDK_GOOGLE_KEY: value}
     return {}
+
+
 # Ambient claude-code platform credentials must fold into the redaction map for
 # the same reason: when job-scoped injection is off, the direct/OAuth Anthropic
 # credential or the Bedrock credential chain the stock agent forwards is only in
@@ -1378,6 +1380,7 @@ async def run_harbor_trial_async(
     billed_user_id: str | None = None,
     extra_agent_env: dict[str, str] | None = None,
     sandbox_launch: SandboxLaunchContext | None = None,
+    trial_kind: str = "agent",
 ) -> HarborOutcome:
     """
     Execute a Harbor trial using Harbor's Python API with lifecycle hooks.
@@ -1419,6 +1422,7 @@ async def run_harbor_trial_async(
             billed_user_id=billed_user_id,
             extra_agent_env=extra_agent_env,
             sandbox_launch=sandbox_launch,
+            trial_kind=trial_kind,
             raw=raw,
             hc=hc,
             backend=backend,
@@ -1442,6 +1446,7 @@ async def _run_harbor_trial_async_impl(
     hc: HarborConfig,
     backend: Any,
     sandbox_launch: SandboxLaunchContext | None,
+    trial_kind: str,
 ) -> HarborOutcome:
     # Size the environment-build timeout multiplier BEFORE the dispatch fork so
     # EVERY path that runs a GKE environment carries it -- the in-process blessed
@@ -1533,6 +1538,7 @@ async def _run_harbor_trial_async_impl(
             harbor_config=harbor_config,
             extra_agent_env=extra_agent_env,
             environment_build_timeout_multiplier=env_build_multiplier,
+            trial_kind=trial_kind,
         )
 
     # Probes and analysis trials attach to an existing task and inherit its
@@ -1540,7 +1546,7 @@ async def _run_harbor_trial_async_impl(
     # hard-fail, skip strict validation and cap the agent timeout below.
     from oddish.workers.analysis_trials import is_analysis_kind
 
-    is_probe = raw.get("mode") == "probe" or is_analysis_kind(raw.get("mode"))
+    is_probe = raw.get("mode") == "probe" or is_analysis_kind(trial_kind)
     if not is_probe:
         validate_task_timeout_config(task_path)
 
@@ -1790,7 +1796,8 @@ async def _run_harbor_trial_async_impl(
         # raw_agent_config import_path is covered too.
         if (
             (agent or "").strip().lower() == "antigravity-cli"
-            or "antigravity_cli:" in (getattr(agent_config, "import_path", None) or "").strip().lower()
+            or "antigravity_cli:"
+            in (getattr(agent_config, "import_path", None) or "").strip().lower()
         ) and not (
             _supports_daytona_compose_restricted_agent_network(
                 task_path=effective_task_path,

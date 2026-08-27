@@ -187,7 +187,6 @@ async def create_qa_eval_core(
             model=canonical_model,
             billed_user_id=billed_user_id,
             payload={
-                "source_trial_id": source.id,
                 "trial_ids": [source.id],
                 "with_verdict": False,
                 "prompt_name": request.prompt_name,

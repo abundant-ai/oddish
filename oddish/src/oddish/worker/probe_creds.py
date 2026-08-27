@@ -33,7 +33,10 @@ def resolve_probe_api_base_url() -> str:
 
 
 async def mint_probe_creds(
-    *, org_id: str | None, trial_id: str
+    *,
+    org_id: str | None,
+    trial_id: str,
+    bound_analysis_trial_id: str | None = None,
 ) -> tuple[str, dict[str, str]]:
     """Returns (api_key_id, env) for the probe agent. Raises ProbeCredsError on failure."""
     if not org_id:
@@ -46,6 +49,7 @@ async def mint_probe_creds(
                 org_id=org_id,
                 name=f"probe:{trial_id}",
                 ttl_minutes=PROBE_KEY_TTL_MINUTES,
+                bound_analysis_trial_id=bound_analysis_trial_id,
             )
     except ProbeCredsError:
         raise

@@ -21,7 +21,8 @@ async def test_analysis_probe_env_pins_task_version(monkeypatch, tmp_path):
         trial_agent="claude-code",
         trial_model="anthropic/claude-sonnet-4-6",
         trial_environment="docker",
-        trial_harbor_config={"mode": "qa_eval", "extra_instructions": "brief"},
+        trial_harbor_config={"extra_instructions": "brief"},
+        trial_kind="qa_eval",
         task_version=7,
         org_id="org-1",
     )
@@ -29,7 +30,10 @@ async def test_analysis_probe_env_pins_task_version(monkeypatch, tmp_path):
     async def resolve_task_directory(**_kwargs):
         return source_task, temp_root, prepared.task_s3_key
 
-    async def mint_probe_creds(**_kwargs):
+    minted = {}
+
+    async def mint_probe_creds(**kwargs):
+        minted.update(kwargs)
         return "key-1", {"ODDISH_API_KEY": "secret"}
 
     monkeypatch.setattr(trial_handler, "resolve_task_directory", resolve_task_directory)
@@ -43,6 +47,7 @@ async def test_analysis_probe_env_pins_task_version(monkeypatch, tmp_path):
 
     assert task.probe_agent_env["ODDISH_PROBE_TASK_ID"] == "task-1"
     assert task.probe_agent_env["ODDISH_PROBE_TASK_VERSION"] == "7"
+    assert minted["bound_analysis_trial_id"] == "task-1-4"
 
 
 @pytest.mark.asyncio
@@ -60,9 +65,9 @@ async def test_summarize_materialization_failure_removes_task_copy(
         trial_model="anthropic/claude-sonnet-4-6",
         trial_environment="docker",
         trial_harbor_config={
-            "mode": "summarize",
             "extra_instructions": "materialized at pickup",
         },
+        trial_kind="summarize",
         org_id="org-1",
     )
     copy_root = tmp_path / "prepared-copy"
@@ -144,7 +149,8 @@ async def test_run_trial_job_settles_task_preparation_error(monkeypatch):
         trial_agent="single-llm",
         trial_model="anthropic/claude-sonnet-4-6",
         trial_environment="docker",
-        trial_harbor_config={"mode": "summarize"},
+        trial_harbor_config={"extra_instructions": "materialized at pickup"},
+        trial_kind="summarize",
         org_id="org-1",
         trial_attempt=2,
     )

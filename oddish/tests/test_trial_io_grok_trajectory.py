@@ -17,6 +17,9 @@ class _FakeStorage:
             return self.grok_text
         raise FileNotFoundError(key)
 
+    async def object_exists(self, _key: str) -> bool:
+        return False
+
     async def list_keys(self, prefix: str) -> list[str]:
         return []
 
@@ -39,6 +42,7 @@ def test_read_trial_trajectory_converts_grok_build_s3_artifact(monkeypatch):
         name="trial-1",
         model="xai/redacted-model",
         trial_s3_key="tasks/task-1/trials/trial-1/",
+        attempts=1,
         harbor_result_path=None,
         finished_at=datetime.now(timezone.utc),
     )
@@ -73,6 +77,7 @@ def test_read_trial_trajectory_marks_tool_results_as_user_observations(monkeypat
         name="trial-tool-result",
         model="xai/redacted-model",
         trial_s3_key="tasks/task-1/trials/trial-tool-result/",
+        attempts=1,
         harbor_result_path=None,
         finished_at=datetime.now(timezone.utc),
     )

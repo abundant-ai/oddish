@@ -279,7 +279,7 @@ async def create_analysis_trial(
     normalized_model = settings.normalize_trial_model(
         analysis_agent, model or settings.analysis_model
     )
-    harbor_config: dict = {"mode": kind, "extra_instructions": brief}
+    harbor_config: dict = {"extra_instructions": brief}
     if kind == "audit" and version is not None and version.content_hash:
         # Pin the audited bytes. An in-place overwrite keeps the version id
         # while replacing its content, so the importer needs more than the
@@ -399,12 +399,19 @@ def build_qa_brief(
         if with_verdict
         else ""
     )
-    return f"""You are the QA auditor for the task `{task_name}`. You are in a clean analysis sandbox, not the task's own environment. The task source, each trial's logs, and each trial's trajectory come from the oddish-query CLI. Do not solve the task.
+    return f"""You are the QA auditor for the task `{task_name}`. You are in a clean analysis sandbox, not the task's own environment. Each trial's complete Harbor result and ATIF trajectory come from the oddish-query CLI. Do not solve the task.
 
 Audit these trials:
 {ids}
 
-The oddish-query CLI fetches trial data from the oddish API (logs, trajectories, results, files). Run `node /probe-harness/oddish-query --help` first. Fetch each trial's trajectory and logs before judging it.
+Run `node /probe-harness/oddish-query --help` first. For every trial ID above, fetch both required evidence documents without truncation and redirect them to files:
+
+```
+node /probe-harness/oddish-query trials result <trial-id> > /tmp/<trial-id>.result.json
+node /probe-harness/oddish-query trials trajectory <trial-id> > /tmp/<trial-id>.trajectory.json
+```
+
+Read both complete files before judging the trial. Confirm that the Harbor result's `trial_results[].trial_name` and the trajectory's trial identity describe the expected trial. Use `trials logs <trial-id>` only when diagnosing a setup or runtime failure. If either required resource is missing, malformed, or names a different trial, report that missing or conflicting evidence explicitly and do not infer agent behavior from another trial or attempt.
 
 Known pre-trial audit findings for this task (do not repeat these as per-trial action items):
 {pre_trial}
@@ -1105,6 +1112,15 @@ async def _import_qa_result(
 
 async def _import_qa_eval_result(trial: TrialModel) -> None:
     """Store a replay result only on its newly-created evaluation trial."""
+    trial_ids = ((trial.harbor_config or {}).get("analysis_payload") or {}).get(
+        "trial_ids"
+    ) or []
+    payload_error = None
+    if len(trial_ids) != 1:
+        payload_error = (
+            "qa_eval analysis_payload.trial_ids must contain exactly one "
+            f"source trial id; found {len(trial_ids)}"
+        )
     artifact = None
     if trial.status == TrialStatus.SUCCESS:
         artifact = await read_analysis_artifact(trial, QA_RESULT_FILENAME)
@@ -1118,6 +1134,8 @@ async def _import_qa_eval_result(trial: TrialModel) -> None:
             f"finished {trial.status.value}: "
             f"{trial.error_message or 'no error recorded'}"
         )
+    elif payload_error is not None:
+        detail = payload_error
     elif artifact is None:
         detail = "produced no valid qa_result.json"
     elif violations:
@@ -1127,12 +1145,7 @@ async def _import_qa_eval_result(trial: TrialModel) -> None:
 
     analysis = None
     if detail is None:
-        source_trial_id = str(
-            ((trial.harbor_config or {}).get("analysis_payload") or {}).get(
-                "source_trial_id"
-            )
-            or ""
-        )
+        source_trial_id = str(trial_ids[0])
         entries = artifact.get("trials") if isinstance(artifact, dict) else None
         entry = next(
             (

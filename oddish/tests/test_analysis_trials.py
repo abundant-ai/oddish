@@ -43,6 +43,57 @@ def test_the_analysis_kinds_are_known():
     assert not is_analysis_kind(None)
 
 
+@pytest.mark.asyncio
+async def test_analysis_creation_stores_kind_only_once(monkeypatch):
+    from oddish.db import TaskModel
+    from oddish.workers.analysis_trials import create_analysis_trial
+
+    task = TaskModel(
+        id="task-1",
+        name="task-1",
+        org_id="org-1",
+        current_version_id=None,
+    )
+
+    class FakeSession:
+        def __init__(self):
+            self.added = None
+
+        def add(self, row):
+            self.added = row
+
+        async def flush(self):
+            return None
+
+    async def reserve_next_trial_index(_session, *, task_id):
+        assert task_id == "task-1"
+        return 4
+
+    async def enqueue_trial_worker_job(_session, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "oddish.queue.reserve_next_trial_index", reserve_next_trial_index
+    )
+    monkeypatch.setattr(
+        "oddish.queue.enqueue_trial_worker_job", enqueue_trial_worker_job
+    )
+    session = FakeSession()
+
+    trial = await create_analysis_trial(
+        session,
+        task=task,
+        kind="qa",
+        brief="grade the trials",
+        payload={"trial_ids": ["source-1"]},
+        experiment_id="analysis-experiment",
+    )
+
+    assert trial.kind == "qa"
+    assert "mode" not in trial.harbor_config
+    assert trial.harbor_config["analysis_payload"]["trial_ids"] == ["source-1"]
+
+
 def test_the_qa_brief_tells_the_agent_everything_it_needs():
     """The brief must name each trial, the output file, the labels, and the
     verdict fields. If one is missing, the QA agent cannot do its job."""
@@ -80,6 +131,12 @@ def test_the_no_verdict_brief_does_not_contradict_itself():
     assert '"verdict": null' in brief
     assert "Verdict JSON schema" not in brief
     assert "<object matching this JSON schema>" not in brief
+    assert "trials result <trial-id>" in brief
+    assert "trials trajectory <trial-id>" in brief
+    assert "> /tmp/<trial-id>.result.json" in brief
+    assert "> /tmp/<trial-id>.trajectory.json" in brief
+    assert "only when diagnosing a setup or runtime failure" in brief
+    assert "do not infer agent behavior" in brief
 
 
 def _qa_check_payload(trial_ids: list[str], *, with_verdict: bool = False) -> dict:
@@ -303,6 +360,7 @@ async def test_a_task_gets_exactly_one_qa_trial():
             .all()
         )
         assert len(qa_trials) == 1
+        assert "mode" not in qa_trials[0].harbor_config
         brief = qa_trials[0].harbor_config["extra_instructions"]
         assert f"{task_id}-1" in brief
         assert f"{task_id}-2" in brief
@@ -1308,7 +1366,6 @@ async def test_the_qa_import_is_all_or_nothing(monkeypatch):
                 attempts=1,
                 max_attempts=3,
                 harbor_config={
-                    "mode": "qa",
                     "analysis_payload": {
                         "trial_ids": graded_ids,
                         "with_verdict": False,
@@ -1498,7 +1555,6 @@ async def test_a_settled_qa_trial_summarizes_its_own_run(monkeypatch):
                 attempts=1,
                 max_attempts=3,
                 harbor_config={
-                    "mode": "qa",
                     "analysis_payload": {
                         "trial_ids": graded_ids,
                         "with_verdict": False,
@@ -2144,7 +2200,6 @@ async def test_reimport_scan_miss_keeps_same_grader_step_anchors(monkeypatch):
                 attempts=1,
                 max_attempts=3,
                 harbor_config={
-                    "mode": "qa",
                     "analysis_payload": {
                         "trial_ids": graded_ids,
                         "with_verdict": False,
@@ -2342,12 +2397,11 @@ def test_only_probe_trials_get_the_inline_probe_summary():
         should_generate_inline_probe_summary,
     )
 
-    for mode in ("qa", "audit"):
-        assert should_generate_inline_probe_summary(mode, "the brief") is False
-    assert should_generate_inline_probe_summary(None, "probe instructions") is True
-    assert should_generate_inline_probe_summary("probe", "probe instructions") is True
-    assert should_generate_inline_probe_summary(None, None) is False
-    assert should_generate_inline_probe_summary(None, "") is False
+    for trial_kind in ("qa", "qa_eval", "audit", "summarize"):
+        assert should_generate_inline_probe_summary(trial_kind, "the brief") is False
+    assert should_generate_inline_probe_summary("agent", "probe instructions") is True
+    assert should_generate_inline_probe_summary("agent", None) is False
+    assert should_generate_inline_probe_summary("agent", "") is False
 
 
 def test_the_view_definition_cannot_drift_between_fresh_and_migrated_dbs():

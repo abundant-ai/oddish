@@ -277,6 +277,7 @@ async def run_ephemeral_harbor_trial(
     harbor_config: dict[str, Any] | None = None,
     extra_agent_env: dict[str, str] | None = None,
     environment_build_timeout_multiplier: float | None = None,
+    trial_kind: str = "agent",
 ) -> HarborOutcome:
     """Run one trial in an override Harbor child process.
 
@@ -302,7 +303,9 @@ async def run_ephemeral_harbor_trial(
             exception_type="HarborOverrideImportError",
         )
 
-    is_probe = raw.get("mode") == "probe"
+    from oddish.workers.analysis_trials import is_analysis_kind
+
+    is_probe = raw.get("mode") == "probe" or is_analysis_kind(trial_kind)
     if not is_probe:
         validate_task_timeout_config(task_path)
 
