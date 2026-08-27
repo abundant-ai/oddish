@@ -252,6 +252,10 @@ _GKE_PLAN_FILE = "/opt/oddish/gke_secret_plan"
 _GKE_COORDS_FILE = "/opt/oddish/gke_coords.json"
 
 _EC2_ENABLED_ENV = "ODDISH_EC2_ENABLED"
+_NUMINOUS_ENABLED_ENV = "ODDISH_NUMINOUS_ENABLED"
+_NUMINOUS_SECRET_NAME = os.environ.get(
+    "ODDISH_NUMINOUS_SECRET_NAME", "oddish-numinous"
+)
 _EC2_CONTROL_SECRET_NAME_ENV = "ODDISH_EC2_CONTROL_SECRET_NAME"
 _EC2_SSH_SECRET_NAME_ENV = "ODDISH_EC2_SSH_SECRET_NAME"
 _EC2_PLAN_FILE = "/opt/oddish/ec2_secret_plan.json"
@@ -585,6 +589,24 @@ for _gke_secret_name in GKE_SECRET_PLAN:
         )
     )
 
+# Optional Numinous Cloud secret. Gated on ODDISH_NUMINOUS_ENABLED so a
+# numinous-less deploy references no secret (CI, default path). When enabled,
+# the single oddish-numinous secret carries NUMINOUS_API_URL + NUMINOUS_API_KEY
+# and re-affirms ODDISH_NUMINOUS_ENABLED=1 inside the worker so the backend
+# registers. Same opt-in flag the runtime registry reads.
+_NUMINOUS_ENABLED = _is_truthy(
+    _deploy_value(_NUMINOUS_ENABLED_ENV, os.environ, LOCAL_DOTENV_VARS)
+)
+NUMINOUS_SECRET_PLAN = (
+    [_NUMINOUS_SECRET_NAME] if _NUMINOUS_ENABLED and _NUMINOUS_SECRET_NAME else []
+)
+for _numinous_secret_name in NUMINOUS_SECRET_PLAN:
+    runtime_secrets.append(
+        modal.Secret.from_name(
+            _numinous_secret_name, environment_name=MODAL_SECRET_ENVIRONMENT
+        )
+    )
+
 # EC2 secrets intentionally do not join ``runtime_secrets``. That base list is
 # attached to the API, dispatcher, and unrelated scheduled functions. EC2's AWS
 # control secret goes only to trial workers and the reconciler; its SSH private
@@ -595,6 +617,7 @@ _broad_runtime_secret_names = {
     LOGFIRE_SECRET_NAME,
     RUNTIME_SECRET_NAME,
     *GKE_SECRET_PLAN,
+    *NUMINOUS_SECRET_PLAN,
 }
 if SAURON_AWS_SECRET_NAME:
     _broad_runtime_secret_names.add(SAURON_AWS_SECRET_NAME)
@@ -840,6 +863,13 @@ ENV_VARS = {
         for k, v in {**LOCAL_DOTENV_VARS, **os.environ}.items()
         if k in _EC2_PUBLIC_ENV_NAMES
     },
+    # Numinous opt-in flag, baked like ODDISH_EC2_ENABLED: runtime registration
+    # (settings.numinous_enabled in oddish.runtime.registry) and secret
+    # attachment (NUMINOUS_SECRET_PLAN above) resolve from the same deploy-time
+    # value, so a secret that carries only NUMINOUS_API_URL + NUMINOUS_API_KEY
+    # still registers the backend. Without the bake, workers only saw the flag
+    # if the secret happened to re-inject it.
+    _NUMINOUS_ENABLED_ENV: str(_NUMINOUS_ENABLED).lower(),
 }
 
 

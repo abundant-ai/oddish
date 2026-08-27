@@ -59,8 +59,12 @@ _HOSTED_PASSTHROUGH_ENVIRONMENTS = {
     EnvironmentType.DAYTONA,
     EnvironmentType.EC2,
     EnvironmentType.GKE,
-    EnvironmentType.ARCHIL,
 }
+# Public Harbor releases may lag fork-only environments.
+if hasattr(EnvironmentType, "ARCHIL"):
+    _HOSTED_PASSTHROUGH_ENVIRONMENTS.add(EnvironmentType.ARCHIL)
+if hasattr(EnvironmentType, "NUMINOUS"):
+    _HOSTED_PASSTHROUGH_ENVIRONMENTS.add(EnvironmentType.NUMINOUS)
 
 
 def _task_config_requests_gpu(task_path: Path) -> bool:
@@ -915,7 +919,7 @@ def run(
     ):
         console.print(
             "[yellow]Oddish Cloud supports --env modal, --env daytona, --env ec2, "
-            "--env gke, and --env archil; forcing --env modal[/yellow]"
+            "--env gke, --env archil, and --env numinous; forcing --env modal[/yellow]"
         )
         environment = EnvironmentType.MODAL
 

@@ -1095,6 +1095,22 @@ Handler registration happens at container load via
 which refreshes the whole PR comment (per-trial classifications + task
 verdict) in one update.
 
+### Trial Storage Layout
+
+Trial artifacts live under ``tasks/<task_id>/trials/<trial_id>/`` with each
+harbor attempt in its own ``task-<name>__<rand>/`` directory. Analysis
+trials (QA, audit, summarize) upload under a self-labeling
+``analysis-<kind>/`` child of that prefix: they share the subject task's
+trial-id sequence and its storage neighborhood by design, and trial ids
+repeat across environments that share a bucket, so an unlabeled analysis
+agent session reads as the subject trial's own execution. Reader rules:
+artifact readers locate analysis results by filename suffix across the
+whole prefix (nesting-agnostic); the file LISTING and file CONTENT
+endpoints both root at the trial's authoritative prefix
+(``trials.trial_s3_key`` when set -- the nested prefix for analysis
+trials -- else the id-derived prefix), so listed relative paths round-trip
+to the content endpoint without doubling the segment.
+
 ### Worker Runtime Invariants & Pitfalls
 
 Load-bearing properties, several learned from incidents. Changing them naively
@@ -1220,6 +1236,33 @@ directly by `backend/modal_app.py` from `ODDISH_MODAL_*` /
 source of truth for the full list and defaults (e.g.
 `ODDISH_MODAL_MAX_WORKERS_PER_POLL=256`,
 `ODDISH_MODAL_WORKER_MAX_CONTAINERS=2688`).
+
+### GKE Placement Contract
+
+The pinned Harbor (harbor-gke `6ec8e946`+) requires explicit placement for
+every GKE TPU trial — there is no default provisioning mode, no table-derived
+zone pool, and `accelerator_region_prefixes` is inert. A trial missing any
+required field fails at environment construction with an error naming the
+field and the served zones; it does not sit in a scheduling wait.
+
+Required fields and where they come from:
+
+- **`provisioning_mode`** (`on-demand` | `spot` | `flex-start`) — from the
+  task's `[environment.kwargs]` or a per-submission
+  `--environment-kwarg provisioning_mode=...`. A deployment MAY force a
+  fleet-wide mode by setting `ODDISH_GKE_PROVISIONING_MODE`; the backend
+  ships it only when configured (unset means "not configured", and each
+  task/submission states its own). Deployment-shipped kwargs override the
+  task's in Harbor's merge — a deployment that forces a mode overrides every
+  task's choice, which is why previews deliberately leave it unset.
+- **`[environment.tpu] zones`** — from the task only. Validated against the
+  mode's served-zone table, scoped to the region. A single-zone pool is
+  pinned through the node selector; multi-zone pools use affinity.
+- **`region`** — from deployment coordinates (`ODDISH_GKE_REGION`) or a
+  per-submission kwarg override.
+
+Migration: GKE tasks written before this contract (no mode, no zones) stop
+scheduling and fail with the requiredness error until updated.
 
 ### Preview Branch Preserved Rows
 

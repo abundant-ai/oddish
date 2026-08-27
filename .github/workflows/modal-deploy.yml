@@ -56,6 +56,12 @@ jobs:
       MODAL_ENVIRONMENT: main
       # Hold LLM trials until a task's nop/oracle baselines validate it.
       ODDISH_GATE_LLM_ON_BASELINES: "1"
+      # Numinous Cloud execution backend (merged in #1344). Enabled in prod:
+      # plain-CPU trials (and QA/analysis trials) route to Numinous first,
+      # then Daytona, then Modal. Attaches the oddish-numinous secret
+      # (env main: NUMINOUS_API_URL + NUMINOUS_API_KEY). Rollback: delete
+      # this line; the next deploy reverts routing to daytona -> modal.
+      ODDISH_NUMINOUS_ENABLED: "1"
       # Enable the GKE (TPU) execution backend in prod. The SA credential
       # rides in the oddish-gcp secret (attached when ODDISH_GKE_ENABLED is
       # set); the non-secret cluster/registry coordinates are declared here

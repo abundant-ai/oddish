@@ -646,13 +646,16 @@ function hasLiveQueueSnapshot(trial: Trial): boolean {
   return isActiveTrialStatus(trial.status);
 }
 
-type SandboxBackendId = "daytona" | "modal" | "archil" | "ec2";
+type SandboxBackendId = "daytona" | "modal" | "archil" | "ec2" | "numinous";
 
 type SandboxBackend = {
   id: SandboxBackendId;
   label: string;
   logoSrc?: string;
   logoWidth?: number;
+  // When true the logo is a full square mark and fills the badge edge to edge
+  // (no white plate, no padding), e.g. an app-icon style logo.
+  logoFill?: boolean;
   href?: string;
 };
 
@@ -680,6 +683,12 @@ const SANDBOX_BACKENDS: Record<
     id: "ec2",
     label: "EC2",
   },
+  numinous: {
+    id: "numinous",
+    label: "Numinous Cloud",
+    logoSrc: "/numinous-logo.png",
+    logoFill: true,
+  },
 };
 
 function normalizeSandboxBackend(
@@ -690,7 +699,8 @@ function normalizeSandboxBackend(
     normalized === "daytona" ||
     normalized === "modal" ||
     normalized === "archil" ||
-    normalized === "ec2"
+    normalized === "ec2" ||
+    normalized === "numinous"
   ) {
     return normalized;
   }
@@ -722,17 +732,28 @@ function getSandboxBackend(trial: Trial): SandboxBackend | null {
 function SandboxBackendBadge({ backend }: { backend: SandboxBackend }) {
   const content = (
     <>
-      {backend.logoSrc && (
-        <span className="inline-flex h-4 items-center justify-center rounded-sm bg-white px-1">
-          <Image
-            src={backend.logoSrc}
-            alt={`${backend.label} logo`}
-            width={backend.logoWidth ?? 10}
-            height={10}
-            className="h-2.5 w-auto object-contain"
-          />
-        </span>
-      )}
+      {backend.logoSrc &&
+        (backend.logoFill ? (
+          <span className="inline-flex h-4 w-4 items-center justify-center overflow-hidden rounded-sm">
+            <Image
+              src={backend.logoSrc}
+              alt={`${backend.label} logo`}
+              width={16}
+              height={16}
+              className="h-full w-full object-cover"
+            />
+          </span>
+        ) : (
+          <span className="inline-flex h-4 items-center justify-center rounded-sm bg-white px-1">
+            <Image
+              src={backend.logoSrc}
+              alt={`${backend.label} logo`}
+              width={backend.logoWidth ?? 10}
+              height={10}
+              className="h-2.5 w-auto object-contain"
+            />
+          </span>
+        ))}
       {backend.id !== "daytona" && (
         <span className="text-muted-foreground font-sans text-[9px] font-semibold tracking-wide uppercase">
           {backend.label}
