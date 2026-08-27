@@ -7,6 +7,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.dispatch import cycle
+from oddish.dispatch.backends import inprocess
+from oddish.dispatch.backends.inprocess import InProcessDispatcher
 from oddish.workers.queue import queue_manager
 
 
@@ -50,3 +52,59 @@ def test_run_polling_worker_delegates_to_shared_dispatch_loop(monkeypatch) -> No
     assert seen["capacity_by_lane"] is cycle.load_sandbox_capacity_by_lane
     assert seen["queue_keys"] == ("openai/gpt-test",)
     assert seen["limit"] == 7
+
+
+def test_run_polling_worker_awaits_spawned_workers_during_shutdown(monkeypatch) -> None:
+    worker_started = asyncio.Event()
+    worker_cancelled = asyncio.Event()
+    dispatcher: InProcessDispatcher
+
+    async def run_job(_queue_key, **_kwargs):
+        worker_started.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            worker_cancelled.set()
+            raise
+
+    async def acquire_slot(**_kwargs):
+        return 0
+
+    async def release_slot(**_kwargs):
+        return None
+
+    dispatcher = InProcessDispatcher(
+        run_job=run_job,
+        acquire_slot=acquire_slot,
+        release_slot=release_slot,
+    )
+
+    async def load_limit(_queue_key):
+        return 1
+
+    async def run_loop(active_dispatcher, **_kwargs):
+        assert active_dispatcher is dispatcher
+        await active_dispatcher.spawn(spawn_plan=["openai/gpt-test"])
+        await worker_started.wait()
+        await asyncio.Future()
+
+    monkeypatch.setattr(inprocess, "InProcessDispatcher", lambda **_kwargs: dispatcher)
+    monkeypatch.setattr(
+        "oddish.core.model_concurrency.load_effective_model_concurrency_limit",
+        load_limit,
+    )
+    monkeypatch.setattr(cycle, "run_dispatch_loop", run_loop)
+
+    async def run_and_stop() -> None:
+        polling_task = asyncio.create_task(queue_manager.run_polling_worker())
+        await worker_started.wait()
+        polling_task.cancel()
+        try:
+            await polling_task
+        except asyncio.CancelledError:
+            pass
+
+        assert worker_cancelled.is_set()
+        assert dispatcher._tasks == {}
+
+    asyncio.run(run_and_stop())

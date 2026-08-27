@@ -50,14 +50,18 @@ async def run_polling_worker(
         run_dispatch_loop,
     )
 
-    await run_dispatch_loop(
-        InProcessDispatcher(worker_id_prefix="oss"),
-        max_workers=max_workers,
-        concurrency_limits_for=load_effective_model_concurrency_limits,
-        on_stage=stamp_dispatch_stage,
-        capacity_by_lane=load_sandbox_capacity_by_lane,
-        fallback_interval=poll_interval,
-    )
+    dispatcher = InProcessDispatcher(worker_id_prefix="oss")
+    try:
+        await run_dispatch_loop(
+            dispatcher,
+            max_workers=max_workers,
+            concurrency_limits_for=load_effective_model_concurrency_limits,
+            on_stage=stamp_dispatch_stage,
+            capacity_by_lane=load_sandbox_capacity_by_lane,
+            fallback_interval=poll_interval,
+        )
+    finally:
+        await dispatcher.shutdown()
 
 
 async def run_assigned_queue_worker(
