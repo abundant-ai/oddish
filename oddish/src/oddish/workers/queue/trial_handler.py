@@ -889,7 +889,7 @@ def _log_trial_metering_integrity(
 def _artifact_subprefix(harbor_config: dict | None) -> str | None:
     """Analysis trials upload under a self-labeling segment.
 
-    QA, audit, and summarize trials share the subject task's trial-id
+    Analysis trials share the subject task's trial-id
     sequence and, by design, its storage neighborhood -- and trial ids
     repeat across environments that share a bucket. Without the label, an
     analysis agent's session under a colliding prefix reads as the subject
@@ -899,7 +899,7 @@ def _artifact_subprefix(harbor_config: dict | None) -> str | None:
     if not isinstance(harbor_config, dict):
         return None
     mode = harbor_config.get("mode")
-    if mode in ("qa", "audit", "summarize"):
+    if is_analysis_kind(mode):
         return f"analysis-{mode}"
     return None
 
