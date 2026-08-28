@@ -1401,6 +1401,11 @@ class Settings(BaseSettings):
     # `numinous-environment`).
     numinous_enabled: bool = False
 
+    # Thunder GPU backend (opt-in). Registration is gated so deployments that
+    # do not carry TNR_API_TOKEN never advertise or route Thunder trials.
+    thunder_enabled: bool = False
+    thunder_max_capacity: int = 16
+
     ec2_enabled: bool = False
     ec2_region: str | None = None
     ec2_ami_id: str | None = None
@@ -1723,6 +1728,12 @@ class Settings(BaseSettings):
             raise ValueError("ec2_root_volume_size_gb must be greater than zero")
         if self.ec2_max_concurrent_instances <= 0:
             raise ValueError("ec2_max_concurrent_instances must be greater than zero")
+        return self
+
+    @model_validator(mode="after")
+    def validate_thunder_configuration(self) -> "Settings":
+        if self.thunder_max_capacity <= 0:
+            raise ValueError("thunder_max_capacity must be greater than zero")
         return self
 
     @model_validator(mode="after")

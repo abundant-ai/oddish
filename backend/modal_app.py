@@ -253,6 +253,13 @@ _GKE_COORDS_FILE = "/opt/oddish/gke_coords.json"
 
 _EC2_ENABLED_ENV = "ODDISH_EC2_ENABLED"
 _NUMINOUS_ENABLED_ENV = "ODDISH_NUMINOUS_ENABLED"
+_THUNDER_ENABLED_ENV = "ODDISH_THUNDER_ENABLED"
+_THUNDER_SECRET_NAME_ENV = "ODDISH_THUNDER_SECRET_NAME"
+_THUNDER_SECRET_NAME = (
+    os.environ.get(_THUNDER_SECRET_NAME_ENV)
+    or LOCAL_DOTENV_VARS.get(_THUNDER_SECRET_NAME_ENV)
+    or "oddish-thunder"
+)
 _NUMINOUS_SECRET_NAME = os.environ.get(
     "ODDISH_NUMINOUS_SECRET_NAME", "oddish-numinous"
 )
@@ -607,6 +614,23 @@ for _numinous_secret_name in NUMINOUS_SECRET_PLAN:
         )
     )
 
+# Thunder credentials are worker-only. The named secret contains TNR_API_URL
+# and TNR_API_TOKEN; it is deliberately excluded from runtime_secrets because
+# that broader list also reaches the API, dispatcher, and scheduled functions.
+_THUNDER_ENABLED = _is_truthy(
+    _deploy_value(_THUNDER_ENABLED_ENV, os.environ, LOCAL_DOTENV_VARS)
+)
+THUNDER_SECRET_PLAN = (
+    [_THUNDER_SECRET_NAME] if _THUNDER_ENABLED and _THUNDER_SECRET_NAME else []
+)
+thunder_worker_secrets = [
+    modal.Secret.from_name(
+        secret_name,
+        environment_name=MODAL_SECRET_ENVIRONMENT,
+    )
+    for secret_name in THUNDER_SECRET_PLAN
+]
+
 # EC2 secrets intentionally do not join ``runtime_secrets``. That base list is
 # attached to the API, dispatcher, and unrelated scheduled functions. EC2's AWS
 # control secret goes only to trial workers and the reconciler; its SSH private
@@ -618,6 +642,7 @@ _broad_runtime_secret_names = {
     RUNTIME_SECRET_NAME,
     *GKE_SECRET_PLAN,
     *NUMINOUS_SECRET_PLAN,
+    *THUNDER_SECRET_PLAN,
 }
 if SAURON_AWS_SECRET_NAME:
     _broad_runtime_secret_names.add(SAURON_AWS_SECRET_NAME)
@@ -802,6 +827,12 @@ _EC2_PUBLIC_ENV_NAMES = {
     "ODDISH_EC2_MAX_CONCURRENT_INSTANCES",
 }
 
+_THUNDER_PUBLIC_ENV_NAMES = {
+    "ODDISH_THUNDER_ENABLED",
+    "ODDISH_THUNDER_MAX_CAPACITY",
+    "ODDISH_THUNDER_SECRET_NAME",
+}
+
 ENV_VARS = {
     "UV_LINK_MODE": "copy",
     # Claude CLI refuses --dangerously-skip-permissions when running as root (Modal default).
@@ -863,6 +894,11 @@ ENV_VARS = {
         for k, v in {**LOCAL_DOTENV_VARS, **os.environ}.items()
         if k in _EC2_PUBLIC_ENV_NAMES
     },
+    **{
+        k: v
+        for k, v in {**LOCAL_DOTENV_VARS, **os.environ}.items()
+        if k in _THUNDER_PUBLIC_ENV_NAMES
+    },
     # Numinous opt-in flag, baked like ODDISH_EC2_ENABLED: runtime registration
     # (settings.numinous_enabled in oddish.runtime.registry) and secret
     # attachment (NUMINOUS_SECRET_PLAN above) resolve from the same deploy-time
@@ -870,6 +906,17 @@ ENV_VARS = {
     # still registers the backend. Without the bake, workers only saw the flag
     # if the secret happened to re-inject it.
     _NUMINOUS_ENABLED_ENV: str(_NUMINOUS_ENABLED).lower(),
+    # Keep worker-side Settings and the deploy-time secret plan in lockstep.
+    _THUNDER_ENABLED_ENV: str(_THUNDER_ENABLED).lower(),
+    "ODDISH_THUNDER_MAX_CAPACITY": str(
+        int(
+            _deploy_value(
+                "ODDISH_THUNDER_MAX_CAPACITY", os.environ, LOCAL_DOTENV_VARS
+            )
+            or "16"
+        )
+    ),
+    _THUNDER_SECRET_NAME_ENV: _THUNDER_SECRET_NAME,
 }
 
 

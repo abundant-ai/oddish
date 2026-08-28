@@ -1,0 +1,79 @@
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import modal_app
+import worker.functions as worker_functions
+
+
+def test_disabled_deploy_has_no_thunder_secret_dependency() -> None:
+    assert modal_app.THUNDER_SECRET_PLAN == []
+    assert modal_app.thunder_worker_secrets == []
+
+
+def test_thunder_public_image_env_excludes_credentials() -> None:
+    assert modal_app._THUNDER_PUBLIC_ENV_NAMES == {
+        "ODDISH_THUNDER_ENABLED",
+        "ODDISH_THUNDER_MAX_CAPACITY",
+        "ODDISH_THUNDER_SECRET_NAME",
+    }
+    assert "TNR_API_URL" not in modal_app.ENV_VARS
+    assert "TNR_API_TOKEN" not in modal_app.ENV_VARS
+
+
+def test_enabled_import_builds_one_worker_only_secret() -> None:
+    code = """
+import json
+import modal_app
+import worker.functions as worker_functions
+print(json.dumps({
+    "plan": modal_app.THUNDER_SECRET_PLAN,
+    "worker_count": len(modal_app.thunder_worker_secrets),
+    "base_overlap": any(
+        secret in modal_app.runtime_secrets
+        for secret in modal_app.thunder_worker_secrets
+    ),
+    "trial_has_secret": all(
+        secret in worker_functions.trial_worker_secrets
+        for secret in modal_app.thunder_worker_secrets
+    ),
+    "capacity": modal_app.ENV_VARS["ODDISH_THUNDER_MAX_CAPACITY"],
+}))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=Path(modal_app.__file__).parent,
+        env={
+            **os.environ,
+            "ODDISH_THUNDER_ENABLED": "true",
+            "ODDISH_THUNDER_SECRET_NAME": "test-thunder",
+            "ODDISH_THUNDER_MAX_CAPACITY": "16",
+            "ODDISH_SAURON_AWS_SECRET_NAME": "",
+        },
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert json.loads(result.stdout.splitlines()[-1]) == {
+        "plan": ["test-thunder"],
+        "worker_count": 1,
+        "base_overlap": False,
+        "trial_has_secret": True,
+        "capacity": "16",
+    }
+
+
+def test_only_trial_workers_receive_thunder_secret() -> None:
+    assert worker_functions.trial_worker_secrets == [
+        *modal_app.runtime_secrets,
+        *modal_app.thunder_worker_secrets,
+    ]
+    assert all(
+        secret not in worker_functions.reconciler_secrets
+        for secret in modal_app.thunder_worker_secrets
+    )

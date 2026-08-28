@@ -61,6 +61,7 @@ from modal_app import (
     harbor_variant_images,
     image,
     runtime_secrets,
+    thunder_worker_secrets,
     worker_volumes,
 )
 from backfill_github_id import backfill_github_id
@@ -126,7 +127,7 @@ from .runtime import configure_storage_paths, console
 
 # Generic workers must never receive EC2 launch credentials or the SSH key.
 # Only the dedicated ``ec2_trial`` lane carries those secrets.
-trial_worker_secrets = [*runtime_secrets]
+trial_worker_secrets = [*runtime_secrets, *thunder_worker_secrets]
 ec2_trial_worker_secrets = [*runtime_secrets, *ec2_worker_secrets]
 reconciler_secrets = [*runtime_secrets, *ec2_control_secrets]
 
