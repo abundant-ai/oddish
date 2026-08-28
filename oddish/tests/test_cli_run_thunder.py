@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -31,3 +33,19 @@ def test_hosted_normalization_still_coerces_local_only_environment() -> None:
         )
         is EnvironmentType.MODAL
     )
+
+
+def test_enabled_thunder_does_not_steal_implicit_cli_gpu_routing() -> None:
+    code = """
+from oddish.cli.run import _default_cloud_environment_for_task
+print(_default_cloud_environment_for_task(None, override_gpus=1).value)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        env={**os.environ, "ODDISH_THUNDER_ENABLED": "true"},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert result.stdout.strip().splitlines()[-1] == "modal"

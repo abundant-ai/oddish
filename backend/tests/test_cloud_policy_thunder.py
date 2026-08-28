@@ -19,7 +19,7 @@ _THUNDER_ENV_NAMES = {
 }
 
 
-def _cloud_policy_values(*, thunder_enabled: bool) -> tuple[set[str], str]:
+def _cloud_policy_values(*, thunder_enabled: bool) -> tuple[set[str], str, str]:
     code = (
         "import cloud_policy;"
         "from fastapi import HTTPException;"
@@ -35,7 +35,11 @@ def _cloud_policy_values(*, thunder_enabled: bool) -> tuple[set[str], str]:
         " build_trial_specs_from_sweep(submission,allowed_environments="
         "cloud_policy.ALLOWED_CLOUD_ENVIRONMENTS)\n"
         "except HTTPException as exc:\n decision=f'rejected:{exc.status_code}'\n"
-        "print(decision)"
+        "print(decision);"
+        "gpu_submission=TaskSweepSubmission.model_validate({"
+        "'task_id':'t','configs':[{'agent':'nop','n_trials':1}],"
+        "'harbor':{'environment':{'override_gpus':1}}});"
+        "print(cloud_policy.get_default_cloud_environment(gpu_submission).value)"
     )
     env = {
         key: value
@@ -60,17 +64,21 @@ def _cloud_policy_values(*, thunder_enabled: bool) -> tuple[set[str], str]:
         cwd=str(_BACKEND_ROOT),
     )
     assert result.returncode == 0, result.stderr
-    allowed, decision = result.stdout.strip().splitlines()
-    return set(allowed.split(",")), decision
+    allowed, decision, gpu_default = result.stdout.strip().splitlines()
+    return set(allowed.split(",")), decision, gpu_default
 
 
 def test_thunder_is_accepted_only_when_enabled() -> None:
-    disabled_allowed, disabled_decision = _cloud_policy_values(
+    disabled_allowed, disabled_decision, disabled_gpu_default = _cloud_policy_values(
         thunder_enabled=False
     )
-    enabled_allowed, enabled_decision = _cloud_policy_values(thunder_enabled=True)
+    enabled_allowed, enabled_decision, enabled_gpu_default = _cloud_policy_values(
+        thunder_enabled=True
+    )
 
     assert "thunder" not in disabled_allowed
     assert "thunder" in enabled_allowed
     assert disabled_decision == "rejected:400"
     assert enabled_decision == "accepted"
+    assert disabled_gpu_default == "modal"
+    assert enabled_gpu_default == "modal"

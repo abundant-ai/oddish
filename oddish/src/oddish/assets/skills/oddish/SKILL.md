@@ -71,7 +71,7 @@ not authorize a later mutation.
    deterministic and bounded:
 
    ```bash
-   oddish run ./smoke_test_thunder --env thunder -a nop \
+   oddish run ./smoke_test_thunder/task --env thunder -a nop \
      --n-trials 1 --max-trial-attempts 1 --json
    ```
 

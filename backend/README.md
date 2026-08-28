@@ -308,7 +308,7 @@ Then, from the Oddish repository root, submit the hermetic smoke task with one
 deterministic `nop` attempt:
 
 ```bash
-oddish run ../smoke_test_thunder --env thunder -a nop \
+oddish run ../smoke_test_thunder/task --env thunder -a nop \
   --n-trials 1 --max-trial-attempts 1 --json
 ```
 
