@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import pytest
 import pytest_asyncio
+from sqlalchemy import select
 
 import auth.provisioning as prov
 from auth.provisioning import (
@@ -632,3 +633,43 @@ async def test_set_github_id_savepoint_swallows_concurrent_race(org_id) -> None:
         b = await session.get(UserModel, b_id)
         holders = [u.github_id for u in (a, b) if u.github_id == "raced"]
         assert len(holders) == 1  # persisted exactly once
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_concurrent_first_login_adopts_one_user(monkeypatch, org_id) -> None:
+    """Two first-page requests for one Clerk identity must return one local user.
+
+    Both transactions can miss the initial SELECT. The email unique constraint
+    chooses one INSERT; the loser rolls back only its savepoint and reselects
+    the winner instead of aborting the dashboard request.
+    """
+    clerk_user_id = f"clerk_{uuid.uuid4().hex[:8]}"
+    email = f"first-login-{uuid.uuid4().hex[:8]}@example.com"
+    _mock_clerk(monkeypatch, None)
+
+    async def _provision() -> str:
+        async with get_session() as session:
+            org = await session.get(OrganizationModel, org_id)
+            user = await get_or_create_user_in_org(
+                session,
+                clerk_user_id,
+                org,
+                email,
+                "member",
+                UserRole.MEMBER,
+            )
+            return user.id
+
+    user_ids = await asyncio.wait_for(
+        asyncio.gather(_provision(), _provision()), timeout=15
+    )
+    assert user_ids[0] == user_ids[1]
+
+    async with get_session() as session:
+        rows = await session.execute(
+            select(UserModel)
+            .where(UserModel.org_id == org_id)
+            .where(UserModel.email == email)
+        )
+        assert [user.id for user in rows.scalars()] == [user_ids[0]]
