@@ -28,6 +28,7 @@ class ParsedAnalysisPayload:
     pre_trial_must_fix_ids: tuple[str, ...] = ()
     with_verdict: bool = True
     target_trial_id: str | None = None
+    task_version_content_hash: str | None = None
 
 
 def parse_analysis_payload(
@@ -35,10 +36,33 @@ def parse_analysis_payload(
     harbor_config: dict | None,
 ) -> ParsedAnalysisPayload:
     """Validate stored analysis JSON once at its persistence boundary."""
+    if kind not in ("qa", "qa_eval", "audit", "summarize"):
+        raise AnalysisPayloadError(f"unsupported analysis trial kind {kind!r}")
+
     payload = (harbor_config or {}).get("analysis_payload")
+    if kind == "audit" and payload is None:
+        # Audit payloads predate content-hash pinning. A missing object means
+        # there is no pin, not that the audit contract is malformed.
+        return ParsedAnalysisPayload(kind=kind)
     if not isinstance(payload, dict):
         raise AnalysisPayloadError(
             f"{kind} harbor_config.analysis_payload must be an object"
+        )
+
+    if kind == "audit":
+        content_hash = payload.get("task_version_content_hash")
+        if content_hash is not None and (
+            not isinstance(content_hash, str) or not content_hash.strip()
+        ):
+            raise AnalysisPayloadError(
+                "audit analysis_payload.task_version_content_hash must be a "
+                "non-empty string when present"
+            )
+        return ParsedAnalysisPayload(
+            kind=kind,
+            task_version_content_hash=(
+                content_hash.strip() if isinstance(content_hash, str) else None
+            ),
         )
 
     if kind in ("qa", "qa_eval"):
@@ -123,10 +147,7 @@ def parse_analysis_payload(
             target_trial_id=target_trial_id.strip(),
         )
 
-    if kind == "audit":
-        return ParsedAnalysisPayload(kind=kind)
-
-    raise AnalysisPayloadError(f"unsupported analysis trial kind {kind!r}")
+    raise AssertionError(f"unhandled analysis trial kind {kind!r}")
 
 
 def analysis_source_trial_ids(

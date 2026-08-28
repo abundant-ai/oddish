@@ -594,16 +594,28 @@ async def _read_trial_trajectory_from_s3(
     if layout.mode is TrialArtifactMode.EXACT:
         assert layout.artifact_prefix is not None
         trajectory_key = f"{layout.artifact_prefix}agent/trajectory.json"
-        if not await storage.object_exists(trajectory_key):
+        if await storage.object_exists(trajectory_key):
+            try:
+                content = await storage.download_text(trajectory_key)
+                if content:
+                    parsed: dict = _json.loads(content)
+                    return parsed
+            except (_json.JSONDecodeError, TypeError, ValueError):
+                return None
+
+        grok_key = f"{layout.artifact_prefix}agent/grok-build.json"
+        if not await storage.object_exists(grok_key):
             return None
         try:
-            content = await storage.download_text(trajectory_key)
-            if content:
-                parsed: dict = _json.loads(content)
-                return parsed
+            content = await storage.download_text(grok_key)
+            if not content:
+                return None
+            return _convert_grok_build_text_to_trajectory(
+                content,
+                model_name=trial.model,
+            )
         except (_json.JSONDecodeError, TypeError, ValueError):
             return None
-        return None
 
     if layout.mode is TrialArtifactMode.UNAVAILABLE:
         return None

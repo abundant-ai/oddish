@@ -105,6 +105,61 @@ async def test_analysis_creation_stores_kind_only_once(monkeypatch):
     assert trial.harbor_config["analysis_payload"]["trial_ids"] == ["source-1"]
 
 
+@pytest.mark.asyncio
+async def test_audit_creation_stores_an_empty_payload_without_a_content_hash(
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from oddish.db import TaskModel, TaskVersionModel
+    from oddish.workers.analysis_trials import create_analysis_trial
+
+    task = TaskModel(
+        id="task-1",
+        name="task-1",
+        org_id="org-1",
+        current_version_id="version-1",
+    )
+    version = SimpleNamespace(id="version-1", content_hash=None)
+
+    class FakeSession:
+        def add(self, _row):
+            return None
+
+        async def flush(self):
+            return None
+
+        async def get(self, model, row_id):
+            if model is TaskVersionModel and row_id == version.id:
+                return version
+            return None
+
+    async def reserve_next_trial_index(_session, *, task_id):
+        assert task_id == "task-1"
+        return 1
+
+    async def enqueue_trial_worker_job(_session, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "oddish.queue.reserve_next_trial_index", reserve_next_trial_index
+    )
+    monkeypatch.setattr(
+        "oddish.queue.enqueue_trial_worker_job", enqueue_trial_worker_job
+    )
+
+    trial = await create_analysis_trial(
+        FakeSession(),
+        task=task,
+        kind="audit",
+        brief="audit this version",
+        task_version_id=version.id,
+        experiment_id="analysis-experiment",
+    )
+
+    assert trial.harbor_config["analysis_payload"] == {}
+
+
 def test_the_qa_brief_tells_the_agent_everything_it_needs():
     """The brief must name each trial, the output file, the labels, and the
     verdict fields. If one is missing, the QA agent cannot do its job."""
@@ -304,6 +359,33 @@ def test_analysis_check_payload_rejects_unknown_kinds():
 
     with pytest.raises(AnalysisPayloadError, match="unsupported"):
         analysis_check_payload("typo", {"analysis_payload": {}})
+
+
+def test_audit_payload_allows_historical_missing_metadata_and_parses_hashes():
+    from oddish.core.analysis_payload import parse_analysis_payload
+    from oddish.workers.analysis_trials import analysis_check_payload
+
+    expected = analysis_check_payload(
+        "audit", {"extra_instructions": "audit this version"}
+    )
+    assert expected["kind"] == "audit"
+
+    parsed = parse_analysis_payload(
+        "audit",
+        {"analysis_payload": {"task_version_content_hash": "  sha256:current  "}},
+    )
+    assert parsed.task_version_content_hash == "sha256:current"
+
+
+def test_audit_payload_rejects_malformed_content_hashes():
+    from oddish.core.analysis_payload import AnalysisPayloadError
+    from oddish.workers.analysis_trials import analysis_check_payload
+
+    with pytest.raises(AnalysisPayloadError, match="non-empty string"):
+        analysis_check_payload(
+            "audit",
+            {"analysis_payload": {"task_version_content_hash": ""}},
+        )
 
 
 @pytest.mark.asyncio

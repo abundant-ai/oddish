@@ -196,8 +196,7 @@ def analysis_check_payload(kind: str, harbor_config: dict | None) -> dict:
             **trajectory_vocabulary,
         }
     if kind == "audit":
-        if harbor_config is not None:
-            parse_analysis_payload(kind, harbor_config)
+        parse_analysis_payload(kind, harbor_config)
         return {
             "kind": "audit",
             "sources": [ActionItemSource.PRE_TRIAL.value],
@@ -341,15 +340,14 @@ async def create_analysis_trial(
         analysis_agent, model or settings.analysis_model
     )
     harbor_config: dict = {"extra_instructions": brief}
-    if kind == "audit" and version is not None and version.content_hash:
-        # Pin the audited bytes. An in-place overwrite keeps the version id
-        # while replacing its content, so the importer needs more than the
-        # id to tell a stale audit from a current one.
-        payload = {
-            **(payload or {}),
-            "task_version_content_hash": version.content_hash,
-        }
-    if payload:
+    if kind == "audit":
+        payload = dict(payload or {})
+        if version is not None and version.content_hash:
+            # Pin the audited bytes. An in-place overwrite keeps the version id
+            # while replacing its content, so the importer needs more than the
+            # id to tell a stale audit from a current one.
+            payload["task_version_content_hash"] = version.content_hash
+    if payload is not None:
         harbor_config["analysis_payload"] = payload
     if kind == "summarize":
         harbor_config["agent_config"] = {
@@ -1451,9 +1449,19 @@ async def _import_audit_result(trial: TrialModel) -> None:
     # cancels live audits); this pin catches the race where the audit
     # settled first or was already importing. Old-bytes findings must never
     # land on the overwritten version.
-    pinned_hash = ((trial.harbor_config or {}).get("analysis_payload") or {}).get(
-        "task_version_content_hash"
-    )
+    try:
+        audit_payload = parse_analysis_payload("audit", trial.harbor_config)
+    except AnalysisPayloadError as exc:
+        error = f"audit trial {trial.id} carries an invalid analysis payload: {exc}"
+        logger.warning("audit import for version %s failed: %s", version_id, error)
+        await sync_pre_trial_to_task_version(
+            version_id,
+            payload=None,
+            error=RuntimeError(error),
+            expected_content_hash=None,
+        )
+        return
+    pinned_hash = audit_payload.task_version_content_hash
     if pinned_hash:
         async with get_session() as session:
             current_hash = await session.scalar(
