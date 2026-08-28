@@ -325,11 +325,11 @@ export function useTaskOpenReader(
       [exactAgentModels, trialsForVersion]
     );
   const detailKey = taskDetailKey(taskId);
-  const revalidateReaderResources = useCallback(() => {
-    void mutate();
-    if (cache.get(detailKey) !== undefined) {
-      void mutateCache(detailKey);
-    }
+  const revalidateReaderResources = useCallback(async () => {
+    await Promise.all([
+      mutate(),
+      cache.get(detailKey) !== undefined ? mutateCache(detailKey) : undefined,
+    ]);
   }, [cache, detailKey, mutate, mutateCache]);
 
   return {

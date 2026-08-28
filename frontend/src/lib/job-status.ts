@@ -90,7 +90,7 @@ export function taskHasActiveAnalysis(task: Task | null | undefined): boolean {
 // crash the flags can be stale. The qa/cancel endpoint cancels both kinds.
 export function isLiveAnalysisTrial(trial: Trial): boolean {
   return (
-    !isAgentTrial(trial) &&
+    (trial.kind === "qa" || trial.kind === "audit") &&
     !trial.superseded_by_trial_id &&
     isActiveTrialStatus(trial.status)
   );

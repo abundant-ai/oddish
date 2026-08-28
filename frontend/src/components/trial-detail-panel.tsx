@@ -175,7 +175,7 @@ interface TrialDetailPanelProps {
   }> | null;
   onNavigate?: (trial: Trial, trialIndex: number | null) => void;
   onNavigateToTask?: () => void;
-  onRetry?: (taskIds?: string[]) => void;
+  onRetry?: (taskIds?: string[]) => void | Promise<void>;
   onDelete?: (trial: Trial, task: Task | null) => Promise<void>;
   apiBaseUrl?: string;
   allowRetry?: boolean;
@@ -228,7 +228,7 @@ function TrialAnalysisCard({
   taskQaInProgress: boolean;
   apiBaseUrl: string;
   actionsReady: boolean;
-  onQueued?: () => void;
+  onQueued?: () => void | Promise<void>;
   activeQaTrial: Trial | null;
   onOpenActiveQaTrial?: (qaTrial: Trial) => void;
   onFeedback?: (record: FeedbackRecord) => Promise<void>;
@@ -299,7 +299,7 @@ function TrialAnalysisCard({
       }
       // The server created one task-level QA trial. Refresh the task-open
       // resource so its active_qa_trial becomes the source of truth.
-      onQueued?.();
+      await onQueued?.();
     } catch (err) {
       setQueueError(
         err instanceof Error ? err.message : "Failed to queue analysis"
