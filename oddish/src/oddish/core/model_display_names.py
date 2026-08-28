@@ -1,24 +1,15 @@
-"""Operator model aliases, applied to published share responses.
+"""Per-experiment operator model aliases, applied to published share responses.
 
-``apply_model_display_names`` rewrites already-built ``TrialResponse``
-objects, after ``build_trial_response`` resolved cost from the real model
-id. Nothing may run it earlier or feed an alias into ``normalize_trial_model``
-or a pricing lookup -- those key off ``trials.model`` and would mis-price.
+``apply_model_display_names`` rewrites already-built ``TrialResponse`` objects,
+after ``build_trial_response`` resolved cost from the real model id. Nothing may
+run it earlier or feed an alias into a pricing lookup -- those key off
+``trials.model`` and would mis-price.
 """
 
-import logging
 from collections.abc import Iterable
 
-from sqlalchemy import select
-from sqlalchemy.exc import ProgrammingError
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from oddish.config import normalize_model_id
-from oddish.db import ModelDisplayNameModel
-from oddish.db.pg_errors import is_missing_table
 from oddish.schemas import TrialResponse
-
-logger = logging.getLogger(__name__)
 
 
 def _lookup_keys(model: str | None) -> list[str]:
@@ -29,49 +20,27 @@ def _lookup_keys(model: str | None) -> list[str]:
 
 
 def canonical_model_key(model: str) -> str:
-    """The single spelling an alias is stored under.
-
-    Writers canonicalize through this so the live UNIQUE index collapses case
-    and whitespace variants into one row; ``_lookup_keys`` covers the same
-    ground from the read side, so the two always meet.
-    """
+    """The single spelling an alias is stored under; ``_lookup_keys`` covers the
+    same case/whitespace variants on the read side, so writes and reads meet."""
     keys = _lookup_keys(model)
     return keys[-1] if keys else ""
 
 
-async def load_model_display_names(session: AsyncSession) -> dict[str, str]:
-    try:
-        # Savepoint so a missing table leaves the caller's transaction usable;
-        # public share reads run several more queries after this one.
-        async with session.begin_nested():
-            rows = list(await session.scalars(select(ModelDisplayNameModel)))
-    except ProgrammingError as exc:
-        # Only a MISSING table degrades -- any other SQL fault must surface.
-        # Share pages predate this feature, so during the deploy-before-migrate
-        # window they render real model ids instead of 500ing.
-        if not is_missing_table(exc):
-            raise
-        logger.warning(
-            "model display names unavailable (schema not migrated yet); "
-            "published pages show real model ids",
-            exc_info=True,
-        )
-        return {}
+def experiment_display_names(experiment) -> dict[str, str]:
+    """One experiment's stored alias map, each key expanded through
+    ``_lookup_keys`` so reads match whatever spelling a trial carries."""
+    stored = getattr(experiment, "public_model_renames", None) or {}
     names: dict[str, str] = {}
-    for row in rows:
-        for key in _lookup_keys(row.model_name):
-            names.setdefault(key, row.display_name)
+    for model_name, display in stored.items():
+        if not display:
+            continue
+        for key in _lookup_keys(model_name):
+            names.setdefault(key, display)
     return names
 
 
 def display_model_name(model: str | None, names: dict[str, str]) -> str | None:
-    """The alias for one model id, or the id unchanged when none is set.
-
-    For published payloads that carry model ids outside a ``TrialResponse`` --
-    the cohort comparison names the models on each side, and cites one per
-    trial. Those spellings have to be masked by the same table, or a share page
-    hides the real id in the trial grid and prints it in the analysis below.
-    """
+    """The alias for one model id, or the id unchanged when none is set."""
     if not names or not model:
         return model
     return next((names[key] for key in _lookup_keys(model) if key in names), model)
@@ -80,11 +49,8 @@ def display_model_name(model: str | None, names: dict[str, str]) -> str | None:
 def mask_trajectory_model_names(
     trajectory: dict | None, names: dict[str, str]
 ) -> dict | None:
-    """Rewrite the model ids an ATIF trajectory carries, on a copy.
-
-    The trial grid masks ``trials.model``, but a share page renders the
-    trajectory's own ``agent.model_name`` and per-step ``model_name`` too --
-    unmasked, the step headers print the real id directly beneath the alias.
+    """Rewrite the model ids a share page renders from an ATIF trajectory's own
+    ``agent.model_name`` and per-step ``model_name``.
 
     Copies rather than mutates: ``read_trial_trajectory`` memoizes the parsed
     document, and the authenticated route serves that same object, which must
@@ -94,10 +60,7 @@ def mask_trajectory_model_names(
         return trajectory
 
     def masked_name(value):
-        # The document is agent-written JSON, not a validated schema. A
-        # model_name that is not a string reaches _lookup_keys' .strip() and
-        # 500s the whole trajectory read, so pass anything odd straight
-        # through rather than trusting the declared type.
+        # Agent-written JSON: a non-string model_name would 500 in _lookup_keys.
         if not isinstance(value, str):
             return value
         return display_model_name(value, names)

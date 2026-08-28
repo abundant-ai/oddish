@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import functools
 from functools import partial
 import json
 import logging
@@ -16,15 +16,10 @@ from pathlib import Path
 from harbor.models.environment_type import EnvironmentType
 from harbor.models.job.config import RetryConfig
 from harbor.trial.hooks import TrialEvent, TrialHookEvent
-
-# Only the abundant-ai Harbor fork defines ENVIRONMENT_PROVISIONED; against
-# vanilla harbor the attribute access itself would raise AttributeError on
-# every hook event. Resolve it once so the comparisons below simply never
-# match when the event does not exist.
-_ENVIRONMENT_PROVISIONED = getattr(TrialEvent, "ENVIRONMENT_PROVISIONED", None)
 from harbor.viewer.scanner import JobScanner
 from sqlalchemy import select, update
 
+from oddish.core.harbor_artifacts import build_trial_result
 from oddish.config import settings
 from oddish.costs.modal_cost import SpanResources
 from oddish.costs.recorder import (
@@ -44,10 +39,12 @@ from oddish.db import (
     WorkerJobModel,
     WorkerJobStatus,
     get_session,
+    is_worker_owned_trial_status,
     utcnow,
 )
 from oddish.core.llm_key_fingerprint import trial_llm_key_hash
 from oddish.core.task_browse_summary import refresh_task_browse_summaries
+from oddish.config import HARBOR_DEFAULT_SHA, HARBOR_DEFAULT_SOURCE
 from oddish.db.storage import get_storage_client, resolve_task_directory
 from oddish.model_pricing import is_native_cost_trusted, settle_cost_usd
 from oddish.observability import (
@@ -66,7 +63,6 @@ from oddish.worker.probe_analysis import (
 )
 from oddish.worker.local_offline_policy import enable_local_internet
 from oddish.worker.probe_creds import (
-    ProbeCredsError,
     mint_probe_creds,
     revoke_probe_creds,
 )
@@ -78,7 +74,7 @@ from oddish.worker.probe_staging import (
 )
 from oddish.workers.analysis_trials import is_analysis_kind
 from oddish.workers.harbor.ephemeral import HarborOverrideImportError
-from oddish.workers.harbor.outcome import merged_trial_result
+from oddish.workers.harbor.quota_control import QuotaPauseControlError
 from oddish.workers.harbor.runner import (
     HarborOutcome,
     capture_live_sandbox_resources,
@@ -101,7 +97,98 @@ from oddish.workers.queue.worker_job_single_job import (
 
 logger = logging.getLogger(__name__)
 
+# Only the abundant-ai Harbor fork defines ENVIRONMENT_PROVISIONED. Resolve it
+# once so vanilla Harbor simply never matches that hook event.
+_ENVIRONMENT_PROVISIONED = getattr(TrialEvent, "ENVIRONMENT_PROVISIONED", None)
 TRIAL_HEARTBEAT_INTERVAL_SECONDS = 30
+
+
+@functools.lru_cache(maxsize=1)
+def _installed_harbor_descriptor() -> tuple[str, str]:
+    """The source and commit of the harbor THIS process imports.
+
+    Read from the installed distribution's PEP 610 ``direct_url.json``, which
+    records the resolved VCS URL and commit for a git install -- the one
+    answer that is correct in every runtime: variant image, default image,
+    self-host dispatcher, or local mode. Falls back to the locked default pin
+    when the metadata is unavailable (a non-git install), which is what such
+    an environment executes.
+    """
+    try:
+        import importlib.metadata
+        import json as _json
+
+        raw = importlib.metadata.distribution("harbor").read_text("direct_url.json")
+        info = _json.loads(raw or "")
+        url = str(info.get("url") or "").removeprefix("git+").removesuffix(".git")
+        sha = str((info.get("vcs_info") or {}).get("commit_id") or "")
+        if url and sha:
+            return url, sha
+    except Exception:  # noqa: BLE001 -- any metadata shape falls back
+        pass
+    return HARBOR_DEFAULT_SOURCE, HARBOR_DEFAULT_SHA
+
+
+def _refresh_stable_variant_pin(
+    trial, *, executing: tuple[str, str] | None = None
+) -> dict | None:
+    """Refresh a stable-variant trial's recorded harbor pin at claim time.
+
+    The deployment is the unit of harbor identity for stable variants: the
+    ``gke`` variant image bakes the blessed gke pin, and every other worker
+    executes the locked default pin -- so a trial queued across a pin bump
+    executes whatever the deployment now ships, and the pin stamped at
+    submission can go stale while it waits. Rewrite the record the moment
+    the worker claims the job so the row matches execution; the trial's own
+    lock.json already told the truth, this makes the database agree with it.
+
+    The indexed ``trials.harbor_sha`` projection is reconciled even when the
+    pin itself already matches: immutable retry, combine, and import all
+    persist ``harbor_config`` without the projection, and sha filters query
+    only the projection.
+
+    Left untouched: ``ephemeral`` exact-pin trials (they run the sha they
+    recorded, out of process) beyond the projection sync, and configs with
+    no harbor identity at all (audit/analysis payloads execute no pin).
+    """
+    harbor_config = getattr(trial, "harbor_config", None)
+    if not isinstance(harbor_config, dict):
+        return harbor_config
+    variant_id = harbor_config.get("variant_id")
+    if variant_id is None and "resolved_sha" not in harbor_config:
+        return harbor_config
+    if variant_id != "ephemeral":
+        # ``executing`` is what the claiming runtime actually runs. When the
+        # caller does not say, ask the runtime itself: the imported harbor's
+        # installation metadata carries the resolved source and commit, which
+        # is exact in every mode -- a Modal variant image bakes its blessed
+        # pin, the default image bakes the locked default, and a self-host
+        # or local worker executes whatever is installed, regardless of the
+        # trial's variant label.
+        if executing is None:
+            executing = _installed_harbor_descriptor()
+        source, sha = executing
+        if (
+            harbor_config.get("resolved_sha") != sha
+            or harbor_config.get("source") != source
+        ):
+            logger.warning(
+                "trial %s: recorded harbor pin %s superseded by the deployed %s "
+                "at claim",
+                getattr(trial, "id", "?"),
+                harbor_config.get("resolved_sha"),
+                sha,
+            )
+            harbor_config = {
+                **harbor_config,
+                "source": source,
+                "resolved_sha": sha,
+            }
+            trial.harbor_config = harbor_config
+    resolved = harbor_config.get("resolved_sha")
+    if hasattr(trial, "harbor_sha") and trial.harbor_sha != resolved:
+        trial.harbor_sha = resolved
+    return harbor_config
 
 
 def _extract_trial_index(trial_id: str, task_id: str) -> int:
@@ -181,6 +268,7 @@ class PreparedTrialRun:
     trial_model: str
     trial_environment: str | None
     trial_harbor_config: dict | None
+    task_version: int | None = None
     # Fields for sauron S3 mirror
     task_name: str = ""
     experiment_id: str = ""
@@ -200,7 +288,19 @@ class PreparedTrialRun:
 class TrialExecutionResult:
     outcome: HarborOutcome | None
     execution_error: str | None
+    retryable: bool = True
     tailed_attempt: int | None = None
+
+
+@dataclass(slots=True)
+class PreparedTrialTask:
+    task_path: Path
+    temp_task_dir: Path | None
+    resolved_task_s3_key: str | None
+    probe_extra_instructions: str | None
+    probe_agent_env: dict[str, str] | None
+    probe_key_id: str | None
+    trial_mode: str | None
 
 
 @dataclass(slots=True)
@@ -218,6 +318,14 @@ class SandboxCostState:
     terminal_at: datetime | None = None
 
 
+@dataclass(slots=True)
+class PreparedTrialAttempt:
+    task: PreparedTrialTask
+    byok_env: dict[str, str] | None
+    sandbox_launch: SandboxLaunchContext | None
+    cost_state: SandboxCostState
+
+
 def _is_agent_timeout_exception(exc: object | None) -> bool:
     return bool(exc and getattr(exc, "exception_type", None) == "AgentTimeoutError")
 
@@ -228,26 +336,24 @@ def _is_agent_timeout_error_message(error: str | None) -> bool:
     return "AgentTimeoutError" in error or "Agent execution timed out" in error
 
 
-# Source of truth for "the trial finished with an error that retrying in a
-# fresh sandbox cannot fix" lives in Harbor's RetryConfig. We resolve the
-# default exclude set at import time and treat any HarborOutcome whose
-# exception_type lands in here as terminal — without this, a dying-sandbox
-# AddTestsDirError on a 10h ruby-rust-port trial gets re-queued up to
-# ``trial.max_attempts`` times against fresh sandboxes that hit the same
-# failure mode for the same upstream reason.
-# A broken override ref (bad source/sha, dep/import mismatch) can't be fixed by
-# a fresh sandbox either, so the ephemeral engine's terminal failure joins the
-# set: it blocks re-queue of attempts 2..max without burning the already-counted
-# first attempt.
-_NON_RETRYABLE_EXCEPTION_TYPES: frozenset[str] = frozenset(
-    RetryConfig.model_fields["exclude_exceptions"].default_factory() or set()
-) | {"AddTestsDirError", HarborOverrideImportError.__name__}
+# Harbor RetryConfig owns Harbor exception policy. These two Oddish-only
+# failures cannot be repaired by starting another sandbox.
+_NON_HARBOR_RETRYABLE_EXCEPTION_TYPES = {
+    HarborOverrideImportError.__name__,
+    QuotaPauseControlError.__name__,
+}
 
 
-def _is_non_retryable_outcome(outcome: HarborOutcome | None) -> bool:
+def _is_non_retryable_outcome(trial: object, outcome: HarborOutcome | None) -> bool:
     if outcome is None or outcome.exception_type is None:
         return False
-    return outcome.exception_type in _NON_RETRYABLE_EXCEPTION_TYPES
+    if outcome.exception_type in _NON_HARBOR_RETRYABLE_EXCEPTION_TYPES:
+        return True
+    harbor_config = getattr(trial, "harbor_config", None)
+    retry = harbor_config.get("retry") if isinstance(harbor_config, dict) else None
+    return not RetryConfig.model_validate(retry or {}).should_retry(
+        outcome.exception_type
+    )
 
 
 def _expects_no_reward(trial: object) -> bool:
@@ -380,7 +486,7 @@ async def _touch_trial_execution(
         session,
         trial,
     ):
-        if not trial or trial.status != TrialStatus.RUNNING:
+        if not trial or not is_worker_owned_trial_status(trial.status):
             return False
         if trial.superseded_by_trial_id is not None:
             return False
@@ -414,7 +520,7 @@ async def _heartbeat_trial_execution(
     queue_slot: int | None,
     stop_event: asyncio.Event,
     worker_job_id: str | None = None,
-    fatal_error: asyncio.Future[TrialExecutionResult] | None = None,
+    heartbeat_interrupt: asyncio.Future[None] | None = None,
 ) -> None:
     """Periodically write heartbeat_at to keep the trial out of stale-reap.
 
@@ -438,6 +544,9 @@ async def _heartbeat_trial_execution(
     next successful write so operators can tell after the fact whether a
     stale-heartbeat reap was caused by (a) the worker dying silently or
     (b) the DB/pooler being unreachable for a stretch.
+
+    ``heartbeat_interrupt`` completes normally when worker-job ownership is
+    lost and carries an exception only when the capacity lease fails.
     """
     consecutive_failures = 0
     pending_failure_count = 0
@@ -465,12 +574,23 @@ async def _heartbeat_trial_execution(
                 pending_last_error_at=pending_last_error_at,
             )
             if worker_job_id:
-                await heartbeat_worker_job(
+                still_owned = await heartbeat_worker_job(
                     worker_job_id,
                     current_worker_id=worker_id,
                     pending_failure_count=pending_failure_count,
                     pending_last_error=pending_last_error,
                 )
+                if not still_owned:
+                    console.print(
+                        f"[yellow]Trial {trial_id} worker job was cancelled; "
+                        "stopping execution[/yellow]"
+                    )
+                    if (
+                        heartbeat_interrupt is not None
+                        and not heartbeat_interrupt.done()
+                    ):
+                        heartbeat_interrupt.set_result(None)
+                    return
             if consecutive_failures > 0:
                 console.print(
                     f"[green]Trial {trial_id} heartbeat recovered after "
@@ -482,8 +602,8 @@ async def _heartbeat_trial_execution(
             pending_last_error_at = None
         except SandboxCapacityLeaseLostError as exc:
             console.print(f"[red]Trial {trial_id} capacity lease lost: {exc}[/red]")
-            if fatal_error is not None and not fatal_error.done():
-                fatal_error.set_exception(exc)
+            if heartbeat_interrupt is not None and not heartbeat_interrupt.done():
+                heartbeat_interrupt.set_exception(exc)
             return
         except Exception as exc:
             consecutive_failures += 1
@@ -530,12 +650,12 @@ async def _prepare_trial_run(
         trial.total_tool_calls = None
         trial.tool_counts = None
         trial.cost_usd = None
-        # llm_key_hash deliberately survives this reset: it is the last
-        # attempt's funding key, the best prediction for the retry, and wiping
-        # it would flip an excluded-key trial back into the inflight quota
-        # reservation mid-run. Settlement overwrites it with the actual key.
         trial.phase_timing = None
         trial.has_trajectory = False
+        # A stale analysis from an earlier attempt is dropped in
+        # ``_run_post_trial_hooks``, not here: clearing it at attempt start would
+        # leave the trial unclassified for the whole attempt, racing an in-flight
+        # QA job that snapshots its work list up front.
         trial.attempts += 1
 
         if not trial.idempotency_key:
@@ -561,11 +681,13 @@ async def _prepare_trial_run(
 
         task_path: str | None = None
         task_s3_key: str | None = None
+        task_version: int | None = None
         if trial.task_version_id:
             tv = await session.get(TaskVersionModel, trial.task_version_id)
             if tv:
                 task_path = tv.task_path
                 task_s3_key = tv.task_s3_key
+                task_version = tv.version
         if task_path is None and task:
             task_path = task.task_path
         if task_s3_key is None and task:
@@ -578,7 +700,7 @@ async def _prepare_trial_run(
         if trial.queue_key != canonical_queue_key:
             trial.queue_key = canonical_queue_key
         trial_environment = trial.environment
-        trial_harbor_config = trial.harbor_config
+        trial_harbor_config = _refresh_stable_variant_pin(trial)
         trial.current_worker_id = worker_id
         trial.current_queue_slot = queue_slot
         trial.claimed_at = utcnow()
@@ -596,6 +718,7 @@ async def _prepare_trial_run(
             trial_model=trial_model,
             trial_environment=trial_environment,
             trial_harbor_config=trial_harbor_config,
+            task_version=task_version,
             task_name=task_name,
             experiment_id=experiment_id,
             experiment_name=experiment_name,
@@ -703,7 +826,6 @@ async def _worker_still_owns_trial(
 def _settle_trial_metering(
     trial,
     outcome: HarborOutcome,
-    byok_env,
     *,
     preserve_checkpointed_cost: bool = False,
 ):
@@ -729,8 +851,6 @@ def _settle_trial_metering(
     if preserve_checkpointed_cost and prev_cost_usd is not None:
         if trial.cost_usd is None or trial.cost_usd < prev_cost_usd:
             trial.cost_usd = prev_cost_usd
-    # Attribute spend to the BYOK overlay or platform key that funded the run.
-    trial.llm_key_hash = trial_llm_key_hash(provider, byok_env)
     return prev_cost_usd, provider, native_cost_trusted
 
 
@@ -766,17 +886,36 @@ def _log_trial_metering_integrity(
     )
 
 
+def _artifact_subprefix(harbor_config: dict | None) -> str | None:
+    """Analysis trials upload under a self-labeling segment.
+
+    Analysis trials share the subject task's trial-id
+    sequence and, by design, its storage neighborhood -- and trial ids
+    repeat across environments that share a bucket. Without the label, an
+    analysis agent's session under a colliding prefix reads as the subject
+    trial's own execution (a real misdiagnosis: an imported audit's sandbox
+    log was mistaken for a TPU trial's runtime).
+    """
+    if not isinstance(harbor_config, dict):
+        return None
+    mode = harbor_config.get("mode")
+    if mode in ("qa", "qa_eval", "audit", "summarize"):
+        return f"analysis-{mode}"
+    return None
+
+
 async def _store_trial_results(
     *,
     trial_id: str,
     outcome: HarborOutcome | None,
     trial_s3_key: str | None,
     execution_error: str | None,
+    artifact_upload_error: str | None = None,
+    execution_retryable: bool = True,
     probe_analysis: dict | None = None,
     worker_id: str | None = None,
     worker_job_id: str | None = None,
     trial_attempt: int,
-    byok_env: Mapping[str, str] | None = None,
 ) -> tuple[bool, bool]:
     """Return whether the trial is terminal and whether this call completed it."""
     async with _trial_session(trial_id, allow_missing=True, with_for_update=True) as (
@@ -806,10 +945,7 @@ async def _store_trial_results(
         if user_cancelled:
             if outcome:
                 _, provider, native_cost_trusted = _settle_trial_metering(
-                    trial,
-                    outcome,
-                    byok_env,
-                    preserve_checkpointed_cost=True,
+                    trial, outcome, preserve_checkpointed_cost=True
                 )
                 _log_trial_metering_integrity(
                     trial,
@@ -836,8 +972,12 @@ async def _store_trial_results(
 
         if outcome:
             is_timeout = _is_agent_timeout_error_message(outcome.error)
-            derived_reward = outcome.reward
-            if derived_reward is None and is_timeout:
+            # Analysis importers read their required result from durable storage.
+            # A verifier reward is not a successful analysis run when that
+            # artifact never reached storage: keep the trial on the normal retry
+            # path instead of publishing an unrecoverable SUCCESS row.
+            derived_reward = None if artifact_upload_error else outcome.reward
+            if derived_reward is None and is_timeout and not artifact_upload_error:
                 verifier_ran = _verifier_ran_from_job_result(
                     str(outcome.job_result_path) if outcome.job_result_path else None
                 )
@@ -848,7 +988,9 @@ async def _store_trial_results(
                     )
 
             trial.reward = derived_reward
-            if outcome.error:
+            if artifact_upload_error:
+                trial.error_message = artifact_upload_error
+            elif outcome.error:
                 trial.error_message = outcome.error
             elif derived_reward is not None:
                 trial.error_message = None
@@ -858,7 +1000,7 @@ async def _store_trial_results(
             trial.trial_s3_key = trial_s3_key
 
             prev_cost_usd, provider, native_cost_trusted = _settle_trial_metering(
-                trial, outcome, byok_env
+                trial, outcome
             )
             trial.total_steps = outcome.total_steps
             trial.trajectory_duration_seconds = outcome.trajectory_duration_seconds
@@ -869,11 +1011,15 @@ async def _store_trial_results(
             # Verifier-reported benchmark metrics (the metrics.json contract),
             # compact CTRF test counts, plus a harbor_exception marker when a
             # phase raised quietly.
-            trial.result = merged_trial_result(
+            trial.result = build_trial_result(
                 outcome.metrics,
+                outcome.verifier_summary,
                 outcome.error,
                 outcome.exception_type,
-                outcome.verifier_summary,
+                http_status=outcome.http_status,
+                request_id=outcome.request_id,
+                session_id=outcome.session_id,
+                retry_after_seconds=outcome.retry_after_seconds,
             )
 
             trial.has_trajectory = outcome.has_trajectory
@@ -898,7 +1044,7 @@ async def _store_trial_results(
                     console.print(
                         f"[red]Trial {trial_id} FAILED (Modal image build)[/red]"
                     )
-                elif _is_non_retryable_outcome(outcome):
+                elif _is_non_retryable_outcome(trial, outcome):
                     trial.status = TrialStatus.FAILED
                     trial.finished_at = utcnow()
                     console.print(
@@ -945,7 +1091,13 @@ async def _store_trial_results(
             trial.error_message = (
                 execution_error or "Trial execution failed with exception"
             )
-            if trial.attempts < trial.max_attempts:
+            if not execution_retryable:
+                trial.status = TrialStatus.FAILED
+                trial.finished_at = utcnow()
+                console.print(
+                    f"[red]Trial {trial_id} FAILED (non-retryable execution error)[/red]"
+                )
+            elif trial.attempts < trial.max_attempts:
                 trial.status = TrialStatus.RETRYING
                 trial.finished_at = None
                 console.print(
@@ -979,6 +1131,7 @@ async def _store_trial_results(
 
 
 async def _run_post_trial_hooks(trial_id: str) -> None:
+    from oddish.core.verdict_state import reset_verdict
     from oddish.queue import maybe_gate_llm_trials, maybe_start_qa_stage
     from oddish.workers.analysis_trials import handle_analysis_trial_settled
 
@@ -1003,6 +1156,49 @@ async def _run_post_trial_hooks(trial_id: str) -> None:
             if trial_kind == "agent":
                 if task is None or task.status == TaskStatus.FAILED:
                     return
+                # A retried trial's classification describes an earlier attempt
+                # -- one whose reward, result and artifacts
+                # ``_prepare_trial_run`` already cleared. Nothing re-runs QA on a
+                # task that has closed out, so that stale verdict would ride the
+                # row forever: a HARNESS_ERROR from an infra-killed attempt
+                # pinned to a trial that went on to pass.
+                #
+                # Dropped here, under the task + trial locks this function
+                # already holds, so it is atomic with the ``maybe_start_qa_stage``
+                # re-enqueue below and the trial is terminal (its artifacts
+                # complete). Clearing at attempt start would instead leave the
+                # trial unclassified for the length of an attempt, racing an
+                # in-flight QA trial that snapshots its graded set at creation.
+                #
+                # No timestamp comparison would be safe: a label an in-flight QA
+                # trial wrote mid-attempt -- off the row ``_prepare_trial_run``
+                # had already wiped -- carries a NEWER stamp than this attempt's
+                # own start, yet is exactly the kind that must go. Probes are the
+                # one exception; ``_store_trial_results`` writes their
+                # classification during settlement, above.
+                if trial.attempts > 1 and not trial.is_probe and trial.analysis_status:
+                    trial.analysis = None
+                    trial.analysis_status = None
+                    trial.analysis_error = None
+                    trial.analysis_started_at = None
+                    trial.analysis_finished_at = None
+                    # ``maybe_start_task_qa_stage`` only fires from
+                    # PENDING/RUNNING. If QA already closed this task out while
+                    # the attempt was still running, nothing would re-enqueue it
+                    # -- so reopen the task the way ``append_trials_to_task``
+                    # reopens a finished task when live trials appear. COMPLETED
+                    # is the only status reaching here that needs it: a FAILED
+                    # task returns above, PENDING/RUNNING re-enqueue on their
+                    # own, and VERDICT_PENDING means a QA trial is already live
+                    # and will grade this trial now that its analysis is gone.
+                    if task.status == TaskStatus.COMPLETED:
+                        task.status = TaskStatus.RUNNING
+                        task.finished_at = None
+                        if task.run_analysis:
+                            # The stale verdict described the same superseded
+                            # artifacts; discard it so the re-enqueued QA
+                            # republishes from the current attempt.
+                            reset_verdict(task)
                 await maybe_gate_llm_trials(session, trial_id)
                 if await maybe_start_qa_stage(session, trial_id):
                     console.print(
@@ -1093,17 +1289,19 @@ async def _handle_harbor_event(
         observed_at = observed_at.replace(tzinfo=timezone.utc)
 
     if _ENVIRONMENT_PROVISIONED is not None and event == _ENVIRONMENT_PROVISIONED:
-        if sandbox_launch is None:
-            raise RuntimeError(
-                f"Trial {trial_id} received environment-provisioned without a "
-                "sandbox ledger row"
+        provider = (hook_event.environment_provider or "").strip().lower()
+        if provider == "ec2":
+            if sandbox_launch is None:
+                raise RuntimeError(
+                    f"Trial {trial_id} received an EC2 environment-provisioned "
+                    "event without a sandbox ledger row"
+                )
+            await mark_environment_provisioned(
+                context=sandbox_launch,
+                provider=hook_event.environment_provider,
+                external_id=hook_event.environment_external_id,
+                worker_id=worker_id,
             )
-        await mark_environment_provisioned(
-            context=sandbox_launch,
-            provider=hook_event.environment_provider,
-            external_id=hook_event.environment_external_id,
-            worker_id=worker_id,
-        )
 
     if event in (TrialEvent.END, TrialEvent.CANCEL) and cost_state is not None:
         cost_state.terminal_at = observed_at
@@ -1367,6 +1565,7 @@ async def _execute_trial(
     sandbox_launch: SandboxLaunchContext | None = None,
 ) -> TrialExecutionResult:
     execution_error: str | None = None
+    retryable = True
     tailed_attempt: int | None = None
     try:
         try:
@@ -1381,8 +1580,9 @@ async def _execute_trial(
                 f"{prepared_trial.trial_environment or settings.harbor_environment}"
             ) from exc
 
-        is_probe = bool(
-            (prepared_trial.trial_harbor_config or {}).get("extra_instructions")
+        harbor_config = prepared_trial.trial_harbor_config or {}
+        is_probe = bool(harbor_config.get("extra_instructions")) and (
+            harbor_config.get("mode") != "summarize"
         )
         outcome = await run_harbor_trial_async(
             task_path=task_path_to_run,
@@ -1404,25 +1604,16 @@ async def _execute_trial(
             worker_job_id=worker_job_id,
             harbor_config=prepared_trial.trial_harbor_config,
             org_id=prepared_trial.org_id,
+            billed_user_id=prepared_trial.billed_user_id,
             extra_agent_env=extra_agent_env,
             sandbox_launch=sandbox_launch,
         )
     except asyncio.CancelledError:
-        # CancelledError inherits from BaseException, not Exception, so must be caught explicitly.
-        # This can happen if the worker is shutdown mid-trial.
-        import traceback
-
-        tb = traceback.format_exc()
-        execution_error = (
-            "Trial was cancelled by the worker runtime. This typically means the worker "
-            "was restarted, hit a timeout, or the job was explicitly cancelled. "
-            f"Check worker logs for details.\n\nTraceback:\n{tb}"
-        )
-        console.print(f"[yellow]Trial {trial_id} cancelled: {execution_error}[/yellow]")
-        outcome = None
-        # Don't re-raise - we want to properly update the trial status in the database
+        console.print(f"[yellow]Trial {trial_id} cancelled by worker runtime[/yellow]")
+        raise
     except Exception as e:
         execution_error = f"{type(e).__name__}: {e}"
+        retryable = not isinstance(e, QuotaPauseControlError)
         console.print(f"[red]Trial {trial_id} execution error: {execution_error}[/red]")
         outcome = None
     finally:
@@ -1439,21 +1630,9 @@ async def _execute_trial(
     return TrialExecutionResult(
         outcome=outcome,
         execution_error=execution_error,
+        retryable=retryable,
         tailed_attempt=tailed_attempt,
     )
-
-
-def _harbor_config_is_ephemeral(harbor_config: dict | None) -> bool:
-    """Whether the trial runs on the out-of-process (custom-Harbor) engine.
-
-    Mirrors the runner's own fork on ``variant_id``. BYOK is honored only
-    in-process: the ephemeral child builds its agent from the raw trial model
-    without the direct/Bedrock normalization a user key needs. Its agent env is
-    passed through a private temporary payload that is deleted as soon as the
-    child reads it, but BYOK still must not be resolved for these trials -- they
-    keep the platform credentials.
-    """
-    return bool((harbor_config or {}).get("variant_id") == "ephemeral")
 
 
 def _phase_timestamp(value: object) -> datetime | None:
@@ -1504,6 +1683,276 @@ async def _settle_compute_costs(
         )
 
 
+async def _prepare_trial_task(
+    *, trial_id: str, prepared_trial: PreparedTrialRun
+) -> PreparedTrialTask:
+    """Resolve and mutate the task copy consumed by one trial attempt.
+
+    This is the single pre-execution boundary for downloaded task bytes,
+    analysis/probe overlays, and probe credentials. Callers turn any exception
+    from this boundary into a normal ``TrialExecutionResult`` and settle it
+    through the same state machine as a Harbor execution failure.
+    """
+    temp_task_dir: Path | None = None
+    probe_key_id: str | None = None
+    try:
+        (
+            task_path_to_run,
+            temp_task_dir,
+            resolved_task_s3_key,
+        ) = await resolve_task_directory(
+            task_id=prepared_trial.task_id,
+            task_s3_key=prepared_trial.task_s3_key,
+            task_path=prepared_trial.task_path,
+        )
+        if temp_task_dir:
+            console.print(f"[dim]Downloaded task from S3: {resolved_task_s3_key}[/dim]")
+        else:
+            console.print(f"[dim]Using local task path: {task_path_to_run}[/dim]")
+
+        harbor_config = prepared_trial.trial_harbor_config or {}
+        probe_extra_instructions = harbor_config.get("extra_instructions")
+        probe_scope = harbor_config.get("probe_scope", "task")
+        trial_mode = harbor_config.get("mode")
+        probe_agent_env: dict[str, str] | None = None
+
+        if probe_extra_instructions:
+            # Every overlay mutates the task, so a mounted/canonical local path
+            # gets the same disposable copy as an S3-backed task.
+            if temp_task_dir is None:
+                probe_copy_root = Path(tempfile.mkdtemp(prefix=f"probe-{trial_id}-"))
+                temp_task_dir = probe_copy_root
+                probe_copy_dir = probe_copy_root / task_path_to_run.name
+                shutil.copytree(task_path_to_run, probe_copy_dir, symlinks=True)
+                task_path_to_run = probe_copy_dir
+
+            if is_analysis_kind(trial_mode):
+                from oddish.workers.analysis_trials import (
+                    ANALYSIS_ARTIFACTS,
+                    analysis_check_payload,
+                    materialize_summarize_brief,
+                )
+
+                if trial_mode == "summarize":
+                    probe_extra_instructions = await materialize_summarize_brief(
+                        harbor_config
+                    )
+                apply_analysis_overlay(
+                    task_path_to_run,
+                    brief=probe_extra_instructions,
+                    artifact=ANALYSIS_ARTIFACTS[trial_mode],
+                    check_payload=analysis_check_payload(trial_mode, harbor_config),
+                    needs_query_cli=trial_mode != "summarize",
+                )
+            else:
+                await apply_probe_overlay(
+                    task_path_to_run,
+                    task_id=prepared_trial.task_id,
+                    trial_id=trial_id,
+                    extra_instructions=probe_extra_instructions,
+                    probe_scope=probe_scope,
+                )
+
+            if trial_mode != "summarize":
+                # QA, audit, and operator probes use oddish-query inside the
+                # sandbox. Summarize receives its bounded input directly.
+                enable_local_internet(task_path_to_run)
+                probe_key_id, probe_agent_env = await mint_probe_creds(
+                    org_id=prepared_trial.org_id, trial_id=trial_id
+                )
+                probe_agent_env["ODDISH_PROBE_TASK_ID"] = prepared_trial.task_id
+                if prepared_trial.task_version is not None:
+                    probe_agent_env["ODDISH_PROBE_TASK_VERSION"] = str(
+                        prepared_trial.task_version
+                    )
+                probe_agent_env["ODDISH_PROBE_HARBOR_REPO"] = (
+                    settings.harbor_source_repo
+                )
+                probe_agent_env["ODDISH_PROBE_HARBOR_REF"] = settings.harbor_source_ref
+
+        return PreparedTrialTask(
+            task_path=task_path_to_run,
+            temp_task_dir=temp_task_dir,
+            resolved_task_s3_key=resolved_task_s3_key,
+            probe_extra_instructions=probe_extra_instructions,
+            probe_agent_env=probe_agent_env,
+            probe_key_id=probe_key_id,
+            trial_mode=trial_mode,
+        )
+    except (Exception, asyncio.CancelledError):
+        if probe_key_id:
+            await revoke_probe_creds(probe_key_id, trial_id)
+        if temp_task_dir and temp_task_dir.exists():
+            shutil.rmtree(temp_task_dir, ignore_errors=True)
+        raise
+
+
+async def _release_prepared_trial_attempt(
+    *,
+    trial_id: str,
+    prepared_task: PreparedTrialTask,
+    sandbox_launch: SandboxLaunchContext | None,
+) -> None:
+    """Release every external or filesystem resource owned by an attempt."""
+    if sandbox_launch is not None:
+        try:
+            terminated = await asyncio.shield(
+                terminate_sandbox_run(sandbox_launch.sandbox_run_id)
+            )
+            if not terminated:
+                console.print(
+                    f"[red]EC2 sandbox teardown remains retryable "
+                    f"sandbox_run={sandbox_launch.sandbox_run_id}[/red]"
+                )
+        except Exception as exc:
+            console.print(
+                f"[red]EC2 sandbox teardown failed "
+                f"sandbox_run={sandbox_launch.sandbox_run_id}: {exc}[/red]"
+            )
+    if prepared_task.probe_key_id:
+        await revoke_probe_creds(prepared_task.probe_key_id, trial_id)
+    if prepared_task.temp_task_dir and prepared_task.temp_task_dir.exists():
+        shutil.rmtree(prepared_task.temp_task_dir, ignore_errors=True)
+
+
+async def _prepare_claimed_trial_attempt(
+    *,
+    trial_id: str,
+    prepared_trial: PreparedTrialRun,
+    worker_id: str | None,
+    worker_job_id: str | None,
+    worker_job_attempt: int | None,
+) -> PreparedTrialAttempt | None:
+    """Prepare all resources after domain ownership has been claimed.
+
+    Returning ``None`` means the claim was superseded before preparation.
+    Every raised exception is safe for the caller to settle as an attempt
+    failure because partial task, credential, and sandbox resources are
+    released here first.
+    """
+    prepared_task: PreparedTrialTask | None = None
+    sandbox_launch: SandboxLaunchContext | None = None
+    try:
+        byok_resolution = None
+        if byok.byok_resolver_registered() and not byok.harbor_config_is_ephemeral(
+            prepared_trial.trial_harbor_config
+        ):
+            byok_resolution = await byok.resolve_byok(
+                owner_user_id=prepared_trial.created_by_user_id,
+                org_id=prepared_trial.org_id,
+                experiment_name=prepared_trial.experiment_name,
+                model=prepared_trial.trial_model,
+                agent=prepared_trial.trial_agent,
+            )
+        byok_env = dict(byok_resolution.env) if byok_resolution else None
+        funding_key_hash = trial_llm_key_hash(
+            settings.get_provider_for_trial(
+                prepared_trial.trial_agent, prepared_trial.trial_model
+            ),
+            byok_env,
+        )
+        claim = update(TrialModel).where(
+            TrialModel.id == trial_id,
+            TrialModel.finished_at.is_(None),
+            TrialModel.attempts == prepared_trial.trial_attempt,
+        )
+        if worker_id is not None:
+            claim = claim.where(TrialModel.current_worker_id == worker_id)
+        async with get_session() as session:
+            claimed = await session.execute(
+                claim.values(llm_key_hash=funding_key_hash, updated_at=utcnow())
+            )
+        if not getattr(claimed, "rowcount", 0):
+            return None
+
+        prepared_task = await _prepare_trial_task(
+            trial_id=trial_id, prepared_trial=prepared_trial
+        )
+        os.makedirs(settings.harbor_jobs_dir, exist_ok=True)
+
+        span_provider = (
+            prepared_trial.trial_environment or settings.harbor_environment
+        ).lower()
+        if span_provider == "ec2":
+            if worker_job_id is None or worker_job_attempt is None:
+                raise RuntimeError("EC2 trial requires worker job attempt identity")
+            sandbox_launch = await create_ec2_sandbox_run(
+                worker_job_id=worker_job_id,
+                worker_job_attempt=worker_job_attempt,
+                trial_id=trial_id,
+            )
+
+        cost_state = SandboxCostState(
+            resources=capture_sandbox_resources(
+                prepared_task.task_path,
+                prepared_trial.trial_harbor_config,
+                span_provider,
+            ),
+            verifier_resources=capture_verifier_resources(
+                prepared_task.task_path,
+                prepared_trial.trial_harbor_config,
+                span_provider,
+            ),
+            provider=span_provider,
+            trial_id=trial_id,
+            attempt=prepared_trial.trial_attempt,
+            experiment_id=prepared_trial.experiment_id or None,
+            org_id=prepared_trial.org_id,
+            billed_user_id=prepared_trial.billed_user_id,
+            worker_job_id=worker_job_id,
+            worker_job_attempt=worker_job_attempt,
+        )
+        return PreparedTrialAttempt(
+            task=prepared_task,
+            byok_env=byok_env,
+            sandbox_launch=sandbox_launch,
+            cost_state=cost_state,
+        )
+    except (Exception, asyncio.CancelledError):
+        if prepared_task is not None:
+            await _release_prepared_trial_attempt(
+                trial_id=trial_id,
+                prepared_task=prepared_task,
+                sandbox_launch=sandbox_launch,
+            )
+        raise
+
+
+async def _settle_trial_attempt(
+    *,
+    trial_id: str,
+    prepared_trial: PreparedTrialRun,
+    execution: TrialExecutionResult,
+    worker_id: str | None,
+    worker_job_id: str | None,
+    trial_s3_key: str | None = None,
+    artifact_upload_error: str | None = None,
+    probe_analysis: dict | None = None,
+) -> bool:
+    """Persist one attempt result and run its terminal lifecycle exactly once."""
+    trial_terminal, run_post_trial_hooks = await asyncio.shield(
+        _store_trial_results(
+            trial_id=trial_id,
+            outcome=execution.outcome,
+            trial_s3_key=trial_s3_key,
+            execution_error=execution.execution_error,
+            artifact_upload_error=artifact_upload_error,
+            execution_retryable=execution.retryable,
+            probe_analysis=probe_analysis,
+            worker_id=worker_id,
+            worker_job_id=worker_job_id,
+            trial_attempt=prepared_trial.trial_attempt,
+        )
+    )
+    await _finish_trial_settlement(
+        trial_id=trial_id,
+        org_id=prepared_trial.org_id,
+        billed_user_id=prepared_trial.billed_user_id,
+        run_post_trial_hooks=run_post_trial_hooks,
+    )
+    return trial_terminal
+
+
 async def run_trial_job(
     trial_id: str,
     queue_key: str,
@@ -1513,7 +1962,7 @@ async def run_trial_job(
     modal_function_call_id: str | None = None,
     worker_job_id: str | None = None,
     worker_job_attempt: int | None = None,
-) -> None:
+) -> HarborOutcome | None:
     """
     Execute a claimed trial.
 
@@ -1540,7 +1989,7 @@ async def run_trial_job(
             console.print(
                 f"[yellow]Trial {trial_id} already processed (idempotent), skipping[/yellow]"
             )
-            return
+            return None
 
     prepared_trial = await _prepare_trial_run(
         trial_id=trial_id,
@@ -1549,178 +1998,56 @@ async def run_trial_job(
         modal_function_call_id=modal_function_call_id,
     )
     if prepared_trial is None:
-        return
+        return None
 
-    byok_resolution = None
-    if byok.byok_resolver_registered() and not _harbor_config_is_ephemeral(
-        prepared_trial.trial_harbor_config
-    ):
-        byok_resolution = await byok.resolve_byok(
-            owner_user_id=prepared_trial.created_by_user_id,
-            org_id=prepared_trial.org_id,
-            experiment_name=prepared_trial.experiment_name,
-            model=prepared_trial.trial_model,
-            agent=prepared_trial.trial_agent,
-        )
-    byok_env = byok_resolution.env if byok_resolution else None
-    funding_key_hash = trial_llm_key_hash(
-        settings.get_provider_for_trial(
-            prepared_trial.trial_agent, prepared_trial.trial_model
-        ),
-        byok_env,
-    )
-    stamp = update(TrialModel).where(
-        TrialModel.id == trial_id,
-        TrialModel.finished_at.is_(None),
-        TrialModel.attempts == prepared_trial.trial_attempt,
-    )
-    if worker_id is not None:
-        stamp = stamp.where(TrialModel.current_worker_id == worker_id)
-    async with get_session() as session:
-        stamped = await session.execute(stamp.values(llm_key_hash=funding_key_hash))
-    if not getattr(stamped, "rowcount", 0):
-        return
-
-    # Determine task path: download from S3 if needed, or use local path
-    temp_task_dir = None
-    (
-        task_path_to_run,
-        temp_task_dir,
-        resolved_task_s3_key,
-    ) = await resolve_task_directory(
-        task_id=prepared_trial.task_id,
-        task_s3_key=prepared_trial.task_s3_key,
-        task_path=prepared_trial.task_path,
-    )
-    if temp_task_dir:
-        console.print(f"[dim]Downloaded task from S3: {resolved_task_s3_key}[/dim]")
-    else:
-        console.print(f"[dim]Using local task path: {task_path_to_run}[/dim]")
-
-    # Probe overlay: for probe trials, prepend the operator directive, append
-    # the test/related-log sections, and pre-stage prior real-attempt logs.
-    # apply_probe_overlay mutates instruction.md in place, so the task dir
-    # must be writable. resolve_task_directory only returns a writable temp
-    # dir for the S3-download case; a mounted or canonical local path
-    # (temp_task_dir is None) must be copied first. Reusing temp_task_dir for
-    # the copy root means _execute_trial's finally block cleans it up.
-    probe_extra_instructions = (prepared_trial.trial_harbor_config or {}).get(
-        "extra_instructions"
-    )
-    probe_scope = (prepared_trial.trial_harbor_config or {}).get("probe_scope", "task")
-    # Read-only oddish CLI creds minted for a probe trial; injected into the
-    # agent env only (never persisted to harbor_config / S3). Best-effort
-    # deleted after the run.
-    probe_agent_env: dict[str, str] | None = None
-    probe_key_id: str | None = None
-    job_scoped_bundle: job_tokens.JobCredentialBundle | None = None
-    trial_mode = (prepared_trial.trial_harbor_config or {}).get("mode")
-    if probe_extra_instructions:
-        if temp_task_dir is None:
-            probe_copy_root = Path(tempfile.mkdtemp(prefix=f"probe-{trial_id}-"))
-            probe_copy_dir = probe_copy_root / task_path_to_run.name
-            shutil.copytree(task_path_to_run, probe_copy_dir, symlinks=True)
-            task_path_to_run = probe_copy_dir
-            temp_task_dir = probe_copy_root
-        if is_analysis_kind(trial_mode):
-            from oddish.workers.analysis_trials import (
-                ANALYSIS_ARTIFACTS,
-                analysis_check_payload,
-            )
-
-            apply_analysis_overlay(
-                task_path_to_run,
-                brief=probe_extra_instructions,
-                artifact=ANALYSIS_ARTIFACTS[trial_mode],
-                check_payload=analysis_check_payload(
-                    trial_mode, prepared_trial.trial_harbor_config
-                ),
-            )
-        else:
-            await apply_probe_overlay(
-                task_path_to_run,
-                task_id=prepared_trial.task_id,
-                trial_id=trial_id,
-                extra_instructions=probe_extra_instructions,
-                probe_scope=probe_scope,
-            )
-        # Network egress so the oddish-query CLI can reach the API.
-        enable_local_internet(task_path_to_run)
-        try:
-            probe_key_id, probe_agent_env = await mint_probe_creds(
-                org_id=prepared_trial.org_id, trial_id=trial_id
-            )
-            probe_agent_env["ODDISH_PROBE_TASK_ID"] = prepared_trial.task_id
-            probe_agent_env["ODDISH_PROBE_HARBOR_REPO"] = settings.harbor_source_repo
-            probe_agent_env["ODDISH_PROBE_HARBOR_REF"] = settings.harbor_source_ref
-        except ProbeCredsError as exc:
-            # Record the failure on the trial row so the operator sees why the
-            # probe failed; _execute_trial's handler never runs in this path.
-            logger.error(
-                "trial %s failed before sandbox start: ProbeCredsError: %s",
-                trial_id,
-                exc,
-            )
-            _, run_post_trial_hooks = await asyncio.shield(
-                _store_trial_results(
-                    trial_id=trial_id,
-                    outcome=None,
-                    trial_s3_key=None,
-                    execution_error=f"ProbeCredsError: {exc}",
-                    worker_id=worker_id,
-                    worker_job_id=worker_job_id,
-                    trial_attempt=prepared_trial.trial_attempt,
-                )
-            )
-            await _finish_trial_settlement(
-                trial_id=trial_id,
-                org_id=prepared_trial.org_id,
-                billed_user_id=prepared_trial.billed_user_id,
-                run_post_trial_hooks=run_post_trial_hooks,
-            )
-            if temp_task_dir and temp_task_dir.exists():
-                shutil.rmtree(temp_task_dir, ignore_errors=True)
-            raise
-
-    # Ensure Harbor scratch directories exist before execution starts.
-    os.makedirs(settings.harbor_jobs_dir, exist_ok=True)
-
-    should_upload_to_s3 = bool(resolved_task_s3_key)
-
-    span_provider = (
-        prepared_trial.trial_environment or settings.harbor_environment
-    ).lower()
-    sandbox_launch: SandboxLaunchContext | None = None
-    if span_provider == "ec2":
-        if worker_job_id is None or worker_job_attempt is None:
-            raise RuntimeError("EC2 trial requires worker job attempt identity")
-        sandbox_launch = await create_ec2_sandbox_run(
+    try:
+        prepared_attempt = await _prepare_claimed_trial_attempt(
+            trial_id=trial_id,
+            prepared_trial=prepared_trial,
+            worker_id=worker_id,
             worker_job_id=worker_job_id,
             worker_job_attempt=worker_job_attempt,
-            trial_id=trial_id,
         )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        execution_error = f"{type(exc).__name__}: {exc}"
+        logger.error(
+            "trial %s failed during task preparation: %s", trial_id, execution_error
+        )
+        await _settle_trial_attempt(
+            trial_id=trial_id,
+            prepared_trial=prepared_trial,
+            execution=TrialExecutionResult(
+                outcome=None,
+                execution_error=execution_error,
+                retryable=not isinstance(exc, QuotaPauseControlError),
+            ),
+            worker_id=worker_id,
+            worker_job_id=worker_job_id,
+        )
+        return None
+    if prepared_attempt is None:
+        return None
 
-    cost_state = SandboxCostState(
-        resources=capture_sandbox_resources(
-            task_path_to_run, prepared_trial.trial_harbor_config, span_provider
-        ),
-        verifier_resources=capture_verifier_resources(
-            task_path_to_run, prepared_trial.trial_harbor_config, span_provider
-        ),
-        provider=span_provider,
-        trial_id=trial_id,
-        attempt=prepared_trial.trial_attempt,
-        experiment_id=prepared_trial.experiment_id or None,
-        org_id=prepared_trial.org_id,
-        billed_user_id=prepared_trial.billed_user_id,
-        worker_job_id=worker_job_id,
-        worker_job_attempt=worker_job_attempt,
-    )
+    prepared_task = prepared_attempt.task
+    task_path_to_run = prepared_task.task_path
+    temp_task_dir = prepared_task.temp_task_dir
+    resolved_task_s3_key = prepared_task.resolved_task_s3_key
+    probe_extra_instructions = prepared_task.probe_extra_instructions
+    probe_agent_env = prepared_task.probe_agent_env
+    trial_mode = prepared_task.trial_mode
+    byok_env = prepared_attempt.byok_env
+    sandbox_launch = prepared_attempt.sandbox_launch
+    cost_state = prepared_attempt.cost_state
+    job_scoped_bundle: job_tokens.JobCredentialBundle | None = None
+
+    should_upload_to_s3 = bool(resolved_task_s3_key)
 
     execution: TrialExecutionResult | None = None
     trial_terminal = False
     heartbeat_stop = asyncio.Event()
-    heartbeat_fatal_error: asyncio.Future[TrialExecutionResult] = (
+    heartbeat_interrupt: asyncio.Future[None] = (
         asyncio.get_running_loop().create_future()
     )
     heartbeat_task = asyncio.create_task(
@@ -1730,7 +2057,7 @@ async def run_trial_job(
             queue_slot=queue_slot,
             stop_event=heartbeat_stop,
             worker_job_id=worker_job_id,
-            fatal_error=heartbeat_fatal_error,
+            heartbeat_interrupt=heartbeat_interrupt,
         )
     )
     try:
@@ -1765,19 +2092,20 @@ async def run_trial_job(
             )
         )
         completed, _ = await asyncio.wait(
-            {execution_task, heartbeat_fatal_error},
+            {execution_task, heartbeat_interrupt},
             return_when=asyncio.FIRST_COMPLETED,
         )
-        if heartbeat_fatal_error in completed:
+        if heartbeat_interrupt in completed:
             execution_task.cancel()
             await asyncio.gather(execution_task, return_exceptions=True)
-            heartbeat_fatal_error.result()
+            heartbeat_interrupt.result()
         execution = await execution_task
         await _settle_compute_costs(cost_state, execution.outcome)
 
         # Upload trial results to S3.
         trial_s3_key = None
         oddish_uploaded = False
+        artifact_upload_error = None
         if should_upload_to_s3 and execution.outcome and execution.outcome.job_dir:
             try:
                 storage = get_storage_client()
@@ -1789,15 +2117,30 @@ async def run_trial_job(
                         if job_scoped_bundle is not None
                         else None
                     ),
+                    subprefix=_artifact_subprefix(prepared_trial.trial_harbor_config),
                 )
                 console.print(
                     f"[dim]Uploaded trial results to S3: {trial_s3_key}[/dim]"
                 )
                 oddish_uploaded = True
             except Exception as e:
-                console.print(
-                    f"[yellow]Failed to upload trial results to S3: {e}[/yellow]"
+                message = (
+                    f"Failed to upload trial results to S3: {type(e).__name__}: {e}"
                 )
+                console.print(f"[yellow]{message}[/yellow]")
+                if is_analysis_kind(trial_mode):
+                    artifact_upload_error = message
+        if (
+            should_upload_to_s3
+            and is_analysis_kind(trial_mode)
+            and execution.outcome
+            and not oddish_uploaded
+            and artifact_upload_error is None
+        ):
+            artifact_upload_error = (
+                "Failed to upload trial results to S3: Harbor produced no job "
+                "directory to upload"
+            )
 
         # Mirror to sauron's AWS S3 (best-effort). This targets sauron's own
         # observability bucket (settings.sauron_s3_bucket) with its own prefix
@@ -1853,47 +2196,28 @@ async def run_trial_job(
         if oddish_uploaded and execution.outcome and execution.outcome.job_dir:
             _cleanup_uploaded_job_dir(execution.outcome.job_dir, trial_id)
 
-        trial_terminal, run_post_trial_hooks = await asyncio.shield(
-            _store_trial_results(
-                trial_id=trial_id,
-                outcome=execution.outcome,
-                trial_s3_key=trial_s3_key,
-                execution_error=execution.execution_error,
-                probe_analysis=probe_analysis,
-                worker_id=worker_id,
-                worker_job_id=worker_job_id,
-                trial_attempt=prepared_trial.trial_attempt,
-                byok_env=byok_env,
-            )
-        )
-        await _finish_trial_settlement(
+        trial_terminal = await _settle_trial_attempt(
             trial_id=trial_id,
-            org_id=prepared_trial.org_id,
-            billed_user_id=prepared_trial.billed_user_id,
-            run_post_trial_hooks=run_post_trial_hooks,
+            prepared_trial=prepared_trial,
+            execution=execution,
+            worker_id=worker_id,
+            worker_job_id=worker_job_id,
+            trial_s3_key=trial_s3_key,
+            artifact_upload_error=artifact_upload_error,
+            probe_analysis=probe_analysis,
         )
     finally:
         heartbeat_stop.set()
-        if not heartbeat_fatal_error.done():
-            heartbeat_fatal_error.cancel()
-        elif not heartbeat_fatal_error.cancelled():
-            heartbeat_fatal_error.exception()
+        if not heartbeat_interrupt.done():
+            heartbeat_interrupt.cancel()
+        elif not heartbeat_interrupt.cancelled():
+            heartbeat_interrupt.exception()
         await asyncio.gather(heartbeat_task, return_exceptions=True)
-        if sandbox_launch is not None:
-            try:
-                terminated = await asyncio.shield(
-                    terminate_sandbox_run(sandbox_launch.sandbox_run_id)
-                )
-                if not terminated:
-                    console.print(
-                        f"[red]EC2 sandbox teardown remains retryable "
-                        f"sandbox_run={sandbox_launch.sandbox_run_id}[/red]"
-                    )
-            except Exception as exc:
-                console.print(
-                    f"[red]EC2 sandbox teardown failed "
-                    f"sandbox_run={sandbox_launch.sandbox_run_id}: {exc}[/red]"
-                )
+        await _release_prepared_trial_attempt(
+            trial_id=trial_id,
+            prepared_task=prepared_task,
+            sandbox_launch=sandbox_launch,
+        )
         # Purge the live transcript only once the trial is terminal. Doing it
         # inside _execute_trial's finally would race the S3 upload/store window
         # and blank the transcript while clients still see the trial running;
@@ -1913,10 +2237,7 @@ async def run_trial_job(
         # dev trials (S3 disabled) keep their harbor-jobs output on disk.
         if should_upload_to_s3:
             _cleanup_trial_wrapper_dirs(trial_id)
-        # Best-effort revoke the short-lived probe read key now that the run
-        # is done; it also auto-expires via its TTL if this fails.
-        if probe_key_id:
-            await revoke_probe_creds(probe_key_id, trial_id)
         # Same for the job-scoped credential token (revoke on terminal status).
         if job_scoped_bundle is not None and worker_job_id:
             await _revoke_job_credentials(worker_job_id, trial_id)
+    return execution.outcome if execution is not None and not trial_terminal else None

@@ -12,11 +12,12 @@ from oddish.core.experiment_membership import gathered_trial_ids_select
 from oddish.core.helpers import build_task_status_response, fetch_trial_queue_info
 from oddish.core.model_display_names import (
     apply_model_display_names,
-    load_model_display_names,
+    experiment_display_names,
     mask_trajectory_model_names,
 )
 from oddish.core.tags.projection import list_effective_user_tags_for_task_versions
 from oddish.core.trial_live import read_trial_live
+from oddish.core.task_files import resolve_task_file_source
 from oddish.core.trial_io import (
     read_trial_agent_file,
     read_trial_logs,
@@ -96,17 +97,23 @@ async def _get_detached_public_trial(public_token: str, trial_id: str) -> TrialM
 async def _detached_public_trial_with_display_names(
     public_token: str, trial_id: str
 ) -> tuple[TrialModel, dict[str, str]]:
-    """A public trial plus the alias table, both read before artifact I/O.
+    """A public trial plus this experiment's alias table, both read before I/O.
 
     One session for the pair, released before the S3 read for the same reason
-    :func:`_get_detached_public_trial` releases it.
+    :func:`_get_detached_public_trial` releases it. The experiment is loaded
+    once here and handed to the trial lookup so it isn't re-queried.
     """
     async with get_session() as session:
-        trial = await get_public_trial_for_experiment(session, public_token, trial_id)
+        experiment = await get_public_experiment(session, public_token)
+        if not experiment:
+            raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
+        trial = await get_public_trial_for_experiment(
+            session, public_token, trial_id, experiment=experiment
+        )
         if not trial:
             raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
         session.expunge(trial)
-        return trial, await load_model_display_names(session)
+        return trial, experiment_display_names(experiment)
 
 
 @router.get(
@@ -299,7 +306,7 @@ async def list_public_experiment_tasks(
             )
         apply_model_display_names(
             [trial for resp in responses for trial in (resp.trials or [])],
-            await load_model_display_names(session),
+            experiment_display_names(experiment),
         )
         return responses
 
@@ -337,7 +344,7 @@ async def get_public_task_status(
             response, public_exps.get(task.id, []), preferred_id=exp.id
         )
         apply_model_display_names(
-            response.trials or [], await load_model_display_names(session)
+            response.trials or [], experiment_display_names(exp)
         )
         return response
 
@@ -478,14 +485,12 @@ async def list_public_task_files(
 ):
     """List all files in a public task's S3 directory."""
     async with get_session() as session:
-        resolved = await get_public_task_for_experiment(
-            session, public_token, task_id, load_current_version=True
-        )
+        resolved = await get_public_task_for_experiment(session, public_token, task_id)
         if not resolved:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-        _, task, _ = resolved
-        if version is None and task.current_version:
-            version = task.current_version.version
+        version, task_s3_prefix = await resolve_task_file_source(
+            session, task_id=task_id, version=version
+        )
 
     if stream:
         return await make_task_files_ndjson_response(
@@ -496,6 +501,7 @@ async def list_public_task_files(
                 limit=limit,
                 cursor=cursor,
                 presign=presign,
+                task_s3_prefix=task_s3_prefix,
                 version=version,
             )
         )
@@ -507,6 +513,7 @@ async def list_public_task_files(
         limit=limit,
         cursor=cursor,
         presign=presign,
+        task_s3_prefix=task_s3_prefix,
         version=version,
     )
 
@@ -518,21 +525,22 @@ async def get_public_task_file_content(
     file_path: str,
     presign: bool = Query(False),
     version: int | None = Query(None, description="Task version number"),
+    max_bytes: int | None = Query(None, ge=1),
 ) -> dict:
     """Get content of a specific public task file from S3."""
     async with get_session() as session:
-        resolved = await get_public_task_for_experiment(
-            session, public_token, task_id, load_current_version=True
-        )
+        resolved = await get_public_task_for_experiment(session, public_token, task_id)
         if not resolved:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-        _, task, _ = resolved
-        if version is None and task.current_version:
-            version = task.current_version.version
+        version, task_s3_prefix = await resolve_task_file_source(
+            session, task_id=task_id, version=version
+        )
 
     return await get_task_file_content_s3(
         task_id=task_id,
         file_path=file_path,
         presign=presign,
+        task_s3_prefix=task_s3_prefix,
         version=version,
+        max_bytes=max_bytes,
     )

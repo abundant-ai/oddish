@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 import types
 from pathlib import Path
@@ -13,8 +14,85 @@ from oddish.core.helpers import (
     register_provider_teardown_delegate,
     unregister_provider_teardown_delegate,
 )
+from oddish.runtime.backends.archil import ArchilBackend
 from oddish.runtime.backends.daytona import DaytonaBackend
 from oddish.runtime.backends.modal import ModalBackend
+
+
+def test_archil_teardown_stops_deletes_and_closes(monkeypatch) -> None:
+    calls: dict[str, object] = {}
+
+    async def _stop_aio():
+        calls["stopped"] = True
+        sandbox.status = "stopped"
+        return sandbox
+
+    async def _delete_aio():
+        calls["deleted"] = True
+
+    sandbox = types.SimpleNamespace(
+        status="running",
+        stop=types.SimpleNamespace(aio=_stop_aio),
+        delete=types.SimpleNamespace(aio=_delete_aio),
+    )
+
+    class _FakeClient:
+        def __init__(self, *, timeout: int):
+            calls["timeout"] = timeout
+
+            async def _get_aio(external_id: str):
+                calls["get"] = external_id
+                return sandbox
+
+            self.sandboxes = types.SimpleNamespace(
+                get=types.SimpleNamespace(aio=_get_aio)
+            )
+
+            async def _close_aio():
+                calls["closed"] = True
+
+            self.close = types.SimpleNamespace(aio=_close_aio)
+
+    fake_archil = types.ModuleType("archil")
+    fake_archil.Archil = _FakeClient
+    monkeypatch.setitem(sys.modules, "archil", fake_archil)
+
+    assert asyncio.run(ArchilBackend().teardown("sb-archil")) is True
+    assert calls == {
+        "timeout": 120,
+        "get": "sb-archil",
+        "stopped": True,
+        "deleted": True,
+        "closed": True,
+    }
+
+
+def test_archil_teardown_treats_missing_sandbox_as_done(monkeypatch) -> None:
+    calls: dict[str, object] = {}
+
+    class _NotFoundError(Exception):
+        status = 404
+
+    class _FakeClient:
+        def __init__(self, *, timeout: int):
+            async def _get_aio(external_id: str):
+                raise _NotFoundError
+
+            self.sandboxes = types.SimpleNamespace(
+                get=types.SimpleNamespace(aio=_get_aio)
+            )
+
+            async def _close_aio():
+                calls["closed"] = True
+
+            self.close = types.SimpleNamespace(aio=_close_aio)
+
+    fake_archil = types.ModuleType("archil")
+    fake_archil.Archil = _FakeClient
+    monkeypatch.setitem(sys.modules, "archil", fake_archil)
+
+    assert asyncio.run(ArchilBackend().teardown("sb-gone")) is True
+    assert calls["closed"] is True
 
 
 def test_modal_teardown_terminates_sandbox_by_id(monkeypatch) -> None:
@@ -67,8 +145,17 @@ def test_daytona_teardown_gets_and_deletes_then_closes(monkeypatch) -> None:
             calls["closed"] = True
 
     fake_daytona = types.ModuleType("daytona")
+    fake_daytona.__path__ = []
     fake_daytona.AsyncDaytona = lambda: _FakeClient()
+    fake_daytona_common = types.ModuleType("daytona.common")
+    fake_daytona_common.__path__ = []
+    fake_daytona_errors = types.ModuleType("daytona.common.errors")
+    fake_daytona_errors.DaytonaNotFoundError = type(
+        "DaytonaNotFoundError", (Exception,), {}
+    )
     monkeypatch.setitem(sys.modules, "daytona", fake_daytona)
+    monkeypatch.setitem(sys.modules, "daytona.common", fake_daytona_common)
+    monkeypatch.setitem(sys.modules, "daytona.common.errors", fake_daytona_errors)
 
     result = asyncio.run(DaytonaBackend().teardown("dt-1"))
     assert result is True
@@ -77,7 +164,7 @@ def test_daytona_teardown_gets_and_deletes_then_closes(monkeypatch) -> None:
     assert calls["closed"] is True
 
 
-def test_daytona_teardown_treats_missing_sandbox_as_done(monkeypatch) -> None:
+def test_daytona_teardown_treats_missing_sandbox_as_done(monkeypatch, caplog) -> None:
     from daytona.common.errors import DaytonaNotFoundError
 
     calls: dict[str, object] = {}
@@ -96,8 +183,14 @@ def test_daytona_teardown_treats_missing_sandbox_as_done(monkeypatch) -> None:
     fake_daytona.AsyncDaytona = lambda: _FakeClient()
     monkeypatch.setitem(sys.modules, "daytona", fake_daytona)
 
-    assert asyncio.run(DaytonaBackend().teardown("dt-gone")) is True
+    with caplog.at_level(
+        logging.INFO, logger="oddish.runtime.backends.daytona"
+    ):
+        assert asyncio.run(DaytonaBackend().teardown("dt-gone")) is True
     assert calls["closed"] is True
+    assert "metric=daytona.sandbox_gone phase=teardown external_id=dt-gone" in (
+        caplog.text
+    )
 
 
 def test_cancel_job_by_worker_delegates_to_modal(monkeypatch) -> None:

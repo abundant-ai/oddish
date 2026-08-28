@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 from harbor.models.environment_type import EnvironmentType
 from sqlalchemy import or_, select
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cloud_policy import (
@@ -45,7 +46,6 @@ from oddish.core.endpoints import (
     get_experiment_cost_totals,
     get_task_detail_core,
     get_task_open_core,
-    get_task_for_org_core,
     get_task_status_core,
     get_task_version_core,
     list_experiment_slim_tasks,
@@ -74,6 +74,7 @@ from oddish.core.sharing.helpers import (
     make_task_files_ndjson_response,
     stream_task_files_s3,
 )
+from oddish.core.task_files import resolve_task_file_source
 from oddish.core.idempotency import (
     IdempotencyReplay,
     SWEEP_ROUTE,
@@ -85,6 +86,8 @@ from api.schemas import (
     ExperimentShareResponse,
     ExperimentUpdateRequest,
     ExperimentUpdateResponse,
+    ModelRenameRequest,
+    ModelRenameResponse,
 )
 from auth import APIKeyScope, AuthContext, require_admin, require_auth
 from api.routers.task_submission import (
@@ -101,9 +104,11 @@ from oddish.core.tasks import (
     complete_task_upload,
     initialize_task_upload,
 )
+from oddish.core.model_display_names import canonical_model_key
 from oddish.db import (
     ExperimentModel,
     TaskModel,
+    get_read_session,
     get_session,
     utcnow,
 )
@@ -808,7 +813,7 @@ async def browse_tasks(
         ),
     ),
 ) -> TaskBrowseResponse:
-    """Browse latest task versions for the authenticated organization."""
+    """Browse selected default versions for the authenticated organization."""
     auth.require_scope(APIKeyScope.READ)
 
     async with get_session() as session:
@@ -1120,36 +1125,48 @@ async def get_experiment_share(
     experiment_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> ExperimentShareResponse:
-    """Get share status for an experiment."""
+    """Get share status for an experiment.
+
+    This runs on every experiment-page load (the page title fetch and the
+    share dialog both call it), and the database is a network hop away, so
+    the handler is built to spend exactly one statement round-trip: the
+    experiment row and the id of its QA-report shadow come back from a
+    single self outer-join, on an autocommit session that adds no
+    BEGIN/COMMIT traffic.
+    """
     auth.require_scope(APIKeyScope.READ)
 
-    async with get_session() as session:
-        result = await session.execute(
-            select(ExperimentModel).where(
-                ExperimentModel.id == experiment_id,
-                ExperimentModel.org_id == auth.org_id,
-            )
-        )
-        experiment = result.scalar_one_or_none()
-        if not experiment:
-            raise HTTPException(status_code=404, detail="Experiment not found")
-
-        qa_report_experiment_id = None
-        if experiment.shadow_of is None:
-            qa_report_experiment_id = await session.scalar(
-                select(ExperimentModel.id).where(
-                    ExperimentModel.shadow_of == experiment.id
+    shadow = aliased(ExperimentModel)
+    async with get_read_session() as session:
+        row = (
+            await session.execute(
+                select(ExperimentModel, shadow.id)
+                .outerjoin(shadow, shadow.shadow_of == ExperimentModel.id)
+                .where(
+                    ExperimentModel.id == experiment_id,
+                    ExperimentModel.org_id == auth.org_id,
                 )
+                .limit(1)
             )
+        ).first()
 
-        return ExperimentShareResponse(
-            name=experiment.name,
-            is_public=bool(experiment.is_public),
-            public_token=experiment.public_token,
-            description=experiment.description,
-            shadow_of=experiment.shadow_of,
-            qa_report_experiment_id=qa_report_experiment_id,
-        )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+
+    experiment, qa_report_experiment_id = row
+    if experiment.shadow_of is not None:
+        # A shadow experiment is never itself shadowed; ignore any join
+        # artifact rather than report a shadow-of-a-shadow.
+        qa_report_experiment_id = None
+
+    return ExperimentShareResponse(
+        name=experiment.name,
+        is_public=bool(experiment.is_public),
+        public_token=experiment.public_token,
+        description=experiment.description,
+        shadow_of=experiment.shadow_of,
+        qa_report_experiment_id=qa_report_experiment_id,
+    )
 
 
 @router.patch(
@@ -1341,6 +1358,70 @@ async def unpublish_experiment(
 
 
 @router.get(
+    "/experiments/{experiment_id}/model-renames",
+    response_model=ModelRenameResponse,
+)
+async def get_experiment_model_renames(
+    experiment_id: str,
+    auth: Annotated[AuthContext, Depends(require_admin)],
+) -> ModelRenameResponse:
+    """The experiment's current public model-rename map."""
+    async with get_session() as session:
+        result = await session.execute(
+            select(ExperimentModel).where(
+                ExperimentModel.id == experiment_id,
+                ExperimentModel.org_id == auth.org_id,
+            )
+        )
+        experiment = result.scalar_one_or_none()
+        if not experiment:
+            raise HTTPException(status_code=404, detail="Experiment not found")
+        return ModelRenameResponse(
+            name=experiment.name, renames=experiment.public_model_renames or {}
+        )
+
+
+@router.post(
+    "/experiments/{experiment_id}/model-renames",
+    response_model=ModelRenameResponse,
+)
+async def set_experiment_model_rename(
+    experiment_id: str,
+    request: ModelRenameRequest,
+    auth: Annotated[AuthContext, Depends(require_admin)],
+) -> ModelRenameResponse:
+    """Set or clear one public model alias, shown only on the experiment's
+    published ``/share`` pages; cost and queue routing keep the real model id."""
+    model_key = canonical_model_key(request.model)
+    if not model_key:
+        raise HTTPException(status_code=400, detail="model must not be empty")
+    display = (request.display or "").strip()
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(ExperimentModel)
+            .where(
+                ExperimentModel.id == experiment_id,
+                ExperimentModel.org_id == auth.org_id,
+            )
+            .with_for_update()
+        )
+        experiment = result.scalar_one_or_none()
+        if not experiment:
+            raise HTTPException(status_code=404, detail="Experiment not found")
+
+        renames = dict(experiment.public_model_renames or {})
+        if request.remove or not display:
+            renames.pop(model_key, None)
+        else:
+            renames[model_key] = display
+        experiment.public_model_renames = renames or None
+        await session.commit()
+
+        return ModelRenameResponse(name=experiment.name, renames=renames)
+
+
+@router.get(
     "/experiments/{experiment_id}/probes",
     response_model=list[ExperimentProbeRow],
 )
@@ -1447,8 +1528,7 @@ async def retry_task_qa(
     task_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict:
-    """(Re)run the single task-level QA job: classify every trial, then
-    synthesize the task verdict."""
+    """Create replacement task-level QA over every eligible agent trial."""
     auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
 
     async with get_session() as session:
@@ -1461,10 +1541,10 @@ async def backfill_task_qa(
     body: BackfillQARequest,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict:
-    """Backfill trial analysis for a task: fill trials with no successful analysis yet.
+    """Create replacement task-level QA over every eligible agent trial.
 
-    Default fills only missing/never-analyzed trials; ``force`` re-runs
-    (optionally only ``trial_ids``).
+    ``force`` and ``trial_ids`` choose which stored analysis fields are cleared
+    first; they do not narrow the replacement trial's input set.
     """
     auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
 
@@ -1501,7 +1581,7 @@ async def cancel_task_qa(
     task_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict:
-    """Cancel a task's in-flight QA job."""
+    """Cancel a task's live qa-kind and audit-kind analysis trials."""
     auth.require_scope(APIKeyScope.TASKS)
 
     async with get_session() as session:
@@ -1672,15 +1752,13 @@ async def list_task_files(
     """
     auth.require_scope(APIKeyScope.READ)
 
-    async with get_session() as session:
-        task = await get_task_for_org_core(
+    async with get_read_session() as session:
+        version, task_s3_prefix = await resolve_task_file_source(
             session,
             task_id=task_id,
             org_id=auth.org_id,
-            load_current_version=True,
+            version=version,
         )
-        if version is None and task.current_version:
-            version = task.current_version.version
 
     if stream:
         return await make_task_files_ndjson_response(
@@ -1692,6 +1770,7 @@ async def list_task_files(
                 cursor=cursor,
                 presign=presign,
                 version=version,
+                task_s3_prefix=task_s3_prefix,
             )
         )
 
@@ -1704,6 +1783,7 @@ async def list_task_files(
         presign=presign,
         version=version,
         inline=inline,
+        task_s3_prefix=task_s3_prefix,
     )
 
 
@@ -1727,15 +1807,13 @@ async def get_task_file_content(
     """
     auth.require_scope(APIKeyScope.READ)
 
-    async with get_session() as session:
-        task = await get_task_for_org_core(
+    async with get_read_session() as session:
+        version, task_s3_prefix = await resolve_task_file_source(
             session,
             task_id=task_id,
             org_id=auth.org_id,
-            load_current_version=True,
+            version=version,
         )
-        if version is None and task.current_version:
-            version = task.current_version.version
 
     try:
         result = await get_task_file_content_s3(
@@ -1744,6 +1822,7 @@ async def get_task_file_content(
             presign=presign,
             version=version,
             max_bytes=max_bytes,
+            task_s3_prefix=task_s3_prefix,
         )
     except HTTPException as exc:
         if exc.status_code != status.HTTP_404_NOT_FOUND:

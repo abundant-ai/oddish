@@ -9,9 +9,11 @@ import modal
 from dotenv import dotenv_values
 
 from modal_runtime import (
+    LOGFIRE_SECRET_NAME,
     MODAL_APP_NAME,
     MODAL_SECRET_ENVIRONMENT,
     RUNTIME_SECRET_NAME,
+    logfire_secret,
     runtime_secret,
 )
 from modal_runtime import app as app
@@ -241,8 +243,20 @@ _GKE_ENABLED_ENV = "ODDISH_GKE_ENABLED"
 # (e.g. one carrying ODDISH_GKE_*) cannot pollute into a dependency-count drift.
 # See _resolve_gke_secret_plan and _build_worker_image. Not operator-facing.
 _GKE_PLAN_FILE = "/opt/oddish/gke_secret_plan"
+# Deploy-time ODDISH_GKE_* coordinate snapshot, baked as JSON into the image.
+# The coordinates also ride the image env (ENV_VARS) and, when GKE is enabled,
+# the oddish-gcp runtime secret -- and a runtime secret overwrites env at
+# container init, so a preview's env block silently loses to whatever the
+# secret carries. A file is the one channel a secret cannot write; settings
+# prefer it and warn when the effective env disagrees. Not operator-facing.
+_GKE_COORDS_FILE = "/opt/oddish/gke_coords.json"
 
 _EC2_ENABLED_ENV = "ODDISH_EC2_ENABLED"
+_NUMINOUS_ENABLED_ENV = "ODDISH_NUMINOUS_ENABLED"
+_NUMINOUS_GPU_ENABLED_ENV = "ODDISH_NUMINOUS_GPU_ENABLED"
+_NUMINOUS_SECRET_NAME = os.environ.get(
+    "ODDISH_NUMINOUS_SECRET_NAME", "oddish-numinous"
+)
 _EC2_CONTROL_SECRET_NAME_ENV = "ODDISH_EC2_CONTROL_SECRET_NAME"
 _EC2_SSH_SECRET_NAME_ENV = "ODDISH_EC2_SSH_SECRET_NAME"
 _EC2_PLAN_FILE = "/opt/oddish/ec2_secret_plan.json"
@@ -287,6 +301,41 @@ def _effective_gke_cluster_name(
     if project:
         return f"{MODAL_APP_NAME}-trials"
     return None
+
+
+def _gke_coords_snapshot(
+    environ: Mapping[str, str], dotenv_vars: Mapping[str, str]
+) -> dict[str, str]:
+    """Every ODDISH_GKE_* key resolved at deploy time, process env winning.
+
+    Mirrors the ENV_VARS filter, plus one addition: when the deploy resolves
+    a cluster identity (explicit, or derived from the project id) but the
+    key itself is absent from the deploy env, the EFFECTIVE name is baked
+    anyway. The cluster name is the identity every deletion authorizes
+    against, and a key the snapshot does not carry is a key a runtime
+    secret can inject unopposed -- trials would target the secret's cluster
+    while teardown, correctly, refuses to clean it. Deploys that resolve no
+    identity at deploy time (GKE-less, or the flow where the credential
+    secret intentionally carries the coordinates) bake nothing, so the
+    secret stays the designed source there.
+    """
+    snapshot = {
+        k: v
+        for k, v in {**dotenv_vars, **environ}.items()
+        if k.startswith("ODDISH_GKE_")
+    }
+    # Falsy, not merely absent: an empty ODDISH_GKE_CLUSTER_NAME in the
+    # deploy env must not block the bake, because the effective-name
+    # resolver treats empty as unset and the runtime would derive anyway.
+    if not snapshot.get(_GKE_CLUSTER_ENV):
+        effective = _effective_gke_cluster_name(environ, dotenv_vars)
+        if effective:
+            snapshot[_GKE_CLUSTER_ENV] = effective
+        else:
+            # Never ship an empty identity for the runtime to re-derive from
+            # a mutable app name.
+            snapshot.pop(_GKE_CLUSTER_ENV, None)
+    return snapshot
 
 
 def _gke_enabled_flag(
@@ -508,7 +557,9 @@ def _validate_ec2_secret_isolation(
 
 
 _validate_ec2_dotenv_secret_isolation(LOCAL_DOTENV_VARS)
-runtime_secrets = [runtime_secret]
+# Logfire has a dedicated secret so rotating observability credentials cannot
+# replace the database, storage, and provider credentials in oddish-prod.
+runtime_secrets = [runtime_secret, logfire_secret]
 
 # AWS credentials for the sauron S3 mirror. Kept in a separate Modal
 # secret so it can be rotated independently of oddish-prod. Set
@@ -531,10 +582,39 @@ if SAURON_AWS_SECRET_NAME:
 # list is identical at deploy time and at in-container recompute. See
 # _gke_runtime_secret_names.
 GKE_SECRET_PLAN = _resolve_gke_secret_plan(os.environ, LOCAL_DOTENV_VARS)
+GKE_COORDS_SNAPSHOT = _gke_coords_snapshot(os.environ, LOCAL_DOTENV_VARS)
 for _gke_secret_name in GKE_SECRET_PLAN:
     runtime_secrets.append(
         modal.Secret.from_name(
             _gke_secret_name, environment_name=MODAL_SECRET_ENVIRONMENT
+        )
+    )
+
+# Optional Numinous Cloud secret. Gated on ODDISH_NUMINOUS_ENABLED so a
+# numinous-less deploy references no secret (CI, default path). When enabled,
+# the single oddish-numinous secret carries NUMINOUS_API_URL + NUMINOUS_API_KEY
+# and re-affirms ODDISH_NUMINOUS_ENABLED=1 inside the worker so the backend
+# registers. Same opt-in flag the runtime registry reads.
+_NUMINOUS_ENABLED = _is_truthy(
+    _deploy_value(_NUMINOUS_ENABLED_ENV, os.environ, LOCAL_DOTENV_VARS)
+)
+# GPU lane is a SECOND opt-in, resolved from the same deploy-time channel so
+# the value the API workers see matches what the deploy host resolved. Read
+# by settings.numinous_gpu_enabled in oddish.runtime.backends.numinous. Baked
+# into ENV_VARS below (mirrors _NUMINOUS_ENABLED); without the bake, workers
+# would only see it if the oddish-numinous secret happened to re-inject it,
+# so a deploy setting ODDISH_NUMINOUS_GPU_ENABLED=1 would still route GPU
+# trials to Modal.
+_NUMINOUS_GPU_ENABLED = _is_truthy(
+    _deploy_value(_NUMINOUS_GPU_ENABLED_ENV, os.environ, LOCAL_DOTENV_VARS)
+)
+NUMINOUS_SECRET_PLAN = (
+    [_NUMINOUS_SECRET_NAME] if _NUMINOUS_ENABLED and _NUMINOUS_SECRET_NAME else []
+)
+for _numinous_secret_name in NUMINOUS_SECRET_PLAN:
+    runtime_secrets.append(
+        modal.Secret.from_name(
+            _numinous_secret_name, environment_name=MODAL_SECRET_ENVIRONMENT
         )
     )
 
@@ -545,8 +625,10 @@ for _gke_secret_name in GKE_SECRET_PLAN:
 # plan so runtime-secret env injection cannot change Modal dependency counts.
 EC2_SECRET_PLAN = _resolve_ec2_secret_plan(os.environ, LOCAL_DOTENV_VARS)
 _broad_runtime_secret_names = {
+    LOGFIRE_SECRET_NAME,
     RUNTIME_SECRET_NAME,
     *GKE_SECRET_PLAN,
+    *NUMINOUS_SECRET_PLAN,
 }
 if SAURON_AWS_SECRET_NAME:
     _broad_runtime_secret_names.add(SAURON_AWS_SECRET_NAME)
@@ -792,6 +874,19 @@ ENV_VARS = {
         for k, v in {**LOCAL_DOTENV_VARS, **os.environ}.items()
         if k in _EC2_PUBLIC_ENV_NAMES
     },
+    # Numinous opt-in flag, baked like ODDISH_EC2_ENABLED: runtime registration
+    # (settings.numinous_enabled in oddish.runtime.registry) and secret
+    # attachment (NUMINOUS_SECRET_PLAN above) resolve from the same deploy-time
+    # value, so a secret that carries only NUMINOUS_API_URL + NUMINOUS_API_KEY
+    # still registers the backend. Without the bake, workers only saw the flag
+    # if the secret happened to re-inject it.
+    _NUMINOUS_ENABLED_ENV: str(_NUMINOUS_ENABLED).lower(),
+    # GPU lane opt-in, baked like the enable flag above so capability
+    # negotiation inside the worker (which re-reads settings from the image
+    # env, where neither the deploy shell nor backend/.env exists) actually
+    # sees it. Independent of _NUMINOUS_ENABLED: a CPU-only deploy leaves
+    # this "false" and GPU trials stay on Modal.
+    _NUMINOUS_GPU_ENABLED_ENV: str(_NUMINOUS_GPU_ENABLED).lower(),
 }
 
 
@@ -925,6 +1020,8 @@ def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal
         f"mkdir -p {os.path.dirname(_GKE_PLAN_FILE)} && "
         f"printf '%s' '{','.join(GKE_SECRET_PLAN)}' > {_GKE_PLAN_FILE}",
         f"printf %s {shlex.quote(ec2_plan_json)} > {shlex.quote(_EC2_PLAN_FILE)}",
+        f"printf %s {shlex.quote(json.dumps(GKE_COORDS_SNAPSHOT, separators=(',', ':')))} "
+        f"> {shlex.quote(_GKE_COORDS_FILE)}",
     )
     if harbor_override is not None:
         # Swap the variant's Harbor into the synced venv AFTER uv_sync. The sync

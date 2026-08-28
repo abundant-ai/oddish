@@ -59,9 +59,17 @@ async def maybe_enqueue_auto_probe(
     org_id: str | None,
     billed_user_id: str | None = None,
     registry_auth: list[RegistryAuth] | None = None,
+    task_version_id: str | None = None,
 ) -> None:
+    """Enqueue one probe for the version this submission's trials run on.
+
+    ``task_version_id`` is the version the caller pinned its trials to; the
+    probe must share it or it inspects content no trial used, and the
+    experiment grid -- which shows one version per task -- filters it out.
+    Defaults to the task's current version for callers that do not pin.
+    """
     try:
-        version_id = task.current_version_id
+        version_id = task_version_id or task.current_version_id
         if not version_id:
             return
         if await _version_already_probed(session, version_id):
@@ -108,23 +116,15 @@ async def maybe_enqueue_auto_probe(
             billed_user_id,
             count=len(expanded.trials),
         )
-        new_trials = await append_trials_to_task(
+        await append_trials_to_task(
             session,
             task=task,
             submission=expanded,
             experiment_id=submission.experiment_id,
             billed_user_id=billed_user_id,
+            task_version_id=version_id,
         )
 
-        from oddish.config import settings
-
-        if settings.local_mode:
-            import asyncio
-
-            from oddish.worker.local_runner import run_trial_locally
-
-            for trial in new_trials:
-                asyncio.create_task(run_trial_locally(trial.id, dry_run=False))
     except Exception:  # noqa: BLE001 — best-effort; never fail the real sweep
         logger.exception(
             "auto-probe enqueue failed for task %s", getattr(task, "id", "?")

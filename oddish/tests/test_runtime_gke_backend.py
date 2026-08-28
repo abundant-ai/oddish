@@ -75,17 +75,35 @@ def test_gke_capabilities_are_tpu_only() -> None:
 
 
 def test_gke_env_kwargs_inject_settings_defaults() -> None:
-    merged = GkeBackend().harbor_env_kwargs({})
+    fields_set = set(settings.__pydantic_fields_set__)
+    settings.__pydantic_fields_set__.discard("gke_provisioning_mode")
+    try:
+        merged = GkeBackend().harbor_env_kwargs({})
+    finally:
+        settings.__pydantic_fields_set__ |= fields_set
     assert merged["cluster_name"] == settings.gke_cluster_name
     assert merged["region"] == settings.gke_region
     assert merged["project_id"] == settings.gke_project_id
     assert merged["namespace"] == settings.gke_namespace
     assert merged["registry_location"] == settings.gke_registry_location
     assert merged["registry_name"] == settings.gke_registry_name
-    assert merged["flex_start"] == settings.gke_flex_start
     assert merged["auto_build_missing_image"] == settings.gke_auto_build_missing_image
     assert merged["auto_provision_cluster"] == settings.gke_auto_provision_cluster
     assert merged["pod_ready_timeout_sec"] == settings.gke_pod_ready_timeout_sec
+    # The mode is deliberately absent: every job kwarg covers its task.toml
+    # counterpart, so shipping a mode the deployment never configured would
+    # silently override every task's own choice.
+    assert "provisioning_mode" not in merged
+
+
+def test_gke_env_kwargs_ship_the_mode_only_when_configured(monkeypatch) -> None:
+    """A configured deployment mode ships (and covers tasks); an
+    unconfigured one (None -- the default) leaves the key out so task.toml
+    modes take effect."""
+    monkeypatch.setattr(settings, "gke_provisioning_mode", None)
+    assert "provisioning_mode" not in GkeBackend().harbor_env_kwargs({})
+    monkeypatch.setattr(settings, "gke_provisioning_mode", "spot")
+    assert GkeBackend().harbor_env_kwargs({})["provisioning_mode"] == "spot"
 
 
 def test_gke_env_kwargs_caller_overrides_win() -> None:
@@ -158,3 +176,39 @@ def test_gke_registered_after_modal_when_cluster_configured() -> None:
     assert "gke" in names
     # Never a cheap-first default: GKE follows Modal in the negotiation order.
     assert names.index("modal") < names.index("gke")
+
+
+def test_gke_env_kwargs_caller_mode_overrides_the_deployment_default(
+    monkeypatch,
+) -> None:
+    """One key, so the spread is the whole reconciliation.
+
+    The deployment default must differ from the requested mode for this to
+    prove anything: with both set to flex-start the assertion holds whether or
+    not the caller's value is read at all.
+    """
+    monkeypatch.setattr(settings, "gke_provisioning_mode", "flex-start")
+    merged = GkeBackend().harbor_env_kwargs({"provisioning_mode": "spot"})
+    assert merged["provisioning_mode"] == "spot"
+
+
+def test_gke_env_kwargs_mode_default_survives_an_unrelated_override(
+    monkeypatch,
+) -> None:
+    """A caller who names no mode keeps the deployment's."""
+    monkeypatch.setattr(settings, "gke_provisioning_mode", "spot")
+    merged = GkeBackend().harbor_env_kwargs({"namespace": "custom-ns"})
+    assert merged["provisioning_mode"] == "spot"
+
+
+def test_gke_env_kwargs_never_emits_the_removed_booleans() -> None:
+    """Harbor rejects flex_start and spot outright, by name.
+
+    Re-introducing either here -- as a compatibility alias, or by restoring
+    the old reconciliation -- fails every GKE trial at environment
+    construction with GKEConfigurationError, before the pod is built. The
+    merged bag must carry the mode and nothing else.
+    """
+    merged = GkeBackend().harbor_env_kwargs({})
+    assert "flex_start" not in merged
+    assert "spot" not in merged

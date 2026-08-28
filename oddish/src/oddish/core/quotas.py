@@ -4,22 +4,26 @@ import logging
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, true
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
+from oddish.core.cost_exclusions import (
+    not_excluded_experiment_filter,
+    not_excluded_llm_key_filter,
+    not_excluded_model_filter,
+)
 from oddish.core.cost_basis import (
     first_party_spend_filter,
-    not_excluded_llm_key_filter,
     settled_cost_columns,
     settled_cost_from_row,
     sum_settled_cost,
 )
 from oddish.db import (
+    ACTIVE_TRIAL_STATUSES,
     ModalCostSpanModel,
     TrialModel,
-    TrialStatus,
     analysis_spend_view,
 )
 from oddish.db.pg_errors import is_missing_table
@@ -27,13 +31,6 @@ from oddish.db.pg_errors import is_missing_table
 logger = logging.getLogger(__name__)
 
 MONEY_QUANTUM = Decimal("0.0001")
-
-_INFLIGHT_TRIAL_STATUSES = (
-    TrialStatus.PENDING,
-    TrialStatus.QUEUED,
-    TrialStatus.RUNNING,
-    TrialStatus.RETRYING,
-)
 
 _LIVE_BUMP = "revoked_at IS NULL AND deleted_at IS NULL AND expires_at > NOW()"
 
@@ -126,6 +123,12 @@ def _timestamp_in_period(column, period_start: datetime, *, inclusive_start: boo
 
 def _quota_counts_analysis_and_compute() -> bool:
     return settings.quota_counts_analysis_and_compute
+
+
+def _inflight_trial_kind_filter():
+    return (
+        true() if _quota_counts_analysis_and_compute() else TrialModel.kind == "agent"
+    )
 
 
 async def _sum_analysis_and_compute_cost_usd(
@@ -454,30 +457,31 @@ async def _bump_aware_limits_by_org_user_all_orgs(
 
 
 def _inflight_predicates(org_id: str | None, billed_user_id: str) -> list:
-    # ``not_excluded_llm_key_filter``: a RETRYING attempt already carries its
-    # settlement stamp while finished_at is still NULL; spend the settled sums
-    # will drop must not keep reserving against the cap either.
     return [
         TrialModel.org_id == org_id,
         TrialModel.billed_user_id == billed_user_id,
-        TrialModel.kind == "agent",
+        _inflight_trial_kind_filter(),
         TrialModel.finished_at.is_(None),
         TrialModel.deleted_at.is_(None),
         TrialModel.superseded_by_trial_id.is_(None),
-        TrialModel.status.in_(_INFLIGHT_TRIAL_STATUSES),
+        TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
         not_excluded_llm_key_filter(),
+        not_excluded_model_filter(),
+        not_excluded_experiment_filter(),
     ]
 
 
 def _org_inflight_predicates(org_id: str | None) -> list:
     return [
         TrialModel.org_id == org_id,
-        TrialModel.kind == "agent",
+        _inflight_trial_kind_filter(),
         TrialModel.finished_at.is_(None),
         TrialModel.deleted_at.is_(None),
         TrialModel.superseded_by_trial_id.is_(None),
-        TrialModel.status.in_(_INFLIGHT_TRIAL_STATUSES),
+        TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
         not_excluded_llm_key_filter(),
+        not_excluded_model_filter(),
+        not_excluded_experiment_filter(),
     ]
 
 
@@ -511,11 +515,14 @@ async def inflight_trial_count_by_org_user_all_orgs(
         select(TrialModel.org_id, TrialModel.billed_user_id, func.count(TrialModel.id))
         .where(
             TrialModel.billed_user_id.is_not(None),
+            _inflight_trial_kind_filter(),
             TrialModel.finished_at.is_(None),
             TrialModel.deleted_at.is_(None),
             TrialModel.superseded_by_trial_id.is_(None),
-            TrialModel.status.in_(_INFLIGHT_TRIAL_STATUSES),
+            TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
             not_excluded_llm_key_filter(),
+            not_excluded_model_filter(),
+            not_excluded_experiment_filter(),
         )
         .group_by(TrialModel.org_id, TrialModel.billed_user_id)
     )
@@ -537,6 +544,46 @@ async def org_inflight_reserved_usd(
     session: AsyncSession, org_id: str | None
 ) -> Decimal:
     return await _sum_inflight_reserved_usd(session, _org_inflight_predicates(org_id))
+
+
+async def _sum_inflight_reported_usd(
+    session: AsyncSession, predicates: list
+) -> Decimal:
+    return to_money_decimal(
+        await session.scalar(
+            select(func.coalesce(func.sum(func.coalesce(TrialModel.cost_usd, 0)), 0))
+            .select_from(TrialModel)
+            .where(*predicates)
+        )
+    )
+
+
+async def inflight_reported_usd(
+    session: AsyncSession, org_id: str | None, billed_user_id: str
+) -> Decimal:
+    return await _sum_inflight_reported_usd(
+        session, _inflight_predicates(org_id, billed_user_id)
+    )
+
+
+async def org_inflight_reported_usd(
+    session: AsyncSession, org_id: str | None
+) -> Decimal:
+    return await _sum_inflight_reported_usd(session, _org_inflight_predicates(org_id))
+
+
+def quota_pause_limit_usd(hard_limit_usd: Decimal | None) -> Decimal | None:
+    if hard_limit_usd is None:
+        return None
+    reserves = [
+        hard_limit_usd * settings.quota_pause_remaining_percent / Decimal(100)
+    ]
+    if settings.quota_pause_remaining_usd is not None:
+        reserves.append(settings.quota_pause_remaining_usd)
+    reserve = max(reserves)
+    if reserve == 0:
+        return None
+    return max(Decimal(0), hard_limit_usd - reserve)
 
 
 # An org's UNATTRIBUTED spend, pooled. A trial whose payer could not be resolved
@@ -561,7 +608,11 @@ async def unattributed_inflight_reserved_usd(
 ) -> Decimal:
     return await _sum_inflight_reserved_usd(
         session,
-        [*_org_inflight_predicates(org_id), TrialModel.billed_user_id.is_(None)],
+        [
+            *_org_inflight_predicates(org_id),
+            TrialModel.kind == "agent",
+            TrialModel.billed_user_id.is_(None),
+        ],
     )
 
 

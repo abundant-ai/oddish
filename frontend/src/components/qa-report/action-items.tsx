@@ -33,7 +33,7 @@ function ActionItemDetail({
 }: {
   item: PreTrialFinding;
   itemKey: string;
-  onFeedback?: (r: FeedbackRecord) => void;
+  onFeedback?: (record: FeedbackRecord) => Promise<void>;
   renderItemFooter?: (item: PreTrialFinding, itemKey: string) => ReactNode;
 }) {
   const where = findingLocation(item);
@@ -120,7 +120,7 @@ export function SeverityGroups({
   renderItemFooter,
 }: {
   items: PreTrialFinding[];
-  onFeedback?: (r: FeedbackRecord) => void;
+  onFeedback?: (record: FeedbackRecord) => Promise<void>;
   className?: string;
   /** Per-tier effect line; the default narrates trial classification. */
   tierEffects?: Partial<Record<string, string>>;
@@ -159,7 +159,7 @@ export function SeverityGroups({
             <span
               className={cn(
                 "rounded-md px-2 py-0.5 font-mono text-[9.5px] font-semibold tracking-wider",
-                TIER_BADGE[group.tier],
+                TIER_BADGE[group.tier]
               )}
             >
               {group.meta.label}

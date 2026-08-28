@@ -19,6 +19,10 @@ PREPARE = PREVIEW / "prepare_preview_database.sh"
 COMPUTE_PLAN = PREVIEW / "compute_deployment_plan.sh"
 DEPLOY = PREVIEW / "deploy_preview_backend.sh"
 PRUNE = PREVIEW / "prune_stale_supabase_branches.sh"
+PRUNE_APPS = PREVIEW / "prune_stale_preview_apps.sh"
+RUN_GKE_TEARDOWN = PREVIEW / "run_gke_teardown.sh"
+STOP_MODAL_APP = PREVIEW / "stop_modal_preview_app.sh"
+STOP_PREVIEW = PREVIEW / "stop_preview.sh"
 MODAL_APP = REPO / "backend/modal_app.py"
 
 URL_FRAGMENT = "abundant-ai-preview--oddish-pr-{0}-api.modal.run"
@@ -139,6 +143,62 @@ def test_prepare_stops_before_supabase_wait():
     s = PREPARE.read_text()
     assert "stop_modal_preview_app.sh" in s
     assert s.index("stop_modal_preview_app.sh") < s.index("wait_for_supabase_branch.sh")
+
+
+def test_every_gke_teardown_uses_bounded_helper():
+    for script in (STOP_MODAL_APP, STOP_PREVIEW, PRUNE_APPS):
+        source = script.read_text()
+        assert "run_gke_teardown.sh" in source, f"{script.name} bypasses the helper"
+        assert "teardown_gke_cluster.py" not in source, (
+            f"{script.name} invokes the Python teardown directly"
+        )
+
+
+def test_gke_teardown_deadline_is_300_seconds():
+    source = RUN_GKE_TEARDOWN.read_text()
+    assert "timeout --foreground --kill-after=15s 300s" in source
+    assert "modal run --env \"$MODAL_ENVIRONMENT\"" in source
+
+
+def test_only_bounded_helper_invokes_gke_teardown_python():
+    direct_invokers = [
+        script
+        for script in PREVIEW.glob("*.sh")
+        if "teardown_gke_cluster.py" in script.read_text()
+    ]
+    assert direct_invokers == [RUN_GKE_TEARDOWN]
+
+
+@needs_bash
+def test_pre_redeploy_timeout_keeps_existing_modal_app_running():
+    tmp = Path(tempfile.mkdtemp())
+    preview = tmp / "preview"
+    preview.mkdir()
+    shutil.copy(STOP_MODAL_APP, preview / STOP_MODAL_APP.name)
+    helper = preview / RUN_GKE_TEARDOWN.name
+    helper.write_text("#!/usr/bin/env bash\nexit 124\n")
+    helper.chmod(0o755)
+    modal_calls = tmp / "modal-calls"
+    fake_modal = tmp / "modal"
+    fake_modal.write_text(f'#!/usr/bin/env bash\necho "$*" >> "{modal_calls}"\n')
+    fake_modal.chmod(0o755)
+
+    proc = subprocess.run(
+        ["bash", str(preview / STOP_MODAL_APP.name)],
+        env={
+            **os.environ,
+            "PATH": f"{tmp}:{os.environ['PATH']}",
+            "MODAL_ENVIRONMENT": "preview",
+            "MODAL_APP_NAME": "oddish-pr-1366",
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "GKE teardown failed" in proc.stdout
+    assert "leaving oddish-pr-1366 running" in proc.stdout
+    assert not modal_calls.exists(), "modal app stop ran after teardown timed out"
 
 
 def _run_prepare(
@@ -622,3 +682,91 @@ def test_prune_is_quiet_when_nothing_is_stale():
     proc, deleted = _run_prune([_branch("pr-1", 2)])
     assert proc.returncode == 0, proc.stderr
     assert deleted == []
+
+
+WAIT_BRANCH = PREVIEW / "wait_for_supabase_branch.sh"
+
+
+def _is_failed_status(value: str) -> str:
+    """Run the script's own is_failed_status() against a value."""
+    script = WAIT_BRANCH.read_text()
+    body = script.split("is_failed_status() {", 1)[1].split("\n}", 1)[0]
+    probe = (
+        f"is_failed_status() {{{body}\n}}\n"
+        f'if is_failed_status "{value}"; then echo FAILED; else echo OK; fi'
+    )
+    return subprocess.run(
+        ["bash", "-c", probe],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+
+
+class TestBranchIsReusedAcrossPushes:
+    """A preview branch must survive a second push.
+
+    `supabase/migrations/` is empty on purpose (supabase/config.toml) so
+    Supabase's migration runner is a no-op and Alembic owns the schema. The
+    runner therefore reports MIGRATIONS_FAILED without that meaning anything,
+    and the branch DB password is rotated on every run, which is enough by
+    itself to stop the runner reporting success.
+
+    Treating that as terminal deleted and recreated the branch on every second
+    push: no preview kept its data, every push paid a full reseed, and an API
+    key made from the preview dashboard died on the next push.
+    """
+
+    def test_migrations_failed_is_not_terminal(self):
+        assert _is_failed_status("MIGRATIONS_FAILED") == "OK", (
+            "MIGRATIONS_FAILED must not tear the branch down: the migration "
+            "runner is a deliberate no-op, so its verdict says nothing about "
+            "whether the branch works."
+        )
+
+    def test_genuinely_broken_states_are_still_terminal(self):
+        assert _is_failed_status("FUNCTIONS_FAILED") == "FAILED"
+
+    def test_migrations_failed_still_counts_as_ready(self):
+        """Otherwise the branch never satisfies readiness, times out, and is
+        recreated anyway -- the same churn by a slower route."""
+        script = WAIT_BRANCH.read_text()
+        ready_block = script.split('case "$status" in', 1)[1].split("esac", 1)[0]
+        assert "MIGRATIONS_FAILED" in ready_block
+        assert "ACTIVE_HEALTHY" in ready_block
+
+    def test_the_real_health_gate_is_still_present(self):
+        """Reusing a branch is only safe because a real connection is proven."""
+        script = WAIT_BRANCH.read_text()
+        assert "smoke-testing connection to branch DB" in script
+        assert "select 1" in script
+
+    def test_supabase_migrations_dir_is_still_empty(self):
+        """The premise of this whole change. If someone adds a migration here,
+        Supabase's runner stops being a no-op and MIGRATIONS_FAILED starts
+        carrying real meaning again."""
+        migrations = REPO / "supabase/migrations"
+        files = [p for p in migrations.iterdir() if p.name != ".gitkeep"]
+        assert files == [], (
+            f"supabase/migrations/ is no longer empty ({files}); revisit "
+            "whether MIGRATIONS_FAILED should be terminal again."
+        )
+
+
+def test_reset_redeploys_the_same_preview_it_replaces():
+    """Preview Reset must carry the exact ODDISH_* env of pr-preview's deploy.
+
+    The reset workflow stops the app and redeploys through the same script,
+    so any ODDISH_* coordinate present in one workflow but not the other
+    silently redeploys a DIFFERENT preview (a reset without the GKE block
+    would strip the preview's GKE backend until the next push). Compare the
+    full ODDISH_-prefixed env of both jobs, values included, in both
+    directions.
+    """
+    deploy_env = _wf()["jobs"]["deploy-preview-backend"].get("env") or {}
+    reset_env = yaml.safe_load(RESET_WORKFLOW.read_text())["jobs"]["reset"].get(
+        "env"
+    ) or {}
+    deploy_oddish = {k: v for k, v in deploy_env.items() if k.startswith("ODDISH_")}
+    reset_oddish = {k: v for k, v in reset_env.items() if k.startswith("ODDISH_")}
+    assert deploy_oddish == reset_oddish

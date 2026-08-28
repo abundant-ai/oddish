@@ -48,6 +48,16 @@ jobs:
       # Hold LLM trials until a task's nop/oracle baselines validate it (mirrors
       # modal-deploy.yml's prod setting).
       ODDISH_GATE_LLM_ON_BASELINES: "1"
+      # Numinous Cloud execution backend (merged in #1344, opt-in). Disabled:
+      # staging is treated as main, so development happens on preview deploys
+      # only (pr-preview.yml keeps it on). Set to "1" to route CPU trials to
+      # Numinous first, then Daytona, then Modal.
+      ODDISH_NUMINOUS_ENABLED: "0"
+      # Numinous GPU lane (#1412). Disabled here too (preview-only). Separate
+      # flag from ODDISH_NUMINOUS_ENABLED; set to "1" to route GPU trials to
+      # Numinous ahead of Modal.
+      ODDISH_NUMINOUS_GPU_ENABLED: "0"
+      # (staging-only until it reaches main after this soaks)
       # GKE (TPU) execution backend, mirroring modal-deploy.yml's prod block.
       # backend/modal_app.py only bakes env vars prefixed ODDISH_GKE_ into the
       # deployed image (its ENV_VARS dict filters on that prefix); an unprefixed

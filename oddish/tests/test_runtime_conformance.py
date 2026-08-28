@@ -13,6 +13,7 @@ from oddish.runtime.ports import (
     GpuSupport,
     TpuSupport,
 )
+from oddish.runtime.backends.archil import ArchilBackend
 from oddish.runtime.backends.daytona import DaytonaBackend
 from oddish.runtime.backends.fake import FakeBackend
 from oddish.runtime.backends.gke import GkeBackend
@@ -23,6 +24,7 @@ CONFORMANCE_BACKENDS: list[ExecutionBackend] = [
     FakeBackend(),
     ModalBackend(),
     DaytonaBackend(),
+    ArchilBackend(),
     GkeBackend(),
 ]
 
@@ -59,3 +61,25 @@ def test_harbor_env_kwargs_preserves_caller_values(backend: ExecutionBackend) ->
 @pytest.mark.parametrize("backend", CONFORMANCE_BACKENDS, ids=lambda b: b.name)
 def test_name_is_nonempty_str(backend: ExecutionBackend) -> None:
     assert isinstance(backend.name, str) and backend.name
+
+
+def test_archil_capabilities_match_current_harbor_support() -> None:
+    caps = ArchilBackend().capabilities()
+    assert caps.gpu is None
+    assert caps.private_registry_pull is False
+    assert caps.network_egress == "allow"
+    assert caps.persistent_volumes is False
+    assert caps.streaming_logs is False
+
+
+def test_archil_env_kwargs_enable_safe_pause_by_default() -> None:
+    assert ArchilBackend().harbor_env_kwargs({})["pause_http_proxy"] is True
+
+
+def test_archil_env_kwargs_allow_explicit_proxy_override() -> None:
+    assert (
+        ArchilBackend().harbor_env_kwargs({"pause_http_proxy": False})[
+            "pause_http_proxy"
+        ]
+        is False
+    )

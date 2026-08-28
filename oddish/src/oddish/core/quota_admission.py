@@ -9,8 +9,11 @@ from oddish.config import QuotaMode, settings
 from oddish.core.quotas import (
     get_effective_limit,
     get_effective_org_limit,
+    inflight_reported_usd,
     inflight_reserved_usd,
+    org_inflight_reported_usd,
     org_inflight_reserved_usd,
+    quota_pause_limit_usd,
     quota_window_start,
     start_of_month_utc,
     sum_cost_usd,
@@ -55,6 +58,20 @@ class OrgQuotaExceeded(HTTPException):
                 "used_usd": float(used_usd),
                 "reserved_usd": float(reserved_usd),
                 "limit_usd": float(limit_usd),
+            },
+        )
+
+
+class QuotaPaused(HTTPException):
+    def __init__(self, used_usd, in_flight_usd, limit_usd) -> None:
+        super().__init__(
+            status_code=402,
+            detail={
+                "message": "New runs are paused because spend is near its quota.",
+                "used_usd": float(used_usd),
+                "in_flight_usd": float(in_flight_usd),
+                "pause_limit_usd": float(limit_usd),
+                "paused": True,
             },
         )
 
@@ -136,6 +153,18 @@ async def _check_user_quota(
 ) -> None:
     limit = await get_effective_limit(session, org_id, billed_user_id)
     used = await sum_cost_usd(session, org_id, billed_user_id, quota_window_start())
+    pause_limit = quota_pause_limit_usd(limit)
+    if pause_limit is not None:
+        _raise_or_log_over_budget(
+            org_id,
+            billed_user_id,
+            used,
+            await inflight_reported_usd(session, org_id, billed_user_id),
+            pause_limit,
+            enforce=enforce,
+            exc_type=QuotaPaused,
+            reason="pause_limit",
+        )
     reserved = (
         await inflight_reserved_usd(session, org_id, billed_user_id)
         + count * settings.pending_trial_reservation_usd
@@ -164,6 +193,18 @@ async def _check_org_quota(
     if limit is None:
         return
     used = await sum_org_cost_usd(session, org_id, start_of_month_utc())
+    pause_limit = quota_pause_limit_usd(limit)
+    if pause_limit is not None:
+        _raise_or_log_over_budget(
+            org_id,
+            billed_user_id,
+            used,
+            await org_inflight_reported_usd(session, org_id),
+            pause_limit,
+            enforce=enforce,
+            exc_type=QuotaPaused,
+            reason="org_pause_limit",
+        )
     reserved = (
         await org_inflight_reserved_usd(session, org_id)
         + count * settings.pending_trial_reservation_usd

@@ -1,17 +1,20 @@
 """Oddish's Claude Code agent wrappers.
 
 All Claude Code trials deliver the task over stdin so task text is absent from
-the process command line. Probe trials additionally install Harbor into the
-sandbox so the agent can inspect the harness.
+the process command line -- upstream Harbor does this itself now, so the
+wrappers no longer patch the command. Probe trials additionally install Harbor
+into the sandbox so the agent can inspect the harness.
 
 Stock Harbor installs only the claude-code CLI into the sandbox (see
 ``harbor.agents.installed.claude_code.ClaudeCode.install``). Probe trials also
 want the *harbor* package importable inside the sandbox so the agent can
 ``import harbor`` while exploring the harness. We pin the install to the exact
 harbor the orchestrator is running -- read from the installed package's PEP 610
-``direct_url.json`` so it emits a ``git+<source>@<commit>`` requirement (harbor is
-a git fork, not a PyPI release). In a blessed-variant container that is the
-variant's harbor; for an explicit override the caller can pass ``(source, sha)``.
+``direct_url.json`` (harbor is a git fork, not a PyPI release) and rendered as
+a requirement the sandbox can actually install: probe sandbox images ship no
+``git`` binary, so GitHub sources become a commit tarball rather than a
+``git+`` reference. In a blessed-variant container that is the variant's
+harbor; for an explicit override the caller can pass ``(source, sha)``.
 
 The wrappers are selected by ``_apply_claude_code_oddish_wrapper`` in
 :mod:`oddish.workers.harbor.agent_config`.
@@ -19,7 +22,6 @@ The wrappers are selected by ``_apply_claude_code_oddish_wrapper`` in
 
 from __future__ import annotations
 
-import base64
 import json
 import logging
 import shlex
@@ -28,7 +30,7 @@ from importlib.metadata import Distribution, PackageNotFoundError, version
 from harbor.agents.installed.base import BaseEnvironment
 from harbor.agents.installed.claude_code import ClaudeCode
 
-from oddish.core.harbor_source import harbor_git_requirement
+from oddish.core.harbor_source import harbor_sandbox_requirement
 
 logger = logging.getLogger(__name__)
 
@@ -63,16 +65,18 @@ def _pinned_harbor_requirement(
 ) -> str | None:
     """The pip requirement that installs the run's harbor into the sandbox.
 
-    Emits a git direct reference (``harbor @ git+<source>@<sha>``) so the sandbox
-    gets the same fork commit as the run: an explicit ``(source, sha)`` wins;
-    otherwise the orchestrator's own git-installed harbor (via ``direct_url``);
-    falling back to ``harbor==<version>`` only if harbor is a plain release.
+    Emits a direct reference the sandbox can install WITHOUT a git binary
+    (GitHub sources render as the commit tarball; see
+    ``harbor_sandbox_requirement``) so the sandbox gets the same fork commit
+    as the run: an explicit ``(source, sha)`` wins; otherwise the
+    orchestrator's own git-installed harbor (via ``direct_url``); falling
+    back to ``harbor==<version>`` only if harbor is a plain release.
     """
     if source and sha:
-        return harbor_git_requirement(source, sha)
+        return harbor_sandbox_requirement(source, sha)
     pin = _installed_harbor_git_pin()
     if pin is not None:
-        return harbor_git_requirement(*pin)
+        return harbor_sandbox_requirement(*pin)
     try:
         return f"harbor=={version('harbor')}"
     except PackageNotFoundError:
@@ -92,44 +96,23 @@ def _pinned_oddish_requirement() -> str | None:
     try:
         return f"oddish=={version('oddish')}"
     except PackageNotFoundError:
-        logger.warning(
-            "pre-trial: oddish not installed in orchestrator; skipping pin"
-        )
+        logger.warning("pre-trial: oddish not installed in orchestrator; skipping pin")
         return None
 
 
 class OddishClaudeCode(ClaudeCode):
-    """Claude Code with task delivery kept off the process command line."""
+    """Stock Claude Code under an Oddish-owned name.
 
-    def _build_claude_command(self, escaped_instruction: str, extra_flags: str) -> str:
-        """Pipe the prompt over stdin instead of including it in ``claude`` argv.
-
-        Long-horizon tasks often restart services with ``pkill -f``. When the
-        full task is on argv, a service name from that prompt can match and kill
-        the agent itself. Encoding only protects the transport command line;
-        ``base64 -d`` restores the exact UTF-8 prompt on Claude Code's stdin.
-        """
-        try:
-            instruction_parts = shlex.split(escaped_instruction)
-        except ValueError as exc:
-            raise ValueError(
-                "Claude Code instruction is not valid shell quoting"
-            ) from exc
-        if len(instruction_parts) != 1:
-            raise ValueError(
-                "Claude Code instruction must decode to exactly one shell argument"
-            )
-
-        encoded_instruction = base64.b64encode(
-            instruction_parts[0].encode("utf-8")
-        ).decode("ascii")
-        return (
-            'export PATH="$HOME/.local/bin:$PATH"; '
-            f"printf %s {shlex.quote(encoded_instruction)} | base64 -d | "
-            "claude --verbose --output-format=stream-json "
-            f"{extra_flags}"
-            "--print 2>&1 | tee /logs/agent/claude-code.txt"
-        )
+    Harbor keeps the prompt off ``claude``'s argv itself: it hands the
+    instruction to the agent's stdin through a transient environment
+    variable and tees the stream-json output to
+    ``/logs/agent/claude-code.txt``. This subclass therefore adds no
+    behaviour; it exists because its import path is a routing key -- the
+    agent-config wrapper selects it by name
+    (``_ODDISH_CLAUDE_CODE_IMPORT_PATH``), the restricted-network
+    compatibility profiles are keyed on it, and
+    :class:`OddishProbeClaudeCode` derives from it.
+    """
 
 
 class OddishProbeClaudeCode(OddishClaudeCode):

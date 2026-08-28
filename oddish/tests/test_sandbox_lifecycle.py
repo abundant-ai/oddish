@@ -270,7 +270,11 @@ async def test_worker_heartbeat_renews_bound_capacity_lease(
 
         async def fetchrow(self, statement: str, *_args):
             self.statements.append(statement)
-            return {"execution_lane": "ec2_trial", "capacity_renewed": True}
+            return {
+                "still_owned": True,
+                "execution_lane": "ec2_trial",
+                "capacity_renewed": True,
+            }
 
         async def close(self) -> None:
             return None
@@ -280,12 +284,42 @@ async def test_worker_heartbeat_renews_bound_capacity_lease(
         worker_job_single_job, "_open_connection", lambda: _return(connection)
     )
 
-    await worker_job_single_job.heartbeat_worker_job(
+    still_owned = await worker_job_single_job.heartbeat_worker_job(
         "worker-job-1", current_worker_id="worker-1"
     )
 
+    assert still_owned is True
     assert any("UPDATE sandbox_capacity_leases" in sql for sql in connection.statements)
     assert any("locked_until = NOW()" in sql for sql in connection.statements)
+
+
+@pytest.mark.asyncio
+async def test_worker_heartbeat_reports_cancelled_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Connection:
+        async def execute(self, _statement: str, *_args):
+            return "UPDATE 0"
+
+        async def fetchrow(self, _statement: str, *_args):
+            return {
+                "still_owned": False,
+                "execution_lane": None,
+                "capacity_renewed": False,
+            }
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        worker_job_single_job, "_open_connection", lambda: _return(Connection())
+    )
+
+    still_owned = await worker_job_single_job.heartbeat_worker_job(
+        "worker-job-1", current_worker_id="worker-1"
+    )
+
+    assert still_owned is False
 
 
 @pytest.mark.asyncio
@@ -297,7 +331,11 @@ async def test_ec2_heartbeat_fails_loudly_when_capacity_lease_is_lost(
             return "UPDATE 1"
 
         async def fetchrow(self, _statement: str, *_args):
-            return {"execution_lane": "ec2_trial", "capacity_renewed": False}
+            return {
+                "still_owned": True,
+                "execution_lane": "ec2_trial",
+                "capacity_renewed": False,
+            }
 
         async def close(self) -> None:
             return None

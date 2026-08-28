@@ -1101,6 +1101,8 @@ function QaModelTable({ models }: { models: CostQaModelBreakdown[] }) {
 const COMPUTE_PROVIDER_LABELS: Record<string, string> = {
   modal: "Modal",
   daytona: "Daytona",
+  archil: "Archil",
+  numinous: "Numinous Cloud",
   other: "Other",
 };
 

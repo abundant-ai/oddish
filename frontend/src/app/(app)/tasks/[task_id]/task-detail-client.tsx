@@ -24,6 +24,7 @@ import { TaskVerdictBadge } from "@/components/task-verdict-badge";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { ExperimentsList } from "@/components/experiments-list";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
+import { trialNotRealSpendNote } from "@/components/not-real-spend-badge";
 import { getExperimentAgentKey } from "@/lib/experiment-agent-grouping";
 import {
   formatCostUsd,
@@ -51,7 +52,7 @@ import {
   normalizedAgentModel,
   useTaskOpenReader,
 } from "@/lib/use-task-open-reader";
-import { useTrial } from "@/lib/use-trial";
+import { preloadTrial, useTrial } from "@/lib/use-trial";
 import {
   formatRelativeTime,
   prBadge,
@@ -498,6 +499,8 @@ function TrialChip({ trial, onClick }: { trial: Trial; onClick: () => void }) {
         <button
           type="button"
           onClick={onClick}
+          onPointerEnter={() => void preloadTrial("/api", trial.id)}
+          onFocus={() => void preloadTrial("/api", trial.id)}
           className={`flex h-[22px] w-[22px] items-center justify-center rounded-[4px] border font-mono leading-none font-semibold transition ${config.matrixClass} ${
             status === "partial"
               ? "text-[8px] tracking-[-0.03em]"
@@ -523,6 +526,11 @@ function TrialChip({ trial, onClick }: { trial: Trial; onClick: () => void }) {
             <div className="text-muted-foreground">
               {trial.cost_is_estimated ? "~" : ""}
               {formatCostUsd(trial.cost_usd)}
+            </div>
+          )}
+          {trialNotRealSpendNote(trial.cost_exclusion_reason) && (
+            <div className="text-muted-foreground mt-1 max-w-[220px] text-[10px]">
+              {trialNotRealSpendNote(trial.cost_exclusion_reason)}
             </div>
           )}
         </div>
@@ -1036,10 +1044,6 @@ export function TaskDetailClient({
     }
   }, [activeTaskPane, drawer, taskPaneFile, taskPaneLines]);
 
-  const handleRerun = useCallback(() => {
-    revalidateReaderResources();
-  }, [revalidateReaderResources]);
-
   const [isRunningJudge, setIsRunningJudge] = useState(false);
   const [isCancellingJudge, setIsCancellingJudge] = useState(false);
   const [judgeError, setJudgeError] = useState<string | null>(null);
@@ -1424,7 +1428,7 @@ export function TaskDetailClient({
                 selectedLines={taskPaneLines}
                 onSelectLinesChange={setTaskPaneLines}
                 onSelectedFileChange={handleTaskPaneFileChange}
-                onRetryComplete={handleRerun}
+                onRetryComplete={revalidateReaderResources}
                 allowRetry={true}
                 onNavigateToFirstTrial={
                   drawerTrialGroups.length > 0 &&
@@ -1451,7 +1455,7 @@ export function TaskDetailClient({
                   trialGroups={drawerTrialGroups}
                   onNavigate={handleNavigateToTrial}
                   onNavigateToTask={() => setDrawer({ mode: "task" })}
-                  onRetry={handleRerun}
+                  onRetry={revalidateReaderResources}
                   allowRetry={true}
                   apiBaseUrl="/api"
                   contentOnly={true}

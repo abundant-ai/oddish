@@ -59,7 +59,7 @@ HARBOR_VARIANTS: dict[str, HarborVariant] = {
     GKE_VARIANT_ID: HarborVariant(
         variant_id=GKE_VARIANT_ID,
         source="https://github.com/abundant-ai/harbor-gke",
-        sha="196c2e47157738e9f4390dda90fe76b6247b2ff2",
+        sha="6ec8e94640f0a4146270458898e4fc98cfd7823e",
         extras=("gke",),
     ),
 }
@@ -160,12 +160,55 @@ def harbor_git_requirement(
     raises ``MissingExtraError`` at runtime when it tries to build the sandbox.
     Extras are sorted and de-duplicated for a stable requirement string.
     """
-    name = "harbor"
+    return f"{_requirement_name(extras)} @ git+{_strip_git_prefix(source)}@{sha}"
+
+
+def _requirement_name(extras: Sequence[str] | None) -> str:
+    """``harbor`` or ``harbor[extra,...]`` with extras sorted and de-duplicated."""
     if extras:
         unique = sorted({e.strip() for e in extras if e and e.strip()})
         if unique:
-            name = f"harbor[{','.join(unique)}]"
-    return f"{name} @ git+{_strip_git_prefix(source)}@{sha}"
+            return f"harbor[{','.join(unique)}]"
+    return "harbor"
+
+
+_GITHUB_HTTPS_RE = re.compile(
+    r"^https://github\.com/(?P<org>[^/]+?)/(?P<repo>[^/]+?)(?:\.git)?/?$",
+    re.IGNORECASE,
+)
+
+
+def harbor_sandbox_requirement(
+    source: str, sha: str, *, extras: Sequence[str] | None = None
+) -> str:
+    """Requirement for installing Harbor where no ``git`` binary exists.
+
+    A ``git+`` direct reference makes the installer shell out to the git
+    binary, which minimal probe sandbox images (Daytona) do not ship — every
+    such install died with "probe: failed to install ... into the sandbox"
+    and the agent ran without an importable harbor. For GitHub sources this
+    renders the commit tarball instead
+    (``https://github.com/<org>/<repo>/archive/<sha>.tar.gz``): the identical
+    immutable tree for that sha, fetched over plain HTTPS, no git involved.
+    A non-GitHub source has no forge tarball endpoint and falls back to the
+    ``git+`` form unchanged.
+
+    Use this ONLY for installs into a sandbox. Orchestrator and image
+    installs must keep :func:`harbor_git_requirement`: the installed
+    package's PEP 610 ``direct_url.json`` then carries ``vcs_info``, which
+    ``_installed_harbor_git_pin`` (oddish.workers.agents.claude_code) reads
+    to re-derive ``(source, sha)``. A tarball install records only
+    ``archive_info`` and would break that chain.
+    """
+    src = _strip_git_prefix(source)
+    match = _GITHUB_HTTPS_RE.match(src)
+    if match is None:
+        return harbor_git_requirement(source, sha, extras=extras)
+    org, repo = match.group("org"), match.group("repo")
+    return (
+        f"{_requirement_name(extras)} @ "
+        f"https://github.com/{org}/{repo}/archive/{sha}.tar.gz"
+    )
 
 
 def harbor_variant_function_name(variant_id: str) -> str:

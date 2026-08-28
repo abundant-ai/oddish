@@ -37,6 +37,7 @@ from oddish.core.endpoints.qa import (
     rerun_pre_trial_audit_core,
     rerun_task_qa_core,
 )
+from oddish.core.endpoints.qa_eval import create_qa_eval_core
 from oddish.core.endpoints.sweep import (
     SweepAttribution,
     build_task_sweep_response,
@@ -75,7 +76,6 @@ from oddish.core.endpoints.trials import (
     get_trial_by_index_core,
     get_trial_logs_core,
     get_trial_logs_structured_core,
-    get_trial_analysis_log_core,
     get_trial_response_for_org_core,
     get_trial_result_core,
     get_trial_trajectory_core,
@@ -103,6 +103,7 @@ __all__ = [
     "combine_experiments_core",
     "create_task_sweep_batch_core",
     "create_task_sweep_core",
+    "create_qa_eval_core",
     "delete_experiment_core",
     "delete_task_core",
     "delete_trial_core",
@@ -119,7 +120,6 @@ __all__ = [
     "get_trial_logs_core",
     "get_trial_logs_structured_core",
     "get_trial_qa_costs",
-    "get_trial_analysis_log_core",
     "get_trial_response_for_org_core",
     "get_trial_result_core",
     "get_trial_trajectory_core",

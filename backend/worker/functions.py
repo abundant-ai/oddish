@@ -31,6 +31,7 @@ import modal
 from observability import log_exception, span as _otel_span
 
 from modal_app import (
+    MODAL_APP_NAME,
     CLEANUP_INTERVAL_SECONDS,
     CLEANUP_TIMEOUT_SECONDS,
     DASHBOARD_PRECOMPUTE_INTERVAL_SECONDS,
@@ -68,6 +69,11 @@ from oddish.config import settings
 from oddish.costs.recorder import WorkerBillingSpec
 from oddish.core.model_concurrency import get_model_concurrency_overrides
 from oddish.db import close_database_connections, get_session, WorkerJobKind
+from oddish.observability import (
+    DispatchCycleOutcome,
+    record_dispatch_cycle,
+    record_dispatch_snapshot,
+)
 from oddish.runtime.backends.daytona import reap_stale_daytona_sandboxes
 from oddish.workers.jobs import ensure_builtin_handlers_registered
 from oddish.workers.queue.cleanup import cleanup_orphaned_queue_state
@@ -796,10 +802,14 @@ def build_gke_image_builder_function(modal_app) -> object | None:
 GKE_IMAGE_BUILDER: object | None = build_gke_image_builder_function(app)
 
 
-async def _reap_idle_gke_cluster_entry() -> str:
+async def _reap_idle_gke_cluster_entry(app_name: str = MODAL_APP_NAME) -> str:
+    # ``app_name`` binds at DEPLOY time: with serialized=True the default is
+    # pickled with the function, so a runtime secret that overwrites
+    # MODAL_APP_NAME in the container cannot change which deployment this
+    # function believes it is. Deletion authorizes against this identity.
     from worker.gke_cluster_reaper import reap_idle_cluster
 
-    outcome = await reap_idle_cluster()
+    outcome = await reap_idle_cluster(deploy_app_name=app_name)
     console.print(f"[cyan]GKE cluster reaper[/cyan]: {outcome}")
     return outcome
 
@@ -824,6 +834,42 @@ def build_gke_cluster_reaper_function(modal_app) -> object | None:
 
 
 GKE_CLUSTER_REAPER: object | None = build_gke_cluster_reaper_function(app)
+
+
+async def _teardown_gke_cluster_entry(app_name: str = MODAL_APP_NAME) -> str:
+    # Deploy-time identity, same reasoning as the reaper entry above.
+    from worker.gke_cluster_reaper import teardown_deployment_cluster
+
+    outcome = await teardown_deployment_cluster(deploy_app_name=app_name)
+    console.print(f"[cyan]GKE cluster teardown[/cyan]: {outcome}")
+    return outcome
+
+
+def build_gke_cluster_teardown_function(modal_app) -> object | None:
+    """On-demand deletion of the deployment's own cluster.
+
+    The hourly reaper is a scheduled function, so it dies with the app and
+    can never clean up after a closing preview. The stop workflow calls this
+    just before ``modal app stop``, while the app still holds the credentials
+    to do it. No schedule: invoked explicitly or not at all.
+    """
+    images = harbor_variant_images()
+    if "gke" not in images:
+        return None
+    return modal_app.function(
+        image=images["gke"],
+        secrets=runtime_secrets,
+        min_containers=0,
+        buffer_containers=0,
+        timeout=600,
+        cpu=1.0,
+        memory=2048,
+        name="teardown_gke_cluster",
+        serialized=True,
+    )(_teardown_gke_cluster_entry)
+
+
+GKE_CLUSTER_TEARDOWN: object | None = build_gke_cluster_teardown_function(app)
 
 
 @app.function(
@@ -857,6 +903,10 @@ async def poll_queue():
     # Open the span FIRST so the storage-path setup, discovery, and
     # spawn-plan queries all nest under one named
     # ``worker.poll_queue_cycle`` parent per tick.
+    cycle_started_at = time.monotonic()
+    cycle_outcome: DispatchCycleOutcome = "error"
+    workers_spawned = 0
+    spawn_cap_reached = False
     cycle_span = _otel_span("worker.poll_queue_cycle")
     cycle_span.__enter__()
     try:
@@ -878,6 +928,13 @@ async def poll_queue():
                 EC2_TRIAL_EXECUTION_LANE: ec2_capacity_limit,
             },
             held_by_lane={EC2_TRIAL_EXECUTION_LANE: held_ec2_capacity},
+        )
+        record_dispatch_snapshot(
+            queue_keys=plan.queue_keys,
+            queued_by_queue=plan.queued_by_queue,
+            running_by_queue_key=plan.running_by_queue_key,
+            held_by_queue_key=plan.held_by_queue_key,
+            concurrency_limits=plan.concurrency_limits,
         )
 
         for queue_key in plan.queue_keys:
@@ -932,6 +989,7 @@ async def poll_queue():
         )
 
         spawn_plan = plan.unit_plan
+        spawn_cap_reached = len(spawn_plan) >= MAX_WORKERS_PER_POLL
 
         # Persist a heartbeat the admin dashboard reads back so operators can
         # see the spawn rate (and whether it is pinned at the per-poll cap)
@@ -967,6 +1025,7 @@ async def poll_queue():
             except Exception as stamp_err:  # noqa: BLE001 - telemetry is best-effort
                 console.print(f"[yellow]stage stamp skipped: {stamp_err}[/yellow]")
             console.print("[dim]No queue capacity available, exiting[/dim]")
+            cycle_outcome = "success"
             return
 
         console.print(f"[green]Spawning {len(spawn_plan)} job worker(s)...[/green]")
@@ -986,6 +1045,7 @@ async def poll_queue():
             )
             spawn_calls.append(fn.spawn.aio(**spawn_kwargs))
         await asyncio.gather(*spawn_calls)
+        workers_spawned = len(spawn_plan)
         for i, (queue_key, variant, lane) in enumerate(spawn_plan, start=1):
             console.print(
                 f"[dim]Spawned worker {i}/{len(spawn_plan)} "
@@ -1007,10 +1067,15 @@ async def poll_queue():
             await stamp_dispatch_stage(spawned_queue_keys, why_waiting)
         except Exception as stamp_err:  # noqa: BLE001 - telemetry is best-effort
             console.print(f"[yellow]stage stamp skipped: {stamp_err}[/yellow]")
+        cycle_outcome = "success"
 
+    except asyncio.CancelledError:
+        cycle_outcome = "cancelled"
+        raise
     except OSError as e:
         # Transient network/DNS errors (e.g. socket.gaierror) should not
         # crash the scheduled function -- the next poll in 3 minutes will retry.
+        cycle_outcome = "skipped"
         console.print(
             f"[yellow]Dispatcher skipped (transient network error): {e}[/yellow]"
         )
@@ -1018,6 +1083,12 @@ async def poll_queue():
         console.print(f"[red]Dispatcher error: {e}[/red]")
         raise
     finally:
+        record_dispatch_cycle(
+            workers_spawned=workers_spawned,
+            spawn_cap_reached=spawn_cap_reached,
+            duration_seconds=time.monotonic() - cycle_started_at,
+            outcome=cycle_outcome,
+        )
         await close_database_connections()
         import sys as _sys
 

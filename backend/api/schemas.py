@@ -217,6 +217,22 @@ class ExperimentShareResponse(BaseModel):
     qa_report_experiment_id: str | None = None
 
 
+class ModelRenameRequest(BaseModel):
+    """Upsert (``display`` set) or clear (``remove`` / blank ``display``) one
+    public model alias for an experiment."""
+
+    model: str
+    display: str | None = None
+    remove: bool = False
+
+
+class ModelRenameResponse(BaseModel):
+    """An experiment's full public model-rename map after an edit."""
+
+    name: str
+    renames: dict[str, str]
+
+
 class ExperimentUpdateRequest(BaseModel):
     """Request to update experiment metadata.
 

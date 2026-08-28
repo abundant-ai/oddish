@@ -65,19 +65,19 @@ test("summary polling preserves the durable backend job state", async () => {
     await expect(
       fetchTrajectorySummary("https://example.test/summary")
     ).resolves.toEqual({
-      status: "running",
       summary: null,
-      jobId: "job-1",
-      retryAfterMs: 1700,
+      refresh: {
+        status: "running",
+        jobId: "job-1",
+        retryAfterMs: 1700,
+      },
     });
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("public trial drawers defer trajectory work", async ({
-  page,
-}) => {
+test("public trial drawers defer trajectory work", async ({ page }) => {
   const token = "public-drawer-regression";
   const publicTrial: Trial = {
     id: "task-1-2",

@@ -59,6 +59,8 @@ def _enforce_mode(monkeypatch):
     monkeypatch.setattr(settings, "quota_mode", QuotaMode.ENFORCE)
     monkeypatch.setattr(settings, "pending_trial_reservation_usd", Decimal("0"))
     monkeypatch.setattr(settings, "default_daily_quota_usd", Decimal("0.3000"))
+    monkeypatch.setattr(settings, "quota_pause_remaining_percent", Decimal(0))
+    monkeypatch.setattr(settings, "quota_pause_remaining_usd", None)
 
 
 async def _make_billed_task(cleanup_task_ids, *, n_trials, billed_user, org_id):

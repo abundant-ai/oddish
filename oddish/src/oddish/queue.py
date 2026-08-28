@@ -39,6 +39,7 @@ from oddish.core.verdict_state import (
     reset_verdict,
 )
 from oddish.db import (
+    ACTIVE_TRIAL_STATUSES,
     AGENT_TRIAL_KIND,
     AnalysisStatus,
     ExperimentModel,
@@ -52,6 +53,7 @@ from oddish.db import (
     WorkerJobModel,
     WorkerJobStatus,
     generate_id,
+    is_active_trial_status,
     utcnow,
 )
 from oddish.db.storage import extract_s3_key_from_path, get_storage_client
@@ -83,12 +85,6 @@ class TaskQAStageAdmission:
     task_version_id: str | None = None
 
 
-ACTIVE_TRIAL_STATUSES = (
-    TrialStatus.PENDING,
-    TrialStatus.QUEUED,
-    TrialStatus.RUNNING,
-    TrialStatus.RETRYING,
-)
 ACTIVE_WORKER_JOB_STATUSES = (
     WorkerJobStatus.QUEUED,
     WorkerJobStatus.RUNNING,
@@ -302,7 +298,7 @@ async def cancel_tasks_runs(
     cancelled_trial_ids: set[str] = set()
     for trial in trials:
         trial_updated = False
-        if trial.id in canceled_trial_kinds or trial.status in ACTIVE_TRIAL_STATUSES:
+        if trial.id in canceled_trial_kinds or is_active_trial_status(trial.status):
             # Modal function-call ids now live only on ``worker_jobs``;
             # the ``UPDATE worker_jobs ... RETURNING`` above is the
             # single source for FCs to terminate.
@@ -335,7 +331,7 @@ async def cancel_tasks_runs(
         for trial in all_trials
         if trial.id not in cancelled_trial_ids
         and (
-            trial.status in ACTIVE_TRIAL_STATUSES
+            is_active_trial_status(trial.status)
             or trial.analysis_status in ACTIVE_PIPELINE_STATUSES
         )
     }
@@ -639,12 +635,18 @@ def _get_next_trial_index(task_id: str, existing_trials: list[TrialModel]) -> in
 async def reserve_next_trial_index(session: AsyncSession, *, task_id: str) -> int:
     """SQL-backed sibling of :func:`_get_next_trial_index` for rerun paths.
 
-    The retry path doesn't already have ``task.trials`` loaded and we
-    don't want to pull every trial just to compute the suffix. Instead
-    we scan ``trials.id`` directly for numeric ``{task_id}-{N}``
-    suffixes -- including superseded rows so the new id can never
-    collide with an existing prefix in S3.
+    The task row lock serializes every caller that allocates a
+    ``{task_id}-{N}`` id, including unrelated target trials under the same
+    task. We then scan ``trials.id`` directly for numeric suffixes, including
+    superseded rows so the new id can never collide with an existing DB or S3
+    prefix.
     """
+    task_id_locked = await session.scalar(
+        select(TaskModel.id).where(TaskModel.id == task_id).with_for_update()
+    )
+    if task_id_locked is None:
+        raise RuntimeError(f"cannot reserve a trial id for missing task {task_id}")
+
     prefix = f"{task_id}-"
     rows = await session.execute(
         select(TrialModel.id)
@@ -1139,10 +1141,14 @@ async def append_trials_to_task(
     experiment_id: str | None = None,
     billed_user_id: str | None = None,
     supersede_failed_trial_ids: Sequence[Sequence[str]] | None = None,
+    task_version_id: str | None = None,
 ) -> list[TrialModel]:
     """Append new queued trials to an existing task.
 
-    New trials are pinned to the task's ``current_version_id``. When
+    New trials are pinned to ``task_version_id`` when given, else to the task's
+    ``current_version_id``. Callers pass the override to keep an append on the
+    version the target experiment already runs, instead of pulling the
+    experiment onto a newer default nothing there has run. When
     ``experiment_id`` is given, new trials use that experiment and the
     task is auto-linked to it via ``task_experiments`` (matching the
     implicit behavior of the old single-FK world).
@@ -1169,7 +1175,7 @@ async def append_trials_to_task(
     existing_trials = list(trial_rows.scalars().all())
     next_index = _get_next_trial_index(task.id, existing_trials)
 
-    current_version_id = task.current_version_id
+    current_version_id = task_version_id or task.current_version_id
 
     # Pick the target experiment: explicit argument wins, otherwise fall back
     # to the first linked experiment (the task's "primary" association).
@@ -1254,8 +1260,11 @@ async def append_trials_to_task(
 
     from oddish.workers.analysis_trials import maybe_enqueue_audit_trial
 
+    # Audit the version these trials run, not the task default: an append
+    # pinned to an older version would otherwise audit content no trial
+    # used and mark the wrong version audited.
     await maybe_enqueue_audit_trial(
-        session, task=task, task_version_id=task.current_version_id
+        session, task=task, task_version_id=current_version_id
     )
 
     # The replacement rows must exist before the self-referential FK can point
@@ -1558,7 +1567,7 @@ async def start_qa_for_task(session: AsyncSession, task: TaskModel) -> bool:
 async def live_analysis_trial_id(
     session: AsyncSession, task_id: str, *, kind: str
 ) -> str | None:
-    """Id of a live (pending/queued/running/retrying) non-superseded trial
+    """Id of a live (pending/queued/running/paused/retrying) non-superseded trial
     of ``kind`` for this task, or None. The live row itself is the
     in-progress marker for analysis stages: status flags can be stale after
     a crash, the trial row cannot."""
@@ -1613,14 +1622,7 @@ async def maybe_start_task_qa_stage(
                 ),
                 TrialModel.kind == AGENT_TRIAL_KIND,
                 TrialModel.superseded_by_trial_id.is_(None),
-                TrialModel.status.in_(
-                    [
-                        TrialStatus.PENDING,
-                        TrialStatus.QUEUED,
-                        TrialStatus.RUNNING,
-                        TrialStatus.RETRYING,
-                    ]
-                ),
+                TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
             )
         )
     )
@@ -1665,11 +1667,11 @@ async def maybe_gate_llm_trials(session: AsyncSession, trial_id: str) -> bool:
     and its authoritative worker job for that task version in that experiment
     are terminal, evaluates them and — if they validate the task (oracle passes,
     nop fails) — releases that scope's BLOCKED LLM trials to QUEUED; otherwise
-    cancels them and mirrors them to FAILED so the task can advance. Scoping by
-    experiment keeps concurrent sweeps in different experiments from sharing
-    each other's gate timing or verdict; scoping by task version keeps an older
-    version's baselines from validating a newer version's (different code) LLM
-    trials.
+    cancels them and marks their trial rows SKIPPED so the task can advance.
+    Scoping by experiment keeps concurrent sweeps in different experiments
+    from sharing each other's gate timing or verdict; scoping by task version
+    keeps an older version's baselines from validating a newer version's
+    (different code) LLM trials.
 
     A no-op when there are no BLOCKED LLM trials in this scope (the gate was
     never armed) or other baselines are still running. Uses SELECT FOR UPDATE on
@@ -2062,14 +2064,7 @@ async def maybe_advance_legacy_analyzing_task(
                 TrialModel.task_id == task_id,
                 TrialModel.kind == "agent",
                 TrialModel.superseded_by_trial_id.is_(None),
-                TrialModel.status.in_(
-                    [
-                        TrialStatus.PENDING,
-                        TrialStatus.QUEUED,
-                        TrialStatus.RUNNING,
-                        TrialStatus.RETRYING,
-                    ]
-                ),
+                TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
             )
         )
     )

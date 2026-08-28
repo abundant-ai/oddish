@@ -206,6 +206,21 @@ class InProcessDispatcher:
             self._tasks.pop(handle.id, None)
         return cancelled
 
+    async def shutdown(self) -> int:
+        """Cancel and await every worker task owned by this dispatcher.
+
+        The polling loop is the parent of these tasks. Its shutdown must not
+        return while a child can still be using queue leases, database
+        connections, or trial resources.
+        """
+        live_tasks = [task for task in self._tasks.values() if not task.done()]
+        for task in live_tasks:
+            task.cancel()
+        if live_tasks:
+            await asyncio.gather(*live_tasks, return_exceptions=True)
+        self._tasks.clear()
+        return len(live_tasks)
+
     async def recover(self, serialized: Mapping[str, Any]) -> WorkerHandle | None:
         return None
 

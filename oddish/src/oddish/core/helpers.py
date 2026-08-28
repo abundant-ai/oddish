@@ -23,8 +23,10 @@ from oddish.db import (
     TrialStatus,
     WorkerJobModel,
     WorkerJobStatus,
+    is_worker_owned_trial_status,
 )
 from oddish.core.cost_basis import is_combine_copy
+from oddish.core.cost_exclusions import CostExclusions
 from oddish.core.tags.projection import (
     list_effective_user_tags_for_task_versions,
 )
@@ -100,7 +102,12 @@ def _has_fetchable_trajectory(trial: TrialModel) -> bool:
 _ANALYSIS_SUMMARY_UNSET = object()
 _VERSION_ID_UNSET: object = object()
 _QUEUE_PENDING_STATUSES = {TrialStatus.QUEUED, TrialStatus.RETRYING}
-_QUEUE_ACTIVE_STATUSES = _QUEUE_PENDING_STATUSES | {TrialStatus.RUNNING}
+_QUEUE_ACTIVE_STATUSES = {
+    TrialStatus.QUEUED,
+    TrialStatus.RUNNING,
+    TrialStatus.PAUSED,
+    TrialStatus.RETRYING,
+}
 _VISIBLE_ACTIVE_WORKER_JOB_STATUSES = {
     WorkerJobStatus.QUEUED,
     WorkerJobStatus.RUNNING,
@@ -141,7 +148,7 @@ def _build_trial_queue_info_snapshot(
         running_count = 0
 
         for trial in queue_trials:
-            if trial.status == TrialStatus.RUNNING:
+            if is_worker_owned_trial_status(trial.status):
                 running_count += 1
                 running_by_fairness[trial.fairness_key] += 1
                 continue
@@ -424,6 +431,7 @@ def build_trial_response(
     # None = "not resolved by this caller", which the UI renders as nothing.
     # Distinct from 0.0, which would mean "resolved, and there was no QA".
     qa_cost_usd: float | None = None,
+    exclusions: CostExclusions | None = None,
 ) -> TrialResponse:
     """Build a TrialResponse from a TrialModel."""
     normalized_model = settings.normalize_trial_model(trial.agent, trial.model, strict=False)
@@ -465,6 +473,15 @@ def build_trial_response(
         cost_usd=cost_usd,
         cost_is_estimated=cost_is_estimated,
         is_billed=trial.billed_user_id is not None,
+        cost_exclusion_reason=(
+            exclusions.reason_for(
+                llm_key_hash=trial.llm_key_hash,
+                model=trial.model,
+                experiment_id=trial.experiment_id,
+            )
+            if exclusions
+            else None
+        ),
         phase_timing=trial.phase_timing,
         has_trajectory=_has_fetchable_trajectory(trial),
         analysis_status=trial.analysis_status,
@@ -489,6 +506,7 @@ def build_compact_trial_response(
     analysis_summary: dict[str, str | None] | None | object = _ANALYSIS_SUMMARY_UNSET,
     queue_info: TrialQueueInfo | None = None,
     jobs: Sequence[VisibleWorkerJob] | None = None,
+    exclusions: CostExclusions | None = None,
 ) -> TrialResponse:
     """Build a compact TrialResponse for table views.
 
@@ -546,6 +564,15 @@ def build_compact_trial_response(
         cost_usd=cost_usd,
         cost_is_estimated=cost_is_estimated,
         is_billed=trial.billed_user_id is not None,
+        cost_exclusion_reason=(
+            exclusions.reason_for(
+                llm_key_hash=trial.llm_key_hash,
+                model=trial.model,
+                experiment_id=trial.experiment_id,
+            )
+            if exclusions
+            else None
+        ),
         phase_timing=trial.phase_timing,
         has_trajectory=_has_fetchable_trajectory(trial),
         analysis_status=trial.analysis_status,
@@ -777,6 +804,7 @@ def get_task_status_trials(
         trial
         for trial in task.trials
         if trial.superseded_by_trial_id is None
+        and (getattr(trial, "kind", "agent") or "agent") != "qa_eval"
         and not (exclude_combine_copies and is_combine_copy(trial))
     ]
     if effective is None:
@@ -945,6 +973,7 @@ def build_task_status_response(
     effective_version_id: str | None | object = _VERSION_ID_UNSET,
     gathered_trial_ids: set[str] | None = None,
     exclude_combine_copies: bool = False,
+    exclusions: CostExclusions | None = None,
 ) -> TaskStatusResponse:
     """Build a TaskStatusResponse from a TaskModel with eagerly loaded trials.
 
@@ -994,6 +1023,7 @@ def build_task_status_response(
                     if jobs_by_subject is not None
                     else None
                 ),
+                exclusions=exclusions,
             )
             for t in task_trials
         ]
@@ -1033,6 +1063,7 @@ def build_task_status_response_compact(
     experiment_context_id: str | None = None,
     effective_version_id: str | None | object = _VERSION_ID_UNSET,
     gathered_trial_ids: set[str] | None = None,
+    exclusions: CostExclusions | None = None,
 ) -> TaskStatusResponse:
     """Build TaskStatusResponse with compact per-trial payloads.
 
@@ -1072,6 +1103,7 @@ def build_task_status_response_compact(
                 if jobs_by_subject is not None
                 else None
             ),
+            exclusions=exclusions,
         )
         for t in task_trials
     ]
@@ -1125,6 +1157,7 @@ SLIM_TRIAL_RESPONSE_COLUMNS = (
     TrialModel.output_tokens,
     TrialModel.cost_usd,
     TrialModel.billed_user_id,
+    TrialModel.llm_key_hash,
     TrialModel.superseded_by_trial_id,
     TrialModel.created_at,
     TrialModel.started_at,
@@ -1136,6 +1169,7 @@ def build_slim_trial_response(
     trial: TrialModel,
     task_path: str,
     *,
+    exclusions: CostExclusions | None = None,
     # None = "not resolved by this caller", which the UI renders as nothing.
     # Distinct from 0.0, which would mean "resolved, and there was no QA".
     qa_cost_usd: float | None = None,
@@ -1187,6 +1221,15 @@ def build_slim_trial_response(
         started_at=trial.started_at,
         finished_at=trial.finished_at,
         qa_cost_usd=qa_cost_usd,
+        cost_exclusion_reason=(
+            exclusions.reason_for(
+                llm_key_hash=trial.llm_key_hash,
+                model=trial.model,
+                experiment_id=trial.experiment_id,
+            )
+            if exclusions
+            else None
+        ),
     )
 
 
@@ -1198,6 +1241,7 @@ def build_slim_task_status_response(
     effective_version_id: str | None | object = _VERSION_ID_UNSET,
     gathered_trial_ids: set[str] | None = None,
     qa_costs_by_trial_id: dict[str, float] | None = None,
+    exclusions: CostExclusions | None = None,
 ) -> TaskStatusResponse:
     """Build a task status response with slim per-trial payloads.
 
@@ -1228,6 +1272,7 @@ def build_slim_task_status_response(
                 if qa_costs_by_trial_id is not None
                 else None
             ),
+            exclusions=exclusions,
         )
         for t in task_trials
     ]

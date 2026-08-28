@@ -9,12 +9,25 @@ set -euo pipefail
 : "${VERCEL_GIT_BRANCH:?}"
 
 branch_name="${BRANCH_NAME:-pr-${PR_NUMBER:?}}"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 is_configured_vercel() {
   [ -n "${VERCEL_TOKEN:-}" ] &&
     [ -n "${VERCEL_ORG_ID:-}" ] &&
     [ -n "${VERCEL_PROJECT_ID:-}" ]
 }
+
+# The app must delete its own auto-provisioned trials cluster BEFORE it is
+# stopped: the credentials live only inside the app, and its scheduled idle
+# reaper dies with it. A missing function or a missing cluster is a skip; a
+# REAL teardown failure must not be followed by the stop, because stopping
+# the app would destroy the one remaining owner that can still delete the
+# cluster. Fail the close job instead -- the app and its reaper stay alive,
+# and re-running the workflow retries the teardown.
+if ! "$script_dir/run_gke_teardown.sh" "$MODAL_APP_NAME"; then
+  echo "::error::GKE teardown failed; leaving $MODAL_APP_NAME running so its reaper still owns the cluster"
+  exit 1
+fi
 
 modal app stop -y --env "$MODAL_ENVIRONMENT" "$MODAL_APP_NAME" || true
 # -y matters: `modal secret delete` click.confirm()s without it, which in a

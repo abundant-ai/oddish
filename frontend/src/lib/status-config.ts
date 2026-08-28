@@ -6,6 +6,7 @@ import {
   CircleSlash,
   Loader2,
   MinusCircle,
+  Pause,
   type LucideIcon,
 } from "lucide-react";
 import type { CSSProperties } from "react";
@@ -23,7 +24,8 @@ export type MatrixStatus =
   | "skipped"
   | "pending"
   | "queued"
-  | "running";
+  | "running"
+  | "paused";
 
 /**
  * Status configuration for consistent styling across the UI.
@@ -162,6 +164,18 @@ export const STATUS_CONFIG: Record<
       "bg-[color:var(--paper-running-bg)] text-paper-running border-[color:color-mix(in_oklch,var(--paper-running),transparent_70%)] animate-pulse hover:opacity-90",
     bracketClass: "bg-blue-500 text-white animate-pulse",
     panelBadgeClass: "bg-blue-500/20 text-blue-400 border-blue-500/50",
+  },
+  paused: {
+    icon: Pause,
+    label: "PAUSED",
+    shortLabel: "Paused",
+    symbol: "Ⅱ",
+    description: "Execution is paused",
+    badgeClass: "bg-amber-500/90 text-slate-950 border-amber-400",
+    matrixClass:
+      "bg-amber-500/10 text-amber-600 border-amber-500/40 hover:opacity-90",
+    bracketClass: "bg-amber-500 text-slate-950",
+    panelBadgeClass: "bg-amber-500/20 text-amber-400 border-amber-500/50",
   },
 };
 
@@ -323,6 +337,10 @@ export function getMatrixStatus(
   // Running = currently executing
   if (trialStatus === "running") {
     return "running";
+  }
+
+  if (trialStatus === "paused") {
+    return "paused";
   }
 
   // Any other status (retrying) = pending

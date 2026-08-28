@@ -33,6 +33,7 @@ from oddish.costs.recorder import (
     open_worker_span,
 )
 from oddish.db import WorkerJobKind, WorkerJobStatus
+from oddish.observability import record_worker_job_transition
 from oddish.workers.jobs.registry import (
     HANDLERS,
     JobOutcome,
@@ -107,6 +108,7 @@ def calculate_trial_retry_delay_seconds(
     attempts: int,
     error_message: str | None,
     jitter: float | None = None,
+    retry_after_seconds: float | None = None,
 ) -> float:
     """Return bounded exponential trial retry delay with multiplicative jitter.
 
@@ -127,12 +129,10 @@ def calculate_trial_retry_delay_seconds(
         random.uniform(0.0, TRIAL_RETRY_JITTER_FRACTION) if jitter is None else jitter
     )
     jitter_value = max(0.0, min(jitter_value, TRIAL_RETRY_JITTER_FRACTION))
-    return float(
-        min(
-            capped_delay * (1.0 + jitter_value),
-            TRIAL_RETRY_MAX_DELAY_SECONDS,
-        )
-    )
+    delay = capped_delay * (1.0 + jitter_value)
+    if retry_after_seconds is not None:
+        delay = max(delay, retry_after_seconds)
+    return float(min(delay, TRIAL_RETRY_MAX_DELAY_SECONDS))
 
 
 # ---------------------------------------------------------------------------
@@ -286,13 +286,11 @@ async def heartbeat_worker_job(
     current_worker_id: str | None = None,
     pending_failure_count: int = 0,
     pending_last_error: str | None = None,
-) -> None:
+) -> bool:
     """Update a RUNNING worker_job's heartbeat timestamp.
 
-    No-ops for terminal rows so a late heartbeat after SUCCESS / FAILED
-    / CANCELLED can't resurrect a row. Follows the same failure-folding
-    pattern as the trial heartbeat so a pooler blip produces a
-    diagnostic breadcrumb rather than a silent stale-reap.
+    Returns whether the worker still owns a running row. Terminal rows remain
+    untouched so a late heartbeat cannot resurrect them.
     """
     connection = await _open_connection()
     try:
@@ -341,7 +339,8 @@ async def heartbeat_worker_job(
                   AND lease.locked_by = wj.current_worker_id
                 RETURNING lease.slot
             )
-            SELECT (SELECT execution_lane FROM running_job) AS execution_lane,
+            SELECT EXISTS (SELECT 1 FROM running_job) AS still_owned,
+                   (SELECT execution_lane FROM running_job) AS execution_lane,
                    EXISTS (SELECT 1 FROM renewed) AS capacity_renewed
             """,
             job_id,
@@ -356,6 +355,7 @@ async def heartbeat_worker_job(
             raise SandboxCapacityLeaseLostError(
                 f"EC2 worker_job {job_id} lost its global capacity lease"
             )
+        return bool(capacity_heartbeat and capacity_heartbeat["still_owned"])
     finally:
         await connection.close()
 
@@ -452,7 +452,7 @@ async def _record_outcome(
     kind: WorkerJobKind | None = None,
     subject_table: str | None = None,
     subject_id: str | None = None,
-) -> bool:
+) -> WorkerJobStatus | None:
     def row_was_updated(command: str) -> bool:
         return command.endswith(" 1")
 
@@ -484,8 +484,8 @@ async def _record_outcome(
                 console.print(
                     f"[yellow]worker_job {job_id} outcome ignored; row is no longer RUNNING[/yellow]"
                 )
-                return False
-            return True
+                return None
+            return WorkerJobStatus.SUCCESS
 
         assert outcome.failure is not None
         # Decide against the CURRENT row, not the claim-time snapshot: an
@@ -508,6 +508,7 @@ async def _record_outcome(
                 delay_seconds = calculate_trial_retry_delay_seconds(
                     attempts=attempts,
                     error_message=outcome.failure.error_message,
+                    retry_after_seconds=outcome.failure.retry_after_seconds,
                 )
                 retry_at = datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
 
@@ -546,7 +547,7 @@ async def _record_outcome(
                 console.print(
                     f"[yellow]worker_job {job_id} retry outcome ignored; row is no longer RUNNING[/yellow]"
                 )
-                return False
+                return None
             if (
                 kind == WorkerJobKind.TRIAL
                 and subject_table == "trials"
@@ -576,7 +577,7 @@ async def _record_outcome(
                 f"retry_reason={retry_reason} "
                 f"retry_delay_seconds={delay_seconds or 0:.2f}"
             )
-            return True
+            return WorkerJobStatus.RETRYING
         else:
             command = await connection.execute(
                 """
@@ -598,8 +599,8 @@ async def _record_outcome(
                 console.print(
                     f"[yellow]worker_job {job_id} failure outcome ignored; row is no longer RUNNING[/yellow]"
                 )
-                return False
-            return True
+                return None
+            return WorkerJobStatus.FAILED
     finally:
         await connection.close()
 
@@ -648,10 +649,13 @@ async def run_single_worker_job(
     if job is None:
         return False
 
+    attempt_started_at = job.claimed_at or datetime.now(timezone.utc)
+    attempt_started_monotonic = time.monotonic()
+
     await open_worker_span(
         job,
         worker_billing_spec,
-        started_at=job.claimed_at or datetime.now(timezone.utc),
+        started_at=attempt_started_at,
     )
 
     console.print(
@@ -664,62 +668,43 @@ async def run_single_worker_job(
     except NoHandlerRegisteredError as exc:
         # Fail the row instead of leaving it in RUNNING so cleanup
         # doesn't have to reap it via the stale-heartbeat sweep.
-        outcome_at = datetime.now(timezone.utc)
-        outcome_recorded = await _record_outcome(
-            job_id=job.id,
-            worker_id=worker_id,
-            outcome=JobOutcome.fail(
-                f"No handler registered for kind={job.kind.value!r}: {exc}",
-                retryable=False,
-            ),
-            attempts=job.attempts,
-            max_attempts=job.max_attempts,
-            kind=job.kind,
-            subject_table=job.subject_table,
-            subject_id=job.subject_id,
+        outcome = JobOutcome.fail(
+            f"No handler registered for kind={job.kind.value!r}: {exc}",
+            retryable=False,
         )
-        if outcome_recorded:
-            await close_worker_span(job.id, job.attempts, finished_at=outcome_at)
-        return True
-
-    try:
-        # Handlers receive the claimed projection; they can hydrate a
-        # full ORM row if they need more columns.
-        outcome = await handler.run(job)  # type: ignore[arg-type]
-    except asyncio.CancelledError:
-        console.print(f"[yellow]worker_job {job.id} cancelled[/yellow]")
-        # This attempt's compute is over; close its worker span at cancel time
-        # so the reconciler doesn't later close it at the job's (much later)
-        # terminal finished_at. CAS close, so any other close path is a no-op.
-        await close_worker_span(
-            job.id, job.attempts, finished_at=datetime.now(timezone.utc)
-        )
-        raise
-    except Exception as exc:  # handler-raised exceptions are retryable by default
-        logger.exception(
-            "worker_job %s (%s, subject=%s) handler error",
-            job.id,
-            job.kind.value,
-            job.subject_id,
-        )
-        outcome = JobOutcome.fail(f"{type(exc).__name__}: {exc}", retryable=True)
+    else:
+        try:
+            # Handlers receive the claimed projection; they can hydrate a
+            # full ORM row if they need more columns.
+            outcome = await handler.run(job)  # type: ignore[arg-type]
+        except asyncio.CancelledError:
+            console.print(f"[yellow]worker_job {job.id} cancelled[/yellow]")
+            # This attempt's compute is over; close its worker span at cancel time
+            # so the reconciler doesn't later close it at the job's (much later)
+            # terminal finished_at. CAS close, so any other close path is a no-op.
+            await close_worker_span(
+                job.id, job.attempts, finished_at=datetime.now(timezone.utc)
+            )
+            raise
+        except Exception as exc:  # handler-raised exceptions retry by default
+            logger.exception(
+                "worker_job %s (%s, subject=%s) handler error",
+                job.id,
+                job.kind.value,
+                job.subject_id,
+            )
+            outcome = JobOutcome.fail(f"{type(exc).__name__}: {exc}", retryable=True)
 
     if (outcome.success is None) == (outcome.failure is None):
-        # Defensive: the dataclass enforces this, but double-check so a
-        # buggy handler can't leave a row RUNNING.
+        # A handler can mutate the dataclass after construction. Keep an invalid
+        # result from leaving its claimed worker_jobs row RUNNING indefinitely.
         outcome = JobOutcome.fail(
             "handler returned an invalid JobOutcome",
             retryable=False,
         )
 
-    status = WorkerJobStatus.SUCCESS if outcome.success else WorkerJobStatus.FAILED
-    console.print(
-        f"[dim]worker_job {job.id} -> {status.value} "
-        f"(kind={job.kind.value}, queue_key={queue_key})[/dim]"
-    )
-
     outcome_at = datetime.now(timezone.utc)
-    outcome_recorded = await _record_outcome(
+    persisted_status = await _record_outcome(
         job_id=job.id,
         worker_id=worker_id,
         outcome=outcome,
@@ -729,6 +714,21 @@ async def run_single_worker_job(
         subject_table=job.subject_table,
         subject_id=job.subject_id,
     )
+    attempt_duration_seconds = time.monotonic() - attempt_started_monotonic
+    outcome_recorded = bool(persisted_status)
+    if isinstance(persisted_status, WorkerJobStatus):
+        console.print(
+            f"[dim]worker_job {job.id} -> {persisted_status.value} "
+            f"(kind={job.kind.value}, queue_key={queue_key})[/dim]"
+        )
+        record_worker_job_transition(
+            kind=job.kind,
+            outcome=persisted_status,
+            queue_key=job.queue_key,
+            execution_lane=job.execution_lane,
+            duration_seconds=attempt_duration_seconds,
+        )
+
     if outcome_recorded:
         await close_worker_span(job.id, job.attempts, finished_at=outcome_at)
 

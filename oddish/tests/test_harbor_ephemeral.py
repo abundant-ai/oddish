@@ -16,7 +16,10 @@ from harbor.models.environment_type import EnvironmentType
 from harbor.models.trial.config import EnvironmentConfig
 from harbor.trial.hooks import TrialEvent
 
-from oddish.core.harbor_source import harbor_git_requirement
+from oddish.core.harbor_source import (
+    harbor_git_requirement,
+    harbor_sandbox_requirement,
+)
 from oddish.runtime.backends.daytona import DaytonaBackend
 from oddish.workers.harbor import ephemeral as harbor_ephemeral
 from oddish.workers.harbor._entry import (
@@ -303,10 +306,11 @@ def _payload(**over):
     return _build_payload(**base)
 
 
-def test_payload_agent_harbor_requirement_is_override_git_req_for_probe_claude_code():
+def test_payload_agent_harbor_requirement_is_override_sandbox_req_for_probe_claude_code():
     req = _payload()["agent_harbor_requirement"]
-    assert req == harbor_git_requirement(_SOURCE, _SHA)
-    assert req == f"harbor @ git+{_SOURCE}@{_SHA}"
+    assert req == harbor_sandbox_requirement(_SOURCE, _SHA)
+    # Tarball form: the probe sandbox image has no git binary to clone with.
+    assert req == f"harbor @ {_SOURCE}/archive/{_SHA}.tar.gz"
     assert _SHA in req
 
 
@@ -322,7 +326,7 @@ def test_payload_agent_harbor_requirement_is_exact_match_not_substring():
     assert _payload(agent="claude-code-custom")["agent_harbor_requirement"] is None
     assert _payload(agent="my-claude-code")["agent_harbor_requirement"] is None
     assert _payload(agent="Claude-Code")["agent_harbor_requirement"] == (
-        harbor_git_requirement(_SOURCE, _SHA)
+        harbor_sandbox_requirement(_SOURCE, _SHA)
     )
 
 
@@ -462,9 +466,11 @@ def test_read_outcome_with_result_json_uses_extractor(tmp_path, monkeypatch):
 
 
 def test_harbor_override_import_error_is_non_retryable():
-    from oddish.workers.queue.trial_handler import _NON_RETRYABLE_EXCEPTION_TYPES
+    from oddish.workers.queue.trial_handler import (
+        _NON_HARBOR_RETRYABLE_EXCEPTION_TYPES,
+    )
 
-    assert HarborOverrideImportError.__name__ in _NON_RETRYABLE_EXCEPTION_TYPES
+    assert HarborOverrideImportError.__name__ in _NON_HARBOR_RETRYABLE_EXCEPTION_TYPES
 
 
 def test_spawn_args_requests_daytona_extra_for_daytona_env():
@@ -474,6 +480,15 @@ def test_spawn_args_requests_daytona_extra_for_daytona_env():
     req = args[args.index("--with") + 1]
     assert req == harbor_git_requirement(_SOURCE, _SHA, extras=["daytona"])
     assert req.startswith("harbor[daytona] @ git+")
+
+
+def test_spawn_args_requests_archil_extra_for_archil_env():
+    args = harbor_ephemeral._spawn_args(
+        _SOURCE, _SHA, environment=EnvironmentType.ARCHIL
+    )
+    req = args[args.index("--with") + 1]
+    assert req == harbor_git_requirement(_SOURCE, _SHA, extras=["archil"])
+    assert req.startswith("harbor[archil] @ git+")
 
 
 def test_ephemeral_daytona_forces_ownership_labels():
@@ -510,9 +525,7 @@ def test_ephemeral_daytona_forces_ownership_labels():
 
 
 def test_spawn_args_requests_ec2_extra_for_ec2_env():
-    args = harbor_ephemeral._spawn_args(
-        _SOURCE, _SHA, environment=EnvironmentType.EC2
-    )
+    args = harbor_ephemeral._spawn_args(_SOURCE, _SHA, environment=EnvironmentType.EC2)
     req = args[args.index("--with") + 1]
     assert req == harbor_git_requirement(_SOURCE, _SHA, extras=["ec2"])
 
@@ -755,9 +768,7 @@ async def test_failed_ephemeral_child_cannot_expose_payload_in_job_artifacts(
 
     assert outcome.exception_type == "HarborOverrideImportError"
     assert outcome.job_dir is not None
-    observation = json.loads(
-        (outcome.job_dir / "payload-observation.json").read_text()
-    )
+    observation = json.loads((outcome.job_dir / "payload-observation.json").read_text())
     payload_path = Path(observation["payload_path"])
     assert payload_path.parent != outcome.job_dir
     assert observation["payload_mode"] == 0o600
@@ -819,9 +830,7 @@ async def test_ephemeral_child_uses_key_path_without_inheriting_private_key_secr
         harbor_config=_EPHEMERAL_HC,
     )
 
-    child_state = json.loads(
-        (next(jobs_dir.iterdir()) / "child-env.json").read_text()
-    )
+    child_state = json.loads((next(jobs_dir.iterdir()) / "child-env.json").read_text())
     assert child_state == {
         "secret": None,
         "access": None,

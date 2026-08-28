@@ -13,6 +13,7 @@ from oddish.core.endpoints._common import (
 )
 from oddish.core.verdict_state import cancel_verdict
 from oddish.db import (
+    ACTIVE_TRIAL_STATUSES,
     AGENT_TRIAL_KIND,
     AnalysisStatus,
     TaskModel,
@@ -121,12 +122,11 @@ async def cancel_task_qa_core(
     task_id: str,
     org_id: str | None = None,
 ) -> dict[str, str | int | list[str]]:
-    """Cancel a task's in-flight QA job.
+    """Cancel a task's live qa-kind and audit-kind analysis trials.
 
-    There is one task-level QA job: it classifies every trial and then
-    synthesizes the verdict. Cancelling it stops that job and finalizes any
-    trial whose classification was mid-flight (left RUNNING by a killed
-    worker).
+    A qa-kind trial classifies the eligible agent trials and may synthesize a
+    verdict. Cancelling this endpoint also stops the task's live pre-trial
+    audit and finalizes any classification left RUNNING by a killed worker.
     """
     # The same task row lock the backfill and the reruns take: without it, a
     # cancel can interleave with their check-and-enqueue and either kill a
@@ -238,9 +238,6 @@ def _reset_trial_analysis(trial: TrialModel) -> None:
     trial.analysis_error = None
     trial.analysis_started_at = None
     trial.analysis_finished_at = None
-    # Also drop the previous run's log, so the card never shows the old
-    # run's output while the new run waits for a worker.
-    trial.analysis_log = None
 
 
 async def _count_active_trials(
@@ -250,12 +247,6 @@ async def _count_active_trials(
     task_version_id: str | None,
 ) -> int:
     """Count non-terminal, non-superseded agent trials for one task version."""
-    active_statuses = [
-        TrialStatus.PENDING,
-        TrialStatus.QUEUED,
-        TrialStatus.RUNNING,
-        TrialStatus.RETRYING,
-    ]
     count = await session.scalar(
         select(func.count(TrialModel.id)).where(
             TrialModel.task_id == task_id,
@@ -266,7 +257,7 @@ async def _count_active_trials(
             ),
             TrialModel.kind == AGENT_TRIAL_KIND,
             TrialModel.superseded_by_trial_id.is_(None),
-            TrialModel.status.in_(active_statuses),
+            TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
         )
     )
     return int(count or 0)
@@ -278,11 +269,12 @@ async def rerun_task_qa_core(
     task_id: str,
     org_id: str | None = None,
 ) -> dict[str, str | int]:
-    """(Re)run the single task-level QA job for a finished task.
+    """Create a replacement qa-kind trial for a finished task.
 
-    Resets every live trial's classification, then enqueues one QA job that
-    re-classifies all live trials and synthesizes a fresh verdict. The current
-    published verdict remains visible until that job replaces it.
+    Resets every live agent trial's classification, then creates one QA trial
+    that reclassifies the eligible set and synthesizes a verdict when the
+    evidence bar is met. The published verdict remains visible until that
+    replacement succeeds.
     """
     return await backfill_task_analysis_core(
         session,

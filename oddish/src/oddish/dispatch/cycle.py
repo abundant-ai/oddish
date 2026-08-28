@@ -18,12 +18,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Collection, Sequence
 
 from oddish.dispatch.ports import Dispatcher, WorkerHandle
-from oddish.observability import span
+from oddish.observability import (
+    DispatchCycleOutcome,
+    record_dispatch_cycle,
+    record_dispatch_snapshot,
+    span,
+)
 from oddish.workers.queue.slots import count_held_queue_slots
 from oddish.workers.queue.worker_job_dispatcher import (
     build_spawn_plan,
@@ -316,64 +322,95 @@ async def _run_dispatch_cycle(
     _held: HeldFn = count_held_queue_slots,
     capacity_by_lane: LaneCapacityFn | None = None,
 ) -> DispatchCycleResult:
-    capacity_limits_by_lane: dict[str, int] | None = None
-    held_by_lane: dict[str, int] | None = None
-    if capacity_by_lane is not None:
-        capacity_limits_by_lane, held_by_lane = await capacity_by_lane()
-    plan = await build_dispatch_plan(
-        max_workers=max_workers,
-        concurrency_limits_for=concurrency_limits_for,
-        _discover=_discover,
-        _counts=_counts,
-        _held=_held,
-        capacity_limits_by_lane=capacity_limits_by_lane,
-        held_by_lane=held_by_lane,
-    )
-    # Admission remains queue-key based; dispatchers with ``spawn_units`` retain
-    # the exact variant and execution lane when they fan out workers.
-    spawn_plan = [unit[0] for unit in plan.unit_plan]
+    cycle_started_at = time.monotonic()
+    cycle_outcome: DispatchCycleOutcome = "error"
+    spawn_cap_reached = False
+    handles: list[WorkerHandle] = []
+    try:
+        capacity_limits_by_lane: dict[str, int] | None = None
+        held_by_lane: dict[str, int] | None = None
+        if capacity_by_lane is not None:
+            capacity_limits_by_lane, held_by_lane = await capacity_by_lane()
+        plan = await build_dispatch_plan(
+            max_workers=max_workers,
+            concurrency_limits_for=concurrency_limits_for,
+            _discover=_discover,
+            _counts=_counts,
+            _held=_held,
+            capacity_limits_by_lane=capacity_limits_by_lane,
+            held_by_lane=held_by_lane,
+        )
+        record_dispatch_snapshot(
+            queue_keys=plan.queue_keys,
+            queued_by_queue=plan.queued_by_queue,
+            running_by_queue_key=plan.running_by_queue_key,
+            held_by_queue_key=plan.held_by_queue_key,
+            concurrency_limits=plan.concurrency_limits,
+        )
+        # Admission remains queue-key based; dispatchers with ``spawn_units``
+        # retain the exact variant and execution lane when they fan out workers.
+        spawn_plan = [unit[0] for unit in plan.unit_plan]
+        spawn_cap_reached = len(spawn_plan) >= max_workers
 
-    admitted, rejected = admit_spawn_plan(spawn_plan, admit)
+        admitted, rejected = admit_spawn_plan(spawn_plan, admit)
 
-    spawn_units = [unit for unit in plan.unit_plan if unit[0] in admitted]
-    unit_spawner = getattr(dispatcher, "spawn_units", None)
-    if unit_spawner is not None:
-        handles = list(await unit_spawner(spawn_units=spawn_units))
-    else:
-        handles = list(await dispatcher.spawn(spawn_plan=admitted))
+        spawn_units = [unit for unit in plan.unit_plan if unit[0] in admitted]
+        unit_spawner = getattr(dispatcher, "spawn_units", None)
+        if unit_spawner is not None:
+            handles = list(await unit_spawner(spawn_units=spawn_units))
+        else:
+            handles = list(await dispatcher.spawn(spawn_plan=admitted))
 
-    # Derive both §12 fields from the queue_keys that ACTUALLY got a worker this
-    # cycle (the returned handles, preserving per-key multiplicity), NOT the
-    # admitted plan. A backend that spawns fewer workers than admitted would
-    # otherwise leave the un-spawned rows with neither a wait reason (why_waiting
-    # would treat them served) nor a spawned_at stamp -- dropping them from both
-    # fields. Using the actual spawns keeps why_waiting and the spawned_at stamp
-    # consistent; in the all-spawned case ``spawned_keys`` equals ``admitted``.
-    spawned_keys = [h.queue_key for h in handles]
+        # Derive both §12 fields from the queue_keys that ACTUALLY got a worker this
+        # cycle (the returned handles, preserving per-key multiplicity), NOT the
+        # admitted plan. A backend that spawns fewer workers than admitted would
+        # otherwise leave the un-spawned rows with neither a wait reason (why_waiting
+        # would treat them served) nor a spawned_at stamp -- dropping them from both
+        # fields. Using the actual spawns keeps why_waiting and the spawned_at stamp
+        # consistent; in the all-spawned case ``spawned_keys`` equals ``admitted``.
+        spawned_keys = [h.queue_key for h in handles]
 
-    why_waiting = compute_post_spawn_why_waiting(
-        plan,
-        spawned_keys=spawned_keys,
-        max_workers=max_workers,
-        base_reasons=rejected,
-    )
+        why_waiting = compute_post_spawn_why_waiting(
+            plan,
+            spawned_keys=spawned_keys,
+            max_workers=max_workers,
+            base_reasons=rejected,
+        )
 
-    if on_stage is not None:
-        # Telemetry is best-effort: a stamping failure must never break dispatch.
-        try:
-            await on_stage(spawned_keys, why_waiting)
-        except Exception:
-            pass
+        if on_stage is not None:
+            # Telemetry is best-effort: a stamping failure must never break dispatch.
+            try:
+                await on_stage(spawned_keys, why_waiting)
+            except Exception:
+                pass
 
-    return DispatchCycleResult(
-        queue_keys=plan.queue_keys,
-        spawn_plan=spawn_plan,
-        admitted=admitted,
-        handles=handles,
-        why_waiting=why_waiting,
-        queued_total=sum(plan.queued_by_queue.values()),
-        running_total=sum(plan.running_by_queue.values()),
-    )
+        result = DispatchCycleResult(
+            queue_keys=plan.queue_keys,
+            spawn_plan=spawn_plan,
+            admitted=admitted,
+            handles=handles,
+            why_waiting=why_waiting,
+            queued_total=sum(plan.queued_by_queue.values()),
+            running_total=sum(plan.running_by_queue.values()),
+        )
+        cycle_outcome = "success"
+        return result
+    except asyncio.CancelledError:
+        cycle_outcome = "cancelled"
+        raise
+    except OSError:
+        # The surrounding standalone loop already retries every failed cycle.
+        # Distinguish recognized network/filesystem transients from unexpected
+        # failures so the dispatcher-error alert does not page on this path.
+        cycle_outcome = "skipped"
+        raise
+    finally:
+        record_dispatch_cycle(
+            workers_spawned=len(handles),
+            spawn_cap_reached=spawn_cap_reached,
+            duration_seconds=time.monotonic() - cycle_started_at,
+            outcome=cycle_outcome,
+        )
 
 
 FetchHandlesFn = Callable[[], Awaitable[list[tuple[str, str]]]]

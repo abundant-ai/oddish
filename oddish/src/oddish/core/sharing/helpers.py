@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import set_committed_value
 
+from oddish.core.cost_exclusions import load_cost_exclusions
 from oddish.core.experiment_membership import trial_in_experiment
 from oddish.core.helpers import (
     build_task_status_responses_from_counts,
@@ -20,7 +21,7 @@ from oddish.core.helpers import (
 )
 from oddish.core.model_display_names import (
     apply_model_display_names,
-    load_model_display_names,
+    experiment_display_names,
 )
 from oddish.db import (
     ExperimentModel,
@@ -28,7 +29,6 @@ from oddish.db import (
     TaskVersionModel,
     TrialModel,
     experiment_trials,
-    get_session,
     get_storage_client,
     task_experiments,
 )
@@ -142,10 +142,20 @@ async def get_public_task_for_experiment(
 
 
 async def get_public_trial_for_experiment(
-    session: AsyncSession, public_token: str, trial_id: str
+    session: AsyncSession,
+    public_token: str,
+    trial_id: str,
+    *,
+    experiment: ExperimentModel | None = None,
 ) -> TrialModel | None:
-    """Get a public trial only through the share token that exposes it."""
-    experiment = await get_public_experiment(session, public_token)
+    """Get a public trial only through the share token that exposes it.
+
+    Pass ``experiment`` when the caller already loaded the row for this same
+    token to skip the redundant lookup; it must be what
+    ``get_public_experiment`` would return for ``public_token``.
+    """
+    if experiment is None:
+        experiment = await get_public_experiment(session, public_token)
     if not experiment:
         return None
     result = await session.execute(
@@ -216,9 +226,13 @@ async def list_experiment_trials_for_org(
     rows = result.all()
     trials = [trial for trial, _ in rows]
     queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=trials)
+    exclusions = await load_cost_exclusions(session)
     return [
         build_trial_response(
-            trial, task_path, queue_info=queue_info_by_trial_id.get(trial.id)
+            trial,
+            task_path,
+            queue_info=queue_info_by_trial_id.get(trial.id),
+            exclusions=exclusions,
         )
         for trial, task_path in rows
     ]
@@ -269,11 +283,13 @@ async def list_task_trials_for_task(
     rows = result.all()
     trials = [trial for trial, _ in rows]
     queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=trials)
+    exclusions = await load_cost_exclusions(session)
     return [
         build_trial_response(
             trial,
             task_path,
             queue_info=queue_info_by_trial_id.get(trial.id),
+            exclusions=exclusions,
         )
         for trial, task_path in rows
     ]
@@ -310,27 +326,13 @@ async def list_task_trials_for_public_experiment(
         )
         for trial, task_path in rows
     ]
-    apply_model_display_names(responses, await load_model_display_names(session))
+    apply_model_display_names(responses, experiment_display_names(experiment))
     return responses
 
 
 # =============================================================================
 # S3 File Operations
 # =============================================================================
-
-
-async def _task_version_s3_prefix(task_id: str, version: int | None) -> str | None:
-    """Resolve the DB-selected source prefix for a task version."""
-    if version is None:
-        return None
-    async with get_session() as session:
-        row = await session.scalar(
-            select(TaskVersionModel.task_s3_key).where(
-                TaskVersionModel.task_id == task_id,
-                TaskVersionModel.version == version,
-            )
-        )
-    return str(row) if row else None
 
 
 async def list_task_files_s3(
@@ -340,6 +342,7 @@ async def list_task_files_s3(
     limit: int,
     cursor: str | None,
     presign: bool,
+    task_s3_prefix: str | None,
     version: int | None = None,
     inline: bool = True,
 ) -> dict:
@@ -347,7 +350,6 @@ async def list_task_files_s3(
     storage = get_storage_client()
 
     try:
-        task_s3_prefix = await _task_version_s3_prefix(task_id, version)
         return await storage.list_task_files(
             task_id=task_id,
             prefix=prefix,
@@ -372,6 +374,7 @@ async def stream_task_files_s3(
     limit: int,
     cursor: str | None,
     presign: bool,
+    task_s3_prefix: str | None,
     version: int | None = None,
 ):
     """Stream a task file listing chunk-by-chunk (tree first, then contents).
@@ -381,7 +384,6 @@ async def stream_task_files_s3(
     falls back to per-file fetches for missing bodies.
     """
     storage = get_storage_client()
-    task_s3_prefix = await _task_version_s3_prefix(task_id, version)
 
     stream = storage.stream_task_files(
         task_id=task_id,
@@ -441,6 +443,7 @@ async def get_task_file_content_s3(
     task_id: str,
     file_path: str,
     presign: bool,
+    task_s3_prefix: str | None,
     version: int | None = None,
     max_bytes: int | None = None,
 ) -> dict:
@@ -448,7 +451,6 @@ async def get_task_file_content_s3(
     storage = get_storage_client()
 
     try:
-        task_s3_prefix = await _task_version_s3_prefix(task_id, version)
         return await storage.get_task_file_content(
             task_id=task_id,
             file_path=file_path,
@@ -490,6 +492,9 @@ async def list_trial_files_s3(
             cursor=cursor,
             presign=presign,
             presign_expiration=presign_expiration,
+            # The same root the content endpoint resolves against, so listed
+            # relative paths round-trip without doubling the analysis segment.
+            root_prefix=_get_trial_s3_prefix(trial),
         )
     except HTTPException:
         raise

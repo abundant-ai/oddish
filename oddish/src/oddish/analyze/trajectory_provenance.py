@@ -26,9 +26,17 @@ Bash calls than Edit/Write calls, so a file created by a heredoc is invisible
 here. Every field is therefore True-or-None. A positive is evidence; the
 absence of one is not evidence of absence.
 """
+
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import Any
+
+from oddish.analyze.trajectory_tool_calls import (
+    COMMAND_ARGUMENT_KEYS,
+    PATH_ARGUMENT_KEYS,
+    string_argument,
+    tool_name,
+)
 
 # Structured file tools per agent, by the names real trajectories record.
 # An agent absent from this map has no structured file tooling and cannot be
@@ -36,6 +44,14 @@ from typing import Any, Iterable
 _WRITE_TOOLS: dict[str, frozenset[str]] = {
     "claude-code": frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"}),
     "gemini-cli": frozenset({"write_file", "replace"}),
+    "antigravity-cli": frozenset(
+        {
+            "write_to_file",
+            "edit_file",
+            "replace_file_content",
+            "multi_replace_file_content",
+        }
+    ),
     "grok-build": frozenset({"write", "search_replace"}),
     "opencode": frozenset({"write", "edit"}),
 }
@@ -52,41 +68,9 @@ _RUN_TOOLS = frozenset(
     }
 )
 
-# Argument keys that hold a path, across the agents above.
-_PATH_KEYS = (
-    "file_path",
-    "filePath",
-    "path",
-    "filename",
-    "file",
-    "target_file",
-    "absolute_path",
-)
-
-# Argument keys that hold a shell command.
-_COMMAND_KEYS = ("command", "cmd", "script", "shell_command")
-
 # A path shorter than this matches too much inside a command string ("a.py"
 # would hit "data.py"). Short paths are skipped rather than guessed at.
 _MIN_PATH_MATCH = 6
-
-
-def _tool_name(call: object) -> str | None:
-    """``function_name``, falling back to ``name``. Mirrors delegation.py."""
-    if not isinstance(call, dict):
-        return None
-    return call.get("function_name") or call.get("name")
-
-
-def _arg(call: dict, keys: Iterable[str]) -> str | None:
-    args = call.get("arguments")
-    if not isinstance(args, dict):
-        return None
-    for key in keys:
-        value = args.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return None
 
 
 def _agent_name(trajectory: dict) -> str | None:
@@ -99,7 +83,9 @@ def _agent_name(trajectory: dict) -> str | None:
 
 def provenance_capable(trajectory: dict) -> bool:
     """Whether this run's agent exposes structured file tools at all."""
-    return _agent_name(trajectory if isinstance(trajectory, dict) else {}) in _WRITE_TOOLS
+    return (
+        _agent_name(trajectory if isinstance(trajectory, dict) else {}) in _WRITE_TOOLS
+    )
 
 
 def authored_paths_by_step(trajectory: dict) -> dict[int, set[str]]:
@@ -126,8 +112,8 @@ def authored_paths_by_step(trajectory: dict) -> dict[int, set[str]]:
         if isinstance(step_id, int):
             out[step_id] = set(seen)
         for call in step.get("tool_calls") or []:
-            if _tool_name(call) in write_tools:
-                path = _arg(call, _PATH_KEYS)
+            if tool_name(call) in write_tools:
+                path = string_argument(call, PATH_ARGUMENT_KEYS)
                 if path:
                     seen.add(path)
     return out
@@ -170,13 +156,13 @@ def component_provenance(
             continue
         already = prior.get(step.get("step_id"), set())
         for call in step.get("tool_calls") or []:
-            name = _tool_name(call)
+            name = tool_name(call)
             if name in write_tools:
-                path = _arg(call, _PATH_KEYS)
+                path = string_argument(call, PATH_ARGUMENT_KEYS)
                 if path and path in already:
                     revisits = True
             elif name in _RUN_TOOLS:
-                command = _arg(call, _COMMAND_KEYS)
+                command = string_argument(call, COMMAND_ARGUMENT_KEYS)
                 if command and any(
                     len(p) >= _MIN_PATH_MATCH and p in command for p in already
                 ):

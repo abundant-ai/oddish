@@ -9,18 +9,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.core.task_browse_metrics import browse_trial_scope, trial_bucket_label
 from oddish.db import (
+    ACTIVE_TRIAL_STATUSES,
     TaskVersionModel,
     TaskVersionModelMetricsModel,
     TrialModel,
-    TrialStatus,
 )
 
-_INFLIGHT = (
-    TrialStatus.PENDING,
-    TrialStatus.QUEUED,
-    TrialStatus.RUNNING,
-    TrialStatus.RETRYING,
-)
+_INFLIGHT = ACTIVE_TRIAL_STATUSES
 
 _ENV_STAGES = (
     "starting",

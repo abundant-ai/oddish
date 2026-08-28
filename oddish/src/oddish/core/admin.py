@@ -8,11 +8,11 @@ from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StringConstraints
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from oddish.config import normalize_model_id, settings
+from oddish.config import MAX_MODEL_CONCURRENCY, normalize_model_id, settings
 from oddish.core.cost_basis import (
     first_party_spend_filter,
     settled_cost_columns,
@@ -21,7 +21,6 @@ from oddish.core.cost_basis import (
 )
 from oddish.core.dashboard import EXPERIMENTS_UNATTRIBUTED_OWNER
 from oddish.core.model_concurrency import (
-    MAX_MODEL_CONCURRENCY,
     get_model_concurrency_overrides,
     set_model_concurrency_override,
 )
@@ -33,6 +32,7 @@ from oddish.core.quotas import (
     sum_cost_usd_by_org_user_all_orgs,
 )
 from oddish.db import (
+    ACTIVE_WORKER_JOB_KINDS,
     ExperimentModel,
     ModalCostSpanModel,
     TaskModel,
@@ -244,12 +244,12 @@ async def get_queue_status_core(
 ) -> QueueStatusResponse:
     """Get queue status grouped by worker-job kind and queue key."""
     now = utcnow()
+    active_kinds = [kind.value for kind in ACTIVE_WORKER_JOB_KINDS]
 
-    # One grouped query against ``worker_jobs``. QA and audits run as
-    # trials now, so a TRIAL job's effective kind comes from joining the
-    # subject trial's ``kind`` -- a QA trial reports as 'QA' and an audit
-    # as 'AUDIT' instead of hiding inside the TRIAL totals. The legacy
-    # aggregate fields are preserved for older clients.
+    # One grouped query against ``worker_jobs``. Analysis runs use TRIAL jobs,
+    # so their effective kind comes from the subject trial instead of hiding
+    # inside the ordinary evaluation totals. The legacy aggregate fields are
+    # preserved for older clients.
     rows = (
         await session.execute(
             text(
@@ -260,6 +260,8 @@ async def get_queue_status_core(
                             THEN 'QA'
                         WHEN wj.kind::text = 'TRIAL' AND tr.kind = 'audit'
                             THEN 'AUDIT'
+                        WHEN wj.kind::text = 'TRIAL' AND tr.kind = 'summarize'
+                            THEN 'SUMMARIZE'
                         ELSE wj.kind::text
                     END AS kind,
                     wj.queue_key,
@@ -271,12 +273,13 @@ async def get_queue_status_core(
                    AND wj.subject_table = 'trials'
                    AND tr.id = wj.subject_id
                 WHERE wj.status::text IN ('QUEUED', 'RETRYING', 'RUNNING')
+                  AND wj.kind::text = ANY(CAST(:active_kinds AS TEXT[]))
                   AND (CAST(:org_id AS TEXT) IS NULL OR wj.org_id = CAST(:org_id AS TEXT))
                 GROUP BY 1, wj.queue_key
                 ORDER BY 1, wj.queue_key
                 """
             ),
-            {"org_id": org_id},
+            {"org_id": org_id, "active_kinds": active_kinds},
         )
     ).all()
 
@@ -301,8 +304,9 @@ async def get_queue_status_core(
             # The task-level QA trial (classification + verdict).
             verdict_queued += queued
             verdict_running += running
-        elif kind == "AUDIT":
-            # The pre-trial audit trial fills the legacy analysis slots.
+        elif kind in {"AUDIT", "SUMMARIZE"}:
+            # Pre-trial audits and requested trajectory summaries fill the
+            # legacy analysis slots.
             analysis_queued += queued
             analysis_running += running
         # Unknown kinds silently ignored by this endpoint; the
@@ -367,7 +371,7 @@ async def get_orphaned_state_core(
                                     SELECT 1 FROM trials tr
                                     WHERE tr.task_id = t.id
                                       AND tr.deleted_at IS NULL
-                                      AND tr.status IN ('QUEUED', 'RUNNING', 'RETRYING')
+                                      AND tr.status IN ('QUEUED', 'RUNNING', 'PAUSED', 'RETRYING')
                                 )
                             ) OR (
                                 t.status = 'ANALYZING'
@@ -448,7 +452,7 @@ async def get_orphaned_state_core(
                             SELECT 1 FROM trials tr
                             WHERE tr.task_id = t.id
                               AND tr.deleted_at IS NULL
-                              AND tr.status IN ('QUEUED', 'RUNNING', 'RETRYING')
+                              AND tr.status IN ('QUEUED', 'RUNNING', 'PAUSED', 'RETRYING')
                         )
                     ) OR (
                         t.status = 'ANALYZING'
@@ -762,14 +766,65 @@ class ModelConcurrencyUpdateRequest(BaseModel):
     queue_key: Annotated[
         str, StringConstraints(strip_whitespace=True, min_length=1)
     ] = Field(max_length=512)
-    limit: int | None = Field(ge=0, le=MAX_MODEL_CONCURRENCY)
+    limit: StrictInt | None = Field(ge=0, le=MAX_MODEL_CONCURRENCY)
 
 
 class ModelConcurrencySetting(BaseModel):
     queue_key: str
+    # The configured limit before the deprecated dynamic controller is applied.
+    # Kept for API compatibility with the admin dashboard.
     limit: int
     deploy_limit: int
     override_limit: int | None
+    controller_enabled: bool
+    advisory_limit: int | None
+    effective_limit: int
+
+
+async def get_model_concurrency_setting_core(
+    session: AsyncSession,
+    queue_key: str,
+) -> ModelConcurrencySetting:
+    """Read every layer that contributes to one queue's effective limit."""
+    normalized = settings.normalize_queue_key(queue_key)
+    overrides = await get_model_concurrency_overrides(session, (normalized,))
+    override_limit = overrides.get(normalized)
+    deploy_limit = settings.get_model_concurrency(normalized)
+    configured_limit = override_limit if override_limit is not None else deploy_limit
+    controller_enabled = settings.dynamic_model_concurrency
+    advisory_limit: int | None = None
+    effective_limit = configured_limit
+
+    if controller_enabled:
+        # Imported lazily because the deprecated controller reads queue health
+        # from this module. Keeping the import at call time avoids a module cycle.
+        from oddish.workers.queue.concurrency_controller import (
+            get_advisory_limits,
+            merge_advisory_over_static,
+        )
+
+        raw_advisory = await get_advisory_limits(session)
+        advisory = {
+            settings.normalize_queue_key(key): value
+            for key, value in raw_advisory.items()
+        }
+        advisory_limit = advisory.get(normalized)
+        hard_caps = {normalized: override_limit} if override_limit is not None else None
+        effective_limit = merge_advisory_over_static(
+            {normalized: configured_limit},
+            advisory,
+            hard_caps=hard_caps,
+        )[normalized]
+
+    return ModelConcurrencySetting(
+        queue_key=normalized,
+        limit=configured_limit,
+        deploy_limit=deploy_limit,
+        override_limit=override_limit,
+        controller_enabled=controller_enabled,
+        advisory_limit=advisory_limit,
+        effective_limit=effective_limit,
+    )
 
 
 async def update_model_concurrency_core(
@@ -779,13 +834,7 @@ async def update_model_concurrency_core(
     queue_key = await set_model_concurrency_override(
         session, request.queue_key, request.limit
     )
-    deploy_limit = settings.get_model_concurrency(queue_key)
-    return ModelConcurrencySetting(
-        queue_key=queue_key,
-        limit=deploy_limit if request.limit is None else request.limit,
-        deploy_limit=deploy_limit,
-        override_limit=request.limit,
-    )
+    return await get_model_concurrency_setting_core(session, queue_key)
 
 
 async def get_queue_health_core(
@@ -794,8 +843,9 @@ async def get_queue_health_core(
     org_id: str | None = None,
     include_global_details: bool = True,
 ) -> QueueHealthResponse:
-    """Aggregate throughput, per-queue-key capacity fill, and component health."""
+    """Aggregate throughput, active-kind capacity fill, and component health."""
     now = utcnow()
+    active_kinds = [kind.value for kind in ACTIVE_WORKER_JOB_KINDS]
 
     # -- throughput per kind ----------------------------------------------
     throughput_rows = (
@@ -856,11 +906,12 @@ async def get_queue_health_core(
                        ))) AS oldest_queued_age_seconds
                 FROM   worker_jobs
                 WHERE  status::text IN ('QUEUED', 'RETRYING', 'RUNNING')
+                  AND  kind::text = ANY(CAST(:active_kinds AS TEXT[]))
                   AND  (CAST(:org_id AS TEXT) IS NULL OR org_id = CAST(:org_id AS TEXT))
                 GROUP  BY queue_key
                 """
             ),
-            {"org_id": org_id},
+            {"org_id": org_id, "active_kinds": active_kinds},
         )
     ).all()
 
@@ -878,6 +929,7 @@ async def get_queue_health_core(
                        ) AS wait_p95
                 FROM   worker_jobs
                 WHERE  claimed_at IS NOT NULL
+                  AND  kind::text = ANY(CAST(:active_kinds AS TEXT[]))
                   AND  (CAST(:org_id AS TEXT) IS NULL OR org_id = CAST(:org_id AS TEXT))
                   AND  claimed_at >= NOW() - INTERVAL '1 hour'
                   AND  claimed_at >= created_at
@@ -885,7 +937,7 @@ async def get_queue_health_core(
                 HAVING COUNT(*) >= 3
                 """
             ),
-            {"org_id": org_id},
+            {"org_id": org_id, "active_kinds": active_kinds},
         )
     ).all()
     wait_by_key: dict[str, tuple[float | None, float | None]] = {}
@@ -1746,7 +1798,9 @@ async def _qa_cost_time_series(
         type_slot = type_per_bucket.setdefault(bstart, {})
         type_slot[type_key] = type_slot.get(type_key, 0.0) + cost
         type_totals[type_key] = type_totals.get(type_key, 0.0) + cost
-        jobs_per_bucket[bstart] = jobs_per_bucket.get(bstart, 0) + int(row.job_count or 0)
+        jobs_per_bucket[bstart] = jobs_per_bucket.get(bstart, 0) + int(
+            row.job_count or 0
+        )
 
     bucket_starts = sorted(jobs_per_bucket.keys())
     return (
@@ -1764,9 +1818,7 @@ async def _qa_cost_time_series(
             per_bucket=type_per_bucket,
             totals=type_totals,
             trials_per_bucket=jobs_per_bucket,
-            labels={
-                key: key.replace("_", " ").title() for key in type_totals
-            },
+            labels={key: key.replace("_", " ").title() for key in type_totals},
         ),
     )
 
@@ -1776,9 +1828,11 @@ async def _qa_cost_time_series(
 _COMPUTE_PROVIDER_LABELS = {
     "modal": "Modal",
     "daytona": "Daytona",
+    "archil": "Archil",
+    "numinous": "Numinous Cloud",
     "other": "Other",
 }
-_KNOWN_COMPUTE_PROVIDERS = ("modal", "daytona")
+_KNOWN_COMPUTE_PROVIDERS = ("modal", "daytona", "archil", "numinous")
 
 
 def _normalize_compute_provider(raw: str | None) -> str:
@@ -2317,16 +2371,17 @@ async def get_cost_breakdown_core(
         limit for limit in month_limits_by_org.values() if limit is not None
     ]
     month_budget = float(sum(month_limits)) if month_limits else None
+    budget_org_ids: set[str | None] | None
+    if org_id is not None:
+        budget_org_ids = {org_id}
+    elif month_budget is not None:
+        budget_org_ids = budgeted_month_org_ids
+    else:
+        budget_org_ids = None
     month_cost = await _billed_cost_since(
         session,
         since=month_start,
-        org_ids=(
-            {org_id}
-            if org_id is not None
-            else budgeted_month_org_ids
-            if month_budget is not None
-            else None
-        ),
+        org_ids=budget_org_ids,
     )
 
     quota_start = quota_window_start(now)
@@ -2473,7 +2528,7 @@ async def get_cost_breakdown_core(
         compute_query = compute_query.where(ModalCostSpanModel.org_id == org_id)
     compute_rows = (await session.execute(compute_query)).all()
     compute_cost_total = round(sum(float(row.cost_usd) for row in compute_rows), 4)
-    # Fold raw providers into the modal / daytona / other buckets.
+    # Fold raw providers into the known provider buckets or other.
     compute_by_provider_totals: dict[str, float] = {}
     compute_by_provider_spans: dict[str, int] = {}
     for row in compute_rows:

@@ -25,6 +25,7 @@ from oddish.config import (
     is_moonshot_model,
     is_xai_model,
     is_zai_model,
+    looks_like_bedrock_model_id,
     to_meta_model_id,
     minimax_api_model_id,
     minimax_bare_model_id,
@@ -56,10 +57,14 @@ _ODDISH_CURSOR_CLI_IMPORT_PATH = "oddish.workers.agents.cursor_cli:OddishCursorC
 _ODDISH_GROK_BUILD_IMPORT_PATH = "oddish.workers.agents.grok_build:OddishGrokBuild"
 _ODDISH_OPENCODE_IMPORT_PATH = "oddish.workers.agents.opencode:OddishOpenCode"
 _ODDISH_GEMINI_CLI_IMPORT_PATH = "oddish.workers.agents.gemini_cli:OddishGeminiCli"
+_ODDISH_ANTIGRAVITY_CLI_IMPORT_PATH = (
+    "oddish.workers.agents.antigravity_cli:OddishAntigravityCli"
+)
 _ODDISH_MINI_SWE_IMPORT_PATH = "oddish.workers.agents.mini_swe_agent:OddishMiniSweAgent"
 _ODDISH_META_MINI_SWE_IMPORT_PATH = (
     "oddish.workers.agents.mini_swe_agent:OddishMetaMiniSweAgent"
 )
+_SINGLE_LLM_IMPORT_PATH = "oddish.workers.harbor.single_llm_agent:SingleLLMAgent"
 _ANTHROPIC_MODEL_ALIAS_KEYS = (
     "ANTHROPIC_DEFAULT_HAIKU_MODEL",
     "ANTHROPIC_DEFAULT_SONNET_MODEL",
@@ -97,6 +102,10 @@ _KIMI_CLAUDE_CODE_RECOMMENDED_ENV: dict[str, str] = {
 
 def _is_claude_code_agent(agent_config: AgentConfig) -> bool:
     return "claude-code" in (agent_config.name or "").strip().lower()
+
+
+def _is_single_llm_agent(agent_config: AgentConfig) -> bool:
+    return agent_config.import_path == _SINGLE_LLM_IMPORT_PATH
 
 
 def _is_kimi_claude_code_agent(agent_config: AgentConfig) -> bool:
@@ -144,6 +153,52 @@ def _to_litellm_claude_model_id(model: str | None) -> str | None:
     if "claude" in api_id.lower():
         return f"anthropic/{api_id}"
     return api_id
+
+
+# Agents that hand the model id to litellm, whose Gemini provider is ``gemini``.
+_LITELLM_MODEL_ID_AGENTS: frozenset[str] = frozenset(
+    {
+        "terminus",
+        "terminus-1",
+        "terminus-2",
+        "mini-swe-agent",
+        "computer-1",
+        "openhands-sdk",
+        "swe-agent",
+    }
+)
+
+
+def _is_litellm_model_id_agent(agent_config: AgentConfig) -> bool:
+    return (agent_config.name or "").strip().lower() in _LITELLM_MODEL_ID_AGENTS
+
+
+# Agents built on the Vercel AI SDK, whose Gemini provider is named ``google``.
+_AI_SDK_MODEL_ID_AGENTS: frozenset[str] = frozenset({"opencode", "pi", "mimo", "eve"})
+
+
+def _is_ai_sdk_model_id_agent(agent_config: AgentConfig) -> bool:
+    return (agent_config.name or "").strip().lower() in _AI_SDK_MODEL_ID_AGENTS
+
+
+def _to_ai_sdk_gemini_model_id(model: str | None) -> str | None:
+    """Map the ``gemini/`` prefix to the AI SDK's ``google/``."""
+    if not model:
+        return model
+    prefix, _, bare = model.partition("/")
+    if prefix.strip().lower() == "gemini" and bare:
+        return f"google/{bare}"
+    return model
+
+
+def _to_litellm_gemini_model_id(model: str | None) -> str | None:
+    """Map the ``google/`` prefix to litellm's ``gemini/``."""
+    if not model:
+        return model
+    prefix, _, bare = model.partition("/")
+    if prefix.strip().lower() == "google" and bare:
+        return f"gemini/{bare}"
+    return model
 
 
 def _apply_anthropic_compat_env(
@@ -403,6 +458,17 @@ def _apply_gemini_cli_oddish_wrapper(agent_config: AgentConfig) -> None:
     agent_config.import_path = _ODDISH_GEMINI_CLI_IMPORT_PATH
 
 
+def _apply_antigravity_cli_oddish_wrapper(agent_config: AgentConfig) -> None:
+    """Route Antigravity CLI through the attested Oddish wrapper."""
+    if agent_config.import_path is not None:
+        return
+    if (agent_config.name or "").strip().lower() != "antigravity-cli":
+        return
+
+    agent_config.name = None
+    agent_config.import_path = _ODDISH_ANTIGRAVITY_CLI_IMPORT_PATH
+
+
 def _apply_cursor_cli_oddish_wrapper(agent_config: AgentConfig) -> None:
     """Route Cursor through the restricted-Compose compatibility wrapper."""
     if agent_config.import_path is not None:
@@ -619,10 +685,25 @@ def _build_agent_config(
             bare = anthropic_hdo_bare_model_id(canonical or "")
             api_id = to_anthropic_api_model_id(bare) or bare
             agent_config.model_name = f"anthropic/{api_id}" if api_id else canonical
+    elif _is_single_llm_agent(agent_config) and looks_like_bedrock_model_id(
+        agent_config.model_name
+    ):
+        # This host-side agent calls LiteLLM directly. Preserve the stored
+        # Bedrock route and its queue/concurrency bucket; LiteLLM requires the
+        # provider prefix that claude-code's own Bedrock transport omits.
+        agent_config.model_name = f"bedrock/{agent_config.model_name}"
     elif not _is_claude_code_agent(agent_config):
         # litellm-based agents need a "provider/model" id; claude-code is the
         # only agent that consumes the bare Bedrock inference-profile id.
         agent_config.model_name = _to_litellm_claude_model_id(agent_config.model_name)
+        if _is_litellm_model_id_agent(agent_config):
+            agent_config.model_name = _to_litellm_gemini_model_id(
+                agent_config.model_name
+            )
+        elif _is_ai_sdk_model_id_agent(agent_config):
+            agent_config.model_name = _to_ai_sdk_gemini_model_id(
+                agent_config.model_name
+            )
     elif _claude_code_forces_direct_api(is_probe):
         agent_config.model_name = to_anthropic_api_model_id(agent_config.model_name)
     elif _agent_uses_bedrock():
@@ -639,14 +720,14 @@ def _build_agent_config(
 
     # Gate on agent_keeps_public_model_identity: a harness that routes the model
     # through its own service (Cursor) or pins its egress to one provider
-    # (gemini-cli -> Gemini, grok-build -> xAI) never talks to the OpenAI/Azure
-    # endpoint, so its model must NOT be rewritten to the private Azure
-    # deployment id -- it needs the public model identity, and a pinned
-    # transport could never resolve a worker-private deployment id anyway.
-    # Agents that talk to OpenAI directly (codex, mini-swe on an openai model --
-    # prefixed or bare) still get the rewrite. This is the source the runner's
-    # runtime-model swap later undoes for serialization/redaction; both gate the
-    # same way.
+    # (gemini-cli / antigravity-cli -> Gemini, grok-build -> xAI) never talks
+    # to the OpenAI/Azure endpoint, so its model must NOT be rewritten to the
+    # private Azure deployment id -- it needs the public model identity, and a
+    # pinned transport could never resolve a worker-private deployment id
+    # anyway. Agents that talk to OpenAI directly (codex, mini-swe on an
+    # openai model -- prefixed or bare) still get the rewrite. This is the
+    # source the runner's runtime-model swap later undoes for
+    # serialization/redaction; both gate the same way.
     if _agent_uses_openai_provider(
         agent_config
     ) and not agent_keeps_public_model_identity(agent_config):

@@ -61,6 +61,7 @@ from oddish.worker.probe_staging import stage_org_skills
 from .agent_config import (
     _build_agent_config,
     _claude_code_forces_direct_api,
+    _apply_antigravity_cli_oddish_wrapper,
     _apply_gemini_cli_oddish_wrapper,
     _apply_cursor_cli_oddish_wrapper,
     _resolve_anthropic_hdo_api_key,
@@ -69,6 +70,8 @@ from .agent_config import (
     _trial_uses_openai_provider,
 )
 from .model_hosts import (
+    ANTIGRAVITY_INSTALL_HOSTS,
+    ANTIGRAVITY_RUNTIME_HOSTS,
     GEMINI_BASE_URL_KEYS,
     GEMINI_OAUTH_ENV_KEYS,
     OPENCODE_INSTALL_HOSTS,
@@ -292,6 +295,15 @@ def _resolved_runtime_transport_env(
         # This mirrors the cursor branch below.
         is_gemini = name == "gemini-cli" or "gemini_cli:" in import_path
         if is_gemini:
+            for key in (*_GEMINI_RUNTIME_ENV_KEYS, *_GEMINI_RUNTIME_SECRET_KEYS):
+                if key not in runtime_env and (value := os.environ.get(key)):
+                    runtime_env[key] = value
+        # agy (antigravity-cli) is the Gemini-family Oddish wrapper: it forwards
+        # the same base-URL + OAuth keys and the same ambient secrets gemini-cli
+        # does, so it needs the identical fold for the identical reason -- see
+        # the is_gemini comment above.
+        is_antigravity = name == "antigravity-cli" or "antigravity_cli:" in import_path
+        if is_antigravity:
             for key in (*_GEMINI_RUNTIME_ENV_KEYS, *_GEMINI_RUNTIME_SECRET_KEYS):
                 if key not in runtime_env and (value := os.environ.get(key)):
                     runtime_env[key] = value
@@ -1061,6 +1073,7 @@ def _apply_daytona_compose_restricted_network_profile(
     # These wrappers exist solely to enforce restricted-Compose capabilities.
     # Public and non-Compose trials retain the stock Harbor agent classes.
     _apply_gemini_cli_oddish_wrapper(agent_config)
+    _apply_antigravity_cli_oddish_wrapper(agent_config)
     _apply_cursor_cli_oddish_wrapper(agent_config)
     # Drop non-consumed routes only once the EFFECTIVE class is final. The
     # wrapper above swaps stock ``GeminiCli`` -- which is absent from the
@@ -1170,6 +1183,25 @@ def _opencode_environment_hosts(agent_config: HarborAgentConfig) -> list[str]:
     return [
         *OPENCODE_INSTALL_HOSTS,
         *outbound_hosts_for_model(agent_config.model_name, agent_env=agent_config.env),
+    ]
+
+
+def _antigravity_environment_hosts(agent_config: HarborAgentConfig) -> list[str]:
+    """Hosts agy needs across install *and* run.
+
+    agy self-installs (install.sh -> manifest -> GCS tarball) during agent
+    SETUP, which runs under the ENVIRONMENT baseline -- same shape as the
+    opencode arm above; the model transport host rides along for legacy
+    closed tasks.
+    """
+    return [
+        *ANTIGRAVITY_INSTALL_HOSTS,
+        *ANTIGRAVITY_RUNTIME_HOSTS,
+        *outbound_hosts_for_model(
+            agent_config.model_name,
+            agent_kwargs=agent_config.kwargs,
+            agent_env=agent_config.env,
+        ),
     ]
 
 
@@ -1343,6 +1375,7 @@ async def run_harbor_trial_async(
     worker_job_id: str | None = None,
     harbor_config: dict[str, Any] | None = None,
     org_id: str | None = None,
+    billed_user_id: str | None = None,
     extra_agent_env: dict[str, str] | None = None,
     sandbox_launch: SandboxLaunchContext | None = None,
 ) -> HarborOutcome:
@@ -1383,6 +1416,7 @@ async def run_harbor_trial_async(
             worker_job_id=worker_job_id,
             harbor_config=harbor_config,
             org_id=org_id,
+            billed_user_id=billed_user_id,
             extra_agent_env=extra_agent_env,
             sandbox_launch=sandbox_launch,
             raw=raw,
@@ -1402,6 +1436,7 @@ async def _run_harbor_trial_async_impl(
     worker_job_id: str | None,
     harbor_config: dict[str, Any] | None,
     org_id: str | None,
+    billed_user_id: str | None,
     extra_agent_env: dict[str, str] | None,
     raw: dict[str, Any],
     hc: HarborConfig,
@@ -1743,6 +1778,31 @@ async def _run_harbor_trial_async_impl(
                 *[h for h in hosts if h not in env_config.extra_allowed_hosts],
             ]
 
+        # agy self-installs (install.sh -> manifest -> GCS tarball) at
+        # agent-setup, which runs under the environment baseline -- same
+        # lifecycle problem as the opencode arm above, same solution: allow
+        # install + model hosts via the environment baseline, which spans
+        # install and run. Checked on the raw requested agent (not
+        # agent_config.name/import_path, which only diverge here via the
+        # Compose wrapper swap this branch already excludes by construction)
+        # OR an explicit import_path, mirroring the is_gemini check in
+        # _resolved_runtime_transport_env, so a caller-submitted
+        # raw_agent_config import_path is covered too.
+        if (
+            (agent or "").strip().lower() == "antigravity-cli"
+            or "antigravity_cli:" in (getattr(agent_config, "import_path", None) or "").strip().lower()
+        ) and not (
+            _supports_daytona_compose_restricted_agent_network(
+                task_path=effective_task_path,
+                environment_config=env_config,
+            )
+        ):
+            hosts = _antigravity_environment_hosts(agent_config)
+            env_config.extra_allowed_hosts = [
+                *env_config.extra_allowed_hosts,
+                *[h for h in hosts if h not in env_config.extra_allowed_hosts],
+            ]
+
         # Stage the org's shared skills (+ global seeds) into a root under the
         # job dir and hand it to Harbor via ``AgentConfig.skills``. Best-effort;
         # failure never blocks a trial run.
@@ -1845,11 +1905,22 @@ async def _run_harbor_trial_async_impl(
                     job.on_trial_ended(safe_hook_callback)
                     job.on_trial_cancelled(safe_hook_callback)
 
+                if trial_id is not None and org_id is not None:
+                    from .quota_control import run_job_with_quota_control
+
+                    run_job = run_job_with_quota_control(
+                        job,
+                        trial_id=trial_id,
+                        org_id=org_id,
+                        billed_user_id=billed_user_id,
+                    )
+                else:
+                    run_job = job.run()
                 with _capture_modal_output(
                     actual_job_dir, environment
                 ) as captured_log_path:
                     modal_debug_log_path = captured_log_path
-                    job_result = await job.run()
+                    job_result = await run_job
             finally:
                 if redaction_trial_id:
                     harbor_live_tail.clear_runtime_redactions(redaction_trial_id)

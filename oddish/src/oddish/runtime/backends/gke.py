@@ -40,16 +40,39 @@ class GkeBackend:
         )
 
     def harbor_env_kwargs(self, base_kwargs: dict[str, Any]) -> dict[str, Any]:
+        # Precedence, stated exactly:
+        # a submission kwarg (--environment-kwarg) beats the deployment
+        # setting, because base_kwargs is spread last. A task.toml
+        # [environment.kwargs] key CANNOT beat the deployment setting on this
+        # path: harbor merges task kwargs as the base UNDER job kwargs, and
+        # this dict is the job kwargs, so the deployment value always covers
+        # the task's. Fixing that needs a defaults channel harbor does not
+        # have; until then a task-level provisioning_mode is decorative here
+        # and the per-submission kwarg is the override that works.
         # Provider defaults first, caller kwargs last (caller wins), matching
         # the Daytona spread. Names mirror ``GKEEnvironment.__init__``.
-        return {
+        #
+        # ``provisioning_mode`` is the one key that selects accelerator
+        # capacity -- 'flex-start', 'spot' or 'on-demand'. It needs no
+        # reconciliation against the deployment default, because the spread
+        # already does that whole job: a caller who names a mode overwrites
+        # the default, and one key cannot contradict itself.
+        #
+        # The two booleans it replaced did need it. Naming one mode left the
+        # other at its deployment default, and flex_start=true beside
+        # spot=true asks for a node pool that cannot exist, so an explicit
+        # request had to clear its opposite -- keyed on presence, because
+        # spot=false was a statement about spot rather than a vote against a
+        # flex-start default. Harbor removed the booleans, so that state is
+        # unrepresentable and the reconciliation has nothing left to
+        # reconcile.
+        kwargs: dict[str, Any] = {
             "cluster_name": settings.gke_cluster_name,
             "region": settings.gke_region,
             "project_id": settings.gke_project_id,
             "namespace": settings.gke_namespace,
             "registry_location": settings.gke_registry_location,
             "registry_name": settings.gke_registry_name,
-            "flex_start": settings.gke_flex_start,
             "auto_build_missing_image": settings.gke_auto_build_missing_image,
             "auto_provision_cluster": settings.gke_auto_provision_cluster,
             "pod_ready_timeout_sec": settings.gke_pod_ready_timeout_sec,
@@ -59,8 +82,20 @@ class GkeBackend:
             # "image not found" instead. The hosted model builds/pushes task
             # images ahead of the run, so a miss is an error, not a build cue.
             "require_prebuilt_image": True,
-            **base_kwargs,
         }
+        # The provisioning mode ships only when the deployment explicitly
+        # configured one. Every job kwarg COVERS its task.toml counterpart
+        # (harbor merges task kwargs under job kwargs), so unconditionally
+        # shipping the settings default silently overrode every task's own
+        # mode -- a task pinning zones outside the default mode's
+        # availability could never run. A deployment that wants a forced
+        # fleet-wide mode still sets the variable; one that does not leaves
+        # tasks to steer themselves, with harbor's own default for tasks
+        # that name no mode.
+        if settings.gke_provisioning_mode is not None:
+            kwargs["provisioning_mode"] = settings.gke_provisioning_mode
+        kwargs.update(base_kwargs)
+        return kwargs
 
     async def teardown(self, external_id: str) -> bool:
         try:

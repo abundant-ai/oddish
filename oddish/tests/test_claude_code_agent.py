@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import base64
-import shlex
-
 import pytest
 
 from oddish.config import HARBOR_DEFAULT_SHA, HARBOR_DEFAULT_SOURCE
@@ -16,32 +13,76 @@ from oddish.workers.agents.claude_code import (
 )
 
 
-def test_command_delivers_exact_prompt_over_stdin_without_plaintext_on_argv(tmp_path):
-    agent = OddishClaudeCode(logs_dir=tmp_path)
+@pytest.mark.asyncio
+async def test_run_delivers_exact_prompt_over_stdin_without_plaintext_on_argv(
+    tmp_path, monkeypatch
+):
+    """Harbor -- not Oddish -- keeps the prompt off ``claude``'s argv.
+
+    Oddish used to force this by overriding Harbor's ``_build_claude_command``
+    seam; Harbor now does it natively, so this pins the *inherited* guarantees
+    rather than a command string Oddish builds:
+
+    * the task text never reaches ``claude``'s command line. Long-horizon tasks
+      restart services with ``pkill -f``, and a service name lifted from an
+      argv-borne prompt can match and kill the agent itself;
+    * the prompt still arrives verbatim (exact UTF-8, quotes and newlines
+      intact), piped in from a transient env var that is unset before the agent
+      starts;
+    * the stream is teed to ``/logs/agent/claude-code.txt``, the path live
+      tailing, trajectory parsing, probe analysis and cost parsing read back.
+    """
+    agent = OddishClaudeCode(logs_dir=tmp_path, reasoning_effort="xhigh")
     instruction = "restart rj-rust; preserve 'quotes' and\nnewlines"
 
-    command = agent._build_claude_command(shlex.quote(instruction), "--effort xhigh ")
+    calls: list[tuple[str, dict[str, str]]] = []
 
+    async def _fake_exec(self, environment, *, command, env=None, **_kwargs):
+        calls.append((command, dict(env or {})))
+
+    monkeypatch.setattr(OddishClaudeCode, "exec_as_agent", _fake_exec)
+
+    await agent.run(instruction, environment=object(), context=object())
+
+    command, env = calls[-1]
+
+    # Off argv: no plaintext prompt, and no `--print -- <instruction>` form.
     assert instruction not in command
     assert "--print --" not in command
-    assert "| base64 -d | claude " in command
-    assert "--effort xhigh --print" in command
 
-    encoded_shell_word = command.split("printf %s ", 1)[1].split(" | base64 -d", 1)[0]
-    encoded = shlex.split(encoded_shell_word)[0]
-    assert base64.b64decode(encoded).decode("utf-8") == instruction
+    # Delivered verbatim through exactly one transient env var...
+    carriers = [name for name, value in env.items() if value == instruction]
+    assert len(carriers) == 1
+    carrier = carriers[0]
+    # ...which is unset before `claude` runs, then piped onto its stdin.
+    assert f"unset {carrier}" in command
+    assert 'printf "%s"' in command
+    assert "| claude --verbose --output-format=stream-json" in command
+
+    # Agent kwargs still render as CLI flags.
+    assert "--effort xhigh" in command
+
+    # The log five downstream consumers read back.
+    assert "| tee /logs/agent/claude-code.txt" in command
 
 
-def test_requirement_explicit_source_sha_is_git_reference():
+def test_requirement_explicit_source_sha_is_no_git_tarball():
+    # The sandbox has no git binary, so the requirement must be installable
+    # over plain HTTPS: GitHub sources render as the commit tarball.
     req = _pinned_harbor_requirement("https://github.com/dot-agi/harbor", "a" * 40)
-    assert req == f"harbor @ git+https://github.com/dot-agi/harbor@{'a' * 40}"
+    assert req == (
+        f"harbor @ https://github.com/dot-agi/harbor/archive/{'a' * 40}.tar.gz"
+    )
 
 
-def test_requirement_from_installed_direct_url_is_git_reference():
-    # The orchestrator's harbor is git-installed from the locked fork, so the
-    # requirement derived from its direct_url is the locked default pin.
+def test_requirement_from_installed_direct_url_is_no_git_tarball():
+    # The orchestrator's harbor is git-installed from the locked fork; the
+    # requirement derived from its direct_url pins the same commit but as a
+    # tarball the git-less sandbox can install.
     req = _pinned_harbor_requirement()
-    assert req == f"harbor @ git+{HARBOR_DEFAULT_SOURCE}@{HARBOR_DEFAULT_SHA}"
+    assert req == (
+        f"harbor @ {HARBOR_DEFAULT_SOURCE}/archive/{HARBOR_DEFAULT_SHA}.tar.gz"
+    )
 
 
 def test_requirement_falls_back_to_version_without_direct_url(monkeypatch):
@@ -63,7 +104,7 @@ def test_requirement_none_when_harbor_absent(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_install_runs_pip_with_git_requirement(tmp_path, monkeypatch):
+async def test_install_runs_pip_with_no_git_requirement(tmp_path, monkeypatch):
     agent = OddishProbeClaudeCode(logs_dir=tmp_path)
 
     calls: list[str] = []
@@ -84,7 +125,11 @@ async def test_install_runs_pip_with_git_requirement(tmp_path, monkeypatch):
     assert calls[0] == "super"  # stock CLI install runs first
     install_cmd = calls[1]
     assert install_cmd.startswith("pip install --user --quiet ")
-    assert f"harbor @ git+{HARBOR_DEFAULT_SOURCE}@{HARBOR_DEFAULT_SHA}" in install_cmd
+    assert (
+        f"harbor @ {HARBOR_DEFAULT_SOURCE}/archive/{HARBOR_DEFAULT_SHA}.tar.gz"
+        in install_cmd
+    )
+    assert "git+" not in install_cmd
 
 
 @pytest.mark.asyncio

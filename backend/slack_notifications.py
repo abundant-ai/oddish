@@ -24,11 +24,13 @@ from oddish.core.cost_basis import (
 )
 from oddish.core.endpoints._common import USER_CANCELLED_MESSAGE
 from oddish.db import (
+    ACTIVE_TRIAL_STATUSES,
     ExperimentModel,
     TaskModel,
     TrialModel,
     TrialStatus,
     VerdictStatus,
+    WORKER_OWNED_TRIAL_STATUSES,
     close_database_connections,
     get_session,
 )
@@ -256,6 +258,7 @@ def build_alerts(
     user_prefs: Mapping[str, UserAlertPrefs] | None = None,
 ) -> list[SlackAlert]:
     prefs_by_email = user_prefs or {}
+    alert_date = (recent_cutoff + timedelta(days=1)).astimezone(timezone.utc).date()
 
     def prefs_for(email: str | None) -> UserAlertPrefs:
         return prefs_by_email.get(
@@ -417,7 +420,7 @@ def build_alerts(
             continue
         alerts.append(
             SlackAlert(
-                key=f"user-daily-overage:{user.org_id}:{user.user_id}",
+                key=f"user-daily-overage:{user.org_id}:{user.user_id}:{alert_date}",
                 text=(
                     "<!channel>\n"
                     ":moneybag: *User spend above their 7-day daily average*\n"
@@ -612,20 +615,14 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
     # module-scope read would pin whatever was set when it first woke up.
     settings = await read_alert_settings()
     user_prefs = await read_prefs_by_email()
-    active_statuses = [
-        TrialStatus.PENDING,
-        TrialStatus.QUEUED,
-        TrialStatus.RUNNING,
-        TrialStatus.RETRYING,
-    ]
     active_trial = and_(
         TrialModel.deleted_at.is_(None),
-        TrialModel.status.in_(active_statuses),
+        TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
     )
     live_trial = and_(
         TrialModel.deleted_at.is_(None),
         TrialModel.finished_at.is_(None),
-        TrialModel.status.in_([TrialStatus.RUNNING, TrialStatus.RETRYING]),
+        TrialModel.status.in_((*WORKER_OWNED_TRIAL_STATUSES, TrialStatus.RETRYING)),
     )
 
     async with get_session() as session:
@@ -864,7 +861,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                 )
                 .having(
                     func.count(TrialModel.id).filter(
-                        TrialModel.status.in_(active_statuses)
+                        TrialModel.status.in_(ACTIVE_TRIAL_STATUSES)
                     )
                     == 0
                 )

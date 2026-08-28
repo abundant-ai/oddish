@@ -7,9 +7,8 @@ from pathlib import Path
 
 from fastapi import Body, FastAPI, Header, HTTPException, Query, Response, status
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import select, text
+from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import selectinload
 from typing import Annotated, cast
 import uvicorn
 from rich.console import Console
@@ -29,7 +28,6 @@ from oddish.core.endpoints import (
     get_task_open_core,
     get_task_status_core,
     get_task_version_core,
-    get_trial_analysis_log_core,
     get_trial_by_index_core,
     get_trial_for_org_core,
     list_task_versions_core,
@@ -52,6 +50,7 @@ from oddish.core.sharing.helpers import (
     make_task_files_ndjson_response,
     stream_task_files_s3,
 )
+from oddish.core.task_files import resolve_task_file_source
 from oddish.core.trial_io import (
     read_trial_agent_file,
     read_trial_logs,
@@ -84,7 +83,6 @@ from oddish.core.ingest.trial_imports import (
 from oddish.config import settings
 from oddish.db import (
     ExperimentModel,
-    TaskModel,
     TrialModel,
     get_session,
     init_db,
@@ -505,7 +503,7 @@ async def browse_tasks(
     tool_count_mins: str | None = Query(None),
     trial_metric_match: str = Query("any", pattern="^(any|all)$"),
 ) -> TaskBrowseResponse:
-    """Browse latest task versions with aggregated trial stats."""
+    """Browse selected default task versions with aggregated trial stats."""
     async with get_session() as session:
         from oddish.filters.trial_metrics import TrialMetricFilter
 
@@ -726,31 +724,30 @@ async def get_trial(task_id: str, index: int):
 
 
 # =============================================================================
-# Task QA (trajectory analysis + verdict, one job)
+# Task QA (one qa-kind analysis trial per replacement pass)
 # =============================================================================
 
 
 @api.post("/tasks/{task_id}/qa/retry")
 async def retry_task_qa(task_id: str) -> dict:
-    """(Re)run the single task-level QA job: classify every trial, then
-    synthesize the task verdict."""
+    """Create replacement task-level QA over every eligible agent trial."""
     async with get_session() as session:
         return await rerun_task_qa_core(session, task_id=task_id)
 
 
 @api.post("/tasks/{task_id}/qa/cancel")
 async def cancel_task_qa(task_id: str) -> dict:
-    """Cancel a task's in-flight QA job."""
+    """Cancel a task's live qa-kind and audit-kind analysis trials."""
     async with get_session() as session:
         return await cancel_task_qa_core(session, task_id=task_id)
 
 
 @api.post("/tasks/{task_id}/qa/backfill")
 async def backfill_task_qa(task_id: str, body: BackfillQARequest) -> dict:
-    """Backfill trial analysis for a task: (re)run the task-level QA job.
+    """Create replacement task-level QA over every eligible agent trial.
 
-    Fills only missing/never-analyzed trials by default; ``force`` re-runs
-    (optionally just ``trial_ids``).
+    ``force`` and ``trial_ids`` choose which stored analysis fields are cleared
+    before the pass; they do not narrow the replacement trial's input set.
     """
     async with get_session() as session:
         return await backfill_task_analysis_core(
@@ -776,19 +773,13 @@ async def rerun_pre_trial_audit(task_id: str) -> dict:
 async def rerun_trial_analysis(trial_id: str) -> dict:
     """Queue analysis for one trial.
 
-    Classifies only this trial. Does not touch other trials, the task
-    verdict, or the pre-trial audit.
+    Classification is one task-wide QA pass, so a single trial cannot be
+    re-read alone: this clears the named trial's stored analysis, then
+    re-runs the task's QA, which re-reads every live trial and recomputes
+    the verdict. Only the named trial loses its stored result up front.
     """
     async with get_session() as session:
         return await rerun_trial_analysis_core(session, trial_id=trial_id)
-
-
-@api.get("/trials/{trial_id}/analysis-log")
-async def get_trial_analysis_log(trial_id: str) -> dict:
-    """Whole log of the trial's current/most recent analysis run, plus the
-    QA queue position while the job waits for a worker."""
-    async with get_session() as session:
-        return await get_trial_analysis_log_core(session, trial_id=trial_id)
 
 
 @api.post("/trials/{trial_id}/retry")
@@ -877,17 +868,9 @@ async def list_task_files(
 ):
     """List all files in a task's S3 directory with optional presigned URLs."""
     async with get_session() as session:
-        task = (
-            await session.execute(
-                select(TaskModel)
-                .where(TaskModel.id == task_id)
-                .options(selectinload(TaskModel.current_version))
-            )
-        ).scalar_one_or_none()
-        if not task:
-            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-        if version is None and task.current_version:
-            version = task.current_version.version
+        version, task_s3_prefix = await resolve_task_file_source(
+            session, task_id=task_id, version=version
+        )
 
     if stream:
         return await make_task_files_ndjson_response(
@@ -898,6 +881,7 @@ async def list_task_files(
                 limit=limit,
                 cursor=cursor,
                 presign=presign,
+                task_s3_prefix=task_s3_prefix,
                 version=version,
             )
         )
@@ -909,6 +893,7 @@ async def list_task_files(
         limit=limit,
         cursor=cursor,
         presign=presign,
+        task_s3_prefix=task_s3_prefix,
         version=version,
         inline=inline,
     )
@@ -924,22 +909,15 @@ async def get_task_file_content(
 ) -> dict:
     """Get content of a specific task file from S3."""
     async with get_session() as session:
-        task = (
-            await session.execute(
-                select(TaskModel)
-                .where(TaskModel.id == task_id)
-                .options(selectinload(TaskModel.current_version))
-            )
-        ).scalar_one_or_none()
-        if not task:
-            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-        if version is None and task.current_version:
-            version = task.current_version.version
+        version, task_s3_prefix = await resolve_task_file_source(
+            session, task_id=task_id, version=version
+        )
 
     return await get_task_file_content_s3(
         task_id=task_id,
         file_path=file_path,
         presign=presign,
+        task_s3_prefix=task_s3_prefix,
         version=version,
         max_bytes=max_bytes,
     )

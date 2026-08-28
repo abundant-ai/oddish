@@ -18,6 +18,7 @@ const hasClerkEnv = !!CLERK_EMAIL && !!CLERK_SECRET && !!CLERK_PUBLISHABLE;
 
 const TASK_ID = "task-p1-snapshot";
 const TRIAL_ID = "trial-p1-snapshot";
+const SECOND_TRIAL_ID = "trial-p1-second";
 const PROBE_TRIAL_ID = "trial-p1-probe";
 const FAILED_DETAIL_TASK_ID = "task-p1-failed-detail";
 const NOW = "2026-08-10T20:00:00Z";
@@ -73,6 +74,16 @@ const probeTrial: Trial = {
   is_probe: true,
 };
 
+const secondTrial: Trial = {
+  ...trial,
+  id: SECOND_TRIAL_ID,
+  name: "trial-p1-second",
+  analysis: {
+    ...trial.analysis!,
+    root_cause: "A second completed trial used to expose stale polling state.",
+  },
+};
+
 const browseTask: TaskBrowseResponse["items"][number] = {
   id: TASK_ID,
   name: "P1 snapshot task",
@@ -108,6 +119,14 @@ const browseTask: TaskBrowseResponse["items"][number] = {
       reward: trial.reward,
       agent: trial.agent,
       model: trial.model,
+    },
+    {
+      id: SECOND_TRIAL_ID,
+      name: secondTrial.name,
+      status: secondTrial.status,
+      reward: secondTrial.reward,
+      agent: secondTrial.agent,
+      model: secondTrial.model,
     },
   ],
   latest_trials_truncated: false,
@@ -195,6 +214,25 @@ const canonicalTaskOpen = {
       }
     : null,
 };
+const activeQaTaskOpen = {
+  ...canonicalTaskOpen,
+  task: {
+    ...canonicalTaskOpen.task,
+    verdict_status: "running",
+  },
+  active_qa_trial: {
+    ...canonicalTaskOpen.trials[0],
+    id: `${TASK_ID}-qa`,
+    name: "qa-p1",
+    experiment_id: "qa-shadow",
+    agent: "claude-code",
+    provider: "anthropic",
+    model: "anthropic/claude-sonnet-4-6",
+    kind: "qa",
+    status: "running",
+    reward: null,
+  },
+};
 
 const taskDetail: TaskDetailResponse = {
   task: {
@@ -221,7 +259,7 @@ const taskDetail: TaskDetailResponse = {
     current_version_id: "version-p1",
     trial_version: 1,
     trial_version_id: "version-p1",
-    trials: [trial, probeTrial],
+    trials: [trial, secondTrial, probeTrial],
     user_tags: [],
     created_at: NOW,
     updated_at: NOW,
@@ -298,8 +336,31 @@ test.describe("critical task and trial subtree", () => {
     const taskOpenGate = deferred();
     const taskDetailGate = deferred();
     const trialDetailGate = deferred();
+    const analysisRerunGate = deferred();
+    let holdAnalysisRerun = false;
+    let taskQaInProgress = false;
     let failTrialRevalidation = false;
     const requests: string[] = [];
+    let summaryGetCount = 0;
+    let summaryPostCount = 0;
+    let failNextSummaryPost = false;
+    let failNextSummaryPoll = false;
+    const replacementSummary = {
+      schema_version: "5",
+      model: "analysis-model",
+      generated_at: NOW,
+      summary: "Replacement summary published",
+      highlights: [],
+      components: [
+        {
+          step_ids: [1],
+          trajectory_component: "implementing",
+          summary: "Implemented the requested change.",
+          tool_count: 0,
+          duration_ms: 0,
+        },
+      ],
+    };
     page.on("request", (request) => requests.push(request.url()));
 
     await page.route(/\/api\/tasks\/browse(?:\?|$)/, async (route) => {
@@ -325,7 +386,9 @@ test.describe("critical task and trial subtree", () => {
       new RegExp(`/api/tasks/${TASK_ID}/open(?:\\?|$)`),
       async (route) => {
         await taskOpenGate.pending;
-        await route.fulfill({ json: canonicalTaskOpen });
+        await route.fulfill({
+          json: taskQaInProgress ? activeQaTaskOpen : canonicalTaskOpen,
+        });
       }
     );
     await page.route(
@@ -359,20 +422,14 @@ test.describe("critical task and trial subtree", () => {
     await page.route(
       new RegExp(`/api/tasks/${TASK_ID}/trials(?:\\?|$)`),
       async (route) => {
-        await route.fulfill({ json: [trial, probeTrial] });
-      }
-    );
-    await page.route(
-      new RegExp(`/api/trials/${TRIAL_ID}/analysis-log(?:\\?|$)`),
-      async (route) => {
-        await route.fulfill({
-          json: { log: "terminal analyzer output", queue_position: null },
-        });
+        await route.fulfill({ json: [trial, secondTrial, probeTrial] });
       }
     );
     await page.route(
       new RegExp(`/api/trials/${TRIAL_ID}/analysis/rerun(?:\\?|$)`),
       async (route) => {
+        if (holdAnalysisRerun) await analysisRerunGate.pending;
+        taskQaInProgress = true;
         await route.fulfill({ status: 202, json: {} });
       }
     );
@@ -386,7 +443,83 @@ test.describe("critical task and trial subtree", () => {
       new RegExp(`/api/trials/${TRIAL_ID}/trajectory(?:/|\\?|$)`),
       async (route) => {
         if (new URL(route.request().url()).pathname.endsWith("/summary")) {
-          await route.fulfill({ status: 404, json: { detail: "not found" } });
+          if (route.request().method() === "POST") {
+            summaryPostCount += 1;
+            if (failNextSummaryPost) {
+              failNextSummaryPost = false;
+              await route.fulfill({
+                status: 503,
+                json: { detail: "Summary refresh temporarily unavailable" },
+              });
+              return;
+            }
+            failNextSummaryPoll = summaryPostCount > 1;
+            await route.fulfill({
+              status: summaryPostCount > 1 ? 200 : 202,
+              json: {
+                summary: summaryPostCount > 1 ? replacementSummary : null,
+                refresh: {
+                  status: "running",
+                  job_id: "summary-refresh-p1",
+                  retry_after_ms: 25,
+                },
+              },
+            });
+            return;
+          }
+          summaryGetCount += 1;
+          if (summaryPostCount === 0) {
+            await route.fulfill({ status: 404, json: { detail: "not found" } });
+            return;
+          }
+          if (failNextSummaryPoll) {
+            failNextSummaryPoll = false;
+            await route.fulfill({
+              json: {
+                summary: replacementSummary,
+                refresh: {
+                  status: "failed",
+                  job_id: "summary-refresh-p1",
+                  detail: "Trajectory summary refresh failed after it started",
+                },
+              },
+            });
+            return;
+          }
+          if (summaryGetCount === 2) {
+            await route.fulfill({
+              status: 202,
+              json: {
+                summary: null,
+                refresh: {
+                  status: "running",
+                  job_id: "summary-refresh-p1",
+                  retry_after_ms: 25,
+                },
+              },
+            });
+            return;
+          }
+          if (summaryGetCount === 3) {
+            await route.fulfill({
+              status: 202,
+              json: {
+                summary: null,
+                refresh: {
+                  status: "settling",
+                  job_id: "summary-refresh-p1",
+                  retry_after_ms: 25,
+                },
+              },
+            });
+            return;
+          }
+          await route.fulfill({
+            json: {
+              summary: replacementSummary,
+              refresh: null,
+            },
+          });
           return;
         }
         await route.fulfill({
@@ -421,6 +554,12 @@ test.describe("critical task and trial subtree", () => {
       new RegExp(`/api/trials/${PROBE_TRIAL_ID}(?:\\?|$)`),
       async (route) => {
         await route.fulfill({ json: probeTrial });
+      }
+    );
+    await page.route(
+      new RegExp(`/api/trials/${SECOND_TRIAL_ID}(?:\\?|$)`),
+      async (route) => {
+        await route.fulfill({ json: secondTrial });
       }
     );
     await page.route(
@@ -470,21 +609,19 @@ test.describe("critical task and trial subtree", () => {
     const taskFilesPattern = new RegExp(
       `/api/tasks/${TASK_ID}/files(?:/|\\?|$)`
     );
-    const analysisLogPattern = new RegExp(
-      `/api/trials/${TRIAL_ID}/analysis-log(?:\\?|$)`
-    );
     const trialFilesPattern = new RegExp(
       `/api/trials/${TRIAL_ID}/files(?:/|\\?|$)`
     );
     const trajectoryPattern = new RegExp(
       `/api/trials/${TRIAL_ID}/trajectory(?:/|\\?|$)`
     );
-    const trialDetailRequest = page.waitForRequest(trialDetailPattern);
-    await trialButton.click();
-    await trialDetailRequest;
+    const prefetchedTrialRequest = page.waitForRequest(trialDetailPattern);
+    await trialButton.hover();
+    await prefetchedTrialRequest;
     expect(requestCount(requests, trialDetailPattern)).toBe(1);
-    // The lightweight /open row paints Summary, but mutations wait for the
-    // selected trial resource. The hidden task pane owns no network work.
+    await trialButton.click();
+    // The compact row paints immediately while the hover-prefetched detail
+    // remains blocked. SWR shares that request with the mounted drawer.
     await expect(page.getByRole("tab", { name: "Summary" })).toBeVisible();
     await expect(
       page.getByRole("button", { name: "Retry Trial" })
@@ -498,9 +635,17 @@ test.describe("critical task and trial subtree", () => {
     expect(requestCount(requests, taskDetailPattern)).toBe(0);
     expect(requestCount(requests, taskTrialsPattern)).toBe(0);
     expect(requestCount(requests, taskFilesPattern)).toBe(0);
-    expect(requestCount(requests, analysisLogPattern)).toBe(0);
     expect(requestCount(requests, trialFilesPattern)).toBe(0);
     expect(requestCount(requests, trajectoryPattern)).toBe(0);
+    expect(requestCount(requests, trialDetailPattern)).toBe(1);
+
+    trialDetailGate.release();
+    await expect(
+      page.getByRole("heading", { name: "GOOD FAILURE", exact: true })
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Re-run analysis" })
+    ).toBeEnabled();
 
     const taskDetailRequest = page.waitForRequest(taskDetailPattern);
     await page.getByRole("button", { name: "Show task" }).click();
@@ -509,21 +654,6 @@ test.describe("critical task and trial subtree", () => {
     await expect.poll(() => requestCount(requests, taskTrialsPattern)).toBe(1);
     expect(requestCount(requests, taskFilesPattern)).toBe(0);
     taskDetailGate.release();
-
-    trialDetailGate.release();
-    await expect(
-      page.getByRole("heading", { name: "GOOD FAILURE", exact: true })
-    ).toBeVisible();
-    const analysisLogDisclosure = page
-      .locator("summary")
-      .filter({ hasText: "Analysis log" });
-    await expect(analysisLogDisclosure).toBeVisible();
-    await expect(
-      page.getByRole("button", { name: "Re-run analysis" })
-    ).toBeEnabled();
-    await analysisLogDisclosure.click();
-    await expect(page.getByText("terminal analyzer output")).toBeVisible();
-    expect(requestCount(requests, analysisLogPattern)).toBe(1);
 
     const trialFilesRequest = page.waitForRequest(trialFilesPattern);
     await page.getByRole("tab", { name: "Files" }).click();
@@ -541,15 +671,89 @@ test.describe("critical task and trial subtree", () => {
     await page.getByRole("button", { name: /^#1/ }).click();
     await expect(page.getByText("DEFERRED_TRAJECTORY_STEP_BODY")).toBeVisible();
 
+    const summaryPost = page.waitForRequest(
+      (request) =>
+        request.method() === "POST" &&
+        request.url().endsWith(`/api/trials/${TRIAL_ID}/trajectory/summary`)
+    );
+    await page.getByRole("button", { name: "Generate" }).click();
+    await summaryPost;
+    await expect(page.getByText("Replacement summary published")).toBeVisible();
+    expect(summaryPostCount).toBe(1);
+    expect(summaryGetCount).toBeGreaterThanOrEqual(4);
+
+    failNextSummaryPost = true;
+    const failedSummaryPost = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.url().endsWith(`/api/trials/${TRIAL_ID}/trajectory/summary`) &&
+        response.status() === 503
+    );
+    await page.getByRole("button", { name: "Regenerate" }).click();
+    await failedSummaryPost;
+    await expect(page.getByText("Replacement summary published")).toBeVisible();
+    const regenerationAlert = page
+      .getByRole("tabpanel", { name: "Trajectory" })
+      .getByRole("alert");
+    await expect(regenerationAlert).toContainText(
+      "Summary refresh temporarily unavailable"
+    );
+
+    const retriedSummaryPost = page.waitForRequest(
+      (request) =>
+        request.method() === "POST" &&
+        request.url().endsWith(`/api/trials/${TRIAL_ID}/trajectory/summary`)
+    );
+    await regenerationAlert.getByRole("button", { name: "Retry" }).click();
+    await retriedSummaryPost;
+    expect(summaryPostCount).toBe(3);
+    await expect(page.getByText("Replacement summary published")).toBeVisible();
+    await expect(regenerationAlert).toContainText(
+      "Trajectory summary refresh failed after it started"
+    );
+
     await page.getByRole("tab", { name: "Summary" }).click();
-    // The analysis mutation revalidates the canonical trial. A transient
-    // failure keeps that canonical row and must not relock other mutations.
+    const secondTrialPattern = new RegExp(
+      `/api/trials/${SECOND_TRIAL_ID}(?:\\?|$)`
+    );
+    await page.clock.install();
+    holdAnalysisRerun = true;
+    const queuedAnalysisRequest = page.waitForRequest(
+      new RegExp(`/api/trials/${TRIAL_ID}/analysis/rerun(?:\\?|$)`)
+    );
+    await page.getByRole("button", { name: "Re-run analysis" }).click();
+    await queuedAnalysisRequest;
+    const secondTrialResponse = page.waitForResponse(secondTrialPattern);
+    await page.getByRole("button", { name: "Next trial" }).click();
+    await secondTrialResponse;
+    await expect(
+      page.locator("p.sr-only").filter({ hasText: SECOND_TRIAL_ID })
+    ).toHaveText(SECOND_TRIAL_ID);
+    await page.waitForTimeout(2_100);
+    const activeTaskQaResponse = page.waitForResponse(taskOpenPattern);
+    analysisRerunGate.release();
+    await activeTaskQaResponse;
+    expect(requestCount(requests, secondTrialPattern)).toBe(1);
+
+    await page.getByRole("button", { name: "Previous trial" }).click();
+    await expect(
+      page.locator("p.sr-only").filter({ hasText: TRIAL_ID })
+    ).toHaveText(TRIAL_ID);
+    await expect(
+      page.getByRole("button", { name: "Re-run analysis" })
+    ).toBeDisabled();
+    // Task-level QA writes the finished report onto this terminal agent row.
+    // Its settlement ends task-open polling and triggers one final trial-detail
+    // revalidation. A transient failure keeps the canonical row usable.
     failTrialRevalidation = true;
+    taskQaInProgress = false;
+    const settledTaskQaResponse = page.waitForResponse(taskOpenPattern);
     const failedTrialRevalidation = page.waitForResponse(
       (response) =>
         trialDetailPattern.test(response.url()) && response.status() === 503
     );
-    await page.getByRole("button", { name: "Re-run analysis" }).click();
+    await page.clock.fastForward(30_000);
+    await settledTaskQaResponse;
     await failedTrialRevalidation;
     await expect(
       page.getByRole("button", { name: "Retry Trial" })

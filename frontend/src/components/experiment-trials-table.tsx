@@ -59,6 +59,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { mutate } from "swr";
 import type { Task, Trial, AnalysisClassification } from "@/lib/types";
 import { isAgentTrial } from "@/lib/types";
+import { preloadTrial } from "@/lib/use-trial";
 import {
   costEstimateMarks,
   formatCostUsd,
@@ -73,6 +74,7 @@ import {
 } from "@/lib/experiment-agent-grouping";
 import {
   isActivePipelineStatus,
+  isActiveTrialStatus,
   taskHasActiveAnalysis,
   taskHasActiveVerdict,
   taskHasCancellableWork,
@@ -103,6 +105,7 @@ import {
 } from "lucide-react";
 import { QueueKeyIcon } from "./queue-key-icon";
 import { StatusIcon } from "./status-icon";
+import { NotRealSpendBadge } from "./not-real-spend-badge";
 
 const PassAtKGraph = dynamic(
   () => import("./pass-at-k-graph").then((mod) => mod.PassAtKGraph),
@@ -181,6 +184,7 @@ const LOADING_AGENT_COLUMNS: AgentSummary[] = Array.from(
 const STATUS_FILTER_ORDER: MatrixStatus[] = [
   "queued",
   "running",
+  "paused",
   "pass",
   "partial",
   "fail",
@@ -536,7 +540,7 @@ function groupTrialsByAgent(
 }
 
 function hasLiveQueueSnapshot(trial: Trial): boolean {
-  return ["queued", "retrying", "running", "pending"].includes(trial.status);
+  return isActiveTrialStatus(trial.status);
 }
 
 function getTrialTitle(trial: Trial, status: MatrixStatus) {
@@ -677,7 +681,8 @@ export function ExperimentTrialsTable({
               value === "scoreless" ||
               value === "skipped" ||
               value === "queued" ||
-              value === "running"
+              value === "running" ||
+              value === "paused"
           )
       );
       setDimmedStatuses(next);
@@ -797,7 +802,8 @@ export function ExperimentTrialsTable({
       if (lower === "oracle") return 1;
       if (lower.startsWith("claude")) return 2;
       if (lower.startsWith("codex")) return 3;
-      if (lower.startsWith("gemini")) return 4;
+      if (lower.startsWith("gemini") || lower.startsWith("antigravity"))
+        return 4;
       return 5;
     };
 
@@ -2453,36 +2459,21 @@ export function ExperimentTrialsTable({
                             {(() => {
                               const showVersion =
                                 showAnalysis && task.current_version != null;
-                              // Sum the trials actually rendered in this row's
-                              // matrix (visible agent columns) so the badge
-                              // tracks the grid when agent columns are hidden.
-                              // Gathered/shared-task trials count: the badge
-                              // prices the row being shown, matching the Cost
-                              // tile.
-                              const cost = readOnly
-                                ? null
-                                : sumTaskTrialCost(orderedTrials);
-                              // Agent cost only. QA spend is deliberately not
-                              // annotated per row -- the row is already dense,
-                              // and QA totals live on the experiment's Cost
-                              // tile and on each task's own page.
+                              const cost = sumTaskTrialCost(orderedTrials);
                               const showCost =
-                                cost != null &&
+                                !readOnly &&
                                 cost.pricedCount > 0 &&
                                 hasDisplayableCostUsd(cost.costUsd);
 
                               if (!showVersion && !showCost) return null;
 
-                              const marks = showCost
-                                ? costEstimateMarks(
-                                    cost.hasEstimated,
-                                    cost.hasNative
-                                  )
-                                : null;
-                              const costTone =
-                                showCost && cost.hasEstimated
-                                  ? "text-amber-700 dark:text-amber-400"
-                                  : "text-[color:var(--paper-ink-3)]";
+                              const marks = costEstimateMarks(
+                                cost.hasEstimated,
+                                cost.hasNative
+                              );
+                              const costTone = cost.hasEstimated
+                                ? "text-amber-700 dark:text-amber-400"
+                                : "text-[color:var(--paper-ink-3)]";
 
                               return (
                                 <div className="flex shrink-0 flex-col items-end gap-0.5 leading-none">
@@ -2491,9 +2482,8 @@ export function ExperimentTrialsTable({
                                       v{task.current_version}
                                     </span>
                                   )}
-                                  {showCost &&
-                                    cost != null &&
-                                    marks != null && (
+                                  {showCost && (
+                                    <span className="inline-flex items-center gap-1">
                                       <Tooltip>
                                         <TooltipTrigger asChild>
                                           <span
@@ -2515,7 +2505,12 @@ export function ExperimentTrialsTable({
                                               : ""}
                                         </TooltipContent>
                                       </Tooltip>
-                                    )}
+                                      <NotRealSpendBadge
+                                        excludedCostUsd={cost.excludedCostUsd}
+                                        totalCostUsd={cost.costUsd}
+                                      />
+                                    </span>
+                                  )}
                                 </div>
                               );
                             })()}
@@ -2607,6 +2602,11 @@ export function ExperimentTrialsTable({
                                       <Button
                                         type="button"
                                         variant="unstyled"
+                                        onPointerDown={() => {
+                                          if (!readOnly && !trial.is_probe) {
+                                            void preloadTrial("/api", trial.id);
+                                          }
+                                        }}
                                         onClick={() => {
                                           if (trial.is_probe) {
                                             if (onProbeSelect) {

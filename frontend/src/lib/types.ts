@@ -10,6 +10,7 @@ type TrialStatus =
   | "pending"
   | "queued"
   | "running"
+  | "paused"
   | "success"
   | "failed"
   | "retrying"
@@ -114,6 +115,9 @@ interface TrialExploitation {
 interface TrialAnalysis {
   /** Id of the QA trial that wrote this analysis. */
   _graded_by?: string;
+  /** Steps of the QA run whose tool calls named this trial, scanned by the
+      importer — anchors for jumping into the grader's trajectory. */
+  _graded_at_steps?: number[];
   trial_name?: string;
   classification: AnalysisClassification;
   subtype: string;
@@ -144,6 +148,7 @@ export interface Trial {
   experiment_id?: string | null;
   agent: string;
   provider: string;
+  queue_key?: string;
   model: string | null;
   environment?: string | null;
   status: TrialStatus;
@@ -187,6 +192,7 @@ export interface Trial {
   // would mean "resolved, and there was no QA".
   qa_cost_usd?: number | null;
   is_billed?: boolean;
+  cost_exclusion_reason?: string | null;
   has_trajectory?: boolean;
   is_probe?: boolean;
   kind?: TrialKind;
@@ -266,6 +272,7 @@ export interface Task {
   current_version_id?: string | null;
   trial_version?: number | null;
   trial_version_id?: string | null;
+  active_qa_trial?: Trial | null;
   trials?: Trial[] | null;
   user_tags?: UserTagRef[];
   created_at: string;
@@ -472,6 +479,7 @@ export interface TaskOpenTrialRef {
   agent: string;
   provider: string;
   model: string | null;
+  kind: TrialKind;
   status: TrialStatus;
   reward: number | null;
   error_kind?: string | null;
@@ -494,6 +502,7 @@ export interface TaskOpenResponse {
   default_version?: TaskOpenVersionRef | null;
   selected_version?: TaskOpenVersionSummary | null;
   totals: TaskOpenTotals;
+  active_qa_trial?: TaskOpenTrialRef | null;
   trials: TaskOpenTrialRef[];
   trials_has_more: boolean;
 }
@@ -566,6 +575,9 @@ export interface ExperimentCostTotals {
   qa_cost_usd?: number;
   owned_qa_cost_usd?: number;
   qa_has_estimated?: boolean;
+  excluded_cost_usd?: number;
+  owned_excluded_cost_usd?: number;
+  experiment_cost_excluded?: boolean;
 }
 
 export interface TaskDetailResponse {
@@ -628,17 +640,6 @@ export interface JobUsage {
 export interface DashboardExperimentAuthor {
   name: string;
   source: "github" | "api" | "member";
-}
-
-export interface OrgUser {
-  id: string;
-  email: string;
-  name: string | null;
-  github_username: string | null;
-  github_id: string | null;
-  role: string;
-  org_id: string;
-  created_at: string;
 }
 
 export interface QuotaUsage {

@@ -3,6 +3,7 @@ import { isAgentTrial } from "@/lib/types";
 
 const ACTIVE_TRIAL_STATUSES = [
   "running",
+  "paused",
   "queued",
   "retrying",
   "pending",
@@ -15,9 +16,21 @@ const ACTIVE_VISIBLE_JOB_STATUSES = [
   "blocked",
 ] as const;
 
-function isActiveTrialStatus(status: string | null | undefined): boolean {
+const WORKER_OWNED_TRIAL_STATUSES = ["running", "paused"] as const;
+
+export function isActiveTrialStatus(
+  status: string | null | undefined,
+): boolean {
   return ACTIVE_TRIAL_STATUSES.includes(
     status as (typeof ACTIVE_TRIAL_STATUSES)[number],
+  );
+}
+
+export function isWorkerOwnedTrialStatus(
+  status: string | null | undefined,
+): boolean {
+  return WORKER_OWNED_TRIAL_STATUSES.includes(
+    status as (typeof WORKER_OWNED_TRIAL_STATUSES)[number],
   );
 }
 
@@ -77,7 +90,7 @@ export function taskHasActiveAnalysis(task: Task | null | undefined): boolean {
 // crash the flags can be stale. The qa/cancel endpoint cancels both kinds.
 export function isLiveAnalysisTrial(trial: Trial): boolean {
   return (
-    !isAgentTrial(trial) &&
+    (trial.kind === "qa" || trial.kind === "audit") &&
     !trial.superseded_by_trial_id &&
     isActiveTrialStatus(trial.status)
   );
@@ -86,7 +99,11 @@ export function isLiveAnalysisTrial(trial: Trial): boolean {
 export function taskHasLiveAnalysisTrial(
   task: Task | null | undefined,
 ): boolean {
-  return task?.trials?.some(isLiveAnalysisTrial) === true;
+  return (
+    (task?.active_qa_trial != null &&
+      isLiveAnalysisTrial(task.active_qa_trial)) ||
+    task?.trials?.some(isLiveAnalysisTrial) === true
+  );
 }
 
 // The qa kind specifically: verdict presentation must not read a live
@@ -103,7 +120,10 @@ export function isLiveQaTrial(trial: Trial): boolean {
 }
 
 export function taskHasLiveQaTrial(task: Task | null | undefined): boolean {
-  return task?.trials?.some(isLiveQaTrial) === true;
+  return (
+    (task?.active_qa_trial != null && isLiveQaTrial(task.active_qa_trial)) ||
+    task?.trials?.some(isLiveQaTrial) === true
+  );
 }
 
 export function taskHasActiveVerdict(task: Task | null | undefined): boolean {

@@ -247,6 +247,42 @@ def test_gemini_ambient_credentials_enter_redaction_map(monkeypatch):
     assert replacements["goog-secret-456"] == "[REDACTED]"
 
 
+def test_antigravity_ambient_credentials_enter_redaction_map(monkeypatch):
+    # agy (antigravity-cli) is the Gemini-family Oddish wrapper: it forwards
+    # the same base-URL + secret env the stock gemini-cli agent does, so
+    # ambient Gemini credentials (used when job-scoped injection is off) must
+    # fold into the trial transport env the same way, for the same reason --
+    # so their raw values are redacted from live-tail / lifecycle / scrubbed
+    # artifacts.
+    monkeypatch.setenv("GEMINI_API_KEY", "gm-secret-123")
+    monkeypatch.setenv("GOOGLE_API_KEY", "goog-secret-456")
+    monkeypatch.setenv("GOOGLE_GEMINI_BASE_URL", "https://relay.corp/v1")
+    agent_config = HarborAgentConfig(
+        name="antigravity-cli", model_name="google/gemini-3.7-flash"
+    )
+
+    runtime_env = harbor_runner._resolved_runtime_transport_env(
+        {}, agent_config=agent_config
+    )
+    assert runtime_env.get("GEMINI_API_KEY") == "gm-secret-123"
+    assert runtime_env.get("GOOGLE_API_KEY") == "goog-secret-456"
+    assert runtime_env.get("GOOGLE_GEMINI_BASE_URL") == "https://relay.corp/v1"
+
+    replacements = harbor_runner._runtime_transport_redactions(runtime_env)
+    assert replacements["gm-secret-123"] == "[REDACTED]"
+    assert replacements["goog-secret-456"] == "[REDACTED]"
+
+    # A non-antigravity, non-gemini agent must not fold these ambient Google
+    # credentials -- folding is keyed on the effective harness, not merely on
+    # ambient env being present.
+    other_env = harbor_runner._resolved_runtime_transport_env(
+        {}, agent_config=HarborAgentConfig(name="codex", model_name="openai/gpt-5")
+    )
+    assert "GEMINI_API_KEY" not in other_env
+    assert "GOOGLE_API_KEY" not in other_env
+    assert "GOOGLE_GEMINI_BASE_URL" not in other_env
+
+
 def test_opencode_google_model_folds_ai_sdk_credential(monkeypatch):
     # opencode has no agent-specific branch: it authenticates through the
     # general provider-driven fold, keyed on the model's canonical provider
@@ -566,6 +602,139 @@ def test_gemini_profile_pins_its_transport_instead_of_inferring():
     assert routed_profile.outbound_hosts == ("relay.corp",)
 
 
+def test_antigravity_wrapper_swaps_stock_class_for_oddish_wrapper():
+    """The Compose-profile swap site routes agy through its attested wrapper.
+
+    Mirrors the gemini-cli swap
+    (test_route_drop_runs_after_the_gemini_wrapper_swaps_the_class):
+    _apply_antigravity_cli_oddish_wrapper is called only from
+    _apply_daytona_compose_restricted_network_profile, never unconditionally
+    at config-build time (unlike opencode) and never from
+    _ensure_web_tool_wrapper_when_disabling (agy has no disable_web_tools
+    kwarg) -- see test_antigravity_wrapper_is_not_swapped_by_the_web_tool_gate
+    below.
+
+    Since the E2E-evidenced ``server_web_disabled=True`` attestation, the
+    pipeline resolves a full profile after the swap, so this asserts both the
+    routing (class swap) and the resolved profile's load-bearing fields: the
+    attestation flag and the agy startup hosts (Gemini endpoint + the
+    Unleash feature-flag host the binary probes before any model call).
+    """
+    from pathlib import Path
+    from unittest.mock import patch
+
+    agent_config = HarborAgentConfig(
+        name="antigravity-cli", model_name="google/gemini-3.7-flash"
+    )
+    with patch.object(
+        harbor_runner,
+        "_supports_daytona_compose_restricted_agent_network",
+        return_value=True,
+    ):
+        routed_profile = (
+            harbor_runner._apply_daytona_compose_restricted_network_profile(
+                task_path=Path("/tmp"),
+                environment_config=None,
+                agent_config=agent_config,
+                runtime_transport_env={},
+            )
+        )
+
+    assert agent_config.name is None
+    assert (
+        agent_config.import_path
+        == "oddish.workers.agents.antigravity_cli:OddishAntigravityCli"
+    )
+    assert routed_profile is not None
+    assert routed_profile.server_web_disabled is True
+    assert "generativelanguage.googleapis.com" in routed_profile.outbound_hosts
+    assert "antigravity-unleash.goog" in routed_profile.outbound_hosts
+
+
+def test_antigravity_wrapper_leaves_explicit_import_path_alone():
+    """An agent_config already carrying an import_path is never touched.
+
+    Direct unit test of the wrapper's own no-op guard (``if
+    agent_config.import_path is not None: return``), same as the applier
+    functions it sits beside (_apply_gemini_cli_oddish_wrapper /
+    _apply_cursor_cli_oddish_wrapper have no dedicated direct test of their
+    own either -- their coverage rides the Compose-profile integration tests
+    above). Deliberately does not route through
+    _apply_daytona_compose_restricted_network_profile: an arbitrary
+    import_path's own profile factory (or _antigravity_profile's current
+    fail-closed status -- see the swap test above) has nothing to do with
+    this guard clause, and would only make the test's pass/fail depend on
+    unrelated profile machinery.
+    """
+    from oddish.workers.harbor.agent_config import (
+        _apply_antigravity_cli_oddish_wrapper,
+    )
+
+    explicit_import_path = "some.other.module:SomeOtherAgent"
+    agent_config = HarborAgentConfig(
+        name="antigravity-cli",
+        import_path=explicit_import_path,
+        model_name="google/gemini-3.7-flash",
+    )
+    _apply_antigravity_cli_oddish_wrapper(agent_config)
+
+    assert agent_config.name == "antigravity-cli"
+    assert agent_config.import_path == explicit_import_path
+
+
+def test_antigravity_wrapper_is_not_swapped_by_the_web_tool_gate():
+    """agy has no ``disable_web_tools`` kwarg, unlike cursor-cli / gemini-cli.
+
+    ``_ensure_web_tool_wrapper_when_disabling`` swaps in the Oddish wrapper
+    whenever a trial disables web tools, but only ``OddishCursorCli`` /
+    ``OddishGeminiCli`` honor that switch. agy's wrapper must NOT be swapped
+    in from this site -- only from the Compose-profile site above -- or a
+    non-Compose trial would silently start requesting a kwarg
+    ``OddishAntigravityCli`` does not support.
+    """
+    agent_config = HarborAgentConfig(
+        name="antigravity-cli",
+        model_name="google/gemini-3.7-flash",
+        kwargs={"disable_web_tools": True},
+    )
+    harbor_runner._ensure_web_tool_wrapper_when_disabling(agent_config)
+
+    assert agent_config.name == "antigravity-cli"
+    assert agent_config.import_path is None
+
+
+def test_antigravity_cli_keeps_public_model_identity():
+    """agy pins its egress to the Gemini API, exactly like gemini-cli.
+
+    agent_keeps_public_model_identity is a restricted_network.py registry
+    lookup (_COMPATIBILITY_PROFILES keyed on the resolved class path), not a
+    name-set/predicate in this module -- both the stock
+    ``harbor.agents.installed.antigravity_cli:AntigravityCli`` class and the
+    Oddish ``OddishAntigravityCli`` wrapper are already registered there with
+    ``pins_own_transport=True`` (feat(restricted-network): attested
+    antigravity-cli profile, landed separately), so this gate already returns
+    True for antigravity-cli with no code change in this module -- this test
+    pins that behavior down. gemini-cli's own equivalent lives in
+    test_transport_authoritative_agents_keep_their_model_identity
+    (test_restricted_network_profile.py); there is no antigravity-cli analog
+    in *this* file yet, so this is that direct test for test_harbor_runner.py.
+    """
+    from oddish.workers.harbor.restricted_network import (
+        agent_keeps_public_model_identity,
+    )
+
+    by_name = HarborAgentConfig(
+        name="antigravity-cli", model_name="google/gemini-3.7-flash"
+    )
+    assert agent_keeps_public_model_identity(by_name)
+
+    by_import_path = HarborAgentConfig(
+        import_path="oddish.workers.agents.antigravity_cli:OddishAntigravityCli",
+        model_name="google/gemini-3.7-flash",
+    )
+    assert agent_keeps_public_model_identity(by_import_path)
+
+
 def test_both_azure_provider_spellings_fold_ambient_credentials(monkeypatch):
     """``azure_openai`` is passed through verbatim by the provider normalizer.
 
@@ -787,10 +956,8 @@ def test_restricted_cursor_gets_transport_hosts_and_web_hardening(tmp_path):
         model_name="cursor/composer",
         **agent_config.kwargs,
     )
-    assert agent.build_cli_flags() == (
-        "--exclude-tools web_search_tool_call "
-        "--exclude-tools web_fetch_tool_call"
-    )
+    assert agent.build_cli_flags() == ""
+    assert agent._oddish_disable_web_tools is True
 
 
 @pytest.mark.parametrize("shape", ["public-compose", "restricted-kube"])
@@ -972,9 +1139,7 @@ def test_restricted_compose_runtime_route_is_private_and_artifacts_are_scrubbed(
             (self.job_dir / "result.json").write_text(leaked, encoding="utf-8")
             return object()
 
-    monkeypatch.setattr(
-        harbor_runner, "apply_harbor_patches", lambda **_kwargs: None
-    )
+    monkeypatch.setattr(harbor_runner, "apply_harbor_patches", lambda **_kwargs: None)
     monkeypatch.setattr(harbor_runner, "get_backend", lambda value: None)
     monkeypatch.setattr(
         harbor_runner, "validate_task_timeout_config", lambda path: None
@@ -1305,6 +1470,7 @@ def test_store_trial_results_marks_modal_image_build_failed_permanent(monkeypatc
         id="trial-1",
         task_id="task-1",
         model="gpt-5",
+        harbor_config={},
         status=trial_handler.TrialStatus.RUNNING,
         attempts=1,
         max_attempts=6,
@@ -1632,7 +1798,6 @@ def test_store_trial_results_settles_metering_after_quota_cancel(monkeypatch):
         cache_write_tokens=None,
         output_tokens=None,
         cost_usd=0.25,
-        llm_key_hash=None,
         phase_timing=None,
         has_trajectory=False,
         current_worker_id=None,
@@ -1650,11 +1815,6 @@ def test_store_trial_results_settles_metering_after_quota_cancel(monkeypatch):
         yield SimpleNamespace(), trial
 
     monkeypatch.setattr(trial_handler, "_trial_session", _fake_trial_session)
-    monkeypatch.setattr(
-        trial_handler,
-        "trial_llm_key_hash",
-        lambda *_args: "settled-key-hash",
-    )
 
     outcome = harbor_runner.HarborOutcome(
         reward=1.0,
@@ -1696,7 +1856,6 @@ def test_store_trial_results_settles_metering_after_quota_cancel(monkeypatch):
     assert trial.cache_write_tokens == 10
     assert trial.output_tokens == 50
     assert trial.cost_usd == 0.25
-    assert trial.llm_key_hash == "settled-key-hash"
     assert stored == (True, False)
 
 
@@ -1709,7 +1868,6 @@ def test_store_trial_results_ignores_stale_cancelled_attempt(monkeypatch):
         superseded_by_trial_id=None,
         input_tokens=7,
         cost_usd=0.25,
-        llm_key_hash="current-key",
     )
 
     @asynccontextmanager
@@ -1739,11 +1897,7 @@ def test_store_trial_results_ignores_stale_cancelled_attempt(monkeypatch):
     )
 
     assert stored == (True, False)
-    assert (trial.input_tokens, trial.cost_usd, trial.llm_key_hash) == (
-        7,
-        0.25,
-        "current-key",
-    )
+    assert (trial.input_tokens, trial.cost_usd) == (7, 0.25)
 
 
 @pytest.mark.asyncio
@@ -1796,6 +1950,12 @@ async def test_post_trial_hooks_run_for_completed_trial(monkeypatch):
         status=trial_handler.TrialStatus.SUCCESS,
         harbor_stage="completed",
         agent="claude-code",
+        # First attempt, never classified: the stale-analysis clear
+        # (test_retry_clears_stale_analysis) reads these and must no-op here.
+        attempts=1,
+        started_at=None,
+        analysis_started_at=None,
+        analysis_finished_at=None,
     )
     calls = []
 
@@ -1933,7 +2093,11 @@ def test_run_harbor_trial_async_skips_temp_root_preflight_without_task_patch(
     monkeypatch.setattr(
         harbor_runner, "validate_task_timeout_config", lambda path: None
     )
-    monkeypatch.setattr(harbor_runner, "_build_agent_config", lambda **kwargs: object())
+    monkeypatch.setattr(
+        harbor_runner,
+        "_build_agent_config",
+        lambda **kwargs: SimpleNamespace(kwargs={}),
+    )
     monkeypatch.setattr(harbor_runner, "TaskConfig", lambda path: path)
     monkeypatch.setattr(harbor_runner, "JobConfig", lambda **kwargs: kwargs)
     monkeypatch.setattr(harbor_runner, "Job", _FakeJob)
@@ -2151,12 +2315,11 @@ def test_build_agent_config_mini_swe_fireworks_uses_litellm_runtime_model(
     assert getattr(agent_config, RUNTIME_MODEL_NAME_ATTR) == (
         "fireworks_ai/accounts/fireworks/models/glm-5p2"
     )
-    assert (agent_config.env or {})["FIREWORKS_AI_API_KEY"] == (
-        "${FIREWORKS_API_KEY}"
+    assert (agent_config.env or {})["FIREWORKS_AI_API_KEY"] == ("${FIREWORKS_API_KEY}")
+    assert (
+        harbor_runner.resolve_env_vars(agent_config.env)["FIREWORKS_AI_API_KEY"]
+        == "fireworks-secret"
     )
-    assert harbor_runner.resolve_env_vars(agent_config.env)[
-        "FIREWORKS_AI_API_KEY"
-    ] == "fireworks-secret"
     assert RUNTIME_MODEL_NAME_ATTR not in agent_config.model_dump()
 
 
@@ -2305,6 +2468,37 @@ def test_build_agent_config_litellm_agent_non_claude_model_unchanged(monkeypatch
     )
 
     assert agent_config.model_name == "gemini-3-pro"
+
+
+def test_build_agent_config_litellm_agent_google_prefix_becomes_gemini(monkeypatch):
+    """litellm has no ``google`` provider; Oddish's ``google/`` Gemini alias must
+    reach litellm-based agents as ``gemini/<id>``."""
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+
+    for agent in ("mini-swe-agent", "terminus-2"):
+        agent_config = harbor_runner._build_agent_config(
+            agent=agent,
+            model="google/gemini-3.7-flash",
+            raw_harbor_config={},
+        )
+        assert agent_config.model_name == "gemini/gemini-3.7-flash"
+
+
+def test_build_agent_config_ai_sdk_agents_get_google_prefix(monkeypatch):
+    """Vercel AI SDK agents name the Gemini provider ``google``: ``google/`` ids
+    stay as-is and ``gemini/`` ids are rewritten to it."""
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+
+    for agent in ("opencode", "pi"):
+        for model in ("google/gemini-3.7-flash", "gemini/gemini-3.7-flash"):
+            agent_config = harbor_runner._build_agent_config(
+                agent=agent,
+                model=model,
+                raw_harbor_config={},
+            )
+            assert agent_config.model_name == "google/gemini-3.7-flash"
 
 
 def test_build_agent_config_claude_code_keeps_bare_bedrock_id(monkeypatch):
@@ -2591,9 +2785,7 @@ def test_build_agent_config_uses_oddish_opencode_wrapper(monkeypatch):
     )
 
     assert agent_config.name is None
-    assert (
-        agent_config.import_path == "oddish.workers.agents.opencode:OddishOpenCode"
-    )
+    assert agent_config.import_path == "oddish.workers.agents.opencode:OddishOpenCode"
     assert agent_config.model_name == "openrouter/tencent/hy3"
 
 
@@ -3523,6 +3715,7 @@ def _make_retry_decision_trial(*, attempts: int = 1, max_attempts: int = 6):
     return SimpleNamespace(
         id="trial-1",
         task_id="task-retry-gate",
+        kind="agent",
         model="gpt-5",
         status=trial_handler.TrialStatus.RUNNING,
         attempts=attempts,
@@ -3605,6 +3798,43 @@ def test_store_trial_results_skips_retry_for_non_retryable_exception(monkeypatch
     assert trial.attempts == 1
 
 
+def test_store_trial_results_skips_retry_for_quota_pause_outcome(monkeypatch):
+    """The Harbor runner returns quota-pause control failures as outcomes.
+
+    Retrying cannot repair a snapshot or resume failure, so the outcome path
+    must make the trial terminal just like the direct-exception path does.
+    """
+
+    trial = _make_retry_decision_trial(attempts=1, max_attempts=6)
+    _install_retry_decision_session_fakes(monkeypatch, trial)
+
+    outcome = harbor_runner.HarborOutcome(
+        reward=None,
+        error="QuotaPauseControlError: snapshot failed",
+        exit_code=-1,
+        duration_sec=5.0,
+        job_result_path=None,
+        job_dir=None,
+        exception_type=trial_handler.QuotaPauseControlError.__name__,
+    )
+
+    stored = asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id="trial-1",
+            outcome=outcome,
+            trial_s3_key=None,
+            execution_error=None,
+            trial_attempt=trial.attempts,
+        )
+    )
+
+    assert trial.status == trial_handler.TrialStatus.FAILED
+    assert trial.finished_at is not None
+    assert trial.error_message == "QuotaPauseControlError: snapshot failed"
+    assert trial.attempts == 1
+    assert stored == (True, True)
+
+
 def test_store_trial_results_still_retries_unknown_exception(monkeypatch):
     """Exception types we don't explicitly mark as terminal still go through
     the existing attempts < max_attempts retry path."""
@@ -3634,6 +3864,49 @@ def test_store_trial_results_still_retries_unknown_exception(monkeypatch):
 
     assert trial.status == trial_handler.TrialStatus.RETRYING
     assert trial.finished_at is None
+
+
+@pytest.mark.parametrize(
+    ("attempts", "expected_status"),
+    [
+        (1, trial_handler.TrialStatus.RETRYING),
+        (3, trial_handler.TrialStatus.FAILED),
+    ],
+)
+def test_analysis_artifact_upload_failure_cannot_settle_successfully(
+    monkeypatch, attempts, expected_status
+):
+    """A verifier reward is unusable until an analysis artifact is durable."""
+    trial = _make_retry_decision_trial(attempts=attempts, max_attempts=3)
+    trial.kind = "summarize"
+    _install_retry_decision_session_fakes(monkeypatch, trial)
+
+    outcome = harbor_runner.HarborOutcome(
+        reward=1.0,
+        error=None,
+        exit_code=0,
+        duration_sec=5.0,
+        job_result_path=Path("/tmp/result.json"),
+        job_dir=Path("/tmp/job"),
+    )
+    upload_error = "Failed to upload trial results to S3: TimeoutError: timed out"
+
+    terminal, completed = asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id=trial.id,
+            outcome=outcome,
+            trial_s3_key=None,
+            execution_error=None,
+            artifact_upload_error=upload_error,
+            trial_attempt=trial.attempts,
+        )
+    )
+
+    assert trial.status == expected_status
+    assert trial.reward is None
+    assert trial.error_message == upload_error
+    assert terminal is (expected_status == trial_handler.TrialStatus.FAILED)
+    assert completed is (expected_status == trial_handler.TrialStatus.FAILED)
 
 
 def test_store_trial_results_retries_when_exception_type_is_missing(monkeypatch):
@@ -3690,6 +3963,27 @@ def test_store_trial_results_retries_execution_exception_without_outcome(monkeyp
     assert stored == (False, False)
 
 
+def test_store_trial_results_fails_non_retryable_execution_exception(monkeypatch):
+    trial = _make_retry_decision_trial(attempts=1, max_attempts=6)
+    _install_retry_decision_session_fakes(monkeypatch, trial)
+
+    stored = asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id="trial-1",
+            outcome=None,
+            trial_s3_key=None,
+            execution_error="QuotaPauseControlError: snapshot failed",
+            execution_retryable=False,
+            trial_attempt=trial.attempts,
+        )
+    )
+
+    assert trial.status == trial_handler.TrialStatus.FAILED
+    assert trial.finished_at is not None
+    assert trial.error_message == "QuotaPauseControlError: snapshot failed"
+    assert stored == (True, True)
+
+
 def test_store_trial_results_retries_runtime_cancel_with_budget(monkeypatch):
     """Harbor runtime CANCEL is retryable unless an external cancel won the row."""
 
@@ -3744,10 +4038,7 @@ def test_store_trial_results_fails_execution_exception_at_attempt_limit(monkeypa
     assert stored == (True, True)
 
 
-def test_non_retryable_set_includes_known_terminal_failures():
-    """Tripwire: if Harbor's RetryConfig defaults change, we want the test
-    to fail loudly so we can decide whether to track the new entry."""
-
+def test_harbor_retry_config_owns_known_terminal_failures():
     expected = {
         "AddTestsDirError",
         "AgentTimeoutError",
@@ -3755,8 +4046,14 @@ def test_non_retryable_set_includes_known_terminal_failures():
         "RewardFileNotFoundError",
         "RewardFileEmptyError",
         "VerifierOutputParseError",
+        "ApiClientError",
     }
-    assert expected <= trial_handler._NON_RETRYABLE_EXCEPTION_TYPES
+    retry_config = trial_handler.RetryConfig()
+    assert all(not retry_config.should_retry(name) for name in expected)
+    assert trial_handler._NON_HARBOR_RETRYABLE_EXCEPTION_TYPES == {
+        "HarborOverrideImportError",
+        "QuotaPauseControlError",
+    }
 
 
 def test_extract_outcome_from_job_result_carries_exception_type(monkeypatch):
@@ -3768,6 +4065,10 @@ def test_extract_outcome_from_job_result_carries_exception_type(monkeypatch):
         exception_info=SimpleNamespace(
             exception_type="AddTestsDirError",
             exception_message="Failed to add tests directory to environment.",
+            http_status=529,
+            request_id="request-1",
+            session_id="session-1",
+            retry_after_seconds=12.5,
         ),
         agent_result=None,
         verifier_result=None,
@@ -3790,6 +4091,10 @@ def test_extract_outcome_from_job_result_carries_exception_type(monkeypatch):
 
     assert outcome.exception_type == "AddTestsDirError"
     assert outcome.error and "Failed to add tests directory" in outcome.error
+    assert outcome.http_status == 529
+    assert outcome.request_id == "request-1"
+    assert outcome.session_id == "session-1"
+    assert outcome.retry_after_seconds == 12.5
 
 
 def test_extract_outcome_from_job_result_reads_trajectory_steps(tmp_path):
@@ -4548,3 +4853,23 @@ def test_opencode_environment_hosts_follow_custom_base_url():
 
     assert "gateway.internal.example" in hosts
     assert "raw.githubusercontent.com" in hosts
+
+
+def test_antigravity_environment_hosts_span_install_and_model():
+    """agy self-installs at agent-setup, same lifecycle shape as opencode.
+
+    install.sh -> manifest (Cloud Run auto-updater) -> GCS tarball must all be
+    reachable during the environment-baseline setup phase, and the Gemini
+    model transport host must still resolve for legacy closed tasks --
+    exactly like _opencode_environment_hosts above.
+    """
+    hosts = harbor_runner._antigravity_environment_hosts(
+        HarborAgentConfig(name="antigravity-cli", model_name="google/gemini-3.7-flash")
+    )
+
+    assert "antigravity.google" in hosts  # install.sh
+    assert (
+        "antigravity-cli-auto-updater-974169037036.us-central1.run.app" in hosts
+    )  # manifest
+    assert "storage.googleapis.com" in hosts  # binary tarball
+    assert "generativelanguage.googleapis.com" in hosts  # ...and inference works

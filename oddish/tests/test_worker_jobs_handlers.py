@@ -22,11 +22,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.db import (  # noqa: E402
+    ACTIVE_WORKER_JOB_KINDS,
     TrialStatus,
     WorkerJobKind,
     WorkerJobStatus,
 )
-from oddish.queue import TaskQAStageAdmission  # noqa: E402
 from oddish.workers.jobs import handlers as handlers_module  # noqa: E402
 from oddish.workers.jobs.handlers import TrialJobHandler  # noqa: E402
 from oddish.workers.queue.worker_job_single_job import ClaimedWorkerJob  # noqa: E402
@@ -61,13 +61,14 @@ def _fake_get_session_factory(
     return _get_session
 
 
-def _patch_run(monkeypatch, fn_name: str):
+def _patch_run(monkeypatch, fn_name: str, *, result=None):
     """Install a no-op stub for the underlying ``run_*_job`` call."""
     called = {"args": None, "kwargs": None}
 
     async def _stub(*args, **kwargs):
         called["args"] = args
         called["kwargs"] = kwargs
+        return result
 
     monkeypatch.setattr(handlers_module, fn_name, _stub)
     return called
@@ -136,6 +137,27 @@ async def test_trial_handler_returns_retryable_fail_on_retrying(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_trial_handler_threads_harbor_retry_after_hint(monkeypatch):
+    trial_row = SimpleNamespace(
+        status=TrialStatus.RETRYING,
+        error_message="provider overloaded",
+    )
+    monkeypatch.setattr(
+        handlers_module, "get_session", _fake_get_session_factory(trial_row)
+    )
+    _patch_run(
+        monkeypatch,
+        "run_trial_job",
+        result=SimpleNamespace(retry_after_seconds=90.0),
+    )
+
+    outcome = await TrialJobHandler().run(_trial_claim())
+
+    assert outcome.failure is not None
+    assert outcome.failure.retry_after_seconds == 90.0
+
+
+@pytest.mark.asyncio
 async def test_trial_handler_returns_permanent_fail_on_failed_with_budget(monkeypatch):
     trial_row = SimpleNamespace(
         status=TrialStatus.FAILED,
@@ -199,16 +221,14 @@ async def test_trial_handler_rejects_missing_subject_id(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_all_three_handlers_register_against_builtin_registry():
+def test_active_worker_job_kinds_register_against_builtin_registry():
     from oddish.workers.jobs import (
         HANDLERS,
         ensure_builtin_handlers_registered,
     )
 
     ensure_builtin_handlers_registered()
-    assert WorkerJobKind.TRIAL in HANDLERS
-    assert WorkerJobKind.TASK_EXPAND in HANDLERS
-    assert WorkerJobKind.TAG_PROJECT in HANDLERS
+    assert set(HANDLERS) == set(ACTIVE_WORKER_JOB_KINDS)
 
 
 def test_tag_project_handler_is_registered(monkeypatch):

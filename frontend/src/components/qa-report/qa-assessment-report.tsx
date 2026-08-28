@@ -16,10 +16,6 @@ export function QaAssessmentReport({
   recommendation,
   evidence,
   actionItems,
-  log,
-  logStatus,
-  logOpen,
-  onLogToggle,
   duration,
   raw,
   onFeedback,
@@ -31,13 +27,6 @@ export function QaAssessmentReport({
   recommendation?: string | null;
   evidence?: string | null;
   actionItems?: PreTrialFinding[] | null;
-  /** the analyzer's run log, shown as a fold under Evidence */
-  log?: string | null;
-  /** terminal logs stay idle until the fold is opened */
-  logStatus?: "idle" | "loading" | "ready" | "error";
-  /** carries the fold's open state across the live-log -> report handoff */
-  logOpen?: boolean;
-  onLogToggle?: (open: boolean) => void;
   duration?: string | null;
   /** the raw analysis object, for the copy button */
   raw?: unknown;
@@ -45,7 +34,7 @@ export function QaAssessmentReport({
    * Vote controls render only when this is provided — a vote that persists
    * nowhere is worse than no vote control.
    */
-  onFeedback?: (record: FeedbackRecord) => void;
+  onFeedback?: (record: FeedbackRecord) => Promise<void>;
   className?: string;
 }) {
   const token = VERDICT_TOKENS[classification] ?? FALLBACK_TOKEN;
@@ -66,7 +55,7 @@ export function QaAssessmentReport({
         <h2
           className={cn(
             "font-mono text-sm font-semibold tracking-wide",
-            token.accent,
+            token.accent
           )}
         >
           {classification.replace(/_/g, " ")}
@@ -76,7 +65,7 @@ export function QaAssessmentReport({
             className={cn(
               "rounded-md border px-2 py-0.5 font-mono text-[10px]",
               token.chip,
-              token.accent,
+              token.accent
             )}
           >
             {subtype.replace(/_/g, " ")}
@@ -167,39 +156,6 @@ export function QaAssessmentReport({
                 className="text-muted-foreground/90"
               />
             </div>
-          </details>
-        ) : null}
-
-        {onLogToggle ? (
-          <details
-            className="group mt-3"
-            open={logOpen}
-            onToggle={(e) =>
-              onLogToggle?.((e.target as HTMLDetailsElement).open)
-            }
-          >
-            <summary className="text-muted-foreground hover:text-foreground flex cursor-pointer list-none items-center gap-2 text-[11px] font-medium transition-colors select-none">
-              <span
-                aria-hidden="true"
-                className="text-[9px] transition-transform group-open:rotate-90"
-              >
-                &#9654;
-              </span>
-              Analysis log
-            </summary>
-            {log ? (
-              <pre className="bg-muted/40 mt-2 max-h-48 overflow-auto rounded p-2 font-mono text-[10.5px] leading-relaxed whitespace-pre-wrap">
-                {log}
-              </pre>
-            ) : logOpen ? (
-              <p className="text-muted-foreground mt-2 text-[11px]">
-                {logStatus === "error"
-                  ? "Unable to load the analysis log."
-                  : logStatus === "ready"
-                    ? "No log output."
-                    : "Loading analysis log…"}
-              </p>
-            ) : null}
           </details>
         ) : null}
       </div>

@@ -36,8 +36,8 @@ GOOD_ANALYSIS = {
 
 
 def test_the_analysis_kinds_are_known():
-    """qa and audit are analysis kinds. agent is not."""
-    for kind in ("qa", "audit"):
+    """qa, qa_eval, audit, and summarize are analysis kinds. agent is not."""
+    for kind in ("qa", "qa_eval", "audit", "summarize"):
         assert is_analysis_kind(kind)
     assert not is_analysis_kind("agent")
     assert not is_analysis_kind(None)
@@ -151,6 +151,23 @@ def test_the_overlay_replaces_the_whole_task(tmp_path):
     assert staged_expected == payload
     validator = (tmp_path / "tests" / "analysis_result_check.py").read_text()
     assert "def check_analysis_result" in validator
+
+
+def test_the_single_llm_overlay_does_not_install_the_query_cli(tmp_path):
+    from oddish.worker.probe_staging import apply_analysis_overlay
+
+    apply_analysis_overlay(
+        tmp_path,
+        brief="bounded prompt",
+        artifact="summary_result.json",
+        check_payload={"kind": "summarize", "target_trial_id": "t-42"},
+        needs_query_cli=False,
+    )
+
+    dockerfile = (tmp_path / "environment" / "Dockerfile").read_text()
+    assert "python:3.13-slim" in dockerfile
+    assert "apt-get" not in dockerfile
+    assert "nodejs" not in dockerfile
 
 
 def test_a_correct_analysis_is_accepted():
@@ -925,6 +942,7 @@ async def test_cleanup_reimports_a_settled_audit(monkeypatch):
             )
         ).scalar_one()
         audit.status = TrialStatus.SUCCESS
+        audit.has_trajectory = True
         await session.commit()
     async with get_session() as session:
         version = await session.get(TaskVersionModel, version_id)
@@ -934,6 +952,25 @@ async def test_cleanup_reimports_a_settled_audit(monkeypatch):
         return {"items": []}
 
     monkeypatch.setattr(analysis_trials, "read_analysis_artifact", read_clean)
+
+    async def read_audit_trajectory(trial):
+        return {
+            "steps": [
+                {
+                    "step_id": 1,
+                    "tool_calls": [
+                        {
+                            "name": "Write",
+                            "arguments": {"absolute_path": "/logs/audit_result.json"},
+                        }
+                    ],
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        "oddish.core.trial_io.read_trial_trajectory", read_audit_trajectory
+    )
     # The sweep composes these two: the scan runs inside the sweep
     # transaction, the re-imports after it commits (the importer takes its
     # own locks).
@@ -948,6 +985,13 @@ async def test_cleanup_reimports_a_settled_audit(monkeypatch):
         version = await session.get(TaskVersionModel, version_id)
         assert version.pre_trial_status == VerdictStatus.SUCCESS
         assert version.pre_trial is not None
+        audit_row = await session.get(TrialModel, audit.id)
+        assert audit_row.trajectory_summary["generator"] == "analysis-activity"
+        assert (
+            audit_row.trajectory_summary["taxonomy_version"]
+            == analysis_trials.ANALYSIS_ACTIVITY_VERSION
+        )
+        assert "wrote audit_result.json" in audit_row.trajectory_summary["summary"]
 
 
 @pytest.mark.asyncio
@@ -1324,6 +1368,834 @@ async def test_the_qa_import_is_all_or_nothing(monkeypatch):
         assert task.status == TaskStatus.COMPLETED
 
 
+def _qa_run_trajectory(graded_ids: list[str]) -> dict:
+    """A stereotyped QA run: plan, fetch each trial, read the data, inspect,
+    write the artifact. Step 4 mixes a fetch with a read so precedence is
+    exercised, and the fetch commands name the graded trials so the mention
+    scan has something to find."""
+    return {
+        "agent": "claude-code",
+        "steps": [
+            {"step_id": 1, "timestamp": "2026-08-18T00:00:00Z", "tool_calls": []},
+            {
+                "step_id": 2,
+                "timestamp": "2026-08-18T00:00:05Z",
+                "tool_calls": [
+                    {
+                        "name": "Bash",
+                        "arguments": {
+                            "command": f"node /probe-harness/oddish-query trajectory {graded_ids[0]}"
+                        },
+                    }
+                ],
+            },
+            {
+                "step_id": 3,
+                "timestamp": "2026-08-18T00:00:10Z",
+                "tool_calls": [
+                    {
+                        "name": "Read",
+                        "arguments": {"file_path": f"/tmp/data/{graded_ids[1]}.json"},
+                    }
+                ],
+            },
+            {
+                "step_id": 4,
+                "timestamp": "2026-08-18T00:00:15Z",
+                "tool_calls": [
+                    {"name": "Read", "arguments": {"file_path": "/tmp/notes.md"}},
+                    {
+                        "name": "Bash",
+                        "arguments": {
+                            "command": f"node /probe-harness/oddish-query logs {graded_ids[1]}"
+                        },
+                    },
+                ],
+            },
+            {
+                "step_id": 5,
+                "timestamp": "2026-08-18T00:00:20Z",
+                "tool_calls": [
+                    {"name": "Bash", "arguments": {"command": "jq .steps /tmp/t.json"}}
+                ],
+            },
+            {
+                "step_id": 6,
+                "timestamp": "2026-08-18T00:00:25Z",
+                "tool_calls": [
+                    {
+                        "name": "Write",
+                        "arguments": {"file_path": "/logs/qa_result.json"},
+                    }
+                ],
+            },
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_settled_qa_trial_summarizes_its_own_run(monkeypatch):
+    """Needs a database. Settlement writes the QA trial's own deterministic
+    trajectory_summary (independent of the artifact import) and stamps
+    ``_graded_at_steps`` anchors onto each graded trial."""
+    if not URL:
+        pytest.skip("ODDISH_DATABASE_URL not set")
+    from oddish.analyze.analysis_activity import ANALYSIS_ACTIVITY_VERSION
+    from oddish.db import TaskStatus, TrialStatus, get_session, init_db
+    from oddish.db.models import ExperimentModel, TaskModel
+    from oddish.workers import analysis_trials
+    from oddish.workers.analysis_trials import handle_analysis_trial_settled
+
+    await init_db()
+    run = uuid.uuid4().hex[:8]
+    task_id = f"qa-selfsum-{run}"
+    graded_ids = [f"{task_id}-graded-{i}-{uuid.uuid4().hex}" for i in (1, 2)]
+    qa_id = f"{task_id}-qa"
+    async with get_session() as session:
+        experiment = ExperimentModel(name=f"exp-{run}")
+        session.add(experiment)
+        session.add(
+            TaskModel(
+                id=task_id,
+                name=task_id,
+                user="u",
+                task_path="p",
+                status=TaskStatus.VERDICT_PENDING,
+                run_analysis=True,
+            )
+        )
+        await session.flush()
+        for trial_id in graded_ids:
+            session.add(
+                TrialModel(
+                    id=trial_id,
+                    name=trial_id,
+                    task_id=task_id,
+                    experiment_id=experiment.id,
+                    agent="claude-code",
+                    provider="local",
+                    queue_key="q",
+                    status=TrialStatus.SUCCESS,
+                    attempts=1,
+                    max_attempts=3,
+                )
+            )
+        session.add(
+            TrialModel(
+                id=qa_id,
+                name=qa_id,
+                task_id=task_id,
+                experiment_id=experiment.id,
+                agent="claude-code",
+                provider="local",
+                queue_key="q",
+                kind="qa",
+                model="anthropic/claude-opus-5",
+                status=TrialStatus.SUCCESS,
+                # The settlement gate: without it the self-summary skips the
+                # trajectory read entirely.
+                has_trajectory=True,
+                attempts=1,
+                max_attempts=3,
+                harbor_config={
+                    "mode": "qa",
+                    "analysis_payload": {
+                        "trial_ids": graded_ids,
+                        "with_verdict": False,
+                    },
+                },
+            )
+        )
+        await session.commit()
+
+    qa_trajectory = _qa_run_trajectory(graded_ids)
+
+    async def fake_trajectory(row):
+        # Only the QA run has a trajectory; the graded rows read as absent so
+        # their summaries carry version stamps but no derived facts.
+        return qa_trajectory if row.id == qa_id else None
+
+    monkeypatch.setattr("oddish.core.trial_io.read_trial_trajectory", fake_trajectory)
+    artifact = {
+        "trials": [_good_qa_entry(t) for t in graded_ids],
+        "verdict": None,
+    }
+
+    async def read_artifact(trial, filename):
+        return artifact
+
+    monkeypatch.setattr(analysis_trials, "read_analysis_artifact", read_artifact)
+
+    await handle_analysis_trial_settled(qa_id)
+
+    async with get_session() as session:
+        qa_row = await session.get(TrialModel, qa_id)
+        own = qa_row.trajectory_summary
+        assert own is not None
+        assert own["generator"] == "analysis-activity"
+        assert own["taxonomy_version"] == ANALYSIS_ACTIVITY_VERSION
+        assert own["model"] == "anthropic/claude-opus-5"
+        # Enrichment ran over the counted components: derived facts present.
+        assert own["components"][1]["trajectory_component"] == "fetching_trial_data"
+        assert own["components"][1]["tool_count"] == 1
+        assert own["components"][1]["duration_ms"] == 5000
+
+        first, second = [
+            await session.get(TrialModel, trial_id) for trial_id in graded_ids
+        ]
+        assert first.analysis["_graded_at_steps"] == [2]
+        assert second.analysis["_graded_at_steps"] == [3, 4]
+        task = await session.get(TaskModel, task_id)
+        assert task.status == TaskStatus.COMPLETED
+
+
+def test_the_summarize_brief_names_its_output_and_target():
+    from oddish.workers.analysis_trials import build_summarize_brief
+
+    brief = build_summarize_brief(task_name="apache-kafka", target_trial_id="t-42")
+    assert "/logs/summary_result.json" in brief
+    assert '"target_trial_id": "t-42"' in brief
+    assert "reading_files" in brief and "debugging" in brief
+    assert "Do not solve the task" in brief
+    assert "oddish-query" not in brief
+
+
+def test_the_materialized_summarize_brief_contains_bounded_trial_data():
+    from oddish.workers.analysis_trials import build_summarize_brief
+
+    brief = build_summarize_brief(
+        task_name="apache-kafka",
+        target_trial_id="t-42",
+        trajectory={
+            "steps": [{"step_id": 1, "source": "agent", "message": "finished"}]
+        },
+        instruction="repair the broker",
+        final_reward=1.0,
+        model_used="anthropic/claude-test",
+        verifier_output="all tests passed",
+    )
+
+    assert "repair the broker" in brief
+    assert "Final reward: 1.0" in brief
+    assert '"step_id":1' in brief
+    assert "all tests passed" in brief
+
+
+@pytest.mark.asyncio
+async def test_materialize_summarize_brief_reads_the_target_without_the_api(
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from oddish.core import trial_io
+    from oddish.db import TaskModel
+    from oddish.workers import analysis_trials
+
+    target = SimpleNamespace(
+        id="t-42",
+        task_id="task-1",
+        kind="agent",
+        has_trajectory=True,
+        reward=1.0,
+        model="anthropic/claude-test",
+    )
+    task = SimpleNamespace(id="task-1", name="apache-kafka")
+
+    class Session:
+        async def get(self, model, row_id):
+            if model is TrialModel and row_id == "t-42":
+                return target
+            if model is TaskModel and row_id == "task-1":
+                return task
+            return None
+
+    class SessionContext:
+        async def __aenter__(self):
+            return Session()
+
+        async def __aexit__(self, *_args):
+            return None
+
+    async def read_trajectory(_target):
+        return {"steps": [{"step_id": 1, "source": "agent", "message": "done"}]}
+
+    async def read_instruction(_target):
+        return "repair the broker"
+
+    async def read_verifier(_target):
+        return "all tests passed"
+
+    monkeypatch.setattr(analysis_trials, "get_session", SessionContext)
+    monkeypatch.setattr(trial_io, "read_trial_trajectory", read_trajectory)
+    monkeypatch.setattr(trial_io, "read_trial_instruction", read_instruction)
+    monkeypatch.setattr(trial_io, "read_trial_verifier_output", read_verifier)
+
+    brief = await analysis_trials.materialize_summarize_brief(
+        {"analysis_payload": {"target_trial_id": "t-42"}}
+    )
+
+    assert "repair the broker" in brief
+    assert '"step_id":1' in brief
+    assert "oddish-query" not in brief
+
+
+def test_the_validator_enforces_the_summarize_contract():
+    from oddish.worker.analysis_result_check import check_analysis_result
+
+    expected = {"kind": "summarize", "target_trial_id": "t-42"}
+    good = {
+        "target_trial_id": "t-42",
+        "trajectory_summary": _good_qa_entry("t-42")["trajectory_summary"],
+    }
+    assert check_analysis_result(good, expected) == []
+    wrong_target = {**good, "target_trial_id": "t-9"}
+    assert any(
+        "target_trial_id" in violation
+        for violation in check_analysis_result(wrong_target, expected)
+    )
+    assert check_analysis_result(
+        {"target_trial_id": "t-42", "trajectory_summary": {}}, expected
+    )
+
+
+@pytest.mark.asyncio
+async def test_analysis_artifact_storage_errors_remain_retryable(monkeypatch):
+    """A storage outage must reach the cleanup retry path, not look absent."""
+    from types import SimpleNamespace
+
+    from oddish.workers import analysis_trials
+
+    class UnavailableStorage:
+        async def list_objects_all(self, _prefix):
+            raise TimeoutError("storage timed out")
+
+    monkeypatch.setattr(
+        analysis_trials, "get_storage_client", lambda: UnavailableStorage()
+    )
+
+    with pytest.raises(TimeoutError, match="storage timed out"):
+        await analysis_trials.read_analysis_artifact(
+            SimpleNamespace(id="task-1-9", trial_s3_key="trials/task-1-9/"),
+            "summary_result.json",
+        )
+
+
+async def _seed_summarize_targets(
+    prefix: str, specs: list[tuple[str, str, bool]]
+) -> tuple[str, dict[str, str]]:
+    """Create one task and its candidate summarize targets for DB tests."""
+    from sqlalchemy import text
+
+    from oddish.db import TaskStatus, TrialStatus, get_session
+    from oddish.db.models import ExperimentModel, TaskModel
+
+    run = uuid.uuid4().hex[:8]
+    task_id = f"{prefix}-{run}"
+    ids = {label: f"{task_id}-{label}-{uuid.uuid4().hex}" for label, _, _ in specs}
+    async with get_session() as session:
+        experiment = ExperimentModel(name=f"exp-{run}")
+        session.add(experiment)
+        session.add(
+            TaskModel(
+                id=task_id,
+                name=task_id,
+                user="u",
+                task_path="p",
+                status=TaskStatus.COMPLETED,
+            )
+        )
+        await session.flush()
+        await session.execute(
+            text(
+                "INSERT INTO task_experiments (task_id, experiment_id, created_at) "
+                "VALUES (:task_id, :experiment_id, NOW())"
+            ),
+            {"task_id": task_id, "experiment_id": experiment.id},
+        )
+        for label, kind, has_trajectory in specs:
+            session.add(
+                TrialModel(
+                    id=ids[label],
+                    name=ids[label],
+                    task_id=task_id,
+                    experiment_id=experiment.id,
+                    agent="claude-code",
+                    provider="local",
+                    queue_key="q",
+                    kind=kind,
+                    status=TrialStatus.SUCCESS,
+                    has_trajectory=has_trajectory,
+                    attempts=1,
+                    max_attempts=3,
+                )
+            )
+    return task_id, ids
+
+
+@pytest.mark.asyncio
+async def test_summarize_creation_accepts_only_agent_targets_and_imports_only_summary(
+    monkeypatch,
+):
+    """Needs a database. Paid generation accepts an agent trajectory only;
+    settlement changes that target's summary and no analysis or non-agent row."""
+    if not URL:
+        pytest.skip("ODDISH_DATABASE_URL not set")
+    from oddish.db import TrialStatus, get_session, init_db
+    from oddish.workers import analysis_trials
+    from oddish.workers.analysis_trials import (
+        get_or_create_summarize_trial,
+        handle_analysis_trial_settled,
+    )
+
+    await init_db()
+    task_id, ids = await _seed_summarize_targets(
+        "summarize-targets",
+        [
+            ("agent", "agent", True),
+            ("bare", "agent", False),
+            ("qa", "qa", True),
+            ("audit", "audit", True),
+            ("summarize", "summarize", True),
+        ],
+    )
+    async with get_session() as session:
+        for label in ("bare", "qa", "audit", "summarize"):
+            assert (
+                await get_or_create_summarize_trial(session, target_trial_id=ids[label])
+                is None
+            )
+        created = await get_or_create_summarize_trial(
+            session, target_trial_id=ids["agent"]
+        )
+        assert created is not None
+        summarize_id = created.id
+        target = await session.get(TrialModel, ids["agent"])
+        assert target.trajectory_summary_refresh_trial_id == summarize_id
+
+    async with get_session() as session:
+        target = await session.get(TrialModel, ids["agent"])
+        target.analysis = {"sentinel": True}
+        row = await session.get(TrialModel, summarize_id)
+        assert row.agent == "single-llm"
+        assert row.harbor_config["agent_config"]["import_path"].endswith(
+            ":SingleLLMAgent"
+        )
+        row.status = TrialStatus.SUCCESS
+
+    artifact = {
+        "target_trial_id": ids["agent"],
+        "trajectory_summary": _good_qa_entry(ids["agent"])["trajectory_summary"],
+    }
+
+    async def read_artifact(trial, filename):
+        assert filename == "summary_result.json"
+        return artifact
+
+    async def no_trajectory(row):
+        return None
+
+    monkeypatch.setattr(analysis_trials, "read_analysis_artifact", read_artifact)
+    monkeypatch.setattr("oddish.core.trial_io.read_trial_trajectory", no_trajectory)
+    await handle_analysis_trial_settled(summarize_id)
+
+    async with get_session() as session:
+        target = await session.get(TrialModel, ids["agent"])
+        assert target.task_id == task_id
+        assert target.trajectory_summary["_graded_by"] == summarize_id
+        assert target.trajectory_summary_refresh_trial_id is None
+        assert target.analysis == {"sentinel": True}
+        for label in ("qa", "audit", "summarize"):
+            row = await session.get(TrialModel, ids[label])
+            assert row.trajectory_summary is None
+
+
+@pytest.mark.asyncio
+async def test_paused_summarize_trial_is_adopted_instead_of_replaced():
+    """Needs PostgreSQL. A paused refresh still owns its worker and target."""
+    if not URL:
+        pytest.skip("ODDISH_DATABASE_URL not set")
+    from oddish.db import TrialStatus, get_session, init_db
+    from oddish.workers.analysis_trials import get_or_create_summarize_trial
+
+    await init_db()
+    _, ids = await _seed_summarize_targets(
+        "summarize-paused", [("agent", "agent", True)]
+    )
+    target_id = ids["agent"]
+    async with get_session() as session:
+        created = await get_or_create_summarize_trial(
+            session, target_trial_id=target_id
+        )
+        assert created is not None
+        summarize_id = created.id
+
+    async with get_session() as session:
+        summarize = await session.get(TrialModel, summarize_id)
+        summarize.status = TrialStatus.PAUSED
+
+    async with get_session() as session:
+        adopted = await get_or_create_summarize_trial(
+            session, target_trial_id=target_id
+        )
+        assert adopted is not None
+        assert adopted.id == summarize_id
+
+
+@pytest.mark.asyncio
+async def test_missing_summarize_artifact_fails_refresh_and_allows_replacement(
+    monkeypatch,
+):
+    """Needs PostgreSQL. A permanently absent artifact must not stay settling."""
+    if not URL:
+        pytest.skip("ODDISH_DATABASE_URL not set")
+    from oddish.db import TrialStatus, get_session, init_db
+    from oddish.workers import analysis_trials
+    from oddish.workers.analysis_trials import (
+        get_or_create_summarize_trial,
+        handle_analysis_trial_settled,
+    )
+
+    await init_db()
+    _, ids = await _seed_summarize_targets(
+        "summarize-missing-artifact", [("agent", "agent", True)]
+    )
+    target_id = ids["agent"]
+    async with get_session() as session:
+        summarize = await get_or_create_summarize_trial(
+            session, target_trial_id=target_id
+        )
+        assert summarize is not None
+        summarize_id = summarize.id
+    async with get_session() as session:
+        summarize = await session.get(TrialModel, summarize_id)
+        summarize.status = TrialStatus.SUCCESS
+        summarize.reward = 1.0
+
+    async def missing_artifact(_trial, _filename):
+        return None
+
+    monkeypatch.setattr(analysis_trials, "read_analysis_artifact", missing_artifact)
+    await handle_analysis_trial_settled(summarize_id)
+
+    async with get_session() as session:
+        target = await session.get(TrialModel, target_id)
+        failed = await session.get(TrialModel, summarize_id)
+        assert target.trajectory_summary_refresh_trial_id == summarize_id
+        assert failed.status == TrialStatus.FAILED
+        assert failed.reward is None
+        assert failed.error_message == (
+            "Trajectory summary import failed: produced no valid summary_result.json"
+        )
+
+    async with get_session() as session:
+        replacement = await get_or_create_summarize_trial(
+            session, target_trial_id=target_id
+        )
+        assert replacement is not None
+        assert replacement.id != summarize_id
+        target = await session.get(TrialModel, target_id)
+        assert target.trajectory_summary_refresh_trial_id == replacement.id
+
+
+@pytest.mark.asyncio
+async def test_concurrent_summarize_creation_returns_one_trial_and_one_worker_job():
+    """Needs PostgreSQL. The target-row lock serializes two paid refreshes."""
+    if not URL:
+        pytest.skip("ODDISH_DATABASE_URL not set")
+    import asyncio
+
+    from sqlalchemy import select
+
+    from oddish.db import get_session, init_db
+    from oddish.db.models import WorkerJobKind, WorkerJobModel
+    from oddish.workers.analysis_trials import get_or_create_summarize_trial
+
+    await init_db()
+    _, ids = await _seed_summarize_targets("summarize-race", [("agent", "agent", True)])
+
+    async def request_summary() -> str:
+        async with get_session() as session:
+            trial = await get_or_create_summarize_trial(
+                session, target_trial_id=ids["agent"]
+            )
+            assert trial is not None
+            return trial.id
+
+    first_id, second_id = await asyncio.gather(request_summary(), request_summary())
+    assert first_id == second_id
+
+    async with get_session() as session:
+        summarize_trials = (
+            await session.scalars(
+                select(TrialModel).where(
+                    TrialModel.kind == "summarize",
+                    TrialModel.harbor_config["analysis_payload"][
+                        "target_trial_id"
+                    ].astext
+                    == ids["agent"],
+                )
+            )
+        ).all()
+        jobs = (
+            await session.scalars(
+                select(WorkerJobModel).where(
+                    WorkerJobModel.kind == WorkerJobKind.TRIAL,
+                    WorkerJobModel.subject_id == first_id,
+                )
+            )
+        ).all()
+        assert [trial.id for trial in summarize_trials] == [first_id]
+        assert len(jobs) == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_summarize_creation_for_two_targets_reserves_unique_ids():
+    """Needs PostgreSQL. The task lock serializes ids across target rows."""
+    if not URL:
+        pytest.skip("ODDISH_DATABASE_URL not set")
+    import asyncio
+
+    from oddish.db import get_session, init_db
+    from oddish.workers.analysis_trials import get_or_create_summarize_trial
+
+    await init_db()
+    _, ids = await _seed_summarize_targets(
+        "summarize-two-targets",
+        [("first", "agent", True), ("second", "agent", True)],
+    )
+
+    async def request_summary(target_id: str) -> str:
+        async with get_session() as session:
+            trial = await get_or_create_summarize_trial(
+                session, target_trial_id=target_id
+            )
+            assert trial is not None
+            return trial.id
+
+    first_id, second_id = await asyncio.gather(
+        request_summary(ids["first"]), request_summary(ids["second"])
+    )
+    assert first_id != second_id
+
+    async with get_session() as session:
+        first = await session.get(TrialModel, ids["first"])
+        second = await session.get(TrialModel, ids["second"])
+        assert first.trajectory_summary_refresh_trial_id == first_id
+        assert second.trajectory_summary_refresh_trial_id == second_id
+
+
+@pytest.mark.asyncio
+async def test_older_summarize_import_cannot_overwrite_newer_refresh(monkeypatch):
+    """Needs PostgreSQL. Publication compares the target pointer under lock."""
+    if not URL:
+        pytest.skip("ODDISH_DATABASE_URL not set")
+    from oddish.db import TrialStatus, get_session, init_db
+    from oddish.workers import analysis_trials
+    from oddish.workers.analysis_trials import (
+        get_or_create_summarize_trial,
+        handle_analysis_trial_settled,
+    )
+
+    await init_db()
+    _, ids = await _seed_summarize_targets(
+        "summarize-stale-import", [("agent", "agent", True)]
+    )
+    target_id = ids["agent"]
+    async with get_session() as session:
+        older = await get_or_create_summarize_trial(session, target_trial_id=target_id)
+        assert older is not None
+        older_id = older.id
+    async with get_session() as session:
+        older = await session.get(TrialModel, older_id)
+        older.status = TrialStatus.FAILED
+    async with get_session() as session:
+        newer = await get_or_create_summarize_trial(session, target_trial_id=target_id)
+        assert newer is not None
+        newer_id = newer.id
+        assert newer_id != older_id
+    async with get_session() as session:
+        target = await session.get(TrialModel, target_id)
+        target.trajectory_summary = {"sentinel": "newer publication pending"}
+        older = await session.get(TrialModel, older_id)
+        older.status = TrialStatus.SUCCESS
+
+    async def read_artifact(_trial, _filename):
+        return {
+            "target_trial_id": target_id,
+            "trajectory_summary": _good_qa_entry(target_id)["trajectory_summary"],
+        }
+
+    monkeypatch.setattr(analysis_trials, "read_analysis_artifact", read_artifact)
+    await handle_analysis_trial_settled(older_id)
+
+    async with get_session() as session:
+        target = await session.get(TrialModel, target_id)
+        assert target.trajectory_summary == {"sentinel": "newer publication pending"}
+        assert target.trajectory_summary_refresh_trial_id == newer_id
+
+
+@pytest.mark.asyncio
+async def test_summarize_worker_job_is_reported_as_analysis_not_agent_work():
+    """Needs PostgreSQL. A summarize sandbox uses a TRIAL worker job, but
+    queue diagnostics must keep it out of ordinary agent-trial totals."""
+    if not URL:
+        pytest.skip("ODDISH_DATABASE_URL not set")
+    from sqlalchemy import select
+
+    from oddish.core.admin import get_queue_status_core
+    from oddish.db import get_session, init_db
+    from oddish.db.models import WorkerJobKind, WorkerJobModel
+    from oddish.workers.analysis_trials import get_or_create_summarize_trial
+
+    await init_db()
+    _, ids = await _seed_summarize_targets(
+        "summarize-queue-kind", [("agent", "agent", True)]
+    )
+    queue_key = f"summarize-test-{uuid.uuid4().hex}"
+
+    async with get_session() as session:
+        analysis_queued_before = (await get_queue_status_core(session)).analysis_queued
+        summarize = await get_or_create_summarize_trial(
+            session, target_trial_id=ids["agent"]
+        )
+        assert summarize is not None
+        job = await session.scalar(
+            select(WorkerJobModel).where(
+                WorkerJobModel.kind == WorkerJobKind.TRIAL,
+                WorkerJobModel.subject_id == summarize.id,
+            )
+        )
+        assert job is not None
+        summarize.queue_key = queue_key
+        job.queue_key = queue_key
+        await session.flush()
+
+        status = await get_queue_status_core(session)
+
+    entries = [entry for entry in status.queues if entry.queue_key == queue_key]
+    assert [(entry.kind, entry.queued, entry.running) for entry in entries] == [
+        ("SUMMARIZE", 1, 0)
+    ]
+    assert all(entry.queue_key != queue_key for entry in status.trial_queues)
+    assert status.analysis_queued == analysis_queued_before + 1
+
+
+@pytest.mark.asyncio
+async def test_reimport_scan_miss_keeps_same_grader_step_anchors(monkeypatch):
+    """Needs a database. A healer re-import whose grader-trajectory read
+    failed (``own_trajectory=None``, the best-effort read's failure value)
+    must keep the ``_graded_at_steps`` anchors the first import stored — and
+    a *different* grader's scan miss must not inherit them, because anchors
+    index into the grader's own trajectory."""
+    if not URL:
+        pytest.skip("ODDISH_DATABASE_URL not set")
+    from oddish.db import TaskStatus, TrialStatus, get_session, init_db
+    from oddish.db.models import ExperimentModel, TaskModel
+    from oddish.workers import analysis_trials
+    from oddish.workers.analysis_trials import handle_analysis_trial_settled
+
+    await init_db()
+    run = uuid.uuid4().hex[:8]
+    task_id = f"qa-anchor-keep-{run}"
+    graded_ids = [f"{task_id}-graded-{i}-{uuid.uuid4().hex}" for i in (1, 2)]
+    qa_id = f"{task_id}-qa"
+    async with get_session() as session:
+        experiment = ExperimentModel(name=f"exp-{run}")
+        session.add(experiment)
+        session.add(
+            TaskModel(
+                id=task_id,
+                name=task_id,
+                user="u",
+                task_path="p",
+                status=TaskStatus.VERDICT_PENDING,
+                run_analysis=True,
+            )
+        )
+        await session.flush()
+        for trial_id in graded_ids:
+            session.add(
+                TrialModel(
+                    id=trial_id,
+                    name=trial_id,
+                    task_id=task_id,
+                    experiment_id=experiment.id,
+                    agent="claude-code",
+                    provider="local",
+                    queue_key="q",
+                    status=TrialStatus.SUCCESS,
+                    attempts=1,
+                    max_attempts=3,
+                )
+            )
+        session.add(
+            TrialModel(
+                id=qa_id,
+                name=qa_id,
+                task_id=task_id,
+                experiment_id=experiment.id,
+                agent="claude-code",
+                provider="local",
+                queue_key="q",
+                kind="qa",
+                model="anthropic/claude-opus-5",
+                status=TrialStatus.SUCCESS,
+                has_trajectory=True,
+                attempts=1,
+                max_attempts=3,
+                harbor_config={
+                    "mode": "qa",
+                    "analysis_payload": {
+                        "trial_ids": graded_ids,
+                        "with_verdict": False,
+                    },
+                },
+            )
+        )
+        await session.commit()
+
+    qa_trajectory = _qa_run_trajectory(graded_ids)
+
+    async def fake_trajectory(row):
+        return qa_trajectory if row.id == qa_id else None
+
+    monkeypatch.setattr("oddish.core.trial_io.read_trial_trajectory", fake_trajectory)
+    artifact = {
+        "trials": [_good_qa_entry(t) for t in graded_ids],
+        "verdict": None,
+    }
+
+    async def read_artifact(trial, filename):
+        return artifact
+
+    monkeypatch.setattr(analysis_trials, "read_analysis_artifact", read_artifact)
+
+    await handle_analysis_trial_settled(qa_id)
+
+    async with get_session() as session:
+        first = await session.get(TrialModel, graded_ids[0])
+        assert first.analysis["_graded_at_steps"] == [2]
+        qa_row = await session.get(TrialModel, qa_id)
+
+    # Same grader re-imports with the trajectory read failing: the scan
+    # misses, the stored anchors survive.
+    await analysis_trials._import_qa_result(qa_row, own_trajectory=None)
+    async with get_session() as session:
+        first = await session.get(TrialModel, graded_ids[0])
+        assert first.analysis["_graded_by"] == qa_id
+        assert first.analysis["_graded_at_steps"] == [2]
+
+    # A different grader's scan miss must not inherit another run's anchors.
+    async with get_session() as session:
+        row = await session.get(TrialModel, graded_ids[0])
+        row.analysis = {**row.analysis, "_graded_by": "some-other-qa-trial"}
+    await analysis_trials._import_qa_result(qa_row, own_trajectory=None)
+    async with get_session() as session:
+        first = await session.get(TrialModel, graded_ids[0])
+        assert first.analysis["_graded_by"] == qa_id
+        assert "_graded_at_steps" not in first.analysis
+
+
 def test_the_importer_stamps_derived_facts_onto_the_summary():
     """tool_count / duration / subagent dispatches / provenance are counted
     from the trajectory by the importer, never taken from the model (#1275),
@@ -1372,6 +2244,58 @@ def test_the_importer_stamps_derived_facts_onto_the_summary():
     # Step 2 edits the path step 1 authored: counted, not judged.
     assert component["provenance_capable"] is True
     assert component["revisits_own_edits"] is True
+
+
+def test_antigravity_provenance_reads_agys_pascalcase_path_argument():
+    """agy records its write path as ``TargetFile``, and its own tool names.
+
+    Harbor's ATIF writer copies agy's tool name AND its argument dict through
+    unchanged, so both spellings below are what a real trajectory holds --
+    the shapes here are taken from a recorded agy 1.1.19 run. Before
+    ``TargetFile`` was a known path key, every agy write resolved to no path:
+    the agent was reported provenance-CAPABLE while never attributing a single
+    file, which reads as "it did not revisit its own work" rather than "we
+    cannot see". ``edit_file`` and ``multi_replace_file_content`` cover the
+    other half -- a write tool absent from the map is a revisit that never
+    counts. Each of the three writes a DISTINCT path, so every name has to be
+    recognized for the final set to be complete.
+    """
+    from oddish.analyze.trajectory_provenance import authored_paths_by_step
+
+    def write(step_id: int, name: str, path: str) -> dict:
+        return {
+            "step_id": step_id,
+            "tool_calls": [{"function_name": name, "arguments": {"TargetFile": path}}],
+        }
+
+    trajectory = {
+        "agent": "antigravity-cli",
+        "steps": [
+            {
+                "step_id": 1,
+                "tool_calls": [
+                    {
+                        "function_name": "write_to_file",
+                        "arguments": {
+                            "CodeContent": "Hello, world!\n",
+                            "Overwrite": True,
+                            "TargetFile": "/app/hello.txt",
+                        },
+                    }
+                ],
+            },
+            write(2, "edit_file", "/app/edited.py"),
+            write(3, "multi_replace_file_content", "/app/multi.py"),
+            {"step_id": 4, "tool_calls": []},
+        ],
+    }
+
+    prior = authored_paths_by_step(trajectory)
+    # Strictly "before": the step that creates a file is authoring it.
+    assert prior[1] == set()
+    assert prior[2] == {"/app/hello.txt"}
+    assert prior[3] == {"/app/hello.txt", "/app/edited.py"}
+    assert prior[4] == {"/app/hello.txt", "/app/edited.py", "/app/multi.py"}
 
 
 @pytest.mark.asyncio

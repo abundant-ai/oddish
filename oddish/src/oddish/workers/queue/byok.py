@@ -58,6 +58,18 @@ def byok_resolver_registered() -> bool:
     return _RESOLVER is not None
 
 
+def harbor_config_is_ephemeral(harbor_config: dict | None) -> bool:
+    """Whether BYOK must stay out of an out-of-process Harbor trial.
+
+    The ephemeral child builds its agent from the raw trial model without the
+    direct/Bedrock normalization a user key needs. Its agent env is passed
+    through a private temporary payload that is deleted as soon as the child
+    reads it, but resolving BYOK would still claim a funding path the child
+    cannot honor.
+    """
+    return bool((harbor_config or {}).get("variant_id") == "ephemeral")
+
+
 async def resolve_byok(
     *,
     owner_user_id: str | None,

@@ -128,7 +128,8 @@ class TrialSpec(BaseModel):
     """
 
     agent: str = Field(
-        ..., description="Agent name (e.g., 'claude-code', 'codex', 'gemini-cli')"
+        ...,
+        description="Agent name (e.g., 'claude-code', 'codex', 'gemini-cli', 'antigravity-cli')",
     )
     model: str | None = Field(
         None, description="Model name (e.g., 'claude-sonnet-4-20250514')"
@@ -511,6 +512,14 @@ class TaskSweepSubmission(BaseModel):
         None,
         description="Deterministic hash of task directory contents (set by CLI during upload)",
     )
+    use_default_version: bool = Field(
+        False,
+        description=(
+            "On append, pin new trials to the task's current default version "
+            "instead of the version the target experiment already runs. Ignored "
+            "when the submission uploads task content, which sets its own version."
+        ),
+    )
     link: str | None = Field(
         None,
         description="URL to associate with this task (e.g. PR, issue, CI run)",
@@ -631,6 +640,45 @@ class TrialCollectionRequest(BaseModel):
         )
         if not self.trial_ids and not self.task_ids:
             raise ValueError("provide at least one trial id or task id")
+        return self
+
+
+class QAEvalCreateRequest(BaseModel):
+    """Replay one candidate QA prompt over exact historical solver trials."""
+
+    name: str = Field(..., max_length=255)
+    source_trial_ids: list[str]
+    prompt_name: str = Field(..., max_length=128)
+    prompt_text: str = Field(..., max_length=200_000)
+    model: str | None = Field(
+        None,
+        description=(
+            "Analysis model override. Null uses the deployed production QA model."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_qa_eval(self) -> "QAEvalCreateRequest":
+        self.name = self.name.strip()
+        self.prompt_name = self.prompt_name.strip()
+        self.prompt_text = self.prompt_text.strip()
+        self.source_trial_ids = list(
+            dict.fromkeys(
+                value.strip()
+                for value in self.source_trial_ids
+                if value and value.strip()
+            )
+        )
+        if not self.name:
+            raise ValueError("name must not be empty")
+        if not self.prompt_name:
+            raise ValueError("prompt_name must not be empty")
+        if not self.prompt_text:
+            raise ValueError("prompt_text must not be empty")
+        if not self.source_trial_ids:
+            raise ValueError("source_trial_ids must not be empty")
+        if self.model is not None:
+            self.model = self.model.strip() or None
         return self
 
 
@@ -978,6 +1026,10 @@ class ExperimentCostTotals(BaseModel):
     billed_token_trial_count: int = 0
     total_trials: int = 0
 
+    excluded_cost_usd: float = 0.0
+    owned_excluded_cost_usd: float = 0.0
+    experiment_cost_excluded: bool = False
+
     # QA/analysis spend (``analysis_costs``), scoped exactly like the agent
     # figures above: ``qa_cost_usd`` over every member trial, ``owned_*`` over
     # homed trials only. Never folded into ``cost_usd`` -- the UI renders it as
@@ -1133,6 +1185,19 @@ class TrialResponse(BaseModel):
             "billed spend and quota usage."
         ),
     )
+    cost_exclusion_reason: str | None = Field(
+        None,
+        description=(
+            "Why this trial's ``cost_usd`` is not real spend: ``key`` for a "
+            "preserved provider-key exclusion, ``model`` for a cost-excluded "
+            "model, or ``experiment`` when its home experiment is excluded. The cost "
+            "is still reported -- the work ran -- but it is absent from the "
+            "admin cost dashboards and from quota enforcement, and the UI "
+            "labels it. Null means the spend is real, OR that the builder "
+            "did not resolve exclusions; only callers that pass an "
+            "exclusions snapshot populate it."
+        ),
+    )
     # QA/analysis spend for this trial. None when no QA ran -- distinct from
     # 0.0, so the UI can render nothing rather than "+$0.00 QA". None also
     # means "not resolved by this caller": most builders never populate it.
@@ -1194,7 +1259,7 @@ class TrialResponse(BaseModel):
 class UserTagRef(BaseModel):
     """Effective tag on a task, surfaced to API/CLI/frontend.
 
-    ``current=True`` -> tag is on the latest task version (primary chip).
+    ``current=True`` -> tag is on the selected default version (primary chip).
     ``older=True``   -> tag exists only on older versions (de-emphasized).
     """
 
@@ -1368,7 +1433,7 @@ class ExperimentCombineResponse(BaseModel):
         0,
         description=(
             "Source trials skipped because they were not finished "
-            "(still pending/queued/running) at combine time"
+            "(still pending/queued/running/paused) at combine time"
         ),
     )
     artifacts_copied: int = Field(
@@ -1385,6 +1450,20 @@ class TrialCollectionResponse(BaseModel):
     tasks_linked: int
     trials_from_tasks: int = 0
     tasks_skipped_empty: int = 0
+
+
+class QAEvalTrialResponse(BaseModel):
+    source_trial_id: str
+    qa_eval_trial_id: str
+
+
+class QAEvalCreateResponse(BaseModel):
+    experiment_id: str
+    experiment_name: str
+    prompt_name: str
+    prompt_sha256: str
+    model: str
+    trials: list[QAEvalTrialResponse]
 
 
 class CollectionMutationResponse(BaseModel):
@@ -1650,6 +1729,7 @@ class TaskOpenTrialRef(BaseModel):
     agent: str
     provider: str
     model: str | None = None
+    kind: str = "agent"
     status: TrialStatus
     reward: float | None = None
     error_kind: str | None = None
@@ -1669,6 +1749,7 @@ class TaskOpenResponse(BaseModel):
     default_version: TaskOpenVersionRef | None = None
     selected_version: TaskOpenVersionSummary | None = None
     totals: TaskOpenTotals = Field(default_factory=TaskOpenTotals)
+    active_qa_trial: TaskOpenTrialRef | None = None
     trials: list[TaskOpenTrialRef] = Field(default_factory=list)
     trials_has_more: bool = False
 
@@ -2221,5 +2302,44 @@ class DocumentResponse(BaseModel):
     raw_filename: str | None = None
     created_at: datetime
     updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+FEEDBACK_BODY_MAX_CHARS = 20_000
+FeedbackTarget = Literal["qa_verdict", "qa_action_item"]
+FeedbackVote = Literal["agree", "disagree"]
+
+
+class FeedbackCreate(BaseModel):
+    """Agree or disagree with one QA verdict or action item."""
+
+    body: str = Field(default="", max_length=FEEDBACK_BODY_MAX_CHARS)
+    target: FeedbackTarget
+    target_key: str = Field(min_length=1, max_length=160)
+    vote: FeedbackVote
+    trial_id: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def normalize_text(self) -> "FeedbackCreate":
+        self.body = self.body.strip()
+        self.target_key = self.target_key.strip()
+        self.trial_id = self.trial_id.strip()
+        if not self.target_key or not self.trial_id:
+            raise ValueError("target_key and trial_id cannot be blank")
+        return self
+
+
+class FeedbackResponse(BaseModel):
+    """The persisted QA vote returned by the create endpoint."""
+
+    id: str
+    experiment_id: str
+    trial_id: str
+    target: FeedbackTarget
+    target_key: str
+    vote: FeedbackVote
+    body: str
+    created_at: datetime
 
     model_config = {"from_attributes": True}

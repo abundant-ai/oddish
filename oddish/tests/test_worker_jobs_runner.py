@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import types
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -313,14 +314,26 @@ def test_trial_retry_backoff_is_capped_after_jitter():
     assert delay == worker_job_single_job.TRIAL_RETRY_MAX_DELAY_SECONDS
 
 
+def test_trial_retry_backoff_honors_harbor_retry_after_hint():
+    delay = worker_job_single_job.calculate_trial_retry_delay_seconds(
+        attempts=1,
+        error_message="provider overloaded",
+        jitter=0.0,
+        retry_after_seconds=90.0,
+    )
+
+    assert delay == 90.0
+
+
 class _FakeConnection:
-    def __init__(self) -> None:
+    def __init__(self, *, update_result: str = "UPDATE 1") -> None:
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
         self.closed = False
+        self.update_result = update_result
 
     async def execute(self, sql: str, *args: Any) -> str:
         self.calls.append((sql, args))
-        return "UPDATE 1"
+        return self.update_result
 
     async def fetchrow(self, sql: str, *args: Any) -> None:
         # The retry decision re-reads the current row; None exercises the
@@ -345,7 +358,7 @@ async def test_record_outcome_requeues_trial_with_backoff_and_mirrors_next_retry
     monkeypatch.setattr(worker_job_single_job.random, "uniform", lambda _a, _b: 0.0)
 
     before = datetime.now(timezone.utc)
-    await worker_job_single_job._record_outcome(
+    status = await worker_job_single_job._record_outcome(
         job_id="wj-1",
         worker_id="w-test",
         outcome=JobOutcome.fail("HTTP 503 from agent", retryable=True),
@@ -357,6 +370,7 @@ async def test_record_outcome_requeues_trial_with_backoff_and_mirrors_next_retry
     )
     after = datetime.now(timezone.utc)
 
+    assert status == WorkerJobStatus.RETRYING
     assert connection.closed is True
     assert len(connection.calls) == 3
 
@@ -389,6 +403,48 @@ async def test_record_outcome_requeues_trial_with_backoff_and_mirrors_next_retry
     assert "current_worker_id = NULL" in trial_sql
     assert "current_queue_slot = NULL" in trial_sql
     assert trial_args == ("trial-1", "HTTP 503 from agent", retry_at)
+
+
+@pytest.mark.asyncio
+async def test_record_outcome_returns_success_only_when_guarded_update_changes_row(
+    monkeypatch,
+):
+    accepted_connection = _FakeConnection()
+
+    async def accepted_open_connection():
+        return accepted_connection
+
+    monkeypatch.setattr(
+        worker_job_single_job, "_open_connection", accepted_open_connection
+    )
+    accepted = await worker_job_single_job._record_outcome(
+        job_id="wj-1",
+        worker_id="w-test",
+        outcome=JobOutcome.ok(),
+        attempts=1,
+        max_attempts=3,
+    )
+
+    rejected_connection = _FakeConnection(update_result="UPDATE 0")
+
+    async def rejected_open_connection():
+        return rejected_connection
+
+    monkeypatch.setattr(
+        worker_job_single_job, "_open_connection", rejected_open_connection
+    )
+    rejected = await worker_job_single_job._record_outcome(
+        job_id="wj-1",
+        worker_id="w-test",
+        outcome=JobOutcome.ok(),
+        attempts=1,
+        max_attempts=3,
+    )
+
+    assert accepted == WorkerJobStatus.SUCCESS
+    assert rejected is None
+    assert accepted_connection.closed is True
+    assert rejected_connection.closed is True
 
 
 # ---------------------------------------------------------------------------
@@ -436,6 +492,11 @@ def _capture_record_outcome(monkeypatch):
                 "subject_id": subject_id,
             }
         )
+        if outcome.success is not None:
+            return WorkerJobStatus.SUCCESS
+        if outcome.failure.retryable and attempts < max_attempts:
+            return WorkerJobStatus.RETRYING
+        return WorkerJobStatus.FAILED
 
     monkeypatch.setattr(worker_job_single_job, "_record_outcome", fake_record)
     return captured
@@ -476,12 +537,24 @@ async def test_run_single_worker_job_returns_false_when_queue_empty(monkeypatch)
 
 @pytest.mark.asyncio
 async def test_run_single_worker_job_records_success(monkeypatch):
-    job = _make_claimed()
+    job = _make_claimed(kind=WorkerJobKind.TRIAL)
     handler = _FakeHandler(job.kind, outcome=JobOutcome.ok({"answer": 42}))
     register(handler)
 
     _install_fake_claim(monkeypatch, job)
     captured = _capture_record_outcome(monkeypatch)
+    metric_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        worker_job_single_job,
+        "record_worker_job_transition",
+        lambda **values: metric_calls.append(values),
+    )
+    monotonic_values = iter((10.0, 15.0))
+    monkeypatch.setattr(
+        worker_job_single_job,
+        "time",
+        types.SimpleNamespace(monotonic=lambda: next(monotonic_values)),
+    )
 
     result = await worker_job_single_job.run_single_worker_job(
         "default", worker_id="w-1", queue_slot=0
@@ -495,16 +568,26 @@ async def test_run_single_worker_job_records_success(monkeypatch):
     assert recorded["worker_id"] == "w-1"
     assert recorded["outcome"].success is not None
     assert recorded["outcome"].success.result_summary == {"answer": 42}
+    assert len(metric_calls) == 1
+    assert metric_calls[0]["kind"] == WorkerJobKind.TRIAL
+    assert metric_calls[0]["outcome"] == WorkerJobStatus.SUCCESS
+    assert metric_calls[0]["duration_seconds"] == 5.0
 
 
 @pytest.mark.asyncio
 async def test_run_single_worker_job_records_retryable_on_exception(monkeypatch):
-    job = _make_claimed(attempts=2, max_attempts=5)
+    job = _make_claimed(kind=WorkerJobKind.TRIAL, attempts=2, max_attempts=5)
     handler = _FakeHandler(job.kind, raise_exc=RuntimeError("boom"))
     register(handler)
 
     _install_fake_claim(monkeypatch, job)
     captured = _capture_record_outcome(monkeypatch)
+    metric_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        worker_job_single_job,
+        "record_worker_job_transition",
+        lambda **values: metric_calls.append(values),
+    )
 
     await worker_job_single_job.run_single_worker_job(
         "default", worker_id="w-1", queue_slot=0
@@ -514,6 +597,34 @@ async def test_run_single_worker_job_records_retryable_on_exception(monkeypatch)
     assert recorded["outcome"].failure is not None
     assert recorded["outcome"].failure.retryable is True
     assert "RuntimeError" in recorded["outcome"].failure.error_message
+    assert [call["outcome"] for call in metric_calls] == [WorkerJobStatus.RETRYING]
+
+
+@pytest.mark.asyncio
+async def test_run_single_worker_job_emits_nothing_when_outcome_update_loses_race(
+    monkeypatch,
+):
+    job = _make_claimed(kind=WorkerJobKind.TRIAL)
+    register(_FakeHandler(job.kind, outcome=JobOutcome.ok()))
+    _install_fake_claim(monkeypatch, job)
+
+    async def rejected_outcome(**_values):
+        return None
+
+    metric_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(worker_job_single_job, "_record_outcome", rejected_outcome)
+    monkeypatch.setattr(
+        worker_job_single_job,
+        "record_worker_job_transition",
+        lambda **values: metric_calls.append(values),
+    )
+
+    result = await worker_job_single_job.run_single_worker_job(
+        "default", worker_id="w-1", queue_slot=0
+    )
+
+    assert result is True
+    assert metric_calls == []
 
 
 @pytest.mark.asyncio
@@ -523,6 +634,12 @@ async def test_run_single_worker_job_handles_missing_handler(monkeypatch):
 
     _install_fake_claim(monkeypatch, job)
     captured = _capture_record_outcome(monkeypatch)
+    metric_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        worker_job_single_job,
+        "record_worker_job_transition",
+        lambda **values: metric_calls.append(values),
+    )
 
     result = await worker_job_single_job.run_single_worker_job(
         "default", worker_id="w-1", queue_slot=0
@@ -533,6 +650,7 @@ async def test_run_single_worker_job_handles_missing_handler(monkeypatch):
     assert recorded["outcome"].failure is not None
     # No-handler failures are permanent -- retrying can't help.
     assert recorded["outcome"].failure.retryable is False
+    assert [call["outcome"] for call in metric_calls] == [WorkerJobStatus.FAILED]
 
 
 @pytest.mark.asyncio

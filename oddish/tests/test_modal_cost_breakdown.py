@@ -10,10 +10,24 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from oddish.core.admin import get_cost_breakdown_core  # noqa: E402
+from oddish.core.admin import (  # noqa: E402
+    _COMPUTE_PROVIDER_LABELS,
+    _normalize_compute_provider,
+    get_cost_breakdown_core,
+)
 from oddish.db import ModalCostSpanModel, get_session, utcnow  # noqa: E402
 
 _RUN = uuid.uuid4().hex[:8]
+
+
+def test_archil_has_its_own_compute_provider_label() -> None:
+    assert _normalize_compute_provider(" Archil ") == "archil"
+    assert _COMPUTE_PROVIDER_LABELS["archil"] == "Archil"
+
+
+def test_numinous_has_its_own_compute_provider_label() -> None:
+    assert _normalize_compute_provider(" Numinous ") == "numinous"
+    assert _COMPUTE_PROVIDER_LABELS["numinous"] == "Numinous Cloud"
 
 
 def _breakdown_map(result):

@@ -52,14 +52,19 @@ from oddish.preflight.runner import run_checks
 console = Console()
 
 # Environments the hosted (Modal-backed) API dispatches directly; any other
-# ``--env`` on that path is coerced to Modal. EC2 and GKE join Modal and Daytona
-# so explicitly selected cloud backends reach the hosted API unchanged.
+# ``--env`` on that path is coerced to Modal. Explicitly selected cloud backends
+# must reach the hosted API unchanged.
 _HOSTED_PASSTHROUGH_ENVIRONMENTS = {
     EnvironmentType.MODAL,
     EnvironmentType.DAYTONA,
     EnvironmentType.EC2,
     EnvironmentType.GKE,
 }
+# Public Harbor releases may lag fork-only environments.
+if hasattr(EnvironmentType, "ARCHIL"):
+    _HOSTED_PASSTHROUGH_ENVIRONMENTS.add(EnvironmentType.ARCHIL)
+if hasattr(EnvironmentType, "NUMINOUS"):
+    _HOSTED_PASSTHROUGH_ENVIRONMENTS.add(EnvironmentType.NUMINOUS)
 
 
 def _task_config_requests_gpu(task_path: Path) -> bool:
@@ -324,8 +329,8 @@ def run(
             "--env",
             "-e",
             help=(
-                "Execution environment (docker, daytona, ec2, e2b, modal, runloop, "
-                "gke). "
+                "Execution environment (docker, daytona, ec2, e2b, modal, archil, "
+                "runloop, gke). "
                 "Defaults: daytona for CPU-only hosted tasks, modal for GPU hosted "
                 "tasks, docker otherwise."
             ),
@@ -507,6 +512,18 @@ def run(
             ),
         ),
     ] = False,
+    use_default_version: Annotated[
+        bool,
+        typer.Option(
+            "--use-default-version",
+            help=(
+                "When appending to an existing task, pin new trials to the "
+                "task's current default version instead of the version the "
+                "target experiment is already running. No effect when this run "
+                "uploads task files, which set their own version."
+            ),
+        ),
+    ] = False,
     force: Annotated[
         bool,
         typer.Option(
@@ -585,7 +602,7 @@ def run(
                 "Re-run an existing target instead of submitting new work. "
                 "Pass a trial, task, or experiment id (positional, --task, or "
                 "--experiment). Retries failed trials by default; combine with "
-                "--qa to re-run the task-level QA job (classify every trial + "
+                "--qa to create a replacement task-level QA trial (classify every trial + "
                 "synthesize the verdict)."
             ),
         ),
@@ -595,7 +612,7 @@ def run(
         typer.Option(
             "--qa",
             help=(
-                "With --retry: re-run the task-level QA job (classify trials + "
+                "With --retry: create a replacement task-level QA trial (classify trials + "
                 "verdict) instead of retrying trials."
             ),
         ),
@@ -788,6 +805,10 @@ def run(
         # Config can opt out of the baseline gate
         if "gate_baselines" in sweep_config:
             gate_baselines = sweep_config["gate_baselines"]
+        # Config can send appends to the task default instead of the
+        # experiment's version. The CLI flag wins when both are set.
+        if "use_default_version" in sweep_config and not use_default_version:
+            use_default_version = sweep_config["use_default_version"]
         # Config can set Harbor passthrough options
         if "disable_verification" in sweep_config:
             disable_verification = sweep_config["disable_verification"]
@@ -898,7 +919,7 @@ def run(
     ):
         console.print(
             "[yellow]Oddish Cloud supports --env modal, --env daytona, --env ec2, "
-            "and --env gke; forcing --env modal[/yellow]"
+            "--env gke, --env archil, and --env numinous; forcing --env modal[/yellow]"
         )
         environment = EnvironmentType.MODAL
 
@@ -955,6 +976,7 @@ def run(
             artifact_paths=artifact_paths,
             append_to_task=append_to_task,
             content_hash=task_content_hash,
+            use_default_version=use_default_version,
             link=link,
             registry_auth=registry_auth,
         )

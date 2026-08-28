@@ -102,6 +102,10 @@ async def test_cleanup_unwedges_stuck_analyzing(monkeypatch):
     discovery = next(
         (sql, params) for sql, params in session.executed if ":stale_minutes" in sql
     )
+    assert (
+        "a.status IN ('PENDING', 'QUEUED', 'RUNNING', 'PAUSED', 'RETRYING')"
+        in discovery[0]
+    )
     assert discovery[1]["stale_minutes"] == cleanup.STUCK_ANALYZING_MINUTES
     assert discovery[1]["batch_limit"] == cleanup.STUCK_ANALYZING_BATCH_LIMIT
 
