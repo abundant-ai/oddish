@@ -22,6 +22,9 @@ oddish run -d swebench@1.0 -a codex -m openai/gpt-5.2 --n-trials 3
 # Explicitly use an operator-enabled ephemeral EC2 backend
 # oddish run ./my-task --env ec2 -a codex -m openai/gpt-5.2
 
+# Explicitly use an operator-enabled Thunder GPU sandbox
+# oddish run ./my-task --env thunder -a nop --n-trials 1 --max-trial-attempts 1
+
 # Append trials to a task an experiment already runs; add
 # --use-default-version to target the task's default version instead
 # oddish run --task <task_id> -E <experiment> -a codex --n-trials 2
@@ -64,7 +67,7 @@ Need package internals, architecture, or development notes? See [`AGENTS.md`](..
 Run `oddish --help` or see [`../DOCS.md`](../DOCS.md) for the full CLI
 reference. The main commands are:
 
-- `oddish run` — submit local tasks, registry datasets, sweeps, retries, and task-level QA retries; `--env archil` selects Archil and `--env ec2` selects an operator-enabled ephemeral CPU VM, while Daytona remains the hosted CPU default.
+- `oddish run` — submit local tasks, registry datasets, sweeps, retries, and task-level QA retries; `--env archil` selects Archil, `--env ec2` selects an operator-enabled ephemeral CPU VM, and `--env thunder` selects an operator-enabled GPU sandbox, while Daytona remains the hosted CPU default.
 - `oddish upload` — register task bundles or import off-oddish Harbor trial results; `--overwrite-current-version` corrects the selected version in place.
 - `oddish preflight` — run the local task integrity checks that also gate `run` and `upload` (pass `--force` there to submit anyway).
 - `oddish ls` / `oddish status` — browse tasks (including model and trajectory-metric filters) and inspect progress. `oddish status <trial_id>` shows single-trial detail; `--detail`/`--versions` show a task's version history and cost rollups; `--queue` shows queue & worker scheduler diagnostics.

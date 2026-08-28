@@ -61,6 +61,21 @@ _HOSTED_PASSTHROUGH_ENVIRONMENTS = {
     EnvironmentType.GKE,
     EnvironmentType.THUNDER,
 }
+
+
+def _normalize_hosted_environment(
+    environment: EnvironmentType | None, *, is_modal_api: bool
+) -> EnvironmentType | None:
+    """Preserve supported hosted providers and coerce local-only ones to Modal."""
+    if (
+        environment is not None
+        and is_modal_api
+        and environment not in _HOSTED_PASSTHROUGH_ENVIRONMENTS
+    ):
+        return EnvironmentType.MODAL
+    return environment
+
+
 # Public Harbor releases may lag fork-only environments.
 if hasattr(EnvironmentType, "ARCHIL"):
     _HOSTED_PASSTHROUGH_ENVIRONMENTS.add(EnvironmentType.ARCHIL)
@@ -913,17 +928,17 @@ def run(
 
     if environment is None and not existing_task_ids and not is_modal_api:
         environment = EnvironmentType.DOCKER
-    elif (
-        environment is not None
-        and is_modal_api
-        and environment not in _HOSTED_PASSTHROUGH_ENVIRONMENTS
-    ):
-        console.print(
-            "[yellow]Oddish Cloud supports --env modal, --env daytona, --env ec2, "
-            "--env gke, --env archil, --env numinous, and --env thunder; "
-            "forcing --env modal[/yellow]"
+    else:
+        normalized_environment = _normalize_hosted_environment(
+            environment, is_modal_api=is_modal_api
         )
-        environment = EnvironmentType.MODAL
+        if environment is not None and normalized_environment != environment:
+            console.print(
+                "[yellow]Oddish Cloud supports --env modal, --env daytona, --env ec2, "
+                "--env gke, --env archil, --env numinous, and --env thunder; "
+                "forcing --env modal[/yellow]"
+            )
+        environment = normalized_environment
 
     # Upload and submit all tasks
     all_results = []

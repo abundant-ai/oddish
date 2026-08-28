@@ -5,8 +5,10 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import ModuleType
 
 import modal_app
+import thunder_readiness
 import worker.functions as worker_functions
 
 
@@ -87,3 +89,26 @@ def test_only_thunder_lane_workers_receive_thunder_secret() -> None:
         secret not in worker_functions.reconciler_secrets
         for secret in modal_app.thunder_worker_secrets
     )
+
+
+def test_worker_readiness_validates_dependencies_without_returning_credentials(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("TNR_API_URL", "https://thunder.invalid")
+    monkeypatch.setenv("TNR_API_TOKEN", "do-not-return")
+    monkeypatch.setitem(sys.modules, "asyncssh", ModuleType("asyncssh"))
+    versions = {
+        "thunder-sandbox": "0.4.0",
+        "aiohttp": "3.12.0",
+        "asyncssh": "2.21.0",
+        "cryptography": "45.0.0",
+    }
+    monkeypatch.setattr(thunder_readiness, "version", versions.__getitem__)
+
+    result = thunder_readiness.check_thunder_worker.get_raw_f()()
+
+    assert result["thunder_sandbox"] == "0.4.0"
+    assert result["api_url_resolved"] is True
+    assert result["api_token_resolved"] is True
+    assert "https://thunder.invalid" not in result.values()
+    assert "do-not-return" not in result.values()

@@ -253,6 +253,50 @@ def test_lane_capacity_is_shared_across_queues_and_orgs():
     assert plan[0][2] == "ec2_trial"
 
 
+def test_thunder_capacity_sixteen_is_global_across_models_and_queues():
+    queued_by_org_queue = {
+        ("org-a", "model-a", _D, "thunder_trial"): 100,
+        ("org-b", "model-b", _D, "thunder_trial"): 100,
+        ("org-c", "model-c", "harbor-next", "thunder_trial"): 100,
+    }
+    common = {
+        "queued_by_org_queue": queued_by_org_queue,
+        "running_by_queue": {},
+        "concurrency_limits": _limits_for(queued_by_org_queue),
+        "max_workers": 100,
+        "capacity_limits_by_lane": {"thunder_trial": 16},
+    }
+
+    one_slot = build_spawn_plan(**common, held_by_lane={"thunder_trial": 15})
+    exhausted = build_spawn_plan(**common, held_by_lane={"thunder_trial": 16})
+
+    assert len(one_slot) == 1
+    assert one_slot[0][2] == "thunder_trial"
+    assert exhausted == []
+
+
+def test_thunder_running_count_and_held_leases_are_not_double_counted():
+    queued_by_org_queue = {
+        ("org-a", "model-a", _D, "thunder_trial"): 100,
+        ("org-b", "model-b", _D, "thunder_trial"): 100,
+    }
+    plan = build_spawn_plan(
+        queued_by_org_queue=queued_by_org_queue,
+        running_by_queue={
+            ("model-a", _D, "thunder_trial"): 10,
+            ("model-b", _D, "thunder_trial"): 2,
+        },
+        concurrency_limits=_limits_for(queued_by_org_queue),
+        max_workers=100,
+        capacity_limits_by_lane={"thunder_trial": 16},
+        held_by_lane={"thunder_trial": 12},
+    )
+
+    # Each running job owns one of the twelve held leases. Capacity accounting
+    # uses max(running, held), not their sum, leaving exactly four slots.
+    assert len(plan) == 4
+
+
 def test_plan_never_exceeds_total_demand():
     queued_by_org_queue = {
         ("org-a", "m1", _D, "default"): 3,

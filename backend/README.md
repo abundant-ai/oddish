@@ -43,7 +43,8 @@ Scheduled functions
        - Dispatches each to the registered handler
        - Writes heartbeats, records outcomes, exits
   ▼
-Harbor execution on Modal, Daytona, GKE (TPU), or opt-in ephemeral EC2
+Harbor execution on Modal, Daytona, GKE (TPU), opt-in ephemeral EC2, or
+opt-in Thunder GPU sandboxes
   - logs/artifacts persisted to S3
 ```
 
@@ -53,7 +54,8 @@ Dispatcher + batch-draining workers backed by the unified `worker_jobs` table:
 
 1. `poll_queue()` runs on a 180s Modal schedule. It builds a dispatch plan via
    `build_dispatch_plan` (org-first fair share over active queue keys, plus a
-   budgeted EC2 capacity lane) and launches up to `MAX_WORKERS_PER_POLL`
+   budgeted EC2 and Thunder capacity lanes) and launches up to
+   `MAX_WORKERS_PER_POLL`
    worker containers.
 2. `reconcile_queue_state()` runs separately. It calls
    `cleanup_orphaned_queue_state` (zombie-txn reap, stale-heartbeat sweep,
@@ -63,7 +65,8 @@ Dispatcher + batch-draining workers backed by the unified `worker_jobs` table:
    the queue key, then on the default lane calls `drain_worker_jobs`, which
    atomically claims and runs queued rows one at a time until the
    `ODDISH_MODAL_WORKER_BATCH_BUDGET_SECONDS` budget (default 300) expires;
-   the EC2 lane still runs exactly one row via `run_single_worker_job`. Each
+   the EC2 and Thunder lanes still run exactly one row via
+   `run_single_worker_job`. Each
    claim dispatches to the registered handler
    (`TRIAL` / `TASK_EXPAND` / `TAG_PROJECT`), writes heartbeats to both
    `worker_jobs.heartbeat_at` and the mirrored domain column, records the
@@ -262,6 +265,59 @@ Standalone hosts installed with `oddish[worker]` must also provide the OpenSSH
 client (`openssh-client` on Debian/Ubuntu), because Harbor invokes `ssh` to reach
 the VM. The shared `backend/Dockerfile` already installs this package for the
 Railway/Docker deployment path, and the Modal worker image installs it as well.
+
+### Thunder Harbor backend
+
+Thunder is an explicit GPU provider; it is never selected automatically. Set
+these non-secret deploy values in `backend/.env` or the deploy environment:
+
+```bash
+ODDISH_THUNDER_ENABLED=true
+ODDISH_THUNDER_SECRET_NAME=oddish-thunder
+ODDISH_THUNDER_MAX_CAPACITY=16
+```
+
+Create `oddish-thunder` in the same Modal environment as the app with exactly
+`TNR_API_URL` and `TNR_API_TOKEN`. Only dedicated `thunder_trial` workers and
+the dedicated teardown function receive this secret. API, dispatcher,
+reconciler, generic workers, and EC2 workers do not. For example:
+
+```bash
+uv run modal secret create oddish-thunder \
+  TNR_API_URL="$TNR_API_URL" \
+  TNR_API_TOKEN="$TNR_API_TOKEN"
+```
+
+The global capacity is enforced with durable, atomic provider leases across
+all organizations, models, queue keys, and Harbor variants. Cancellation and
+orphan cleanup operate on the persisted sandbox ID through the provider SDK.
+Thunder uses `thunder-sandbox==0.4.0` and its Python dependencies (`aiohttp`,
+`asyncssh`, and `cryptography`); it does not shell out to `ssh`, `scp`, or
+`ssh-keygen`.
+
+Sync the locked deployment environment, deploy, and validate the remote worker
+without printing credentials (commands run from `backend/`):
+
+```bash
+uv sync --locked
+uv run modal deploy deploy.py
+uv run modal run thunder_readiness.py::check_thunder_worker
+```
+
+Then, from the Oddish repository root, submit the hermetic smoke task with one
+deterministic `nop` attempt:
+
+```bash
+oddish run ../smoke_test_thunder --env thunder -a nop \
+  --n-trials 1 --max-trial-attempts 1 --json
+```
+
+Keep the returned task/trial IDs. `oddish status <task-id> --json` must show the
+agent trial in `environment: thunder` with reward `1`; pulled artifacts must
+contain the expected GPU output. Separately cancel an in-flight smoke trial and
+confirm its persisted sandbox ID is terminated. Finally, verify the Thunder
+provider inventory contains none of the sandbox IDs created by either run and
+that the `sandbox_capacity_leases` count returns to its pre-smoke value.
 
 ### oddish runtime patching
 

@@ -13,3 +13,21 @@ run_module = importlib.import_module("oddish.cli.run")
 
 def test_thunder_is_hosted_passthrough_when_harbor_exposes_it() -> None:
     assert EnvironmentType.THUNDER in run_module._HOSTED_PASSTHROUGH_ENVIRONMENTS
+
+
+def test_hosted_normalization_preserves_explicit_thunder() -> None:
+    assert (
+        run_module._normalize_hosted_environment(
+            EnvironmentType.THUNDER, is_modal_api=True
+        )
+        is EnvironmentType.THUNDER
+    )
+
+
+def test_hosted_normalization_still_coerces_local_only_environment() -> None:
+    assert (
+        run_module._normalize_hosted_environment(
+            EnvironmentType.DOCKER, is_modal_api=True
+        )
+        is EnvironmentType.MODAL
+    )
