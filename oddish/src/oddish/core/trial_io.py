@@ -54,6 +54,8 @@ class _TrialS3Layout:
     attempt_prefix: str
     trial_prefix: str | None
     has_manifest: bool
+    allows_legacy_fallback: bool = True
+    listed_keys: tuple[str, ...] | None = None
 
 
 def _cache_get(cache: MutableMapping[_K, tuple[float, _T]], key: _K) -> _T | None:
@@ -194,6 +196,20 @@ def _legacy_grok_build_candidate_keys(trial: TrialModel, s3_prefix: str) -> list
     return _legacy_trial_candidate_keys(trial, s3_prefix, "agent/grok-build.json")
 
 
+def _is_attempt_scoped_key(key: str, root_prefix: str) -> bool:
+    """Whether an object belongs to the immutable per-attempt layout."""
+    parts = PurePosixPath(key.removeprefix(root_prefix)).parts
+    if not parts:
+        return False
+    if re.fullmatch(r"attempt-[1-9]\d*", parts[0]):
+        return True
+    return (
+        len(parts) > 1
+        and parts[0].startswith("analysis-")
+        and re.fullmatch(r"attempt-[1-9]\d*", parts[1]) is not None
+    )
+
+
 async def _resolve_trial_s3_layout(
     trial: TrialModel,
     storage: StorageClient,
@@ -205,9 +221,30 @@ async def _resolve_trial_s3_layout(
     a missing selected artifact must not expose a sibling retry directory.
     """
     attempt_prefix = trial.trial_s3_key or StorageClient._trial_prefix(trial.id)
+    listed_keys: tuple[str, ...] | None = None
+    if trial.trial_s3_key is None:
+        # A null pointer can recover historical layouts stored directly below
+        # the canonical trial root. It cannot choose among immutable retries:
+        # if any attempt namespace exists, no root artifact or sibling is
+        # authoritative.
+        listed_keys = tuple(sorted(await storage.list_keys(attempt_prefix)))
+        if any(_is_attempt_scoped_key(key, attempt_prefix) for key in listed_keys):
+            return _TrialS3Layout(
+                attempt_prefix,
+                None,
+                False,
+                allows_legacy_fallback=False,
+                listed_keys=listed_keys,
+            )
+
     manifest_key = f"{attempt_prefix}result.json"
     if not await storage.object_exists(manifest_key):
-        return _TrialS3Layout(attempt_prefix, None, False)
+        return _TrialS3Layout(
+            attempt_prefix,
+            None,
+            False,
+            listed_keys=listed_keys,
+        )
 
     try:
         manifest = _json.loads(await storage.download_text(manifest_key))
@@ -638,6 +675,9 @@ async def _read_trial_trajectory_from_s3(
             pass
         return None
 
+    if not layout.allows_legacy_fallback:
+        return None
+
     # Imported and historical trials may predate the root-manifest contract.
     for trajectory_key in _legacy_trajectory_candidate_keys(
         trial, layout.attempt_prefix
@@ -664,7 +704,11 @@ async def _read_trial_trajectory_from_s3(
             continue
 
     try:
-        files = sorted(await storage.list_keys(layout.attempt_prefix))
+        files = (
+            list(layout.listed_keys)
+            if layout.listed_keys is not None
+            else sorted(await storage.list_keys(layout.attempt_prefix))
+        )
         grok_build_keys: list[str] = []
         for f in files:
             if f.endswith("/agent/trajectory.json"):
@@ -785,6 +829,8 @@ async def read_trial_summary_inputs(
             f"{layout.trial_prefix}verifier/test-stdout.txt",
             f"{layout.trial_prefix}verifier/stdout.txt",
         ]
+    elif not layout.allows_legacy_fallback:
+        return trajectory, None, None
     else:
         instruction_keys = _legacy_trial_candidate_keys(
             trial,
@@ -849,26 +895,32 @@ async def read_trial_agent_file(
                 pass
         raise HTTPException(status_code=404, detail="File not found")
 
-    direct_key = f"{layout.attempt_prefix}agent/{normalized_path}"
-    try:
-        content = await storage.download_bytes(direct_key)
-        return content, media_type
-    except Exception:
-        pass
+    if layout.allows_legacy_fallback:
+        direct_key = f"{layout.attempt_prefix}agent/{normalized_path}"
+        try:
+            content = await storage.download_bytes(direct_key)
+            return content, media_type
+        except Exception:
+            pass
 
-    try:
-        suffix = f"/agent/{normalized_path}"
-        for key in await storage.list_keys(layout.attempt_prefix):
-            if key.endswith(suffix):
-                content = await storage.download_bytes(key)
-                return content, media_type
-    except Exception as e:
-        logging.getLogger(__name__).debug(
-            "No agent file in S3 for %s at %s: %s",
-            trial.id,
-            layout.attempt_prefix,
-            e,
-        )
+        try:
+            suffix = f"/agent/{normalized_path}"
+            files = (
+                layout.listed_keys
+                if layout.listed_keys is not None
+                else await storage.list_keys(layout.attempt_prefix)
+            )
+            for key in files:
+                if key.endswith(suffix):
+                    content = await storage.download_bytes(key)
+                    return content, media_type
+        except Exception as e:
+            logging.getLogger(__name__).debug(
+                "No agent file in S3 for %s at %s: %s",
+                trial.id,
+                layout.attempt_prefix,
+                e,
+            )
 
     if not trial.harbor_result_path:
         raise HTTPException(status_code=404, detail="Trial has no local result path")

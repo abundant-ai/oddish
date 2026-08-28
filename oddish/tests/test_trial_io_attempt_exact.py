@@ -33,7 +33,7 @@ class _Storage:
         return self.listed
 
 
-def _trial(*, prefix: str, attempts: int = 1):
+def _trial(*, prefix: str | None, attempts: int = 1):
     return SimpleNamespace(
         id="task-1-7",
         name="display-name-not-used-for-current-layout",
@@ -200,6 +200,77 @@ def test_manifestless_historical_layout_uses_deterministic_fallback(monkeypatch)
     result = asyncio.run(trial_io.read_trial_trajectory(_trial(prefix=prefix)))
 
     assert result == {"trial_name": "deterministic-first"}
+    assert storage.list_calls == 1
+
+
+def test_missing_attempt_pointer_never_selects_a_sibling_attempt(monkeypatch):
+    prefix = "tasks/task-1/trials/task-1-7/"
+    for namespace in ("attempt", "analysis-qa/attempt"):
+        _clear_cache()
+        old_key = f"{prefix}{namespace}-1/old-run/agent/trajectory.json"
+        partial_current_key = (
+            f"{prefix}{namespace}-2/current-run/agent/setup/stdout.txt"
+        )
+        storage = _Storage(
+            {
+                old_key: json.dumps({"trial_name": "old-attempt"}),
+                partial_current_key: "setup completed",
+            },
+            listed=[old_key, partial_current_key],
+        )
+        monkeypatch.setattr(trial_io, "get_storage_client", lambda: storage)
+
+        result = asyncio.run(
+            trial_io.read_trial_trajectory(_trial(prefix=None, attempts=2))
+        )
+
+        assert result is None
+        assert old_key not in storage.download_calls
+        assert storage.list_calls == 1
+
+
+def test_missing_pointer_still_recovers_a_pre_attempt_historical_layout(monkeypatch):
+    _clear_cache()
+    prefix = "tasks/task-1/trials/task-1-7/"
+    historical_key = f"{prefix}historical-run/agent/trajectory.json"
+    storage = _Storage(
+        {historical_key: json.dumps({"trial_name": "historical"})},
+        listed=[historical_key],
+    )
+    monkeypatch.setattr(trial_io, "get_storage_client", lambda: storage)
+
+    result = asyncio.run(trial_io.read_trial_trajectory(_trial(prefix=None)))
+
+    assert result == {"trial_name": "historical"}
+    assert storage.download_calls.count(historical_key) == 1
+    assert storage.list_calls == 1
+
+
+def test_missing_pointer_rejects_a_legacy_root_manifest_beside_new_attempts(
+    monkeypatch,
+):
+    _clear_cache()
+    prefix = "tasks/task-1/trials/task-1-7/"
+    manifest_key = f"{prefix}result.json"
+    stale_key = f"{prefix}legacy-run/agent/trajectory.json"
+    attempt_key = f"{prefix}attempt-2/current-run/agent/setup/stdout.txt"
+    storage = _Storage(
+        {
+            manifest_key: json.dumps({"trial_results": [{"trial_name": "legacy-run"}]}),
+            stale_key: json.dumps({"trial_name": "legacy"}),
+            attempt_key: "setup completed",
+        },
+        listed=[manifest_key, stale_key, attempt_key],
+    )
+    monkeypatch.setattr(trial_io, "get_storage_client", lambda: storage)
+
+    result = asyncio.run(
+        trial_io.read_trial_trajectory(_trial(prefix=None, attempts=2))
+    )
+
+    assert result is None
+    assert manifest_key not in storage.download_calls
+    assert stale_key not in storage.download_calls
     assert storage.list_calls == 1
 
 

@@ -1171,7 +1171,11 @@ verifier output, and agent-file readers all use that selected directory. If the
 manifest is malformed or an exact artifact is absent, a reader returns no
 artifact; it never substitutes a sibling retry directory. Deterministic
 candidate/list fallback exists only for imported and historical layouts without
-a root manifest. The file LISTING and file CONTENT endpoints both root at
+a root manifest. When ``trials.trial_s3_key`` is null, the canonical trial root
+is eligible for that historical fallback only if it contains no ``attempt-N``
+or ``analysis-*/attempt-N`` namespace; once immutable attempts exist, the
+missing pointer makes every sibling non-authoritative and artifact reads fail
+closed. The file LISTING and file CONTENT endpoints both root at
 ``trials.trial_s3_key`` when set, so listed relative paths round-trip without
 doubling an analysis or attempt segment. Analysis-result readers locate their
 one result artifact by filename suffix within that authoritative attempt prefix.
