@@ -1758,7 +1758,7 @@ class WorkerJobModel(TimestampedMixin, Base):
         String(64), nullable=False, server_default=text("'default'")
     )
 
-    # Credential/capacity routing lane. Only ``ec2_trial`` workers receive EC2
+    # Credential/capacity routing lane. Provider lanes receive only their own
     # control + SSH material; every other job remains on the secret-free lane.
     execution_lane: Mapped[str] = mapped_column(
         String(32), nullable=False, server_default=text("'default'")
@@ -1842,7 +1842,7 @@ class WorkerJobModel(TimestampedMixin, Base):
 
     __table_args__ = (
         CheckConstraint(
-            "execution_lane IN ('default', 'ec2_trial')",
+            "execution_lane IN ('default', 'ec2_trial', 'thunder_trial')",
             name="ck_worker_jobs_execution_lane",
         ),
         Index(

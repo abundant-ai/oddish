@@ -88,6 +88,15 @@ def execution_lane_for_environment(environment: str | None) -> str:
     return DEFAULT_EXECUTION_LANE
 
 
+def capacity_provider_for_execution_lane(execution_lane: str | None) -> str | None:
+    """Return the globally capacity-limited provider owned by a worker lane."""
+    if execution_lane == EC2_TRIAL_EXECUTION_LANE:
+        return "ec2"
+    if execution_lane == THUNDER_TRIAL_EXECUTION_LANE:
+        return "thunder"
+    return None
+
+
 def _context_from_run(run: SandboxRunModel) -> SandboxLaunchContext:
     return SandboxLaunchContext(
         sandbox_run_id=run.id,
@@ -368,6 +377,7 @@ __all__ = [
     "SandboxLifecycleError",
     "SandboxProvisioningRefused",
     "THUNDER_TRIAL_EXECUTION_LANE",
+    "capacity_provider_for_execution_lane",
     "create_ec2_sandbox_run",
     "execution_lane_for_environment",
     "get_sandbox_ownership_by_external_id",

@@ -34,6 +34,7 @@ from oddish.costs.recorder import (
 )
 from oddish.db import WorkerJobKind, WorkerJobStatus
 from oddish.observability import record_worker_job_transition
+from oddish.runtime.sandbox_lifecycle import capacity_provider_for_execution_lane
 from oddish.workers.jobs.registry import (
     HANDLERS,
     JobOutcome,
@@ -347,13 +348,15 @@ async def heartbeat_worker_job(
             current_worker_id,
             SANDBOX_CAPACITY_LEASE_SECONDS,
         )
-        if (
-            capacity_heartbeat is not None
-            and capacity_heartbeat["execution_lane"] == "ec2_trial"
-            and not capacity_heartbeat["capacity_renewed"]
-        ):
+        heartbeat_lane = (
+            capacity_heartbeat["execution_lane"]
+            if capacity_heartbeat is not None
+            else None
+        )
+        capacity_provider = capacity_provider_for_execution_lane(heartbeat_lane)
+        if capacity_provider is not None and not capacity_heartbeat["capacity_renewed"]:
             raise SandboxCapacityLeaseLostError(
-                f"EC2 worker_job {job_id} lost its global capacity lease"
+                f"{capacity_provider} worker_job {job_id} lost its global capacity lease"
             )
         return bool(capacity_heartbeat and capacity_heartbeat["still_owned"])
     finally:
@@ -381,14 +384,17 @@ async def claim_single_worker_job(
     is in ``RUNNING`` state with ``attempts`` incremented and claim metadata
     stamped.
     """
-    if execution_lane == "ec2_trial":
-        if capacity_provider != "ec2" or capacity_slot is None:
+    expected_capacity_provider = capacity_provider_for_execution_lane(execution_lane)
+    if expected_capacity_provider is not None:
+        if capacity_provider != expected_capacity_provider or capacity_slot is None:
+            provider_label = expected_capacity_provider.upper()
             raise RuntimeError(
-                "EC2 trial claims require a pre-acquired EC2 capacity lease"
+                f"{provider_label} trial claims require a pre-acquired "
+                f"{provider_label} capacity lease"
             )
     elif capacity_provider is not None or capacity_slot is not None:
         raise RuntimeError(
-            "sandbox capacity lease cannot be attached to a non-EC2 claim"
+            "sandbox capacity lease cannot be attached to an unbounded claim"
         )
 
     connection = await _open_connection()

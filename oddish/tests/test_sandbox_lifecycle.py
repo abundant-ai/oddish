@@ -221,6 +221,17 @@ async def test_ec2_claim_refuses_to_bypass_global_capacity_lease() -> None:
 
 
 @pytest.mark.asyncio
+async def test_thunder_claim_refuses_to_bypass_global_capacity_lease() -> None:
+    with pytest.raises(RuntimeError, match="pre-acquired THUNDER capacity lease"):
+        await claim_single_worker_job(
+            "model-queue",
+            worker_id="worker-1",
+            queue_slot=0,
+            execution_lane=sandbox_lifecycle.THUNDER_TRIAL_EXECUTION_LANE,
+        )
+
+
+@pytest.mark.asyncio
 async def test_ec2_claim_renews_capacity_lease_when_binding(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

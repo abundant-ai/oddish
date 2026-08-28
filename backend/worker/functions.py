@@ -92,6 +92,7 @@ from oddish.workers.queue.slots import (
 from oddish.workers.queue.sandbox_capacity import (
     SANDBOX_CAPACITY_LEASE_SECONDS,
     acquire_sandbox_capacity_lease,
+    configured_sandbox_capacity_limit,
     count_held_sandbox_capacity_leases,
     release_sandbox_capacity_lease,
 )
@@ -118,6 +119,8 @@ from oddish.runtime.registry import get_backend
 from oddish.runtime.sandbox_lifecycle import (
     DEFAULT_EXECUTION_LANE,
     EC2_TRIAL_EXECUTION_LANE,
+    THUNDER_TRIAL_EXECUTION_LANE,
+    capacity_provider_for_execution_lane,
 )
 
 from oddish.workers.analysis_trials import register_qa_imported_hook
@@ -257,19 +260,22 @@ async def _run_one_job(
         if execution_lane not in {
             DEFAULT_EXECUTION_LANE,
             EC2_TRIAL_EXECUTION_LANE,
+            THUNDER_TRIAL_EXECUTION_LANE,
         }:
             raise RuntimeError(f"unsupported execution lane: {execution_lane!r}")
-        if execution_lane == EC2_TRIAL_EXECUTION_LANE:
+        capacity_provider = capacity_provider_for_execution_lane(execution_lane)
+        if capacity_provider is not None:
+            capacity_limit = configured_sandbox_capacity_limit(capacity_provider)
             capacity_slot = await acquire_sandbox_capacity_lease(
-                provider="ec2",
-                limit=settings.ec2_max_concurrent_instances,
+                provider=capacity_provider,
+                limit=capacity_limit,
                 worker_id=worker_id,
                 lease_seconds=SANDBOX_CAPACITY_LEASE_SECONDS,
             )
             if capacity_slot is None:
                 console.print(
-                    "metric=sandbox_capacity_exhausted provider=ec2 "
-                    f"limit={settings.ec2_max_concurrent_instances}"
+                    f"metric=sandbox_capacity_exhausted provider={capacity_provider} "
+                    f"limit={capacity_limit}"
                 )
                 return
 
@@ -306,7 +312,7 @@ async def _run_one_job(
             memory_mb=WORKER_MEMORY_MB,
             nonpreemptible=WORKER_NONPREEMPTIBLE,
         )
-        if execution_lane == EC2_TRIAL_EXECUTION_LANE:
+        if capacity_provider is not None:
             # Only a normal return proves the sandbox teardown path completed.
             # On cancellation, reconciliation keeps this lease until the owner
             # is terminal.
@@ -320,7 +326,7 @@ async def _run_one_job(
                     post_success_hooks=_POST_SUCCESS_HOOKS,
                     harbor_variant_id=harbor_variant_id,
                     execution_lane=execution_lane,
-                    capacity_provider="ec2",
+                    capacity_provider=capacity_provider,
                     capacity_slot=capacity_slot,
                     worker_billing_spec=worker_billing_spec,
                 )
@@ -366,7 +372,7 @@ async def _run_one_job(
             finally:
                 if capacity_slot is not None and release_capacity_lease:
                     await release_sandbox_capacity_lease(
-                        provider="ec2",
+                        provider=capacity_provider,
                         slot=capacity_slot,
                         worker_id=worker_id,
                     )
@@ -914,21 +920,27 @@ async def poll_queue():
         console.print("[cyan]Queue dispatcher starting...[/cyan]")
         await configure_storage_paths()
 
-        ec2_capacity_limit = (
-            settings.ec2_max_concurrent_instances if settings.ec2_enabled else 0
-        )
-        held_ec2_capacity = (
-            await count_held_sandbox_capacity_leases(provider="ec2")
-            if ec2_capacity_limit > 0
-            else 0
-        )
+        capacity_providers_by_lane = {
+            EC2_TRIAL_EXECUTION_LANE: "ec2",
+            THUNDER_TRIAL_EXECUTION_LANE: "thunder",
+        }
+        capacity_limits_by_lane = {
+            lane: configured_sandbox_capacity_limit(provider)
+            for lane, provider in capacity_providers_by_lane.items()
+        }
+        held_by_lane = {
+            lane: (
+                await count_held_sandbox_capacity_leases(provider=provider)
+                if capacity_limits_by_lane[lane] > 0
+                else 0
+            )
+            for lane, provider in capacity_providers_by_lane.items()
+        }
         plan = await build_dispatch_plan(
             max_workers=MAX_WORKERS_PER_POLL,
             concurrency_limits_for=_effective_model_concurrency_limits,
-            capacity_limits_by_lane={
-                EC2_TRIAL_EXECUTION_LANE: ec2_capacity_limit,
-            },
-            held_by_lane={EC2_TRIAL_EXECUTION_LANE: held_ec2_capacity},
+            capacity_limits_by_lane=capacity_limits_by_lane,
+            held_by_lane=held_by_lane,
         )
         record_dispatch_snapshot(
             queue_keys=plan.queue_keys,

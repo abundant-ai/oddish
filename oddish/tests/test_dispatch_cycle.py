@@ -465,8 +465,8 @@ def test_sandbox_lane_capacity_is_zero_when_ec2_is_disabled(monkeypatch) -> None
 
     limits, held = asyncio.run(cycle.load_sandbox_capacity_by_lane())
 
-    assert limits == {"ec2_trial": 0}
-    assert held == {"ec2_trial": 0}
+    assert limits == {"ec2_trial": 0, "thunder_trial": 0}
+    assert held == {"ec2_trial": 0, "thunder_trial": 0}
 
 
 def test_sandbox_lane_capacity_counts_live_ec2_leases(monkeypatch) -> None:
@@ -488,8 +488,32 @@ def test_sandbox_lane_capacity_counts_live_ec2_leases(monkeypatch) -> None:
 
     limits, held = asyncio.run(cycle.load_sandbox_capacity_by_lane())
 
-    assert limits == {"ec2_trial": 3}
-    assert held == {"ec2_trial": 2}
+    assert limits == {"ec2_trial": 3, "thunder_trial": 0}
+    assert held == {"ec2_trial": 2, "thunder_trial": 0}
+
+
+def test_sandbox_lane_capacity_counts_live_thunder_leases(monkeypatch) -> None:
+    from oddish.config import settings
+    from oddish.dispatch import cycle
+    from oddish.workers.queue import sandbox_capacity
+
+    async def _count(*, provider: str) -> int:
+        assert provider == "thunder"
+        return 7
+
+    monkeypatch.setattr(settings, "ec2_enabled", False)
+    monkeypatch.setattr(settings, "thunder_enabled", True)
+    monkeypatch.setattr(settings, "thunder_max_capacity", 16)
+    monkeypatch.setattr(
+        sandbox_capacity,
+        "count_held_sandbox_capacity_leases",
+        _count,
+    )
+
+    limits, held = asyncio.run(cycle.load_sandbox_capacity_by_lane())
+
+    assert limits == {"ec2_trial": 0, "thunder_trial": 16}
+    assert held == {"ec2_trial": 0, "thunder_trial": 7}
 
 
 def test_run_dispatch_cycle_records_why_waiting_for_over_cap_queue() -> None:
