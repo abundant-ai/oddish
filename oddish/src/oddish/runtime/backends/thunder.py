@@ -50,17 +50,17 @@ class ThunderBackend:
             return False
 
         try:
-            from thunder_sandbox import AsyncSandbox, NotFoundError
+            from thunder_sandbox import NotFoundError, Sandbox
 
             try:
-                sandbox = await AsyncSandbox.from_id(external_id)
+                sandbox = await Sandbox.from_id_async(external_id)
             except NotFoundError:
                 logger.info(
                     "metric=thunder.sandbox_gone phase=teardown external_id=%s",
                     external_id,
                 )
                 return True
-            await sandbox.terminate()
+            await sandbox.terminate_async()
         except Exception:
             logger.exception(
                 "ThunderBackend.teardown: failed to terminate %s", external_id

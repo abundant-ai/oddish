@@ -11,7 +11,7 @@ import pytest
 from oddish.runtime.backends.thunder import ThunderBackend
 
 
-def test_capabilities_match_thunder_sdk_030() -> None:
+def test_capabilities_match_thunder_sdk_040() -> None:
     caps = ThunderBackend().capabilities()
 
     assert caps.gpu is not None
@@ -35,18 +35,18 @@ async def test_teardown_terminates_sandbox(monkeypatch: pytest.MonkeyPatch) -> N
     terminated = False
 
     class FakeSandbox:
-        async def terminate(self) -> None:
+        async def terminate_async(self) -> None:
             nonlocal terminated
             terminated = True
 
-    class FakeAsyncSandbox:
+    class FakeSandboxType:
         @staticmethod
-        async def from_id(external_id: str) -> FakeSandbox:
+        async def from_id_async(external_id: str) -> FakeSandbox:
             assert external_id == "sb-123"
             return FakeSandbox()
 
     module = ModuleType("thunder_sandbox")
-    module.AsyncSandbox = FakeAsyncSandbox  # type: ignore[attr-defined]
+    module.Sandbox = FakeSandboxType  # type: ignore[attr-defined]
     module.NotFoundError = type("NotFoundError", (Exception,), {})  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "thunder_sandbox", module)
 
@@ -60,13 +60,13 @@ async def test_teardown_treats_missing_sandbox_as_success(
 ) -> None:
     not_found = type("NotFoundError", (Exception,), {})
 
-    class FakeAsyncSandbox:
+    class FakeSandboxType:
         @staticmethod
-        async def from_id(external_id: str):
+        async def from_id_async(external_id: str):
             raise not_found(external_id)
 
     module = ModuleType("thunder_sandbox")
-    module.AsyncSandbox = FakeAsyncSandbox  # type: ignore[attr-defined]
+    module.Sandbox = FakeSandboxType  # type: ignore[attr-defined]
     module.NotFoundError = not_found  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "thunder_sandbox", module)
 
@@ -77,13 +77,13 @@ async def test_teardown_treats_missing_sandbox_as_success(
 async def test_teardown_converts_provider_failure_to_false(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class FakeAsyncSandbox:
+    class FakeSandboxType:
         @staticmethod
-        async def from_id(external_id: str):
+        async def from_id_async(external_id: str):
             raise RuntimeError(external_id)
 
     module = ModuleType("thunder_sandbox")
-    module.AsyncSandbox = FakeAsyncSandbox  # type: ignore[attr-defined]
+    module.Sandbox = FakeSandboxType  # type: ignore[attr-defined]
     module.NotFoundError = type("NotFoundError", (Exception,), {})  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "thunder_sandbox", module)
 
