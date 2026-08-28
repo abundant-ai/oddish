@@ -263,6 +263,26 @@ def _patch_unrelated_cleanup_phases(
 
 
 @pytest.mark.asyncio
+async def test_orphan_cleanup_terminates_persisted_thunder_sandbox_id(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    async def terminate(provider: str, external_id: str) -> bool:
+        calls.append((provider, external_id))
+        return True
+
+    monkeypatch.setattr(cleanup, "cancel_job_by_worker", terminate)
+
+    terminated = await cleanup._terminate_orphaned_sandboxes(
+        {("thunder", "sb-thunder-orphan")}
+    )
+
+    assert terminated == 1
+    assert calls == [("thunder", "sb-thunder-orphan")]
+
+
+@pytest.mark.asyncio
 async def test_unprovisioned_sandbox_runs_are_finalized_only_after_inventory_proof():
     class Result:
         rowcount = 2

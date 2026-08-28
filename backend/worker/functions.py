@@ -115,6 +115,7 @@ from oddish.workers.queue.worker_job_single_job import (
     run_single_worker_job,
 )
 from oddish.core.harbor_source import harbor_variant_function_name
+from oddish.core.helpers import register_provider_teardown_delegate
 from oddish.runtime.registry import get_backend
 from oddish.runtime.sandbox_lifecycle import (
     DEFAULT_EXECUTION_LANE,
@@ -148,6 +149,27 @@ async def teardown_ec2_sandbox(external_id: str) -> bool:
     if backend is None:
         raise RuntimeError("EC2 backend is not registered in the teardown worker")
     return await backend.teardown(external_id)
+
+
+@app.function(
+    image=image,
+    secrets=thunder_trial_worker_secrets,
+    timeout=300,
+    cpu=1.0,
+    memory=1024,
+)
+async def teardown_thunder_sandbox(external_id: str) -> bool:
+    backend = get_backend("thunder")
+    if backend is None:
+        raise RuntimeError("Thunder backend is not registered in the teardown worker")
+    return await backend.teardown(external_id)
+
+
+async def _teardown_thunder_via_function(external_id: str) -> bool:
+    return bool(await teardown_thunder_sandbox.remote.aio(external_id))
+
+
+register_provider_teardown_delegate("thunder", _teardown_thunder_via_function)
 
 
 # Register TRIAL / TASK_EXPAND / TAG_PROJECT handlers against the unified

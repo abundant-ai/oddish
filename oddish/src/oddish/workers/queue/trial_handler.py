@@ -54,6 +54,7 @@ from oddish.observability import (
 from oddish.runtime.sandbox_lifecycle import (
     SandboxLaunchContext,
     create_ec2_sandbox_run,
+    create_thunder_sandbox_run,
     mark_environment_provisioned,
     terminate_sandbox_run,
 )
@@ -1286,10 +1287,11 @@ async def _handle_harbor_event(
 
     if _ENVIRONMENT_PROVISIONED is not None and event == _ENVIRONMENT_PROVISIONED:
         provider = (hook_event.environment_provider or "").strip().lower()
-        if provider == "ec2":
+        if provider in {"ec2", "thunder"}:
             if sandbox_launch is None:
+                provider_label = "EC2" if provider == "ec2" else "Thunder"
                 raise RuntimeError(
-                    f"Trial {trial_id} received an EC2 environment-provisioned "
+                    f"Trial {trial_id} received a {provider_label} environment-provisioned "
                     "event without a sandbox ledger row"
                 )
             await mark_environment_provisioned(
@@ -1793,12 +1795,12 @@ async def _release_prepared_trial_attempt(
             )
             if not terminated:
                 console.print(
-                    f"[red]EC2 sandbox teardown remains retryable "
+                    f"[red]Sandbox teardown remains retryable "
                     f"sandbox_run={sandbox_launch.sandbox_run_id}[/red]"
                 )
         except Exception as exc:
             console.print(
-                f"[red]EC2 sandbox teardown failed "
+                f"[red]Sandbox teardown failed "
                 f"sandbox_run={sandbox_launch.sandbox_run_id}: {exc}[/red]"
             )
     if prepared_task.probe_key_id:
@@ -1869,6 +1871,14 @@ async def _prepare_claimed_trial_attempt(
             if worker_job_id is None or worker_job_attempt is None:
                 raise RuntimeError("EC2 trial requires worker job attempt identity")
             sandbox_launch = await create_ec2_sandbox_run(
+                worker_job_id=worker_job_id,
+                worker_job_attempt=worker_job_attempt,
+                trial_id=trial_id,
+            )
+        elif span_provider == "thunder":
+            if worker_job_id is None or worker_job_attempt is None:
+                raise RuntimeError("Thunder trial requires worker job attempt identity")
+            sandbox_launch = await create_thunder_sandbox_run(
                 worker_job_id=worker_job_id,
                 worker_job_attempt=worker_job_attempt,
                 trial_id=trial_id,
