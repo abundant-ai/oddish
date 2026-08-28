@@ -10,6 +10,42 @@ from oddish.workers.queue import trial_handler
 
 
 @pytest.mark.asyncio
+async def test_analysis_probe_env_pins_task_version(monkeypatch, tmp_path):
+    temp_root = tmp_path / "download"
+    source_task = temp_root / "task"
+    source_task.mkdir(parents=True)
+    prepared = trial_handler.PreparedTrialRun(
+        task_path=str(source_task),
+        task_s3_key="tasks/task-1/v7.tar.gz",
+        task_id="task-1",
+        trial_agent="claude-code",
+        trial_model="anthropic/claude-sonnet-4-6",
+        trial_environment="docker",
+        trial_harbor_config={"mode": "qa_eval", "extra_instructions": "brief"},
+        task_version=7,
+        org_id="org-1",
+    )
+
+    async def resolve_task_directory(**_kwargs):
+        return source_task, temp_root, prepared.task_s3_key
+
+    async def mint_probe_creds(**_kwargs):
+        return "key-1", {"ODDISH_API_KEY": "secret"}
+
+    monkeypatch.setattr(trial_handler, "resolve_task_directory", resolve_task_directory)
+    monkeypatch.setattr(trial_handler, "apply_analysis_overlay", lambda *_a, **_k: None)
+    monkeypatch.setattr(trial_handler, "enable_local_internet", lambda *_a: None)
+    monkeypatch.setattr(trial_handler, "mint_probe_creds", mint_probe_creds)
+
+    task = await trial_handler._prepare_trial_task(
+        trial_id="task-1-4", prepared_trial=prepared
+    )
+
+    assert task.probe_agent_env["ODDISH_PROBE_TASK_ID"] == "task-1"
+    assert task.probe_agent_env["ODDISH_PROBE_TASK_VERSION"] == "7"
+
+
+@pytest.mark.asyncio
 async def test_summarize_materialization_failure_removes_task_copy(
     monkeypatch, tmp_path
 ):

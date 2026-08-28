@@ -1405,6 +1405,15 @@ class Settings(BaseSettings):
     # do not carry TNR_API_TOKEN never advertise or route Thunder trials.
     thunder_enabled: bool = False
     thunder_max_capacity: int = 16
+      
+    # Numinous GPU lane (opt-in, separate flag). When enabled the backend
+    # advertises a GpuSupport(accelerators=("H100", "H200", "A100", "L40S",
+    # "A10", "RTX_4090"), max_count=8), so capability negotiation routes
+    # GPU trials (SWE-marathon H100, terminal-bench GPU tasks) to Numinous
+    # ahead of Modal. GPU trials still require ``numinous_enabled=1``
+    # underneath. Requires the Numinous control plane to have a GPU
+    # provider wired (RunPod SECURE for dedicated, or gpu_mux for shared).
+    numinous_gpu_enabled: bool = False
 
     ec2_enabled: bool = False
     ec2_region: str | None = None
