@@ -535,11 +535,7 @@ export function buildOddishRunCommand(trial: Trial, task: Task): string {
   }
 
   if (trial.model) {
-    const modelArg =
-      trial.provider && !trial.model.includes("/")
-        ? `${trial.provider}/${trial.model}`
-        : trial.model;
-    parts.push(`-m ${modelArg}`);
+    parts.push(`-m ${trial.queue_key || trial.model}`);
   }
 
   return parts.join(" ");
@@ -1731,14 +1727,19 @@ export function TrialDetailPanel({
                 </Card>
               )}
 
-              {/* Discreet reproduction command — hidden from public viewers */}
+              {/* Equivalent retry command — hidden from public viewers */}
               {showAnalysis && (
-                <CodeBlock
-                  code={buildOddishRunCommand(trial, task)}
-                  language="bash"
-                  maxHeight="none"
-                  className="opacity-60 transition-opacity hover:opacity-100"
-                />
+                <div>
+                  <p className="mb-1 text-[11px] text-muted-foreground">
+                    Equivalent retry command, reconstructed.
+                  </p>
+                  <CodeBlock
+                    code={buildOddishRunCommand(trial, task)}
+                    language="bash"
+                    maxHeight="none"
+                    className="opacity-60 transition-opacity hover:opacity-100"
+                  />
+                </div>
               )}
             </div>
           </ActiveTabContent>
