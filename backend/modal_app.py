@@ -253,6 +253,7 @@ _GKE_COORDS_FILE = "/opt/oddish/gke_coords.json"
 
 _EC2_ENABLED_ENV = "ODDISH_EC2_ENABLED"
 _NUMINOUS_ENABLED_ENV = "ODDISH_NUMINOUS_ENABLED"
+_NUMINOUS_GPU_ENABLED_ENV = "ODDISH_NUMINOUS_GPU_ENABLED"
 _NUMINOUS_SECRET_NAME = os.environ.get(
     "ODDISH_NUMINOUS_SECRET_NAME", "oddish-numinous"
 )
@@ -597,6 +598,16 @@ for _gke_secret_name in GKE_SECRET_PLAN:
 _NUMINOUS_ENABLED = _is_truthy(
     _deploy_value(_NUMINOUS_ENABLED_ENV, os.environ, LOCAL_DOTENV_VARS)
 )
+# GPU lane is a SECOND opt-in, resolved from the same deploy-time channel so
+# the value the API workers see matches what the deploy host resolved. Read
+# by settings.numinous_gpu_enabled in oddish.runtime.backends.numinous. Baked
+# into ENV_VARS below (mirrors _NUMINOUS_ENABLED); without the bake, workers
+# would only see it if the oddish-numinous secret happened to re-inject it,
+# so a deploy setting ODDISH_NUMINOUS_GPU_ENABLED=1 would still route GPU
+# trials to Modal.
+_NUMINOUS_GPU_ENABLED = _is_truthy(
+    _deploy_value(_NUMINOUS_GPU_ENABLED_ENV, os.environ, LOCAL_DOTENV_VARS)
+)
 NUMINOUS_SECRET_PLAN = (
     [_NUMINOUS_SECRET_NAME] if _NUMINOUS_ENABLED and _NUMINOUS_SECRET_NAME else []
 )
@@ -870,6 +881,12 @@ ENV_VARS = {
     # still registers the backend. Without the bake, workers only saw the flag
     # if the secret happened to re-inject it.
     _NUMINOUS_ENABLED_ENV: str(_NUMINOUS_ENABLED).lower(),
+    # GPU lane opt-in, baked like the enable flag above so capability
+    # negotiation inside the worker (which re-reads settings from the image
+    # env, where neither the deploy shell nor backend/.env exists) actually
+    # sees it. Independent of _NUMINOUS_ENABLED: a CPU-only deploy leaves
+    # this "false" and GPU trials stay on Modal.
+    _NUMINOUS_GPU_ENABLED_ENV: str(_NUMINOUS_GPU_ENABLED).lower(),
 }
 
 

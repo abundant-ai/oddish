@@ -5158,6 +5158,33 @@ def test_opencode_environment_hosts_follow_custom_base_url():
     assert "raw.githubusercontent.com" in hosts
 
 
+def test_gemini_cli_environment_hosts_span_install_and_its_pinned_transport():
+    """Gemini CLI setup needs npm hosts and always calls the Gemini transport."""
+    hosts = harbor_runner._gemini_cli_environment_hosts(
+        HarborAgentConfig(name="gemini-cli", model_name="openai/gpt-4o")
+    )
+
+    assert "raw.githubusercontent.com" in hosts  # nvm installer
+    assert "nodejs.org" in hosts  # Node runtime
+    assert "registry.npmjs.org" in hosts  # @google/gemini-cli package
+    assert "generativelanguage.googleapis.com" in hosts
+    assert "api.openai.com" not in hosts
+
+
+def test_gemini_cli_environment_hosts_follow_a_custom_gemini_route():
+    hosts = harbor_runner._gemini_cli_environment_hosts(
+        HarborAgentConfig(
+            name="gemini-cli",
+            model_name="gemini/gemini-3.7-flash",
+            env={"GOOGLE_GEMINI_BASE_URL": "https://gemini-relay.example/v1"},
+        )
+    )
+
+    assert "gemini-relay.example" in hosts
+    assert "generativelanguage.googleapis.com" not in hosts
+    assert "raw.githubusercontent.com" in hosts
+
+
 def test_antigravity_environment_hosts_span_install_and_model():
     """agy self-installs at agent-setup, same lifecycle shape as opencode.
 
