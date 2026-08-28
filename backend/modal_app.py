@@ -604,7 +604,8 @@ _NUMINOUS_ENABLED = _is_truthy(
 # into ENV_VARS below (mirrors _NUMINOUS_ENABLED); without the bake, workers
 # would only see it if the oddish-numinous secret happened to re-inject it,
 # so a deploy setting ODDISH_NUMINOUS_GPU_ENABLED=1 would still route GPU
-# trials to Modal.
+# trials to Modal. Preview deploys set it (pr-preview.yml) for end-to-end
+# GPU-lane validation; staging/prod keep it off.
 _NUMINOUS_GPU_ENABLED = _is_truthy(
     _deploy_value(_NUMINOUS_GPU_ENABLED_ENV, os.environ, LOCAL_DOTENV_VARS)
 )
