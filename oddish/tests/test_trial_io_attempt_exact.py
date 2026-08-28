@@ -386,6 +386,53 @@ def test_freeform_logs_use_the_manifest_selected_harbor_directory(monkeypatch):
     assert storage.log_prefixes == [current_prefix]
 
 
+def test_root_only_failure_manifest_reads_exact_attempt_logs(monkeypatch):
+    _clear_cache()
+    prefix = "tasks/task-1/trials/task-1-7/attempt-2/"
+    log_key = f"{prefix}modal-output.log"
+    storage = _Storage(
+        {
+            f"{prefix}result.json": json.dumps({"trial_results": []}),
+            log_key: "image build failed\n",
+        },
+        listed=[log_key],
+    )
+    monkeypatch.setattr(trial_io, "get_storage_client", lambda: storage)
+
+    freeform = asyncio.run(
+        trial_io.read_trial_logs(_trial(prefix=prefix, attempts=2))
+    )
+    structured = asyncio.run(
+        trial_io.read_trial_logs_structured(_trial(prefix=prefix, attempts=2))
+    )
+
+    assert freeform["s3_key"] == prefix
+    assert "image build failed" in freeform["logs"]
+    assert storage.log_prefixes == [prefix]
+    assert structured["other"] == [
+        {"name": "modal-output.log", "content": "image build failed\n"}
+    ]
+
+
+def test_malformed_manifest_does_not_expose_sibling_logs(monkeypatch):
+    prefix = "tasks/task-1/trials/task-1-7/attempt-2/"
+    stale_key = f"{prefix}old-run/verifier/test-stdout.txt"
+    storage = _Storage(
+        {
+            f"{prefix}result.json": json.dumps({"trial_results": [{}]}),
+            stale_key: "STALE\n",
+        },
+        listed=[stale_key],
+    )
+    monkeypatch.setattr(trial_io, "get_storage_client", lambda: storage)
+
+    result = asyncio.run(trial_io.read_trial_logs(_trial(prefix=prefix, attempts=2)))
+
+    assert result["logs"] == ""
+    assert storage.log_prefixes == []
+    assert stale_key not in storage.download_calls
+
+
 def test_structured_logs_with_a_missing_pointer_do_not_scan_sibling_attempts(
     monkeypatch,
 ):

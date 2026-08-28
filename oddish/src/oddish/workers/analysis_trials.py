@@ -156,6 +156,7 @@ def analysis_check_payload(kind: str, harbor_config: dict | None) -> dict:
         # for the dimension field; the validator must not be stricter.
         "dimension_spellings": sorted(_DIMENSION_HEADING_SPELLINGS),
         "tiers": [t.value for t in ActionTier],
+        "must_fix_tier": ActionTier.MUST_FIX.value,
     }
     trajectory_vocabulary = {
         "trajectory_components": [v.value for v in TrajectoryBlockTaxonomy],

@@ -158,7 +158,10 @@ High-level flow:
    created once per task version at sweep time.
    `POST /qa-evals` is the lower-level historical prompt-replay primitive. It
    creates one output experiment and one `qa_eval` trial per exact source
-   solver trial. Each new trial stores its source-trial id and prompt hash,
+   solver trial. Terminal failed sources remain replayable when no trajectory
+   was recorded; the QA brief then uses the result, verifier, exception, and
+   authoritative trial facts without inventing agent actions. Each new trial
+   stores its source-trial id and prompt hash,
    reuses the normal QA brief and `qa_result.json`, and writes the candidate
    analysis only to the new trial. Hosted creation resolves the authenticated
    caller as the payer, admits the validated replay count once, and stamps that

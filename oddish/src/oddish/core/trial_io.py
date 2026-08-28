@@ -49,7 +49,7 @@ _EMPTY_PROBE_ARTIFACTS: dict = {
 
 @dataclass(frozen=True, slots=True)
 class _TrialS3Layout:
-    """The one Harbor trial directory selected by an attempt manifest."""
+    """The one artifact directory selected by an attempt manifest."""
 
     attempt_prefix: str
     trial_prefix: str | None
@@ -256,6 +256,10 @@ async def _resolve_trial_s3_layout(
     trial_results = manifest.get("trial_results")
     if not isinstance(trial_results, list):
         return _TrialS3Layout(attempt_prefix, None, True)
+    if not trial_results:
+        # Setup failures have no Harbor child trial. Their synthetic manifest
+        # and diagnostic artifacts belong directly to this exact attempt.
+        return _TrialS3Layout(attempt_prefix, attempt_prefix, True)
     trial_name = next(
         (
             item.get("trial_name").strip()

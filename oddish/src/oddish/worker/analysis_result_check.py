@@ -254,6 +254,19 @@ def _check_classification(
             errors.extend(
                 _check_action_item(item, expected, f"{where}.action_items[{index}]")
             )
+        has_post_trial_must_fix = any(
+            isinstance(item, dict)
+            and item.get("tier", item.get("severity")) == expected["must_fix_tier"]
+            for item in action_items
+        )
+        if analysis.get("classification") == "GOOD_FAILURE" and (
+            has_post_trial_must_fix
+            or bool(expected.get("pre_trial_must_fix_ids"))
+        ):
+            errors.append(
+                f"{where}.classification cannot be GOOD_FAILURE when the task "
+                "has a must-fix finding"
+            )
     exploitation = analysis.get("exploitation")
     if not isinstance(exploitation, list):
         errors.append(f"{where}.exploitation must be a list")

@@ -135,8 +135,6 @@ async def create_qa_eval_core(
             reason = "task version belongs to another task"
         elif not version_by_id[source.task_version_id].task_s3_key:
             reason = "exact task version has no stored files"
-        elif not source.has_trajectory:
-            reason = "missing a stored trajectory"
         if reason:
             invalid.append(f"{source_trial_id}: {reason}")
 

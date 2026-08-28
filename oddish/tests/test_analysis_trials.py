@@ -238,6 +238,7 @@ def _qa_check_payload(
     with_verdict: bool = False,
     trial_evidence: list[dict] | None = None,
     pre_trial_item_ids: list[str] | None = None,
+    pre_trial_must_fix_ids: list[str] | None = None,
 ) -> dict:
     from oddish.workers.analysis_trials import analysis_check_payload
 
@@ -248,6 +249,7 @@ def _qa_check_payload(
                 "trial_ids": trial_ids,
                 "trial_evidence": trial_evidence or [],
                 "pre_trial_item_ids": pre_trial_item_ids or [],
+                "pre_trial_must_fix_ids": pre_trial_must_fix_ids or [],
                 "with_verdict": with_verdict,
             }
         },
@@ -1356,6 +1358,68 @@ def test_the_validator_rejects_invalid_analyses_and_summaries():
     hollow["trajectory_summary"] = dict(hollow["trajectory_summary"], components=[])
     errors = check_analysis_result({"trials": [hollow], "verdict": None}, expected)
     assert any("components" in e for e in errors)
+
+
+def test_the_validator_rejects_good_failure_with_a_must_fix_finding():
+    from oddish.worker.analysis_result_check import check_analysis_result
+
+    must_fix_item = {
+        "source": "post_trial",
+        "problem_type": "incompleteness",
+        "dimension": "verifier",
+        "file": "tests/verify.py",
+        "line_start": 4,
+        "line_end": 6,
+        "title": "The verifier ignores the exit code",
+        "detail": "It never asserts returncode.",
+        "recommendation": "Assert returncode == 0.",
+        "tier": "must_fix",
+    }
+    expected = _qa_check_payload(["t-1"])
+    entry = _good_qa_entry("t-1")
+    entry["analysis"] = {
+        **entry["analysis"],
+        "classification": "GOOD_FAILURE",
+        "action_items": [must_fix_item],
+    }
+
+    errors = check_analysis_result({"trials": [entry], "verdict": None}, expected)
+    assert any("cannot be GOOD_FAILURE" in error for error in errors)
+
+    entry["analysis"]["classification"] = "BAD_FAILURE"
+    assert check_analysis_result({"trials": [entry], "verdict": None}, expected) == []
+
+    entry["analysis"]["classification"] = "HARNESS_ERROR"
+    assert check_analysis_result({"trials": [entry], "verdict": None}, expected) == []
+
+
+def test_the_validator_applies_pre_trial_must_fix_findings_to_classification():
+    from oddish.worker.analysis_result_check import check_analysis_result
+
+    expected = _qa_check_payload(
+        ["t-1"],
+        pre_trial_item_ids=["audit-1"],
+        pre_trial_must_fix_ids=["audit-1"],
+    )
+    entry = _good_qa_entry("t-1")
+    entry["analysis"] = {
+        **entry["analysis"],
+        "classification": "GOOD_FAILURE",
+        "exploitation": [
+            {
+                "links_to": "audit-1",
+                "exploited": False,
+                "exploit_evidence": None,
+                "causal": False,
+            }
+        ],
+    }
+
+    errors = check_analysis_result({"trials": [entry], "verdict": None}, expected)
+    assert any("cannot be GOOD_FAILURE" in error for error in errors)
+
+    entry["analysis"]["classification"] = "BAD_FAILURE"
+    assert check_analysis_result({"trials": [entry], "verdict": None}, expected) == []
 
 
 def test_the_validator_reconciles_classification_with_authoritative_trial_facts():

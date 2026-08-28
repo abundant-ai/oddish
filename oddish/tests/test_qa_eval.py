@@ -103,7 +103,11 @@ def test_replay_reuses_the_production_qa_brief_and_contract():
     assert check_analysis_result(_qa_artifact(), expected) == []
 
 
-def _source(*, has_trajectory: bool = True) -> TrialModel:
+def _source(
+    *,
+    has_trajectory: bool = True,
+    status: TrialStatus = TrialStatus.SUCCESS,
+) -> TrialModel:
     return TrialModel(
         id="source-1",
         name="source-1",
@@ -116,7 +120,7 @@ def _source(*, has_trajectory: bool = True) -> TrialModel:
         queue_key="codex:model",
         model="model",
         kind="agent",
-        status=TrialStatus.SUCCESS,
+        status=status,
         is_probe=False,
         has_trajectory=has_trajectory,
         analysis={"classification": "BAD_FAILURE"},
@@ -171,8 +175,8 @@ class _CreateSession:
 
 
 @pytest.mark.asyncio
-async def test_create_adds_one_pointer_trial_without_moving_the_source(monkeypatch):
-    source = _source()
+async def test_create_accepts_a_failed_source_without_a_trajectory(monkeypatch):
+    source = _source(has_trajectory=False, status=TrialStatus.FAILED)
     session = _CreateSession(source)
     captured = {}
     admitted = []
@@ -214,9 +218,9 @@ async def test_create_adds_one_pointer_trial_without_moving_the_source(monkeypat
     assert captured["payload"]["trial_evidence"] == [
         {
             "trial_id": "source-1",
-            "status": "success",
+            "status": "failed",
             "reward": None,
-            "has_trajectory": True,
+            "has_trajectory": False,
             "agent": "codex",
             "baseline_kind": None,
         }
@@ -232,8 +236,8 @@ async def test_create_adds_one_pointer_trial_without_moving_the_source(monkeypat
 
 @pytest.mark.asyncio
 async def test_create_rejects_the_whole_request_when_a_source_is_ineligible():
-    session = _CreateSession(_source(has_trajectory=False))
-    with pytest.raises(HTTPException, match="missing a stored trajectory"):
+    session = _CreateSession(_source(status=TrialStatus.RUNNING))
+    with pytest.raises(HTTPException, match=r"not terminal \(running\)"):
         await create_qa_eval_core(
             session,
             request=QAEvalCreateRequest(
