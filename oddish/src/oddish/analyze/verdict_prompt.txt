@@ -1,16 +1,6 @@
-One benchmark task ran {num_trials} times. Each run is a trial, and each trial has an analysis below. Read the analyses and decide: accept the task or reject it. Accept means the task works and can stay in the benchmark. Reject means the task has a problem that a person must fix first.
+Decide whether to accept or reject the benchmark task after classifying every listed trial. Accept means the task works and can stay in the benchmark. Reject means a person must fix the task first.
 
-## INPUTS
-
-Baseline validation:
-{baseline_summary}
-
-Static quality check:
-{quality_check_summary}
-
-Trial classifications:
-
-{trial_classifications}
+Use the enclosing QA brief's authoritative evidence manifest, baseline evidence, source-audit status and findings, and the classifications you just produced. Do not invent a missing baseline or source-audit result.
 
 ## THE LABELS
 
@@ -24,8 +14,9 @@ Each analysis gives its trial one label. A label is a claim from that analysis, 
 
 ## STEP 1: LOOK FOR AN IMMEDIATE REJECTION
 
-Four kinds of evidence reject the task on their own. Look for them first. If you find one, reject the task. Good results from the other trials do not cancel it.
+Five kinds of evidence reject the task on their own. Look for them first. If you find one, reject the task. Good results from the other trials do not cancel it.
 
+* Any current source-audit finding with tier `must_fix`. That tier means the defect can decide a trial.
 * A used leak. A trial read the hidden tests, the solution, or other files the task must keep hidden (subtype `hidden_file_leak`, `test_inspection`, `oracle_copying`, or `unintended_access`).
 * A found leak. A `must_fix` finding with the dimension `info_leakage`, from the static quality check or from a trial. The finding counts even if no trial used the leak.
 * Weak tests. A trial measured that the tests also pass work that does not solve the task. Example: the untouched base model already scores above the pass threshold. Weak tests make every pass meaningless, including the ones labeled GOOD_SUCCESS.
@@ -49,19 +40,9 @@ The decision: reject if most trials show the same task problem, with clear evide
 * A rejection because most trials show the same problem is high confidence.
 * An accept is high confidence when the trials agree, and low when they disagree or every trial is a harness error.
 
-## OUTPUT
+## VERDICT FIELDS
 
-Return ONLY valid JSON (no markdown, no code blocks, no explanation):
-
-{{
-  "verdict": "accept" | "reject",
-  "confidence": "high" | "medium" | "low",
-  "primary_issue": "the main problem" or null,
-  "recommendations": ["concrete fix 1", "concrete fix 2"],
-  "reasoning": "1-3 sentences about what the trials show"
-}}
-
-How to write the fields:
+The enclosing QA brief owns the output file and JSON structure. Fill its `verdict` object as follows:
 
 * Write for the task's author, who reads this once and has seen none of the analyses. Use short sentences, plain words, and no jargon.
 * Wrap every code name in backticks: files, tests, functions, variables, config keys. Use no other formatting.
