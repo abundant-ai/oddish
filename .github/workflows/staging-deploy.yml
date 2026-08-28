@@ -52,6 +52,13 @@ jobs:
       # runs it enabled so the routing ships to main only after soaking here.
       # Attaches the oddish-numinous secret (env main): API URL + key.
       ODDISH_NUMINOUS_ENABLED: "1"
+      # Numinous GPU lane (#1412). Staging-only for now so GPU trial routing
+      # to Numinous soaks here before it ships to main. Separate flag from
+      # ODDISH_NUMINOUS_ENABLED so the CPU backend can run without accepting
+      # GPU work. When on, NuminousBackend advertises H100-first GpuSupport
+      # and cheap-first negotiation routes GPU trials (SWE-marathon) to
+      # Numinous ahead of Modal.
+      ODDISH_NUMINOUS_GPU_ENABLED: "1"
       # GKE (TPU) execution backend, mirroring modal-deploy.yml's prod block.
       # backend/modal_app.py only bakes env vars prefixed ODDISH_GKE_ into the
       # deployed image (its ENV_VARS dict filters on that prefix); an unprefixed
