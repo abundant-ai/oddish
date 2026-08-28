@@ -30,6 +30,10 @@ class HarborTrialExtraction:
     total_steps: int | None
     cost_usd: float | None
     phase_timing: dict[str, Any] | None
+    http_status: int | None = None
+    request_id: str | None = None
+    session_id: str | None = None
+    retry_after_seconds: float | None = None
 
 
 def detect_trajectory(path: Path) -> bool:
@@ -169,16 +173,34 @@ def build_trial_result(
     verifier_summary: dict[str, Any] | None,
     error: str | None,
     exception_type: str | None,
+    *,
+    http_status: int | None = None,
+    request_id: str | None = None,
+    session_id: str | None = None,
+    retry_after_seconds: float | None = None,
 ) -> dict[str, Any] | None:
     """Merge verifier metrics, a compact report, and a quiet exception marker."""
     result: dict[str, Any] = sanitize_task_result(metrics) or {}
     if verifier_summary is not None:
         result["_verifier"] = verifier_summary
     if exception_type is not None:
-        result["harbor_exception"] = {
+        exception: dict[str, Any] = {
             "exception_type": exception_type,
             "error": error[:300] if error else None,
         }
+        exception.update(
+            {
+                key: value
+                for key, value in {
+                    "http_status": http_status,
+                    "request_id": request_id,
+                    "session_id": session_id,
+                    "retry_after_seconds": retry_after_seconds,
+                }.items()
+                if value is not None
+            }
+        )
+        result["harbor_exception"] = exception
     return result or None
 
 
@@ -371,18 +393,32 @@ def _extract_reward(trial_result: Any) -> float | None:
     return _as_float(reward_value)
 
 
-def _extract_error(trial_result: Any) -> tuple[str | None, str | None]:
+def _extract_error(
+    trial_result: Any,
+) -> tuple[
+    str | None,
+    str | None,
+    int | None,
+    str | None,
+    str | None,
+    float | None,
+]:
     exc = getattr(trial_result, "exception_info", None)
     if exc is None:
-        return None, None
+        return None, None, None, None, None, None
     exception_type = getattr(exc, "exception_type", None)
     message = (
         getattr(exc, "exception_message", None)
         or exception_type
         or "Harbor execution error"
     )
-    return str(message) if message else None, (
-        str(exception_type) if exception_type else None
+    return (
+        str(message) if message else None,
+        str(exception_type) if exception_type else None,
+        getattr(exc, "http_status", None),
+        getattr(exc, "request_id", None),
+        getattr(exc, "session_id", None),
+        getattr(exc, "retry_after_seconds", None),
     )
 
 
@@ -414,7 +450,14 @@ def extract_trial_result_fields(
     artifact_dir: Path | None = None,
 ) -> HarborTrialExtraction:
     """Flatten a Harbor TrialResult-like object into Oddish persistence fields."""
-    error, exception_type = _extract_error(trial_result)
+    (
+        error,
+        exception_type,
+        http_status,
+        request_id,
+        session_id,
+        retry_after_seconds,
+    ) = _extract_error(trial_result)
     input_tokens, cache_tokens, output_tokens, cost_usd = _extract_token_cost_totals(
         trial_result
     )
@@ -440,4 +483,8 @@ def extract_trial_result_fields(
         total_steps=total_steps,
         cost_usd=cost_usd,
         phase_timing=extract_timing_info(trial_result),
+        http_status=http_status,
+        request_id=request_id,
+        session_id=session_id,
+        retry_after_seconds=retry_after_seconds,
     )

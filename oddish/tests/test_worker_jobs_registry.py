@@ -67,11 +67,12 @@ def test_job_outcome_ok_sets_success_only():
 
 
 def test_job_outcome_fail_sets_failure_only():
-    outcome = JobOutcome.fail("boom", retryable=False)
+    outcome = JobOutcome.fail("boom", retryable=False, retry_after_seconds=12.5)
     assert outcome.success is None
     assert isinstance(outcome.failure, JobFailure)
     assert outcome.failure.error_message == "boom"
     assert outcome.failure.retryable is False
+    assert outcome.failure.retry_after_seconds == 12.5
 
 
 def test_job_outcome_rejects_both_unset():

@@ -134,6 +134,15 @@ High-level flow:
    collections, and combined experiments follow the same create-only owner rule.
 3. Workers claim one `worker_jobs` row at a time, dispatch to the registered
    handler for its kind, write heartbeats, and exit.
+   Harbor's `RetryConfig` owns exception include/exclude policy and backoff for
+   both retry scopes. `Trial` first retries typed installer transport failures
+   and transient provider `ApiError` failures in the active sandbox, up to
+   `max_in_place_retries`; resumable agents continue their session, while other
+   agents rerun the original instruction in the existing working tree. A final
+   failure crosses the result boundary once through `ExceptionInfo`, including
+   optional HTTP status, request ID, session ID, and retry-after metadata.
+   Harbor's `TrialQueue` still owns whole-trial retries, and Oddish
+   `worker_jobs` owns durable fresh-sandbox retries across worker processes.
 4. Trajectory analysis is **task-scoped** and runs as a trial: when every
    agent trial of a task is terminal, one QA trial (`trials.kind = 'qa'`)
    is created on the same task. Its agent classifies
@@ -147,8 +156,21 @@ High-level flow:
    verdict. A sweep of `T` tasks × `N` trials therefore creates `T`
    QA trials, not `T × (N + 1)`. The pre-trial audit is an `audit`-kind trial
    created once per task version at sweep time.
-   Non-'agent' kinds are excluded from cost, quota, leaderboard, facet, and
-   public surfaces (see `oddish.filters.trial_predicates.EligibleTrialScope`).
+   `POST /qa-evals` is the lower-level historical prompt-replay primitive. It
+   creates one output experiment and one `qa_eval` trial per exact source
+   solver trial. Each new trial stores its source-trial id and prompt hash,
+   reuses the normal QA brief and `qa_result.json`, and writes the candidate
+   analysis only to the new trial. Hosted creation resolves the authenticated
+   caller as the payer, admits the validated replay count once, and stamps that
+   payer on every new `qa_eval` trial. When
+   `ODDISH_QUOTA_COUNTS_ANALYSIS_AND_COMPUTE` is on,
+   queued analysis trials reserve quota through the same inflight predicates as
+   solver trials; automatic QA, audit, and summarize trials remain org-level
+   spend with a null payer. Callers retain the returned trial ids and read
+   results through the existing single-trial endpoint.
+   Non-'agent' kinds are excluded from solver cost, leaderboard, facet, and
+   public surfaces (see `oddish.filters.trial_predicates.EligibleTrialScope`);
+   their separate cost and optional quota basis comes from `analysis_spend`.
 5. While a trial runs, a worker-side tailer (`oddish.workers.harbor.live_tail`,
    on by default via `live_tail_enabled` / `live_tail_interval_sec`) polls the
    agent's log file inside the sandbox for supported agents (claude-code,
@@ -319,9 +341,9 @@ a code change that ships with a deploy.
 
 `WorkerJobKind` (in `oddish.db.models`):
 
-- **Active**: `TRIAL` (Harbor trial execution — including `qa`, `audit`, and
-  `summarize` kind trials), `TASK_EXPAND` (sweep expansion), `TAG_PROJECT`
-  (tag recompute).
+- **Active**: `TRIAL` (Harbor trial execution — including `qa`, `qa_eval`,
+  `audit`, and `summarize` kind trials), `TASK_EXPAND` (sweep expansion),
+  `TAG_PROJECT` (tag recompute).
 - **Legacy, enum-only**: `QA`, `VERDICT`, `ANALYSIS`, `QA_REVIEW`,
   `ANALYZER`, `ANALYZER_BLOCK`. QA/audit/analyzer work runs as trials now;
   no handler claims these kinds (workers claim only registered kinds), and
@@ -467,9 +489,11 @@ experiments, and exact agent/model summaries use the requested version. Its
 experiment list is derived from that version's live, non-probe, non-superseded,
 non-combine trial population, matching `/detail`. Pre-trial audit metadata stays
 on `/detail` and is not serialized with the bounded version summary. The
-response also carries compact QA verdict
-presentation/control fields and caps the selected-version trial preview at 20
-lightweight refs. The handler uses at most three SQL statements, stays below the
+response also carries compact QA verdict presentation/control fields and one
+`active_qa_trial` lightweight ref for the task's live, non-superseded QA run.
+That ref is task-scoped rather than selected-version-scoped. Every lightweight
+trial ref carries `kind`, and the selected-version trial preview remains capped
+at 20 rows. The handler uses at most three SQL statements, stays below the
 50 KB response budget, and must not select trial `result`, `analysis`,
 `error_message`, jobs, or ORM relationships. `GET /tasks/{task_id}/detail`
 remains the compatibility bundle for CLI and drawer consumers during the soak;

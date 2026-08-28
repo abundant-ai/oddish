@@ -1684,7 +1684,7 @@ export function ExperimentDetailView({
     });
   };
 
-  const handleNavigateToTrial = (trial: Trial, trialIndex: number) => {
+  const handleNavigateToTrial = (trial: Trial, trialIndex: number | null) => {
     if (!drawerState) return;
     cancelPendingDeepLink();
     setDrawerState({

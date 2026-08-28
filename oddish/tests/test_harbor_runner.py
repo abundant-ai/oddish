@@ -631,11 +631,13 @@ def test_antigravity_wrapper_swaps_stock_class_for_oddish_wrapper():
         "_supports_daytona_compose_restricted_agent_network",
         return_value=True,
     ):
-        routed_profile = harbor_runner._apply_daytona_compose_restricted_network_profile(
-            task_path=Path("/tmp"),
-            environment_config=None,
-            agent_config=agent_config,
-            runtime_transport_env={},
+        routed_profile = (
+            harbor_runner._apply_daytona_compose_restricted_network_profile(
+                task_path=Path("/tmp"),
+                environment_config=None,
+                agent_config=agent_config,
+                runtime_transport_env={},
+            )
         )
 
     assert agent_config.name is None
@@ -1137,9 +1139,7 @@ def test_restricted_compose_runtime_route_is_private_and_artifacts_are_scrubbed(
             (self.job_dir / "result.json").write_text(leaked, encoding="utf-8")
             return object()
 
-    monkeypatch.setattr(
-        harbor_runner, "apply_harbor_patches", lambda **_kwargs: None
-    )
+    monkeypatch.setattr(harbor_runner, "apply_harbor_patches", lambda **_kwargs: None)
     monkeypatch.setattr(harbor_runner, "get_backend", lambda value: None)
     monkeypatch.setattr(
         harbor_runner, "validate_task_timeout_config", lambda path: None
@@ -1470,6 +1470,7 @@ def test_store_trial_results_marks_modal_image_build_failed_permanent(monkeypatc
         id="trial-1",
         task_id="task-1",
         model="gpt-5",
+        harbor_config={},
         status=trial_handler.TrialStatus.RUNNING,
         attempts=1,
         max_attempts=6,
@@ -2314,12 +2315,11 @@ def test_build_agent_config_mini_swe_fireworks_uses_litellm_runtime_model(
     assert getattr(agent_config, RUNTIME_MODEL_NAME_ATTR) == (
         "fireworks_ai/accounts/fireworks/models/glm-5p2"
     )
-    assert (agent_config.env or {})["FIREWORKS_AI_API_KEY"] == (
-        "${FIREWORKS_API_KEY}"
+    assert (agent_config.env or {})["FIREWORKS_AI_API_KEY"] == ("${FIREWORKS_API_KEY}")
+    assert (
+        harbor_runner.resolve_env_vars(agent_config.env)["FIREWORKS_AI_API_KEY"]
+        == "fireworks-secret"
     )
-    assert harbor_runner.resolve_env_vars(agent_config.env)[
-        "FIREWORKS_AI_API_KEY"
-    ] == "fireworks-secret"
     assert RUNTIME_MODEL_NAME_ATTR not in agent_config.model_dump()
 
 
@@ -2785,9 +2785,7 @@ def test_build_agent_config_uses_oddish_opencode_wrapper(monkeypatch):
     )
 
     assert agent_config.name is None
-    assert (
-        agent_config.import_path == "oddish.workers.agents.opencode:OddishOpenCode"
-    )
+    assert agent_config.import_path == "oddish.workers.agents.opencode:OddishOpenCode"
     assert agent_config.model_name == "openrouter/tencent/hy3"
 
 
@@ -4040,20 +4038,22 @@ def test_store_trial_results_fails_execution_exception_at_attempt_limit(monkeypa
     assert stored == (True, True)
 
 
-def test_non_retryable_set_includes_known_terminal_failures():
-    """Tripwire: if Harbor's RetryConfig defaults change, we want the test
-    to fail loudly so we can decide whether to track the new entry."""
-
+def test_harbor_retry_config_owns_known_terminal_failures():
     expected = {
         "AddTestsDirError",
         "AgentTimeoutError",
-        "QuotaPauseControlError",
         "VerifierTimeoutError",
         "RewardFileNotFoundError",
         "RewardFileEmptyError",
         "VerifierOutputParseError",
+        "ApiClientError",
     }
-    assert expected <= trial_handler._NON_RETRYABLE_EXCEPTION_TYPES
+    retry_config = trial_handler.RetryConfig()
+    assert all(not retry_config.should_retry(name) for name in expected)
+    assert trial_handler._NON_HARBOR_RETRYABLE_EXCEPTION_TYPES == {
+        "HarborOverrideImportError",
+        "QuotaPauseControlError",
+    }
 
 
 def test_extract_outcome_from_job_result_carries_exception_type(monkeypatch):
@@ -4065,6 +4065,10 @@ def test_extract_outcome_from_job_result_carries_exception_type(monkeypatch):
         exception_info=SimpleNamespace(
             exception_type="AddTestsDirError",
             exception_message="Failed to add tests directory to environment.",
+            http_status=529,
+            request_id="request-1",
+            session_id="session-1",
+            retry_after_seconds=12.5,
         ),
         agent_result=None,
         verifier_result=None,
@@ -4087,6 +4091,10 @@ def test_extract_outcome_from_job_result_carries_exception_type(monkeypatch):
 
     assert outcome.exception_type == "AddTestsDirError"
     assert outcome.error and "Failed to add tests directory" in outcome.error
+    assert outcome.http_status == 529
+    assert outcome.request_id == "request-1"
+    assert outcome.session_id == "session-1"
+    assert outcome.retry_after_seconds == 12.5
 
 
 def test_extract_outcome_from_job_result_reads_trajectory_steps(tmp_path):

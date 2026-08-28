@@ -16,15 +16,10 @@ from pathlib import Path
 from harbor.models.environment_type import EnvironmentType
 from harbor.models.job.config import RetryConfig
 from harbor.trial.hooks import TrialEvent, TrialHookEvent
-
-# Only the abundant-ai Harbor fork defines ENVIRONMENT_PROVISIONED; against
-# vanilla harbor the attribute access itself would raise AttributeError on
-# every hook event. Resolve it once so the comparisons below simply never
-# match when the event does not exist.
-_ENVIRONMENT_PROVISIONED = getattr(TrialEvent, "ENVIRONMENT_PROVISIONED", None)
 from harbor.viewer.scanner import JobScanner
 from sqlalchemy import select, update
 
+from oddish.core.harbor_artifacts import build_trial_result
 from oddish.config import settings
 from oddish.costs.modal_cost import SpanResources
 from oddish.costs.recorder import (
@@ -79,7 +74,6 @@ from oddish.worker.probe_staging import (
 )
 from oddish.workers.analysis_trials import is_analysis_kind
 from oddish.workers.harbor.ephemeral import HarborOverrideImportError
-from oddish.workers.harbor.outcome import merged_trial_result
 from oddish.workers.harbor.quota_control import QuotaPauseControlError
 from oddish.workers.harbor.runner import (
     HarborOutcome,
@@ -103,6 +97,9 @@ from oddish.workers.queue.worker_job_single_job import (
 
 logger = logging.getLogger(__name__)
 
+# Only the abundant-ai Harbor fork defines ENVIRONMENT_PROVISIONED. Resolve it
+# once so vanilla Harbor simply never matches that hook event.
+_ENVIRONMENT_PROVISIONED = getattr(TrialEvent, "ENVIRONMENT_PROVISIONED", None)
 TRIAL_HEARTBEAT_INTERVAL_SECONDS = 30
 
 
@@ -271,6 +268,7 @@ class PreparedTrialRun:
     trial_model: str
     trial_environment: str | None
     trial_harbor_config: dict | None
+    task_version: int | None = None
     # Fields for sauron S3 mirror
     task_name: str = ""
     experiment_id: str = ""
@@ -338,32 +336,24 @@ def _is_agent_timeout_error_message(error: str | None) -> bool:
     return "AgentTimeoutError" in error or "Agent execution timed out" in error
 
 
-# Source of truth for "the trial finished with an error that retrying in a
-# fresh sandbox cannot fix" lives in Harbor's RetryConfig. We resolve the
-# default exclude set at import time and treat any HarborOutcome whose
-# exception_type lands in here as terminal — without this, a dying-sandbox
-# AddTestsDirError on a 10h ruby-rust-port trial gets re-queued up to
-# ``trial.max_attempts`` times against fresh sandboxes that hit the same
-# failure mode for the same upstream reason.
-# A broken override ref (bad source/sha, dep/import mismatch) can't be fixed by
-# a fresh sandbox either, so the ephemeral engine's terminal failure joins the
-# set. Quota pause control failures are also terminal because the Harbor runner
-# returns snapshot/resume failures as HarborOutcome values instead of raising
-# them through ``_execute_trial``. These entries block re-queue of attempts
-# 2..max without burning the already-counted first attempt.
-_NON_RETRYABLE_EXCEPTION_TYPES: frozenset[str] = frozenset(
-    RetryConfig.model_fields["exclude_exceptions"].default_factory() or set()
-) | {
-    "AddTestsDirError",
+# Harbor RetryConfig owns Harbor exception policy. These two Oddish-only
+# failures cannot be repaired by starting another sandbox.
+_NON_HARBOR_RETRYABLE_EXCEPTION_TYPES = {
     HarborOverrideImportError.__name__,
     QuotaPauseControlError.__name__,
 }
 
 
-def _is_non_retryable_outcome(outcome: HarborOutcome | None) -> bool:
+def _is_non_retryable_outcome(trial: object, outcome: HarborOutcome | None) -> bool:
     if outcome is None or outcome.exception_type is None:
         return False
-    return outcome.exception_type in _NON_RETRYABLE_EXCEPTION_TYPES
+    if outcome.exception_type in _NON_HARBOR_RETRYABLE_EXCEPTION_TYPES:
+        return True
+    harbor_config = getattr(trial, "harbor_config", None)
+    retry = harbor_config.get("retry") if isinstance(harbor_config, dict) else None
+    return not RetryConfig.model_validate(retry or {}).should_retry(
+        outcome.exception_type
+    )
 
 
 def _expects_no_reward(trial: object) -> bool:
@@ -691,11 +681,13 @@ async def _prepare_trial_run(
 
         task_path: str | None = None
         task_s3_key: str | None = None
+        task_version: int | None = None
         if trial.task_version_id:
             tv = await session.get(TaskVersionModel, trial.task_version_id)
             if tv:
                 task_path = tv.task_path
                 task_s3_key = tv.task_s3_key
+                task_version = tv.version
         if task_path is None and task:
             task_path = task.task_path
         if task_s3_key is None and task:
@@ -726,6 +718,7 @@ async def _prepare_trial_run(
             trial_model=trial_model,
             trial_environment=trial_environment,
             trial_harbor_config=trial_harbor_config,
+            task_version=task_version,
             task_name=task_name,
             experiment_id=experiment_id,
             experiment_name=experiment_name,
@@ -896,7 +889,7 @@ def _log_trial_metering_integrity(
 def _artifact_subprefix(harbor_config: dict | None) -> str | None:
     """Analysis trials upload under a self-labeling segment.
 
-    QA, audit, and summarize trials share the subject task's trial-id
+    Analysis trials share the subject task's trial-id
     sequence and, by design, its storage neighborhood -- and trial ids
     repeat across environments that share a bucket. Without the label, an
     analysis agent's session under a colliding prefix reads as the subject
@@ -906,7 +899,7 @@ def _artifact_subprefix(harbor_config: dict | None) -> str | None:
     if not isinstance(harbor_config, dict):
         return None
     mode = harbor_config.get("mode")
-    if mode in ("qa", "audit", "summarize"):
+    if mode in ("qa", "qa_eval", "audit", "summarize"):
         return f"analysis-{mode}"
     return None
 
@@ -1018,11 +1011,15 @@ async def _store_trial_results(
             # Verifier-reported benchmark metrics (the metrics.json contract),
             # compact CTRF test counts, plus a harbor_exception marker when a
             # phase raised quietly.
-            trial.result = merged_trial_result(
+            trial.result = build_trial_result(
                 outcome.metrics,
+                outcome.verifier_summary,
                 outcome.error,
                 outcome.exception_type,
-                outcome.verifier_summary,
+                http_status=outcome.http_status,
+                request_id=outcome.request_id,
+                session_id=outcome.session_id,
+                retry_after_seconds=outcome.retry_after_seconds,
             )
 
             trial.has_trajectory = outcome.has_trajectory
@@ -1047,7 +1044,7 @@ async def _store_trial_results(
                     console.print(
                         f"[red]Trial {trial_id} FAILED (Modal image build)[/red]"
                     )
-                elif _is_non_retryable_outcome(outcome):
+                elif _is_non_retryable_outcome(trial, outcome):
                     trial.status = TrialStatus.FAILED
                     trial.finished_at = utcnow()
                     console.print(
@@ -1764,6 +1761,10 @@ async def _prepare_trial_task(
                     org_id=prepared_trial.org_id, trial_id=trial_id
                 )
                 probe_agent_env["ODDISH_PROBE_TASK_ID"] = prepared_trial.task_id
+                if prepared_trial.task_version is not None:
+                    probe_agent_env["ODDISH_PROBE_TASK_VERSION"] = str(
+                        prepared_trial.task_version
+                    )
                 probe_agent_env["ODDISH_PROBE_HARBOR_REPO"] = (
                     settings.harbor_source_repo
                 )
@@ -1961,7 +1962,7 @@ async def run_trial_job(
     modal_function_call_id: str | None = None,
     worker_job_id: str | None = None,
     worker_job_attempt: int | None = None,
-) -> None:
+) -> HarborOutcome | None:
     """
     Execute a claimed trial.
 
@@ -1988,7 +1989,7 @@ async def run_trial_job(
             console.print(
                 f"[yellow]Trial {trial_id} already processed (idempotent), skipping[/yellow]"
             )
-            return
+            return None
 
     prepared_trial = await _prepare_trial_run(
         trial_id=trial_id,
@@ -1997,7 +1998,7 @@ async def run_trial_job(
         modal_function_call_id=modal_function_call_id,
     )
     if prepared_trial is None:
-        return
+        return None
 
     try:
         prepared_attempt = await _prepare_claimed_trial_attempt(
@@ -2025,9 +2026,9 @@ async def run_trial_job(
             worker_id=worker_id,
             worker_job_id=worker_job_id,
         )
-        return
+        return None
     if prepared_attempt is None:
-        return
+        return None
 
     prepared_task = prepared_attempt.task
     task_path_to_run = prepared_task.task_path
@@ -2239,3 +2240,4 @@ async def run_trial_job(
         # Same for the job-scoped credential token (revoke on terminal status).
         if job_scoped_bundle is not None and worker_job_id:
             await _revoke_job_credentials(worker_job_id, trial_id)
+    return execution.outcome if execution is not None and not trial_terminal else None

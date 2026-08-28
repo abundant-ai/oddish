@@ -108,6 +108,7 @@ def calculate_trial_retry_delay_seconds(
     attempts: int,
     error_message: str | None,
     jitter: float | None = None,
+    retry_after_seconds: float | None = None,
 ) -> float:
     """Return bounded exponential trial retry delay with multiplicative jitter.
 
@@ -128,12 +129,10 @@ def calculate_trial_retry_delay_seconds(
         random.uniform(0.0, TRIAL_RETRY_JITTER_FRACTION) if jitter is None else jitter
     )
     jitter_value = max(0.0, min(jitter_value, TRIAL_RETRY_JITTER_FRACTION))
-    return float(
-        min(
-            capped_delay * (1.0 + jitter_value),
-            TRIAL_RETRY_MAX_DELAY_SECONDS,
-        )
-    )
+    delay = capped_delay * (1.0 + jitter_value)
+    if retry_after_seconds is not None:
+        delay = max(delay, retry_after_seconds)
+    return float(min(delay, TRIAL_RETRY_MAX_DELAY_SECONDS))
 
 
 # ---------------------------------------------------------------------------
@@ -509,6 +508,7 @@ async def _record_outcome(
                 delay_seconds = calculate_trial_retry_delay_seconds(
                     attempts=attempts,
                     error_message=outcome.failure.error_message,
+                    retry_after_seconds=outcome.failure.retry_after_seconds,
                 )
                 retry_at = datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
 

@@ -40,6 +40,7 @@ class JobFailure:
 
     error_message: str
     retryable: bool = True
+    retry_after_seconds: float | None = None
 
 
 @dataclass
@@ -65,8 +66,20 @@ class JobOutcome:
         return cls(success=JobSuccess(result_summary=result_summary))
 
     @classmethod
-    def fail(cls, error_message: str, *, retryable: bool = True) -> "JobOutcome":
-        return cls(failure=JobFailure(error_message=error_message, retryable=retryable))
+    def fail(
+        cls,
+        error_message: str,
+        *,
+        retryable: bool = True,
+        retry_after_seconds: float | None = None,
+    ) -> "JobOutcome":
+        return cls(
+            failure=JobFailure(
+                error_message=error_message,
+                retryable=retryable,
+                retry_after_seconds=retry_after_seconds,
+            )
+        )
 
 
 @runtime_checkable
