@@ -40,6 +40,9 @@ from oddish.workers.jobs import (  # noqa: E402
     register,
 )
 from oddish.workers.queue import worker_job_single_job  # noqa: E402
+from oddish.workers.queue.provider_failures import (  # noqa: E402
+    classify_provider_failure,
+)
 from oddish.workers.queue.worker_job_single_job import (  # noqa: E402
     ClaimedWorkerJob,
     _CLAIM_WORKER_JOB_SQL,
@@ -327,20 +330,38 @@ def test_trial_retry_backoff_honors_harbor_retry_after_hint():
 
 
 class _FakeConnection:
-    def __init__(self, *, update_result: str = "UPDATE 1") -> None:
+    def __init__(
+        self,
+        *,
+        update_result: str = "UPDATE 1",
+        attempts: int = 1,
+        max_attempts: int = 3,
+    ) -> None:
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
         self.closed = False
         self.update_result = update_result
+        self.attempts = attempts
+        self.max_attempts = max_attempts
 
     async def execute(self, sql: str, *args: Any) -> str:
         self.calls.append((sql, args))
         return self.update_result
 
-    async def fetchrow(self, sql: str, *args: Any) -> None:
-        # The retry decision re-reads the current row; None exercises the
-        # snapshot fallback so these tests keep their original semantics.
+    async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any] | None:
         self.calls.append((sql, args))
-        return None
+        if self.update_result == "UPDATE 0":
+            return None
+        retryable = bool(args[4])
+        status = (
+            WorkerJobStatus.RETRYING
+            if retryable and self.attempts < self.max_attempts
+            else WorkerJobStatus.FAILED
+        )
+        return {
+            "status": status.value,
+            "attempts": self.attempts,
+            "max_attempts": self.max_attempts,
+        }
 
     async def close(self) -> None:
         self.closed = True
@@ -356,7 +377,7 @@ CLAUDE_USAGE_CAP_ERROR = (
 async def test_record_outcome_requeues_trial_with_backoff_and_mirrors_next_retry(
     monkeypatch,
 ):
-    connection = _FakeConnection()
+    connection = _FakeConnection(attempts=2, max_attempts=6)
 
     async def fake_open_connection():
         return connection
@@ -379,22 +400,19 @@ async def test_record_outcome_requeues_trial_with_backoff_and_mirrors_next_retry
 
     assert status == WorkerJobStatus.RETRYING
     assert connection.closed is True
-    assert len(connection.calls) == 3
+    assert len(connection.calls) == 2
 
-    # The retry decision re-reads the current row before choosing.
-    reread_sql, reread_args = connection.calls[0]
-    assert "SELECT attempts, max_attempts" in reread_sql
-    assert reread_args == ("wj-1",)
-
-    worker_sql, worker_args = connection.calls[1]
-    assert "status = 'RETRYING'" in worker_sql
+    worker_sql, worker_args = connection.calls[0]
+    assert "UPDATE worker_jobs" in worker_sql
+    assert "status = CASE" in worker_sql
+    assert "attempts < max_attempts" in worker_sql
+    assert "RETURNING status::text AS status, attempts, max_attempts" in worker_sql
     # The retry row must start UNLINKED: a kept handle can point at a pod that
     # still exists, blinding the orphan sweeper's live-unlinked guard while the
     # next attempt's pod is still unreferenced.
-    assert "external_id = NULL" in worker_sql
-    assert "provider = NULL" in worker_sql
-    assert "next_retry_at = $3" in worker_sql
-    assert "available_after = COALESCE($3::timestamptz, NOW())" in worker_sql
+    assert "external_id = CASE" in worker_sql
+    assert "provider = CASE" in worker_sql
+    assert "THEN COALESCE($3::timestamptz, NOW())" in worker_sql
     assert worker_args[0] == "wj-1"
     assert worker_args[1] == "HTTP 503 from agent"
 
@@ -402,7 +420,7 @@ async def test_record_outcome_requeues_trial_with_backoff_and_mirrors_next_retry
     assert retry_at is not None
     assert before + timedelta(seconds=60) <= retry_at <= after + timedelta(seconds=60)
 
-    trial_sql, trial_args = connection.calls[2]
+    trial_sql, trial_args = connection.calls[1]
     assert "UPDATE trials" in trial_sql
     assert "status = 'RETRYING'" in trial_sql
     assert "error_message = $2" in trial_sql
@@ -464,7 +482,7 @@ async def test_retry_transition_emits_structured_usage_limit_warning(monkeypatch
         return connection
 
     def capture_warning(message, **attributes):
-        assert len(connection.calls) == 3
+        assert len(connection.calls) == 2
         warnings.append((message, attributes))
 
     monkeypatch.setattr(worker_job_single_job, "_open_connection", fake_open_connection)
@@ -482,7 +500,11 @@ async def test_retry_transition_emits_structured_usage_limit_warning(monkeypatch
     recorded = await worker_job_single_job._record_outcome(
         job_id="wj-usage-cap",
         worker_id="worker-1",
-        outcome=JobOutcome.fail(CLAUDE_USAGE_CAP_ERROR, retryable=True),
+        outcome=JobOutcome.fail(
+            CLAUDE_USAGE_CAP_ERROR,
+            retryable=True,
+            provider_failure=classify_provider_failure(CLAUDE_USAGE_CAP_ERROR),
+        ),
         attempts=1,
         max_attempts=3,
         kind=WorkerJobKind.TRIAL,
@@ -505,7 +527,7 @@ async def test_retry_transition_emits_structured_usage_limit_warning(monkeypatch
     assert attributes["attempt"] == 1
     assert attributes["max_attempts"] == 3
     assert attributes["trial_id"] == "trial-usage-cap"
-    assert attributes["retry_reason"] == "rate_limit"
+    assert attributes["retry_reason"] == "provider_usage_limit"
     assert attributes["retry_delay_seconds"] == 300.0
     assert attributes["retry_at"] is not None
 
@@ -520,7 +542,7 @@ async def test_terminal_transition_emits_structured_error(monkeypatch):
         return connection
 
     def capture_error(message, **attributes):
-        assert len(connection.calls) == 2
+        assert len(connection.calls) == 1
         errors.append((message, attributes))
 
     monkeypatch.setattr(worker_job_single_job, "_open_connection", fake_open_connection)
@@ -538,7 +560,11 @@ async def test_terminal_transition_emits_structured_error(monkeypatch):
     recorded = await worker_job_single_job._record_outcome(
         job_id="wj-failed",
         worker_id="worker-1",
-        outcome=JobOutcome.fail(CLAUDE_USAGE_CAP_ERROR, retryable=False),
+        outcome=JobOutcome.fail(
+            CLAUDE_USAGE_CAP_ERROR,
+            retryable=False,
+            provider_failure=classify_provider_failure(CLAUDE_USAGE_CAP_ERROR),
+        ),
         attempts=1,
         max_attempts=3,
         kind=WorkerJobKind.TRIAL,
@@ -562,6 +588,43 @@ async def test_terminal_transition_emits_structured_error(monkeypatch):
     assert attributes["recovery_at"] == "2099-09-01T00:00:00+00:00"
     assert attributes["attempt"] == 1
     assert attributes["max_attempts"] == 3
+
+
+@pytest.mark.asyncio
+async def test_non_trial_timeout_is_not_tagged_as_provider_failure(monkeypatch):
+    connection = _FakeConnection()
+    warnings: list[tuple[str, dict[str, Any]]] = []
+
+    async def fake_open_connection():
+        return connection
+
+    monkeypatch.setattr(worker_job_single_job, "_open_connection", fake_open_connection)
+    monkeypatch.setattr(
+        worker_job_single_job,
+        "log_warning",
+        lambda message, **attributes: warnings.append((message, attributes)),
+    )
+
+    recorded = await worker_job_single_job._record_outcome(
+        job_id="wj-task-expand",
+        worker_id="worker-1",
+        outcome=JobOutcome.fail(
+            "task bundle upload failed with HTTP 429", retryable=True
+        ),
+        attempts=1,
+        max_attempts=3,
+        kind=WorkerJobKind.TASK_EXPAND,
+        subject_table="tasks",
+        subject_id="task-1",
+    )
+
+    assert recorded == WorkerJobStatus.RETRYING
+    assert len(warnings) == 1
+    _, attributes = warnings[0]
+    assert attributes["tags"] == ("worker-job",)
+    assert attributes["failure_class"] is None
+    assert attributes["provider_status_code"] is None
+    assert attributes["retry_reason"] == "transient"
 
 
 @pytest.mark.asyncio

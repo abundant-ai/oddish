@@ -25,6 +25,8 @@ from oddish.registry_auth import (
     decrypt_credentials,
 )
 from oddish.workers.jobs.registry import JobOutcome
+from oddish.workers.harbor.outcome import HarborOutcome
+from oddish.workers.queue.provider_failures import classify_provider_failure
 from oddish.workers.queue.task_expand_handler import run_task_expand_job
 from oddish.workers.queue.trial_handler import run_trial_job
 
@@ -46,6 +48,31 @@ def _fail_retryable(message: str) -> JobOutcome:
 
 def _fail_permanent(message: str) -> JobOutcome:
     return JobOutcome.fail(message, retryable=False)
+
+
+def _trial_failure(
+    message: str,
+    *,
+    retryable: bool,
+    harbor_outcome: HarborOutcome | None,
+) -> JobOutcome:
+    """Carry provider-owned Harbor facts across the worker outcome boundary."""
+    if harbor_outcome is None:
+        return JobOutcome.fail(message, retryable=retryable)
+    provider_failure = classify_provider_failure(
+        message,
+        http_status=harbor_outcome.http_status,
+        exception_type=harbor_outcome.exception_type,
+    )
+    return JobOutcome.fail(
+        message,
+        retryable=retryable,
+        retry_after_seconds=harbor_outcome.retry_after_seconds,
+        exception_type=harbor_outcome.exception_type,
+        request_id=harbor_outcome.request_id,
+        session_id=harbor_outcome.session_id,
+        provider_failure=provider_failure,
+    )
 
 
 class TrialJobHandler:
@@ -87,18 +114,18 @@ class TrialJobHandler:
             if trial.status == TrialStatus.SUCCESS:
                 return JobOutcome.ok()
             if trial.status == TrialStatus.RETRYING:
-                return JobOutcome.fail(
+                return _trial_failure(
                     trial.error_message or f"Trial {trial_id} marked RETRYING",
                     retryable=True,
-                    retry_after_seconds=(
-                        harbor_outcome.retry_after_seconds
-                        if harbor_outcome is not None
-                        else None
-                    ),
+                    harbor_outcome=harbor_outcome,
                 )
             if trial.status == TrialStatus.FAILED:
                 error_message = trial.error_message or f"Trial {trial_id} marked FAILED"
-                return _fail_permanent(error_message)
+                return _trial_failure(
+                    error_message,
+                    retryable=False,
+                    harbor_outcome=harbor_outcome,
+                )
             return _fail_retryable(
                 f"Trial {trial_id} left in non-terminal status {trial.status!r}"
             )

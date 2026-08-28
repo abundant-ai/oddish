@@ -10,10 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from oddish.workers.queue.provider_failures import (
-    classify_provider_failure,
-    is_permanent_provider_failure,
-)
+from oddish.workers.queue.provider_failures import classify_provider_failure
 
 
 # The exact string prod recorded on 6,155 QA jobs.
@@ -72,24 +69,32 @@ def test_long_error_summary_is_single_line_and_at_most_500_characters():
 
 
 def test_azure_content_policy_block_is_permanent():
-    assert is_permanent_provider_failure(AZURE_CONTENT_POLICY_403) is True
+    assert (
+        classify_provider_failure(AZURE_CONTENT_POLICY_403).failure_class
+        == "permission_denied"
+    )
 
 
 def test_bare_403_is_permanent():
-    assert is_permanent_provider_failure("Error code: 403 - forbidden") is True
+    assert (
+        classify_provider_failure("Error code: 403 - forbidden").failure_class
+        == "permission_denied"
+    )
 
 
 def test_permission_denied_without_code_is_permanent():
-    assert is_permanent_provider_failure("PermissionDeniedError: nope") is True
+    assert (
+        classify_provider_failure("PermissionDeniedError: nope").failure_class
+        == "permission_denied"
+    )
 
 
 def test_none_and_empty_are_not_permanent():
-    assert is_permanent_provider_failure(None) is False
-    assert is_permanent_provider_failure("") is False
+    assert classify_provider_failure(None).failure_class == "unknown"
+    assert classify_provider_failure("").failure_class == "unknown"
 
 
 def test_timeout_is_still_retryable():
-    assert is_permanent_provider_failure("TimeoutError: ") is False
     assert classify_provider_failure("TimeoutError: ").failure_class == "timeout"
 
 
@@ -100,7 +105,6 @@ def test_low_credit_balance_is_still_retryable():
         "BadRequestError: Error code: 400 - {'error': {'message': 'Your credit "
         "balance is too low to access the Anthropic API'}}"
     )
-    assert is_permanent_provider_failure(err) is False
     failure = classify_provider_failure(err)
     assert failure.failure_class == "low_credit"
     assert failure.provider_status_code == 400
@@ -108,7 +112,6 @@ def test_low_credit_balance_is_still_retryable():
 
 def test_rate_limit_is_still_retryable():
     err = "RateLimitError: Error code: 429 - slow down"
-    assert is_permanent_provider_failure(err) is False
     failure = classify_provider_failure(err)
     assert failure.failure_class == "rate_limit"
     assert failure.provider_status_code == 429
@@ -119,7 +122,6 @@ def test_token_limit_is_still_retryable():
         "BadRequestError: Error code: 400 - {'error': {'message': 'Input tokens "
         "exceed the configured limit of 922000 tokens.'}}"
     )
-    assert is_permanent_provider_failure(err) is False
     failure = classify_provider_failure(err)
     assert failure.failure_class == "token_limit"
     assert failure.provider_status_code == 400
@@ -135,6 +137,26 @@ def test_permission_denied_has_distinct_class_and_status():
 def test_403_inside_a_larger_message_still_matches():
     """The QA handler reads ``task.verdict_error``, which prefixes the type."""
     assert (
-        is_permanent_provider_failure(f"QA task-abc FAILED: {AZURE_CONTENT_POLICY_403}")
-        is True
+        classify_provider_failure(
+            f"QA task-abc FAILED: {AZURE_CONTENT_POLICY_403}"
+        ).failure_class
+        == "permission_denied"
     )
+
+
+def test_bare_429_preserves_rate_limit_classification():
+    failure = classify_provider_failure("429")
+
+    assert failure.failure_class == "rate_limit"
+    assert failure.provider_status_code == 429
+
+
+def test_structured_http_status_takes_precedence_over_message_parsing():
+    failure = classify_provider_failure(
+        "provider request failed",
+        http_status=429,
+        exception_type="RateLimitError",
+    )
+
+    assert failure.failure_class == "rate_limit"
+    assert failure.provider_status_code == 429

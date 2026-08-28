@@ -143,6 +143,14 @@ High-level flow:
    optional HTTP status, request ID, session ID, and retry-after metadata.
    Harbor's `TrialQueue` still owns whole-trial retries, and Oddish
    `worker_jobs` owns durable fresh-sandbox retries across worker processes.
+   The trial handler carries Harbor's structured failure fields into the
+   worker-job outcome; non-trial worker kinds never infer provider failures
+   from generic error strings. A failure transition compares `attempts` with
+   the current `max_attempts` inside the same atomic `worker_jobs` update that
+   chooses `RETRYING` or `FAILED`. If trial settlement committed `FAILED`
+   before its worker process died, stale-heartbeat cleanup treats that trial
+   row as authoritative and fails the stale worker job instead of clearing
+   `finished_at` and scheduling another provider request.
 4. Trajectory analysis is **task-scoped** and runs as a trial: when every
    agent trial of a task is terminal, one QA trial (`trials.kind = 'qa'`)
    is created on the same task. Its agent classifies

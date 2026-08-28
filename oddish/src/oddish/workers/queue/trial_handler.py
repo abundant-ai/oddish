@@ -84,10 +84,7 @@ from oddish.workers.harbor.runner import (
 )
 from oddish.workers.harbor import live_tail
 from oddish.workers.queue.db_helpers import _trial_session
-from oddish.workers.queue.provider_failures import (
-    MAX_PROVIDER_ERROR_LENGTH,
-    classify_provider_failure,
-)
+from oddish.workers.queue.provider_failures import classify_provider_failure
 from oddish.workers.queue.shared import console
 from oddish.workers.queue.trial_failures import (
     MODAL_IMAGE_BUILD_FAILED_STAGE,
@@ -1008,7 +1005,7 @@ async def _store_trial_results(
                 trial.error_message = artifact_upload_error
             elif outcome.error:
                 trial.error_message = (
-                    outcome.error[:MAX_PROVIDER_ERROR_LENGTH]
+                    provider_failure.error_summary
                     if provider_failure.failure_class == "provider_usage_limit"
                     else outcome.error
                 )
@@ -2263,4 +2260,6 @@ async def run_trial_job(
         # Same for the job-scoped credential token (revoke on terminal status).
         if job_scoped_bundle is not None and worker_job_id:
             await _revoke_job_credentials(worker_job_id, trial_id)
-    return execution.outcome if execution is not None and not trial_terminal else None
+    # The worker-job adapter needs Harbor's structured exception/status/request
+    # facts even when this settlement made the domain row terminal.
+    return execution.outcome if execution is not None else None

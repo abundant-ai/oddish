@@ -13,7 +13,7 @@ from oddish.workers.harbor.runner import HarborOutcome
 from oddish.workers.jobs import handlers
 from oddish.workers.jobs.handlers import TrialJobHandler
 from oddish.workers.queue import trial_handler
-from oddish.workers.queue.provider_failures import MAX_PROVIDER_ERROR_LENGTH
+from oddish.workers.queue.provider_failures import classify_provider_failure
 from oddish.workers.queue.worker_job_single_job import ClaimedWorkerJob
 
 
@@ -121,7 +121,7 @@ async def test_future_usage_cap_fails_trial_on_first_attempt_and_worker_agrees(
     assert trial.status == TrialStatus.FAILED
     assert trial.finished_at is not None
     assert trial.attempts == 1
-    assert trial.error_message == original_error[:MAX_PROVIDER_ERROR_LENGTH]
+    assert trial.error_message == classify_provider_failure(original_error).error_summary
 
     @asynccontextmanager
     async def fake_handler_session():

@@ -58,6 +58,7 @@ class _FakeSession:
     def __init__(self, trial: SimpleNamespace) -> None:
         self.trial = trial
         self.worker_job_retry_updates: list[dict[str, Any]] = []
+        self.worker_job_terminal_updates: list[dict[str, Any]] = []
 
     def begin_nested(self):
         return _FakeSavepoint()
@@ -83,6 +84,9 @@ class _FakeSession:
             )
         if "UPDATE worker_jobs" in sql and "available_after = :retry_at" in sql:
             self.worker_job_retry_updates.append(params or {})
+            return _FakeResult(rowcount=1)
+        if "status = 'FAILED'::worker_job_status" in sql:
+            self.worker_job_terminal_updates.append(params or {})
             return _FakeResult(rowcount=1)
         if sql.lstrip().startswith("SELECT") and "FROM trials" in sql:
             # The mirror's FOR UPDATE SKIP LOCKED trial load.
@@ -155,5 +159,46 @@ async def test_stale_trial_retry_cleanup_schedules_backoff(monkeypatch):
     assert trial.error_message == "Worker heartbeat stalled for over 15 minutes."
     assert trial.next_retry_at == retry_at
     assert trial.finished_at is None
+    assert trial.current_worker_id is None
+    assert trial.current_queue_slot is None
+
+
+@pytest.mark.asyncio
+async def test_stale_cleanup_does_not_resurrect_terminal_provider_failure():
+    finished_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    provider_error = (
+        "API Error: 400 You have reached your specified API usage limits. "
+        "You will regain access on 2099-09-01 at 00:00 UTC."
+    )
+    trial = SimpleNamespace(
+        id="trial-terminal",
+        status=TrialStatus.FAILED,
+        error_message=provider_error,
+        next_retry_at=None,
+        finished_at=finished_at,
+        current_worker_id="worker-1",
+        current_queue_slot=3,
+        stale_reaped_at=None,
+    )
+    session = _FakeSession(trial)
+
+    retried, failed, reaped_trial_ids, worker_targets = (
+        await cleanup._reap_stale_worker_jobs(
+            session,
+            stale_after_minutes=15,
+        )
+    )
+
+    assert (retried, failed) == (0, 1)
+    assert reaped_trial_ids == ["trial-terminal"]
+    assert worker_targets == set()
+    assert session.worker_job_retry_updates == []
+    assert session.worker_job_terminal_updates == [
+        {"job_id": "wj-1", "error_message": provider_error}
+    ]
+    assert trial.status == TrialStatus.FAILED
+    assert trial.error_message == provider_error
+    assert trial.finished_at == finished_at
+    assert trial.next_retry_at is None
     assert trial.current_worker_id is None
     assert trial.current_queue_slot is None
