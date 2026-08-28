@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_EXECUTION_LANE = "default"
 EC2_TRIAL_EXECUTION_LANE = "ec2_trial"
+THUNDER_TRIAL_EXECUTION_LANE = "thunder_trial"
 
 _EC2_HANDLE = re.compile(
     r"^ec2://(?P<account>[0-9]{12})/(?P<region>[a-z0-9-]+)/"
@@ -79,11 +80,12 @@ class SandboxLaunchContext:
 
 
 def execution_lane_for_environment(environment: str | None) -> str:
-    return (
-        EC2_TRIAL_EXECUTION_LANE
-        if (environment or "").strip().lower() == "ec2"
-        else DEFAULT_EXECUTION_LANE
-    )
+    normalized = (environment or "").strip().lower()
+    if normalized == "ec2":
+        return EC2_TRIAL_EXECUTION_LANE
+    if normalized == "thunder":
+        return THUNDER_TRIAL_EXECUTION_LANE
+    return DEFAULT_EXECUTION_LANE
 
 
 def _context_from_run(run: SandboxRunModel) -> SandboxLaunchContext:
@@ -365,6 +367,7 @@ __all__ = [
     "SandboxLaunchContext",
     "SandboxLifecycleError",
     "SandboxProvisioningRefused",
+    "THUNDER_TRIAL_EXECUTION_LANE",
     "create_ec2_sandbox_run",
     "execution_lane_for_environment",
     "get_sandbox_ownership_by_external_id",

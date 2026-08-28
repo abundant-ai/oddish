@@ -59,6 +59,7 @@ _ENVIRONMENT_HARBOR_EXTRAS: dict[EnvironmentType, str] = {
     EnvironmentType.WANDB: "wandb",
     EnvironmentType.ISLO: "islo",
     EnvironmentType.EC2: "ec2",
+    EnvironmentType.THUNDER: "thunder",
 }
 
 

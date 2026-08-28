@@ -14,6 +14,7 @@ from oddish.runtime.backends.ec2 import Ec2Backend
 from oddish.runtime.backends.gke import GkeBackend
 from oddish.runtime.backends.modal import ModalBackend
 from oddish.runtime.backends.numinous import NuminousBackend
+from oddish.runtime.backends.thunder import ThunderBackend
 from oddish.runtime.ports import ExecutionBackend
 
 # Singleton instances; backends are stateless w.r.t. trial dispatch.
@@ -30,6 +31,12 @@ if settings.numinous_enabled:
     REGISTERED_BACKENDS[_NUMINOUS.name] = _NUMINOUS
 
 REGISTERED_BACKENDS[_DAYTONA.name] = _DAYTONA
+
+# Thunder is explicit opt-in and intentionally follows Daytona in the ordered
+# registry, so enabling it cannot replace the established CPU default.
+if settings.thunder_enabled:
+    _THUNDER = ThunderBackend()
+    REGISTERED_BACKENDS[_THUNDER.name] = _THUNDER
 
 if settings.ec2_enabled:
     _EC2 = Ec2Backend()
@@ -53,7 +60,7 @@ def get_backend(name: str | None) -> ExecutionBackend | None:
 
 
 def ordered_backends() -> list[ExecutionBackend]:
-    """Backends in cheap-first order: Daytona, opt-in EC2, Modal, Archil, GKE.
+    """Backends in cheap-first order; optional providers preserve defaults.
 
     Sourced from ``REGISTERED_BACKENDS`` (insertion-ordered cheap-first) so the
     resolution set and the routing order never desync."""

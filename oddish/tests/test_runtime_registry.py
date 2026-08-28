@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import sys
+import json
+import os
+import subprocess
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -29,3 +32,20 @@ def test_get_backend_unknown_returns_none() -> None:
 def test_ordered_backends_preserves_existing_defaults() -> None:
     names = [b.name for b in ordered_backends()]
     assert names == ["daytona", "modal", "archil"]
+
+
+def test_thunder_registers_only_when_enabled() -> None:
+    code = """
+import json
+from oddish.runtime.registry import ordered_backends
+print(json.dumps([backend.name for backend in ordered_backends()]))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        env={**os.environ, "ODDISH_THUNDER_ENABLED": "true"},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert "thunder" in json.loads(result.stdout.splitlines()[-1])
