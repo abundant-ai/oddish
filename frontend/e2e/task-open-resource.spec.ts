@@ -75,6 +75,8 @@ test("browse snapshots keep exact counters independent of the trial preview", ()
     fail_count: 20,
   });
   expect(open?.trials).toHaveLength(1);
+  expect(open?.trials[0].kind).toBe("agent");
+  expect(open?.active_qa_trial).toBeNull();
   expect(open?.trials_has_more).toBe(true);
 });
 

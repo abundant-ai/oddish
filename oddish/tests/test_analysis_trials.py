@@ -36,8 +36,8 @@ GOOD_ANALYSIS = {
 
 
 def test_the_analysis_kinds_are_known():
-    """qa, audit, and summarize are analysis kinds. agent is not."""
-    for kind in ("qa", "audit", "summarize"):
+    """qa, qa_eval, audit, and summarize are analysis kinds. agent is not."""
+    for kind in ("qa", "qa_eval", "audit", "summarize"):
         assert is_analysis_kind(kind)
     assert not is_analysis_kind("agent")
     assert not is_analysis_kind(None)
