@@ -83,5 +83,7 @@ Promotion Preflight, `/promote <sha>` on the promotion pull request, or the
 
 - **Run backend locally:** `cd backend && uv run modal serve deploy.py`. See `backend/README.md` for required env vars.
 - **Run frontend locally:** `cd frontend && pnpm dev`. See `frontend/README.md`.
-- **Tests:** `pytest` from `oddish/` or `backend/`. Frontend has no test suite wired up yet.
+- **Tests:** run `pytest` from `oddish/` or `backend/`. In `frontend/`, use
+  `pnpm test` for unit tests, `pnpm test:e2e` for Playwright, and
+  `pnpm typecheck:e2e` for the end-to-end TypeScript project.
 - **Self-hosting:** see `SELF_HOSTING.md` for Modal, Clerk, migrations, and local HTTPS.
