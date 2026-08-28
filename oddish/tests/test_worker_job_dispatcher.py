@@ -24,6 +24,8 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.db import ACTIVE_WORKER_JOB_KINDS  # noqa: E402
@@ -400,6 +402,8 @@ _DEFAULT_FN = object()
 _VARIANT_FN = object()
 _EC2_FN = object()
 _EC2_VARIANT_FN = object()
+_THUNDER_FN = object()
+_THUNDER_VARIANT_FN = object()
 
 
 def test_default_and_ephemeral_route_to_the_base_function():
@@ -467,6 +471,43 @@ def test_ec2_blessed_variant_stays_in_ec2_credential_topology():
     )
     assert fn is _EC2_VARIANT_FN
     assert kwargs["execution_lane"] == "ec2_trial"
+
+
+def test_thunder_lane_routes_only_to_thunder_credential_function():
+    fn, kwargs = select_job_function(
+        ("m1", "default", "thunder_trial"),
+        default_fn=_DEFAULT_FN,
+        thunder_fn=_THUNDER_FN,
+        variant_fns={},
+        thunder_variant_fns={},
+    )
+    assert fn is _THUNDER_FN
+    assert kwargs == {
+        "queue_key": "m1",
+        "harbor_variant_id": "default",
+        "execution_lane": "thunder_trial",
+    }
+
+
+def test_thunder_lane_never_falls_back_to_generic_function():
+    with pytest.raises(RuntimeError, match="no Thunder worker Function"):
+        select_job_function(
+            ("m1", "default", "thunder_trial"),
+            default_fn=_DEFAULT_FN,
+            variant_fns={},
+        )
+
+
+def test_thunder_blessed_variant_stays_in_thunder_credential_topology():
+    fn, kwargs = select_job_function(
+        ("m1", "harbor-next", "thunder_trial"),
+        default_fn=_DEFAULT_FN,
+        thunder_fn=_THUNDER_FN,
+        variant_fns={"harbor-next": _VARIANT_FN},
+        thunder_variant_fns={"harbor-next": _THUNDER_VARIANT_FN},
+    )
+    assert fn is _THUNDER_VARIANT_FN
+    assert kwargs["execution_lane"] == "thunder_trial"
 
 
 def test_full_lane_keys_are_preserved_by_spawn_plan():

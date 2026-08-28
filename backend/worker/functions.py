@@ -128,10 +128,11 @@ from oddish.workers.analysis_trials import register_qa_imported_hook
 from .github import notify_github_qa, notify_github_trial
 from .runtime import configure_storage_paths, console
 
-# Generic workers must never receive EC2 launch credentials or the SSH key.
-# Only the dedicated ``ec2_trial`` lane carries those secrets.
-trial_worker_secrets = [*runtime_secrets, *thunder_worker_secrets]
+# Provider credentials are lane-scoped. Generic workers receive neither EC2
+# nor Thunder credentials; each provider lane carries only its own secrets.
+trial_worker_secrets = [*runtime_secrets]
 ec2_trial_worker_secrets = [*runtime_secrets, *ec2_worker_secrets]
+thunder_trial_worker_secrets = [*runtime_secrets, *thunder_worker_secrets]
 reconciler_secrets = [*runtime_secrets, *ec2_control_secrets]
 
 
@@ -442,6 +443,31 @@ async def process_single_ec2_trial_job(
     await _run_one_job(queue_key, harbor_variant_id, execution_lane)
 
 
+@app.function(
+    image=image,
+    volumes=worker_volumes,
+    secrets=thunder_trial_worker_secrets,
+    min_containers=0,
+    buffer_containers=0,
+    scaledown_window=WORKER_SCALEDOWN_WINDOW_SECONDS,
+    max_containers=WORKER_MAX_CONTAINERS,
+    timeout=WORKER_TIMEOUT_SECONDS,
+    cpu=WORKER_CPU,
+    memory=WORKER_MEMORY_MB,
+    nonpreemptible=WORKER_NONPREEMPTIBLE,
+)
+async def process_single_thunder_trial_job(
+    queue_key: str,
+    harbor_variant_id: str = "default",
+    execution_lane: str = THUNDER_TRIAL_EXECUTION_LANE,
+):
+    if execution_lane != THUNDER_TRIAL_EXECUTION_LANE:
+        raise RuntimeError(
+            f"Thunder worker refused non-Thunder execution lane {execution_lane!r}"
+        )
+    await _run_one_job(queue_key, harbor_variant_id, execution_lane)
+
+
 def _make_variant_entry(variant_id: str, lane: str):
     """Build the entrypoint for a blessed variant's single-job Function.
 
@@ -486,6 +512,8 @@ def build_harbor_variant_functions(
             secrets=(
                 ec2_trial_worker_secrets
                 if execution_lane == EC2_TRIAL_EXECUTION_LANE
+                else thunder_trial_worker_secrets
+                if execution_lane == THUNDER_TRIAL_EXECUTION_LANE
                 else trial_worker_secrets
             ),
             min_containers=0,
@@ -497,9 +525,9 @@ def build_harbor_variant_functions(
             memory=WORKER_MEMORY_MB,
             nonpreemptible=WORKER_NONPREEMPTIBLE,
             name=(
-                f"{harbor_variant_function_name(variant_id)}__ec2_trial"
-                if execution_lane == EC2_TRIAL_EXECUTION_LANE
-                else harbor_variant_function_name(variant_id)
+                harbor_variant_function_name(variant_id)
+                if execution_lane == DEFAULT_EXECUTION_LANE
+                else f"{harbor_variant_function_name(variant_id)}__{execution_lane}"
             ),
             serialized=True,
         )(_make_variant_entry(variant_id, execution_lane))
@@ -768,6 +796,9 @@ async def refresh_trial_facets():
 _VARIANT_JOB_FUNCTIONS: dict[str, object] = build_harbor_variant_functions(app)
 _EC2_VARIANT_JOB_FUNCTIONS: dict[str, object] = build_harbor_variant_functions(
     app, execution_lane=EC2_TRIAL_EXECUTION_LANE
+)
+_THUNDER_VARIANT_JOB_FUNCTIONS: dict[str, object] = build_harbor_variant_functions(
+    app, execution_lane=THUNDER_TRIAL_EXECUTION_LANE
 )
 
 
@@ -1053,8 +1084,10 @@ async def poll_queue():
                 unit,
                 default_fn=process_single_job,
                 ec2_fn=process_single_ec2_trial_job,
+                thunder_fn=process_single_thunder_trial_job,
                 variant_fns=_VARIANT_JOB_FUNCTIONS,
                 ec2_variant_fns=_EC2_VARIANT_JOB_FUNCTIONS,
+                thunder_variant_fns=_THUNDER_VARIANT_JOB_FUNCTIONS,
             )
             spawn_calls.append(fn.spawn.aio(**spawn_kwargs))
         await asyncio.gather(*spawn_calls)

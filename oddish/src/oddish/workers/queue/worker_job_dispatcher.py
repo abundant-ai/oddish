@@ -251,6 +251,8 @@ def select_job_function(
     variant_fns: dict[str, Any],
     ec2_fn: Any | None = None,
     ec2_variant_fns: dict[str, Any] | None = None,
+    thunder_fn: Any | None = None,
+    thunder_variant_fns: dict[str, Any] | None = None,
 ) -> tuple[Any, dict[str, str]]:
     """Pick the worker Function for one ``(queue_key, variant, lane)``.
 
@@ -262,6 +264,12 @@ def select_job_function(
         if ec2_fn is None:
             raise RuntimeError("EC2 dispatch unit has no EC2 worker Function")
         fn = (ec2_variant_fns or {}).get(variant, ec2_fn)
+    elif lane == "thunder_trial":
+        if thunder_fn is None:
+            raise RuntimeError(
+                "Thunder dispatch unit has no Thunder worker Function"
+            )
+        fn = (thunder_variant_fns or {}).get(variant, thunder_fn)
     else:
         fn = variant_fns.get(variant, default_fn)
     return fn, {

@@ -37,7 +37,11 @@ print(json.dumps({
         secret in modal_app.runtime_secrets
         for secret in modal_app.thunder_worker_secrets
     ),
-    "trial_has_secret": all(
+    "thunder_lane_has_secret": all(
+        secret in worker_functions.thunder_trial_worker_secrets
+        for secret in modal_app.thunder_worker_secrets
+    ),
+    "generic_has_secret": any(
         secret in worker_functions.trial_worker_secrets
         for secret in modal_app.thunder_worker_secrets
     ),
@@ -63,16 +67,22 @@ print(json.dumps({
         "plan": ["test-thunder"],
         "worker_count": 1,
         "base_overlap": False,
-        "trial_has_secret": True,
+        "thunder_lane_has_secret": True,
+        "generic_has_secret": False,
         "capacity": "16",
     }
 
 
-def test_only_trial_workers_receive_thunder_secret() -> None:
-    assert worker_functions.trial_worker_secrets == [
+def test_only_thunder_lane_workers_receive_thunder_secret() -> None:
+    assert worker_functions.trial_worker_secrets == [*modal_app.runtime_secrets]
+    assert worker_functions.thunder_trial_worker_secrets == [
         *modal_app.runtime_secrets,
         *modal_app.thunder_worker_secrets,
     ]
+    assert all(
+        secret not in worker_functions.ec2_trial_worker_secrets
+        for secret in modal_app.thunder_worker_secrets
+    )
     assert all(
         secret not in worker_functions.reconciler_secrets
         for secret in modal_app.thunder_worker_secrets
