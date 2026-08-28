@@ -107,6 +107,68 @@ async def test_qa_key_reads_only_trial_ids_derived_from_analysis_payload(monkeyp
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "route_path",
+    (
+        "/trials/{trial_id}/files",
+        "/trials/{trial_id}/files/{file_path:path}",
+        "/trials/{trial_id}/debug-files",
+        "/trials/{trial_id}/probe-artifacts",
+        "/trials/{trial_id}/live",
+        "/trials/{trial_id}/trajectory/summary",
+    ),
+)
+async def test_qa_key_denies_trial_routes_the_prompt_does_not_need(
+    monkeypatch, route_path
+):
+    analysis = SimpleNamespace(
+        id="analysis-1",
+        org_id="org-1",
+        kind="qa",
+        task_id="task-1",
+        task_version_id="version-1",
+        harbor_config={"analysis_payload": {"trial_ids": ["source-1"]}},
+    )
+    _session(monkeypatch, analysis)
+
+    with pytest.raises(HTTPException) as denied:
+        await authorize_bound_analysis_request(
+            _request(
+                route_path,
+                path_params={"trial_id": "source-1", "file_path": "secret.txt"},
+            ),
+            _auth(),
+        )
+    assert denied.value.status_code == 403
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "route_path",
+    (
+        "/trials/{trial_id}/result",
+        "/trials/{trial_id}/trajectory",
+        "/trials/{trial_id}/logs/structured",
+    ),
+)
+async def test_qa_key_allows_only_the_three_evidence_routes(monkeypatch, route_path):
+    analysis = SimpleNamespace(
+        id="analysis-1",
+        org_id="org-1",
+        kind="qa",
+        task_id="task-1",
+        task_version_id="version-1",
+        harbor_config={"analysis_payload": {"trial_ids": ["source-1"]}},
+    )
+    _session(monkeypatch, analysis)
+
+    await authorize_bound_analysis_request(
+        _request(route_path, path_params={"trial_id": "source-1"}),
+        _auth(),
+    )
+
+
+@pytest.mark.asyncio
 async def test_qa_eval_key_rejects_a_payload_with_multiple_source_trials(monkeypatch):
     analysis = SimpleNamespace(
         id="analysis-1",

@@ -10,6 +10,15 @@ from oddish.core.analysis_payload import (
 from oddish.db import TaskVersionModel, TrialModel, get_session
 
 
+_QA_TRIAL_READ_ROUTES = frozenset(
+    {
+        "/trials/{trial_id}/result",
+        "/trials/{trial_id}/trajectory",
+        "/trials/{trial_id}/logs/structured",
+    }
+)
+
+
 def _denied() -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
@@ -35,7 +44,7 @@ async def authorize_bound_analysis_request(request: Request, auth: AuthContext) 
             raise _denied()
 
         target_trial_id = path_params.get("trial_id")
-        if route_path.startswith("/trials/{trial_id}") and target_trial_id:
+        if route_path in _QA_TRIAL_READ_ROUTES and target_trial_id:
             if analysis_trial.kind not in ("qa", "qa_eval"):
                 raise _denied()
             try:

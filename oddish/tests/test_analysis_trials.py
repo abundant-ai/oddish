@@ -267,6 +267,80 @@ def test_qa_eval_check_payload_requires_exactly_one_source_trial():
         )
 
 
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    (
+        ({"trial_ids": []}, "must not be empty"),
+        ({"trial_ids": ["source-1", "source-1"]}, "must not contain duplicates"),
+        (
+            {
+                "trial_ids": ["source-1"],
+                "trial_evidence": [{"trial_id": "source-2"}],
+            },
+            "must cover trial_ids exactly",
+        ),
+        (
+            {
+                "trial_ids": ["source-1"],
+                "pre_trial_item_ids": ["audit-1"],
+                "pre_trial_must_fix_ids": ["audit-2"],
+            },
+            "must be a subset",
+        ),
+        ({"trial_ids": ["source-1"], "with_verdict": "yes"}, "must be a boolean"),
+    ),
+)
+def test_qa_payload_parser_rejects_inconsistent_persisted_state(payload, message):
+    from oddish.core.analysis_payload import AnalysisPayloadError
+    from oddish.workers.analysis_trials import analysis_check_payload
+
+    with pytest.raises(AnalysisPayloadError, match=message):
+        analysis_check_payload("qa", {"analysis_payload": payload})
+
+
+def test_analysis_check_payload_rejects_unknown_kinds():
+    from oddish.core.analysis_payload import AnalysisPayloadError
+    from oddish.workers.analysis_trials import analysis_check_payload
+
+    with pytest.raises(AnalysisPayloadError, match="unsupported"):
+        analysis_check_payload("typo", {"analysis_payload": {}})
+
+
+@pytest.mark.asyncio
+async def test_malformed_qa_payload_enters_the_verdict_failure_path(monkeypatch):
+    from types import SimpleNamespace
+
+    from oddish.db import TrialStatus
+    from oddish.workers import analysis_trials
+
+    captured = {}
+
+    async def unexpected_artifact_read(*_args):
+        raise AssertionError("an invalid persisted payload must fail before S3 access")
+
+    async def capture_failure(task_id, *, payload, should_store, error):
+        captured.update(task_id=task_id, payload=payload, error=error)
+
+    monkeypatch.setattr(
+        analysis_trials, "read_analysis_artifact", unexpected_artifact_read
+    )
+    monkeypatch.setattr(analysis_trials, "sync_verdict_to_task", capture_failure)
+
+    await analysis_trials._import_qa_result(
+        SimpleNamespace(
+            id="qa-1",
+            task_id="task-1",
+            task_version_id="version-1",
+            harbor_config={"analysis_payload": {"trial_ids": []}},
+            status=TrialStatus.SUCCESS,
+        )
+    )
+
+    assert captured["task_id"] == "task-1"
+    assert captured["payload"] is None
+    assert "must not be empty" in captured["error"]
+
+
 def _good_qa_entry(trial_id: str) -> dict:
     return {
         "trial_id": trial_id,
@@ -2031,7 +2105,7 @@ async def test_analysis_artifact_storage_errors_remain_retryable(monkeypatch):
     from oddish.workers import analysis_trials
 
     class UnavailableStorage:
-        async def list_objects_all(self, _prefix):
+        async def object_exists(self, _key):
             raise TimeoutError("storage timed out")
 
     monkeypatch.setattr(

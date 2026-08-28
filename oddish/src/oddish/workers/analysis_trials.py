@@ -54,9 +54,13 @@ from oddish.analyze.trajectory_taxonomy import (
 from oddish.config import is_nop_oracle_agent, nop_oracle_kind, settings
 from oddish.core.analysis_payload import (
     AnalysisPayloadError,
-    analysis_source_trial_ids,
+    parse_analysis_payload,
 )
 from oddish.core.baseline_gate import GateOutcome, evaluate_baseline_gate
+from oddish.core.trial_artifacts import (
+    TrialArtifactMode,
+    resolve_trial_artifact_layout,
+)
 from oddish.core.verdict_sync import (
     aggregate_exploited_into_pre_trial,
     build_pre_trial_payload,
@@ -76,7 +80,7 @@ from oddish.db import (
     get_session,
     utcnow,
 )
-from oddish.db.storage import get_storage_client, resolve_trial_s3_prefix
+from oddish.db.storage import get_storage_client
 from oddish.worker.analysis_result_check import check_analysis_result
 
 logger = logging.getLogger(__name__)
@@ -164,15 +168,15 @@ def analysis_check_payload(kind: str, harbor_config: dict | None) -> dict:
         "purposes": [v.value for v in PurposeAxis],
     }
     if kind in ("qa", "qa_eval"):
-        payload = (harbor_config or {}).get("analysis_payload") or {}
+        payload = parse_analysis_payload(kind, harbor_config)
         return {
             "kind": "qa",
-            "trial_ids": list(analysis_source_trial_ids(kind, harbor_config)),
-            "trial_evidence": list(payload.get("trial_evidence") or []),
-            "baseline_evidence": list(payload.get("baseline_evidence") or []),
-            "pre_trial_item_ids": list(payload.get("pre_trial_item_ids") or []),
-            "pre_trial_must_fix_ids": list(payload.get("pre_trial_must_fix_ids") or []),
-            "verdict_expected": bool(payload.get("with_verdict", True)),
+            "trial_ids": list(payload.trial_ids),
+            "trial_evidence": list(payload.trial_evidence),
+            "baseline_evidence": list(payload.baseline_evidence),
+            "pre_trial_item_ids": list(payload.pre_trial_item_ids),
+            "pre_trial_must_fix_ids": list(payload.pre_trial_must_fix_ids),
+            "verdict_expected": payload.with_verdict,
             "classifications": [c.value for c in Classification],
             "verdicts": list(
                 get_args(TaskVerdictModel.model_fields["verdict"].annotation)
@@ -185,17 +189,21 @@ def analysis_check_payload(kind: str, harbor_config: dict | None) -> dict:
             **item_vocabulary,
         }
     if kind == "summarize":
-        payload = (harbor_config or {}).get("analysis_payload") or {}
+        payload = parse_analysis_payload(kind, harbor_config)
         return {
             "kind": "summarize",
-            "target_trial_id": str(payload.get("target_trial_id") or ""),
+            "target_trial_id": payload.target_trial_id,
             **trajectory_vocabulary,
         }
-    return {
-        "kind": "audit",
-        "sources": [ActionItemSource.PRE_TRIAL.value],
-        **item_vocabulary,
-    }
+    if kind == "audit":
+        if harbor_config is not None:
+            parse_analysis_payload(kind, harbor_config)
+        return {
+            "kind": "audit",
+            "sources": [ActionItemSource.PRE_TRIAL.value],
+            **item_vocabulary,
+        }
+    raise AnalysisPayloadError(f"unsupported analysis trial kind {kind!r}")
 
 
 # Fired after a QA import writes the task verdict (hosted GitHub PR refresh).
@@ -643,10 +651,9 @@ The file must be valid JSON. Do not write anything else to /logs."""
 
 async def materialize_summarize_brief(harbor_config: dict | None) -> str:
     """Read one target trial's immutable artifacts and build its bounded prompt."""
-    payload = (harbor_config or {}).get("analysis_payload") or {}
-    target_trial_id = str(payload.get("target_trial_id") or "")
-    if not target_trial_id:
-        raise ValueError("summarize trial is missing analysis_payload.target_trial_id")
+    payload = parse_analysis_payload("summarize", harbor_config)
+    assert payload.target_trial_id is not None
+    target_trial_id = payload.target_trial_id
 
     from oddish.core.trial_io import read_trial_summary_inputs
 
@@ -840,31 +847,32 @@ async def create_qa_trial(
 
 
 async def read_artifact_bytes(trial: TrialModel, filename: str) -> bytes | None:
-    """Find the artifact anywhere under the trial's storage prefix.
-
-    Harbor nests each attempt's upload under its own job directory
-    (``task-<name>__<rand>/``), so a fixed key never matches. The analysis
-    verifier stages the artifact at ``<job dir>/verifier/<filename>``;
-    prefer that, take any other ``/<filename>`` key as a fallback, and pick
-    the newest when retries left several attempts behind."""
-    prefix = resolve_trial_s3_prefix(trial.id, trial_s3_key=trial.trial_s3_key)
+    """Read an analysis artifact from its manifest-selected attempt."""
     storage = get_storage_client()
     # Storage failures are retryable importer failures. Let them propagate to
     # the post-trial hook, whose cleanup backstop will retry the import, instead
     # of collapsing them into the permanent "artifact is absent" case.
-    objects = await storage.list_objects_all(prefix)
-    staged = [
-        o for o in objects if str(o.get("key", "")).endswith(f"/verifier/{filename}")
-    ]
-    loose = [o for o in objects if str(o.get("key", "")).endswith(f"/{filename}")]
-    candidates = staged or loose
-    if not candidates:
+    layout = await resolve_trial_artifact_layout(trial, storage)
+    if layout.mode is TrialArtifactMode.UNAVAILABLE:
         return None
-    newest = max(
-        candidates,
-        key=lambda o: (str(o.get("last_modified") or ""), str(o.get("key"))),
+    assert layout.artifact_prefix is not None
+    if layout.mode is TrialArtifactMode.EXACT:
+        key = f"{layout.artifact_prefix}verifier/{filename}"
+        if not await storage.object_exists(key):
+            return None
+        return await storage.download_bytes(key)
+
+    keys = (
+        list(layout.listed_keys)
+        if layout.listed_keys is not None
+        else sorted(await storage.list_keys(layout.attempt_prefix))
     )
-    return await storage.download_bytes(str(newest["key"]))
+    staged = [key for key in keys if key.endswith(f"/verifier/{filename}")]
+    loose = [key for key in keys if key.endswith(f"/{filename}")]
+    candidates = staged or loose
+    if len(candidates) != 1:
+        return None
+    return await storage.download_bytes(candidates[0])
 
 
 async def read_analysis_artifact(trial: TrialModel, filename: str) -> dict | None:
@@ -1129,10 +1137,23 @@ async def _import_qa_result(
 ) -> None:
     task_id = trial.task_id
     graded_version_id = trial.task_version_id
+    try:
+        expected = analysis_check_payload("qa", trial.harbor_config)
+    except AnalysisPayloadError as exc:
+        error = f"QA trial {trial.id} carries an invalid analysis payload: {exc}"
+        logger.warning("qa import for task %s failed: %s", task_id, error)
+        await sync_verdict_to_task(
+            task_id,
+            payload=None,
+            should_store=lambda s: _qa_import_still_current(
+                s, task_id, graded_version_id
+            ),
+            error=error,
+        )
+        return
     artifact = None
     if trial.status == TrialStatus.SUCCESS:
         artifact = await read_analysis_artifact(trial, QA_RESULT_FILENAME)
-    expected = analysis_check_payload("qa", trial.harbor_config)
     # A run below the evidence bar was told not to produce a verdict, so a
     # missing one is the expected outcome, not an import failure.
     verdict_expected = expected["verdict_expected"]
@@ -1525,8 +1546,14 @@ async def _import_summarize_result(trial: TrialModel) -> None:
     status, or analysis columns. Publication compares the pointer under the
     target lock, then writes the summary and clears that pointer atomically.
     """
-    payload = (trial.harbor_config or {}).get("analysis_payload") or {}
-    target_id = str(payload.get("target_trial_id") or "")
+    try:
+        payload = parse_analysis_payload("summarize", trial.harbor_config)
+        assert payload.target_trial_id is not None
+        target_id = payload.target_trial_id
+        payload_error = None
+    except AnalysisPayloadError as exc:
+        target_id = ""
+        payload_error = str(exc)
     artifact = None
     if trial.status == TrialStatus.SUCCESS:
         artifact = await read_analysis_artifact(trial, SUMMARIZE_RESULT_FILENAME)
@@ -1534,12 +1561,12 @@ async def _import_summarize_result(trial: TrialModel) -> None:
         check_analysis_result(
             artifact, analysis_check_payload("summarize", trial.harbor_config)
         )
-        if artifact is not None
+        if artifact is not None and payload_error is None
         else None
     )
     import_error = None
-    if not target_id:
-        import_error = "carries no target_trial_id"
+    if payload_error is not None:
+        import_error = payload_error
     elif trial.status != TrialStatus.SUCCESS:
         import_error = f"finished {trial.status.value}"
     elif artifact is None:

@@ -7,21 +7,25 @@ import mimetypes
 import re
 import time
 from collections.abc import Hashable, MutableMapping
-from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import TypeVar
 
 from fastapi import HTTPException
 from harbor.models.trial.paths import TrialPaths
-from harbor.viewer.scanner import JobScanner
 
+from oddish.core.trial_artifacts import (
+    TrialArtifactMode,
+    TrialArtifactLayout,
+    normalize_trial_relative_path,
+    resolve_trial_artifact_layout,
+    trial_name_from_manifest,
+)
 from oddish.config import settings
 from oddish.db import TrialModel, get_storage_client
 from oddish.db.storage import (
     StorageClient,
     _cleanup_temp_directory,
     resolve_trial_directory,
-    sanitize_s3_key_chars,
 )
 from oddish.workers.agents.grok_build_trajectory import (
     convert_grok_build_json_text_to_trajectory,
@@ -32,10 +36,10 @@ _CACHE_TTL_SECONDS = 120.0
 _CACHE_MAX_ENTRIES = 128
 _STRUCTURED_LOGS_CACHE: dict[tuple[str, int, str | None], tuple[float, dict]] = {}
 _TRAJECTORY_CACHE: dict[tuple[str, int, str | None], tuple[float, dict | None]] = {}
-_PROBE_ARTIFACTS_CACHE: dict[str, tuple[float, dict]] = {}
+_PROBE_ARTIFACTS_CACHE: dict[tuple[str, int, str | None], tuple[float, dict]] = {}
 _STRUCTURED_LOGS_LOCKS: dict[tuple[str, int, str | None], asyncio.Lock] = {}
 _TRAJECTORY_LOCKS: dict[tuple[str, int, str | None], asyncio.Lock] = {}
-_PROBE_ARTIFACTS_LOCKS: dict[str, asyncio.Lock] = {}
+_PROBE_ARTIFACTS_LOCKS: dict[tuple[str, int, str | None], asyncio.Lock] = {}
 _T = TypeVar("_T")
 _K = TypeVar("_K", bound=Hashable)
 
@@ -45,17 +49,6 @@ _EMPTY_PROBE_ARTIFACTS: dict = {
     "agent_messages": [],
     "watchdog_log": None,
 }
-
-
-@dataclass(frozen=True, slots=True)
-class _TrialS3Layout:
-    """The one artifact directory selected by an attempt manifest."""
-
-    attempt_prefix: str
-    trial_prefix: str | None
-    has_manifest: bool
-    allows_legacy_fallback: bool = True
-    listed_keys: tuple[str, ...] | None = None
 
 
 def _cache_get(cache: MutableMapping[_K, tuple[float, _T]], key: _K) -> _T | None:
@@ -123,25 +116,6 @@ def _resolve_local_job_dir(trial: TrialModel) -> Path | None:
     return job_dir
 
 
-def _resolve_scanned_trial_dir(
-    job_dir: Path, preferred_name: str | None
-) -> Path | None:
-    """Use Harbor's JobScanner to identify the per-trial directory inside a job."""
-    scanner = JobScanner(job_dir.parent)
-    trial_names: list[str] = scanner.list_trials(job_dir.name)
-    if not trial_names:
-        return None
-
-    for candidate in (preferred_name, "trial-0"):
-        if candidate and candidate in trial_names:
-            return job_dir / candidate
-
-    if len(trial_names) == 1:
-        return job_dir / trial_names[0]
-
-    return job_dir / trial_names[0]
-
-
 def _resolve_local_trial_paths(trial: TrialModel) -> TrialPaths | None:
     """Resolve Harbor trial directory for a trial's local artifacts.
 
@@ -153,13 +127,23 @@ def _resolve_local_trial_paths(trial: TrialModel) -> TrialPaths | None:
     if job_dir is None:
         return None
 
-    # Backward-compatible flat layout: logs directly under the job directory.
+    result_path = Path(trial.harbor_result_path)
+    if result_path.exists() and result_path.is_file():
+        try:
+            manifest = _json.loads(result_path.read_text(errors="replace"))
+            trial_name = trial_name_from_manifest(manifest)
+        except Exception:
+            return None
+        if trial_name is None:
+            return TrialPaths(job_dir)
+        trial_dir = job_dir / trial_name
+        if trial_dir.exists() and trial_dir.is_dir():
+            return TrialPaths(trial_dir)
+        return None
+
+    # Backward-compatible flat layout without a Harbor result manifest.
     if (job_dir / "agent").exists() or (job_dir / "verifier").exists():
         return TrialPaths(job_dir)
-
-    scanned_trial_dir = _resolve_scanned_trial_dir(job_dir, trial.name)
-    if scanned_trial_dir is not None:
-        return TrialPaths(scanned_trial_dir)
 
     # Setup failures can still leave behind root-level debug logs plus a
     # synthetic result.json. Treat the job directory itself as the trial dir so
@@ -196,90 +180,6 @@ def _legacy_grok_build_candidate_keys(trial: TrialModel, s3_prefix: str) -> list
     return _legacy_trial_candidate_keys(trial, s3_prefix, "agent/grok-build.json")
 
 
-def _is_attempt_scoped_key(key: str, root_prefix: str) -> bool:
-    """Whether an object belongs to the immutable per-attempt layout."""
-    parts = PurePosixPath(key.removeprefix(root_prefix)).parts
-    if not parts:
-        return False
-    if re.fullmatch(r"attempt-[1-9]\d*", parts[0]):
-        return True
-    return (
-        len(parts) > 1
-        and parts[0].startswith("analysis-")
-        and re.fullmatch(r"attempt-[1-9]\d*", parts[1]) is not None
-    )
-
-
-async def _resolve_trial_s3_layout(
-    trial: TrialModel,
-    storage: StorageClient,
-) -> _TrialS3Layout:
-    """Resolve the exact Harbor child directory for the current attempt.
-
-    Historical attempts without a root ``result.json`` remain eligible for
-    deterministic fallback lookup. Once the manifest exists, malformed data or
-    a missing selected artifact must not expose a sibling retry directory.
-    """
-    attempt_prefix = trial.trial_s3_key or StorageClient._trial_prefix(trial.id)
-    listed_keys: tuple[str, ...] | None = None
-    if trial.trial_s3_key is None:
-        # A null pointer can recover historical layouts stored directly below
-        # the canonical trial root. It cannot choose among immutable retries:
-        # if any attempt namespace exists, no root artifact or sibling is
-        # authoritative.
-        listed_keys = tuple(sorted(await storage.list_keys(attempt_prefix)))
-        if any(_is_attempt_scoped_key(key, attempt_prefix) for key in listed_keys):
-            return _TrialS3Layout(
-                attempt_prefix,
-                None,
-                False,
-                allows_legacy_fallback=False,
-                listed_keys=listed_keys,
-            )
-
-    manifest_key = f"{attempt_prefix}result.json"
-    if not await storage.object_exists(manifest_key):
-        return _TrialS3Layout(
-            attempt_prefix,
-            None,
-            False,
-            listed_keys=listed_keys,
-        )
-
-    try:
-        manifest = _json.loads(await storage.download_text(manifest_key))
-    except Exception:
-        return _TrialS3Layout(attempt_prefix, None, True)
-    if not isinstance(manifest, dict):
-        return _TrialS3Layout(attempt_prefix, None, True)
-
-    trial_results = manifest.get("trial_results")
-    if not isinstance(trial_results, list):
-        return _TrialS3Layout(attempt_prefix, None, True)
-    if not trial_results:
-        # Setup failures have no Harbor child trial. Their synthetic manifest
-        # and diagnostic artifacts belong directly to this exact attempt.
-        return _TrialS3Layout(attempt_prefix, attempt_prefix, True)
-    trial_name = next(
-        (
-            item.get("trial_name").strip()
-            for item in trial_results
-            if isinstance(item, dict)
-            and isinstance(item.get("trial_name"), str)
-            and item.get("trial_name").strip()
-        ),
-        None,
-    )
-    if trial_name is None:
-        return _TrialS3Layout(attempt_prefix, None, True)
-    trial_name_path = PurePosixPath(trial_name)
-    if trial_name_path.is_absolute() or ".." in trial_name_path.parts:
-        return _TrialS3Layout(attempt_prefix, None, True)
-
-    trial_prefix = f"{attempt_prefix}{sanitize_s3_key_chars(trial_name)}/"
-    return _TrialS3Layout(attempt_prefix, trial_prefix, True)
-
-
 async def _download_first_text(
     storage: StorageClient,
     candidates: list[str],
@@ -290,24 +190,6 @@ async def _download_first_text(
         except Exception:
             continue
     return None
-
-
-async def _resolve_trial_log_s3_prefix(
-    trial: TrialModel, storage: StorageClient
-) -> str | None:
-    """Return the one attempt/trial prefix logs may read.
-
-    A manifest-selected Harbor child is authoritative for immutable attempts.
-    Historical layouts without a manifest may still use their one legacy root.
-    A null DB pointer beside any attempt namespace is ambiguous and returns no
-    S3 prefix, matching the trajectory reader's fail-closed rule.
-    """
-    layout = await _resolve_trial_s3_layout(trial, storage)
-    if layout.has_manifest:
-        return layout.trial_prefix
-    if not layout.allows_legacy_fallback:
-        return None
-    return layout.attempt_prefix
 
 
 def _convert_grok_build_text_to_trajectory(
@@ -328,14 +210,21 @@ def _convert_grok_build_text_to_trajectory(
 async def read_trial_logs(trial: TrialModel) -> dict:
     """Read trial logs from S3 or local storage."""
     storage = get_storage_client()
+    layout = await resolve_trial_artifact_layout(trial, storage)
+    if layout.mode is TrialArtifactMode.UNAVAILABLE:
+        return {"trial_id": trial.id, "logs": ""}
     try:
-        s3_prefix = await _resolve_trial_log_s3_prefix(trial, storage)
-        if s3_prefix is not None:
-            logs = await storage.download_trial_logs(s3_prefix)
-            return {"trial_id": trial.id, "logs": logs, "s3_key": s3_prefix}
+        assert layout.artifact_prefix is not None
+        logs = await storage.download_trial_logs(layout.artifact_prefix)
+        if logs or layout.mode is TrialArtifactMode.EXACT:
+            return {
+                "trial_id": trial.id,
+                "logs": logs,
+                "s3_key": layout.artifact_prefix,
+            }
     except Exception:
-        # Fall back to local volume if S3 read fails
-        pass
+        if layout.mode is TrialArtifactMode.EXACT:
+            raise
 
     job_dir_resolved = _resolve_local_job_dir(trial)
     if job_dir_resolved is None:
@@ -379,10 +268,12 @@ async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
     }
 
     storage = get_storage_client()
+    layout = await resolve_trial_artifact_layout(trial, storage)
+    if layout.mode is TrialArtifactMode.UNAVAILABLE:
+        return result
     try:
-        s3_prefix = await _resolve_trial_log_s3_prefix(trial, storage)
-        if s3_prefix is None:
-            raise FileNotFoundError("no authoritative S3 log prefix")
+        assert layout.artifact_prefix is not None
+        s3_prefix = layout.artifact_prefix
         files = await storage.list_keys(s3_prefix)
 
         # Phase 1: Categorize files and plan downloads
@@ -462,6 +353,8 @@ async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
                 try:
                     return await storage.download_text(key)
                 except Exception:
+                    if layout.mode is TrialArtifactMode.EXACT:
+                        raise
                     return None
 
             download_tasks = [safe_download(key) for key, _, _ in download_plan]
@@ -503,9 +396,11 @@ async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
                 {"name": name, "content": content} for name, content in other_list
             ]
 
-        return result
+        if files or layout.mode is TrialArtifactMode.EXACT:
+            return result
     except Exception:
-        pass  # Fall through to local
+        if layout.mode is TrialArtifactMode.EXACT:
+            raise
 
     # Local path fallback
     if not trial.harbor_result_path:
@@ -639,18 +534,24 @@ async def _read_trial_probe_artifacts_uncached(trial: TrialModel) -> dict:
         if inlined:
             return inlined
 
-    if not trial.trial_s3_key and not trial.harbor_result_path:
-        return _EMPTY_PROBE_ARTIFACTS
-
     # Imported here (not at module load) to avoid pulling the worker analysis
     # stack into every API import.
     from oddish.worker.probe_analysis import extract_probe_artifacts
 
+    storage = get_storage_client()
+    layout = await resolve_trial_artifact_layout(trial, storage)
+    if layout.mode is TrialArtifactMode.UNAVAILABLE:
+        return _EMPTY_PROBE_ARTIFACTS
+    assert layout.artifact_prefix is not None
     try:
         trial_dir, temp_dir, _ = await resolve_trial_directory(
             trial_id=trial.id,
-            trial_s3_key=trial.trial_s3_key,
-            trial_result_path=trial.harbor_result_path,
+            trial_s3_key=layout.artifact_prefix,
+            trial_result_path=(
+                trial.harbor_result_path
+                if layout.mode is TrialArtifactMode.LEGACY
+                else None
+            ),
         )
     except Exception as exc:
         logging.getLogger(__name__).warning(
@@ -666,7 +567,7 @@ async def _read_trial_probe_artifacts_uncached(trial: TrialModel) -> dict:
 
 
 async def read_trial_probe_artifacts(trial: TrialModel) -> dict:
-    cache_key = trial.id
+    cache_key = (trial.id, trial.attempts, trial.trial_s3_key)
     if _should_cache_trial(trial):
         cached = _cache_get(_PROBE_ARTIFACTS_CACHE, cache_key)
         if cached is not None:
@@ -688,23 +589,23 @@ async def read_trial_probe_artifacts(trial: TrialModel) -> dict:
 async def _read_trial_trajectory_from_s3(
     trial: TrialModel,
     storage: StorageClient,
-    layout: _TrialS3Layout,
+    layout: TrialArtifactLayout,
 ) -> dict | None:
-    if layout.has_manifest:
-        if layout.trial_prefix is None:
+    if layout.mode is TrialArtifactMode.EXACT:
+        assert layout.artifact_prefix is not None
+        trajectory_key = f"{layout.artifact_prefix}agent/trajectory.json"
+        if not await storage.object_exists(trajectory_key):
             return None
         try:
-            content = await storage.download_text(
-                f"{layout.trial_prefix}agent/trajectory.json"
-            )
+            content = await storage.download_text(trajectory_key)
             if content:
                 parsed: dict = _json.loads(content)
                 return parsed
-        except Exception:
-            pass
+        except (_json.JSONDecodeError, TypeError, ValueError):
+            return None
         return None
 
-    if not layout.allows_legacy_fallback:
+    if layout.mode is TrialArtifactMode.UNAVAILABLE:
         return None
 
     # Imported and historical trials may predate the root-manifest contract.
@@ -813,9 +714,9 @@ def _read_local_trial_trajectory(trial: TrialModel) -> dict | None:
 async def _read_trial_trajectory_uncached(trial: TrialModel) -> dict | None:
     """Read ATIF trajectory.json for a trial."""
     storage = get_storage_client()
-    layout = await _resolve_trial_s3_layout(trial, storage)
+    layout = await resolve_trial_artifact_layout(trial, storage)
     trajectory = await _read_trial_trajectory_from_s3(trial, storage, layout)
-    if trajectory is not None or layout.has_manifest:
+    if trajectory is not None or layout.mode is not TrialArtifactMode.LEGACY:
         return trajectory
     return _read_local_trial_trajectory(trial)
 
@@ -845,20 +746,19 @@ async def read_trial_summary_inputs(
 ) -> tuple[dict | None, str | None, str | None]:
     """Read the trajectory, instruction, and verifier output from one layout."""
     storage = get_storage_client()
-    layout = await _resolve_trial_s3_layout(trial, storage)
+    layout = await resolve_trial_artifact_layout(trial, storage)
     trajectory = await _read_trial_trajectory_from_s3(trial, storage, layout)
-    if trajectory is None and not layout.has_manifest:
+    if trajectory is None and layout.mode is TrialArtifactMode.LEGACY:
         trajectory = _read_local_trial_trajectory(trial)
 
-    if layout.has_manifest:
-        if layout.trial_prefix is None:
-            return trajectory, None, None
-        instruction_keys = [f"{layout.trial_prefix}task/instruction.md"]
+    if layout.mode is TrialArtifactMode.EXACT:
+        assert layout.artifact_prefix is not None
+        instruction_keys = [f"{layout.artifact_prefix}task/instruction.md"]
         verifier_keys = [
-            f"{layout.trial_prefix}verifier/test-stdout.txt",
-            f"{layout.trial_prefix}verifier/stdout.txt",
+            f"{layout.artifact_prefix}verifier/test-stdout.txt",
+            f"{layout.artifact_prefix}verifier/stdout.txt",
         ]
-    elif not layout.allows_legacy_fallback:
+    elif layout.mode is TrialArtifactMode.UNAVAILABLE:
         return trajectory, None, None
     else:
         instruction_keys = _legacy_trial_candidate_keys(
@@ -880,24 +780,24 @@ async def read_trial_summary_inputs(
             )
         verifier_keys = list(dict.fromkeys(verifier_keys))
 
-    instruction, verifier_output = await asyncio.gather(
-        _download_first_text(storage, instruction_keys),
-        _download_first_text(storage, verifier_keys),
-    )
+    if layout.mode is TrialArtifactMode.EXACT:
+
+        async def download_exact(candidates: list[str]) -> str | None:
+            for key in candidates:
+                if await storage.object_exists(key):
+                    return await storage.download_text(key)
+            return None
+
+        instruction, verifier_output = await asyncio.gather(
+            download_exact(instruction_keys),
+            download_exact(verifier_keys),
+        )
+    else:
+        instruction, verifier_output = await asyncio.gather(
+            _download_first_text(storage, instruction_keys),
+            _download_first_text(storage, verifier_keys),
+        )
     return trajectory, instruction, verifier_output
-
-
-def _normalize_relative_agent_path(file_path: str) -> str:
-    raw = file_path.replace("\\", "/").strip()
-    if not raw or raw.startswith("/"):
-        raise HTTPException(status_code=400, detail="Invalid file path")
-    parts = PurePosixPath(raw).parts
-    if ".." in parts:
-        raise HTTPException(status_code=400, detail="Invalid file path")
-    normalized = str(PurePosixPath(*parts))
-    if normalized in ("", ".", "/"):
-        raise HTTPException(status_code=400, detail="Invalid file path")
-    return normalized
 
 
 async def read_trial_agent_file(
@@ -905,26 +805,22 @@ async def read_trial_agent_file(
     file_path: str,
 ) -> tuple[bytes, str]:
     """Read a file from the trial's `agent/` directory."""
-    normalized_path = _normalize_relative_agent_path(file_path)
+    normalized_path = normalize_trial_relative_path(file_path)
     media_type, _ = mimetypes.guess_type(normalized_path)
     if media_type is None:
         media_type = "application/octet-stream"
 
     storage = get_storage_client()
-    layout = await _resolve_trial_s3_layout(trial, storage)
+    layout = await resolve_trial_artifact_layout(trial, storage)
 
-    if layout.has_manifest:
-        if layout.trial_prefix is not None:
-            try:
-                content = await storage.download_bytes(
-                    f"{layout.trial_prefix}agent/{normalized_path}"
-                )
-                return content, media_type
-            except Exception:
-                pass
-        raise HTTPException(status_code=404, detail="File not found")
+    if layout.mode is TrialArtifactMode.EXACT:
+        assert layout.artifact_prefix is not None
+        key = f"{layout.artifact_prefix}agent/{normalized_path}"
+        if not await storage.object_exists(key):
+            raise HTTPException(status_code=404, detail="File not found")
+        return await storage.download_bytes(key), media_type
 
-    if layout.allows_legacy_fallback:
+    if layout.mode is TrialArtifactMode.LEGACY:
         direct_key = f"{layout.attempt_prefix}agent/{normalized_path}"
         try:
             content = await storage.download_bytes(direct_key)
@@ -950,6 +846,9 @@ async def read_trial_agent_file(
                 layout.attempt_prefix,
                 e,
             )
+
+    if layout.mode is TrialArtifactMode.UNAVAILABLE:
+        raise HTTPException(status_code=404, detail="File not found")
 
     if not trial.harbor_result_path:
         raise HTTPException(status_code=404, detail="Trial has no local result path")
@@ -980,14 +879,21 @@ async def read_trial_agent_file(
 
 async def read_trial_result(trial: TrialModel) -> dict:
     """Read result.json for a trial."""
-    s3_prefix = trial.trial_s3_key or StorageClient._trial_prefix(trial.id)
     storage = get_storage_client()
+    layout = await resolve_trial_artifact_layout(trial, storage)
+    if layout.mode is TrialArtifactMode.EXACT:
+        assert layout.manifest is not None
+        return layout.manifest
+    if layout.mode is TrialArtifactMode.UNAVAILABLE:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No authoritative result found for {trial.id}",
+        )
     try:
-        result_json = await storage.get_trial_result_json(s3_prefix)
+        result_json = await storage.get_trial_result_json(layout.attempt_prefix)
         if result_json:
             return result_json
     except Exception:
-        # Fall back to local volume if S3 read fails
         pass
 
     # Local path: read result.json from harbor_result_path
