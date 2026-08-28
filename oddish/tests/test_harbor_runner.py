@@ -142,6 +142,8 @@ def test_inject_restricted_agent_model_hosts_for_restricted_direct_task(
 
 
 def test_kube_chart_model_hosts_merge_into_helm_contract(monkeypatch, tmp_path):
+    """An agent with no attested profile keeps model-id inference: opencode
+    talks to the provider its model id names, so inference is correct there."""
     task_path = _write_kube_network_policy_task(tmp_path)
     environment_config = HarborEnvironmentConfig(
         type=EnvironmentType.DAYTONA,
@@ -152,7 +154,7 @@ def test_kube_chart_model_hosts_merge_into_helm_contract(monkeypatch, tmp_path):
         },
     )
     agent_config = HarborAgentConfig(
-        name="tbh",
+        name="opencode",
         model_name="anthropic/claude-opus-5",
         extra_allowed_hosts=["explicit.test", "existing.test"],
     )
@@ -406,6 +408,81 @@ def test_kube_chart_contract_follows_real_provider_routes(
         "runtimeAllowedHosts"
     ]
     assert expected_hosts <= set(raw_hosts.split(";"))
+
+
+def test_kube_chart_contract_pins_transport_authoritative_agent_hosts(tmp_path):
+    """gemini-cli fronts the Gemini API whatever the model id says.
+
+    Resolving hosts from the model id instead of the agent's attested profile
+    opened the provider named by the id (api.openai.com) while never opening
+    the host the CLI actually dials, so the agent could not reach its model at
+    all — the same drift ``_gemini_profile``'s ``infer_model=False`` exists to
+    prevent on Compose.
+    """
+    task_path = _write_kube_network_policy_task(tmp_path)
+    environment_config = HarborEnvironmentConfig(type=EnvironmentType.DAYTONA)
+    agent_config = HarborAgentConfig(name="gemini-cli", model_name="openai/gpt-5.2")
+
+    harbor_runner._apply_restricted_agent_network_defaults(
+        task_path=task_path,
+        environment_config=environment_config,
+        agent_config=agent_config,
+    )
+
+    hosts = set(
+        environment_config.kwargs["helm_values"]["agentEgressProxy"][
+            "runtimeAllowedHosts"
+        ].split(";")
+    )
+    assert "generativelanguage.googleapis.com" in hosts
+    assert not hosts & {"api.openai.com", "ab.chatgpt.com"}
+
+
+@pytest.mark.parametrize("model_name", ["openai/gpt-5.2", "cursor/gpt-5.2"])
+def test_kube_chart_contract_rejects_wildcard_pinned_agent(tmp_path, model_name):
+    """Cursor's attested boundary is the wildcard ``*.cursor.sh``, which this
+    chart's exact-match proxy cannot express — refuse the trial rather than
+    open the unrelated provider host the model id happens to name."""
+    task_path = _write_kube_network_policy_task(tmp_path)
+    environment_config = HarborEnvironmentConfig(type=EnvironmentType.DAYTONA)
+    agent_config = HarborAgentConfig(name="cursor-cli", model_name=model_name)
+
+    with pytest.raises(
+        harbor_runner.RestrictedNetworkProfileError,
+        match="supports only exact DNS hostnames",
+    ):
+        harbor_runner._apply_restricted_agent_network_defaults(
+            task_path=task_path,
+            environment_config=environment_config,
+            agent_config=agent_config,
+        )
+
+
+def test_kube_chart_contract_honors_custom_agent_profile_hook(tmp_path):
+    """A self-fronting agent's own hook is authoritative here as on Compose:
+    tbh reaches Meta through its own service, so its declared service_hosts —
+    not the model id — decide the policy."""
+    task_path = _write_kube_network_policy_task(tmp_path)
+    environment_config = HarborEnvironmentConfig(type=EnvironmentType.DAYTONA)
+    agent_config = HarborAgentConfig(
+        name="tbh",
+        model_name="openai/gpt-5.2",
+        kwargs={"service_hosts": ["api.meta.ai"]},
+    )
+
+    harbor_runner._apply_restricted_agent_network_defaults(
+        task_path=task_path,
+        environment_config=environment_config,
+        agent_config=agent_config,
+    )
+
+    hosts = set(
+        environment_config.kwargs["helm_values"]["agentEgressProxy"][
+            "runtimeAllowedHosts"
+        ].split(";")
+    )
+    assert "api.meta.ai" in hosts
+    assert not hosts & {"api.openai.com", "ab.chatgpt.com"}
 
 
 def test_compose_restricted_profile_keeps_runtime_host_out_of_config(tmp_path):

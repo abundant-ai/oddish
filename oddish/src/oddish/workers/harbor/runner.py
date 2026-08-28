@@ -89,9 +89,11 @@ from .restricted_network import (
     agent_keeps_public_model_identity,
     apply_restricted_network_profile,
     assert_no_serialized_restricted_routes,
+    agent_has_attested_restricted_profile,
     consumed_transport_base_url_keys,
     is_static_restricted_agent_supported,
     reject_submitted_restricted_routes,
+    restricted_network_profile_for_config,
     set_runtime_model_name,
 )
 from .modal_debug import (
@@ -1152,9 +1154,53 @@ def _validate_kube_chart_agent_hosts(hosts: list[str]) -> list[str]:
         if "*" in host or "/" in host or is_ip_address:
             raise RestrictedNetworkProfileError(
                 "The .oddish-agent-egress-hosts Helm contract supports only "
-                f"exact DNS hostnames; the resolved agent policy contains {host!r}."
+                f"exact DNS hostnames; the resolved agent policy contains {host!r}. "
+                "An agent whose attested profile is a wildcard boundary (e.g. "
+                "cursor-cli's *.cursor.sh) cannot run against this chart's "
+                "exact-match proxy; use a public agent phase for it instead."
             )
     return hosts
+
+
+def _kube_chart_agent_policy_hosts(
+    *,
+    agent_config: HarborAgentConfig,
+    resolved_env: dict[str, str],
+    agent_kwargs: dict[str, Any],
+) -> list[str]:
+    """Hosts the EFFECTIVE agent dials, from its profile when one is attested.
+
+    The wrappers applied just above exist to select these profiles, so the host
+    set must come from the same place Compose gets it. Inferring from the model
+    id instead is wrong for every transport-authoritative harness: Cursor fronts
+    arbitrary models through its own API, and gemini-cli/agy/grok-build pin
+    egress to one provider (``infer_model=False``), so a cursor-cli trial
+    carrying an ``openai/`` id would otherwise open api.openai.com -- a host it
+    never dials -- while never opening the one it does.
+
+    Agents with no attested profile (tbh, dsh, custom import paths) keep the
+    model-id inference plus their registered runtime hosts; that inference is
+    correct precisely because they talk to the provider the model id names.
+    """
+    if agent_has_attested_restricted_profile(agent_config):
+        profile = restricted_network_profile_for_config(
+            agent_config,
+            resolved_env=resolved_env,
+        )
+        return list(profile.outbound_hosts)
+    return [
+        *outbound_hosts_for_model(
+            agent_config.model_name,
+            agent_env=resolved_env,
+            agent_kwargs=agent_kwargs,
+        ),
+        *agent_runtime_hosts(
+            agent_name=agent_config.name,
+            import_path=agent_config.import_path,
+            agent_kwargs=agent_kwargs,
+            agent_env=resolved_env,
+        ),
+    ]
 
 
 def _inject_kube_chart_agent_model_hosts(
@@ -1191,19 +1237,11 @@ def _inject_kube_chart_agent_model_hosts(
     )
     if resolved_env:
         agent_kwargs["extra_env"] = resolved_env
-    inferred_hosts = [
-        *outbound_hosts_for_model(
-            agent_config.model_name,
-            agent_env=resolved_env,
-            agent_kwargs=agent_kwargs,
-        ),
-        *agent_runtime_hosts(
-            agent_name=agent_config.name,
-            import_path=agent_config.import_path,
-            agent_kwargs=agent_kwargs,
-            agent_env=resolved_env,
-        ),
-    ]
+    inferred_hosts = _kube_chart_agent_policy_hosts(
+        agent_config=agent_config,
+        resolved_env=resolved_env,
+        agent_kwargs=agent_kwargs,
+    )
 
     environment_kwargs = dict(environment_config.kwargs or {})
     helm_values = dict(environment_kwargs.get("helm_values") or {})
