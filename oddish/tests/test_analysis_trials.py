@@ -34,6 +34,16 @@ GOOD_ANALYSIS = {
     "exploitation": [],
 }
 
+LEGACY_CLASSIFIER_TOKENS = {
+    "{result}",
+    "{trial_agent_context}",
+    "{task_dir}",
+    "{trial_dir}",
+    "{pre_trial_context}",
+    "{file_access_context}",
+    "{trajectory_components_context}",
+}
+
 
 def test_the_analysis_kinds_are_known():
     """qa, qa_eval, audit, and summarize are analysis kinds. agent is not."""
@@ -109,6 +119,26 @@ def test_the_qa_brief_tells_the_agent_everything_it_needs():
     assert "GOOD_SUCCESS|BAD_SUCCESS" in brief
     for field in TaskVerdictModel.model_json_schema()["properties"]:
         assert field in brief
+
+
+def test_the_production_classifier_uses_the_query_evidence_contract():
+    """The packaged policy must describe evidence QA actually receives. It
+    must not retain placeholders or paths from the deleted mounted-dir flow."""
+    brief = build_qa_brief(
+        task_name="demo",
+        trial_ids=["t-1"],
+        pre_trial_items=None,
+        with_verdict=False,
+    )
+
+    for token in LEGACY_CLASSIFIER_TOKENS:
+        assert token not in brief
+    assert "/tmp/<trial-id>.result.json" in brief
+    assert "/tmp/<trial-id>.trajectory.json" in brief
+    assert "final workspace" in brief
+    assert "not mounted in the QA sandbox" in brief
+    assert "stop without writing `qa_result.json`" in brief
+    assert "Missing QA evidence is not a solver HARNESS_ERROR" in brief
 
 
 def test_the_audit_brief_names_its_output_file():

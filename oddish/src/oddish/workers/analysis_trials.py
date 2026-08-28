@@ -411,7 +411,7 @@ node /probe-harness/oddish-query trials result <trial-id> > /tmp/<trial-id>.resu
 node /probe-harness/oddish-query trials trajectory <trial-id> > /tmp/<trial-id>.trajectory.json
 ```
 
-Read both complete files before judging the trial. Confirm that the Harbor result's `trial_results[].trial_name` and the trajectory's trial identity describe the expected trial. Use `trials logs <trial-id>` only when diagnosing a setup or runtime failure. If either required resource is missing, malformed, or names a different trial, report that missing or conflicting evidence explicitly and do not infer agent behavior from another trial or attempt.
+Read both complete files before judging the trial. Confirm that the Harbor result's `trial_results[].trial_name` and the trajectory's trial identity describe the expected trial. Use `trials logs <trial-id>` only when diagnosing a setup or runtime failure. If either command fails, either file is malformed, or the identities conflict, stop without writing `qa_result.json`. Missing QA evidence is not a solver HARNESS_ERROR; do not infer agent behavior or substitute evidence from another trial or attempt.
 
 Known pre-trial audit findings for this task (do not repeat these as per-trial action items):
 {pre_trial}
