@@ -49,7 +49,7 @@ def _qa_artifact(source_trial_id: str = "source-1") -> dict:
                             "step_ids": [1],
                             "trajectory_component": "implementing",
                             "action": "edit",
-                            "purpose": "fix the task",
+                            "purpose": "build",
                             "summary": "One edit.",
                         }
                     ],
@@ -211,6 +211,19 @@ async def test_create_adds_one_pointer_trial_without_moving_the_source(monkeypat
     assert captured["task_version_id"] == "version-1"
     assert captured["billed_user_id"] == "user-1"
     assert captured["payload"]["trial_ids"] == ["source-1"]
+    assert captured["payload"]["trial_evidence"] == [
+        {
+            "trial_id": "source-1",
+            "status": "success",
+            "reward": None,
+            "has_trajectory": True,
+            "agent": "codex",
+            "baseline_kind": None,
+        }
+    ]
+    assert captured["payload"]["pre_trial_item_ids"] == []
+    assert captured["payload"]["pre_trial_must_fix_ids"] == []
+    assert captured["payload"]["baseline_evidence"] == []
     assert "source_trial_id" not in captured["payload"]
     assert admitted == [("org-1", "user-1", 1)]
     assert source.experiment_id == "original-experiment"
@@ -258,7 +271,11 @@ async def test_importer_extracts_one_standard_qa_analysis(monkeypatch):
 
     class FakeSession:
         async def get(self, _model, trial_id):
-            return eval_trial if trial_id == "eval-1" else None
+            if trial_id == "eval-1":
+                return eval_trial
+            if trial_id == "source-1":
+                return _source()
+            return None
 
     @asynccontextmanager
     async def fake_get_session():
@@ -274,7 +291,11 @@ async def test_importer_extracts_one_standard_qa_analysis(monkeypatch):
     )
 
     await _import_qa_eval_result(eval_trial)
-    assert eval_trial.analysis == _analysis()
+    assert eval_trial.analysis == {
+        **_analysis(),
+        "trial_name": "source-1",
+        "reward": None,
+    }
     assert eval_trial.analysis_status == AnalysisStatus.SUCCESS
 
 

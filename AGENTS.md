@@ -348,6 +348,15 @@ summary template must retain the `{{taxonomy}}` placeholder, rendered by the
 QA-trial brief builder (`oddish.workers.analysis_trials`). Editing a prompt is
 a code change that ships with a deploy.
 
+Each automatic QA brief snapshots authoritative Trial facts (id, status,
+reward, trajectory availability, and agent), current-version nop/oracle
+baseline results, and the source-audit status/findings into its pinned analysis
+payload. The QA agent fetches complete result, verifier, and trajectory
+resources for each solver Trial; it writes judgments only. Import restores
+`trial_name` and `reward` from the graded Trial row, and a source-audit
+`must_fix` finding or failed deterministic baseline rejects an otherwise
+accepted verdict.
+
 ### Worker job kinds
 
 `WorkerJobKind` (in `oddish.db.models`):
@@ -1167,7 +1176,8 @@ The attempt root's Harbor ``result.json`` is the artifact manifest. The shared
 trial-artifact resolver extracts ``trial_results[].trial_name``, sanitizes it
 with the same storage-key encoding used during upload, and selects exactly one
 ``<trial_s3_key>/<trial_name>/`` directory. Trajectory, task instruction,
-verifier output, and agent-file readers all use that selected directory. If the
+verifier output, agent-file, and structured/free-form log readers all use that
+selected directory. If the
 manifest is malformed or an exact artifact is absent, a reader returns no
 artifact; it never substitutes a sibling retry directory. Deterministic
 candidate/list fallback exists only for imported and historical layouts without

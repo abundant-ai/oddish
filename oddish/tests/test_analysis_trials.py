@@ -13,6 +13,7 @@ from oddish.db.models import TrialModel
 from oddish.filters.trial_predicates import EligibleTrialScope
 from oddish.core.trial_facets import facet_rows_for_trial
 from oddish.workers.analysis_trials import (
+    _apply_deterministic_verdict_rules,
     _classification_from_analysis,
     build_audit_brief,
     build_qa_brief,
@@ -134,11 +135,68 @@ def test_the_production_classifier_uses_the_query_evidence_contract():
     for token in LEGACY_CLASSIFIER_TOKENS:
         assert token not in brief
     assert "/tmp/<trial-id>.result.json" in brief
+    assert "/tmp/<trial-id>.verifier.json" in brief
     assert "/tmp/<trial-id>.trajectory.json" in brief
     assert "final workspace" in brief
     assert "not mounted in the QA sandbox" in brief
     assert "stop without writing `qa_result.json`" in brief
     assert "Missing QA evidence is not a solver HARNESS_ERROR" in brief
+    assert brief.count("== OUTPUT ==") == 1
+    for token in (
+        "{num_trials}",
+        "{baseline_summary}",
+        "{quality_check_summary}",
+        "{trial_classifications}",
+        "{{",
+        "}}",
+    ):
+        assert token not in brief
+
+
+def test_the_qa_brief_distinguishes_a_clean_audit_from_an_audit_failure():
+    failed = build_qa_brief(
+        task_name="demo",
+        trial_ids=["t-1"],
+        pre_trial_items=None,
+        with_verdict=False,
+        trial_evidence=[
+            {
+                "trial_id": "t-1",
+                "status": "failed",
+                "reward": None,
+                "has_trajectory": False,
+                "agent": "codex",
+                "baseline_kind": None,
+            }
+        ],
+        baseline_evidence=[
+            {
+                "trial_id": "nop-1",
+                "status": "success",
+                "reward": 1.0,
+                "has_trajectory": True,
+                "agent": "nop",
+                "baseline_kind": "nop",
+            }
+        ],
+        pre_trial_status="failed",
+        pre_trial_error="audit_result.json was missing",
+    )
+
+    assert "Source-audit status: failed" in failed
+    assert "Source-audit error: audit_result.json was missing" in failed
+    assert '"baseline_kind": "nop"' in failed
+    assert '"has_trajectory": false' in failed
+
+    clean = build_qa_brief(
+        task_name="demo",
+        trial_ids=["t-1"],
+        pre_trial_items=None,
+        with_verdict=False,
+        pre_trial_status="success",
+    )
+    assert "Source-audit status: success" in clean
+    assert "Source-audit error: (none)" in clean
 
 
 def test_the_audit_brief_names_its_output_file():
@@ -164,20 +222,35 @@ def test_the_no_verdict_brief_does_not_contradict_itself():
     assert "trials result <trial-id>" in brief
     assert "trials trajectory <trial-id>" in brief
     assert "> /tmp/<trial-id>.result.json" in brief
+    assert "> /tmp/<trial-id>.verifier.json" in brief
     assert "> /tmp/<trial-id>.trajectory.json" in brief
     assert brief.count("/tmp/<trial-id>.result.json") == 1
+    assert brief.count("/tmp/<trial-id>.verifier.json") == 1
     assert brief.count("/tmp/<trial-id>.trajectory.json") == 1
     assert brief.count("Missing QA evidence is not a solver HARNESS_ERROR") == 1
     assert "only when diagnosing a setup or runtime failure" in brief
     assert "do not infer agent behavior" in brief
 
 
-def _qa_check_payload(trial_ids: list[str], *, with_verdict: bool = False) -> dict:
+def _qa_check_payload(
+    trial_ids: list[str],
+    *,
+    with_verdict: bool = False,
+    trial_evidence: list[dict] | None = None,
+    pre_trial_item_ids: list[str] | None = None,
+) -> dict:
     from oddish.workers.analysis_trials import analysis_check_payload
 
     return analysis_check_payload(
         "qa",
-        {"analysis_payload": {"trial_ids": trial_ids, "with_verdict": with_verdict}},
+        {
+            "analysis_payload": {
+                "trial_ids": trial_ids,
+                "trial_evidence": trial_evidence or [],
+                "pre_trial_item_ids": pre_trial_item_ids or [],
+                "with_verdict": with_verdict,
+            }
+        },
     )
 
 
@@ -273,7 +346,7 @@ def test_the_single_llm_overlay_does_not_install_the_query_cli(tmp_path):
 
 def test_a_correct_analysis_is_accepted():
     """A well-formed analysis from the QA agent parses into a classification."""
-    parsed = _classification_from_analysis(GOOD_ANALYSIS)
+    parsed = _classification_from_analysis(GOOD_ANALYSIS, trial_name="t-1", reward=0.0)
     assert parsed is not None
     assert parsed.classification.value == "BAD_FAILURE"
 
@@ -288,7 +361,38 @@ def test_a_correct_analysis_is_accepted():
 )
 def test_a_broken_analysis_is_rejected_not_stored(broken):
     """A malformed analysis must parse to None. It must never reach the DB."""
-    assert _classification_from_analysis(broken) is None
+    assert _classification_from_analysis(broken, trial_name="t-1", reward=0.0) is None
+
+
+def test_a_must_fix_source_audit_overrides_an_accept_verdict():
+    accepted = TaskVerdictModel(verdict="accept", confidence="high")
+
+    rejected = _apply_deterministic_verdict_rules(
+        accepted, must_fix_ids=["finding-1"], baseline_evidence=[]
+    )
+
+    assert rejected.verdict == "reject"
+    assert rejected.confidence == "high"
+    assert "1 must-fix finding" in rejected.primary_issue
+    assert (
+        _apply_deterministic_verdict_rules(
+            accepted, must_fix_ids=[], baseline_evidence=[]
+        )
+        is accepted
+    )
+
+
+def test_a_failed_deterministic_baseline_overrides_an_accept_verdict():
+    accepted = TaskVerdictModel(verdict="accept", confidence="high")
+
+    rejected = _apply_deterministic_verdict_rules(
+        accepted,
+        must_fix_ids=[],
+        baseline_evidence=[{"agent": "nop", "reward": 1.0}],
+    )
+
+    assert rejected.verdict == "reject"
+    assert rejected.primary_issue.startswith("CRITICAL:")
 
 
 def test_trial_filters_hide_analysis_trials_by_default():
@@ -1254,6 +1358,103 @@ def test_the_validator_rejects_invalid_analyses_and_summaries():
     assert any("components" in e for e in errors)
 
 
+def test_the_validator_reconciles_classification_with_authoritative_trial_facts():
+    """The model cannot change the trial identity, reward, or whether a
+    trajectory exists. Those facts come from the database manifest."""
+    from oddish.worker.analysis_result_check import check_analysis_result
+
+    expected = _qa_check_payload(
+        ["t-1"],
+        trial_evidence=[
+            {
+                "trial_id": "t-1",
+                "status": "success",
+                "reward": 1.0,
+                "has_trajectory": True,
+                "agent": "codex",
+            }
+        ],
+    )
+    entry = _good_qa_entry("t-1")
+    errors = check_analysis_result({"trials": [entry], "verdict": None}, expected)
+    assert any("SUCCESS label for reward 1" in error for error in errors)
+    assert any("authoritative reward 1.0" in error for error in errors)
+
+    entry["analysis"] = {
+        **entry["analysis"],
+        "classification": "GOOD_SUCCESS",
+        "reward": 1.0,
+        "trial_name": "other-trial",
+    }
+    errors = check_analysis_result({"trials": [entry], "verdict": None}, expected)
+    assert any("trial_name must match 't-1'" in error for error in errors)
+
+
+def test_the_validator_accepts_an_empty_summary_only_without_a_trajectory():
+    from oddish.worker.analysis_result_check import check_analysis_result
+
+    expected = _qa_check_payload(
+        ["t-1"],
+        trial_evidence=[
+            {
+                "trial_id": "t-1",
+                "status": "failed",
+                "reward": None,
+                "has_trajectory": False,
+                "agent": "codex",
+            }
+        ],
+    )
+    entry = _good_qa_entry("t-1")
+    entry["analysis"] = {
+        **entry["analysis"],
+        "classification": "HARNESS_ERROR",
+        "reward": None,
+    }
+    entry["trajectory_summary"] = {
+        "summary": "The trial recorded no trajectory.",
+        "highlights": [],
+        "components": [],
+    }
+
+    assert check_analysis_result({"trials": [entry], "verdict": None}, expected) == []
+
+    entry["trajectory_summary"]["components"] = [
+        {
+            "step_ids": [1],
+            "trajectory_component": "implementing",
+            "action": "edit",
+            "purpose": "build",
+            "summary": "Invented work.",
+        }
+    ]
+    errors = check_analysis_result({"trials": [entry], "verdict": None}, expected)
+    assert any("components must be empty" in error for error in errors)
+
+
+def test_the_validator_requires_one_exploitation_assessment_per_audit_finding():
+    from oddish.worker.analysis_result_check import check_analysis_result
+
+    expected = _qa_check_payload(["t-1"], pre_trial_item_ids=["finding-1"])
+    entry = _good_qa_entry("t-1")
+    errors = check_analysis_result({"trials": [entry], "verdict": None}, expected)
+    assert any("missing pre-trial items" in error for error in errors)
+
+    entry["analysis"]["exploitation"] = [
+        {
+            "links_to": "finding-1",
+            "exploited": False,
+            "exploit_evidence": None,
+            "causal": False,
+        }
+    ]
+    assert check_analysis_result({"trials": [entry], "verdict": None}, expected) == []
+
+    entry["analysis"]["exploitation"][0]["links_to"] = {"invalid": "object"}
+    errors = check_analysis_result({"trials": [entry], "verdict": None}, expected)
+    assert any("links_to must be a non-empty string" in error for error in errors)
+
+
 def test_the_validator_enforces_the_verdict_contract():
     """A requested verdict must be a valid object; an unrequested one must
     be null, exactly as the brief instructs."""
@@ -1335,11 +1536,15 @@ def test_the_validator_holds_audit_items_to_the_prompt_schema():
         item,
         id=None,
         links_to="a1",
-        exploited=True,
+        exploited=False,
         causal=False,
         exploit_evidence=None,
     )
     assert check_analysis_result({"items": [optional_ok]}, expected) == []
+
+    invalid_range = dict(item, line_start=7, line_end=6)
+    errors = check_analysis_result({"items": [invalid_range]}, expected)
+    assert any("greater than or equal" in error for error in errors)
 
 
 @pytest.mark.asyncio

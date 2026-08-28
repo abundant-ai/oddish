@@ -91,7 +91,17 @@ async function cmdLogs(a) {
 }
 
 async function cmdTrialResource(a) {
-  out(JSON.stringify(await get(`/trials/${a.trialId}/${a.resource}`)));
+  const value = await get(`/trials/${a.trialId}/${a.resource}`);
+  out(JSON.stringify({ trial_id: a.trialId, [a.outputKey || a.resource]: value }));
+}
+
+async function cmdTrialVerifier(a) {
+  const data = await get(`/trials/${a.trialId}/logs/structured`);
+  out(JSON.stringify({
+    trial_id: a.trialId,
+    verifier: data?.verifier || { stdout: null, stderr: null },
+    exception: data?.exception ?? null,
+  }));
 }
 
 function taskId() {
@@ -221,7 +231,7 @@ async function cmdSolutionFetch(a) {
   out(withBanner(`copied solution (${count} files) to ${dest}`));
 }
 
-const HELP = `oddish-query — probe-only read access to task data (every command prints a PROBE-ONLY banner)
+const HELP = `oddish-query — bounded read access to task and trial evidence
 
 USAGE: node /probe-harness/oddish-query <group> <command> [args]
 
@@ -239,6 +249,7 @@ USAGE: node /probe-harness/oddish-query <group> <command> [args]
   trials result <trial_id>     complete Harbor result.json for one trial
   trials trajectory <trial_id>
                               complete ATIF trajectory for one trial
+  trials verifier <trial_id>  complete verifier stdout/stderr and exception
   trials logs <trial_id>       trial logs (large logs may be truncated)
 
 Use your judgement about which of these to call for your probe — not every probe needs every command.`;
@@ -270,6 +281,7 @@ async function main() {
   if (group === 'tasks' && cmd === 'trials') return cmdTaskTrials(a);
   if (group === 'experiments' && cmd === 'trials') return cmdExpTrials(a);
   if (group === 'trials' && (cmd === 'result' || cmd === 'trajectory')) return cmdTrialResource(a);
+  if (group === 'trials' && cmd === 'verifier') return cmdTrialVerifier(a);
   if (group === 'trials' && cmd === 'logs') return cmdLogs(a);
   if (group === 'task' && cmd === 'cat') return cmdTaskCat(a);
   if (group === 'task' && cmd === 'fetch') return await cmdTaskFetch({ into: opt.into });

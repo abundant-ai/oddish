@@ -14,6 +14,7 @@ class _Storage:
         self.listed = listed or []
         self.list_calls = 0
         self.download_calls: list[str] = []
+        self.log_prefixes: list[str] = []
 
     async def download_text(self, key: str) -> str:
         self.download_calls.append(key)
@@ -28,9 +29,15 @@ class _Storage:
     async def object_exists(self, key: str) -> bool:
         return key in self.objects
 
-    async def list_keys(self, _prefix: str) -> list[str]:
+    async def list_keys(self, prefix: str) -> list[str]:
         self.list_calls += 1
-        return self.listed
+        return [key for key in self.listed if key.startswith(prefix)]
+
+    async def download_trial_logs(self, prefix: str) -> str:
+        self.log_prefixes.append(prefix)
+        return "\n".join(
+            value for key, value in self.objects.items() if key.startswith(prefix)
+        )
 
 
 def _trial(*, prefix: str | None, attempts: int = 1):
@@ -40,6 +47,7 @@ def _trial(*, prefix: str | None, attempts: int = 1):
         model="openai/gpt-5.5",
         trial_s3_key=prefix,
         harbor_result_path=None,
+        error_message=None,
         finished_at=datetime.now(timezone.utc),
         attempts=attempts,
     )
@@ -48,6 +56,8 @@ def _trial(*, prefix: str | None, attempts: int = 1):
 def _clear_cache() -> None:
     trial_io._TRAJECTORY_CACHE.clear()
     trial_io._TRAJECTORY_LOCKS.clear()
+    trial_io._STRUCTURED_LOGS_CACHE.clear()
+    trial_io._STRUCTURED_LOGS_LOCKS.clear()
 
 
 def test_manifest_selects_the_exact_sanitized_harbor_directory(monkeypatch):
@@ -328,3 +338,120 @@ def test_retry_changes_the_cache_identity(monkeypatch):
 
     assert first == {"trial_name": "attempt-1"}
     assert second == {"trial_name": "attempt-2"}
+
+
+def test_structured_logs_use_the_manifest_selected_harbor_directory(monkeypatch):
+    _clear_cache()
+    prefix = "tasks/task-1/trials/task-1-7/attempt-2/"
+    current_key = f"{prefix}current-run/verifier/test-stdout.txt"
+    stale_key = f"{prefix}old-run/verifier/test-stdout.txt"
+    storage = _Storage(
+        {
+            f"{prefix}result.json": json.dumps(
+                {"trial_results": [{"trial_name": "current-run"}]}
+            ),
+            current_key: "CURRENT\n",
+            stale_key: "STALE\n",
+        },
+        listed=[stale_key, current_key],
+    )
+    monkeypatch.setattr(trial_io, "get_storage_client", lambda: storage)
+
+    result = asyncio.run(
+        trial_io.read_trial_logs_structured(_trial(prefix=prefix, attempts=2))
+    )
+
+    assert result["verifier"]["stdout"] == "CURRENT\n"
+    assert stale_key not in storage.download_calls
+
+
+def test_freeform_logs_use_the_manifest_selected_harbor_directory(monkeypatch):
+    prefix = "tasks/task-1/trials/task-1-7/attempt-2/"
+    current_prefix = f"{prefix}current-run/"
+    storage = _Storage(
+        {
+            f"{prefix}result.json": json.dumps(
+                {"trial_results": [{"trial_name": "current-run"}]}
+            ),
+            f"{current_prefix}verifier/test-stdout.txt": "CURRENT\n",
+            f"{prefix}old-run/verifier/test-stdout.txt": "STALE\n",
+        }
+    )
+    monkeypatch.setattr(trial_io, "get_storage_client", lambda: storage)
+
+    result = asyncio.run(trial_io.read_trial_logs(_trial(prefix=prefix, attempts=2)))
+
+    assert result["s3_key"] == current_prefix
+    assert result["logs"] == "CURRENT\n"
+    assert storage.log_prefixes == [current_prefix]
+
+
+def test_structured_logs_with_a_missing_pointer_do_not_scan_sibling_attempts(
+    monkeypatch,
+):
+    _clear_cache()
+    prefix = "tasks/task-1/trials/task-1-7/"
+    stale_key = f"{prefix}attempt-1/old-run/verifier/test-stdout.txt"
+    current_key = f"{prefix}attempt-2/current-run/agent/setup/stdout.txt"
+    storage = _Storage(
+        {stale_key: "STALE\n", current_key: "setup complete\n"},
+        listed=[stale_key, current_key],
+    )
+    monkeypatch.setattr(trial_io, "get_storage_client", lambda: storage)
+
+    result = asyncio.run(
+        trial_io.read_trial_logs_structured(_trial(prefix=None, attempts=2))
+    )
+
+    assert result["verifier"]["stdout"] is None
+    assert stale_key not in storage.download_calls
+    assert current_key not in storage.download_calls
+
+
+def test_freeform_logs_with_a_missing_pointer_do_not_scan_sibling_attempts(
+    monkeypatch,
+):
+    prefix = "tasks/task-1/trials/task-1-7/"
+    stale_key = f"{prefix}attempt-1/old-run/verifier/test-stdout.txt"
+    current_key = f"{prefix}attempt-2/current-run/agent/setup/stdout.txt"
+    storage = _Storage(
+        {stale_key: "STALE\n", current_key: "setup complete\n"},
+        listed=[stale_key, current_key],
+    )
+    monkeypatch.setattr(trial_io, "get_storage_client", lambda: storage)
+
+    result = asyncio.run(trial_io.read_trial_logs(_trial(prefix=None, attempts=2)))
+
+    assert result["logs"] == ""
+    assert storage.log_prefixes == []
+
+
+def test_structured_log_cache_changes_with_the_attempt_pointer(monkeypatch):
+    _clear_cache()
+    first_prefix = "tasks/task-1/trials/task-1-7/attempt-1/"
+    second_prefix = "tasks/task-1/trials/task-1-7/attempt-2/"
+    first_key = f"{first_prefix}run-1/verifier/test-stdout.txt"
+    second_key = f"{second_prefix}run-2/verifier/test-stdout.txt"
+    storage = _Storage(
+        {
+            f"{first_prefix}result.json": json.dumps(
+                {"trial_results": [{"trial_name": "run-1"}]}
+            ),
+            f"{second_prefix}result.json": json.dumps(
+                {"trial_results": [{"trial_name": "run-2"}]}
+            ),
+            first_key: "FIRST\n",
+            second_key: "SECOND\n",
+        },
+        listed=[first_key, second_key],
+    )
+    monkeypatch.setattr(trial_io, "get_storage_client", lambda: storage)
+    trial = _trial(prefix=first_prefix, attempts=1)
+
+    first = asyncio.run(trial_io.read_trial_logs_structured(trial))
+    trial.attempts = 2
+    trial.trial_s3_key = second_prefix
+    second = asyncio.run(trial_io.read_trial_logs_structured(trial))
+
+    assert first["verifier"]["stdout"] == "FIRST\n"
+    assert second["verifier"]["stdout"] == "SECOND\n"

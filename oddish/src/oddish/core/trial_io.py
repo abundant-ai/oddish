@@ -30,10 +30,10 @@ from oddish.workers.agents.grok_build_trajectory import (
 
 _CACHE_TTL_SECONDS = 120.0
 _CACHE_MAX_ENTRIES = 128
-_STRUCTURED_LOGS_CACHE: dict[str, tuple[float, dict]] = {}
+_STRUCTURED_LOGS_CACHE: dict[tuple[str, int, str | None], tuple[float, dict]] = {}
 _TRAJECTORY_CACHE: dict[tuple[str, int, str | None], tuple[float, dict | None]] = {}
 _PROBE_ARTIFACTS_CACHE: dict[str, tuple[float, dict]] = {}
-_STRUCTURED_LOGS_LOCKS: dict[str, asyncio.Lock] = {}
+_STRUCTURED_LOGS_LOCKS: dict[tuple[str, int, str | None], asyncio.Lock] = {}
 _TRAJECTORY_LOCKS: dict[tuple[str, int, str | None], asyncio.Lock] = {}
 _PROBE_ARTIFACTS_LOCKS: dict[str, asyncio.Lock] = {}
 _T = TypeVar("_T")
@@ -288,6 +288,24 @@ async def _download_first_text(
     return None
 
 
+async def _resolve_trial_log_s3_prefix(
+    trial: TrialModel, storage: StorageClient
+) -> str | None:
+    """Return the one attempt/trial prefix logs may read.
+
+    A manifest-selected Harbor child is authoritative for immutable attempts.
+    Historical layouts without a manifest may still use their one legacy root.
+    A null DB pointer beside any attempt namespace is ambiguous and returns no
+    S3 prefix, matching the trajectory reader's fail-closed rule.
+    """
+    layout = await _resolve_trial_s3_layout(trial, storage)
+    if layout.has_manifest:
+        return layout.trial_prefix
+    if not layout.allows_legacy_fallback:
+        return None
+    return layout.attempt_prefix
+
+
 def _convert_grok_build_text_to_trajectory(
     text: str,
     *,
@@ -305,11 +323,12 @@ def _convert_grok_build_text_to_trajectory(
 
 async def read_trial_logs(trial: TrialModel) -> dict:
     """Read trial logs from S3 or local storage."""
-    s3_prefix = trial.trial_s3_key or StorageClient._trial_prefix(trial.id)
     storage = get_storage_client()
     try:
-        logs = await storage.download_trial_logs(s3_prefix)
-        return {"trial_id": trial.id, "logs": logs, "s3_key": s3_prefix}
+        s3_prefix = await _resolve_trial_log_s3_prefix(trial, storage)
+        if s3_prefix is not None:
+            logs = await storage.download_trial_logs(s3_prefix)
+            return {"trial_id": trial.id, "logs": logs, "s3_key": s3_prefix}
     except Exception:
         # Fall back to local volume if S3 read fails
         pass
@@ -355,9 +374,11 @@ async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
         "exception": trial.error_message,
     }
 
-    s3_prefix = trial.trial_s3_key or StorageClient._trial_prefix(trial.id)
     storage = get_storage_client()
     try:
+        s3_prefix = await _resolve_trial_log_s3_prefix(trial, storage)
+        if s3_prefix is None:
+            raise FileNotFoundError("no authoritative S3 log prefix")
         files = await storage.list_keys(s3_prefix)
 
         # Phase 1: Categorize files and plan downloads
@@ -577,7 +598,11 @@ async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
 
 
 async def read_trial_logs_structured(trial: TrialModel) -> dict:
-    cache_key = trial.id
+    cache_key = (
+        trial.id,
+        int(getattr(trial, "attempts", 0) or 0),
+        getattr(trial, "trial_s3_key", None),
+    )
     if _should_cache_trial(trial):
         cached = _cache_get(_STRUCTURED_LOGS_CACHE, cache_key)
         if cached is not None:

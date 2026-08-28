@@ -30,7 +30,12 @@ from oddish.schemas import (
     QAEvalCreateResponse,
     QAEvalTrialResponse,
 )
-from oddish.workers.analysis_trials import build_qa_brief, create_analysis_trial
+from oddish.workers.analysis_trials import (
+    build_qa_brief,
+    create_analysis_trial,
+    pre_trial_item_ids,
+    qa_trial_evidence,
+)
 
 _QA_EVAL_SOURCE_STATUSES = (TrialStatus.SUCCESS, TrialStatus.FAILED)
 _QA_EVAL_ROUTE = "POST /qa-evals"
@@ -171,6 +176,8 @@ async def create_qa_eval_core(
             if isinstance(version.pre_trial, dict)
             else None
         )
+        evidence = [qa_trial_evidence(source)]
+        item_ids, must_fix_ids = pre_trial_item_ids(pre_trial_items)
         trial = await create_analysis_trial(
             session,
             task=task,
@@ -181,6 +188,14 @@ async def create_qa_eval_core(
                 pre_trial_items=pre_trial_items,
                 with_verdict=False,
                 classification_prompt=request.prompt_text,
+                trial_evidence=evidence,
+                pre_trial_status=(
+                    version.pre_trial_status.value
+                    if version.pre_trial_status is not None
+                    else None
+                ),
+                pre_trial_error=version.pre_trial_error,
+                verdict_omission_reason="QA replay does not synthesize a task verdict",
             ),
             task_version_id=task_version_id,
             experiment_id=experiment.id,
@@ -188,6 +203,10 @@ async def create_qa_eval_core(
             billed_user_id=billed_user_id,
             payload={
                 "trial_ids": [source.id],
+                "trial_evidence": evidence,
+                "baseline_evidence": [],
+                "pre_trial_item_ids": item_ids,
+                "pre_trial_must_fix_ids": must_fix_ids,
                 "with_verdict": False,
                 "prompt_name": request.prompt_name,
                 "prompt_sha256": prompt_sha256,
