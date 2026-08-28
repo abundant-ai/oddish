@@ -11,7 +11,7 @@ import pytest
 from oddish.runtime.backends.thunder import ThunderBackend
 
 
-def test_capabilities_match_thunder_sdk_040() -> None:
+def test_capabilities_match_thunder_sdk_041() -> None:
     caps = ThunderBackend().capabilities()
 
     assert caps.gpu is not None

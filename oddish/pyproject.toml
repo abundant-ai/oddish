@@ -91,7 +91,7 @@ worker = [
     "archil==0.11.0",
     # Hosted workers orchestrate Thunder sandboxes directly. Keep this aligned
     # with Harbor's thunder extra so cancellation can recover a sandbox by id.
-    "thunder-sandbox==0.4.0",
+    "thunder-sandbox==0.4.1",
     # LLM providers
     "anthropic==0.76.0",
     "openai==2.24.0",

@@ -1693,7 +1693,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = "==14.3.1" },
     { name = "sqlalchemy", extras = ["asyncio"], marker = "extra == 'server'", specifier = "==2.0.46" },
-    { name = "thunder-sandbox", marker = "extra == 'worker'", specifier = "==0.4.0" },
+    { name = "thunder-sandbox", marker = "extra == 'worker'", specifier = "==0.4.1" },
     { name = "tomlkit", specifier = "==0.15.1" },
     { name = "twine", marker = "extra == 'dev'", specifier = "==6.2.0" },
     { name = "typer", specifier = "==0.21.1" },
@@ -2948,15 +2948,15 @@ wheels = [
 
 [[package]]
 name = "thunder-sandbox"
-version = "0.4.0"
+version = "0.4.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
     { name = "asyncssh" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ac/b1/17b0b6e8a116b9b403049a4bfb974e1d4f9559886ef90d6fe60fb03ca315/thunder_sandbox-0.4.0.tar.gz", hash = "sha256:62daa07cc8497a1dcd66c4a377eeac2ec09b9b9ebe04729c2c641ead5c7a7082", size = 26530, upload-time = "2026-08-28T18:24:01.504Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/39/44/2145c80d6040a66f65a96eff323ddbfe861e2deb6ff40bc5097785cea66f/thunder_sandbox-0.4.1.tar.gz", hash = "sha256:22405a4b234d997d5aef8dea5745e31740c6f3846e57bf1805f02789a535dd37", size = 28467, upload-time = "2026-08-28T20:27:31.414Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/20/03/cc933d11ff4b1fb0b533754c3b821576ee9d2805f4658e4f24871d5de1ac/thunder_sandbox-0.4.0-py3-none-any.whl", hash = "sha256:633505fd678be84c9de6c49252d231e88d5577787d9899ffdf75bf970a675696", size = 30400, upload-time = "2026-08-28T18:24:00.058Z" },
+    { url = "https://files.pythonhosted.org/packages/85/7b/81c41d5b5fecc2ca3a754a9ff46fed96903ad7541fc2531a3e640602a526/thunder_sandbox-0.4.1-py3-none-any.whl", hash = "sha256:2c50622a7c3d428c19fcbbdcb837e43fe386fa3b809b5efbcc186dff3b062536", size = 33106, upload-time = "2026-08-28T20:27:30.188Z" },
 ]
 
 [[package]]

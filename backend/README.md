@@ -291,7 +291,7 @@ uv run modal secret create oddish-thunder \
 The global capacity is enforced with durable, atomic provider leases across
 all organizations, models, queue keys, and Harbor variants. Cancellation and
 orphan cleanup operate on the persisted sandbox ID through the provider SDK.
-Thunder uses `thunder-sandbox==0.4.0` and its Python dependencies (`aiohttp`,
+Thunder uses `thunder-sandbox==0.4.1` and its Python dependencies (`aiohttp`,
 `asyncssh`, and `cryptography`); it does not shell out to `ssh`, `scp`, or
 `ssh-keygen`.
 
