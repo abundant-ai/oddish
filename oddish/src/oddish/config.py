@@ -1342,6 +1342,13 @@ class Settings(BaseSettings):
     # Default execution environment (daytona, docker, or modal)
     harbor_environment: str = "daytona"
 
+    # Percentage of newly submitted hosted CPU sweeps whose Daytona default is
+    # replaced with Archil. The backend hashes the raw request body before it
+    # adds identity defaults, so retries and every trial in one sweep keep the
+    # same provider. Explicit environments and non-Daytona capability routes
+    # (GPU, TPU, Numinous previews) remain authoritative.
+    archil_traffic_percent: int = Field(0, ge=0, le=100)
+
     # Live tail of agent output for running trials
     live_tail_enabled: bool = True
     live_tail_interval_sec: float = 30.0

@@ -1622,7 +1622,7 @@ def test_store_trial_results_persists_total_steps(monkeypatch):
     assert trial.total_steps == 7
     assert trial.cost_usd == 0.12
     assert trial.has_trajectory is True
-    assert stored == (True, True)
+    assert stored[:2] == (True, True)
 
 
 def test_store_trial_results_overrides_runtime_cancelled_for_image_build(monkeypatch):
@@ -1770,7 +1770,7 @@ def test_store_trial_results_preserves_user_cancel_for_image_build(monkeypatch):
     assert trial.harbor_stage == "cancelled"
     assert trial.error_message == "Cancelled by user"
     assert trial.finished_at is original_finished_at
-    assert stored == (True, False)
+    assert stored[:2] == (True, False)
 
 
 def test_store_trial_results_settles_metering_after_quota_cancel(monkeypatch):
@@ -1856,7 +1856,7 @@ def test_store_trial_results_settles_metering_after_quota_cancel(monkeypatch):
     assert trial.cache_write_tokens == 10
     assert trial.output_tokens == 50
     assert trial.cost_usd == 0.25
-    assert stored == (True, False)
+    assert stored[:2] == (True, False)
 
 
 def test_store_trial_results_ignores_stale_cancelled_attempt(monkeypatch):
@@ -1896,7 +1896,7 @@ def test_store_trial_results_ignores_stale_cancelled_attempt(monkeypatch):
         )
     )
 
-    assert stored == (True, False)
+    assert stored[:2] == (True, False)
     assert (trial.input_tokens, trial.cost_usd) == (7, 0.25)
 
 
@@ -3832,7 +3832,7 @@ def test_store_trial_results_skips_retry_for_quota_pause_outcome(monkeypatch):
     assert trial.finished_at is not None
     assert trial.error_message == "QuotaPauseControlError: snapshot failed"
     assert trial.attempts == 1
-    assert stored == (True, True)
+    assert stored[:2] == (True, True)
 
 
 def test_store_trial_results_still_retries_unknown_exception(monkeypatch):
@@ -3841,7 +3841,6 @@ def test_store_trial_results_still_retries_unknown_exception(monkeypatch):
 
     trial = _make_retry_decision_trial(attempts=1, max_attempts=6)
     _install_retry_decision_session_fakes(monkeypatch, trial)
-
     outcome = harbor_runner.HarborOutcome(
         reward=None,
         error="ConnectionResetError: connection reset by peer",
@@ -3891,7 +3890,7 @@ def test_analysis_artifact_upload_failure_cannot_settle_successfully(
     )
     upload_error = "Failed to upload trial results to S3: TimeoutError: timed out"
 
-    terminal, completed = asyncio.run(
+    terminal, completed, event = asyncio.run(
         trial_handler._store_trial_results(
             trial_id=trial.id,
             outcome=outcome,
@@ -3907,6 +3906,7 @@ def test_analysis_artifact_upload_failure_cannot_settle_successfully(
     assert trial.error_message == upload_error
     assert terminal is (expected_status == trial_handler.TrialStatus.FAILED)
     assert completed is (expected_status == trial_handler.TrialStatus.FAILED)
+    assert (event is not None) is (expected_status == trial_handler.TrialStatus.FAILED)
 
 
 def test_store_trial_results_retries_when_exception_type_is_missing(monkeypatch):
@@ -3960,13 +3960,12 @@ def test_store_trial_results_retries_execution_exception_without_outcome(monkeyp
     assert trial.status == trial_handler.TrialStatus.RETRYING
     assert trial.finished_at is None
     assert trial.error_message == "ConnectionResetError: worker transport disappeared"
-    assert stored == (False, False)
+    assert stored == (False, False, None)
 
 
 def test_store_trial_results_fails_non_retryable_execution_exception(monkeypatch):
     trial = _make_retry_decision_trial(attempts=1, max_attempts=6)
     _install_retry_decision_session_fakes(monkeypatch, trial)
-
     stored = asyncio.run(
         trial_handler._store_trial_results(
             trial_id="trial-1",
@@ -3981,7 +3980,8 @@ def test_store_trial_results_fails_non_retryable_execution_exception(monkeypatch
     assert trial.status == trial_handler.TrialStatus.FAILED
     assert trial.finished_at is not None
     assert trial.error_message == "QuotaPauseControlError: snapshot failed"
-    assert stored == (True, True)
+    assert stored[:2] == (True, True)
+    assert stored[2]["trial_id"] == trial.id
 
 
 def test_store_trial_results_retries_runtime_cancel_with_budget(monkeypatch):
@@ -4016,7 +4016,7 @@ def test_store_trial_results_retries_runtime_cancel_with_budget(monkeypatch):
 
     assert trial.status == trial_handler.TrialStatus.RETRYING
     assert trial.finished_at is None
-    assert stored == (False, False)
+    assert stored == (False, False, None)
 
 
 def test_store_trial_results_fails_execution_exception_at_attempt_limit(monkeypatch):
@@ -4035,7 +4035,7 @@ def test_store_trial_results_fails_execution_exception_at_attempt_limit(monkeypa
 
     assert trial.status == trial_handler.TrialStatus.FAILED
     assert trial.finished_at is not None
-    assert stored == (True, True)
+    assert stored[:2] == (True, True)
 
 
 def test_harbor_retry_config_owns_known_terminal_failures():

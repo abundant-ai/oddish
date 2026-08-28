@@ -61,7 +61,7 @@ backend/                        # Hosted cloud layer (Modal deployment)
 │                               # verification (auth/verification.py), provisioning, types
 ├── worker/                     # Modal dispatcher and single-job worker orchestration
 ├── deploy.py                   # Modal app entrypoint
-├── modal_app.py                # Modal image, volumes, shared runtime, env knobs; default Harbor provider is Daytona
+├── modal_app.py                # Modal image, volumes, shared runtime, env knobs; CPU defaults to Daytona with a deterministic Archil rollout
 ├── endpoints.py                # Modal ASGI app function with concurrency/volume wiring
 ├── serve.py                    # Railway/uvicorn entrypoint for non-Modal deployment
 ├── cloud_policy.py             # Hosted-only environment policy
@@ -755,6 +755,15 @@ Settings are loaded from `oddish/.env`; see `oddish/env.example`,
 Keep these routing rules in sync with `oddish/src/oddish/config.py` and
 `oddish/src/oddish/workers/harbor/runner.py`:
 
+- `ODDISH_ARCHIL_TRAFFIC_PERCENT` (integer 0 through 100, default 0) replaces
+  the Daytona default for that percentage of newly submitted hosted CPU
+  sweeps. `backend/api/routers/tasks.py` computes the request fingerprint before
+  identity or GitHub attribution mutates the submission; `backend/cloud_policy.py`
+  maps that SHA-256 value into a 0–99 bucket. The selected default reaches every
+  unset trial spec in the sweep. Explicit submission/config environments,
+  non-Daytona capability routes, appends that inherit an existing task's
+  environment, and retries of stored trial rows keep their provider. The batch
+  route applies the same rule independently to each raw item.
 - EC2 is an explicit, opt-in Harbor backend: `ODDISH_EC2_ENABLED=true` registers
   it and permits hosted `environment=ec2`, but capability ordering keeps Daytona
   as the CPU default. V1 launches one ephemeral CPU instance per trial and uses

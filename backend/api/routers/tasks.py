@@ -382,7 +382,9 @@ async def create_task_sweep(
                 submission=submission,
                 org_id=auth.org_id,
                 attribution=attribution,
-                default_environment=get_default_cloud_environment(submission),
+                default_environment=get_default_cloud_environment(
+                    submission, request_hash=request_hash
+                ),
                 allowed_environments=ALLOWED_CLOUD_ENVIRONMENTS,
                 idempotency_key=idempotency_key,
                 idempotency_store=SubmissionIdempotencyStore(session),
@@ -470,6 +472,9 @@ async def create_task_sweep_batch(
         # Per-item, auth-aware setup. Runs in the batch core's read-only
         # pre-loop (identity -> attribution -> billed, same order as the single
         # route); a failure fails only this item.
+        # Keep routing stable across retries by hashing the raw item before
+        # identity and GitHub attribution add server-resolved defaults.
+        request_hash = compute_request_hash(submission)
         await resolve_submission_identity(session, submission, auth)
         apply_github_attribution(submission)
         # Unconditional linkage gate: a truthy github_id resolving to no active
@@ -479,7 +484,10 @@ async def create_task_sweep_batch(
         attribution = await resolve_sweep_attribution(
             session, submission, auth, connected_user
         )
-        return get_default_cloud_environment(submission), attribution
+        return (
+            get_default_cloud_environment(submission, request_hash=request_hash),
+            attribution,
+        )
 
     async def _finalize(
         session: AsyncSession,
