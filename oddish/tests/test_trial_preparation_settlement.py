@@ -21,7 +21,14 @@ async def test_analysis_probe_env_pins_task_version(monkeypatch, tmp_path):
         trial_agent="claude-code",
         trial_model="anthropic/claude-sonnet-4-6",
         trial_environment="docker",
-        trial_harbor_config={"mode": "qa_eval", "extra_instructions": "brief"},
+        trial_harbor_config={
+            "extra_instructions": "brief",
+            "analysis_payload": {
+                "trial_ids": ["source-1"],
+                "with_verdict": False,
+            },
+        },
+        trial_kind="qa_eval",
         task_version=7,
         org_id="org-1",
     )
@@ -60,9 +67,9 @@ async def test_summarize_materialization_failure_removes_task_copy(
         trial_model="anthropic/claude-sonnet-4-6",
         trial_environment="docker",
         trial_harbor_config={
-            "mode": "summarize",
             "extra_instructions": "materialized at pickup",
         },
+        trial_kind="summarize",
         org_id="org-1",
     )
     copy_root = tmp_path / "prepared-copy"
@@ -144,7 +151,8 @@ async def test_run_trial_job_settles_task_preparation_error(monkeypatch):
         trial_agent="single-llm",
         trial_model="anthropic/claude-sonnet-4-6",
         trial_environment="docker",
-        trial_harbor_config={"mode": "summarize"},
+        trial_harbor_config={"extra_instructions": "materialized at pickup"},
+        trial_kind="summarize",
         org_id="org-1",
         trial_attempt=2,
     )

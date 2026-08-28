@@ -79,6 +79,28 @@ def test_trial_upload_sanitizes_disallowed_key_chars(tmp_path) -> None:
     ]
 
 
+def test_trial_upload_returns_the_exact_nested_attempt_prefix(tmp_path) -> None:
+    (tmp_path / "result.json").write_text("{}", encoding="utf-8")
+    client, uploaded = _client_with_recorder()
+
+    async def _noop():
+        return None
+
+    client._ensure_client = _noop  # type: ignore[assignment]
+    root_prefix = "tasks/task_a/trials/task_a-0/"
+    prefix = asyncio.run(
+        client.upload_trial_results(
+            "task_a-0",
+            tmp_path,
+            authorized_prefix=root_prefix,
+            subprefix="analysis-qa/attempt-2",
+        )
+    )
+
+    assert prefix == f"{root_prefix}analysis-qa/attempt-2/"
+    assert uploaded == [f"{prefix}result.json"]
+
+
 def test_sanitized_trial_keys_stay_within_authorized_prefix(tmp_path) -> None:
     (tmp_path / "%weird").mkdir()
     (tmp_path / "%weird" / "log.txt").write_text("x", encoding="utf-8")

@@ -39,6 +39,57 @@ from oddish.workers.queue import trial_handler  # noqa: E402
 _DISK_USAGE = namedtuple("DiskUsage", ["total", "used", "free"])
 
 
+@pytest.mark.parametrize(
+    ("trial_kind", "expected_probe_runtime"),
+    (("qa", True), ("summarize", False)),
+)
+def test_analysis_kind_derives_runtime_capabilities_once(
+    tmp_path,
+    monkeypatch,
+    trial_kind,
+    expected_probe_runtime,
+):
+    task_path = tmp_path / "analysis-task"
+    task_path.mkdir()
+    monkeypatch.setattr(harbor_runner, "apply_harbor_patches", lambda **_kwargs: None)
+    monkeypatch.setattr(harbor_runner, "get_backend", lambda _name: None)
+
+    def unexpected_validation(_path):
+        raise AssertionError("analysis trials must skip ordinary task validation")
+
+    monkeypatch.setattr(
+        harbor_runner,
+        "validate_task_timeout_config",
+        unexpected_validation,
+    )
+    monkeypatch.setattr(
+        harbor_runner,
+        "_check_local_storage_preflight",
+        lambda *_args, **_kwargs: "stop after validation boundary",
+    )
+    observed_probe_runtime = []
+
+    def probe_modal_kwargs(is_probe, environment):
+        observed_probe_runtime.append(is_probe)
+        assert environment == EnvironmentType.MODAL
+        return {}
+
+    monkeypatch.setattr(harbor_runner, "_probe_modal_kwargs", probe_modal_kwargs)
+
+    outcome = asyncio.run(
+        harbor_runner.run_harbor_trial_async(
+            task_path=task_path,
+            agent="claude-code",
+            jobs_dir=tmp_path / "jobs",
+            environment=EnvironmentType.MODAL,
+            trial_kind=trial_kind,
+        )
+    )
+
+    assert outcome.exception_type == "LocalStoragePreflightError"
+    assert observed_probe_runtime == [expected_probe_runtime]
+
+
 def _write_network_policy_task(
     tmp_path: Path,
     *,

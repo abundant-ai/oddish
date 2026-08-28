@@ -177,6 +177,8 @@ def _gemini_ai_sdk_alias_env(model: str | None) -> dict[str, str]:
         if value := os.environ.get(source):
             return {_AI_SDK_GOOGLE_KEY: value}
     return {}
+
+
 # Ambient claude-code platform credentials must fold into the redaction map for
 # the same reason: when job-scoped injection is off, the direct/OAuth Anthropic
 # credential or the Bedrock credential chain the stock agent forwards is only in
@@ -1388,6 +1390,7 @@ async def run_harbor_trial_async(
     billed_user_id: str | None = None,
     extra_agent_env: dict[str, str] | None = None,
     sandbox_launch: SandboxLaunchContext | None = None,
+    trial_kind: str = "agent",
 ) -> HarborOutcome:
     """
     Execute a Harbor trial using Harbor's Python API with lifecycle hooks.
@@ -1429,6 +1432,7 @@ async def run_harbor_trial_async(
             billed_user_id=billed_user_id,
             extra_agent_env=extra_agent_env,
             sandbox_launch=sandbox_launch,
+            trial_kind=trial_kind,
             raw=raw,
             hc=hc,
             backend=backend,
@@ -1452,7 +1456,10 @@ async def _run_harbor_trial_async_impl(
     hc: HarborConfig,
     backend: Any,
     sandbox_launch: SandboxLaunchContext | None,
+    trial_kind: str,
 ) -> HarborOutcome:
+    from oddish.workers.analysis_trials import is_analysis_kind
+
     # Size the environment-build timeout multiplier BEFORE the dispatch fork so
     # EVERY path that runs a GKE environment carries it -- the in-process blessed
     # variant AND the out-of-process ephemeral child. pod_ready is read from the
@@ -1479,7 +1486,10 @@ async def _run_harbor_trial_async_impl(
         getattr(hc.environment, "override_tpu", None),
     )
 
-    is_probe = raw.get("mode") == "probe"
+    is_operator_probe = raw.get("mode") == "probe"
+    is_analysis_trial = is_analysis_kind(trial_kind)
+    is_probe = is_operator_probe or (is_analysis_trial and trial_kind != "summarize")
+    skip_task_validation = is_operator_probe or is_analysis_trial
     dispatch_env_config = hc.environment.model_copy()
     dispatch_env_config.type = environment
     try:
@@ -1543,15 +1553,14 @@ async def _run_harbor_trial_async_impl(
             harbor_config=harbor_config,
             extra_agent_env=extra_agent_env,
             environment_build_timeout_multiplier=env_build_multiplier,
+            is_probe=is_probe,
+            skip_task_validation=skip_task_validation,
         )
 
     # Probes and analysis trials attach to an existing task and inherit its
     # task.toml, which may predate the timeout requirement. Rather than
     # hard-fail, skip strict validation and cap the agent timeout below.
-    from oddish.workers.analysis_trials import is_analysis_kind
-
-    is_probe = raw.get("mode") == "probe" or is_analysis_kind(raw.get("mode"))
-    if not is_probe:
+    if not skip_task_validation:
         validate_task_timeout_config(task_path)
 
     needs_task_patch = bool(hc.docker_image or hc.mcp_servers)
@@ -1820,7 +1829,8 @@ async def _run_harbor_trial_async_impl(
         # raw_agent_config import_path is covered too.
         if (
             (agent or "").strip().lower() == "antigravity-cli"
-            or "antigravity_cli:" in (getattr(agent_config, "import_path", None) or "").strip().lower()
+            or "antigravity_cli:"
+            in (getattr(agent_config, "import_path", None) or "").strip().lower()
         ) and not (
             _supports_daytona_compose_restricted_agent_network(
                 task_path=effective_task_path,
