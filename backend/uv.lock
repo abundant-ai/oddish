@@ -8,7 +8,7 @@ resolution-markers = [
 ]
 
 [manifest]
-overrides = [{ name = "harbor", git = "https://github.com/abundant-ai/harbor?rev=f6fe08e1dad9b88762cdaada8b374eaad2caadae" }]
+overrides = [{ name = "harbor", git = "https://github.com/abundant-ai/harbor?rev=b4ff6196628eaa39358dc55253fd1d29afd8ed52" }]
 
 [[package]]
 name = "aioboto3"
@@ -196,16 +196,16 @@ wheels = [
 
 [[package]]
 name = "archil"
-version = "0.11.0"
+version = "0.12.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "synchronicity" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b2/86/0a12a0d0c130f4cedf447f4f9cc813d24d3af1a33bbc81a6b82101e8f671/archil-0.11.0.tar.gz", hash = "sha256:11b52c0a1fbba6f6280f7fcf4b7a8b1b5f85d1782ce09faba2d12cf271f683e0", size = 65706, upload-time = "2026-08-19T00:30:40.237Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c1/40/965a2dde17a25ad0b9d2a6cf1b7e2312b506d8c302d81160f831a08e3ab8/archil-0.12.0.tar.gz", hash = "sha256:a3d4e476df4f4c23b885e9b664da5ccb88a30e5e00d892553dbb5bd34fd2f602", size = 65987, upload-time = "2026-08-26T23:48:33.07Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a9/53/908fa38e2be21d1e7b2b9f95706cad75271c935f6ce2f07fd74d1355684c/archil-0.11.0-py3-none-any.whl", hash = "sha256:ff904b38873cadd0bbf22bcae27a8d1c0d5116be162e9712fd0f36db5224c3ec", size = 77776, upload-time = "2026-08-19T00:30:38.974Z" },
+    { url = "https://files.pythonhosted.org/packages/9e/c4/dc8a0659e3dac7599a3f5978195ce0c96049d23066e7ab866db7e0088469/archil-0.12.0-py3-none-any.whl", hash = "sha256:92257eb050e152f744fe08e76cc1edbbe347474026b8398eed96d0018177d50a", size = 77925, upload-time = "2026-08-26T23:48:31.892Z" },
 ]
 
 [[package]]
@@ -953,7 +953,7 @@ wheels = [
 [[package]]
 name = "harbor"
 version = "0.20.0"
-source = { git = "https://github.com/abundant-ai/harbor?rev=f6fe08e1dad9b88762cdaada8b374eaad2caadae#f6fe08e1dad9b88762cdaada8b374eaad2caadae" }
+source = { git = "https://github.com/abundant-ai/harbor?rev=b4ff6196628eaa39358dc55253fd1d29afd8ed52#b4ff6196628eaa39358dc55253fd1d29afd8ed52" }
 dependencies = [
     { name = "dirhash" },
     { name = "dockerfile-parse" },
@@ -1650,7 +1650,7 @@ requires-dist = [
     { name = "aioboto3", marker = "extra == 'server'", specifier = "==15.5.0" },
     { name = "alembic", marker = "extra == 'server'", specifier = "==1.18.1" },
     { name = "anthropic", marker = "extra == 'worker'", specifier = "==0.76.0" },
-    { name = "archil", marker = "extra == 'worker'", specifier = "==0.11.0" },
+    { name = "archil", marker = "extra == 'worker'", specifier = "==0.12.0" },
     { name = "asyncpg", marker = "extra == 'server'", specifier = "==0.31.0" },
     { name = "better-profanity", marker = "extra == 'server'", specifier = ">=0.7.0,<1.0" },
     { name = "boto3", marker = "extra == 'worker'", specifier = "==1.40.61" },
@@ -1659,7 +1659,7 @@ requires-dist = [
     { name = "dockerfile-parse", marker = "extra == 'worker'", specifier = ">=2.0.1" },
     { name = "fastapi", marker = "extra == 'server'", specifier = "==0.128.0" },
     { name = "google-generativeai", marker = "extra == 'worker'", specifier = "==0.8.6" },
-    { name = "harbor", git = "https://github.com/abundant-ai/harbor?rev=f6fe08e1dad9b88762cdaada8b374eaad2caadae" },
+    { name = "harbor", git = "https://github.com/abundant-ai/harbor?rev=b4ff6196628eaa39358dc55253fd1d29afd8ed52" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "jsonschema", specifier = ">=4.0" },
     { name = "litellm", specifier = "==1.83.14" },

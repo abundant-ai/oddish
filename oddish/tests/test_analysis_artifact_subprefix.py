@@ -11,6 +11,7 @@ from oddish.workers.queue.trial_handler import _artifact_subprefix
 
 def test_each_analysis_kind_gets_its_label():
     assert _artifact_subprefix({"mode": "qa"}) == "analysis-qa"
+    assert _artifact_subprefix({"mode": "qa_eval"}) == "analysis-qa_eval"
     assert _artifact_subprefix({"mode": "audit"}) == "analysis-audit"
     assert _artifact_subprefix({"mode": "summarize"}) == "analysis-summarize"
 
