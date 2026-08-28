@@ -3,6 +3,10 @@ from __future__ import annotations
 from fastapi import HTTPException, Request, status
 
 from auth.types import AuthContext
+from oddish.core.analysis_payload import (
+    AnalysisPayloadError,
+    analysis_source_trial_ids,
+)
 from oddish.db import TaskVersionModel, TrialModel, get_session
 
 
@@ -34,10 +38,14 @@ async def authorize_bound_analysis_request(request: Request, auth: AuthContext) 
         if route_path.startswith("/trials/{trial_id}") and target_trial_id:
             if analysis_trial.kind not in ("qa", "qa_eval"):
                 raise _denied()
-            trial_ids = (
-                (analysis_trial.harbor_config or {}).get("analysis_payload") or {}
-            ).get("trial_ids") or []
-            if target_trial_id not in {str(trial_id) for trial_id in trial_ids}:
+            try:
+                trial_ids = analysis_source_trial_ids(
+                    analysis_trial.kind,
+                    analysis_trial.harbor_config,
+                )
+            except AnalysisPayloadError as exc:
+                raise _denied() from exc
+            if target_trial_id not in trial_ids:
                 raise _denied()
             return
 

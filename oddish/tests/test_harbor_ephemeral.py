@@ -44,7 +44,7 @@ _EPHEMERAL_HC = {
 
 
 @pytest.mark.asyncio
-async def test_ephemeral_analysis_kind_skips_ordinary_task_timeout_validation(
+async def test_ephemeral_uses_runner_derived_analysis_capabilities(
     tmp_path, monkeypatch
 ):
     task_path = tmp_path / "analysis-task"
@@ -70,7 +70,8 @@ async def test_ephemeral_analysis_kind_skips_ordinary_task_timeout_validation(
         jobs_dir=tmp_path / "jobs",
         environment_config=EnvironmentConfig(type=EnvironmentType.DOCKER),
         harbor_config=_EPHEMERAL_HC,
-        trial_kind="audit",
+        is_probe=True,
+        skip_task_validation=True,
     )
 
     assert outcome.exception_type == "LocalStoragePreflightError"

@@ -50,6 +50,10 @@ from oddish.analyze.trajectory_taxonomy import (
     taxonomy_version,
 )
 from oddish.config import settings
+from oddish.core.analysis_payload import (
+    AnalysisPayloadError,
+    analysis_source_trial_ids,
+)
 from oddish.core.verdict_sync import (
     aggregate_exploited_into_pre_trial,
     build_pre_trial_payload,
@@ -125,7 +129,7 @@ def analysis_check_payload(kind: str, harbor_config: dict | None) -> dict:
         payload = (harbor_config or {}).get("analysis_payload") or {}
         return {
             "kind": "qa",
-            "trial_ids": [str(t) for t in payload.get("trial_ids") or []],
+            "trial_ids": list(analysis_source_trial_ids(kind, harbor_config)),
             "verdict_expected": bool(payload.get("with_verdict", True)),
             "classifications": [c.value for c in Classification],
             "verdicts": list(
@@ -522,11 +526,7 @@ async def materialize_summarize_brief(harbor_config: dict | None) -> str:
     if not target_trial_id:
         raise ValueError("summarize trial is missing analysis_payload.target_trial_id")
 
-    from oddish.core.trial_io import (
-        read_trial_instruction,
-        read_trial_trajectory,
-        read_trial_verifier_output,
-    )
+    from oddish.core.trial_io import read_trial_summary_inputs
 
     async with get_session() as session:
         target = await session.get(TrialModel, target_trial_id)
@@ -537,10 +537,8 @@ async def materialize_summarize_brief(harbor_config: dict | None) -> str:
         task = await session.get(TaskModel, target.task_id)
         if task is None:
             raise ValueError(f"summarize target {target_trial_id} has no live task")
-        trajectory, task_instruction, verifier_output = await asyncio.gather(
-            read_trial_trajectory(target),
-            read_trial_instruction(target),
-            read_trial_verifier_output(target),
+        trajectory, task_instruction, verifier_output = await read_trial_summary_inputs(
+            target
         )
         if trajectory is None:
             raise ValueError(
@@ -1112,21 +1110,21 @@ async def _import_qa_result(
 
 async def _import_qa_eval_result(trial: TrialModel) -> None:
     """Store a replay result only on its newly-created evaluation trial."""
-    trial_ids = ((trial.harbor_config or {}).get("analysis_payload") or {}).get(
-        "trial_ids"
-    ) or []
-    payload_error = None
-    if len(trial_ids) != 1:
-        payload_error = (
-            "qa_eval analysis_payload.trial_ids must contain exactly one "
-            f"source trial id; found {len(trial_ids)}"
-        )
+    try:
+        expected = analysis_check_payload("qa_eval", trial.harbor_config)
+        trial_ids = tuple(expected["trial_ids"])
+        payload_error = None
+    except AnalysisPayloadError as exc:
+        expected = None
+        trial_ids = ()
+        payload_error = str(exc)
     artifact = None
     if trial.status == TrialStatus.SUCCESS:
         artifact = await read_analysis_artifact(trial, QA_RESULT_FILENAME)
-    expected = analysis_check_payload("qa_eval", trial.harbor_config)
     violations = (
-        check_analysis_result(artifact, expected) if artifact is not None else None
+        check_analysis_result(artifact, expected)
+        if artifact is not None and expected is not None
+        else None
     )
 
     if trial.status != TrialStatus.SUCCESS:
@@ -1145,7 +1143,7 @@ async def _import_qa_eval_result(trial: TrialModel) -> None:
 
     analysis = None
     if detail is None:
-        source_trial_id = str(trial_ids[0])
+        source_trial_id = trial_ids[0]
         entries = artifact.get("trials") if isinstance(artifact, dict) else None
         entry = next(
             (

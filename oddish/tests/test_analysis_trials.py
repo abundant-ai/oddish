@@ -165,6 +165,9 @@ def test_the_no_verdict_brief_does_not_contradict_itself():
     assert "trials trajectory <trial-id>" in brief
     assert "> /tmp/<trial-id>.result.json" in brief
     assert "> /tmp/<trial-id>.trajectory.json" in brief
+    assert brief.count("/tmp/<trial-id>.result.json") == 1
+    assert brief.count("/tmp/<trial-id>.trajectory.json") == 1
+    assert brief.count("Missing QA evidence is not a solver HARNESS_ERROR") == 1
     assert "only when diagnosing a setup or runtime failure" in brief
     assert "do not infer agent behavior" in brief
 
@@ -176,6 +179,17 @@ def _qa_check_payload(trial_ids: list[str], *, with_verdict: bool = False) -> di
         "qa",
         {"analysis_payload": {"trial_ids": trial_ids, "with_verdict": with_verdict}},
     )
+
+
+def test_qa_eval_check_payload_requires_exactly_one_source_trial():
+    from oddish.core.analysis_payload import AnalysisPayloadError
+    from oddish.workers.analysis_trials import analysis_check_payload
+
+    with pytest.raises(AnalysisPayloadError, match="exactly one source trial"):
+        analysis_check_payload(
+            "qa_eval",
+            {"analysis_payload": {"trial_ids": ["source-1", "source-2"]}},
+        )
 
 
 def _good_qa_entry(trial_id: str) -> dict:
@@ -1702,19 +1716,15 @@ async def test_materialize_summarize_brief_reads_the_target_without_the_api(
         async def __aexit__(self, *_args):
             return None
 
-    async def read_trajectory(_target):
-        return {"steps": [{"step_id": 1, "source": "agent", "message": "done"}]}
-
-    async def read_instruction(_target):
-        return "repair the broker"
-
-    async def read_verifier(_target):
-        return "all tests passed"
+    async def read_summary_inputs(_target):
+        return (
+            {"steps": [{"step_id": 1, "source": "agent", "message": "done"}]},
+            "repair the broker",
+            "all tests passed",
+        )
 
     monkeypatch.setattr(analysis_trials, "get_session", SessionContext)
-    monkeypatch.setattr(trial_io, "read_trial_trajectory", read_trajectory)
-    monkeypatch.setattr(trial_io, "read_trial_instruction", read_instruction)
-    monkeypatch.setattr(trial_io, "read_trial_verifier_output", read_verifier)
+    monkeypatch.setattr(trial_io, "read_trial_summary_inputs", read_summary_inputs)
 
     brief = await analysis_trials.materialize_summarize_brief(
         {"analysis_payload": {"target_trial_id": "t-42"}}

@@ -107,6 +107,30 @@ async def test_qa_key_reads_only_trial_ids_derived_from_analysis_payload(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_qa_eval_key_rejects_a_payload_with_multiple_source_trials(monkeypatch):
+    analysis = SimpleNamespace(
+        id="analysis-1",
+        org_id="org-1",
+        kind="qa_eval",
+        task_id="task-1",
+        task_version_id="version-1",
+        harbor_config={"analysis_payload": {"trial_ids": ["source-1", "source-2"]}},
+    )
+    _session(monkeypatch, analysis)
+
+    for source_trial_id in ("source-1", "source-2"):
+        with pytest.raises(HTTPException) as denied:
+            await authorize_bound_analysis_request(
+                _request(
+                    "/trials/{trial_id}/result",
+                    path_params={"trial_id": source_trial_id},
+                ),
+                _auth(),
+            )
+        assert denied.value.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_bound_key_denies_non_resource_and_mutating_routes(monkeypatch):
     analysis = SimpleNamespace(
         id="analysis-1",

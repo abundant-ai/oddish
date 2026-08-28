@@ -323,7 +323,9 @@ materialization, and Harbor's task-validation exception derive from that column.
 analysis trials must not duplicate `qa`, `qa_eval`, `audit`, or `summarize` there.
 QA-eval source identity lives only in
 `harbor_config.analysis_payload.trial_ids`, which contains exactly one id for a
-QA-eval run.
+QA-eval run. The shared `oddish.core.analysis_payload` parser enforces that
+cardinality for both bound-key authorization and artifact import; malformed
+QA-eval payloads authorize no source trial and fail import with the same error.
 
 Trajectory summaries use schema v6. Each taxonomy-valued `components` entry
 contains its `step_ids`, summary, and deterministic `tool_count` and
@@ -1005,7 +1007,9 @@ Auth flow: read token → if `ok_` prefix validate API key → otherwise validat
 Short-lived internal READ keys may set `api_keys.bound_analysis_trial_id`. The
 binding stores only the requesting analysis trial id; every request derives its
 allowlist from that Trial row. QA and QA-eval keys may GET only Trial resources
-whose ids appear in `harbor_config.analysis_payload.trial_ids`. Audit keys may
+whose ids appear in `harbor_config.analysis_payload.trial_ids`; a QA-eval
+payload must contain exactly one non-empty source id or the key authorizes
+nothing. Audit keys may
 GET only `/tasks/{task_id}/files` resources for the analysis trial's exact
 `task_version_id`, and the request must carry that pinned version number.
 Summarize trials receive no query key. Bound keys fail closed on other routes
@@ -1159,17 +1163,18 @@ lives below that attempt prefix. ``trials.trial_s3_key`` stores the exact
 attempt prefix returned by the uploader, so later retries never replace the
 manifest or leave the row pointing at a mixed set of attempt directories.
 
-The attempt root's Harbor ``result.json`` is the trajectory manifest. The
-canonical trajectory reader extracts ``trial_results[].trial_name``, sanitizes
-it with the same storage-key encoding used during upload, and reads only
-``<trial_s3_key>/<trial_name>/agent/trajectory.json``. If that manifest exists
-but the exact trajectory does not, the reader returns no trajectory; it never
-substitutes a different retry. A deterministic candidate/list fallback exists
-only for imported and historical layouts without a root manifest. The file
-LISTING and file CONTENT endpoints both root at ``trials.trial_s3_key`` when
-set, so listed relative paths round-trip without doubling an analysis or
-attempt segment. Analysis-result readers locate their one result artifact by
-filename suffix within that authoritative attempt prefix.
+The attempt root's Harbor ``result.json`` is the artifact manifest. The shared
+trial-artifact resolver extracts ``trial_results[].trial_name``, sanitizes it
+with the same storage-key encoding used during upload, and selects exactly one
+``<trial_s3_key>/<trial_name>/`` directory. Trajectory, task instruction,
+verifier output, and agent-file readers all use that selected directory. If the
+manifest is malformed or an exact artifact is absent, a reader returns no
+artifact; it never substitutes a sibling retry directory. Deterministic
+candidate/list fallback exists only for imported and historical layouts without
+a root manifest. The file LISTING and file CONTENT endpoints both root at
+``trials.trial_s3_key`` when set, so listed relative paths round-trip without
+doubling an analysis or attempt segment. Analysis-result readers locate their
+one result artifact by filename suffix within that authoritative attempt prefix.
 
 ### Worker Runtime Invariants & Pitfalls
 

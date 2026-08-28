@@ -13,12 +13,17 @@ class _Storage:
         self.objects = objects
         self.listed = listed or []
         self.list_calls = 0
+        self.download_calls: list[str] = []
 
     async def download_text(self, key: str) -> str:
+        self.download_calls.append(key)
         try:
             return self.objects[key]
         except KeyError as exc:
             raise FileNotFoundError(key) from exc
+
+    async def download_bytes(self, key: str) -> bytes:
+        return (await self.download_text(key)).encode()
 
     async def object_exists(self, key: str) -> bool:
         return key in self.objects
@@ -91,6 +96,90 @@ def test_manifest_missing_trajectory_never_falls_back_to_an_old_retry(monkeypatc
     )
 
     assert result is None
+    assert storage.list_calls == 0
+
+
+def test_summary_inputs_share_the_manifest_selected_directory(monkeypatch):
+    prefix = "tasks/task-1/trials/task-1-7/attempt-4/"
+    current_prefix = f"{prefix}current=25run/"
+    storage = _Storage(
+        {
+            f"{prefix}result.json": json.dumps(
+                {"trial_results": [{"trial_name": "current%run"}]}
+            ),
+            f"{current_prefix}agent/trajectory.json": json.dumps(
+                {"trial_name": "current-attempt"}
+            ),
+            f"{current_prefix}task/instruction.md": "repair the broker",
+            f"{current_prefix}verifier/test-stdout.txt": "PASS\n",
+            f"{prefix}old-run/task/instruction.md": "stale instruction",
+        },
+        listed=[f"{prefix}old-run/task/instruction.md"],
+    )
+    monkeypatch.setattr(trial_io, "get_storage_client", lambda: storage)
+
+    result = asyncio.run(
+        trial_io.read_trial_summary_inputs(_trial(prefix=prefix, attempts=4))
+    )
+
+    assert result == (
+        {"trial_name": "current-attempt"},
+        "repair the broker",
+        "PASS\n",
+    )
+    assert storage.download_calls.count(f"{prefix}result.json") == 1
+    assert storage.list_calls == 0
+
+
+def test_manifest_missing_summary_artifacts_never_reads_a_sibling(monkeypatch):
+    prefix = "tasks/task-1/trials/task-1-7/attempt-5/"
+    stale_key = f"{prefix}old-run/task/instruction.md"
+    storage = _Storage(
+        {
+            f"{prefix}result.json": json.dumps(
+                {"trial_results": [{"trial_name": "current-run"}]}
+            ),
+            stale_key: "stale instruction",
+        },
+        listed=[stale_key],
+    )
+    monkeypatch.setattr(trial_io, "get_storage_client", lambda: storage)
+
+    result = asyncio.run(
+        trial_io.read_trial_summary_inputs(_trial(prefix=prefix, attempts=5))
+    )
+
+    assert result == (None, None, None)
+    assert stale_key not in storage.download_calls
+    assert storage.list_calls == 0
+
+
+def test_agent_file_uses_manifest_directory_without_sibling_fallback(monkeypatch):
+    prefix = "tasks/task-1/trials/task-1-7/attempt-6/"
+    exact_key = f"{prefix}current-run/agent/screenshot.png"
+    stale_key = f"{prefix}old-run/agent/screenshot.png"
+    storage = _Storage(
+        {
+            f"{prefix}result.json": json.dumps(
+                {"trial_results": [{"trial_name": "current-run"}]}
+            ),
+            exact_key: "current image",
+            stale_key: "stale image",
+        },
+        listed=[stale_key],
+    )
+    monkeypatch.setattr(trial_io, "get_storage_client", lambda: storage)
+
+    content, media_type = asyncio.run(
+        trial_io.read_trial_agent_file(
+            _trial(prefix=prefix, attempts=6),
+            "screenshot.png",
+        )
+    )
+
+    assert content == b"current image"
+    assert media_type == "image/png"
+    assert stale_key not in storage.download_calls
     assert storage.list_calls == 0
 
 

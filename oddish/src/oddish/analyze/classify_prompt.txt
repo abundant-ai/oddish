@@ -29,16 +29,9 @@ The complete result JSON determines the allowed label family:
 
 ## EVIDENCE
 
-For each trial, the enclosing QA brief requires two local files:
+The enclosing QA brief owns evidence acquisition, file paths, completeness and identity checks, diagnostic-log access, and the rule for aborting when required evidence is missing. Follow that workflow once before applying this rubric.
 
-* `/tmp/<trial-id>.result.json` — the complete Harbor result and recorded reward
-* `/tmp/<trial-id>.trajectory.json` — the complete recording of the solver's actions
-
-Read both files completely before judging the trial. Confirm that their trial identities match the expected trial. Use `oddish-query trials logs <trial-id>` only when the result or trajectory shows a setup or runtime failure that needs diagnosis.
-
-Both files are required. If either fetch fails, either file is malformed, or their identities conflict, stop without writing `qa_result.json`. Missing QA evidence is not a solver HARNESS_ERROR.
-
-Use only these documents, the pre-trial findings in the enclosing brief, and any diagnostic logs you explicitly fetch. The solver's task image, final workspace, hidden tests, reference solution, and verifier filesystem are not mounted in the QA sandbox. Do not claim that you inspected or reran them. Never invent missing evidence.
+Use only the complete Harbor result and trajectory accepted by that workflow, the pre-trial findings in the enclosing brief, and diagnostic logs fetched under its rule. The solver's task image, final workspace, hidden tests, reference solution, and verifier filesystem are not mounted in the QA sandbox. Do not claim that you inspected or reran them. Never invent missing evidence.
 
 ---
 
@@ -226,4 +219,4 @@ Field notes:
 * `action_items` — one entry per NEW task weakness this trial revealed, using the fixed values shown. Do not repeat a pre-trial item — assess those in `exploitation` instead. The verdict reads the pre-trial findings directly, so a repeated item only adds noise. Cite a real file and line range where possible.
 * `exploitation` — exactly one entry per pre-trial action item, when any were provided. Set `links_to` to that item's id, copied exactly — matching breaks otherwise. `exploited=true` only if the trajectory shows the agent used that weakness (cite the step and a short quote); `causal=true` only if that changed the outcome. File access alone is not proof. No pre-trial items -> empty list.
 
-Your classification must match the recorded result in `/tmp/<trial-id>.result.json`: pass -> a SUCCESS label; fail -> FAILURE or HARNESS_ERROR; partial or unknown -> use the LABELS rules above.
+Your classification must match the recorded result in the complete Harbor result: pass -> a SUCCESS label; fail -> FAILURE or HARNESS_ERROR; partial or unknown -> use the LABELS rules above.

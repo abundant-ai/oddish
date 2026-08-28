@@ -21,7 +21,13 @@ async def test_analysis_probe_env_pins_task_version(monkeypatch, tmp_path):
         trial_agent="claude-code",
         trial_model="anthropic/claude-sonnet-4-6",
         trial_environment="docker",
-        trial_harbor_config={"extra_instructions": "brief"},
+        trial_harbor_config={
+            "extra_instructions": "brief",
+            "analysis_payload": {
+                "trial_ids": ["source-1"],
+                "with_verdict": False,
+            },
+        },
         trial_kind="qa_eval",
         task_version=7,
         org_id="org-1",
