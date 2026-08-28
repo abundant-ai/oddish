@@ -11,6 +11,7 @@ import time
 import uuid
 from dataclasses import replace
 from decimal import Decimal
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse
@@ -88,9 +89,11 @@ from .restricted_network import (
     agent_keeps_public_model_identity,
     apply_restricted_network_profile,
     assert_no_serialized_restricted_routes,
+    agent_has_attested_restricted_profile,
     consumed_transport_base_url_keys,
     is_static_restricted_agent_supported,
     reject_submitted_restricted_routes,
+    restricted_network_profile_for_config,
     set_runtime_model_name,
 )
 from .modal_debug import (
@@ -177,6 +180,8 @@ def _gemini_ai_sdk_alias_env(model: str | None) -> dict[str, str]:
         if value := os.environ.get(source):
             return {_AI_SDK_GOOGLE_KEY: value}
     return {}
+
+
 # Ambient claude-code platform credentials must fold into the redaction map for
 # the same reason: when job-scoped injection is off, the direct/OAuth Anthropic
 # credential or the Bedrock credential chain the stock agent forwards is only in
@@ -1057,6 +1062,219 @@ def _inject_restricted_agent_model_hosts(
     )
 
 
+_KUBE_AGENT_EGRESS_VALUES_KEY = "agentEgressProxy"
+_KUBE_AGENT_EGRESS_HOSTS_KEY = "runtimeAllowedHosts"
+_KUBE_AGENT_EGRESS_CONTRACT = ".oddish-agent-egress-hosts"
+_KUBE_AGENT_EGRESS_TASK_HOSTS_METADATA_KEY = "oddish_agent_egress_allowed_hosts"
+
+
+def _kube_chart_supports_agent_egress_hosts(
+    *,
+    task_path: Path,
+    environment_config: HarborEnvironmentConfig,
+) -> bool:
+    """Whether a kube chart opts into Oddish's model-host Helm contract."""
+    environment_dir = task_path / "environment"
+    if not kube_chart_present(environment_dir, environment_config.kwargs):
+        return False
+    chart_path = environment_config.kwargs.get("chart_path", "chart")
+    contract_path = environment_dir / chart_path / _KUBE_AGENT_EGRESS_CONTRACT
+    try:
+        contract = contract_path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise RestrictedNetworkProfileError(
+            f"Cannot read Kubernetes agent-egress contract marker: {exc}"
+        ) from exc
+    expected = f"{_KUBE_AGENT_EGRESS_VALUES_KEY}.{_KUBE_AGENT_EGRESS_HOSTS_KEY}"
+    if contract != expected:
+        raise RestrictedNetworkProfileError(
+            "Unsupported .oddish-agent-egress-hosts contract value "
+            f"{contract!r}; expected {expected!r}."
+        )
+    return True
+
+
+def _kube_chart_task_agent_hosts(task_path: Path) -> list[str]:
+    """Read the stable task-local proxy policy from task.toml metadata.
+
+    EC2/k3s does not implement Harbor's dynamic phase-policy API. The opted-in
+    chart supplies that runtime boundary itself, while Harbor must retain its
+    public environment baseline for trusted agent installation. Requiring a
+    formal ``[agent]`` allowlist here would make Harbor reject the trial before
+    the chart's setup/runtime cutover can run.
+    """
+    try:
+        task_config = HarborTaskConfig.model_validate_toml(
+            (task_path / "task.toml").read_text(encoding="utf-8")
+        )
+    except Exception as exc:
+        raise RestrictedNetworkProfileError(
+            "A Kubernetes task using .oddish-agent-egress-hosts must have a "
+            f"readable task.toml ({type(exc).__name__})."
+        ) from exc
+
+    if task_config.environment.resolve_baseline().network_mode != NetworkMode.PUBLIC:
+        raise RestrictedNetworkProfileError(
+            "A Kubernetes task using .oddish-agent-egress-hosts must retain a "
+            "public Harbor environment baseline; the chart owns its runtime "
+            "setup/agent egress cutover."
+        )
+    task_policy = task_config.agent.explicit_phase_policy()
+    step_policies = [
+        step.agent.explicit_phase_policy() for step in (task_config.steps or [])
+    ]
+    if task_policy is not None or any(policy is not None for policy in step_policies):
+        raise RestrictedNetworkProfileError(
+            "A Kubernetes task using .oddish-agent-egress-hosts must not declare "
+            "a Harbor [agent] or step network policy; EC2/k3s cannot perform "
+            "that dynamic switch. Declare stable proxy hosts in metadata."
+        )
+    raw_hosts = task_config.metadata.get(_KUBE_AGENT_EGRESS_TASK_HOSTS_METADATA_KEY)
+    if (
+        not isinstance(raw_hosts, list)
+        or not raw_hosts
+        or any(not isinstance(host, str) or not host.strip() for host in raw_hosts)
+    ):
+        raise RestrictedNetworkProfileError(
+            "A Kubernetes task using .oddish-agent-egress-hosts must declare a "
+            "non-empty metadata.oddish_agent_egress_allowed_hosts string list."
+        )
+    return normalize_allowed_hosts(raw_hosts)
+
+
+def _validate_kube_chart_agent_hosts(hosts: list[str]) -> list[str]:
+    """Reject Harbor policy shapes the DNS/SNI chart cannot represent."""
+    for host in hosts:
+        try:
+            is_ip_address = ip_address(host) is not None
+        except ValueError:
+            is_ip_address = False
+        if "*" in host or "/" in host or is_ip_address:
+            raise RestrictedNetworkProfileError(
+                "The .oddish-agent-egress-hosts Helm contract supports only "
+                f"exact DNS hostnames; the resolved agent policy contains {host!r}. "
+                "An agent whose attested profile is a wildcard boundary (e.g. "
+                "cursor-cli's *.cursor.sh) cannot run against this chart's "
+                "exact-match proxy; use a public agent phase for it instead."
+            )
+    return hosts
+
+
+def _kube_chart_agent_policy_hosts(
+    *,
+    agent_config: HarborAgentConfig,
+    resolved_env: dict[str, str],
+    agent_kwargs: dict[str, Any],
+) -> list[str]:
+    """Hosts the EFFECTIVE agent dials, from its profile when one is attested.
+
+    The wrappers applied just above exist to select these profiles, so the host
+    set must come from the same place Compose gets it. Inferring from the model
+    id instead is wrong for every transport-authoritative harness: Cursor fronts
+    arbitrary models through its own API, and gemini-cli/agy/grok-build pin
+    egress to one provider (``infer_model=False``), so a cursor-cli trial
+    carrying an ``openai/`` id would otherwise open api.openai.com -- a host it
+    never dials -- while never opening the one it does.
+
+    Agents with no attested profile (tbh, dsh, custom import paths) keep the
+    model-id inference plus their registered runtime hosts; that inference is
+    correct precisely because they talk to the provider the model id names.
+    """
+    if agent_has_attested_restricted_profile(agent_config):
+        profile = restricted_network_profile_for_config(
+            agent_config,
+            resolved_env=resolved_env,
+        )
+        return list(profile.outbound_hosts)
+    return [
+        *outbound_hosts_for_model(
+            agent_config.model_name,
+            agent_env=resolved_env,
+            agent_kwargs=agent_kwargs,
+        ),
+        *agent_runtime_hosts(
+            agent_name=agent_config.name,
+            import_path=agent_config.import_path,
+            agent_kwargs=agent_kwargs,
+            agent_env=resolved_env,
+        ),
+    ]
+
+
+def _inject_kube_chart_agent_model_hosts(
+    *,
+    task_path: Path,
+    environment_config: HarborEnvironmentConfig,
+    agent_config: HarborAgentConfig,
+    runtime_transport_env: dict[str, str] | None = None,
+    worker_minted_env: Mapping[str, str] | None = None,
+) -> None:
+    """Bridge Oddish's route allowlist into a compatible task-local proxy.
+
+    Kubernetes task charts can enforce a second network boundary inside the
+    sandbox. Harbor's trial-level ``extra_allowed_hosts`` cannot configure that
+    proxy, so opted-in charts accept the same normalized host set through a
+    scalar Helm value. A semicolon-delimited scalar is intentional: Harbor's
+    Helm transport supports scalar and nested-dict overrides, not YAML lists,
+    and Helm treats commas in ``--set-string`` values as assignment separators.
+    """
+    if not _kube_chart_supports_agent_egress_hosts(
+        task_path=task_path,
+        environment_config=environment_config,
+    ):
+        return
+
+    _drop_nonconsumed_agent_transport_routes(agent_config, worker_minted_env)
+    agent_kwargs = dict(agent_config.kwargs or {})
+    resolved_env = _resolved_agent_profile_env(agent_config)
+    resolved_env.update(
+        _resolved_runtime_transport_env(
+            runtime_transport_env,
+            agent_config=agent_config,
+        )
+    )
+    if resolved_env:
+        agent_kwargs["extra_env"] = resolved_env
+    inferred_hosts = _kube_chart_agent_policy_hosts(
+        agent_config=agent_config,
+        resolved_env=resolved_env,
+        agent_kwargs=agent_kwargs,
+    )
+
+    environment_kwargs = dict(environment_config.kwargs or {})
+    helm_values = dict(environment_kwargs.get("helm_values") or {})
+    proxy_values = dict(helm_values.get(_KUBE_AGENT_EGRESS_VALUES_KEY) or {})
+    existing_override = proxy_values.get(_KUBE_AGENT_EGRESS_HOSTS_KEY)
+    if existing_override not in (None, ""):
+        raise ValueError(
+            "environment.kwargs.helm_values.agentEgressProxy.runtimeAllowedHosts "
+            "is reserved for Oddish's resolved task/agent policy"
+        )
+    effective_hosts = _validate_kube_chart_agent_hosts(
+        list(
+            dict.fromkeys(
+                normalize_allowed_hosts(
+                    [
+                        *_kube_chart_task_agent_hosts(task_path),
+                        *agent_config.extra_allowed_hosts,
+                        *inferred_hosts,
+                    ]
+                )
+            )
+        )
+    )
+    proxy_values[_KUBE_AGENT_EGRESS_HOSTS_KEY] = ";".join(effective_hosts)
+    helm_values[_KUBE_AGENT_EGRESS_VALUES_KEY] = proxy_values
+    environment_kwargs["helm_values"] = helm_values
+    environment_config.kwargs = environment_kwargs
+    # Harbor's EC2/k3s backend retains a public baseline and would ignore these
+    # trial extras (with a misleading warning). They have now been consumed by
+    # the task-local chart policy, which is the runtime boundary for this shape.
+    agent_config.extra_allowed_hosts = []
+
+
 def _apply_daytona_compose_restricted_network_profile(
     *,
     task_path: Path,
@@ -1117,6 +1335,23 @@ def _apply_restricted_agent_network_defaults(
     )
     if profile is not None:
         return profile
+
+    if _kube_chart_supports_agent_egress_hosts(
+        task_path=task_path,
+        environment_config=environment_config,
+    ):
+        _apply_restricted_agent_web_tool_defaults(agent_config)
+        _apply_gemini_cli_oddish_wrapper(agent_config)
+        _apply_antigravity_cli_oddish_wrapper(agent_config)
+        _apply_cursor_cli_oddish_wrapper(agent_config)
+        _inject_kube_chart_agent_model_hosts(
+            task_path=task_path,
+            environment_config=environment_config,
+            agent_config=agent_config,
+            runtime_transport_env=runtime_transport_env,
+            worker_minted_env=worker_minted_env,
+        )
+        return None
 
     if not _supports_auto_restricted_agent_network(
         task_path=task_path,
@@ -1820,7 +2055,8 @@ async def _run_harbor_trial_async_impl(
         # raw_agent_config import_path is covered too.
         if (
             (agent or "").strip().lower() == "antigravity-cli"
-            or "antigravity_cli:" in (getattr(agent_config, "import_path", None) or "").strip().lower()
+            or "antigravity_cli:"
+            in (getattr(agent_config, "import_path", None) or "").strip().lower()
         ) and not (
             _supports_daytona_compose_restricted_agent_network(
                 task_path=effective_task_path,
