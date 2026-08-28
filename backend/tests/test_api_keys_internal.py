@@ -24,3 +24,16 @@ def test_create_api_key_stores_creator_role():
     )
 
     assert model.created_by_role == "member"
+
+
+def test_create_api_key_can_bind_to_analysis_trial_without_copying_resources():
+    model, _ = create_api_key(
+        org_id="org_1",
+        name="analysis:qa-1",
+        scope=APIKeyScope.READ,
+        is_internal=True,
+        bound_analysis_trial_id="qa-1",
+    )
+
+    assert model.bound_analysis_trial_id == "qa-1"
+    assert not hasattr(model, "allowed_trial_ids")

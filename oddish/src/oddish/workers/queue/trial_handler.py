@@ -1760,6 +1760,9 @@ async def _prepare_trial_task(
                 probe_key_id, probe_agent_env = await mint_probe_creds(
                     org_id=prepared_trial.org_id,
                     trial_id=trial_id,
+                    bound_analysis_trial_id=(
+                        trial_id if is_analysis_kind(trial_kind) else None
+                    ),
                 )
                 probe_agent_env["ODDISH_PROBE_TASK_ID"] = prepared_trial.task_id
                 if prepared_trial.task_version is not None:

@@ -36,7 +36,10 @@ async def test_analysis_probe_env_pins_task_version(monkeypatch, tmp_path):
     async def resolve_task_directory(**_kwargs):
         return source_task, temp_root, prepared.task_s3_key
 
-    async def mint_probe_creds(**_kwargs):
+    minted = {}
+
+    async def mint_probe_creds(**kwargs):
+        minted.update(kwargs)
         return "key-1", {"ODDISH_API_KEY": "secret"}
 
     monkeypatch.setattr(trial_handler, "resolve_task_directory", resolve_task_directory)
@@ -50,6 +53,7 @@ async def test_analysis_probe_env_pins_task_version(monkeypatch, tmp_path):
 
     assert task.probe_agent_env["ODDISH_PROBE_TASK_ID"] == "task-1"
     assert task.probe_agent_env["ODDISH_PROBE_TASK_VERSION"] == "7"
+    assert minted["bound_analysis_trial_id"] == "task-1-4"
 
 
 @pytest.mark.asyncio
