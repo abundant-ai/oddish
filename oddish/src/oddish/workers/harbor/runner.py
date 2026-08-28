@@ -73,9 +73,11 @@ from .model_hosts import (
     ANTIGRAVITY_INSTALL_HOSTS,
     ANTIGRAVITY_RUNTIME_HOSTS,
     GEMINI_BASE_URL_KEYS,
+    GEMINI_CLI_INSTALL_HOSTS,
     GEMINI_OAUTH_ENV_KEYS,
     OPENCODE_INSTALL_HOSTS,
     agent_runtime_hosts,
+    gemini_cli_transport_hosts,
     outbound_hosts_for_model,
 )
 from .redaction import redact_exact_text, redact_exact_value
@@ -1188,6 +1190,14 @@ def _opencode_environment_hosts(agent_config: HarborAgentConfig) -> list[str]:
     ]
 
 
+def _gemini_cli_environment_hosts(agent_config: HarborAgentConfig) -> list[str]:
+    """Hosts Gemini CLI needs during environment setup and agent execution."""
+    return [
+        *GEMINI_CLI_INSTALL_HOSTS,
+        *gemini_cli_transport_hosts(agent_config.env),
+    ]
+
+
 def _antigravity_environment_hosts(agent_config: HarborAgentConfig) -> list[str]:
     """Hosts agy needs across install *and* run.
 
@@ -1782,6 +1792,26 @@ async def _run_harbor_trial_async_impl(
             )
         ):
             hosts = _opencode_environment_hosts(agent_config)
+            env_config.extra_allowed_hosts = [
+                *env_config.extra_allowed_hosts,
+                *[h for h in hosts if h not in env_config.extra_allowed_hosts],
+            ]
+
+        # Gemini CLI's nvm, Node, and npm install happens during agent setup,
+        # under the environment baseline.  Do not merge it for a restricted
+        # Daytona Compose task: that shape owns a runtime-only agent profile and
+        # its setup phase is already public.
+        if (
+            (agent or "").strip().lower() == "gemini-cli"
+            or "gemini_cli:"
+            in (getattr(agent_config, "import_path", None) or "").strip().lower()
+        ) and not (
+            _supports_daytona_compose_restricted_agent_network(
+                task_path=effective_task_path,
+                environment_config=env_config,
+            )
+        ):
+            hosts = _gemini_cli_environment_hosts(agent_config)
             env_config.extra_allowed_hosts = [
                 *env_config.extra_allowed_hosts,
                 *[h for h in hosts if h not in env_config.extra_allowed_hosts],

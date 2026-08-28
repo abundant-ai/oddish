@@ -158,6 +158,18 @@ def test_antigravity_install_hosts_and_runtime_registration():
     )
 
 
+def test_gemini_cli_setup_and_transport_hosts():
+    # Gemini CLI shares OpenCode's nvm/Node setup chain, but its runtime route
+    # is pinned to Gemini rather than inferred from a submitted model id.
+    assert model_hosts.GEMINI_CLI_INSTALL_HOSTS == model_hosts.OPENCODE_INSTALL_HOSTS
+    assert model_hosts.gemini_cli_transport_hosts() == [
+        "generativelanguage.googleapis.com"
+    ]
+    assert model_hosts.gemini_cli_transport_hosts(
+        {"GOOGLE_GEMINI_BASE_URL": "https://gemini-relay.example/v1"}
+    ) == ["gemini-relay.example"]
+
+
 def test_antigravity_runtime_hosts_cover_agy_startup_probes():
     # Captured live from agy 1.1.19: the Unleash feature-flag host is dialed
     # before any model call; an egress filter that drops (not refuses) its
