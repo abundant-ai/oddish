@@ -148,6 +148,7 @@ export interface Trial {
   experiment_id?: string | null;
   agent: string;
   provider: string;
+  queue_key?: string;
   model: string | null;
   environment?: string | null;
   status: TrialStatus;
