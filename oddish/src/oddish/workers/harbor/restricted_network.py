@@ -882,6 +882,28 @@ def consumed_transport_base_url_keys(
     return spec.base_url_keys(agent_config)
 
 
+def agent_has_attested_restricted_profile(agent_config: AgentConfig) -> bool:
+    """Whether this effective agent's egress can be resolved from its profile.
+
+    True when the class declares its own ``restricted_network_profile`` hook or
+    appears in ``_COMPATIBILITY_PROFILES``. Callers that would otherwise infer
+    hosts from the model id must prefer the profile whenever this holds: a
+    transport-authoritative harness (Cursor, gemini-cli, agy, grok-build) fronts
+    the model through its OWN service, so the model id names a provider it never
+    dials. Registry membership -- not the profile's success -- is the question
+    here, so an attested agent whose profile REJECTS the trial (e.g. Gemini
+    OAuth) still returns True and fails closed at resolution instead of quietly
+    falling back to inference.
+    """
+    try:
+        agent_class = resolve_effective_agent_class(agent_config)
+    except Exception:
+        return False
+    if agent_class.__dict__.get("restricted_network_profile") is not None:
+        return True
+    return _class_path(agent_class) in _COMPATIBILITY_PROFILES
+
+
 def agent_fronts_own_model_service(agent_config: AgentConfig) -> bool:
     """Whether the effective agent routes the model through its own service.
 
