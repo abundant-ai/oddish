@@ -861,6 +861,15 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   (`chat_completions` | `responses` | `messages`); pass
   `--agent-kwarg api_backend=chat_completions` to route such a model. When
   unset, the upstream `responses` default is preserved.
+  The wrapper also pins the grok CLI itself: `v9m-rl-learnability-tp8` 404s
+  on current `install.sh` stable (1.0.13) even with `chat_completions`, and
+  last worked on CLI 1.0.0 + Responses. `OddishGrokBuild` therefore installs
+  `1.0.0` for that model (override with `--agent-kwarg version=…`; empty
+  `version` keeps whatever `install.sh` ships). `[cli] auto_update = false`
+  so the pin cannot self-update mid-trial. Sweep YAML may set
+  `import_path: harbor.agents.installed.grok_build:GrokBuild` plus
+  `kwargs.version` to bypass the wrapper and use Harbor's stock installer
+  pin on a deployment that does not yet have this default.
 - `grok-build` trajectories come from the CLI's on-disk **session store**, not
   its headless stdout. `grok -p --output-format json|streaming-json` only emits
   the assistant's `text`/`thought` — no tool calls and no token usage — so
