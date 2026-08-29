@@ -36,6 +36,7 @@ async def test_read_session_has_no_enclosing_transaction():
 async def test_read_session_loads_cost_exclusions_without_a_savepoint():
     """Autocommit readers cannot issue SAVEPOINT outside a transaction."""
     async with get_read_session() as session:
+        assert session.info["oddish_read_autocommit"] is True
         exclusions = await load_cost_exclusions(session)
 
     assert isinstance(exclusions, CostExclusions)

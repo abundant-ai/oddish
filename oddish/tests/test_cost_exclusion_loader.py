@@ -5,14 +5,6 @@ import pytest
 from oddish.core.cost_exclusions import CostExclusions, load_cost_exclusions
 
 
-class _Connection:
-    def __init__(self, isolation_level: str | None):
-        self.isolation_level = isolation_level
-
-    def get_execution_options(self):
-        return {"isolation_level": self.isolation_level}
-
-
 class _NestedTransaction:
     def __init__(self):
         self.entered = False
@@ -25,16 +17,13 @@ class _NestedTransaction:
 
 
 class _ExclusionSession:
-    def __init__(self, isolation_level: str | None):
-        self.connection_value = _Connection(isolation_level)
+    def __init__(self, *, is_read_autocommit: bool):
+        self.info = {"oddish_read_autocommit": True} if is_read_autocommit else {}
         self.nested = _NestedTransaction()
         self.scalar_calls = 0
 
-    async def connection(self):
-        return self.connection_value
-
     def begin_nested(self):
-        if self.connection_value.isolation_level == "AUTOCOMMIT":
+        if self.info.get("oddish_read_autocommit") is True:
             raise AssertionError("autocommit reads must not create a savepoint")
         return self.nested
 
@@ -45,7 +34,7 @@ class _ExclusionSession:
 
 @pytest.mark.asyncio
 async def test_cost_exclusion_loader_skips_savepoint_in_autocommit():
-    session = _ExclusionSession("AUTOCOMMIT")
+    session = _ExclusionSession(is_read_autocommit=True)
 
     exclusions = await load_cost_exclusions(session)  # type: ignore[arg-type]
 
@@ -56,7 +45,7 @@ async def test_cost_exclusion_loader_skips_savepoint_in_autocommit():
 
 @pytest.mark.asyncio
 async def test_cost_exclusion_loader_keeps_savepoint_in_transaction():
-    session = _ExclusionSession(None)
+    session = _ExclusionSession(is_read_autocommit=False)
 
     exclusions = await load_cost_exclusions(session)  # type: ignore[arg-type]
 

@@ -222,6 +222,11 @@ async def get_read_session() -> AsyncIterator[AsyncSession]:
     applies -- it is keyed on the Session class, not the transaction.
     """
     async with async_session_maker() as session:
+        # Consumers that need transaction-specific behavior must read the mode
+        # from the session owner instead of inferring it from a pooled driver's
+        # execution options. Those options are not a stable public contract once
+        # an AsyncSession has procured and wrapped the connection.
+        session.info["oddish_read_autocommit"] = True
         # The isolation level must be set when the connection is first
         # procured for this session, before any query runs on it. The
         # option applies for this checkout only; the pool resets the
