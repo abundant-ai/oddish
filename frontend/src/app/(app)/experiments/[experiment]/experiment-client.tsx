@@ -75,6 +75,10 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
     openError,
     isLoading,
     isLoadingPages: isLoadingTrials,
+    hasMoreTasks,
+    hasMoreTrials,
+    loadNextTasks,
+    loadNextTrials,
     trialsLoaded: trialsLoadedCount,
     totalTrials: totalTrialCount,
     trialsStalled,
@@ -303,6 +307,10 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
           costTotalsPending={costTotalsPending}
           isLoading={isLoading}
           isLoadingTrials={isLoadingTrials}
+          hasMoreTasks={hasMoreTasks}
+          hasMoreTrials={hasMoreTrials}
+          loadNextTasks={loadNextTasks}
+          loadNextTrials={loadNextTrials}
           // SWR retains successful fallback/revalidation data when a later
           // request fails. Keep that usable grid visible instead of replacing
           // it with the fatal error state during a transient backend failure.
@@ -459,7 +467,7 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
                     variant="secondary"
                     size="sm"
                     className="h-7"
-                    onClick={() => void mutateTrials()}
+                    onClick={loadNextTrials}
                     disabled={isValidatingTrials}
                   >
                     Retry

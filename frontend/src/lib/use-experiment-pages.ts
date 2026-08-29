@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import useSWRInfinite from "swr/infinite";
 import { fetcher } from "@/lib/api";
 import type {
@@ -121,15 +121,52 @@ export function useExperimentPages({
   const canLoadTasks = hasMoreTasks && !open.isLoading && !open.isValidating;
   const canLoadTrials =
     hasMoreTrials && !trials.isLoading && !trials.isValidating;
-  const setOpenSize = open.setSize;
-  const setTrialSize = trials.setSize;
-
-  useEffect(() => {
-    if (canLoadTasks) void setOpenSize((size) => size + 1);
-  }, [canLoadTasks, setOpenSize]);
-  useEffect(() => {
-    if (canLoadTrials) void setTrialSize((size) => size + 1);
-  }, [canLoadTrials, setTrialSize]);
+  const {
+    error: openError,
+    isLoading: isLoadingOpen,
+    isValidating: isValidatingOpen,
+    mutate: mutateOpen,
+    setSize: setOpenSize,
+  } = open;
+  const {
+    error: trialError,
+    isLoading: isLoadingTrials,
+    isValidating: isValidatingTrials,
+    mutate: mutateTrials,
+    setSize: setTrialSize,
+  } = trials;
+  const loadNextTasks = useCallback(() => {
+    if (isLoadingOpen || isValidatingOpen) return;
+    if (openError) {
+      void mutateOpen();
+      return;
+    }
+    if (hasMoreTasks) void setOpenSize((size) => size + 1);
+  }, [
+    hasMoreTasks,
+    isLoadingOpen,
+    isValidatingOpen,
+    mutateOpen,
+    openError,
+    setOpenSize,
+  ]);
+  const loadNextTrials = useCallback(() => {
+    if (isLoadingTrials || isValidatingTrials) return;
+    if (trialError) {
+      // Keep the current page count so retry rebuilds this exact failed key
+      // from the last successful cursor instead of advancing past it.
+      void mutateTrials();
+      return;
+    }
+    if (hasMoreTrials) void setTrialSize((size) => size + 1);
+  }, [
+    hasMoreTrials,
+    isLoadingTrials,
+    isValidatingTrials,
+    mutateTrials,
+    setTrialSize,
+    trialError,
+  ]);
 
   const tasks = useMemo(
     () => buildTasks(open.data, trials.data, publicView),
@@ -142,19 +179,23 @@ export function useExperimentPages({
   return {
     experiment,
     tasks,
-    openError: open.error,
-    trialError: trials.error,
-    isLoading: open.isLoading && !experiment,
+    openError,
+    trialError,
+    isLoading: isLoadingOpen && !experiment,
     isLoadingPages:
-      hasMoreTasks ||
-      open.isValidating ||
-      (totalTrials > 0 &&
-        (trials.isLoading || trials.isValidating || hasMoreTrials)),
+      isValidatingOpen ||
+      (totalTrials > 0 && (isLoadingTrials || isValidatingTrials)),
+    hasMoreTasks,
+    hasMoreTrials,
+    canLoadTasks,
+    canLoadTrials,
+    loadNextTasks,
+    loadNextTrials,
     trialsLoaded,
     totalTrials,
-    trialsStalled: Boolean(trials.error) && trialsLoaded < totalTrials,
-    isValidatingTrials: trials.isValidating,
-    mutateOpen: open.mutate,
-    mutateTrials: trials.mutate,
+    trialsStalled: Boolean(trialError) && trialsLoaded < totalTrials,
+    isValidatingTrials,
+    mutateOpen,
+    mutateTrials,
   };
 }

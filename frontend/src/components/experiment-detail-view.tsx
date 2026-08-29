@@ -15,6 +15,7 @@ import useSWR from "swr";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { ExperimentTrialsTable } from "@/components/experiment-trials-table";
+import { ExperimentPaginationSentinel } from "@/components/experiment-pagination-sentinel";
 import { ExperimentPageSkeleton } from "@/components/experiment-page-skeleton";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
 import { NotRealSpendBadge } from "@/components/not-real-spend-badge";
@@ -128,6 +129,10 @@ interface ExperimentDetailViewProps {
   costTotalsPending?: boolean;
   isLoading: boolean;
   isLoadingTrials?: boolean;
+  hasMoreTasks?: boolean;
+  hasMoreTrials?: boolean;
+  loadNextTasks?: () => void;
+  loadNextTrials?: () => void;
   hasError?: boolean;
   errorTitle?: string;
   errorDescription?: string;
@@ -996,6 +1001,10 @@ export function ExperimentDetailView({
   costTotalsPending = false,
   isLoading,
   isLoadingTrials = false,
+  hasMoreTasks = false,
+  hasMoreTrials = false,
+  loadNextTasks = () => {},
+  loadNextTrials = () => {},
   hasError = false,
   errorTitle = "Failed to load experiment",
   errorDescription = "Check the API connection and try again.",
@@ -1876,6 +1885,12 @@ export function ExperimentDetailView({
                     trialGroups,
                   });
                 }}
+              />
+              <ExperimentPaginationSentinel
+                hasMoreTasks={hasMoreTasks}
+                hasMoreTrials={hasMoreTrials}
+                loadNextTasks={loadNextTasks}
+                loadNextTrials={loadNextTrials}
               />
             </div>
           )}

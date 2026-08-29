@@ -171,7 +171,7 @@ def _trial_page_row(
     subtype=None,
     evidence=None,
 ):
-    row = {column: getattr(trial, column.key) for column in _TRIAL_PAGE_COLUMNS}
+    row = {column.key: getattr(trial, column.key) for column in _TRIAL_PAGE_COLUMNS}
     row.update(
         task_path="tasks/task-001",
         analysis_classification=classification,
