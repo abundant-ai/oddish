@@ -4,40 +4,27 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict
-from typing import Annotated
+from time import monotonic
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import and_, func, select
-from sqlalchemy.exc import ProgrammingError
-
-from auth import AuthContext, require_admin
-from dashboard_attribution import resolve_github_users
-from models import OrganizationModel, UserModel
-from auth.permissions import is_operator_org, require_operator_org
-from pg_errors import is_undefined_column_or_table_error
-from slack_alert_settings import (
-    AlertSettings,
-    clear_alert_settings,
-    get_alert_settings,
-    set_alert_settings,
-)
+from oddish.config import OPENAI_PROVIDER_AZURE, infer_model_provider_prefix, settings
 from oddish.core.admin import (
     CostBreakdownResponse,
     ModelConcurrencySetting,
     ModelConcurrencyUpdateRequest,
+    OrphanedStateResponse,
     QueueHealthResponse,
     QueueSlotsResponse,
     QueueStatusResponse,
-    OrphanedStateResponse,
     UserCostBreakdownResponse,
     WorkerJobsResponse,
     get_cost_breakdown_core,
     get_model_concurrency_setting_core,
+    get_orphaned_state_core,
     get_queue_health_core,
     get_queue_slots_core,
     get_queue_status_core,
-    get_orphaned_state_core,
     get_user_cost_breakdown_core,
     get_worker_jobs_admin_core,
     update_model_concurrency_core,
@@ -45,10 +32,139 @@ from oddish.core.admin import (
 from oddish.core.trial_facets import rebuild_trial_facets_core
 from oddish.db import TaskModel, TaskVersionModel, get_session
 from oddish.queue import enqueue_task_expand_worker_job
+from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import and_, func, select
+from sqlalchemy.exc import ProgrammingError
+
+from auth import AuthContext, require_admin
+from auth.permissions import is_operator_org, require_operator_org
+from dashboard_attribution import resolve_github_users
+from models import OrganizationModel, UserModel
+from pg_errors import is_undefined_column_or_table_error
+from slack_alert_settings import (
+    AlertSettings,
+    clear_alert_settings,
+    get_alert_settings,
+    set_alert_settings,
+)
 
 _EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
+
+
+class ModelEndpointCheckRequest(BaseModel):
+    model: str = Field(min_length=1, max_length=512)
+
+    @field_validator("model")
+    @classmethod
+    def strip_model(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("model must not be blank")
+        return value
+
+
+class ModelEndpointCheckResponse(BaseModel):
+    ok: bool
+    model: str
+    resolved_model: str
+    provider: str
+    transport: Literal["litellm_completion"] = "litellm_completion"
+    failure_kind: Literal["provider", "configuration"] | None = None
+    status_code: int | None = None
+    latency_ms: int
+    response: str | None = None
+    error: str | None = None
+    request_id: str | None = None
+
+
+@router.post("/model-endpoints", response_model=ModelEndpointCheckResponse)
+async def check_model_endpoint(
+    request: ModelEndpointCheckRequest,
+    auth: Annotated[AuthContext, Depends(require_admin)],
+) -> ModelEndpointCheckResponse:
+    """Send one small provider request without creating a trial or worker job."""
+    require_operator_org(auth)
+    model = settings.normalize_queue_key(request.model)
+    provider = infer_model_provider_prefix(model)
+    if not provider:
+        raise HTTPException(status_code=422, detail="Queue key is not an LLM model")
+
+    started = monotonic()
+    resolved_model = model
+    try:
+        kwargs = {}
+        if provider == "gemini" and model.startswith("google/"):
+            resolved_model = f"gemini/{model.split('/', 1)[1]}"
+        elif (
+            provider == "openai"
+            and settings.get_openai_provider() == OPENAI_PROVIDER_AZURE
+        ):
+            azure = settings.require_azure_openai_config()
+            resolved_model = f"azure/{settings.resolve_azure_openai_deployment(model)}"
+            kwargs = {
+                "api_key": azure["api_key"],
+                "base_url": settings.get_azure_openai_base_url(),
+                "api_version": azure["api_version"],
+            }
+    except (ValueError, RuntimeError) as caught:
+        failure = caught
+        failure_kind: Literal["provider", "configuration"] = "configuration"
+    else:
+        # This is deliberately narrower than a trial: it exercises LiteLLM's
+        # completion transport, not an agent CLI or sandbox startup.
+        import litellm
+
+        try:
+            completion = await litellm.acompletion(
+                model=resolved_model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": "Reply with one short sentence naming the model you are.",
+                    }
+                ],
+                max_tokens=32,
+                timeout=15,
+                **kwargs,
+            )
+        except litellm.APIError as caught:
+            failure = caught
+            failure_kind = "provider"
+        else:
+            # Unexpected response shapes are integration defects and remain 500s.
+            content = completion.choices[0].message.content
+            return ModelEndpointCheckResponse(
+                ok=True,
+                model=model,
+                resolved_model=resolved_model,
+                provider=provider,
+                latency_ms=round((monotonic() - started) * 1000),
+                response=content if isinstance(content, str) else str(content or ""),
+                request_id=(
+                    str(completion.id) if getattr(completion, "id", None) else None
+                ),
+            )
+
+    raw_status = getattr(failure, "status_code", None)
+    status_code = (
+        int(raw_status)
+        if isinstance(raw_status, int | str) and str(raw_status).isdigit()
+        else None
+    )
+    message = " ".join(str(failure).split())[:500]
+    return ModelEndpointCheckResponse(
+        ok=False,
+        model=model,
+        resolved_model=resolved_model,
+        provider=provider,
+        failure_kind=failure_kind,
+        status_code=status_code,
+        latency_ms=round((monotonic() - started) * 1000),
+        error=f"{type(failure).__name__}: {message}",
+        request_id=str(getattr(failure, "request_id", "") or "") or None,
+    )
 
 
 @router.get("/slots", response_model=QueueSlotsResponse)
