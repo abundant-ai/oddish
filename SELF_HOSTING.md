@@ -85,8 +85,12 @@ GEMINI_API_KEY=...
 # ODDISH_OPENAI_PROVIDER=openai
 # OPENAI_API_KEY=sk-...
 
-# oddish runs Claude exclusively through AWS Bedrock. The Modal image sets
-# CLAUDE_CODE_USE_BEDROCK=1; provide the bearer token here.
+# Claude Code uses direct Anthropic when ANTHROPIC_API_KEY is present because
+# ODDISH_CLAUDE_CODE_FORCE_DIRECT_API defaults to 1. Set that flag to 0 to use
+# the Modal image's Bedrock route instead.
+ANTHROPIC_API_KEY=...
+
+# Bedrock credentials are required when direct routing is disabled.
 AWS_BEARER_TOKEN_BEDROCK=...
 ```
 

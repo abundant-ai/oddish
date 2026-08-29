@@ -30,7 +30,8 @@ import os
 from pathlib import Path
 from typing import Any, Iterator
 
-from oddish.runtime.ports import Capabilities, ExecutionBackend
+from oddish.config import settings
+from oddish.runtime.ports import Capabilities, ExecutionBackend, GpuSupport
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +48,24 @@ class NuminousBackend:
     name = "numinous"
 
     def capabilities(self) -> Capabilities:
+        # GPU lane is opt-in behind ODDISH_NUMINOUS_GPU_ENABLED. When on, the
+        # backend advertises the SKUs the control plane knows how to rent
+        # (RunPod secure cloud + our shared gpu_mux plane). Turning the flag
+        # on routes GPU trials to Numinous ahead of Modal in the cheap-first
+        # order the registry defines.
+        gpu: GpuSupport | None = None
+        if getattr(settings, "numinous_gpu_enabled", False):
+            gpu = GpuSupport(
+                # Order matters: fallback-ordered list per Capabilities spec.
+                # H100 is our headline for SWE-marathon; L40S is the cheap
+                # inference lane; RTX_4090 is the shared-mux fake for CI
+                # smoke tests where CUDA is not actually required.
+                accelerators=("H100", "H200", "A100", "L40S", "A10",
+                              "RTX_4090"),
+                max_count=8,
+            )
         return Capabilities(
-            gpu=None,  # GPU lane ships behind a separate flag
+            gpu=gpu,
             private_registry_pull=True,
             network_egress="configurable",
             persistent_volumes=True,  # named volumes, idempotent create, $0.10/GiB-mo

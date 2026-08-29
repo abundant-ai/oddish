@@ -4,7 +4,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, true
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -123,6 +123,12 @@ def _timestamp_in_period(column, period_start: datetime, *, inclusive_start: boo
 
 def _quota_counts_analysis_and_compute() -> bool:
     return settings.quota_counts_analysis_and_compute
+
+
+def _inflight_trial_kind_filter():
+    return (
+        true() if _quota_counts_analysis_and_compute() else TrialModel.kind == "agent"
+    )
 
 
 async def _sum_analysis_and_compute_cost_usd(
@@ -454,7 +460,7 @@ def _inflight_predicates(org_id: str | None, billed_user_id: str) -> list:
     return [
         TrialModel.org_id == org_id,
         TrialModel.billed_user_id == billed_user_id,
-        TrialModel.kind == "agent",
+        _inflight_trial_kind_filter(),
         TrialModel.finished_at.is_(None),
         TrialModel.deleted_at.is_(None),
         TrialModel.superseded_by_trial_id.is_(None),
@@ -468,7 +474,7 @@ def _inflight_predicates(org_id: str | None, billed_user_id: str) -> list:
 def _org_inflight_predicates(org_id: str | None) -> list:
     return [
         TrialModel.org_id == org_id,
-        TrialModel.kind == "agent",
+        _inflight_trial_kind_filter(),
         TrialModel.finished_at.is_(None),
         TrialModel.deleted_at.is_(None),
         TrialModel.superseded_by_trial_id.is_(None),
@@ -509,6 +515,7 @@ async def inflight_trial_count_by_org_user_all_orgs(
         select(TrialModel.org_id, TrialModel.billed_user_id, func.count(TrialModel.id))
         .where(
             TrialModel.billed_user_id.is_not(None),
+            _inflight_trial_kind_filter(),
             TrialModel.finished_at.is_(None),
             TrialModel.deleted_at.is_(None),
             TrialModel.superseded_by_trial_id.is_(None),
@@ -601,7 +608,11 @@ async def unattributed_inflight_reserved_usd(
 ) -> Decimal:
     return await _sum_inflight_reserved_usd(
         session,
-        [*_org_inflight_predicates(org_id), TrialModel.billed_user_id.is_(None)],
+        [
+            *_org_inflight_predicates(org_id),
+            TrialModel.kind == "agent",
+            TrialModel.billed_user_id.is_(None),
+        ],
     )
 
 

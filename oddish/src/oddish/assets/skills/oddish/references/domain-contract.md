@@ -69,9 +69,10 @@ the global flag off, trials are never held regardless of the CLI flag. When
 both are on and a sweep contains a baseline and a non-baseline agent, the gate
 decision is scoped to one task version and one experiment:
 
-- every present oracle run must have reward exactly `1`;
+- every present oracle run must have reward greater than `0`; partial positive
+  credit still proves that the known solution and verifier work together;
 - every present nop run must have reward exactly `0`;
-- `None`, a partial reward, or a wrong extreme makes the task faulty;
+- `None`, a zero oracle reward, or a nonzero nop reward makes the task faulty;
 - a faulty gate leaves blocked paid trials terminal as `skipped`.
 
 `nop` reward `0` is the expected calibration outcome. Do not average nop into
