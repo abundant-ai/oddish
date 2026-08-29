@@ -1730,7 +1730,7 @@ export function TrialDetailPanel({
               {/* Equivalent retry command — hidden from public viewers */}
               {showAnalysis && (
                 <div>
-                  <p className="mb-1 text-[11px] text-muted-foreground">
+                  <p className="text-muted-foreground mb-1 text-[11px]">
                     Equivalent retry command, reconstructed.
                   </p>
                   <CodeBlock
