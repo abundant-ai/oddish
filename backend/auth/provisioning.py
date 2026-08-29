@@ -432,15 +432,44 @@ async def get_or_create_user_in_org(
             return existing_user
 
     role = resolve_role(org_role, default_role)
+    provisioning_email = email or f"{clerk_user_id}@clerk.user"
     user = UserModel(
         id=generate_id(),
         org_id=org.id,
         clerk_user_id=clerk_user_id,
-        email=email or f"{clerk_user_id}@clerk.user",
+        email=provisioning_email,
         role=role,
     )
-    session.add(user)
-    await session.flush()
+    try:
+        # Two requests for a Clerk user's first page load can both miss the
+        # reads above. Keep the losing INSERT inside a savepoint so its unique
+        # email violation does not abort the request's outer transaction.
+        async with session.begin_nested():
+            session.add(user)
+            await session.flush()
+    except IntegrityError:
+        result = await session.execute(
+            select(UserModel)
+            .where(UserModel.clerk_user_id == clerk_user_id)
+            .where(UserModel.org_id == org.id)
+            .where(UserModel.is_active == True)  # noqa: E712
+        )
+        user = result.scalar_one_or_none()
+        if user is None:
+            result = await session.execute(
+                select(UserModel)
+                .where(UserModel.org_id == org.id)
+                .where(UserModel.email == provisioning_email)
+                .where(UserModel.is_active == True)  # noqa: E712
+            )
+            user = result.scalar_one_or_none()
+        if user is None:
+            raise
+
+        user.clerk_user_id = clerk_user_id
+        resolved_role = resolve_role(org_role, user.role)
+        if resolved_role != user.role:
+            user.role = resolved_role
 
     await _refresh_user_github_identity(user, session)
 

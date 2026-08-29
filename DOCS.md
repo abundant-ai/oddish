@@ -121,7 +121,7 @@ Options
 - `--task-name`, `-t TEXT` - Include task glob filter; can be passed multiple times
 - `--exclude-task-name`, `-x TEXT` - Exclude task glob filter; can be passed multiple times
 - `--n-tasks`, `-l INTEGER` - Limit the number of selected tasks after filtering
-- `--env`, `-e` - Execution environment. The flag accepts any Harbor environment name, but hosted Oddish honors only `modal`, `daytona`, `ec2`, `gke`, and `archil` — anything else is coerced to `modal` with a warning. Hosted EC2 is opt-in and must be enabled by the deployment operator. Daytona is the CPU default unless `ODDISH_ARCHIL_TRAFFIC_PERCENT` deterministically selects the whole submission for Archil; explicit environments always win.
+- `--env`, `-e` - Execution environment. The flag accepts any Harbor environment name, but hosted Oddish honors only `modal`, `daytona`, `ec2`, `gke`, `archil`, and `numinous`; anything else is coerced to `modal` with a warning. EC2 and Numinous are deployment-controlled opt-in backends. When Numinous is enabled it is the first CPU candidate; otherwise Daytona is the CPU baseline and `ODDISH_ARCHIL_TRAFFIC_PERCENT` can deterministically move the whole submission to Archil. Explicit environments always win. Numinous GPU availability is controlled separately by the deployment operator.
 - `--priority`, `-P TEXT` - Queue priority, typically `low` or `high`
 - `--experiment`, `-E TEXT` - Reuse or create an experiment ID/name
 - `--user`, `-u TEXT` - Override the author attached to the run. Defaults to the authenticated identity (Clerk-linked email for API keys / dashboard sessions); set this only to attribute a run to someone other than yourself.
@@ -379,8 +379,9 @@ If a positional ID isn't found as a task, `status` automatically retries it as a
 One thing to know when scripting against `status <task_id> --json`: the
 response's `trials` list is every current-version trial, including the
 platform's own QA and audit runs (rows whose `kind` is `"qa"` or `"audit"`),
-and the top-level totals count them too. To count only evaluation attempts,
-filter on `trials[].kind == "agent"`.
+but the top-level `total`, `completed`, `failed`, and `running` counters count
+only evaluation attempts (`kind == "agent"`). Filter the `trials` list on
+`trials[].kind == "agent"` when reproducing those counters yourself.
 
 Options
 
@@ -783,8 +784,9 @@ Use `oddish delete` to delete tasks, experiments, or trials. What each
 deployment allows:
 
 - **Trial deletion** (`--trial`) works against hosted Oddish (oddish.app). It
-  is admin-only — a full-scope API key — and removes the trial row plus its
-  stored artifacts.
+  is admin-only — a full-scope API key — and soft-deletes the trial by setting
+  its `deleted_at` timestamp. The database row and S3 artifacts remain for
+  audit and restoration, while normal API and dashboard queries hide the row.
 - **Whole-task and whole-experiment deletion** is refused by the CLI against
   any Modal-hosted API (hosted oddish.app and Modal self-hosts alike); the
   command exits with "Cleanup is not available for hosted Oddish instances."

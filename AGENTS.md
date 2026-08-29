@@ -61,7 +61,7 @@ backend/                        # Hosted cloud layer (Modal deployment)
 │                               # verification (auth/verification.py), provisioning, types
 ├── worker/                     # Modal dispatcher and single-job worker orchestration
 ├── deploy.py                   # Modal app entrypoint
-├── modal_app.py                # Modal image, volumes, shared runtime, env knobs; CPU defaults to Daytona with a deterministic Archil rollout
+├── modal_app.py                # Modal image, volumes, shared runtime, env knobs; CPU policy preserves enabled Numinous before the Daytona/Archil rollout
 ├── endpoints.py                # Modal ASGI app function with concurrency/volume wiring
 ├── serve.py                    # Railway/uvicorn entrypoint for non-Modal deployment
 ├── cloud_policy.py             # Hosted-only environment policy
@@ -756,8 +756,9 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
 `oddish/src/oddish/workers/harbor/runner.py`:
 
 - `ODDISH_ARCHIL_TRAFFIC_PERCENT` (integer 0 through 100, default 0) replaces
-  the Daytona default for that percentage of newly submitted hosted CPU
-  sweeps. `backend/api/routers/tasks.py` computes the request fingerprint before
+  a Daytona result for that percentage of newly submitted hosted CPU sweeps.
+  Enabled Numinous remains the first CPU candidate and is not replaced.
+  `backend/api/routers/tasks.py` computes the request fingerprint before
   identity or GitHub attribution mutates the submission; `backend/cloud_policy.py`
   maps that SHA-256 value into a 0–99 bucket. The selected default reaches every
   unset trial spec in the sweep. Explicit submission/config environments,
@@ -765,8 +766,8 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   environment, and retries of stored trial rows keep their provider. The batch
   route applies the same rule independently to each raw item.
 - EC2 is an explicit, opt-in Harbor backend: `ODDISH_EC2_ENABLED=true` registers
-  it and permits hosted `environment=ec2`, but capability ordering keeps Daytona
-  as the CPU default. V1 launches one ephemeral CPU instance per trial and uses
+  it and permits hosted `environment=ec2`, but never selects it automatically.
+  V1 launches one ephemeral CPU instance per trial and uses
   public-IP, key-only SSH. It does not support accelerators, attach/retain mode,
   private networking, Spot, or AWS infrastructure provisioning.
 - An EC2 deployment must provide an existing Ubuntu-compatible AMI, subnet,
@@ -818,13 +819,14 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   slots forever; an inventory failure never authorizes this finalization.
   Inventory and termination failures stay visible in logs/metrics while the rest
   of queue cleanup continues.
-- Claude trials run through AWS Bedrock by default. `CLAUDE_CODE_USE_BEDROCK=1` is
-  baked into the Modal image, and Claude model aliases must normalize to an
-  invokable inference profile (`global.` / `us.` / ARN) via
-  `to_bedrock_model_id`. Opt into the direct Anthropic API with a separate key
-  via the explicit `anthropic-hdo/<model>` prefix: that route overwrites
-  `ANTHROPIC_API_KEY` with `ANTHROPIC_HDO_API_KEY` and blanks Bedrock routing
-  for the trial.
+- Claude Code currently prefers the direct Anthropic API whenever
+  `ANTHROPIC_API_KEY` is available because
+  `ODDISH_CLAUDE_CODE_FORCE_DIRECT_API` defaults to `1`. Set the flag to `0`
+  to restore the Modal image's Bedrock route (`CLAUDE_CODE_USE_BEDROCK=1`).
+  Bedrock model aliases must normalize to an invokable inference profile
+  (`global.` / `us.` / ARN) via `to_bedrock_model_id`. The separate
+  `anthropic-hdo/<model>` prefix always uses `ANTHROPIC_HDO_API_KEY` and blanks
+  Bedrock routing for that trial.
 - OpenAI-family jobs default to Azure OpenAI. Use
   `ODDISH_OPENAI_PROVIDER=openai` plus `OPENAI_API_KEY` only when intentionally
   routing to public OpenAI.
@@ -837,6 +839,25 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   each agent the spelling its LLM client expects (litellm agents in
   `_LITELLM_MODEL_ID_AGENTS`, Vercel AI SDK agents in
   `_AI_SDK_MODEL_ID_AGENTS`); add a new agent to the set matching its client.
+- Kubernetes task charts that enforce their own runtime egress boundary can opt
+  into Oddish's model-route bridge with a chart-root
+  `.oddish-agent-egress-hosts` marker containing exactly
+  `agentEgressProxy.runtimeAllowedHosts`. Because EC2/k3s cannot perform
+  Harbor's dynamic phase-policy switch, the task must retain a public
+  environment baseline, omit formal agent/step network policies, and declare
+  its stable task-owned proxy hosts in
+  `metadata.oddish_agent_egress_allowed_hosts`. Before Harbor instantiates the
+  environment, Oddish merges that task policy with the selected model and
+  agent runtime hosts and explicit `extra_allowed_hosts` entries, then writes
+  the resolved normalized policy as a semicolon-delimited value to
+  `environment.kwargs.helm_values.agentEgressProxy.runtimeAllowedHosts`. That
+  Helm key is reserved for Oddish: the chart must treat it as the authoritative
+  runtime allowlist for its deny-by-default proxy, using chart defaults only
+  when no hosted override is supplied. This chart contract accepts exact DNS
+  hostnames only; wildcard, IP, and CIDR policies fail closed because the task
+  proxy materializes concrete DNS and TLS/SNI routes. Charts without the
+  declaration are untouched; Compose and single-container egress behavior
+  remains on its existing paths.
 - Provider secrets are referenced by env var name (`AWS_BEARER_TOKEN_BEDROCK`,
   `ANTHROPIC_HDO_API_KEY`, `ZAI_API_KEY`, `MINIMAX_API_KEY`, `MOONSHOT_API_KEY`,
   `FIREWORKS_API_KEY`, `XAI_API_KEY`, `META_API_KEY`) and must not be persisted
@@ -1131,12 +1152,13 @@ sweep):
    so each person is DMed at most once per task version, ever.
 
 Handler registration happens at container load via
-`ensure_builtin_handlers_registered()`. Post-success hooks
-(`notify_github_trial`, `notify_github_qa`, and the transitional
-`notify_github_analysis`) are wired through `_POST_SUCCESS_HOOKS` in
-`worker/functions.py`. The task-level `QA` job fires `notify_github_qa`,
-which refreshes the whole PR comment (per-trial classifications + task
-verdict) in one update.
+`ensure_builtin_handlers_registered()`. `_POST_SUCCESS_HOOKS` in
+`worker/functions.py` contains only `notify_github_trial` for successful
+`TRIAL` worker jobs. QA GitHub notifications use a separate import hook:
+`register_qa_imported_hook(notify_github_qa)` refreshes the whole PR comment
+(per-trial classifications plus the task verdict) after a QA trial's artifact
+is imported. There is no `notify_github_analysis` hook or active task-level
+`QA` worker-job handler.
 
 ### Trial Storage Layout
 
