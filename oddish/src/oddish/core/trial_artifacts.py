@@ -40,6 +40,10 @@ class TrialArtifactLayout:
     listed_keys: tuple[str, ...] | None = None
 
 
+class AnalysisArtifactLayoutError(RuntimeError):
+    """A newly uploaded analysis attempt cannot satisfy its read contract."""
+
+
 def normalize_trial_relative_path(file_path: str) -> str:
     """Normalize one trial-relative path and reject absolute or parent paths."""
     raw = file_path.replace("\\", "/").strip()
@@ -148,3 +152,46 @@ async def resolve_trial_artifact_layout(
         artifact_prefix,
         manifest=manifest,
     )
+
+
+async def validate_uploaded_analysis_artifacts(
+    *,
+    trial_id: str,
+    trial_s3_key: str,
+    required_artifact: str,
+    has_trajectory: bool,
+    storage: StorageClient,
+) -> TrialArtifactLayout:
+    """Prove a fresh analysis upload can be read before settlement succeeds."""
+
+    @dataclass(frozen=True, slots=True)
+    class UploadedAttempt:
+        id: str
+        trial_s3_key: str
+
+    layout = await resolve_trial_artifact_layout(
+        UploadedAttempt(id=trial_id, trial_s3_key=trial_s3_key), storage
+    )
+    if layout.mode is not TrialArtifactMode.EXACT or layout.manifest is None:
+        raise AnalysisArtifactLayoutError(
+            "result.json is missing, malformed, or does not select one attempt"
+        )
+    trial_name = trial_name_from_manifest(layout.manifest)
+    if trial_name is None or layout.artifact_prefix == layout.attempt_prefix:
+        raise AnalysisArtifactLayoutError(
+            "result.json does not select a Harbor child directory"
+        )
+
+    result_key = f"{layout.artifact_prefix}verifier/{required_artifact}"
+    if not await storage.object_exists(result_key):
+        raise AnalysisArtifactLayoutError(
+            f"selected Harbor child is missing verifier/{required_artifact}"
+        )
+    if has_trajectory:
+        trajectory_key = f"{layout.artifact_prefix}agent/trajectory.json"
+        if not await storage.object_exists(trajectory_key):
+            raise AnalysisArtifactLayoutError(
+                "outcome reports a trajectory but the selected Harbor child "
+                "is missing agent/trajectory.json"
+            )
+    return layout

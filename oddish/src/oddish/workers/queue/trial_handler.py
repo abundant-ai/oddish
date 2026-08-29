@@ -20,6 +20,7 @@ from harbor.viewer.scanner import JobScanner
 from sqlalchemy import select, update
 
 from oddish.core.harbor_artifacts import build_trial_result
+from oddish.core.trial_artifacts import validate_uploaded_analysis_artifacts
 from oddish.config import settings
 from oddish.costs.modal_cost import SpanResources
 from oddish.costs.recorder import (
@@ -72,7 +73,7 @@ from oddish.worker.probe_staging import (
     apply_probe_overlay,
     stage_cli_mount,
 )
-from oddish.workers.analysis_trials import is_analysis_kind
+from oddish.workers.analysis_trials import ANALYSIS_ARTIFACTS, is_analysis_kind
 from oddish.workers.harbor.ephemeral import HarborOverrideImportError
 from oddish.workers.harbor.quota_control import QuotaPauseControlError
 from oddish.workers.harbor.runner import (
@@ -2124,14 +2125,25 @@ async def run_trial_job(
                         trial_kind, prepared_trial.trial_attempt
                     ),
                 )
+                if is_analysis_kind(trial_kind):
+                    await validate_uploaded_analysis_artifacts(
+                        trial_id=trial_id,
+                        trial_s3_key=trial_s3_key,
+                        required_artifact=ANALYSIS_ARTIFACTS[trial_kind],
+                        has_trajectory=execution.outcome.has_trajectory,
+                        storage=storage,
+                    )
                 console.print(
                     f"[dim]Uploaded trial results to S3: {trial_s3_key}[/dim]"
                 )
                 oddish_uploaded = True
             except Exception as e:
-                message = (
-                    f"Failed to upload trial results to S3: {type(e).__name__}: {e}"
+                action = (
+                    "Uploaded trial artifacts failed validation"
+                    if trial_s3_key is not None
+                    else "Failed to upload trial results to S3"
                 )
+                message = f"{action}: {type(e).__name__}: {e}"
                 console.print(f"[yellow]{message}[/yellow]")
                 if is_analysis_kind(trial_kind):
                     artifact_upload_error = message

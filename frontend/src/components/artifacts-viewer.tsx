@@ -15,6 +15,7 @@ import { fetcher } from "@/lib/api";
 import { firstFilePath } from "@/lib/file-tree-order";
 import { formatFileSize } from "@/lib/format";
 import { sameFilePath } from "@/lib/file-path";
+import { recordClientError } from "@/lib/observability";
 import type { LineRange } from "@/lib/line-range";
 
 // Preview truncation threshold; matches TaskFilesPanel.
@@ -78,7 +79,7 @@ function relativizeArtifactPath(path: string): string {
  * same name) keep the first entry — `path` is the tree row's identity.
  */
 function buildArtifactEntries(
-  files: ArtifactFile[],
+  files: ArtifactFile[]
 ): Map<string, ArtifactEntry> {
   const entries = new Map<string, ArtifactEntry>();
   for (const file of files) {
@@ -96,6 +97,8 @@ function buildArtifactEntries(
 
 interface ArtifactsViewerProps {
   filesUrl: string;
+  trialId?: string;
+  successfulAnalysisTrial?: boolean;
   /**
    * Deep-linked file to select once the listing loads (``?file=`` while
    * ``tab=artifacts``). Accepts the tree path shown in the browser, the
@@ -117,23 +120,41 @@ interface ArtifactsViewerProps {
 
 export function ArtifactsViewer({
   filesUrl,
+  trialId,
+  successfulAnalysisTrial = false,
   initialFilePath,
   selectedLines,
   onSelectLinesChange,
   onSelectedFileChange,
 }: ArtifactsViewerProps) {
-  const { data, isLoading, error } = useSWR<ArtifactsListing>(
-    `${filesUrl}?recursive=1`,
-    fetcher,
-    { revalidateOnFocus: false },
-  );
+  const { data, isLoading, isValidating, error, mutate } =
+    useSWR<ArtifactsListing>(`${filesUrl}?recursive=1`, fetcher, {
+      revalidateOnFocus: false,
+    });
+  const errorStatus = (error as { status?: number } | undefined)?.status;
+  const reportedIntegrityFailureRef = useRef(false);
+  useEffect(() => {
+    if (
+      errorStatus !== 404 ||
+      !successfulAnalysisTrial ||
+      reportedIntegrityFailureRef.current
+    ) {
+      return;
+    }
+    reportedIntegrityFailureRef.current = true;
+    recordClientError("artifact_integrity_failure", {
+      trial_id: trialId ?? "unknown",
+      files_url: filesUrl,
+      http_status: 404,
+    });
+  }, [errorStatus, filesUrl, successfulAnalysisTrial, trialId]);
 
   const entriesByPath = useMemo(
     () =>
       buildArtifactEntries(
-        (data?.files ?? []).filter((f) => isArtifactPath(f.path)),
+        (data?.files ?? []).filter((f) => isArtifactPath(f.path))
       ),
-    [data],
+    [data]
   );
 
   // Identity must only change with the listing — FileTreePane rebuilds (and
@@ -209,9 +230,53 @@ export function ArtifactsViewer({
   }
 
   if (error) {
+    if (errorStatus === 404) {
+      return (
+        <div className="p-6 text-center">
+          <Package className="text-muted-foreground/50 mx-auto mb-2 h-8 w-8" />
+          <p className="text-muted-foreground text-sm">
+            Artifacts are unavailable for this attempt.
+          </p>
+          {successfulAnalysisTrial && (
+            <p className="mt-1 text-xs text-red-500">
+              This successful analysis run promised durable artifacts; an
+              integrity alert was recorded.
+            </p>
+          )}
+        </div>
+      );
+    }
+    if (errorStatus === 403) {
+      return (
+        <div className="p-6 text-center">
+          <p className="text-sm text-red-500">
+            You are not authorized to view artifacts for this trial.
+          </p>
+        </div>
+      );
+    }
     return (
-      <div className="text-muted-foreground p-6 text-center text-sm">
-        Failed to load artifacts
+      <div className="p-6 text-center">
+        <p className="text-muted-foreground text-sm">
+          Could not load artifacts.
+        </p>
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          className="mt-3 h-7"
+          onClick={() => void mutate()}
+          disabled={isValidating}
+        >
+          {isValidating ? (
+            <>
+              <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              Retrying…
+            </>
+          ) : (
+            "Retry"
+          )}
+        </Button>
       </div>
     );
   }
@@ -366,7 +431,7 @@ function ArtifactContentPane({
       } catch (err) {
         if (!cancelled) {
           setContentError(
-            err instanceof Error ? err.message : "Failed to load file",
+            err instanceof Error ? err.message : "Failed to load file"
           );
           setContent("");
           setIsTruncated(false);
@@ -406,7 +471,7 @@ function ArtifactContentPane({
       setIsTruncated(false);
     } catch (err) {
       setContentError(
-        err instanceof Error ? err.message : "Failed to load full file",
+        err instanceof Error ? err.message : "Failed to load full file"
       );
     } finally {
       setLoadingFullFile(false);

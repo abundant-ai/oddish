@@ -735,10 +735,14 @@ export function TrialDetailPanel({
   paneAction,
 }: TrialDetailPanelProps) {
   const taskQaInProgress = taskHasActiveVerdict(task);
-  const { data: refreshedTrial, mutate: revalidateTrial } = useTrial(
-    isOpen && requireTrialDetail ? selectedTrial?.id : null,
-    { apiBaseUrl }
-  );
+  const {
+    data: refreshedTrial,
+    error: trialDetailError,
+    isValidating: isValidatingTrialDetail,
+    mutate: revalidateTrial,
+  } = useTrial(isOpen && requireTrialDetail ? selectedTrial?.id : null, {
+    apiBaseUrl,
+  });
   const previousTaskQaRef = useRef({
     taskId: task?.id ?? null,
     inProgress: taskQaInProgress,
@@ -776,6 +780,8 @@ export function TrialDetailPanel({
   ]);
   const canonicalTrial =
     refreshedTrial?.id === selectedTrial?.id ? refreshedTrial : null;
+  const trialDetailFailed =
+    requireTrialDetail && canonicalTrial === null && trialDetailError != null;
   const actionsReady = !requireTrialDetail || canonicalTrial !== null;
   const trial = canonicalTrial ?? selectedTrial;
   const verifierSummary = embeddedCtrfSummary(trial?.result);
@@ -1147,6 +1153,29 @@ export function TrialDetailPanel({
     isWorkerOwnedTrialStatus(trial.status) || trial.status === "retrying";
   const effectiveTab =
     activeTab === "live" && !showLive ? "summary" : activeTab;
+  const trialDetailErrorContent = (
+    <div className="p-4 sm:p-6">
+      <Alert variant="destructive">
+        <AlertTitle>Trial details could not be loaded</AlertTitle>
+        <AlertDescription className="flex flex-wrap items-center gap-2">
+          <span>
+            This tab needs the authoritative trial record before it can decide
+            which stored resources exist.
+          </span>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            className="h-7"
+            onClick={() => void revalidateTrial()}
+            disabled={isValidatingTrialDetail}
+          >
+            {isValidatingTrialDetail ? "Retrying…" : "Retry"}
+          </Button>
+        </AlertDescription>
+      </Alert>
+    </div>
+  );
   const trialStatusConfig = STATUS_CONFIG[trialStatus];
   const TrialStatusIcon = trialStatusConfig.icon;
   // Sum the navigable trials for this view (version-scoped in both callers),
@@ -1730,7 +1759,7 @@ export function TrialDetailPanel({
               {/* Equivalent retry command — hidden from public viewers */}
               {showAnalysis && (
                 <div>
-                  <p className="mb-1 text-[11px] text-muted-foreground">
+                  <p className="text-muted-foreground mb-1 text-[11px]">
                     Equivalent retry command, reconstructed.
                   </p>
                   <CodeBlock
@@ -1762,18 +1791,22 @@ export function TrialDetailPanel({
             value="files"
             className="m-0 h-full p-0"
           >
-            <TaskFilesPanel
-              isOpen={isOpen}
-              onClose={() => {}}
-              activePane="file"
-              taskId={null}
-              filesUrl={`${apiBaseUrl}/trials/${trial.id}/files`}
-              initialFilePath={filesTargetPath}
-              selectedLines={selectedLines}
-              onSelectLinesChange={setSelectedLines}
-              onSelectedFileChange={handleSelectedFileChange}
-              contentOnly
-            />
+            {trialDetailFailed ? (
+              trialDetailErrorContent
+            ) : (
+              <TaskFilesPanel
+                isOpen={isOpen}
+                onClose={() => {}}
+                activePane="file"
+                taskId={null}
+                filesUrl={`${apiBaseUrl}/trials/${trial.id}/files`}
+                initialFilePath={filesTargetPath}
+                selectedLines={selectedLines}
+                onSelectLinesChange={setSelectedLines}
+                onSelectedFileChange={handleSelectedFileChange}
+                contentOnly
+              />
+            )}
           </ActiveTabContent>
 
           <ActiveTabContent
@@ -1781,13 +1814,24 @@ export function TrialDetailPanel({
             value="artifacts"
             className="m-0 h-full p-0"
           >
-            <ArtifactsViewer
-              filesUrl={`${apiBaseUrl}/trials/${trial.id}/files`}
-              initialFilePath={artifactsTargetPath}
-              selectedLines={artifactsLines}
-              onSelectLinesChange={setArtifactsLines}
-              onSelectedFileChange={handleArtifactsFileChange}
-            />
+            {trialDetailFailed ? (
+              trialDetailErrorContent
+            ) : (
+              <ArtifactsViewer
+                filesUrl={`${apiBaseUrl}/trials/${trial.id}/files`}
+                trialId={trial.id}
+                successfulAnalysisTrial={
+                  trial.status === "success" &&
+                  ["qa", "qa_eval", "audit", "summarize"].includes(
+                    trial.kind ?? "agent"
+                  )
+                }
+                initialFilePath={artifactsTargetPath}
+                selectedLines={artifactsLines}
+                onSelectLinesChange={setArtifactsLines}
+                onSelectedFileChange={handleArtifactsFileChange}
+              />
+            )}
           </ActiveTabContent>
 
           <ActiveTabContent
@@ -1795,12 +1839,16 @@ export function TrialDetailPanel({
             value="trajectory"
             className="m-0 h-full overflow-auto p-0"
           >
-            <TrajectoryViewer
-              trialId={trial.id}
-              hasTrajectory={trial.has_trajectory}
-              apiBaseUrl={apiBaseUrl}
-              canRegenerateSummary={showAnalysis}
-            />
+            {trialDetailFailed ? (
+              trialDetailErrorContent
+            ) : (
+              <TrajectoryViewer
+                trialId={trial.id}
+                hasTrajectory={trial.has_trajectory}
+                apiBaseUrl={apiBaseUrl}
+                canRegenerateSummary={showAnalysis}
+              />
+            )}
           </ActiveTabContent>
         </div>
       </Tabs>
