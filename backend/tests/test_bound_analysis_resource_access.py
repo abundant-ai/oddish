@@ -107,6 +107,29 @@ async def test_qa_key_reads_only_trial_ids_derived_from_analysis_payload(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_bound_key_cannot_cross_organization_boundary(monkeypatch):
+    analysis = SimpleNamespace(
+        id="analysis-1",
+        org_id="org-2",
+        kind="qa",
+        task_id="task-1",
+        task_version_id="version-1",
+        harbor_config={"analysis_payload": {"trial_ids": ["source-1"]}},
+    )
+    _session(monkeypatch, analysis)
+
+    with pytest.raises(HTTPException) as denied:
+        await authorize_bound_analysis_request(
+            _request(
+                "/trials/{trial_id}/result",
+                path_params={"trial_id": "source-1"},
+            ),
+            _auth(),
+        )
+    assert denied.value.status_code == 403
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "route_path",
     (

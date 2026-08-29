@@ -1,4 +1,11 @@
+from datetime import timedelta
+from types import SimpleNamespace
+
+import pytest
+
+from auth.verification import verify_api_key
 from models import APIKeyScope, create_api_key
+from oddish.db import utcnow
 
 
 def test_create_api_key_sets_is_internal():
@@ -37,3 +44,26 @@ def test_create_api_key_can_bind_to_analysis_trial_without_copying_resources():
 
     assert model.bound_analysis_trial_id == "qa-1"
     assert not hasattr(model, "allowed_trial_ids")
+
+
+@pytest.mark.asyncio
+async def test_expired_bound_analysis_key_is_rejected_before_resource_access():
+    expired_key = SimpleNamespace(
+        expires_at=utcnow() - timedelta(seconds=1),
+        bound_analysis_trial_id="qa-1",
+    )
+
+    class Result:
+        def scalar_one_or_none(self):
+            return expired_key
+
+    class Session:
+        calls = 0
+
+        async def execute(self, _query):
+            self.calls += 1
+            return Result()
+
+    session = Session()
+    assert await verify_api_key(session, "ok_expired_bound_key") is None
+    assert session.calls == 1
