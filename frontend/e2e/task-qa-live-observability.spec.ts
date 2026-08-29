@@ -38,7 +38,7 @@ function compactTrial(id: string, kind: "agent" | "qa", status: string) {
   };
 }
 
-function taskOpenResponse(qaStatus: QaStatus) {
+function taskOpenResponse(qaStatus: QaStatus | null) {
   return {
     task: {
       id: TASK_ID,
@@ -135,7 +135,8 @@ function taskOpenResponse(qaStatus: QaStatus) {
       token_count: 100,
       token_trial_count: 1,
     },
-    active_qa_trial: compactTrial(QA_TRIAL_ID, "qa", qaStatus),
+    active_qa_trial:
+      qaStatus === null ? null : compactTrial(QA_TRIAL_ID, "qa", qaStatus),
     trials: [compactTrial(AGENT_TRIAL_ID, "agent", "success")],
     trials_has_more: false,
   };
@@ -173,7 +174,7 @@ function trialDetail(id: string, status: string) {
 
 async function installRoutes(
   page: Page,
-  qaStatus: QaStatus,
+  qaStatus: QaStatus | null,
   qaDetailStatus: () => string
 ) {
   await page.route(new RegExp(`/api/tasks/${TASK_ID}/open(?:\\?|$)`), (route) =>
@@ -235,11 +236,13 @@ async function installRoutes(
   );
 }
 
-async function openAgentDrawer(page: Page) {
+async function openAgentDrawer(page: Page, expectActiveQaButton = true) {
   await page.goto(`/tasks/${TASK_ID}?trial=${AGENT_TRIAL_ID}`);
-  await expect(
-    page.getByRole("button", { name: "view the QA run" })
-  ).toBeVisible();
+  if (expectActiveQaButton) {
+    await expect(
+      page.getByRole("button", { name: "view the QA run" })
+    ).toBeVisible();
+  }
 }
 
 test.describe("task QA live observability", () => {
@@ -314,8 +317,8 @@ test.describe("task QA live observability", () => {
   test("graded-step link opens the QA trajectory at step 15", async ({
     page,
   }) => {
-    await installRoutes(page, "queued", () => "success");
-    await openAgentDrawer(page);
+    await installRoutes(page, null, () => "success");
+    await openAgentDrawer(page, false);
 
     const gradedStepLink = page.getByRole("link", { name: "at step 15" });
     await expect(gradedStepLink).toHaveAttribute("href", /#step-15$/);
