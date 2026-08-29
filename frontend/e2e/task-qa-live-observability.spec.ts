@@ -331,9 +331,10 @@ test.describe("task QA live observability", () => {
       "data-state",
       "active"
     );
-    await expect(page.getByText("#15", { exact: true })).toBeVisible();
+    const gradedStep = page.getByRole("button", { name: /^#15 Agent/ });
+    await expect(gradedStep).toBeVisible();
     await expect(
-      page.getByText("graded this trial", { exact: true })
+      gradedStep.getByText("graded this trial", { exact: true })
     ).toBeVisible();
   });
 });
