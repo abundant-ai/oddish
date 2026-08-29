@@ -27,6 +27,10 @@ export default function PublicExperimentPage() {
     trialError,
     isLoading,
     isLoadingPages,
+    hasMoreTasks,
+    hasMoreTrials,
+    loadNextTasks,
+    loadNextTrials,
   } = useExperimentPages({
     openUrl: publicBase ? `${publicBase}/open` : null,
     trialPageUrl: publicBase ? `${publicBase}/trial-page` : null,
@@ -49,6 +53,10 @@ export default function PublicExperimentPage() {
             pageSummary={experiment?.summary}
             isLoading={isLoading}
             isLoadingTrials={isLoadingPages}
+            hasMoreTasks={hasMoreTasks}
+            hasMoreTrials={hasMoreTrials}
+            loadNextTasks={loadNextTasks}
+            loadNextTrials={loadNextTrials}
             hasError={hasErrors}
             errorTitle="Failed to load experiment"
             errorDescription="The share link may be invalid or no longer public."

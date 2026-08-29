@@ -3,6 +3,7 @@
 import useSWR from "swr";
 import { useParams } from "next/navigation";
 import { DatasetDetailView } from "@/components/dataset-detail-view";
+import { ExperimentPaginationSentinel } from "@/components/experiment-pagination-sentinel";
 import { Nav } from "@/components/nav";
 import type { PublicExperimentInfo } from "@/lib/types";
 import { fetcher } from "@/lib/api";
@@ -26,6 +27,10 @@ export default function PublicDatasetPage() {
     trialError,
     isLoading,
     isLoadingPages,
+    hasMoreTasks,
+    hasMoreTrials,
+    loadNextTasks,
+    loadNextTrials,
   } = useExperimentPages({
     openUrl: publicBase ? `${publicBase}/open` : null,
     trialPageUrl: publicBase ? `${publicBase}/trial-page` : null,
@@ -46,6 +51,12 @@ export default function PublicDatasetPage() {
           tasks={tasks}
           isLoading={isLoading || isLoadingPages}
           hasError={hasError}
+        />
+        <ExperimentPaginationSentinel
+          hasMoreTasks={hasMoreTasks}
+          hasMoreTrials={hasMoreTrials}
+          loadNextTasks={loadNextTasks}
+          loadNextTrials={loadNextTrials}
         />
       </main>
     </>
