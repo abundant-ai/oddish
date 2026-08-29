@@ -11,8 +11,9 @@ Current app surface:
 - `/tasks` authenticated task browser with search, pagination, per-task version summaries, and links back to experiments
 - `/experiments` base page directing users to select an experiment
 - `/experiments/[experiment]` experiment detail, task and trial inspection, logs, results, files, version history, share controls, per-task retry actions, and **cancel** for in-flight work (task drawer **Cancel (N)** or experiment table bulk **Cancel** when tasks are selected; both use `POST /tasks/cancel` with one or more task ids)
-- `/qa` QA workspace (runs, skills, documents)
-- `/skills` and `/documents` org skill and doc-store management
+- `/qa` QA workspace; `/qa/skills` and `/qa/documents` provide organization
+  skill and document-store management
+- `/skills` and `/documents` compatibility routes that redirect into `/qa`
 - `/usage` usage and cost reporting
 - `/settings` organization management and API key management
 - `/admin` includes an **Overview** with editable per-queue-key concurrency limits and queue health, plus detailed **Worker Jobs** and **Concurrency** tabs for job state and `queue_slots` leases
@@ -73,6 +74,9 @@ pnpm dev           # Next.js dev server
 pnpm build         # Production build
 pnpm start         # Run production server
 pnpm lint          # ESLint
+pnpm test          # Node unit tests in tests/*.test.ts
+pnpm test:e2e      # Playwright end-to-end suite
+pnpm typecheck:e2e # Type-check the Playwright project
 pnpm format        # Prettier formatting
 pnpm format:check  # Check Prettier formatting
 ```
@@ -105,6 +109,9 @@ Public routes:
 - `/sign-up/*`
 - `/share/*`
 - `/datasets/*`
+- `/experiments/*` at the middleware layer, so unfurl bots can read metadata;
+  the authenticated app layout still redirects ordinary signed-out visitors
+- `/api/client-traces/*`
 - `/api/public/*`
 
 Everything else is protected by Clerk middleware.

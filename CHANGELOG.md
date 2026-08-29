@@ -6,6 +6,59 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-08-28]
+
+### Added
+
+- Historical QA prompt replay can create `qa_eval` trials from exact source
+  solver trials without overwriting the source analyses.
+- Trajectory summary refreshes now run as `summarize`-kind Harbor trials, with
+  durable target pointers, normal retry/cost accounting, and artifact import.
+- Logfire operations monitoring includes dispatcher, queue, slot, worker
+  transition, and worker-duration metrics plus checked-in dashboard and alert
+  SQL.
+- Numinous Cloud is available as an opt-in CPU backend with a separately gated
+  GPU lane. It remains disabled on staging and production and enabled for
+  preview deployment testing.
+- The authenticated task page has a bounded `GET /tasks/{task_id}/open` first
+  read, and the frontend defers large trial resources until the user opens them.
+- Administrators can set database-backed per-model concurrency overrides from
+  the API and CLI; the stored override takes precedence over deploy settings.
+
+### Changed
+
+- QA, audit, and trajectory-summary work now runs as ordinary `TRIAL` worker
+  jobs with `qa`, `audit`, or `summarize` trial kinds. The old analyzer and
+  task-level QA worker pipelines are no longer active.
+- The baseline gate accepts any positive oracle reward as evidence that the
+  known solution works; nop still must score exactly zero, and missing rewards
+  still fail the gate.
+- Appending trials to an existing experiment uses that experiment's task
+  version unless the caller explicitly selects the task's default version.
+- Cost accounting can exclude configured model families, experiments, and LLM
+  provider keys while leaving the excluded spend visible and labelled.
+- Harbor owns transient harness retries inside a sandbox before Oddish spends a
+  durable fresh-sandbox retry.
+
+### Removed
+
+- Agent-capability cohort comparison, analyzer reports, analyzer blocks, and
+  their active endpoints and worker handlers were removed. Historical enum and
+  schema values remain readable where database compatibility requires them.
+
+### Fixed
+
+- Trial retry reconstruction preserves the requested model instead of falling
+  back to a default model.
+- Concurrent dashboard first loads no longer fail while shared data is being
+  populated.
+- QA replay state, active QA references, and rerun controls now remain
+  consistent across task and trial views.
+- Gemini CLI installation hosts are allowed during the environment setup phase
+  without opening the restricted agent phase to those hosts.
+
+---
+
 ## [2026-08-07]
 
 ### Changed
