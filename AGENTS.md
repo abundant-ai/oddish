@@ -824,13 +824,14 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   slots forever; an inventory failure never authorizes this finalization.
   Inventory and termination failures stay visible in logs/metrics while the rest
   of queue cleanup continues.
-- Claude trials run through AWS Bedrock by default. `CLAUDE_CODE_USE_BEDROCK=1` is
-  baked into the Modal image, and Claude model aliases must normalize to an
-  invokable inference profile (`global.` / `us.` / ARN) via
-  `to_bedrock_model_id`. Opt into the direct Anthropic API with a separate key
-  via the explicit `anthropic-hdo/<model>` prefix: that route overwrites
-  `ANTHROPIC_API_KEY` with `ANTHROPIC_HDO_API_KEY` and blanks Bedrock routing
-  for the trial.
+- Claude Code currently prefers the direct Anthropic API whenever
+  `ANTHROPIC_API_KEY` is available because
+  `ODDISH_CLAUDE_CODE_FORCE_DIRECT_API` defaults to `1`. Set the flag to `0`
+  to restore the Modal image's Bedrock route (`CLAUDE_CODE_USE_BEDROCK=1`).
+  Bedrock model aliases must normalize to an invokable inference profile
+  (`global.` / `us.` / ARN) via `to_bedrock_model_id`. The separate
+  `anthropic-hdo/<model>` prefix always uses `ANTHROPIC_HDO_API_KEY` and blanks
+  Bedrock routing for that trial.
 - OpenAI-family jobs default to Azure OpenAI. Use
   `ODDISH_OPENAI_PROVIDER=openai` plus `OPENAI_API_KEY` only when intentionally
   routing to public OpenAI.
@@ -843,6 +844,25 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   each agent the spelling its LLM client expects (litellm agents in
   `_LITELLM_MODEL_ID_AGENTS`, Vercel AI SDK agents in
   `_AI_SDK_MODEL_ID_AGENTS`); add a new agent to the set matching its client.
+- Kubernetes task charts that enforce their own runtime egress boundary can opt
+  into Oddish's model-route bridge with a chart-root
+  `.oddish-agent-egress-hosts` marker containing exactly
+  `agentEgressProxy.runtimeAllowedHosts`. Because EC2/k3s cannot perform
+  Harbor's dynamic phase-policy switch, the task must retain a public
+  environment baseline, omit formal agent/step network policies, and declare
+  its stable task-owned proxy hosts in
+  `metadata.oddish_agent_egress_allowed_hosts`. Before Harbor instantiates the
+  environment, Oddish merges that task policy with the selected model and
+  agent runtime hosts and explicit `extra_allowed_hosts` entries, then writes
+  the resolved normalized policy as a semicolon-delimited value to
+  `environment.kwargs.helm_values.agentEgressProxy.runtimeAllowedHosts`. That
+  Helm key is reserved for Oddish: the chart must treat it as the authoritative
+  runtime allowlist for its deny-by-default proxy, using chart defaults only
+  when no hosted override is supplied. This chart contract accepts exact DNS
+  hostnames only; wildcard, IP, and CIDR policies fail closed because the task
+  proxy materializes concrete DNS and TLS/SNI routes. Charts without the
+  declaration are untouched; Compose and single-container egress behavior
+  remains on its existing paths.
 - Provider secrets are referenced by env var name (`AWS_BEARER_TOKEN_BEDROCK`,
   `ANTHROPIC_HDO_API_KEY`, `ZAI_API_KEY`, `MINIMAX_API_KEY`, `MOONSHOT_API_KEY`,
   `FIREWORKS_API_KEY`, `XAI_API_KEY`, `META_API_KEY`) and must not be persisted
@@ -1137,12 +1157,13 @@ sweep):
    so each person is DMed at most once per task version, ever.
 
 Handler registration happens at container load via
-`ensure_builtin_handlers_registered()`. Post-success hooks
-(`notify_github_trial`, `notify_github_qa`, and the transitional
-`notify_github_analysis`) are wired through `_POST_SUCCESS_HOOKS` in
-`worker/functions.py`. The task-level `QA` job fires `notify_github_qa`,
-which refreshes the whole PR comment (per-trial classifications + task
-verdict) in one update.
+`ensure_builtin_handlers_registered()`. `_POST_SUCCESS_HOOKS` in
+`worker/functions.py` contains only `notify_github_trial` for successful
+`TRIAL` worker jobs. QA GitHub notifications use a separate import hook:
+`register_qa_imported_hook(notify_github_qa)` refreshes the whole PR comment
+(per-trial classifications plus the task verdict) after a QA trial's artifact
+is imported. There is no `notify_github_analysis` hook or active task-level
+`QA` worker-job handler.
 
 ### Trial Storage Layout
 
