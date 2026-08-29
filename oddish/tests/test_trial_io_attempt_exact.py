@@ -5,7 +5,14 @@ import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from oddish.core import trial_io
+from oddish.core.trial_artifacts import (
+    AnalysisArtifactLayoutError,
+    TrialArtifactMode,
+    validate_uploaded_analysis_artifacts,
+)
 
 
 class _Storage:
@@ -60,6 +67,108 @@ def _clear_cache() -> None:
     trial_io._STRUCTURED_LOGS_LOCKS.clear()
     trial_io._PROBE_ARTIFACTS_CACHE.clear()
     trial_io._PROBE_ARTIFACTS_LOCKS.clear()
+
+
+def test_analysis_upload_validation_accepts_manifest_selected_qa_artifacts():
+    prefix = "tasks/task-1/trials/task-1-qa/analysis-qa/attempt-2/"
+    child = f"{prefix}qa-run/"
+    storage = _Storage(
+        {
+            f"{prefix}result.json": json.dumps(
+                {"trial_results": [{"trial_name": "qa-run"}]}
+            ),
+            f"{child}verifier/qa_result.json": "{}",
+            f"{child}agent/trajectory.json": "{}",
+        }
+    )
+
+    layout = asyncio.run(
+        validate_uploaded_analysis_artifacts(
+            trial_id="task-1-qa",
+            trial_s3_key=prefix,
+            required_artifact="qa_result.json",
+            has_trajectory=True,
+            storage=storage,
+        )
+    )
+
+    assert layout.mode is TrialArtifactMode.EXACT
+    assert layout.artifact_prefix == child
+
+
+@pytest.mark.parametrize(
+    "manifest",
+    ["not-json", json.dumps({"trial_results": []})],
+)
+def test_analysis_upload_validation_rejects_malformed_or_root_only_manifest(
+    manifest,
+):
+    prefix = "tasks/task-1/trials/task-1-qa/analysis-qa/attempt-1/"
+    storage = _Storage(
+        {
+            f"{prefix}result.json": manifest,
+            f"{prefix}verifier/qa_result.json": "{}",
+        }
+    )
+
+    with pytest.raises(AnalysisArtifactLayoutError):
+        asyncio.run(
+            validate_uploaded_analysis_artifacts(
+                trial_id="task-1-qa",
+                trial_s3_key=prefix,
+                required_artifact="qa_result.json",
+                has_trajectory=False,
+                storage=storage,
+            )
+        )
+
+
+def test_analysis_upload_validation_never_accepts_a_sibling_child():
+    prefix = "tasks/task-1/trials/task-1-qa/analysis-qa/attempt-2/"
+    storage = _Storage(
+        {
+            f"{prefix}result.json": json.dumps(
+                {"trial_results": [{"trial_name": "current-run"}]}
+            ),
+            f"{prefix}old-run/verifier/qa_result.json": "{}",
+        }
+    )
+
+    with pytest.raises(
+        AnalysisArtifactLayoutError, match="missing verifier/qa_result.json"
+    ):
+        asyncio.run(
+            validate_uploaded_analysis_artifacts(
+                trial_id="task-1-qa",
+                trial_s3_key=prefix,
+                required_artifact="qa_result.json",
+                has_trajectory=False,
+                storage=storage,
+            )
+        )
+
+
+def test_analysis_upload_validation_requires_reported_trajectory():
+    prefix = "tasks/task-1/trials/task-1-audit/analysis-audit/attempt-3/"
+    storage = _Storage(
+        {
+            f"{prefix}result.json": json.dumps(
+                {"trial_results": [{"trial_name": "audit-run"}]}
+            ),
+            f"{prefix}audit-run/verifier/audit_result.json": "{}",
+        }
+    )
+
+    with pytest.raises(AnalysisArtifactLayoutError, match="trajectory"):
+        asyncio.run(
+            validate_uploaded_analysis_artifacts(
+                trial_id="task-1-audit",
+                trial_s3_key=prefix,
+                required_artifact="audit_result.json",
+                has_trajectory=True,
+                storage=storage,
+            )
+        )
 
 
 def test_manifest_selects_the_exact_sanitized_harbor_directory(monkeypatch):
