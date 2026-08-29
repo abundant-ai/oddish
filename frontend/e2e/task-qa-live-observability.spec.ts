@@ -31,6 +31,7 @@ function compactTrial(id: string, kind: "agent" | "qa", status: string) {
     cost_usd: kind === "agent" ? 1 : null,
     cost_is_estimated: false,
     is_billed: kind === "agent",
+    has_trajectory: status === "success",
     created_at: CREATED_AT,
     started_at: status === "running" ? CREATED_AT : null,
     finished_at: status === "success" ? CREATED_AT : null,
@@ -142,6 +143,7 @@ function taskOpenResponse(qaStatus: QaStatus) {
 
 function trialDetail(id: string, status: string) {
   const compact = compactTrial(id, id === QA_TRIAL_ID ? "qa" : "agent", status);
+  const isAgent = id === AGENT_TRIAL_ID;
   return {
     ...compact,
     task_id: TASK_ID,
@@ -152,8 +154,16 @@ function trialDetail(id: string, status: string) {
     harbor_stage: status === "success" ? "completed" : status,
     error_message: null,
     result: null,
-    analysis_status: null,
-    analysis: null,
+    analysis_status: isAgent ? "success" : null,
+    analysis: isAgent
+      ? {
+          classification: "GOOD_FAILURE",
+          subtype: "correct",
+          evidence: "The verifier correctly rejected the output.",
+          _graded_by: QA_TRIAL_ID,
+          _graded_at_steps: [15],
+        }
+      : null,
     jobs: [],
     has_trajectory: status === "success",
     input_tokens: status === "success" ? 100 : 10,
@@ -188,6 +198,40 @@ async function installRoutes(
   );
   await page.route(new RegExp(`/api/trials/${AGENT_TRIAL_ID}$`), (route) =>
     route.fulfill({ json: trialDetail(AGENT_TRIAL_ID, "success") })
+  );
+  await page.route(
+    new RegExp(`/api/trials/${QA_TRIAL_ID}/trajectory/summary$`),
+    (route) => route.fulfill({ status: 404, json: { detail: "No summary" } })
+  );
+  await page.route(
+    new RegExp(`/api/trials/${QA_TRIAL_ID}/trajectory$`),
+    (route) =>
+      route.fulfill({
+        json: {
+          schema_version: "1.0",
+          session_id: "qa-session",
+          agent: {
+            name: "claude-code",
+            version: "1",
+            model_name: "anthropic/claude-sonnet-4-6",
+          },
+          steps: [
+            {
+              step_id: 15,
+              timestamp: CREATED_AT,
+              source: "agent",
+              model_name: "anthropic/claude-sonnet-4-6",
+              message: "graded this trial",
+              reasoning_content: null,
+              tool_calls: null,
+              observation: null,
+              metrics: null,
+            },
+          ],
+          notes: null,
+          final_metrics: null,
+        },
+      })
   );
 }
 
@@ -265,5 +309,28 @@ test.describe("task QA live observability", () => {
     );
     await page.waitForTimeout(1_000);
     expect(qaDetailRequests).toBe(1);
+  });
+
+  test("graded-step link opens the QA trajectory at step 15", async ({
+    page,
+  }) => {
+    await installRoutes(page, "queued", () => "success");
+    await openAgentDrawer(page);
+
+    const gradedStepLink = page.getByRole("link", { name: "at step 15" });
+    await expect(gradedStepLink).toHaveAttribute("href", /#step-15$/);
+    await gradedStepLink.click();
+
+    await expect
+      .poll(() => new URL(page.url()).searchParams.get("trial"))
+      .toBe(QA_TRIAL_ID);
+    await expect(page.getByRole("tab", { name: "Trajectory" })).toHaveAttribute(
+      "data-state",
+      "active"
+    );
+    await expect(page.getByText("#15", { exact: true })).toBeVisible();
+    await expect(
+      page.getByText("graded this trial", { exact: true })
+    ).toBeVisible();
   });
 });

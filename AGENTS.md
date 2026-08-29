@@ -519,8 +519,10 @@ on `/detail` and is not serialized with the bounded version summary. The
 response also carries compact QA verdict presentation/control fields and one
 `active_qa_trial` lightweight ref for the task's live, non-superseded QA run.
 That ref is task-scoped rather than selected-version-scoped. Every lightweight
-trial ref carries `kind`, and the selected-version trial preview remains capped
-at 20 rows. The handler uses at most three SQL statements, stays below the
+trial ref carries `kind` and `has_trajectory`, so a drawer can choose its
+initial tab while the authoritative trial-detail request loads; the
+selected-version trial preview remains capped at 20 rows. The handler uses at
+most three SQL statements, stays below the
 50 KB response budget, and must not select trial `result`, `analysis`,
 `error_message`, jobs, or ORM relationships. `GET /tasks/{task_id}/detail`
 remains the compatibility bundle for CLI and drawer consumers during the soak;

@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.core import helpers
 from oddish.core.endpoints.collections import create_trial_collection_core
+from oddish.core.endpoints.task_open import get_task_open_core
 from oddish.core.endpoints.tasks_query import (
     list_experiment_task_shells_core,
     list_experiment_slim_tasks,
@@ -153,6 +154,53 @@ async def test_slim_path_surfaces_gathered_old_version_trial(session):
     assert shell.current_version_id == v2_id
     assert shell.trial_version_id == v1_id
     assert shell.total == 1
+
+
+@pytest.mark.asyncio
+async def test_task_open_execution_counts_match_selected_version_preview(session):
+    task = _task("task-open-count-contract")
+    experiment = _experiment("task-open-count-contract")
+    session.add_all([task, experiment])
+    await session.flush()
+
+    version = _version(task, 1)
+    session.add(version)
+    await session.flush()
+    task.current_version_id = version.id
+
+    verifier_failure = _trial(
+        task,
+        experiment,
+        task_version_id=version.id,
+        reward=0,
+    )
+    harness_error = _trial(
+        task,
+        experiment,
+        task_version_id=version.id,
+        reward=None,
+    )
+    harness_error.status = TrialStatus.FAILED
+    harness_error.error_message = "RuntimeError: sandbox failed"
+    session.add_all([verifier_failure, harness_error])
+    await session.flush()
+
+    response = await get_task_open_core(
+        session,
+        task_id=task.id,
+        org_id="org1",
+    )
+
+    selected = response.selected_version
+    assert selected is not None
+    assert selected.id == version.id
+    assert selected.trial_count == 2
+    assert selected.completed_count == 1
+    assert selected.failed_count == 1
+    assert selected.fail_count == 1
+    assert selected.pass_count == 0
+    assert {row.task_version_id for row in response.trials} == {version.id}
+    assert sorted(row.status for row in response.trials) == ["failed", "success"]
 
 
 @pytest.mark.asyncio

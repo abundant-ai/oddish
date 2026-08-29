@@ -487,6 +487,7 @@ export interface TaskOpenTrialRef {
   cost_usd?: number | null;
   cost_is_estimated?: boolean | null;
   is_billed: boolean;
+  has_trajectory: boolean;
   created_at: string;
   started_at?: string | null;
   finished_at?: string | null;
