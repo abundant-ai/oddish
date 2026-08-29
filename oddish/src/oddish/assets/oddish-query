@@ -32,15 +32,16 @@ function withBanner(body) { return BOUNDARY_BANNER + '\n---\n' + body; }
 function dieStage(msg, status) { out(BOUNDARY_BANNER); die(msg, status); }
 
 async function get(path, params) {
+  const url = new URL((BASE || 'http://fixture') + path);
+  for (const [k, v] of Object.entries(params || {})) {
+    if (v !== null && v !== undefined && v !== '') url.searchParams.set(k, v);
+  }
   const fixture = process.env.ODDISH_QUERY_TEST_FIXTURE;
   if (fixture) {
     const f = JSON.parse(fixture);
     if (f.__status === 401) die('session credential expired', 401);
-    return f[path];
-  }
-  const url = new URL(BASE + path);
-  for (const [k, v] of Object.entries(params || {})) {
-    if (v !== null && v !== undefined && v !== '') url.searchParams.set(k, v);
+    const fixturePath = url.pathname + url.search;
+    return Object.hasOwn(f, fixturePath) ? f[fixturePath] : f[path];
   }
   let r;
   try { r = await fetch(url, { headers: { Authorization: `Bearer ${KEY}` } }); }
@@ -114,14 +115,18 @@ function taskId() {
   return id;
 }
 
+function taskFileParams(params) {
+  return { ...(params || {}), version: process.env.ODDISH_PROBE_TASK_VERSION || '' };
+}
+
 async function fetchFileContent(relPath) {
-  const data = await get(`/tasks/${taskId()}/files/${relPath}`);
+  const data = await get(`/tasks/${taskId()}/files/${relPath}`, taskFileParams());
   if (data == null || typeof data.content !== 'string') die(`no such file: ${relPath}`, 4);
   return data.content;
 }
 
 async function listFiles(prefix) {
-  const data = await get(`/tasks/${taskId()}/files`, { prefix, recursive: true, presign: true });
+  const data = await get(`/tasks/${taskId()}/files`, taskFileParams({ prefix, recursive: true, presign: true }));
   return (data && data.files) || [];
 }
 

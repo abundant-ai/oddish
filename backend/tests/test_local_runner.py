@@ -455,9 +455,10 @@ async def test_probe_uploads_cli_to_harness(
     # The /probe-harness mount carries ONLY the CLI.
     harness = next(names for t, names in uploads if t == "/probe-harness")
     assert harness == "oddish-query"
-    # STAGE_DIR is gone; three new env vars take its place.
+    # STAGE_DIR is gone; task identity and the Harbor pin are explicit env vars.
     assert "ODDISH_PROBE_STAGE_DIR" not in captured["env"]
     assert captured["env"]["ODDISH_PROBE_TASK_ID"]
+    assert captured["env"]["ODDISH_PROBE_TASK_VERSION"]
     assert captured["env"]["ODDISH_PROBE_HARBOR_REPO"]
     assert captured["env"]["ODDISH_PROBE_HARBOR_REF"]
     # CLI executable check was attempted.
@@ -466,7 +467,7 @@ async def test_probe_uploads_cli_to_harness(
 
 @pytest.mark.asyncio
 async def test_local_probe_env_contract(monkeypatch, seeded_probe_trial_with_task_dir):
-    """Probe agent env: 3 new vars present, ODDISH_PROBE_STAGE_DIR absent."""
+    """Probe agent env pins task identity; ODDISH_PROBE_STAGE_DIR stays absent."""
     trial_id, _ = seeded_probe_trial_with_task_dir
     captured: dict[str, object] = {"env": None}
 
@@ -516,6 +517,7 @@ async def test_local_probe_env_contract(monkeypatch, seeded_probe_trial_with_tas
 
     env = captured["env"]
     assert env["ODDISH_PROBE_TASK_ID"]
+    assert env["ODDISH_PROBE_TASK_VERSION"]
     assert env["ODDISH_PROBE_HARBOR_REPO"]
     assert env["ODDISH_PROBE_HARBOR_REF"]
     assert "ODDISH_PROBE_STAGE_DIR" not in env

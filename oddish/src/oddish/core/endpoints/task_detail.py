@@ -172,7 +172,9 @@ async def get_task_detail_core(
     all_trial_models = [
         t
         for t in task.trials
-        if t.superseded_by_trial_id is None and not is_combine_copy(t)
+        if t.superseded_by_trial_id is None
+        and (t.kind or "agent") != "qa_eval"
+        and not is_combine_copy(t)
     ]
     exclusions = await load_cost_exclusions(session)
     task_status.trials = [
