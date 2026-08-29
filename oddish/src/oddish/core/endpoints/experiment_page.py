@@ -7,14 +7,14 @@ from typing import Any
 from fastapi import HTTPException
 from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased, load_only
+from sqlalchemy.orm import aliased
 
+from oddish.config import settings
 from oddish.core.baseline_gate import baseline_agent_clause
-from oddish.core.cost_exclusions import load_cost_exclusions
+from oddish.core.cost_exclusions import CostExclusions, load_cost_exclusions
 from oddish.core.experiment_membership import visible_experiment_trial_predicates
 from oddish.core.helpers import (
     SLIM_TRIAL_RESPONSE_COLUMNS,
-    build_slim_trial_response,
     experiment_effective_versions_selectable,
 )
 from oddish.db import (
@@ -28,6 +28,7 @@ from oddish.db import (
     VerdictStatus,
     task_experiments,
 )
+from oddish.model_pricing import estimate_cost_usd
 from oddish.schemas import (
     ExperimentOpenResponse,
     ExperimentPageSummary,
@@ -51,6 +52,79 @@ _TRIAL_PAGE_COLUMNS = tuple(
     for column in SLIM_TRIAL_RESPONSE_COLUMNS
     if column not in (TrialModel.analysis, TrialModel.error_message)
 )
+
+
+def build_experiment_trial_cell(
+    row: Mapping[str, Any],
+    *,
+    exclusions: CostExclusions | None,
+) -> ExperimentTrialCell:
+    """Project one bounded SQL row without constructing an ORM entity."""
+    normalized_model = settings.normalize_trial_model(
+        str(row["agent"]), row["model"], strict=False
+    )
+    stored_cost = row["cost_usd"]
+    if stored_cost is not None:
+        cost_usd = float(stored_cost)
+        cost_is_estimated: bool | None = False
+    elif row["input_tokens"] is None and row["output_tokens"] is None:
+        cost_usd = None
+        cost_is_estimated = None
+    else:
+        cost_usd = estimate_cost_usd(
+            normalized_model or row["model"],
+            row["input_tokens"],
+            row["output_tokens"],
+            row["cache_tokens"],
+            row["cache_write_tokens"],
+        )
+        cost_is_estimated = True if cost_usd is not None else None
+
+    experiment_id = row["experiment_id"]
+    return ExperimentTrialCell(
+        id=str(row["id"]),
+        task_id=str(row["task_id"]),
+        task_path=str(row["task_path"]),
+        experiment_id=str(experiment_id) if experiment_id is not None else None,
+        task_version_id=row["task_version_id"],
+        name=str(row["name"]),
+        agent=str(row["agent"]),
+        model=normalized_model,
+        provider=str(row["provider"]),
+        queue_key=settings.normalize_queue_key(str(row["queue_key"])),
+        status=row["status"],
+        attempts=int(row["attempts"]),
+        max_attempts=int(row["max_attempts"]),
+        harbor_stage=row["harbor_stage"],
+        reward=row["reward"],
+        input_tokens=row["input_tokens"],
+        cache_tokens=row["cache_tokens"],
+        output_tokens=row["output_tokens"],
+        cost_usd=cost_usd,
+        cost_is_estimated=cost_is_estimated,
+        is_billed=row["billed_user_id"] is not None,
+        cost_exclusion_reason=(
+            exclusions.reason_for(
+                llm_key_hash=row["llm_key_hash"],
+                model=row["model"],
+                experiment_id=experiment_id,
+            )
+            if exclusions
+            else None
+        ),
+        has_trajectory=bool(row["has_trajectory"]),
+        analysis=ExperimentTrialAnalysis(
+            status=row["analysis_status"],
+            classification=row["analysis_classification"],
+            subtype=row["analysis_subtype"],
+            evidence=row["analysis_evidence"],
+            started_at=row["analysis_started_at"],
+            finished_at=row["analysis_finished_at"],
+        ),
+        created_at=row["created_at"],
+        started_at=row["started_at"],
+        finished_at=row["finished_at"],
+    )
 
 
 async def _member_experiment(
@@ -376,11 +450,17 @@ async def get_experiment_trial_page_core(
     effective = experiment_effective_versions_selectable(experiment_id=experiment_id)
     query = (
         select(
-            TrialModel,
+            *(column.label(column.key) for column in _TRIAL_PAGE_COLUMNS),
             TaskModel.task_path,
-            func.left(TrialModel.analysis["classification"].astext, 100),
-            func.left(TrialModel.analysis["subtype"].astext, 100),
-            func.left(TrialModel.analysis["evidence"].astext, 1_000),
+            func.left(TrialModel.analysis["classification"].astext, 100).label(
+                "analysis_classification"
+            ),
+            func.left(TrialModel.analysis["subtype"].astext, 100).label(
+                "analysis_subtype"
+            ),
+            func.left(TrialModel.analysis["evidence"].astext, 1_000).label(
+                "analysis_evidence"
+            ),
         )
         .join(TaskModel, TaskModel.id == TrialModel.task_id)
         .join(
@@ -395,7 +475,6 @@ async def get_experiment_trial_page_core(
             TaskModel.org_id == org_id,
             TaskModel.deleted_at.is_(None),
         )
-        .options(load_only(*_TRIAL_PAGE_COLUMNS))
     )
     if before_created_at is not None:
         query = query.where(
@@ -413,40 +492,15 @@ async def get_experiment_trial_page_core(
             limit + 1
         )
     )
-    rows = list(result.all())
+    rows = list(result.mappings().all())
     has_more = len(rows) > limit
     rows = rows[:limit]
     exclusions = await load_cost_exclusions(session) if rows else None
-    trials = []
-    for trial, task_path, classification, subtype, evidence in rows:
-        analysis = {
-            "classification": classification,
-            "subtype": subtype,
-            "evidence": evidence,
-        }
-        slim = build_slim_trial_response(
-            trial,
-            str(task_path),
-            analysis=analysis,
-            error_message=None,
-            exclusions=exclusions,
-        )
-        values = slim.model_dump()
-        values.update(
-            analysis=ExperimentTrialAnalysis(
-                status=slim.analysis_status,
-                classification=classification,
-                subtype=subtype,
-                evidence=evidence,
-                started_at=slim.analysis_started_at,
-                finished_at=slim.analysis_finished_at,
-            ),
-        )
-        trials.append(ExperimentTrialCell.model_validate(values))
+    trials = [build_experiment_trial_cell(row, exclusions=exclusions) for row in rows]
     response = ExperimentTrialPageResponse(
         revision=experiment["revision"], trials=trials
     )
     if has_more and rows:
-        response.next_created_at = rows[-1][0].created_at
-        response.next_trial_id = rows[-1][0].id
+        response.next_created_at = rows[-1]["created_at"]
+        response.next_trial_id = rows[-1]["id"]
     return response

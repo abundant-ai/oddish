@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from oddish.core.endpoints.experiment_page import (
     OPEN_MAX_BYTES,
     OPEN_MAX_TASKS,
+    _TRIAL_PAGE_COLUMNS,
     get_experiment_open_core,
     get_experiment_trial_page_core,
 )
@@ -161,6 +162,23 @@ def _trial(index: int) -> TrialModel:
         started_at=NOW - timedelta(minutes=1),
         finished_at=NOW,
     )
+
+
+def _trial_page_row(
+    trial: TrialModel,
+    *,
+    classification=None,
+    subtype=None,
+    evidence=None,
+):
+    row = {column.key: getattr(trial, column.key) for column in _TRIAL_PAGE_COLUMNS}
+    row.update(
+        task_path="tasks/task-001",
+        analysis_classification=classification,
+        analysis_subtype=subtype,
+        analysis_evidence=evidence,
+    )
+    return row
 
 
 def _open(*tasks, summary=None, **kwargs):
@@ -328,8 +346,13 @@ def test_trial_page_is_flat_bounded_and_omits_detail_columns(monkeypatch):
         _Result([_identity()]),
         _Result(
             [
-                (first, "tasks/task-001", "GOOD_SUCCESS", "correct", "evidence"),
-                (second, "tasks/task-001", None, None, None),
+                _trial_page_row(
+                    first,
+                    classification="GOOD_SUCCESS",
+                    subtype="correct",
+                    evidence="evidence",
+                ),
+                _trial_page_row(second),
             ]
         ),
     )

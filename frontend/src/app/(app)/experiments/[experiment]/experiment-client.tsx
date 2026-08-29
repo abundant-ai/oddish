@@ -226,16 +226,12 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
 
   const isLoading = isLoadingOpen && !experimentOpen;
   const isLoadingTrials =
-    hasMoreTasks ||
     isValidatingOpen ||
     ((experimentOpen?.summary.trial_count ?? 0) > 0 &&
-      (isLoadingTrialPages || isValidatingTrials || hasMoreTrials));
+      (isLoadingTrialPages || isValidatingTrials));
   const trialsLoadedCount =
     trialPages?.reduce((sum, page) => sum + page.trials.length, 0) ?? 0;
   const totalTrialCount = experimentOpen?.summary.trial_count ?? 0;
-  const canLoadMoreTasks = hasMoreTasks && !isLoadingOpen && !isValidatingOpen;
-  const canLoadMoreTrials =
-    hasMoreTrials && !isLoadingTrialPages && !isValidatingTrials;
   const trialsStalled =
     Boolean(trialsError) && trialsLoadedCount < totalTrialCount;
 
@@ -263,15 +259,39 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
     [mutateOpen, mutateTrials, mutateCostTotals]
   );
 
-  useEffect(() => {
-    if (!canLoadMoreTasks) return;
-    void setOpenSize((size) => size + 1);
-  }, [canLoadMoreTasks, setOpenSize]);
+  const loadNextTasks = useCallback(() => {
+    if (isLoadingOpen || isValidatingOpen) return;
+    if (openError) {
+      void mutateOpen();
+      return;
+    }
+    if (hasMoreTasks) void setOpenSize((size) => size + 1);
+  }, [
+    hasMoreTasks,
+    isLoadingOpen,
+    isValidatingOpen,
+    mutateOpen,
+    openError,
+    setOpenSize,
+  ]);
 
-  useEffect(() => {
-    if (!canLoadMoreTrials) return;
-    void setTrialsSize((size) => size + 1);
-  }, [canLoadMoreTrials, setTrialsSize]);
+  const loadNextTrials = useCallback(() => {
+    if (isLoadingTrialPages || isValidatingTrials) return;
+    if (trialsError) {
+      // Preserve the current SWRInfinite size so this retries the failed key
+      // from the last successful page's cursor instead of skipping a page.
+      void mutateTrials();
+      return;
+    }
+    if (hasMoreTrials) void setTrialsSize((size) => size + 1);
+  }, [
+    hasMoreTrials,
+    isLoadingTrialPages,
+    isValidatingTrials,
+    mutateTrials,
+    setTrialsSize,
+    trialsError,
+  ]);
 
   useEffect(() => {
     if (!isEditingName) {
@@ -426,6 +446,10 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
           costTotalsPending={costTotalsPending}
           isLoading={isLoading}
           isLoadingTrials={isLoadingTrials}
+          hasMoreTasks={hasMoreTasks}
+          hasMoreTrials={hasMoreTrials}
+          loadNextTasks={loadNextTasks}
+          loadNextTrials={loadNextTrials}
           // SWR retains successful fallback/revalidation data when a later
           // request fails. Keep that usable grid visible instead of replacing
           // it with the fatal error state during a transient backend failure.
@@ -582,7 +606,7 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
                     variant="secondary"
                     size="sm"
                     className="h-7"
-                    onClick={() => void mutateTrials()}
+                    onClick={loadNextTrials}
                     disabled={isValidatingTrials}
                   >
                     Retry
