@@ -146,13 +146,11 @@ class CostExclusions:
 
 
 async def load_cost_exclusions(session: AsyncSession) -> CostExclusions:
-    connection = await session.connection()
-    is_autocommit = (
-        connection.get_execution_options().get("isolation_level") == "AUTOCOMMIT"
-    )
+    is_autocommit = session.info.get("oddish_read_autocommit") is True
     # A missing optional table must not abort a caller's transaction, so normal
-    # sessions keep the savepoint. get_read_session uses driver autocommit; each
-    # SELECT already owns its transaction and PostgreSQL rejects SAVEPOINT there.
+    # sessions keep the savepoint. get_read_session marks driver autocommit on
+    # the session it owns; each SELECT already owns its transaction and
+    # PostgreSQL rejects SAVEPOINT there.
     transaction_guard = nullcontext() if is_autocommit else session.begin_nested()
     try:
         async with transaction_guard:
