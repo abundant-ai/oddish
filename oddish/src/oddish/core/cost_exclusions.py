@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 
 from sqlalchemy import func, select
@@ -145,8 +146,16 @@ class CostExclusions:
 
 
 async def load_cost_exclusions(session: AsyncSession) -> CostExclusions:
+    connection = await session.connection()
+    is_autocommit = (
+        connection.get_execution_options().get("isolation_level") == "AUTOCOMMIT"
+    )
+    # A missing optional table must not abort a caller's transaction, so normal
+    # sessions keep the savepoint. get_read_session uses driver autocommit; each
+    # SELECT already owns its transaction and PostgreSQL rejects SAVEPOINT there.
+    transaction_guard = nullcontext() if is_autocommit else session.begin_nested()
     try:
-        async with session.begin_nested():
+        async with transaction_guard:
             llm_keys = list(await session.scalars(select(CostExcludedLlmKeyModel)))
             models = list(await session.scalars(select(CostExcludedModelModel)))
             experiments = list(
