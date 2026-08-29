@@ -44,7 +44,9 @@ uv pip install "oddish @ git+https://github.com/abundant-ai/oddish.git#subdirect
 
 ### 2. Generate an API key [here](https://oddish.app/)
 
-- API key generation is restricted during the beta. To request access, contact the [maintainer](https://github.com/RishiDesai).
+Sign in, select an organization, and create a key from the dashboard. Organization
+members can create `read` or `tasks` keys; organization administrators can also
+create `full` keys. An API key cannot be used to create another API key.
 
 ```bash
 export ODDISH_API_KEY="ok_..."

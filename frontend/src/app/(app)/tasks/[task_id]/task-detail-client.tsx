@@ -1044,10 +1044,6 @@ export function TaskDetailClient({
     }
   }, [activeTaskPane, drawer, taskPaneFile, taskPaneLines]);
 
-  const handleRerun = useCallback(() => {
-    revalidateReaderResources();
-  }, [revalidateReaderResources]);
-
   const [isRunningJudge, setIsRunningJudge] = useState(false);
   const [isCancellingJudge, setIsCancellingJudge] = useState(false);
   const [judgeError, setJudgeError] = useState<string | null>(null);
@@ -1432,7 +1428,7 @@ export function TaskDetailClient({
                 selectedLines={taskPaneLines}
                 onSelectLinesChange={setTaskPaneLines}
                 onSelectedFileChange={handleTaskPaneFileChange}
-                onRetryComplete={handleRerun}
+                onRetryComplete={revalidateReaderResources}
                 allowRetry={true}
                 onNavigateToFirstTrial={
                   drawerTrialGroups.length > 0 &&
@@ -1459,7 +1455,7 @@ export function TaskDetailClient({
                   trialGroups={drawerTrialGroups}
                   onNavigate={handleNavigateToTrial}
                   onNavigateToTask={() => setDrawer({ mode: "task" })}
-                  onRetry={handleRerun}
+                  onRetry={revalidateReaderResources}
                   allowRetry={true}
                   apiBaseUrl="/api"
                   contentOnly={true}

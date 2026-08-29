@@ -43,7 +43,8 @@ Scheduled functions
        - Dispatches each to the registered handler
        - Writes heartbeats, records outcomes, exits
   ▼
-Harbor execution on Modal, Daytona, GKE (TPU), or opt-in ephemeral EC2
+Harbor execution on Modal, Daytona, Archil, GKE (TPU), opt-in ephemeral EC2,
+or opt-in Numinous Cloud (CPU and optionally GPU)
   - logs/artifacts persisted to S3
 ```
 
@@ -228,7 +229,11 @@ throughput (`ODDISH_MODAL_MAX_WORKERS_PER_POLL`, default `256`;
 `ODDISH_MODAL_WORKER_MAX_CONTAINERS`, default `2688`), per-model concurrency
 (`ODDISH_DEFAULT_MODEL_CONCURRENCY`, `ODDISH_MODEL_CONCURRENCY_OVERRIDES`,
 `ODDISH_MODAL_NOP_ORACLE_CONCURRENCY`), and app naming (`MODAL_APP_NAME`,
-`MODAL_SECRET_ENVIRONMENT`).
+`MODAL_SECRET_ENVIRONMENT`). Numinous registration uses
+`ODDISH_NUMINOUS_ENABLED`; `ODDISH_NUMINOUS_GPU_ENABLED` separately advertises
+its GPU lane. When enabled, the Modal deployment attaches the secret named by
+`ODDISH_NUMINOUS_SECRET_NAME` (default `oddish-numinous`), which must contain
+`NUMINOUS_API_URL` and `NUMINOUS_API_KEY`.
 
 Local `backend/.env` values are layered on top of the shared Modal secret for local deploys.
 

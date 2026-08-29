@@ -157,16 +157,18 @@ capacity before treating that absence as an export failure.
 3. Open **Dashboards**, choose **Custom**, and create **Oddish Operations**.
 4. Add the four list variables above, then add the ten time-series panels and
    paste their queries.
-5. Use **Download dashboard as code**. Save the downloaded file as
-   `docs/observability/logfire-oddish-operations.json` without hand-editing its
-   schema.
-6. To install it in another Logfire project, open **Dashboards**, choose
-   **Custom**, select **Import JSON**, and upload that file. Enable the standard
-   **Web Server Metrics** and **Basic System Metrics (Logfire)** dashboards from
-   the **Standard** tab separately.
+5. Optionally use **Download dashboard as code** and save the unedited export
+   as `docs/observability/logfire-oddish-operations.json`. No dashboard export
+   is currently checked in; `logfire-oddish-operations.sql` is the repository's
+   current panel source.
+6. If an export has been checked in, install it in another Logfire project by
+   opening **Dashboards**, choosing **Custom**, selecting **Import JSON**, and
+   uploading that file. Enable the standard **Web Server Metrics** and
+   **Basic System Metrics (Logfire)** dashboards from the **Standard** tab
+   separately.
 
 The Logfire server owns the dashboard export format and does not publish its
-JSON schema. The checked-in JSON therefore comes from **Download dashboard as
+JSON schema. Any future checked-in JSON must come from **Download dashboard as
 code** after the SQL has been exercised against deployed metrics; a handwritten
 lookalike is not treated as an importable export.
 

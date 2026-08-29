@@ -643,6 +643,45 @@ class TrialCollectionRequest(BaseModel):
         return self
 
 
+class QAEvalCreateRequest(BaseModel):
+    """Replay one candidate QA prompt over exact historical solver trials."""
+
+    name: str = Field(..., max_length=255)
+    source_trial_ids: list[str]
+    prompt_name: str = Field(..., max_length=128)
+    prompt_text: str = Field(..., max_length=200_000)
+    model: str | None = Field(
+        None,
+        description=(
+            "Analysis model override. Null uses the deployed production QA model."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_qa_eval(self) -> "QAEvalCreateRequest":
+        self.name = self.name.strip()
+        self.prompt_name = self.prompt_name.strip()
+        self.prompt_text = self.prompt_text.strip()
+        self.source_trial_ids = list(
+            dict.fromkeys(
+                value.strip()
+                for value in self.source_trial_ids
+                if value and value.strip()
+            )
+        )
+        if not self.name:
+            raise ValueError("name must not be empty")
+        if not self.prompt_name:
+            raise ValueError("prompt_name must not be empty")
+        if not self.prompt_text:
+            raise ValueError("prompt_text must not be empty")
+        if not self.source_trial_ids:
+            raise ValueError("source_trial_ids must not be empty")
+        if self.model is not None:
+            self.model = self.model.strip() or None
+        return self
+
+
 class CollectionAddRequest(BaseModel):
     """Request to link more trials into an existing collection."""
 
@@ -1525,6 +1564,20 @@ class TrialCollectionResponse(BaseModel):
     tasks_skipped_empty: int = 0
 
 
+class QAEvalTrialResponse(BaseModel):
+    source_trial_id: str
+    qa_eval_trial_id: str
+
+
+class QAEvalCreateResponse(BaseModel):
+    experiment_id: str
+    experiment_name: str
+    prompt_name: str
+    prompt_sha256: str
+    model: str
+    trials: list[QAEvalTrialResponse]
+
+
 class CollectionMutationResponse(BaseModel):
     """Result of editing an existing read-only collection in place."""
 
@@ -1788,6 +1841,7 @@ class TaskOpenTrialRef(BaseModel):
     agent: str
     provider: str
     model: str | None = None
+    kind: str = "agent"
     status: TrialStatus
     reward: float | None = None
     error_kind: str | None = None
@@ -1807,6 +1861,7 @@ class TaskOpenResponse(BaseModel):
     default_version: TaskOpenVersionRef | None = None
     selected_version: TaskOpenVersionSummary | None = None
     totals: TaskOpenTotals = Field(default_factory=TaskOpenTotals)
+    active_qa_trial: TaskOpenTrialRef | None = None
     trials: list[TaskOpenTrialRef] = Field(default_factory=list)
     trials_has_more: bool = False
 

@@ -831,6 +831,7 @@ def get_task_status_trials(
         trial
         for trial in task.trials
         if trial.superseded_by_trial_id is None
+        and (getattr(trial, "kind", "agent") or "agent") != "qa_eval"
         and not (exclude_combine_copies and is_combine_copy(trial))
     ]
     if effective is None:

@@ -10,13 +10,57 @@ import pytest
 from oddish.runtime.backends.numinous import NuminousBackend
 
 
-def test_capabilities_shape() -> None:
+def test_capabilities_shape_gpu_lane_off_by_default(monkeypatch) -> None:
+    # Default: numinous_gpu_enabled is False so caps.gpu stays None. This
+    # locks the opt-in shape in.
+    from oddish.config import settings
+
+    monkeypatch.setattr(settings, "numinous_gpu_enabled", False,
+                        raising=False)
     caps = NuminousBackend().capabilities()
-    assert caps.gpu is None  # GPU lane ships behind a separate flag
+    assert caps.gpu is None
     assert caps.private_registry_pull is True
     assert caps.network_egress == "configurable"
     assert caps.streaming_logs is True
     assert caps.memory_snapshot_fork is True
+
+
+def test_capabilities_shape_gpu_lane_on_reports_h100(monkeypatch) -> None:
+    # When ODDISH_NUMINOUS_GPU_ENABLED=1 the backend reports a GpuSupport
+    # covering the full runpod SKU list. Routing is what actually sends the
+    # SWE-marathon GPU trials to Numinous instead of Modal.
+    from oddish.config import settings
+    from oddish.runtime.ports import GpuSupport
+
+    monkeypatch.setattr(settings, "numinous_gpu_enabled", True,
+                        raising=False)
+    caps = NuminousBackend().capabilities()
+    assert isinstance(caps.gpu, GpuSupport)
+    # H100 is the SWE-marathon headline; it MUST be present.
+    assert "H100" in caps.gpu.accelerators
+    # Fallback ordering: H100 first, then H200/A100/L40S/A10/RTX_4090.
+    # The order is contractual because Capabilities spec §8 defines
+    # fallback-ordered lists.
+    assert caps.gpu.accelerators[0] == "H100"
+    assert caps.gpu.max_count == 8
+    # Other capabilities are unchanged.
+    assert caps.private_registry_pull is True
+    assert caps.network_egress == "configurable"
+    assert caps.memory_snapshot_fork is True
+
+
+def test_gpu_lane_flag_is_independent_of_the_backend_enable_flag(
+        monkeypatch) -> None:
+    # numinous_enabled controls whether the backend registers at all;
+    # numinous_gpu_enabled controls whether it accepts GPU work. This must
+    # be TWO separate flags so a customer who has us for CPU-only trials
+    # cannot accidentally get billed for a GPU trial that got routed to us.
+    from oddish.config import settings
+
+    monkeypatch.setattr(settings, "numinous_enabled", True, raising=False)
+    monkeypatch.setattr(settings, "numinous_gpu_enabled", False,
+                        raising=False)
+    assert NuminousBackend().capabilities().gpu is None
 
 
 def test_harbor_env_kwargs_passthrough_preserves_caller_kwargs() -> None:
