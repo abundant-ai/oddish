@@ -594,7 +594,9 @@ for _gke_secret_name in GKE_SECRET_PLAN:
 # numinous-less deploy references no secret (CI, default path). When enabled,
 # the single oddish-numinous secret carries NUMINOUS_API_URL + NUMINOUS_API_KEY
 # and re-affirms ODDISH_NUMINOUS_ENABLED=1 inside the worker so the backend
-# registers. Same opt-in flag the runtime registry reads.
+# registers. Same opt-in flag the runtime registry reads. Only the numinous
+# secret is attached for the numinous lane; per-trial model credentials ride
+# the ephemeral agent env, never a persisted secret.
 _NUMINOUS_ENABLED = _is_truthy(
     _deploy_value(_NUMINOUS_ENABLED_ENV, os.environ, LOCAL_DOTENV_VARS)
 )
