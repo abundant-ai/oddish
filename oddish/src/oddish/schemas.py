@@ -2343,3 +2343,170 @@ class FeedbackResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+# =============================================================================
+# Deliveries (docs/delivery-design.md)
+# =============================================================================
+
+DeliveryCheckStatus = Literal["pass", "fail", "off"]
+DeliveryCheckKind = Literal["automated", "manual"]
+ManualCheckScope = Literal["task", "delivery"]
+
+
+class ManualCheckDefinition(BaseModel):
+    """One human-ticked check defined in a delivery's check_config."""
+
+    key: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9_]+$")
+    label: str = Field(min_length=1, max_length=255)
+    scope: ManualCheckScope = "task"
+
+
+class DeliveryCheckConfig(BaseModel):
+    """Stored shape of ``deliveries.check_config``.
+
+    ``automated`` holds per-check overrides merged over the defaults in
+    ``oddish.core.deliveries.DEFAULT_AUTOMATED_CHECKS``; unknown keys are
+    rejected so a typo cannot silently disable a check.
+    """
+
+    automated: dict[str, dict] = Field(default_factory=dict)
+    manual: list[ManualCheckDefinition] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def unique_manual_keys(self) -> "DeliveryCheckConfig":
+        keys = [m.key for m in self.manual]
+        if len(keys) != len(set(keys)):
+            raise ValueError("manual check keys must be unique")
+        return self
+
+
+class DeliveryCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    customer_name: str | None = Field(default=None, max_length=255)
+    description: str | None = None
+    check_config: DeliveryCheckConfig | None = None
+    task_ids: list[str] = Field(default_factory=list, max_length=500)
+
+
+class DeliveryPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    customer_name: str | None = Field(default=None, max_length=255)
+    description: str | None = None
+    check_config: DeliveryCheckConfig | None = None
+    # Optimistic lock: when provided, the update fails with 409 unless it
+    # matches the delivery's current revision.
+    expected_revision: int | None = None
+
+
+class DeliveryTasksAdd(BaseModel):
+    task_ids: list[str] = Field(min_length=1, max_length=500)
+
+
+class DeliveryTaskPatch(BaseModel):
+    customer_note: str | None = None
+    internal_note: str | None = None
+    is_visible: bool | None = None
+    sort_order: int | None = None
+
+
+class ManualCheckSet(BaseModel):
+    """Tick or untick one manual check."""
+
+    check_key: str = Field(min_length=1, max_length=64)
+    # Required for task-scoped checks; must be omitted for delivery-scoped.
+    delivery_task_id: str | None = None
+    checked: bool
+    note: str = Field(default="", max_length=4000)
+
+
+class DeliveryResponse(BaseModel):
+    id: str
+    name: str
+    customer_name: str | None
+    description: str | None
+    status: str
+    revision: int
+    is_public: bool
+    finalized_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class DeliveryListItem(DeliveryResponse):
+    task_count: int
+
+
+class DeliveryCheckResult(BaseModel):
+    key: str
+    kind: DeliveryCheckKind
+    label: str
+    status: DeliveryCheckStatus
+    detail: str = ""
+    # Manual checks only: who ticked it and when.
+    checked_by_user_id: str | None = None
+    checked_at: datetime | None = None
+
+
+class DeliveryTaskBoardRow(BaseModel):
+    delivery_task_id: str
+    task_id: str
+    task_name: str
+    version_id: str | None
+    version: int | None
+    pinned_version_id: str | None
+    newer_version_exists: bool
+    is_visible: bool
+    sort_order: int
+    customer_note: str | None
+    internal_note: str | None
+    checks: list[DeliveryCheckResult]
+    ready: bool
+
+
+class DeliveryBoardResponse(BaseModel):
+    delivery: DeliveryResponse
+    check_config: DeliveryCheckConfig
+    tasks: list[DeliveryTaskBoardRow]
+    delivery_checks: list[DeliveryCheckResult]
+    ready: bool
+    ready_task_count: int
+    task_count: int
+    # Set when status == finalized: the board above is the stored snapshot,
+    # not a live computation.
+    frozen: bool = False
+    finalized_at: datetime | None = None
+
+
+class TaskQAHistoryRun(BaseModel):
+    trial_id: str
+    kind: str
+    status: str | None
+    started_at: datetime | None
+    finished_at: datetime | None
+
+
+class TaskQAHistoryVersion(BaseModel):
+    version_id: str
+    version: int
+    created_at: datetime
+    message: str | None
+    is_current: bool
+    pre_trial_status: str | None
+    pre_trial_finished_at: datetime | None
+    pre_trial_must_fix: int
+    pre_trial_should_fix: int
+    rollout_count: int
+    rollout_agents: int
+    qa_runs: list[TaskQAHistoryRun]
+
+
+class TaskQAHistoryResponse(BaseModel):
+    task_id: str
+    task_name: str
+    current_version_id: str | None
+    verdict: dict | None
+    verdict_status: str | None
+    versions: list[TaskQAHistoryVersion]

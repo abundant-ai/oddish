@@ -2684,9 +2684,188 @@ class FeedbackModel(Base):
     )
 
 
+class DeliveryModel(TimestampedMixin, Base):
+    """A customer-facing shipping checklist over a set of tasks.
+
+    Readiness is never stored: the board is recomputed from live signals
+    (pre-trial audits, eligible trials, verdicts) against each task's
+    current default version. Only membership, manual ticks, config, and
+    the finalize snapshot persist.
+    """
+
+    __tablename__ = "deliveries"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active', 'finalized')", name="ck_deliveries_status"
+        ),
+        CheckConstraint(
+            "(is_public AND public_token IS NOT NULL) OR NOT is_public",
+            name="ck_deliveries_public_state",
+        ),
+        CheckConstraint(
+            "status <> 'finalized' OR finalized_at IS NOT NULL",
+            name="ck_deliveries_finalized_at",
+        ),
+        Index(
+            "uq_deliveries_public_token",
+            "public_token",
+            unique=True,
+            postgresql_where=text("public_token IS NOT NULL"),
+        ),
+        Index("idx_deliveries_org_created_at", "org_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Free text until a customer entity exists; a future customers table
+    # adds a nullable customer_id alongside without disturbing this.
+    customer_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="active", server_default="active"
+    )
+    # Which automated checks apply (with parameters) and the manual check
+    # definitions. Shape documented in ``oddish.core.deliveries``.
+    check_config: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    # Optional delivery-specific QA rubric (preset/skills refs); NULL means
+    # the generic QA pipeline's results are the ones that count.
+    qa_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Optimistic lock for config/text mutations.
+    revision: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+
+    is_public: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    public_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    finalized_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    finalized_by_user_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+
+
+class DeliveryTaskModel(TimestampedMixin, Base):
+    """One task's membership row in a delivery.
+
+    ``pinned_version_id`` stays NULL while the delivery is active (the board
+    always evaluates the task's current default version) and is stamped at
+    finalize time as the record of what shipped.
+    """
+
+    __tablename__ = "delivery_tasks"
+    __table_args__ = (
+        UniqueConstraint("delivery_id", "task_id", name="uq_delivery_tasks_task"),
+        Index("idx_delivery_tasks_delivery_order", "delivery_id", "sort_order"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    delivery_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("deliveries.id", ondelete="CASCADE"), nullable=False
+    )
+    task_id: Mapped[str] = mapped_column(
+        String(128), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
+    )
+    pinned_version_id: Mapped[str | None] = mapped_column(
+        String(160), ForeignKey("task_versions.id", ondelete="SET NULL"), nullable=True
+    )
+    customer_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    internal_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_visible: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    sort_order: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+
+
+class DeliveryManualCheckModel(TimestampedMixin, Base):
+    """One ticked manual check. A tick is a row; untick deletes it.
+
+    ``task_version_id`` records the version the tick attested to. The board
+    honors a task-scoped tick only while that version is still the task's
+    current default, so editing a task un-ticks it without any cleanup job.
+    """
+
+    __tablename__ = "delivery_manual_checks"
+    __table_args__ = (
+        # Postgres treats NULLs as distinct in plain unique constraints, so
+        # delivery-level ticks (delivery_task_id IS NULL) get their own
+        # partial unique index.
+        Index(
+            "uq_delivery_manual_checks_task",
+            "delivery_id",
+            "delivery_task_id",
+            "check_key",
+            unique=True,
+            postgresql_where=text("delivery_task_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_delivery_manual_checks_delivery",
+            "delivery_id",
+            "check_key",
+            unique=True,
+            postgresql_where=text("delivery_task_id IS NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    delivery_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("deliveries.id", ondelete="CASCADE"), nullable=False
+    )
+    delivery_task_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("delivery_tasks.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    check_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    task_version_id: Mapped[str | None] = mapped_column(
+        String(160), ForeignKey("task_versions.id", ondelete="SET NULL"), nullable=True
+    )
+    note: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    checked_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    checked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
+class DeliverySnapshotModel(Base):
+    """The append-only record written when a delivery is finalized.
+
+    ``snapshot`` holds the customer-safe board (internal notes stripped);
+    ``scope`` pins ``[{task_id, task_version_id}, ...]`` as shipped.
+    """
+
+    __tablename__ = "delivery_snapshots"
+    __table_args__ = (
+        Index("idx_delivery_snapshots_delivery", "delivery_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    delivery_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("deliveries.id", ondelete="CASCADE"), nullable=False
+    )
+    snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    scope: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
 from oddish.db.soft_delete import register_soft_delete_models
 
 register_soft_delete_models(
+    DeliveryModel,
     ExperimentModel,
     TaskModel,
     TrialModel,
