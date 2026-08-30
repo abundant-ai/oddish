@@ -840,6 +840,53 @@ Options
 - `--api TEXT` - Override the API URL
 - `--json` - Emit the share status as JSON
 
+## Deliveries
+
+A delivery is a shipping checklist over a set of tasks: is this batch good
+to go? Every task must pass automated checks (pre-trial audit, enough
+rollouts, an accepting verdict, no open must-fix defects) evaluated against
+its current default version, plus any human sign-off checks the delivery
+defines. Editing a task resets its checks until the new version is
+re-validated.
+
+```bash
+# Create a delivery and add tasks to it over time
+oddish delivery create "august-batch" --customer "Acme" -t task-1 -t task-2
+oddish delivery add august-batch task-3 task-4
+
+# The board: every task, every check, every blocker
+oddish delivery show august-batch
+
+# The gate for scripts and CI: exit 0 when green, 1 with blockers
+oddish delivery ready august-batch && ./ship.sh
+
+# Tick a human sign-off check (defined in the delivery's check config)
+oddish delivery check august-batch proofread --task task-1
+
+# Pin versions and freeze the record once everything is green
+oddish delivery finalize august-batch
+
+# A task's QA trail: versions, audits, rollouts, defects, QA runs
+oddish delivery history task-1
+```
+
+Commands
+
+- `list` - List deliveries
+- `create NAME` - Create a delivery (`--customer`, `--description`, `-t/--task`)
+- `show DELIVERY` - Render the readiness board (`--json` for the full matrix)
+- `ready DELIVERY` - Exit 0 if every check passes, 1 with the blockers listed
+- `add DELIVERY TASKS...` / `remove DELIVERY TASK` - Manage membership
+- `check DELIVERY KEY` - Tick a manual check (`--task` for task-scoped,
+  `--off` to untick, `--note` to annotate)
+- `finalize DELIVERY` - Pin task versions and freeze the delivery (`-y` skips
+  the prompt)
+- `history TASK` - Per-version QA history for one task
+
+Deliveries accept an ID or a unique name everywhere. On the hosted API,
+mutations need an admin role (or a full-scope key); reads work with a
+`tasks`-scope key.
+
 ## Drag-and-drop import (UI)
 
 The dashboard's **Tasks** page has an **Import** button next to the
