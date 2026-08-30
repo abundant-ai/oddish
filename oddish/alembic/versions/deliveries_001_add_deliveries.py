@@ -42,7 +42,6 @@ def upgrade() -> None:
             server_default=sa.text("'{}'::jsonb"),
         ),
         sa.Column("qa_config", JSONB, nullable=True),
-        sa.Column("revision", sa.Integer(), nullable=False, server_default="1"),
         sa.Column(
             "is_public",
             sa.Boolean(),

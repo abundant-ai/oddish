@@ -19,7 +19,6 @@ from oddish.core.deliveries import (
     get_task_qa_history_core,
     list_deliveries_core,
     patch_delivery_core,
-    patch_delivery_task_core,
     remove_delivery_task_core,
     set_manual_check_core,
 )
@@ -30,7 +29,6 @@ from oddish.schemas import (
     DeliveryListItem,
     DeliveryPatch,
     DeliveryResponse,
-    DeliveryTaskPatch,
     DeliveryTasksAdd,
     ManualCheckSet,
     TaskQAHistoryResponse,
@@ -126,25 +124,6 @@ async def remove_delivery_task(
         )
         await session.commit()
         return {"removed": task_id}
-
-
-@router.patch("/deliveries/{delivery_id}/tasks/{task_id}")
-async def patch_delivery_task(
-    delivery_id: str,
-    task_id: str,
-    data: DeliveryTaskPatch,
-    auth: Annotated[AuthContext, Depends(require_admin)],
-) -> dict:
-    async with get_session() as session:
-        await patch_delivery_task_core(
-            session,
-            delivery_id=delivery_id,
-            org_id=auth.org_id,
-            task_id=task_id,
-            data=data,
-        )
-        await session.commit()
-        return {"updated": task_id}
 
 
 @router.put("/deliveries/{delivery_id}/checks")

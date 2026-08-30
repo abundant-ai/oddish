@@ -205,7 +205,6 @@ PATCH  /deliveries/{id}                     name/notes/config (optimistic lock)
 DELETE /deliveries/{id}                     soft delete
 POST   /deliveries/{id}/tasks               add tasks
 DELETE /deliveries/{id}/tasks/{task_id}     remove
-PATCH  /deliveries/{id}/tasks/{task_id}     notes / visibility / order
 PUT    /deliveries/{id}/checks/{key}        tick/untick a manual check
 POST   /deliveries/{id}/qa-run              kick delivery-rubric QA (per task
                                             or all stale)
@@ -217,8 +216,7 @@ GET    /public/deliveries/{token}           filtered board (live or snapshot)
 GET    /public/deliveries/{token}/tasks/{task_id}   filtered detail + history
 ```
 
-Mutations are admin-only, with optimistic locking (`expected_version`) as in
-#1388.
+Mutations are admin-only.
 
 ## Frontend
 

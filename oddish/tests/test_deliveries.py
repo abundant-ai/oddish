@@ -344,30 +344,6 @@ async def test_org_scoping_and_unknown_check_key(session):
 
 
 @pytest.mark.asyncio
-async def test_patch_revision_conflict(session):
-    delivery = await create_delivery_core(
-        session,
-        data=DeliveryCreate(name="batch-7"),
-        org_id=ORG,
-        user_id="u1",
-    )
-    await patch_delivery_core(
-        session,
-        delivery_id=delivery.id,
-        org_id=ORG,
-        data=DeliveryPatch(name="renamed", expected_revision=1),
-    )
-    with pytest.raises(HTTPException) as err:
-        await patch_delivery_core(
-            session,
-            delivery_id=delivery.id,
-            org_id=ORG,
-            data=DeliveryPatch(name="stale", expected_revision=1),
-        )
-    assert err.value.status_code == 409
-
-
-@pytest.mark.asyncio
 async def test_qa_history(session):
     task, v1, experiment = await _green_task(session, "deliv-history")
     v2 = _version(

@@ -2736,10 +2736,6 @@ class DeliveryModel(TimestampedMixin, Base):
     # Optional delivery-specific QA rubric (preset/skills refs); NULL means
     # the generic QA pipeline's results are the ones that count.
     qa_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    # Optimistic lock for config/text mutations.
-    revision: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=1, server_default="1"
-    )
 
     is_public: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")

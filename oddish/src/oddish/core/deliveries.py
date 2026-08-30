@@ -36,7 +36,6 @@ from oddish.schemas import (
     DeliveryPatch,
     DeliveryResponse,
     DeliveryTaskBoardRow,
-    DeliveryTaskPatch,
     DeliveryTasksAdd,
     ManualCheckSet,
     TaskQAHistoryResponse,
@@ -179,17 +178,6 @@ async def patch_delivery_core(
 ) -> DeliveryModel:
     delivery = await _get_delivery(session, delivery_id, org_id)
     _require_active(delivery)
-    if (
-        data.expected_revision is not None
-        and data.expected_revision != delivery.revision
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"delivery changed (revision {delivery.revision}, "
-                f"expected {data.expected_revision}); reload and retry"
-            ),
-        )
     if data.name is not None:
         delivery.name = data.name
     if "customer_name" in data.model_fields_set:
@@ -200,7 +188,6 @@ async def patch_delivery_core(
         delivery.check_config = _normalized_check_config(
             data.check_config.model_dump()
         ).model_dump()
-    delivery.revision += 1
     await session.flush()
     return delivery
 
@@ -308,31 +295,6 @@ async def remove_delivery_task_core(
     )
     await session.delete(row)
     await session.flush()
-
-
-async def patch_delivery_task_core(
-    session: AsyncSession,
-    *,
-    delivery_id: str,
-    org_id: str | None,
-    task_id: str,
-    data: DeliveryTaskPatch,
-) -> DeliveryTaskModel:
-    delivery = await _get_delivery(session, delivery_id, org_id)
-    _require_active(delivery)
-    row = await session.scalar(
-        select(DeliveryTaskModel).where(
-            DeliveryTaskModel.delivery_id == delivery.id,
-            DeliveryTaskModel.task_id == task_id,
-        )
-    )
-    if row is None:
-        raise HTTPException(status_code=404, detail="task not in this delivery")
-    for field in ("customer_note", "internal_note", "is_visible", "sort_order"):
-        if field in data.model_fields_set:
-            setattr(row, field, getattr(data, field))
-    await session.flush()
-    return row
 
 
 # =============================================================================
@@ -795,7 +757,6 @@ async def finalize_delivery_core(
     delivery.status = "finalized"
     delivery.finalized_at = now
     delivery.finalized_by_user_id = user_id
-    delivery.revision += 1
     board.frozen = True
     board.finalized_at = now
     board.delivery.status = "finalized"

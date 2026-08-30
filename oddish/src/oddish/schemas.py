@@ -2394,20 +2394,10 @@ class DeliveryPatch(BaseModel):
     customer_name: str | None = Field(default=None, max_length=255)
     description: str | None = None
     check_config: DeliveryCheckConfig | None = None
-    # Optimistic lock: when provided, the update fails with 409 unless it
-    # matches the delivery's current revision.
-    expected_revision: int | None = None
 
 
 class DeliveryTasksAdd(BaseModel):
     task_ids: list[str] = Field(min_length=1, max_length=500)
-
-
-class DeliveryTaskPatch(BaseModel):
-    customer_note: str | None = None
-    internal_note: str | None = None
-    is_visible: bool | None = None
-    sort_order: int | None = None
 
 
 class ManualCheckSet(BaseModel):
@@ -2426,7 +2416,6 @@ class DeliveryResponse(BaseModel):
     customer_name: str | None
     description: str | None
     status: str
-    revision: int
     is_public: bool
     finalized_at: datetime | None
     created_at: datetime

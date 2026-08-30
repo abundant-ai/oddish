@@ -1275,7 +1275,6 @@ export interface DeliveryListItem {
   customer_name?: string | null;
   description?: string | null;
   status: "active" | "finalized" | (string & {});
-  revision: number;
   is_public: boolean;
   finalized_at?: string | null;
   created_at: string;
