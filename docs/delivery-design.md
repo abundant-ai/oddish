@@ -1,6 +1,8 @@
 # Design: Deliveries
 
-Status: proposal. Not implemented.
+Status: phases 1-2 and QA history implemented (tables, board, manual
+checks, finalize, hosted routes, dashboard pages). Sharing (phase 3) and
+delivery-rubric QA (phase 5) are not built yet.
 
 ## The problem
 

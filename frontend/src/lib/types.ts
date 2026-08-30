@@ -1251,3 +1251,104 @@ export interface ExperimentShareInfo {
   shadow_of?: string | null;
   qa_report_experiment_id?: string | null;
 }
+
+// ---------------------------------------------------------------------------
+// Deliveries (docs/delivery-design.md) — mirrors oddish/schemas.py
+// ---------------------------------------------------------------------------
+
+export type DeliveryCheckStatus = "pass" | "fail" | "off";
+
+interface ManualCheckDefinition {
+  key: string;
+  label: string;
+  scope: "task" | "delivery";
+}
+
+interface DeliveryCheckConfig {
+  automated: Record<string, Record<string, unknown>>;
+  manual: ManualCheckDefinition[];
+}
+
+export interface DeliveryListItem {
+  id: string;
+  name: string;
+  customer_name?: string | null;
+  description?: string | null;
+  status: "active" | "finalized" | (string & {});
+  revision: number;
+  is_public: boolean;
+  finalized_at?: string | null;
+  created_at: string;
+  updated_at: string;
+  task_count: number;
+}
+
+export interface DeliveryCheckResult {
+  key: string;
+  kind: "automated" | "manual";
+  label: string;
+  status: DeliveryCheckStatus;
+  detail: string;
+  checked_by_user_id?: string | null;
+  checked_at?: string | null;
+}
+
+export interface DeliveryTaskBoardRow {
+  delivery_task_id: string;
+  task_id: string;
+  task_name: string;
+  version_id?: string | null;
+  version?: number | null;
+  pinned_version_id?: string | null;
+  newer_version_exists: boolean;
+  is_visible: boolean;
+  sort_order: number;
+  customer_note?: string | null;
+  internal_note?: string | null;
+  checks: DeliveryCheckResult[];
+  ready: boolean;
+}
+
+export interface DeliveryBoardResponse {
+  delivery: Omit<DeliveryListItem, "task_count">;
+  check_config: DeliveryCheckConfig;
+  tasks: DeliveryTaskBoardRow[];
+  delivery_checks: DeliveryCheckResult[];
+  ready: boolean;
+  ready_task_count: number;
+  task_count: number;
+  frozen: boolean;
+  finalized_at?: string | null;
+}
+
+interface TaskQAHistoryRun {
+  trial_id: string;
+  kind: string;
+  status?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+}
+
+interface TaskQAHistoryVersion {
+  version_id: string;
+  version: number;
+  created_at: string;
+  message?: string | null;
+  is_current: boolean;
+  pre_trial_status?: string | null;
+  pre_trial_finished_at?: string | null;
+  pre_trial_must_fix: number;
+  pre_trial_should_fix: number;
+  rollout_count: number;
+  rollout_agents: number;
+  qa_runs: TaskQAHistoryRun[];
+}
+
+export interface TaskQAHistoryResponse {
+  task_id: string;
+  task_name: string;
+  current_version_id?: string | null;
+  verdict?: Record<string, unknown> | null;
+  verdict_status?: string | null;
+  versions: TaskQAHistoryVersion[];
+}

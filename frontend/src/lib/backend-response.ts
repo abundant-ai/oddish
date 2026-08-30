@@ -71,7 +71,7 @@ export async function proxyBackendJson({
 }: {
   request: Request;
   path: string;
-  method?: "GET" | "PUT" | "POST" | "DELETE";
+  method?: "GET" | "PUT" | "POST" | "PATCH" | "DELETE";
   body?: unknown;
   signal?: AbortSignal;
 }): Promise<NextResponse> {
@@ -131,7 +131,7 @@ export async function proxyBackendJson({
 export async function proxyJsonRequest(
   request: NextRequest,
   path: string,
-  method: "PUT" | "POST"
+  method: "PUT" | "POST" | "PATCH"
 ): Promise<NextResponse> {
   let body: unknown;
   try {
