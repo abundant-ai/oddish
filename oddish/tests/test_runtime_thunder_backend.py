@@ -7,8 +7,12 @@ from types import ModuleType
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import pytest
+from harbor.models.environment_type import EnvironmentType
 
-from oddish.runtime.backends.thunder import ThunderBackend
+from oddish.runtime.backends.thunder import ThunderBackend, ThunderSandboxSnapshot
+from oddish.runtime.sandbox_lifecycle import SandboxLaunchContext
+from oddish.schemas import HarborConfig
+from oddish.workers.harbor.runner import _resolve_provider_environment_config
 
 
 def test_capabilities_match_thunder_sdk_041() -> None:
@@ -28,6 +32,35 @@ def test_harbor_env_kwargs_preserve_caller_values() -> None:
 
     assert result == original
     assert result is not original
+
+
+def test_runner_forces_inventory_safe_thunder_sandbox_name() -> None:
+    context = SandboxLaunchContext(
+        sandbox_run_id="sandbox-run-456",
+        worker_job_id="worker-job-1",
+        worker_job_attempt=1,
+        trial_id="trial-1",
+        launch_token="launch-token",
+        deployment="thunder",
+        aws_account_id="",
+        region="",
+        provider="thunder",
+    )
+    config = HarborConfig(
+        environment={"kwargs": {"sandbox_name": "task-controlled"}}
+    )
+
+    resolved = _resolve_provider_environment_config(
+        hc=config,
+        environment=EnvironmentType.THUNDER,
+        backend=ThunderBackend(),
+        is_probe=False,
+        trial_id="trial-1",
+        worker_job_id="worker-job-1",
+        sandbox_launch=context,
+    )
+
+    assert resolved.kwargs["sandbox_name"] == "sandbox-run-456"
 
 
 @pytest.mark.asyncio
@@ -93,3 +126,35 @@ async def test_teardown_converts_provider_failure_to_false(
 @pytest.mark.asyncio
 async def test_teardown_rejects_empty_id_without_importing_sdk() -> None:
     assert await ThunderBackend().teardown("") is False
+
+
+@pytest.mark.asyncio
+async def test_inventory_returns_provider_id_and_ownership_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeSandbox:
+        id = "sb-123"
+        name = "sandbox-run-456"
+
+    class FakeClient:
+        @classmethod
+        def from_cli(cls):
+            return cls()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def list_sandboxes_async(self, *, status: str):
+            assert status == "active"
+            yield FakeSandbox()
+
+    module = ModuleType("thunder_sandbox")
+    module.Client = FakeClient  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "thunder_sandbox", module)
+
+    assert await ThunderBackend().snapshot_sandboxes_direct() == (
+        ThunderSandboxSnapshot(external_id="sb-123", name="sandbox-run-456"),
+    )

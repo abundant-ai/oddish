@@ -46,21 +46,35 @@ _ENTRY_PATH = str(Path(__file__).resolve().parent / "_entry.py")
 _CHILD_PYTHON = "3.13"
 _PARENT_SITE_PACKAGES_ENV = "ODDISH_PARENT_SITE_PACKAGES"
 logger = logging.getLogger(__name__)
-_ENVIRONMENT_HARBOR_EXTRAS: dict[EnvironmentType, str] = {
-    EnvironmentType.DAYTONA: "daytona",
-    EnvironmentType.ARCHIL: "archil",
-    EnvironmentType.MODAL: "modal",
-    EnvironmentType.E2B: "e2b",
-    EnvironmentType.RUNLOOP: "runloop",
-    EnvironmentType.GKE: "gke",
-    EnvironmentType.NOVITA: "novita",
-    EnvironmentType.TENSORLAKE: "tensorlake",
-    EnvironmentType.CWSANDBOX: "cwsandbox",
-    EnvironmentType.WANDB: "wandb",
-    EnvironmentType.ISLO: "islo",
-    EnvironmentType.EC2: "ec2",
-    EnvironmentType.THUNDER: "thunder",
-}
+def _environment_harbor_extras(
+    environment_type: Any = EnvironmentType,
+) -> dict[Any, str]:
+    extras = {
+        environment_type.DAYTONA: "daytona",
+        environment_type.ARCHIL: "archil",
+        environment_type.MODAL: "modal",
+        environment_type.E2B: "e2b",
+        environment_type.RUNLOOP: "runloop",
+        environment_type.GKE: "gke",
+        environment_type.NOVITA: "novita",
+        environment_type.TENSORLAKE: "tensorlake",
+        environment_type.CWSANDBOX: "cwsandbox",
+        environment_type.WANDB: "wandb",
+        environment_type.ISLO: "islo",
+        environment_type.EC2: "ec2",
+    }
+    # Published Harbor releases can lag provider support shipped by Oddish's
+    # locked worker fork. Keep imports working without inventing string-backed
+    # environment members for those older builds.
+    thunder = getattr(environment_type, "THUNDER", None)
+    if thunder is not None:
+        extras[thunder] = "thunder"
+    return extras
+
+
+_ENVIRONMENT_HARBOR_EXTRAS: dict[EnvironmentType, str] = (
+    _environment_harbor_extras()
+)
 
 
 class HarborOverrideImportError(Exception):

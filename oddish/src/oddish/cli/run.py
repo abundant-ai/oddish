@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import json
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated, Any, Optional
 
 import typer
 from rich.console import Console
@@ -54,13 +54,24 @@ console = Console()
 # Environments the hosted (Modal-backed) API dispatches directly; any other
 # ``--env`` on that path is coerced to Modal. Explicitly selected cloud backends
 # must reach the hosted API unchanged.
-_HOSTED_PASSTHROUGH_ENVIRONMENTS = {
-    EnvironmentType.MODAL,
-    EnvironmentType.DAYTONA,
-    EnvironmentType.EC2,
-    EnvironmentType.GKE,
-    EnvironmentType.THUNDER,
-}
+def _hosted_passthrough_environments(
+    environment_type: Any = EnvironmentType,
+) -> set[Any]:
+    environments = {
+        environment_type.MODAL,
+        environment_type.DAYTONA,
+        environment_type.EC2,
+        environment_type.GKE,
+    }
+    # Public Harbor releases may lag fork-only environments.
+    for name in ("ARCHIL", "NUMINOUS", "THUNDER"):
+        member = getattr(environment_type, name, None)
+        if member is not None:
+            environments.add(member)
+    return environments
+
+
+_HOSTED_PASSTHROUGH_ENVIRONMENTS = _hosted_passthrough_environments()
 
 
 def _normalize_hosted_environment(
@@ -74,13 +85,6 @@ def _normalize_hosted_environment(
     ):
         return EnvironmentType.MODAL
     return environment
-
-
-# Public Harbor releases may lag fork-only environments.
-if hasattr(EnvironmentType, "ARCHIL"):
-    _HOSTED_PASSTHROUGH_ENVIRONMENTS.add(EnvironmentType.ARCHIL)
-if hasattr(EnvironmentType, "NUMINOUS"):
-    _HOSTED_PASSTHROUGH_ENVIRONMENTS.add(EnvironmentType.NUMINOUS)
 
 
 def _task_config_requests_gpu(task_path: Path) -> bool:

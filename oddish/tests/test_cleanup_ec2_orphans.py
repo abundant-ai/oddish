@@ -248,6 +248,7 @@ def _patch_unrelated_cleanup_phases(
     async def no_reimports(*_args, **_kwargs):
         return []
 
+    monkeypatch.setattr(cleanup, "_find_orphaned_thunder_sandbox_runs", no_reimports)
     monkeypatch.setattr(cleanup, "_heal_stale_verdict_pending", heal_nothing)
     monkeypatch.setattr(cleanup, "_heal_stale_audit_imports", no_reimports)
     monkeypatch.setattr(cleanup, "_unwedge_stuck_analyzing", unwedge)
@@ -256,6 +257,7 @@ def _patch_unrelated_cleanup_phases(
     monkeypatch.setattr(cleanup, "_maybe_reconcile_tag_projections", zero)
     monkeypatch.setattr(cleanup, "sweep_orphaned_tag_owners", zero)
     monkeypatch.setattr(cleanup, "_terminate_orphaned_sandboxes", terminate)
+    monkeypatch.setattr(cleanup, "_terminate_orphaned_sandbox_runs", zero)
     monkeypatch.setattr(cleanup, "clear_terminal_trial_runtime_refs", zero)
     monkeypatch.setattr(cleanup, "purge_stale_trial_events", zero)
     monkeypatch.setattr(cleanup, "reconcile_compute_cost_spans", zero)

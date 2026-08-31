@@ -13,6 +13,25 @@ from harbor.models.environment_type import EnvironmentType
 run_module = importlib.import_module("oddish.cli.run")
 
 
+def test_hosted_passthrough_import_contract_allows_harbor_without_thunder() -> None:
+    class PublicHarborEnvironmentType:
+        MODAL = object()
+        DAYTONA = object()
+        EC2 = object()
+        GKE = object()
+
+    environments = run_module._hosted_passthrough_environments(
+        PublicHarborEnvironmentType
+    )
+
+    assert environments == {
+        PublicHarborEnvironmentType.MODAL,
+        PublicHarborEnvironmentType.DAYTONA,
+        PublicHarborEnvironmentType.EC2,
+        PublicHarborEnvironmentType.GKE,
+    }
+
+
 def test_thunder_is_hosted_passthrough_when_harbor_exposes_it() -> None:
     assert EnvironmentType.THUNDER in run_module._HOSTED_PASSTHROUGH_ENVIRONMENTS
 

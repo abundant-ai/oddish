@@ -57,6 +57,10 @@ from oddish.runtime.ec2_orphans import (
     decide_ec2_orphan,
 )
 from oddish.runtime.registry import get_backend
+from oddish.runtime.backends.thunder import (
+    ThunderSandboxSnapshot,
+    snapshot_thunder_sandboxes,
+)
 from oddish.workers.queue.sandbox_capacity import cleanup_sandbox_capacity_leases
 from oddish.workers.queue.shared import console
 from oddish.workers.queue.worker_job_single_job import (
@@ -504,6 +508,8 @@ async def cleanup_orphaned_queue_state(
     """
     ec2_inventory: Ec2InventorySnapshot | None = None
     ec2_orphan_snapshot_errors = 0
+    thunder_inventory: tuple[ThunderSandboxSnapshot, ...] | None = None
+    thunder_orphan_snapshot_errors = 0
 
     if settings.ec2_enabled:
         ec2_backend = cast(Any, get_backend("ec2"))
@@ -523,6 +529,20 @@ async def cleanup_orphaned_queue_state(
                 f"error_type={type(exc).__name__} error={exc}"
             )
 
+    if settings.thunder_enabled:
+        try:
+            thunder_inventory = await snapshot_thunder_sandboxes()
+            console.print(
+                "metric=thunder_orphan_snapshot "
+                f"outcome=success count={len(thunder_inventory)}"
+            )
+        except Exception as exc:
+            thunder_orphan_snapshot_errors = 1
+            console.print(
+                "metric=thunder_orphan_snapshot_error outcome=error "
+                f"error_type={type(exc).__name__} error={exc}"
+            )
+
     zombie_txn_reaped = await reap_idle_in_transaction_zombies()
     sandbox_capacity_cleanup_errors = 0
     try:
@@ -536,6 +556,9 @@ async def cleanup_orphaned_queue_state(
         )
     ec2_orphan_keep_verdicts = 0
     ec2_orphan_terminate_candidates = 0
+    thunder_orphan_terminate_candidates = 0
+    thunder_inventory_handles_recovered = 0
+    unprovisioned_thunder_runs_finalized = 0
     unprovisioned_sandbox_runs_finalized = 0
 
     async with get_session() as session:
@@ -546,6 +569,19 @@ async def cleanup_orphaned_queue_state(
             worker_targets,
         ) = await _reap_stale_worker_jobs(
             session, stale_after_minutes=stale_after_minutes
+        )
+        if thunder_inventory is not None:
+            thunder_inventory_handles_recovered = (
+                await _recover_thunder_inventory_handles(session, thunder_inventory)
+            )
+        thunder_run_targets = await _find_orphaned_thunder_sandbox_runs(session)
+        thunder_orphan_terminate_candidates = len(thunder_run_targets)
+        # Prefer the durable lifecycle path when the worker row and ledger both
+        # carry the handle.  Raw provider teardown does not terminalize the
+        # sandbox_run, so its capacity lease would remain deliberately held.
+        worker_targets.difference_update(
+            ("thunder", external_id)
+            for _, external_id in thunder_run_targets
         )
         if ec2_inventory is not None and ec2_inventory.instances:
             ec2_targets, ec2_orphan_keep_verdicts = await _decide_ec2_orphan_targets(
@@ -563,6 +599,14 @@ async def cleanup_orphaned_queue_state(
                 await _finalize_unprovisioned_sandbox_runs(
                     session,
                     ec2_inventory,
+                    grace_minutes=UNPROVISIONED_SANDBOX_GRACE_MINUTES,
+                )
+            )
+        if thunder_inventory is not None:
+            unprovisioned_thunder_runs_finalized = (
+                await _finalize_unprovisioned_thunder_runs(
+                    session,
+                    thunder_inventory,
                     grace_minutes=UNPROVISIONED_SANDBOX_GRACE_MINUTES,
                 )
             )
@@ -622,7 +666,7 @@ async def cleanup_orphaned_queue_state(
     # Re-run after the ledger transaction commits only when it closed rows. They
     # no longer protect their capacity leases, so the same reconciliation cycle
     # restores dispatch capacity instead of waiting for another scheduled pass.
-    if unprovisioned_sandbox_runs_finalized:
+    if unprovisioned_sandbox_runs_finalized or unprovisioned_thunder_runs_finalized:
         try:
             sandbox_capacity_leases_cleared += await cleanup_sandbox_capacity_leases()
         except Exception as exc:
@@ -635,7 +679,22 @@ async def cleanup_orphaned_queue_state(
     # These run AFTER the outer commit so a rolled-back sweep never tears down
     # remote handles / claim metadata the DB still points at. Best-effort; the
     # provider TTL and the next sweep are the backstops.
-    worker_sandboxes_terminated = await _terminate_orphaned_sandboxes(worker_targets)
+    thunder_sandboxes_terminated = await _terminate_orphaned_sandbox_runs(
+        [run_id for run_id, _ in thunder_run_targets]
+    )
+    worker_sandboxes_terminated = (
+        await _terminate_orphaned_sandboxes(worker_targets)
+        + thunder_sandboxes_terminated
+    )
+    if thunder_sandboxes_terminated:
+        try:
+            sandbox_capacity_leases_cleared += await cleanup_sandbox_capacity_leases()
+        except Exception as exc:
+            sandbox_capacity_cleanup_errors = 1
+            console.print(
+                "metric=sandbox_capacity_cleanup outcome=error phase=post_thunder "
+                f"error_type={type(exc).__name__} error={exc}"
+            )
     try:
         modal_cost_spans_reconciled = await reconcile_compute_cost_spans()
     except Exception as exc:
@@ -654,6 +713,10 @@ async def cleanup_orphaned_queue_state(
         "ec2_orphan_terminate_candidates": ec2_orphan_terminate_candidates,
         "ec2_orphan_snapshot_errors": ec2_orphan_snapshot_errors,
         "ec2_orphan_keep_verdicts": ec2_orphan_keep_verdicts,
+        "thunder_orphan_terminate_candidates": thunder_orphan_terminate_candidates,
+        "thunder_orphan_sandboxes_terminated": thunder_sandboxes_terminated,
+        "thunder_orphan_snapshot_errors": thunder_orphan_snapshot_errors,
+        "thunder_inventory_handles_recovered": thunder_inventory_handles_recovered,
         "tasks_progressed_to_analysis": tasks_progressed_to_analysis,
         "tasks_progressed_to_verdict": tasks_progressed_to_verdict,
         "verdict_pending_completed": verdict_pending_completed,
@@ -669,6 +732,7 @@ async def cleanup_orphaned_queue_state(
         "sandbox_capacity_leases_cleared": sandbox_capacity_leases_cleared,
         "sandbox_capacity_cleanup_errors": sandbox_capacity_cleanup_errors,
         "unprovisioned_sandbox_runs_finalized": (unprovisioned_sandbox_runs_finalized),
+        "unprovisioned_thunder_runs_finalized": unprovisioned_thunder_runs_finalized,
         "experiments_last_activity_reconciled": experiments_last_activity_reconciled,
         "tag_projections_reconciled": tag_projections_reconciled,
         "tag_owners_reassigned": tag_owners_reassigned,
@@ -1206,6 +1270,179 @@ async def _reap_stale_worker_jobs(
 
     await session.flush()
     return worker_jobs_retried, worker_jobs_failed, reaped_trial_ids, worker_targets
+
+
+async def _find_orphaned_thunder_sandbox_runs(
+    session: Any,
+) -> list[tuple[str, str]]:
+    """Find persisted Thunder handles no longer owned by their launch attempt.
+
+    A cancellation can win the worker-row lock before Harbor's late
+    ``environment-provisioned`` event arrives.  That event intentionally saves
+    the handle on ``sandbox_runs`` and marks it TERMINATING, but cannot safely
+    copy it onto the now-terminal worker row.  Likewise, a stale worker can be
+    reaped between ledger and worker-row persistence.  The ledger is therefore
+    authoritative for recovery, not ``worker_jobs.external_id``.
+    """
+    rows = (
+        await session.execute(
+            text(
+                """
+                SELECT run.id, run.external_id
+                FROM sandbox_runs AS run
+                LEFT JOIN worker_jobs AS wj ON wj.id = run.worker_job_id
+                WHERE run.provider = 'thunder'
+                  AND run.deleted_at IS NULL
+                  AND run.terminated_at IS NULL
+                  AND run.external_id IS NOT NULL
+                  AND run.state <> 'TERMINATED'
+                  AND (
+                      run.state = 'TERMINATING'
+                      OR wj.id IS NULL
+                      OR wj.status::text <> 'RUNNING'
+                      OR wj.attempts <> run.worker_job_attempt
+                  )
+                ORDER BY run.id
+                """
+            ),
+            {},
+        )
+    ).mappings().all()
+    return [(str(row["id"]), str(row["external_id"])) for row in rows]
+
+
+async def _recover_thunder_inventory_handles(
+    session: Any,
+    inventory: tuple[ThunderSandboxSnapshot, ...],
+) -> int:
+    """Bind inventory IDs only when the sandbox name proves ledger ownership."""
+    recovered = 0
+    for snapshot in sorted(inventory, key=lambda item: (item.name, item.external_id)):
+        row = (
+            await session.execute(
+                text(
+                    """
+                    UPDATE sandbox_runs AS run
+                    SET external_id = :external_id,
+                        provisioned_at = COALESCE(run.provisioned_at, NOW()),
+                        state = CASE
+                            WHEN EXISTS (
+                                SELECT 1 FROM worker_jobs AS wj
+                                WHERE wj.id = run.worker_job_id
+                                  AND wj.status::text = 'RUNNING'
+                                  AND wj.attempts = run.worker_job_attempt
+                            ) THEN 'RUNNING'
+                            ELSE 'TERMINATING'
+                        END,
+                        termination_requested_at = CASE
+                            WHEN EXISTS (
+                                SELECT 1 FROM worker_jobs AS wj
+                                WHERE wj.id = run.worker_job_id
+                                  AND wj.status::text = 'RUNNING'
+                                  AND wj.attempts = run.worker_job_attempt
+                            ) THEN run.termination_requested_at
+                            ELSE COALESCE(run.termination_requested_at, NOW())
+                        END,
+                        updated_at = NOW()
+                    WHERE run.id = :sandbox_run_id
+                      AND run.provider = 'thunder'
+                      AND run.deleted_at IS NULL
+                      AND run.terminated_at IS NULL
+                      AND run.external_id IS NULL
+                      AND run.state IN ('PROVISIONING', 'TERMINATING')
+                    RETURNING run.id, run.worker_job_id, run.worker_job_attempt,
+                              run.state
+                    """
+                ),
+                {
+                    "sandbox_run_id": snapshot.name,
+                    "external_id": snapshot.external_id,
+                },
+            )
+        ).mappings().one_or_none()
+        if row is None:
+            continue
+        recovered += 1
+        if row["state"] == "RUNNING":
+            await session.execute(
+                text(
+                    """
+                    UPDATE worker_jobs
+                    SET provider = 'thunder', external_id = :external_id
+                    WHERE id = :worker_job_id
+                      AND status::text = 'RUNNING'
+                      AND attempts = :worker_job_attempt
+                    """
+                ),
+                {
+                    "worker_job_id": row["worker_job_id"],
+                    "worker_job_attempt": row["worker_job_attempt"],
+                    "external_id": snapshot.external_id,
+                },
+            )
+        console.print(
+            "metric=thunder_inventory_handle_recovered "
+            f"sandbox_run_id={row['id']} external_id={snapshot.external_id} "
+            f"state={row['state']}"
+        )
+    return recovered
+
+
+async def _finalize_unprovisioned_thunder_runs(
+    session: Any,
+    inventory: tuple[ThunderSandboxSnapshot, ...],
+    *,
+    grace_minutes: int,
+) -> int:
+    """Close old nameless Thunder attempts after a complete inventory proves absence."""
+    active_names = sorted({snapshot.name for snapshot in inventory})
+    result = cast(
+        CursorResult,
+        await session.execute(
+            text(
+                """
+                UPDATE sandbox_runs AS run
+                SET state = 'TERMINATED',
+                    termination_requested_at = COALESCE(
+                        run.termination_requested_at, NOW()
+                    ),
+                    terminated_at = NOW(),
+                    last_error = COALESCE(
+                        run.last_error,
+                        'No named Thunder sandbox appeared before the inventory grace expired.'
+                    ),
+                    updated_at = NOW()
+                WHERE run.provider = 'thunder'
+                  AND run.deleted_at IS NULL
+                  AND run.state IN ('PROVISIONING', 'TERMINATING')
+                  AND run.external_id IS NULL
+                  AND run.terminated_at IS NULL
+                  AND COALESCE(
+                      run.termination_requested_at,
+                      run.updated_at,
+                      run.created_at
+                  ) <= NOW() - make_interval(mins => :grace_minutes)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM worker_jobs AS wj
+                      WHERE wj.id = run.worker_job_id
+                        AND wj.status::text = 'RUNNING'
+                        AND wj.attempts = run.worker_job_attempt
+                  )
+                  AND NOT (
+                      run.id::text = ANY(CAST(:active_names AS text[]))
+                  )
+                """
+            ),
+            {"active_names": active_names, "grace_minutes": grace_minutes},
+        ),
+    )
+    finalized = int(result.rowcount or 0)
+    if finalized:
+        console.print(
+            "metric=unprovisioned_sandbox_runs_finalized "
+            f"provider=thunder count={finalized} grace_minutes={grace_minutes}"
+        )
+    return finalized
 
 
 async def _advance_running_tasks_to_analysis(
@@ -1860,5 +2097,37 @@ async def _terminate_orphaned_sandboxes(worker_targets: set[tuple[str, str]]) ->
             "metric=orphaned_sandbox_termination "
             f"outcome={'terminated' if result else 'failed'} "
             f"provider={provider} external_id={external_id}"
+        )
+    return terminated
+
+
+async def _terminate_orphaned_sandbox_runs(sandbox_run_ids: list[str]) -> int:
+    """Terminate ledger-owned sandboxes and persist their terminal state."""
+    if not sandbox_run_ids:
+        return 0
+
+    from oddish.runtime.sandbox_lifecycle import terminate_sandbox_run
+
+    ordered_ids = sorted(set(sandbox_run_ids))
+    results = await asyncio.gather(
+        *(terminate_sandbox_run(run_id) for run_id in ordered_ids),
+        return_exceptions=True,
+    )
+    terminated = 0
+    for run_id, result in zip(ordered_ids, results, strict=True):
+        if isinstance(result, BaseException):
+            logger.error(
+                "metric=orphaned_sandbox_run_termination outcome=error "
+                "sandbox_run_id=%s error_type=%s error=%s",
+                run_id,
+                type(result).__name__,
+                result,
+            )
+            continue
+        if result:
+            terminated += 1
+        console.print(
+            "metric=orphaned_sandbox_run_termination "
+            f"outcome={'success' if result else 'refused'} sandbox_run_id={run_id}"
         )
     return terminated

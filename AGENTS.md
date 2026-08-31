@@ -782,6 +782,11 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   requirements for `ssh`, `scp`, or `ssh-keygen` on its behalf. Registration
   makes `environment=thunder` valid but must never put Thunder in
   `automatic_backends()`; unspecified GPU work continues to default to Modal.
+  Oddish forces each Thunder sandbox name to its durable `sandbox_runs.id`.
+  The reconciler inventories Thunder through a credential-scoped Modal
+  function and treats that exact name match as the ownership proof needed to
+  recover a handle lost before Harbor's `environment-provisioned` event. Never
+  make the name task-configurable or terminate unmatched inventory entries.
 - EC2 is an explicit, opt-in Harbor backend: `ODDISH_EC2_ENABLED=true` registers
   it and permits hosted `environment=ec2`, but capability ordering keeps Daytona
   as the CPU default. V1 launches one ephemeral CPU instance per trial and uses

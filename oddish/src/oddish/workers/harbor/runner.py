@@ -1605,6 +1605,16 @@ def _resolve_provider_environment_config(
             **environment_config.kwargs,
             "tags": tags,
         }
+    elif environment == EnvironmentType.THUNDER:
+        if sandbox_launch is None:
+            raise RuntimeError("Thunder trial is missing its durable sandbox run")
+        # Thunder has no provider tags. Its globally visible name is the
+        # ownership channel used by inventory reconciliation, so task-authored
+        # kwargs must never override it.
+        environment_config.kwargs = {
+            **environment_config.kwargs,
+            "sandbox_name": sandbox_launch.sandbox_run_id,
+        }
     return HarborEnvironmentConfig.model_validate(
         environment_config.model_dump(mode="python")
     )

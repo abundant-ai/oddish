@@ -117,6 +117,7 @@ from oddish.workers.queue.worker_job_single_job import (
 from oddish.core.harbor_source import harbor_variant_function_name
 from oddish.core.helpers import register_provider_teardown_delegate
 from oddish.runtime.registry import get_backend
+from oddish.runtime.backends.thunder import register_thunder_inventory_delegate
 from oddish.runtime.sandbox_lifecycle import (
     DEFAULT_EXECUTION_LANE,
     EC2_TRIAL_EXECUTION_LANE,
@@ -165,11 +166,31 @@ async def teardown_thunder_sandbox(external_id: str) -> bool:
     return await backend.teardown(external_id)
 
 
+@app.function(
+    image=image,
+    secrets=thunder_trial_worker_secrets,
+    timeout=300,
+    cpu=1.0,
+    memory=1024,
+)
+async def snapshot_thunder_sandboxes():
+    from oddish.runtime.backends.thunder import ThunderBackend
+
+    return await ThunderBackend().snapshot_sandboxes_direct()
+
+
 async def _teardown_thunder_via_function(external_id: str) -> bool:
     return bool(await teardown_thunder_sandbox.remote.aio(external_id))
 
 
 register_provider_teardown_delegate("thunder", _teardown_thunder_via_function)
+
+
+async def _snapshot_thunder_via_function():
+    return tuple(await snapshot_thunder_sandboxes.remote.aio())
+
+
+register_thunder_inventory_delegate(_snapshot_thunder_via_function)
 
 
 # Register TRIAL / TASK_EXPAND / TAG_PROJECT handlers against the unified

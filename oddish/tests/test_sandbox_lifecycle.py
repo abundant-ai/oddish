@@ -193,16 +193,16 @@ async def test_thunder_teardown_uses_persisted_external_id(
     async def mark(sandbox_run_id: str):
         marked.append(sandbox_run_id)
 
-    class Backend:
-        async def teardown(self, external_id: str) -> bool:
-            assert external_id == "sb-thunder-123"
-            return True
+    async def teardown(provider: str, external_id: str) -> bool:
+        assert provider == "thunder"
+        assert external_id == "sb-thunder-123"
+        return True
 
-    import oddish.runtime.registry as registry
+    import oddish.core.helpers as helpers
 
     monkeypatch.setattr(sandbox_lifecycle, "request_sandbox_termination", request)
     monkeypatch.setattr(sandbox_lifecycle, "mark_sandbox_terminated", mark)
-    monkeypatch.setattr(registry, "get_backend", lambda _provider: Backend())
+    monkeypatch.setattr(helpers, "cancel_job_by_worker", teardown)
 
     assert await sandbox_lifecycle.terminate_sandbox_run(run.id) is True
     assert marked == [run.id]

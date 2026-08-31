@@ -534,6 +534,28 @@ def test_spawn_args_requests_thunder_extra_for_thunder_env():
     assert req.startswith("harbor[thunder] @ git+")
 
 
+def test_ephemeral_extra_map_allows_harbor_without_thunder():
+    class PublicHarborEnvironmentType:
+        DAYTONA = object()
+        ARCHIL = object()
+        MODAL = object()
+        E2B = object()
+        RUNLOOP = object()
+        GKE = object()
+        NOVITA = object()
+        TENSORLAKE = object()
+        CWSANDBOX = object()
+        WANDB = object()
+        ISLO = object()
+        EC2 = object()
+
+    extras = harbor_ephemeral._environment_harbor_extras(
+        PublicHarborEnvironmentType
+    )
+
+    assert "thunder" not in extras.values()
+
+
 def test_ephemeral_daytona_forces_ownership_labels():
     raw_kwargs = {
         "auto_labels": False,

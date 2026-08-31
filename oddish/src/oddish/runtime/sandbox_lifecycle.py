@@ -410,22 +410,28 @@ async def terminate_sandbox_run(sandbox_run_id: str) -> bool:
         )
         return False
 
-    from oddish.runtime.registry import get_backend
-
-    backend = get_backend(run.provider)
-    if backend is None:
-        await mark_sandbox_failed(
-            run.id, error=f"provider backend {run.provider!r} is not registered"
-        )
-        return False
     if run.provider == "ec2":
+        from oddish.runtime.registry import get_backend
+
+        backend = get_backend(run.provider)
+        if backend is None:
+            await mark_sandbox_failed(
+                run.id, error=f"provider backend {run.provider!r} is not registered"
+            )
+            return False
         ec2_backend = cast(_Ec2LifecycleBackend, backend)
         ownership = _context_from_run(run).ownership(run.external_id)
         terminated = await ec2_backend.teardown_owned(
             run.external_id, ownership=ownership
         )
     else:
-        terminated = await backend.teardown(run.external_id)
+        # Hosted providers may keep credentials on a dedicated teardown
+        # function rather than on the reconciler.  The registered delegate
+        # preserves that secret boundary and falls back to the local backend in
+        # standalone deployments.
+        from oddish.core.helpers import cancel_job_by_worker
+
+        terminated = await cancel_job_by_worker(run.provider, run.external_id)
     if terminated:
         await mark_sandbox_terminated(run.id)
         return True
