@@ -46,6 +46,7 @@ from oddish.costs.modal_cost import (
     normalize_gpu_type,
     provider_default_request,
 )
+from oddish.core.trial_artifacts import write_trial_selection_manifest
 from oddish.runtime.ec2_policy import (
     LAUNCH_TOKEN_TAG_KEY,
     SANDBOX_RUN_ID_TAG_KEY,
@@ -1623,6 +1624,7 @@ async def run_harbor_trial_async(
     billed_user_id: str | None = None,
     extra_agent_env: dict[str, str] | None = None,
     sandbox_launch: SandboxLaunchContext | None = None,
+    trial_kind: str = "agent",
 ) -> HarborOutcome:
     """
     Execute a Harbor trial using Harbor's Python API with lifecycle hooks.
@@ -1664,6 +1666,7 @@ async def run_harbor_trial_async(
             billed_user_id=billed_user_id,
             extra_agent_env=extra_agent_env,
             sandbox_launch=sandbox_launch,
+            trial_kind=trial_kind,
             raw=raw,
             hc=hc,
             backend=backend,
@@ -1687,7 +1690,10 @@ async def _run_harbor_trial_async_impl(
     hc: HarborConfig,
     backend: Any,
     sandbox_launch: SandboxLaunchContext | None,
+    trial_kind: str,
 ) -> HarborOutcome:
+    from oddish.workers.analysis_trials import is_analysis_kind
+
     # Size the environment-build timeout multiplier BEFORE the dispatch fork so
     # EVERY path that runs a GKE environment carries it -- the in-process blessed
     # variant AND the out-of-process ephemeral child. pod_ready is read from the
@@ -1714,7 +1720,10 @@ async def _run_harbor_trial_async_impl(
         getattr(hc.environment, "override_tpu", None),
     )
 
-    is_probe = raw.get("mode") == "probe"
+    is_operator_probe = raw.get("mode") == "probe"
+    is_analysis_trial = is_analysis_kind(trial_kind)
+    is_probe = is_operator_probe or (is_analysis_trial and trial_kind != "summarize")
+    skip_task_validation = is_operator_probe or is_analysis_trial
     dispatch_env_config = hc.environment.model_copy()
     dispatch_env_config.type = environment
     try:
@@ -1778,15 +1787,14 @@ async def _run_harbor_trial_async_impl(
             harbor_config=harbor_config,
             extra_agent_env=extra_agent_env,
             environment_build_timeout_multiplier=env_build_multiplier,
+            is_probe=is_probe,
+            skip_task_validation=skip_task_validation,
         )
 
     # Probes and analysis trials attach to an existing task and inherit its
     # task.toml, which may predate the timeout requirement. Rather than
     # hard-fail, skip strict validation and cap the agent timeout below.
-    from oddish.workers.analysis_trials import is_analysis_kind
-
-    is_probe = raw.get("mode") == "probe" or is_analysis_kind(raw.get("mode"))
-    if not is_probe:
+    if not skip_task_validation:
         validate_task_timeout_config(task_path)
 
     needs_task_patch = bool(hc.docker_image or hc.mcp_servers)
@@ -2211,6 +2219,13 @@ async def _run_harbor_trial_async_impl(
                 exception_type="JobResultMissingError",
             )
 
+        write_trial_selection_manifest(
+            job_result_path,
+            [
+                trial_result.trial_name
+                for trial_result in getattr(job_result, "trial_results", [])
+            ],
+        )
         outcome = _extract_outcome_from_job_result(
             job_result=job_result,
             job_result_path=job_result_path,

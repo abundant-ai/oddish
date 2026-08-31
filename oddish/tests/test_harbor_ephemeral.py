@@ -43,6 +43,40 @@ _EPHEMERAL_HC = {
 }
 
 
+@pytest.mark.asyncio
+async def test_ephemeral_uses_runner_derived_analysis_capabilities(
+    tmp_path, monkeypatch
+):
+    task_path = tmp_path / "analysis-task"
+    task_path.mkdir()
+
+    def unexpected_validation(_path):
+        raise AssertionError("analysis trials must skip ordinary task validation")
+
+    monkeypatch.setattr(
+        harbor_ephemeral,
+        "validate_task_timeout_config",
+        unexpected_validation,
+    )
+    monkeypatch.setattr(
+        harbor_ephemeral,
+        "_check_local_storage_preflight",
+        lambda *_args, **_kwargs: "stop after validation boundary",
+    )
+
+    outcome = await run_ephemeral_harbor_trial(
+        task_path=task_path,
+        agent="claude-code",
+        jobs_dir=tmp_path / "jobs",
+        environment_config=EnvironmentConfig(type=EnvironmentType.DOCKER),
+        harbor_config=_EPHEMERAL_HC,
+        is_probe=True,
+        skip_task_validation=True,
+    )
+
+    assert outcome.exception_type == "LocalStoragePreflightError"
+
+
 def test_bridge_event_end_with_reward_and_exception():
     ev = _bridge_event(
         {

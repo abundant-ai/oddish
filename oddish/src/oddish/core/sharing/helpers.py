@@ -23,6 +23,11 @@ from oddish.core.model_display_names import (
     apply_model_display_names,
     experiment_display_names,
 )
+from oddish.core.trial_artifacts import (
+    TrialArtifactMode,
+    normalize_trial_relative_path,
+    resolve_trial_artifact_layout,
+)
 from oddish.db import (
     ExperimentModel,
     TaskModel,
@@ -465,12 +470,6 @@ async def get_task_file_content_s3(
         raise HTTPException(status_code=404, detail="File not found")
 
 
-def _get_trial_s3_prefix(trial: TrialModel) -> str:
-    from oddish.db.storage import StorageClient
-
-    return trial.trial_s3_key or StorageClient._trial_prefix(trial.id)
-
-
 async def list_trial_files_s3(
     trial: TrialModel,
     prefix: str | None = None,
@@ -484,6 +483,10 @@ async def list_trial_files_s3(
     storage = get_storage_client()
 
     try:
+        layout = await resolve_trial_artifact_layout(trial, storage)
+        if layout.mode is TrialArtifactMode.UNAVAILABLE:
+            raise HTTPException(status_code=404, detail="No authoritative trial files")
+        assert layout.artifact_prefix is not None
         return await storage.list_trial_files(
             trial_id=trial.id,
             prefix=prefix,
@@ -492,9 +495,7 @@ async def list_trial_files_s3(
             cursor=cursor,
             presign=presign,
             presign_expiration=presign_expiration,
-            # The same root the content endpoint resolves against, so listed
-            # relative paths round-trip without doubling the analysis segment.
-            root_prefix=_get_trial_s3_prefix(trial),
+            root_prefix=layout.artifact_prefix,
         )
     except HTTPException:
         raise
@@ -508,26 +509,20 @@ async def get_trial_file_content_s3(
 ) -> tuple[bytes, str]:
     """Download a file from a trial's S3 directory by relative path."""
     import mimetypes
-    from pathlib import PurePosixPath
 
-    raw = file_path.replace("\\", "/").strip()
-    if not raw or raw.startswith("/"):
-        raise HTTPException(status_code=400, detail="Invalid file path")
-    parts = PurePosixPath(raw).parts
-    if ".." in parts:
-        raise HTTPException(status_code=400, detail="Invalid file path")
-    normalized = str(PurePosixPath(*parts))
+    normalized = normalize_trial_relative_path(file_path)
 
     media_type, _ = mimetypes.guess_type(normalized)
     if media_type is None:
         media_type = "application/octet-stream"
 
     storage = get_storage_client()
-    s3_prefix = _get_trial_s3_prefix(trial)
-    s3_key = f"{s3_prefix}{normalized}"
+    layout = await resolve_trial_artifact_layout(trial, storage)
+    if layout.mode is TrialArtifactMode.UNAVAILABLE:
+        raise HTTPException(status_code=404, detail="No authoritative trial files")
+    assert layout.artifact_prefix is not None
+    s3_key = f"{layout.artifact_prefix}{normalized}"
 
-    try:
-        content = await storage.download_bytes(s3_key)
-        return content, media_type
-    except Exception:
+    if not await storage.object_exists(s3_key):
         raise HTTPException(status_code=404, detail="File not found")
+    return await storage.download_bytes(s3_key), media_type
