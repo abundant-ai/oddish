@@ -269,6 +269,7 @@ const NON_MODEL_QUEUE_KEYS = new Set([
   "analysis",
   "default",
   "nop_oracle",
+  "tag-project",
   "task_expand",
   "verdict",
 ]);
