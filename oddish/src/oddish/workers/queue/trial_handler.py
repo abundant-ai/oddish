@@ -972,6 +972,9 @@ async def _store_trial_results(
 
         if outcome:
             is_timeout = _is_agent_timeout_error_message(outcome.error)
+            has_non_retryable_oddish_failure = (
+                outcome.exception_type in _NON_HARBOR_RETRYABLE_EXCEPTION_TYPES
+            )
             # Analysis importers read their required result from durable storage.
             # A verifier reward is not a successful analysis run when that
             # artifact never reached storage: keep the trial on the normal retry
@@ -1044,7 +1047,14 @@ async def _store_trial_results(
                     console.print(
                         f"[red]Trial {trial_id} FAILED (Modal image build)[/red]"
                     )
-                elif _is_non_retryable_outcome(trial, outcome):
+                # A freshly uploaded analysis layout that cannot be read is an
+                # Oddish settlement failure. Give it the trial's durable retry
+                # budget even when Harbor classified the underlying verifier
+                # failure as terminal. Oddish-only control failures still fail
+                # closed because another sandbox cannot repair them.
+                elif _is_non_retryable_outcome(trial, outcome) and (
+                    not artifact_upload_error or has_non_retryable_oddish_failure
+                ):
                     trial.status = TrialStatus.FAILED
                     trial.finished_at = utcnow()
                     console.print(

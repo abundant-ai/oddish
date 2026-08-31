@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import PurePosixPath
-from typing import Protocol
+from typing import Never, Protocol
 
 from fastapi import HTTPException
 
@@ -38,6 +38,7 @@ class TrialArtifactLayout:
     artifact_prefix: str | None
     manifest: dict | None = None
     listed_keys: tuple[str, ...] | None = None
+    failure_reason: str | None = None
 
 
 class AnalysisArtifactLayoutError(RuntimeError):
@@ -120,6 +121,9 @@ async def resolve_trial_artifact_layout(
                 attempt_prefix,
                 None,
                 listed_keys=listed_keys,
+                failure_reason=(
+                    "trial_s3_key is missing while attempt-scoped artifacts exist"
+                ),
             )
 
     manifest_key = f"{attempt_prefix}result.json"
@@ -129,16 +133,26 @@ async def resolve_trial_artifact_layout(
             attempt_prefix,
             attempt_prefix,
             listed_keys=listed_keys,
+            failure_reason="result.json is missing",
         )
 
     try:
         manifest = json.loads(await storage.download_text(manifest_key))
-        trial_name = trial_name_from_manifest(manifest)
-    except (ValueError, TypeError, json.JSONDecodeError):
+    except (TypeError, json.JSONDecodeError):
         return TrialArtifactLayout(
             TrialArtifactMode.UNAVAILABLE,
             attempt_prefix,
             None,
+            failure_reason="result.json is invalid JSON",
+        )
+    try:
+        trial_name = trial_name_from_manifest(manifest)
+    except ValueError as exc:
+        return TrialArtifactLayout(
+            TrialArtifactMode.UNAVAILABLE,
+            attempt_prefix,
+            None,
+            failure_reason=str(exc),
         )
 
     artifact_prefix = (
@@ -164,6 +178,22 @@ async def validate_uploaded_analysis_artifacts(
 ) -> TrialArtifactLayout:
     """Prove a fresh analysis upload can be read before settlement succeeds."""
 
+    async def reject(message: str) -> Never:
+        try:
+            uploaded_keys = sorted(await storage.list_keys(trial_s3_key))
+            relative_files = [
+                key.removeprefix(trial_s3_key) for key in uploaded_keys[:12]
+            ]
+            remaining = len(uploaded_keys) - len(relative_files)
+            listing = f"uploaded_files={relative_files!r}"
+            if remaining:
+                listing += f" (+{remaining} more)"
+        except Exception as exc:
+            listing = f"uploaded_files_unavailable={type(exc).__name__}"
+        raise AnalysisArtifactLayoutError(
+            f"{message}; prefix={trial_s3_key!r}; {listing}"
+        )
+
     @dataclass(frozen=True, slots=True)
     class UploadedAttempt:
         id: str
@@ -173,24 +203,20 @@ async def validate_uploaded_analysis_artifacts(
         UploadedAttempt(id=trial_id, trial_s3_key=trial_s3_key), storage
     )
     if layout.mode is not TrialArtifactMode.EXACT or layout.manifest is None:
-        raise AnalysisArtifactLayoutError(
-            "result.json is missing, malformed, or does not select one attempt"
-        )
+        await reject(layout.failure_reason or "result.json is unavailable")
     trial_name = trial_name_from_manifest(layout.manifest)
-    if trial_name is None or layout.artifact_prefix == layout.attempt_prefix:
-        raise AnalysisArtifactLayoutError(
-            "result.json does not select a Harbor child directory"
-        )
+    if trial_name is None:
+        await reject("result.json contains no trial_results")
+    if layout.artifact_prefix == layout.attempt_prefix:
+        await reject("result.json does not select a Harbor child directory")
 
     result_key = f"{layout.artifact_prefix}verifier/{required_artifact}"
     if not await storage.object_exists(result_key):
-        raise AnalysisArtifactLayoutError(
-            f"selected Harbor child is missing verifier/{required_artifact}"
-        )
+        await reject(f"selected Harbor child is missing verifier/{required_artifact}")
     if has_trajectory:
         trajectory_key = f"{layout.artifact_prefix}agent/trajectory.json"
         if not await storage.object_exists(trajectory_key):
-            raise AnalysisArtifactLayoutError(
+            await reject(
                 "outcome reports a trajectory but the selected Harbor child "
                 "is missing agent/trajectory.json"
             )

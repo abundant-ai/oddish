@@ -110,21 +110,32 @@ def test_analysis_upload_validation_accepts_manifest_selected_qa_artifacts():
 
 
 @pytest.mark.parametrize(
-    "manifest",
-    ["not-json", json.dumps({"trial_results": []})],
+    ("manifest", "expected_error"),
+    [
+        ("not-json", "result.json is invalid JSON"),
+        (
+            json.dumps({"trial_results": []}),
+            "result.json contains no trial_results",
+        ),
+        (
+            json.dumps({"trial_results": [{}, {}]}),
+            "result.json must identify exactly one Harbor trial",
+        ),
+    ],
 )
-def test_analysis_upload_validation_rejects_malformed_or_root_only_manifest(
-    manifest,
+def test_analysis_upload_validation_reports_invalid_manifest_reason(
+    manifest, expected_error
 ):
     prefix = "tasks/task-1/trials/task-1-qa/analysis-qa/attempt-1/"
     storage = _Storage(
         {
             f"{prefix}result.json": manifest,
             f"{prefix}verifier/qa_result.json": "{}",
-        }
+        },
+        listed=[f"{prefix}result.json", f"{prefix}verifier/qa_result.json"],
     )
 
-    with pytest.raises(AnalysisArtifactLayoutError):
+    with pytest.raises(AnalysisArtifactLayoutError) as exc_info:
         asyncio.run(
             validate_uploaded_analysis_artifacts(
                 trial_id="task-1-qa",
@@ -134,6 +145,32 @@ def test_analysis_upload_validation_rejects_malformed_or_root_only_manifest(
                 storage=storage,
             )
         )
+
+    message = str(exc_info.value)
+    assert expected_error in message
+    assert f"prefix={prefix!r}" in message
+    assert "uploaded_files=['result.json', 'verifier/qa_result.json']" in message
+
+
+def test_analysis_upload_validation_reports_missing_manifest():
+    prefix = "tasks/task-1/trials/task-1-qa/analysis-qa/attempt-1/"
+    child_key = f"{prefix}qa-run/verifier/qa_result.json"
+    storage = _Storage({child_key: "{}"}, listed=[child_key])
+
+    with pytest.raises(AnalysisArtifactLayoutError) as exc_info:
+        asyncio.run(
+            validate_uploaded_analysis_artifacts(
+                trial_id="task-1-qa",
+                trial_s3_key=prefix,
+                required_artifact="qa_result.json",
+                has_trajectory=False,
+                storage=storage,
+            )
+        )
+
+    message = str(exc_info.value)
+    assert "result.json is missing" in message
+    assert "uploaded_files=['qa-run/verifier/qa_result.json']" in message
 
 
 def test_analysis_upload_validation_never_accepts_a_sibling_child():
