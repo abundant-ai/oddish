@@ -83,6 +83,8 @@ async def test_model_endpoint_adds_litellm_bedrock_provider_prefix(monkeypatch):
 async def test_model_endpoint_uses_azure_resource_root_for_litellm(monkeypatch):
     async def completion(**kwargs):
         assert kwargs["model"] == "azure/oddish-gpt"
+        assert kwargs["max_completion_tokens"] == 32
+        assert "max_tokens" not in kwargs
         assert kwargs["api_key"] == "azure-key"
         assert kwargs["api_base"] == "https://example.openai.azure.com"
         assert kwargs["api_version"] == "2025-01-01-preview"

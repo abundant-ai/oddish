@@ -94,7 +94,11 @@ async def check_model_endpoint(
     started = monotonic()
     resolved_model = model
     try:
-        kwargs = {}
+        kwargs = (
+            {"max_completion_tokens": 32}
+            if provider == "openai"
+            else {"max_tokens": 32}
+        )
         if provider == "bedrock":
             resolved_model = f"bedrock/{model}"
         elif provider == "gemini" and model.startswith("google/"):
@@ -105,11 +109,15 @@ async def check_model_endpoint(
         ):
             azure = settings.require_azure_openai_config()
             resolved_model = f"azure/{settings.resolve_azure_openai_deployment(model)}"
-            kwargs = {
-                "api_key": azure["api_key"],
-                "api_base": azure["endpoint"].rstrip("/").removesuffix("/openai/v1"),
-                "api_version": azure["api_version"],
-            }
+            kwargs.update(
+                {
+                    "api_key": azure["api_key"],
+                    "api_base": azure["endpoint"]
+                    .rstrip("/")
+                    .removesuffix("/openai/v1"),
+                    "api_version": azure["api_version"],
+                }
+            )
     except (ValueError, RuntimeError) as caught:
         failure = caught
         failure_kind: Literal["provider", "configuration"] = "configuration"
@@ -127,7 +135,6 @@ async def check_model_endpoint(
                         "content": "Reply with one short sentence naming the model you are.",
                     }
                 ],
-                max_tokens=32,
                 timeout=15,
                 **kwargs,
             )
