@@ -46,6 +46,7 @@ from oddish.costs.modal_cost import (
     normalize_gpu_type,
     provider_default_request,
 )
+from oddish.core.trial_artifacts import write_trial_selection_manifest
 from oddish.runtime.ec2_policy import (
     LAUNCH_TOKEN_TAG_KEY,
     SANDBOX_RUN_ID_TAG_KEY,
@@ -2218,6 +2219,13 @@ async def _run_harbor_trial_async_impl(
                 exception_type="JobResultMissingError",
             )
 
+        write_trial_selection_manifest(
+            job_result_path,
+            [
+                trial_result.trial_name
+                for trial_result in getattr(job_result, "trial_results", [])
+            ],
+        )
         outcome = _extract_outcome_from_job_result(
             job_result=job_result,
             job_result_path=job_result_path,

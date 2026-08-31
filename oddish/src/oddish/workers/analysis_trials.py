@@ -44,11 +44,18 @@ from oddish.analyze.trajectory_prompt import (
 )
 from oddish.analyze.trajectory_provenance import component_provenance
 from oddish.analyze.trajectory_taxonomy import (
+    ActionAxis,
+    PurposeAxis,
     SCHEMA_VERSION,
+    TrajectoryBlockTaxonomy,
     render_summary_instructions,
     taxonomy_version,
 )
 from oddish.config import settings
+from oddish.core.analysis_payload import (
+    AnalysisPayloadError,
+    parse_analysis_payload,
+)
 from oddish.core.verdict_sync import (
     aggregate_exploited_into_pre_trial,
     build_pre_trial_payload,
@@ -100,6 +107,54 @@ def is_analysis_kind(kind: str | None) -> bool:
     return kind in ANALYSIS_TRIAL_KINDS
 
 
+def pre_trial_item_ids(items: list[dict] | None) -> tuple[list[str], list[str]]:
+    """Return unique audit ids and the must-fix subset in source order."""
+    item_ids: list[str] = []
+    must_fix_ids: list[str] = []
+    for item in items or []:
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        item_id = str(item["id"])
+        if item_id not in item_ids:
+            item_ids.append(item_id)
+        if (
+            item.get("tier", item.get("severity")) == ActionTier.MUST_FIX.value
+            and item_id not in must_fix_ids
+        ):
+            must_fix_ids.append(item_id)
+    return item_ids, must_fix_ids
+
+
+def trial_evidence_snapshot(trial: TrialModel) -> dict:
+    """Freeze the server-owned facts used to validate one QA classification."""
+    status = (
+        trial.status.value
+        if isinstance(trial.status, TrialStatus)
+        else str(trial.status)
+    )
+    return {
+        "trial_id": str(trial.id),
+        "status": status,
+        "reward": trial.reward,
+        "has_trajectory": bool(trial.has_trajectory),
+        "agent": trial.agent,
+    }
+
+
+async def load_trial_evidence(
+    session: AsyncSession, trial_ids: list[str]
+) -> list[dict]:
+    """Load an exact, source-ordered evidence snapshot for a QA trial."""
+    trials = (
+        await session.scalars(select(TrialModel).where(TrialModel.id.in_(trial_ids)))
+    ).all()
+    by_id = {str(trial.id): trial for trial in trials}
+    missing = [trial_id for trial_id in trial_ids if trial_id not in by_id]
+    if missing:
+        raise RuntimeError(f"cannot snapshot missing QA source trials: {missing}")
+    return [trial_evidence_snapshot(by_id[trial_id]) for trial_id in trial_ids]
+
+
 def analysis_check_payload(kind: str, harbor_config: dict | None) -> dict:
     """The machine-checkable artifact contract for one analysis trial.
 
@@ -112,20 +167,29 @@ def analysis_check_payload(kind: str, harbor_config: dict | None) -> dict:
     from typing import get_args
 
     item_vocabulary = {
-        "sources": [s.value for s in ActionItemSource],
         "problem_types": [p.value for p in ProblemType],
         "dimensions": [d.value for d in Dimension],
         # The ActionItem model accepts the prompt's own heading spellings
         # for the dimension field; the validator must not be stricter.
         "dimension_spellings": sorted(_DIMENSION_HEADING_SPELLINGS),
         "tiers": [t.value for t in ActionTier],
+        "must_fix_tier": ActionTier.MUST_FIX.value,
+    }
+    trajectory_vocabulary = {
+        "trajectory_components": [v.value for v in TrajectoryBlockTaxonomy],
+        "actions": [v.value for v in ActionAxis],
+        "purposes": [v.value for v in PurposeAxis],
     }
     if kind in ("qa", "qa_eval"):
-        payload = (harbor_config or {}).get("analysis_payload") or {}
+        payload = parse_analysis_payload(kind, harbor_config)
         return {
             "kind": "qa",
-            "trial_ids": [str(t) for t in payload.get("trial_ids") or []],
-            "verdict_expected": bool(payload.get("with_verdict", True)),
+            "trial_ids": list(payload.trial_ids),
+            "trial_evidence": list(payload.trial_evidence),
+            "baseline_evidence": list(payload.baseline_evidence),
+            "pre_trial_item_ids": list(payload.pre_trial_item_ids),
+            "pre_trial_must_fix_ids": list(payload.pre_trial_must_fix_ids),
+            "verdict_expected": payload.with_verdict,
             "classifications": [c.value for c in Classification],
             "verdicts": list(
                 get_args(TaskVerdictModel.model_fields["verdict"].annotation)
@@ -133,15 +197,25 @@ def analysis_check_payload(kind: str, harbor_config: dict | None) -> dict:
             "confidences": list(
                 get_args(TaskVerdictModel.model_fields["confidence"].annotation)
             ),
+            "sources": [ActionItemSource.POST_TRIAL.value],
+            **trajectory_vocabulary,
             **item_vocabulary,
         }
     if kind == "summarize":
-        payload = (harbor_config or {}).get("analysis_payload") or {}
+        payload = parse_analysis_payload(kind, harbor_config)
         return {
             "kind": "summarize",
-            "target_trial_id": str(payload.get("target_trial_id") or ""),
+            "target_trial_id": payload.target_trial_id,
+            **trajectory_vocabulary,
         }
-    return {"kind": "audit", **item_vocabulary}
+    if kind == "audit":
+        parse_analysis_payload(kind, harbor_config)
+        return {
+            "kind": "audit",
+            "sources": [ActionItemSource.PRE_TRIAL.value],
+            **item_vocabulary,
+        }
+    raise AnalysisPayloadError(f"unsupported analysis trial kind {kind!r}")
 
 
 # Fired after a QA import writes the task verdict (hosted GitHub PR refresh).
@@ -641,6 +715,8 @@ async def create_qa_trial(
         else None
     )
     items = (version.pre_trial or {}).get("items") if version is not None else None
+    item_ids, must_fix_ids = pre_trial_item_ids(items)
+    trial_evidence = await load_trial_evidence(session, eligible_trial_ids)
     return await create_analysis_trial(
         session,
         task=task,
@@ -651,7 +727,13 @@ async def create_qa_trial(
             pre_trial_items=items,
             with_verdict=with_verdict,
         ),
-        payload={"trial_ids": eligible_trial_ids, "with_verdict": with_verdict},
+        payload={
+            "trial_ids": eligible_trial_ids,
+            "trial_evidence": trial_evidence,
+            "pre_trial_item_ids": item_ids,
+            "pre_trial_must_fix_ids": must_fix_ids,
+            "with_verdict": with_verdict,
+        },
     )
 
 

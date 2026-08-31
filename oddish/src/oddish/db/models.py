@@ -2038,10 +2038,14 @@ class APIKeyModel(TimestampedMixin, Base):
     is_internal: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    bound_analysis_trial_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
 
     __table_args__ = (
         Index("idx_api_keys_org_id", "org_id"),
         Index("idx_api_keys_key_hash", "key_hash"),
+        Index("idx_api_keys_bound_analysis_trial_id", "bound_analysis_trial_id"),
     )
 
 

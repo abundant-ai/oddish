@@ -30,6 +30,7 @@ def create_api_key(
     created_by_role: str | None = None,
     expires_at: datetime | None = None,
     is_internal: bool = False,
+    bound_analysis_trial_id: str | None = None,
 ) -> tuple[APIKeyModel, str]:
     raw_key = generate_api_key()
     api_key = APIKeyModel(
@@ -42,6 +43,7 @@ def create_api_key(
         created_by_role=created_by_role,
         expires_at=expires_at,
         is_internal=is_internal,
+        bound_analysis_trial_id=bound_analysis_trial_id,
     )
     return api_key, raw_key
 
@@ -53,6 +55,7 @@ async def mint_internal_api_key(
     name: str,
     ttl_minutes: int,
     scope: APIKeyScope = APIKeyScope.READ,
+    bound_analysis_trial_id: str | None = None,
 ) -> tuple[str, str]:
     """Mint and persist a short-lived internal key.
 
@@ -65,20 +68,8 @@ async def mint_internal_api_key(
         scope=scope,
         expires_at=utcnow() + timedelta(minutes=ttl_minutes),
         is_internal=True,
+        bound_analysis_trial_id=bound_analysis_trial_id,
     )
     session.add(api_key)
     await session.commit()
     return api_key.id, raw_key
-
-
-async def mint_internal_read_key(
-    session: AsyncSession, *, org_id: str, name: str, ttl_minutes: int
-) -> tuple[str, str]:
-    """Backward-compatible READ-scoped internal-key helper."""
-    return await mint_internal_api_key(
-        session,
-        org_id=org_id,
-        name=name,
-        ttl_minutes=ttl_minutes,
-        scope=APIKeyScope.READ,
-    )

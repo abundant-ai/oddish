@@ -4,8 +4,8 @@ import json
 import re
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import PurePosixPath
-from typing import Protocol
+from pathlib import Path, PurePosixPath
+from typing import Never, Protocol, Sequence
 
 from fastapi import HTTPException
 
@@ -38,10 +38,53 @@ class TrialArtifactLayout:
     artifact_prefix: str | None
     manifest: dict | None = None
     listed_keys: tuple[str, ...] | None = None
+    failure_reason: str | None = None
 
 
 class AnalysisArtifactLayoutError(RuntimeError):
     """A newly uploaded analysis attempt cannot satisfy its read contract."""
+
+
+ODDISH_TRIAL_NAME_KEY = "oddish_trial_name"
+
+
+def _validate_trial_name(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("result.json trial_name must be a non-empty string")
+    trial_name = value.strip()
+    trial_name_path = PurePosixPath(trial_name)
+    if (
+        trial_name_path.is_absolute()
+        or len(trial_name_path.parts) != 1
+        or trial_name_path.parts[0] in (".", "..")
+    ):
+        raise ValueError("result.json trial_name must be one directory name")
+    return trial_name
+
+
+def write_trial_selection_manifest(
+    result_path: Path, trial_names: Sequence[str]
+) -> bool:
+    """Record the one Harbor child owned by an Oddish job in root result.json.
+
+    Harbor 0.20 keeps complete TrialResult objects in each child directory and
+    deliberately omits ``trial_results`` from the root job summary. Oddish runs
+    one Harbor trial per job, so persist that one name as a small extension on
+    the root summary before uploading the directory. Returning False leaves
+    zero- or multi-trial jobs unselected so settlement fails closed.
+    """
+    if len(trial_names) != 1:
+        return False
+    trial_name = _validate_trial_name(trial_names[0])
+    manifest = json.loads(result_path.read_text(encoding="utf-8"))
+    if not isinstance(manifest, dict):
+        raise ValueError("result.json must contain a JSON object")
+    manifest[ODDISH_TRIAL_NAME_KEY] = trial_name
+    result_path.write_text(
+        json.dumps(manifest, indent=4, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    return True
 
 
 def normalize_trial_relative_path(file_path: str) -> str:
@@ -62,6 +105,8 @@ def trial_name_from_manifest(manifest: object) -> str | None:
     """Return the sole Harbor child name, or None for a root-only failure."""
     if not isinstance(manifest, dict):
         raise ValueError("result.json must contain a JSON object")
+    if ODDISH_TRIAL_NAME_KEY in manifest:
+        return _validate_trial_name(manifest[ODDISH_TRIAL_NAME_KEY])
     trial_results = manifest.get("trial_results")
     if not isinstance(trial_results, list):
         raise ValueError("result.json trial_results must be a list")
@@ -69,18 +114,7 @@ def trial_name_from_manifest(manifest: object) -> str | None:
         return None
     if len(trial_results) != 1 or not isinstance(trial_results[0], dict):
         raise ValueError("result.json must identify exactly one Harbor trial")
-    trial_name = trial_results[0].get("trial_name")
-    if not isinstance(trial_name, str) or not trial_name.strip():
-        raise ValueError("result.json trial_name must be a non-empty string")
-    trial_name = trial_name.strip()
-    trial_name_path = PurePosixPath(trial_name)
-    if (
-        trial_name_path.is_absolute()
-        or len(trial_name_path.parts) != 1
-        or trial_name_path.parts[0] in (".", "..")
-    ):
-        raise ValueError("result.json trial_name must be one directory name")
-    return trial_name
+    return _validate_trial_name(trial_results[0].get("trial_name"))
 
 
 def _is_attempt_scoped_key(key: str, root_prefix: str) -> bool:
@@ -120,6 +154,9 @@ async def resolve_trial_artifact_layout(
                 attempt_prefix,
                 None,
                 listed_keys=listed_keys,
+                failure_reason=(
+                    "trial_s3_key is missing while attempt-scoped artifacts exist"
+                ),
             )
 
     manifest_key = f"{attempt_prefix}result.json"
@@ -129,16 +166,26 @@ async def resolve_trial_artifact_layout(
             attempt_prefix,
             attempt_prefix,
             listed_keys=listed_keys,
+            failure_reason="result.json is missing",
         )
 
     try:
         manifest = json.loads(await storage.download_text(manifest_key))
-        trial_name = trial_name_from_manifest(manifest)
-    except (ValueError, TypeError, json.JSONDecodeError):
+    except (TypeError, json.JSONDecodeError):
         return TrialArtifactLayout(
             TrialArtifactMode.UNAVAILABLE,
             attempt_prefix,
             None,
+            failure_reason="result.json is invalid JSON",
+        )
+    try:
+        trial_name = trial_name_from_manifest(manifest)
+    except ValueError as exc:
+        return TrialArtifactLayout(
+            TrialArtifactMode.UNAVAILABLE,
+            attempt_prefix,
+            None,
+            failure_reason=str(exc),
         )
 
     artifact_prefix = (
@@ -164,6 +211,22 @@ async def validate_uploaded_analysis_artifacts(
 ) -> TrialArtifactLayout:
     """Prove a fresh analysis upload can be read before settlement succeeds."""
 
+    async def reject(message: str) -> Never:
+        try:
+            uploaded_keys = sorted(await storage.list_keys(trial_s3_key))
+            relative_files = [
+                key.removeprefix(trial_s3_key) for key in uploaded_keys[:12]
+            ]
+            remaining = len(uploaded_keys) - len(relative_files)
+            listing = f"uploaded_files={relative_files!r}"
+            if remaining:
+                listing += f" (+{remaining} more)"
+        except Exception as exc:
+            listing = f"uploaded_files_unavailable={type(exc).__name__}"
+        raise AnalysisArtifactLayoutError(
+            f"{message}; prefix={trial_s3_key!r}; {listing}"
+        )
+
     @dataclass(frozen=True, slots=True)
     class UploadedAttempt:
         id: str
@@ -173,24 +236,20 @@ async def validate_uploaded_analysis_artifacts(
         UploadedAttempt(id=trial_id, trial_s3_key=trial_s3_key), storage
     )
     if layout.mode is not TrialArtifactMode.EXACT or layout.manifest is None:
-        raise AnalysisArtifactLayoutError(
-            "result.json is missing, malformed, or does not select one attempt"
-        )
+        await reject(layout.failure_reason or "result.json is unavailable")
     trial_name = trial_name_from_manifest(layout.manifest)
-    if trial_name is None or layout.artifact_prefix == layout.attempt_prefix:
-        raise AnalysisArtifactLayoutError(
-            "result.json does not select a Harbor child directory"
-        )
+    if trial_name is None:
+        await reject("result.json contains no trial_results")
+    if layout.artifact_prefix == layout.attempt_prefix:
+        await reject("result.json does not select a Harbor child directory")
 
     result_key = f"{layout.artifact_prefix}verifier/{required_artifact}"
     if not await storage.object_exists(result_key):
-        raise AnalysisArtifactLayoutError(
-            f"selected Harbor child is missing verifier/{required_artifact}"
-        )
+        await reject(f"selected Harbor child is missing verifier/{required_artifact}")
     if has_trajectory:
         trajectory_key = f"{layout.artifact_prefix}agent/trajectory.json"
         if not await storage.object_exists(trajectory_key):
-            raise AnalysisArtifactLayoutError(
+            await reject(
                 "outcome reports a trajectory but the selected Harbor child "
                 "is missing agent/trajectory.json"
             )

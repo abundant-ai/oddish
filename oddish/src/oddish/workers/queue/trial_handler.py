@@ -972,12 +972,18 @@ async def _store_trial_results(
 
         if outcome:
             is_timeout = _is_agent_timeout_error_message(outcome.error)
+            has_non_retryable_oddish_failure = (
+                outcome.exception_type in _NON_HARBOR_RETRYABLE_EXCEPTION_TYPES
+            )
+            analysis_artifact_error = (
+                artifact_upload_error if is_analysis_kind(trial.kind) else None
+            )
             # Analysis importers read their required result from durable storage.
             # A verifier reward is not a successful analysis run when that
             # artifact never reached storage: keep the trial on the normal retry
             # path instead of publishing an unrecoverable SUCCESS row.
-            derived_reward = None if artifact_upload_error else outcome.reward
-            if derived_reward is None and is_timeout and not artifact_upload_error:
+            derived_reward = None if analysis_artifact_error else outcome.reward
+            if derived_reward is None and is_timeout and not analysis_artifact_error:
                 verifier_ran = _verifier_ran_from_job_result(
                     str(outcome.job_result_path) if outcome.job_result_path else None
                 )
@@ -988,8 +994,8 @@ async def _store_trial_results(
                     )
 
             trial.reward = derived_reward
-            if artifact_upload_error:
-                trial.error_message = artifact_upload_error
+            if analysis_artifact_error:
+                trial.error_message = analysis_artifact_error
             elif outcome.error:
                 trial.error_message = outcome.error
             elif derived_reward is not None:
@@ -1044,7 +1050,14 @@ async def _store_trial_results(
                     console.print(
                         f"[red]Trial {trial_id} FAILED (Modal image build)[/red]"
                     )
-                elif _is_non_retryable_outcome(trial, outcome):
+                # A freshly uploaded analysis layout that cannot be read is an
+                # Oddish settlement failure. Give it the trial's durable retry
+                # budget even when Harbor classified the underlying verifier
+                # failure as terminal. Oddish-only control failures still fail
+                # closed because another sandbox cannot repair them.
+                elif _is_non_retryable_outcome(trial, outcome) and (
+                    not analysis_artifact_error or has_non_retryable_oddish_failure
+                ):
                     trial.status = TrialStatus.FAILED
                     trial.finished_at = utcnow()
                     console.print(
@@ -1761,6 +1774,9 @@ async def _prepare_trial_task(
                 probe_key_id, probe_agent_env = await mint_probe_creds(
                     org_id=prepared_trial.org_id,
                     trial_id=trial_id,
+                    bound_analysis_trial_id=(
+                        trial_id if is_analysis_kind(trial_kind) else None
+                    ),
                 )
                 probe_agent_env["ODDISH_PROBE_TASK_ID"] = prepared_trial.task_id
                 if prepared_trial.task_version is not None:
