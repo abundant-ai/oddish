@@ -107,6 +107,24 @@ def is_analysis_kind(kind: str | None) -> bool:
     return kind in ANALYSIS_TRIAL_KINDS
 
 
+def pre_trial_item_ids(items: list[dict] | None) -> tuple[list[str], list[str]]:
+    """Return unique audit ids and the must-fix subset in source order."""
+    item_ids: list[str] = []
+    must_fix_ids: list[str] = []
+    for item in items or []:
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        item_id = str(item["id"])
+        if item_id not in item_ids:
+            item_ids.append(item_id)
+        if (
+            item.get("tier", item.get("severity")) == ActionTier.MUST_FIX.value
+            and item_id not in must_fix_ids
+        ):
+            must_fix_ids.append(item_id)
+    return item_ids, must_fix_ids
+
+
 def analysis_check_payload(kind: str, harbor_config: dict | None) -> dict:
     """The machine-checkable artifact contract for one analysis trial.
 
@@ -667,6 +685,7 @@ async def create_qa_trial(
         else None
     )
     items = (version.pre_trial or {}).get("items") if version is not None else None
+    item_ids, must_fix_ids = pre_trial_item_ids(items)
     return await create_analysis_trial(
         session,
         task=task,
@@ -677,7 +696,12 @@ async def create_qa_trial(
             pre_trial_items=items,
             with_verdict=with_verdict,
         ),
-        payload={"trial_ids": eligible_trial_ids, "with_verdict": with_verdict},
+        payload={
+            "trial_ids": eligible_trial_ids,
+            "pre_trial_item_ids": item_ids,
+            "pre_trial_must_fix_ids": must_fix_ids,
+            "with_verdict": with_verdict,
+        },
     )
 
 

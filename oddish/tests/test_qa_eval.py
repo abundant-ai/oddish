@@ -49,7 +49,7 @@ def _qa_artifact(source_trial_id: str = "source-1") -> dict:
                             "step_ids": [1],
                             "trajectory_component": "implementing",
                             "action": "edit",
-                            "purpose": "fix the task",
+                            "purpose": "build",
                             "summary": "One edit.",
                         }
                     ],
@@ -174,6 +174,12 @@ class _CreateSession:
 async def test_create_adds_one_pointer_trial_without_moving_the_source(monkeypatch):
     source = _source()
     session = _CreateSession(source)
+    session.version.pre_trial = {
+        "items": [
+            {"id": "audit-1", "tier": "must_fix"},
+            {"id": "audit-2", "tier": "should_fix"},
+        ]
+    }
     captured = {}
     admitted = []
 
@@ -212,6 +218,8 @@ async def test_create_adds_one_pointer_trial_without_moving_the_source(monkeypat
     assert captured["billed_user_id"] == "user-1"
     assert captured["payload"]["source_trial_id"] == "source-1"
     assert captured["payload"]["trial_ids"] == ["source-1"]
+    assert captured["payload"]["pre_trial_item_ids"] == ["audit-1", "audit-2"]
+    assert captured["payload"]["pre_trial_must_fix_ids"] == ["audit-1"]
     assert admitted == [("org-1", "user-1", 1)]
     assert source.experiment_id == "original-experiment"
     assert source.analysis == {"classification": "BAD_FAILURE"}

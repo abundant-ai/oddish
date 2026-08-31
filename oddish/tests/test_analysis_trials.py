@@ -5,6 +5,7 @@ Each test checks one rule. The rule is in the test name and the first line.
 
 import os
 import uuid
+from types import SimpleNamespace
 
 import pytest
 
@@ -201,6 +202,70 @@ def _good_qa_entry(trial_id: str) -> dict:
             ],
         },
     }
+
+
+@pytest.mark.asyncio
+async def test_qa_creation_persists_the_pre_trial_contract(monkeypatch):
+    from oddish.db import TaskVersionModel
+    from oddish.worker.analysis_result_check import check_analysis_result
+    from oddish.workers.analysis_trials import analysis_check_payload, create_qa_trial
+
+    task = SimpleNamespace(
+        id="task-1",
+        name="demo",
+        current_version_id="version-1",
+    )
+    version = SimpleNamespace(
+        pre_trial={
+            "items": [
+                {"id": "audit-1", "tier": "must_fix"},
+                {"id": "audit-2", "severity": "should_fix"},
+                {"id": "audit-1", "tier": "must_fix"},
+                {"title": "An old finding without an id"},
+            ]
+        }
+    )
+
+    class Session:
+        async def get(self, model, row_id):
+            assert model is TaskVersionModel
+            assert row_id == "version-1"
+            return version
+
+    captured = {}
+
+    async def fake_create_analysis_trial(_session, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(id="qa-1")
+
+    monkeypatch.setattr(
+        "oddish.workers.analysis_trials.create_analysis_trial",
+        fake_create_analysis_trial,
+    )
+
+    await create_qa_trial(
+        Session(),
+        task=task,
+        eligible_trial_ids=["trial-1"],
+        with_verdict=False,
+    )
+
+    payload = captured["payload"]
+    assert payload["pre_trial_item_ids"] == ["audit-1", "audit-2"]
+    assert payload["pre_trial_must_fix_ids"] == ["audit-1"]
+
+    entry = _good_qa_entry("trial-1")
+    entry["analysis"]["exploitation"] = [
+        {
+            "links_to": item_id,
+            "exploited": False,
+            "exploit_evidence": None,
+            "causal": False,
+        }
+        for item_id in payload["pre_trial_item_ids"]
+    ]
+    expected = analysis_check_payload("qa", {"analysis_payload": payload})
+    assert check_analysis_result({"trials": [entry], "verdict": None}, expected) == []
 
 
 def test_the_overlay_replaces_the_whole_task(tmp_path):
