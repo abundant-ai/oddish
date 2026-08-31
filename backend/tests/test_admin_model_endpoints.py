@@ -171,7 +171,12 @@ async def test_model_endpoint_surfaces_upstream_http_status(monkeypatch, status_
     monkeypatch.setitem(
         sys.modules,
         "litellm",
-        SimpleNamespace(APIError=FakeAPIError, acompletion=completion),
+        SimpleNamespace(
+            APIError=FakeAPIError,
+            Timeout=FakeAPIError,
+            APIConnectionError=FakeAPIError,
+            acompletion=completion,
+        ),
     )
 
     async with AsyncClient(
@@ -193,6 +198,52 @@ async def test_model_endpoint_surfaces_upstream_http_status(monkeypatch, status_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("error_name", ["Timeout", "APIConnectionError"])
+async def test_model_endpoint_surfaces_transport_failures(monkeypatch, error_name):
+    class FakeAPIError(Exception):
+        pass
+
+    class Timeout(Exception):
+        pass
+
+    class APIConnectionError(Exception):
+        pass
+
+    error_type = {
+        "Timeout": Timeout,
+        "APIConnectionError": APIConnectionError,
+    }[error_name]
+
+    async def completion(**_kwargs):
+        raise error_type("The provider did not respond")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "litellm",
+        SimpleNamespace(
+            APIError=FakeAPIError,
+            Timeout=Timeout,
+            APIConnectionError=APIConnectionError,
+            acompletion=completion,
+        ),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_app()), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/admin/model-endpoints", json={"model": "xai/grok-code-fast-1"}
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["failure_kind"] == "provider"
+    assert payload["status_code"] is None
+    assert payload["error"] == f"{error_name}: The provider did not respond"
+
+
+@pytest.mark.asyncio
 async def test_model_endpoint_does_not_hide_internal_errors(monkeypatch):
     class FakeAPIError(Exception):
         pass
@@ -203,7 +254,12 @@ async def test_model_endpoint_does_not_hide_internal_errors(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "litellm",
-        SimpleNamespace(APIError=FakeAPIError, acompletion=completion),
+        SimpleNamespace(
+            APIError=FakeAPIError,
+            Timeout=FakeAPIError,
+            APIConnectionError=FakeAPIError,
+            acompletion=completion,
+        ),
     )
 
     async with AsyncClient(

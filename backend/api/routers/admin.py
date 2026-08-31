@@ -152,7 +152,11 @@ async def check_model_endpoint(
                 timeout=15,
                 **kwargs,
             )
-        except litellm.APIError as caught:
+        except (
+            litellm.APIError,
+            litellm.Timeout,
+            litellm.APIConnectionError,
+        ) as caught:
             failure = caught
             failure_kind = "provider"
         else:
