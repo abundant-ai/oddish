@@ -368,7 +368,7 @@ All routes require auth unless marked public.
 | PUT | `/admin/concurrency` | Set or clear a database-backed queue-key concurrency override |
 | GET | `/admin/queue-status` | Per-kind queue counts sourced from `trials`/`tasks` |
 | GET | `/admin/orphaned-state` | Stale/orphaned queue state diagnostics |
-| GET | `/admin/worker-jobs` | Unified `worker_jobs` kind×status matrix, stale-RUNNING samples, recent failures/cancels, and duration percentiles |
+| GET | `/admin/worker-jobs` | Live worker summary plus a bounded `active`, `attention`, or `failures` sample with task, experiment, and trial context |
 | POST | `/admin/tasks/expand-backfill` | Backfill sweep expansion for older tasks missing worker_jobs rows (admin only) |
 | POST | `/webhooks/clerk` | Clerk webhook ingestion |
 | POST | `/webhooks/slack/events` | Signed Slack URL verification and `link_shared` event ingestion |

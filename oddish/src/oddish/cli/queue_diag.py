@@ -32,7 +32,7 @@ _ADMIN_ENDPOINTS: list[tuple[str, str, dict[str, Any]]] = [
     ("queue_status", "/admin/queue-status", {}),
     ("slots", "/admin/slots", {}),
     ("orphaned_state", "/admin/orphaned-state", {}),
-    ("worker_jobs", "/admin/worker-jobs", {}),
+    ("worker_jobs", "/admin/worker-jobs", {"sample": "failures"}),
 ]
 
 
@@ -119,7 +119,9 @@ def _render_health(health: dict[str, Any]) -> None:
 
     capacity = health.get("capacity") or []
     if capacity:
-        table = Table(title="Capacity by queue", show_header=True, box=None, padding=(0, 2))
+        table = Table(
+            title="Capacity by queue", show_header=True, box=None, padding=(0, 2)
+        )
         table.add_column("Queue key", style="cyan")
         table.add_column("Queued", justify="right")
         table.add_column("Sched", justify="right")
@@ -131,7 +133,9 @@ def _render_health(health: dict[str, Any]) -> None:
             fill = row.get("fill")
             fill_str = f"{fill * 100:.0f}%" if isinstance(fill, (int, float)) else "-"
             oldest = row.get("oldest_queued_age_seconds")
-            oldest_str = f"{oldest / 60:.0f}m" if isinstance(oldest, (int, float)) else "-"
+            oldest_str = (
+                f"{oldest / 60:.0f}m" if isinstance(oldest, (int, float)) else "-"
+            )
             table.add_row(
                 str(row.get("queue_key", "-")),
                 str(row.get("queued", 0)),
@@ -221,7 +225,9 @@ def _render_orphaned(orphaned: dict[str, Any]) -> None:
     )
     samples = orphaned.get("trial_samples") or []
     if samples:
-        table = Table(title="Stale trial samples", show_header=True, box=None, padding=(0, 2))
+        table = Table(
+            title="Stale trial samples", show_header=True, box=None, padding=(0, 2)
+        )
         table.add_column("Trial", style="cyan")
         table.add_column("Queue key")
         table.add_column("Stage")
@@ -234,7 +240,11 @@ def _render_orphaned(orphaned: dict[str, Any]) -> None:
                 str(row.get("queue_key", "-")),
                 str(row.get("harbor_stage") or "-"),
                 str(row.get("current_worker_id") or "-"),
-                str(row.get("current_queue_slot") if row.get("current_queue_slot") is not None else "-"),
+                str(
+                    row.get("current_queue_slot")
+                    if row.get("current_queue_slot") is not None
+                    else "-"
+                ),
                 _age(row.get("heartbeat_at")),
             )
         console.print(table)
@@ -242,37 +252,31 @@ def _render_orphaned(orphaned: dict[str, Any]) -> None:
 
 def _render_worker_jobs(worker_jobs: dict[str, Any]) -> None:
     console.print("[bold cyan]Worker jobs[/bold cyan]")
-    counts = worker_jobs.get("counts") or {}
-    if counts:
-        # Collect the union of statuses across kinds for a stable column set.
-        statuses: list[str] = []
-        for by_status in counts.values():
-            for status_name in by_status:
-                if status_name not in statuses:
-                    statuses.append(status_name)
-        table = Table(show_header=True, box=None, padding=(0, 2))
-        table.add_column("Kind", style="cyan")
-        for status_name in statuses:
-            table.add_column(status_name, justify="right")
-        for kind, by_status in counts.items():
-            table.add_row(
-                str(kind),
-                *[str(by_status.get(status_name, 0)) for status_name in statuses],
-            )
-        console.print(table)
-    else:
-        console.print("  [dim]no worker jobs[/dim]")
+    summary = worker_jobs.get("summary") or {}
+    console.print(
+        f"  running [blue]{summary.get('running', 0)}[/blue]   "
+        f"ready [yellow]{summary.get('ready', 0)}[/yellow]   "
+        f"scheduled {summary.get('scheduled', 0)}   "
+        f"blocked {summary.get('blocked', 0)}   "
+        f"stale [red]{summary.get('stale', 0)}[/red]"
+    )
 
-    failures = worker_jobs.get("recent_failures") or []
+    failures = [
+        row for row in (worker_jobs.get("jobs") or []) if row.get("status") == "FAILED"
+    ]
     if failures:
-        table = Table(title="Recent failures", show_header=True, box=None, padding=(0, 2))
+        table = Table(
+            title="Recent failures", show_header=True, box=None, padding=(0, 2)
+        )
         table.add_column("Job", style="cyan")
         table.add_column("Kind")
         table.add_column("Queue key")
         table.add_column("Finished")
         table.add_column("Error")
         for row in failures[:10]:
-            err = str(row.get("error_message") or row.get("last_heartbeat_error") or "-")
+            err = str(
+                row.get("error_message") or row.get("last_heartbeat_error") or "-"
+            )
             if len(err) > 60:
                 err = err[:57] + "..."
             table.add_row(
@@ -295,8 +299,7 @@ def print_queue_diagnostics(
     payload, auth_error = _fetch_admin(api_url, stale_after)
 
     any_success = any(
-        isinstance(value, dict) and "error" not in value
-        for value in payload.values()
+        isinstance(value, dict) and "error" not in value for value in payload.values()
     )
     # Endpoints that returned a real error (network / non-403 HTTP). A 404 maps
     # to None (endpoint absent, e.g. worker-jobs on the core server) and is not

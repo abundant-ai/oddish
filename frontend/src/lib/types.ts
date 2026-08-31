@@ -886,68 +886,17 @@ export interface QueueSlotsResponse {
   timestamp: string;
 }
 
-interface QueueStatusEntry {
-  kind?: string;
-  queue_key: string;
-  queued: number;
-  running: number;
-}
-
-export interface QueueStatusResponse {
-  queues?: QueueStatusEntry[];
-  trial_queues: QueueStatusEntry[];
-  analysis_queued: number;
-  analysis_running: number;
-  verdict_queued: number;
-  verdict_running: number;
-  timestamp: string;
-}
-
-interface OrphanedTrialSample {
-  trial_id: string;
-  task_id: string;
-  queue_key: string;
-  status: string;
-  issue: string;
-  harbor_stage: string | null;
-  current_worker_id: string | null;
-  current_queue_slot: number | null;
-  claimed_at: string | null;
-  heartbeat_at: string | null;
-  updated_at: string | null;
-}
-
-interface OrphanedTaskSample {
-  task_id: string;
-  status: string;
-  run_analysis: boolean;
-  verdict_status: string | null;
-  issue: string;
-  updated_at: string | null;
-}
-
-interface OrphanedStateCounts {
-  running_stale_heartbeat: number;
-  active_tasks_without_active_trials: number;
-}
-
-export interface OrphanedStateResponse {
-  counts: OrphanedStateCounts;
-  trial_samples: OrphanedTrialSample[];
-  task_samples: OrphanedTaskSample[];
-  stale_after_minutes: number;
-  timestamp: string;
-}
-
 export type WorkerJobKind =
-  | "TRIAL"
-  | "QA"
-  | "ANALYSIS"
-  | "VERDICT"
-  | "QA_REVIEW"
+  | "agent"
+  | "qa"
+  | "qa_eval"
+  | "audit"
+  | "summarize"
+  | "task_expand"
+  | "tag_project"
   | (string & {});
 
-export type WorkerJobStatus =
+type WorkerJobStatus =
   | "QUEUED"
   | "RUNNING"
   | "RETRYING"
@@ -962,36 +911,65 @@ export interface WorkerJobSample {
   kind: WorkerJobKind;
   status: WorkerJobStatus;
   queue_key: string;
-  subject_table: string | null;
-  subject_id: string | null;
+  trial_id: string | null;
+  task_id: string | null;
+  task_name: string | null;
+  experiment_id: string | null;
+  experiment_name: string | null;
+  agent: string | null;
+  model: string | null;
+  harbor_stage: string | null;
   attempts: number;
   max_attempts: number;
+  created_at: string;
+  available_after: string;
   claimed_at: string | null;
   heartbeat_at: string | null;
-  stale_reaped_at: string | null;
   finished_at: string | null;
+  admission_reason: string | null;
   error_message: string | null;
   heartbeat_failure_count: number;
   last_heartbeat_error: string | null;
   current_worker_id: string | null;
-  org_id: string | null;
+  current_queue_slot: number | null;
+  is_stale: boolean;
 }
 
-interface WorkerJobDurationStat {
+interface WorkerJobKindSummary {
   kind: WorkerJobKind;
-  queue_key: string;
-  sample_count: number;
-  p50_seconds: number;
-  p95_seconds: number;
+  running: number;
+  ready: number;
+  scheduled: number;
+  blocked: number;
+}
+
+interface WorkerJobsSummary {
+  running: number;
+  ready: number;
+  scheduled: number;
+  blocked: number;
+  stale: number;
+  failed_last_hour: number;
+  by_kind: WorkerJobKindSummary[];
+}
+
+interface WorkerPipelineIssue {
+  task_id: string;
+  task_name: string;
+  status: string;
+  run_analysis: boolean;
+  verdict_status: string | null;
+  issue: string;
+  updated_at: string | null;
 }
 
 export interface WorkerJobsResponse {
-  counts: Partial<
-    Record<WorkerJobKind, Partial<Record<WorkerJobStatus, number>>>
-  >;
-  stale_running: WorkerJobSample[];
-  recent_failures: WorkerJobSample[];
-  durations_last_hour: WorkerJobDurationStat[];
+  summary: WorkerJobsSummary;
+  jobs: WorkerJobSample[];
+  pipeline_issue_count: number;
+  pipeline_issues: WorkerPipelineIssue[];
+  total_jobs: number;
+  truncated: boolean;
   stale_after_minutes: number;
   timestamp: string;
 }

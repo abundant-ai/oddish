@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -23,12 +23,7 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "@/components/ui/accordion";
-import type {
-  QueueSlotsResponse,
-  QueueStatusResponse,
-  OrphanedStateResponse,
-  QueueSlotSummary,
-} from "@/lib/types";
+import type { QueueSlotsResponse, QueueSlotSummary } from "@/lib/types";
 import { fetcher } from "@/lib/api";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { TagAdminPolicyForm } from "@/components/tag-admin-policy-form";
@@ -40,17 +35,6 @@ import { CostBreakdownCard } from "@/components/cost-breakdown-card";
 import { CostExclusionsCard } from "@/components/cost-exclusions-card";
 import { SlackAlertSettingsForm } from "@/components/slack-alert-settings-form";
 import { RefreshCw, Server, Clock, AlertCircle } from "lucide-react";
-
-const formatAge = (dateStr: string | null) => {
-  if (!dateStr) return "—";
-  const diffMs = Date.now() - new Date(dateStr).getTime();
-  if (diffMs <= 0) return "0s";
-  const totalSeconds = Math.floor(diffMs / 1000);
-  if (totalSeconds < 60) return `${totalSeconds}s`;
-  if (totalSeconds < 3600) return `${Math.floor(totalSeconds / 60)}m`;
-  if (totalSeconds < 86400) return `${Math.floor(totalSeconds / 3600)}h`;
-  return `${Math.floor(totalSeconds / 86400)}d`;
-};
 
 // =============================================================================
 // Queue Slots Card
@@ -78,15 +62,13 @@ function QueueSlotsCard() {
     return `${Math.round(diffSec / 3600)}h`;
   };
   const [queueFilter, setQueueFilter] = useState("");
-  const filteredProviders = useMemo(() => {
-    if (!data?.queue_keys) return [];
-    const query = queueFilter.toLowerCase().trim();
-    if (!query) return data.queue_keys;
-    return data.queue_keys.filter((queueSummary) => {
-      const queueKey = queueSummary.queue_key;
-      return queueKey.toLowerCase().includes(query);
-    });
-  }, [data?.queue_keys, queueFilter]);
+  const queueNeedle = queueFilter.toLowerCase().trim();
+  const filteredProviders =
+    data?.queue_keys.filter(
+      (queueSummary) =>
+        !queueNeedle ||
+        queueSummary.queue_key.toLowerCase().includes(queueNeedle)
+    ) ?? [];
 
   return (
     <Card>
@@ -254,405 +236,6 @@ function QueueSlotsCard() {
   );
 }
 
-// =============================================================================
-// Queue Health Summary Card
-// =============================================================================
-
-function QueueHealthCard() {
-  const {
-    data: slotsData,
-    error: slotsError,
-    isLoading: slotsLoading,
-  } = useSWR<QueueSlotsResponse>("/api/admin/slots", fetcher, {
-    refreshInterval: 10000,
-  });
-
-  const {
-    data: qsData,
-    error: qsError,
-    isLoading: qsLoading,
-  } = useSWR<QueueStatusResponse>("/api/admin/queue-status", fetcher, {
-    refreshInterval: 10000,
-  });
-  const [queueFilter, setQueueFilter] = useState("");
-
-  const queueStatusEntries =
-    qsData?.queues && qsData.queues.length > 0
-      ? qsData.queues
-      : (qsData?.trial_queues ?? []);
-  const queueKeys = new Set<string>();
-  slotsData?.queue_keys.forEach((p) => queueKeys.add(p.queue_key));
-  queueStatusEntries.forEach((q) => queueKeys.add(q.queue_key));
-
-  const queueRows = queueStatusEntries.map((entry) => {
-    const queueKey = entry.queue_key;
-    const slotSummary =
-      slotsData?.queue_keys.find((p) => p.queue_key === queueKey) ?? null;
-    const queued = entry.queued ?? 0;
-    const running = entry.running ?? 0;
-    const totalSlots = slotSummary?.total_slots ?? 0;
-    const activeSlots = slotSummary?.active_slots ?? 0;
-    const staleLocks =
-      slotSummary?.slots.filter((slot) => slot.locked_by && !slot.is_active)
-        .length ?? 0;
-
-    const notes: string[] = [];
-    if (totalSlots === 0 && (queued > 0 || running > 0)) {
-      notes.push("No slots configured");
-    }
-    if (queued > 0 && totalSlots > 0 && activeSlots === 0) {
-      notes.push("No active workers");
-    }
-    if (queued > 0 && totalSlots > 0 && activeSlots >= totalSlots) {
-      notes.push("At capacity");
-    }
-    if (staleLocks > 0) {
-      notes.push(`${staleLocks} stale lock${staleLocks > 1 ? "s" : ""}`);
-    }
-
-    return {
-      kind: entry.kind ?? "TRIAL",
-      queueKey,
-      queued,
-      running,
-      totalSlots,
-      activeSlots,
-      notes,
-    };
-  });
-  for (const queueKey of queueKeys) {
-    if (queueRows.some((row) => row.queueKey === queueKey)) continue;
-    const slotSummary =
-      slotsData?.queue_keys.find((p) => p.queue_key === queueKey) ?? null;
-    if (!slotSummary) continue;
-    const staleLocks =
-      slotSummary.slots.filter((slot) => slot.locked_by && !slot.is_active)
-        .length ?? 0;
-    queueRows.push({
-      kind: "SLOT",
-      queueKey,
-      queued: 0,
-      running: 0,
-      totalSlots: slotSummary.total_slots,
-      activeSlots: slotSummary.active_slots,
-      notes:
-        staleLocks > 0
-          ? [`${staleLocks} stale lock${staleLocks > 1 ? "s" : ""}`]
-          : [],
-    });
-  }
-  const filteredRows = queueRows
-    .filter((row) =>
-      `${row.kind} ${row.queueKey}`
-        .toLowerCase()
-        .includes(queueFilter.toLowerCase().trim())
-    )
-    .sort(
-      (a, b) =>
-        b.queued + b.running - (a.queued + a.running) ||
-        a.kind.localeCompare(b.kind) ||
-        a.queueKey.localeCompare(b.queueKey)
-    )
-    .slice(0, 30);
-
-  const totalQueued = queueRows.reduce((sum, row) => sum + row.queued, 0);
-  const totalRunning = queueRows.reduce((sum, row) => sum + row.running, 0);
-  const totalSlots = slotsData?.total_slots ?? 0;
-  const totalActive = slotsData?.total_active ?? 0;
-
-  return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Server className="h-5 w-5" />
-            <CardTitle className="text-base">Queue Health</CardTitle>
-            {slotsData && (
-              <Badge variant="outline" className="text-xs">
-                {totalActive}/{totalSlots} slots active
-              </Badge>
-            )}
-          </div>
-          {qsData && (
-            <div className="flex gap-2">
-              <Badge variant="outline" className="text-xs">
-                {totalQueued} queued
-              </Badge>
-              <Badge variant="outline" className="text-xs">
-                {totalRunning} running
-              </Badge>
-            </div>
-          )}
-        </div>
-        {qsData && (
-          <p className="text-muted-foreground text-xs">
-            Last updated: {new Date(qsData.timestamp).toLocaleTimeString()}
-          </p>
-        )}
-      </CardHeader>
-      <CardContent>
-        {slotsError || qsError ? (
-          <Alert variant="destructive">
-            <AlertCircle className="h-4 w-4" />
-            <AlertTitle>Failed to load queue health</AlertTitle>
-            <AlertDescription>
-              {slotsError instanceof Error
-                ? slotsError.message
-                : qsError instanceof Error
-                  ? qsError.message
-                  : "Check if you have admin access."}
-            </AlertDescription>
-          </Alert>
-        ) : slotsLoading || qsLoading ? (
-          <p className="text-muted-foreground">Loading...</p>
-        ) : queueRows.length === 0 ? (
-          <div className="text-muted-foreground py-6 text-center">
-            <Server className="mx-auto mb-2 h-10 w-10 opacity-50" />
-            <p>No queue data available</p>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            <Input
-              value={queueFilter}
-              onChange={(event) => setQueueFilter(event.target.value)}
-              placeholder="Filter queue keys..."
-              className="h-8 text-xs"
-            />
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Kind</TableHead>
-                  <TableHead>Queue Key</TableHead>
-                  <TableHead className="text-right">Queued</TableHead>
-                  <TableHead className="text-right">Running</TableHead>
-                  <TableHead className="text-right">Slots</TableHead>
-                  <TableHead>Notes</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredRows.map((row) => (
-                  <TableRow key={`${row.kind}-${row.queueKey}`}>
-                    <TableCell>
-                      <Badge
-                        variant="outline"
-                        className="font-mono text-[10px]"
-                      >
-                        {row.kind}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      <span className="inline-flex items-center gap-2">
-                        <QueueKeyIcon queueKey={row.queueKey} size={13} />
-                        <span className="font-mono text-xs">
-                          {row.queueKey}
-                        </span>
-                      </span>
-                    </TableCell>
-                    <TableCell className="text-right font-mono text-xs">
-                      {row.queued}
-                    </TableCell>
-                    <TableCell className="text-right font-mono text-xs">
-                      {row.running}
-                    </TableCell>
-                    <TableCell className="text-right text-xs">
-                      {row.activeSlots}/{row.totalSlots || "—"}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground text-xs">
-                      {row.notes.length > 0 ? row.notes.join(" • ") : "—"}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-            <p className="text-muted-foreground text-xs">
-              Running tracks active workers. If queued &gt; 0 with no active
-              slots, workers are not spawning or slots are locked.
-            </p>
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-function formatIssueLabel(issue: string) {
-  switch (issue) {
-    case "running_stale_heartbeat":
-      return "Running trial with stale heartbeat";
-    case "active_task_without_active_trials":
-      return "Active task without active trials";
-    default:
-      return issue.replaceAll("_", " ");
-  }
-}
-
-function OrphanedStateCard() {
-  const { data, error, isLoading } = useSWR<OrphanedStateResponse>(
-    "/api/admin/orphaned-state?stale_after_minutes=10",
-    fetcher,
-    {
-      refreshInterval: 10000,
-    }
-  );
-
-  const counts = data?.counts;
-  const totalIssues = counts
-    ? counts.running_stale_heartbeat + counts.active_tasks_without_active_trials
-    : 0;
-
-  return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <AlertCircle className="h-5 w-5" />
-            <CardTitle className="text-base">Orphaned State</CardTitle>
-            {counts && (
-              <Badge variant={totalIssues > 0 ? "destructive" : "outline"}>
-                {totalIssues} signals
-              </Badge>
-            )}
-          </div>
-          {data && (
-            <p className="text-muted-foreground text-xs">
-              Updated {new Date(data.timestamp).toLocaleTimeString()}
-            </p>
-          )}
-        </div>
-        {data && (
-          <p className="text-muted-foreground text-xs">
-            Heartbeat becomes stale after {data.stale_after_minutes} minutes.
-          </p>
-        )}
-      </CardHeader>
-      <CardContent>
-        {error ? (
-          <Alert variant="destructive">
-            <AlertCircle className="h-4 w-4" />
-            <AlertTitle>Failed to load orphaned state</AlertTitle>
-            <AlertDescription>
-              {error instanceof Error ? error.message : "Unknown error"}
-            </AlertDescription>
-          </Alert>
-        ) : isLoading || !counts ? (
-          <p className="text-muted-foreground">Loading...</p>
-        ) : (
-          <div className="space-y-4">
-            <div className="flex flex-wrap gap-2 text-xs">
-              <Badge variant="outline">
-                stale-heartbeat {counts.running_stale_heartbeat}
-              </Badge>
-              <Badge variant="outline">
-                stuck-tasks {counts.active_tasks_without_active_trials}
-              </Badge>
-            </div>
-
-            {totalIssues === 0 ? (
-              <p className="text-muted-foreground text-sm">
-                No orphaned queue or pipeline state detected.
-              </p>
-            ) : (
-              <>
-                <div className="space-y-2">
-                  <div className="text-sm font-medium">
-                    Execution job samples
-                  </div>
-                  {data.trial_samples.length === 0 ? (
-                    <p className="text-muted-foreground text-xs">
-                      No execution job samples.
-                    </p>
-                  ) : (
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>Issue</TableHead>
-                          <TableHead>Execution Job</TableHead>
-                          <TableHead>Queue Key</TableHead>
-                          <TableHead>Worker</TableHead>
-                          <TableHead>Heartbeat</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {data.trial_samples.map((sample) => (
-                          <TableRow key={`${sample.issue}-${sample.trial_id}`}>
-                            <TableCell className="text-xs">
-                              {formatIssueLabel(sample.issue)}
-                            </TableCell>
-                            <TableCell className="font-mono text-xs">
-                              {sample.trial_id}
-                            </TableCell>
-                            <TableCell className="text-xs">
-                              {sample.queue_key}
-                            </TableCell>
-                            <TableCell className="font-mono text-xs">
-                              {sample.current_worker_id || "—"}
-                            </TableCell>
-                            <TableCell className="text-muted-foreground text-xs">
-                              {formatAge(sample.heartbeat_at)}
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  )}
-                </div>
-
-                <div className="space-y-2">
-                  <div className="text-sm font-medium">
-                    Task-stage job samples
-                  </div>
-                  {data.task_samples.length === 0 ? (
-                    <p className="text-muted-foreground text-xs">
-                      No task samples.
-                    </p>
-                  ) : (
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>Issue</TableHead>
-                          <TableHead>Task</TableHead>
-                          <TableHead>Status</TableHead>
-                          <TableHead>Verdict</TableHead>
-                          <TableHead>Updated</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {data.task_samples.map((sample) => (
-                          <TableRow key={`${sample.issue}-${sample.task_id}`}>
-                            <TableCell className="text-xs">
-                              {formatIssueLabel(sample.issue)}
-                            </TableCell>
-                            <TableCell className="font-mono text-xs">
-                              {sample.task_id}
-                            </TableCell>
-                            <TableCell className="text-xs">
-                              {sample.status}
-                            </TableCell>
-                            <TableCell className="text-xs">
-                              {sample.verdict_status || "—"}
-                            </TableCell>
-                            <TableCell className="text-muted-foreground text-xs">
-                              {formatAge(sample.updated_at)}
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  )}
-                </div>
-              </>
-            )}
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-// =============================================================================
-// Main Admin Page
-// =============================================================================
-
 const ADMIN_TABS = [
   "overview",
   "usage",
@@ -775,12 +358,10 @@ function AdminPageContent() {
 
         <TabsContent value="worker-jobs" className="space-y-4">
           <WorkerJobsCard />
-          <OrphanedStateCard />
         </TabsContent>
 
         {canManagePlatform && (
           <TabsContent value="concurrency" className="space-y-4">
-            <QueueHealthCard />
             <QueueSlotsCard />
           </TabsContent>
         )}

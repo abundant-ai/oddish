@@ -32,6 +32,7 @@ from oddish.core.admin import (
     OrphanedStateResponse,
     UserCostBreakdownResponse,
     WorkerJobsResponse,
+    WorkerJobsSample,
     get_cost_breakdown_core,
     get_model_concurrency_setting_core,
     get_queue_health_core,
@@ -133,18 +134,16 @@ async def get_model_concurrency(
 async def get_worker_jobs(
     auth: Annotated[AuthContext, Depends(require_admin)],
     stale_after_minutes: int = Query(15, ge=1, le=240),
-    sample_limit: int = Query(25, ge=1, le=100),
+    sample_limit: int = Query(200, ge=1, le=500),
+    sample: WorkerJobsSample = Query("active"),
 ) -> WorkerJobsResponse:
-    """Summarize the unified ``worker_jobs`` queue by (kind, status).
-
-    Powers the "Worker Jobs" admin panel which treats each kind (TRIAL,
-    ANALYSIS, VERDICT, ...) as an independently queued agent job.
-    """
+    """Return current execution work and recent failures with run context."""
     async with get_session() as session:
         return await get_worker_jobs_admin_core(
             session,
             stale_after_minutes=stale_after_minutes,
             sample_limit=sample_limit,
+            sample=sample,
             org_id=auth.org_id,
         )
 
