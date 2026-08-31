@@ -53,6 +53,78 @@ async def test_model_endpoint_returns_provider_response(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_model_endpoint_adds_litellm_bedrock_provider_prefix(monkeypatch):
+    async def completion(**kwargs):
+        assert kwargs["model"] == ("bedrock/global.anthropic.claude-sonnet-5")
+        return SimpleNamespace(
+            id="bedrock-request",
+            choices=[SimpleNamespace(message=SimpleNamespace(content="Claude."))],
+        )
+
+    monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(acompletion=completion))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_app()), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/admin/model-endpoints",
+            json={"model": "global.anthropic.claude-sonnet-5"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["model"] == "global.anthropic.claude-sonnet-5"
+    assert payload["resolved_model"] == ("bedrock/global.anthropic.claude-sonnet-5")
+    assert payload["provider"] == "bedrock"
+
+
+@pytest.mark.asyncio
+async def test_model_endpoint_uses_azure_resource_root_for_litellm(monkeypatch):
+    async def completion(**kwargs):
+        assert kwargs["model"] == "azure/oddish-gpt"
+        assert kwargs["api_key"] == "azure-key"
+        assert kwargs["api_base"] == "https://example.openai.azure.com"
+        assert kwargs["api_version"] == "2025-01-01-preview"
+        assert "base_url" not in kwargs
+        return SimpleNamespace(
+            id="azure-request",
+            choices=[SimpleNamespace(message=SimpleNamespace(content="GPT."))],
+        )
+
+    settings_type = type(admin_router.settings)
+    monkeypatch.setattr(settings_type, "get_openai_provider", lambda _self: "azure")
+    monkeypatch.setattr(
+        settings_type,
+        "require_azure_openai_config",
+        lambda _self: {
+            "api_key": "azure-key",
+            "endpoint": "https://example.openai.azure.com/openai/v1/",
+            "api_version": "2025-01-01-preview",
+        },
+    )
+    monkeypatch.setattr(
+        settings_type,
+        "resolve_azure_openai_deployment",
+        lambda _self, model: "oddish-gpt" if model == "openai/gpt-5.4-mini" else None,
+    )
+    monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(acompletion=completion))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_app()), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/admin/model-endpoints", json={"model": "openai/gpt-5.4-mini"}
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["resolved_model"] == "azure/oddish-gpt"
+    assert payload["provider"] == "openai"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("status_code", [403, 404])
 async def test_model_endpoint_surfaces_upstream_http_status(monkeypatch, status_code):
     class FakeAPIError(Exception):

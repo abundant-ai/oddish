@@ -95,7 +95,9 @@ async def check_model_endpoint(
     resolved_model = model
     try:
         kwargs = {}
-        if provider == "gemini" and model.startswith("google/"):
+        if provider == "bedrock":
+            resolved_model = f"bedrock/{model}"
+        elif provider == "gemini" and model.startswith("google/"):
             resolved_model = f"gemini/{model.split('/', 1)[1]}"
         elif (
             provider == "openai"
@@ -105,7 +107,7 @@ async def check_model_endpoint(
             resolved_model = f"azure/{settings.resolve_azure_openai_deployment(model)}"
             kwargs = {
                 "api_key": azure["api_key"],
-                "base_url": settings.get_azure_openai_base_url(),
+                "api_base": azure["endpoint"].rstrip("/").removesuffix("/openai/v1"),
                 "api_version": azure["api_version"],
             }
     except (ValueError, RuntimeError) as caught:
