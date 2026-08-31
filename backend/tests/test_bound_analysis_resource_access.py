@@ -4,13 +4,12 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
-from fastapi import HTTPException
-from starlette.requests import Request
-
 from auth.resource_access import authorize_bound_analysis_request
 from auth.types import AuthContext, AuthMethod
+from fastapi import HTTPException
 from models import APIKeyScope
 from oddish.db import TaskVersionModel, TrialModel
+from starlette.requests import Request
 
 
 def _request(
@@ -268,11 +267,14 @@ async def test_bound_key_denies_non_resource_and_mutating_routes(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_audit_key_reads_only_its_pinned_task_version(monkeypatch):
+@pytest.mark.parametrize("kind", ("qa", "qa_eval", "audit"))
+async def test_task_reading_analysis_key_reads_its_pinned_task_version(
+    monkeypatch, kind
+):
     analysis = SimpleNamespace(
         id="analysis-1",
         org_id="org-1",
-        kind="audit",
+        kind=kind,
         task_id="task-1",
         task_version_id="version-7",
         harbor_config={"analysis_payload": {}},
@@ -285,6 +287,14 @@ async def test_audit_key_reads_only_its_pinned_task_version(monkeypatch):
             "/tasks/{task_id}/files/{file_path:path}",
             path_params={"task_id": "task-1", "file_path": "instruction.md"},
             query="version=7",
+        ),
+        _auth(),
+    )
+    await authorize_bound_analysis_request(
+        _request(
+            "/tasks/{task_id}/files",
+            path_params={"task_id": "task-1"},
+            query="version=7&recursive=true&presign=true",
         ),
         _auth(),
     )
@@ -303,6 +313,31 @@ async def test_audit_key_reads_only_its_pinned_task_version(monkeypatch):
                 ),
                 _auth(),
             )
+
+
+@pytest.mark.asyncio
+async def test_summarize_key_cannot_read_task_files(monkeypatch):
+    analysis = SimpleNamespace(
+        id="analysis-1",
+        org_id="org-1",
+        kind="summarize",
+        task_id="task-1",
+        task_version_id="version-7",
+        harbor_config={"analysis_payload": {"trial_ids": ["source-1"]}},
+    )
+    version = SimpleNamespace(id="version-7", task_id="task-1", version=7)
+    _session(monkeypatch, analysis, version)
+
+    with pytest.raises(HTTPException) as denied:
+        await authorize_bound_analysis_request(
+            _request(
+                "/tasks/{task_id}/files",
+                path_params={"task_id": "task-1"},
+                query="version=7",
+            ),
+            _auth(),
+        )
+    assert denied.value.status_code == 403
 
 
 @pytest.mark.asyncio

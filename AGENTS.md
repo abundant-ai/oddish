@@ -1028,6 +1028,13 @@ as tagging, collections, documents, skills, and GitHub webhook updates. The
 creator role is stamped on the API key at mint time so later role changes or
 deleted creator rows do not broaden a member-created key.
 
+Internal analysis API keys are additionally bound to the analysis trial that
+requested them. QA and QA-eval keys may read only their stored source-trial
+result, trajectory, and log routes, plus task files for the analysis trial's
+exact `task_id` and `task_version_id`; the task-file request must include that
+version number. Audit keys have the same exact-version task-file access.
+Summarize keys receive no Oddish API reads, and every bound key is read-only.
+
 If a Clerk JWT arrives without `org_id`, the backend tries to resolve a single existing org membership, or provisions a personal org.
 
 ### Worker Architecture

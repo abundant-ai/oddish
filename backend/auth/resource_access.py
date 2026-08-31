@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 from fastapi import HTTPException, Request, status
-
-from auth.types import AuthContext
 from oddish.core.analysis_payload import (
     AnalysisPayloadError,
     analysis_source_trial_ids,
 )
 from oddish.db import TaskVersionModel, TrialModel, get_session
 
+from auth.types import AuthContext
 
 _QA_TRIAL_READ_ROUTES = frozenset(
     {
@@ -18,6 +17,13 @@ _QA_TRIAL_READ_ROUTES = frozenset(
         "/trials/{trial_id}/logs/structured",
     }
 )
+_TASK_FILE_READ_ROUTES = frozenset(
+    {
+        "/tasks/{task_id}/files",
+        "/tasks/{task_id}/files/{file_path:path}",
+    }
+)
+_TASK_FILE_ANALYSIS_KINDS = frozenset({"qa", "qa_eval", "audit"})
 
 
 def _denied() -> HTTPException:
@@ -60,15 +66,11 @@ async def authorize_bound_analysis_request(request: Request, auth: AuthContext) 
             return
 
         task_id = path_params.get("task_id")
-        if (
-            route_path
-            in (
-                "/tasks/{task_id}/files",
-                "/tasks/{task_id}/files/{file_path:path}",
-            )
-            and task_id
-        ):
-            if analysis_trial.kind != "audit" or analysis_trial.task_id != task_id:
+        if route_path in _TASK_FILE_READ_ROUTES and task_id:
+            if (
+                analysis_trial.kind not in _TASK_FILE_ANALYSIS_KINDS
+                or analysis_trial.task_id != task_id
+            ):
                 raise _denied()
             if analysis_trial.task_version_id is None:
                 raise _denied()
