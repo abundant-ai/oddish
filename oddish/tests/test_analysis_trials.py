@@ -446,7 +446,7 @@ def _good_qa_entry(trial_id: str) -> dict:
 
 @pytest.mark.asyncio
 async def test_qa_creation_persists_the_pre_trial_contract(monkeypatch):
-    from oddish.db import TaskVersionModel
+    from oddish.db import TaskVersionModel, TrialStatus, VerdictStatus
     from oddish.worker.analysis_result_check import check_analysis_result
     from oddish.workers.analysis_trials import analysis_check_payload, create_qa_trial
 
@@ -463,14 +463,33 @@ async def test_qa_creation_persists_the_pre_trial_contract(monkeypatch):
                 {"id": "audit-1", "tier": "must_fix"},
                 {"title": "An old finding without an id"},
             ]
-        }
+        },
+        pre_trial_status=VerdictStatus.SUCCESS,
+        pre_trial_error=None,
     )
+    source = SimpleNamespace(
+        id="trial-1",
+        status=TrialStatus.SUCCESS,
+        reward=0.0,
+        has_trajectory=True,
+        agent="codex",
+    )
+
+    class Result:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return [source]
 
     class Session:
         async def get(self, model, row_id):
             assert model is TaskVersionModel
             assert row_id == "version-1"
             return version
+
+        async def execute(self, _statement):
+            return Result()
 
     captured = {}
 
@@ -481,23 +500,6 @@ async def test_qa_creation_persists_the_pre_trial_contract(monkeypatch):
     monkeypatch.setattr(
         "oddish.workers.analysis_trials.create_analysis_trial",
         fake_create_analysis_trial,
-    )
-
-    async def fake_load_trial_evidence(_session, trial_ids):
-        assert trial_ids == ["trial-1"]
-        return [
-            {
-                "trial_id": "trial-1",
-                "status": "success",
-                "reward": 0.0,
-                "has_trajectory": True,
-                "agent": "codex",
-            }
-        ]
-
-    monkeypatch.setattr(
-        "oddish.workers.analysis_trials.load_trial_evidence",
-        fake_load_trial_evidence,
     )
 
     await create_qa_trial(
@@ -517,8 +519,10 @@ async def test_qa_creation_persists_the_pre_trial_contract(monkeypatch):
             "reward": 0.0,
             "has_trajectory": True,
             "agent": "codex",
+            "baseline_kind": None,
         }
     ]
+    assert payload["baseline_evidence"] == []
 
     entry = _good_qa_entry("trial-1")
     entry["analysis"]["exploitation"] = [
