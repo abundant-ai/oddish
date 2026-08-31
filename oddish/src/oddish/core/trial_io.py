@@ -10,7 +10,7 @@ from collections.abc import Hashable, MutableMapping
 from contextlib import suppress
 from pathlib import Path
 
-from botocore.exceptions import BotoCoreError
+from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import HTTPException
 from harbor.models.trial.paths import TrialPaths
 
@@ -42,6 +42,7 @@ _TRAJECTORY_LOCKS: dict[tuple[str, int, str | None], asyncio.Lock] = {}
 _PROBE_ARTIFACTS_LOCKS: dict[tuple[str, int, str | None], asyncio.Lock] = {}
 _ARTIFACT_FALLBACK_ERRORS = (
     BotoCoreError,
+    ClientError,
     OSError,
     RuntimeError,
     TypeError,
