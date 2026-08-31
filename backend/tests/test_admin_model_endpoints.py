@@ -80,6 +80,35 @@ async def test_model_endpoint_adds_litellm_bedrock_provider_prefix(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_model_endpoint_remaps_anthropic_hdo_and_uses_hdo_key(monkeypatch):
+    async def completion(**kwargs):
+        assert kwargs["model"] == "anthropic/claude-sonnet-4-6"
+        assert kwargs["api_key"] == "hdo-key"
+        assert kwargs["max_tokens"] == 32
+        return SimpleNamespace(
+            id="hdo-request",
+            choices=[SimpleNamespace(message=SimpleNamespace(content="Claude."))],
+        )
+
+    monkeypatch.setattr(admin_router.settings, "anthropic_hdo_api_key", "hdo-key")
+    monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(acompletion=completion))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_app()), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/admin/model-endpoints",
+            json={"model": "anthropic-hdo/claude-sonnet-4-6"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["resolved_model"] == "anthropic/claude-sonnet-4-6"
+    assert payload["provider"] == "anthropic-hdo"
+
+
+@pytest.mark.asyncio
 async def test_model_endpoint_uses_azure_resource_root_for_litellm(monkeypatch):
     async def completion(**kwargs):
         assert kwargs["model"] == "azure/oddish-gpt"

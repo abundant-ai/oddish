@@ -8,7 +8,13 @@ from time import monotonic
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from oddish.config import OPENAI_PROVIDER_AZURE, infer_model_provider_prefix, settings
+from oddish.config import (
+    OPENAI_PROVIDER_AZURE,
+    anthropic_hdo_bare_model_id,
+    infer_model_provider_prefix,
+    settings,
+    to_anthropic_api_model_id,
+)
 from oddish.core.admin import (
     CostBreakdownResponse,
     ModelConcurrencySetting,
@@ -101,6 +107,14 @@ async def check_model_endpoint(
         )
         if provider == "bedrock":
             resolved_model = f"bedrock/{model}"
+        elif provider == "anthropic-hdo":
+            bare_model = anthropic_hdo_bare_model_id(model)
+            api_model = to_anthropic_api_model_id(bare_model) or bare_model
+            hdo_api_key = (settings.anthropic_hdo_api_key or "").strip()
+            if not hdo_api_key:
+                raise RuntimeError("ANTHROPIC_HDO_API_KEY is missing")
+            resolved_model = f"anthropic/{api_model}"
+            kwargs["api_key"] = hdo_api_key
         elif provider == "gemini" and model.startswith("google/"):
             resolved_model = f"gemini/{model.split('/', 1)[1]}"
         elif (
