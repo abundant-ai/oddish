@@ -497,11 +497,7 @@ async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
 
 
 async def read_trial_logs_structured(trial: TrialModel) -> dict:
-    cache_key = (
-        trial.id,
-        int(getattr(trial, "attempts", 0) or 0),
-        getattr(trial, "trial_s3_key", None),
-    )
+    cache_key = (trial.id, trial.attempts, trial.trial_s3_key)
     if _should_cache_trial(trial):
         cached = _cache_get(_STRUCTURED_LOGS_CACHE, cache_key)
         if cached is not None:

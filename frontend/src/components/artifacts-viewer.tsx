@@ -132,16 +132,22 @@ export function ArtifactsViewer({
       revalidateOnFocus: false,
     });
   const errorStatus = (error as { status?: number } | undefined)?.status;
-  const reportedIntegrityFailureRef = useRef(false);
+  const reportedIntegrityFailureRef = useRef<{
+    trialId: string | undefined;
+    filesUrl: string;
+  } | null>(null);
   useEffect(() => {
+    const reportedFailure = reportedIntegrityFailureRef.current;
     if (
       errorStatus !== 404 ||
       !successfulAnalysisTrial ||
-      reportedIntegrityFailureRef.current
+      (reportedFailure !== null &&
+        reportedFailure.trialId === trialId &&
+        reportedFailure.filesUrl === filesUrl)
     ) {
       return;
     }
-    reportedIntegrityFailureRef.current = true;
+    reportedIntegrityFailureRef.current = { trialId, filesUrl };
     recordClientError("artifact_integrity_failure", {
       trial_id: trialId ?? "unknown",
       files_url: filesUrl,
