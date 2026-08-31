@@ -88,10 +88,10 @@ jobs:
       ODDISH_EC2_USE_PUBLIC_IP: "true"
       ODDISH_EC2_BOOTSTRAP_DOCKER: "true"
       UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
-      # Low caps: staging carries no production traffic.
-      ODDISH_MODAL_API_MIN_CONTAINERS: "0"
-      ODDISH_MODAL_API_BUFFER_CONTAINERS: "0"
-      ODDISH_MODAL_API_MAX_CONTAINERS: "2"
+      # Keep staging responsive while QA replay workers fetch source artifacts.
+      ODDISH_MODAL_API_MIN_CONTAINERS: "1"
+      ODDISH_MODAL_API_BUFFER_CONTAINERS: "4"
+      ODDISH_MODAL_API_MAX_CONTAINERS: "8"
       ODDISH_MODAL_WORKER_MIN_CONTAINERS: "0"
       ODDISH_MODAL_WORKER_BUFFER_CONTAINERS: "0"
       ODDISH_MODAL_WORKER_MAX_CONTAINERS: "8"

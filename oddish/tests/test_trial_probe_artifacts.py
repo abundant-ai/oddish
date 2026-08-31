@@ -10,12 +10,14 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.core import trial_io
+from oddish.core.trial_artifacts import TrialArtifactLayout, TrialArtifactMode
 
 
 def _make_trial(**kwargs):
     """A duck-typed stand-in — the reader only reads a few attributes."""
     defaults = {
         "id": "task-abc-0",
+        "attempts": 0,
         "result": None,
         "trial_s3_key": None,
         "harbor_result_path": None,
@@ -74,7 +76,15 @@ async def test_cloud_trial_extracts_from_downloaded_dir(monkeypatch, tmp_path):
     async def _fake_resolve(*, trial_id, trial_s3_key, trial_result_path):
         return tmp_path, tmp_path, trial_s3_key
 
+    async def _exact_layout(trial, storage):
+        return TrialArtifactLayout(
+            TrialArtifactMode.EXACT,
+            trial.trial_s3_key,
+            trial.trial_s3_key,
+        )
+
     monkeypatch.setattr(trial_io, "resolve_trial_directory", _fake_resolve)
+    monkeypatch.setattr(trial_io, "resolve_trial_artifact_layout", _exact_layout)
     monkeypatch.setattr(trial_io, "_cleanup_temp_directory", cleaned.append)
 
     trial = _make_trial(
@@ -91,6 +101,14 @@ async def test_cloud_trial_extracts_from_downloaded_dir(monkeypatch, tmp_path):
 
 @pytest.mark.anyio
 async def test_no_location_returns_empty(monkeypatch):
+    async def _unavailable_layout(trial, storage):
+        return TrialArtifactLayout(TrialArtifactMode.UNAVAILABLE, "", None)
+
+    monkeypatch.setattr(
+        trial_io,
+        "resolve_trial_artifact_layout",
+        _unavailable_layout,
+    )
     trial = _make_trial(result={}, trial_s3_key=None, harbor_result_path=None)
     out = await trial_io.read_trial_probe_artifacts(trial)
     assert out["agent_messages"] == []

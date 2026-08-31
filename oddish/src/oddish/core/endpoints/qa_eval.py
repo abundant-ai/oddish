@@ -30,7 +30,12 @@ from oddish.schemas import (
     QAEvalCreateResponse,
     QAEvalTrialResponse,
 )
-from oddish.workers.analysis_trials import build_qa_brief, create_analysis_trial
+from oddish.workers.analysis_trials import (
+    build_qa_brief,
+    create_analysis_trial,
+    pre_trial_item_ids,
+    trial_evidence_snapshot,
+)
 
 _QA_EVAL_SOURCE_STATUSES = (TrialStatus.SUCCESS, TrialStatus.FAILED)
 _QA_EVAL_ROUTE = "POST /qa-evals"
@@ -171,6 +176,7 @@ async def create_qa_eval_core(
             if isinstance(version.pre_trial, dict)
             else None
         )
+        item_ids, must_fix_ids = pre_trial_item_ids(pre_trial_items)
         trial = await create_analysis_trial(
             session,
             task=task,
@@ -189,6 +195,9 @@ async def create_qa_eval_core(
             payload={
                 "source_trial_id": source.id,
                 "trial_ids": [source.id],
+                "trial_evidence": [trial_evidence_snapshot(source)],
+                "pre_trial_item_ids": item_ids,
+                "pre_trial_must_fix_ids": must_fix_ids,
                 "with_verdict": False,
                 "prompt_name": request.prompt_name,
                 "prompt_sha256": prompt_sha256,
