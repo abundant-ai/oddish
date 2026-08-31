@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
+from botocore.exceptions import ClientError
 
 from oddish.core import trial_io
 from oddish.core.trial_artifacts import (
@@ -47,6 +48,18 @@ class _Storage:
         )
 
 
+class _ClientErrorStorage(_Storage):
+    async def download_text(self, key: str) -> str:
+        self.download_calls.append(key)
+        try:
+            return self.objects[key]
+        except KeyError as exc:
+            raise ClientError(
+                {"Error": {"Code": "NoSuchKey", "Message": "missing"}},
+                "GetObject",
+            ) from exc
+
+
 def _trial(*, prefix: str | None, attempts: int = 1):
     return SimpleNamespace(
         id="task-1-7",
@@ -55,7 +68,7 @@ def _trial(*, prefix: str | None, attempts: int = 1):
         trial_s3_key=prefix,
         harbor_result_path=None,
         error_message=None,
-        finished_at=datetime.now(timezone.utc),
+        finished_at=datetime.now(UTC),
         attempts=attempts,
     )
 
@@ -446,7 +459,11 @@ def test_missing_attempt_pointer_never_selects_a_sibling_attempt(monkeypatch):
             },
             listed=[old_key, partial_current_key],
         )
-        monkeypatch.setattr(trial_io, "get_storage_client", lambda: storage)
+        monkeypatch.setattr(
+            trial_io,
+            "get_storage_client",
+            lambda storage=storage: storage,
+        )
 
         result = asyncio.run(
             trial_io.read_trial_trajectory(_trial(prefix=None, attempts=2))
@@ -472,6 +489,44 @@ def test_missing_pointer_still_recovers_a_pre_attempt_historical_layout(monkeypa
     assert result == {"trial_name": "historical"}
     assert storage.download_calls.count(historical_key) == 1
     assert storage.list_calls == 1
+
+
+def test_legacy_readers_continue_after_missing_s3_candidates(monkeypatch):
+    _clear_cache()
+    prefix = "tasks/task-1/trials/task-1-7/"
+    trial_prefix = f"{prefix}display-name-not-used-for-current-layout/"
+    trajectory_key = f"{trial_prefix}agent/trajectory.json"
+    instruction_key = f"{trial_prefix}task/instruction.md"
+    verifier_key = f"{trial_prefix}verifier/test-stdout.txt"
+    screenshot_key = f"{trial_prefix}agent/screenshot.png"
+    storage = _ClientErrorStorage(
+        {
+            trajectory_key: json.dumps({"trial_name": "historical"}),
+            instruction_key: "repair the broker",
+            verifier_key: "PASS\n",
+            screenshot_key: "image bytes",
+        },
+        listed=[screenshot_key],
+    )
+    monkeypatch.setattr(trial_io, "get_storage_client", lambda: storage)
+    trial = _trial(prefix=prefix)
+
+    summary_inputs = asyncio.run(trial_io.read_trial_summary_inputs(trial))
+    screenshot, media_type = asyncio.run(
+        trial_io.read_trial_agent_file(trial, "screenshot.png")
+    )
+
+    assert summary_inputs == (
+        {"trial_name": "historical"},
+        "repair the broker",
+        "PASS\n",
+    )
+    assert screenshot == b"image bytes"
+    assert media_type == "image/png"
+    assert f"{prefix}agent/trajectory.json" in storage.download_calls
+    assert trajectory_key in storage.download_calls
+    assert f"{prefix}agent/screenshot.png" in storage.download_calls
+    assert screenshot_key in storage.download_calls
 
 
 def test_missing_pointer_rejects_a_legacy_root_manifest_beside_new_attempts(
