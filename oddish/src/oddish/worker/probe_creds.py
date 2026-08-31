@@ -4,8 +4,9 @@ import logging
 import os
 
 from oddish.config import api_base_url_for_modal_app
-from oddish.core.api_keys import mint_internal_read_key
+from oddish.core.api_keys import mint_internal_api_key
 from oddish.db import get_session
+from oddish.db.models import APIKeyScope
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,10 @@ def resolve_probe_api_base_url() -> str:
 
 
 async def mint_probe_creds(
-    *, org_id: str | None, trial_id: str
+    *,
+    org_id: str | None,
+    trial_id: str,
+    bound_analysis_trial_id: str | None = None,
 ) -> tuple[str, dict[str, str]]:
     """Returns (api_key_id, env) for the probe agent. Raises ProbeCredsError on failure."""
     if not org_id:
@@ -41,11 +45,13 @@ async def mint_probe_creds(
     base_url = resolve_probe_api_base_url()
     try:
         async with get_session() as session:
-            key_id, raw_key = await mint_internal_read_key(
+            key_id, raw_key = await mint_internal_api_key(
                 session,
                 org_id=org_id,
                 name=f"probe:{trial_id}",
                 ttl_minutes=PROBE_KEY_TTL_MINUTES,
+                scope=APIKeyScope.READ,
+                bound_analysis_trial_id=bound_analysis_trial_id,
             )
     except ProbeCredsError:
         raise

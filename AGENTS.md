@@ -159,7 +159,14 @@ High-level flow:
    `POST /qa-evals` is the lower-level historical prompt-replay primitive. It
    creates one output experiment and one `qa_eval` trial per exact source
    solver trial. Each new trial stores its source-trial id and prompt hash,
-   reuses the normal QA brief and `qa_result.json`, and writes the candidate
+   plus a creation-time snapshot of the source trial's status, reward,
+   trajectory availability, and agent. The in-sandbox verifier and settlement
+   importer use that snapshot to reject a QA artifact that changes those
+   server-owned facts.
+   Short-lived read keys bound to an analysis trial store the full trial ID;
+   `api_keys.bound_analysis_trial_id` therefore shares the 160-character limit
+   of `trials.id`.
+   It reuses the normal QA brief and `qa_result.json`, and writes the candidate
    analysis only to the new trial. Hosted creation resolves the authenticated
    caller as the payer, admits the validated replay count once, and stamps that
    payer on every new `qa_eval` trial. When
@@ -309,9 +316,19 @@ SUCCESS and retries those imports after the cleanup transaction commits. A
 worker that dies between trial settlement and import therefore leaves durable,
 bounded recovery work instead of a permanently stale summary. In an S3-backed
 run, a QA/audit/summarize trial cannot settle SUCCESS until its Harbor artifact
-directory uploads successfully; an upload failure uses the trial's normal retry
-budget. Storage list/download errors during import propagate so cleanup retries
-them. A successfully settled summarize trial whose stored artifact is absent or
+directory uploads successfully and the freshly uploaded attempt's root
+`result.json` selects an existing child containing the required analysis result.
+Pinned Harbor 0.20 omits its former `trial_results` array from that root job
+summary, so the Oddish runner writes `oddish_trial_name` there after `Job.run()`
+returns and before upload. That field contains the sole in-memory Harbor
+`TrialResult.trial_name`; older stored roots with exactly one `trial_results`
+entry remain readable. Zero- or multi-result jobs receive no selection and fail
+settlement instead of choosing a directory by listing siblings.
+If the outcome reports a trajectory, that same selected child must also contain
+`agent/trajectory.json`. An upload or layout-validation failure uses the trial's
+normal retry budget. Storage list/download errors during import propagate so
+cleanup retries them. A successfully settled summarize trial whose stored
+artifact is absent or
 violates the pinned contract becomes FAILED while the target pointer remains,
 so GET reports 409 and the next POST replaces it instead of adopting a SUCCESS
 trial that can never publish.
@@ -861,6 +878,15 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   (`chat_completions` | `responses` | `messages`); pass
   `--agent-kwarg api_backend=chat_completions` to route such a model. When
   unset, the upstream `responses` default is preserved.
+  The wrapper also pins the grok CLI itself: `v9m-rl-learnability-tp8` 404s
+  on current `install.sh` stable (1.0.13) even with `chat_completions`, and
+  last worked on CLI 1.0.0 + Responses with Oddish's `grok -p` invocation.
+  `OddishGrokBuild` therefore installs `1.0.0` for that model (override
+  with `--agent-kwarg version=…`; empty `version` keeps whatever
+  `install.sh` ships). `[cli] auto_update = false` so the pin cannot
+  self-update mid-trial. Do not bypass the wrapper with Harbor stock
+  `GrokBuild` on 1.0.0: that class runs `grok --single --session-id`,
+  which 1.0.0 rejects (`Session ID is already in use`).
 - `grok-build` trajectories come from the CLI's on-disk **session store**, not
   its headless stdout. `grok -p --output-format json|streaming-json` only emits
   the assistant's `text`/`thought` — no tool calls and no token usage — so
@@ -1023,6 +1049,13 @@ blocked from broader org mutations such
 as tagging, collections, documents, skills, and GitHub webhook updates. The
 creator role is stamped on the API key at mint time so later role changes or
 deleted creator rows do not broaden a member-created key.
+
+Internal analysis API keys are additionally bound to the analysis trial that
+requested them. QA and QA-eval keys may read only their stored source-trial
+result, trajectory, and log routes, plus task files for the analysis trial's
+exact `task_id` and `task_version_id`; the task-file request must include that
+version number. Audit keys have the same exact-version task-file access.
+Summarize keys receive no Oddish API reads, and every bound key is read-only.
 
 If a Clerk JWT arrives without `org_id`, the backend tries to resolve a single existing org membership, or provisions a personal org.
 
