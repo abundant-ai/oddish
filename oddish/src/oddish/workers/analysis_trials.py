@@ -10,7 +10,6 @@ owned columns.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
@@ -515,11 +514,7 @@ async def materialize_summarize_brief(harbor_config: dict | None) -> str:
     if not target_trial_id:
         raise ValueError("summarize trial is missing analysis_payload.target_trial_id")
 
-    from oddish.core.trial_io import (
-        read_trial_instruction,
-        read_trial_trajectory,
-        read_trial_verifier_output,
-    )
+    from oddish.core.trial_io import read_trial_summary_inputs
 
     async with get_session() as session:
         target = await session.get(TrialModel, target_trial_id)
@@ -530,10 +525,8 @@ async def materialize_summarize_brief(harbor_config: dict | None) -> str:
         task = await session.get(TaskModel, target.task_id)
         if task is None:
             raise ValueError(f"summarize target {target_trial_id} has no live task")
-        trajectory, task_instruction, verifier_output = await asyncio.gather(
-            read_trial_trajectory(target),
-            read_trial_instruction(target),
-            read_trial_verifier_output(target),
+        trajectory, task_instruction, verifier_output = await read_trial_summary_inputs(
+            target
         )
         if trajectory is None:
             raise ValueError(

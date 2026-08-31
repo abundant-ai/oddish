@@ -1616,19 +1616,15 @@ async def test_materialize_summarize_brief_reads_the_target_without_the_api(
         async def __aexit__(self, *_args):
             return None
 
-    async def read_trajectory(_target):
-        return {"steps": [{"step_id": 1, "source": "agent", "message": "done"}]}
-
-    async def read_instruction(_target):
-        return "repair the broker"
-
-    async def read_verifier(_target):
-        return "all tests passed"
+    async def read_summary_inputs(_target):
+        return (
+            {"steps": [{"step_id": 1, "source": "agent", "message": "done"}]},
+            "repair the broker",
+            "all tests passed",
+        )
 
     monkeypatch.setattr(analysis_trials, "get_session", SessionContext)
-    monkeypatch.setattr(trial_io, "read_trial_trajectory", read_trajectory)
-    monkeypatch.setattr(trial_io, "read_trial_instruction", read_instruction)
-    monkeypatch.setattr(trial_io, "read_trial_verifier_output", read_verifier)
+    monkeypatch.setattr(trial_io, "read_trial_summary_inputs", read_summary_inputs)
 
     brief = await analysis_trials.materialize_summarize_brief(
         {"analysis_payload": {"target_trial_id": "t-42"}}
@@ -2342,12 +2338,11 @@ def test_only_probe_trials_get_the_inline_probe_summary():
         should_generate_inline_probe_summary,
     )
 
-    for mode in ("qa", "audit"):
-        assert should_generate_inline_probe_summary(mode, "the brief") is False
-    assert should_generate_inline_probe_summary(None, "probe instructions") is True
-    assert should_generate_inline_probe_summary("probe", "probe instructions") is True
-    assert should_generate_inline_probe_summary(None, None) is False
-    assert should_generate_inline_probe_summary(None, "") is False
+    for trial_kind in ("qa", "qa_eval", "audit", "summarize"):
+        assert should_generate_inline_probe_summary(trial_kind, "the brief") is False
+    assert should_generate_inline_probe_summary("agent", "probe instructions") is True
+    assert should_generate_inline_probe_summary("agent", None) is False
+    assert should_generate_inline_probe_summary("agent", "") is False
 
 
 def test_the_view_definition_cannot_drift_between_fresh_and_migrated_dbs():
