@@ -1561,6 +1561,8 @@ export function TaskFilesPanel({
         {loadsTaskTreeByDirectory &&
         (!directory || directory.status === "loading") ? (
           <div
+            role="status"
+            aria-label="Loading task directory"
             className="text-muted-foreground flex items-center gap-1.5 py-1 text-xs"
             style={{ paddingLeft: `${depth * 12 + 8}px` }}
           >
