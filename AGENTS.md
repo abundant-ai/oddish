@@ -159,7 +159,14 @@ High-level flow:
    `POST /qa-evals` is the lower-level historical prompt-replay primitive. It
    creates one output experiment and one `qa_eval` trial per exact source
    solver trial. Each new trial stores its source-trial id and prompt hash,
-   reuses the normal QA brief and `qa_result.json`, and writes the candidate
+   plus a creation-time snapshot of the source trial's status, reward,
+   trajectory availability, and agent. The in-sandbox verifier and settlement
+   importer use that snapshot to reject a QA artifact that changes those
+   server-owned facts.
+   Short-lived read keys bound to an analysis trial store the full trial ID;
+   `api_keys.bound_analysis_trial_id` therefore shares the 160-character limit
+   of `trials.id`.
+   It reuses the normal QA brief and `qa_result.json`, and writes the candidate
    analysis only to the new trial. Hosted creation resolves the authenticated
    caller as the payer, admits the validated replay count once, and stamps that
    payer on every new `qa_eval` trial. When
@@ -309,9 +316,19 @@ SUCCESS and retries those imports after the cleanup transaction commits. A
 worker that dies between trial settlement and import therefore leaves durable,
 bounded recovery work instead of a permanently stale summary. In an S3-backed
 run, a QA/audit/summarize trial cannot settle SUCCESS until its Harbor artifact
-directory uploads successfully; an upload failure uses the trial's normal retry
-budget. Storage list/download errors during import propagate so cleanup retries
-them. A successfully settled summarize trial whose stored artifact is absent or
+directory uploads successfully and the freshly uploaded attempt's root
+`result.json` selects an existing child containing the required analysis result.
+Pinned Harbor 0.20 omits its former `trial_results` array from that root job
+summary, so the Oddish runner writes `oddish_trial_name` there after `Job.run()`
+returns and before upload. That field contains the sole in-memory Harbor
+`TrialResult.trial_name`; older stored roots with exactly one `trial_results`
+entry remain readable. Zero- or multi-result jobs receive no selection and fail
+settlement instead of choosing a directory by listing siblings.
+If the outcome reports a trajectory, that same selected child must also contain
+`agent/trajectory.json`. An upload or layout-validation failure uses the trial's
+normal retry budget. Storage list/download errors during import propagate so
+cleanup retries them. A successfully settled summarize trial whose stored
+artifact is absent or
 violates the pinned contract becomes FAILED while the target pointer remains,
 so GET reports 409 and the next POST replaces it instead of adopting a SUCCESS
 trial that can never publish.
@@ -819,13 +836,14 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   slots forever; an inventory failure never authorizes this finalization.
   Inventory and termination failures stay visible in logs/metrics while the rest
   of queue cleanup continues.
-- Claude trials run through AWS Bedrock by default. `CLAUDE_CODE_USE_BEDROCK=1` is
-  baked into the Modal image, and Claude model aliases must normalize to an
-  invokable inference profile (`global.` / `us.` / ARN) via
-  `to_bedrock_model_id`. Opt into the direct Anthropic API with a separate key
-  via the explicit `anthropic-hdo/<model>` prefix: that route overwrites
-  `ANTHROPIC_API_KEY` with `ANTHROPIC_HDO_API_KEY` and blanks Bedrock routing
-  for the trial.
+- Claude Code currently prefers the direct Anthropic API whenever
+  `ANTHROPIC_API_KEY` is available because
+  `ODDISH_CLAUDE_CODE_FORCE_DIRECT_API` defaults to `1`. Set the flag to `0`
+  to restore the Modal image's Bedrock route (`CLAUDE_CODE_USE_BEDROCK=1`).
+  Bedrock model aliases must normalize to an invokable inference profile
+  (`global.` / `us.` / ARN) via `to_bedrock_model_id`. The separate
+  `anthropic-hdo/<model>` prefix always uses `ANTHROPIC_HDO_API_KEY` and blanks
+  Bedrock routing for that trial.
 - OpenAI-family jobs default to Azure OpenAI. Use
   `ODDISH_OPENAI_PROVIDER=openai` plus `OPENAI_API_KEY` only when intentionally
   routing to public OpenAI.
@@ -838,6 +856,25 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   each agent the spelling its LLM client expects (litellm agents in
   `_LITELLM_MODEL_ID_AGENTS`, Vercel AI SDK agents in
   `_AI_SDK_MODEL_ID_AGENTS`); add a new agent to the set matching its client.
+- Kubernetes task charts that enforce their own runtime egress boundary can opt
+  into Oddish's model-route bridge with a chart-root
+  `.oddish-agent-egress-hosts` marker containing exactly
+  `agentEgressProxy.runtimeAllowedHosts`. Because EC2/k3s cannot perform
+  Harbor's dynamic phase-policy switch, the task must retain a public
+  environment baseline, omit formal agent/step network policies, and declare
+  its stable task-owned proxy hosts in
+  `metadata.oddish_agent_egress_allowed_hosts`. Before Harbor instantiates the
+  environment, Oddish merges that task policy with the selected model and
+  agent runtime hosts and explicit `extra_allowed_hosts` entries, then writes
+  the resolved normalized policy as a semicolon-delimited value to
+  `environment.kwargs.helm_values.agentEgressProxy.runtimeAllowedHosts`. That
+  Helm key is reserved for Oddish: the chart must treat it as the authoritative
+  runtime allowlist for its deny-by-default proxy, using chart defaults only
+  when no hosted override is supplied. This chart contract accepts exact DNS
+  hostnames only; wildcard, IP, and CIDR policies fail closed because the task
+  proxy materializes concrete DNS and TLS/SNI routes. Charts without the
+  declaration are untouched; Compose and single-container egress behavior
+  remains on its existing paths.
 - Provider secrets are referenced by env var name (`AWS_BEARER_TOKEN_BEDROCK`,
   `ANTHROPIC_HDO_API_KEY`, `ZAI_API_KEY`, `MINIMAX_API_KEY`, `MOONSHOT_API_KEY`,
   `FIREWORKS_API_KEY`, `XAI_API_KEY`, `META_API_KEY`) and must not be persisted
@@ -1014,6 +1051,13 @@ as tagging, collections, documents, skills, and GitHub webhook updates. The
 creator role is stamped on the API key at mint time so later role changes or
 deleted creator rows do not broaden a member-created key.
 
+Internal analysis API keys are additionally bound to the analysis trial that
+requested them. QA and QA-eval keys may read only their stored source-trial
+result, trajectory, and log routes, plus task files for the analysis trial's
+exact `task_id` and `task_version_id`; the task-file request must include that
+version number. Audit keys have the same exact-version task-file access.
+Summarize keys receive no Oddish API reads, and every bound key is read-only.
+
 If a Clerk JWT arrives without `org_id`, the backend tries to resolve a single existing org membership, or provisions a personal org.
 
 ### Worker Architecture
@@ -1132,12 +1176,13 @@ sweep):
    so each person is DMed at most once per task version, ever.
 
 Handler registration happens at container load via
-`ensure_builtin_handlers_registered()`. Post-success hooks
-(`notify_github_trial`, `notify_github_qa`, and the transitional
-`notify_github_analysis`) are wired through `_POST_SUCCESS_HOOKS` in
-`worker/functions.py`. The task-level `QA` job fires `notify_github_qa`,
-which refreshes the whole PR comment (per-trial classifications + task
-verdict) in one update.
+`ensure_builtin_handlers_registered()`. `_POST_SUCCESS_HOOKS` in
+`worker/functions.py` contains only `notify_github_trial` for successful
+`TRIAL` worker jobs. QA GitHub notifications use a separate import hook:
+`register_qa_imported_hook(notify_github_qa)` refreshes the whole PR comment
+(per-trial classifications plus the task verdict) after a QA trial's artifact
+is imported. There is no `notify_github_analysis` hook or active task-level
+`QA` worker-job handler.
 
 ### Trial Storage Layout
 

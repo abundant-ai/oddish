@@ -1,17 +1,18 @@
-# Oddish Logfire operations rollout
+# Oddish Logfire post-merge deployment checklist
 
-This file tracks the code, Logfire, and verification work required to finish
-PR #1366. Check a box only after recording the requested evidence. Never paste
-the `LOGFIRE_TOKEN` value into this file, GitHub, Slack, or a chat.
+PR #1366 added the repository-side Logfire instrumentation and SQL and is
+present on `staging` as commit `d333fc1f6`. This file now tracks the external
+Logfire project setup and deployed-data verification that cannot be completed
+from the repository alone. Check a box only after recording the requested
+evidence. Never paste the `LOGFIRE_TOKEN` value into this file, GitHub, Slack,
+or a chat.
 
 ## Current state
 
-- Worktree: `/Users/kyle/Desktop/oddish/.worktrees/logfire-operations-metrics`
-- Branch: `codex/logfire-operations-metrics`
-- Pull request: `https://github.com/abundant-ai/oddish/pull/1366`
+- Repository instrumentation: merged into `staging` by PR #1366
 - Target Logfire dashboard: `Oddish Operations`
-- Preferred smoke-test environment: `preview-pr-1366`
-- Alternative smoke-test environment: `staging`
+- Smoke-test environment: `staging` or another deployment with
+  `LOGFIRE_TOKEN` configured
 
 ## Repository work (Codex)
 
@@ -41,10 +42,7 @@ the `LOGFIRE_TOKEN` value into this file, GitHub, Slack, or a chat.
     observation call signatures match.
   - SQL syntax: `4` alert statements and `10` dashboard statements parsed.
   - `git diff --check`: exited zero with no output.
-- [ ] Record the final changed-file and line-count report.
-- [ ] Update the PR title/body with observed verification output.
-
-## Logfire setup (Kyle)
+## Logfire project setup (operator)
 
 - [ ] Open the Logfire project that should receive Oddish telemetry.
 - [ ] Create or select a project write token.
@@ -56,7 +54,7 @@ the `LOGFIRE_TOKEN` value into this file, GitHub, Slack, or a chat.
   - Configured: `yes / no`
   - Date checked: `YYYY-MM-DD`
 - [ ] Choose the smoke-test environment:
-  - Selected environment: `preview-pr-1366 / staging`
+  - Selected environment: `<deployment name>`
 - [ ] Configure a Logfire notification channel if alerts should notify people:
   - Channel type: `Slack / email / other / none`
   - Channel label, without credentials: `<label>`
@@ -137,17 +135,20 @@ recording webhook URLs, tokens, or recipient addresses.
 ## Dashboard export (Kyle, then Codex)
 
 - [ ] In Logfire, use `Download dashboard as code` after all ten panels render.
-- [ ] Save the unedited export at
-  `/Users/kyle/Desktop/oddish/.worktrees/logfire-operations-metrics/docs/observability/logfire-oddish-operations.json`.
+- [ ] Save the unedited export as
+  `docs/observability/logfire-oddish-operations.json`.
 - [ ] Tell Codex that the file is present.
 - [ ] Codex validates that the JSON contains all ten panels and four variables.
 - [ ] Codex commits the exported JSON.
 - [ ] Kyle imports the committed JSON into a second/test project or otherwise
   confirms that Logfire accepts the export.
 
-## Completion evidence
+No dashboard JSON is currently checked in; the repository contains the panel
+queries in `logfire-oddish-operations.sql` and alert queries in
+`logfire-oddish-alerts.sql`.
 
-- [ ] After commit/push, PR #1366 contains no GKE preview-teardown diff.
+## Deployment completion evidence
+
 - [ ] A transient dispatch `OSError` appears as `outcome = 'skipped'`.
 - [ ] An externally interrupted dispatch cycle appears as
   `outcome = 'cancelled'` and cancellation still propagates to the host.
@@ -156,8 +157,3 @@ recording webhook URLs, tokens, or recipient addresses.
 - [ ] All ten dashboard panels return data without SQL errors.
 - [ ] All four alert queries evaluate without SQL errors.
 - [ ] The exported dashboard JSON imports successfully.
-- [ ] Targeted pytest output is recorded in the PR.
-- [ ] Ruff output is recorded in the PR.
-- [ ] `git diff --check` returns no output and exits zero.
-- [ ] No `frontend/`, API-route, database-model, or migration changes appear in
-  the final PR diff.

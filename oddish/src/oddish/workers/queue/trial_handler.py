@@ -20,6 +20,7 @@ from harbor.viewer.scanner import JobScanner
 from sqlalchemy import select, update
 
 from oddish.core.harbor_artifacts import build_trial_result
+from oddish.core.trial_artifacts import validate_uploaded_analysis_artifacts
 from oddish.config import settings
 from oddish.costs.modal_cost import SpanResources
 from oddish.costs.recorder import (
@@ -73,7 +74,7 @@ from oddish.worker.probe_staging import (
     apply_probe_overlay,
     stage_cli_mount,
 )
-from oddish.workers.analysis_trials import is_analysis_kind
+from oddish.workers.analysis_trials import ANALYSIS_ARTIFACTS, is_analysis_kind
 from oddish.workers.harbor.ephemeral import HarborOverrideImportError
 from oddish.workers.harbor.quota_control import QuotaPauseControlError
 from oddish.workers.harbor.runner import (
@@ -269,6 +270,7 @@ class PreparedTrialRun:
     trial_model: str
     trial_environment: str | None
     trial_harbor_config: dict | None
+    trial_kind: str = "agent"
     task_version: int | None = None
     # Fields for sauron S3 mirror
     task_name: str = ""
@@ -301,7 +303,6 @@ class PreparedTrialTask:
     probe_extra_instructions: str | None
     probe_agent_env: dict[str, str] | None
     probe_key_id: str | None
-    trial_mode: str | None
 
 
 @dataclass(slots=True)
@@ -719,6 +720,7 @@ async def _prepare_trial_run(
             trial_model=trial_model,
             trial_environment=trial_environment,
             trial_harbor_config=trial_harbor_config,
+            trial_kind=trial.kind or "agent",
             task_version=task_version,
             task_name=task_name,
             experiment_id=experiment_id,
@@ -740,14 +742,14 @@ async def _prepare_trial_run(
 
 
 def should_generate_inline_probe_summary(
-    trial_mode: str | None, extra_instructions: str | None
+    trial_kind: str, extra_instructions: str | None
 ) -> bool:
     """Only probe trials get the inline probe-summary call. QA/audit trials
     also carry ``extra_instructions`` (their brief), but their analysis IS the
     trial itself: running the direct probe analyzer for them would burn a
     second, unintended LLM call per analysis run and stamp probe-style
     analysis fields onto the qa/audit row."""
-    return bool(extra_instructions) and not is_analysis_kind(trial_mode)
+    return bool(extra_instructions) and trial_kind == "agent"
 
 
 async def _generate_probe_summary_inline(
@@ -887,22 +889,20 @@ def _log_trial_metering_integrity(
     )
 
 
-def _artifact_subprefix(harbor_config: dict | None) -> str | None:
-    """Analysis trials upload under a self-labeling segment.
+def _artifact_subprefix(trial_kind: str, trial_attempt: int) -> str:
+    """Return the immutable storage path owned by one trial attempt.
 
-    Analysis trials share the subject task's trial-id
-    sequence and, by design, its storage neighborhood -- and trial ids
-    repeat across environments that share a bucket. Without the label, an
-    analysis agent's session under a colliding prefix reads as the subject
-    trial's own execution (a real misdiagnosis: an imported audit's sandbox
-    log was mistaken for a TPU trial's runtime).
+    Analysis trials also carry a self-labeling segment because they share the
+    subject task's trial-id sequence and storage neighborhood. The attempt
+    segment prevents a retry from replacing the manifest while leaving older
+    randomly-named Harbor trial directories beside it.
     """
-    if not isinstance(harbor_config, dict):
-        return None
-    mode = harbor_config.get("mode")
-    if mode in ("qa", "qa_eval", "audit", "summarize"):
-        return f"analysis-{mode}"
-    return None
+    if trial_attempt < 1:
+        raise ValueError(f"trial attempt must be positive, got {trial_attempt}")
+    attempt = f"attempt-{trial_attempt}"
+    if is_analysis_kind(trial_kind):
+        return f"analysis-{trial_kind}/{attempt}"
+    return attempt
 
 
 async def _store_trial_results(
@@ -973,12 +973,18 @@ async def _store_trial_results(
 
         if outcome:
             is_timeout = _is_agent_timeout_error_message(outcome.error)
+            has_non_retryable_oddish_failure = (
+                outcome.exception_type in _NON_HARBOR_RETRYABLE_EXCEPTION_TYPES
+            )
+            analysis_artifact_error = (
+                artifact_upload_error if is_analysis_kind(trial.kind) else None
+            )
             # Analysis importers read their required result from durable storage.
             # A verifier reward is not a successful analysis run when that
             # artifact never reached storage: keep the trial on the normal retry
             # path instead of publishing an unrecoverable SUCCESS row.
-            derived_reward = None if artifact_upload_error else outcome.reward
-            if derived_reward is None and is_timeout and not artifact_upload_error:
+            derived_reward = None if analysis_artifact_error else outcome.reward
+            if derived_reward is None and is_timeout and not analysis_artifact_error:
                 verifier_ran = _verifier_ran_from_job_result(
                     str(outcome.job_result_path) if outcome.job_result_path else None
                 )
@@ -989,8 +995,8 @@ async def _store_trial_results(
                     )
 
             trial.reward = derived_reward
-            if artifact_upload_error:
-                trial.error_message = artifact_upload_error
+            if analysis_artifact_error:
+                trial.error_message = analysis_artifact_error
             elif outcome.error:
                 trial.error_message = outcome.error
             elif derived_reward is not None:
@@ -1045,7 +1051,14 @@ async def _store_trial_results(
                     console.print(
                         f"[red]Trial {trial_id} FAILED (Modal image build)[/red]"
                     )
-                elif _is_non_retryable_outcome(trial, outcome):
+                # A freshly uploaded analysis layout that cannot be read is an
+                # Oddish settlement failure. Give it the trial's durable retry
+                # budget even when Harbor classified the underlying verifier
+                # failure as terminal. Oddish-only control failures still fail
+                # closed because another sandbox cannot repair them.
+                elif _is_non_retryable_outcome(trial, outcome) and (
+                    not analysis_artifact_error or has_non_retryable_oddish_failure
+                ):
                     trial.status = TrialStatus.FAILED
                     trial.finished_at = utcnow()
                     console.print(
@@ -1584,7 +1597,7 @@ async def _execute_trial(
 
         harbor_config = prepared_trial.trial_harbor_config or {}
         is_probe = bool(harbor_config.get("extra_instructions")) and (
-            harbor_config.get("mode") != "summarize"
+            prepared_trial.trial_kind != "summarize"
         )
         outcome = await run_harbor_trial_async(
             task_path=task_path_to_run,
@@ -1605,6 +1618,7 @@ async def _execute_trial(
             trial_id=trial_id,
             worker_job_id=worker_job_id,
             harbor_config=prepared_trial.trial_harbor_config,
+            trial_kind=prepared_trial.trial_kind,
             org_id=prepared_trial.org_id,
             billed_user_id=prepared_trial.billed_user_id,
             extra_agent_env=extra_agent_env,
@@ -1715,7 +1729,7 @@ async def _prepare_trial_task(
         harbor_config = prepared_trial.trial_harbor_config or {}
         probe_extra_instructions = harbor_config.get("extra_instructions")
         probe_scope = harbor_config.get("probe_scope", "task")
-        trial_mode = harbor_config.get("mode")
+        trial_kind = prepared_trial.trial_kind
         probe_agent_env: dict[str, str] | None = None
 
         if probe_extra_instructions:
@@ -1728,23 +1742,23 @@ async def _prepare_trial_task(
                 shutil.copytree(task_path_to_run, probe_copy_dir, symlinks=True)
                 task_path_to_run = probe_copy_dir
 
-            if is_analysis_kind(trial_mode):
+            if is_analysis_kind(trial_kind):
                 from oddish.workers.analysis_trials import (
                     ANALYSIS_ARTIFACTS,
                     analysis_check_payload,
                     materialize_summarize_brief,
                 )
 
-                if trial_mode == "summarize":
+                if trial_kind == "summarize":
                     probe_extra_instructions = await materialize_summarize_brief(
                         harbor_config
                     )
                 apply_analysis_overlay(
                     task_path_to_run,
                     brief=probe_extra_instructions,
-                    artifact=ANALYSIS_ARTIFACTS[trial_mode],
-                    check_payload=analysis_check_payload(trial_mode, harbor_config),
-                    needs_query_cli=trial_mode != "summarize",
+                    artifact=ANALYSIS_ARTIFACTS[trial_kind],
+                    check_payload=analysis_check_payload(trial_kind, harbor_config),
+                    needs_query_cli=trial_kind != "summarize",
                 )
             else:
                 await apply_probe_overlay(
@@ -1755,12 +1769,16 @@ async def _prepare_trial_task(
                     probe_scope=probe_scope,
                 )
 
-            if trial_mode != "summarize":
+            if trial_kind != "summarize":
                 # QA, audit, and operator probes use oddish-query inside the
                 # sandbox. Summarize receives its bounded input directly.
                 enable_local_internet(task_path_to_run)
                 probe_key_id, probe_agent_env = await mint_probe_creds(
-                    org_id=prepared_trial.org_id, trial_id=trial_id
+                    org_id=prepared_trial.org_id,
+                    trial_id=trial_id,
+                    bound_analysis_trial_id=(
+                        trial_id if is_analysis_kind(trial_kind) else None
+                    ),
                 )
                 probe_agent_env["ODDISH_PROBE_TASK_ID"] = prepared_trial.task_id
                 if prepared_trial.task_version is not None:
@@ -1779,7 +1797,6 @@ async def _prepare_trial_task(
             probe_extra_instructions=probe_extra_instructions,
             probe_agent_env=probe_agent_env,
             probe_key_id=probe_key_id,
-            trial_mode=trial_mode,
         )
     except (Exception, asyncio.CancelledError):
         if probe_key_id:
@@ -2046,7 +2063,7 @@ async def run_trial_job(
     resolved_task_s3_key = prepared_task.resolved_task_s3_key
     probe_extra_instructions = prepared_task.probe_extra_instructions
     probe_agent_env = prepared_task.probe_agent_env
-    trial_mode = prepared_task.trial_mode
+    trial_kind = prepared_trial.trial_kind
     byok_env = prepared_attempt.byok_env
     sandbox_launch = prepared_attempt.sandbox_launch
     cost_state = prepared_attempt.cost_state
@@ -2127,22 +2144,35 @@ async def run_trial_job(
                         if job_scoped_bundle is not None
                         else None
                     ),
-                    subprefix=_artifact_subprefix(prepared_trial.trial_harbor_config),
+                    subprefix=_artifact_subprefix(
+                        trial_kind, prepared_trial.trial_attempt
+                    ),
                 )
+                if is_analysis_kind(trial_kind):
+                    await validate_uploaded_analysis_artifacts(
+                        trial_id=trial_id,
+                        trial_s3_key=trial_s3_key,
+                        required_artifact=ANALYSIS_ARTIFACTS[trial_kind],
+                        has_trajectory=execution.outcome.has_trajectory,
+                        storage=storage,
+                    )
                 console.print(
                     f"[dim]Uploaded trial results to S3: {trial_s3_key}[/dim]"
                 )
                 oddish_uploaded = True
             except Exception as e:
-                message = (
-                    f"Failed to upload trial results to S3: {type(e).__name__}: {e}"
+                action = (
+                    "Uploaded trial artifacts failed validation"
+                    if trial_s3_key is not None
+                    else "Failed to upload trial results to S3"
                 )
+                message = f"{action}: {type(e).__name__}: {e}"
                 console.print(f"[yellow]{message}[/yellow]")
-                if is_analysis_kind(trial_mode):
+                if is_analysis_kind(trial_kind):
                     artifact_upload_error = message
         if (
             should_upload_to_s3
-            and is_analysis_kind(trial_mode)
+            and is_analysis_kind(trial_kind)
             and execution.outcome
             and not oddish_uploaded
             and artifact_upload_error is None
@@ -2191,7 +2221,7 @@ async def run_trial_job(
         # should_generate_inline_probe_summary).
         probe_analysis = None
         if (
-            should_generate_inline_probe_summary(trial_mode, probe_extra_instructions)
+            should_generate_inline_probe_summary(trial_kind, probe_extra_instructions)
             and execution.outcome
             and execution.outcome.job_dir
         ):

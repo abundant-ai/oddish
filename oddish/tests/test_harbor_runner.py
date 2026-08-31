@@ -19,6 +19,7 @@ from harbor.models.trial.config import (  # noqa: E402
     AgentConfig as HarborAgentConfig,
     EnvironmentConfig as HarborEnvironmentConfig,
 )
+from harbor.trial.network_policy import resolve_agent_phase_policy  # noqa: E402
 
 from oddish.task_timeouts import TaskTimeoutValidationError  # noqa: E402
 from oddish.workers.agents.codex import AzureCompatibleCodex, OddishCodex  # noqa: E402
@@ -37,6 +38,57 @@ from oddish.workers.harbor.restricted_network import (  # noqa: E402
 from oddish.workers.queue import trial_handler  # noqa: E402
 
 _DISK_USAGE = namedtuple("DiskUsage", ["total", "used", "free"])
+
+
+@pytest.mark.parametrize(
+    ("trial_kind", "expected_probe_runtime"),
+    (("qa", True), ("summarize", False)),
+)
+def test_analysis_kind_derives_runtime_capabilities_once(
+    tmp_path,
+    monkeypatch,
+    trial_kind,
+    expected_probe_runtime,
+):
+    task_path = tmp_path / "analysis-task"
+    task_path.mkdir()
+    monkeypatch.setattr(harbor_runner, "apply_harbor_patches", lambda **_kwargs: None)
+    monkeypatch.setattr(harbor_runner, "get_backend", lambda _name: None)
+
+    def unexpected_validation(_path):
+        raise AssertionError("analysis trials must skip ordinary task validation")
+
+    monkeypatch.setattr(
+        harbor_runner,
+        "validate_task_timeout_config",
+        unexpected_validation,
+    )
+    monkeypatch.setattr(
+        harbor_runner,
+        "_check_local_storage_preflight",
+        lambda *_args, **_kwargs: "stop after validation boundary",
+    )
+    observed_probe_runtime = []
+
+    def probe_modal_kwargs(is_probe, environment):
+        observed_probe_runtime.append(is_probe)
+        assert environment == EnvironmentType.MODAL
+        return {}
+
+    monkeypatch.setattr(harbor_runner, "_probe_modal_kwargs", probe_modal_kwargs)
+
+    outcome = asyncio.run(
+        harbor_runner.run_harbor_trial_async(
+            task_path=task_path,
+            agent="claude-code",
+            jobs_dir=tmp_path / "jobs",
+            environment=EnvironmentType.MODAL,
+            trial_kind=trial_kind,
+        )
+    )
+
+    assert outcome.exception_type == "LocalStoragePreflightError"
+    assert observed_probe_runtime == [expected_probe_runtime]
 
 
 def _write_network_policy_task(
@@ -63,6 +115,41 @@ network_mode = "{agent_mode}"
     if compose:
         (environment_dir / "docker-compose.yaml").write_text(
             "services: {}\n", encoding="utf-8"
+        )
+    return task_path
+
+
+def _write_kube_network_policy_task(
+    tmp_path: Path,
+    *,
+    contract: bool = True,
+) -> Path:
+    task_path = tmp_path / "task"
+    environment_dir = task_path / "environment"
+    environment_dir.mkdir(parents=True)
+    (task_path / "task.toml").write_text(
+        """schema_version = "1.3"
+
+[metadata]
+oddish_agent_egress_allowed_hosts = ["task-static.test"]
+
+[environment]
+network_mode = "public"
+
+[agent]
+user = "agent"
+""",
+        encoding="utf-8",
+    )
+    chart = task_path / "environment" / "chart"
+    chart.mkdir()
+    (chart / "Chart.yaml").write_text(
+        "apiVersion: v2\nname: test\nversion: 0.1.0\n", encoding="utf-8"
+    )
+    (chart / "values.yaml").write_text("{}\n", encoding="utf-8")
+    if contract:
+        (chart / ".oddish-agent-egress-hosts").write_text(
+            "agentEgressProxy.runtimeAllowedHosts\n", encoding="utf-8"
         )
     return task_path
 
@@ -103,6 +190,350 @@ def test_inject_restricted_agent_model_hosts_for_restricted_direct_task(
     assert captured["agent_kwargs"] == {
         "extra_env": {"MODEL_BASE_URL": "https://model.test/v1"}
     }
+
+
+def test_kube_chart_model_hosts_merge_into_helm_contract(monkeypatch, tmp_path):
+    """An agent with no attested profile keeps model-id inference: opencode
+    talks to the provider its model id names, so inference is correct there."""
+    task_path = _write_kube_network_policy_task(tmp_path)
+    environment_config = HarborEnvironmentConfig(
+        type=EnvironmentType.DAYTONA,
+        kwargs={
+            "helm_values": {
+                "unrelated": {"value": "preserved"},
+            }
+        },
+    )
+    agent_config = HarborAgentConfig(
+        name="opencode",
+        model_name="anthropic/claude-opus-5",
+        extra_allowed_hosts=["explicit.test", "existing.test"],
+    )
+    monkeypatch.setattr(
+        harbor_runner,
+        "outbound_hosts_for_model",
+        lambda *_args, **_kwargs: [
+            "api.anthropic.com",
+            "mcp-proxy.anthropic.com",
+        ],
+    )
+    monkeypatch.setattr(
+        harbor_runner,
+        "agent_runtime_hosts",
+        lambda **_kwargs: ["runtime.test"],
+    )
+
+    harbor_runner._apply_restricted_agent_network_defaults(
+        task_path=task_path,
+        environment_config=environment_config,
+        agent_config=agent_config,
+    )
+
+    assert environment_config.kwargs["helm_values"] == {
+        "agentEgressProxy": {
+            "runtimeAllowedHosts": (
+                "task-static.test;explicit.test;existing.test;api.anthropic.com;"
+                "mcp-proxy.anthropic.com;runtime.test"
+            )
+        },
+        "unrelated": {"value": "preserved"},
+    }
+    # EC2/k3s remains on its public Harbor baseline. Trial extras are consumed
+    # by the chart policy instead of being left for Harbor to ignore.
+    assert agent_config.extra_allowed_hosts == []
+    task_config = harbor_runner.HarborTaskConfig.model_validate_toml(
+        (task_path / "task.toml").read_text(encoding="utf-8")
+    )
+    inner_policy = environment_config.kwargs["helm_values"]["agentEgressProxy"][
+        "runtimeAllowedHosts"
+    ].split(";")
+    assert task_config.environment.resolve_baseline().network_mode.value == "public"
+    assert task_config.agent.explicit_phase_policy() is None
+    assert (
+        resolve_agent_phase_policy(
+            task_config,
+            agent_config,
+            task_config.environment.resolve_baseline(),
+        ).network_mode.value
+        == "public"
+    )
+    assert inner_policy == [
+        "task-static.test",
+        "explicit.test",
+        "existing.test",
+        "api.anthropic.com",
+        "mcp-proxy.anthropic.com",
+        "runtime.test",
+    ]
+
+
+def test_kube_chart_runtime_policy_helm_key_is_reserved(tmp_path):
+    task_path = _write_kube_network_policy_task(tmp_path)
+    environment_config = HarborEnvironmentConfig(
+        type=EnvironmentType.DAYTONA,
+        kwargs={
+            "helm_values": {"agentEgressProxy": {"runtimeAllowedHosts": "bypass.test"}}
+        },
+    )
+    agent_config = HarborAgentConfig(name="codex", model_name="openai/gpt-5.2")
+
+    with pytest.raises(ValueError, match="is reserved for Oddish"):
+        harbor_runner._apply_restricted_agent_network_defaults(
+            task_path=task_path,
+            environment_config=environment_config,
+            agent_config=agent_config,
+        )
+
+
+@pytest.mark.parametrize(
+    "unsupported_host", ["*.provider.test", "192.0.2.1", "10.0.0.0/8"]
+)
+def test_kube_chart_contract_rejects_non_dns_policy_entries(tmp_path, unsupported_host):
+    task_path = _write_kube_network_policy_task(tmp_path)
+    environment_config = HarborEnvironmentConfig(type=EnvironmentType.DAYTONA)
+    agent_config = HarborAgentConfig(
+        name="codex",
+        model_name="openai/gpt-5.2",
+        extra_allowed_hosts=[unsupported_host],
+    )
+
+    with pytest.raises(
+        harbor_runner.RestrictedNetworkProfileError,
+        match="supports only exact DNS hostnames",
+    ):
+        harbor_runner._apply_restricted_agent_network_defaults(
+            task_path=task_path,
+            environment_config=environment_config,
+            agent_config=agent_config,
+        )
+
+
+def test_kube_chart_without_model_host_contract_is_unchanged(monkeypatch, tmp_path):
+    task_path = _write_kube_network_policy_task(tmp_path, contract=False)
+    environment_config = HarborEnvironmentConfig(type=EnvironmentType.DAYTONA)
+    agent_config = HarborAgentConfig(
+        name="claude-code",
+        model_name="anthropic/claude-opus-5",
+        extra_allowed_hosts=["explicit.test"],
+    )
+    host_calls = 0
+
+    def _hosts(*_args, **_kwargs):
+        nonlocal host_calls
+        host_calls += 1
+        return ["api.anthropic.com"]
+
+    monkeypatch.setattr(harbor_runner, "outbound_hosts_for_model", _hosts)
+
+    harbor_runner._apply_restricted_agent_network_defaults(
+        task_path=task_path,
+        environment_config=environment_config,
+        agent_config=agent_config,
+    )
+
+    assert host_calls == 0
+    assert environment_config.kwargs == {}
+
+
+def test_kube_chart_malformed_contract_fails_closed(tmp_path):
+    task_path = _write_kube_network_policy_task(tmp_path)
+    (task_path / "environment/chart/.oddish-agent-egress-hosts").write_text(
+        "agentEgressProxy.misspelledKey\n", encoding="utf-8"
+    )
+    environment_config = HarborEnvironmentConfig(type=EnvironmentType.DAYTONA)
+    agent_config = HarborAgentConfig(name="codex", model_name="openai/gpt-5.2")
+
+    with pytest.raises(
+        harbor_runner.RestrictedNetworkProfileError,
+        match="Unsupported .oddish-agent-egress-hosts contract value",
+    ):
+        harbor_runner._apply_restricted_agent_network_defaults(
+            task_path=task_path,
+            environment_config=environment_config,
+            agent_config=agent_config,
+        )
+
+
+def test_kube_chart_contract_requires_task_toml_metadata_hosts(tmp_path):
+    task_path = _write_kube_network_policy_task(tmp_path)
+    task_toml = task_path / "task.toml"
+    task_toml.write_text(
+        task_toml.read_text(encoding="utf-8").replace(
+            'oddish_agent_egress_allowed_hosts = ["task-static.test"]\n',
+            "",
+        ),
+        encoding="utf-8",
+    )
+    environment_config = HarborEnvironmentConfig(type=EnvironmentType.DAYTONA)
+    agent_config = HarborAgentConfig(name="codex", model_name="openai/gpt-5.2")
+
+    with pytest.raises(
+        harbor_runner.RestrictedNetworkProfileError,
+        match="metadata.oddish_agent_egress_allowed_hosts",
+    ):
+        harbor_runner._apply_restricted_agent_network_defaults(
+            task_path=task_path,
+            environment_config=environment_config,
+            agent_config=agent_config,
+        )
+
+
+def test_kube_chart_contract_rejects_formal_harbor_agent_policy(tmp_path):
+    task_path = _write_kube_network_policy_task(tmp_path)
+    task_toml = task_path / "task.toml"
+    task_toml.write_text(
+        task_toml.read_text(encoding="utf-8")
+        + 'network_mode = "allowlist"\nallowed_hosts = ["task-static.test"]\n',
+        encoding="utf-8",
+    )
+    environment_config = HarborEnvironmentConfig(type=EnvironmentType.DAYTONA)
+    agent_config = HarborAgentConfig(name="codex", model_name="openai/gpt-5.2")
+
+    with pytest.raises(
+        harbor_runner.RestrictedNetworkProfileError,
+        match="must not declare a Harbor.*network policy",
+    ):
+        harbor_runner._apply_restricted_agent_network_defaults(
+            task_path=task_path,
+            environment_config=environment_config,
+            agent_config=agent_config,
+        )
+
+
+def test_kube_chart_contract_adds_runtime_transport_and_disables_web_tools(
+    tmp_path,
+):
+    task_path = _write_kube_network_policy_task(tmp_path)
+    environment_config = HarborEnvironmentConfig(type=EnvironmentType.DAYTONA)
+    agent_config = HarborAgentConfig(name="codex", model_name="openai/gpt-5.2")
+
+    harbor_runner._apply_restricted_agent_network_defaults(
+        task_path=task_path,
+        environment_config=environment_config,
+        agent_config=agent_config,
+        runtime_transport_env={"OPENAI_BASE_URL": "https://custom-openai.example/v1"},
+    )
+
+    raw_hosts = environment_config.kwargs["helm_values"]["agentEgressProxy"][
+        "runtimeAllowedHosts"
+    ]
+    assert "custom-openai.example" in raw_hosts.split(";")
+    assert agent_config.kwargs["web_search"] == "disabled"
+
+
+@pytest.mark.parametrize(
+    ("model_name", "expected_hosts"),
+    [
+        (
+            "claude-opus-5",
+            {"api.anthropic.com", "mcp-proxy.anthropic.com"},
+        ),
+        (
+            "global.anthropic.claude-opus-5",
+            {
+                "bedrock-runtime.us-east-1.amazonaws.com",
+                "bedrock.us-east-1.amazonaws.com",
+                "bedrock-runtime.us-west-2.amazonaws.com",
+                "bedrock.us-west-2.amazonaws.com",
+                "sts.amazonaws.com",
+            },
+        ),
+        ("openai/gpt-5.2", {"api.openai.com", "ab.chatgpt.com"}),
+        ("fireworks/glm-5.3", {"api.fireworks.ai"}),
+    ],
+)
+def test_kube_chart_contract_follows_real_provider_routes(
+    tmp_path, model_name, expected_hosts
+):
+    task_path = _write_kube_network_policy_task(tmp_path)
+    environment_config = HarborEnvironmentConfig(type=EnvironmentType.DAYTONA)
+    agent_config = HarborAgentConfig(name="claude-code", model_name=model_name)
+
+    harbor_runner._apply_restricted_agent_network_defaults(
+        task_path=task_path,
+        environment_config=environment_config,
+        agent_config=agent_config,
+    )
+
+    raw_hosts = environment_config.kwargs["helm_values"]["agentEgressProxy"][
+        "runtimeAllowedHosts"
+    ]
+    assert expected_hosts <= set(raw_hosts.split(";"))
+
+
+def test_kube_chart_contract_pins_transport_authoritative_agent_hosts(tmp_path):
+    """gemini-cli fronts the Gemini API whatever the model id says.
+
+    Resolving hosts from the model id instead of the agent's attested profile
+    opened the provider named by the id (api.openai.com) while never opening
+    the host the CLI actually dials, so the agent could not reach its model at
+    all — the same drift ``_gemini_profile``'s ``infer_model=False`` exists to
+    prevent on Compose.
+    """
+    task_path = _write_kube_network_policy_task(tmp_path)
+    environment_config = HarborEnvironmentConfig(type=EnvironmentType.DAYTONA)
+    agent_config = HarborAgentConfig(name="gemini-cli", model_name="openai/gpt-5.2")
+
+    harbor_runner._apply_restricted_agent_network_defaults(
+        task_path=task_path,
+        environment_config=environment_config,
+        agent_config=agent_config,
+    )
+
+    hosts = set(
+        environment_config.kwargs["helm_values"]["agentEgressProxy"][
+            "runtimeAllowedHosts"
+        ].split(";")
+    )
+    assert "generativelanguage.googleapis.com" in hosts
+    assert not hosts & {"api.openai.com", "ab.chatgpt.com"}
+
+
+@pytest.mark.parametrize("model_name", ["openai/gpt-5.2", "cursor/gpt-5.2"])
+def test_kube_chart_contract_rejects_wildcard_pinned_agent(tmp_path, model_name):
+    """Cursor's attested boundary is the wildcard ``*.cursor.sh``, which this
+    chart's exact-match proxy cannot express — refuse the trial rather than
+    open the unrelated provider host the model id happens to name."""
+    task_path = _write_kube_network_policy_task(tmp_path)
+    environment_config = HarborEnvironmentConfig(type=EnvironmentType.DAYTONA)
+    agent_config = HarborAgentConfig(name="cursor-cli", model_name=model_name)
+
+    with pytest.raises(
+        harbor_runner.RestrictedNetworkProfileError,
+        match="supports only exact DNS hostnames",
+    ):
+        harbor_runner._apply_restricted_agent_network_defaults(
+            task_path=task_path,
+            environment_config=environment_config,
+            agent_config=agent_config,
+        )
+
+
+def test_kube_chart_contract_honors_custom_agent_profile_hook(tmp_path):
+    """A self-fronting agent's own hook is authoritative here as on Compose:
+    tbh reaches Meta through its own service, so its declared service_hosts —
+    not the model id — decide the policy."""
+    task_path = _write_kube_network_policy_task(tmp_path)
+    environment_config = HarborEnvironmentConfig(type=EnvironmentType.DAYTONA)
+    agent_config = HarborAgentConfig(
+        name="tbh",
+        model_name="openai/gpt-5.2",
+        kwargs={"service_hosts": ["api.meta.ai"]},
+    )
+
+    harbor_runner._apply_restricted_agent_network_defaults(
+        task_path=task_path,
+        environment_config=environment_config,
+        agent_config=agent_config,
+    )
+
+    hosts = set(
+        environment_config.kwargs["helm_values"]["agentEgressProxy"][
+            "runtimeAllowedHosts"
+        ].split(";")
+    )
+    assert "api.meta.ai" in hosts
+    assert not hosts & {"api.openai.com", "ab.chatgpt.com"}
 
 
 def test_compose_restricted_profile_keeps_runtime_host_out_of_config(tmp_path):
@@ -3909,6 +4340,120 @@ def test_analysis_artifact_upload_failure_cannot_settle_successfully(
     assert completed is (expected_status == trial_handler.TrialStatus.FAILED)
 
 
+@pytest.mark.parametrize(
+    ("attempts", "expected_status"),
+    [
+        (1, trial_handler.TrialStatus.RETRYING),
+        (3, trial_handler.TrialStatus.FAILED),
+    ],
+)
+def test_analysis_artifact_validation_failure_uses_retry_budget_even_when_harbor_error_is_terminal(
+    monkeypatch, attempts, expected_status
+):
+    """Settlement owns retries when Harbor's failed run uploaded no readable layout."""
+    trial = _make_retry_decision_trial(attempts=attempts, max_attempts=3)
+    trial.kind = "qa_eval"
+    _install_retry_decision_session_fakes(monkeypatch, trial)
+
+    outcome = harbor_runner.HarborOutcome(
+        reward=None,
+        error="No reward file found",
+        exit_code=0,
+        duration_sec=5.0,
+        job_result_path=Path("/tmp/result.json"),
+        job_dir=Path("/tmp/job"),
+        exception_type="RewardFileNotFoundError",
+    )
+    upload_error = (
+        "Uploaded trial artifacts failed validation: "
+        "AnalysisArtifactLayoutError: result.json is missing"
+    )
+    prefix = (
+        f"tasks/{trial.task_id}/trials/{trial.id}/analysis-qa_eval/attempt-{attempts}/"
+    )
+
+    terminal, completed = asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id=trial.id,
+            outcome=outcome,
+            trial_s3_key=prefix,
+            execution_error=None,
+            artifact_upload_error=upload_error,
+            trial_attempt=trial.attempts,
+        )
+    )
+
+    assert trial.status == expected_status
+    assert trial.reward is None
+    assert trial.error_message == upload_error
+    assert trial.trial_s3_key == prefix
+    assert terminal is (expected_status == trial_handler.TrialStatus.FAILED)
+    assert completed is (expected_status == trial_handler.TrialStatus.FAILED)
+
+
+def test_analysis_artifact_failure_does_not_retry_oddish_control_error(monkeypatch):
+    trial = _make_retry_decision_trial(attempts=1, max_attempts=3)
+    trial.kind = "qa_eval"
+    _install_retry_decision_session_fakes(monkeypatch, trial)
+
+    outcome = harbor_runner.HarborOutcome(
+        reward=None,
+        error="Quota control paused the trial",
+        exit_code=-1,
+        duration_sec=5.0,
+        job_result_path=None,
+        job_dir=None,
+        exception_type="QuotaPauseControlError",
+    )
+
+    terminal, completed = asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id=trial.id,
+            outcome=outcome,
+            trial_s3_key=None,
+            execution_error=None,
+            artifact_upload_error="Harbor produced no job directory to upload",
+            trial_attempt=trial.attempts,
+        )
+    )
+
+    assert trial.status == trial_handler.TrialStatus.FAILED
+    assert terminal is True
+    assert completed is True
+
+
+def test_agent_non_retryable_failure_ignores_analysis_artifact_error(monkeypatch):
+    """Only analysis trials may widen retry policy for artifact settlement."""
+    trial = _make_retry_decision_trial(attempts=1, max_attempts=6)
+    _install_retry_decision_session_fakes(monkeypatch, trial)
+    outcome = harbor_runner.HarborOutcome(
+        reward=None,
+        error="No reward file found",
+        exit_code=0,
+        duration_sec=5.0,
+        job_result_path=Path("/tmp/result.json"),
+        job_dir=Path("/tmp/job"),
+        exception_type="RewardFileNotFoundError",
+    )
+
+    terminal, completed = asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id=trial.id,
+            outcome=outcome,
+            trial_s3_key=None,
+            execution_error=None,
+            artifact_upload_error="Failed to upload trial results to S3",
+            trial_attempt=trial.attempts,
+        )
+    )
+
+    assert trial.status == trial_handler.TrialStatus.FAILED
+    assert trial.error_message == "No reward file found"
+    assert trial.attempts == 1
+    assert terminal is True
+    assert completed is True
+
+
 def test_store_trial_results_retries_when_exception_type_is_missing(monkeypatch):
     """Pre-fix HarborOutcome rows have exception_type=None; retry behavior
     for those must match the previous default (re-queue while attempts
@@ -4852,6 +5397,33 @@ def test_opencode_environment_hosts_follow_custom_base_url():
     )
 
     assert "gateway.internal.example" in hosts
+    assert "raw.githubusercontent.com" in hosts
+
+
+def test_gemini_cli_environment_hosts_span_install_and_its_pinned_transport():
+    """Gemini CLI setup needs npm hosts and always calls the Gemini transport."""
+    hosts = harbor_runner._gemini_cli_environment_hosts(
+        HarborAgentConfig(name="gemini-cli", model_name="openai/gpt-4o")
+    )
+
+    assert "raw.githubusercontent.com" in hosts  # nvm installer
+    assert "nodejs.org" in hosts  # Node runtime
+    assert "registry.npmjs.org" in hosts  # @google/gemini-cli package
+    assert "generativelanguage.googleapis.com" in hosts
+    assert "api.openai.com" not in hosts
+
+
+def test_gemini_cli_environment_hosts_follow_a_custom_gemini_route():
+    hosts = harbor_runner._gemini_cli_environment_hosts(
+        HarborAgentConfig(
+            name="gemini-cli",
+            model_name="gemini/gemini-3.7-flash",
+            env={"GOOGLE_GEMINI_BASE_URL": "https://gemini-relay.example/v1"},
+        )
+    )
+
+    assert "gemini-relay.example" in hosts
+    assert "generativelanguage.googleapis.com" not in hosts
     assert "raw.githubusercontent.com" in hosts
 
 

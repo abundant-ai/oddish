@@ -278,6 +278,8 @@ async def run_ephemeral_harbor_trial(
     harbor_config: dict[str, Any] | None = None,
     extra_agent_env: dict[str, str] | None = None,
     environment_build_timeout_multiplier: float | None = None,
+    is_probe: bool = False,
+    skip_task_validation: bool = False,
 ) -> HarborOutcome:
     """Run one trial in an override Harbor child process.
 
@@ -303,8 +305,7 @@ async def run_ephemeral_harbor_trial(
             exception_type="HarborOverrideImportError",
         )
 
-    is_probe = raw.get("mode") == "probe"
-    if not is_probe:
+    if not skip_task_validation:
         validate_task_timeout_config(task_path)
 
     needs_task_patch = bool(hc.docker_image or hc.mcp_servers)

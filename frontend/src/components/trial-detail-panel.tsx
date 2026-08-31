@@ -535,11 +535,7 @@ export function buildOddishRunCommand(trial: Trial, task: Task): string {
   }
 
   if (trial.model) {
-    const modelArg =
-      trial.provider && !trial.model.includes("/")
-        ? `${trial.provider}/${trial.model}`
-        : trial.model;
-    parts.push(`-m ${modelArg}`);
+    parts.push(`-m ${trial.queue_key || trial.model}`);
   }
 
   return parts.join(" ");
@@ -1731,14 +1727,19 @@ export function TrialDetailPanel({
                 </Card>
               )}
 
-              {/* Discreet reproduction command — hidden from public viewers */}
+              {/* Equivalent retry command — hidden from public viewers */}
               {showAnalysis && (
-                <CodeBlock
-                  code={buildOddishRunCommand(trial, task)}
-                  language="bash"
-                  maxHeight="none"
-                  className="opacity-60 transition-opacity hover:opacity-100"
-                />
+                <div>
+                  <p className="text-muted-foreground mb-1 text-[11px]">
+                    Equivalent retry command, reconstructed.
+                  </p>
+                  <CodeBlock
+                    code={buildOddishRunCommand(trial, task)}
+                    language="bash"
+                    maxHeight="none"
+                    className="opacity-60 transition-opacity hover:opacity-100"
+                  />
+                </div>
               )}
             </div>
           </ActiveTabContent>
@@ -1782,6 +1783,13 @@ export function TrialDetailPanel({
           >
             <ArtifactsViewer
               filesUrl={`${apiBaseUrl}/trials/${trial.id}/files`}
+              trialId={trial.id}
+              successfulAnalysisTrial={
+                trial.status === "success" &&
+                ["qa", "qa_eval", "audit", "summarize"].includes(
+                  trial.kind ?? "agent"
+                )
+              }
               initialFilePath={artifactsTargetPath}
               selectedLines={artifactsLines}
               onSelectLinesChange={setArtifactsLines}
