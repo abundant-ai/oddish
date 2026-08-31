@@ -34,6 +34,7 @@ from oddish.workers.analysis_trials import (
     build_qa_brief,
     create_analysis_trial,
     pre_trial_item_ids,
+    trial_evidence_snapshot,
 )
 
 _QA_EVAL_SOURCE_STATUSES = (TrialStatus.SUCCESS, TrialStatus.FAILED)
@@ -194,6 +195,7 @@ async def create_qa_eval_core(
             payload={
                 "source_trial_id": source.id,
                 "trial_ids": [source.id],
+                "trial_evidence": [trial_evidence_snapshot(source)],
                 "pre_trial_item_ids": item_ids,
                 "pre_trial_must_fix_ids": must_fix_ids,
                 "with_verdict": False,

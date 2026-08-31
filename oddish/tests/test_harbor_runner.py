@@ -4422,6 +4422,38 @@ def test_analysis_artifact_failure_does_not_retry_oddish_control_error(monkeypat
     assert completed is True
 
 
+def test_agent_non_retryable_failure_ignores_analysis_artifact_error(monkeypatch):
+    """Only analysis trials may widen retry policy for artifact settlement."""
+    trial = _make_retry_decision_trial(attempts=1, max_attempts=6)
+    _install_retry_decision_session_fakes(monkeypatch, trial)
+    outcome = harbor_runner.HarborOutcome(
+        reward=None,
+        error="No reward file found",
+        exit_code=0,
+        duration_sec=5.0,
+        job_result_path=Path("/tmp/result.json"),
+        job_dir=Path("/tmp/job"),
+        exception_type="RewardFileNotFoundError",
+    )
+
+    terminal, completed = asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id=trial.id,
+            outcome=outcome,
+            trial_s3_key=None,
+            execution_error=None,
+            artifact_upload_error="Failed to upload trial results to S3",
+            trial_attempt=trial.attempts,
+        )
+    )
+
+    assert trial.status == trial_handler.TrialStatus.FAILED
+    assert trial.error_message == "No reward file found"
+    assert trial.attempts == 1
+    assert terminal is True
+    assert completed is True
+
+
 def test_store_trial_results_retries_when_exception_type_is_missing(monkeypatch):
     """Pre-fix HarborOutcome rows have exception_type=None; retry behavior
     for those must match the previous default (re-queue while attempts

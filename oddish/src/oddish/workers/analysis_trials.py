@@ -125,6 +125,36 @@ def pre_trial_item_ids(items: list[dict] | None) -> tuple[list[str], list[str]]:
     return item_ids, must_fix_ids
 
 
+def trial_evidence_snapshot(trial: TrialModel) -> dict:
+    """Freeze the server-owned facts used to validate one QA classification."""
+    status = (
+        trial.status.value
+        if isinstance(trial.status, TrialStatus)
+        else str(trial.status)
+    )
+    return {
+        "trial_id": str(trial.id),
+        "status": status,
+        "reward": trial.reward,
+        "has_trajectory": bool(trial.has_trajectory),
+        "agent": trial.agent,
+    }
+
+
+async def load_trial_evidence(
+    session: AsyncSession, trial_ids: list[str]
+) -> list[dict]:
+    """Load an exact, source-ordered evidence snapshot for a QA trial."""
+    trials = (
+        await session.scalars(select(TrialModel).where(TrialModel.id.in_(trial_ids)))
+    ).all()
+    by_id = {str(trial.id): trial for trial in trials}
+    missing = [trial_id for trial_id in trial_ids if trial_id not in by_id]
+    if missing:
+        raise RuntimeError(f"cannot snapshot missing QA source trials: {missing}")
+    return [trial_evidence_snapshot(by_id[trial_id]) for trial_id in trial_ids]
+
+
 def analysis_check_payload(kind: str, harbor_config: dict | None) -> dict:
     """The machine-checkable artifact contract for one analysis trial.
 
@@ -686,6 +716,7 @@ async def create_qa_trial(
     )
     items = (version.pre_trial or {}).get("items") if version is not None else None
     item_ids, must_fix_ids = pre_trial_item_ids(items)
+    trial_evidence = await load_trial_evidence(session, eligible_trial_ids)
     return await create_analysis_trial(
         session,
         task=task,
@@ -698,6 +729,7 @@ async def create_qa_trial(
         ),
         payload={
             "trial_ids": eligible_trial_ids,
+            "trial_evidence": trial_evidence,
             "pre_trial_item_ids": item_ids,
             "pre_trial_must_fix_ids": must_fix_ids,
             "with_verdict": with_verdict,

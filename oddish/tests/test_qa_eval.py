@@ -218,6 +218,15 @@ async def test_create_adds_one_pointer_trial_without_moving_the_source(monkeypat
     assert captured["billed_user_id"] == "user-1"
     assert captured["payload"]["source_trial_id"] == "source-1"
     assert captured["payload"]["trial_ids"] == ["source-1"]
+    assert captured["payload"]["trial_evidence"] == [
+        {
+            "trial_id": "source-1",
+            "status": "success",
+            "reward": None,
+            "has_trajectory": True,
+            "agent": "codex",
+        }
+    ]
     assert captured["payload"]["pre_trial_item_ids"] == ["audit-1", "audit-2"]
     assert captured["payload"]["pre_trial_must_fix_ids"] == ["audit-1"]
     assert admitted == [("org-1", "user-1", 1)]

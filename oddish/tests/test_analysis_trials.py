@@ -243,6 +243,23 @@ async def test_qa_creation_persists_the_pre_trial_contract(monkeypatch):
         fake_create_analysis_trial,
     )
 
+    async def fake_load_trial_evidence(_session, trial_ids):
+        assert trial_ids == ["trial-1"]
+        return [
+            {
+                "trial_id": "trial-1",
+                "status": "success",
+                "reward": 0.0,
+                "has_trajectory": True,
+                "agent": "codex",
+            }
+        ]
+
+    monkeypatch.setattr(
+        "oddish.workers.analysis_trials.load_trial_evidence",
+        fake_load_trial_evidence,
+    )
+
     await create_qa_trial(
         Session(),
         task=task,
@@ -253,6 +270,15 @@ async def test_qa_creation_persists_the_pre_trial_contract(monkeypatch):
     payload = captured["payload"]
     assert payload["pre_trial_item_ids"] == ["audit-1", "audit-2"]
     assert payload["pre_trial_must_fix_ids"] == ["audit-1"]
+    assert payload["trial_evidence"] == [
+        {
+            "trial_id": "trial-1",
+            "status": "success",
+            "reward": 0.0,
+            "has_trajectory": True,
+            "agent": "codex",
+        }
+    ]
 
     entry = _good_qa_entry("trial-1")
     entry["analysis"]["exploitation"] = [
