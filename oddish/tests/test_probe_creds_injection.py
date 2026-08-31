@@ -76,6 +76,7 @@ async def test_mint_probe_creds_wraps_mint_failure(monkeypatch):
 @pytest.mark.asyncio
 async def test_mint_probe_creds_returns_env(monkeypatch):
     monkeypatch.setenv("ODDISH_PUBLIC_API_BASE_URL", "https://api.example")
+    trial_id = "qa-post-trial-01-apache__kafka-21033-9-run-20260831-102300-12451f9d-2"
 
     class _FakeSession:
         async def __aenter__(self):
@@ -90,16 +91,18 @@ async def test_mint_probe_creds_returns_env(monkeypatch):
         session, *, org_id, name, ttl_minutes, scope, bound_analysis_trial_id
     ):
         assert org_id == "org-1"
-        assert name == "probe:t1"
+        assert name == f"probe:{trial_id}"
         assert ttl_minutes == PROBE_KEY_TTL_MINUTES
         assert scope is APIKeyScope.READ
-        assert bound_analysis_trial_id == "t1"
+        assert bound_analysis_trial_id == trial_id
         return ("key-id-123", "ok_rawsecret")
 
     monkeypatch.setattr("oddish.worker.probe_creds.mint_internal_api_key", _mint)
 
     key_id, env = await mint_probe_creds(
-        org_id="org-1", trial_id="t1", bound_analysis_trial_id="t1"
+        org_id="org-1",
+        trial_id=trial_id,
+        bound_analysis_trial_id=trial_id,
     )
     assert key_id == "key-id-123"
     assert env == {

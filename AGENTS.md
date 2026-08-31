@@ -163,6 +163,9 @@ High-level flow:
    trajectory availability, and agent. The in-sandbox verifier and settlement
    importer use that snapshot to reject a QA artifact that changes those
    server-owned facts.
+   Short-lived read keys bound to an analysis trial store the full trial ID;
+   `api_keys.bound_analysis_trial_id` therefore shares the 160-character limit
+   of `trials.id`.
    It reuses the normal QA brief and `qa_result.json`, and writes the candidate
    analysis only to the new trial. Hosted creation resolves the authenticated
    caller as the payer, admits the validated replay count once, and stamps that

@@ -2039,7 +2039,7 @@ class APIKeyModel(TimestampedMixin, Base):
         Boolean, nullable=False, default=False, server_default="false"
     )
     bound_analysis_trial_id: Mapped[str | None] = mapped_column(
-        String(64), nullable=True
+        String(160), nullable=True
     )
 
     __table_args__ = (
