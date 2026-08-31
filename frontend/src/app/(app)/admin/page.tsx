@@ -265,14 +265,8 @@ type ModelCheckState =
   | { status: "complete"; result: ModelEndpointCheckResponse }
   | { status: "error"; message: string };
 
-const NON_MODEL_QUEUE_KEYS = new Set([
-  "analysis",
-  "default",
-  "nop_oracle",
-  "tag-project",
-  "task_expand",
-  "verdict",
-]);
+const BEDROCK_MODEL_QUEUE_KEY =
+  /^(?:arn:aws(?:-[a-z]+)?:bedrock:|anthropic\.|(?:us|eu|apac|apn|global)\.anthropic\.)/;
 const MODEL_CHECK_BATCH_SIZE = 3;
 
 function DiagnosticsPanel() {
@@ -284,7 +278,10 @@ function DiagnosticsPanel() {
   const [checks, setChecks] = useState<Record<string, ModelCheckState>>({});
   const models = (data?.capacity ?? [])
     .map((row) => row.queue_key)
-    .filter((model) => !NON_MODEL_QUEUE_KEYS.has(model))
+    .filter(
+      (queueKey) =>
+        queueKey.includes("/") || BEDROCK_MODEL_QUEUE_KEY.test(queueKey)
+    )
     .sort();
   const hasRunningCheck = models.some(
     (model) => checks[model]?.status === "running"
