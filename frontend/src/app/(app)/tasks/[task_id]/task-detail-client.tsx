@@ -814,11 +814,7 @@ export function TaskDetailClient({
       const params = new URLSearchParams(window.location.search);
       const pane = params.get("taskPane");
       setActiveTaskPane(
-        pane === "file"
-          ? pane
-          : params.has("taskFile")
-            ? "file"
-            : "overview"
+        pane === "file" ? pane : params.has("taskFile") ? "file" : "overview"
       );
     };
     window.addEventListener("popstate", restoreTaskPane);
@@ -864,11 +860,7 @@ export function TaskDetailClient({
     const urlTaskLines = parseLineRange(params.get("taskLines"));
     const urlTaskPane = params.get("taskPane");
     setActiveTaskPane(
-      urlTaskPane === "file"
-        ? urlTaskPane
-        : urlTaskFile
-          ? "file"
-          : "overview"
+      urlTaskPane === "file" ? urlTaskPane : urlTaskFile ? "file" : "overview"
     );
     if (urlTaskFile) {
       taskPaneFileRef.current = urlTaskFile;
@@ -1215,7 +1207,7 @@ export function TaskDetailClient({
           </KpiTile>
           <KpiTile
             label="Trials"
-            hint={`${versionSummary.completed} succeeded · ${versionSummary.failed} failed${
+            hint={`${versionSummary.completed} completed · ${versionSummary.failed} harness errors${
               versionSummary.skipped > 0
                 ? ` · ${versionSummary.skipped} skipped`
                 : ""
@@ -1366,7 +1358,7 @@ export function TaskDetailClient({
           )}
           {analysisTrialsForVersion.length > 0 && (
             <div className="flex flex-wrap items-center gap-2 pt-1">
-              <span className="text-[11px] uppercase tracking-wide text-[color:var(--paper-ink-3)]">
+              <span className="text-[11px] tracking-wide text-[color:var(--paper-ink-3)] uppercase">
                 QA
               </span>
               {analysisTrialsForVersion.map((t) => (
