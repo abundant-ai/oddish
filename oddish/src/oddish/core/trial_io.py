@@ -7,20 +7,21 @@ import mimetypes
 import re
 import time
 from collections.abc import Hashable, MutableMapping
+from contextlib import suppress
 from pathlib import Path
-from typing import TypeVar
 
+from botocore.exceptions import BotoCoreError
 from fastapi import HTTPException
 from harbor.models.trial.paths import TrialPaths
 
+from oddish.config import settings
 from oddish.core.trial_artifacts import (
-    TrialArtifactMode,
     TrialArtifactLayout,
+    TrialArtifactMode,
     normalize_trial_relative_path,
     resolve_trial_artifact_layout,
     trial_name_from_manifest,
 )
-from oddish.config import settings
 from oddish.db import TrialModel, get_storage_client
 from oddish.db.storage import (
     StorageClient,
@@ -31,7 +32,6 @@ from oddish.workers.agents.grok_build_trajectory import (
     convert_grok_build_json_text_to_trajectory,
 )
 
-
 _CACHE_TTL_SECONDS = 120.0
 _CACHE_MAX_ENTRIES = 128
 _STRUCTURED_LOGS_CACHE: dict[tuple[str, int, str | None], tuple[float, dict]] = {}
@@ -40,8 +40,14 @@ _PROBE_ARTIFACTS_CACHE: dict[tuple[str, int, str | None], tuple[float, dict]] = 
 _STRUCTURED_LOGS_LOCKS: dict[tuple[str, int, str | None], asyncio.Lock] = {}
 _TRAJECTORY_LOCKS: dict[tuple[str, int, str | None], asyncio.Lock] = {}
 _PROBE_ARTIFACTS_LOCKS: dict[tuple[str, int, str | None], asyncio.Lock] = {}
-_T = TypeVar("_T")
-_K = TypeVar("_K", bound=Hashable)
+_ARTIFACT_FALLBACK_ERRORS = (
+    BotoCoreError,
+    OSError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+)
+logger = logging.getLogger(__name__)
 
 _EMPTY_PROBE_ARTIFACTS: dict = {
     "trajectory": None,
@@ -51,7 +57,9 @@ _EMPTY_PROBE_ARTIFACTS: dict = {
 }
 
 
-def _cache_get(cache: MutableMapping[_K, tuple[float, _T]], key: _K) -> _T | None:
+def _cache_get[K: Hashable, T](
+    cache: MutableMapping[K, tuple[float, T]], key: K
+) -> T | None:
     entry = cache.get(key)
     if not entry:
         return None
@@ -62,7 +70,9 @@ def _cache_get(cache: MutableMapping[_K, tuple[float, _T]], key: _K) -> _T | Non
     return value
 
 
-def _cache_set(cache: MutableMapping[_K, tuple[float, _T]], key: _K, value: _T) -> None:
+def _cache_set[K: Hashable, T](
+    cache: MutableMapping[K, tuple[float, T]], key: K, value: T
+) -> None:
     cache[key] = (time.monotonic(), value)
     if len(cache) <= _CACHE_MAX_ENTRIES:
         return
@@ -70,7 +80,7 @@ def _cache_set(cache: MutableMapping[_K, tuple[float, _T]], key: _K, value: _T) 
     cache.pop(oldest_key, None)
 
 
-def _get_lock(locks: dict[_K, asyncio.Lock], key: _K) -> asyncio.Lock:
+def _get_lock[K: Hashable](locks: dict[K, asyncio.Lock], key: K) -> asyncio.Lock:
     lock = locks.get(key)
     if lock is None:
         lock = asyncio.Lock()
@@ -101,7 +111,7 @@ def _resolve_local_job_dir(trial: TrialModel) -> Path | None:
     base_dir = Path(settings.harbor_jobs_dir).resolve()
     try:
         result_path_resolved = result_path.resolve()
-    except Exception:
+    except (OSError, RuntimeError):
         return None
 
     if (
@@ -132,7 +142,7 @@ def _resolve_local_trial_paths(trial: TrialModel) -> TrialPaths | None:
         try:
             manifest = _json.loads(result_path.read_text(errors="replace"))
             trial_name = trial_name_from_manifest(manifest)
-        except Exception:
+        except (OSError, TypeError, ValueError):
             return None
         if trial_name is None:
             return TrialPaths(job_dir)
@@ -185,10 +195,8 @@ async def _download_first_text(
     candidates: list[str],
 ) -> str | None:
     for key in candidates:
-        try:
+        with suppress(*_ARTIFACT_FALLBACK_ERRORS):
             return await storage.download_text(key)
-        except Exception:
-            continue
     return None
 
 
@@ -240,14 +248,10 @@ async def read_trial_logs(trial: TrialModel) -> dict:
             continue
         if p.suffix in (".json", ".patch"):
             continue
-        rel: Path | str
-        try:
-            rel = p.relative_to(job_dir_resolved)
-        except Exception:
-            rel = p.name
+        rel = p.relative_to(job_dir_resolved)
         try:
             content = p.read_text(errors="replace")
-        except Exception as e:
+        except OSError as e:
             content = f"[failed to read {p.name}: {e}]"
         logs_parts.append(f"=== {rel} ===\n{content}\n")
 
@@ -291,14 +295,12 @@ async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
 
         for key in files:
             # Agent logs
-            if key.endswith("/agent/oracle.txt") or key.endswith("/oracle.txt"):
+            if key.endswith(("/agent/oracle.txt", "/oracle.txt")):
                 if oracle_key is None:
                     oracle_key = key
                     download_plan.append((key, "oracle", None))
                     matched_keys.add(key)
-            elif key.endswith("/agent/setup/stdout.txt") or key.endswith(
-                "/setup/stdout.txt"
-            ):
+            elif key.endswith(("/agent/setup/stdout.txt", "/setup/stdout.txt")):
                 if setup_key is None:
                     setup_key = key
                     download_plan.append((key, "setup", None))
@@ -310,25 +312,20 @@ async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
                     download_plan.append((key, "command", cmd_name))
                     matched_keys.add(key)
             # Verifier logs
-            elif key.endswith("/verifier/test-stdout.txt") or key.endswith(
-                "/test-stdout.txt"
-            ):
+            elif key.endswith(("/verifier/test-stdout.txt", "/test-stdout.txt")):
                 if verifier_stdout_key is None:
                     verifier_stdout_key = key
                     download_plan.append((key, "verifier_stdout", None))
                     matched_keys.add(key)
-            elif key.endswith("/verifier/test-stderr.txt") or key.endswith(
-                "/test-stderr.txt"
-            ):
+            elif key.endswith(("/verifier/test-stderr.txt", "/test-stderr.txt")):
                 if verifier_stderr_key is None:
                     verifier_stderr_key = key
                     download_plan.append((key, "verifier_stderr", None))
                     matched_keys.add(key)
-            elif key.endswith("/exception.txt"):
-                if exception_key is None:
-                    exception_key = key
-                    download_plan.append((key, "exception", None))
-                    matched_keys.add(key)
+            elif key.endswith("/exception.txt") and exception_key is None:
+                exception_key = key
+                download_plan.append((key, "exception", None))
+                matched_keys.add(key)
 
         # Add other log files that weren't matched
         for key in files:
@@ -417,52 +414,40 @@ async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
     # Agent: oracle.txt
     oracle_path = agent_dir / "oracle.txt"
     if oracle_path.exists():
-        try:
+        with suppress(OSError):
             result["agent"]["oracle"] = oracle_path.read_text(errors="replace")
-        except Exception:
-            pass
 
     # Agent: setup/stdout.txt
     setup_path = agent_dir / "setup" / "stdout.txt"
     if setup_path.exists():
-        try:
+        with suppress(OSError):
             result["agent"]["setup"] = setup_path.read_text(errors="replace")
-        except Exception:
-            pass
 
     # Agent: command-*/stdout.txt
     for cmd_dir in sorted(agent_dir.glob("command-*")):
         stdout_path = cmd_dir / "stdout.txt"
         if stdout_path.exists():
-            try:
+            with suppress(OSError):
                 content = stdout_path.read_text(errors="replace")
                 result["agent"]["commands"].append(
                     {"name": cmd_dir.name, "content": content}
                 )
-            except Exception:
-                pass
 
     # Verifier: test-stdout.txt, test-stderr.txt
     stdout_path = trial_paths.test_stdout_path
     if stdout_path.exists():
-        try:
+        with suppress(OSError):
             result["verifier"]["stdout"] = stdout_path.read_text(errors="replace")
-        except Exception:
-            pass
 
     stderr_path = trial_paths.test_stderr_path
     if stderr_path.exists():
-        try:
+        with suppress(OSError):
             result["verifier"]["stderr"] = stderr_path.read_text(errors="replace")
-        except Exception:
-            pass
 
     exception_path = trial_dir / "exception.txt"
     if exception_path.exists():
-        try:
+        with suppress(OSError):
             result["exception"] = exception_path.read_text(errors="replace")
-        except Exception:
-            pass
 
     # Capture other log files as fallback
     matched_paths: set[Path] = set()
@@ -486,12 +471,10 @@ async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
         is_log_file = p.suffix in (".log", ".txt")
         is_log_dir = any(part in p.parts for part in ("logs", "agent", "verifier"))
         if (is_log_file or is_log_dir) and p.suffix not in (".json", ".patch"):
-            try:
+            with suppress(OSError, ValueError):
                 rel = p.relative_to(trial_dir)
                 content = p.read_text(errors="replace")
                 result["other"].append({"name": str(rel), "content": content})
-            except Exception:
-                pass
 
     return result
 
@@ -549,8 +532,8 @@ async def _read_trial_probe_artifacts_uncached(trial: TrialModel) -> dict:
                 else None
             ),
         )
-    except Exception as exc:
-        logging.getLogger(__name__).warning(
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.warning(
             "Could not resolve trial dir for probe artifacts %s: %s", trial.id, exc
         )
         return _EMPTY_PROBE_ARTIFACTS
@@ -620,16 +603,14 @@ async def _read_trial_trajectory_from_s3(
     for trajectory_key in _legacy_trajectory_candidate_keys(
         trial, layout.attempt_prefix
     ):
-        try:
+        with suppress(*_ARTIFACT_FALLBACK_ERRORS):
             content = await storage.download_text(trajectory_key)
             if content:
                 parsed = _json.loads(content)
                 return parsed
-        except Exception:
-            continue
 
     for grok_key in _legacy_grok_build_candidate_keys(trial, layout.attempt_prefix):
-        try:
+        with suppress(*_ARTIFACT_FALLBACK_ERRORS):
             content = await storage.download_text(grok_key)
             if content:
                 parsed = _convert_grok_build_text_to_trajectory(
@@ -638,8 +619,6 @@ async def _read_trial_trajectory_from_s3(
                 )
                 if parsed:
                     return parsed
-        except Exception:
-            continue
 
     try:
         files = (
@@ -665,8 +644,8 @@ async def _read_trial_trajectory_from_s3(
                 )
                 if parsed:
                     return parsed
-    except Exception as e:
-        logging.getLogger(__name__).debug(
+    except _ARTIFACT_FALLBACK_ERRORS as e:
+        logger.debug(
             "No trajectory in S3 for %s at %s: %s",
             trial.id,
             layout.attempt_prefix,
@@ -688,14 +667,14 @@ def _read_local_trial_trajectory(trial: TrialModel) -> dict | None:
 
     try:
         trajectory_path_resolved = trajectory_path.resolve()
-    except Exception:
+    except (OSError, RuntimeError):
         return None
 
     if not trajectory_path_resolved.exists() or not trajectory_path_resolved.is_file():
         grok_build_path = trial_paths.agent_dir / "grok-build.json"
         try:
             grok_build_path_resolved = grok_build_path.resolve()
-        except Exception:
+        except (OSError, RuntimeError):
             return None
         if (
             not grok_build_path_resolved.exists()
@@ -707,7 +686,7 @@ def _read_local_trial_trajectory(trial: TrialModel) -> dict | None:
                 grok_build_path_resolved.read_text(errors="replace"),
                 model_name=trial.model,
             )
-        except Exception:
+        except (OSError, TypeError, ValueError):
             return None
 
     try:
@@ -715,7 +694,7 @@ def _read_local_trial_trajectory(trial: TrialModel) -> dict | None:
             trajectory_path_resolved.read_text(errors="replace")
         )
         return local_parsed
-    except Exception:
+    except (OSError, TypeError, ValueError):
         return None
 
 
@@ -833,8 +812,13 @@ async def read_trial_agent_file(
         try:
             content = await storage.download_bytes(direct_key)
             return content, media_type
-        except Exception:
-            pass
+        except _ARTIFACT_FALLBACK_ERRORS:
+            logger.debug(
+                "No direct legacy agent file for %s at %s",
+                trial.id,
+                direct_key,
+                exc_info=True,
+            )
 
         try:
             suffix = f"/agent/{normalized_path}"
@@ -847,8 +831,8 @@ async def read_trial_agent_file(
                 if key.endswith(suffix):
                     content = await storage.download_bytes(key)
                     return content, media_type
-        except Exception as e:
-            logging.getLogger(__name__).debug(
+        except _ARTIFACT_FALLBACK_ERRORS as e:
+            logger.debug(
                 "No agent file in S3 for %s at %s: %s",
                 trial.id,
                 layout.attempt_prefix,
@@ -867,7 +851,7 @@ async def read_trial_agent_file(
 
     try:
         file_path_resolved = (trial_paths.agent_dir / normalized_path).resolve()
-    except Exception:
+    except (OSError, RuntimeError):
         raise HTTPException(status_code=404, detail="File not found")
 
     if trial_paths.trial_dir.resolve() not in file_path_resolved.parents:
@@ -881,7 +865,7 @@ async def read_trial_agent_file(
 
     try:
         return file_path_resolved.read_bytes(), media_type
-    except Exception:
+    except OSError:
         raise HTTPException(status_code=404, detail="File not found")
 
 
@@ -897,12 +881,9 @@ async def read_trial_result(trial: TrialModel) -> dict:
             status_code=404,
             detail=f"No authoritative result found for {trial.id}",
         )
-    try:
-        result_json = await storage.get_trial_result_json(layout.attempt_prefix)
-        if result_json:
-            return result_json
-    except Exception:
-        pass
+    result_json = await storage.get_trial_result_json(layout.attempt_prefix)
+    if result_json:
+        return result_json
 
     # Local path: read result.json from harbor_result_path
     if not trial.harbor_result_path:
@@ -924,7 +905,7 @@ async def read_trial_result(trial: TrialModel) -> dict:
     try:
         parsed: dict = _json.loads(result_path_resolved.read_text(errors="replace"))
         return parsed
-    except Exception as e:
+    except (OSError, TypeError, ValueError) as e:
         raise HTTPException(
             status_code=500, detail=f"Failed to parse local result.json: {e}"
         )
@@ -952,7 +933,7 @@ async def debug_trial_files(trial: TrialModel) -> dict:
         result["files"] = files
         # Find any trajectory files
         result["trajectory_files"] = [f for f in files if "trajectory.json" in f]
-    except Exception as e:
-        result["error"] = f"Failed to list files: {str(e)}"
+    except _ARTIFACT_FALLBACK_ERRORS as e:
+        result["error"] = f"Failed to list files: {e!s}"
 
     return result
