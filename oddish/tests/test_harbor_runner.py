@@ -41,6 +41,57 @@ from pydantic import BaseModel, ConfigDict
 _DISK_USAGE = namedtuple("DiskUsage", ["total", "used", "free"])
 
 
+@pytest.mark.parametrize(
+    ("trial_kind", "expected_probe_runtime"),
+    (("qa", True), ("summarize", False)),
+)
+def test_analysis_kind_derives_runtime_capabilities_once(
+    tmp_path,
+    monkeypatch,
+    trial_kind,
+    expected_probe_runtime,
+):
+    task_path = tmp_path / "analysis-task"
+    task_path.mkdir()
+    monkeypatch.setattr(harbor_runner, "apply_harbor_patches", lambda **_kwargs: None)
+    monkeypatch.setattr(harbor_runner, "get_backend", lambda _name: None)
+
+    def unexpected_validation(_path):
+        raise AssertionError("analysis trials must skip ordinary task validation")
+
+    monkeypatch.setattr(
+        harbor_runner,
+        "validate_task_timeout_config",
+        unexpected_validation,
+    )
+    monkeypatch.setattr(
+        harbor_runner,
+        "_check_local_storage_preflight",
+        lambda *_args, **_kwargs: "stop after validation boundary",
+    )
+    observed_probe_runtime = []
+
+    def probe_modal_kwargs(is_probe, environment):
+        observed_probe_runtime.append(is_probe)
+        assert environment == EnvironmentType.MODAL
+        return {}
+
+    monkeypatch.setattr(harbor_runner, "_probe_modal_kwargs", probe_modal_kwargs)
+
+    outcome = asyncio.run(
+        harbor_runner.run_harbor_trial_async(
+            task_path=task_path,
+            agent="claude-code",
+            jobs_dir=tmp_path / "jobs",
+            environment=EnvironmentType.MODAL,
+            trial_kind=trial_kind,
+        )
+    )
+
+    assert outcome.exception_type == "LocalStoragePreflightError"
+    assert observed_probe_runtime == [expected_probe_runtime]
+
+
 def _write_network_policy_task(
     tmp_path: Path,
     *,
@@ -4307,6 +4358,120 @@ def test_analysis_artifact_upload_failure_cannot_settle_successfully(
     assert trial.error_message == upload_error
     assert terminal is (expected_status == trial_handler.TrialStatus.FAILED)
     assert completed is (expected_status == trial_handler.TrialStatus.FAILED)
+
+
+@pytest.mark.parametrize(
+    ("attempts", "expected_status"),
+    [
+        (1, trial_handler.TrialStatus.RETRYING),
+        (3, trial_handler.TrialStatus.FAILED),
+    ],
+)
+def test_analysis_artifact_validation_failure_uses_retry_budget_even_when_harbor_error_is_terminal(
+    monkeypatch, attempts, expected_status
+):
+    """Settlement owns retries when Harbor's failed run uploaded no readable layout."""
+    trial = _make_retry_decision_trial(attempts=attempts, max_attempts=3)
+    trial.kind = "qa_eval"
+    _install_retry_decision_session_fakes(monkeypatch, trial)
+
+    outcome = harbor_runner.HarborOutcome(
+        reward=None,
+        error="No reward file found",
+        exit_code=0,
+        duration_sec=5.0,
+        job_result_path=Path("/tmp/result.json"),
+        job_dir=Path("/tmp/job"),
+        exception_type="RewardFileNotFoundError",
+    )
+    upload_error = (
+        "Uploaded trial artifacts failed validation: "
+        "AnalysisArtifactLayoutError: result.json is missing"
+    )
+    prefix = (
+        f"tasks/{trial.task_id}/trials/{trial.id}/analysis-qa_eval/attempt-{attempts}/"
+    )
+
+    terminal, completed = asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id=trial.id,
+            outcome=outcome,
+            trial_s3_key=prefix,
+            execution_error=None,
+            artifact_upload_error=upload_error,
+            trial_attempt=trial.attempts,
+        )
+    )
+
+    assert trial.status == expected_status
+    assert trial.reward is None
+    assert trial.error_message == upload_error
+    assert trial.trial_s3_key == prefix
+    assert terminal is (expected_status == trial_handler.TrialStatus.FAILED)
+    assert completed is (expected_status == trial_handler.TrialStatus.FAILED)
+
+
+def test_analysis_artifact_failure_does_not_retry_oddish_control_error(monkeypatch):
+    trial = _make_retry_decision_trial(attempts=1, max_attempts=3)
+    trial.kind = "qa_eval"
+    _install_retry_decision_session_fakes(monkeypatch, trial)
+
+    outcome = harbor_runner.HarborOutcome(
+        reward=None,
+        error="Quota control paused the trial",
+        exit_code=-1,
+        duration_sec=5.0,
+        job_result_path=None,
+        job_dir=None,
+        exception_type="QuotaPauseControlError",
+    )
+
+    terminal, completed = asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id=trial.id,
+            outcome=outcome,
+            trial_s3_key=None,
+            execution_error=None,
+            artifact_upload_error="Harbor produced no job directory to upload",
+            trial_attempt=trial.attempts,
+        )
+    )
+
+    assert trial.status == trial_handler.TrialStatus.FAILED
+    assert terminal is True
+    assert completed is True
+
+
+def test_agent_non_retryable_failure_ignores_analysis_artifact_error(monkeypatch):
+    """Only analysis trials may widen retry policy for artifact settlement."""
+    trial = _make_retry_decision_trial(attempts=1, max_attempts=6)
+    _install_retry_decision_session_fakes(monkeypatch, trial)
+    outcome = harbor_runner.HarborOutcome(
+        reward=None,
+        error="No reward file found",
+        exit_code=0,
+        duration_sec=5.0,
+        job_result_path=Path("/tmp/result.json"),
+        job_dir=Path("/tmp/job"),
+        exception_type="RewardFileNotFoundError",
+    )
+
+    terminal, completed = asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id=trial.id,
+            outcome=outcome,
+            trial_s3_key=None,
+            execution_error=None,
+            artifact_upload_error="Failed to upload trial results to S3",
+            trial_attempt=trial.attempts,
+        )
+    )
+
+    assert trial.status == trial_handler.TrialStatus.FAILED
+    assert trial.error_message == "No reward file found"
+    assert trial.attempts == 1
+    assert terminal is True
+    assert completed is True
 
 
 def test_store_trial_results_retries_when_exception_type_is_missing(monkeypatch):
