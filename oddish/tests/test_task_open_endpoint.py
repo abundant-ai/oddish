@@ -178,6 +178,7 @@ def _preview(index):
         "cache_tokens": 0,
         "cache_write_tokens": 0,
         "billed_user_id": "user-1",
+        "has_trajectory": True,
         "created_at": NOW,
         "started_at": NOW,
         "finished_at": NOW,
@@ -279,6 +280,7 @@ def test_task_open_is_org_scoped_exact_compact_and_bounded():
     assert response.task.verdict_error == "judge timed out"
     assert response.active_qa_trial is not None
     assert response.active_qa_trial.kind == "qa"
+    assert response.active_qa_trial.has_trajectory is True
 
     selected = response.selected_version
     assert selected is not None
@@ -301,6 +303,7 @@ def test_task_open_is_org_scoped_exact_compact_and_bounded():
     assert legacy.cost_usd == pytest.approx(0.2)
     assert all(trial.agent == "codex" for trial in response.trials)
     assert all(trial.kind == "agent" for trial in response.trials)
+    assert all(trial.has_trajectory for trial in response.trials)
 
     assert response.totals.total_trials == 1201
     assert response.totals.cost_usd == pytest.approx(120.2)
