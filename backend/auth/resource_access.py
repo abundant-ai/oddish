@@ -14,6 +14,7 @@ _QA_TRIAL_READ_ROUTES = frozenset(
     {
         "/trials/{trial_id}/result",
         "/trials/{trial_id}/trajectory",
+        "/trials/{trial_id}/logs",
         "/trials/{trial_id}/logs/structured",
     }
 )

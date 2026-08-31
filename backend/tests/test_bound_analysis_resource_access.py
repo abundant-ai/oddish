@@ -171,10 +171,11 @@ async def test_qa_key_denies_trial_routes_the_prompt_does_not_need(
     (
         "/trials/{trial_id}/result",
         "/trials/{trial_id}/trajectory",
+        "/trials/{trial_id}/logs",
         "/trials/{trial_id}/logs/structured",
     ),
 )
-async def test_qa_key_allows_only_the_three_evidence_routes(monkeypatch, route_path):
+async def test_qa_key_allows_only_the_evidence_routes(monkeypatch, route_path):
     analysis = SimpleNamespace(
         id="analysis-1",
         org_id="org-1",
@@ -189,6 +190,29 @@ async def test_qa_key_allows_only_the_three_evidence_routes(monkeypatch, route_p
         _request(route_path, path_params={"trial_id": "source-1"}),
         _auth(),
     )
+
+
+@pytest.mark.asyncio
+async def test_qa_key_denies_free_form_logs_for_an_unassigned_trial(monkeypatch):
+    analysis = SimpleNamespace(
+        id="analysis-1",
+        org_id="org-1",
+        kind="qa",
+        task_id="task-1",
+        task_version_id="version-1",
+        harbor_config={"analysis_payload": {"trial_ids": ["source-1"]}},
+    )
+    _session(monkeypatch, analysis)
+
+    with pytest.raises(HTTPException) as denied:
+        await authorize_bound_analysis_request(
+            _request(
+                "/trials/{trial_id}/logs",
+                path_params={"trial_id": "other-trial"},
+            ),
+            _auth(),
+        )
+    assert denied.value.status_code == 403
 
 
 @pytest.mark.asyncio
