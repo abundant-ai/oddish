@@ -11,8 +11,10 @@ from botocore.exceptions import ClientError
 from oddish.core import trial_io
 from oddish.core.trial_artifacts import (
     AnalysisArtifactLayoutError,
+    ODDISH_TRIAL_NAME_KEY,
     TrialArtifactMode,
     validate_uploaded_analysis_artifacts,
+    write_trial_selection_manifest,
 )
 
 
@@ -107,6 +109,56 @@ def test_analysis_upload_validation_accepts_manifest_selected_qa_artifacts():
 
     assert layout.mode is TrialArtifactMode.EXACT
     assert layout.artifact_prefix == child
+
+
+def test_current_harbor_root_manifest_records_and_selects_its_only_child(tmp_path):
+    result_path = tmp_path / "result.json"
+    result_path.write_text(
+        json.dumps(
+            {
+                "id": "67b598d1-9dc2-434e-861a-f18baea0a8dd",
+                "n_total_trials": 1,
+                "stats": {"n_completed_trials": 1},
+            }
+        )
+    )
+
+    assert write_trial_selection_manifest(result_path, ["qa-run__AbC1234"])
+    manifest = json.loads(result_path.read_text())
+
+    assert manifest[ODDISH_TRIAL_NAME_KEY] == "qa-run__AbC1234"
+    assert "trial_results" not in manifest
+
+    prefix = "tasks/task-1/trials/task-1-qa/analysis-qa/attempt-2/"
+    child = f"{prefix}qa-run__AbC1234/"
+    storage = _Storage(
+        {
+            f"{prefix}result.json": result_path.read_text(),
+            f"{child}verifier/qa_result.json": "{}",
+            f"{child}agent/trajectory.json": "{}",
+        }
+    )
+    layout = asyncio.run(
+        validate_uploaded_analysis_artifacts(
+            trial_id="task-1-qa",
+            trial_s3_key=prefix,
+            required_artifact="qa_result.json",
+            has_trajectory=True,
+            storage=storage,
+        )
+    )
+
+    assert layout.mode is TrialArtifactMode.EXACT
+    assert layout.artifact_prefix == child
+
+
+def test_current_harbor_root_manifest_does_not_guess_between_children(tmp_path):
+    result_path = tmp_path / "result.json"
+    original = {"n_total_trials": 2, "stats": {"n_completed_trials": 2}}
+    result_path.write_text(json.dumps(original))
+
+    assert not write_trial_selection_manifest(result_path, ["qa-a", "qa-b"])
+    assert json.loads(result_path.read_text()) == original
 
 
 @pytest.mark.parametrize(

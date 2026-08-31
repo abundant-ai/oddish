@@ -311,6 +311,12 @@ bounded recovery work instead of a permanently stale summary. In an S3-backed
 run, a QA/audit/summarize trial cannot settle SUCCESS until its Harbor artifact
 directory uploads successfully and the freshly uploaded attempt's root
 `result.json` selects an existing child containing the required analysis result.
+Pinned Harbor 0.20 omits its former `trial_results` array from that root job
+summary, so the Oddish runner writes `oddish_trial_name` there after `Job.run()`
+returns and before upload. That field contains the sole in-memory Harbor
+`TrialResult.trial_name`; older stored roots with exactly one `trial_results`
+entry remain readable. Zero- or multi-result jobs receive no selection and fail
+settlement instead of choosing a directory by listing siblings.
 If the outcome reports a trajectory, that same selected child must also contain
 `agent/trajectory.json`. An upload or layout-validation failure uses the trial's
 normal retry budget. Storage list/download errors during import propagate so

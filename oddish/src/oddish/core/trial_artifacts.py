@@ -4,8 +4,8 @@ import json
 import re
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import PurePosixPath
-from typing import Never, Protocol
+from pathlib import Path, PurePosixPath
+from typing import Never, Protocol, Sequence
 
 from fastapi import HTTPException
 
@@ -45,6 +45,48 @@ class AnalysisArtifactLayoutError(RuntimeError):
     """A newly uploaded analysis attempt cannot satisfy its read contract."""
 
 
+ODDISH_TRIAL_NAME_KEY = "oddish_trial_name"
+
+
+def _validate_trial_name(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("result.json trial_name must be a non-empty string")
+    trial_name = value.strip()
+    trial_name_path = PurePosixPath(trial_name)
+    if (
+        trial_name_path.is_absolute()
+        or len(trial_name_path.parts) != 1
+        or trial_name_path.parts[0] in (".", "..")
+    ):
+        raise ValueError("result.json trial_name must be one directory name")
+    return trial_name
+
+
+def write_trial_selection_manifest(
+    result_path: Path, trial_names: Sequence[str]
+) -> bool:
+    """Record the one Harbor child owned by an Oddish job in root result.json.
+
+    Harbor 0.20 keeps complete TrialResult objects in each child directory and
+    deliberately omits ``trial_results`` from the root job summary. Oddish runs
+    one Harbor trial per job, so persist that one name as a small extension on
+    the root summary before uploading the directory. Returning False leaves
+    zero- or multi-trial jobs unselected so settlement fails closed.
+    """
+    if len(trial_names) != 1:
+        return False
+    trial_name = _validate_trial_name(trial_names[0])
+    manifest = json.loads(result_path.read_text(encoding="utf-8"))
+    if not isinstance(manifest, dict):
+        raise ValueError("result.json must contain a JSON object")
+    manifest[ODDISH_TRIAL_NAME_KEY] = trial_name
+    result_path.write_text(
+        json.dumps(manifest, indent=4, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    return True
+
+
 def normalize_trial_relative_path(file_path: str) -> str:
     """Normalize one trial-relative path and reject absolute or parent paths."""
     raw = file_path.replace("\\", "/").strip()
@@ -63,6 +105,8 @@ def trial_name_from_manifest(manifest: object) -> str | None:
     """Return the sole Harbor child name, or None for a root-only failure."""
     if not isinstance(manifest, dict):
         raise ValueError("result.json must contain a JSON object")
+    if ODDISH_TRIAL_NAME_KEY in manifest:
+        return _validate_trial_name(manifest[ODDISH_TRIAL_NAME_KEY])
     trial_results = manifest.get("trial_results")
     if not isinstance(trial_results, list):
         raise ValueError("result.json trial_results must be a list")
@@ -70,18 +114,7 @@ def trial_name_from_manifest(manifest: object) -> str | None:
         return None
     if len(trial_results) != 1 or not isinstance(trial_results[0], dict):
         raise ValueError("result.json must identify exactly one Harbor trial")
-    trial_name = trial_results[0].get("trial_name")
-    if not isinstance(trial_name, str) or not trial_name.strip():
-        raise ValueError("result.json trial_name must be a non-empty string")
-    trial_name = trial_name.strip()
-    trial_name_path = PurePosixPath(trial_name)
-    if (
-        trial_name_path.is_absolute()
-        or len(trial_name_path.parts) != 1
-        or trial_name_path.parts[0] in (".", "..")
-    ):
-        raise ValueError("result.json trial_name must be one directory name")
-    return trial_name
+    return _validate_trial_name(trial_results[0].get("trial_name"))
 
 
 def _is_attempt_scoped_key(key: str, root_prefix: str) -> bool:
