@@ -148,6 +148,8 @@ def test_render_includes_cli_usage_block():
     assert "verify run" in out
     assert "harbor src" in out
     assert "experiments trials" in out
+    assert "trials result" in out
+    assert "trials trajectory" in out
     assert "trials logs" in out
     # defers exhaustive detail to --help
     assert "--help" in out
