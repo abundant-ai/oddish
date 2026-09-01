@@ -276,15 +276,22 @@ async def list_tasks_core(
     # experiment has visible trials for it; otherwise the latest represented
     # version wins so an experiment still shows its own historical trials after
     # the task's default changes elsewhere.
-    # Experiment-scoped eager and aggregate paths must choose the same version.
-    # The SQL selector can reject a trial whose TaskVersion row was deleted;
-    # an in-memory TrialModel cannot determine that from task_version_id alone.
-    effective_by_task: dict[str, str] = {}
+    # Resolve one displayed version for every task before any consumer filters
+    # rows. The SQL selector deliberately returns only versions represented by
+    # visible experiment trials; a task absent from that partial result still
+    # displays its current version. Keeping the fallback in this total map makes
+    # the agent rows, response metadata, and separately-loaded probe rows use
+    # the same version decision.
+    effective_by_task: dict[str, str | None] = {
+        task.id: task.current_version_id for task in tasks
+    }
     if experiment_id and tasks and include_trials:
-        effective_by_task = await fetch_experiment_effective_version_ids(
-            session,
-            experiment_id=experiment_id,
-            task_ids=[task.id for task in tasks],
+        effective_by_task.update(
+            await fetch_experiment_effective_version_ids(
+                session,
+                experiment_id=experiment_id,
+                task_ids=[task.id for task in tasks],
+            )
         )
 
     if include_trials:
@@ -295,7 +302,7 @@ async def list_tasks_core(
                 # ``task.trials`` is already scoped to the experiment's visible
                 # agent population. Use the SQL-selected version rather than
                 # re-ranking the loaded rows in Python.
-                effective = effective_by_task.get(task.id, task.current_version_id)
+                effective = effective_by_task[task.id]
                 set_committed_value(
                     task,
                     "trials",
@@ -380,9 +387,7 @@ async def list_tasks_core(
                     queue_info_by_trial_id=queue_info_by_trial_id,
                     jobs_by_subject=jobs_by_subject,
                     experiment_context_id=experiment_id,
-                    effective_version_id=effective_by_task.get(
-                        task.id, task.current_version_id
-                    ),
+                    effective_version_id=effective_by_task[task.id],
                     exclusions=exclusions,
                 )
                 for task in tasks
@@ -402,9 +407,7 @@ async def list_tasks_core(
                 queue_info_by_trial_id=queue_info_by_trial_id,
                 jobs_by_subject=jobs_by_subject,
                 experiment_context_id=experiment_id,
-                effective_version_id=effective_by_task.get(
-                    task.id, task.current_version_id
-                ),
+                effective_version_id=effective_by_task[task.id],
                 exclusions=exclusions,
             )
             for task in tasks

@@ -492,6 +492,66 @@ async def test_experiment_paths_share_visible_agent_version_selection(session):
 
 
 @pytest.mark.asyncio
+async def test_compact_path_keeps_current_version_probe_without_agent_candidate(
+    session,
+):
+    """A probe must use the same current-version fallback as the task row.
+
+    Probe trials are loaded separately from experiment agent trials. When no
+    live versioned agent trial exists, the SQL selector returns no row and the
+    compact task view falls back to the task's current version. The probe must
+    follow that displayed version instead of disappearing with the absent SQL
+    row.
+    """
+    task = _task("probe-fallback-version-task")
+    session.add(task)
+    await session.flush()
+
+    current = _version(task, 1)
+    session.add(current)
+    await session.flush()
+    task.current_version_id = current.id
+
+    experiment = _experiment("probe-fallback-version-experiment")
+    session.add(experiment)
+    await session.flush()
+
+    probe = _trial(
+        task,
+        experiment,
+        task_version_id=current.id,
+        is_probe=True,
+    )
+    session.add(probe)
+    await session.execute(
+        task_experiments.insert().values(
+            task_id=task.id,
+            experiment_id=experiment.id,
+        )
+    )
+    await session.flush()
+
+    task_id = task.id
+    experiment_id = experiment.id
+    probe_id = probe.id
+    session.expunge_all()
+
+    compact = await list_tasks_core(
+        session,
+        experiment_id=experiment_id,
+        compact_trials=True,
+        include_queue_info=False,
+        include_worker_jobs=False,
+        org_id="org1",
+    )
+
+    compact_task = {response.id: response for response in compact}[task_id]
+    assert compact_task.trial_version_id == current.id
+    assert compact_task.total == 0
+    assert [trial.id for trial in (compact_task.trials or [])] == [probe_id]
+
+
+@pytest.mark.asyncio
 async def test_experiment_open_counts_versionless_trials_without_an_effective_version(
     session,
 ):
