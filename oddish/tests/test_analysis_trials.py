@@ -184,8 +184,7 @@ def test_the_qa_brief_tells_the_agent_everything_it_needs():
     assert "oddish-query task fetch --into /tmp/qa-task-source" in brief
     assert "`/tmp/qa-task-source/instruction.md`" in brief
     assert "`/tmp/qa-task-source/task.toml`" in brief
-    assert "does not prove that the historical solver could read them" in brief
-    assert "checked every verifier failure" in brief
+    assert "does not prove that the historical solver could read hidden tests" in brief
 
 
 def test_the_production_classifier_uses_the_query_evidence_contract():
@@ -208,13 +207,21 @@ def test_the_production_classifier_uses_the_query_evidence_contract():
     assert "stop without writing `qa_result.json`" in brief
     assert "Missing QA evidence is not a solver HARNESS_ERROR" in brief
     assert "The fetched task source is QA-only evidence" in brief
-    assert "Do not select the final label after finding the first solver error" in brief
-    assert "with `[agent].timeout_sec` in `task.toml`" in brief
-    assert "reaches that configured budget" in brief
-    assert "result's agent-execution timing" in brief
-    assert "does not prove that configured budget remained" in brief
-    assert "That is not HARNESS_ERROR" in brief
-    assert "BAD_SUCCESS `oracle_copying`" in brief
+    assert "The exact exception `AgentTimeoutError`" in brief
+    assert "it is not HARNESS_ERROR" in brief
+    assert "check every failed verifier condition" in brief
+    assert "found only in the verifier, hidden tests, or reference solution" in brief
+    assert "Do not let an unrelated task defect change" in brief
+    assert "Oracle copying or other proven unintended access is BAD_SUCCESS" in brief
+    for ambiguous in (
+        "inferable",
+        "strongest available evidence",
+        "first decisive finding",
+        "Complete the infrastructure",
+        "visible code contract",
+        "when it is needed",
+    ):
+        assert ambiguous not in brief
     assert brief.count("== OUTPUT ==") == 1
     for token in (
         "{num_trials}",
@@ -278,10 +285,11 @@ def test_the_audit_brief_names_its_output_file():
     brief = build_audit_brief(task_name="demo")
     assert "audit_result.json" in brief
     assert "Do not solve the task" in brief
-    assert "Build an instruction-to-verifier map" in brief
-    assert "Exact text, whitespace, line numbers, hashes" in brief
-    assert "exists only in the verifier or reference solution" in brief
-    assert "read oracle bytes, strings, symbols, bytecode" in brief
+    assert "For each verifier assertion, comparison, exit-code check" in brief
+    assert "If no instruction line exists, report a `must_fix` `mismatch`" in brief
+    assert "The reference solution does not document requirements" in brief
+    assert "exact names, signatures, text, whitespace, hashes" in brief
+    assert "Report `info_leakage` only when you can cite" in brief
 
 
 def test_the_no_verdict_brief_does_not_contradict_itself():
