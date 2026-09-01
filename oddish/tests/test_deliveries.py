@@ -111,6 +111,38 @@ def _checks(board, task_id):
     return {c.key: c for c in row.checks}
 
 
+async def _sign_off(session, delivery_id, task_id, user="signer"):
+    """Acknowledge every open defect, then sign the task off."""
+    board = await get_delivery_board_core(
+        session, delivery_id=delivery_id, org_id=ORG
+    )
+    row = next(r for r in board.tasks if r.task_id == task_id)
+    for defect in row.defects:
+        if not defect.acknowledged:
+            await set_manual_check_core(
+                session,
+                delivery_id=delivery_id,
+                org_id=ORG,
+                data=ManualCheckSet(
+                    check_key=f"ack:{defect.id}",
+                    delivery_task_id=row.delivery_task_id,
+                    checked=True,
+                ),
+                user_id=user,
+            )
+    await set_manual_check_core(
+        session,
+        delivery_id=delivery_id,
+        org_id=ORG,
+        data=ManualCheckSet(
+            check_key="signoff",
+            delivery_task_id=row.delivery_task_id,
+            checked=True,
+        ),
+        user_id=user,
+    )
+
+
 @pytest.mark.asyncio
 async def test_green_task_board_is_ready(session):
     task, _, _ = await _green_task(session, "deliv-green")
@@ -124,10 +156,20 @@ async def test_green_task_board_is_ready(session):
         session, delivery_id=delivery.id, org_id=ORG
     )
     checks = _checks(board, task.id)
-    assert all(c.status == "pass" for c in checks.values()), {
-        k: (c.status, c.detail) for k, c in checks.items()
+    automated = {k: c for k, c in checks.items() if c.kind == "automated"}
+    assert all(c.status == "pass" for c in automated.values()), {
+        k: (c.status, c.detail) for k, c in automated.items()
     }
+    # Every task needs a person's sign-off before the board is ready.
+    assert checks["signoff"].status == "fail"
+    assert not board.ready
+
+    await _sign_off(session, delivery.id, task.id, user="u9")
+    board = await get_delivery_board_core(
+        session, delivery_id=delivery.id, org_id=ORG
+    )
     assert board.ready and board.ready_task_count == 1
+    assert _checks(board, task.id)["signoff"].checked_by_user_id == "u9"
 
 
 @pytest.mark.asyncio
@@ -139,6 +181,7 @@ async def test_version_bump_resets_board(session):
         org_id=ORG,
         user_id="u1",
     )
+    await _sign_off(session, delivery.id, task.id)
     v2 = _version(task, 2)
     session.add(v2)
     await session.flush()
@@ -153,6 +196,7 @@ async def test_version_bump_resets_board(session):
     assert checks["min_rollouts"].status == "fail"
     assert checks["verdict_ok"].status == "fail"
     assert "does not cover" in checks["verdict_ok"].detail
+    assert checks["signoff"].status == "fail"
     assert not board.ready
 
 
@@ -193,7 +237,9 @@ async def test_must_fix_defects_block(session):
     )
     check = _checks(board, task.id)["no_must_fix"]
     assert check.status == "fail"
-    assert "2 must-fix open" in check.detail
+    assert "2 of 2 must-fix unacknowledged" in check.detail
+    row = next(r for r in board.tasks if r.task_id == task.id)
+    assert len(row.defects) == 2 and not any(d.acknowledged for d in row.defects)
 
 
 @pytest.mark.asyncio
@@ -235,6 +281,7 @@ async def test_manual_tick_and_version_reset(session):
         data=ManualCheckSet(check_key="scope_ok", checked=True),
         user_id="u2",
     )
+    await _sign_off(session, delivery.id, task.id)
     board = await get_delivery_board_core(
         session, delivery_id=delivery.id, org_id=ORG
     )
@@ -277,6 +324,7 @@ async def test_finalize_gates_pins_and_freezes(session):
         org_id=ORG,
         data=DeliveryTasksAdd(task_ids=[task.id]),
     )
+    await _sign_off(session, delivery.id, task.id)
     board = await finalize_delivery_core(
         session, delivery_id=delivery.id, org_id=ORG, user_id="u1"
     )
@@ -392,6 +440,7 @@ async def test_deleted_task_blocks_readiness(session):
         org_id=ORG,
         user_id="u1",
     )
+    await _sign_off(session, delivery.id, task.id)
     board = await get_delivery_board_core(
         session, delivery_id=delivery.id, org_id=ORG
     )
@@ -463,6 +512,7 @@ async def test_finalized_delivery_cannot_be_deleted(session):
         org_id=ORG,
         user_id="u1",
     )
+    await _sign_off(session, delivery.id, task.id)
     await finalize_delivery_core(
         session, delivery_id=delivery.id, org_id=ORG, user_id="u1"
     )
@@ -587,4 +637,108 @@ async def test_retrying_a_trial_keeps_its_must_fix_findings(session):
     )
     check = _checks(board, task.id)["no_must_fix"]
     assert check.status == "fail"
-    assert "1 must-fix open" in check.detail
+    assert "1 of 1 must-fix unacknowledged" in check.detail
+
+
+@pytest.mark.asyncio
+async def test_signoff_requires_defect_acknowledgement(session):
+    task, version, _ = await _green_task(session, "deliv-ack")
+    version.pre_trial = {
+        "items": [{"id": "def-1", "tier": "must_fix", "title": "leaky check"}]
+    }
+    await session.flush()
+    delivery = await create_delivery_core(
+        session,
+        data=DeliveryCreate(name="batch-14", task_ids=[task.id]),
+        org_id=ORG,
+        user_id="u1",
+    )
+    board = await get_delivery_board_core(
+        session, delivery_id=delivery.id, org_id=ORG
+    )
+    row = board.tasks[0]
+    assert [d.id for d in row.defects] == ["def-1"]
+
+    # Sign-off is refused while the defect has no acknowledgement.
+    with pytest.raises(HTTPException) as err:
+        await set_manual_check_core(
+            session,
+            delivery_id=delivery.id,
+            org_id=ORG,
+            data=ManualCheckSet(
+                check_key="signoff",
+                delivery_task_id=row.delivery_task_id,
+                checked=True,
+            ),
+            user_id="u5",
+        )
+    assert err.value.status_code == 409
+    assert "def-1" in err.value.detail
+
+    # An acknowledgement must name a real defect.
+    with pytest.raises(HTTPException) as err:
+        await set_manual_check_core(
+            session,
+            delivery_id=delivery.id,
+            org_id=ORG,
+            data=ManualCheckSet(
+                check_key="ack:not-a-defect",
+                delivery_task_id=row.delivery_task_id,
+                checked=True,
+            ),
+            user_id="u5",
+        )
+    assert err.value.status_code == 404
+
+    # Acknowledge, then sign off. Both record the person.
+    await set_manual_check_core(
+        session,
+        delivery_id=delivery.id,
+        org_id=ORG,
+        data=ManualCheckSet(
+            check_key="ack:def-1",
+            delivery_task_id=row.delivery_task_id,
+            checked=True,
+        ),
+        user_id="u5",
+    )
+    await set_manual_check_core(
+        session,
+        delivery_id=delivery.id,
+        org_id=ORG,
+        data=ManualCheckSet(
+            check_key="signoff",
+            delivery_task_id=row.delivery_task_id,
+            checked=True,
+        ),
+        user_id="u6",
+    )
+    board = await get_delivery_board_core(
+        session, delivery_id=delivery.id, org_id=ORG
+    )
+    row = board.tasks[0]
+    assert board.ready
+    assert row.defects[0].acknowledged
+    assert row.defects[0].acknowledged_by_user_id == "u5"
+    assert _checks(board, task.id)["signoff"].checked_by_user_id == "u6"
+    assert _checks(board, task.id)["no_must_fix"].status == "pass"
+
+    # A reserved key cannot be redefined in check_config.
+    from oddish.schemas import DeliveryCheckConfig as _Config
+
+    with pytest.raises(HTTPException) as err:
+        await patch_delivery_core(
+            session,
+            delivery_id=delivery.id,
+            org_id=ORG,
+            data=DeliveryPatch(
+                check_config=_Config(
+                    manual=[
+                        ManualCheckDefinition(
+                            key="signoff", label="x", scope="task"
+                        )
+                    ]
+                )
+            ),
+        )
+    assert err.value.status_code == 422

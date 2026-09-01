@@ -124,8 +124,13 @@ Built-in automated checks (each toggleable / parameterized in `check_config`):
    reads "missing/stale for vN" until someone runs it. Mechanically this
    reuses the QA replay machinery (`qa_eval`) with the delivery's config.
 
-Manual checks: defined in `check_config` as `{key, label, scope}` where scope
-is `task` or `delivery`. Task-scoped ticks are version-bound as above;
+Two manual checks are built in and reserved. Each task needs a `signoff`
+tick before it is ready. The server refuses the sign-off while the task has
+a must-fix defect without an `ack:<defect-id>` tick. Both ticks record the
+person, the time, and the version they attested to.
+
+More manual checks: defined in `check_config` as `{key, label, scope}` where
+scope is `task` or `delivery`. Task-scoped ticks are version-bound as above;
 delivery-scoped ticks (e.g. "customer confirmed scope") are not.
 
 Readiness for the delivery = AND over all applicable checks over all visible

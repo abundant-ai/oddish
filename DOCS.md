@@ -842,12 +842,20 @@ Options
 
 ## Deliveries
 
-A delivery is a shipping checklist over a set of tasks: is this batch good
-to go? Every task must pass automated checks (pre-trial audit, enough
-rollouts, an accepting verdict, no open must-fix defects) evaluated against
-its current default version, plus any human sign-off checks the delivery
-defines. Editing a task resets its checks until the new version is
-re-validated.
+A delivery is a checklist for a set of tasks. It answers one question: can
+we ship these tasks to a customer?
+
+Each task must pass the automated checks. The checks are: the pre-trial
+audit passed, the task has sufficient rollouts, the newest QA run accepts
+the version, and each must-fix defect has an acknowledgement. The checks
+always apply to the current default version of the task. A new version
+makes the checks red again.
+
+Each task also needs a manual sign-off. The server records who signed off
+and which version they saw. If the task has a must-fix defect, a person
+must acknowledge that defect first. The server records who acknowledged
+each defect. A delivery can define more manual checks in its check
+configuration.
 
 ```bash
 # Create a delivery and add tasks to it over time
@@ -860,7 +868,11 @@ oddish delivery show august-batch
 # The gate for scripts and CI: exit 0 when green, 1 with blockers
 oddish delivery ready august-batch && ./ship.sh
 
-# Tick a human sign-off check (defined in the delivery's check config)
+# Acknowledge a defect, then sign the task off (both record who did it)
+oddish delivery ack august-batch task-1 <defect-id>
+oddish delivery signoff august-batch task-1
+
+# Tick a custom sign-off check (defined in the delivery's check config)
 oddish delivery check august-batch proofread --task task-1
 
 # Pin versions and freeze the record once everything is green
@@ -878,8 +890,10 @@ Commands
 - `ready DELIVERY` - Exit 0 if every check passes, 1 with the blockers listed
 - `add DELIVERY TASKS...` / `remove DELIVERY TASK` - Manage membership
   (tasks accepted by id or name)
-- `check DELIVERY KEY` - Tick a manual check (`--task` for task-scoped,
-  `--off` to untick, `--note` to annotate)
+- `signoff DELIVERY TASK` - Sign a task off (`--off` removes the sign-off)
+- `ack DELIVERY TASK DEFECT` - Acknowledge one must-fix defect
+- `check DELIVERY KEY` - Tick a custom manual check (`--task` for
+  task-scoped, `--off` to untick, `--note` to annotate)
 - `finalize DELIVERY` - Pin task versions and freeze the delivery (`-y` skips
   the prompt)
 - `history TASK` - Per-version QA history for one task

@@ -2439,6 +2439,17 @@ class DeliveryCheckResult(BaseModel):
     checked_at: datetime | None = None
 
 
+class DeliveryDefect(BaseModel):
+    """One open must-fix defect on a task's current version."""
+
+    id: str
+    title: str
+    source: str  # "pre_trial" | "trial"
+    acknowledged: bool
+    acknowledged_by_user_id: str | None = None
+    acknowledged_at: datetime | None = None
+
+
 class DeliveryTaskBoardRow(BaseModel):
     delivery_task_id: str
     task_id: str
@@ -2452,6 +2463,7 @@ class DeliveryTaskBoardRow(BaseModel):
     customer_note: str | None
     internal_note: str | None
     checks: list[DeliveryCheckResult]
+    defects: list[DeliveryDefect] = Field(default_factory=list)
     ready: bool
 
 

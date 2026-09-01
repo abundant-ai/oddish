@@ -24,6 +24,7 @@ import type {
   TaskBrowseResponse,
   TaskQAHistoryResponse,
 } from "@/lib/types";
+import { Skeleton } from "@/components/ui/skeleton";
 import { CheckChip, DeliveryStatusBadge } from "@/components/delivery-status";
 import {
   AlertDialog,
@@ -150,7 +151,11 @@ function AddTasksDialog({
               Search failed: {error.message}
             </p>
           ) : isLoading && !data ? (
-            <p className="text-muted-foreground py-2 text-sm">Searching…</p>
+            <div className="space-y-1 py-1">
+              <Skeleton className="h-7 w-full" />
+              <Skeleton className="h-7 w-full" />
+              <Skeleton className="h-7 w-3/4" />
+            </div>
           ) : results.length === 0 ? (
             <p className="text-muted-foreground py-2 text-sm">
               {query
@@ -212,7 +217,15 @@ function ManualCheckRow({
         className="mt-0.5"
       />
       <div className="min-w-0">
-        <p className="text-sm">{check.label}</p>
+        <p className="text-sm">
+          {check.label}
+          {check.status === "pass" && check.checked_by_user_id && (
+            <span className="text-muted-foreground">
+              {" "}
+              · by {check.checked_by_user_id}
+            </span>
+          )}
+        </p>
         {check.detail && (
           <p className="text-muted-foreground text-xs">{check.detail}</p>
         )}
@@ -234,7 +247,12 @@ function QAHistoryPanel({ taskId }: { taskId: string }) {
     );
   }
   if (isLoading || !data) {
-    return <p className="text-muted-foreground text-xs">Loading QA history…</p>;
+    return (
+      <div className="space-y-2">
+        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-10 w-2/3" />
+      </div>
+    );
   }
   return (
     <div className="space-y-2">
@@ -482,11 +500,21 @@ export function DeliveryBoardClient({
   }
   if (isLoading || !data) {
     return (
-      <Card>
-        <CardContent className="py-6">
-          <p className="text-muted-foreground text-sm">Loading delivery…</p>
-        </CardContent>
-      </Card>
+      <div className="space-y-4">
+        <Card>
+          <CardContent className="space-y-2 py-6">
+            <Skeleton className="h-6 w-64" />
+            <Skeleton className="h-4 w-40" />
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="space-y-2 py-6">
+            <Skeleton className="h-8 w-full" />
+            <Skeleton className="h-8 w-full" />
+            <Skeleton className="h-8 w-full" />
+          </CardContent>
+        </Card>
+      </div>
     );
   }
 

@@ -83,6 +83,12 @@ def _blockers(board: dict) -> list[str]:
         if check["status"] == "fail"
     ]
     lines += [
+        f"{row['task_name']}: defect {defect['id']} — {defect['title']}"
+        for row in board["tasks"]
+        for defect in row.get("defects", [])
+        if not defect["acknowledged"]
+    ]
+    lines += [
         f"delivery: {check['label']}"
         + (f" — {check['detail']}" if check.get("detail") else "")
         for check in board["delivery_checks"]
@@ -340,6 +346,84 @@ def set_check(
         )
     verb = "Unticked" if off else "Ticked"
     console.print(f"[green]{verb} {check_key}[/green]")
+
+
+def _member_row(board: dict, task: str) -> dict:
+    row = next(
+        (r for r in board["tasks"] if task in (r["task_id"], r["task_name"])),
+        None,
+    )
+    if row is None:
+        _fail(f"task {task!r} is not in this delivery")
+        raise AssertionError  # unreachable
+    return row
+
+
+@delivery_app.command("signoff")
+def signoff(
+    delivery: Annotated[str, typer.Argument(help="Delivery id or name.")],
+    task: Annotated[str, typer.Argument(help="Task id or name.")],
+    off: Annotated[
+        bool, typer.Option("--off", help="Remove the sign-off.")
+    ] = False,
+    note: Annotated[str, typer.Option("--note", help="Note to attach.")] = "",
+    api_url: Annotated[str, _API_OPTION] = "",
+) -> None:
+    """Sign a task off. The server records who signed and which version.
+
+    The server refuses the sign-off while the task has a must-fix defect
+    without an acknowledgement. Use 'oddish delivery ack' first.
+    """
+    api_url = api_url or get_api_url()
+    with httpx.Client(timeout=60.0, headers=get_auth_headers()) as client:
+        board = _fetch_board(client, api_url, delivery)
+        row = _member_row(board, task)
+        _request(
+            client,
+            "PUT",
+            f"{api_url}/deliveries/{board['delivery']['id']}/checks",
+            json={
+                "check_key": "signoff",
+                "delivery_task_id": row["delivery_task_id"],
+                "checked": not off,
+                "note": note,
+            },
+        )
+    verb = "Removed sign-off from" if off else "Signed off"
+    console.print(f"[green]{verb} {row['task_name']}[/green]")
+
+
+@delivery_app.command("ack")
+def ack(
+    delivery: Annotated[str, typer.Argument(help="Delivery id or name.")],
+    task: Annotated[str, typer.Argument(help="Task id or name.")],
+    defect: Annotated[
+        str, typer.Argument(help="Defect id (see 'delivery show').")
+    ],
+    off: Annotated[
+        bool, typer.Option("--off", help="Remove the acknowledgement.")
+    ] = False,
+    note: Annotated[str, typer.Option("--note", help="Note to attach.")] = "",
+    api_url: Annotated[str, _API_OPTION] = "",
+) -> None:
+    """Acknowledge one must-fix defect. The server records who did it."""
+    api_url = api_url or get_api_url()
+    with httpx.Client(timeout=60.0, headers=get_auth_headers()) as client:
+        board = _fetch_board(client, api_url, delivery)
+        row = _member_row(board, task)
+        _request(
+            client,
+            "PUT",
+            f"{api_url}/deliveries/{board['delivery']['id']}/checks",
+            json={
+                "check_key": f"ack:{defect}",
+                "delivery_task_id": row["delivery_task_id"],
+                "checked": not off,
+                "note": note,
+            },
+        )
+    verb = "Removed acknowledgement of" if off else "Acknowledged"
+    console.print(f"[green]{verb} defect {defect}[/green]")
 
 
 @delivery_app.command("finalize")

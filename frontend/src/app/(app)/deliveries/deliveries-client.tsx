@@ -22,6 +22,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Label } from "@/components/ui/label";
 import {
   Table,
@@ -146,7 +147,11 @@ export function DeliveriesClient({
             Failed to load deliveries: {error.message}
           </p>
         ) : isLoading ? (
-          <p className="text-muted-foreground text-sm">Loading…</p>
+          <div className="space-y-2">
+            <Skeleton className="h-8 w-full" />
+            <Skeleton className="h-8 w-full" />
+            <Skeleton className="h-8 w-2/3" />
+          </div>
         ) : !data || data.length === 0 ? (
           <p className="text-muted-foreground text-sm">
             No deliveries yet. A delivery is a checklist that tracks whether a

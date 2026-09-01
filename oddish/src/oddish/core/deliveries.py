@@ -8,6 +8,7 @@ the version they attested to and only count while it is still the default.
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any, Sequence
 
 from fastapi import HTTPException
@@ -32,6 +33,7 @@ from oddish.schemas import (
     DeliveryCheckConfig,
     DeliveryCheckResult,
     DeliveryCreate,
+    DeliveryDefect,
     DeliveryListItem,
     DeliveryPatch,
     DeliveryResponse,
@@ -55,6 +57,12 @@ DEFAULT_AUTOMATED_CHECKS: dict[str, dict[str, Any]] = {
     "no_must_fix": {"enabled": True},
 }
 
+# Reserved manual-check keys. Every task must carry a 'signoff' tick, and
+# each open must-fix defect needs its own 'ack:<defect-id>' tick before a
+# person can sign the task off. Both record who ticked and which version.
+SIGNOFF_CHECK_KEY = "signoff"
+ACK_CHECK_PREFIX = "ack:"
+
 _CHECK_LABELS = {
     "pre_trial_passed": "Pre-trial audit passed",
     "min_rollouts": "Enough rollouts",
@@ -72,6 +80,14 @@ def _normalized_check_config(raw: dict | None) -> DeliveryCheckConfig:
             status_code=422,
             detail=f"unknown automated checks: {', '.join(sorted(unknown))}",
         )
+    for definition in config.manual:
+        if definition.key == SIGNOFF_CHECK_KEY or definition.key.startswith(
+            ACK_CHECK_PREFIX
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="'signoff' and 'ack:*' are reserved check keys",
+            )
     merged = {
         key: {**defaults, **config.automated.get(key, {})}
         for key, defaults in DEFAULT_AUTOMATED_CHECKS.items()
@@ -335,9 +351,140 @@ async def remove_delivery_task_core(
     await session.flush()
 
 
+def _defect_id(version_id: str, item: dict) -> str:
+    """A stable id for one must-fix item, for 'ack:<id>' ticks."""
+    raw = item.get("id")
+    if isinstance(raw, str) and raw:
+        return raw[:56]
+    seed = (
+        f"{version_id}:{item.get('file')}:{item.get('line_start')}:"
+        f"{item.get('title')}"
+    )
+    return hashlib.sha1(seed.encode()).hexdigest()[:16]
+
+
+async def _must_fix_items(
+    session: AsyncSession, versions: dict[str, TaskVersionModel]
+) -> dict[str, list[dict]]:
+    """Open must-fix items per version id: ``{id, title, source}``.
+
+    Sources are the version's pre-trial audit and the trial analyses on the
+    version. Superseded trials stay in: a defect describes the task version,
+    not the run, so retrying the run must not clear the finding (a real fix
+    edits the task and lands on a new version anyway).
+    """
+    out: dict[str, list[dict]] = {vid: [] for vid in versions}
+    seen: dict[str, set[str]] = {vid: set() for vid in versions}
+
+    def add(vid: str, item: dict, source: str) -> None:
+        defect_id = _defect_id(vid, item)
+        if defect_id in seen[vid]:
+            return
+        seen[vid].add(defect_id)
+        out[vid].append(
+            {
+                "id": defect_id,
+                "title": str(item.get("title") or "untitled defect"),
+                "source": source,
+            }
+        )
+
+    for vid, version in versions.items():
+        for item in (version.pre_trial or {}).get("items", []):
+            if isinstance(item, dict) and item.get("tier") == "must_fix":
+                add(vid, item, "pre_trial")
+
+    if versions:
+        defect_scope = EligibleTrialScope(
+            membership=[TrialModel.task_version_id.in_(list(versions))],
+            include_superseded=True,
+        )
+        # The array-shape guard must live INSIDE the set-returning function:
+        # jsonb_array_elements runs in FROM before any WHERE filter, so a row
+        # whose action_items is an object or scalar would otherwise raise.
+        items = func.jsonb_array_elements(
+            case(
+                (
+                    func.jsonb_typeof(TrialModel.analysis["action_items"])
+                    == "array",
+                    TrialModel.analysis["action_items"],
+                ),
+                else_=text("'[]'::jsonb"),
+            )
+        ).table_valued("value", joins_implicitly=True)
+        rows = (
+            await session.execute(
+                select(TrialModel.task_version_id, items.c.value).where(
+                    *defect_scope.clauses(),
+                    items.c.value.op("->>")("tier") == "must_fix",
+                )
+            )
+        ).all()
+        for vid, item in rows:
+            if isinstance(item, dict):
+                add(vid, item, "trial")
+
+    return out
+
+
 # =============================================================================
 # Manual checks
 # =============================================================================
+
+
+async def _validate_signoff_or_ack(
+    session: AsyncSession,
+    delivery_id: str,
+    member: DeliveryTaskModel,
+    key: str,
+    task_version_id: str | None,
+) -> None:
+    """A person must acknowledge each open must-fix defect before sign-off,
+    and can only acknowledge a defect that exists on the current version."""
+    if task_version_id is None:
+        raise HTTPException(
+            status_code=409, detail="task has no default version to attest to"
+        )
+    version = await session.get(TaskVersionModel, task_version_id)
+    if version is None:
+        raise HTTPException(
+            status_code=409, detail="task has no default version to attest to"
+        )
+    defects = (await _must_fix_items(session, {version.id: version}))[version.id]
+    if key.startswith(ACK_CHECK_PREFIX):
+        if key[len(ACK_CHECK_PREFIX) :] not in {d["id"] for d in defects}:
+            raise HTTPException(
+                status_code=404,
+                detail="defect not found on the task's current version",
+            )
+        return
+    acked = {
+        row_key[len(ACK_CHECK_PREFIX) :]
+        for row_key, row_version in (
+            await session.execute(
+                select(
+                    DeliveryManualCheckModel.check_key,
+                    DeliveryManualCheckModel.task_version_id,
+                ).where(
+                    DeliveryManualCheckModel.delivery_id == delivery_id,
+                    DeliveryManualCheckModel.delivery_task_id == member.id,
+                    DeliveryManualCheckModel.check_key.like(
+                        ACK_CHECK_PREFIX + "%"
+                    ),
+                )
+            )
+        ).all()
+        if row_version == version.id
+    }
+    unacknowledged = [d["id"] for d in defects if d["id"] not in acked]
+    if unacknowledged:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "acknowledge the open must-fix defects before sign-off: "
+                + ", ".join(unacknowledged[:10])
+            ),
+        )
 
 
 async def set_manual_check_core(
@@ -351,16 +498,19 @@ async def set_manual_check_core(
     delivery = await _get_delivery(session, delivery_id, org_id, for_update=True)
     _require_active(delivery)
     config = _normalized_check_config(delivery.check_config)
-    definition = next(
-        (m for m in config.manual if m.key == data.check_key), None
-    )
-    if definition is None:
-        raise HTTPException(
-            status_code=404, detail=f"manual check '{data.check_key}' is not defined"
-        )
+    key = data.check_key
+    if key == SIGNOFF_CHECK_KEY or key.startswith(ACK_CHECK_PREFIX):
+        scope_kind = "task"
+    else:
+        definition = next((m for m in config.manual if m.key == key), None)
+        if definition is None:
+            raise HTTPException(
+                status_code=404, detail=f"manual check '{key}' is not defined"
+            )
+        scope_kind = definition.scope
 
     task_version_id: str | None = None
-    if definition.scope == "task":
+    if scope_kind == "task":
         if data.delivery_task_id is None:
             raise HTTPException(
                 status_code=422,
@@ -379,6 +529,12 @@ async def set_manual_check_core(
         task_version_id = await session.scalar(
             select(TaskModel.current_version_id).where(TaskModel.id == member.task_id)
         )
+        if data.checked and (
+            key == SIGNOFF_CHECK_KEY or key.startswith(ACK_CHECK_PREFIX)
+        ):
+            await _validate_signoff_or_ack(
+                session, delivery.id, member, key, task_version_id
+            )
     elif data.delivery_task_id is not None:
         raise HTTPException(
             status_code=422,
@@ -453,7 +609,7 @@ async def _compute_board(
     versions: dict[str, TaskVersionModel] = {}
     max_versions: dict[str, int] = {}
     rollouts: dict[str, tuple[int, int]] = {}
-    post_trial_must_fix: dict[str, int] = {}
+    must_fix_items: dict[str, list[dict]] = {}
     latest_qa_version: dict[str, str] = {}
 
     if task_ids:
@@ -502,40 +658,7 @@ async def _compute_board(
             ).all():
                 rollouts[version_id] = (count, agents)
 
-            # Open must-fix defects reported by trial analyses on the current
-            # version. Superseded trials stay IN this scan: a defect found on
-            # a run describes the task version, not the run, so retrying the
-            # run must not clear the finding before re-QA re-grades it (a
-            # real fix edits the task and lands on a new version anyway).
-            # The array-shape guard must live INSIDE the set-returning
-            # function: jsonb_array_elements runs in FROM before any WHERE
-            # filter, so a row whose action_items is an object or scalar would
-            # otherwise raise and 500 every board read.
-            defect_scope = EligibleTrialScope(
-                membership=[TrialModel.task_version_id.in_(version_ids)],
-                include_superseded=True,
-            )
-            items = func.jsonb_array_elements(
-                case(
-                    (
-                        func.jsonb_typeof(TrialModel.analysis["action_items"])
-                        == "array",
-                        TrialModel.analysis["action_items"],
-                    ),
-                    else_=text("'[]'::jsonb"),
-                )
-            ).table_valued("value", joins_implicitly=True)
-            for version_id, count in (
-                await session.execute(
-                    select(TrialModel.task_version_id, func.count())
-                    .where(
-                        *defect_scope.clauses(),
-                        items.c.value.op("->>")("tier") == "must_fix",
-                    )
-                    .group_by(TrialModel.task_version_id)
-                )
-            ).all():
-                post_trial_must_fix[version_id] = count
+            must_fix_items = await _must_fix_items(session, versions)
 
         # ``tasks.verdict`` is last-write-wins across versions, so the
         # stored verdict belongs to the NEWEST successful QA run. It only
@@ -608,6 +731,7 @@ async def _compute_board(
                             label="Task exists",
                         )
                     ],
+                    defects=[],
                     ready=False,
                 )
             )
@@ -628,16 +752,29 @@ async def _compute_board(
             else:
                 checks.append(_check(key, passed=passed, detail=detail))
 
+        defects: list[DeliveryDefect] = []
         if version is None:
             for key in DEFAULT_AUTOMATED_CHECKS:
                 automated(key, False, "task has no default version")
         else:
             vlabel = f"v{version.version}"
-            pre_items = (version.pre_trial or {}).get("items", [])
-            pre_must_fix = sum(1 for i in pre_items if i.get("tier") == "must_fix")
-            pre_should_fix = sum(
-                1 for i in pre_items if i.get("tier") == "should_fix"
-            )
+            for item in must_fix_items.get(version.id, []):
+                ack = task_ticks.get((member.id, ACK_CHECK_PREFIX + item["id"]))
+                acknowledged = (
+                    ack is not None and ack.task_version_id == version.id
+                )
+                defects.append(
+                    DeliveryDefect(
+                        id=item["id"],
+                        title=item["title"],
+                        source=item["source"],
+                        acknowledged=acknowledged,
+                        acknowledged_by_user_id=(
+                            ack.checked_by_user_id if acknowledged else None
+                        ),
+                        acknowledged_at=ack.checked_at if acknowledged else None,
+                    )
+                )
 
             audited = version.pre_trial_status == VerdictStatus.SUCCESS
             automated(
@@ -677,13 +814,50 @@ async def _compute_board(
                     else f"verdict rejects: {verdict.get('primary_issue') or ''}",
                 )
 
-            post_must_fix = post_trial_must_fix.get(version.id, 0)
-            open_must_fix = pre_must_fix + post_must_fix
-            automated(
-                "no_must_fix",
-                open_must_fix == 0,
-                f"{open_must_fix} must-fix open on {vlabel}"
-                + (f" ({pre_should_fix} should-fix)" if pre_should_fix else ""),
+            unacknowledged = sum(1 for d in defects if not d.acknowledged)
+            if not defects:
+                must_fix_detail = f"no must-fix defects on {vlabel}"
+            elif unacknowledged:
+                must_fix_detail = (
+                    f"{unacknowledged} of {len(defects)} must-fix "
+                    f"unacknowledged on {vlabel}"
+                )
+            else:
+                must_fix_detail = (
+                    f"all {len(defects)} must-fix acknowledged on {vlabel}"
+                )
+            automated("no_must_fix", unacknowledged == 0, must_fix_detail)
+
+        # Every task needs a person's sign-off, bound to the version they
+        # looked at. The tick records who signed and when.
+        signoff = task_ticks.get((member.id, SIGNOFF_CHECK_KEY))
+        if signoff is not None and version is not None and (
+            signoff.task_version_id == version.id
+        ):
+            checks.append(
+                _check(
+                    SIGNOFF_CHECK_KEY,
+                    passed=True,
+                    detail=signoff.note,
+                    kind="manual",
+                    label="Signed off",
+                    checked_by=signoff.checked_by_user_id,
+                    checked_at=signoff.checked_at,
+                )
+            )
+        else:
+            checks.append(
+                _check(
+                    SIGNOFF_CHECK_KEY,
+                    passed=False,
+                    detail=(
+                        "not signed off"
+                        if signoff is None
+                        else "signed off on an older version; sign off again"
+                    ),
+                    kind="manual",
+                    label="Signed off",
+                )
             )
 
         for definition in config.manual:
@@ -740,6 +914,7 @@ async def _compute_board(
                 customer_note=member.customer_note,
                 internal_note=member.internal_note,
                 checks=checks,
+                defects=defects,
                 ready=all(c.status in ("pass", "off") for c in checks),
             )
         )

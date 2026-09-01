@@ -1292,6 +1292,15 @@ export interface DeliveryCheckResult {
   checked_at?: string | null;
 }
 
+export interface DeliveryDefect {
+  id: string;
+  title: string;
+  source: "pre_trial" | "trial" | (string & {});
+  acknowledged: boolean;
+  acknowledged_by_user_id?: string | null;
+  acknowledged_at?: string | null;
+}
+
 export interface DeliveryTaskBoardRow {
   delivery_task_id: string;
   task_id: string;
@@ -1305,6 +1314,7 @@ export interface DeliveryTaskBoardRow {
   customer_note?: string | null;
   internal_note?: string | null;
   checks: DeliveryCheckResult[];
+  defects: DeliveryDefect[];
   ready: boolean;
 }
 
