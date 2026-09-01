@@ -923,7 +923,16 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   `/chat/completions` so `OPENAI_BASE_URL` carries the `/v1`, while Claude Code
   appends `/v1/messages` so `ANTHROPIC_BASE_URL` must not —
   `get_geometric_anthropic_base_url()` derives the latter by dropping a
-  trailing `/v1`, overridable with `GEOMETRIC_ANTHROPIC_BASE_URL`.
+  trailing `/v1`, overridable with `GEOMETRIC_ANTHROPIC_BASE_URL`. So
+  **`GEOMETRIC_BASE_URL` must end in `/v1`** — it is on the OpenAI side of the
+  repo's base-URL split (as `META_BASE_URL` is), not the Anthropic side that
+  `ZAI_BASE_URL`, `MINIMAX_BASE_URL`, `MOONSHOT_BASE_URL`, and
+  `FIREWORKS_BASE_URL` sit on, where the root deliberately omits it. Setting it
+  without the suffix breaks exactly one of the two routes: the derivation is a
+  no-op so `claude-code` still resolves, while `mini-swe-agent` 404s against
+  vLLM, which serves `/v1/chat/completions`. The result reads as an
+  agent-specific bug rather than a misconfiguration, so check the suffix first
+  when only one harness fails.
 - Geometric is **prefix-only**: `is_zai_model` claims every bare `glm...` id, so
   a bare `glm-5.3` keeps routing to z.ai and selecting Geometric takes an
   explicit `geometric/glm-5.3` (or the `gm/` alias) — the same opt-in rule

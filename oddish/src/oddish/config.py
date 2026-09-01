@@ -1728,6 +1728,19 @@ class Settings(BaseSettings):
     meta_eval_name: str | None = Field(default=None, alias="ODDISH_META_EVAL_NAME")
     meta_session_id: str | None = Field(default=None, alias="ODDISH_META_SESSION_ID")
     geometric_api_key: str | None = Field(default=None, alias="GEOMETRIC_API_KEY")
+    # MUST end in ``/v1``. This repo carries two base-URL conventions, split by
+    # API surface, and Geometric is on the OpenAI side of that split:
+    #   * OpenAI-compatible (OPENAI_BASE_URL, mini-swe-agent): INCLUDES ``/v1``
+    #     -- litellm's ``openai/`` provider appends only ``/chat/completions``.
+    #     See META_DEFAULT_BASE_URL.
+    #   * Anthropic-compatible (ANTHROPIC_BASE_URL, claude-code): OMITS it --
+    #     Claude Code appends ``/v1/messages`` itself. See ZAI/MINIMAX/MOONSHOT/
+    #     FIREWORKS_DEFAULT_BASE_URL.
+    # Dropping the suffix here breaks exactly ONE of Geometric's two routes,
+    # which makes it nasty to diagnose: get_geometric_anthropic_base_url strips
+    # a trailing ``/v1``, so with no suffix the claude-code route still resolves
+    # correctly while mini-swe-agent silently 404s against vLLM (which serves
+    # ``/v1/chat/completions``, not ``/chat/completions``).
     geometric_base_url: str = Field(
         default=GEOMETRIC_DEFAULT_BASE_URL, alias="GEOMETRIC_BASE_URL"
     )
