@@ -2384,7 +2384,9 @@ class DeliveryCheckConfig(BaseModel):
 
 class DeliveryCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
-    customer_name: str | None = Field(default=None, max_length=255)
+    # Every delivery ships to a customer: an existing customer's id or
+    # name, or a new name (the server creates the customer row).
+    customer: str = Field(min_length=1, max_length=255)
     description: str | None = None
     check_config: DeliveryCheckConfig | None = None
     task_ids: list[str] = Field(default_factory=list, max_length=500)
@@ -2392,7 +2394,7 @@ class DeliveryCreate(BaseModel):
 
 class DeliveryPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
-    customer_name: str | None = Field(default=None, max_length=255)
+    customer: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = None
     check_config: DeliveryCheckConfig | None = None
 
@@ -2411,9 +2413,18 @@ class ManualCheckSet(BaseModel):
     note: str = Field(default="", max_length=4000)
 
 
+class CustomerResponse(BaseModel):
+    id: str
+    name: str
+
+    model_config = {"from_attributes": True}
+
+
 class DeliveryResponse(BaseModel):
     id: str
     name: str
+    customer_id: str | None = None
+    # Resolved from the customer row; None on legacy rows only.
     customer_name: str | None
     description: str | None
     status: str

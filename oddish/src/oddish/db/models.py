@@ -2684,6 +2684,24 @@ class FeedbackModel(Base):
     )
 
 
+class CustomerModel(TimestampedMixin, Base):
+    """A customer deliveries ship to. One row per org and name."""
+
+    __tablename__ = "customers"
+    __table_args__ = (
+        Index(
+            "idx_customers_unique_org_name",
+            text("COALESCE(org_id, '')"),
+            "name",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+
+
 class DeliveryModel(TimestampedMixin, Base):
     """A customer-facing shipping checklist over a set of tasks.
 
@@ -2720,10 +2738,18 @@ class DeliveryModel(TimestampedMixin, Base):
     created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    # Free text until a customer entity exists; a future customers table
-    # adds a nullable customer_id alongside without disturbing this.
-    customer_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Every delivery ships to a customer. Nullable in SQL for rows created
+    # before the customers table; creation requires it.
+    customer_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("customers.id", ondelete="RESTRICT"), nullable=True
+    )
+    customer: Mapped[CustomerModel | None] = relationship(lazy="selectin")
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    @property
+    def customer_name(self) -> str | None:
+        """Display name from the customer row; None on legacy rows."""
+        return self.customer.name if self.customer else None
 
     status: Mapped[str] = mapped_column(
         String(32), nullable=False, default="active", server_default="active"

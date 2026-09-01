@@ -35,9 +35,10 @@ A **delivery** is a checklist that answers one question:
 - A share link shows the customer the same checklist and the QA behind it,
   minus internal fields.
 
-No customer table for now. A delivery carries a free-text `customer_name` and
-an optional QA rubric of its own. If we later want real customer entities, we
-add a `customers` table and a nullable `customer_id`; nothing here blocks that.
+Customers are rows in a `customers` table (one per org and name). Every
+delivery ships to one: creation requires a customer reference, and a new
+name creates the row in place, so no separate setup step exists. The
+delivery stores `customer_id`; display names come from the join.
 
 ## Data we already have (nothing new needed to compute readiness)
 
@@ -62,7 +63,7 @@ membership, human ticks, config, and finalize snapshots.
 
 ```
 deliveries
-  id, org_id, name, customer_name (text, nullable)
+  id, org_id, name, customer_id (FK -> customers, required at creation)
   description (text, nullable)
   status: 'active' | 'finalized'        -- one-way; see Finalize
   qa_config (jsonb, nullable)           -- optional delivery-specific QA rubric

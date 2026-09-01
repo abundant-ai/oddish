@@ -20,6 +20,7 @@ from oddish.core.deliveries import (
     finalize_delivery_core,
     get_delivery_board_core,
     get_task_qa_history_core,
+    list_customers_core,
     list_deliveries_core,
     patch_delivery_core,
     remove_delivery_task_core,
@@ -27,6 +28,7 @@ from oddish.core.deliveries import (
 )
 from oddish.db import get_session
 from oddish.schemas import (
+    CustomerResponse,
     DeliveryBoardResponse,
     DeliveryCreate,
     DeliveryListItem,
@@ -60,6 +62,16 @@ async def list_deliveries(
     auth.require_scope(APIKeyScope.TASKS)
     async with get_session() as session:
         return await list_deliveries_core(session, org_id=auth.org_id)
+
+
+@router.get("/customers", response_model=list[CustomerResponse])
+async def list_customers(
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> list[CustomerResponse]:
+    auth.require_scope(APIKeyScope.TASKS)
+    async with get_session() as session:
+        customers = await list_customers_core(session, org_id=auth.org_id)
+        return [CustomerResponse.model_validate(c) for c in customers]
 
 
 async def _fill_user_names(

@@ -1272,6 +1272,7 @@ interface DeliveryCheckConfig {
 export interface DeliveryListItem {
   id: string;
   name: string;
+  customer_id?: string | null;
   customer_name?: string | null;
   description?: string | null;
   status: "active" | "finalized" | (string & {});
@@ -1280,6 +1281,11 @@ export interface DeliveryListItem {
   created_at: string;
   updated_at: string;
   task_count: number;
+}
+
+export interface Customer {
+  id: string;
+  name: string;
 }
 
 export interface DeliveryCheckResult {

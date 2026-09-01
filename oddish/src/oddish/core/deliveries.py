@@ -16,6 +16,7 @@ from sqlalchemy import case, delete, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.db import (
+    CustomerModel,
     DeliveryManualCheckModel,
     DeliveryModel,
     DeliverySnapshotModel,
@@ -150,6 +151,41 @@ async def _member_rows(
 # =============================================================================
 
 
+async def _resolve_customer(
+    session: AsyncSession, org_id: str | None, ref: str
+) -> CustomerModel:
+    """The customer this delivery ships to: by id, by name, or created.
+
+    A new name creates the customer row in place, so requiring a customer
+    never forces a separate setup step."""
+    ref = ref.strip()
+    customer = await session.scalar(
+        select(CustomerModel).where(
+            CustomerModel.org_id == org_id,
+            or_(CustomerModel.id == ref, CustomerModel.name == ref),
+        )
+    )
+    if customer is None:
+        customer = CustomerModel(org_id=org_id, name=ref)
+        session.add(customer)
+        await session.flush()
+    return customer
+
+
+async def list_customers_core(
+    session: AsyncSession, *, org_id: str | None
+) -> list[CustomerModel]:
+    return list(
+        (
+            await session.scalars(
+                select(CustomerModel)
+                .where(CustomerModel.org_id == org_id)
+                .order_by(CustomerModel.name)
+            )
+        ).all()
+    )
+
+
 async def create_delivery_core(
     session: AsyncSession,
     *,
@@ -162,16 +198,18 @@ async def create_delivery_core(
         if data.check_config is not None
         else None
     )
+    customer = await _resolve_customer(session, org_id, data.customer)
     delivery = DeliveryModel(
         org_id=org_id,
         created_by_user_id=user_id,
         name=data.name,
-        customer_name=data.customer_name,
+        customer_id=customer.id,
         description=data.description,
         check_config=check_config.model_dump() if check_config else {},
     )
     session.add(delivery)
     await session.flush()
+    await session.refresh(delivery, ["customer"])
     if data.task_ids:
         await _add_tasks(session, delivery, data.task_ids, org_id)
     return delivery
@@ -216,8 +254,10 @@ async def patch_delivery_core(
     _require_active(delivery)
     if data.name is not None:
         delivery.name = data.name
-    if "customer_name" in data.model_fields_set:
-        delivery.customer_name = data.customer_name
+    if data.customer is not None:
+        customer = await _resolve_customer(session, org_id, data.customer)
+        delivery.customer_id = customer.id
+        await session.refresh(delivery, ["customer"])
     if "description" in data.model_fields_set:
         delivery.description = data.description
     if data.check_config is not None:

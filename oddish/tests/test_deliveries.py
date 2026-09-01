@@ -148,7 +148,7 @@ async def test_green_task_board_is_ready(session):
     task, _, _ = await _green_task(session, "deliv-green")
     delivery = await create_delivery_core(
         session,
-        data=DeliveryCreate(name="batch-1", task_ids=[task.id]),
+        data=DeliveryCreate(customer="acme", name="batch-1", task_ids=[task.id]),
         org_id=ORG,
         user_id="u1",
     )
@@ -177,7 +177,7 @@ async def test_version_bump_resets_board(session):
     task, _, _ = await _green_task(session, "deliv-bump")
     delivery = await create_delivery_core(
         session,
-        data=DeliveryCreate(name="batch-2", task_ids=[task.id]),
+        data=DeliveryCreate(customer="acme", name="batch-2", task_ids=[task.id]),
         org_id=ORG,
         user_id="u1",
     )
@@ -228,7 +228,7 @@ async def test_must_fix_defects_block(session):
     await session.flush()
     delivery = await create_delivery_core(
         session,
-        data=DeliveryCreate(name="batch-3", task_ids=[task.id]),
+        data=DeliveryCreate(customer="acme", name="batch-3", task_ids=[task.id]),
         org_id=ORG,
         user_id="u1",
     )
@@ -255,7 +255,7 @@ async def test_manual_tick_and_version_reset(session):
     )
     delivery = await create_delivery_core(
         session,
-        data=DeliveryCreate(name="batch-4", check_config=config, task_ids=[task.id]),
+        data=DeliveryCreate(customer="acme", name="batch-4", check_config=config, task_ids=[task.id]),
         org_id=ORG,
         user_id="u1",
     )
@@ -308,7 +308,7 @@ async def test_finalize_gates_pins_and_freezes(session):
     task, version, _ = await _green_task(session, "deliv-final")
     delivery = await create_delivery_core(
         session,
-        data=DeliveryCreate(name="batch-5"),
+        data=DeliveryCreate(customer="acme", name="batch-5"),
         org_id=ORG,
         user_id="u1",
     )
@@ -370,7 +370,7 @@ async def test_org_scoping_and_unknown_check_key(session):
     task, _, _ = await _green_task(session, "deliv-scope")
     delivery = await create_delivery_core(
         session,
-        data=DeliveryCreate(name="batch-6", task_ids=[task.id]),
+        data=DeliveryCreate(customer="acme", name="batch-6", task_ids=[task.id]),
         org_id=ORG,
         user_id="u1",
     )
@@ -475,7 +475,7 @@ async def test_deleted_task_blocks_readiness(session):
     task, _, _ = await _green_task(session, "deliv-deleted")
     delivery = await create_delivery_core(
         session,
-        data=DeliveryCreate(name="batch-8", task_ids=[task.id]),
+        data=DeliveryCreate(customer="acme", name="batch-8", task_ids=[task.id]),
         org_id=ORG,
         user_id="u1",
     )
@@ -523,7 +523,7 @@ async def test_sort_order_advances_from_zero(session):
     b, _, _ = await _green_task(session, "deliv-order-b")
     delivery = await create_delivery_core(
         session,
-        data=DeliveryCreate(name="batch-9", task_ids=[a.id]),
+        data=DeliveryCreate(customer="acme", name="batch-9", task_ids=[a.id]),
         org_id=ORG,
         user_id="u1",
     )
@@ -547,7 +547,7 @@ async def test_finalized_delivery_cannot_be_deleted(session):
     task, _, _ = await _green_task(session, "deliv-nodelete")
     delivery = await create_delivery_core(
         session,
-        data=DeliveryCreate(name="batch-10", task_ids=[task.id]),
+        data=DeliveryCreate(customer="acme", name="batch-10", task_ids=[task.id]),
         org_id=ORG,
         user_id="u1",
     )
@@ -591,7 +591,7 @@ async def test_verdict_freshness_follows_newest_qa_run(session):
 
     delivery = await create_delivery_core(
         session,
-        data=DeliveryCreate(name="batch-11", task_ids=[task.id]),
+        data=DeliveryCreate(customer="acme", name="batch-11", task_ids=[task.id]),
         org_id=ORG,
         user_id="u1",
     )
@@ -619,7 +619,7 @@ async def test_add_tasks_by_name(session):
     task, _, _ = await _green_task(session, "deliv-by-name")
     delivery = await create_delivery_core(
         session,
-        data=DeliveryCreate(name="batch-12", task_ids=["deliv-by-name"]),
+        data=DeliveryCreate(customer="acme", name="batch-12", task_ids=["deliv-by-name"]),
         org_id=ORG,
         user_id="u1",
     )
@@ -667,7 +667,7 @@ async def test_retrying_a_trial_keeps_its_must_fix_findings(session):
 
     delivery = await create_delivery_core(
         session,
-        data=DeliveryCreate(name="batch-13", task_ids=[task.id]),
+        data=DeliveryCreate(customer="acme", name="batch-13", task_ids=[task.id]),
         org_id=ORG,
         user_id="u1",
     )
@@ -688,7 +688,7 @@ async def test_signoff_requires_defect_acknowledgement(session):
     await session.flush()
     delivery = await create_delivery_core(
         session,
-        data=DeliveryCreate(name="batch-14", task_ids=[task.id]),
+        data=DeliveryCreate(customer="acme", name="batch-14", task_ids=[task.id]),
         org_id=ORG,
         user_id="u1",
     )
@@ -803,7 +803,7 @@ async def test_no_verdict_qa_run_cannot_vouch(session):
 
     delivery = await create_delivery_core(
         session,
-        data=DeliveryCreate(name="batch-15", task_ids=[task.id]),
+        data=DeliveryCreate(customer="acme", name="batch-15", task_ids=[task.id]),
         org_id=ORG,
         user_id="u1",
     )
@@ -827,7 +827,7 @@ async def test_failing_checks_need_acknowledgement_before_signoff(session):
 
     delivery = await create_delivery_core(
         session,
-        data=DeliveryCreate(name="batch-16", task_ids=[task.id]),
+        data=DeliveryCreate(customer="acme", name="batch-16", task_ids=[task.id]),
         org_id=ORG,
         user_id="u1",
     )
@@ -912,3 +912,48 @@ async def test_failing_checks_need_acknowledgement_before_signoff(session):
     assert checks["min_rollouts"].status == "fail"
     assert checks["signoff"].status == "fail"
     assert not board.ready
+
+
+@pytest.mark.asyncio
+async def test_customers_are_rows_and_reused(session):
+    """Every delivery ships to a customer row; equal names share one row."""
+    from oddish.core.deliveries import list_customers_core
+
+    d1 = await create_delivery_core(
+        session,
+        data=DeliveryCreate(customer="Initech", name="batch-c1"),
+        org_id=ORG,
+        user_id="u1",
+    )
+    d2 = await create_delivery_core(
+        session,
+        data=DeliveryCreate(customer="Initech", name="batch-c2"),
+        org_id=ORG,
+        user_id="u1",
+    )
+    assert d1.customer_id == d2.customer_id
+    assert d1.customer_name == "Initech"
+
+    # A customer id works as the reference too.
+    d3 = await create_delivery_core(
+        session,
+        data=DeliveryCreate(customer=d1.customer_id, name="batch-c3"),
+        org_id=ORG,
+        user_id="u1",
+    )
+    assert d3.customer_id == d1.customer_id
+
+    customers = await list_customers_core(session, org_id=ORG)
+    assert "Initech" in [c.name for c in customers]
+
+    # Patch moves the delivery to another customer, creating it on demand.
+    await patch_delivery_core(
+        session,
+        delivery_id=d2.id,
+        org_id=ORG,
+        data=DeliveryPatch(customer="Globex"),
+    )
+    board = await get_delivery_board_core(
+        session, delivery_id=d2.id, org_id=ORG
+    )
+    assert board.delivery.customer_name == "Globex"

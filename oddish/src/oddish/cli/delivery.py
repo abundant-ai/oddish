@@ -186,8 +186,13 @@ def list_deliveries(
 def create_delivery(
     name: Annotated[str, typer.Argument(help="Delivery name.")],
     customer: Annotated[
-        Optional[str], typer.Option("--customer", help="Customer name.")
-    ] = None,
+        str,
+        typer.Option(
+            "--customer",
+            help="Customer the delivery ships to (required). A new name "
+            "creates the customer.",
+        ),
+    ],
     description: Annotated[
         Optional[str], typer.Option("--description", help="Description.")
     ] = None,
@@ -207,7 +212,7 @@ def create_delivery(
             f"{api_url}/deliveries",
             json={
                 "name": name,
-                "customer_name": customer,
+                "customer": customer,
                 "description": description,
                 "task_ids": tasks or [],
             },

@@ -896,7 +896,9 @@ oddish delivery history task-1
 Commands
 
 - `list` - List deliveries
-- `create NAME` - Create a delivery (`--customer`, `--description`, `-t/--task`)
+- `create NAME` - Create a delivery. `--customer` is required: an existing
+  customer's name or id, or a new name (the server creates the customer).
+  Also `--description`, `-t/--task`
 - `show DELIVERY` - Render the readiness board (`--json` for the full matrix)
 - `ready DELIVERY` - Exit 0 if every check passes, 1 with the blockers listed
 - `add DELIVERY TASKS...` / `remove DELIVERY TASK` - Manage membership

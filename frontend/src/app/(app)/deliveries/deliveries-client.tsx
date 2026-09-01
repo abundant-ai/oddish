@@ -9,7 +9,7 @@ import { Package, Plus } from "lucide-react";
 
 import { fetcher } from "@/lib/api";
 import { isOrgAdminRole } from "@/lib/org-roles";
-import type { DeliveryListItem } from "@/lib/types";
+import type { Customer, DeliveryListItem } from "@/lib/types";
 import { DeliveryStatusBadge } from "@/components/delivery-status";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -52,6 +52,10 @@ export function DeliveriesClient({
   const [customer, setCustomer] = useState("");
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const { data: customers } = useSWR<Customer[]>(
+    createOpen ? "/api/customers" : null,
+    fetcher
+  );
 
   const createDelivery = async () => {
     setCreating(true);
@@ -62,7 +66,7 @@ export function DeliveriesClient({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: name.trim(),
-          customer_name: customer.trim() || null,
+          customer: customer.trim(),
         }),
       });
       const payload = (await res.json().catch(() => null)) as {
@@ -122,8 +126,14 @@ export function DeliveriesClient({
                     id="delivery-customer"
                     value={customer}
                     onChange={(e) => setCustomer(e.target.value)}
-                    placeholder="optional"
+                    list="delivery-customer-options"
+                    placeholder="pick one or type a new name"
                   />
+                  <datalist id="delivery-customer-options">
+                    {(customers ?? []).map((entry) => (
+                      <option key={entry.id} value={entry.name} />
+                    ))}
+                  </datalist>
                 </div>
                 {createError && (
                   <p className="text-destructive text-sm">{createError}</p>
@@ -132,7 +142,7 @@ export function DeliveriesClient({
               <DialogFooter>
                 <Button
                   onClick={() => void createDelivery()}
-                  disabled={creating || !name.trim()}
+                  disabled={creating || !name.trim() || !customer.trim()}
                 >
                   {creating ? "Creating…" : "Create"}
                 </Button>
