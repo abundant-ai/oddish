@@ -23,7 +23,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.core import helpers
 from oddish.core.endpoints.collections import create_trial_collection_core
-from oddish.core.endpoints.experiment_page import get_experiment_open_core
+from oddish.core.endpoints.experiment_page import (
+    get_experiment_open_core,
+    get_experiment_trial_page_core,
+)
 from oddish.core.endpoints.task_open import get_task_open_core
 from oddish.core.endpoints.tasks_query import (
     list_experiment_slim_tasks,
@@ -31,6 +34,7 @@ from oddish.core.endpoints.tasks_query import (
     list_tasks_core,
 )
 from oddish.db import (
+    AnalysisStatus,
     ExperimentModel,
     TaskModel,
     TaskVersionModel,
@@ -159,6 +163,48 @@ async def test_slim_path_surfaces_gathered_old_version_trial(session):
     assert shell.current_version_id == v2_id
     assert shell.trial_version_id == v1_id
     assert shell.total == 1
+
+
+@pytest.mark.asyncio
+async def test_trial_page_projects_real_postgres_mapping(session):
+    task = _task("trial-page-real-mapping")
+    experiment = _experiment("trial-page-real-mapping")
+    session.add_all([task, experiment])
+    await session.flush()
+
+    version = _version(task, 1)
+    session.add(version)
+    await session.flush()
+    task.current_version_id = version.id
+
+    trial = _trial(task, experiment, task_version_id=version.id)
+    trial.analysis_status = AnalysisStatus.SUCCESS
+    trial.analysis = {
+        "classification": "GOOD_SUCCESS",
+        "subtype": "correct",
+        "evidence": "Postgres mapping evidence",
+    }
+    trial.input_tokens = 1_000
+    trial.cache_tokens = 100
+    trial.output_tokens = 50
+    trial.has_trajectory = True
+    session.add(trial)
+    await session.flush()
+
+    response = await get_experiment_trial_page_core(
+        session,
+        experiment_id=experiment.id,
+        org_id="org1",
+    )
+
+    projected = next(row for row in response.trials if row.id == trial.id)
+    assert projected.task_path == task.task_path
+    assert projected.analysis.status == AnalysisStatus.SUCCESS
+    assert projected.analysis.classification == "GOOD_SUCCESS"
+    assert projected.analysis.evidence == "Postgres mapping evidence"
+    assert projected.has_trajectory is True
+    assert projected.cost_is_estimated is True
+    assert projected.cost_usd is not None
 
 
 @pytest.mark.asyncio

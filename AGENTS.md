@@ -570,9 +570,11 @@ on lightweight task shells that omit trial rows.
 numerically latest version. In an experiment view, `trial_version_id` uses that
 default when the experiment has a non-superseded, non-probe trial for it;
 otherwise it falls back to the highest version represented by such trials. The
-`task-shells` and `slim-tasks` endpoints must apply the same trial-version rule
-so progressive loading cannot change the files/counts pivot or mix one
-version's trials with another's artifacts.
+bounded `/open` and `/trial-page` endpoints apply the same rule so progressive
+loading cannot change the files/counts pivot or mix one version's trials with
+another's artifacts. `/open` returns exact totals plus at most 100 task shells
+under 50 KB. `/trial-page` returns at most 250 projected trials and omits full
+analysis, errors, results, phase timing, Harbor config, and ORM relationships.
 
 `overwrite_current_version` replaces the archive and metadata for
 `tasks.current_version_id` without changing its ID or version number. Uploads
@@ -1017,10 +1019,12 @@ guards alone are not enough, since the trials still ship to the browser.
 ### `list_tasks_core` `load_only` and MissingGreenlet
 
 `list_tasks_core` (`oddish/src/oddish/core/endpoints/tasks_query.py`) powers
-every `/tasks` route, including the experiment page. Its **compact path**
+the generic and legacy task-list routes. Its **compact path**
 (`compact_trials=True`) restricts the trial/task/experiment selectin loads with
 `load_only(...)`, which makes *only* the enumerated columns eager and defers
-everything else. Under async SQLAlchemy, reading a deferred column in a
+everything else. The bounded experiment `/trial-page` uses the separate
+`_TRIAL_PAGE_COLUMNS` projection in `core/endpoints/experiment_page.py`.
+Under async SQLAlchemy, reading a deferred column in a
 response builder fires a lazy-load outside the request greenlet and 500s with
 `sqlalchemy.exc.MissingGreenlet`.
 
@@ -1028,10 +1032,9 @@ So: whenever you surface a **new `TrialModel` / `TaskModel` / `ExperimentModel`
 column in the FE** (i.e. read it in `build_trial_response`,
 `build_compact_trial_response`, or `_build_task_status_response` in
 `core/helpers.py`), you **must also add that column to the matching `load_only`
-set** in `list_tasks_core`. The full (non-compact) builder has no `load_only`,
-so it won't catch the omission — the failure only shows up on the compact
-experiment page. Builder unit tests can't catch it either (in-memory models
-have all attrs set); the bug lives in the query options, not the builder.
+set** in each caller. The full builder has no `load_only`, so it will not catch
+an omission. Builder unit tests cannot catch it either because in-memory models
+have every attribute set; the bug lives in the query options, not the builder.
 
 ### Dashboard pipeline stats use reserved queue keys
 

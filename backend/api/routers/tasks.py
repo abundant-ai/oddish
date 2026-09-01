@@ -45,6 +45,7 @@ from oddish.core.endpoints import (
     delete_task_core,
     get_experiment_cost_totals,
     get_experiment_open_core,
+    get_experiment_trial_page_core,
     get_task_detail_core,
     get_task_open_core,
     get_task_status_core,
@@ -133,6 +134,7 @@ from oddish.schemas import (
     ExperimentCombineResponse,
     ExperimentCostTotals,
     ExperimentOpenResponse,
+    ExperimentTrialPageResponse,
     ExperimentOptionsResponse,
     ExperimentProbeRow,
     OrgProbeRow,
@@ -625,6 +627,29 @@ async def get_experiment_open(
             limit=limit,
             before_created_at=before_created_at,
             before_task_id=before_task_id,
+        )
+
+
+@router.get(
+    "/experiments/{experiment_id}/trial-page",
+    response_model=ExperimentTrialPageResponse,
+)
+async def get_experiment_trial_page(
+    experiment_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    limit: int = Query(250, ge=1, le=250),
+    before_created_at: datetime | None = Query(None),
+    before_trial_id: str | None = Query(None),
+) -> ExperimentTrialPageResponse:
+    auth.require_scope(APIKeyScope.READ)
+    async with get_read_session() as session:
+        return await get_experiment_trial_page_core(
+            session,
+            experiment_id=experiment_id,
+            org_id=auth.org_id,
+            limit=limit,
+            before_created_at=before_created_at,
+            before_trial_id=before_trial_id,
         )
 
 

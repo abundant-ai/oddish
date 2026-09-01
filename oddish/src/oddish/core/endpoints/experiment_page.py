@@ -9,9 +9,14 @@ from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from oddish.config import settings
 from oddish.core.baseline_gate import baseline_agent_clause
+from oddish.core.cost_exclusions import CostExclusions, load_cost_exclusions
 from oddish.core.experiment_membership import visible_experiment_trial_predicates
-from oddish.core.helpers import experiment_effective_versions_selectable
+from oddish.core.helpers import (
+    SLIM_TRIAL_RESPONSE_COLUMNS,
+    experiment_effective_versions_selectable,
+)
 from oddish.db import (
     ACTIVE_TRIAL_STATUSES,
     ExperimentModel,
@@ -23,20 +28,103 @@ from oddish.db import (
     VerdictStatus,
     task_experiments,
 )
+from oddish.model_pricing import estimate_cost_usd
 from oddish.schemas import (
     ExperimentOpenResponse,
     ExperimentPageSummary,
     ExperimentPageVerdict,
     ExperimentTaskRow,
+    ExperimentTrialAnalysis,
+    ExperimentTrialCell,
+    ExperimentTrialPageResponse,
 )
 
 OPEN_MAX_TASKS = 100
 OPEN_MAX_BYTES = 50_000
+TRIAL_PAGE_MAX_TRIALS = 250
 _ACTIVE_VERDICT_STATUSES = (
     VerdictStatus.PENDING,
     VerdictStatus.QUEUED,
     VerdictStatus.RUNNING,
 )
+_TRIAL_PAGE_COLUMNS = tuple(
+    column
+    for column in SLIM_TRIAL_RESPONSE_COLUMNS
+    if column not in (TrialModel.analysis, TrialModel.error_message)
+)
+
+
+def build_experiment_trial_cell(
+    row: Mapping[str, Any],
+    *,
+    exclusions: CostExclusions | None,
+) -> ExperimentTrialCell:
+    """Project one bounded SQL row without constructing an ORM entity."""
+    normalized_model = settings.normalize_trial_model(
+        str(row["agent"]), row["model"], strict=False
+    )
+    stored_cost = row["cost_usd"]
+    if stored_cost is not None:
+        cost_usd = float(stored_cost)
+        cost_is_estimated: bool | None = False
+    elif row["input_tokens"] is None and row["output_tokens"] is None:
+        cost_usd = None
+        cost_is_estimated = None
+    else:
+        cost_usd = estimate_cost_usd(
+            normalized_model or row["model"],
+            row["input_tokens"],
+            row["output_tokens"],
+            row["cache_tokens"],
+            row["cache_write_tokens"],
+        )
+        cost_is_estimated = True if cost_usd is not None else None
+
+    experiment_id = row["experiment_id"]
+    return ExperimentTrialCell(
+        id=str(row["id"]),
+        task_id=str(row["task_id"]),
+        task_path=str(row["task_path"]),
+        experiment_id=str(experiment_id) if experiment_id is not None else None,
+        task_version_id=row["task_version_id"],
+        name=str(row["name"]),
+        agent=str(row["agent"]),
+        model=normalized_model,
+        provider=str(row["provider"]),
+        queue_key=settings.normalize_queue_key(str(row["queue_key"])),
+        status=row["status"],
+        attempts=int(row["attempts"]),
+        max_attempts=int(row["max_attempts"]),
+        harbor_stage=row["harbor_stage"],
+        reward=row["reward"],
+        input_tokens=row["input_tokens"],
+        cache_tokens=row["cache_tokens"],
+        output_tokens=row["output_tokens"],
+        cost_usd=cost_usd,
+        cost_is_estimated=cost_is_estimated,
+        is_billed=row["billed_user_id"] is not None,
+        cost_exclusion_reason=(
+            exclusions.reason_for(
+                llm_key_hash=row["llm_key_hash"],
+                model=row["model"],
+                experiment_id=experiment_id,
+            )
+            if exclusions
+            else None
+        ),
+        has_trajectory=bool(row["has_trajectory"]),
+        analysis=ExperimentTrialAnalysis(
+            status=row["analysis_status"],
+            classification=row["analysis_classification"],
+            subtype=row["analysis_subtype"],
+            evidence=row["analysis_evidence"],
+            started_at=row["analysis_started_at"],
+            finished_at=row["analysis_finished_at"],
+        ),
+        created_at=row["created_at"],
+        started_at=row["started_at"],
+        finished_at=row["finished_at"],
+    )
 
 
 async def _member_experiment(
@@ -349,4 +437,79 @@ async def get_experiment_open_core(
         has_more = True
         response.next_created_at = rows[-1]["created_at"]
         response.next_task_id = str(rows[-1]["task_id"])
+    return response
+
+
+async def get_experiment_trial_page_core(
+    session: AsyncSession,
+    *,
+    experiment_id: str,
+    org_id: str,
+    limit: int = TRIAL_PAGE_MAX_TRIALS,
+    before_created_at: datetime | None = None,
+    before_trial_id: str | None = None,
+) -> ExperimentTrialPageResponse:
+    if (before_created_at is None) != (before_trial_id is None):
+        raise HTTPException(
+            status_code=400, detail="Both trial page fields are required"
+        )
+    experiment = await _member_experiment(
+        session, experiment_id=experiment_id, org_id=org_id
+    )
+    effective = experiment_effective_versions_selectable(experiment_id=experiment_id)
+    query = (
+        select(
+            *(column.label(column.key) for column in _TRIAL_PAGE_COLUMNS),
+            TaskModel.task_path,
+            func.left(TrialModel.analysis["classification"].astext, 100).label(
+                "analysis_classification"
+            ),
+            func.left(TrialModel.analysis["subtype"].astext, 100).label(
+                "analysis_subtype"
+            ),
+            func.left(TrialModel.analysis["evidence"].astext, 1_000).label(
+                "analysis_evidence"
+            ),
+        )
+        .join(TaskModel, TaskModel.id == TrialModel.task_id)
+        .join(
+            effective,
+            and_(
+                effective.c.task_id == TrialModel.task_id,
+                effective.c.task_version_id == TrialModel.task_version_id,
+            ),
+        )
+        .where(
+            *visible_experiment_trial_predicates(experiment_id),
+            TaskModel.org_id == org_id,
+            TaskModel.deleted_at.is_(None),
+        )
+    )
+    if before_created_at is not None:
+        query = query.where(
+            or_(
+                TrialModel.created_at < before_created_at,
+                and_(
+                    TrialModel.created_at == before_created_at,
+                    TrialModel.id < before_trial_id,
+                ),
+            )
+        )
+    limit = max(1, min(limit, TRIAL_PAGE_MAX_TRIALS))
+    result = await session.execute(
+        query.order_by(TrialModel.created_at.desc(), TrialModel.id.desc()).limit(
+            limit + 1
+        )
+    )
+    rows = list(result.mappings().all())
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    exclusions = await load_cost_exclusions(session) if rows else None
+    trials = [build_experiment_trial_cell(row, exclusions=exclusions) for row in rows]
+    response = ExperimentTrialPageResponse(
+        revision=experiment["revision"], trials=trials
+    )
+    if has_more and rows:
+        response.next_created_at = rows[-1]["created_at"]
+        response.next_trial_id = rows[-1]["id"]
     return response

@@ -14,9 +14,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from oddish.core.endpoints.experiment_page import (
     OPEN_MAX_BYTES,
     OPEN_MAX_TASKS,
+    _TRIAL_PAGE_COLUMNS,
     get_experiment_open_core,
+    get_experiment_trial_page_core,
 )
+from oddish.core.cost_exclusions import CostExclusions
 from oddish.core.helpers import experiment_effective_versions_selectable
+from oddish.db import TrialOrigin, TrialStatus
+from oddish.db.models import TrialModel
 
 NOW = datetime(2026, 8, 26, tzinfo=UTC)
 
@@ -42,6 +47,9 @@ class _Result:
 
     def mappings(self):
         return _Mappings(self.rows)
+
+    def all(self):
+        return self.rows
 
 
 class _Session:
@@ -123,6 +131,54 @@ def _task(index: int, **overrides):
     }
     values.update(overrides)
     return values
+
+
+def _trial(index: int) -> TrialModel:
+    return TrialModel(
+        id=f"trial-{index:03}",
+        name=f"trial-{index:03}",
+        task_id="task-001",
+        task_version_id="task-001-v1",
+        experiment_id="experiment-1",
+        agent="codex",
+        provider="openai",
+        queue_key="openai/gpt-5.6",
+        model="openai/gpt-5.6",
+        status=TrialStatus.SUCCESS,
+        origin=TrialOrigin.ODDISH,
+        attempts=1,
+        max_attempts=6,
+        harbor_stage="completed",
+        reward=1.0,
+        is_probe=False,
+        kind="agent",
+        input_tokens=100,
+        cache_tokens=20,
+        cache_write_tokens=0,
+        output_tokens=10,
+        cost_usd=0.01,
+        has_trajectory=True,
+        created_at=NOW - timedelta(seconds=index),
+        started_at=NOW - timedelta(minutes=1),
+        finished_at=NOW,
+    )
+
+
+def _trial_page_row(
+    trial: TrialModel,
+    *,
+    classification=None,
+    subtype=None,
+    evidence=None,
+):
+    row = {column.key: getattr(trial, column.key) for column in _TRIAL_PAGE_COLUMNS}
+    row.update(
+        task_path="tasks/task-001",
+        analysis_classification=classification,
+        analysis_subtype=subtype,
+        analysis_evidence=evidence,
+    )
+    return row
 
 
 def _open(*tasks, summary=None, **kwargs):
@@ -286,3 +342,71 @@ def test_effective_version_selectable_filters_before_ranking():
     assert "trials.task_version_id = tasks.current_version_id" in sql
     assert "task_versions.version DESC" in sql
     assert "experiment_version_candidates.rank = 1" in sql
+
+
+def test_trial_page_is_flat_bounded_and_omits_detail_columns(monkeypatch):
+    async def no_exclusions(_session):
+        return CostExclusions()
+
+    monkeypatch.setattr(
+        "oddish.core.endpoints.experiment_page.load_cost_exclusions", no_exclusions
+    )
+    first, second = _trial(1), _trial(2)
+    session = _Session(
+        _Result([_identity()]),
+        _Result(
+            [
+                _trial_page_row(
+                    first,
+                    classification="GOOD_SUCCESS",
+                    subtype="correct",
+                    evidence="evidence",
+                ),
+                _trial_page_row(second),
+            ]
+        ),
+    )
+    response = asyncio.run(
+        get_experiment_trial_page_core(
+            session,
+            experiment_id="experiment-1",
+            org_id="org-1",
+            limit=1,
+        )
+    )
+
+    assert len(session.calls) == 2
+    assert [trial.id for trial in response.trials] == [first.id]
+    assert response.trials[0].has_trajectory is True
+    assert response.trials[0].analysis.classification == "GOOD_SUCCESS"
+    assert response.next_created_at == first.created_at
+    assert response.next_trial_id == first.id
+    payload = response.model_dump_json()
+    for field in ("result", "phase_timing", "harbor_config", "error_message"):
+        assert f'"{field}"' not in payload
+
+    sql = _sql(session.calls[1])
+    assert "LIMIT 2" in sql
+    assert "trials.kind = 'agent'" in sql
+    assert "trials.is_probe IS false" in sql
+    assert "trials.superseded_by_trial_id IS NULL" in sql
+    assert "trials.result" not in sql
+    assert "trials.phase_timing" not in sql
+    assert "trials.harbor_config" not in sql
+    assert "trials.error_message" not in sql
+    assert "left(trials.analysis ->> 'classification', 100)" in sql
+
+
+def test_trial_page_requires_both_page_fields_before_querying():
+    session = _Session()
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            get_experiment_trial_page_core(
+                session,
+                experiment_id="experiment-1",
+                org_id="org-1",
+                before_created_at=NOW,
+            )
+        )
+    assert exc.value.status_code == 400
+    assert session.calls == []

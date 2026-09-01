@@ -434,7 +434,9 @@ def build_trial_response(
     exclusions: CostExclusions | None = None,
 ) -> TrialResponse:
     """Build a TrialResponse from a TrialModel."""
-    normalized_model = settings.normalize_trial_model(trial.agent, trial.model, strict=False)
+    normalized_model = settings.normalize_trial_model(
+        trial.agent, trial.model, strict=False
+    )
     task_version, task_version_id = _resolve_trial_version_fields(trial)
     cost_usd, cost_is_estimated = _resolve_trial_cost(trial, normalized_model)
     return TrialResponse(
@@ -524,7 +526,9 @@ def build_compact_trial_response(
         resolved_analysis_summary = (
             analysis_summary if isinstance(analysis_summary, dict) else None
         )
-    normalized_model = settings.normalize_trial_model(trial.agent, trial.model, strict=False)
+    normalized_model = settings.normalize_trial_model(
+        trial.agent, trial.model, strict=False
+    )
     task_version, task_version_id = _resolve_trial_version_fields(trial)
     cost_usd, cost_is_estimated = _resolve_trial_cost(trial, normalized_model)
 
@@ -1166,6 +1170,7 @@ SLIM_TRIAL_RESPONSE_COLUMNS = (
     TrialModel.status,
     TrialModel.attempts,
     TrialModel.max_attempts,
+    TrialModel.harbor_stage,
     TrialModel.reward,
     TrialModel.error_message,
     TrialModel.is_probe,
@@ -1179,6 +1184,7 @@ SLIM_TRIAL_RESPONSE_COLUMNS = (
     TrialModel.cache_write_tokens,
     TrialModel.output_tokens,
     TrialModel.cost_usd,
+    TrialModel.has_trajectory,
     TrialModel.billed_user_id,
     TrialModel.llm_key_hash,
     TrialModel.superseded_by_trial_id,
@@ -1192,6 +1198,8 @@ def build_slim_trial_response(
     trial: TrialModel,
     task_path: str,
     *,
+    analysis: Mapping[str, object] | None,
+    error_message: str | None,
     exclusions: CostExclusions | None = None,
     # None = "not resolved by this caller", which the UI renders as nothing.
     # Distinct from 0.0, which would mean "resolved, and there was no QA".
@@ -1199,13 +1207,15 @@ def build_slim_trial_response(
 ) -> TrialResponse:
     """Build a slim TrialResponse for the experiment grid."""
     resolved_analysis_summary: dict[str, str | None] | None = None
-    if isinstance(trial.analysis, dict):
+    if isinstance(analysis, Mapping):
         resolved_analysis_summary = {
-            "classification": trial.analysis.get("classification"),
-            "subtype": trial.analysis.get("subtype"),
-            "evidence": trial.analysis.get("evidence"),
+            "classification": analysis.get("classification"),
+            "subtype": analysis.get("subtype"),
+            "evidence": analysis.get("evidence"),
         }
-    normalized_model = settings.normalize_trial_model(trial.agent, trial.model, strict=False)
+    normalized_model = settings.normalize_trial_model(
+        trial.agent, trial.model, strict=False
+    )
     task_version, task_version_id = _resolve_trial_version_fields(trial)
     cost_usd, cost_is_estimated = _resolve_trial_cost(trial, normalized_model)
 
@@ -1224,9 +1234,9 @@ def build_slim_trial_response(
         status=trial.status,
         attempts=trial.attempts,
         max_attempts=trial.max_attempts,
-        harbor_stage=None,
+        harbor_stage=trial.harbor_stage,
         reward=trial.reward,
-        error_message=trial.error_message,
+        error_message=error_message,
         result=None,
         is_probe=trial.is_probe,
         kind=trial.kind or "agent",
@@ -1253,6 +1263,7 @@ def build_slim_trial_response(
             if exclusions
             else None
         ),
+        has_trajectory=trial.has_trajectory,
     )
 
 
@@ -1290,6 +1301,8 @@ def build_slim_task_status_response(
         build_slim_trial_response(
             t,
             task.task_path,
+            analysis=t.analysis,
+            error_message=t.error_message,
             qa_cost_usd=(
                 qa_costs_by_trial_id.get(t.id)
                 if qa_costs_by_trial_id is not None
