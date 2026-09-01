@@ -196,6 +196,9 @@ async def delete_delivery_core(
     session: AsyncSession, *, delivery_id: str, org_id: str | None
 ) -> None:
     delivery = await _get_delivery(session, delivery_id, org_id)
+    # A finalized delivery is the permanent record of what shipped; it is
+    # read-only like every other mutation path, deletion included.
+    _require_active(delivery)
     delivery.deleted_at = utcnow()
     await session.flush()
 
@@ -414,7 +417,7 @@ async def _compute_board(
     max_versions: dict[str, int] = {}
     rollouts: dict[str, tuple[int, int]] = {}
     post_trial_must_fix: dict[str, int] = {}
-    latest_qa_version: dict[str, str | None] = {}
+    qa_graded_versions: set[tuple[str, str]] = set()
 
     if task_ids:
         # Soft-deleted members must stay on the board as failing rows, not
@@ -482,8 +485,10 @@ async def _compute_board(
             ).all():
                 post_trial_must_fix[version_id] = count
 
-        # Which version the latest successful QA run graded, per task: a
-        # published verdict only counts while it covers the current default.
+        # Which versions successful QA runs have graded, per task: a
+        # published verdict only counts while a run covers the current default.
+        # Membership, not recency: a later QA run on some other version must
+        # not invalidate a successful run on the current one.
         qa_rows = (
             await session.execute(
                 select(TrialModel.task_id, TrialModel.task_version_id)
@@ -491,12 +496,12 @@ async def _compute_board(
                     TrialModel.task_id.in_(task_ids),
                     TrialModel.kind == "qa",
                     TrialModel.status == TrialStatus.SUCCESS,
+                    TrialModel.task_version_id.isnot(None),
                 )
-                .order_by(TrialModel.finished_at.desc().nulls_last())
+                .distinct()
             )
         ).all()
-        for task_id, version_id in qa_rows:
-            latest_qa_version.setdefault(task_id, version_id)
+        qa_graded_versions = {(t, v) for t, v in qa_rows}
 
         for task_id, highest in (
             await session.execute(
@@ -597,10 +602,9 @@ async def _compute_board(
             )
 
             verdict = task.verdict if isinstance(task.verdict, dict) else None
-            qa_version = latest_qa_version.get(task.id)
             if verdict is None:
                 automated("verdict_ok", False, "no verdict yet")
-            elif qa_version != version.id:
+            elif (task.id, version.id) not in qa_graded_versions:
                 automated(
                     "verdict_ok",
                     False,

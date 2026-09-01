@@ -444,3 +444,52 @@ async def test_sort_order_advances_from_zero(session):
         (a.id, 0),
         (b.id, 1),
     ]
+
+
+@pytest.mark.asyncio
+async def test_finalized_delivery_cannot_be_deleted(session):
+    task, _, _ = await _green_task(session, "deliv-nodelete")
+    delivery = await create_delivery_core(
+        session,
+        data=DeliveryCreate(name="batch-10", task_ids=[task.id]),
+        org_id=ORG,
+        user_id="u1",
+    )
+    await finalize_delivery_core(
+        session, delivery_id=delivery.id, org_id=ORG, user_id="u1"
+    )
+    from oddish.core.deliveries import delete_delivery_core
+
+    with pytest.raises(HTTPException) as err:
+        await delete_delivery_core(session, delivery_id=delivery.id, org_id=ORG)
+    assert err.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_qa_on_other_version_does_not_stale_verdict(session):
+    from datetime import datetime, timezone
+
+    task, v1, experiment = await _green_task(session, "deliv-qa-order")
+    # Timestamp the current-version QA run, then add a *later* successful QA
+    # on an older version. The current version stays covered: freshness is
+    # membership, not global recency.
+    qa_current = _trial(task, experiment, v1.id, kind="qa")
+    qa_current.finished_at = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    v0 = _version(task, 2)  # a non-default sibling version
+    session.add_all([qa_current, v0])
+    await session.flush()
+    qa_other = _trial(task, experiment, v0.id, kind="qa")
+    qa_other.finished_at = datetime(2026, 8, 15, tzinfo=timezone.utc)
+    session.add(qa_other)
+    await session.flush()
+
+    delivery = await create_delivery_core(
+        session,
+        data=DeliveryCreate(name="batch-11", task_ids=[task.id]),
+        org_id=ORG,
+        user_id="u1",
+    )
+    board = await get_delivery_board_core(
+        session, delivery_id=delivery.id, org_id=ORG
+    )
+    assert _checks(board, task.id)["verdict_ok"].status == "pass"
