@@ -63,6 +63,17 @@ export function ensureLogfireConfigured(): void {
   }
 }
 
+export function recordClientError(
+  name: string,
+  attributes: Record<string, string | number | boolean>
+): void {
+  console.error(`[${name}]`, attributes);
+  if (!configured) return;
+  const span = trace.getTracer(TRACER_NAME).startSpan(name, { attributes });
+  span.setStatus({ code: SpanStatusCode.ERROR });
+  span.end();
+}
+
 function installFlushHandlers(): void {
   if (typeof document === "undefined") return;
 
@@ -88,8 +99,9 @@ function installFlushHandlers(): void {
 export async function withUserAction<T>(
   name: string,
   attributesOrFn:
-    Record<string, string | number | boolean> | (() => Promise<T> | T),
-  maybeFn?: () => Promise<T> | T,
+    | Record<string, string | number | boolean>
+    | (() => Promise<T> | T),
+  maybeFn?: () => Promise<T> | T
 ): Promise<T> {
   const attributes = typeof attributesOrFn === "function" ? {} : attributesOrFn;
   const fn = typeof attributesOrFn === "function" ? attributesOrFn : maybeFn!;

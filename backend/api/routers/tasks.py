@@ -617,6 +617,49 @@ async def get_experiment_trial_page(
         )
 
 
+@router.get("/experiments/{experiment_id}/open", response_model=ExperimentOpenResponse)
+async def get_experiment_open(
+    experiment_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    limit: int = Query(100, ge=1, le=100),
+    before_created_at: datetime | None = Query(None),
+    before_task_id: str | None = Query(None),
+) -> ExperimentOpenResponse:
+    auth.require_scope(APIKeyScope.READ)
+    async with get_read_session() as session:
+        return await get_experiment_open_core(
+            session,
+            experiment_id=experiment_id,
+            org_id=auth.org_id,
+            limit=limit,
+            before_created_at=before_created_at,
+            before_task_id=before_task_id,
+        )
+
+
+@router.get(
+    "/experiments/{experiment_id}/trial-page",
+    response_model=ExperimentTrialPageResponse,
+)
+async def get_experiment_trial_page(
+    experiment_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    limit: int = Query(250, ge=1, le=250),
+    before_created_at: datetime | None = Query(None),
+    before_trial_id: str | None = Query(None),
+) -> ExperimentTrialPageResponse:
+    auth.require_scope(APIKeyScope.READ)
+    async with get_read_session() as session:
+        return await get_experiment_trial_page_core(
+            session,
+            experiment_id=experiment_id,
+            org_id=auth.org_id,
+            limit=limit,
+            before_created_at=before_created_at,
+            before_trial_id=before_trial_id,
+        )
+
+
 @router.get(
     "/experiments/{experiment_id}/cost-totals",
     response_model=ExperimentCostTotals,

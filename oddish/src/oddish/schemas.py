@@ -1849,6 +1849,7 @@ class TaskOpenTrialRef(BaseModel):
     cost_usd: float | None = None
     cost_is_estimated: bool | None = None
     is_billed: bool = False
+    has_trajectory: bool = False
     created_at: datetime
     started_at: datetime | None = None
     finished_at: datetime | None = None

@@ -102,7 +102,9 @@ async_session_maker = _create_session_maker(engine)
 
 
 def _install_request_query_timing(db_engine: AsyncEngine) -> None:
-    def before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+    def before_cursor_execute(
+        conn, cursor, statement, parameters, context, executemany
+    ):
         context._oddish_timing = (now(), current_request_stage())
 
     def record_cursor_timing(context) -> None:

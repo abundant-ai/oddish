@@ -25,6 +25,7 @@ from oddish.core.endpoints.experiment_page import (
     get_experiment_open_core,
     get_experiment_trial_page_core,
 )
+from oddish.core.endpoints.task_open import get_task_open_core
 from oddish.core.endpoints.tasks_query import list_tasks_core
 from oddish.db import (
     AnalysisStatus,
@@ -35,6 +36,7 @@ from oddish.db import (
     TrialStatus,
     generate_id,
     task_experiments,
+    utcnow,
 )
 
 
@@ -64,11 +66,13 @@ def _trial(
     task: TaskModel,
     home_experiment: ExperimentModel,
     *,
-    task_version_id: str,
+    task_version_id: str | None,
     org_id: str = "org1",
     reward: float | None = 1,
     is_probe: bool = False,
     superseded_by_trial_id: str | None = None,
+    kind: str = "agent",
+    status: TrialStatus = TrialStatus.SUCCESS,
 ) -> TrialModel:
     trial_id = generate_id()
     return TrialModel(
@@ -82,10 +86,11 @@ def _trial(
         provider="openai",
         queue_key="openai/gpt-5.5",
         model="gpt-5.5",
-        status=TrialStatus.SUCCESS,
+        status=status,
         reward=reward,
         is_probe=is_probe,
         superseded_by_trial_id=superseded_by_trial_id,
+        kind=kind,
     )
 
 
@@ -196,6 +201,53 @@ async def test_trial_page_projects_real_postgres_mapping(session):
     assert projected.has_trajectory is True
     assert projected.cost_is_estimated is True
     assert projected.cost_usd is not None
+
+
+@pytest.mark.asyncio
+async def test_task_open_execution_counts_match_selected_version_preview(session):
+    task = _task("task-open-count-contract")
+    experiment = _experiment("task-open-count-contract")
+    session.add_all([task, experiment])
+    await session.flush()
+
+    version = _version(task, 1)
+    session.add(version)
+    await session.flush()
+    task.current_version_id = version.id
+
+    verifier_failure = _trial(
+        task,
+        experiment,
+        task_version_id=version.id,
+        reward=0,
+    )
+    harness_error = _trial(
+        task,
+        experiment,
+        task_version_id=version.id,
+        reward=None,
+    )
+    harness_error.status = TrialStatus.FAILED
+    harness_error.error_message = "RuntimeError: sandbox failed"
+    session.add_all([verifier_failure, harness_error])
+    await session.flush()
+
+    response = await get_task_open_core(
+        session,
+        task_id=task.id,
+        org_id="org1",
+    )
+
+    selected = response.selected_version
+    assert selected is not None
+    assert selected.id == version.id
+    assert selected.trial_count == 2
+    assert selected.completed_count == 1
+    assert selected.failed_count == 1
+    assert selected.fail_count == 1
+    assert selected.pass_count == 0
+    assert {row.task_version_id for row in response.trials} == {version.id}
+    assert sorted(row.status for row in response.trials) == ["failed", "success"]
 
 
 @pytest.mark.asyncio
@@ -437,3 +489,166 @@ async def test_experiment_reports_default_while_using_latest_visible_trial_versi
     assert shell.trial_version_id == v2.id
     assert shell.total == 1
     assert [row.id for row in trial_page.trials] == [v2_trial.id]
+
+
+@pytest.mark.asyncio
+async def test_experiment_paths_share_visible_agent_version_selection(session):
+    task = _task("visible-agent-version-task")
+    session.add(task)
+    await session.flush()
+
+    v1 = _version(task, 1)
+    v2 = _version(task, 2)
+    v3 = _version(task, 3)
+    v4 = _version(task, 4)
+    session.add_all([v1, v2, v3, v4])
+    await session.flush()
+    task.current_version_id = v4.id
+
+    experiment = _experiment("visible-agent-version-experiment")
+    session.add(experiment)
+    await session.flush()
+
+    visible_agent = _trial(task, experiment, task_version_id=v1.id)
+    qa_trial = _trial(task, experiment, task_version_id=v2.id, kind="qa")
+    deleted_version_agent = _trial(task, experiment, task_version_id=v3.id)
+    v3.deleted_at = utcnow()
+    session.add_all([visible_agent, qa_trial, deleted_version_agent])
+    await session.execute(
+        task_experiments.insert().values(
+            task_id=task.id,
+            experiment_id=experiment.id,
+        )
+    )
+    await session.flush()
+
+    task_id = task.id
+    experiment_id = experiment.id
+    visible_trial_id = visible_agent.id
+
+    session.expunge_all()
+    opened, trial_page = await _experiment_pages(session, experiment_id)
+    shell = {response.id: response for response in opened.tasks}[task_id]
+
+    session.expunge_all()
+    compact = await list_tasks_core(
+        session,
+        experiment_id=experiment_id,
+        compact_trials=True,
+        include_queue_info=False,
+        include_worker_jobs=False,
+        org_id="org1",
+    )
+    compact_task = {response.id: response for response in compact}[task_id]
+
+    for response in (shell, compact_task):
+        assert response.current_version_id == v4.id
+        assert response.trial_version_id == v1.id
+        assert response.total == 1
+    assert [trial.id for trial in trial_page.trials] == [visible_trial_id]
+    assert [trial.id for trial in (compact_task.trials or [])] == [visible_trial_id]
+
+
+@pytest.mark.asyncio
+async def test_compact_path_keeps_current_version_probe_without_agent_candidate(
+    session,
+):
+    """A probe must use the same current-version fallback as the task row.
+
+    Probe trials are loaded separately from experiment agent trials. When no
+    live versioned agent trial exists, the SQL selector returns no row and the
+    compact task view falls back to the task's current version. The probe must
+    follow that displayed version instead of disappearing with the absent SQL
+    row.
+    """
+    task = _task("probe-fallback-version-task")
+    session.add(task)
+    await session.flush()
+
+    current = _version(task, 1)
+    session.add(current)
+    await session.flush()
+    task.current_version_id = current.id
+
+    experiment = _experiment("probe-fallback-version-experiment")
+    session.add(experiment)
+    await session.flush()
+
+    probe = _trial(
+        task,
+        experiment,
+        task_version_id=current.id,
+        is_probe=True,
+    )
+    session.add(probe)
+    await session.execute(
+        task_experiments.insert().values(
+            task_id=task.id,
+            experiment_id=experiment.id,
+        )
+    )
+    await session.flush()
+
+    task_id = task.id
+    experiment_id = experiment.id
+    probe_id = probe.id
+    session.expunge_all()
+
+    compact = await list_tasks_core(
+        session,
+        experiment_id=experiment_id,
+        compact_trials=True,
+        include_queue_info=False,
+        include_worker_jobs=False,
+        org_id="org1",
+    )
+
+    compact_task = {response.id: response for response in compact}[task_id]
+    assert compact_task.trial_version_id == current.id
+    assert compact_task.total == 0
+    assert [trial.id for trial in (compact_task.trials or [])] == [probe_id]
+
+
+@pytest.mark.asyncio
+async def test_experiment_open_counts_versionless_trials_without_an_effective_version(
+    session,
+):
+    task = _task("versionless-experiment-task")
+    session.add(task)
+    await session.flush()
+
+    current = _version(task, 1)
+    session.add(current)
+    await session.flush()
+    task.current_version_id = current.id
+
+    experiment = _experiment("versionless-experiment")
+    session.add(experiment)
+    await session.flush()
+
+    session.add(
+        _trial(
+            task,
+            experiment,
+            task_version_id=None,
+            reward=None,
+            status=TrialStatus.RUNNING,
+        )
+    )
+    await session.execute(
+        task_experiments.insert().values(
+            task_id=task.id,
+            experiment_id=experiment.id,
+        )
+    )
+    await session.flush()
+
+    session.expunge_all()
+    opened = await get_experiment_open_core(
+        session, experiment_id=experiment.id, org_id="org1"
+    )
+
+    assert opened.summary.trial_count == 1
+    assert opened.summary.active == 1
+    assert opened.has_active_trials is True
+    assert opened.tasks[0].total == 1
