@@ -503,10 +503,18 @@ async def _compute_board(
                 rollouts[version_id] = (count, agents)
 
             # Open must-fix defects reported by trial analyses on the current
-            # version. The array-shape guard must live INSIDE the set-returning
+            # version. Superseded trials stay IN this scan: a defect found on
+            # a run describes the task version, not the run, so retrying the
+            # run must not clear the finding before re-QA re-grades it (a
+            # real fix edits the task and lands on a new version anyway).
+            # The array-shape guard must live INSIDE the set-returning
             # function: jsonb_array_elements runs in FROM before any WHERE
             # filter, so a row whose action_items is an object or scalar would
             # otherwise raise and 500 every board read.
+            defect_scope = EligibleTrialScope(
+                membership=[TrialModel.task_version_id.in_(version_ids)],
+                include_superseded=True,
+            )
             items = func.jsonb_array_elements(
                 case(
                     (
@@ -521,7 +529,7 @@ async def _compute_board(
                 await session.execute(
                     select(TrialModel.task_version_id, func.count())
                     .where(
-                        *scope.clauses(),
+                        *defect_scope.clauses(),
                         items.c.value.op("->>")("tier") == "must_fix",
                     )
                     .group_by(TrialModel.task_version_id)

@@ -559,3 +559,32 @@ async def test_add_tasks_by_name(session):
         session, delivery_id=delivery.id, org_id=ORG
     )
     assert board.task_count == 0
+
+
+@pytest.mark.asyncio
+async def test_retrying_a_trial_keeps_its_must_fix_findings(session):
+    task, version, experiment = await _green_task(session, "deliv-retry")
+    flagged = _trial(
+        task,
+        experiment,
+        version.id,
+        analysis={"action_items": [{"tier": "must_fix", "title": "leak"}]},
+    )
+    replacement = _trial(task, experiment, version.id)
+    session.add_all([flagged, replacement])
+    await session.flush()
+    flagged.superseded_by_trial_id = replacement.id
+    await session.flush()
+
+    delivery = await create_delivery_core(
+        session,
+        data=DeliveryCreate(name="batch-13", task_ids=[task.id]),
+        org_id=ORG,
+        user_id="u1",
+    )
+    board = await get_delivery_board_core(
+        session, delivery_id=delivery.id, org_id=ORG
+    )
+    check = _checks(board, task.id)["no_must_fix"]
+    assert check.status == "fail"
+    assert "1 must-fix open" in check.detail
