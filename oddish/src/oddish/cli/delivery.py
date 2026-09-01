@@ -373,7 +373,7 @@ def _open_blockers(row: dict) -> tuple[list[dict], list[dict]]:
         for c in row["checks"]
         if c["kind"] == "automated"
         and c["status"] == "fail"
-        and c["key"] != "no_must_fix"
+        and c["key"] not in ("no_must_fix", "task_exists")
     ]
     defects = [d for d in row.get("defects", []) if not d["acknowledged"]]
     return checks, defects

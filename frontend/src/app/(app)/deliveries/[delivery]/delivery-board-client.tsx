@@ -84,7 +84,8 @@ function signoffBlockers(row: DeliveryTaskBoardRow) {
     (check) =>
       check.kind === "automated" &&
       check.status === "fail" &&
-      check.key !== "no_must_fix"
+      check.key !== "no_must_fix" &&
+      check.key !== "task_exists"
   );
   const defects = row.defects.filter((defect) => !defect.acknowledged);
   return { checks, defects };
@@ -612,7 +613,10 @@ function TaskRow({
                         acknowledged by{" "}
                         {check.checked_by_name ?? check.checked_by_user_id}
                       </span>
-                    ) : check.key === "no_must_fix" ? null : (
+                    ) : // no_must_fix takes per-defect acks; task_exists is
+                    // the deleted-task marker — neither is waivable.
+                    check.key === "no_must_fix" ||
+                      check.key === "task_exists" ? null : (
                       <Button
                         variant="outline"
                         size="sm"

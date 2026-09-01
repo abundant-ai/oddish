@@ -209,14 +209,13 @@ async def test_must_fix_defects_block(session):
             {"tier": "should_fix", "title": "nit"},
         ]
     }
-    session.add(
-        _trial(
-            task,
-            experiment,
-            version.id,
-            analysis={"action_items": [{"tier": "must_fix", "title": "cheat"}]},
-        )
+    cheat_trial = _trial(
+        task,
+        experiment,
+        version.id,
+        analysis={"action_items": [{"tier": "must_fix", "title": "cheat"}]},
     )
+    session.add(cheat_trial)
     # Malformed analyses (object / scalar action_items) must not crash the
     # board query or count as defects.
     session.add(
@@ -240,6 +239,18 @@ async def test_must_fix_defects_block(session):
     assert "2 of 2 must-fix unacknowledged" in check.detail
     row = next(r for r in board.tasks if r.task_id == task.id)
     assert len(row.defects) == 2 and not any(d.acknowledged for d in row.defects)
+
+    # Deleting the trial that reported a defect must not clear it: only an
+    # acknowledgement or a new version does.
+    from oddish.db import utcnow
+
+    cheat_trial.deleted_at = utcnow()
+    await session.flush()
+    board = await get_delivery_board_core(
+        session, delivery_id=delivery.id, org_id=ORG
+    )
+    row = next(r for r in board.tasks if r.task_id == task.id)
+    assert len(row.defects) == 2
 
 
 @pytest.mark.asyncio
@@ -463,6 +474,12 @@ async def test_qa_history(session):
     assert first.rollout_count == 5 and first.rollout_agents == 3
     assert [run.kind for run in first.qa_runs] == ["qa"]
     assert history.verdict == {"is_good": True, "verdict": "accept"}
+
+    # The task name works too, like every other delivery entry point.
+    by_name = await get_task_qa_history_core(
+        session, task_id=task.name, org_id=ORG
+    )
+    assert by_name.task_id == task.id
 
     with pytest.raises(HTTPException):
         await get_task_qa_history_core(

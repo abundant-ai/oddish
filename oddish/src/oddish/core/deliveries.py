@@ -475,6 +475,7 @@ async def _must_fix_items(
         defect_scope = EligibleTrialScope(
             membership=[TrialModel.task_version_id.in_(list(versions))],
             include_superseded=True,
+            include_deleted=True,
         )
         # The array-shape guard must live INSIDE the set-returning function:
         # jsonb_array_elements runs in FROM before any WHERE filter, so a row
@@ -491,10 +492,15 @@ async def _must_fix_items(
         ).table_valued("value", joins_implicitly=True)
         rows = (
             await session.execute(
-                select(TrialModel.task_version_id, items.c.value).where(
+                select(TrialModel.task_version_id, items.c.value)
+                .where(
                     *defect_scope.clauses(),
                     items.c.value.op("->>")("tier") == "must_fix",
                 )
+                # A defect describes the version, not the run: deleting or
+                # superseding the trial that reported it must not clear it.
+                # Only an acknowledgement or a new version does.
+                .execution_options(include_deleted=True)
             )
         ).all()
         for vid, item in rows:
@@ -1178,9 +1184,22 @@ async def finalize_delivery_core(
 async def get_task_qa_history_core(
     session: AsyncSession, *, task_id: str, org_id: str | None
 ) -> TaskQAHistoryResponse:
-    task = await session.get(TaskModel, task_id)
-    if task is None or task.org_id != org_id:
+    # A task id or a task name, like every other delivery entry point.
+    # An id match wins if a string happens to be both.
+    matches = (
+        await session.scalars(
+            select(TaskModel).where(
+                TaskModel.org_id == org_id,
+                or_(TaskModel.id == task_id, TaskModel.name == task_id),
+            )
+        )
+    ).all()
+    task = next((t for t in matches if t.id == task_id), None) or next(
+        iter(matches), None
+    )
+    if task is None:
         raise HTTPException(status_code=404, detail="task not found")
+    task_id = task.id
 
     versions = (
         await session.scalars(
