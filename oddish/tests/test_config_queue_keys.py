@@ -11,6 +11,7 @@ from oddish.config import (
     NOP_ORACLE_QUEUE_KEY,
     Settings,
     normalize_model_id,
+    require_geometric_served_model_id,
 )  # noqa: E402
 
 
@@ -391,36 +392,37 @@ def test_bare_glm_still_routes_to_zai_not_geometric(monkeypatch):
     assert settings.normalize_trial_model("claude-code", "zai/glm-5.3") == "zai/glm-5.3"
 
 
-def test_geometric_rejects_a_model_the_endpoint_does_not_serve(monkeypatch):
-    settings = _settings(monkeypatch, clear_openai_env=False)
-
+def test_geometric_rejects_a_model_the_endpoint_does_not_serve():
     # A typo must die at submit, not after a queue slot, worker, and sandbox
     # have been spent reaching the endpoint's 404.
     with pytest.raises(ValueError, match="glm-5.3"):
-        settings.normalize_trial_model("mini-swe-agent", "geometric/glm-5.4")
+        require_geometric_served_model_id("geometric/glm-5.4")
 
 
-def test_geometric_cannot_smuggle_a_foreign_model_to_public_openai(monkeypatch):
-    settings = _settings(monkeypatch, clear_openai_env=False)
-
-    # The real hazard: geometric/gpt-4o reaches litellm as ``openai/gpt-4o``,
+def test_geometric_cannot_smuggle_a_foreign_model_to_public_openai():
+    # The real hazard: geometric/gpt-4o would reach litellm as ``openai/gpt-4o``,
     # whose default route is public OpenAI. Only OPENAI_BASE_URL keeps it on our
-    # own box, so refuse the id outright rather than depend on that env var.
+    # own box, so refuse the id rather than depend on that env var.
     with pytest.raises(ValueError):
-        settings.normalize_trial_model("mini-swe-agent", "geometric/gpt-4o")
+        require_geometric_served_model_id("geometric/gpt-4o")
 
 
-def test_geometric_read_path_never_raises_for_a_stored_model(monkeypatch):
+def test_geometric_normalization_is_total_over_stored_rows(monkeypatch):
     settings = _settings(monkeypatch, clear_openai_env=False)
 
-    # strict=False is the queue/admin/dashboard read path: a historical trial
-    # naming a since-removed model must still render, not 500 the page.
+    # _GEOMETRIC_SERVED_MODELS is meant to change with --served-model-name, so an
+    # id valid when a trial was written can later leave the set. Every read over
+    # stored rows must still resolve. get_provider_for_trial and
+    # get_queue_key_for_trial do NOT expose ``strict``, so normalization has to
+    # be total rather than relying on callers to opt out.
+    retired = "geometric/glm-5.2"
+    assert settings.normalize_trial_model("mini-swe-agent", retired) == retired
     assert (
-        settings.normalize_trial_model(
-            "mini-swe-agent", "geometric/retired-model", strict=False
-        )
-        == "geometric/retired-model"
+        settings.normalize_trial_model("mini-swe-agent", retired, strict=False)
+        == retired
     )
+    assert settings.get_provider_for_trial("mini-swe-agent", retired) == "geometric"
+    assert settings.get_queue_key_for_trial("mini-swe-agent", retired) == retired
 
 
 def test_geometric_canonicalizes_case_to_the_served_model_name(monkeypatch):
@@ -431,6 +433,19 @@ def test_geometric_canonicalizes_case_to_the_served_model_name(monkeypatch):
         settings.normalize_trial_model("mini-swe-agent", "geometric/GLM-5.3")
         == "geometric/glm-5.3"
     )
+    assert require_geometric_served_model_id("geometric/GLM-5.3") == "glm-5.3"
+
+
+def test_geometric_allowlist_leaves_other_providers_open(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    # The allowlist is justified by Geometric being a single-model endpoint; it
+    # must not leak into the multi-model vendor APIs, which stay open.
+    assert (
+        settings.normalize_trial_model("mini-swe-agent", "meta/anything-at-all")
+        == "meta/anything-at-all"
+    )
+    assert settings.normalize_trial_model("claude-code", "zai/glm-5.4") == "zai/glm-5.4"
 
 
 def test_geometric_agent_env_points_mini_swe_at_geometric(monkeypatch):

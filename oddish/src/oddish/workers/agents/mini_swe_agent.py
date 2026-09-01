@@ -11,7 +11,7 @@ from harbor.agents.installed.mini_swe_agent import MiniSweAgent
 from oddish.config import (
     GEOMETRIC_DEFAULT_BASE_URL,
     META_DEFAULT_BASE_URL,
-    geometric_bare_model_id,
+    require_geometric_served_model_id,
     meta_bare_model_id,
     settings,
 )
@@ -322,4 +322,4 @@ class OddishGeometricMiniSweAgent(_OpenAiCompatMiniSweAgent):
 
     @staticmethod
     def _oddish_bare_model_id(model_name: str) -> str:
-        return geometric_bare_model_id(model_name)
+        return require_geometric_served_model_id(model_name)

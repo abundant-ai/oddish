@@ -27,6 +27,7 @@ from oddish.config import (
     is_xai_model,
     is_zai_model,
     looks_like_bedrock_model_id,
+    require_geometric_served_model_id,
     to_geometric_model_id,
     to_meta_model_id,
     minimax_api_model_id,
@@ -306,6 +307,46 @@ def _apply_claude_code_zai_env(agent_config: AgentConfig) -> None:
     kwargs.setdefault("thinking", "adaptive")
     kwargs.setdefault("reasoning_effort", "max")
     agent_config.kwargs = kwargs
+
+
+# GLM on Claude Code needs the same long-generation accommodations whether it is
+# served by z.ai or by our own vLLM: 128k output, hour-long timeouts, and a wide
+# compaction window. Reuse z.ai's proven values rather than the minimal Fireworks
+# shape -- same model family, same failure modes.
+_GEOMETRIC_RECOMMENDED_ENV: dict[str, str] = {
+    "ENABLE_TOOL_SEARCH": "false",
+    **_ZAI_RECOMMENDED_ENV,
+}
+
+
+def _apply_claude_code_geometric_env(agent_config: AgentConfig) -> None:
+    """Apply the env Claude Code needs for Geometric's Anthropic-compatible surface.
+
+    The same endpoint also serves the OpenAI shape that
+    ``_apply_geometric_mini_swe_agent`` uses; the two are harness-gated, so one
+    ``geometric/<id>`` model keeps a single queue key and cost bucket while each
+    harness gets the transport it speaks.
+    """
+    if not _is_claude_code_agent(agent_config):
+        return
+    if not is_geometric_model(agent_config.model_name):
+        return
+
+    # Validating helper: this is the wire id, so an unserved model must never
+    # reach the endpoint.
+    bare_model = require_geometric_served_model_id(agent_config.model_name or "")
+    _apply_anthropic_compat_env(
+        agent_config,
+        base_url=settings.get_geometric_anthropic_base_url(),
+        auth_token="${GEOMETRIC_API_KEY}",
+        model=bare_model,
+        recommended_env=_GEOMETRIC_RECOMMENDED_ENV,
+    )
+    # Deliberately NOT setting z.ai's thinking/reasoning_effort kwargs. vLLM
+    # reaches /v1/messages through an Anthropic->OpenAI adapter, and an
+    # unsupported sampling param is rejected outright -- the same reason the
+    # Fireworks route stays on plain defaults. Callers who want them can pass
+    # --agent-kwarg once the endpoint is known to accept them.
 
 
 _MINIMAX_RECOMMENDED_ENV: dict[str, str] = {
@@ -745,6 +786,7 @@ def _build_agent_config(
     _apply_claude_code_openrouter_env(agent_config)
     _apply_claude_code_fireworks_env(agent_config)
     _apply_claude_code_zai_env(agent_config)
+    _apply_claude_code_geometric_env(agent_config)
     _apply_claude_code_minimax_env(agent_config)
     _apply_claude_code_moonshot_env(agent_config)
     _apply_claude_code_probe_subagent_model(agent_config, is_probe)

@@ -739,11 +739,9 @@ def is_geometric_model(model: str | None) -> bool:
 def geometric_bare_model_id(model: str) -> str:
     """Strip a ``geometric/``/``gm/`` prefix, returning the bare model id.
 
-    Raises ``ValueError`` for a Geometric-prefixed id the endpoint does not
-    serve, so a bad id dies at submit instead of mid-trial -- and so a
-    non-Geometric id can never reach litellm as a bare ``openai/<id>`` bound for
-    public OpenAI. A reference with no Geometric prefix is returned untouched,
-    since this is also called defensively on ids belonging to other providers.
+
+    A reference with no Geometric prefix is returned untouched, since this is
+    also called defensively on ids belonging to other providers.
     """
     raw = model.strip()
     provider_prefix, bare = split_provider_model_name(raw)
@@ -752,16 +750,27 @@ def geometric_bare_model_id(model: str) -> str:
         and provider_prefix.strip().lower() in _GEOMETRIC_PROVIDER_PREFIXES
     ):
         return raw
-    bare_id = str(bare).strip().lower()
+    # Canonical spelling, so the wire id matches --served-model-name exactly
+    # whatever case the caller used.
+    return str(bare).strip().lower()
+
+
+def require_geometric_served_model_id(model: str) -> str:
+    """Bare Geometric id, rejecting anything this endpoint does not serve.
+
+    Raises ``ValueError`` so a bad id dies at submit rather than after a queue
+    slot, worker, and sandbox have been spent -- and, on the execute path, so a
+    foreign id can never reach litellm as a bare ``openai/<id>`` bound for
+    public OpenAI.
+    """
+    bare_id = geometric_bare_model_id(model)
     if bare_id not in _GEOMETRIC_SERVED_MODELS:
         served = ", ".join(sorted(_GEOMETRIC_SERVED_MODELS))
         raise ValueError(
-            f"Geometric serves only [{served}]; got {str(bare).strip()!r}. "
+            f"Geometric serves only [{served}]; got {bare_id!r}. "
             "Add the id to _GEOMETRIC_SERVED_MODELS when the endpoint's "
             "--served-model-name changes."
         )
-    # Return the canonical spelling so the wire id always matches
-    # --served-model-name exactly, whatever case the caller used.
     return bare_id
 
 
@@ -1719,6 +1728,11 @@ class Settings(BaseSettings):
     geometric_base_url: str = Field(
         default=GEOMETRIC_DEFAULT_BASE_URL, alias="GEOMETRIC_BASE_URL"
     )
+    # Optional explicit override for the Anthropic surface. Left unset, it is
+    # derived from ``geometric_base_url`` -- see get_geometric_anthropic_base_url.
+    geometric_anthropic_base_url: str | None = Field(
+        default=None, alias="GEOMETRIC_ANTHROPIC_BASE_URL"
+    )
     azure_openai_api_key: str | None = Field(default=None, alias="AZURE_OPENAI_API_KEY")
     azure_openai_endpoint: str | None = Field(
         default=None, alias="AZURE_OPENAI_ENDPOINT"
@@ -1971,16 +1985,11 @@ class Settings(BaseSettings):
         # Geometric before z.ai: an explicit ``geometric/``/``gm/`` prefix on a
         # GLM id must win over the bare-``glm`` z.ai fallback below.
         if is_geometric_model(cleaned):
-            try:
-                return to_geometric_model_id(cleaned)
-            except ValueError:
-                # Reject on the live create/queue/execute path; on a read
-                # (strict=False) hand back the stored id, so a historical trial
-                # naming a since-removed model still renders. Mirrors the
-                # Bedrock fallback at the bottom of this method.
-                if strict:
-                    raise
-                return cleaned
+            # Deliberately total, including under strict=True: this method backs
+            # get_provider_for_trial / get_queue_key_for_trial (neither of which
+            # exposes ``strict``) and the cost/browse/handler reads below them,
+            # all of which run over stored rows. Submit validates separately.
+            return to_geometric_model_id(cleaned)
         if is_xai_model(cleaned):
             return to_xai_model_id(cleaned)
         if is_zai_model(cleaned):
@@ -2267,6 +2276,24 @@ class Settings(BaseSettings):
         if self.meta_session_id:
             env["ODDISH_META_SESSION_ID"] = self.meta_session_id
         return env
+
+    def get_geometric_anthropic_base_url(self) -> str:
+        """Base URL for Geometric's Anthropic-compatible surface.
+
+        The same vLLM process serves both shapes, but the two clients want
+        different roots: litellm's ``openai/`` provider appends
+        ``/chat/completions`` to ``OPENAI_BASE_URL`` (so that one carries the
+        ``/v1``), while Claude Code appends ``/v1/messages`` to
+        ``ANTHROPIC_BASE_URL`` (so that one must NOT). Derive the Anthropic root
+        by dropping a trailing ``/v1`` -- correct for vLLM, and overridable with
+        GEOMETRIC_ANTHROPIC_BASE_URL for a gateway that lays its paths out
+        differently.
+        """
+        explicit = (self.geometric_anthropic_base_url or "").strip()
+        if explicit:
+            return explicit.rstrip("/")
+        base = (self.geometric_base_url or GEOMETRIC_DEFAULT_BASE_URL).rstrip("/")
+        return base.removesuffix("/v1").rstrip("/")
 
     def get_geometric_agent_env(self) -> dict[str, str]:
         """Return env vars for Geometric's OpenAI-compatible mini-swe-agent route."""

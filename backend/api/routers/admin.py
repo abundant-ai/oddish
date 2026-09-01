@@ -9,8 +9,10 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from oddish.config import (
+    GEOMETRIC_DEFAULT_BASE_URL,
     OPENAI_PROVIDER_AZURE,
     anthropic_hdo_bare_model_id,
+    geometric_bare_model_id,
     infer_model_provider_prefix,
     settings,
     to_anthropic_api_model_id,
@@ -115,6 +117,26 @@ async def check_model_endpoint(
                 raise RuntimeError("ANTHROPIC_HDO_API_KEY is missing")
             resolved_model = f"anthropic/{api_model}"
             kwargs["api_key"] = hdo_api_key
+        elif provider == "geometric":
+            # Geometric is an OpenAI-compatible endpoint litellm has no provider
+            # entry for, so address it as openai/<bare-id> pinned to our own
+            # api_base -- the same shape the mini-swe route uses. Without this
+            # branch litellm gets a bare ``geometric/...`` id and raises
+            # BadRequestError, which is NOT a litellm.APIError subclass (it
+            # derives from openai's), so the handler below would miss it and
+            # the diagnostic would 500 instead of reporting ok=False.
+            geometric_api_key = (settings.geometric_api_key or "").strip()
+            if not geometric_api_key:
+                raise RuntimeError("GEOMETRIC_API_KEY is missing")
+            resolved_model = f"openai/{geometric_bare_model_id(model)}"
+            kwargs.update(
+                {
+                    "api_key": geometric_api_key,
+                    "api_base": (
+                        settings.geometric_base_url or GEOMETRIC_DEFAULT_BASE_URL
+                    ).rstrip("/"),
+                }
+            )
         elif provider == "gemini" and model.startswith("google/"):
             resolved_model = f"gemini/{model.split('/', 1)[1]}"
         elif (

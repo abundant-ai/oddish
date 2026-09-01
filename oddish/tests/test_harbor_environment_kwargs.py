@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 
 import httpx
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -655,6 +656,82 @@ def test_mini_swe_geometric_agent_config_preserves_explicit_env(monkeypatch) -> 
     assert agent_config.env["MSWEA_API_KEY"] == "${CUSTOM_GEOMETRIC_KEY}"
     assert agent_config.env["OPENAI_BASE_URL"] == "https://custom.geometric/v1"
     assert agent_config.kwargs == {"reasoning_effort": "high"}
+
+
+def test_claude_code_geometric_uses_the_anthropic_surface(monkeypatch) -> None:
+    monkeypatch.setattr(
+        harbor_runner.settings,
+        "geometric_base_url",
+        "http://box.example:8600/v1",
+    )
+    monkeypatch.setattr(
+        harbor_runner.settings, "geometric_anthropic_base_url", None, raising=False
+    )
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="geometric/glm-5.3",
+        raw_harbor_config={},
+    )
+
+    # One vLLM process, two shapes. Claude Code appends /v1/messages, so its
+    # root must NOT carry the /v1 that the OpenAI route needs.
+    assert agent_config.env["ANTHROPIC_BASE_URL"] == "http://box.example:8600"
+    assert agent_config.env["ANTHROPIC_AUTH_TOKEN"] == "${GEOMETRIC_API_KEY}"
+    assert agent_config.env["ANTHROPIC_MODEL"] == "glm-5.3"
+    # Ambient Bedrock/Anthropic creds blanked so our route wins.
+    assert agent_config.env["ANTHROPIC_API_KEY"] == ""
+    # The OpenAI-shape route must not also fire on this harness.
+    assert "OPENAI_BASE_URL" not in agent_config.env
+    assert agent_config.import_path != (
+        "oddish.workers.agents.mini_swe_agent:OddishGeometricMiniSweAgent"
+    )
+    # No thinking/effort kwargs: vLLM's Anthropic adapter rejects unsupported
+    # sampling params, same reason the Fireworks route stays on defaults.
+    assert "thinking" not in agent_config.kwargs
+    assert "reasoning_effort" not in agent_config.kwargs
+
+
+def test_geometric_anthropic_base_url_override_wins(monkeypatch) -> None:
+    monkeypatch.setattr(
+        harbor_runner.settings, "geometric_base_url", "http://box.example:8600/v1"
+    )
+    monkeypatch.setattr(
+        harbor_runner.settings,
+        "geometric_anthropic_base_url",
+        "https://gateway.example/anthropic/",
+        raising=False,
+    )
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="geometric/glm-5.3",
+        raw_harbor_config={},
+    )
+
+    assert agent_config.env["ANTHROPIC_BASE_URL"] == "https://gateway.example/anthropic"
+
+
+def test_geometric_keeps_one_queue_key_across_both_harnesses(monkeypatch) -> None:
+    # The whole point of harness-gating: the stored id, queue key, and cost
+    # bucket must not fork just because the transport differs.
+    ids = {
+        agent: harbor_runner._build_agent_config(
+            agent=agent, model="geometric/glm-5.3", raw_harbor_config={}
+        ).model_name
+        for agent in ("claude-code", "mini-swe-agent")
+    }
+    assert set(ids.values()) == {"geometric/glm-5.3"}
+
+
+def test_claude_code_geometric_refuses_an_unserved_model(monkeypatch) -> None:
+    # The wire id gate applies on the Anthropic route too, not just mini-swe.
+    with pytest.raises(ValueError):
+        harbor_runner._build_agent_config(
+            agent="claude-code",
+            model="geometric/gpt-4o",
+            raw_harbor_config={},
+        )
 
 
 def test_bare_glm_on_claude_code_is_untouched_by_geometric(monkeypatch) -> None:

@@ -912,13 +912,30 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   `minimax/`, `moonshot/`, `fireworks/`, `xai/`, `meta/`, `geometric/`, and
   `anthropic-hdo/`. Add or change provider aliases in `config.py`, then update
   env injection in the Harbor runner and the network allowlist notes.
-- Geometric is Oddish's own OpenAI-compatible endpoint, currently serving
-  GLM-5.3 on the mini-swe-agent harness (`OddishGeometricMiniSweAgent` hands
-  litellm an `openai/<bare-id>` model against `OPENAI_BASE_URL`). It is
-  **prefix-only**: `is_zai_model` claims every bare `glm...` id, so a bare
-  `glm-5.3` keeps routing to z.ai and selecting Geometric takes an explicit
-  `geometric/glm-5.3` (or the `gm/` alias) — the same opt-in rule Fireworks
-  uses to take over GLM/MiniMax/Kimi ids.
+- Geometric is Oddish's own self-hosted vLLM endpoint, currently serving
+  GLM-5.3. It exposes **both** API shapes from one server, and the route is
+  chosen by harness, not by model id: `mini-swe-agent` gets the OpenAI shape
+  (`OddishGeometricMiniSweAgent` hands litellm an `openai/<bare-id>` against
+  `OPENAI_BASE_URL`), and `claude-code` gets the Anthropic shape
+  (`_apply_claude_code_geometric_env` sets `ANTHROPIC_BASE_URL`). One
+  `geometric/<id>` therefore keeps a single queue key and cost bucket across
+  both. The two base URLs differ by design: litellm appends
+  `/chat/completions` so `OPENAI_BASE_URL` carries the `/v1`, while Claude Code
+  appends `/v1/messages` so `ANTHROPIC_BASE_URL` must not —
+  `get_geometric_anthropic_base_url()` derives the latter by dropping a
+  trailing `/v1`, overridable with `GEOMETRIC_ANTHROPIC_BASE_URL`.
+- Geometric is **prefix-only**: `is_zai_model` claims every bare `glm...` id, so
+  a bare `glm-5.3` keeps routing to z.ai and selecting Geometric takes an
+  explicit `geometric/glm-5.3` (or the `gm/` alias) — the same opt-in rule
+  Fireworks uses to take over GLM/MiniMax/Kimi ids.
+- Geometric is also the one provider with a **served-model allowlist**
+  (`_GEOMETRIC_SERVED_MODELS`), because a vLLM process serves exactly one
+  `--served-model-name`, and because `geometric/<foreign-id>` would otherwise
+  reach litellm as `openai/<foreign-id>`, whose default route is public OpenAI.
+  Enforcement lives at submit (`sweep.py`) and on the wire id
+  (`require_geometric_served_model_id`), never in `normalize_trial_model`,
+  which must stay total for reads over stored rows whose model has since left
+  the set. Keep the set in sync with `--served-model-name`.
 - Gemini model ids use the `gemini/<id>` prefix. `_build_agent_config` hands
   each agent the spelling its LLM client expects (litellm agents in
   `_LITELLM_MODEL_ID_AGENTS`, Vercel AI SDK agents in

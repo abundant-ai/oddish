@@ -156,6 +156,65 @@ async def test_model_endpoint_uses_azure_resource_root_for_litellm(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_model_endpoint_addresses_geometric_as_openai_on_its_own_base(
+    monkeypatch,
+):
+    async def completion(**kwargs):
+        # litellm has no ``geometric`` provider, so a bare geometric/<id> would
+        # raise BadRequestError -- which is NOT a litellm.APIError subclass (it
+        # derives from openai's), so the handler would miss it and 500. Address
+        # it as openai/<bare-id> pinned to our own api_base instead.
+        assert kwargs["model"] == "openai/glm-5.3"
+        assert kwargs["api_key"] == "geo-key"
+        assert kwargs["api_base"] == "https://api.geometric.example/v1"
+        return SimpleNamespace(
+            id="geometric-request",
+            choices=[SimpleNamespace(message=SimpleNamespace(content="GLM."))],
+        )
+
+    monkeypatch.setattr(admin_router.settings, "geometric_api_key", "geo-key")
+    monkeypatch.setattr(
+        admin_router.settings,
+        "geometric_base_url",
+        "https://api.geometric.example/v1/",
+    )
+    monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(acompletion=completion))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_app()), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/admin/model-endpoints", json={"model": "geometric/glm-5.3"}
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["resolved_model"] == "openai/glm-5.3"
+    assert payload["provider"] == "geometric"
+
+
+@pytest.mark.asyncio
+async def test_model_endpoint_reports_missing_geometric_key_as_configuration(
+    monkeypatch,
+):
+    monkeypatch.setattr(admin_router.settings, "geometric_api_key", "")
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_app()), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/admin/model-endpoints", json={"model": "geometric/glm-5.3"}
+        )
+
+    # A missing credential is expected configuration failure, not a 500.
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["failure_kind"] == "configuration"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("status_code", [403, 404])
 async def test_model_endpoint_surfaces_upstream_http_status(monkeypatch, status_code):
     class FakeAPIError(Exception):
