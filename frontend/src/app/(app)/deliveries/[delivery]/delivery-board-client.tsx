@@ -57,6 +57,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
 
 async function postJson(url: string, method: string, body?: unknown) {
   const res = await fetch(url, {
@@ -88,8 +89,10 @@ function AddTasksDialog({
   busy: boolean;
   onAdd: (taskIds: string[]) => void;
 }) {
+  const [mode, setMode] = useState<"search" | "paste">("search");
   const [search, setSearch] = useState("");
   const [query, setQuery] = useState("");
+  const [pasteText, setPasteText] = useState("");
   const [selected, setSelected] = useState<Map<string, string>>(new Map());
 
   useEffect(() => {
@@ -98,7 +101,9 @@ function AddTasksDialog({
   }, [search]);
 
   const { data, error, isLoading } = useSWR<TaskBrowseResponse>(
-    open ? `/api/tasks/browse?q=${encodeURIComponent(query)}` : null,
+    open && mode === "search"
+      ? `/api/tasks/browse?q=${encodeURIComponent(query)}`
+      : null,
     fetcher,
     { keepPreviousData: true }
   );
@@ -126,6 +131,8 @@ function AddTasksDialog({
         if (!value) {
           setSelected(new Map());
           setSearch("");
+          setPasteText("");
+          setMode("search");
         }
       }}
     >
@@ -139,60 +146,124 @@ function AddTasksDialog({
         <DialogHeader>
           <DialogTitle>Add tasks</DialogTitle>
         </DialogHeader>
-        <Input
-          autoFocus
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search tasks by name…"
-        />
-        <div className="max-h-64 space-y-0.5 overflow-y-auto">
-          {error ? (
-            <p className="text-destructive py-2 text-sm">
-              Search failed: {error.message}
-            </p>
-          ) : isLoading && !data ? (
-            <div className="space-y-1 py-1">
-              <Skeleton className="h-7 w-full" />
-              <Skeleton className="h-7 w-full" />
-              <Skeleton className="h-7 w-3/4" />
-            </div>
-          ) : results.length === 0 ? (
-            <p className="text-muted-foreground py-2 text-sm">
-              {query
-                ? "No matching tasks (or they are already in this delivery)."
-                : "Type to search your tasks."}
-            </p>
-          ) : (
-            results.map((item) => (
-              <label
-                key={item.id}
-                className="hover:bg-muted flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5"
-              >
-                <Checkbox
-                  checked={selected.has(item.id)}
-                  onCheckedChange={() => toggle(item.id, item.name)}
-                />
-                <span className="min-w-0 flex-1 truncate text-sm">
-                  {item.name}
-                </span>
-                {item.current_version != null && (
-                  <span className="text-muted-foreground text-xs">
-                    v{item.current_version}
-                  </span>
-                )}
-              </label>
-            ))
+        <div className="flex items-center gap-1">
+          <Button
+            variant={mode === "search" ? "secondary" : "ghost"}
+            size="sm"
+            onClick={() => setMode("search")}
+          >
+            Search
+          </Button>
+          <Button
+            variant={mode === "paste" ? "secondary" : "ghost"}
+            size="sm"
+            onClick={() => setMode("paste")}
+          >
+            Paste list
+          </Button>
+          {mode === "search" && results.length > 1 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="ml-auto"
+              onClick={() =>
+                setSelected((current) => {
+                  const next = new Map(current);
+                  for (const item of results) {
+                    next.set(item.id, item.name);
+                  }
+                  return next;
+                })
+              }
+            >
+              Select all {results.length}
+            </Button>
           )}
         </div>
+        {mode === "paste" ? (
+          <Textarea
+            autoFocus
+            value={pasteText}
+            onChange={(e) => setPasteText(e.target.value)}
+            rows={6}
+            placeholder={
+              "One task name or id per line.\nCommas and spaces also work."
+            }
+          />
+        ) : (
+          <Input
+            autoFocus
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search tasks by name…"
+          />
+        )}
+        {mode === "paste" ? null : (
+          <div className="max-h-64 space-y-0.5 overflow-y-auto">
+            {error ? (
+              <p className="text-destructive py-2 text-sm">
+                Search failed: {error.message}
+              </p>
+            ) : isLoading && !data ? (
+              <div className="space-y-1 py-1">
+                <Skeleton className="h-7 w-full" />
+                <Skeleton className="h-7 w-full" />
+                <Skeleton className="h-7 w-3/4" />
+              </div>
+            ) : results.length === 0 ? (
+              <p className="text-muted-foreground py-2 text-sm">
+                {query
+                  ? "No matching tasks (or they are already in this delivery)."
+                  : "Type to search your tasks."}
+              </p>
+            ) : (
+              results.map((item) => (
+                <label
+                  key={item.id}
+                  className="hover:bg-muted flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5"
+                >
+                  <Checkbox
+                    checked={selected.has(item.id)}
+                    onCheckedChange={() => toggle(item.id, item.name)}
+                  />
+                  <span className="min-w-0 flex-1 truncate text-sm">
+                    {item.name}
+                  </span>
+                  {item.current_version != null && (
+                    <span className="text-muted-foreground text-xs">
+                      v{item.current_version}
+                    </span>
+                  )}
+                </label>
+              ))
+            )}
+          </div>
+        )}
         <DialogFooter>
-          <Button
-            onClick={() => onAdd([...selected.keys()])}
-            disabled={busy || selected.size === 0}
-          >
-            {selected.size > 0
-              ? `Add ${selected.size} task${selected.size === 1 ? "" : "s"}`
-              : "Add"}
-          </Button>
+          {mode === "paste" ? (
+            <Button
+              onClick={() =>
+                onAdd(
+                  pasteText
+                    .split(/[\s,]+/)
+                    .map((ref) => ref.trim())
+                    .filter(Boolean)
+                )
+              }
+              disabled={busy || !pasteText.trim()}
+            >
+              Add pasted tasks
+            </Button>
+          ) : (
+            <Button
+              onClick={() => onAdd([...selected.keys()])}
+              disabled={busy || selected.size === 0}
+            >
+              {selected.size > 0
+                ? `Add ${selected.size} task${selected.size === 1 ? "" : "s"}`
+                : "Add"}
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>
