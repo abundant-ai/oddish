@@ -143,6 +143,13 @@ OPENCODE_INSTALL_HOSTS: tuple[str, ...] = (
     "codeload.github.com",  # GitHub tarball fetch
     "nodejs.org",  # Node runtime downloaded by nvm
     "registry.npmjs.org",  # npm metadata + package tarballs
+    # On images without curl the install script first runs
+    # ``apt-get update && apt-get install -y curl``, which needs the apt
+    # mirrors -- and ``apt-get update`` fails outright when any configured
+    # source (nodesource on Node-based images) is unreachable.
+    "archive.ubuntu.com",  # apt packages (curl bootstrap)
+    "security.ubuntu.com",  # apt security pocket
+    "deb.nodesource.com",  # apt source preconfigured on Node-based images
 )
 # Gemini CLI uses Harbor's same nvm/Node bootstrap as OpenCode, then installs
 # ``@google/gemini-cli`` with npm during agent setup.  Setup runs under the

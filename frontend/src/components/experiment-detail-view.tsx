@@ -15,6 +15,7 @@ import useSWR from "swr";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { ExperimentTrialsTable } from "@/components/experiment-trials-table";
+import { ExperimentPaginationSentinel } from "@/components/experiment-pagination-sentinel";
 import { ExperimentPageSkeleton } from "@/components/experiment-page-skeleton";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
 import { NotRealSpendBadge } from "@/components/not-real-spend-badge";
@@ -38,6 +39,7 @@ import {
 } from "@/lib/trial-aggregation";
 import type {
   ExperimentCostTotals,
+  ExperimentPageSummary,
   Task,
   Trial,
   UserTagRef,
@@ -117,6 +119,7 @@ type DrawerState = {
 interface ExperimentDetailViewProps {
   experimentId?: string;
   tasksForExperiment: Task[];
+  pageSummary?: ExperimentPageSummary;
   // Server-side spend rollup for the whole experiment. Omit (as the public
   // share view does) to fall back to summing the loaded trials, which
   // understates cost while pages are unloaded.
@@ -126,6 +129,10 @@ interface ExperimentDetailViewProps {
   costTotalsPending?: boolean;
   isLoading: boolean;
   isLoadingTrials?: boolean;
+  hasMoreTasks?: boolean;
+  hasMoreTrials?: boolean;
+  loadNextTasks?: () => void;
+  loadNextTrials?: () => void;
   hasError?: boolean;
   errorTitle?: string;
   errorDescription?: string;
@@ -989,10 +996,15 @@ function ExperimentSummaryBar({
 export function ExperimentDetailView({
   experimentId,
   tasksForExperiment,
+  pageSummary,
   costTotals,
   costTotalsPending = false,
   isLoading,
   isLoadingTrials = false,
+  hasMoreTasks = false,
+  hasMoreTrials = false,
+  loadNextTasks = () => {},
+  loadNextTrials = () => {},
   hasError = false,
   errorTitle = "Failed to load experiment",
   errorDescription = "Check the API connection and try again.",
@@ -1548,9 +1560,8 @@ export function ExperimentDetailView({
 
   // Open a directly-fetched deep-link trial. The trial is the source of
   // truth: its task_id names the host task, so the link works even when the
-  // ?task= param is missing or names the wrong task. Waits for the host
-  // task's shell to arrive if it hasn't yet (shells cover the whole
-  // experiment in one request).
+  // ?task= param is missing or names the wrong task. Wait for bounded task
+  // pages to deliver the host task when it is not in the first page.
   useEffect(() => {
     if (!resolvedUrlTrial) return;
     // A cancelled deep link stays cancelled: an in-flight fetch can write
@@ -1566,12 +1577,9 @@ export function ExperimentDetailView({
       (t) => t.id === resolvedUrlTrial.task_id
     );
     if (!host) {
-      // Shells cover the whole experiment in one request, but slim-task
-      // pages can still merge in hosts the shells never returned (shells
-      // are capped, and the trials merge appends enriched-only tasks). So
-      // the deep link only gives up once BOTH loads are done and the host
-      // still isn't there — then it truly belongs to another experiment
-      // or an unlinked task, and URL sync may drop the stale params.
+      // The deep link only gives up after every bounded task and trial page
+      // has settled. At that point the trial belongs to another experiment
+      // or an unlinked task, and URL sync may drop the stale parameters.
       if (!isLoading && !isLoadingTrials && tasksForExperiment.length > 0) {
         cancelPendingDeepLink();
       }
@@ -1588,12 +1596,29 @@ export function ExperimentDetailView({
     cancelPendingDeepLink,
   ]);
 
-  // Prefer the server-side rollup for cost: ``buildExperimentSummary`` sums
-  // only the loaded pages, and only the trials the grid renders, so it
-  // understates spend on both counts. Non-cost fields stay client-side --
-  // they describe the visible rows, which is what they should describe.
+  // The bounded open resource owns exact non-cost totals. The separate cost
+  // resource owns whole-experiment spend because trial pages are incomplete
+  // until pagination finishes.
   const summary = useMemo(() => {
-    const base = buildExperimentSummary(deferredTasksForDerivedData);
+    const visible = buildExperimentSummary(deferredTasksForDerivedData);
+    const base = pageSummary
+      ? {
+          ...visible,
+          rewardSuccess: pageSummary.pass_count,
+          rewardSum: pageSummary.reward_sum,
+          rewardTotal: pageSummary.reward_total,
+          avgScore: pageSummary.average_score,
+          totalTrials: pageSummary.trial_count,
+          completedTrials: pageSummary.completed,
+          failedTrials: pageSummary.failed,
+          skippedTrials: pageSummary.skipped,
+          passCount: pageSummary.pass_count,
+          partialCount: pageSummary.partial_count,
+          failCount: pageSummary.fail_count,
+          harnessErrorCount: pageSummary.harness_error_count,
+          pendingCount: pageSummary.active,
+        }
+      : visible;
     if (!costTotals) return base;
     return {
       ...base,
@@ -1626,11 +1651,20 @@ export function ExperimentDetailView({
       ownedExcludedCostUsd: costTotals.owned_excluded_cost_usd ?? 0,
       experimentCostExcluded: costTotals.experiment_cost_excluded ?? false,
     };
-  }, [deferredTasksForDerivedData, costTotals]);
+  }, [deferredTasksForDerivedData, pageSummary, costTotals]);
 
   // Task-level QA rollup for the summary bar. Null when no task in the
   // grid ever ran QA, so non-QA experiments keep their five tiles.
   const qaRollup = useMemo(() => {
+    if (pageSummary) {
+      const rollup = {
+        accepted: pageSummary.qa_accepted,
+        rejected: pageSummary.qa_rejected,
+        running: pageSummary.qa_running,
+        failed: pageSummary.qa_failed,
+      };
+      return Object.values(rollup).some(Boolean) ? rollup : null;
+    }
     let accepted = 0;
     let rejected = 0;
     let running = 0;
@@ -1651,7 +1685,7 @@ export function ExperimentDetailView({
     }
     if (accepted + rejected + running + failed === 0) return null;
     return { accepted, rejected, running, failed };
-  }, [deferredTasksForDerivedData]);
+  }, [deferredTasksForDerivedData, pageSummary]);
 
   const closeDrawer = () => {
     cancelPendingDeepLink();
@@ -1777,7 +1811,7 @@ export function ExperimentDetailView({
           </div>
 
           <ExperimentSummaryBar
-            taskCount={tasksForExperiment.length}
+            taskCount={pageSummary?.task_count ?? tasksForExperiment.length}
             summary={summary}
             isInitialLoading={isInitialLoading}
             isLoadingTrials={isLoadingTrials}
@@ -1851,6 +1885,12 @@ export function ExperimentDetailView({
                     trialGroups,
                   });
                 }}
+              />
+              <ExperimentPaginationSentinel
+                hasMoreTasks={hasMoreTasks}
+                hasMoreTrials={hasMoreTrials}
+                loadNextTasks={loadNextTasks}
+                loadNextTrials={loadNextTrials}
               />
             </div>
           )}

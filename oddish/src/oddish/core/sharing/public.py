@@ -5,10 +5,11 @@ from __future__ import annotations
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Query, Response
-from sqlalchemy import and_, select
-from sqlalchemy.orm import selectinload
-
-from oddish.core.experiment_membership import gathered_trial_ids_select
+from sqlalchemy import select
+from oddish.core.endpoints.experiment_page import (
+    get_public_experiment_open_core,
+    get_public_experiment_trial_page_core,
+)
 from oddish.core.helpers import build_task_status_response, fetch_trial_queue_info
 from oddish.core.model_display_names import (
     apply_model_display_names,
@@ -39,12 +40,13 @@ from .helpers import (
 )
 from oddish.db import (
     ExperimentModel,
-    TaskModel,
     TrialModel,
     get_session,
     task_experiments,
 )
 from oddish.schemas import (
+    ExperimentOpenResponse,
+    ExperimentTrialPageResponse,
     PublicExperimentListItem,
     PublicExperimentResponse,
     TaskBrowseExperiment,
@@ -151,6 +153,46 @@ async def get_public_experiment_info(public_token: str) -> PublicExperimentRespo
         )
 
 
+@router.get(
+    "/public/experiments/{public_token}/open",
+    response_model=ExperimentOpenResponse,
+)
+async def get_public_experiment_open(
+    public_token: str,
+    limit: int = Query(100, ge=1, le=100),
+    before_created_at: datetime | None = Query(None),
+    before_task_id: str | None = Query(None),
+) -> ExperimentOpenResponse:
+    async with get_session() as session:
+        return await get_public_experiment_open_core(
+            session,
+            public_token=public_token,
+            limit=limit,
+            before_created_at=before_created_at,
+            before_task_id=before_task_id,
+        )
+
+
+@router.get(
+    "/public/experiments/{public_token}/trial-page",
+    response_model=ExperimentTrialPageResponse,
+)
+async def get_public_experiment_trial_page(
+    public_token: str,
+    limit: int = Query(250, ge=1, le=250),
+    before_created_at: datetime | None = Query(None),
+    before_trial_id: str | None = Query(None),
+) -> ExperimentTrialPageResponse:
+    async with get_session() as session:
+        return await get_public_experiment_trial_page_core(
+            session,
+            public_token=public_token,
+            limit=limit,
+            before_created_at=before_created_at,
+            before_trial_id=before_trial_id,
+        )
+
+
 async def _public_experiment_refs(
     session, task_ids: list[str]
 ) -> dict[str, list[tuple[str, str, datetime | None]]]:
@@ -212,103 +254,6 @@ def _apply_public_experiments(
     response.experiment_name = primary[1] if primary else ""
     response.experiment_is_public = primary is not None
     response.experiment_created_at = primary[2] if primary else None
-
-
-@router.get(
-    "/public/experiments/{public_token}/tasks", response_model=list[TaskStatusResponse]
-)
-async def list_public_experiment_tasks(
-    public_token: str,
-    limit: int = 200,
-    offset: int = 0,
-) -> list[TaskStatusResponse]:
-    """List tasks (with trials) for a public experiment."""
-    async with get_session() as session:
-        experiment = await get_public_experiment(session, public_token)
-        if not experiment:
-            raise HTTPException(status_code=404, detail="Experiment not found")
-
-        query = (
-            select(TaskModel)
-            .options(
-                selectinload(TaskModel.trials),
-                selectinload(TaskModel.experiments),
-            )
-            .where(
-                TaskModel.experiments.any(
-                    and_(
-                        ExperimentModel.public_token == public_token,
-                        ExperimentModel.is_public == True,  # noqa: E712
-                    )
-                )
-            )
-            .order_by(TaskModel.created_at.desc())
-            .limit(limit)
-            .offset(offset)
-        )
-
-        result = await session.execute(query)
-        tasks = result.scalars().all()
-
-        exp_id_result = await session.execute(
-            select(ExperimentModel.id).where(
-                ExperimentModel.public_token == public_token,
-                ExperimentModel.is_public == True,  # noqa: E712
-            )
-        )
-        exp_id = exp_id_result.scalar_one_or_none()
-        from sqlalchemy.orm.attributes import set_committed_value
-
-        gathered_ids: set[str] = set()
-        if exp_id:
-            gathered_ids = set(
-                (await session.execute(gathered_trial_ids_select(exp_id)))
-                .scalars()
-                .all()
-            )
-
-        for task in tasks:
-            # Scope to this experiment's trials (home or gathered) and never
-            # expose probes — probes are experimental and stay out of the
-            # public share view, gathered or not.
-            filtered = [
-                t
-                for t in task.trials
-                if not t.is_probe
-                and t.kind == "agent"
-                and (not exp_id or t.experiment_id == exp_id or t.id in gathered_ids)
-            ]
-            set_committed_value(task, "trials", filtered)
-
-        queue_info_by_trial_id = await fetch_trial_queue_info(
-            session,
-            trials=[trial for task in tasks for trial in task.trials],
-        )
-        user_tags_by_task = await _hydrate_public_user_tags(
-            session, task_ids=[task.id for task in tasks]
-        )
-        responses = [
-            build_task_status_response(
-                task,
-                queue_info_by_trial_id=queue_info_by_trial_id,
-                experiment_context_id=exp_id,
-                gathered_trial_ids=gathered_ids,
-            )
-            for task in tasks
-        ]
-        public_exps = await _public_experiment_refs(
-            session, [task.id for task in tasks]
-        )
-        for resp, task in zip(responses, tasks):
-            resp.user_tags = _user_tag_refs(user_tags_by_task.get(task.id, []))
-            _apply_public_experiments(
-                resp, public_exps.get(task.id, []), preferred_id=exp_id
-            )
-        apply_model_display_names(
-            [trial for resp in responses for trial in (resp.trials or [])],
-            experiment_display_names(experiment),
-        )
-        return responses
 
 
 @router.get(

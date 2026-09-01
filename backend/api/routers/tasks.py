@@ -44,12 +44,12 @@ from oddish.core.endpoints import (
     delete_experiment_core,
     delete_task_core,
     get_experiment_cost_totals,
+    get_experiment_open_core,
+    get_experiment_trial_page_core,
     get_task_detail_core,
     get_task_open_core,
     get_task_status_core,
     get_task_version_core,
-    list_experiment_slim_tasks,
-    list_experiment_task_shells_core,
     list_tasks_core,
     replay_has_retryable_failed_trials,
     list_task_versions_core,
@@ -131,6 +131,8 @@ from oddish.schemas import (
     ExperimentCombineRequest,
     ExperimentCombineResponse,
     ExperimentCostTotals,
+    ExperimentOpenResponse,
+    ExperimentTrialPageResponse,
     ExperimentOptionsResponse,
     ExperimentProbeRow,
     OrgProbeRow,
@@ -546,11 +548,9 @@ async def list_tasks(
 ) -> list[TaskStatusResponse]:
     """List tasks for the authenticated organization.
 
-    ``compact_tasks=true`` is a fast-path used by the experiment page
-    first paint: it implies ``include_trials=false`` and skips the
-    per-task ``visible_worker_jobs`` and ``effective_version_ids``
-    lookups. The phase-2 batched fetch (``include_trials=true``) fills
-    those columns in afterwards.
+    ``compact_tasks=true`` is the counts-only form used by callers that do not
+    need trial rows: it implies ``include_trials=false`` and skips per-task
+    worker-job and effective-version lookups.
     """
     auth.require_scope(APIKeyScope.READ)
 
@@ -574,35 +574,46 @@ async def list_tasks(
         return tasks
 
 
-@router.get(
-    "/experiments/{experiment_id}/task-shells",
-    response_model=list[TaskStatusResponse],
-)
-async def list_experiment_task_shells(
-    request: Request,
+@router.get("/experiments/{experiment_id}/open", response_model=ExperimentOpenResponse)
+async def get_experiment_open(
     experiment_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
-    limit: int = Query(2000, ge=1, le=2000),
-    offset: int = 0,
-) -> list[TaskStatusResponse]:
-    """Lightweight task shells for the experiment-details first paint.
-
-    A dedicated, trimmed alternative to ``GET /tasks?...&compact_tasks=true``
-    that additionally drops the per-task ``experiments`` fan-out. The generic
-    ``/tasks`` route (and ``list_tasks_core``) are intentionally left unchanged;
-    only the experiment-page first paint should call this.
-    """
+    limit: int = Query(100, ge=1, le=100),
+    before_created_at: datetime | None = Query(None),
+    before_task_id: str | None = Query(None),
+) -> ExperimentOpenResponse:
     auth.require_scope(APIKeyScope.READ)
-
-    async with get_session() as session:
-        return await list_experiment_task_shells_core(
+    async with get_read_session() as session:
+        return await get_experiment_open_core(
             session,
             experiment_id=experiment_id,
             org_id=auth.org_id,
             limit=limit,
-            offset=offset,
-            include_empty_rewards=True,
-            record_timing=_make_timing_recorder(request),
+            before_created_at=before_created_at,
+            before_task_id=before_task_id,
+        )
+
+
+@router.get(
+    "/experiments/{experiment_id}/trial-page",
+    response_model=ExperimentTrialPageResponse,
+)
+async def get_experiment_trial_page(
+    experiment_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    limit: int = Query(250, ge=1, le=250),
+    before_created_at: datetime | None = Query(None),
+    before_trial_id: str | None = Query(None),
+) -> ExperimentTrialPageResponse:
+    auth.require_scope(APIKeyScope.READ)
+    async with get_read_session() as session:
+        return await get_experiment_trial_page_core(
+            session,
+            experiment_id=experiment_id,
+            org_id=auth.org_id,
+            limit=limit,
+            before_created_at=before_created_at,
+            before_trial_id=before_trial_id,
         )
 
 
@@ -629,39 +640,6 @@ async def get_experiment_cost_totals_route(
     async with get_session() as session:
         return await get_experiment_cost_totals(
             session, experiment_id=experiment_id, org_id=auth.org_id
-        )
-
-
-@router.get(
-    "/experiments/{experiment_id}/slim-tasks",
-    response_model=list[TaskStatusResponse],
-)
-async def list_experiment_slim_tasks_route(
-    request: Request,
-    experiment_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
-    limit: int = Query(2000, ge=1, le=2000),
-    offset: int = 0,
-) -> list[TaskStatusResponse]:
-    """Phase-2 grid data with SLIM per-trial payloads for the experiment page.
-
-    Like the experiment-scoped ``GET /tasks?include_trials=true`` path, but
-    each trial carries only the fields the grid renders (+ cost). Heavy
-    per-trial detail is fetched on demand via ``GET /trials/{trial_id}`` when a
-    cell is clicked. The generic ``/tasks`` route is left unchanged; only the
-    experiment-page Phase-2 fetch should call this.
-    """
-    auth.require_scope(APIKeyScope.READ)
-
-    async with get_session() as session:
-        return await list_experiment_slim_tasks(
-            session,
-            experiment_id=experiment_id,
-            org_id=auth.org_id,
-            limit=limit,
-            offset=offset,
-            include_empty_rewards=True,
-            record_timing=_make_timing_recorder(request),
         )
 
 

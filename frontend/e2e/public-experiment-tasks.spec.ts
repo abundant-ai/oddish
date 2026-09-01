@@ -1,6 +1,5 @@
 import { expect, test } from "@playwright/test";
 
-import { preparePublicExperimentTasks } from "../src/lib/public-experiment-tasks";
 import { fetchTrajectorySummary } from "../src/lib/use-trajectory-summary";
 import type { Task, Trial } from "../src/lib/types";
 
@@ -24,31 +23,6 @@ function task(overrides: Partial<Task>): Task {
     ...overrides,
   };
 }
-
-test("keeps historical experiment trials when the task default differs", () => {
-  const historicalTrial = {
-    id: "trial-v2",
-    task_version: 2,
-    status: "success",
-    reward: 1,
-  } as Trial;
-  const historicalTask = task({
-    current_version: 4,
-    current_version_id: "task-1-v4",
-    trials: [historicalTrial],
-    reward_success: 1,
-    reward_sum: 1,
-    reward_total: 1,
-  });
-
-  const [prepared] = preparePublicExperimentTasks([historicalTask]);
-
-  expect(prepared).toBe(historicalTask);
-  expect(prepared.current_version).toBe(4);
-  expect(prepared.trials).toEqual([historicalTrial]);
-  expect(prepared.total).toBe(1);
-  expect(prepared.reward_total).toBe(1);
-});
 
 test("summary polling preserves the durable backend job state", async () => {
   const originalFetch = globalThis.fetch;
@@ -75,6 +49,97 @@ test("summary polling preserves the durable backend job state", async () => {
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("public experiment keeps task rows visible when trial pagination fails", async ({
+  page,
+}) => {
+  const token = "public-trial-page-retry";
+  const publicTask = task({
+    current_version: 1,
+    current_version_id: "task-1-v1",
+    reward_success: 0,
+    reward_sum: 0,
+    reward_total: 0,
+  });
+  let trialPageRequests = 0;
+
+  await page.route(`**/api/public/experiments/${token}`, (route) =>
+    route.fulfill({
+      json: {
+        name: "Public retry test",
+        public_token: token,
+        description: null,
+      },
+    })
+  );
+  await page.route(`**/api/public/experiments/${token}/open?*`, (route) =>
+    route.fulfill({
+      json: {
+        experiment_id: "exp-1",
+        name: "Public retry test",
+        created_at: "2026-07-14T00:00:00Z",
+        revision: "2026-07-14T00:00:00Z",
+        has_active_trials: false,
+        summary: {
+          task_count: 1,
+          trial_count: 1,
+          completed: 0,
+          failed: 0,
+          skipped: 0,
+          active: 1,
+          reward_sum: 0,
+          reward_total: 0,
+          pass_count: 0,
+          partial_count: 0,
+          fail_count: 0,
+          harness_error_count: 0,
+          average_score: null,
+          qa_accepted: 0,
+          qa_rejected: 0,
+          qa_running: 0,
+          qa_failed: 0,
+        },
+        tasks: [publicTask],
+      },
+    })
+  );
+  await page.route(
+    `**/api/public/experiments/${token}/trial-page?*`,
+    (route) => {
+      trialPageRequests += 1;
+      if (trialPageRequests === 1) {
+        return route.fulfill({
+          status: 503,
+          json: { detail: "trial page unavailable" },
+        });
+      }
+      return route.fulfill({
+        json: {
+          revision: "2026-07-14T00:00:00Z",
+          trials: [],
+        },
+      });
+    }
+  );
+
+  await page.goto(`/share/${token}`);
+
+  await expect(page.getByText("Task one")).toBeVisible();
+  await expect(
+    page.getByText("The share link may be invalid or no longer public.")
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { name: "Some trial results failed to load" })
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "Retry" }).click();
+
+  await expect.poll(() => trialPageRequests).toBe(2);
+  await expect(
+    page.getByRole("heading", { name: "Some trial results failed to load" })
+  ).toHaveCount(0);
+  await expect(page.getByText("Task one")).toBeVisible();
 });
 
 test("public trial drawers defer trajectory work", async ({ page }) => {
@@ -119,8 +184,44 @@ test("public trial drawers defer trajectory work", async ({ page }) => {
       },
     })
   );
-  await page.route(`**/api/public/experiments/${token}/tasks?*`, (route) =>
-    route.fulfill({ json: [publicTask] })
+  await page.route(`**/api/public/experiments/${token}/open?*`, (route) =>
+    route.fulfill({
+      json: {
+        experiment_id: "exp-1",
+        name: "Public drawer test",
+        created_at: "2026-07-14T00:00:00Z",
+        revision: "2026-07-14T00:00:00Z",
+        has_active_trials: false,
+        summary: {
+          task_count: 1,
+          trial_count: 1,
+          completed: 1,
+          failed: 0,
+          skipped: 0,
+          active: 0,
+          reward_sum: 0.5,
+          reward_total: 1,
+          pass_count: 0,
+          partial_count: 1,
+          fail_count: 0,
+          harness_error_count: 0,
+          average_score: 0.5,
+          qa_accepted: 0,
+          qa_rejected: 0,
+          qa_running: 0,
+          qa_failed: 0,
+        },
+        tasks: [publicTask],
+      },
+    })
+  );
+  await page.route(`**/api/public/experiments/${token}/trial-page?*`, (route) =>
+    route.fulfill({
+      json: {
+        revision: "2026-07-14T00:00:00Z",
+        trials: [{ ...publicTrial, analysis: {} }],
+      },
+    })
   );
   await page.route(
     `**/api/public/experiments/${token}/tasks/task-1/files?*`,

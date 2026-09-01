@@ -281,6 +281,63 @@ export interface Task {
   finished_at?: string | null;
 }
 
+export type ExperimentOpenTask = Omit<
+  Task,
+  "experiment_id" | "experiment_name" | "experiment_is_public"
+>;
+
+export interface ExperimentPageSummary {
+  task_count: number;
+  trial_count: number;
+  completed: number;
+  failed: number;
+  skipped: number;
+  active: number;
+  reward_sum: number;
+  reward_total: number;
+  pass_count: number;
+  partial_count: number;
+  fail_count: number;
+  harness_error_count: number;
+  average_score: number | null;
+  qa_accepted: number;
+  qa_rejected: number;
+  qa_running: number;
+  qa_failed: number;
+}
+
+export interface ExperimentOpenResponse {
+  experiment_id: string;
+  name: string;
+  created_at: string;
+  owner?: string | null;
+  link?: string | null;
+  revision: string;
+  has_active_trials: boolean;
+  summary: ExperimentPageSummary;
+  tasks: ExperimentOpenTask[];
+  next_created_at?: string | null;
+  next_task_id?: string | null;
+}
+
+export interface ExperimentTrialCell extends Omit<Trial, "analysis"> {
+  analysis: {
+    status?: JobStatus | null;
+    classification?: AnalysisClassification | null;
+    subtype?: string | null;
+    evidence?: string | null;
+    started_at?: string | null;
+    finished_at?: string | null;
+  };
+}
+
+export interface ExperimentTrialPageResponse {
+  revision: string;
+  trials: ExperimentTrialCell[];
+  next_created_at?: string | null;
+  next_trial_id?: string | null;
+}
+
 interface TaskBrowseExperiment {
   id: string;
   name: string;
