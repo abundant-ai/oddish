@@ -236,6 +236,8 @@ def _build_job_config(payload: dict[str, Any]):
 
 
 async def _run(payload: dict[str, Any]) -> dict[str, Any]:
+    from oddish.core.trial_artifacts import write_trial_selection_manifest
+
     environment_type = (payload.get("environment_config") or {}).get("type")
     patch_module = _apply_sibling_harbor_patches(require_ec2=environment_type == "ec2")
     Job = getattr(importlib.import_module("harbor"), "Job")
@@ -272,12 +274,20 @@ async def _run(payload: dict[str, Any]) -> dict[str, Any]:
         for register in registers:
             getattr(job, register)(hook)
 
-        await job.run()
+        job_result = await job.run()
     finally:
         if legacy_provisioned_token is not None:
             patch_module.reset_ec2_provisioned_callback(legacy_provisioned_token)
     duration = time.time() - start
     job_result_path = job_dir / "result.json"
+    if job_result_path.exists():
+        write_trial_selection_manifest(
+            job_result_path,
+            [
+                trial_result.trial_name
+                for trial_result in getattr(job_result, "trial_results", [])
+            ],
+        )
     return {
         "job_dir": str(job_dir),
         "job_result_path": str(job_result_path) if job_result_path.exists() else None,

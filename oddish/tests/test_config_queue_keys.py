@@ -111,6 +111,14 @@ def test_claude_trial_model_is_persisted_as_bedrock_id(monkeypatch):
     assert settings.get_provider_for_trial("claude-code", None) == "bedrock"
 
 
+def test_default_analysis_model_uses_global_sonnet_5(monkeypatch):
+    monkeypatch.delenv("ODDISH_ANALYSIS_MODEL", raising=False)
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    assert settings.analysis_model == "claude-sonnet-5"
+    assert settings.get_qa_queue_key() == "global.anthropic.claude-sonnet-5"
+
+
 def test_anthropic_hdo_prefix_stays_off_bedrock_queue(monkeypatch):
     settings = _settings(monkeypatch, clear_openai_env=False)
 

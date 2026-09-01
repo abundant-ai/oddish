@@ -278,7 +278,7 @@ class StorageClient:
     # decompression. Size-bounded in total byte footprint so a single task
     # doesn't blow the limit. Keys without a known etag fall back to
     # ``(content_length, last_modified)``.
-    _archive_cache: "OrderedDict[tuple[str, str], tuple[bytes, list[dict[str, object]], dict[str, str]]]" = OrderedDict()
+    _archive_cache: "OrderedDict[tuple[str, str], tuple[bytes, list[dict[str, object]], dict[str, str]]]" = (OrderedDict())
     _archive_cache_bytes: int = 0
 
     @classmethod
@@ -650,11 +650,9 @@ class StorageClient:
                 would escape it (e.g. a path-traversal in the relative path) is
                 refused. ``None`` (default) uploads with no extra restriction.
             subprefix: Optional path segment nested under the trial prefix.
-                Analysis trials (QA, audit, summarize) upload under a
-                self-labeling ``analysis-<kind>`` segment so their agent
-                sessions can never be mistaken for the subject trial's own
-                execution -- trial ids repeat across environments that share
-                a bucket, and analysis artifacts co-locate by design.
+                Workers use immutable ``attempt-<number>`` segments. Analysis
+                trials add ``analysis-<kind>`` above that segment so their
+                sessions cannot be mistaken for the subject trial's execution.
 
         Returns:
             S3 key prefix for the uploaded trial

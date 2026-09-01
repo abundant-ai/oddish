@@ -85,6 +85,9 @@ function taskFromOpen(open: TaskOpenResponse): Task {
     reward_success: selected?.pass_count ?? 0,
     reward_sum: selected?.reward_sum ?? 0,
     reward_total: selected?.reward_total ?? 0,
+    active_qa_trial: open.active_qa_trial
+      ? trialFromOpenRef(open.active_qa_trial, open.task)
+      : null,
     trials: open.trials.map((trial) => trialFromOpenRef(trial, open.task)),
   };
 }
@@ -117,7 +120,8 @@ export function useTaskOpenReader(
   } = useSWR<TaskOpenResource>(openKey, fetcher, {
     refreshInterval: (latestResource) => {
       const latest = taskOpenValue(latestResource);
-      return (latest?.selected_version?.pending_count ?? 0) > 0 ||
+      return latest?.active_qa_trial != null ||
+        (latest?.selected_version?.pending_count ?? 0) > 0 ||
         ["running", "analyzing", "verdict_pending"].includes(
           latest?.task.status ?? ""
         ) ||
@@ -321,11 +325,11 @@ export function useTaskOpenReader(
       [exactAgentModels, trialsForVersion]
     );
   const detailKey = taskDetailKey(taskId);
-  const revalidateReaderResources = useCallback(() => {
-    void mutate();
-    if (cache.get(detailKey) !== undefined) {
-      void mutateCache(detailKey);
-    }
+  const revalidateReaderResources = useCallback(async () => {
+    await Promise.all([
+      mutate(),
+      cache.get(detailKey) !== undefined ? mutateCache(detailKey) : undefined,
+    ]);
   }, [cache, detailKey, mutate, mutateCache]);
 
   return {

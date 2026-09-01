@@ -114,7 +114,7 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
 }
 
 # Analysis (QA + audit) trials run claude-code on Sonnet via Bedrock.
-ANALYSIS_MODEL = "claude-sonnet-4-6"
+ANALYSIS_MODEL = "claude-sonnet-5"
 # Model for the probe transcript summarizer -- the one direct LLM call that
 # remains outside the trial pipeline. Kept separate from ANALYSIS_MODEL
 # because run_probe_analyzer speaks the Anthropic API only; it must not
@@ -1504,6 +1504,15 @@ class Settings(BaseSettings):
     # includes EnvironmentType.NUMINOUS (companion Harbor branch
     # `numinous-environment`).
     numinous_enabled: bool = False
+
+    # Numinous GPU lane (opt-in, separate flag). When enabled the backend
+    # advertises a GpuSupport(accelerators=("H100", "H200", "A100", "L40S",
+    # "A10", "RTX_4090"), max_count=8), so capability negotiation routes
+    # GPU trials (SWE-marathon H100, terminal-bench GPU tasks) to Numinous
+    # ahead of Modal. GPU trials still require ``numinous_enabled=1``
+    # underneath. Requires the Numinous control plane to have a GPU
+    # provider wired (RunPod SECURE for dedicated, or gpu_mux for shared).
+    numinous_gpu_enabled: bool = False
 
     ec2_enabled: bool = False
     ec2_region: str | None = None

@@ -579,6 +579,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
             )
         task_path_str = task.task_path
         task_s3_key = task.task_s3_key
+        task_version: int | None = None
         # A version-stable append pins the trial to an older task version;
         # the hosted claim path resolves that version's files, and local
         # mode must run the same bytes -- the task row only knows the
@@ -588,6 +589,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
             if tv:
                 task_path_str = tv.task_path or task_path_str
                 task_s3_key = tv.task_s3_key or task_s3_key
+                task_version = tv.version
         task_db_id = task.id
         # Stamp the record with what this process actually executes
         # (worker-runtime invariant 7); the refresh reads the imported
@@ -745,6 +747,8 @@ async def _run_harbor_trial(trial_id: str) -> None:
         probe_agent_env.setdefault("CLAUDE_CODE_SUBAGENT_MODEL", model_name)
         probe_agent_env.update(probe_env)
         probe_agent_env["ODDISH_PROBE_TASK_ID"] = task_db_id
+        if task_version is not None:
+            probe_agent_env["ODDISH_PROBE_TASK_VERSION"] = str(task_version)
         probe_agent_env["ODDISH_PROBE_HARBOR_REPO"] = settings.harbor_source_repo
         probe_agent_env["ODDISH_PROBE_HARBOR_REF"] = settings.harbor_source_ref
         agent_config.env = probe_agent_env

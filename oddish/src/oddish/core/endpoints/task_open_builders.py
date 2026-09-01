@@ -69,41 +69,42 @@ def compact_verdict(value: Any) -> TaskOpenVerdict | None:
     )
 
 
+def trial_ref(row: Mapping[str, Any]) -> TaskOpenTrialRef:
+    model = settings.normalize_trial_model(
+        str(row["agent"]), row["model"], strict=False
+    )
+    cost, estimated = row["cost_usd"], False
+    if cost is None:
+        cost = estimate_cost_usd(
+            model or row["model"],
+            row["input_tokens"],
+            row["output_tokens"],
+            row["cache_tokens"],
+            row["cache_write_tokens"],
+        )
+        estimated = True if cost is not None else None
+    return TaskOpenTrialRef(
+        id=str(row["id"]),
+        name=str(row["name"]),
+        experiment_id=row["experiment_id"],
+        task_version_id=row["task_version_id"],
+        agent=str(row["agent"]),
+        provider=str(row["provider"]),
+        model=model,
+        kind=str(row["kind"]),
+        status=row["status"],
+        reward=row["reward"],
+        error_kind=row["error_kind"],
+        is_probe=bool(row["is_probe"]),
+        cost_usd=float(cost) if cost is not None else None,
+        cost_is_estimated=estimated,
+        is_billed=row["billed_user_id"] is not None,
+        has_trajectory=bool(row["has_trajectory"]),
+        created_at=row["created_at"],
+        started_at=row["started_at"],
+        finished_at=row["finished_at"],
+    )
+
+
 def trial_refs(rows: list[Mapping[str, Any]]) -> list[TaskOpenTrialRef]:
-    refs = []
-    for row in rows[:TASK_OPEN_TRIAL_LIMIT]:
-        model = settings.normalize_trial_model(
-            str(row["agent"]), row["model"], strict=False
-        )
-        cost, estimated = row["cost_usd"], False
-        if cost is None:
-            cost = estimate_cost_usd(
-                model or row["model"],
-                row["input_tokens"],
-                row["output_tokens"],
-                row["cache_tokens"],
-                row["cache_write_tokens"],
-            )
-            estimated = True if cost is not None else None
-        refs.append(
-            TaskOpenTrialRef(
-                id=str(row["id"]),
-                name=str(row["name"]),
-                experiment_id=row["experiment_id"],
-                task_version_id=row["task_version_id"],
-                agent=str(row["agent"]),
-                provider=str(row["provider"]),
-                model=model,
-                status=row["status"],
-                reward=row["reward"],
-                error_kind=row["error_kind"],
-                is_probe=bool(row["is_probe"]),
-                cost_usd=float(cost) if cost is not None else None,
-                cost_is_estimated=estimated,
-                is_billed=row["billed_user_id"] is not None,
-                created_at=row["created_at"],
-                started_at=row["started_at"],
-                finished_at=row["finished_at"],
-            )
-        )
-    return refs
+    return [trial_ref(row) for row in rows[:TASK_OPEN_TRIAL_LIMIT]]

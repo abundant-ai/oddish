@@ -75,7 +75,21 @@ IDENTITY_SQL = text(
 
 AGGREGATE_SQL = text(
     """
-    WITH qa_rows AS (
+    WITH active_qa AS (
+      SELECT tr.id, tr.name, tr.experiment_id, tr.task_version_id, tr.agent,
+        tr.provider, tr.model, tr.kind, lower(tr.status::text) AS status,
+        tr.reward, NULL::text AS error_kind, tr.is_probe, tr.cost_usd,
+        tr.input_tokens, tr.output_tokens, tr.cache_tokens,
+        tr.cache_write_tokens, tr.billed_user_id, tr.has_trajectory, tr.created_at,
+        tr.started_at, tr.finished_at
+      FROM trials tr
+      WHERE tr.task_id = :task_id AND tr.kind = 'qa'
+        AND tr.deleted_at IS NULL AND tr.superseded_by_trial_id IS NULL
+        AND tr.status::text IN ('PENDING', 'QUEUED', 'RUNNING', 'PAUSED', 'RETRYING')
+        AND (CAST(:org_id AS text) IS NULL OR tr.org_id = :org_id OR tr.org_id IS NULL)
+      ORDER BY tr.created_at DESC, tr.id DESC
+      LIMIT 1
+    ), qa_rows AS (
       -- The analysis_spend view: frozen analysis_costs ledger UNION ALL
       -- QA/audit trial spend. The trial join recovers ledger rows the old
       -- per-trial classifier stamped with trial_id but no task_id; OR is
@@ -157,23 +171,25 @@ AGGREGATE_SQL = text(
            COALESCE((SELECT jsonb_agg(to_jsonb(e)) FROM (
              SELECT id, name FROM selected_experiments ORDER BY name, id
            ) e), '[]'::jsonb) AS experiments,
-           (SELECT COALESCE(sum(cost), 0.0) FROM qa_rows) AS qa_cost_usd
+           (SELECT COALESCE(sum(cost), 0.0) FROM qa_rows) AS qa_cost_usd,
+           (SELECT to_jsonb(q) FROM active_qa q) AS active_qa_trial
     """
 )
 
 PREVIEW_SQL = text(
     """
     SELECT tr.id, tr.name, tr.experiment_id, tr.task_version_id, tr.agent,
-      tr.provider, tr.model, lower(tr.status::text) AS status, tr.reward,
+      tr.provider, tr.model, tr.kind, lower(tr.status::text) AS status, tr.reward,
       CASE WHEN tr.error_message IS NULL THEN NULL
            WHEN tr.error_message LIKE '%AgentTimeoutError%'
              OR tr.error_message LIKE '%Agent execution timed out%' THEN 'timeout'
            ELSE 'error' END AS error_kind,
       tr.is_probe, tr.cost_usd, tr.input_tokens, tr.output_tokens,
       tr.cache_tokens, tr.cache_write_tokens, tr.billed_user_id,
-      tr.created_at, tr.started_at, tr.finished_at
+      tr.has_trajectory, tr.created_at, tr.started_at, tr.finished_at
     FROM trials tr
     WHERE tr.task_id = :task_id AND tr.task_version_id = :version_id
+      AND tr.kind != 'qa_eval'
       AND tr.deleted_at IS NULL AND tr.superseded_by_trial_id IS NULL
       AND (tr.idempotency_key IS NULL OR tr.idempotency_key NOT LIKE 'combine:%')
       AND (CAST(:org_id AS text) IS NULL OR tr.org_id = :org_id OR tr.org_id IS NULL)

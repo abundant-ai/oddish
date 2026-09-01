@@ -1,5 +1,4 @@
 from __future__ import annotations
-import asyncio
 import json
 import logging
 import re
@@ -64,7 +63,6 @@ from oddish.db import (
     WorkerJobStatus,
     WORKER_OWNED_TRIAL_STATUSES,
     experiment_trials,
-    get_session,
     task_experiments,
 )
 from oddish.queue import get_queue_and_pipeline_stats_with_concurrency
@@ -2114,39 +2112,37 @@ async def get_dashboard_core(
             "has_more": hm,
         }
 
-    async def _fetch_experiments_parallel() -> dict:
-        """Experiments on a separate session so they run concurrently with primary."""
+    async def _fetch_experiments() -> dict:
         experiments_started_at = now()
-        async with get_session() as exp_session:
-            response, has_more = await load_dashboard_experiments(
-                exp_session,
-                org_id=org_id,
-                experiments_limit=experiments_limit,
-                experiments_offset=experiments_offset,
-                experiments_query=experiments_query,
-                experiments_status=experiments_status,
-                experiments_tags=experiments_tags,
-                experiments_tags_any=experiments_tags_any,
-                experiments_tags_none=experiments_tags_none,
-                experiments_models=experiments_models,
-                experiments_min_steps=experiments_min_steps,
-                experiments_max_steps=experiments_max_steps,
-                experiments_min_duration_seconds=experiments_min_duration_seconds,
-                experiments_max_duration_seconds=experiments_max_duration_seconds,
-                experiments_min_tool_calls=experiments_min_tool_calls,
-                experiments_max_tool_calls=experiments_max_tool_calls,
-                experiments_tool_names=experiments_tool_names,
-                experiments_tool_count_mins=experiments_tool_count_mins,
-                experiments_trial_metric_match=experiments_trial_metric_match,
-                experiments_author_user_id=experiments_author_user_id,
-                experiments_author_github_usernames=experiments_author_github_usernames,
-                experiments_author_emails=experiments_author_emails,
-                experiments_search_author_user_ids=experiments_search_author_user_ids,
-                experiments_search_author_github_usernames=experiments_search_author_github_usernames,
-                experiments_search_author_emails=experiments_search_author_emails,
-                experiments_search_person_user_ids=experiments_search_person_user_ids,
-                record_timing=record_timing,
-            )
+        response, has_more = await load_dashboard_experiments(
+            session,
+            org_id=org_id,
+            experiments_limit=experiments_limit,
+            experiments_offset=experiments_offset,
+            experiments_query=experiments_query,
+            experiments_status=experiments_status,
+            experiments_tags=experiments_tags,
+            experiments_tags_any=experiments_tags_any,
+            experiments_tags_none=experiments_tags_none,
+            experiments_models=experiments_models,
+            experiments_min_steps=experiments_min_steps,
+            experiments_max_steps=experiments_max_steps,
+            experiments_min_duration_seconds=experiments_min_duration_seconds,
+            experiments_max_duration_seconds=experiments_max_duration_seconds,
+            experiments_min_tool_calls=experiments_min_tool_calls,
+            experiments_max_tool_calls=experiments_max_tool_calls,
+            experiments_tool_names=experiments_tool_names,
+            experiments_tool_count_mins=experiments_tool_count_mins,
+            experiments_trial_metric_match=experiments_trial_metric_match,
+            experiments_author_user_id=experiments_author_user_id,
+            experiments_author_github_usernames=experiments_author_github_usernames,
+            experiments_author_emails=experiments_author_emails,
+            experiments_search_author_user_ids=experiments_search_author_user_ids,
+            experiments_search_author_github_usernames=experiments_search_author_github_usernames,
+            experiments_search_author_emails=experiments_search_author_emails,
+            experiments_search_person_user_ids=experiments_search_person_user_ids,
+            record_timing=record_timing,
+        )
         if record_timing is not None:
             record_timing(
                 "dashboard_experiments_total",
@@ -2180,24 +2176,18 @@ async def get_dashboard_core(
         f"experiments={('hit' if experiments_cached is not None else 'miss') if include_experiments else 'skipped'}"
     )
 
-    primary_task = (
-        asyncio.create_task(_fetch_primary()) if primary_cached is None else None
-    )
-    experiments_task = (
-        asyncio.create_task(_fetch_experiments_parallel())
-        if include_experiments and experiments_cached is None
-        else None
-    )
+    primary_recomputed = primary_cached is None
+    experiments_recomputed = include_experiments and experiments_cached is None
 
-    if primary_task is not None:
-        primary_payload = await primary_task
+    if primary_recomputed:
+        primary_payload = await _fetch_primary()
         _slice_set_cached(_dashboard_primary_cache, primary_cache_key, primary_payload)
     else:
         primary_payload = primary_cached
 
     if include_experiments:
-        if experiments_task is not None:
-            experiments_payload = await experiments_task
+        if experiments_recomputed:
+            experiments_payload = await _fetch_experiments()
             _slice_set_cached(
                 _dashboard_experiments_cache,
                 experiments_cache_key,
@@ -2216,10 +2206,7 @@ async def get_dashboard_core(
     response = {
         **primary_payload,
         **experiments_payload,
-        "cached": (
-            primary_task is None
-            and (experiments_task is None or not include_experiments)
-        ),
+        "cached": not primary_recomputed and not experiments_recomputed,
     }
 
     if record_timing is not None:
@@ -2232,8 +2219,8 @@ async def get_dashboard_core(
         f"dashboard_core org={org_id} "
         f"total_ms={elapsed_ms(dashboard_started_at):.1f} "
         f"cached={response['cached']} "
-        f"primary={'recomputed' if primary_task is not None else 'cached'} "
-        f"experiments={('recomputed' if experiments_task is not None else 'cached') if include_experiments else 'skipped'} "
+        f"primary={'recomputed' if primary_recomputed else 'cached'} "
+        f"experiments={('recomputed' if experiments_recomputed else 'cached') if include_experiments else 'skipped'} "
         f"phases={ {k: round(v, 1) for k, v in phase_timings_ms.items()} }"
     )
     return response

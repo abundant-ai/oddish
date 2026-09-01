@@ -167,6 +167,7 @@ def _preview(index):
         "agent": "codex",
         "provider": "openai",
         "model": "openai/gpt-5.6",
+        "kind": "agent",
         "status": "success",
         "reward": 1.0,
         "error_kind": None,
@@ -177,6 +178,7 @@ def _preview(index):
         "cache_tokens": 0,
         "cache_write_tokens": 0,
         "billed_user_id": "user-1",
+        "has_trajectory": True,
         "created_at": NOW,
         "started_at": NOW,
         "finished_at": NOW,
@@ -188,11 +190,32 @@ def _preview(index):
     }
 
 
-def _aggregate(groups, experiments=None, qa_cost=1.25):
+def _active_qa(*, status="running", task_version_id="task-1-v2"):
+    row = _preview(999)
+    row.update(
+        id="task-1-qa",
+        name="task-1-qa",
+        experiment_id="qa-shadow",
+        task_version_id=task_version_id,
+        agent="claude-code",
+        provider="anthropic",
+        model="anthropic/claude-sonnet-4-6",
+        kind="qa",
+        status=status,
+        reward=None,
+        cost_usd=None,
+        billed_user_id=None,
+        finished_at=None,
+    )
+    return row
+
+
+def _aggregate(groups, experiments=None, qa_cost=1.25, active_qa=None):
     return {
         "groups": groups,
         "experiments": experiments or [],
         "qa_cost_usd": qa_cost,
+        "active_qa_trial": active_qa,
     }
 
 
@@ -236,7 +259,11 @@ def test_task_open_is_org_scoped_exact_compact_and_bounded():
     ]
     session, response = _open(
         _identity(),
-        _aggregate(groups, [{"id": "exp-current", "name": "Current"}]),
+        _aggregate(
+            groups,
+            [{"id": "exp-current", "name": "Current"}],
+            active_qa=_active_qa(),
+        ),
         [_preview(index) for index in range(21)],
     )
 
@@ -251,6 +278,9 @@ def test_task_open_is_org_scoped_exact_compact_and_bounded():
     assert response.task.verdict.is_good is False
     assert response.task.verdict.primary_issue == "Verifier accepts an empty result"
     assert response.task.verdict_error == "judge timed out"
+    assert response.active_qa_trial is not None
+    assert response.active_qa_trial.kind == "qa"
+    assert response.active_qa_trial.has_trajectory is True
 
     selected = response.selected_version
     assert selected is not None
@@ -272,6 +302,8 @@ def test_task_open_is_org_scoped_exact_compact_and_bounded():
     assert legacy.reward_sum == pytest.approx(1.0)
     assert legacy.cost_usd == pytest.approx(0.2)
     assert all(trial.agent == "codex" for trial in response.trials)
+    assert all(trial.kind == "agent" for trial in response.trials)
+    assert all(trial.has_trajectory for trial in response.trials)
 
     assert response.totals.total_trials == 1201
     assert response.totals.cost_usd == pytest.approx(120.2)
@@ -290,6 +322,42 @@ def test_task_open_is_org_scoped_exact_compact_and_bounded():
         '"trial_classifications"',
     ):
         assert excluded not in payload
+
+
+def test_task_open_returns_active_qa_outside_the_twenty_row_preview():
+    _, response = _open(
+        _identity(),
+        _aggregate(
+            [_group(selected=True, current=True, total=21)],
+            active_qa=_active_qa(),
+        ),
+        [_preview(index) for index in range(21)],
+    )
+
+    assert len(response.trials) == 20
+    assert response.trials_has_more is True
+    assert all(trial.id != "task-1-qa" for trial in response.trials)
+    assert response.active_qa_trial is not None
+    assert response.active_qa_trial.id == "task-1-qa"
+    assert response.active_qa_trial.kind == "qa"
+    assert response.active_qa_trial.status == "running"
+
+
+def test_task_open_returns_current_active_qa_while_viewing_history():
+    _, response = _open(
+        _identity(selected_version_id="task-1-v1", selected_version=1),
+        _aggregate(
+            [_group(selected=True, current=False, total=1)],
+            active_qa=_active_qa(task_version_id="task-1-v2"),
+        ),
+        [_preview(1)],
+        version_id="task-1-v1",
+    )
+
+    assert response.selected_version is not None
+    assert response.selected_version.id == "task-1-v1"
+    assert response.active_qa_trial is not None
+    assert response.active_qa_trial.task_version_id == "task-1-v2"
 
 
 def test_task_open_agent_duration_is_exact_across_folded_rows():
@@ -482,6 +550,7 @@ def test_task_open_queries_encode_detail_eligible_population():
         [_preview(1)],
     )
     aggregate_sql = str(session.calls[1][0])
+    active_qa_sql = aggregate_sql.split("), qa_rows AS", 1)[0]
     preview_sql = str(session.calls[2][0])
     for sql in (aggregate_sql, preview_sql):
         assert "deleted_at IS NULL" in sql
@@ -501,7 +570,19 @@ def test_task_open_queries_encode_detail_eligible_population():
     assert "AS duration_sum_seconds" in aggregate_sql
     assert "AS duration_trial_count" in aggregate_sql
     assert "tr.finished_at >= tr.started_at" in aggregate_sql
+    assert "tr.kind = 'qa'" in aggregate_sql
+    assert (
+        "tr.deleted_at IS NULL AND tr.superseded_by_trial_id IS NULL" in aggregate_sql
+    )
+    assert (
+        "tr.status::text IN ('PENDING', 'QUEUED', 'RUNNING', 'PAUSED', 'RETRYING')"
+        in aggregate_sql
+    )
+    assert "ORDER BY tr.created_at DESC, tr.id DESC" in aggregate_sql
+    assert "tr.task_version_id =" not in active_qa_sql
+    assert "tr.experiment_id =" not in active_qa_sql
     assert "LIMIT 21" in preview_sql
+    assert "tr.kind" in preview_sql
     identity_sql = str(session.calls[0][0])
     assert "assignment.target_id = i.selected_version_id" in identity_sql
     assert "assignment.scope = 'VERSION'" in identity_sql

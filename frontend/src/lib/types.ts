@@ -148,6 +148,7 @@ export interface Trial {
   experiment_id?: string | null;
   agent: string;
   provider: string;
+  queue_key?: string;
   model: string | null;
   environment?: string | null;
   status: TrialStatus;
@@ -271,6 +272,7 @@ export interface Task {
   current_version_id?: string | null;
   trial_version?: number | null;
   trial_version_id?: string | null;
+  active_qa_trial?: Trial | null;
   trials?: Trial[] | null;
   user_tags?: UserTagRef[];
   created_at: string;
@@ -477,6 +479,7 @@ export interface TaskOpenTrialRef {
   agent: string;
   provider: string;
   model: string | null;
+  kind: TrialKind;
   status: TrialStatus;
   reward: number | null;
   error_kind?: string | null;
@@ -484,6 +487,7 @@ export interface TaskOpenTrialRef {
   cost_usd?: number | null;
   cost_is_estimated?: boolean | null;
   is_billed: boolean;
+  has_trajectory: boolean;
   created_at: string;
   started_at?: string | null;
   finished_at?: string | null;
@@ -499,6 +503,7 @@ export interface TaskOpenResponse {
   default_version?: TaskOpenVersionRef | null;
   selected_version?: TaskOpenVersionSummary | null;
   totals: TaskOpenTotals;
+  active_qa_trial?: TaskOpenTrialRef | null;
   trials: TaskOpenTrialRef[];
   trials_has_more: boolean;
 }
@@ -1031,6 +1036,20 @@ export interface QueueHealthResponse {
   dispatcher: QueueRuntimeComponentStatus | null;
   reconciler: QueueRuntimeComponentStatus | null;
   timestamp: string;
+}
+
+export interface ModelEndpointCheckResponse {
+  ok: boolean;
+  model: string;
+  resolved_model: string;
+  provider: string;
+  transport: "litellm_completion";
+  failure_kind: "provider" | "configuration" | null;
+  status_code: number | null;
+  latency_ms: number;
+  response: string | null;
+  error: string | null;
+  request_id: string | null;
 }
 
 export interface CostModelBreakdown {
