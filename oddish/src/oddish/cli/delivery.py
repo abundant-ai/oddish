@@ -71,13 +71,15 @@ def _check_glyph(check: dict) -> str:
         return f"[green]✓[/green] {check['label']}"
     if check["status"] == "off":
         return f"[dim]○ {check['label']}[/dim]"
+    if check["status"] == "waived":
+        return f"[yellow]![/yellow] {check['label']} (acknowledged)"
     return f"[red]✗[/red] {check['label']}"
 
 
 def _blockers(board: dict) -> list[str]:
     lines = [
         f"{row['task_name']}: {check['label']}"
-        + (f" — {check['detail']}" if check.get("detail") else "")
+        + f" — {check.get('detail') or 'not done'}"
         for row in board["tasks"]
         for check in row["checks"]
         if check["status"] == "fail"
@@ -372,7 +374,8 @@ def signoff(
     """Sign a task off. The server records who signed and which version.
 
     The server refuses the sign-off while the task has a must-fix defect
-    without an acknowledgement. Use 'oddish delivery ack' first.
+    or a failing automated check without an acknowledgement. Use
+    'oddish delivery ack' first.
     """
     api_url = api_url or get_api_url()
     with httpx.Client(timeout=60.0, headers=get_auth_headers()) as client:
@@ -398,7 +401,11 @@ def ack(
     delivery: Annotated[str, typer.Argument(help="Delivery id or name.")],
     task: Annotated[str, typer.Argument(help="Task id or name.")],
     defect: Annotated[
-        str, typer.Argument(help="Defect id (see 'delivery show').")
+        str,
+        typer.Argument(
+            help="Defect id, or the key of a failing automated check "
+            "(see 'delivery show')."
+        ),
     ],
     off: Annotated[
         bool, typer.Option("--off", help="Remove the acknowledgement.")
@@ -406,24 +413,33 @@ def ack(
     note: Annotated[str, typer.Option("--note", help="Note to attach.")] = "",
     api_url: Annotated[str, _API_OPTION] = "",
 ) -> None:
-    """Acknowledge one must-fix defect. The server records who did it."""
+    """Acknowledge one must-fix defect or one failing automated check.
+
+    The server records who did it and for which version. An acknowledged
+    check no longer blocks the task."""
     api_url = api_url or get_api_url()
     with httpx.Client(timeout=60.0, headers=get_auth_headers()) as client:
         board = _fetch_board(client, api_url, delivery)
         row = _member_row(board, task)
+        is_check = any(
+            c["key"] == defect and c["kind"] == "automated"
+            for c in row["checks"]
+        )
+        prefix = "waive" if is_check else "ack"
         _request(
             client,
             "PUT",
             f"{api_url}/deliveries/{board['delivery']['id']}/checks",
             json={
-                "check_key": f"ack:{defect}",
+                "check_key": f"{prefix}:{defect}",
                 "delivery_task_id": row["delivery_task_id"],
                 "checked": not off,
                 "note": note,
             },
         )
+    noun = "check" if is_check else "defect"
     verb = "Removed acknowledgement of" if off else "Acknowledged"
-    console.print(f"[green]{verb} defect {defect}[/green]")
+    console.print(f"[green]{verb} {noun} {defect}[/green]")
 
 
 @delivery_app.command("finalize")

@@ -124,9 +124,12 @@ Built-in automated checks (each toggleable / parameterized in `check_config`):
    reads "missing/stale for vN" until someone runs it. Mechanically this
    reuses the QA replay machinery (`qa_eval`) with the delivery's config.
 
-Two manual checks are built in and reserved. Each task needs a `signoff`
-tick before it is ready. The server refuses the sign-off while the task has
-a must-fix defect without an `ack:<defect-id>` tick. Both ticks record the
+Three manual check forms are built in and reserved. Each task needs a
+`signoff` tick before it is ready. The server refuses the sign-off while
+the task has a must-fix defect without an `ack:<defect-id>` tick, or a
+failing automated check without a `waive:<check-key>` tick. A waived check
+reads `waived` and no longer blocks the task (`no_must_fix` is not
+waivable as a whole — each defect needs its own ack). All ticks record the
 person, the time, and the version they attested to.
 
 More manual checks: defined in `check_config` as `{key, label, scope}` where

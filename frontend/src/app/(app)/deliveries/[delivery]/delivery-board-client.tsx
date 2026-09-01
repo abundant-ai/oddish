@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useAuth } from "@clerk/nextjs";
 import useSWR from "swr";
 import {
+  AlertCircle,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -389,7 +390,13 @@ function TaskRow({
   ) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const failing = row.checks.filter((check) => check.status === "fail");
+  // Manual checks live in the sign-off section below; listing them here
+  // too would say the same thing twice.
+  const failing = row.checks.filter(
+    (check) =>
+      check.kind === "automated" &&
+      (check.status === "fail" || check.status === "waived")
+  );
   const manualChecks = row.checks.filter((check) => check.kind === "manual");
   return (
     <Fragment>
@@ -451,9 +458,16 @@ function TaskRow({
             {failing.length > 0 && (
               <ul className="space-y-1 text-sm">
                 {failing.map((check) => (
-                  <li key={check.key} className="flex items-start gap-1.5">
-                    <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-600 dark:text-red-400" />
-                    <span>
+                  <li
+                    key={check.key}
+                    className="flex flex-wrap items-center gap-1.5"
+                  >
+                    {check.status === "waived" ? (
+                      <AlertCircle className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+                    ) : (
+                      <XCircle className="h-3.5 w-3.5 shrink-0 text-red-600 dark:text-red-400" />
+                    )}
+                    <span className="min-w-0 flex-1">
                       <span className="font-medium">{check.label}</span>
                       {check.detail && (
                         <span className="text-muted-foreground">
@@ -462,6 +476,27 @@ function TaskRow({
                         </span>
                       )}
                     </span>
+                    {check.status === "waived" ? (
+                      <span className="text-muted-foreground text-xs">
+                        acknowledged by {check.checked_by_user_id}
+                      </span>
+                    ) : check.key === "no_must_fix" ? null : (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={frozen || !isAdmin}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onSetCheck(
+                            `waive:${check.key}`,
+                            row.delivery_task_id,
+                            true
+                          );
+                        }}
+                      >
+                        Acknowledge
+                      </Button>
+                    )}
                   </li>
                 ))}
               </ul>

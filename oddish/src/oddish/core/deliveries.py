@@ -59,9 +59,14 @@ DEFAULT_AUTOMATED_CHECKS: dict[str, dict[str, Any]] = {
 
 # Reserved manual-check keys. Every task must carry a 'signoff' tick, and
 # each open must-fix defect needs its own 'ack:<defect-id>' tick before a
-# person can sign the task off. Both record who ticked and which version.
+# person can sign the task off. A failing automated check can be shipped
+# anyway with a 'waive:<check-key>' acknowledgement. All three record who
+# ticked and which version.
 SIGNOFF_CHECK_KEY = "signoff"
 ACK_CHECK_PREFIX = "ack:"
+WAIVE_CHECK_PREFIX = "waive:"
+# 'no_must_fix' is not waivable as a whole: each defect needs its own ack.
+WAIVABLE_CHECKS = frozenset(DEFAULT_AUTOMATED_CHECKS) - {"no_must_fix"}
 
 _CHECK_LABELS = {
     "pre_trial_passed": "Pre-trial audit passed",
@@ -81,12 +86,14 @@ def _normalized_check_config(raw: dict | None) -> DeliveryCheckConfig:
             detail=f"unknown automated checks: {', '.join(sorted(unknown))}",
         )
     for definition in config.manual:
-        if definition.key == SIGNOFF_CHECK_KEY or definition.key.startswith(
-            ACK_CHECK_PREFIX
+        if (
+            definition.key == SIGNOFF_CHECK_KEY
+            or definition.key.startswith(ACK_CHECK_PREFIX)
+            or definition.key.startswith(WAIVE_CHECK_PREFIX)
         ):
             raise HTTPException(
                 status_code=422,
-                detail="'signoff' and 'ack:*' are reserved check keys",
+                detail="'signoff', 'ack:*' and 'waive:*' are reserved check keys",
             )
     merged = {
         key: {**defaults, **config.automated.get(key, {})}
@@ -434,13 +441,15 @@ async def _must_fix_items(
 
 async def _validate_signoff_or_ack(
     session: AsyncSession,
-    delivery_id: str,
+    delivery: DeliveryModel,
     member: DeliveryTaskModel,
     key: str,
     task_version_id: str | None,
 ) -> None:
-    """A person must acknowledge each open must-fix defect before sign-off,
-    and can only acknowledge a defect that exists on the current version."""
+    """Sign-off is the last human tick. Everything red before it needs a
+    recorded acknowledgement: each open must-fix defect its own 'ack:',
+    each failing automated check a 'waive:'. Acks and waives themselves are
+    validated against the current version and the known check keys."""
     if task_version_id is None:
         raise HTTPException(
             status_code=409, detail="task has no default version to attest to"
@@ -450,39 +459,61 @@ async def _validate_signoff_or_ack(
         raise HTTPException(
             status_code=409, detail="task has no default version to attest to"
         )
-    defects = (await _must_fix_items(session, {version.id: version}))[version.id]
+    if key.startswith(WAIVE_CHECK_PREFIX):
+        check_key = key[len(WAIVE_CHECK_PREFIX) :]
+        if check_key == "no_must_fix":
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "acknowledge each must-fix defect on its own "
+                    "with 'ack:<defect-id>'"
+                ),
+            )
+        if check_key not in WAIVABLE_CHECKS:
+            raise HTTPException(
+                status_code=404,
+                detail=f"'{check_key}' is not an automated check",
+            )
+        return
     if key.startswith(ACK_CHECK_PREFIX):
+        defects = (await _must_fix_items(session, {version.id: version}))[
+            version.id
+        ]
         if key[len(ACK_CHECK_PREFIX) :] not in {d["id"] for d in defects}:
             raise HTTPException(
                 status_code=404,
                 detail="defect not found on the task's current version",
             )
         return
-    acked = {
-        row_key[len(ACK_CHECK_PREFIX) :]
-        for row_key, row_version in (
-            await session.execute(
-                select(
-                    DeliveryManualCheckModel.check_key,
-                    DeliveryManualCheckModel.task_version_id,
-                ).where(
-                    DeliveryManualCheckModel.delivery_id == delivery_id,
-                    DeliveryManualCheckModel.delivery_task_id == member.id,
-                    DeliveryManualCheckModel.check_key.like(
-                        ACK_CHECK_PREFIX + "%"
-                    ),
-                )
-            )
-        ).all()
-        if row_version == version.id
-    }
-    unacknowledged = [d["id"] for d in defects if d["id"] not in acked]
+    # Sign-off: judge the same board the reader sees, so the rule cannot
+    # drift from the display. Unacked defects and unwaived failing checks
+    # both refuse it.
+    board = await _compute_board(session, delivery)
+    row = next(
+        (r for r in board.tasks if r.delivery_task_id == member.id), None
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="task not in this delivery")
+    unacknowledged = [d.id for d in row.defects if not d.acknowledged]
     if unacknowledged:
         raise HTTPException(
             status_code=409,
             detail=(
                 "acknowledge the open must-fix defects before sign-off: "
                 + ", ".join(unacknowledged[:10])
+            ),
+        )
+    failing = [
+        c.key
+        for c in row.checks
+        if c.kind == "automated" and c.status == "fail" and c.key != "no_must_fix"
+    ]
+    if failing:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "acknowledge the failing checks before sign-off "
+                "(waive:<check>): " + ", ".join(failing)
             ),
         )
 
@@ -499,7 +530,11 @@ async def set_manual_check_core(
     _require_active(delivery)
     config = _normalized_check_config(delivery.check_config)
     key = data.check_key
-    if key == SIGNOFF_CHECK_KEY or key.startswith(ACK_CHECK_PREFIX):
+    if (
+        key == SIGNOFF_CHECK_KEY
+        or key.startswith(ACK_CHECK_PREFIX)
+        or key.startswith(WAIVE_CHECK_PREFIX)
+    ):
         scope_kind = "task"
     else:
         definition = next((m for m in config.manual if m.key == key), None)
@@ -530,10 +565,12 @@ async def set_manual_check_core(
             select(TaskModel.current_version_id).where(TaskModel.id == member.task_id)
         )
         if data.checked and (
-            key == SIGNOFF_CHECK_KEY or key.startswith(ACK_CHECK_PREFIX)
+            key == SIGNOFF_CHECK_KEY
+            or key.startswith(ACK_CHECK_PREFIX)
+            or key.startswith(WAIVE_CHECK_PREFIX)
         ):
             await _validate_signoff_or_ack(
-                session, delivery.id, member, key, task_version_id
+                session, delivery, member, key, task_version_id
             )
     elif data.delivery_task_id is not None:
         raise HTTPException(
@@ -760,8 +797,25 @@ async def _compute_board(
                         status="off",
                     )
                 )
-            else:
-                checks.append(_check(key, passed=passed, detail=detail))
+                return
+            if not passed and version is not None:
+                # A person may ship a red check anyway, but the override is
+                # recorded and bound to the version they looked at.
+                waive = task_ticks.get((member.id, WAIVE_CHECK_PREFIX + key))
+                if waive is not None and waive.task_version_id == version.id:
+                    checks.append(
+                        DeliveryCheckResult(
+                            key=key,
+                            kind="automated",
+                            label=_CHECK_LABELS[key],
+                            status="waived",
+                            detail=detail,
+                            checked_by_user_id=waive.checked_by_user_id,
+                            checked_at=waive.checked_at,
+                        )
+                    )
+                    return
+            checks.append(_check(key, passed=passed, detail=detail))
 
         defects: list[DeliveryDefect] = []
         if version is None:
@@ -861,8 +915,10 @@ async def _compute_board(
                 _check(
                     SIGNOFF_CHECK_KEY,
                     passed=False,
+                    # An unchecked box already says "not signed off"; only a
+                    # stale tick needs words.
                     detail=(
-                        "not signed off"
+                        ""
                         if signoff is None
                         else "signed off on an older version; sign off again"
                     ),
@@ -880,7 +936,6 @@ async def _compute_board(
                     _check(
                         definition.key,
                         passed=False,
-                        detail="not checked",
                         kind="manual",
                         label=definition.label,
                     )
@@ -926,7 +981,7 @@ async def _compute_board(
                 internal_note=member.internal_note,
                 checks=checks,
                 defects=defects,
-                ready=all(c.status in ("pass", "off") for c in checks),
+                ready=all(c.status in ("pass", "off", "waived") for c in checks),
             )
         )
 
@@ -939,7 +994,7 @@ async def _compute_board(
             _check(
                 definition.key,
                 passed=tick is not None,
-                detail=tick.note if tick else "not checked",
+                detail=tick.note if tick else "",
                 kind="manual",
                 label=definition.label,
                 checked_by=tick.checked_by_user_id if tick else None,

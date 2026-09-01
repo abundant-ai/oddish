@@ -853,9 +853,10 @@ makes the checks red again.
 
 Each task also needs a manual sign-off. The server records who signed off
 and which version they saw. If the task has a must-fix defect, a person
-must acknowledge that defect first. The server records who acknowledged
-each defect. A delivery can define more manual checks in its check
-configuration.
+must acknowledge that defect first. A task can also ship with a failing
+automated check, but a person must acknowledge the check first. The server
+records who acknowledged each defect and each check. A delivery can define
+more manual checks in its check configuration.
 
 ```bash
 # Create a delivery and add tasks to it over time
@@ -871,6 +872,9 @@ oddish delivery ready august-batch && ./ship.sh
 # Acknowledge a defect, then sign the task off (both record who did it)
 oddish delivery ack august-batch task-1 <defect-id>
 oddish delivery signoff august-batch task-1
+
+# Ship a task with a failing check anyway: acknowledge the check by key
+oddish delivery ack august-batch task-1 min_rollouts
 
 # Tick a custom sign-off check (defined in the delivery's check config)
 oddish delivery check august-batch proofread --task task-1
@@ -891,7 +895,8 @@ Commands
 - `add DELIVERY TASKS...` / `remove DELIVERY TASK` - Manage membership
   (tasks accepted by id or name)
 - `signoff DELIVERY TASK` - Sign a task off (`--off` removes the sign-off)
-- `ack DELIVERY TASK DEFECT` - Acknowledge one must-fix defect
+- `ack DELIVERY TASK REF` - Acknowledge one must-fix defect (by defect id)
+  or one failing automated check (by check key)
 - `check DELIVERY KEY` - Tick a custom manual check (`--task` for
   task-scoped, `--off` to untick, `--note` to annotate)
 - `finalize DELIVERY` - Pin task versions and freeze the delivery (`-y` skips

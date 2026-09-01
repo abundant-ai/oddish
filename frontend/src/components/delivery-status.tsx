@@ -1,4 +1,4 @@
-import { CheckCircle2, CircleDashed, XCircle } from "lucide-react";
+import { AlertCircle, CheckCircle2, CircleDashed, XCircle } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { checkTone } from "@/lib/deliveries";
@@ -22,7 +22,9 @@ export function CheckChip({ check }: { check: DeliveryCheckResult }) {
       ? CheckCircle2
       : check.status === "fail"
         ? XCircle
-        : CircleDashed;
+        : check.status === "waived"
+          ? AlertCircle
+          : CircleDashed;
   return (
     <span
       title={`${check.label}${check.detail ? ` — ${check.detail}` : ""}`}

@@ -1256,7 +1256,7 @@ export interface ExperimentShareInfo {
 // Deliveries (docs/delivery-design.md) — mirrors oddish/schemas.py
 // ---------------------------------------------------------------------------
 
-export type DeliveryCheckStatus = "pass" | "fail" | "off";
+export type DeliveryCheckStatus = "pass" | "fail" | "off" | "waived";
 
 interface ManualCheckDefinition {
   key: string;

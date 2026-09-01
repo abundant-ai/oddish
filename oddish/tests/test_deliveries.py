@@ -774,3 +774,102 @@ async def test_no_verdict_qa_run_cannot_vouch(session):
     check = _checks(board, task.id)["verdict_ok"]
     assert check.status == "fail"
     assert "does not cover" in check.detail
+
+
+@pytest.mark.asyncio
+async def test_failing_checks_need_acknowledgement_before_signoff(session):
+    """A person can ship a red check, but only with a recorded waive."""
+    task, _, _ = await _green_task(session, "deliv-waive")
+    v2 = _version(task, 2)
+    session.add(v2)
+    await session.flush()
+    task.current_version_id = v2.id
+    await session.flush()
+
+    delivery = await create_delivery_core(
+        session,
+        data=DeliveryCreate(name="batch-16", task_ids=[task.id]),
+        org_id=ORG,
+        user_id="u1",
+    )
+    board = await get_delivery_board_core(
+        session, delivery_id=delivery.id, org_id=ORG
+    )
+    member_id = board.tasks[0].delivery_task_id
+    failing = [
+        c.key
+        for c in board.tasks[0].checks
+        if c.kind == "automated" and c.status == "fail"
+    ]
+    assert set(failing) == {"pre_trial_passed", "min_rollouts", "verdict_ok"}
+
+    # Sign-off is refused while a failing check has no waive.
+    with pytest.raises(HTTPException) as err:
+        await set_manual_check_core(
+            session,
+            delivery_id=delivery.id,
+            org_id=ORG,
+            data=ManualCheckSet(
+                check_key="signoff", delivery_task_id=member_id, checked=True
+            ),
+            user_id="u5",
+        )
+    assert err.value.status_code == 409
+    assert "min_rollouts" in err.value.detail
+
+    # A waive must name a real automated check, and never 'no_must_fix'.
+    for bad_key, code in (("waive:nope", 404), ("waive:no_must_fix", 422)):
+        with pytest.raises(HTTPException) as err:
+            await set_manual_check_core(
+                session,
+                delivery_id=delivery.id,
+                org_id=ORG,
+                data=ManualCheckSet(
+                    check_key=bad_key, delivery_task_id=member_id, checked=True
+                ),
+                user_id="u5",
+            )
+        assert err.value.status_code == code
+
+    for key in failing:
+        await set_manual_check_core(
+            session,
+            delivery_id=delivery.id,
+            org_id=ORG,
+            data=ManualCheckSet(
+                check_key=f"waive:{key}", delivery_task_id=member_id, checked=True
+            ),
+            user_id="u5",
+        )
+    await set_manual_check_core(
+        session,
+        delivery_id=delivery.id,
+        org_id=ORG,
+        data=ManualCheckSet(
+            check_key="signoff", delivery_task_id=member_id, checked=True
+        ),
+        user_id="u6",
+    )
+    board = await get_delivery_board_core(
+        session, delivery_id=delivery.id, org_id=ORG
+    )
+    checks = _checks(board, task.id)
+    assert board.ready
+    for key in failing:
+        assert checks[key].status == "waived"
+        assert checks[key].checked_by_user_id == "u5"
+    assert checks["signoff"].checked_by_user_id == "u6"
+
+    # A new default version voids the waives with everything else.
+    v3 = _version(task, 3)
+    session.add(v3)
+    await session.flush()
+    task.current_version_id = v3.id
+    await session.flush()
+    board = await get_delivery_board_core(
+        session, delivery_id=delivery.id, org_id=ORG
+    )
+    checks = _checks(board, task.id)
+    assert checks["min_rollouts"].status == "fail"
+    assert checks["signoff"].status == "fail"
+    assert not board.ready

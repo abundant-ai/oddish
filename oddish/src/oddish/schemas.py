@@ -2349,7 +2349,8 @@ class FeedbackResponse(BaseModel):
 # Deliveries (docs/delivery-design.md)
 # =============================================================================
 
-DeliveryCheckStatus = Literal["pass", "fail", "off"]
+# "waived": the check fails, but a person acknowledged shipping it anyway.
+DeliveryCheckStatus = Literal["pass", "fail", "off", "waived"]
 DeliveryCheckKind = Literal["automated", "manual"]
 ManualCheckScope = Literal["task", "delivery"]
 
