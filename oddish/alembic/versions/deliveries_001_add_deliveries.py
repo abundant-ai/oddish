@@ -24,6 +24,11 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # On a fresh database, 000_initial's ``Base.metadata.create_all`` has
+    # already created every table the current models define — these four
+    # included, with their indexes. Same guard as analyzer_runs_001.
+    if "deliveries" in sa.inspect(op.get_bind()).get_table_names():
+        return
     op.create_table(
         "deliveries",
         sa.Column("id", sa.String(64), primary_key=True),
