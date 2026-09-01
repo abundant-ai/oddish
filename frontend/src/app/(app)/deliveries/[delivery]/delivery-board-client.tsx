@@ -408,13 +408,19 @@ function TaskRow({
   );
 }
 
-export function DeliveryBoardClient({ deliveryId }: { deliveryId: string }) {
+export function DeliveryBoardClient({
+  deliveryId,
+  initialBoard,
+}: {
+  deliveryId: string;
+  initialBoard: DeliveryBoardResponse | null;
+}) {
   const { orgRole } = useAuth();
   const isAdmin = isOrgAdminRole(orgRole);
   const { data, error, isLoading, mutate } = useSWR<DeliveryBoardResponse>(
     `/api/deliveries/${encodeURIComponent(deliveryId)}`,
     fetcher,
-    { refreshInterval: 15000 }
+    { refreshInterval: 15000, fallbackData: initialBoard ?? undefined }
   );
 
   const [actionError, setActionError] = useState<string | null>(null);

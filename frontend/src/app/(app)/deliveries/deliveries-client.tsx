@@ -32,13 +32,18 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
-export function DeliveriesClient() {
+export function DeliveriesClient({
+  initialDeliveries,
+}: {
+  initialDeliveries: DeliveryListItem[] | null;
+}) {
   const router = useRouter();
   const { orgRole } = useAuth();
   const isAdmin = isOrgAdminRole(orgRole);
   const { data, error, isLoading, mutate } = useSWR<DeliveryListItem[]>(
     "/api/deliveries",
     fetcher,
+    { fallbackData: initialDeliveries ?? undefined }
   );
 
   const [createOpen, setCreateOpen] = useState(false);
@@ -66,7 +71,7 @@ export function DeliveriesClient() {
       } | null;
       if (!res.ok || !payload?.id) {
         throw new Error(
-          payload?.detail || payload?.error || `Create failed (${res.status})`,
+          payload?.detail || payload?.error || `Create failed (${res.status})`
         );
       }
       setCreateOpen(false);
@@ -120,7 +125,7 @@ export function DeliveriesClient() {
                   />
                 </div>
                 {createError && (
-                  <p className="text-sm text-destructive">{createError}</p>
+                  <p className="text-destructive text-sm">{createError}</p>
                 )}
               </div>
               <DialogFooter>
@@ -137,13 +142,13 @@ export function DeliveriesClient() {
       </CardHeader>
       <CardContent>
         {error ? (
-          <p className="text-sm text-destructive">
+          <p className="text-destructive text-sm">
             Failed to load deliveries: {error.message}
           </p>
         ) : isLoading ? (
-          <p className="text-sm text-muted-foreground">Loading…</p>
+          <p className="text-muted-foreground text-sm">Loading…</p>
         ) : !data || data.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
+          <p className="text-muted-foreground text-sm">
             No deliveries yet. A delivery is a checklist that tracks whether a
             set of tasks is ready to ship to a customer.
           </p>
