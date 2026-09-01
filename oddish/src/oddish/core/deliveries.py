@@ -207,7 +207,7 @@ async def patch_delivery_core(
 async def delete_delivery_core(
     session: AsyncSession, *, delivery_id: str, org_id: str | None
 ) -> None:
-    delivery = await _get_delivery(session, delivery_id, org_id)
+    delivery = await _get_delivery(session, delivery_id, org_id, for_update=True)
     # A finalized delivery is the permanent record of what shipped; it is
     # read-only like every other mutation path, deletion included.
     _require_active(delivery)
