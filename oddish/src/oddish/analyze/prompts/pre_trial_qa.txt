@@ -23,16 +23,6 @@ Each finding has three labels. You must use the exact values shown as they are s
 * `"should_fix"` — weakens the task, but will not decide most trials by itself.
 * `"optional"` — a hardening or clarity item. The risk is low.
 
-## AUDIT PROCEDURE
-
-Read `instruction.md`, `task.toml`, the verifier entry point, every local file that the verifier imports or executes, the reference solution, and the environment files.
-
-For each verifier assertion, comparison, exit-code check, or reward assignment, cite the instruction line that requires it. If no instruction line exists, report a `must_fix` `mismatch`. The reference solution does not document requirements.
-
-Treat exact names, signatures, text, whitespace, hashes, ordering, serialized bytes, extra integration files, and exact examples as mismatches when the instruction does not require them. An example introduced by `for example`, `e.g.`, or `includes` is not exact unless the instruction says it is exact.
-
-Report `info_leakage` only when you can cite the file and line that lets the solver read hidden tests, the reference solution, oracle implementation data, grader files, secrets, host mounts, or an original fix.
-
 ## OUTPUT
 
 Write one item per issue. Every item needs all ten keys, spelled exactly as shown. The pipeline discards an item with a missing key or an unknown value.

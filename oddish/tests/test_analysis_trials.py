@@ -285,11 +285,6 @@ def test_the_audit_brief_names_its_output_file():
     brief = build_audit_brief(task_name="demo")
     assert "audit_result.json" in brief
     assert "Do not solve the task" in brief
-    assert "For each verifier assertion, comparison, exit-code check" in brief
-    assert "If no instruction line exists, report a `must_fix` `mismatch`" in brief
-    assert "The reference solution does not document requirements" in brief
-    assert "exact names, signatures, text, whitespace, hashes" in brief
-    assert "Report `info_leakage` only when you can cite" in brief
 
 
 def test_the_no_verdict_brief_does_not_contradict_itself():
