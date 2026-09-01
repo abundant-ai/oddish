@@ -169,9 +169,10 @@ async def create_qa_eval_core(
         assert task_version_id is not None
         task = task_by_id[source.task_id]
         version = version_by_id[task_version_id]
+        include_current_audit = request.audit_context == "current"
         pre_trial_items = (
             (version.pre_trial or {}).get("items")
-            if isinstance(version.pre_trial, dict)
+            if include_current_audit and isinstance(version.pre_trial, dict)
             else None
         )
         evidence = [qa_trial_evidence(source)]
@@ -189,10 +190,14 @@ async def create_qa_eval_core(
                 trial_evidence=evidence,
                 pre_trial_status=(
                     version.pre_trial_status.value
-                    if version.pre_trial_status is not None
+                    if include_current_audit and version.pre_trial_status is not None
+                    else "omitted for historical replay"
+                    if not include_current_audit
                     else None
                 ),
-                pre_trial_error=version.pre_trial_error,
+                pre_trial_error=(
+                    version.pre_trial_error if include_current_audit else None
+                ),
                 verdict_omission_reason="QA replay does not synthesize a task verdict",
             ),
             task_version_id=task_version_id,
@@ -208,6 +213,7 @@ async def create_qa_eval_core(
                 "with_verdict": False,
                 "prompt_name": request.prompt_name,
                 "prompt_sha256": prompt_sha256,
+                "audit_context": request.audit_context,
             },
         )
         created.append(

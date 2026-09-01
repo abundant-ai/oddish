@@ -176,6 +176,11 @@ def test_the_qa_brief_tells_the_agent_everything_it_needs():
     assert "GOOD_SUCCESS|BAD_SUCCESS" in brief
     for field in TaskVerdictModel.model_json_schema()["properties"]:
         assert field in brief
+    assert "/tmp/qa_result-draft.json" in brief
+    assert "/probe-harness/submit-analysis-result" in brief
+    assert '`action_items[].problem_type` accepts only `"incompleteness"' in brief
+    assert "If `exploited` is `false`, `causal` must also be `false`" in brief
+    assert '"evidence": ["first fact", "second fact"]' in brief
 
 
 def test_the_production_classifier_uses_the_query_evidence_contract():
@@ -578,6 +583,71 @@ def test_the_overlay_replaces_the_whole_task(tmp_path):
     assert staged_expected == payload
     validator = (tmp_path / "tests" / "analysis_result_check.py").read_text()
     assert "def check_analysis_result" in validator
+    submit = tmp_path / "submit-analysis-result"
+    assert submit.stat().st_mode & 0o111
+    assert "analysis_result_check.py" in submit.read_text()
+    assert (
+        json.loads((tmp_path / ".analysis-contract" / "expected.json").read_text())
+        == payload
+    )
+
+
+def test_submission_helper_rejects_then_publishes_a_repaired_qa_result(tmp_path):
+    import json
+    import os
+    import subprocess
+
+    from oddish.worker.probe_staging import apply_analysis_overlay, stage_cli_mount
+
+    task = tmp_path / "task"
+    task.mkdir()
+    payload = _qa_check_payload(["t-1"])
+    apply_analysis_overlay(
+        task, brief="the brief", artifact="qa_result.json", check_payload=payload
+    )
+    harness = tmp_path / "harness"
+    stage_cli_mount(harness, analysis_task_dir=task)
+    logs = tmp_path / "logs"
+    attempts = tmp_path / "attempts"
+    draft = tmp_path / "draft.json"
+    draft.write_text(json.dumps({"trials": [], "verdict": None}))
+    env = {
+        **os.environ,
+        "ODDISH_ANALYSIS_LOG_DIR": str(logs),
+        "ODDISH_ANALYSIS_ATTEMPTS_FILE": str(attempts),
+    }
+
+    rejected = subprocess.run(
+        [str(harness / "submit-analysis-result"), str(draft)],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert rejected.returncode == 1
+    assert "QA artifact validation failed (submission 1 of 3)" in rejected.stderr
+    assert "missing entries for requested trials: ['t-1']" in rejected.stderr
+    assert not (logs / "qa_result.json").exists()
+    assert json.loads((logs / "qa_result-rejected.json").read_text()) == {
+        "trials": [],
+        "verdict": None,
+    }
+
+    draft.write_text(json.dumps({"trials": [_good_qa_entry("t-1")], "verdict": None}))
+    accepted = subprocess.run(
+        [str(harness / "submit-analysis-result"), str(draft)],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert accepted.returncode == 0, accepted.stderr
+    assert "accepted and published" in accepted.stdout
+    assert json.loads((logs / "qa_result.json").read_text()) == json.loads(
+        draft.read_text()
+    )
+    assert not (logs / "qa_submission_error.txt").exists()
+    assert not (logs / "qa_result-rejected.json").exists()
 
 
 def test_the_single_llm_overlay_does_not_install_the_query_cli(tmp_path):

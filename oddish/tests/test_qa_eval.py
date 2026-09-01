@@ -73,6 +73,18 @@ def test_request_strips_and_deduplicates_source_trial_ids():
     assert request.prompt_name == "candidate-1"
     assert request.prompt_text == "classify this"
     assert request.model is None
+    assert request.audit_context == "current"
+
+
+def test_request_rejects_an_unknown_audit_context():
+    with pytest.raises(ValueError, match="audit_context"):
+        QAEvalCreateRequest(
+            name="replay",
+            source_trial_ids=["source-1"],
+            prompt_name="candidate-1",
+            prompt_text="classify this",
+            audit_context="snapshot",
+        )
 
 
 def test_replay_reuses_the_production_qa_brief_and_contract():
@@ -238,6 +250,53 @@ async def test_create_accepts_a_failed_source_without_a_trajectory(monkeypatch):
     assert admitted == [("org-1", "user-1", 1)]
     assert source.experiment_id == "original-experiment"
     assert source.analysis == {"classification": "BAD_FAILURE"}
+
+
+@pytest.mark.asyncio
+async def test_create_can_omit_current_audit_context_for_historical_goldens(
+    monkeypatch,
+):
+    source = _source(has_trajectory=False, status=TrialStatus.FAILED)
+    session = _CreateSession(source)
+    session.version.pre_trial = {
+        "items": [{"id": "new-staging-finding", "tier": "must_fix"}]
+    }
+    captured = {}
+
+    async def fake_admit_trials(*_args, **_kwargs):
+        return None
+
+    async def fake_create_analysis_trial(_session, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(id="qa-eval-1")
+
+    monkeypatch.setattr(
+        "oddish.core.endpoints.qa_eval.create_analysis_trial",
+        fake_create_analysis_trial,
+    )
+    monkeypatch.setattr(
+        "oddish.core.endpoints.qa_eval.admit_trials",
+        fake_admit_trials,
+    )
+    await create_qa_eval_core(
+        session,
+        request=QAEvalCreateRequest(
+            name="historical replay",
+            source_trial_ids=["source-1"],
+            prompt_name="candidate-1",
+            prompt_text="Classify the stored solver evidence.",
+            audit_context="none",
+        ),
+        org_id="org-1",
+        owner_user_id="user-1",
+        billed_user_id="user-1",
+    )
+
+    assert captured["payload"]["audit_context"] == "none"
+    assert captured["payload"]["pre_trial_item_ids"] == []
+    assert captured["payload"]["pre_trial_must_fix_ids"] == []
+    assert "Source-audit status: omitted for historical replay" in captured["brief"]
+    assert "new-staging-finding" not in captured["brief"]
 
 
 @pytest.mark.asyncio

@@ -4411,6 +4411,31 @@ def test_analysis_artifact_validation_failure_uses_retry_budget_even_when_harbor
     assert completed is (expected_status == trial_handler.TrialStatus.FAILED)
 
 
+def test_qa_validation_error_reads_the_selected_verifier_diagnostic(tmp_path):
+    trial_dir = tmp_path / "qa-run"
+    verifier_dir = trial_dir / "verifier"
+    verifier_dir.mkdir(parents=True)
+    result_path = tmp_path / "result.json"
+    result_path.write_text(json.dumps({"oddish_trial_name": "qa-run"}))
+    (verifier_dir / "error.txt").write_text(
+        "trials[0].analysis.evidence must be a non-empty string\n"
+    )
+    outcome = harbor_runner.HarborOutcome(
+        reward=None,
+        error="No reward file found",
+        exit_code=0,
+        duration_sec=1.0,
+        job_result_path=result_path,
+        job_dir=tmp_path,
+        exception_type="RewardFileNotFoundError",
+    )
+
+    assert trial_handler._qa_artifact_validation_error(outcome) == (
+        "QA artifact validation failed:\n"
+        "trials[0].analysis.evidence must be a non-empty string"
+    )
+
+
 def test_analysis_artifact_failure_does_not_retry_oddish_control_error(monkeypatch):
     trial = _make_retry_decision_trial(attempts=1, max_attempts=3)
     trial.kind = "qa_eval"

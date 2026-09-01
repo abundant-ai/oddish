@@ -773,7 +773,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
     if work_root is not None:
         harness_mount = Path(work_root) / "_harness_mount"
         try:
-            stage_cli_mount(harness_mount)
+            stage_cli_mount(harness_mount, analysis_task_dir=actual_task_path)
         except Exception:
             logger.exception(
                 "probe: building CLI harness mount failed for %s", trial_id
