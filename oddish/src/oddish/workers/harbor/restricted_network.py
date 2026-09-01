@@ -143,6 +143,7 @@ _SAFE_PROFILE_ENV_KEYS = _KNOWN_TRANSPORT_BASE_URL_KEYS | frozenset(
     _GEMINI_OAUTH_ENV_KEYS
 )
 
+
 def _class_path(agent_class: type[Any]) -> str:
     return f"{agent_class.__module__}:{agent_class.__qualname__}"
 
@@ -441,6 +442,7 @@ def _model_transport_base_url_keys(model_name: str | None) -> tuple[str, ...]:
         "azure": _OPENAI_BASE_URL_KEYS,
         "azure_openai": _OPENAI_BASE_URL_KEYS,
         "meta": ("META_BASE_URL", *_OPENAI_BASE_URL_KEYS),
+        "geometric": ("GEOMETRIC_BASE_URL", *_OPENAI_BASE_URL_KEYS),
         "openrouter": ("OPENROUTER_BASE_URL",),
         "fireworks": ("FIREWORKS_BASE_URL",),
         "zai": ("ZAI_BASE_URL",),
@@ -847,6 +849,9 @@ _COMPATIBILITY_PROFILES: dict[str, _RestrictedAgentSpec] = {
     ),
     "oddish.workers.agents.mini_swe_agent:OddishMetaMiniSweAgent": _RestrictedAgentSpec(
         _mini_swe_profile, _mini_swe_base_url_keys
+    ),
+    "oddish.workers.agents.mini_swe_agent:OddishGeometricMiniSweAgent": (
+        _RestrictedAgentSpec(_mini_swe_profile, _mini_swe_base_url_keys)
     ),
 }
 

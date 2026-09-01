@@ -22,6 +22,30 @@ def test_outbound_hosts_follow_model_not_agent_env_shape():
     ]
 
 
+def test_outbound_hosts_for_geometric_model(monkeypatch):
+    # Pin the endpoint: the singleton resolves it from the deployment's env, so
+    # asserting the shipped default would make this test environment-dependent.
+    monkeypatch.setattr(
+        model_hosts.settings, "geometric_base_url", "https://api.geometric.ai/v1"
+    )
+
+    assert outbound_hosts_for_model("geometric/glm-5.3") == ["api.geometric.ai"]
+    # The gm/ alias resolves the same host, not an empty allowlist.
+    assert outbound_hosts_for_model("gm/glm-5.3", infer_bare_provider=True) == [
+        "api.geometric.ai"
+    ]
+    # Prefix-only: the bare GLM id stays on z.ai's host.
+    assert outbound_hosts_for_model("glm-5.3", infer_bare_provider=True) == ["api.z.ai"]
+
+
+def test_outbound_hosts_read_geometric_custom_endpoint(monkeypatch):
+    monkeypatch.setattr(
+        model_hosts.settings, "geometric_base_url", "https://relay.example:8443/v1"
+    )
+
+    assert outbound_hosts_for_model("geometric/glm-5.3") == ["relay.example"]
+
+
 def test_outbound_hosts_preserve_legacy_union():
     hosts = outbound_hosts_for_model(
         "openai/model-with-explicit-route",

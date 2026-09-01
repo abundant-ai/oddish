@@ -17,6 +17,7 @@ from typing import Any
 from oddish.config import (
     DEEPSEEK_DEFAULT_BASE_URL,
     FIREWORKS_DEFAULT_BASE_URL,
+    GEOMETRIC_DEFAULT_BASE_URL,
     META_DEFAULT_BASE_URL,
     MINIMAX_DEFAULT_BASE_URL,
     MOONSHOT_DEFAULT_BASE_URL,
@@ -26,6 +27,7 @@ from oddish.config import (
     is_anthropic_hdo_model,
     is_deepseek_model,
     is_fireworks_model,
+    is_geometric_model,
     is_meta_model,
     is_minimax_model,
     is_moonshot_model,
@@ -46,6 +48,7 @@ from oddish.workers.agents.network import normalize_domain_or_url
 ANTHROPIC_BASE_URL_KEYS = ("ANTHROPIC_BASE_URL",)
 OPENAI_BASE_URL_KEYS = ("OPENAI_BASE_URL", "OPENAI_API_BASE")
 META_BASE_URL_KEYS = ("META_BASE_URL",)
+GEOMETRIC_BASE_URL_KEYS = ("GEOMETRIC_BASE_URL",)
 OPENROUTER_BASE_URL_KEYS = ("OPENROUTER_BASE_URL",)
 FIREWORKS_BASE_URL_KEYS = ("FIREWORKS_BASE_URL",)
 ZAI_BASE_URL_KEYS = ("ZAI_BASE_URL",)
@@ -76,6 +79,7 @@ _BASE_URL_ENV_KEYS = (
     *ANTHROPIC_BASE_URL_KEYS,
     *OPENAI_BASE_URL_KEYS,
     *META_BASE_URL_KEYS,
+    *GEOMETRIC_BASE_URL_KEYS,
     *OPENROUTER_BASE_URL_KEYS,
     *FIREWORKS_BASE_URL_KEYS,
     *ZAI_BASE_URL_KEYS,
@@ -321,7 +325,11 @@ def agent_runtime_hosts(
             )
     if not override and isinstance(agent_env, Mapping):
         override = next(
-            (agent_env.get(k) for k in (*TBH_BASE_URL_KEYS, *DEEPSEEK_BASE_URL_KEYS) if agent_env.get(k)),
+            (
+                agent_env.get(k)
+                for k in (*TBH_BASE_URL_KEYS, *DEEPSEEK_BASE_URL_KEYS)
+                if agent_env.get(k)
+            ),
             None,
         )
     if isinstance(override, str):
@@ -358,7 +366,8 @@ def outbound_hosts_for_model(
     # resolve a bare id to its host. This covers providers that have a bare-id
     # heuristic in infer_model_provider_prefix (e.g. xai/grok-*, zai/glm-*,
     # minimax, moonshot/kimi-*) plus bare Bedrock ids; prefix-only providers
-    # (meta, fireworks, anthropic-hdo) still require an explicit prefix, as before.
+    # (meta, geometric, fireworks, anthropic-hdo) still require an explicit prefix,
+    # as before.
     # The single-container union path leaves bare ids untouched (infer_bare_provider
     # is False there), so it does not widen beyond the routed transport.
     if infer_bare_provider and model_name:
@@ -413,6 +422,10 @@ def outbound_hosts_for_model(
         hosts.extend(_XAI_HOSTS)
     elif is_meta_model(model_name):
         host = _default_host(settings.meta_base_url or META_DEFAULT_BASE_URL)
+        if host:
+            hosts.append(host)
+    elif is_geometric_model(model_name):
+        host = _default_host(settings.geometric_base_url or GEOMETRIC_DEFAULT_BASE_URL)
         if host:
             hosts.append(host)
     elif is_anthropic_hdo_model(model_name):

@@ -34,6 +34,7 @@ def _fake_settings(**keys) -> types.SimpleNamespace:
         openai_api_key=None,
         gemini_api_key=None,
         meta_api_key=None,
+        geometric_api_key=None,
     )
     base.update(keys)
     ns = types.SimpleNamespace(**base)
@@ -54,6 +55,8 @@ def _provider_of(model: str) -> str:
         return "gemini"
     if m.startswith("meta/"):
         return "meta"
+    if m.startswith("geometric/"):
+        return "geometric"
     return "anthropic"
 
 
@@ -94,8 +97,8 @@ def test_scoped_model_env_antigravity_mints_gemini_keys() -> None:
     settings = _fake_settings(gemini_api_key="g-key", anthropic_api_key="sk-ant")
     # Stub provider for antigravity-cli to "gemini" (the real agent_to_provider
     # map will resolve it; here we hardcode it to focus on key minting).
-    settings.get_provider_for_trial = (
-        lambda agent, model: "gemini" if agent == "antigravity-cli" else _provider_of(model)
+    settings.get_provider_for_trial = lambda agent, model: (
+        "gemini" if agent == "antigravity-cli" else _provider_of(model)
     )
     env = job_tokens.scoped_model_env(
         agent="antigravity-cli", model=None, settings=settings
@@ -163,6 +166,24 @@ def test_scoped_model_env_meta_only_carries_meta_key() -> None:
         agent="mini-swe-agent", model="meta/llama-eval-model", settings=settings
     )
     assert env == {"META_API_KEY": "meta-key", "MSWEA_API_KEY": "meta-key"}
+
+
+def test_scoped_model_env_geometric_only_carries_geometric_key() -> None:
+    settings = _fake_settings(
+        anthropic_api_key="sk-ant",
+        openai_api_key="sk-oai",
+        geometric_api_key="geo-key",
+    )
+    env = job_tokens.scoped_model_env(
+        agent="mini-swe-agent", model="geometric/glm-5.3", settings=settings
+    )
+    # The one Geometric key under every name the harness reads -- and the
+    # platform OpenAI key must not ride along.
+    assert env == {
+        "GEOMETRIC_API_KEY": "geo-key",
+        "MSWEA_API_KEY": "geo-key",
+        "OPENAI_API_KEY": "geo-key",
+    }
 
 
 def test_scoped_model_env_claude_code_bedrock_uses_routing_flag() -> None:

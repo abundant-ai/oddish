@@ -357,6 +357,96 @@ def test_meta_agent_env_includes_configured_session_controls(monkeypatch):
     assert "OPENAI_API_BASE" not in env
 
 
+def test_geometric_model_routes_to_geometric_for_mini_swe_agent(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+    model = "geometric/glm-5.3"
+
+    assert normalize_model_id(" Geometric / GLM-5.3 ") == model
+    assert settings.normalize_trial_model("mini-swe-agent", model) == model
+    assert settings.get_provider_for_trial("mini-swe-agent", model) == "geometric"
+    assert settings.get_queue_key_for_trial("mini-swe-agent", model) == model
+    assert settings.normalize_queue_key(model) == model
+
+
+def test_geometric_gm_alias_collapses_to_one_queue_key(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    # Both spellings must share a single stored id / concurrency bucket.
+    assert (
+        settings.normalize_trial_model("mini-swe-agent", "gm/glm-5.3")
+        == "geometric/glm-5.3"
+    )
+    assert (
+        settings.get_provider_for_trial("mini-swe-agent", "gm/glm-5.3") == "geometric"
+    )
+
+
+def test_bare_glm_still_routes_to_zai_not_geometric(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    # Geometric is prefix-only: taking the bare GLM ids would silently reroute
+    # every existing z.ai trial. An explicit prefix is the only opt-in.
+    assert settings.normalize_trial_model("claude-code", "glm-5.3") == "zai/glm-5.3"
+    assert settings.get_provider_for_trial("claude-code", "glm-5.3") == "zai"
+    assert settings.normalize_trial_model("claude-code", "zai/glm-5.3") == "zai/glm-5.3"
+
+
+def test_geometric_rejects_a_model_the_endpoint_does_not_serve(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    # A typo must die at submit, not after a queue slot, worker, and sandbox
+    # have been spent reaching the endpoint's 404.
+    with pytest.raises(ValueError, match="glm-5.3"):
+        settings.normalize_trial_model("mini-swe-agent", "geometric/glm-5.4")
+
+
+def test_geometric_cannot_smuggle_a_foreign_model_to_public_openai(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    # The real hazard: geometric/gpt-4o reaches litellm as ``openai/gpt-4o``,
+    # whose default route is public OpenAI. Only OPENAI_BASE_URL keeps it on our
+    # own box, so refuse the id outright rather than depend on that env var.
+    with pytest.raises(ValueError):
+        settings.normalize_trial_model("mini-swe-agent", "geometric/gpt-4o")
+
+
+def test_geometric_read_path_never_raises_for_a_stored_model(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    # strict=False is the queue/admin/dashboard read path: a historical trial
+    # naming a since-removed model must still render, not 500 the page.
+    assert (
+        settings.normalize_trial_model(
+            "mini-swe-agent", "geometric/retired-model", strict=False
+        )
+        == "geometric/retired-model"
+    )
+
+
+def test_geometric_canonicalizes_case_to_the_served_model_name(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    # The wire id must match --served-model-name exactly whatever case is typed.
+    assert (
+        settings.normalize_trial_model("mini-swe-agent", "geometric/GLM-5.3")
+        == "geometric/glm-5.3"
+    )
+
+
+def test_geometric_agent_env_points_mini_swe_at_geometric(monkeypatch):
+    monkeypatch.setenv("GEOMETRIC_BASE_URL", "https://api.geometric.example/v1/")
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    env = settings.get_geometric_agent_env()
+
+    assert env["MSWEA_API_KEY"] == "${GEOMETRIC_API_KEY}"
+    # LiteLLM's openai/ provider authenticates from OPENAI_API_KEY.
+    assert env["OPENAI_API_KEY"] == "${GEOMETRIC_API_KEY}"
+    # Trailing slash trimmed, matching the Meta route.
+    assert env["OPENAI_BASE_URL"] == "https://api.geometric.example/v1"
+    assert "OPENAI_API_BASE" not in env
+
+
 def test_grok_provider_prefix_canonicalizes_to_xai(monkeypatch):
     settings = _settings(monkeypatch, clear_openai_env=False)
 

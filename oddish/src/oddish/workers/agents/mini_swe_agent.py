@@ -8,12 +8,19 @@ import uuid
 
 from harbor.agents.installed.mini_swe_agent import MiniSweAgent
 
-from oddish.config import META_DEFAULT_BASE_URL, meta_bare_model_id, settings
+from oddish.config import (
+    GEOMETRIC_DEFAULT_BASE_URL,
+    META_DEFAULT_BASE_URL,
+    geometric_bare_model_id,
+    meta_bare_model_id,
+    settings,
+)
 from oddish.workers.agents.network import normalize_domain_or_url
 
 
 _CONFIG_PATH = "/tmp/oddish-mini-swe-agent.yaml"
 _META_CONFIG_PATH = "/tmp/oddish-meta-mini-swe-agent.yaml"
+_GEOMETRIC_CONFIG_PATH = "/tmp/oddish-geometric-mini-swe-agent.yaml"
 _META_API_DOMAIN = "api.ai.meta.com"
 _TASK_FLAG = "--task="
 # litellm >= 1.92 imports its proxy/MCP handler chain (fastapi, orjson, ...) from
@@ -152,10 +159,33 @@ class OddishMiniSweAgent(MiniSweAgent):
         )
 
 
-class OddishMetaMiniSweAgent(OddishMiniSweAgent):
-    """mini-swe-agent wrapper for Meta's OpenAI-compatible eval endpoint."""
+class _OpenAiCompatMiniSweAgent(OddishMiniSweAgent):
+    """mini-swe-agent wrapper for a vendor's own OpenAI-compatible endpoint.
 
-    _oddish_config_path = _META_CONFIG_PATH
+    Shared by the Meta and Geometric routes. Both hand mini-swe-agent an
+    ``openai/<bare-id>`` model so litellm dials the vendor's ``/v1`` endpoint
+    from ``OPENAI_BASE_URL`` instead of public OpenAI, and both keep the task
+    prompt off argv. A subclass supplies its provider's bare-id helper, the env
+    aliases that can carry its base URL, and the URLs known from configuration.
+    """
+
+    # Base-URL env aliases an agent's ``extra_env`` may use to override the
+    # endpoint. The provider's own alias goes first; the OpenAI names are here
+    # because that is what the harness ultimately reads.
+    _oddish_base_url_env_keys: tuple[str, ...] = ("OPENAI_BASE_URL", "OPENAI_API_BASE")
+    # Host granted unconditionally, so a trial keeps model egress even when no
+    # base URL resolves. Empty means "no floor".
+    _oddish_default_api_domain: str = ""
+
+    @classmethod
+    def _oddish_configured_base_urls(cls) -> set[str | None]:
+        """Base URLs known from the package default, settings, and os.environ."""
+        return set()
+
+    @staticmethod
+    def _oddish_bare_model_id(model_name: str) -> str:
+        """Strip the provider prefix, leaving the id the vendor endpoint serves."""
+        return model_name
 
     @classmethod
     def required_outbound_domains(
@@ -163,19 +193,11 @@ class OddishMetaMiniSweAgent(OddishMiniSweAgent):
         model_name: str | None = None,
         kwargs: dict | None = None,
     ) -> list[str]:
-        candidates = {
-            META_DEFAULT_BASE_URL,
-            settings.meta_base_url,
-            os.environ.get("META_BASE_URL"),
-        }
+        candidates = set(cls._oddish_configured_base_urls())
         extra_env = (kwargs or {}).get("extra_env")
         if isinstance(extra_env, dict):
             candidates.update(
-                {
-                    extra_env.get("META_BASE_URL"),
-                    extra_env.get("OPENAI_BASE_URL"),
-                    extra_env.get("OPENAI_API_BASE"),
-                }
+                extra_env.get(key) for key in cls._oddish_base_url_env_keys
             )
 
         domains = {
@@ -183,39 +205,26 @@ class OddishMetaMiniSweAgent(OddishMiniSweAgent):
             for candidate in candidates
             if (domain := normalize_domain_or_url(candidate))
         }
-        domains.add(_META_API_DOMAIN)
+        if cls._oddish_default_api_domain:
+            domains.add(cls._oddish_default_api_domain)
         return sorted(domains)
-
-    def _meta_session_id(self) -> str:
-        explicit = (
-            self._get_env("ODDISH_META_SESSION_ID")
-            or self._get_env("META_SESSION_ID")
-            or ""
-        ).strip()
-        if explicit:
-            return explicit
-
-        eval_name = (
-            self._get_env("ODDISH_META_EVAL_NAME")
-            or self._get_env("META_EVAL_NAME")
-            or "oddish-eval"
-        )
-        return f"{_slugify_session_part(eval_name)}--{uuid.uuid4().hex[:12]}"
 
     def _litellm_model_name(self) -> str | None:
         model_name = str(self.model_name or "").strip()
         if not model_name:
             return None
-        return f"openai/{meta_bare_model_id(model_name)}"
+        return f"openai/{self._oddish_bare_model_id(model_name)}"
+
+    def _oddish_model_kwargs_yaml(self) -> str:
+        """Extra YAML nested under ``model.model_kwargs`` (four-space indent)."""
+        return ""
 
     def _oddish_config_yaml(self, task: str | None) -> str:
-        session_id = self._meta_session_id()
         config_yaml = (
             "model:\n"
             "  model_kwargs:\n"
             + _SKIP_MCP_HANDLER_YAML
-            + "    extra_headers:\n"
-            f"      x-session-id: {json.dumps(session_id)}\n"
+            + self._oddish_model_kwargs_yaml()
         )
         # Deliver the task via the config file (mini-swe-agent reads run.task,
         # see minisweagent.run.mini) instead of --task on the command line. The
@@ -247,3 +256,70 @@ class OddishMetaMiniSweAgent(OddishMiniSweAgent):
                 count=1,
             )
         return super()._oddish_patch_command(command)
+
+
+class OddishMetaMiniSweAgent(_OpenAiCompatMiniSweAgent):
+    """mini-swe-agent wrapper for Meta's OpenAI-compatible eval endpoint."""
+
+    _oddish_config_path = _META_CONFIG_PATH
+    _oddish_base_url_env_keys = ("META_BASE_URL", "OPENAI_BASE_URL", "OPENAI_API_BASE")
+    _oddish_default_api_domain = _META_API_DOMAIN
+
+    @classmethod
+    def _oddish_configured_base_urls(cls) -> set[str | None]:
+        return {
+            META_DEFAULT_BASE_URL,
+            settings.meta_base_url,
+            os.environ.get("META_BASE_URL"),
+        }
+
+    @staticmethod
+    def _oddish_bare_model_id(model_name: str) -> str:
+        return meta_bare_model_id(model_name)
+
+    def _meta_session_id(self) -> str:
+        explicit = (
+            self._get_env("ODDISH_META_SESSION_ID")
+            or self._get_env("META_SESSION_ID")
+            or ""
+        ).strip()
+        if explicit:
+            return explicit
+
+        eval_name = (
+            self._get_env("ODDISH_META_EVAL_NAME")
+            or self._get_env("META_EVAL_NAME")
+            or "oddish-eval"
+        )
+        return f"{_slugify_session_part(eval_name)}--{uuid.uuid4().hex[:12]}"
+
+    def _oddish_model_kwargs_yaml(self) -> str:
+        session_id = self._meta_session_id()
+        return "    extra_headers:\n" f"      x-session-id: {json.dumps(session_id)}\n"
+
+
+class OddishGeometricMiniSweAgent(_OpenAiCompatMiniSweAgent):
+    """mini-swe-agent wrapper for Geometric's OpenAI-compatible endpoint (GLM-5.3).
+
+    No vendor session header and no eval-name plumbing -- Geometric's route is
+    the plain OpenAI-compatible shape, so the shared base covers it whole.
+    """
+
+    _oddish_config_path = _GEOMETRIC_CONFIG_PATH
+    _oddish_base_url_env_keys = (
+        "GEOMETRIC_BASE_URL",
+        "OPENAI_BASE_URL",
+        "OPENAI_API_BASE",
+    )
+
+    @classmethod
+    def _oddish_configured_base_urls(cls) -> set[str | None]:
+        return {
+            GEOMETRIC_DEFAULT_BASE_URL,
+            settings.geometric_base_url,
+            os.environ.get("GEOMETRIC_BASE_URL"),
+        }
+
+    @staticmethod
+    def _oddish_bare_model_id(model_name: str) -> str:
+        return geometric_bare_model_id(model_name)

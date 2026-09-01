@@ -698,6 +698,85 @@ def to_meta_model_id(model: str | None) -> str | None:
     return f"{META_PROVIDER}/{meta_bare_model_id(model)}"
 
 
+# Geometric-hosted OpenAI-compatible model routing. Geometric serves GLM-5.3
+# over its own /v1 endpoint, so trials run through Harbor's mini-swe-agent
+# harness (via litellm's ``openai/`` provider) rather than Oddish's Azure/OpenAI
+# defaults, and need their own provider/queue bucket.
+#
+# Prefix-only, deliberately: ``is_zai_model`` claims every bare ``glm...`` id
+# for z.ai, so a bare ``glm-5.3`` keeps routing to z.ai. Selecting Geometric
+# takes an explicit ``geometric/glm-5.3`` (or ``gm/glm-5.3``) -- the same
+# opt-in rule Fireworks uses to take over GLM/MiniMax/Kimi ids.
+GEOMETRIC_PROVIDER = "geometric"
+GEOMETRIC_DEFAULT_BASE_URL = "https://api.geometric.ai/v1"
+_GEOMETRIC_PROVIDER_PREFIXES: frozenset[str] = frozenset({"geometric", "gm"})
+# The ids this deployment actually serves. Unlike z.ai/Meta/Moonshot -- multi-model
+# vendor APIs where an open prefix is correct, since new models appear without a
+# code change -- a Geometric endpoint is one vLLM process serving exactly one
+# ``--served-model-name``. An open prefix would therefore buy nothing and cost
+# two things: a typo (``geometric/glm-5.4``) would burn a queue slot, a worker,
+# and a sandbox before dying on the endpoint's 404, and -- the real hazard --
+# ``geometric/gpt-4o`` would reach litellm as ``openai/gpt-4o``, whose DEFAULT
+# route is public OpenAI. Only ``OPENAI_BASE_URL`` keeps that on our own box, so
+# a dropped or unresolved base URL would ship task data to OpenAI with whatever
+# key is in scope. Same failure mode ``get_openai_runtime_env`` already refuses
+# to allow for the Azure route; gate it here rather than fail open.
+# Keep this in sync with ``--served-model-name`` on the endpoint.
+_GEOMETRIC_SERVED_MODELS: frozenset[str] = frozenset({"glm-5.3"})
+
+
+def is_geometric_model(model: str | None) -> bool:
+    """Return True when *model* explicitly selects Geometric's OpenAI-compatible API."""
+    if not model:
+        return False
+    raw = model.strip().lower()
+    if not raw:
+        return False
+    provider_prefix, _ = split_provider_model_name(raw)
+    return bool(provider_prefix and provider_prefix in _GEOMETRIC_PROVIDER_PREFIXES)
+
+
+def geometric_bare_model_id(model: str) -> str:
+    """Strip a ``geometric/``/``gm/`` prefix, returning the bare model id.
+
+    Raises ``ValueError`` for a Geometric-prefixed id the endpoint does not
+    serve, so a bad id dies at submit instead of mid-trial -- and so a
+    non-Geometric id can never reach litellm as a bare ``openai/<id>`` bound for
+    public OpenAI. A reference with no Geometric prefix is returned untouched,
+    since this is also called defensively on ids belonging to other providers.
+    """
+    raw = model.strip()
+    provider_prefix, bare = split_provider_model_name(raw)
+    if not (
+        provider_prefix
+        and provider_prefix.strip().lower() in _GEOMETRIC_PROVIDER_PREFIXES
+    ):
+        return raw
+    bare_id = str(bare).strip().lower()
+    if bare_id not in _GEOMETRIC_SERVED_MODELS:
+        served = ", ".join(sorted(_GEOMETRIC_SERVED_MODELS))
+        raise ValueError(
+            f"Geometric serves only [{served}]; got {str(bare).strip()!r}. "
+            "Add the id to _GEOMETRIC_SERVED_MODELS when the endpoint's "
+            "--served-model-name changes."
+        )
+    # Return the canonical spelling so the wire id always matches
+    # --served-model-name exactly, whatever case the caller used.
+    return bare_id
+
+
+def to_geometric_model_id(model: str | None) -> str | None:
+    """Canonicalize a Geometric model reference to ``geometric/<bare-id>``.
+
+    Collapses the ``gm/`` alias too, so one queue key and one stored id serve
+    both spellings.
+    """
+    if not is_geometric_model(model):
+        return model
+    assert model is not None
+    return f"{GEOMETRIC_PROVIDER}/{geometric_bare_model_id(model)}"
+
+
 # Direct Anthropic API via a separate HDO key. Opt-in with an explicit
 # ``anthropic-hdo/<model>`` prefix so Claude trials can use
 # ``ANTHROPIC_HDO_API_KEY`` (injected as ``ANTHROPIC_API_KEY``) instead of the
@@ -1058,6 +1137,9 @@ _MODEL_PROVIDER_ALIASES: dict[str, str] = {
     "grok": XAI_PROVIDER,
     # Meta OpenAI-compatible relay for mini-swe-agent evals.
     "meta": META_PROVIDER,
+    # Geometric's own OpenAI-compatible endpoint (GLM-5.3) for mini-swe-agent.
+    "geometric": GEOMETRIC_PROVIDER,
+    "gm": GEOMETRIC_PROVIDER,
     # Direct Anthropic API with the separate HDO key (ANTHROPIC_HDO_API_KEY).
     "anthropic-hdo": ANTHROPIC_HDO_PROVIDER,
     # DeepSeek official API for the dsh harness.
@@ -1633,6 +1715,10 @@ class Settings(BaseSettings):
     meta_base_url: str = Field(default=META_DEFAULT_BASE_URL, alias="META_BASE_URL")
     meta_eval_name: str | None = Field(default=None, alias="ODDISH_META_EVAL_NAME")
     meta_session_id: str | None = Field(default=None, alias="ODDISH_META_SESSION_ID")
+    geometric_api_key: str | None = Field(default=None, alias="GEOMETRIC_API_KEY")
+    geometric_base_url: str = Field(
+        default=GEOMETRIC_DEFAULT_BASE_URL, alias="GEOMETRIC_BASE_URL"
+    )
     azure_openai_api_key: str | None = Field(default=None, alias="AZURE_OPENAI_API_KEY")
     azure_openai_endpoint: str | None = Field(
         default=None, alias="AZURE_OPENAI_ENDPOINT"
@@ -1882,6 +1968,19 @@ class Settings(BaseSettings):
             return to_fireworks_model_id(cleaned)
         if is_meta_model(cleaned):
             return to_meta_model_id(cleaned)
+        # Geometric before z.ai: an explicit ``geometric/``/``gm/`` prefix on a
+        # GLM id must win over the bare-``glm`` z.ai fallback below.
+        if is_geometric_model(cleaned):
+            try:
+                return to_geometric_model_id(cleaned)
+            except ValueError:
+                # Reject on the live create/queue/execute path; on a read
+                # (strict=False) hand back the stored id, so a historical trial
+                # naming a since-removed model still renders. Mirrors the
+                # Bedrock fallback at the bottom of this method.
+                if strict:
+                    raise
+                return cleaned
         if is_xai_model(cleaned):
             return to_xai_model_id(cleaned)
         if is_zai_model(cleaned):
@@ -2168,6 +2267,21 @@ class Settings(BaseSettings):
         if self.meta_session_id:
             env["ODDISH_META_SESSION_ID"] = self.meta_session_id
         return env
+
+    def get_geometric_agent_env(self) -> dict[str, str]:
+        """Return env vars for Geometric's OpenAI-compatible mini-swe-agent route."""
+        base_url = (self.geometric_base_url or GEOMETRIC_DEFAULT_BASE_URL).rstrip("/")
+        # Same shape as the Meta route: mini-swe-agent drives the model through
+        # LiteLLM's ``openai/`` provider (see
+        # OddishGeometricMiniSweAgent._litellm_model_name), which authenticates
+        # from OPENAI_API_KEY. MSWEA_API_KEY alone does not reach the provider,
+        # so surface the Geometric key under OPENAI_API_KEY too (resolved at
+        # runtime from ${GEOMETRIC_API_KEY}, never persisted).
+        return {
+            "MSWEA_API_KEY": "${GEOMETRIC_API_KEY}",
+            "OPENAI_API_KEY": "${GEOMETRIC_API_KEY}",
+            "OPENAI_BASE_URL": base_url,
+        }
 
 
 settings = Settings()

@@ -20,12 +20,14 @@ from oddish.config import (
     fireworks_bare_model_id,
     is_anthropic_hdo_model,
     is_fireworks_model,
+    is_geometric_model,
     is_meta_model,
     is_minimax_model,
     is_moonshot_model,
     is_xai_model,
     is_zai_model,
     looks_like_bedrock_model_id,
+    to_geometric_model_id,
     to_meta_model_id,
     minimax_api_model_id,
     minimax_bare_model_id,
@@ -63,6 +65,9 @@ _ODDISH_ANTIGRAVITY_CLI_IMPORT_PATH = (
 _ODDISH_MINI_SWE_IMPORT_PATH = "oddish.workers.agents.mini_swe_agent:OddishMiniSweAgent"
 _ODDISH_META_MINI_SWE_IMPORT_PATH = (
     "oddish.workers.agents.mini_swe_agent:OddishMetaMiniSweAgent"
+)
+_ODDISH_GEOMETRIC_MINI_SWE_IMPORT_PATH = (
+    "oddish.workers.agents.mini_swe_agent:OddishGeometricMiniSweAgent"
 )
 _SINGLE_LLM_IMPORT_PATH = "oddish.workers.harbor.single_llm_agent:SingleLLMAgent"
 _ANTHROPIC_MODEL_ALIAS_KEYS = (
@@ -505,6 +510,30 @@ def _apply_meta_mini_swe_agent(agent_config: AgentConfig) -> None:
     agent_config.kwargs = dict(agent_config.kwargs or {})
 
 
+def _apply_geometric_mini_swe_agent(agent_config: AgentConfig) -> None:
+    """Route Geometric model evals through mini-swe-agent with Geometric API settings."""
+    if agent_config.import_path is not None:
+        return
+    if not _is_mini_swe_agent(agent_config):
+        return
+    if not is_geometric_model(agent_config.model_name):
+        return
+
+    agent_config.name = None
+    agent_config.import_path = _ODDISH_GEOMETRIC_MINI_SWE_IMPORT_PATH
+
+    env = dict(agent_config.env or {})
+    for key, value in settings.get_geometric_agent_env().items():
+        env.setdefault(key, value)
+    agent_config.env = env
+
+    # Same contract as the Meta route: preserve a caller-supplied
+    # reasoning_effort (--agent-kwarg reasoning_effort=xhigh), which the harness
+    # forwards via model.model_kwargs.extra_body.reasoning_effort. Unset means
+    # the vendor default, leaving other sampling params untouched.
+    agent_config.kwargs = dict(agent_config.kwargs or {})
+
+
 def _apply_mini_swe_agent(agent_config: AgentConfig) -> None:
     if agent_config.import_path is not None or not _is_mini_swe_agent(agent_config):
         return
@@ -514,9 +543,7 @@ def _apply_mini_swe_agent(agent_config: AgentConfig) -> None:
         )
         set_runtime_model_name(agent_config, f"fireworks_ai/{api_model}")
         agent_config.env = dict(agent_config.env or {})
-        agent_config.env.setdefault(
-            "FIREWORKS_AI_API_KEY", "${FIREWORKS_API_KEY}"
-        )
+        agent_config.env.setdefault("FIREWORKS_AI_API_KEY", "${FIREWORKS_API_KEY}")
     agent_config.name = None
     agent_config.import_path = _ODDISH_MINI_SWE_IMPORT_PATH
 
@@ -662,6 +689,10 @@ def _build_agent_config(
         agent_config.model_name = to_fireworks_model_id(agent_config.model_name)
     elif is_meta_model(agent_config.model_name):
         agent_config.model_name = to_meta_model_id(agent_config.model_name)
+    elif is_geometric_model(agent_config.model_name):
+        # Before z.ai: an explicit geometric/ (or gm/) prefix on a GLM id
+        # must win over the bare-``glm`` z.ai fallback below.
+        agent_config.model_name = to_geometric_model_id(agent_config.model_name)
     elif is_xai_model(agent_config.model_name):
         agent_config.model_name = to_xai_model_id(agent_config.model_name)
     elif is_zai_model(agent_config.model_name):
@@ -743,6 +774,7 @@ def _build_agent_config(
     _apply_grok_build_oddish_wrapper(agent_config)
     _apply_opencode_oddish_wrapper(agent_config)
     _apply_meta_mini_swe_agent(agent_config)
+    _apply_geometric_mini_swe_agent(agent_config)
     _apply_mini_swe_agent(agent_config)
     _apply_claude_code_oddish_wrapper(agent_config, is_probe)
     _apply_probe_oddish_creds(agent_config, probe_oddish_env)

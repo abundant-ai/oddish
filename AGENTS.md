@@ -907,11 +907,18 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
 - OpenAI-family jobs default to Azure OpenAI. Use
   `ODDISH_OPENAI_PROVIDER=openai` plus `OPENAI_API_KEY` only when intentionally
   routing to public OpenAI.
-- z.ai, MiniMax, Moonshot/Kimi, Fireworks, xAI, Meta, and Anthropic HDO each
-  have explicit canonical provider prefixes and queue keys: `zai/`, `minimax/`,
-  `moonshot/`, `fireworks/`, `xai/`, `meta/`, and `anthropic-hdo/`. Add or
-  change provider aliases in `config.py`, then update env injection in the
-  Harbor runner and the network allowlist notes.
+- z.ai, MiniMax, Moonshot/Kimi, Fireworks, xAI, Meta, Geometric, and Anthropic
+  HDO each have explicit canonical provider prefixes and queue keys: `zai/`,
+  `minimax/`, `moonshot/`, `fireworks/`, `xai/`, `meta/`, `geometric/`, and
+  `anthropic-hdo/`. Add or change provider aliases in `config.py`, then update
+  env injection in the Harbor runner and the network allowlist notes.
+- Geometric is Oddish's own OpenAI-compatible endpoint, currently serving
+  GLM-5.3 on the mini-swe-agent harness (`OddishGeometricMiniSweAgent` hands
+  litellm an `openai/<bare-id>` model against `OPENAI_BASE_URL`). It is
+  **prefix-only**: `is_zai_model` claims every bare `glm...` id, so a bare
+  `glm-5.3` keeps routing to z.ai and selecting Geometric takes an explicit
+  `geometric/glm-5.3` (or the `gm/` alias) — the same opt-in rule Fireworks
+  uses to take over GLM/MiniMax/Kimi ids.
 - Gemini model ids use the `gemini/<id>` prefix. `_build_agent_config` hands
   each agent the spelling its LLM client expects (litellm agents in
   `_LITELLM_MODEL_ID_AGENTS`, Vercel AI SDK agents in
