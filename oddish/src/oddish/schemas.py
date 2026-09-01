@@ -2492,6 +2492,9 @@ class TaskQAHistoryRun(BaseModel):
     status: str | None
     started_at: datetime | None
     finished_at: datetime | None
+    # Why a failed run failed: the trial's execution error, else its
+    # analysis error.
+    error: str | None = None
 
 
 class TaskQAHistoryFinding(BaseModel):
@@ -2508,6 +2511,7 @@ class TaskQAHistoryVersion(BaseModel):
     is_current: bool
     pre_trial_status: str | None
     pre_trial_finished_at: datetime | None
+    pre_trial_error: str | None = None
     # Open must-fix defects from every source (pre-trial audit + trial
     # analyses) — the same count the delivery board blocks on.
     must_fix: int

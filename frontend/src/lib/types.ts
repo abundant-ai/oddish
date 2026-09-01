@@ -1338,6 +1338,7 @@ interface TaskQAHistoryRun {
   status?: string | null;
   started_at?: string | null;
   finished_at?: string | null;
+  error?: string | null;
 }
 
 interface TaskQAHistoryVersion {
@@ -1348,6 +1349,7 @@ interface TaskQAHistoryVersion {
   is_current: boolean;
   pre_trial_status?: string | null;
   pre_trial_finished_at?: string | null;
+  pre_trial_error?: string | null;
   must_fix: number;
   pre_trial_should_fix: number;
   rollout_count: number;

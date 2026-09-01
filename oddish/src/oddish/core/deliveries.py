@@ -1175,13 +1175,24 @@ async def get_task_qa_history_core(
                 TrialModel.status,
                 TrialModel.started_at,
                 TrialModel.finished_at,
+                TrialModel.error_message,
+                TrialModel.analysis_error,
             )
             .where(TrialModel.task_id == task_id, TrialModel.kind.in_(["qa", "audit"]))
             .order_by(TrialModel.created_at.desc())
         )
     ).all()
     runs_by_version: dict[str | None, list[TaskQAHistoryRun]] = {}
-    for trial_id, kind, version_id, status, started_at, finished_at in qa_trials:
+    for (
+        trial_id,
+        kind,
+        version_id,
+        status,
+        started_at,
+        finished_at,
+        error_message,
+        analysis_error,
+    ) in qa_trials:
         runs_by_version.setdefault(version_id, []).append(
             TaskQAHistoryRun(
                 trial_id=trial_id,
@@ -1189,6 +1200,7 @@ async def get_task_qa_history_core(
                 status=status.value if status else None,
                 started_at=started_at,
                 finished_at=finished_at,
+                error=error_message or analysis_error,
             )
         )
 
@@ -1237,6 +1249,7 @@ async def get_task_qa_history_core(
                     else None
                 ),
                 pre_trial_finished_at=version.pre_trial_finished_at,
+                pre_trial_error=version.pre_trial_error,
                 must_fix=len(must_fix[version.id]),
                 pre_trial_should_fix=sum(
                     1

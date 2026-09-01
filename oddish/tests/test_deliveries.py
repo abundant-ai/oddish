@@ -423,9 +423,22 @@ async def test_qa_history(session):
             analysis={"action_items": [{"tier": "must_fix", "title": "cheat"}]},
         )
     )
-    # A malformed pre-trial items shape must not crash history.
-    v3 = _version(task, 3, pre_trial={"items": "garbage"})
+    # A malformed pre-trial items shape must not crash history, and a
+    # failed audit must expose why it failed.
+    v3 = _version(
+        task,
+        3,
+        pre_trial={"items": "garbage"},
+        pre_trial_status=VerdictStatus.FAILED,
+        pre_trial_error="docker died",
+    )
     session.add(v3)
+    await session.flush()
+    failed_audit = _trial(
+        task, experiment, v3.id, kind="audit", status=TrialStatus.FAILED
+    )
+    failed_audit.error_message = "container OOM"
+    session.add(failed_audit)
     await session.flush()
 
     history = await get_task_qa_history_core(session, task_id=task.id, org_id=ORG)
@@ -433,6 +446,8 @@ async def test_qa_history(session):
     broken, latest, first = history.versions
     assert broken.must_fix == 0 and broken.pre_trial_should_fix == 0
     assert broken.findings == []
+    assert broken.pre_trial_error == "docker died"
+    assert [run.error for run in broken.qa_runs] == ["container OOM"]
     assert latest.is_current and latest.must_fix == 2
     # The findings behind the counts, for inline display: the pre-trial
     # item and the trial-analysis item, with their sources.

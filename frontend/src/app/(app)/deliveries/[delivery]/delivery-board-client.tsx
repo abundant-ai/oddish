@@ -364,21 +364,19 @@ function QAHistoryVersionRow({
   verdict: TaskQAHistoryResponse["verdict"];
 }) {
   const [open, setOpen] = useState(false);
-  const expandable = version.findings.length > 0 || verdict != null;
   return (
     <div className="rounded-md border border-[#6f88b4]/20 p-2 text-xs">
       <button
         type="button"
-        className={`w-full text-left ${expandable ? "cursor-pointer" : "cursor-default"}`}
-        onClick={() => expandable && setOpen((value) => !value)}
+        className="w-full cursor-pointer text-left"
+        onClick={() => setOpen((value) => !value)}
       >
         <div className="flex flex-wrap items-center gap-2">
-          {expandable &&
-            (open ? (
-              <ChevronDown className="text-muted-foreground h-3 w-3" />
-            ) : (
-              <ChevronRight className="text-muted-foreground h-3 w-3" />
-            ))}
+          {open ? (
+            <ChevronDown className="text-muted-foreground h-3 w-3" />
+          ) : (
+            <ChevronRight className="text-muted-foreground h-3 w-3" />
+          )}
           <span className="font-medium">v{version.version}</span>
           {version.is_current && (
             <span className="bg-secondary rounded-full px-1.5 py-0.5">
@@ -415,6 +413,32 @@ function QAHistoryVersionRow({
       </button>
       {open && (
         <div className="mt-2 space-y-2 border-t border-[#6f88b4]/20 pt-2">
+          {version.pre_trial_error && (
+            <p>
+              <span className="font-medium text-red-600 dark:text-red-400">
+                audit failed:
+              </span>{" "}
+              <span className="text-muted-foreground break-words">
+                {version.pre_trial_error}
+              </span>
+            </p>
+          )}
+          {version.qa_runs.some((run) => run.error) && (
+            <ul className="space-y-1">
+              {version.qa_runs
+                .filter((run) => run.error)
+                .map((run) => (
+                  <li key={run.trial_id}>
+                    <span className="font-medium text-red-600 dark:text-red-400">
+                      {run.kind} {run.status?.toLowerCase() ?? ""}:
+                    </span>{" "}
+                    <span className="text-muted-foreground break-words">
+                      {run.error}
+                    </span>
+                  </li>
+                ))}
+            </ul>
+          )}
           {verdict != null && (
             <div>
               <span
@@ -465,6 +489,14 @@ function QAHistoryVersionRow({
               ))}
             </ul>
           )}
+          {!version.pre_trial_error &&
+            !version.qa_runs.some((run) => run.error) &&
+            verdict == null &&
+            version.findings.length === 0 && (
+              <p className="text-muted-foreground">
+                No QA details recorded for this version yet.
+              </p>
+            )}
         </div>
       )}
     </div>
