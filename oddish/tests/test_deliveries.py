@@ -374,6 +374,8 @@ async def test_finalize_gates_pins_and_freezes(session):
         session, delivery_id=delivery.id, org_id=ORG
     )
     assert board.frozen and board.ready  # v2 does not disturb the record
+    # The frozen board carries the pinned version, not null.
+    assert board.tasks[0].pinned_version_id == version.id
 
 
 @pytest.mark.asyncio

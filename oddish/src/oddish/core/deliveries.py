@@ -1157,6 +1157,10 @@ async def finalize_delivery_core(
     version_by_task = {row.task_id: row.version_id for row in board.tasks}
     for member in members:
         member.pinned_version_id = version_by_task.get(member.task_id)
+    # The snapshot board is what finalized reads serve; it must carry the
+    # pins too, not only the membership rows.
+    for row in board.tasks:
+        row.pinned_version_id = row.version_id
 
     now = utcnow()
     delivery.status = "finalized"
