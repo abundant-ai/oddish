@@ -80,9 +80,21 @@ def _normalized_check_config(raw: dict | None) -> DeliveryCheckConfig:
 
 
 async def _get_delivery(
-    session: AsyncSession, delivery_id: str, org_id: str | None
+    session: AsyncSession,
+    delivery_id: str,
+    org_id: str | None,
+    *,
+    for_update: bool = False,
 ) -> DeliveryModel:
-    delivery = await session.get(DeliveryModel, delivery_id)
+    """Fetch one org-scoped delivery.
+
+    Mutations pass ``for_update=True`` so they serialize on the delivery
+    row: without it, a concurrent add could land between finalize's green
+    check and its snapshot, finalizing a board that omits the new task.
+    """
+    delivery = await session.get(
+        DeliveryModel, delivery_id, with_for_update=bool(for_update) or None
+    )
     if delivery is None or delivery.org_id != org_id:
         raise HTTPException(status_code=404, detail="delivery not found")
     return delivery
@@ -176,7 +188,7 @@ async def patch_delivery_core(
     org_id: str | None,
     data: DeliveryPatch,
 ) -> DeliveryModel:
-    delivery = await _get_delivery(session, delivery_id, org_id)
+    delivery = await _get_delivery(session, delivery_id, org_id, for_update=True)
     _require_active(delivery)
     if data.name is not None:
         delivery.name = data.name
@@ -279,7 +291,7 @@ async def add_delivery_tasks_core(
     org_id: str | None,
     data: DeliveryTasksAdd,
 ) -> int:
-    delivery = await _get_delivery(session, delivery_id, org_id)
+    delivery = await _get_delivery(session, delivery_id, org_id, for_update=True)
     _require_active(delivery)
     added = await _add_tasks(session, delivery, data.task_ids, org_id)
     return len(added)
@@ -292,7 +304,7 @@ async def remove_delivery_task_core(
     org_id: str | None,
     task_id: str,
 ) -> None:
-    delivery = await _get_delivery(session, delivery_id, org_id)
+    delivery = await _get_delivery(session, delivery_id, org_id, for_update=True)
     _require_active(delivery)
     # Accept an id or a name. The id-only lookup comes first so a member
     # whose task was soft-deleted (hidden from TaskModel reads) can still
@@ -336,7 +348,7 @@ async def set_manual_check_core(
     data: ManualCheckSet,
     user_id: str | None,
 ) -> None:
-    delivery = await _get_delivery(session, delivery_id, org_id)
+    delivery = await _get_delivery(session, delivery_id, org_id, for_update=True)
     _require_active(delivery)
     config = _normalized_check_config(delivery.check_config)
     definition = next(
@@ -442,7 +454,7 @@ async def _compute_board(
     max_versions: dict[str, int] = {}
     rollouts: dict[str, tuple[int, int]] = {}
     post_trial_must_fix: dict[str, int] = {}
-    qa_graded_versions: set[tuple[str, str]] = set()
+    latest_qa_version: dict[str, str] = {}
 
     if task_ids:
         # Soft-deleted members must stay on the board as failing rows, not
@@ -517,10 +529,10 @@ async def _compute_board(
             ).all():
                 post_trial_must_fix[version_id] = count
 
-        # Which versions successful QA runs have graded, per task: a
-        # published verdict only counts while a run covers the current default.
-        # Membership, not recency: a later QA run on some other version must
-        # not invalidate a successful run on the current one.
+        # ``tasks.verdict`` is last-write-wins across versions, so the
+        # stored verdict belongs to the NEWEST successful QA run. It only
+        # covers the current default when that run graded it. Ordering falls
+        # back to created_at so a null finished_at cannot scramble recency.
         qa_rows = (
             await session.execute(
                 select(TrialModel.task_id, TrialModel.task_version_id)
@@ -530,10 +542,15 @@ async def _compute_board(
                     TrialModel.status == TrialStatus.SUCCESS,
                     TrialModel.task_version_id.isnot(None),
                 )
-                .distinct()
+                .order_by(
+                    func.coalesce(
+                        TrialModel.finished_at, TrialModel.created_at
+                    ).desc()
+                )
             )
         ).all()
-        qa_graded_versions = {(t, v) for t, v in qa_rows}
+        for qa_task_id, qa_version_id in qa_rows:
+            latest_qa_version.setdefault(qa_task_id, qa_version_id)
 
         for task_id, highest in (
             await session.execute(
@@ -636,11 +653,11 @@ async def _compute_board(
             verdict = task.verdict if isinstance(task.verdict, dict) else None
             if verdict is None:
                 automated("verdict_ok", False, "no verdict yet")
-            elif (task.id, version.id) not in qa_graded_versions:
+            elif latest_qa_version.get(task.id) != version.id:
                 automated(
                     "verdict_ok",
                     False,
-                    f"verdict is from an older version; re-run QA on {vlabel}",
+                    f"verdict does not cover {vlabel}; re-run QA on it",
                 )
             else:
                 accepted = bool(verdict.get("is_good"))
@@ -796,7 +813,7 @@ async def finalize_delivery_core(
     org_id: str | None,
     user_id: str | None,
 ) -> DeliveryBoardResponse:
-    delivery = await _get_delivery(session, delivery_id, org_id)
+    delivery = await _get_delivery(session, delivery_id, org_id, for_update=True)
     _require_active(delivery)
     board = await _compute_board(session, delivery)
     if not board.ready:

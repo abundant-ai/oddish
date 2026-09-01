@@ -152,7 +152,7 @@ async def test_version_bump_resets_board(session):
     assert checks["pre_trial_passed"].status == "fail"
     assert checks["min_rollouts"].status == "fail"
     assert checks["verdict_ok"].status == "fail"
-    assert "older version" in checks["verdict_ok"].detail
+    assert "does not cover" in checks["verdict_ok"].detail
     assert not board.ready
 
 
@@ -474,21 +474,30 @@ async def test_finalized_delivery_cannot_be_deleted(session):
 
 
 @pytest.mark.asyncio
-async def test_qa_on_other_version_does_not_stale_verdict(session):
+async def test_verdict_freshness_follows_newest_qa_run(session):
     from datetime import datetime, timezone
 
     task, v1, experiment = await _green_task(session, "deliv-qa-order")
-    # Timestamp the current-version QA run, then add a *later* successful QA
-    # on an older version. The current version stays covered: freshness is
-    # membership, not global recency.
+    # Timestamp the fixture's QA run too: recency must come from the
+    # trials' own timestamps, not insertion order.
+    from sqlalchemy import select
+
+    fixture_qa = await session.scalar(
+        select(TrialModel).where(
+            TrialModel.task_id == task.id, TrialModel.kind == "qa"
+        )
+    )
+    fixture_qa.finished_at = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    # An OLDER successful QA on another version does not disturb a verdict
+    # produced by the newest run, which graded the current version.
     qa_current = _trial(task, experiment, v1.id, kind="qa")
-    qa_current.finished_at = datetime(2026, 8, 1, tzinfo=timezone.utc)
-    v0 = _version(task, 2)  # a non-default sibling version
-    session.add_all([qa_current, v0])
+    qa_current.finished_at = datetime(2026, 8, 15, tzinfo=timezone.utc)
+    v2 = _version(task, 2)  # a non-default sibling version
+    session.add_all([qa_current, v2])
     await session.flush()
-    qa_other = _trial(task, experiment, v0.id, kind="qa")
-    qa_other.finished_at = datetime(2026, 8, 15, tzinfo=timezone.utc)
-    session.add(qa_other)
+    qa_old = _trial(task, experiment, v2.id, kind="qa")
+    qa_old.finished_at = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    session.add(qa_old)
     await session.flush()
 
     delivery = await create_delivery_core(
@@ -501,6 +510,19 @@ async def test_qa_on_other_version_does_not_stale_verdict(session):
         session, delivery_id=delivery.id, org_id=ORG
     )
     assert _checks(board, task.id)["verdict_ok"].status == "pass"
+
+    # A NEWER successful QA on another version overwrote tasks.verdict, so
+    # the stored verdict no longer covers the current default.
+    qa_newer = _trial(task, experiment, v2.id, kind="qa")
+    qa_newer.finished_at = datetime(2026, 8, 20, tzinfo=timezone.utc)
+    session.add(qa_newer)
+    await session.flush()
+    board = await get_delivery_board_core(
+        session, delivery_id=delivery.id, org_id=ORG
+    )
+    check = _checks(board, task.id)["verdict_ok"]
+    assert check.status == "fail"
+    assert "does not cover" in check.detail
 
 
 @pytest.mark.asyncio
