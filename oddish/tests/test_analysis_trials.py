@@ -213,6 +213,8 @@ def test_the_production_classifier_uses_the_query_evidence_contract():
     assert "found only in the verifier, hidden tests, or reference solution" in brief
     assert "Do not let an unrelated task defect change" in brief
     assert "Oracle copying or other proven unintended access is BAD_SUCCESS" in brief
+    assert "`action_items[].causal` is required" in brief
+    assert "whether or not the defect decided this run" not in brief
     for ambiguous in (
         "inferable",
         "strongest available evidence",
@@ -1701,7 +1703,7 @@ def test_the_validator_rejects_invalid_analyses_and_summaries():
     assert any("components" in e for e in errors)
 
 
-def test_the_validator_rejects_good_failure_with_a_must_fix_finding():
+def test_the_validator_uses_post_trial_causality_for_good_failure():
     from oddish.worker.analysis_result_check import check_analysis_result
 
     must_fix_item = {
@@ -1715,6 +1717,7 @@ def test_the_validator_rejects_good_failure_with_a_must_fix_finding():
         "detail": "It never asserts returncode.",
         "recommendation": "Assert returncode == 0.",
         "tier": "must_fix",
+        "causal": False,
     }
     expected = _qa_check_payload(["t-1"])
     entry = _good_qa_entry("t-1")
@@ -1724,17 +1727,21 @@ def test_the_validator_rejects_good_failure_with_a_must_fix_finding():
         "action_items": [must_fix_item],
     }
 
+    assert check_analysis_result({"trials": [entry], "verdict": None}, expected) == []
+
+    del entry["analysis"]["action_items"][0]["causal"]
     errors = check_analysis_result({"trials": [entry], "verdict": None}, expected)
-    assert any("cannot be GOOD_FAILURE" in error for error in errors)
+    assert any("causal is required" in error for error in errors)
+
+    entry["analysis"]["action_items"][0]["causal"] = True
+    errors = check_analysis_result({"trials": [entry], "verdict": None}, expected)
+    assert any("causal post-trial must-fix" in error for error in errors)
 
     entry["analysis"]["classification"] = "BAD_FAILURE"
     assert check_analysis_result({"trials": [entry], "verdict": None}, expected) == []
 
-    entry["analysis"]["classification"] = "HARNESS_ERROR"
-    assert check_analysis_result({"trials": [entry], "verdict": None}, expected) == []
 
-
-def test_the_validator_applies_pre_trial_must_fix_findings_to_classification():
+def test_the_validator_keeps_pre_trial_must_fix_out_of_per_trial_classification():
     from oddish.worker.analysis_result_check import check_analysis_result
 
     expected = _qa_check_payload(
@@ -1756,10 +1763,6 @@ def test_the_validator_applies_pre_trial_must_fix_findings_to_classification():
         ],
     }
 
-    errors = check_analysis_result({"trials": [entry], "verdict": None}, expected)
-    assert any("cannot be GOOD_FAILURE" in error for error in errors)
-
-    entry["analysis"]["classification"] = "BAD_FAILURE"
     assert check_analysis_result({"trials": [entry], "verdict": None}, expected) == []
 
 
