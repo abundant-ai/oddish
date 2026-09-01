@@ -181,6 +181,11 @@ High-level flow:
    Non-'agent' kinds are excluded from solver cost, leaderboard, facet, and
    public surfaces (see `oddish.filters.trial_predicates.EligibleTrialScope`);
    their separate cost and optional quota basis comes from `analysis_spend`.
+   Its `audit_context` request field defaults to `current`, which injects the
+   task version's current source-audit findings and matches normal web-app QA.
+   Historical golden-label comparisons pass `audit_context="none"`; that mode
+   omits current audit findings so a newly discovered `must_fix` issue cannot
+   make an older `GOOD_FAILURE` expectation impossible.
 5. While a trial runs, a worker-side tailer (`oddish.workers.harbor.live_tail`,
    on by default via `live_tail_enabled` / `live_tail_interval_sec`) polls the
    agent's log file inside the sandbox for supported agents (claude-code,

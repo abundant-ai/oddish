@@ -576,10 +576,37 @@ Deterministic nop/oracle baseline evidence (use it only for the task verdict):
 {verdict_section}
 
 == OUTPUT ==
-Write exactly one file: /logs/{QA_RESULT_FILENAME}
+Write your candidate JSON to `/tmp/qa_result-draft.json`. Do not write directly to `/logs/{QA_RESULT_FILENAME}`.
+
+Submit the draft with:
+```
+/probe-harness/submit-analysis-result /tmp/qa_result-draft.json
+```
+The command runs the same contract checker as the final verifier. If it rejects the draft, read every printed error, repair the draft, and submit it again. You may make at most three total submissions: the initial draft and two repairs. Only the submission command publishes a valid artifact to `/logs/{QA_RESULT_FILENAME}`.
+
+Field rules that are easy to confuse:
+- `evidence` is one non-empty JSON string. Put multiple bullet sentences inside that string separated by `\\n`. An array such as `["first fact", "second fact"]` is invalid.
+- `action_items[].problem_type` accepts only `"incompleteness"` or `"mismatch"`. A classification subtype such as `"underspecified_instruction"` is invalid here.
+- `exploitation[].causal` means the agent's exploitation changed the outcome. If `exploited` is `false`, `causal` must also be `false`.
+
+Valid field examples:
+```
+"evidence": "- Hidden test calls the undocumented three-argument method.\\n- The task instruction documents only two arguments.",
+"action_items": [{{"source":"post_trial","problem_type":"mismatch","dimension":"verifier","file":"tests/test_api.py","line_start":12,"line_end":12,"title":"Hidden API mismatch","detail":"The hidden test requires an undocumented argument.","recommendation":"Document the required signature.","tier":"must_fix"}}],
+"exploitation": [{{"links_to":"audit-item-1","exploited":false,"exploit_evidence":null,"causal":false}}]
+```
+
+Invalid field examples:
+```
+"evidence": ["first fact", "second fact"]
+"problem_type": "underspecified_instruction"
+{{"exploited":false,"causal":true}}
+```
+
+The submitted JSON must have this shape:
 {json.dumps(output_example, indent=1)}
 
-{analysis_schema}{verdict_schema}Every trial listed above must appear in "trials". The file must be valid JSON. Do not write anything else to /logs."""
+{analysis_schema}{verdict_schema}Every trial listed above must appear in "trials". The draft must be valid JSON. Do not write anything else to /logs."""
 
 
 def build_audit_brief(*, task_name: str) -> str:

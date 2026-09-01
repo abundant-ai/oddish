@@ -135,7 +135,8 @@ def _make_hook(probe_task_dir: str | None, probe_harness_dir: str | None):
                     source_dir=Path(probe_task_dir), target_dir=probe_harness_dir
                 )
             except Exception:
-                pass
+                if (Path(probe_task_dir) / "submit-analysis-result").is_file():
+                    raise
 
     return _hook
 

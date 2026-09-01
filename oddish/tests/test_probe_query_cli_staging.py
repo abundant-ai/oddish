@@ -37,6 +37,28 @@ def test_stage_cli_mount_writes_only_the_cli(tmp_path):
     assert cli.stat().st_mode & 0o111
 
 
+def test_stage_cli_mount_adds_only_the_qa_submission_contract(tmp_path):
+    from oddish.worker.probe_staging import apply_analysis_overlay
+
+    task = tmp_path / "task"
+    task.mkdir()
+    apply_analysis_overlay(
+        task,
+        brief="qa brief",
+        artifact="qa_result.json",
+        check_payload={"kind": "qa", "trial_ids": []},
+    )
+    harness = tmp_path / "harness"
+    stage_cli_mount(harness, analysis_task_dir=task)
+
+    assert sorted(path.name for path in harness.iterdir()) == [
+        ".analysis-contract",
+        "oddish-query",
+        "submit-analysis-result",
+    ]
+    assert (harness / "submit-analysis-result").stat().st_mode & 0o111
+
+
 def test_apply_overlay_stages_no_probe_only_dirs(tmp_path: Path):
     task = tmp_path / "task"
     task.mkdir()

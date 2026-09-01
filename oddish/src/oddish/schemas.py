@@ -656,6 +656,13 @@ class QAEvalCreateRequest(BaseModel):
             "Analysis model override. Null uses the deployed production QA model."
         ),
     )
+    audit_context: Literal["current", "none"] = Field(
+        "current",
+        description=(
+            "current includes the task version's current source-audit findings; "
+            "none measures historical classifier behavior without those findings"
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_qa_eval(self) -> "QAEvalCreateRequest":
