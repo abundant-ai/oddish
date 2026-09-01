@@ -508,6 +508,7 @@ function TaskRow({
   frozen,
   isAdmin,
   onSetCheck,
+  onRemove,
 }: {
   row: DeliveryTaskBoardRow;
   frozen: boolean;
@@ -517,6 +518,7 @@ function TaskRow({
     deliveryTaskId: string,
     checked: boolean
   ) => void;
+  onRemove: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   // Manual checks live in the sign-off section below; listing them here
@@ -700,6 +702,35 @@ function TaskRow({
               </p>
               <QAHistoryPanel taskId={row.task_id} />
             </div>
+            {isAdmin && !frozen && (
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="text-destructive"
+                  >
+                    Remove from delivery
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Remove {row.task_name}?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      The task leaves this delivery. Its sign-off and
+                      acknowledgements go with it. The task itself is not
+                      deleted.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction onClick={onRemove}>
+                      Remove
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            )}
           </TableCell>
         </TableRow>
       )}
@@ -789,6 +820,14 @@ export function DeliveryBoardClient({
       await putCheck("signoff", row.delivery_task_id, true);
     });
   };
+
+  const removeTask = (taskId: string) =>
+    void run(() =>
+      postJson(
+        `/api/deliveries/${encodeURIComponent(deliveryId)}/tasks/${encodeURIComponent(taskId)}`,
+        "DELETE"
+      )
+    );
 
   const addTasks = (taskIds: string[]) => {
     if (taskIds.length === 0) return;
@@ -952,6 +991,7 @@ export function DeliveryBoardClient({
                     onSetCheck={(checkKey, deliveryTaskId, checked) =>
                       setCheck(checkKey, deliveryTaskId, checked)
                     }
+                    onRemove={() => removeTask(row.task_id)}
                   />
                 ))}
               </TableBody>
