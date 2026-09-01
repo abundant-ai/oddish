@@ -64,7 +64,7 @@ function bool(payload: Record<string, unknown>, key: string): boolean {
 // single skipped tick doesn't cry wolf.
 const STALE_THRESHOLD_SECONDS = 600;
 
-function DispatcherTile({
+export function DispatcherTile({
   status,
 }: {
   status: QueueRuntimeComponentStatus | null;
@@ -111,7 +111,7 @@ function DispatcherTile({
   );
 }
 
-function ReconcilerTile({
+export function ReconcilerTile({
   status,
 }: {
   status: QueueRuntimeComponentStatus | null;
@@ -627,7 +627,7 @@ export function QueueHealthOverviewCard({
         </div>
         <p className="text-muted-foreground text-xs">
           {canManageConcurrency
-            ? "Is the queue keeping up? Throughput, per-model capacity fill, and platform heartbeats."
+            ? "Is the queue keeping up? Throughput and per-model capacity fill."
             : "Your organization’s queue activity and throughput."}
         </p>
       </CardHeader>
@@ -646,13 +646,6 @@ export function QueueHealthOverviewCard({
           <p className="text-muted-foreground">Loading...</p>
         ) : (
           <TooltipProvider delayDuration={150}>
-            {canManageConcurrency && (
-              <div className="grid gap-3 sm:grid-cols-2">
-                <DispatcherTile status={data.dispatcher} />
-                <ReconcilerTile status={data.reconciler} />
-              </div>
-            )}
-
             <section className="space-y-2">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-medium">

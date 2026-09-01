@@ -1038,6 +1038,20 @@ export interface QueueHealthResponse {
   timestamp: string;
 }
 
+export interface ModelEndpointCheckResponse {
+  ok: boolean;
+  model: string;
+  resolved_model: string;
+  provider: string;
+  transport: "litellm_completion";
+  failure_kind: "provider" | "configuration" | null;
+  status_code: number | null;
+  latency_ms: number;
+  response: string | null;
+  error: string | null;
+  request_id: string | null;
+}
+
 export interface CostModelBreakdown {
   model: string;
   provider: string;
