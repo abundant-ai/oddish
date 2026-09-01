@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any, Sequence
 
 from fastapi import HTTPException
-from sqlalchemy import case, delete, func, select, text
+from sqlalchemy import case, delete, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.db import (
@@ -214,17 +214,30 @@ async def _add_tasks(
     task_ids: Sequence[str],
     org_id: str | None,
 ) -> list[DeliveryTaskModel]:
-    requested = list(dict.fromkeys(task_ids))
-    found = set(
-        (
-            await session.scalars(
-                select(TaskModel.id).where(
-                    TaskModel.id.in_(requested), TaskModel.org_id == org_id
-                )
+    # Each entry is a task id or a task name — names are unique per org
+    # among live tasks (idx_tasks_unique_org_name), so both are unambiguous.
+    # An id match wins if a string happens to be both.
+    refs = list(dict.fromkeys(task_ids))
+    rows = (
+        await session.execute(
+            select(TaskModel.id, TaskModel.name).where(
+                or_(TaskModel.id.in_(refs), TaskModel.name.in_(refs)),
+                TaskModel.org_id == org_id,
             )
-        ).all()
-    )
-    missing = [t for t in requested if t not in found]
+        )
+    ).all()
+    known_ids = {task_id for task_id, _ in rows}
+    by_name = {name: task_id for task_id, name in rows}
+    requested = []
+    missing = []
+    for ref in refs:
+        if ref in known_ids:
+            requested.append(ref)
+        elif ref in by_name:
+            requested.append(by_name[ref])
+        else:
+            missing.append(ref)
+    requested = list(dict.fromkeys(requested))
     if missing:
         raise HTTPException(
             status_code=404, detail=f"tasks not found: {', '.join(missing[:10])}"
@@ -281,12 +294,24 @@ async def remove_delivery_task_core(
 ) -> None:
     delivery = await _get_delivery(session, delivery_id, org_id)
     _require_active(delivery)
+    # Accept an id or a name. The id-only lookup comes first so a member
+    # whose task was soft-deleted (hidden from TaskModel reads) can still
+    # be removed.
     row = await session.scalar(
         select(DeliveryTaskModel).where(
             DeliveryTaskModel.delivery_id == delivery.id,
             DeliveryTaskModel.task_id == task_id,
         )
     )
+    if row is None:
+        row = await session.scalar(
+            select(DeliveryTaskModel)
+            .join(TaskModel, TaskModel.id == DeliveryTaskModel.task_id)
+            .where(
+                DeliveryTaskModel.delivery_id == delivery.id,
+                TaskModel.name == task_id,
+            )
+        )
     if row is None:
         raise HTTPException(status_code=404, detail="task not in this delivery")
     await session.execute(

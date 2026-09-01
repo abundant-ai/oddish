@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import Link from "next/link";
 import { useAuth } from "@clerk/nextjs";
 import useSWR from "swr";
@@ -21,6 +21,7 @@ import type {
   DeliveryBoardResponse,
   DeliveryCheckResult,
   DeliveryTaskBoardRow,
+  TaskBrowseResponse,
   TaskQAHistoryResponse,
 } from "@/lib/types";
 import { CheckChip, DeliveryStatusBadge } from "@/components/delivery-status";
@@ -46,7 +47,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
 import {
   Table,
   TableBody,
@@ -55,7 +56,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Textarea } from "@/components/ui/textarea";
 
 async function postJson(url: string, method: string, body?: unknown) {
   const res = await fetch(url, {
@@ -69,9 +69,129 @@ async function postJson(url: string, method: string, body?: unknown) {
       error?: string;
     } | null;
     throw new Error(
-      payload?.detail || payload?.error || `Request failed (${res.status})`,
+      payload?.detail || payload?.error || `Request failed (${res.status})`
     );
   }
+}
+
+function AddTasksDialog({
+  open,
+  onOpenChange,
+  existingTaskIds,
+  busy,
+  onAdd,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  existingTaskIds: Set<string>;
+  busy: boolean;
+  onAdd: (taskIds: string[]) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const [query, setQuery] = useState("");
+  const [selected, setSelected] = useState<Map<string, string>>(new Map());
+
+  useEffect(() => {
+    const handle = setTimeout(() => setQuery(search.trim()), 300);
+    return () => clearTimeout(handle);
+  }, [search]);
+
+  const { data, error, isLoading } = useSWR<TaskBrowseResponse>(
+    open ? `/api/tasks/browse?q=${encodeURIComponent(query)}` : null,
+    fetcher,
+    { keepPreviousData: true }
+  );
+  const results = (data?.items ?? []).filter(
+    (item) => !existingTaskIds.has(item.id)
+  );
+
+  const toggle = (id: string, name: string) => {
+    setSelected((current) => {
+      const next = new Map(current);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.set(id, name);
+      }
+      return next;
+    });
+  };
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(value) => {
+        onOpenChange(value);
+        if (!value) {
+          setSelected(new Map());
+          setSearch("");
+        }
+      }}
+    >
+      <DialogTrigger asChild>
+        <Button variant="outline" size="sm" disabled={busy}>
+          <Plus className="mr-1 h-4 w-4" />
+          Add tasks
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Add tasks</DialogTitle>
+        </DialogHeader>
+        <Input
+          autoFocus
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search tasks by name…"
+        />
+        <div className="max-h-64 space-y-0.5 overflow-y-auto">
+          {error ? (
+            <p className="text-destructive py-2 text-sm">
+              Search failed: {error.message}
+            </p>
+          ) : isLoading && !data ? (
+            <p className="text-muted-foreground py-2 text-sm">Searching…</p>
+          ) : results.length === 0 ? (
+            <p className="text-muted-foreground py-2 text-sm">
+              {query
+                ? "No matching tasks (or they are already in this delivery)."
+                : "Type to search your tasks."}
+            </p>
+          ) : (
+            results.map((item) => (
+              <label
+                key={item.id}
+                className="hover:bg-muted flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5"
+              >
+                <Checkbox
+                  checked={selected.has(item.id)}
+                  onCheckedChange={() => toggle(item.id, item.name)}
+                />
+                <span className="min-w-0 flex-1 truncate text-sm">
+                  {item.name}
+                </span>
+                {item.current_version != null && (
+                  <span className="text-muted-foreground text-xs">
+                    v{item.current_version}
+                  </span>
+                )}
+              </label>
+            ))
+          )}
+        </div>
+        <DialogFooter>
+          <Button
+            onClick={() => onAdd([...selected.keys()])}
+            disabled={busy || selected.size === 0}
+          >
+            {selected.size > 0
+              ? `Add ${selected.size} task${selected.size === 1 ? "" : "s"}`
+              : "Add"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 function ManualCheckRow({
@@ -94,7 +214,7 @@ function ManualCheckRow({
       <div className="min-w-0">
         <p className="text-sm">{check.label}</p>
         {check.detail && (
-          <p className="text-xs text-muted-foreground">{check.detail}</p>
+          <p className="text-muted-foreground text-xs">{check.detail}</p>
         )}
       </div>
     </div>
@@ -104,17 +224,17 @@ function ManualCheckRow({
 function QAHistoryPanel({ taskId }: { taskId: string }) {
   const { data, error, isLoading } = useSWR<TaskQAHistoryResponse>(
     `/api/tasks/${encodeURIComponent(taskId)}/qa-history`,
-    fetcher,
+    fetcher
   );
   if (error) {
     return (
-      <p className="text-xs text-destructive">
+      <p className="text-destructive text-xs">
         Failed to load QA history: {error.message}
       </p>
     );
   }
   if (isLoading || !data) {
-    return <p className="text-xs text-muted-foreground">Loading QA history…</p>;
+    return <p className="text-muted-foreground text-xs">Loading QA history…</p>;
   }
   return (
     <div className="space-y-2">
@@ -126,7 +246,7 @@ function QAHistoryPanel({ taskId }: { taskId: string }) {
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-medium">v{version.version}</span>
             {version.is_current && (
-              <span className="rounded-full bg-secondary px-1.5 py-0.5">
+              <span className="bg-secondary rounded-full px-1.5 py-0.5">
                 current
               </span>
             )}
@@ -134,7 +254,7 @@ function QAHistoryPanel({ taskId }: { taskId: string }) {
               <span className="text-muted-foreground">{version.message}</span>
             )}
           </div>
-          <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-muted-foreground">
+          <div className="text-muted-foreground mt-1 flex flex-wrap gap-x-4 gap-y-1">
             <span>
               audit:{" "}
               {version.pre_trial_status
@@ -176,7 +296,7 @@ function TaskRow({
   onSetCheck: (
     checkKey: string,
     deliveryTaskId: string,
-    checked: boolean,
+    checked: boolean
   ) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -190,9 +310,9 @@ function TaskRow({
       >
         <TableCell className="w-6">
           {expanded ? (
-            <ChevronDown className="h-4 w-4 text-muted-foreground" />
+            <ChevronDown className="text-muted-foreground h-4 w-4" />
           ) : (
-            <ChevronRight className="h-4 w-4 text-muted-foreground" />
+            <ChevronRight className="text-muted-foreground h-4 w-4" />
           )}
         </TableCell>
         <TableCell>
@@ -204,7 +324,7 @@ function TaskRow({
             {row.task_name}
           </Link>
           {!row.is_visible && (
-            <span className="ml-2 text-xs text-muted-foreground">
+            <span className="text-muted-foreground ml-2 text-xs">
               (hidden from customer)
             </span>
           )}
@@ -259,7 +379,7 @@ function TaskRow({
             )}
             {manualChecks.length > 0 && (
               <div>
-                <p className="mb-1 text-xs font-medium uppercase text-muted-foreground">
+                <p className="text-muted-foreground mb-1 text-xs font-medium uppercase">
                   Sign-off
                 </p>
                 {manualChecks.map((check) => (
@@ -275,7 +395,7 @@ function TaskRow({
               </div>
             )}
             <div>
-              <p className="mb-1 flex items-center gap-1 text-xs font-medium uppercase text-muted-foreground">
+              <p className="text-muted-foreground mb-1 flex items-center gap-1 text-xs font-medium uppercase">
                 <History className="h-3 w-3" />
                 QA history
               </p>
@@ -294,12 +414,11 @@ export function DeliveryBoardClient({ deliveryId }: { deliveryId: string }) {
   const { data, error, isLoading, mutate } = useSWR<DeliveryBoardResponse>(
     `/api/deliveries/${encodeURIComponent(deliveryId)}`,
     fetcher,
-    { refreshInterval: 15000 },
+    { refreshInterval: 15000 }
   );
 
   const [actionError, setActionError] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
-  const [taskIdsText, setTaskIdsText] = useState("");
   const [busy, setBusy] = useState(false);
 
   const run = async (action: () => Promise<void>) => {
@@ -318,7 +437,7 @@ export function DeliveryBoardClient({ deliveryId }: { deliveryId: string }) {
   const setCheck = (
     checkKey: string,
     deliveryTaskId: string | null,
-    checked: boolean,
+    checked: boolean
   ) =>
     void run(() =>
       postJson(
@@ -328,24 +447,19 @@ export function DeliveryBoardClient({ deliveryId }: { deliveryId: string }) {
           check_key: checkKey,
           delivery_task_id: deliveryTaskId,
           checked,
-        },
-      ),
+        }
+      )
     );
 
-  const addTasks = () => {
-    const taskIds = taskIdsText
-      .split(/[\s,]+/)
-      .map((value) => value.trim())
-      .filter(Boolean);
+  const addTasks = (taskIds: string[]) => {
     if (taskIds.length === 0) return;
     void run(async () => {
       await postJson(
         `/api/deliveries/${encodeURIComponent(deliveryId)}/tasks`,
         "POST",
-        { task_ids: taskIds },
+        { task_ids: taskIds }
       );
       setAddOpen(false);
-      setTaskIdsText("");
     });
   };
 
@@ -353,7 +467,7 @@ export function DeliveryBoardClient({ deliveryId }: { deliveryId: string }) {
     return (
       <Card>
         <CardContent className="py-6">
-          <p className="text-sm text-destructive">
+          <p className="text-destructive text-sm">
             Failed to load delivery: {error.message}
           </p>
         </CardContent>
@@ -364,7 +478,7 @@ export function DeliveryBoardClient({ deliveryId }: { deliveryId: string }) {
     return (
       <Card>
         <CardContent className="py-6">
-          <p className="text-sm text-muted-foreground">Loading delivery…</p>
+          <p className="text-muted-foreground text-sm">Loading delivery…</p>
         </CardContent>
       </Card>
     );
@@ -379,9 +493,9 @@ export function DeliveryBoardClient({ deliveryId }: { deliveryId: string }) {
             <CardTitle className="flex items-center gap-2">
               {data.delivery.name}
               <DeliveryStatusBadge status={data.delivery.status} />
-              {frozen && <Lock className="h-4 w-4 text-muted-foreground" />}
+              {frozen && <Lock className="text-muted-foreground h-4 w-4" />}
             </CardTitle>
-            <p className="mt-1 text-sm text-muted-foreground">
+            <p className="text-muted-foreground mt-1 text-sm">
               {data.delivery.customer_name
                 ? `For ${data.delivery.customer_name} · `
                 : ""}
@@ -394,38 +508,13 @@ export function DeliveryBoardClient({ deliveryId }: { deliveryId: string }) {
           </div>
           {isAdmin && !frozen && (
             <div className="flex items-center gap-2">
-              <Dialog open={addOpen} onOpenChange={setAddOpen}>
-                <DialogTrigger asChild>
-                  <Button variant="outline" size="sm" disabled={busy}>
-                    <Plus className="mr-1 h-4 w-4" />
-                    Add tasks
-                  </Button>
-                </DialogTrigger>
-                <DialogContent>
-                  <DialogHeader>
-                    <DialogTitle>Add tasks</DialogTitle>
-                  </DialogHeader>
-                  <div className="space-y-1">
-                    <Label htmlFor="delivery-task-ids">
-                      Task IDs (whitespace or comma separated)
-                    </Label>
-                    <Textarea
-                      id="delivery-task-ids"
-                      value={taskIdsText}
-                      onChange={(e) => setTaskIdsText(e.target.value)}
-                      rows={4}
-                    />
-                  </div>
-                  <DialogFooter>
-                    <Button
-                      onClick={addTasks}
-                      disabled={busy || !taskIdsText.trim()}
-                    >
-                      Add
-                    </Button>
-                  </DialogFooter>
-                </DialogContent>
-              </Dialog>
+              <AddTasksDialog
+                open={addOpen}
+                onOpenChange={setAddOpen}
+                existingTaskIds={new Set(data.tasks.map((row) => row.task_id))}
+                busy={busy}
+                onAdd={addTasks}
+              />
               <AlertDialog>
                 <AlertDialogTrigger asChild>
                   <Button size="sm" disabled={busy || !data.ready}>
@@ -434,14 +523,12 @@ export function DeliveryBoardClient({ deliveryId }: { deliveryId: string }) {
                 </AlertDialogTrigger>
                 <AlertDialogContent>
                   <AlertDialogHeader>
-                    <AlertDialogTitle>
-                      Finalize this delivery?
-                    </AlertDialogTitle>
+                    <AlertDialogTitle>Finalize this delivery?</AlertDialogTitle>
                     <AlertDialogDescription>
                       Finalizing pins every task at its current version and
-                      freezes the board as the permanent record of what
-                      shipped. A finalized delivery is read-only; follow-up
-                      work goes in a new delivery.
+                      freezes the board as the permanent record of what shipped.
+                      A finalized delivery is read-only; follow-up work goes in
+                      a new delivery.
                     </AlertDialogDescription>
                   </AlertDialogHeader>
                   <AlertDialogFooter>
@@ -452,8 +539,8 @@ export function DeliveryBoardClient({ deliveryId }: { deliveryId: string }) {
                           postJson(
                             `/api/deliveries/${encodeURIComponent(deliveryId)}/finalize`,
                             "POST",
-                            {},
-                          ),
+                            {}
+                          )
                         )
                       }
                     >
@@ -468,11 +555,11 @@ export function DeliveryBoardClient({ deliveryId }: { deliveryId: string }) {
         {(actionError || data.delivery_checks.length > 0) && (
           <CardContent className="space-y-2 pt-0">
             {actionError && (
-              <p className="text-sm text-destructive">{actionError}</p>
+              <p className="text-destructive text-sm">{actionError}</p>
             )}
             {data.delivery_checks.length > 0 && (
               <div>
-                <p className="mb-1 text-xs font-medium uppercase text-muted-foreground">
+                <p className="text-muted-foreground mb-1 text-xs font-medium uppercase">
                   Delivery sign-off
                 </p>
                 {data.delivery_checks.map((check) => (
@@ -492,7 +579,7 @@ export function DeliveryBoardClient({ deliveryId }: { deliveryId: string }) {
       <Card>
         <CardContent className="pt-4">
           {data.tasks.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
+            <p className="text-muted-foreground text-sm">
               No tasks yet. Add the tasks this delivery should ship.
             </p>
           ) : (

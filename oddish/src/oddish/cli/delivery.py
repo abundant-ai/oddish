@@ -185,7 +185,7 @@ def create_delivery(
     ] = None,
     tasks: Annotated[
         Optional[list[str]],
-        typer.Option("--task", "-t", help="Task id to include (repeatable)."),
+        typer.Option("--task", "-t", help="Task id or name to include (repeatable)."),
     ] = None,
     api_url: Annotated[str, _API_OPTION] = "",
     json_output: Annotated[bool, _JSON_OPTION] = False,
@@ -263,7 +263,7 @@ def ready(
 @delivery_app.command("add")
 def add_tasks(
     delivery: Annotated[str, typer.Argument(help="Delivery id or name.")],
-    tasks: Annotated[list[str], typer.Argument(help="Task ids to add.")],
+    tasks: Annotated[list[str], typer.Argument(help="Task ids or names to add.")],
     api_url: Annotated[str, _API_OPTION] = "",
 ) -> None:
     """Add tasks to a delivery."""
@@ -282,7 +282,7 @@ def add_tasks(
 @delivery_app.command("remove")
 def remove_task(
     delivery: Annotated[str, typer.Argument(help="Delivery id or name.")],
-    task: Annotated[str, typer.Argument(help="Task id to remove.")],
+    task: Annotated[str, typer.Argument(help="Task id or name to remove.")],
     api_url: Annotated[str, _API_OPTION] = "",
 ) -> None:
     """Remove a task from a delivery."""
@@ -301,7 +301,7 @@ def set_check(
     check_key: Annotated[str, typer.Argument(help="Manual check key.")],
     task: Annotated[
         Optional[str],
-        typer.Option("--task", help="Task id (for task-scoped checks)."),
+        typer.Option("--task", help="Task id or name (for task-scoped checks)."),
     ] = None,
     off: Annotated[
         bool, typer.Option("--off", help="Untick instead of ticking.")
@@ -315,7 +315,14 @@ def set_check(
         board = _fetch_board(client, api_url, delivery)
         delivery_task_id = None
         if task is not None:
-            row = next((r for r in board["tasks"] if r["task_id"] == task), None)
+            row = next(
+                (
+                    r
+                    for r in board["tasks"]
+                    if task in (r["task_id"], r["task_name"])
+                ),
+                None,
+            )
             if row is None:
                 _fail(f"task {task!r} is not in this delivery")
                 return

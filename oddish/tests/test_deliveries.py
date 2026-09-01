@@ -501,3 +501,39 @@ async def test_qa_on_other_version_does_not_stale_verdict(session):
         session, delivery_id=delivery.id, org_id=ORG
     )
     assert _checks(board, task.id)["verdict_ok"].status == "pass"
+
+
+@pytest.mark.asyncio
+async def test_add_tasks_by_name(session):
+    task, _, _ = await _green_task(session, "deliv-by-name")
+    delivery = await create_delivery_core(
+        session,
+        data=DeliveryCreate(name="batch-12", task_ids=["deliv-by-name"]),
+        org_id=ORG,
+        user_id="u1",
+    )
+    board = await get_delivery_board_core(
+        session, delivery_id=delivery.id, org_id=ORG
+    )
+    assert board.tasks[0].task_id == task.id
+
+    # Names in another org must not resolve, and unknown refs still 404.
+    with pytest.raises(HTTPException) as err:
+        await add_delivery_tasks_core(
+            session,
+            delivery_id=delivery.id,
+            org_id=ORG,
+            data=DeliveryTasksAdd(task_ids=["no-such-task"]),
+        )
+    assert err.value.status_code == 404
+
+    # Removal accepts a name too.
+    from oddish.core.deliveries import remove_delivery_task_core
+
+    await remove_delivery_task_core(
+        session, delivery_id=delivery.id, org_id=ORG, task_id="deliv-by-name"
+    )
+    board = await get_delivery_board_core(
+        session, delivery_id=delivery.id, org_id=ORG
+    )
+    assert board.task_count == 0

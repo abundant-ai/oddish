@@ -851,7 +851,7 @@ re-validated.
 
 ```bash
 # Create a delivery and add tasks to it over time
-oddish delivery create "august-batch" --customer "Acme" -t task-1 -t task-2
+oddish delivery create "august-batch" --customer "Acme" -t my-task-name
 oddish delivery add august-batch task-3 task-4
 
 # The board: every task, every check, every blocker
@@ -877,6 +877,7 @@ Commands
 - `show DELIVERY` - Render the readiness board (`--json` for the full matrix)
 - `ready DELIVERY` - Exit 0 if every check passes, 1 with the blockers listed
 - `add DELIVERY TASKS...` / `remove DELIVERY TASK` - Manage membership
+  (tasks accepted by id or name)
 - `check DELIVERY KEY` - Tick a manual check (`--task` for task-scoped,
   `--off` to untick, `--note` to annotate)
 - `finalize DELIVERY` - Pin task versions and freeze the delivery (`-y` skips
