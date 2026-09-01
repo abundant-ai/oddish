@@ -1239,29 +1239,32 @@ export function TrialDetailPanel({
               v{trial.task_version}
             </span>
           )}
-          <span className="text-muted-foreground/50">·</span>
-          <span className="text-muted-foreground flex min-w-0 items-center gap-1.5 leading-tight">
-            <span className="flex min-w-0 flex-col items-center text-center leading-tight">
-              <span className="truncate text-[10px] font-bold sm:text-xs">
-                {trial.agent}
-              </span>
-              <span className="flex items-center gap-1 truncate font-mono text-[9px] font-normal sm:text-[10px]">
-                <QueueKeyIcon
-                  queueKey={trial.provider}
-                  model={trial.model}
-                  agent={trial.agent}
-                  size={11}
-                  className="shrink-0"
-                />
-                {trial.model ?? "—"}
-              </span>
-            </span>
-            {sandboxBackend && <SandboxBackendBadge backend={sandboxBackend} />}
-          </span>
         </DrawerTitle>
         <DrawerDescription className="text-muted-foreground font-mono">
           <span className="truncate">{trial.id}</span>
         </DrawerDescription>
+        <div className="text-muted-foreground flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 pr-16 font-mono text-[10px] sm:text-xs">
+          <span className="text-foreground/80 inline-flex shrink-0 items-center gap-1 font-semibold">
+            <QueueKeyIcon
+              queueKey={trial.provider}
+              model={trial.model}
+              agent={trial.agent}
+              size={11}
+              className="shrink-0"
+            />
+            {trial.agent}
+          </span>
+          <span className="text-muted-foreground/50 shrink-0">·</span>
+          <span className="flex max-w-full min-w-0 flex-1 basis-52 items-center gap-1.5">
+            <span
+              className="min-w-0 flex-1 truncate"
+              title={trial.model ?? undefined}
+            >
+              {trial.model ?? "—"}
+            </span>
+            {sandboxBackend && <SandboxBackendBadge backend={sandboxBackend} />}
+          </span>
+        </div>
         <div className="text-muted-foreground flex flex-wrap items-stretch justify-between gap-2 pt-2 text-xs">
           <div className="flex items-center gap-1">
             {paneAction}
@@ -1355,7 +1358,7 @@ export function TrialDetailPanel({
               </>
             )}
           </div>
-          <div className="flex min-w-0 items-stretch gap-2">
+          <div className="flex min-w-0 flex-wrap items-stretch justify-end gap-2">
             <Card
               className={cn(
                 "min-w-[145px] border",
