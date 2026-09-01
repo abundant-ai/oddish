@@ -2498,7 +2498,9 @@ class TaskQAHistoryVersion(BaseModel):
     is_current: bool
     pre_trial_status: str | None
     pre_trial_finished_at: datetime | None
-    pre_trial_must_fix: int
+    # Open must-fix defects from every source (pre-trial audit + trial
+    # analyses) — the same count the delivery board blocks on.
+    must_fix: int
     pre_trial_should_fix: int
     rollout_count: int
     rollout_agents: int

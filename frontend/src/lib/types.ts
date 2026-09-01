@@ -1346,7 +1346,7 @@ interface TaskQAHistoryVersion {
   is_current: boolean;
   pre_trial_status?: string | null;
   pre_trial_finished_at?: string | null;
-  pre_trial_must_fix: number;
+  must_fix: number;
   pre_trial_should_fix: number;
   rollout_count: number;
   rollout_agents: number;

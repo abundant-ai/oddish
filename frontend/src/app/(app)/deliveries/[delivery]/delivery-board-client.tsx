@@ -356,7 +356,7 @@ function QAHistoryPanel({ taskId }: { taskId: string }) {
               agents)
             </span>
             <span>
-              defects: {version.pre_trial_must_fix} must-fix,{" "}
+              defects: {version.must_fix} must-fix,{" "}
               {version.pre_trial_should_fix} should-fix
             </span>
             <span>

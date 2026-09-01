@@ -370,6 +370,14 @@ def _defect_id(version_id: str, item: dict) -> str:
     return hashlib.sha1(seed.encode()).hexdigest()[:16]
 
 
+def _pre_trial_items(version: TaskVersionModel) -> list[dict]:
+    """The pre-trial audit items, dicts only; any malformed shape reads []."""
+    items = (version.pre_trial or {}).get("items")
+    if not isinstance(items, list):
+        return []
+    return [i for i in items if isinstance(i, dict)]
+
+
 async def _must_fix_items(
     session: AsyncSession, versions: dict[str, TaskVersionModel]
 ) -> dict[str, list[dict]]:
@@ -397,8 +405,8 @@ async def _must_fix_items(
         )
 
     for vid, version in versions.items():
-        for item in (version.pre_trial or {}).get("items", []):
-            if isinstance(item, dict) and item.get("tier") == "must_fix":
+        for item in _pre_trial_items(version):
+            if item.get("tier") == "must_fix":
                 add(vid, item, "pre_trial")
 
     if versions:
@@ -1175,9 +1183,12 @@ async def get_task_qa_history_core(
             )
         )
 
+    # The board's defect source, so history and board never disagree on
+    # what counts as a must-fix (pre-trial items plus trial analyses).
+    must_fix = await _must_fix_items(session, {v.id: v for v in versions})
+
     out = []
     for version in versions:
-        items = (version.pre_trial or {}).get("items", [])
         count, agents = rollouts.get(version.id, (0, 0))
         out.append(
             TaskQAHistoryVersion(
@@ -1192,11 +1203,11 @@ async def get_task_qa_history_core(
                     else None
                 ),
                 pre_trial_finished_at=version.pre_trial_finished_at,
-                pre_trial_must_fix=sum(
-                    1 for i in items if i.get("tier") == "must_fix"
-                ),
+                must_fix=len(must_fix[version.id]),
                 pre_trial_should_fix=sum(
-                    1 for i in items if i.get("tier") == "should_fix"
+                    1
+                    for i in _pre_trial_items(version)
+                    if i.get("tier") == "should_fix"
                 ),
                 rollout_count=count,
                 rollout_agents=agents,

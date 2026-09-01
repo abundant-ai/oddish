@@ -413,12 +413,26 @@ async def test_qa_history(session):
     await session.flush()
     task.current_version_id = v2.id
     session.add(_trial(task, experiment, v2.id, kind="audit"))
+    # History must count must-fix from trial analyses too — the same
+    # source the board blocks on.
+    session.add(
+        _trial(
+            task,
+            experiment,
+            v2.id,
+            analysis={"action_items": [{"tier": "must_fix", "title": "cheat"}]},
+        )
+    )
+    # A malformed pre-trial items shape must not crash history.
+    v3 = _version(task, 3, pre_trial={"items": "garbage"})
+    session.add(v3)
     await session.flush()
 
     history = await get_task_qa_history_core(session, task_id=task.id, org_id=ORG)
-    assert [v.version for v in history.versions] == [2, 1]
-    latest, first = history.versions
-    assert latest.is_current and latest.pre_trial_must_fix == 1
+    assert [v.version for v in history.versions] == [3, 2, 1]
+    broken, latest, first = history.versions
+    assert broken.must_fix == 0 and broken.pre_trial_should_fix == 0
+    assert latest.is_current and latest.must_fix == 2
     assert latest.message == "fix the verifier"
     assert [run.kind for run in latest.qa_runs] == ["audit"]
     assert first.rollout_count == 5 and first.rollout_agents == 3
