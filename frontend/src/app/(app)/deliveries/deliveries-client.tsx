@@ -146,7 +146,7 @@ export function DeliveriesClient({
           <p className="text-destructive text-sm">
             Failed to load deliveries: {error.message}
           </p>
-        ) : isLoading ? (
+        ) : isLoading && !data ? (
           <div className="space-y-2">
             <Skeleton className="h-8 w-full" />
             <Skeleton className="h-8 w-full" />

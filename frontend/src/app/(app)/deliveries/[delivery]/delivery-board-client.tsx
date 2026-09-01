@@ -549,7 +549,7 @@ export function DeliveryBoardClient({
 }) {
   const { orgRole } = useAuth();
   const isAdmin = isOrgAdminRole(orgRole);
-  const { data, error, isLoading, mutate } = useSWR<DeliveryBoardResponse>(
+  const { data, error, mutate } = useSWR<DeliveryBoardResponse>(
     `/api/deliveries/${encodeURIComponent(deliveryId)}`,
     fetcher,
     { refreshInterval: 15000, fallbackData: initialBoard ?? undefined }
@@ -612,7 +612,7 @@ export function DeliveryBoardClient({
       </Card>
     );
   }
-  if (isLoading || !data) {
+  if (!data) {
     return (
       <div className="space-y-4">
         <Card>
