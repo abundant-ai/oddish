@@ -307,7 +307,7 @@ function ManualCheckRow({
           {check.status === "pass" && check.checked_by_user_id && (
             <span className="text-muted-foreground">
               {" "}
-              · by {check.checked_by_user_id}
+              · by {check.checked_by_name ?? check.checked_by_user_id}
             </span>
           )}
         </p>
@@ -342,47 +342,131 @@ function QAHistoryPanel({ taskId }: { taskId: string }) {
   return (
     <div className="space-y-2">
       {data.versions.map((version) => (
-        <div
+        <QAHistoryVersionRow
           key={version.version_id}
-          className="rounded-md border border-[#6f88b4]/20 p-2 text-xs"
-        >
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-medium">v{version.version}</span>
-            {version.is_current && (
-              <span className="bg-secondary rounded-full px-1.5 py-0.5">
-                current
-              </span>
-            )}
-            {version.message && (
-              <span className="text-muted-foreground">{version.message}</span>
-            )}
-          </div>
-          <div className="text-muted-foreground mt-1 flex flex-wrap gap-x-4 gap-y-1">
-            <span>
-              audit:{" "}
-              {version.pre_trial_status
-                ? version.pre_trial_status.toLowerCase()
-                : "not run"}
-            </span>
-            <span>
-              rollouts: {version.rollout_count} ({version.rollout_agents}{" "}
-              agents)
-            </span>
-            <span>
-              defects: {version.must_fix} must-fix,{" "}
-              {version.pre_trial_should_fix} should-fix
-            </span>
-            <span>
-              QA runs:{" "}
-              {version.qa_runs.length > 0
-                ? version.qa_runs
-                    .map((run) => `${run.kind} (${run.status ?? "pending"})`)
-                    .join(", ")
-                : "none"}
-            </span>
-          </div>
-        </div>
+          version={version}
+          verdict={
+            version.version_id === data.verdict_version_id
+              ? (data.verdict ?? null)
+              : null
+          }
+        />
       ))}
+    </div>
+  );
+}
+
+function QAHistoryVersionRow({
+  version,
+  verdict,
+}: {
+  version: TaskQAHistoryResponse["versions"][number];
+  verdict: TaskQAHistoryResponse["verdict"];
+}) {
+  const [open, setOpen] = useState(false);
+  const expandable = version.findings.length > 0 || verdict != null;
+  return (
+    <div className="rounded-md border border-[#6f88b4]/20 p-2 text-xs">
+      <button
+        type="button"
+        className={`w-full text-left ${expandable ? "cursor-pointer" : "cursor-default"}`}
+        onClick={() => expandable && setOpen((value) => !value)}
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          {expandable &&
+            (open ? (
+              <ChevronDown className="text-muted-foreground h-3 w-3" />
+            ) : (
+              <ChevronRight className="text-muted-foreground h-3 w-3" />
+            ))}
+          <span className="font-medium">v{version.version}</span>
+          {version.is_current && (
+            <span className="bg-secondary rounded-full px-1.5 py-0.5">
+              current
+            </span>
+          )}
+          {version.message && (
+            <span className="text-muted-foreground">{version.message}</span>
+          )}
+        </div>
+        <div className="text-muted-foreground mt-1 flex flex-wrap gap-x-4 gap-y-1">
+          <span>
+            audit:{" "}
+            {version.pre_trial_status
+              ? version.pre_trial_status.toLowerCase()
+              : "not run"}
+          </span>
+          <span>
+            rollouts: {version.rollout_count} ({version.rollout_agents} agents)
+          </span>
+          <span>
+            defects: {version.must_fix} must-fix, {version.pre_trial_should_fix}{" "}
+            should-fix
+          </span>
+          <span>
+            QA runs:{" "}
+            {version.qa_runs.length > 0
+              ? version.qa_runs
+                  .map((run) => `${run.kind} (${run.status ?? "pending"})`)
+                  .join(", ")
+              : "none"}
+          </span>
+        </div>
+      </button>
+      {open && (
+        <div className="mt-2 space-y-2 border-t border-[#6f88b4]/20 pt-2">
+          {verdict != null && (
+            <div>
+              <span
+                className={
+                  verdict.is_good
+                    ? "font-medium text-emerald-600 dark:text-emerald-400"
+                    : "font-medium text-red-600 dark:text-red-400"
+                }
+              >
+                verdict:{" "}
+                {verdict.verdict ?? (verdict.is_good ? "accept" : "reject")}
+              </span>
+              {verdict.primary_issue && (
+                <p className="text-muted-foreground mt-0.5">
+                  {verdict.primary_issue}
+                </p>
+              )}
+              {verdict.reasoning && (
+                <p className="text-muted-foreground mt-0.5">
+                  {verdict.reasoning}
+                </p>
+              )}
+            </div>
+          )}
+          {version.findings.length > 0 && (
+            <ul className="space-y-1">
+              {version.findings.map((finding, index) => (
+                <li key={index} className="flex items-start gap-2">
+                  <span
+                    className={`shrink-0 rounded-full px-1.5 py-0.5 ${
+                      finding.tier === "must_fix"
+                        ? "bg-red-500/15 text-red-700 dark:text-red-400"
+                        : "bg-muted text-muted-foreground"
+                    }`}
+                  >
+                    {finding.tier.replace("_", "-") || "note"}
+                  </span>
+                  <span className="min-w-0">
+                    {finding.title}
+                    {finding.source === "trial" && (
+                      <span className="text-muted-foreground">
+                        {" "}
+                        (from a trial)
+                      </span>
+                    )}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -491,7 +575,8 @@ function TaskRow({
                     </span>
                     {check.status === "waived" ? (
                       <span className="text-muted-foreground text-xs">
-                        acknowledged by {check.checked_by_user_id}
+                        acknowledged by{" "}
+                        {check.checked_by_name ?? check.checked_by_user_id}
                       </span>
                     ) : check.key === "no_must_fix" ? null : (
                       <Button
@@ -533,7 +618,9 @@ function TaskRow({
                       </span>
                       {defect.acknowledged ? (
                         <span className="text-muted-foreground text-xs">
-                          acknowledged by {defect.acknowledged_by_user_id}
+                          acknowledged by{" "}
+                          {defect.acknowledged_by_name ??
+                            defect.acknowledged_by_user_id}
                         </span>
                       ) : (
                         <Button

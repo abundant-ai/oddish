@@ -8,8 +8,11 @@ only add auth and transaction boundaries.
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import APIKeyScope, AuthContext, require_admin, require_auth
+from models import UserModel
 from oddish.core.deliveries import (
     add_delivery_tasks_core,
     create_delivery_core,
@@ -59,6 +62,52 @@ async def list_deliveries(
         return await list_deliveries_core(session, org_id=auth.org_id)
 
 
+async def _fill_user_names(
+    session: AsyncSession, org_id: str, board: DeliveryBoardResponse
+) -> None:
+    """Replace bare user ids with display names for the reader.
+
+    The core stores and returns ids only; this hosted layer owns the user
+    directory, so it resolves them at read time. An id without a user row
+    stays as it is and the UI falls back to the id.
+    """
+    ids: set[str] = set()
+    for row in board.tasks:
+        for check in row.checks:
+            if check.checked_by_user_id:
+                ids.add(check.checked_by_user_id)
+        for defect in row.defects:
+            if defect.acknowledged_by_user_id:
+                ids.add(defect.acknowledged_by_user_id)
+    for check in board.delivery_checks:
+        if check.checked_by_user_id:
+            ids.add(check.checked_by_user_id)
+    if not ids:
+        return
+    rows = await session.execute(
+        select(UserModel.id, UserModel.name, UserModel.github_username).where(
+            UserModel.id.in_(ids), UserModel.org_id == org_id
+        )
+    )
+    names: dict[str, str] = {}
+    for user_id, name, handle in rows.all():
+        display = (name or "").strip()
+        if not display:
+            safe_handle = (handle or "").strip().lstrip("@")
+            display = f"@{safe_handle}" if safe_handle else ""
+        if display:
+            names[user_id] = display
+    for row in board.tasks:
+        for check in row.checks:
+            check.checked_by_name = names.get(check.checked_by_user_id or "")
+        for defect in row.defects:
+            defect.acknowledged_by_name = names.get(
+                defect.acknowledged_by_user_id or ""
+            )
+    for check in board.delivery_checks:
+        check.checked_by_name = names.get(check.checked_by_user_id or "")
+
+
 @router.get("/deliveries/{delivery_id}", response_model=DeliveryBoardResponse)
 async def get_delivery_board(
     delivery_id: str,
@@ -66,9 +115,11 @@ async def get_delivery_board(
 ) -> DeliveryBoardResponse:
     auth.require_scope(APIKeyScope.TASKS)
     async with get_session() as session:
-        return await get_delivery_board_core(
+        board = await get_delivery_board_core(
             session, delivery_id=delivery_id, org_id=auth.org_id
         )
+        await _fill_user_names(session, auth.org_id, board)
+        return board
 
 
 @router.patch("/deliveries/{delivery_id}", response_model=DeliveryResponse)

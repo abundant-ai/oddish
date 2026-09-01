@@ -2435,8 +2435,11 @@ class DeliveryCheckResult(BaseModel):
     label: str
     status: DeliveryCheckStatus
     detail: str = ""
-    # Manual checks only: who ticked it and when.
+    # Manual checks only: who ticked it and when. The hosted API fills
+    # ``checked_by_name`` from the user record at read time; the core
+    # leaves it None.
     checked_by_user_id: str | None = None
+    checked_by_name: str | None = None
     checked_at: datetime | None = None
 
 
@@ -2448,6 +2451,7 @@ class DeliveryDefect(BaseModel):
     source: str  # "pre_trial" | "trial"
     acknowledged: bool
     acknowledged_by_user_id: str | None = None
+    acknowledged_by_name: str | None = None
     acknowledged_at: datetime | None = None
 
 
@@ -2490,6 +2494,12 @@ class TaskQAHistoryRun(BaseModel):
     finished_at: datetime | None
 
 
+class TaskQAHistoryFinding(BaseModel):
+    tier: str
+    title: str
+    source: str  # "pre_trial" | "trial"
+
+
 class TaskQAHistoryVersion(BaseModel):
     version_id: str
     version: int
@@ -2505,6 +2515,9 @@ class TaskQAHistoryVersion(BaseModel):
     rollout_count: int
     rollout_agents: int
     qa_runs: list[TaskQAHistoryRun]
+    # The QA findings behind the counts, for inline display: every
+    # pre-trial audit item plus the must-fix items from trial analyses.
+    findings: list[TaskQAHistoryFinding] = Field(default_factory=list)
 
 
 class TaskQAHistoryResponse(BaseModel):
@@ -2513,4 +2526,7 @@ class TaskQAHistoryResponse(BaseModel):
     current_version_id: str | None
     verdict: dict | None
     verdict_status: str | None
+    # The version the stored verdict covers: the one graded by the newest
+    # verdict-producing QA run. None when no such run exists.
+    verdict_version_id: str | None = None
     versions: list[TaskQAHistoryVersion]

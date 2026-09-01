@@ -40,6 +40,7 @@ from oddish.schemas import (
     DeliveryTaskBoardRow,
     DeliveryTasksAdd,
     ManualCheckSet,
+    TaskQAHistoryFinding,
     TaskQAHistoryResponse,
     TaskQAHistoryRun,
     TaskQAHistoryVersion,
@@ -368,6 +369,27 @@ def _defect_id(version_id: str, item: dict) -> str:
         f"{item.get('title')}"
     )
     return hashlib.sha1(seed.encode()).hexdigest()[:16]
+
+
+def _verdict_qa_clauses() -> list:
+    """Filters for QA runs that can author ``tasks.verdict``.
+
+    A run staged below the verdict evidence bar carries with_verdict=false:
+    it completes SUCCESS but restores the prior verdict instead of
+    authoring one, so it cannot vouch for the version it graded.
+    """
+    return [
+        TrialModel.kind == "qa",
+        TrialModel.status == TrialStatus.SUCCESS,
+        TrialModel.task_version_id.isnot(None),
+        func.coalesce(
+            TrialModel.harbor_config["analysis_payload"].op("->>")(
+                "with_verdict"
+            ),
+            "true",
+        )
+        != "false",
+    ]
 
 
 def _pre_trial_items(version: TaskVersionModel) -> list[dict]:
@@ -714,20 +736,7 @@ async def _compute_board(
                 select(TrialModel.task_id, TrialModel.task_version_id)
                 .where(
                     TrialModel.task_id.in_(task_ids),
-                    TrialModel.kind == "qa",
-                    TrialModel.status == TrialStatus.SUCCESS,
-                    TrialModel.task_version_id.isnot(None),
-                    # A run staged below the verdict evidence bar carries
-                    # with_verdict=false: it completes SUCCESS but restores
-                    # the prior verdict instead of authoring one, so it
-                    # cannot vouch for the version it graded.
-                    func.coalesce(
-                        TrialModel.harbor_config["analysis_payload"].op(
-                            "->>"
-                        )("with_verdict"),
-                        "true",
-                    )
-                    != "false",
+                    *_verdict_qa_clauses(),
                 )
                 .order_by(
                     func.coalesce(
@@ -1187,9 +1196,34 @@ async def get_task_qa_history_core(
     # what counts as a must-fix (pre-trial items plus trial analyses).
     must_fix = await _must_fix_items(session, {v.id: v for v in versions})
 
+    # Which version the stored verdict covers: the one graded by the
+    # newest verdict-producing QA run (same rule as the board).
+    verdict_version_id = await session.scalar(
+        select(TrialModel.task_version_id)
+        .where(TrialModel.task_id == task_id, *_verdict_qa_clauses())
+        .order_by(
+            func.coalesce(TrialModel.finished_at, TrialModel.created_at).desc()
+        )
+        .limit(1)
+    )
+
     out = []
     for version in versions:
         count, agents = rollouts.get(version.id, (0, 0))
+        findings = [
+            TaskQAHistoryFinding(
+                tier=str(item.get("tier") or ""),
+                title=str(item.get("title") or "untitled"),
+                source="pre_trial",
+            )
+            for item in _pre_trial_items(version)
+        ] + [
+            TaskQAHistoryFinding(
+                tier="must_fix", title=item["title"], source="trial"
+            )
+            for item in must_fix[version.id]
+            if item["source"] == "trial"
+        ]
         out.append(
             TaskQAHistoryVersion(
                 version_id=version.id,
@@ -1212,6 +1246,7 @@ async def get_task_qa_history_core(
                 rollout_count=count,
                 rollout_agents=agents,
                 qa_runs=runs_by_version.get(version.id, []),
+                findings=findings,
             )
         )
 
@@ -1221,5 +1256,6 @@ async def get_task_qa_history_core(
         current_version_id=task.current_version_id,
         verdict=task.verdict if isinstance(task.verdict, dict) else None,
         verdict_status=task.verdict_status.value if task.verdict_status else None,
+        verdict_version_id=verdict_version_id,
         versions=out,
     )

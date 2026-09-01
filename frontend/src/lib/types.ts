@@ -1289,15 +1289,17 @@ export interface DeliveryCheckResult {
   status: DeliveryCheckStatus;
   detail: string;
   checked_by_user_id?: string | null;
+  checked_by_name?: string | null;
   checked_at?: string | null;
 }
 
-export interface DeliveryDefect {
+interface DeliveryDefect {
   id: string;
   title: string;
   source: "pre_trial" | "trial" | (string & {});
   acknowledged: boolean;
   acknowledged_by_user_id?: string | null;
+  acknowledged_by_name?: string | null;
   acknowledged_at?: string | null;
 }
 
@@ -1351,13 +1353,28 @@ interface TaskQAHistoryVersion {
   rollout_count: number;
   rollout_agents: number;
   qa_runs: TaskQAHistoryRun[];
+  findings: TaskQAHistoryFinding[];
+}
+
+interface TaskQAHistoryFinding {
+  tier: string;
+  title: string;
+  source: "pre_trial" | "trial" | (string & {});
+}
+
+interface TaskQAHistoryVerdict {
+  verdict?: "accept" | "reject" | (string & {});
+  is_good?: boolean | null;
+  primary_issue?: string | null;
+  reasoning?: string | null;
 }
 
 export interface TaskQAHistoryResponse {
   task_id: string;
   task_name: string;
   current_version_id?: string | null;
-  verdict?: Record<string, unknown> | null;
+  verdict?: TaskQAHistoryVerdict | null;
   verdict_status?: string | null;
+  verdict_version_id?: string | null;
   versions: TaskQAHistoryVersion[];
 }

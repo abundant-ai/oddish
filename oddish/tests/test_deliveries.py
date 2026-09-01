@@ -432,7 +432,17 @@ async def test_qa_history(session):
     assert [v.version for v in history.versions] == [3, 2, 1]
     broken, latest, first = history.versions
     assert broken.must_fix == 0 and broken.pre_trial_should_fix == 0
+    assert broken.findings == []
     assert latest.is_current and latest.must_fix == 2
+    # The findings behind the counts, for inline display: the pre-trial
+    # item and the trial-analysis item, with their sources.
+    assert {(f.tier, f.title, f.source) for f in latest.findings} == {
+        ("must_fix", "x", "pre_trial"),
+        ("must_fix", "cheat", "trial"),
+    }
+    # The verdict covers the version the newest verdict-producing QA run
+    # graded: v1.
+    assert history.verdict_version_id == v1.id
     assert latest.message == "fix the verifier"
     assert [run.kind for run in latest.qa_runs] == ["audit"]
     assert first.rollout_count == 5 and first.rollout_agents == 3
