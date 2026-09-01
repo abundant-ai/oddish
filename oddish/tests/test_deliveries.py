@@ -373,3 +373,74 @@ async def test_qa_history(session):
         await get_task_qa_history_core(
             session, task_id=task.id, org_id="other-org"
         )
+
+
+@pytest.mark.asyncio
+async def test_deleted_task_blocks_readiness(session):
+    task, _, _ = await _green_task(session, "deliv-deleted")
+    delivery = await create_delivery_core(
+        session,
+        data=DeliveryCreate(name="batch-8", task_ids=[task.id]),
+        org_id=ORG,
+        user_id="u1",
+    )
+    board = await get_delivery_board_core(
+        session, delivery_id=delivery.id, org_id=ORG
+    )
+    assert board.ready
+
+    # Soft-deleting a member task must surface as a failing row, not
+    # silently shrink the board.
+    from oddish.db import utcnow
+
+    task.deleted_at = utcnow()
+    await session.flush()
+    board = await get_delivery_board_core(
+        session, delivery_id=delivery.id, org_id=ORG
+    )
+    assert board.task_count == 1 and not board.ready
+    row = board.tasks[0]
+    assert row.checks[0].key == "task_exists"
+    assert "deleted" in row.checks[0].detail
+
+    with pytest.raises(HTTPException) as err:
+        await finalize_delivery_core(
+            session, delivery_id=delivery.id, org_id=ORG, user_id="u1"
+        )
+    assert err.value.status_code == 409
+
+    # The remediation path still works: the dead member can be removed.
+    from oddish.core.deliveries import remove_delivery_task_core
+
+    await remove_delivery_task_core(
+        session, delivery_id=delivery.id, org_id=ORG, task_id=task.id
+    )
+    board = await get_delivery_board_core(
+        session, delivery_id=delivery.id, org_id=ORG
+    )
+    assert board.task_count == 0
+
+
+@pytest.mark.asyncio
+async def test_sort_order_advances_from_zero(session):
+    a, _, _ = await _green_task(session, "deliv-order-a")
+    b, _, _ = await _green_task(session, "deliv-order-b")
+    delivery = await create_delivery_core(
+        session,
+        data=DeliveryCreate(name="batch-9", task_ids=[a.id]),
+        org_id=ORG,
+        user_id="u1",
+    )
+    await add_delivery_tasks_core(
+        session,
+        delivery_id=delivery.id,
+        org_id=ORG,
+        data=DeliveryTasksAdd(task_ids=[b.id]),
+    )
+    board = await get_delivery_board_core(
+        session, delivery_id=delivery.id, org_id=ORG
+    )
+    assert [(r.task_id, r.sort_order) for r in board.tasks] == [
+        (a.id, 0),
+        (b.id, 1),
+    ]

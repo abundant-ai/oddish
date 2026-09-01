@@ -236,14 +236,12 @@ async def _add_tasks(
             )
         ).all()
     )
-    next_order = (
-        await session.scalar(
-            select(func.coalesce(func.max(DeliveryTaskModel.sort_order), -1)).where(
-                DeliveryTaskModel.delivery_id == delivery.id
-            )
+    max_order = await session.scalar(
+        select(func.coalesce(func.max(DeliveryTaskModel.sort_order), -1)).where(
+            DeliveryTaskModel.delivery_id == delivery.id
         )
-        or -1
-    ) + 1
+    )
+    next_order = (max_order if max_order is not None else -1) + 1
     added = []
     for task_id in requested:
         if task_id in existing:
@@ -419,16 +417,23 @@ async def _compute_board(
     latest_qa_version: dict[str, str | None] = {}
 
     if task_ids:
+        # Soft-deleted members must stay on the board as failing rows, not
+        # vanish: a delivery that silently drops a task could read ready and
+        # finalize a snapshot missing tasks still on it.
         tasks = {
             t.id: t
             for t in (
                 await session.scalars(
-                    select(TaskModel).where(TaskModel.id.in_(task_ids))
+                    select(TaskModel)
+                    .where(TaskModel.id.in_(task_ids))
+                    .execution_options(include_deleted=True)
                 )
             ).all()
         }
         version_ids = [
-            t.current_version_id for t in tasks.values() if t.current_version_id
+            t.current_version_id
+            for t in tasks.values()
+            if t.current_version_id and t.deleted_at is None
         ]
         if version_ids:
             versions = {
@@ -517,7 +522,33 @@ async def _compute_board(
     rows: list[DeliveryTaskBoardRow] = []
     for member in members:
         task = tasks.get(member.task_id)
-        if task is None:
+        if task is None or task.deleted_at is not None:
+            rows.append(
+                DeliveryTaskBoardRow(
+                    delivery_task_id=member.id,
+                    task_id=member.task_id,
+                    task_name=task.name if task else member.task_id,
+                    version_id=None,
+                    version=None,
+                    pinned_version_id=member.pinned_version_id,
+                    newer_version_exists=False,
+                    is_visible=member.is_visible,
+                    sort_order=member.sort_order,
+                    customer_note=member.customer_note,
+                    internal_note=member.internal_note,
+                    checks=[
+                        _check(
+                            "task_exists",
+                            passed=False,
+                            detail=(
+                                "task was deleted; remove it from this delivery"
+                            ),
+                            label="Task exists",
+                        )
+                    ],
+                    ready=False,
+                )
+            )
             continue
         version = versions.get(task.current_version_id or "")
         checks: list[DeliveryCheckResult] = []
