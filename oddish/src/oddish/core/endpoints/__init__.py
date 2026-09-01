@@ -57,6 +57,8 @@ from oddish.core.endpoints.experiment_cost import get_experiment_cost_totals
 from oddish.core.endpoints.experiment_page import (
     get_experiment_open_core,
     get_experiment_trial_page_core,
+    get_public_experiment_open_core,
+    get_public_experiment_trial_page_core,
 )
 from oddish.core.endpoints.qa_cost import (
     ExperimentQaCostTotals,
@@ -72,8 +74,6 @@ from oddish.core.endpoints.tasks_query import (
     browse_task_facets_core,
     browse_tasks_core,
     get_task_status_core,
-    list_experiment_slim_tasks,
-    list_experiment_task_shells_core,
     list_tasks_core,
 )
 from oddish.core.endpoints.trials import (
@@ -114,6 +114,8 @@ __all__ = [
     "get_experiment_cost_totals",
     "get_experiment_open_core",
     "get_experiment_trial_page_core",
+    "get_public_experiment_open_core",
+    "get_public_experiment_trial_page_core",
     "get_experiment_qa_cost_totals",
     "get_task_detail_core",
     "get_task_open_core",
@@ -129,8 +131,6 @@ __all__ = [
     "get_trial_response_for_org_core",
     "get_trial_result_core",
     "get_trial_trajectory_core",
-    "list_experiment_slim_tasks",
-    "list_experiment_task_shells_core",
     "list_task_versions_core",
     "list_tasks_core",
     "rerun_pre_trial_audit_core",

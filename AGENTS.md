@@ -573,8 +573,13 @@ otherwise it falls back to the highest version represented by such trials. The
 bounded `/open` and `/trial-page` endpoints apply the same rule so progressive
 loading cannot change the files/counts pivot or mix one version's trials with
 another's artifacts. `/open` returns exact totals plus at most 100 task shells
-under 50 KB. `/trial-page` returns at most 250 projected trials and omits full
+under 50 KB. Each task shell includes `github_meta`, parsed from the task's
+stored tags, so public dataset grouping does not infer repository metadata from
+the task name. `/trial-page` returns at most 250 projected trials and omits full
 analysis, errors, results, phase timing, Harbor config, and ORM relationships.
+In React, `/open` owns the page's initial loading and fatal-error state;
+`/trial-page` owns incremental trial loading and a retryable inline error, so a
+trial-page failure must not replace task shells that `/open` already returned.
 
 `overwrite_current_version` replaces the archive and metadata for
 `tasks.current_version_id` without changing its ID or version number. Uploads
@@ -1007,8 +1012,9 @@ the UI:
 
 - `get_public_task_for_experiment` (`sharing/helpers.py`) strips `is_probe` trials from the
   loaded task, covering `get_public_task_status`.
-- `list_public_experiment_tasks` excludes `is_probe` when filtering each task's
-  trials.
+- The public `/open` and `/trial-page` resources reuse
+  `visible_experiment_trial_predicates`, which excludes probes before rows are
+  projected.
 - `list_public_task_trials` always passes `probe=False` (never honors a
   caller-supplied probe filter publicly).
 
@@ -1019,7 +1025,7 @@ guards alone are not enough, since the trials still ship to the browser.
 ### `list_tasks_core` `load_only` and MissingGreenlet
 
 `list_tasks_core` (`oddish/src/oddish/core/endpoints/tasks_query.py`) powers
-the generic and legacy task-list routes. Its **compact path**
+the generic task-list routes. Its **compact path**
 (`compact_trials=True`) restricts the trial/task/experiment selectin loads with
 `load_only(...)`, which makes *only* the enumerated columns eager and defers
 everything else. The bounded experiment `/trial-page` uses the separate

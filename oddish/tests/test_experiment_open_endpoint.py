@@ -106,6 +106,7 @@ def _task(index: int, **overrides):
         "priority": "low",
         "user": "octocat",
         "task_path": f"tasks/task-{index:03}",
+        "tags": {},
         "current_version_id": f"task-{index:03}-v2",
         "current_version": 2,
         "trial_version_id": f"task-{index:03}-v1",
@@ -207,7 +208,15 @@ def _sql(query) -> str:
 
 
 def test_experiment_open_is_exact_compact_bounded_and_three_queries():
-    session, response = _open(_task(1), _task(2))
+    session, response = _open(
+        _task(
+            1,
+            tags={
+                "github_meta": '{"category":"JS","world":"World_7","domain":"Law"}'
+            },
+        ),
+        _task(2),
+    )
 
     assert len(session.calls) == 3
     assert response.experiment_id == "experiment-1"
@@ -235,6 +244,11 @@ def test_experiment_open_is_exact_compact_bounded_and_three_queries():
     assert response.tasks[0].status == "completed"
     assert response.tasks[0].current_version_id == "task-001-v2"
     assert response.tasks[0].trial_version_id == "task-001-v1"
+    assert response.tasks[0].github_meta == {
+        "category": "JS",
+        "world": "World_7",
+        "domain": "Law",
+    }
     assert response.tasks[0].verdict is not None
     assert response.tasks[0].verdict.verdict == "accept"
     assert len(response.model_dump_json().encode()) < OPEN_MAX_BYTES

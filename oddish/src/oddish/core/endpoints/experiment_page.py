@@ -15,8 +15,14 @@ from oddish.core.cost_exclusions import CostExclusions, load_cost_exclusions
 from oddish.core.experiment_membership import visible_experiment_trial_predicates
 from oddish.core.helpers import (
     SLIM_TRIAL_RESPONSE_COLUMNS,
+    _parse_github_meta,
     experiment_effective_versions_selectable,
 )
+from oddish.core.model_display_names import (
+    apply_model_display_names,
+    experiment_display_names,
+)
+from oddish.core.sharing.helpers import get_public_experiment
 from oddish.db import (
     ACTIVE_TRIAL_STATUSES,
     ExperimentModel,
@@ -221,6 +227,7 @@ def _experiment_task_rows(*, experiment_id: str, org_id: str):
             TaskModel.priority,
             TaskModel.user,
             TaskModel.task_path,
+            TaskModel.tags,
             TaskModel.current_version_id,
             current_version.version.label("current_version"),
             effective.c.task_version_id.label("trial_version_id"),
@@ -289,6 +296,7 @@ def _task_row(row: Mapping[str, Any]) -> ExperimentTaskRow:
     values.update(
         id=str(row["task_id"]),
         status=TaskStatus.COMPLETED if total and terminal >= total else row["status"],
+        github_meta=_parse_github_meta(row["tags"]),
         reward_success=int(row["pass_count"] or 0),
         verdict=verdict,
     )
@@ -299,19 +307,25 @@ async def get_experiment_open_core(
     session: AsyncSession,
     *,
     experiment_id: str,
-    org_id: str,
+    org_id: str | None,
     limit: int = OPEN_MAX_TASKS,
     before_created_at: datetime | None = None,
     before_task_id: str | None = None,
+    _experiment: Mapping[str, Any] | None = None,
 ) -> ExperimentOpenResponse:
     """Return exact experiment totals and one byte-bounded task page."""
     if (before_created_at is None) != (before_task_id is None):
         raise HTTPException(
             status_code=400, detail="Both task page fields are required"
         )
-    experiment = await _member_experiment(
-        session, experiment_id=experiment_id, org_id=org_id
-    )
+    if _experiment is None:
+        if org_id is None:
+            raise ValueError("Member experiment reads require an organization")
+        experiment = await _member_experiment(
+            session, experiment_id=experiment_id, org_id=org_id
+        )
+    else:
+        experiment = _experiment
     task_rows = _experiment_task_rows(experiment_id=experiment_id, org_id=org_id)
     tasks = task_rows.subquery("experiment_open_tasks")
     inactive_verdict = or_(
@@ -444,18 +458,25 @@ async def get_experiment_trial_page_core(
     session: AsyncSession,
     *,
     experiment_id: str,
-    org_id: str,
+    org_id: str | None,
     limit: int = TRIAL_PAGE_MAX_TRIALS,
     before_created_at: datetime | None = None,
     before_trial_id: str | None = None,
+    _experiment: Mapping[str, Any] | None = None,
+    _include_cost_exclusion_labels: bool = True,
 ) -> ExperimentTrialPageResponse:
     if (before_created_at is None) != (before_trial_id is None):
         raise HTTPException(
             status_code=400, detail="Both trial page fields are required"
         )
-    experiment = await _member_experiment(
-        session, experiment_id=experiment_id, org_id=org_id
-    )
+    if _experiment is None:
+        if org_id is None:
+            raise ValueError("Member experiment reads require an organization")
+        experiment = await _member_experiment(
+            session, experiment_id=experiment_id, org_id=org_id
+        )
+    else:
+        experiment = _experiment
     effective = experiment_effective_versions_selectable(experiment_id=experiment_id)
     query = (
         select(
@@ -504,7 +525,11 @@ async def get_experiment_trial_page_core(
     rows = list(result.mappings().all())
     has_more = len(rows) > limit
     rows = rows[:limit]
-    exclusions = await load_cost_exclusions(session) if rows else None
+    exclusions = (
+        await load_cost_exclusions(session)
+        if rows and _include_cost_exclusion_labels
+        else None
+    )
     trials = [build_experiment_trial_cell(row, exclusions=exclusions) for row in rows]
     response = ExperimentTrialPageResponse(
         revision=experiment["revision"], trials=trials
@@ -512,4 +537,66 @@ async def get_experiment_trial_page_core(
     if has_more and rows:
         response.next_created_at = rows[-1]["created_at"]
         response.next_trial_id = rows[-1]["id"]
+    return response
+
+
+def _public_experiment_identity(experiment: ExperimentModel) -> Mapping[str, Any]:
+    return {
+        "id": experiment.id,
+        "name": experiment.name,
+        "created_at": experiment.created_at,
+        "owner": None,
+        "link": None,
+        "revision": (
+            experiment.last_activity_at
+            or experiment.updated_at
+            or experiment.created_at
+        ),
+    }
+
+
+async def get_public_experiment_open_core(
+    session: AsyncSession,
+    *,
+    public_token: str,
+    limit: int = OPEN_MAX_TASKS,
+    before_created_at: datetime | None = None,
+    before_task_id: str | None = None,
+) -> ExperimentOpenResponse:
+    experiment = await get_public_experiment(session, public_token)
+    if experiment is None:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    return await get_experiment_open_core(
+        session,
+        experiment_id=experiment.id,
+        org_id=experiment.org_id,
+        limit=limit,
+        before_created_at=before_created_at,
+        before_task_id=before_task_id,
+        _experiment=_public_experiment_identity(experiment),
+    )
+
+
+async def get_public_experiment_trial_page_core(
+    session: AsyncSession,
+    *,
+    public_token: str,
+    limit: int = TRIAL_PAGE_MAX_TRIALS,
+    before_created_at: datetime | None = None,
+    before_trial_id: str | None = None,
+) -> ExperimentTrialPageResponse:
+    experiment = await get_public_experiment(session, public_token)
+    if experiment is None:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    response = await get_experiment_trial_page_core(
+        session,
+        experiment_id=experiment.id,
+        org_id=experiment.org_id,
+        limit=limit,
+        before_created_at=before_created_at,
+        before_trial_id=before_trial_id,
+        _experiment=_public_experiment_identity(experiment),
+        _include_cost_exclusion_labels=False,
+    )
+    apply_model_display_names(response.trials, experiment_display_names(experiment))
     return response

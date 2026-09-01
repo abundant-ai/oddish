@@ -10,7 +10,6 @@ import {
 } from "react";
 import Link from "next/link";
 import useSWR from "swr";
-import useSWRInfinite from "swr/infinite";
 import { useAuth } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,16 +21,15 @@ import {
 } from "@/components/probe-launch-button";
 import { ExperimentDetailView } from "@/components/experiment-detail-view";
 import { ExperimentDescription } from "@/components/experiment-description";
+import { ExperimentTrialLoadAlert } from "@/components/experiment-trial-load-alert";
 import type {
   Task,
   Trial,
   ExperimentShareInfo,
   ExperimentCostTotals,
-  ExperimentOpenResponse,
-  ExperimentTrialCell,
-  ExperimentTrialPageResponse,
 } from "@/lib/types";
 import { fetcher } from "@/lib/api";
+import { useExperimentPages } from "@/lib/use-experiment-pages";
 import { isOrgAdminRole } from "@/lib/org-roles";
 import { Loader2, Pencil } from "lucide-react";
 import { encodeExperimentRouteParam } from "@/lib/utils";
@@ -40,54 +38,6 @@ import { ExperimentPageSkeleton } from "@/components/experiment-page-skeleton";
 // Shared by the experiment header action buttons so they render identically.
 const HEADER_ACTION_BUTTON_CLASS =
   "h-8 select-none gap-[7px] rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] leading-none text-[color:var(--paper-ink)] transition-colors hover:border-[color:var(--paper-ink-4)] hover:bg-[color:var(--paper-surface-2)]";
-
-const TRIALS_BATCH_SIZE = 250;
-
-function trialFromCell(cell: ExperimentTrialCell): Trial {
-  const { analysis, ...trial } = cell;
-  return {
-    ...trial,
-    analysis_status: analysis.status,
-    analysis_started_at: analysis.started_at,
-    analysis_finished_at: analysis.finished_at,
-    analysis:
-      analysis.classification && analysis.subtype
-        ? {
-            classification: analysis.classification,
-            subtype: analysis.subtype,
-            evidence: analysis.evidence ?? undefined,
-          }
-        : null,
-  };
-}
-
-function buildExperimentTasks(
-  openPages: ExperimentOpenResponse[] | undefined,
-  trialPages: ExperimentTrialPageResponse[] | undefined
-): Task[] {
-  const experiment = openPages?.[0];
-  if (!experiment) return [];
-  const trialsByTask = new Map<string, Trial[]>();
-  for (const page of trialPages ?? []) {
-    for (const cell of page.trials) {
-      const trials = trialsByTask.get(cell.task_id) ?? [];
-      trials.push(trialFromCell(cell));
-      trialsByTask.set(cell.task_id, trials);
-    }
-  }
-  return openPages.flatMap((page) =>
-    page.tasks.map((task) => ({
-      ...task,
-      experiment_id: experiment.experiment_id,
-      experiment_name: experiment.name,
-      experiment_is_public: false,
-      experiment_created_at: experiment.created_at,
-      experiment_owner: experiment.owner,
-      experiment_link: experiment.link,
-      trials: trialsByTask.get(task.id),
-    }))
-  );
-}
 
 type ExperimentClientPageProps = {
   experimentId: string;
@@ -120,65 +70,26 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
   const encodedId = experimentId
     ? encodeExperimentRouteParam(experimentId)
     : "";
-
-  const getOpenPageKey = useCallback(
-    (pageIndex: number, previous: ExperimentOpenResponse | null) => {
-      if (!encodedId || (pageIndex > 0 && !previous?.next_task_id)) return null;
-      const query = new URLSearchParams({ limit: "100" });
-      if (previous?.next_created_at && previous.next_task_id) {
-        query.set("before_created_at", previous.next_created_at);
-        query.set("before_task_id", previous.next_task_id);
-      }
-      return `/api/experiments/${encodedId}/open?${query}`;
-    },
-    [encodedId]
-  );
   const {
-    data: openPages,
-    error: openError,
-    isLoading: isLoadingOpen,
-    isValidating: isValidatingOpen,
-    setSize: setOpenSize,
-    mutate: mutateOpen,
-  } = useSWRInfinite<ExperimentOpenResponse>(getOpenPageKey, fetcher, {
-    refreshInterval: (pages) => (pages?.[0]?.has_active_trials ? 30000 : 0),
-    revalidateOnFocus: false,
-    revalidateFirstPage: false,
-    persistSize: true,
+    experiment: experimentOpen,
+    tasks: tasksForExperiment,
+    openError,
+    isLoading,
+    isLoadingTrials,
+    hasMoreTasks,
+    hasMoreTrials,
+    loadNextTasks,
+    loadNextTrials,
+    trialsLoaded: trialsLoadedCount,
+    totalTrials: totalTrialCount,
+    trialsStalled,
+    isValidatingTrials,
+    mutateOpen,
+    mutateTrials,
+  } = useExperimentPages({
+    openUrl: encodedId ? `/api/experiments/${encodedId}/open` : null,
+    trialPageUrl: encodedId ? `/api/experiments/${encodedId}/trial-page` : null,
   });
-  const experimentOpen = openPages?.[0];
-  const openLastPage = openPages?.[openPages.length - 1];
-  const hasMoreTasks = Boolean(openLastPage?.next_task_id);
-
-  const getTrialsPageKey = useCallback(
-    (pageIndex: number, previous: ExperimentTrialPageResponse | null) => {
-      if (!encodedId || (pageIndex > 0 && !previous?.next_trial_id))
-        return null;
-      const query = new URLSearchParams({ limit: String(TRIALS_BATCH_SIZE) });
-      if (previous?.next_created_at && previous.next_trial_id) {
-        query.set("before_created_at", previous.next_created_at);
-        query.set("before_trial_id", previous.next_trial_id);
-      }
-      return `/api/experiments/${encodedId}/trial-page?${query}`;
-    },
-    [encodedId]
-  );
-
-  const {
-    data: trialPages,
-    error: trialsError,
-    isLoading: isLoadingTrialPages,
-    isValidating: isValidatingTrials,
-    setSize: setTrialsSize,
-    mutate: mutateTrials,
-  } = useSWRInfinite<ExperimentTrialPageResponse>(getTrialsPageKey, fetcher, {
-    refreshInterval: experimentOpen?.has_active_trials ? 30000 : 0,
-    revalidateOnFocus: false,
-    revalidateFirstPage: false,
-    persistSize: true,
-  });
-  const trialsLastPage = trialPages?.[trialPages.length - 1] ?? null;
-  const hasMoreTrials = Boolean(trialsLastPage?.next_trial_id);
 
   // What the experiment SPENT. Can't be derived from the trial pages above:
   // they're paginated (so a client-side sum only covers what's loaded), and
@@ -213,27 +124,12 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
       revalidateOnFocus: false,
     });
 
-  const tasksForExperiment = useMemo(
-    () => buildExperimentTasks(openPages, trialPages),
-    [openPages, trialPages]
-  );
   const hasFatalTaskLoadError = Boolean(openError) && !experimentOpen;
 
   const probeHostTask = useMemo(
     () => resolveProbeHostTask(tasksForExperiment),
     [tasksForExperiment]
   );
-
-  const isLoading = isLoadingOpen && !experimentOpen;
-  const isLoadingTrials =
-    isValidatingOpen ||
-    ((experimentOpen?.summary.trial_count ?? 0) > 0 &&
-      (isLoadingTrialPages || isValidatingTrials));
-  const trialsLoadedCount =
-    trialPages?.reduce((sum, page) => sum + page.trials.length, 0) ?? 0;
-  const totalTrialCount = experimentOpen?.summary.trial_count ?? 0;
-  const trialsStalled =
-    Boolean(trialsError) && trialsLoadedCount < totalTrialCount;
 
   const experimentName = experimentOpen?.name ?? "";
   const displayName = experimentName || experimentId || "Experiment";
@@ -258,40 +154,6 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
     },
     [mutateOpen, mutateTrials, mutateCostTotals]
   );
-
-  const loadNextTasks = useCallback(() => {
-    if (isLoadingOpen || isValidatingOpen) return;
-    if (openError) {
-      void mutateOpen();
-      return;
-    }
-    if (hasMoreTasks) void setOpenSize((size) => size + 1);
-  }, [
-    hasMoreTasks,
-    isLoadingOpen,
-    isValidatingOpen,
-    mutateOpen,
-    openError,
-    setOpenSize,
-  ]);
-
-  const loadNextTrials = useCallback(() => {
-    if (isLoadingTrialPages || isValidatingTrials) return;
-    if (trialsError) {
-      // Preserve the current SWRInfinite size so this retries the failed key
-      // from the last successful page's cursor instead of skipping a page.
-      void mutateTrials();
-      return;
-    }
-    if (hasMoreTrials) void setTrialsSize((size) => size + 1);
-  }, [
-    hasMoreTrials,
-    isLoadingTrialPages,
-    isValidatingTrials,
-    mutateTrials,
-    setTrialsSize,
-    trialsError,
-  ]);
 
   useEffect(() => {
     if (!isEditingName) {
@@ -595,24 +457,12 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
             ) : trialsStalled ? (
               // Outranks the refresh alert below: this one carries the only
               // recovery control.
-              <Alert variant="destructive">
-                <AlertTitle>Some trial results failed to load</AlertTitle>
-                <AlertDescription className="flex flex-wrap items-center gap-2">
-                  <span>
-                    Loaded {trialsLoadedCount}/{totalTrialCount} trials.
-                  </span>
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    className="h-7"
-                    onClick={loadNextTrials}
-                    disabled={isValidatingTrials}
-                  >
-                    Retry
-                  </Button>
-                </AlertDescription>
-              </Alert>
+              <ExperimentTrialLoadAlert
+                loaded={trialsLoadedCount}
+                total={totalTrialCount}
+                isRetrying={isValidatingTrials}
+                onRetry={loadNextTrials}
+              />
             ) : openError && tasksForExperiment.length > 0 ? (
               <Alert>
                 <AlertTitle>Could not refresh experiment</AlertTitle>
