@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any, Sequence
 
 from fastapi import HTTPException
-from sqlalchemy import delete, func, select
+from sqlalchemy import case, delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.db import (
@@ -466,18 +466,25 @@ async def _compute_board(
                 rollouts[version_id] = (count, agents)
 
             # Open must-fix defects reported by trial analyses on the current
-            # version. jsonb_typeof guards rows whose analysis predates the
-            # action_items contract.
+            # version. The array-shape guard must live INSIDE the set-returning
+            # function: jsonb_array_elements runs in FROM before any WHERE
+            # filter, so a row whose action_items is an object or scalar would
+            # otherwise raise and 500 every board read.
             items = func.jsonb_array_elements(
-                TrialModel.analysis["action_items"]
+                case(
+                    (
+                        func.jsonb_typeof(TrialModel.analysis["action_items"])
+                        == "array",
+                        TrialModel.analysis["action_items"],
+                    ),
+                    else_=text("'[]'::jsonb"),
+                )
             ).table_valued("value", joins_implicitly=True)
             for version_id, count in (
                 await session.execute(
                     select(TrialModel.task_version_id, func.count())
                     .where(
                         *scope.clauses(),
-                        func.jsonb_typeof(TrialModel.analysis["action_items"])
-                        == "array",
                         items.c.value.op("->>")("tier") == "must_fix",
                     )
                     .group_by(TrialModel.task_version_id)

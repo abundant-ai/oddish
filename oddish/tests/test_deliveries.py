@@ -173,6 +173,14 @@ async def test_must_fix_defects_block(session):
             analysis={"action_items": [{"tier": "must_fix", "title": "cheat"}]},
         )
     )
+    # Malformed analyses (object / scalar action_items) must not crash the
+    # board query or count as defects.
+    session.add(
+        _trial(task, experiment, version.id, analysis={"action_items": {"o": 1}})
+    )
+    session.add(
+        _trial(task, experiment, version.id, analysis={"action_items": "nope"})
+    )
     await session.flush()
     delivery = await create_delivery_core(
         session,
