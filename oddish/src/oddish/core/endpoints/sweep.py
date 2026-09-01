@@ -9,11 +9,7 @@ from harbor.models.environment_type import EnvironmentType
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from oddish.config import (
-    is_geometric_model,
-    require_geometric_served_model_id,
-    settings,
-)
+from oddish.config import settings
 from oddish.core.endpoints._common import (
     _primary_experiment_for_task_model,
     get_task_for_org_core,
@@ -113,11 +109,6 @@ async def _plan_append_trials(
     # directly inspectable as immutable history.
     replacement_positions: dict[tuple[str, str | None], list[int]] = defaultdict(list)
     for index, spec in enumerate(trials):
-        # Geometric is a single-model endpoint whose served set is enforced
-        # here rather than in normalize_trial_model, which must stay total for
-        # reads over stored rows. Raises ValueError for an unserved id.
-        if is_geometric_model(spec.model):
-            require_geometric_served_model_id(spec.model or "")
         normalized_model = settings.normalize_trial_model(spec.agent, spec.model)
         replacement_positions[(spec.agent, normalized_model)].append(index)
     supersede_by_spec: list[list[str]] = [[] for _ in trials]

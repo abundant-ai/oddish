@@ -766,8 +766,11 @@ def require_geometric_served_model_id(model: str) -> str:
     bare_id = geometric_bare_model_id(model)
     if bare_id not in _GEOMETRIC_SERVED_MODELS:
         served = ", ".join(sorted(_GEOMETRIC_SERVED_MODELS))
+        # No square brackets: the CLI renders errors through rich, which parses
+        # ``[...]`` as console markup and silently strips it -- the served list
+        # is the one part of this message the reader actually needs.
         raise ValueError(
-            f"Geometric serves only [{served}]; got {bare_id!r}. "
+            f"Geometric serves only: {served}. Got {bare_id!r}. "
             "Add the id to _GEOMETRIC_SERVED_MODELS when the endpoint's "
             "--served-model-name changes."
         )
