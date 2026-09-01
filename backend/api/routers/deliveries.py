@@ -85,16 +85,23 @@ async def _fill_user_names(
     if not ids:
         return
     rows = await session.execute(
-        select(UserModel.id, UserModel.name, UserModel.github_username).where(
-            UserModel.id.in_(ids), UserModel.org_id == org_id
-        )
+        select(
+            UserModel.id,
+            UserModel.name,
+            UserModel.github_username,
+            UserModel.email,
+        ).where(UserModel.id.in_(ids), UserModel.org_id == org_id)
     )
     names: dict[str, str] = {}
-    for user_id, name, handle in rows.all():
+    for user_id, name, handle, email in rows.all():
+        # Same fallback chain as the dashboard: name, else @handle, else
+        # the email local part. Never the full address.
         display = (name or "").strip()
         if not display:
             safe_handle = (handle or "").strip().lstrip("@")
             display = f"@{safe_handle}" if safe_handle else ""
+        if not display:
+            display = (email or "").split("@", 1)[0].strip()
         if display:
             names[user_id] = display
     for row in board.tasks:
