@@ -672,6 +672,17 @@ async def _compute_board(
                     TrialModel.kind == "qa",
                     TrialModel.status == TrialStatus.SUCCESS,
                     TrialModel.task_version_id.isnot(None),
+                    # A run staged below the verdict evidence bar carries
+                    # with_verdict=false: it completes SUCCESS but restores
+                    # the prior verdict instead of authoring one, so it
+                    # cannot vouch for the version it graded.
+                    func.coalesce(
+                        TrialModel.harbor_config["analysis_payload"].op(
+                            "->>"
+                        )("with_verdict"),
+                        "true",
+                    )
+                    != "false",
                 )
                 .order_by(
                     func.coalesce(

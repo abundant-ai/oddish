@@ -466,6 +466,49 @@ function TaskRow({
                 ))}
               </ul>
             )}
+            {row.defects.length > 0 && (
+              <div>
+                <p className="text-muted-foreground mb-1 text-xs font-medium uppercase">
+                  Defects
+                </p>
+                <ul className="space-y-1 text-sm">
+                  {row.defects.map((defect) => (
+                    <li
+                      key={defect.id}
+                      className="flex flex-wrap items-center gap-2"
+                    >
+                      <span className="text-muted-foreground font-mono text-xs">
+                        {defect.id}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate">
+                        {defect.title}
+                      </span>
+                      {defect.acknowledged ? (
+                        <span className="text-muted-foreground text-xs">
+                          acknowledged by {defect.acknowledged_by_user_id}
+                        </span>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={frozen || !isAdmin}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onSetCheck(
+                              `ack:${defect.id}`,
+                              row.delivery_task_id,
+                              true
+                            );
+                          }}
+                        >
+                          Acknowledge
+                        </Button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             {manualChecks.length > 0 && (
               <div>
                 <p className="text-muted-foreground mb-1 text-xs font-medium uppercase">

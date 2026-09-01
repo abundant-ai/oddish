@@ -742,3 +742,35 @@ async def test_signoff_requires_defect_acknowledgement(session):
             ),
         )
     assert err.value.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_no_verdict_qa_run_cannot_vouch(session):
+    from datetime import datetime, timezone
+
+    task, v1, experiment = await _green_task(session, "deliv-noverdict")
+    v2 = _version(task, 2)
+    session.add(v2)
+    await session.flush()
+    task.current_version_id = v2.id
+    # The newest successful QA run graded v2, but it was staged below the
+    # evidence bar (with_verdict=false): it restored the v1 verdict instead
+    # of authoring one, so it must not make the stored verdict look fresh.
+    no_verdict_run = _trial(task, experiment, v2.id, kind="qa")
+    no_verdict_run.harbor_config = {"analysis_payload": {"with_verdict": False}}
+    no_verdict_run.finished_at = datetime(2026, 8, 20, tzinfo=timezone.utc)
+    session.add(no_verdict_run)
+    await session.flush()
+
+    delivery = await create_delivery_core(
+        session,
+        data=DeliveryCreate(name="batch-15", task_ids=[task.id]),
+        org_id=ORG,
+        user_id="u1",
+    )
+    board = await get_delivery_board_core(
+        session, delivery_id=delivery.id, org_id=ORG
+    )
+    check = _checks(board, task.id)["verdict_ok"]
+    assert check.status == "fail"
+    assert "does not cover" in check.detail
