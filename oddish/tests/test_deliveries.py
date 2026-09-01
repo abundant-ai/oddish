@@ -974,3 +974,33 @@ async def test_customers_are_rows_and_reused(session):
         session, delivery_id=d2.id, org_id=ORG
     )
     assert board.delivery.customer_name == "Globex"
+
+
+@pytest.mark.asyncio
+async def test_agent_count_matches_verdict_evidence_bar(session):
+    """Agent variants that differ only in case or spacing count once."""
+    experiment = ExperimentModel(name="exp-deliv-agents", org_id=ORG)
+    task = _task("deliv-agents")
+    session.add_all([experiment, task])
+    await session.flush()
+    version = _version(task, 1)
+    session.add(version)
+    await session.flush()
+    task.current_version_id = version.id
+    for agent in [" Codex", "codex", "CODEX", "gpt", "gemini"]:
+        session.add(_trial(task, experiment, version.id, agent=agent))
+    await session.flush()
+
+    delivery = await create_delivery_core(
+        session,
+        data=DeliveryCreate(customer="acme", name="batch-agents", task_ids=[task.id]),
+        org_id=ORG,
+        user_id="u1",
+    )
+    board = await get_delivery_board_core(
+        session, delivery_id=delivery.id, org_id=ORG
+    )
+    check = _checks(board, task.id)["min_rollouts"]
+    # 5 trials, but only 3 distinct agents after normalization.
+    assert "5/5 trials, 3/3 agents" in check.detail
+    assert check.status == "pass"

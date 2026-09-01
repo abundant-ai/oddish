@@ -411,6 +411,15 @@ def _defect_id(version_id: str, item: dict) -> str:
     return hashlib.sha1(seed.encode()).hexdigest()[:16]
 
 
+def _distinct_agent_count():
+    """Distinct agents under the verdict evidence bar's rules: trimmed,
+    lowercased, blanks ignored (``_has_verdict_evidence`` in
+    ``workers.analysis_trials``)."""
+    return func.count(
+        func.distinct(func.nullif(func.trim(func.lower(TrialModel.agent)), ""))
+    )
+
+
 def _verdict_qa_clauses() -> list:
     """Filters for QA runs that can author ``tasks.verdict``.
 
@@ -763,7 +772,7 @@ async def _compute_board(
                     select(
                         TrialModel.task_version_id,
                         func.count(),
-                        func.count(func.distinct(TrialModel.agent)),
+                        _distinct_agent_count(),
                     )
                     .where(*scope.clauses(), TrialModel.status == TrialStatus.SUCCESS)
                     .group_by(TrialModel.task_version_id)
@@ -1217,7 +1226,7 @@ async def get_task_qa_history_core(
                 select(
                     TrialModel.task_version_id,
                     func.count(),
-                    func.count(func.distinct(TrialModel.agent)),
+                    _distinct_agent_count(),
                 )
                 .where(*scope.clauses(), TrialModel.status == TrialStatus.SUCCESS)
                 .group_by(TrialModel.task_version_id)
