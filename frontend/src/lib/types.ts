@@ -544,6 +544,7 @@ export interface TaskOpenTrialRef {
   cost_usd?: number | null;
   cost_is_estimated?: boolean | null;
   is_billed: boolean;
+  has_trajectory: boolean;
   created_at: string;
   started_at?: string | null;
   finished_at?: string | null;
@@ -1092,6 +1093,20 @@ export interface QueueHealthResponse {
   dispatcher: QueueRuntimeComponentStatus | null;
   reconciler: QueueRuntimeComponentStatus | null;
   timestamp: string;
+}
+
+export interface ModelEndpointCheckResponse {
+  ok: boolean;
+  model: string;
+  resolved_model: string;
+  provider: string;
+  transport: "litellm_completion";
+  failure_kind: "provider" | "configuration" | null;
+  status_code: number | null;
+  latency_ms: number;
+  response: string | null;
+  error: string | null;
+  request_id: string | null;
 }
 
 export interface CostModelBreakdown {

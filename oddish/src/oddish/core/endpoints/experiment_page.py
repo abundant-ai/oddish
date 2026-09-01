@@ -198,14 +198,17 @@ def _experiment_task_rows(*, experiment_id: str, org_id: str):
             .label("reward_total"),
             func.avg(case((scored, TrialModel.reward))).label("average_score"),
         )
-        .join(
-            effective,
-            and_(
-                effective.c.task_id == TrialModel.task_id,
+        .outerjoin(effective, effective.c.task_id == TrialModel.task_id)
+        .where(
+            *visible_experiment_trial_predicates(experiment_id),
+            # Match the existing experiment-shell contract: use the selected
+            # version when one exists, but retain legacy/versionless trials
+            # when the selector has no live version for this task.
+            or_(
+                effective.c.task_id.is_(None),
                 effective.c.task_version_id == TrialModel.task_version_id,
             ),
         )
-        .where(*visible_experiment_trial_predicates(experiment_id))
         .group_by(TrialModel.task_id)
         .subquery("experiment_task_stats")
     )
@@ -411,7 +414,13 @@ async def get_experiment_open_core(
         owner=experiment["owner"],
         link=experiment["link"],
         revision=experiment["revision"],
-        has_active_trials=bool(summary_row["has_active_trials"]),
+        # QA starts only after the visible agent trials settle. Keep clients
+        # polling while that replacement verdict is active as well, otherwise
+        # the first ``qa_running`` response would stop its own refresh loop.
+        has_active_trials=(
+            bool(summary_row["has_active_trials"])
+            or int(summary_row["qa_running"] or 0) > 0
+        ),
         summary=ExperimentPageSummary.model_validate(summary_values),
         tasks=[_task_row(row) for row in rows],
     )

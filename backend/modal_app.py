@@ -789,6 +789,7 @@ MODEL_CONCURRENCY_OVERRIDES = os.environ.get(
     '"global.anthropic.claude-haiku-4-5-20251001-v1:0": 128, '
     '"minimax/minimax-m3": 128, '
     '"global.anthropic.claude-sonnet-4-6": 256, '
+    '"global.anthropic.claude-sonnet-5": 256, '
     '"openai/gpt-5.4-mini": 128, '
     '"zai/glm-5.2": 64}',
 )

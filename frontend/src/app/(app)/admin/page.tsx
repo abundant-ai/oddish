@@ -24,6 +24,8 @@ import {
   AccordionTrigger,
 } from "@/components/ui/accordion";
 import type {
+  ModelEndpointCheckResponse,
+  QueueHealthResponse,
   QueueSlotsResponse,
   QueueStatusResponse,
   OrphanedStateResponse,
@@ -35,7 +37,11 @@ import { TagAdminPolicyForm } from "@/components/tag-admin-policy-form";
 import { QuotaAdminForm } from "@/components/quota-admin-form";
 import { WorkerJobsCard } from "@/components/worker-jobs-card";
 import { UsagePanel } from "@/components/usage-panel";
-import { QueueHealthOverviewCard } from "@/components/queue-health-overview-card";
+import {
+  DispatcherTile,
+  QueueHealthOverviewCard,
+  ReconcilerTile,
+} from "@/components/queue-health-overview-card";
 import { CostBreakdownCard } from "@/components/cost-breakdown-card";
 import { CostExclusionsCard } from "@/components/cost-exclusions-card";
 import { SlackAlertSettingsForm } from "@/components/slack-alert-settings-form";
@@ -251,6 +257,238 @@ function QueueSlotsCard() {
         )}
       </CardContent>
     </Card>
+  );
+}
+
+type ModelCheckState =
+  | { status: "running" }
+  | { status: "complete"; result: ModelEndpointCheckResponse }
+  | { status: "error"; message: string };
+
+const BEDROCK_MODEL_QUEUE_KEY =
+  /^(?:arn:aws(?:-[a-z]+)?:bedrock:|anthropic\.|(?:us|eu|apac|apn|global)\.anthropic\.)/;
+const MODEL_CHECK_BATCH_SIZE = 3;
+
+function DiagnosticsPanel() {
+  const { data, error } = useSWR<QueueHealthResponse>(
+    "/api/admin/queue-health",
+    fetcher,
+    { refreshInterval: 10000 }
+  );
+  const [checks, setChecks] = useState<Record<string, ModelCheckState>>({});
+  const models = (data?.capacity ?? [])
+    .map((row) => row.queue_key)
+    .filter(
+      (queueKey) =>
+        queueKey.includes("/") || BEDROCK_MODEL_QUEUE_KEY.test(queueKey)
+    )
+    .sort();
+  const hasRunningCheck = models.some(
+    (model) => checks[model]?.status === "running"
+  );
+
+  async function checkModel(model: string) {
+    setChecks((current) => ({
+      ...current,
+      [model]: { status: "running" },
+    }));
+    try {
+      const response = await fetch("/api/admin/model-endpoints", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model }),
+      });
+      const payload = (await response.json()) as
+        | ModelEndpointCheckResponse
+        | { detail?: unknown; error?: unknown };
+      if (!response.ok) {
+        const detail = "detail" in payload ? payload.detail : payload.error;
+        throw new Error(
+          typeof detail === "string"
+            ? detail
+            : `Request failed (${response.status})`
+        );
+      }
+      setChecks((current) => ({
+        ...current,
+        [model]: {
+          status: "complete",
+          result: payload as ModelEndpointCheckResponse,
+        },
+      }));
+    } catch (checkError) {
+      setChecks((current) => ({
+        ...current,
+        [model]: {
+          status: "error",
+          message:
+            checkError instanceof Error ? checkError.message : "Request failed",
+        },
+      }));
+    }
+  }
+
+  async function checkAllModels() {
+    for (
+      let index = 0;
+      index < models.length;
+      index += MODEL_CHECK_BATCH_SIZE
+    ) {
+      await Promise.all(
+        models.slice(index, index + MODEL_CHECK_BATCH_SIZE).map(checkModel)
+      );
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <CardTitle className="text-base">
+                Provider completion checks
+              </CardTitle>
+              <p className="text-muted-foreground mt-1 text-xs">
+                Sends one short LiteLLM completion using the API
+                container&apos;s platform credentials, with at most three checks
+                running at once. Agent-specific Responses, Messages, CLI, and
+                sandbox paths are outside this check.
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!models.length || hasRunningCheck}
+              onClick={() => void checkAllModels()}
+            >
+              Test all models
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {error ? (
+            <Alert variant="destructive">
+              <AlertCircle className="h-4 w-4" />
+              <AlertTitle>Failed to load model endpoints</AlertTitle>
+              <AlertDescription>
+                {error instanceof Error ? error.message : "Queue health failed"}
+              </AlertDescription>
+            </Alert>
+          ) : !data ? (
+            <p className="text-muted-foreground text-sm">Loading...</p>
+          ) : models.length === 0 ? (
+            <p className="text-muted-foreground text-sm">
+              No model queue keys are configured or active.
+            </p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Model</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Latency</TableHead>
+                  <TableHead>Response</TableHead>
+                  <TableHead className="text-right" />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {models.map((model) => {
+                  const check = checks[model];
+                  const result =
+                    check?.status === "complete" ? check.result : null;
+                  const message =
+                    result?.response ??
+                    result?.error ??
+                    (check?.status === "error" ? check.message : null);
+                  return (
+                    <TableRow key={model}>
+                      <TableCell>
+                        <div className="font-mono text-xs">{model}</div>
+                        <div className="text-muted-foreground mt-1 font-mono text-[10px]">
+                          {result
+                            ? `${result.provider} · ${result.transport}`
+                            : "litellm_completion"}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        {check?.status === "running" ? (
+                          <Badge variant="outline">Testing...</Badge>
+                        ) : result ? (
+                          <Badge
+                            variant={result.ok ? "outline" : "destructive"}
+                            className={result.ok ? "text-green-400" : undefined}
+                          >
+                            {result.ok
+                              ? "Completion OK"
+                              : result.status_code
+                                ? `HTTP ${result.status_code}`
+                                : result.failure_kind === "configuration"
+                                  ? "Configuration"
+                                  : "Failed"}
+                          </Badge>
+                        ) : check?.status === "error" ? (
+                          <Badge variant="destructive">Failed</Badge>
+                        ) : (
+                          <span className="text-muted-foreground text-xs">
+                            Not tested
+                          </span>
+                        )}
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">
+                        {result ? `${result.latency_ms}ms` : "—"}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground max-w-md text-xs whitespace-normal">
+                        {message || "—"}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={hasRunningCheck}
+                          onClick={() => void checkModel(model)}
+                        >
+                          Test now
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Platform signals</CardTitle>
+        </CardHeader>
+        <CardContent className="grid gap-3 sm:grid-cols-3">
+          <div className="rounded-lg border p-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-sm font-medium">
+                <Server className="h-4 w-4" />
+                API + database
+              </div>
+              <Badge
+                variant={error ? "destructive" : "outline"}
+                className={!error && data ? "text-green-400" : undefined}
+              >
+                {error ? "Unavailable" : data ? "Connected" : "Checking..."}
+              </Badge>
+            </div>
+            <p className="text-muted-foreground mt-1 text-[11px]">
+              {data
+                ? `Queue health read ${new Date(data.timestamp).toLocaleTimeString()}`
+                : "Waiting for a queue-health database read."}
+            </p>
+          </div>
+          <DispatcherTile status={data?.dispatcher ?? null} />
+          <ReconcilerTile status={data?.reconciler ?? null} />
+        </CardContent>
+      </Card>
+    </div>
   );
 }
 
@@ -661,11 +899,13 @@ const ADMIN_TABS = [
   "concurrency",
   "tags",
   "quotas",
+  "diagnostics",
 ] as const;
 
 // Platform-wide config: hidden unless the caller is in the operator org.
 const OPERATOR_ONLY_TABS: ReadonlySet<(typeof ADMIN_TABS)[number]> = new Set([
   "concurrency",
+  "diagnostics",
 ]);
 
 function AdminPageContent() {
@@ -744,6 +984,9 @@ function AdminPageContent() {
           )}
           <TabsTrigger value="tags">Tag Policy</TabsTrigger>
           <TabsTrigger value="quotas">Quotas</TabsTrigger>
+          {canManagePlatform && (
+            <TabsTrigger value="diagnostics">Diagnostics</TabsTrigger>
+          )}
         </TabsList>
 
         <TabsContent value="overview" className="space-y-4">
@@ -806,6 +1049,12 @@ function AdminPageContent() {
             </CardContent>
           </Card>
         </TabsContent>
+
+        {canManagePlatform && (
+          <TabsContent value="diagnostics" className="space-y-4">
+            <DiagnosticsPanel />
+          </TabsContent>
+        )}
       </Tabs>
     </div>
   );

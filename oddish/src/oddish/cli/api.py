@@ -12,11 +12,11 @@ import tarfile
 import tempfile
 import threading
 import time
-from datetime import datetime
-from fnmatch import fnmatch
-from pathlib import Path
 from collections import Counter
 from collections.abc import Iterable, MutableMapping, MutableSequence
+from datetime import UTC, datetime
+from fnmatch import fnmatch
+from pathlib import Path
 from typing import Any, cast
 
 import httpx
@@ -24,6 +24,13 @@ import tomlkit
 import tomlkit.exceptions
 import typer
 import yaml
+from harbor.models.environment_type import EnvironmentType
+from harbor.models.task.config import TaskConfig
+from harbor.models.task.task import Task
+from harbor.models.trial.config import AgentConfig
+from harbor.models.trial.result import TrialResult
+from harbor.publisher.packager import Packager
+from harbor.viewer.scanner import JobScanner
 from rich.console import Console
 from rich.live import Live
 from rich.markup import escape
@@ -36,14 +43,6 @@ from rich.progress import (
 )
 from rich.table import Table
 
-from harbor.models.environment_type import EnvironmentType
-from harbor.models.task.config import TaskConfig
-from harbor.models.task.task import Task
-from harbor.models.trial.config import AgentConfig
-from harbor.models.trial.result import TrialResult
-from harbor.publisher.packager import Packager
-from harbor.viewer.scanner import JobScanner
-
 from oddish.cli._concurrency import (
     AdaptiveConcurrencyLimiter,
     ConcurrencyGate,
@@ -55,16 +54,16 @@ from oddish.cli._concurrency import (
     resolve_s3_put_concurrency,
     resolve_submit_concurrency,
 )
-from oddish.cli.config import get_auth_headers, error_console
-from oddish.core.idempotency import compute_sweep_idempotency_key
+from oddish.cli.config import error_console, get_auth_headers
 from oddish.core.harbor_artifacts import (
     build_trial_result,
     detect_trajectory,
     extract_ctrf_summary,
-    extract_trial_result_fields,
     extract_trajectory_metrics,
+    extract_trial_result_fields,
     extract_verifier_metrics,
 )
+from oddish.core.idempotency import compute_sweep_idempotency_key
 from oddish.task_timeouts import (
     TaskTimeoutValidationError,
     validate_task_timeout_config,
@@ -668,10 +667,9 @@ def _parse_retry_after(response: httpx.Response) -> float | None:
         return None
     if when is None:
         return None
-    from datetime import timezone
 
     if when.tzinfo is None:
-        when = when.replace(tzinfo=timezone.utc)
+        when = when.replace(tzinfo=UTC)
     return max(0.0, (when - datetime.now(when.tzinfo)).total_seconds())
 
 
@@ -2106,6 +2104,8 @@ def load_sweep_config(config_path: Path) -> dict:
         }
 
         agent_config_overrides: dict = {}
+        if agent_entry.get("import_path"):
+            agent_config_overrides["import_path"] = agent_entry["import_path"]
         if agent_entry.get("env"):
             agent_config_overrides["env"] = agent_entry["env"]
         if agent_entry.get("kwargs"):

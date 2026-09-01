@@ -254,6 +254,16 @@ def test_experiment_open_caps_rows_and_returns_a_stable_boundary():
     assert len(response.model_dump_json().encode()) < OPEN_MAX_BYTES
 
 
+def test_experiment_open_keeps_polling_while_qa_is_running():
+    _, response = _open(
+        _task(1),
+        summary=_summary(has_active_trials=False, qa_running=1),
+    )
+
+    assert response.has_active_trials is True
+    assert response.summary.qa_running == 1
+
+
 def test_experiment_open_rejects_one_task_shell_over_the_byte_budget():
     oversized = _task(1, task_path="x" * OPEN_MAX_BYTES)
     session = _Session(
