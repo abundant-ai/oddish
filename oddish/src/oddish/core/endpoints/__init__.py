@@ -37,7 +37,10 @@ from oddish.core.endpoints.qa import (
     rerun_pre_trial_audit_core,
     rerun_task_qa_core,
 )
-from oddish.core.endpoints.qa_eval import create_qa_eval_core
+from oddish.core.endpoints.qa_eval import (
+    create_qa_eval_core,
+    get_qa_eval_experiment_core,
+)
 from oddish.core.endpoints.sweep import (
     SweepAttribution,
     build_task_sweep_response,
@@ -114,6 +117,7 @@ __all__ = [
     "get_experiment_cost_totals",
     "get_experiment_open_core",
     "get_experiment_trial_page_core",
+    "get_qa_eval_experiment_core",
     "get_experiment_qa_cost_totals",
     "get_task_detail_core",
     "get_task_open_core",

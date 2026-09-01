@@ -1,23 +1,64 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
 import pytest
-from fastapi import FastAPI
-from httpx import ASGITransport, AsyncClient
-
 from auth import require_auth
 from auth.types import AuthContext, AuthMethod
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
 from models import APIKeyScope
-from oddish.schemas import QAEvalCreateResponse, QAEvalTrialResponse
+from oddish.schemas import (
+    QAEvalCreateResponse,
+    QAEvalExperimentResponse,
+    QAEvalTrialResponse,
+)
 
 _ROUTER_PATH = Path(__file__).resolve().parents[1] / "api" / "routers" / "qa_eval.py"
 _SPEC = spec_from_file_location("qa_eval_route_under_test", _ROUTER_PATH)
 assert _SPEC is not None and _SPEC.loader is not None
 qa_eval = module_from_spec(_SPEC)
 _SPEC.loader.exec_module(qa_eval)
+
+
+@pytest.mark.asyncio
+async def test_get_qa_eval_experiment_passes_authenticated_org(monkeypatch):
+    captured: dict = {}
+
+    @asynccontextmanager
+    async def fake_get_read_session():
+        yield object()
+
+    async def fake_get_core(_session, *, experiment_id, org_id):
+        captured.update(experiment_id=experiment_id, org_id=org_id)
+        return QAEvalExperimentResponse(
+            experiment_id=experiment_id,
+            name="golden replay",
+            created_at=datetime(2026, 9, 1, tzinfo=UTC),
+        )
+
+    monkeypatch.setattr(qa_eval, "get_read_session", fake_get_read_session)
+    monkeypatch.setattr(qa_eval, "get_qa_eval_experiment_core", fake_get_core)
+
+    app = FastAPI()
+    app.include_router(qa_eval.router)
+    app.dependency_overrides[require_auth] = lambda: AuthContext(
+        method=AuthMethod.CLERK_JWT,
+        org_id="org-1",
+        user_id="user-1",
+        scope=APIKeyScope.READ,
+    )
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/qa-evals/experiment-1")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["name"] == "golden replay"
+    assert captured == {"experiment_id": "experiment-1", "org_id": "org-1"}
 
 
 @pytest.mark.asyncio

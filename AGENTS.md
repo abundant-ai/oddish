@@ -181,6 +181,12 @@ High-level flow:
    Non-'agent' kinds are excluded from solver cost, leaderboard, facet, and
    public surfaces (see `oddish.filters.trial_predicates.EligibleTrialScope`);
    their separate cost and optional quota basis comes from `analysis_spend`.
+   The authenticated `GET /qa-evals/{experiment_id}` endpoint is the private
+   experiment-page read model for these otherwise non-grid trials. It returns
+   every live `qa_eval` row, its source-trial identity, prompt name/hash, model,
+   artifact-import status, and compact trial data. It does not add
+   `task_experiments` membership, expose golden labels, or create a public
+   sharing route.
 5. While a trial runs, a worker-side tailer (`oddish.workers.harbor.live_tail`,
    on by default via `live_tail_enabled` / `live_tail_interval_sec`) polls the
    agent's log file inside the sandbox for supported agents (claude-code,
@@ -780,6 +786,7 @@ extensions) — see `backend/README.md`.
 | Tasks | `GET /tasks`, `GET /tasks/browse`, `GET /tasks/browse/experiment-options` (typeahead for the experiment filter; `facets.experiments` is deprecated/always empty; the other facet lists are served from the `trial_facets` vocabulary — write-through on trial creation plus a periodic rebuild sweep, see `oddish/src/oddish/core/trial_facets.py`), `GET /tasks/{task_id}`, `GET /tasks/{task_id}/open`, `GET /tasks/{task_id}/detail`, `GET /tasks/{task_id}/versions[/{version}]`, `PUT /tasks/{task_id}/versions/{version}/default`, `POST /tasks/cancel` (optional `experiment_id` scopes the cancel to that experiment's trials so shared tasks keep running elsewhere) |
 | Task QA | `POST /tasks/{task_id}/qa/retry`, `POST /tasks/{task_id}/qa/cancel`, `POST /tasks/{task_id}/qa/backfill` |
 | Experiments | `POST /experiments/combine`, `PATCH /experiments/{experiment_id}` |
+| QA prompt replay | `POST /qa-evals`, `GET /qa-evals/{experiment_id}` (authenticated historical prompt replay creation and private UI read model) |
 | Trials | `GET /tasks/{task_id}/trials/{index}`, `POST /trials/{trial_id}/retry` (optional `registry_auth` body), `GET /trials/{trial_id}/live` ((attempt, seq)-cursor live transcript), `GET /trials/{trial_id}/logs[/structured]`, `GET /trials/{trial_id}/trajectory`, `GET /trials/{trial_id}/result` |
 | Files | `GET /tasks/{task_id}/files[/{path}]` (`inline=false` omits listing bodies; `presign=false` omits URLs; `max_bytes=N` caps archive-backed file reads), `GET /trials/{trial_id}/files[/{path}]`, `GET /trials/{trial_id}/debug-files` |
 | Admin diagnostics | `GET /admin/slots`, `GET /admin/queue-status`, `GET /admin/orphaned-state`, `GET /admin/queue-health` |
@@ -1533,6 +1540,13 @@ On an experiment page, removing a task always calls the scoped
 experiment membership and its scoped trials without deleting the task, even
 when it was the task's final experiment membership. Whole-task deletion remains
 a separate explicit action outside the experiment-scoped table.
+
+An experiment containing `qa_eval` trials renders the dedicated QA-replay
+table instead of the ordinary task/agent matrix. The table labels execution
+status separately from artifact validation: a queued run is pending, and
+"valid QA JSON" means the server accepted the output schema, not that the
+classification matched a locally held golden label. Golden labels remain in
+the `qa_evals` runner and are never sent to the Oddish server or QA model.
 
 See `frontend/README.md` for route groups, scripts, env vars, and deployment
 commands. See `SELF_HOSTING.md` for full-stack local development and production

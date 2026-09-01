@@ -16,11 +16,17 @@ type TrialStatus =
   | "retrying"
   | "skipped";
 
-// trials.kind: "agent" is a normal evaluation run; "qa" and "audit" are the
-// platform's analysis agents (arriving with the analysis-trial pipeline).
+// trials.kind: "agent" is a normal evaluation run; the remaining named kinds
+// are platform analysis runs (including historical QA prompt replays).
 // The union is open (`| (string & {})`) because the column is a plain
 // VARCHAR and historical rows may carry retired kinds.
-export type TrialKind = "agent" | "qa" | "audit" | (string & {});
+export type TrialKind =
+  | "agent"
+  | "qa"
+  | "qa_eval"
+  | "audit"
+  | "summarize"
+  | (string & {});
 
 export function isAgentTrial(t: { kind?: TrialKind }): boolean {
   return (t.kind ?? "agent") === "agent";
@@ -336,6 +342,30 @@ export interface ExperimentTrialPageResponse {
   trials: ExperimentTrialCell[];
   next_created_at?: string | null;
   next_trial_id?: string | null;
+}
+
+export interface QAEvalExperimentTrial {
+  source_index?: number | null;
+  source_trial_id?: string | null;
+  source_task_id: string;
+  source_task_name: string;
+  source_case_name?: string | null;
+  production_trial_id?: string | null;
+  prompt_name?: string | null;
+  prompt_sha256?: string | null;
+  stored_payload_error?: string | null;
+  trial: Trial;
+}
+
+export interface QAEvalExperimentResponse {
+  experiment_id: string;
+  name: string;
+  created_at: string;
+  is_qa_eval: boolean;
+  prompt_names: string[];
+  prompt_sha256s: string[];
+  models: string[];
+  trials: QAEvalExperimentTrial[];
 }
 
 interface TaskBrowseExperiment {

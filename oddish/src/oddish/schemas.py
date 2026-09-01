@@ -1578,6 +1578,34 @@ class QAEvalCreateResponse(BaseModel):
     trials: list[QAEvalTrialResponse]
 
 
+class QAEvalExperimentTrialResponse(BaseModel):
+    """One historical QA replay row shown on its private experiment page."""
+
+    source_index: int | None = None
+    source_trial_id: str | None = None
+    source_task_id: str
+    source_task_name: str
+    source_case_name: str | None = None
+    production_trial_id: str | None = None
+    prompt_name: str | None = None
+    prompt_sha256: str | None = None
+    stored_payload_error: str | None = None
+    trial: TrialResponse
+
+
+class QAEvalExperimentResponse(BaseModel):
+    """Authenticated read model for a QA-replay experiment."""
+
+    experiment_id: str
+    name: str
+    created_at: datetime
+    is_qa_eval: bool = False
+    prompt_names: list[str] = Field(default_factory=list)
+    prompt_sha256s: list[str] = Field(default_factory=list)
+    models: list[str] = Field(default_factory=list)
+    trials: list[QAEvalExperimentTrialResponse] = Field(default_factory=list)
+
+
 class CollectionMutationResponse(BaseModel):
     """Result of editing an existing read-only collection in place."""
 

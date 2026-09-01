@@ -21,6 +21,7 @@ import {
   resolveProbeHostTask,
 } from "@/components/probe-launch-button";
 import { ExperimentDetailView } from "@/components/experiment-detail-view";
+import { QAEvalExperimentView } from "@/components/qa-eval-experiment-view";
 import { ExperimentDescription } from "@/components/experiment-description";
 import type {
   Task,
@@ -30,6 +31,7 @@ import type {
   ExperimentOpenResponse,
   ExperimentTrialCell,
   ExperimentTrialPageResponse,
+  QAEvalExperimentResponse,
 } from "@/lib/types";
 import { fetcher } from "@/lib/api";
 import { isOrgAdminRole } from "@/lib/org-roles";
@@ -180,6 +182,35 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
   const trialsLastPage = trialPages?.[trialPages.length - 1] ?? null;
   const hasMoreTrials = Boolean(trialsLastPage?.next_trial_id);
 
+  // QA prompt replays deliberately have no task_experiments membership and
+  // therefore do not belong in the ordinary agent-trial grid above. This
+  // separate resource is the source of truth for their qa_eval rows.
+  const shouldCheckQaEval =
+    ((experimentOpen?.summary.task_count ?? 0) === 0 &&
+      (experimentOpen?.summary.trial_count ?? 0) === 0 &&
+      experimentOpen !== undefined) ||
+    (Boolean(openError) && experimentOpen === undefined);
+  const qaEvalKey =
+    experimentId && shouldCheckQaEval ? `/api/qa-evals/${encodedId}` : null;
+  const {
+    data: qaEvalExperiment,
+    error: qaEvalError,
+    mutate: mutateQaEvalExperiment,
+  } = useSWR<QAEvalExperimentResponse>(qaEvalKey, fetcher, {
+    refreshInterval: (data) =>
+      data?.trials.some(
+        ({ trial }) =>
+          ["pending", "queued", "running", "paused", "retrying"].includes(
+            trial.status
+          ) ||
+          ["pending", "queued", "running"].includes(trial.analysis_status ?? "")
+      )
+        ? 15000
+        : 0,
+    revalidateOnFocus: false,
+  });
+  const isQaEvalExperiment = qaEvalExperiment?.is_qa_eval === true;
+
   // What the experiment SPENT. Can't be derived from the trial pages above:
   // they're paginated (so a client-side sum only covers what's loaded), and
   // they're filtered to each task's current version (so they omit earlier
@@ -224,7 +255,13 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
     [tasksForExperiment]
   );
 
-  const isLoading = isLoadingOpen && !experimentOpen;
+  const qaEvalDetectionPending =
+    qaEvalKey !== null && qaEvalExperiment === undefined && !qaEvalError;
+  const isLoading =
+    (isLoadingOpen && !experimentOpen) ||
+    (qaEvalDetectionPending &&
+      (experimentOpen?.summary.task_count ?? 0) === 0 &&
+      (experimentOpen?.summary.trial_count ?? 0) === 0);
   const isLoadingTrials =
     isValidatingOpen ||
     ((experimentOpen?.summary.trial_count ?? 0) > 0 &&
@@ -235,7 +272,8 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
   const trialsStalled =
     Boolean(trialsError) && trialsLoadedCount < totalTrialCount;
 
-  const experimentName = experimentOpen?.name ?? "";
+  const experimentName =
+    (isQaEvalExperiment ? qaEvalExperiment.name : experimentOpen?.name) ?? "";
   const displayName = experimentName || experimentId || "Experiment";
   const initialName = experimentName || experimentId || "";
   const canManageExperimentShare = isOrgAdminRole(orgRole);
@@ -349,6 +387,10 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
         (pages) => pages?.map((page) => ({ ...page, name: nextName })),
         { revalidate: false }
       );
+      await mutateQaEvalExperiment(
+        (current) => (current ? { ...current, name: nextName } : current),
+        { revalidate: false }
+      );
       void refreshTaskPages();
     } catch (err) {
       setNameError(err instanceof Error ? err.message : "Rename failed");
@@ -428,6 +470,97 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
     }, 2000);
   };
 
+  const sharedHeaderLeft = isEditingName ? (
+    <div className="flex flex-wrap items-center gap-2">
+      <Input
+        value={nameDraft}
+        onChange={(event) => setNameDraft(event.target.value)}
+        className="h-10 w-[320px] border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] font-mono text-[22px] font-semibold tracking-[-0.02em]"
+        placeholder="Experiment name"
+      />
+      <Button
+        type="button"
+        size="sm"
+        className="h-8"
+        onClick={handleRename}
+        disabled={isSavingName}
+      >
+        {isSavingName ? "Saving..." : "Save"}
+      </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="h-8"
+        onClick={() => setIsEditingName(false)}
+        disabled={isSavingName}
+      >
+        Cancel
+      </Button>
+    </div>
+  ) : (
+    <div className="flex min-w-0 items-center gap-2">
+      <Button
+        type="button"
+        variant="ghost"
+        onClick={handleCopyExperimentName}
+        className="h-auto max-w-full min-w-0 cursor-pointer justify-start truncate rounded-sm bg-transparent p-0 pb-1 text-left font-mono text-[26px] leading-[1.25] font-semibold tracking-[-0.02em] text-[color:var(--paper-ink)] transition hover:bg-transparent hover:text-[color:var(--paper-ink-2)]"
+        aria-label={`Copy experiment name ${displayName}`}
+        title={
+          copiedExperimentName ? "Copied" : "Click to copy experiment name"
+        }
+      >
+        <h1 className="truncate">{displayName}</h1>
+      </Button>
+      {copiedExperimentName && (
+        <span
+          aria-live="polite"
+          className="font-mono text-[11px] text-[color:var(--paper-ink-3)]"
+        >
+          copied
+        </span>
+      )}
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        onClick={() => setIsEditingName(true)}
+        disabled={!experimentId}
+        className="h-6 w-6 rounded-sm text-[color:var(--paper-ink-3)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] disabled:opacity-50"
+        aria-label="Rename experiment"
+        title="Rename experiment"
+      >
+        <Pencil className="h-3.5 w-3.5" />
+      </Button>
+    </div>
+  );
+  const sharedHeaderDescription = experimentId ? (
+    <ExperimentDescription
+      experimentId={experimentId}
+      description={experimentShare?.description ?? null}
+      onSaved={(next) =>
+        void mutateExperimentShare(
+          (prev) => (prev ? { ...prev, description: next } : prev),
+          { revalidate: false }
+        )
+      }
+    />
+  ) : null;
+  const qaEvalInlineAlert = nameError ? (
+    <Alert variant="destructive">
+      <AlertTitle>Rename failed</AlertTitle>
+      <AlertDescription>{nameError}</AlertDescription>
+    </Alert>
+  ) : qaEvalError ? (
+    <Alert variant="destructive">
+      <AlertTitle>Could not refresh QA replay rows</AlertTitle>
+      <AlertDescription>
+        The page is showing the most recently loaded rows. Reload to retry the
+        authenticated QA-eval request.
+      </AlertDescription>
+    </Alert>
+  ) : null;
+
   return (
     <div className="space-y-4">
       {!experimentId ? (
@@ -437,6 +570,13 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
             Select an experiment from the dashboard.
           </AlertDescription>
         </Alert>
+      ) : isQaEvalExperiment ? (
+        <QAEvalExperimentView
+          experiment={qaEvalExperiment}
+          headerLeft={sharedHeaderLeft}
+          headerDescription={sharedHeaderDescription}
+          inlineAlert={qaEvalInlineAlert}
+        />
       ) : (
         <ExperimentDetailView
           experimentId={experimentId}
@@ -455,74 +595,7 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
           // it with the fatal error state during a transient backend failure.
           hasError={hasFatalTaskLoadError}
           loadFullTrialOnOpen
-          headerLeft={
-            isEditingName ? (
-              <div className="flex flex-wrap items-center gap-2">
-                <Input
-                  value={nameDraft}
-                  onChange={(event) => setNameDraft(event.target.value)}
-                  className="h-10 w-[320px] border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] font-mono text-[22px] font-semibold tracking-[-0.02em]"
-                  placeholder="Experiment name"
-                />
-                <Button
-                  type="button"
-                  size="sm"
-                  className="h-8"
-                  onClick={handleRename}
-                  disabled={isSavingName}
-                >
-                  {isSavingName ? "Saving..." : "Save"}
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-8"
-                  onClick={() => setIsEditingName(false)}
-                  disabled={isSavingName}
-                >
-                  Cancel
-                </Button>
-              </div>
-            ) : (
-              <div className="flex min-w-0 items-center gap-2">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  onClick={handleCopyExperimentName}
-                  className="h-auto max-w-full min-w-0 cursor-pointer justify-start truncate rounded-sm bg-transparent p-0 pb-1 text-left font-mono text-[26px] leading-[1.25] font-semibold tracking-[-0.02em] text-[color:var(--paper-ink)] transition hover:bg-transparent hover:text-[color:var(--paper-ink-2)]"
-                  aria-label={`Copy experiment name ${displayName}`}
-                  title={
-                    copiedExperimentName
-                      ? "Copied"
-                      : "Click to copy experiment name"
-                  }
-                >
-                  <h1 className="truncate">{displayName}</h1>
-                </Button>
-                {copiedExperimentName && (
-                  <span
-                    aria-live="polite"
-                    className="font-mono text-[11px] text-[color:var(--paper-ink-3)]"
-                  >
-                    copied
-                  </span>
-                )}
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => setIsEditingName(true)}
-                  disabled={!experimentId}
-                  className="h-6 w-6 rounded-sm text-[color:var(--paper-ink-3)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] disabled:opacity-50"
-                  aria-label="Rename experiment"
-                  title="Rename experiment"
-                >
-                  <Pencil className="h-3.5 w-3.5" />
-                </Button>
-              </div>
-            )
-          }
+          headerLeft={sharedHeaderLeft}
           headerStatus={
             isLoadingTrials ? (
               <div className="text-muted-foreground flex items-center gap-1.5 text-[10px]">
@@ -572,20 +645,7 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
               </div>
             ) : null
           }
-          headerDescription={
-            experimentId ? (
-              <ExperimentDescription
-                experimentId={experimentId}
-                description={experimentShare?.description ?? null}
-                onSaved={(next) =>
-                  void mutateExperimentShare(
-                    (prev) => (prev ? { ...prev, description: next } : prev),
-                    { revalidate: false }
-                  )
-                }
-              />
-            ) : null
-          }
+          headerDescription={sharedHeaderDescription}
           inlineAlert={
             nameError ? (
               <Alert variant="destructive">

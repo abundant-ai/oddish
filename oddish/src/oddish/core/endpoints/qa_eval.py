@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import re
 
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import is_nop_oracle_agent, settings
+from oddish.core.analysis_payload import AnalysisPayloadError, parse_analysis_payload
+from oddish.core.helpers import build_compact_trial_response
 from oddish.core.idempotency import (
     IdempotencyConflict,
     IdempotencyStore,
@@ -28,6 +31,8 @@ from oddish.db import (
 from oddish.schemas import (
     QAEvalCreateRequest,
     QAEvalCreateResponse,
+    QAEvalExperimentResponse,
+    QAEvalExperimentTrialResponse,
     QAEvalTrialResponse,
 )
 from oddish.workers.analysis_trials import (
@@ -110,7 +115,7 @@ async def create_qa_eval_core(
     version_by_id = {row.id: row for row in versions}
 
     invalid: list[str] = []
-    for source_trial_id in request.source_trial_ids:
+    for source_index, source_trial_id in enumerate(request.source_trial_ids, start=1):
         source = source_by_id.get(source_trial_id)
         reason = None
         if source is None:
@@ -208,6 +213,7 @@ async def create_qa_eval_core(
                 "with_verdict": False,
                 "prompt_name": request.prompt_name,
                 "prompt_sha256": prompt_sha256,
+                "source_index": source_index,
             },
         )
         created.append(
@@ -231,3 +237,229 @@ async def create_qa_eval_core(
             response.model_dump(mode="json"),
         )
     return response
+
+
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _qa_eval_row_metadata(
+    trial: TrialModel,
+) -> tuple[int | None, str | None, str | None, str | None, str | None]:
+    """Read display metadata without letting a malformed stored row hide itself."""
+    payload = (trial.harbor_config or {}).get("analysis_payload")
+    payload_dict = payload if isinstance(payload, dict) else {}
+    errors: list[str] = []
+
+    source_trial_id: str | None = None
+    try:
+        parsed = parse_analysis_payload("qa_eval", trial.harbor_config)
+        source_trial_id = parsed.trial_ids[0]
+    except AnalysisPayloadError as exc:
+        errors.append(str(exc))
+        raw_ids = payload_dict.get("trial_ids")
+        if (
+            isinstance(raw_ids, list)
+            and len(raw_ids) == 1
+            and isinstance(raw_ids[0], str)
+            and raw_ids[0].strip()
+        ):
+            source_trial_id = raw_ids[0].strip()
+
+    source_index_value = payload_dict.get("source_index")
+    source_index = (
+        source_index_value
+        if isinstance(source_index_value, int)
+        and not isinstance(source_index_value, bool)
+        and source_index_value >= 1
+        else None
+    )
+    if source_index_value is not None and source_index is None:
+        errors.append(
+            "qa_eval analysis_payload.source_index must be a positive integer"
+        )
+
+    prompt_name_value = payload_dict.get("prompt_name")
+    prompt_name = (
+        prompt_name_value.strip()
+        if isinstance(prompt_name_value, str) and prompt_name_value.strip()
+        else None
+    )
+    if prompt_name is None:
+        errors.append("qa_eval analysis_payload.prompt_name must be a non-empty string")
+
+    prompt_sha256_value = payload_dict.get("prompt_sha256")
+    prompt_sha256 = (
+        prompt_sha256_value.lower()
+        if isinstance(prompt_sha256_value, str)
+        and _SHA256_PATTERN.fullmatch(prompt_sha256_value.lower())
+        else None
+    )
+    if prompt_sha256 is None:
+        errors.append(
+            "qa_eval analysis_payload.prompt_sha256 must be 64 hex characters"
+        )
+
+    return (
+        source_index,
+        source_trial_id,
+        prompt_name,
+        prompt_sha256,
+        "; ".join(dict.fromkeys(errors)) or None,
+    )
+
+
+def _source_import_provenance(
+    harbor_config: dict | None,
+) -> tuple[str | None, str | None]:
+    imported_source = (harbor_config or {}).get("imported_source")
+    if not isinstance(imported_source, dict):
+        return None, None
+    case_name_value = imported_source.get("golden_case")
+    production_trial_id_value = imported_source.get("trial_id")
+    case_name = (
+        case_name_value.strip()
+        if isinstance(case_name_value, str) and case_name_value.strip()
+        else None
+    )
+    production_trial_id = (
+        production_trial_id_value.strip()
+        if isinstance(production_trial_id_value, str)
+        and production_trial_id_value.strip()
+        else None
+    )
+    return case_name, production_trial_id
+
+
+async def get_qa_eval_experiment_core(
+    session: AsyncSession,
+    *,
+    experiment_id: str,
+    org_id: str | None,
+) -> QAEvalExperimentResponse:
+    """Return the private UI read model for one QA replay experiment."""
+    experiment = await session.scalar(
+        select(ExperimentModel).where(
+            ExperimentModel.id == experiment_id,
+            ExperimentModel.org_id == org_id,
+        )
+    )
+    if experiment is None:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+
+    rows = (
+        await session.execute(
+            select(TrialModel, TaskModel.task_path, TaskModel.name)
+            .join(TaskModel, TaskModel.id == TrialModel.task_id)
+            .where(
+                TrialModel.experiment_id == experiment.id,
+                TrialModel.org_id == org_id,
+                TrialModel.kind == "qa_eval",
+                TrialModel.superseded_by_trial_id.is_(None),
+                TaskModel.org_id == org_id,
+            )
+            .order_by(TrialModel.created_at.asc(), TrialModel.id.asc())
+        )
+    ).all()
+
+    parsed_rows: list[tuple] = []
+    source_trial_ids: set[str] = set()
+    for fallback_index, (trial, task_path, task_name) in enumerate(rows, start=1):
+        (
+            source_index,
+            source_trial_id,
+            prompt_name,
+            prompt_sha256,
+            stored_payload_error,
+        ) = _qa_eval_row_metadata(trial)
+        if source_trial_id is not None:
+            source_trial_ids.add(source_trial_id)
+        parsed_rows.append(
+            (
+                fallback_index,
+                trial,
+                task_path,
+                task_name,
+                source_index,
+                source_trial_id,
+                prompt_name,
+                prompt_sha256,
+                stored_payload_error,
+            )
+        )
+
+    source_provenance: dict[str, tuple[str | None, str | None]] = {}
+    if source_trial_ids:
+        source_rows = (
+            await session.execute(
+                select(TrialModel.id, TrialModel.harbor_config).where(
+                    TrialModel.id.in_(source_trial_ids),
+                    TrialModel.org_id == org_id,
+                )
+            )
+        ).all()
+        source_provenance = {
+            source_trial_id: _source_import_provenance(harbor_config)
+            for source_trial_id, harbor_config in source_rows
+        }
+
+    indexed_entries: list[tuple[int, QAEvalExperimentTrialResponse]] = []
+    for (
+        fallback_index,
+        trial,
+        task_path,
+        task_name,
+        source_index,
+        source_trial_id,
+        prompt_name,
+        prompt_sha256,
+        stored_payload_error,
+    ) in parsed_rows:
+        source_case_name, production_trial_id = source_provenance.get(
+            source_trial_id or "", (None, None)
+        )
+        indexed_entries.append(
+            (
+                fallback_index,
+                QAEvalExperimentTrialResponse(
+                    source_index=source_index,
+                    source_trial_id=source_trial_id,
+                    source_task_id=trial.task_id,
+                    source_task_name=task_name,
+                    source_case_name=source_case_name,
+                    production_trial_id=production_trial_id,
+                    prompt_name=prompt_name,
+                    prompt_sha256=prompt_sha256,
+                    stored_payload_error=stored_payload_error,
+                    trial=build_compact_trial_response(trial, task_path),
+                ),
+            )
+        )
+    indexed_entries.sort(
+        key=lambda item: (
+            item[1].source_index is None,
+            item[1].source_index or item[0],
+            item[0],
+        )
+    )
+    entries = [entry for _, entry in indexed_entries]
+
+    return QAEvalExperimentResponse(
+        experiment_id=experiment.id,
+        name=experiment.name,
+        created_at=experiment.created_at,
+        is_qa_eval=bool(entries),
+        prompt_names=sorted(
+            {entry.prompt_name for entry in entries if entry.prompt_name is not None}
+        ),
+        prompt_sha256s=sorted(
+            {
+                entry.prompt_sha256
+                for entry in entries
+                if entry.prompt_sha256 is not None
+            }
+        ),
+        models=sorted(
+            {entry.trial.model for entry in entries if entry.trial.model is not None}
+        ),
+        trials=entries,
+    )

@@ -255,7 +255,7 @@ function TrialAnalysisCard({
   // Always SHOW the button when the feature is on. Disable it (with the
   // reason) when a run cannot be queued right now. The action targets this
   // selected agent trial, while active task-level QA blocks concurrent runs.
-  const showQueueButton = ENABLE_RERUN_ANALYSIS_BUTTON;
+  const showQueueButton = ENABLE_RERUN_ANALYSIS_BUTTON && isAgentTrial(trial);
   // Mirrors _ANALYSIS_CLAIM_TTL_MINUTES: past the lease the backend treats
   // the worker as dead and allows a re-run, so the button must too. A
   // running row with no start time has no live lease, and the backend
@@ -787,7 +787,7 @@ export function TrialDetailPanel({
   // QA votes require authenticated routes and an experiment anchor. Public
   // share drawers use a different apiBaseUrl, so they do not render controls.
   const feedbackExperimentId =
-    apiBaseUrl === "/api" ? (trial?.experiment_id ?? null) : null;
+    apiBaseUrl === "/api" && task ? (trial?.experiment_id ?? null) : null;
   async function handleQaFeedback(record: FeedbackRecord): Promise<void> {
     if (!feedbackExperimentId || !trial) {
       throw new Error("QA feedback is unavailable for this trial");
@@ -1139,7 +1139,7 @@ export function TrialDetailPanel({
     navigateTo,
   ]);
 
-  if (!trial || !task) {
+  if (!trial) {
     return null;
   }
   const trialStatus = getMatrixStatus(
@@ -1758,7 +1758,7 @@ export function TrialDetailPanel({
               )}
 
               {/* Equivalent retry command — hidden from public viewers */}
-              {showAnalysis && (
+              {showAnalysis && task && (
                 <div>
                   <p className="text-muted-foreground mb-1 text-[11px]">
                     Equivalent retry command, reconstructed.

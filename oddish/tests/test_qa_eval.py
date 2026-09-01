@@ -3,15 +3,26 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
-
-from oddish.core.endpoints.qa_eval import create_qa_eval_core
-from oddish.db import AnalysisStatus, TaskModel, TaskVersionModel, TrialStatus
+from oddish.core.endpoints.qa_eval import (
+    _qa_eval_row_metadata,
+    _source_import_provenance,
+    create_qa_eval_core,
+    get_qa_eval_experiment_core,
+)
+from oddish.db import (
+    AnalysisStatus,
+    ExperimentModel,
+    TaskModel,
+    TaskVersionModel,
+    TrialStatus,
+)
 from oddish.db.models import TrialModel
-from oddish.schemas import QAEvalCreateRequest
+from oddish.schemas import QAEvalCreateRequest, TrialResponse
 from oddish.worker.analysis_result_check import check_analysis_result
 from oddish.workers.analysis_trials import (
     _import_qa_eval_result,
@@ -234,10 +245,181 @@ async def test_create_accepts_a_failed_source_without_a_trajectory(monkeypatch):
     assert captured["payload"]["pre_trial_item_ids"] == ["audit-1", "audit-2"]
     assert captured["payload"]["pre_trial_must_fix_ids"] == ["audit-1"]
     assert captured["payload"]["baseline_evidence"] == []
+    assert captured["payload"]["source_index"] == 1
     assert "source_trial_id" not in captured["payload"]
     assert admitted == [("org-1", "user-1", 1)]
     assert source.experiment_id == "original-experiment"
     assert source.analysis == {"classification": "BAD_FAILURE"}
+
+
+def test_qa_eval_row_metadata_keeps_malformed_rows_visible():
+    trial = _source()
+    trial.kind = "qa_eval"
+    trial.harbor_config = {
+        "analysis_payload": {
+            "trial_ids": ["source-1", "source-2"],
+            "prompt_name": " ",
+            "prompt_sha256": "not-a-hash",
+            "source_index": 0,
+        }
+    }
+
+    source_index, source_trial_id, prompt_name, prompt_hash, error = (
+        _qa_eval_row_metadata(trial)
+    )
+
+    assert source_index is None
+    assert source_trial_id is None
+    assert prompt_name is None
+    assert prompt_hash is None
+    assert error is not None
+    assert "exactly one source trial" in error
+    assert "source_index must be a positive integer" in error
+    assert "prompt_name must be a non-empty string" in error
+    assert "prompt_sha256 must be 64 hex characters" in error
+
+
+def test_qa_eval_row_metadata_reads_exact_prompt_and_source():
+    trial = _source()
+    trial.kind = "qa_eval"
+    trial.harbor_config = {
+        "analysis_payload": {
+            "trial_ids": ["source-1"],
+            "trial_evidence": [{"trial_id": "source-1"}],
+            "with_verdict": False,
+            "prompt_name": "staging-classifier",
+            "prompt_sha256": "a" * 64,
+            "source_index": 7,
+        }
+    }
+
+    assert _qa_eval_row_metadata(trial) == (
+        7,
+        "source-1",
+        "staging-classifier",
+        "a" * 64,
+        None,
+    )
+
+
+def test_source_import_provenance_exposes_case_name_but_not_golden_label():
+    harbor_config = {
+        "imported_source": {
+            "golden_case": "apache__kafka-21033-9",
+            "trial_id": "production-trial-1",
+            "gold_class": "BAD_FAILURE",
+        }
+    }
+
+    assert _source_import_provenance(harbor_config) == (
+        "apache__kafka-21033-9",
+        "production-trial-1",
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_qa_eval_experiment_returns_private_replay_rows(monkeypatch):
+    created_at = datetime(2026, 9, 1, tzinfo=UTC)
+    experiment = ExperimentModel(
+        id="replay-experiment",
+        name="staging golden replay",
+        org_id="org-1",
+        created_at=created_at,
+    )
+    qa_trial = TrialModel(
+        id="qa-eval-1",
+        name="qa-eval-1",
+        task_id="staging-task-1",
+        experiment_id=experiment.id,
+        org_id="org-1",
+        agent="claude-code",
+        provider="anthropic",
+        queue_key="anthropic:sonnet-5",
+        model="global.anthropic.claude-sonnet-5",
+        kind="qa_eval",
+        status=TrialStatus.QUEUED,
+        harbor_config={
+            "analysis_payload": {
+                "trial_ids": ["staging-source-1"],
+                "trial_evidence": [{"trial_id": "staging-source-1"}],
+                "with_verdict": False,
+                "source_index": 1,
+                "prompt_name": "staging-92b72e7e",
+                "prompt_sha256": "a" * 64,
+            }
+        },
+        created_at=created_at,
+    )
+
+    class Result:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def all(self):
+            return self._rows
+
+    class Session:
+        execute_count = 0
+
+        async def scalar(self, _statement):
+            return experiment
+
+        async def execute(self, _statement):
+            self.execute_count += 1
+            if self.execute_count == 1:
+                return Result([(qa_trial, "task/path", "staging source task")])
+            return Result(
+                [
+                    (
+                        "staging-source-1",
+                        {
+                            "imported_source": {
+                                "golden_case": "apache__kafka-21033-9",
+                                "trial_id": "production-source-1",
+                            }
+                        },
+                    )
+                ]
+            )
+
+    compact = TrialResponse(
+        id=qa_trial.id,
+        name=qa_trial.name,
+        task_id=qa_trial.task_id,
+        task_path="task/path",
+        experiment_id=experiment.id,
+        agent=qa_trial.agent,
+        provider=qa_trial.provider,
+        queue_key=qa_trial.queue_key,
+        model=qa_trial.model,
+        status=qa_trial.status,
+        attempts=0,
+        max_attempts=6,
+        harbor_stage=None,
+        reward=None,
+        error_message=None,
+        result=None,
+        kind="qa_eval",
+        created_at=created_at,
+        started_at=None,
+        finished_at=None,
+    )
+    monkeypatch.setattr(
+        "oddish.core.endpoints.qa_eval.build_compact_trial_response",
+        lambda _trial, _task_path: compact,
+    )
+
+    response = await get_qa_eval_experiment_core(
+        Session(), experiment_id=experiment.id, org_id="org-1"
+    )
+
+    assert response.is_qa_eval is True
+    assert response.prompt_names == ["staging-92b72e7e"]
+    assert response.prompt_sha256s == ["a" * 64]
+    assert response.models == ["global.anthropic.claude-sonnet-5"]
+    assert response.trials[0].source_case_name == "apache__kafka-21033-9"
+    assert response.trials[0].production_trial_id == "production-source-1"
+    assert response.trials[0].source_trial_id == "staging-source-1"
 
 
 @pytest.mark.asyncio
