@@ -873,6 +873,14 @@ export function DeliveryBoardClient({
   }
 
   const frozen = data.frozen;
+  // Tasks a mass sign-off may take: not signed off, no open blockers.
+  // Blocked tasks keep the per-task acknowledge flow.
+  const cleanUnsigned = data.tasks.filter((row) => {
+    const signoffCheck = row.checks.find((check) => check.key === "signoff");
+    if (!signoffCheck || signoffCheck.status === "pass") return false;
+    const { checks, defects } = signoffBlockers(row);
+    return checks.length + defects.length === 0;
+  });
   return (
     <div className="space-y-4">
       <Card>
@@ -903,6 +911,46 @@ export function DeliveryBoardClient({
                 busy={busy}
                 onAdd={addTasks}
               />
+              {cleanUnsigned.length > 0 && (
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button variant="outline" size="sm" disabled={busy}>
+                      Sign off all ({cleanUnsigned.length})
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>
+                        Sign off {cleanUnsigned.length} task
+                        {cleanUnsigned.length === 1 ? "" : "s"}?
+                      </AlertDialogTitle>
+                      <AlertDialogDescription>
+                        Every check passes on these tasks. Each sign-off is
+                        recorded in your name. Tasks with open blockers are not
+                        included; sign those off from their row.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={() =>
+                          void run(async () => {
+                            for (const row of cleanUnsigned) {
+                              await putCheck(
+                                "signoff",
+                                row.delivery_task_id,
+                                true
+                              );
+                            }
+                          })
+                        }
+                      >
+                        Sign off all
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              )}
               <AlertDialog>
                 <AlertDialogTrigger asChild>
                   <Button size="sm" disabled={busy || !data.ready}>

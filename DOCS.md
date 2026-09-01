@@ -880,6 +880,9 @@ oddish delivery ack august-batch task-1 min_rollouts
 # asks for confirmation. On yes, it acknowledges each one in your name.
 oddish delivery signoff august-batch task-2
 
+# Sign off every task with no open blockers in one command
+oddish delivery signoff august-batch --all
+
 # Tick a custom sign-off check (defined in the delivery's check config)
 oddish delivery check august-batch proofread --task task-1
 
@@ -900,7 +903,8 @@ Commands
   (tasks accepted by id or name)
 - `signoff DELIVERY TASK` - Sign a task off (`--off` removes the sign-off).
   With open blockers, the command warns and asks first; `-y` skips the
-  prompt and acknowledges them
+  prompt and acknowledges them. `--all` signs off every task with no open
+  blockers and lists the skipped ones
 - `ack DELIVERY TASK REF` - Acknowledge one must-fix defect (by defect id)
   or one failing automated check (by check key)
 - `check DELIVERY KEY` - Tick a custom manual check (`--task` for

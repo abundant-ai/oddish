@@ -377,7 +377,15 @@ def _open_blockers(row: dict) -> tuple[list[dict], list[dict]]:
 @delivery_app.command("signoff")
 def signoff(
     delivery: Annotated[str, typer.Argument(help="Delivery id or name.")],
-    task: Annotated[str, typer.Argument(help="Task id or name.")],
+    task: Annotated[
+        str, typer.Argument(help="Task id or name. Omit with --all.")
+    ] = "",
+    all_clean: Annotated[
+        bool,
+        typer.Option(
+            "--all", help="Sign off every task with no open blockers."
+        ),
+    ] = False,
     off: Annotated[
         bool, typer.Option("--off", help="Remove the sign-off.")
     ] = False,
@@ -395,12 +403,53 @@ def signoff(
     If the task does not meet the requirements, the command warns, lists
     the blockers, and asks for confirmation. On yes, it records an
     acknowledgement in your name for each blocker, then signs off.
+
+    With --all, the command signs off every task that has no open
+    blockers and no sign-off yet. It lists the tasks it skipped.
     """
+    if all_clean == bool(task):
+        _fail("give a task or --all, not both" if task else "give a task or --all")
+    if all_clean and off:
+        _fail("--all cannot be combined with --off")
     api_url = api_url or get_api_url()
     with httpx.Client(timeout=60.0, headers=get_auth_headers()) as client:
         board = _fetch_board(client, api_url, delivery)
-        row = _member_row(board, task)
         checks_url = f"{api_url}/deliveries/{board['delivery']['id']}/checks"
+        if all_clean:
+            signed = 0
+            skipped: list[str] = []
+            for row in board["tasks"]:
+                signoff_check = next(
+                    (c for c in row["checks"] if c["key"] == "signoff"), None
+                )
+                if signoff_check is None or signoff_check["status"] == "pass":
+                    continue
+                failing, open_defects = _open_blockers(row)
+                if failing or open_defects:
+                    skipped.append(row["task_name"])
+                    continue
+                _request(
+                    client,
+                    "PUT",
+                    checks_url,
+                    json={
+                        "check_key": "signoff",
+                        "delivery_task_id": row["delivery_task_id"],
+                        "checked": True,
+                        "note": note,
+                    },
+                )
+                signed += 1
+                console.print(f"[green]Signed off {row['task_name']}[/green]")
+            if skipped:
+                console.print(
+                    "[yellow]Skipped (open blockers — sign off one at a "
+                    "time to acknowledge):[/yellow] " + ", ".join(skipped)
+                )
+            if signed == 0 and not skipped:
+                console.print("Nothing to sign off.")
+            return
+        row = _member_row(board, task)
         if not off:
             failing, open_defects = _open_blockers(row)
             if failing or open_defects:
