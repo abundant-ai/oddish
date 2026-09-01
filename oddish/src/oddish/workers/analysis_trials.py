@@ -544,7 +544,15 @@ Audit these trials:
 Authoritative trial facts supplied by the server:
 {evidence_json}
 
-Run `node /probe-harness/oddish-query --help` first. For every trial ID above, fetch the result, verifier output, and trajectory without truncation and redirect them to files:
+Run `node /probe-harness/oddish-query --help` first. Fetch the complete, version-pinned task source into a QA-only directory:
+
+```
+node /probe-harness/oddish-query task fetch --into /tmp/qa-task-source
+```
+
+Read `/tmp/qa-task-source/instruction.md` and `/tmp/qa-task-source/task.toml` completely. The fetched task source is QA-only evidence. Its presence does not prove that the historical solver could read hidden tests, verifier files, or the reference solution. Only the solver trajectory or a supplied pre-trial finding can prove that access.
+
+For every trial ID above, fetch the result, verifier output, and trajectory without truncation and redirect them to files:
 
 ```
 node /probe-harness/oddish-query trials result <trial-id> > /tmp/<trial-id>.result.json

@@ -181,6 +181,10 @@ def test_the_qa_brief_tells_the_agent_everything_it_needs():
     assert '`action_items[].problem_type` accepts only `"incompleteness"' in brief
     assert "If `exploited` is `false`, `causal` must also be `false`" in brief
     assert '"evidence": ["first fact", "second fact"]' in brief
+    assert "oddish-query task fetch --into /tmp/qa-task-source" in brief
+    assert "`/tmp/qa-task-source/instruction.md`" in brief
+    assert "`/tmp/qa-task-source/task.toml`" in brief
+    assert "does not prove that the historical solver could read hidden tests" in brief
 
 
 def test_the_production_classifier_uses_the_query_evidence_contract():
@@ -202,6 +206,22 @@ def test_the_production_classifier_uses_the_query_evidence_contract():
     assert "not mounted in the QA sandbox" in brief
     assert "stop without writing `qa_result.json`" in brief
     assert "Missing QA evidence is not a solver HARNESS_ERROR" in brief
+    assert "The fetched task source is QA-only evidence" in brief
+    assert "The exact exception `AgentTimeoutError`" in brief
+    assert "it is not HARNESS_ERROR" in brief
+    assert "check every failed verifier condition" in brief
+    assert "found only in the verifier, hidden tests, or reference solution" in brief
+    assert "Do not let an unrelated task defect change" in brief
+    assert "Oracle copying or other proven unintended access is BAD_SUCCESS" in brief
+    for ambiguous in (
+        "inferable",
+        "strongest available evidence",
+        "first decisive finding",
+        "Complete the infrastructure",
+        "visible code contract",
+        "when it is needed",
+    ):
+        assert ambiguous not in brief
     assert brief.count("== OUTPUT ==") == 1
     for token in (
         "{num_trials}",
