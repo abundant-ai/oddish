@@ -77,6 +77,19 @@ async function postJson(url: string, method: string, body?: unknown) {
   }
 }
 
+/** What still blocks a sign-off: failing automated checks that need a
+ * waive, and defects without an acknowledgement. */
+function signoffBlockers(row: DeliveryTaskBoardRow) {
+  const checks = row.checks.filter(
+    (check) =>
+      check.kind === "automated" &&
+      check.status === "fail" &&
+      check.key !== "no_must_fix"
+  );
+  const defects = row.defects.filter((defect) => !defect.acknowledged);
+  return { checks, defects };
+}
+
 function AddTasksDialog({
   open,
   onOpenChange,
@@ -593,6 +606,8 @@ export function DeliveryBoardClient({
   const [actionError, setActionError] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [signoffConfirm, setSignoffConfirm] =
+    useState<DeliveryTaskBoardRow | null>(null);
 
   const run = async (action: () => Promise<void>) => {
     setBusy(true);
@@ -607,22 +622,54 @@ export function DeliveryBoardClient({
     }
   };
 
-  const setCheck = (
+  const putCheck = (
     checkKey: string,
     deliveryTaskId: string | null,
     checked: boolean
   ) =>
-    void run(() =>
-      postJson(
-        `/api/deliveries/${encodeURIComponent(deliveryId)}/checks`,
-        "PUT",
-        {
-          check_key: checkKey,
-          delivery_task_id: deliveryTaskId,
-          checked,
-        }
-      )
+    postJson(
+      `/api/deliveries/${encodeURIComponent(deliveryId)}/checks`,
+      "PUT",
+      {
+        check_key: checkKey,
+        delivery_task_id: deliveryTaskId,
+        checked,
+      }
     );
+
+  const setCheck = (
+    checkKey: string,
+    deliveryTaskId: string | null,
+    checked: boolean
+  ) => {
+    // Ticking sign-off on a task with open blockers needs an explicit
+    // confirmation; the dialog lists them and acknowledges on confirm.
+    if (checkKey === "signoff" && checked && data) {
+      const row = data.tasks.find((r) => r.delivery_task_id === deliveryTaskId);
+      if (row) {
+        const { checks, defects } = signoffBlockers(row);
+        if (checks.length + defects.length > 0) {
+          setSignoffConfirm(row);
+          return;
+        }
+      }
+    }
+    void run(() => putCheck(checkKey, deliveryTaskId, checked));
+  };
+
+  const acknowledgeAndSignOff = (row: DeliveryTaskBoardRow) => {
+    const { checks, defects } = signoffBlockers(row);
+    setSignoffConfirm(null);
+    void run(async () => {
+      for (const check of checks) {
+        await putCheck(`waive:${check.key}`, row.delivery_task_id, true);
+      }
+      for (const defect of defects) {
+        await putCheck(`ack:${defect.id}`, row.delivery_task_id, true);
+      }
+      await putCheck("signoff", row.delivery_task_id, true);
+    });
+  };
 
   const addTasks = (taskIds: string[]) => {
     if (taskIds.length === 0) return;
@@ -793,6 +840,53 @@ export function DeliveryBoardClient({
           )}
         </CardContent>
       </Card>
+      <AlertDialog
+        open={signoffConfirm !== null}
+        onOpenChange={(open) => {
+          if (!open) setSignoffConfirm(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              This task does not meet the requirements
+            </AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2">
+                {signoffConfirm && (
+                  <ul className="list-disc space-y-1 pl-5 text-sm">
+                    {signoffBlockers(signoffConfirm).checks.map((check) => (
+                      <li key={check.key}>
+                        {check.label}
+                        {check.detail ? ` — ${check.detail}` : ""}
+                      </li>
+                    ))}
+                    {signoffBlockers(signoffConfirm).defects.map((defect) => (
+                      <li key={defect.id}>
+                        defect {defect.id} — {defect.title}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <p>
+                  Sign off anyway? Each item gets an acknowledgement recorded in
+                  your name.
+                </p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (signoffConfirm) acknowledgeAndSignOff(signoffConfirm);
+              }}
+            >
+              Acknowledge and sign off
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

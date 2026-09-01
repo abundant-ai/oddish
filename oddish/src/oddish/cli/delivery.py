@@ -361,6 +361,19 @@ def _member_row(board: dict, task: str) -> dict:
     return row
 
 
+def _open_blockers(row: dict) -> tuple[list[dict], list[dict]]:
+    """Failing automated checks that need a waive, and unacked defects."""
+    checks = [
+        c
+        for c in row["checks"]
+        if c["kind"] == "automated"
+        and c["status"] == "fail"
+        and c["key"] != "no_must_fix"
+    ]
+    defects = [d for d in row.get("defects", []) if not d["acknowledged"]]
+    return checks, defects
+
+
 @delivery_app.command("signoff")
 def signoff(
     delivery: Annotated[str, typer.Argument(help="Delivery id or name.")],
@@ -369,22 +382,72 @@ def signoff(
         bool, typer.Option("--off", help="Remove the sign-off.")
     ] = False,
     note: Annotated[str, typer.Option("--note", help="Note to attach.")] = "",
+    yes: Annotated[
+        bool,
+        typer.Option(
+            "--yes", "-y", help="Acknowledge open blockers without a prompt."
+        ),
+    ] = False,
     api_url: Annotated[str, _API_OPTION] = "",
 ) -> None:
     """Sign a task off. The server records who signed and which version.
 
-    The server refuses the sign-off while the task has a must-fix defect
-    or a failing automated check without an acknowledgement. Use
-    'oddish delivery ack' first.
+    If the task does not meet the requirements, the command warns, lists
+    the blockers, and asks for confirmation. On yes, it records an
+    acknowledgement in your name for each blocker, then signs off.
     """
     api_url = api_url or get_api_url()
     with httpx.Client(timeout=60.0, headers=get_auth_headers()) as client:
         board = _fetch_board(client, api_url, delivery)
         row = _member_row(board, task)
+        checks_url = f"{api_url}/deliveries/{board['delivery']['id']}/checks"
+        if not off:
+            failing, open_defects = _open_blockers(row)
+            if failing or open_defects:
+                console.print(
+                    f"[yellow]{row['task_name']} does not meet the "
+                    "requirements:[/yellow]"
+                )
+                for check in failing:
+                    detail = (
+                        f" — {check['detail']}" if check.get("detail") else ""
+                    )
+                    console.print(f"  [red]-[/red] {check['label']}{detail}")
+                for defect in open_defects:
+                    console.print(
+                        f"  [red]-[/red] defect {defect['id']} — "
+                        f"{defect['title']}"
+                    )
+                if not yes and not typer.confirm(
+                    "Acknowledge these in your name and sign off anyway?"
+                ):
+                    raise typer.Exit(1)
+                for check in failing:
+                    _request(
+                        client,
+                        "PUT",
+                        checks_url,
+                        json={
+                            "check_key": f"waive:{check['key']}",
+                            "delivery_task_id": row["delivery_task_id"],
+                            "checked": True,
+                        },
+                    )
+                for defect in open_defects:
+                    _request(
+                        client,
+                        "PUT",
+                        checks_url,
+                        json={
+                            "check_key": f"ack:{defect['id']}",
+                            "delivery_task_id": row["delivery_task_id"],
+                            "checked": True,
+                        },
+                    )
         _request(
             client,
             "PUT",
-            f"{api_url}/deliveries/{board['delivery']['id']}/checks",
+            checks_url,
             json={
                 "check_key": "signoff",
                 "delivery_task_id": row["delivery_task_id"],
