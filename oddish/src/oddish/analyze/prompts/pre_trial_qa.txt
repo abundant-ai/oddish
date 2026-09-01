@@ -23,6 +23,28 @@ Each finding has three labels. You must use the exact values shown as they are s
 * `"should_fix"` — weakens the task, but will not decide most trials by itself.
 * `"optional"` — a hardening or clarity item. The risk is low.
 
+## AUDIT PROCEDURE
+
+Read `instruction.md`, `task.toml`, the verifier entry point, every test or fixture the verifier loads, the reference solution, and the environment files before deciding that the source is clean.
+
+Build an instruction-to-verifier map. For every behavior that can change the reward:
+
+1. State what the verifier requires.
+2. Find the instruction sentence or visible starter-code contract that requires it.
+3. Compare the reference solution only to learn what the verifier expects. A reference-only choice is not automatically a stated requirement.
+4. Report a `must_fix` `mismatch` when the verifier requires behavior that is neither stated nor inferable.
+
+Check these mismatch patterns explicitly:
+
+* An exact function name, signature, argument count, field, route, or protocol shape that exists only in the verifier or reference solution.
+* Exact text, whitespace, line numbers, hashes, ordering, or serialized bytes that the instruction does not specify.
+* Integration files, fixtures, services, controllers, generated code, or setup changes outside the instruction's requested scope.
+* Examples introduced by `for example`, `e.g.`, or `includes` that the verifier treats as the only exact output.
+
+Check runtime secrecy separately. If the instruction permits only behavioral oracle queries, inspect the environment and file permissions for ways to read oracle bytes, strings, symbols, bytecode, embedded source, or disassembly. Report practical implementation access as `info_leakage` with tier `must_fix`.
+
+Do not report a mismatch from the reference solution alone. Cite the verifier or runtime file and line that enforces or exposes the problematic behavior.
+
 ## OUTPUT
 
 Write one item per issue. Every item needs all ten keys, spelled exactly as shown. The pipeline discards an item with a missing key or an unknown value.

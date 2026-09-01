@@ -544,7 +544,15 @@ Audit these trials:
 Authoritative trial facts supplied by the server:
 {evidence_json}
 
-Run `node /probe-harness/oddish-query --help` first. For every trial ID above, fetch the result, verifier output, and trajectory without truncation and redirect them to files:
+Run `node /probe-harness/oddish-query --help` first. Fetch the complete, version-pinned task source into a QA-only directory:
+
+```
+node /probe-harness/oddish-query task fetch --into /tmp/qa-task-source
+```
+
+Read `/tmp/qa-task-source/instruction.md` and `/tmp/qa-task-source/task.toml` completely. Inspect the verifier and its referenced tests when deciding whether a failed check was stated, inferable, or hidden. Inspect the reference solution only when it is needed to prove that an interface or expected value exists only there. These files are evidence available to you as the QA auditor. Their presence in `/tmp/qa-task-source` does not prove that the historical solver could read them; only the solver trajectory or a supplied pre-trial finding can prove that access.
+
+For every trial ID above, fetch the result, verifier output, and trajectory without truncation and redirect them to files:
 
 ```
 node /probe-harness/oddish-query trials result <trial-id> > /tmp/<trial-id>.result.json
@@ -553,6 +561,8 @@ node /probe-harness/oddish-query trials trajectory <trial-id> > /tmp/<trial-id>.
 ```
 
 Each successful command writes an object whose `trial_id` must equal the requested ID. Read the complete files before judging the trial. Use `trials logs <trial-id>` only when diagnosing a setup or runtime failure because that free-form view can be truncated.
+
+For every failed verifier check, compare the required behavior with the original task instruction before selecting a classification. Record: what the verifier required, which instruction sentence or visible code contract supports it, what the solver implemented, and whether the unmet requirement was stated, inferable, or hidden. A solver mistake does not prove that the task was fair. Do not select the final classification until you have checked every verifier failure for both solver error and task defect.
 
 For a manifest entry with `has_trajectory: true`, `trajectory` must be a JSON object. If it is absent, malformed, or belongs to another ID, stop without writing `qa_result.json`. For `has_trajectory: false`, a null or unavailable trajectory is expected: use only the authoritative facts, result when available, verifier output, and exception. Do not invent agent actions. Its `trajectory_summary` must say that no trajectory was recorded and must use empty `highlights` and `components` arrays.
 
