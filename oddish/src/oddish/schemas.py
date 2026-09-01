@@ -1052,6 +1052,7 @@ class ExperimentTaskRow(BaseModel):
     priority: Priority
     user: str
     task_path: str
+    github_meta: dict[str, str] | None = None
     current_version: int | None = None
     current_version_id: str | None = None
     trial_version: int | None = None

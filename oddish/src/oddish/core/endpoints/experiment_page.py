@@ -15,6 +15,7 @@ from oddish.core.cost_exclusions import CostExclusions, load_cost_exclusions
 from oddish.core.experiment_membership import visible_experiment_trial_predicates
 from oddish.core.helpers import (
     SLIM_TRIAL_RESPONSE_COLUMNS,
+    _parse_github_meta,
     experiment_effective_versions_selectable,
 )
 from oddish.core.model_display_names import (
@@ -226,6 +227,7 @@ def _experiment_task_rows(*, experiment_id: str, org_id: str):
             TaskModel.priority,
             TaskModel.user,
             TaskModel.task_path,
+            TaskModel.tags,
             TaskModel.current_version_id,
             current_version.version.label("current_version"),
             effective.c.task_version_id.label("trial_version_id"),
@@ -294,6 +296,7 @@ def _task_row(row: Mapping[str, Any]) -> ExperimentTaskRow:
     values.update(
         id=str(row["task_id"]),
         status=TaskStatus.COMPLETED if total and terminal >= total else row["status"],
+        github_meta=_parse_github_meta(row["tags"]),
         reward_success=int(row["pass_count"] or 0),
         verdict=verdict,
     )

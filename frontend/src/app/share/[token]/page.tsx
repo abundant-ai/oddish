@@ -4,6 +4,7 @@ import { useParams } from "next/navigation";
 import useSWR from "swr";
 import { ExperimentDetailView } from "@/components/experiment-detail-view";
 import { ExperimentDescription } from "@/components/experiment-description";
+import { ExperimentTrialLoadAlert } from "@/components/experiment-trial-load-alert";
 import { ShareNav } from "@/components/share-nav";
 import type { PublicExperimentInfo } from "@/lib/types";
 import { fetcher } from "@/lib/api";
@@ -17,20 +18,25 @@ export default function PublicExperimentPage() {
     ? `${PUBLIC_API_URL}/experiments/${encodeURIComponent(token)}`
     : null;
 
-  const { data: experimentInfo, error: experimentError } =
-    useSWR<PublicExperimentInfo>(publicBase, fetcher);
+  const { data: experimentInfo } = useSWR<PublicExperimentInfo>(
+    publicBase,
+    fetcher
+  );
 
   const {
     experiment,
     tasks: tasksForExperiment,
     openError,
-    trialError,
     isLoading,
-    isLoadingPages,
+    isLoadingTrials,
     hasMoreTasks,
     hasMoreTrials,
     loadNextTasks,
     loadNextTrials,
+    trialsLoaded,
+    totalTrials,
+    trialsStalled,
+    isValidatingTrials,
   } = useExperimentPages({
     openUrl: publicBase ? `${publicBase}/open` : null,
     trialPageUrl: publicBase ? `${publicBase}/trial-page` : null,
@@ -39,7 +45,7 @@ export default function PublicExperimentPage() {
 
   const experimentName =
     experimentInfo?.name || experiment?.name || "Public Experiment";
-  const hasErrors = Boolean(experimentError || openError || trialError);
+  const hasFatalError = !experiment && Boolean(openError);
   const scopedApiBaseUrl = publicBase ?? PUBLIC_API_URL;
 
   return (
@@ -52,14 +58,24 @@ export default function PublicExperimentPage() {
             tasksForExperiment={tasksForExperiment}
             pageSummary={experiment?.summary}
             isLoading={isLoading}
-            isLoadingTrials={isLoadingPages}
+            isLoadingTrials={isLoadingTrials}
             hasMoreTasks={hasMoreTasks}
             hasMoreTrials={hasMoreTrials}
             loadNextTasks={loadNextTasks}
             loadNextTrials={loadNextTrials}
-            hasError={hasErrors}
+            hasError={hasFatalError}
             errorTitle="Failed to load experiment"
             errorDescription="The share link may be invalid or no longer public."
+            inlineAlert={
+              trialsStalled ? (
+                <ExperimentTrialLoadAlert
+                  loaded={trialsLoaded}
+                  total={totalTrials}
+                  isRetrying={isValidatingTrials}
+                  onRetry={loadNextTrials}
+                />
+              ) : null
+            }
             headerLeft={
               <h1 className="truncate pb-1 font-mono text-[26px] leading-[1.25] font-semibold tracking-[-0.02em] text-[color:var(--paper-ink)]">
                 {experimentName}

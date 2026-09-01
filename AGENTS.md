@@ -573,8 +573,13 @@ otherwise it falls back to the highest version represented by such trials. The
 bounded `/open` and `/trial-page` endpoints apply the same rule so progressive
 loading cannot change the files/counts pivot or mix one version's trials with
 another's artifacts. `/open` returns exact totals plus at most 100 task shells
-under 50 KB. `/trial-page` returns at most 250 projected trials and omits full
+under 50 KB. Each task shell includes `github_meta`, parsed from the task's
+stored tags, so public dataset grouping does not infer repository metadata from
+the task name. `/trial-page` returns at most 250 projected trials and omits full
 analysis, errors, results, phase timing, Harbor config, and ORM relationships.
+In React, `/open` owns the page's initial loading and fatal-error state;
+`/trial-page` owns incremental trial loading and a retryable inline error, so a
+trial-page failure must not replace task shells that `/open` already returned.
 
 `overwrite_current_version` replaces the archive and metadata for
 `tasks.current_version_id` without changing its ID or version number. Uploads

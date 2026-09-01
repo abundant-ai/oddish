@@ -4,6 +4,7 @@ import useSWR from "swr";
 import { useParams } from "next/navigation";
 import { DatasetDetailView } from "@/components/dataset-detail-view";
 import { ExperimentPaginationSentinel } from "@/components/experiment-pagination-sentinel";
+import { ExperimentTrialLoadAlert } from "@/components/experiment-trial-load-alert";
 import { Nav } from "@/components/nav";
 import type { PublicExperimentInfo } from "@/lib/types";
 import { fetcher } from "@/lib/api";
@@ -17,20 +18,24 @@ export default function PublicDatasetPage() {
     ? `${PUBLIC_API_URL}/experiments/${encodeURIComponent(token)}`
     : null;
 
-  const { data: experimentInfo, error: experimentError } =
-    useSWR<PublicExperimentInfo>(publicBase, fetcher);
+  const { data: experimentInfo } = useSWR<PublicExperimentInfo>(
+    publicBase,
+    fetcher
+  );
 
   const {
     experiment,
     tasks,
     openError,
-    trialError,
     isLoading,
-    isLoadingPages,
     hasMoreTasks,
     hasMoreTrials,
     loadNextTasks,
     loadNextTrials,
+    trialsLoaded,
+    totalTrials,
+    trialsStalled,
+    isValidatingTrials,
   } = useExperimentPages({
     openUrl: publicBase ? `${publicBase}/open` : null,
     trialPageUrl: publicBase ? `${publicBase}/trial-page` : null,
@@ -39,7 +44,7 @@ export default function PublicDatasetPage() {
 
   const datasetName =
     experimentInfo?.name || experiment?.name || "Public Dataset";
-  const hasError = Boolean(experimentError || openError || trialError);
+  const hasFatalError = !experiment && Boolean(openError);
 
   return (
     <>
@@ -49,8 +54,18 @@ export default function PublicDatasetPage() {
         <DatasetDetailView
           datasetName={datasetName}
           tasks={tasks}
-          isLoading={isLoading || isLoadingPages}
-          hasError={hasError}
+          isLoading={isLoading}
+          hasError={hasFatalError}
+          inlineAlert={
+            trialsStalled ? (
+              <ExperimentTrialLoadAlert
+                loaded={trialsLoaded}
+                total={totalTrials}
+                isRetrying={isValidatingTrials}
+                onRetry={loadNextTrials}
+              />
+            ) : null
+          }
         />
         <ExperimentPaginationSentinel
           hasMoreTasks={hasMoreTasks}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useDeferredValue, useMemo, useState } from "react";
+import { useDeferredValue, useMemo, useState, type ReactNode } from "react";
 import { LayoutDashboard, Search, TableProperties } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -15,6 +15,7 @@ type DatasetDetailViewProps = {
   tasks: Task[];
   isLoading: boolean;
   hasError: boolean;
+  inlineAlert?: ReactNode;
 };
 
 type ModelAggregate = {
@@ -117,6 +118,7 @@ export function DatasetDetailView({
   tasks,
   isLoading,
   hasError,
+  inlineAlert,
 }: DatasetDetailViewProps) {
   const [view, setView] = useState<ExplorerView>("overview");
   const [search, setSearch] = useState("");
@@ -181,6 +183,7 @@ export function DatasetDetailView({
           </Alert>
         </div>
       )}
+      {inlineAlert && <div className="px-6 pt-6">{inlineAlert}</div>}
 
       <div className="grid min-h-[calc(100vh-3.5rem)] grid-cols-1 lg:grid-cols-[250px_minmax(0,1fr)]">
         <aside className="border-r border-border bg-card/40 px-4 py-5">

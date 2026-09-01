@@ -182,9 +182,7 @@ export function useExperimentPages({
     openError,
     trialError,
     isLoading: isLoadingOpen && !experiment,
-    isLoadingPages:
-      isValidatingOpen ||
-      (totalTrials > 0 && (isLoadingTrials || isValidatingTrials)),
+    isLoadingTrials: totalTrials > 0 && (isLoadingTrials || isValidatingTrials),
     hasMoreTasks,
     hasMoreTrials,
     canLoadTasks,

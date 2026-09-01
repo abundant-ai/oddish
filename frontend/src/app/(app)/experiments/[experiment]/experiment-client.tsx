@@ -21,6 +21,7 @@ import {
 } from "@/components/probe-launch-button";
 import { ExperimentDetailView } from "@/components/experiment-detail-view";
 import { ExperimentDescription } from "@/components/experiment-description";
+import { ExperimentTrialLoadAlert } from "@/components/experiment-trial-load-alert";
 import type {
   Task,
   Trial,
@@ -74,7 +75,7 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
     tasks: tasksForExperiment,
     openError,
     isLoading,
-    isLoadingPages: isLoadingTrials,
+    isLoadingTrials,
     hasMoreTasks,
     hasMoreTrials,
     loadNextTasks,
@@ -456,24 +457,12 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
             ) : trialsStalled ? (
               // Outranks the refresh alert below: this one carries the only
               // recovery control.
-              <Alert variant="destructive">
-                <AlertTitle>Some trial results failed to load</AlertTitle>
-                <AlertDescription className="flex flex-wrap items-center gap-2">
-                  <span>
-                    Loaded {trialsLoadedCount}/{totalTrialCount} trials.
-                  </span>
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    className="h-7"
-                    onClick={loadNextTrials}
-                    disabled={isValidatingTrials}
-                  >
-                    Retry
-                  </Button>
-                </AlertDescription>
-              </Alert>
+              <ExperimentTrialLoadAlert
+                loaded={trialsLoadedCount}
+                total={totalTrialCount}
+                isRetrying={isValidatingTrials}
+                onRetry={loadNextTrials}
+              />
             ) : openError && tasksForExperiment.length > 0 ? (
               <Alert>
                 <AlertTitle>Could not refresh experiment</AlertTitle>
