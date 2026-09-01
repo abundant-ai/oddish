@@ -15,7 +15,7 @@ from sqlalchemy.orm import aliased
 
 from oddish.core.cost_basis import COMBINE_IDEMPOTENCY_PREFIX, not_combine_copy_filter
 from oddish.db import experiment_trials
-from oddish.db.models import TrialModel
+from oddish.db.models import AGENT_TRIAL_KIND, TrialModel
 
 
 def gathered_trial_ids_select(experiment_id: str) -> Any:
@@ -60,4 +60,15 @@ def trial_in_experiment(experiment_id: str):
             .correlate(TrialModel)
             .exists(),
         ),
+    )
+
+
+def visible_experiment_trial_predicates(experiment_id: str) -> tuple[Any, ...]:
+    """The trial population rendered by member and public experiment grids."""
+    return (
+        trial_in_experiment(experiment_id),
+        TrialModel.deleted_at.is_(None),
+        TrialModel.kind == AGENT_TRIAL_KIND,
+        TrialModel.is_probe.is_(False),
+        TrialModel.superseded_by_trial_id.is_(None),
     )

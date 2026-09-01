@@ -704,48 +704,71 @@ async def fetch_experiment_effective_version_ids(
     experiment, or the latest represented version otherwise. Tasks with no
     scoped trials are omitted.
 
-    Uses ``DISTINCT ON (task_id)`` joined to ``task_versions`` so the
-    server returns at most one row per task -- ordered by the *integer*
-    version number, which lexicographic sorting on ``task_version_id``
-    (``"{task_id}-v9"`` vs ``"{task_id}-v10"``) gets wrong. Replaces
-    the previous "fetch every trial row, sort in Python" path that
-    transferred ``len(task_ids) * trials_per_task`` rows just to keep
-    one per task.
+    Ranks candidates beside ``task_versions.version`` so the server returns
+    one row per task using the integer version number, not lexicographic
+    ``task_version_id`` order (where v9 sorts after v10).
     """
     if not task_ids:
         return {}
 
-    from oddish.core.experiment_membership import trial_in_experiment
-    from oddish.db import TaskVersionModel  # local import: avoid cycle
-
-    stmt = (
-        select(TrialModel.task_id, TrialModel.task_version_id)
-        .join(TaskModel, TaskModel.id == TrialModel.task_id)
-        .join(TaskVersionModel, TaskVersionModel.id == TrialModel.task_version_id)
-        .where(
-            TrialModel.task_id.in_(list(task_ids)),
-            trial_in_experiment(experiment_id),
-            TrialModel.task_version_id.is_not(None),
-            TrialModel.is_probe.is_(False),
-            TrialModel.superseded_by_trial_id.is_(None),
-        )
-        .order_by(
-            TrialModel.task_id.asc(),
-            case(
-                (TrialModel.task_version_id == TaskModel.current_version_id, 0),
-                else_=1,
-            ).asc(),
-            TaskVersionModel.version.desc(),
-        )
-        .distinct(TrialModel.task_id)
+    effective = experiment_effective_versions_selectable(
+        experiment_id=experiment_id, task_ids=task_ids
     )
-
-    result = await session.execute(stmt)
+    result = await session.execute(
+        select(effective.c.task_id, effective.c.task_version_id)
+    )
     return {
         str(task_id): str(version_id)
         for task_id, version_id in result.all()
         if version_id is not None
     }
+
+
+def experiment_effective_versions_selectable(
+    *, experiment_id: str, task_ids: Sequence[str] | None = None
+):
+    """One experiment-relevant version per task, as a reusable SQL subquery."""
+    from oddish.core.experiment_membership import visible_experiment_trial_predicates
+    from oddish.db import TaskVersionModel  # local import: avoid cycle
+
+    ranked = (
+        select(
+            TrialModel.task_id,
+            TrialModel.task_version_id,
+            TaskVersionModel.version.label("task_version"),
+            func.row_number()
+            .over(
+                partition_by=TrialModel.task_id,
+                order_by=(
+                    case(
+                        (TrialModel.task_version_id == TaskModel.current_version_id, 0),
+                        else_=1,
+                    ),
+                    TaskVersionModel.version.desc(),
+                ),
+            )
+            .label("rank"),
+        )
+        .join(TaskModel, TaskModel.id == TrialModel.task_id)
+        .join(TaskVersionModel, TaskVersionModel.id == TrialModel.task_version_id)
+        .where(
+            *visible_experiment_trial_predicates(experiment_id),
+            TaskModel.deleted_at.is_(None),
+            TaskVersionModel.deleted_at.is_(None),
+        )
+    )
+    if task_ids is not None:
+        ranked = ranked.where(TrialModel.task_id.in_(list(task_ids)))
+    ranked = ranked.subquery("experiment_version_candidates")
+    return (
+        select(
+            ranked.c.task_id,
+            ranked.c.task_version_id,
+            ranked.c.task_version,
+        )
+        .where(ranked.c.rank == 1)
+        .subquery("experiment_effective_versions")
+    )
 
 
 def filter_probe_trials_for_effective_versions(

@@ -23,10 +23,7 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, lazyload, load_only, noload, selectinload
 
-from oddish.core.experiment_membership import (
-    gathered_trial_ids_select,
-    trial_in_experiment,
-)
+from oddish.core.experiment_membership import visible_experiment_trial_predicates
 from oddish.core.helpers import (
     SLIM_TRIAL_RESPONSE_COLUMNS,
     TASK_STATUS_RESPONSE_COLUMNS,
@@ -42,7 +39,6 @@ from oddish.core.helpers import (
     fetch_visible_worker_jobs,
     filter_probe_trials_for_effective_versions,
     get_task_status_trials,
-    resolve_effective_version_id,
 )
 from oddish.core.tags.filter_ast import (
     TagFilterAST,
@@ -158,20 +154,12 @@ async def list_tasks_core(
     query = select(TaskModel).order_by(TaskModel.created_at.desc())
     if include_trials:
         # When scoped to an experiment, push the trial filter into the
-        # selectin load so each task fetches only that experiment's non-probe
-        # trials instead of every trial across every version / experiment /
-        # superseded rerun. The former code loaded the full set and filtered
-        # in Python (below), which materialized far more rows than the view
-        # needs -- the memory spike that OOM-killed the API container. This is
-        # an exact in-SQL equivalent of that Python filter: ``experiment_id``
-        # and ``is_probe`` are both NOT NULL, so ``experiment_id == X``
-        # excludes legacy/NULL-experiment trials (``None == X`` is False in
-        # Python, ``NULL = X`` is not-true in SQL) and ``is_probe.is_(False)``
-        # matches ``not t.is_probe``. The effective-version resolution and the
-        # superseded/off-version drop stay in Python, computed from the scoped
-        # set exactly as before. The filtered selectin still runs inside the
-        # async session (eager, no lazy load -> no MissingGreenlet) and still
-        # inherits the soft-delete ``deleted_at IS NULL`` criteria.
+        # selectin load so each task fetches only the experiment's visible
+        # agent trials instead of every trial across versions, experiments,
+        # probes, analysis runs, and superseded reruns. Version selection is
+        # resolved separately by the shared SQL selector below. The filtered
+        # selectin stays eager, so response building cannot lazy-load outside
+        # the async greenlet.
         #
         # NOTE: this relies on ``task.trials`` being UNLOADED on the incoming
         # session. A filtered selectin scopes the collection on first load but
@@ -182,8 +170,7 @@ async def list_tasks_core(
         # Python) or the filter will silently not apply.
         if experiment_id:
             trials_relationship = TaskModel.trials.and_(
-                trial_in_experiment(experiment_id),
-                TrialModel.is_probe.is_(False),
+                *visible_experiment_trial_predicates(experiment_id),
             )
         else:
             trials_relationship = TaskModel.trials
@@ -289,39 +276,33 @@ async def list_tasks_core(
     # experiment has visible trials for it; otherwise the latest represented
     # version wins so an experiment still shows its own historical trials after
     # the task's default changes elsewhere.
-    # Collection experiments gather trials additively via ``experiment_trials``
-    # without rewriting each trial's scalar ``experiment_id``. Compute that
-    # gathered set once so effective-version resolution recognizes those trials
-    # (otherwise a gathered trial on an older version is loaded, then
-    # double-filtered away by the effective-version drop). Empty for a normal
-    # experiment -> every path stays identical to before.
-    gathered_trial_ids: set[str] = set()
-    if experiment_id:
-        gathered_trial_ids = set(
-            (await session.execute(gathered_trial_ids_select(experiment_id)))
-            .scalars()
-            .all()
+    # Resolve one displayed version for every task before any consumer filters
+    # rows. The SQL selector deliberately returns only versions represented by
+    # visible experiment trials; a task absent from that partial result still
+    # displays its current version. Keeping the fallback in this total map makes
+    # the agent rows, response metadata, and separately-loaded probe rows use
+    # the same version decision.
+    effective_by_task: dict[str, str | None] = {
+        task.id: task.current_version_id for task in tasks
+    }
+    if experiment_id and tasks and include_trials:
+        effective_by_task.update(
+            await fetch_experiment_effective_version_ids(
+                session,
+                experiment_id=experiment_id,
+                task_ids=[task.id for task in tasks],
+            )
         )
 
     if include_trials:
         from sqlalchemy.orm.attributes import set_committed_value
 
-        effective_by_task: dict[str, str | None] = {}
         for task in tasks:
             if experiment_id:
-                # ``task.trials`` is already scoped to this experiment's
-                # non-probe trials by the filtered selectin load above (probes
-                # are loaded separately by version and merged into task.trials
-                # below, so excluding them here stops a probe-only version from
-                # skewing the effective version resolution). Resolve the
-                # experiment's effective version from that scoped set, then drop
-                # superseded / off-version trials.
-                effective = resolve_effective_version_id(
-                    task,
-                    experiment_context_id=experiment_id,
-                    gathered_trial_ids=gathered_trial_ids,
-                )
-                effective_by_task[task.id] = effective
+                # ``task.trials`` is already scoped to the experiment's visible
+                # agent population. Use the SQL-selected version rather than
+                # re-ranking the loaded rows in Python.
+                effective = effective_by_task[task.id]
                 set_committed_value(
                     task,
                     "trials",
@@ -406,7 +387,7 @@ async def list_tasks_core(
                     queue_info_by_trial_id=queue_info_by_trial_id,
                     jobs_by_subject=jobs_by_subject,
                     experiment_context_id=experiment_id,
-                    gathered_trial_ids=gathered_trial_ids,
+                    effective_version_id=effective_by_task[task.id],
                     exclusions=exclusions,
                 )
                 for task in tasks
@@ -426,7 +407,7 @@ async def list_tasks_core(
                 queue_info_by_trial_id=queue_info_by_trial_id,
                 jobs_by_subject=jobs_by_subject,
                 experiment_context_id=experiment_id,
-                gathered_trial_ids=gathered_trial_ids,
+                effective_version_id=effective_by_task[task.id],
                 exclusions=exclusions,
             )
             for task in tasks
@@ -584,8 +565,7 @@ async def list_experiment_slim_tasks(
     from sqlalchemy.orm.attributes import set_committed_value
 
     trials_relationship = TaskModel.trials.and_(
-        trial_in_experiment(experiment_id),
-        TrialModel.is_probe.is_(False),
+        *visible_experiment_trial_predicates(experiment_id),
     )
     query_started_at = now()
     member_task_ids = await _experiment_member_task_ids(session, experiment_id)
@@ -613,13 +593,10 @@ async def list_experiment_slim_tasks(
         for task in tasks:
             set_committed_value(task, "experiments", scoped_experiments)
 
-    # Trials gathered into a collection carry their home experiment's scalar
-    # ``experiment_id``; fold them in so the builder's auto-resolve keeps them
-    # at their own (possibly older) version instead of dropping them.
-    gathered_trial_ids = set(
-        (await session.execute(gathered_trial_ids_select(experiment_id)))
-        .scalars()
-        .all()
+    effective_by_task = await fetch_experiment_effective_version_ids(
+        session,
+        experiment_id=experiment_id,
+        task_ids=[task.id for task in tasks],
     )
 
     # One query for the whole page's trials, not one per trial: this is the
@@ -636,7 +613,9 @@ async def list_experiment_slim_tasks(
             task,
             include_empty_rewards=include_empty_rewards,
             experiment_context_id=experiment_id,
-            gathered_trial_ids=gathered_trial_ids,
+            effective_version_id=effective_by_task.get(
+                task.id, task.current_version_id
+            ),
             qa_costs_by_trial_id=qa_costs_by_trial_id,
             exclusions=exclusions,
         )

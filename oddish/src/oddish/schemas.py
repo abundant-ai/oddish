@@ -1039,6 +1039,72 @@ class ExperimentCostTotals(BaseModel):
     qa_has_estimated: bool = False
 
 
+class ExperimentPageVerdict(BaseModel):
+    verdict: str | None = None
+    is_good: bool | None = None
+    confidence: str | None = None
+
+
+class ExperimentTaskRow(BaseModel):
+    id: str
+    name: str
+    status: TaskStatus
+    priority: Priority
+    user: str
+    task_path: str
+    current_version: int | None = None
+    current_version_id: str | None = None
+    trial_version: int | None = None
+    trial_version_id: str | None = None
+    total: int = 0
+    completed: int = 0
+    failed: int = 0
+    skipped: int = 0
+    reward_success: int = 0
+    reward_sum: float = 0.0
+    reward_total: int = 0
+    run_analysis: bool = False
+    verdict_status: VerdictStatus | None = None
+    verdict: ExperimentPageVerdict | None = None
+    verdict_error: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ExperimentPageSummary(BaseModel):
+    task_count: int = 0
+    trial_count: int = 0
+    completed: int = 0
+    failed: int = 0
+    skipped: int = 0
+    active: int = 0
+    reward_sum: float = 0.0
+    reward_total: int = 0
+    pass_count: int = 0
+    partial_count: int = 0
+    fail_count: int = 0
+    harness_error_count: int = 0
+    average_score: float | None = None
+    qa_accepted: int = 0
+    qa_rejected: int = 0
+    qa_running: int = 0
+    qa_failed: int = 0
+
+
+class ExperimentOpenResponse(BaseModel):
+    experiment_id: str
+    name: str
+    created_at: datetime
+    owner: str | None = None
+    link: str | None = None
+    revision: datetime
+    has_active_trials: bool = False
+    summary: ExperimentPageSummary = Field(default_factory=ExperimentPageSummary)
+    tasks: list[ExperimentTaskRow] = Field(default_factory=list)
+    next_created_at: datetime | None = None
+    next_task_id: str | None = None
+
+
 class TaskDetailResponse(BaseModel):
     """Task detail bundle for ``GET /tasks/{task_id}/detail``."""
 
