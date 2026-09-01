@@ -460,6 +460,12 @@ def test_geometric_agent_env_points_mini_swe_at_geometric(monkeypatch):
     # Trailing slash trimmed, matching the Meta route.
     assert env["OPENAI_BASE_URL"] == "https://api.geometric.example/v1"
     assert "OPENAI_API_BASE" not in env
+    # Both verified necessary against a live endpoint: without MSWEA_CONFIGURED
+    # mini-swe-agent drops into an interactive setup wizard and aborts with no
+    # TTY; without MSWEA_COST_TRACKING it raises on a model litellm has no
+    # price for, which a self-hosted GLM-5.3 always is.
+    assert env["MSWEA_CONFIGURED"] == "true"
+    assert env["MSWEA_COST_TRACKING"] == "ignore_errors"
 
 
 def test_grok_provider_prefix_canonicalizes_to_xai(monkeypatch):

@@ -2311,6 +2311,19 @@ class Settings(BaseSettings):
             "MSWEA_API_KEY": "${GEOMETRIC_API_KEY}",
             "OPENAI_API_KEY": "${GEOMETRIC_API_KEY}",
             "OPENAI_BASE_URL": base_url,
+            # mini-swe-agent runs an INTERACTIVE first-run setup wizard unless
+            # MSWEA_CONFIGURED is set (run/utilities/config.py:
+            # ``configure_if_first_time``). In a sandbox there is no TTY, so it
+            # aborts before the first model call and the trial dies with an
+            # empty trajectory and zero tokens -- verified against a bare task
+            # image.
+            "MSWEA_CONFIGURED": "true",
+            # Its cost tracking raises on a model litellm has no price for, and
+            # a self-hosted GLM-5.3 is not in litellm's catalog. Without this
+            # the agent aborts mid-run. Oddish prices trials from its own
+            # model_pricing tables, so mini-swe's accounting is not the source
+            # of truth here anyway.
+            "MSWEA_COST_TRACKING": "ignore_errors",
         }
 
 
