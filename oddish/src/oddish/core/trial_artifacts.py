@@ -90,15 +90,22 @@ def _is_attempt_scoped_key(key: str, root_prefix: str) -> bool:
     )
 
 
+def _is_attempt_scoped_prefix(prefix: str) -> bool:
+    """Whether a stored pointer names one immutable retry attempt."""
+    parts = PurePosixPath(prefix.rstrip("/")).parts
+    return bool(parts and re.fullmatch(r"attempt-[1-9]\d*", parts[-1]))
+
+
 async def resolve_trial_artifact_layout(
     trial: TrialArtifactPointer,
     storage: StorageClient,
 ) -> TrialArtifactLayout:
     """Resolve the exact Harbor child directory for the current attempt.
 
-    Historical attempts without a root ``result.json`` remain eligible for
-    deterministic fallback lookup. Once the manifest exists, malformed data or
-    a missing selected artifact must not expose a sibling retry directory.
+    Historical shared prefixes remain eligible for legacy lookup when their
+    Harbor root summary predates Oddish's trial selector. Attempt-scoped
+    manifests fail closed when malformed or selectorless so a missing selected
+    artifact cannot expose a sibling retry directory.
     """
     attempt_prefix = resolve_trial_s3_prefix(
         trial.id,
@@ -140,6 +147,22 @@ async def resolve_trial_artifact_layout(
     try:
         trial_name = trial_name_from_manifest(manifest)
     except ValueError as exc:
+        is_selectorless_harbor_root = (
+            isinstance(manifest, dict)
+            and ODDISH_TRIAL_NAME_KEY not in manifest
+            and "trial_results" not in manifest
+        )
+        if is_selectorless_harbor_root and not _is_attempt_scoped_prefix(
+            attempt_prefix
+        ):
+            return TrialArtifactLayout(
+                TrialArtifactMode.LEGACY,
+                attempt_prefix,
+                attempt_prefix,
+                manifest=manifest,
+                listed_keys=listed_keys,
+                failure_reason="legacy Harbor root manifest has no trial selector",
+            )
         return TrialArtifactLayout(
             TrialArtifactMode.UNAVAILABLE,
             attempt_prefix,

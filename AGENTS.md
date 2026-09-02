@@ -330,8 +330,11 @@ Pinned Harbor 0.20 omits its former `trial_results` array from that root job
 summary, so the Oddish runner writes `oddish_trial_name` there after `Job.run()`
 returns and before upload. That field contains the sole in-memory Harbor
 `TrialResult.trial_name`; older stored roots with exactly one `trial_results`
-entry remain readable. CLI and ZIP import archive construction writes the same
-selector into a copied root manifest, leaving the external Harbor job unchanged;
+entry remain readable. Pre-attempt shared prefixes whose Harbor 0.20 root
+summary has neither selector retain the historical recursive readers; only new
+`attempt-N` prefixes require the explicit selector. CLI and ZIP import archive
+construction writes the same selector into a copied root manifest, leaving the
+external Harbor job unchanged;
 import completion resolves the uploaded layout and rejects an unreadable archive
 before advancing task state. Zero- or multi-result jobs receive no selection and
 fail settlement instead of choosing a directory by listing siblings.
@@ -1283,12 +1286,14 @@ verifier output, agent-file, and structured/free-form log readers all use that
 selected directory. If the
 manifest is malformed or an exact artifact is absent, a reader returns no
 artifact; it never substitutes a sibling retry directory. Deterministic
-candidate/list fallback exists only for imported and historical layouts without
-a root manifest. When ``trials.trial_s3_key`` is null, the canonical trial root
-is eligible for that historical fallback only if it contains no ``attempt-N``
-or ``analysis-*/attempt-N`` namespace; once immutable attempts exist, the
-missing pointer makes every sibling non-authoritative and artifact reads fail
-closed. The file LISTING and file CONTENT endpoints both root at
+candidate/list fallback exists only for imported and historical shared-prefix
+layouts that either lack a root manifest or carry Harbor 0.20's selectorless
+root job summary. An `attempt-N` root with that selectorless summary is malformed
+and fails closed. When ``trials.trial_s3_key`` is null, the canonical trial root
+is eligible for historical fallback only if it contains no ``attempt-N`` or
+``analysis-*/attempt-N`` namespace; once immutable attempts exist, the missing
+pointer makes every sibling non-authoritative and artifact reads fail closed.
+The file LISTING and file CONTENT endpoints both root at
 ``trials.trial_s3_key`` when set, so listed relative paths round-trip without
 doubling an analysis or attempt segment. Analysis-result readers locate their
 one result artifact by filename suffix within that authoritative attempt prefix.
