@@ -855,6 +855,10 @@ Customers are records of their own. The dashboard's create dialog offers
 a dropdown of existing customers and a form for a new one. `POST
 /customers` creates a customer directly; a duplicate name is a conflict.
 
+The dashboard board can filter its task list: all tasks, tasks that
+need work (not ready), blocked tasks (a failing check or an open defect),
+or ready tasks. Use it to hide what is already approved.
+
 On the dashboard, each task row has a copy-link button. The link opens
 the delivery board with that task expanded and scrolled into view, so you
 can send a failing task straight to the person who owns it

@@ -53,6 +53,13 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Table,
   TableBody,
   TableCell,
@@ -326,6 +333,24 @@ function ManualCheckRow({
 const QA_HISTORY_PAGE = 5;
 // Task rows per page on the board.
 const TASK_PAGE_SIZE = 25;
+
+type TaskFilter = "all" | "needs_work" | "blocked" | "ready";
+
+/** The board filter: hide what is done to focus on what is not.
+ * "blocked" is stricter than "needs work": a failing automated check or
+ * an unacknowledged defect, not just a missing sign-off. */
+function applyTaskFilter(tasks: DeliveryTaskBoardRow[], filter: TaskFilter) {
+  if (filter === "all") return tasks;
+  return tasks.filter((row) => {
+    if (filter === "ready") return row.ready;
+    if (filter === "needs_work") return !row.ready;
+    return (
+      row.checks.some(
+        (check) => check.kind === "automated" && check.status === "fail"
+      ) || row.defects.some((defect) => !defect.acknowledged)
+    );
+  });
+}
 
 function QAHistoryPanel({ taskId }: { taskId: string }) {
   const { data, error, isLoading } = useSWR<TaskQAHistoryResponse>(
@@ -831,6 +856,7 @@ export function DeliveryBoardClient({
   // Suspense boundary for useSearchParams.
   const [focusTask, setFocusTask] = useState<string | null>(null);
   const [page, setPage] = useState(0);
+  const [filter, setFilter] = useState<TaskFilter>("all");
   const prefetched = useRef(new Set<string>());
   useEffect(() => {
     setFocusTask(new URLSearchParams(window.location.search).get("task"));
@@ -846,19 +872,18 @@ export function DeliveryBoardClient({
   // expanding a row shows it without a loading wait.
   useEffect(() => {
     if (!data) return;
+    const rows = applyTaskFilter(data.tasks, filter);
     const start =
-      Math.min(
-        page,
-        Math.max(0, Math.ceil(data.tasks.length / TASK_PAGE_SIZE) - 1)
-      ) * TASK_PAGE_SIZE;
-    for (const row of data.tasks.slice(start, start + TASK_PAGE_SIZE)) {
+      Math.min(page, Math.max(0, Math.ceil(rows.length / TASK_PAGE_SIZE) - 1)) *
+      TASK_PAGE_SIZE;
+    for (const row of rows.slice(start, start + TASK_PAGE_SIZE)) {
       const key = `/api/tasks/${encodeURIComponent(row.task_id)}/qa-history`;
       if (!prefetched.current.has(key)) {
         prefetched.current.add(key);
         void preload(key, fetcher);
       }
     }
-  }, [data, page]);
+  }, [data, page, filter]);
 
   const run = async (action: () => Promise<void>) => {
     setBusy(true);
@@ -974,9 +999,13 @@ export function DeliveryBoardClient({
   }
 
   const frozen = data.frozen;
-  const pageCount = Math.max(1, Math.ceil(data.tasks.length / TASK_PAGE_SIZE));
+  const filteredTasks = applyTaskFilter(data.tasks, filter);
+  const pageCount = Math.max(
+    1,
+    Math.ceil(filteredTasks.length / TASK_PAGE_SIZE)
+  );
   const clampedPage = Math.min(page, pageCount - 1);
-  const pagedTasks = data.tasks.slice(
+  const pagedTasks = filteredTasks.slice(
     clampedPage * TASK_PAGE_SIZE,
     (clampedPage + 1) * TASK_PAGE_SIZE
   );
@@ -1129,40 +1158,75 @@ export function DeliveryBoardClient({
             </p>
           ) : (
             <>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-6" />
-                    <TableHead>Task</TableHead>
-                    <TableHead>Version</TableHead>
-                    <TableHead>Checks</TableHead>
-                    <TableHead className="text-right">Ready</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {pagedTasks.map((row) => (
-                    <TaskRow
-                      key={row.delivery_task_id}
-                      row={row}
-                      frozen={frozen}
-                      isAdmin={isAdmin}
-                      focused={
-                        focusTask === row.task_name || focusTask === row.task_id
-                      }
-                      link={`/deliveries/${encodeURIComponent(deliveryId)}?task=${encodeURIComponent(row.task_name)}`}
-                      onSetCheck={(checkKey, deliveryTaskId, checked) =>
-                        setCheck(checkKey, deliveryTaskId, checked)
-                      }
-                      onRemove={() => removeTask(row.task_id)}
-                    />
-                  ))}
-                </TableBody>
-              </Table>
+              <div className="mb-3 flex flex-wrap items-center gap-2">
+                <Select
+                  value={filter}
+                  onValueChange={(value) => {
+                    setFilter(value as TaskFilter);
+                    setPage(0);
+                  }}
+                >
+                  <SelectTrigger className="w-64">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All tasks</SelectItem>
+                    <SelectItem value="needs_work">
+                      Needs work (not ready)
+                    </SelectItem>
+                    <SelectItem value="blocked">
+                      Blocked (failing checks or defects)
+                    </SelectItem>
+                    <SelectItem value="ready">Ready</SelectItem>
+                  </SelectContent>
+                </Select>
+                {filter !== "all" && (
+                  <span className="text-muted-foreground text-sm">
+                    {filteredTasks.length} of {data.tasks.length} tasks
+                  </span>
+                )}
+              </div>
+              {filteredTasks.length === 0 ? (
+                <p className="text-muted-foreground text-sm">
+                  No tasks match this filter.
+                </p>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-6" />
+                      <TableHead>Task</TableHead>
+                      <TableHead>Version</TableHead>
+                      <TableHead>Checks</TableHead>
+                      <TableHead className="text-right">Ready</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {pagedTasks.map((row) => (
+                      <TaskRow
+                        key={row.delivery_task_id}
+                        row={row}
+                        frozen={frozen}
+                        isAdmin={isAdmin}
+                        focused={
+                          focusTask === row.task_name ||
+                          focusTask === row.task_id
+                        }
+                        link={`/deliveries/${encodeURIComponent(deliveryId)}?task=${encodeURIComponent(row.task_name)}`}
+                        onSetCheck={(checkKey, deliveryTaskId, checked) =>
+                          setCheck(checkKey, deliveryTaskId, checked)
+                        }
+                        onRemove={() => removeTask(row.task_id)}
+                      />
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
               {pageCount > 1 && (
                 <div className="text-muted-foreground mt-3 flex items-center justify-between text-sm">
                   <span>
-                    Page {clampedPage + 1} of {pageCount} · {data.tasks.length}{" "}
-                    tasks
+                    Page {clampedPage + 1} of {pageCount} ·{" "}
+                    {filteredTasks.length} tasks
                   </span>
                   <div className="flex gap-2">
                     <Button
