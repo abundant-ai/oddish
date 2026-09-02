@@ -237,9 +237,18 @@ its GPU lane. When enabled, the Modal deployment attaches the secret named by
 
 Local `backend/.env` values are layered on top of the shared Modal secret for local deploys.
 
+`ODDISH_ARCHIL_TRAFFIC_PERCENT` controls the hosted CPU rollout when capability
+routing selects Daytona and defaults to `0`. The API maps the raw request
+fingerprint into a bucket from 0 through 99, then selects Archil when the bucket
+is below the configured percentage. One bucket applies to the whole sweep.
+Enabled Numinous, explicit environments, retries, existing task appends, and
+other non-Daytona capability routes keep their resolved or stored provider.
+Values outside 0 through 100 fail settings validation at process startup.
+
 ### Ephemeral EC2 Harbor backend
 
-EC2 is an explicit CPU-only provider; Daytona remains the default. Set the
+EC2 is an explicit CPU-only provider; it is never selected by the Archil
+rollout or the ordinary Daytona default. Set the
 non-secret `ODDISH_EC2_*` launch coordinates from `backend/.env.example` and
 name two dedicated Modal secrets:
 

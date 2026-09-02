@@ -68,8 +68,9 @@ reference. The main commands are:
   task-level QA retries. Hosted environments are `modal`, `daytona`, `ec2`,
   `gke`, `archil`, and `numinous`; Archil, EC2, and Numinous are controlled by
   deployment settings. When Numinous is enabled it is the first CPU candidate;
-  otherwise Daytona is the hosted CPU default. Numinous GPU registration has a
-  separate deployment flag.
+  otherwise Daytona is the hosted CPU baseline and the deterministic Archil
+  rollout can select the whole sweep. Numinous GPU registration has a separate
+  deployment flag.
 - `oddish upload` — register task bundles or import off-oddish Harbor trial results; `--overwrite-current-version` corrects the selected version in place.
 - `oddish preflight` — run the local task integrity checks that also gate `run` and `upload` (pass `--force` there to submit anyway).
 - `oddish ls` / `oddish status` — browse tasks (including model and trajectory-metric filters) and inspect progress. `oddish status <trial_id>` shows single-trial detail; `--detail`/`--versions` show a task's version history and cost rollups; `--queue` shows queue & worker scheduler diagnostics.

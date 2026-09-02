@@ -1,8 +1,7 @@
 """TPU detection and routing in `oddish run`.
 
-Mirrors the GPU path: a task.toml declaring ``[environment.tpu]`` must route to
-the TPU-capable backend (GKE) via capability negotiation, while CPU and GPU
-tasks keep their existing Daytona/Modal destinations even when GKE is available.
+The CLI must choose GKE for TPU and Modal for GPU because those capabilities
+require a provider. It leaves CPU unset so the hosted backend owns the default.
 """
 
 from __future__ import annotations
@@ -85,7 +84,7 @@ def test_tpu_task_default_env_is_gke(tmp_path, monkeypatch):
     _patch_env(monkeypatch, gpus=None, tpu=SimpleNamespace(type="v6e"))
     _stub_registry_with_gke(monkeypatch)
     assert (
-        run._default_cloud_environment_for_task(tmp_path, override_gpus=None)
+        run._required_cloud_environment_for_task(tmp_path, override_gpus=None)
         == EnvironmentType.GKE
     )
 
@@ -99,18 +98,17 @@ def test_tpu_task_routes_to_gke_without_local_gke_registration(tmp_path, monkeyp
     _patch_env(monkeypatch, gpus=None, tpu=SimpleNamespace(type="v6e"))
     _stub_registry_without_gke(monkeypatch)
     assert (
-        run._default_cloud_environment_for_task(tmp_path, override_gpus=None)
+        run._required_cloud_environment_for_task(tmp_path, override_gpus=None)
         == EnvironmentType.GKE
     )
 
 
-def test_cpu_task_stays_daytona_even_with_gke_available(tmp_path, monkeypatch):
+def test_cpu_task_leaves_hosted_default_unset(tmp_path, monkeypatch):
     (tmp_path / "task.toml").write_text("x")
     _patch_env(monkeypatch, gpus=0, tpu=None)
     _stub_registry_with_gke(monkeypatch)
     assert (
-        run._default_cloud_environment_for_task(tmp_path, override_gpus=None)
-        == EnvironmentType.DAYTONA
+        run._required_cloud_environment_for_task(tmp_path, override_gpus=None) is None
     )
 
 
@@ -124,7 +122,7 @@ def test_gpu_and_tpu_task_raises_clear_error(tmp_path, monkeypatch):
     _patch_env(monkeypatch, gpus=2, tpu=SimpleNamespace(type="v6e"))
     _stub_registry_with_gke(monkeypatch)
     with pytest.raises(typer.BadParameter) as excinfo:
-        run._default_cloud_environment_for_task(tmp_path, override_gpus=None)
+        run._required_cloud_environment_for_task(tmp_path, override_gpus=None)
     assert not isinstance(excinfo.value, NoEligibleBackendError)
     message = str(excinfo.value)
     assert "GPU" in message and "TPU" in message
@@ -136,7 +134,7 @@ def test_override_gpus_on_tpu_task_raises_clear_error(tmp_path, monkeypatch):
     _patch_env(monkeypatch, gpus=0, tpu=SimpleNamespace(type="v6e"))
     _stub_registry_with_gke(monkeypatch)
     with pytest.raises(typer.BadParameter):
-        run._default_cloud_environment_for_task(tmp_path, override_gpus=4)
+        run._required_cloud_environment_for_task(tmp_path, override_gpus=4)
 
 
 def test_gpu_task_stays_modal_even_with_gke_available(tmp_path, monkeypatch):
@@ -144,7 +142,7 @@ def test_gpu_task_stays_modal_even_with_gke_available(tmp_path, monkeypatch):
     _patch_env(monkeypatch, gpus=2, tpu=None)
     _stub_registry_with_gke(monkeypatch)
     assert (
-        run._default_cloud_environment_for_task(tmp_path, override_gpus=None)
+        run._required_cloud_environment_for_task(tmp_path, override_gpus=None)
         == EnvironmentType.MODAL
     )
 
