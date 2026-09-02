@@ -620,3 +620,10 @@ def history(
             console.print(
                 f"  qa run: {run['kind']} ({run.get('status') or 'pending'})"
             )
+    unversioned = data.get("unversioned_runs") or []
+    if unversioned:
+        console.print("\n[bold]Runs not tied to a version[/bold]")
+        for run in unversioned:
+            console.print(
+                f"  qa run: {run['kind']} ({run.get('status') or 'pending'})"
+            )

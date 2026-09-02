@@ -13,6 +13,7 @@ from typing import Any, Sequence
 
 from fastapi import HTTPException
 from sqlalchemy import case, delete, func, or_, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.db import (
@@ -151,6 +152,17 @@ async def _member_rows(
 # =============================================================================
 
 
+async def _find_customer(
+    session: AsyncSession, org_id: str | None, ref: str
+) -> CustomerModel | None:
+    return await session.scalar(
+        select(CustomerModel).where(
+            CustomerModel.org_id == org_id,
+            or_(CustomerModel.id == ref, CustomerModel.name == ref),
+        )
+    )
+
+
 async def _resolve_customer(
     session: AsyncSession, org_id: str | None, ref: str
 ) -> CustomerModel:
@@ -159,16 +171,19 @@ async def _resolve_customer(
     A new name creates the customer row in place, so requiring a customer
     never forces a separate setup step."""
     ref = ref.strip()
-    customer = await session.scalar(
-        select(CustomerModel).where(
-            CustomerModel.org_id == org_id,
-            or_(CustomerModel.id == ref, CustomerModel.name == ref),
-        )
-    )
+    customer = await _find_customer(session, org_id, ref)
     if customer is None:
-        customer = CustomerModel(org_id=org_id, name=ref)
-        session.add(customer)
-        await session.flush()
+        # The savepoint keeps the unique (org, name) race survivable: a
+        # concurrent create of the same name loses the insert but keeps
+        # the outer transaction, and uses the winner's row.
+        try:
+            async with session.begin_nested():
+                customer = CustomerModel(org_id=org_id, name=ref)
+                session.add(customer)
+        except IntegrityError:
+            customer = await _find_customer(session, org_id, ref)
+            if customer is None:
+                raise
     return customer
 
 
@@ -189,9 +204,16 @@ async def create_customer_core(
         raise HTTPException(
             status_code=409, detail=f"customer '{name}' already exists"
         )
-    customer = CustomerModel(org_id=org_id, name=name)
-    session.add(customer)
-    await session.flush()
+    # Same savepoint guard as _resolve_customer: a concurrent create of
+    # the same name is a conflict here, not a 500.
+    try:
+        async with session.begin_nested():
+            customer = CustomerModel(org_id=org_id, name=name)
+            session.add(customer)
+    except IntegrityError:
+        raise HTTPException(
+            status_code=409, detail=f"customer '{name}' already exists"
+        ) from None
     return customer
 
 

@@ -1033,6 +1033,39 @@ async def test_customers_are_rows_and_reused(session):
 
 
 @pytest.mark.asyncio
+async def test_customer_create_race_recovers(session):
+    """When two requests create the same customer name at once, the
+    loser's insert hits the unique index. The resolver recovers with the
+    winner's row and the explicit create answers 409 — never a 500."""
+    from unittest import mock
+
+    import oddish.core.deliveries as deliveries_mod
+
+    existing = await deliveries_mod.create_customer_core(
+        session, org_id=ORG, name="racer"
+    )
+    # Simulate the race window: the pre-insert lookup misses, the insert
+    # then collides with the winner's committed row.
+    real_find = deliveries_mod._find_customer
+    calls = {"n": 0}
+
+    async def racy_find(session_, org_id, ref):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None
+        return await real_find(session_, org_id, ref)
+
+    with mock.patch.object(deliveries_mod, "_find_customer", racy_find):
+        customer = await deliveries_mod._resolve_customer(session, ORG, "racer")
+    assert customer.id == existing.id
+    assert calls["n"] == 2
+
+    # The session survived the failed insert: further work still commits.
+    others = await deliveries_mod.list_customers_core(session, org_id=ORG)
+    assert sum(1 for c in others if c.name == "racer") == 1
+
+
+@pytest.mark.asyncio
 async def test_agent_count_matches_verdict_evidence_bar(session):
     """Agent variants that differ only in case or spacing count once."""
     experiment = ExperimentModel(name="exp-deliv-agents", org_id=ORG)
