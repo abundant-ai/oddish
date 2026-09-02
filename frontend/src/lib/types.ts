@@ -1385,4 +1385,5 @@ export interface TaskQAHistoryResponse {
   verdict_status?: string | null;
   verdict_version_id?: string | null;
   versions: TaskQAHistoryVersion[];
+  unversioned_runs?: TaskQAHistoryRun[];
 }

@@ -493,9 +493,13 @@ async def test_qa_history(session):
     )
     failed_audit.error_message = "container OOM"
     session.add(failed_audit)
+    # A legacy QA run with no version id must still appear in the history,
+    # apart from the versions, not vanish into a bucket nobody reads.
+    session.add(_trial(task, experiment, None, kind="qa"))
     await session.flush()
 
     history = await get_task_qa_history_core(session, task_id=task.id, org_id=ORG)
+    assert [run.kind for run in history.unversioned_runs] == ["qa"]
     assert [v.version for v in history.versions] == [3, 2, 1]
     broken, latest, first = history.versions
     assert broken.must_fix == 0 and broken.pre_trial_should_fix == 0

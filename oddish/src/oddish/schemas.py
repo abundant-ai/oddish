@@ -2549,3 +2549,6 @@ class TaskQAHistoryResponse(BaseModel):
     # verdict-producing QA run. None when no such run exists.
     verdict_version_id: str | None = None
     versions: list[TaskQAHistoryVersion]
+    # QA/audit trials with no version id (legacy rows): shown apart so the
+    # record stays complete without guessing which version they graded.
+    unversioned_runs: list[TaskQAHistoryRun] = Field(default_factory=list)

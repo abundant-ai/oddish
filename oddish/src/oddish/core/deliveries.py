@@ -1378,4 +1378,7 @@ async def get_task_qa_history_core(
         verdict_status=task.verdict_status.value if task.verdict_status else None,
         verdict_version_id=verdict_version_id,
         versions=out,
+        # Runs whose trial carries no version id (legacy data). They belong
+        # to no version row, but hiding them would understate the QA record.
+        unversioned_runs=runs_by_version.get(None, []),
     )

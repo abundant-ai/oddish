@@ -855,6 +855,11 @@ Customers are records of their own. The dashboard's create dialog offers
 a dropdown of existing customers and a form for a new one. `POST
 /customers` creates a customer directly; a duplicate name is a conflict.
 
+On the dashboard, each task row has a copy-link button. The link opens
+the delivery board with that task expanded and scrolled into view, so you
+can send a failing task straight to the person who owns it
+(`/deliveries/<id>?task=<task-name>`).
+
 Each task also needs a manual sign-off. The server records who signed off
 and which version they saw. If the task has a must-fix defect, a person
 must acknowledge that defect first. A task can also ship with a failing

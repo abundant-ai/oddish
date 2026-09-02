@@ -1,15 +1,17 @@
 "use client";
 
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useAuth } from "@clerk/nextjs";
-import useSWR from "swr";
+import useSWR, { preload } from "swr";
 import {
   AlertCircle,
+  Check,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
   History,
+  Link2,
   Lock,
   Plus,
   XCircle,
@@ -320,11 +322,18 @@ function ManualCheckRow({
   );
 }
 
+// Versions listed before "Show all" expands the history.
+const QA_HISTORY_PAGE = 5;
+// Task rows per page on the board.
+const TASK_PAGE_SIZE = 25;
+
 function QAHistoryPanel({ taskId }: { taskId: string }) {
   const { data, error, isLoading } = useSWR<TaskQAHistoryResponse>(
     `/api/tasks/${encodeURIComponent(taskId)}/qa-history`,
-    fetcher
+    fetcher,
+    { keepPreviousData: true }
   );
+  const [showAll, setShowAll] = useState(false);
   if (error) {
     return (
       <p className="text-destructive text-xs">
@@ -340,9 +349,13 @@ function QAHistoryPanel({ taskId }: { taskId: string }) {
       </div>
     );
   }
+  const versions = showAll
+    ? data.versions
+    : data.versions.slice(0, QA_HISTORY_PAGE);
+  const unversioned = data.unversioned_runs ?? [];
   return (
     <div className="space-y-2">
-      {data.versions.map((version) => (
+      {versions.map((version) => (
         <QAHistoryVersionRow
           key={version.version_id}
           version={version}
@@ -353,6 +366,23 @@ function QAHistoryPanel({ taskId }: { taskId: string }) {
           }
         />
       ))}
+      {data.versions.length > QA_HISTORY_PAGE && !showAll && (
+        <button
+          type="button"
+          className="text-muted-foreground cursor-pointer text-xs hover:underline"
+          onClick={() => setShowAll(true)}
+        >
+          Show all {data.versions.length} versions
+        </button>
+      )}
+      {unversioned.length > 0 && (
+        <p className="text-muted-foreground text-xs">
+          Runs not tied to a version:{" "}
+          {unversioned
+            .map((run) => `${run.kind} (${run.status ?? "pending"})`)
+            .join(", ")}
+        </p>
+      )}
     </div>
   );
 }
@@ -508,12 +538,18 @@ function TaskRow({
   row,
   frozen,
   isAdmin,
+  focused,
+  link,
   onSetCheck,
   onRemove,
 }: {
   row: DeliveryTaskBoardRow;
   frozen: boolean;
   isAdmin: boolean;
+  // True when the page URL's ?task= names this row: it opens expanded
+  // and scrolls into view, so a shared link lands on the right task.
+  focused: boolean;
+  link: string;
   onSetCheck: (
     checkKey: string,
     deliveryTaskId: string,
@@ -522,6 +558,14 @@ function TaskRow({
   onRemove: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const rowRef = useRef<HTMLTableRowElement>(null);
+  useEffect(() => {
+    if (focused) {
+      setExpanded(true);
+      rowRef.current?.scrollIntoView({ block: "center" });
+    }
+  }, [focused]);
   // Manual checks live in the sign-off section below; listing them here
   // too would say the same thing twice.
   const failing = row.checks.filter(
@@ -533,7 +577,8 @@ function TaskRow({
   return (
     <Fragment>
       <TableRow
-        className="cursor-pointer"
+        ref={rowRef}
+        className={`cursor-pointer ${focused ? "bg-secondary/40" : ""}`}
         onClick={() => setExpanded((value) => !value)}
       >
         <TableCell className="w-6">
@@ -551,6 +596,25 @@ function TaskRow({
           >
             {row.task_name}
           </Link>
+          <button
+            type="button"
+            className="text-muted-foreground hover:text-foreground ml-2 inline-flex cursor-pointer align-middle"
+            title="Copy a link to this task"
+            onClick={(event) => {
+              event.stopPropagation();
+              void navigator.clipboard.writeText(
+                `${window.location.origin}${link}`
+              );
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1500);
+            }}
+          >
+            {copied ? (
+              <Check className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+            ) : (
+              <Link2 className="h-3.5 w-3.5" />
+            )}
+          </button>
           {!row.is_visible && (
             <span className="text-muted-foreground ml-2 text-xs">
               (hidden from customer)
@@ -762,6 +826,39 @@ export function DeliveryBoardClient({
   const [busy, setBusy] = useState(false);
   const [signoffConfirm, setSignoffConfirm] =
     useState<DeliveryTaskBoardRow | null>(null);
+  // ?task=<name or id> deep-links one row: it expands, scrolls into view,
+  // and its page is selected. Read from location so the page needs no
+  // Suspense boundary for useSearchParams.
+  const [focusTask, setFocusTask] = useState<string | null>(null);
+  const [page, setPage] = useState(0);
+  const prefetched = useRef(new Set<string>());
+  useEffect(() => {
+    setFocusTask(new URLSearchParams(window.location.search).get("task"));
+  }, []);
+  useEffect(() => {
+    if (!data || !focusTask) return;
+    const index = data.tasks.findIndex(
+      (row) => row.task_name === focusTask || row.task_id === focusTask
+    );
+    if (index >= 0) setPage(Math.floor(index / TASK_PAGE_SIZE));
+  }, [data, focusTask]);
+  // Fetch the visible rows' QA history as soon as the board is up, so
+  // expanding a row shows it without a loading wait.
+  useEffect(() => {
+    if (!data) return;
+    const start =
+      Math.min(
+        page,
+        Math.max(0, Math.ceil(data.tasks.length / TASK_PAGE_SIZE) - 1)
+      ) * TASK_PAGE_SIZE;
+    for (const row of data.tasks.slice(start, start + TASK_PAGE_SIZE)) {
+      const key = `/api/tasks/${encodeURIComponent(row.task_id)}/qa-history`;
+      if (!prefetched.current.has(key)) {
+        prefetched.current.add(key);
+        void preload(key, fetcher);
+      }
+    }
+  }, [data, page]);
 
   const run = async (action: () => Promise<void>) => {
     setBusy(true);
@@ -877,6 +974,12 @@ export function DeliveryBoardClient({
   }
 
   const frozen = data.frozen;
+  const pageCount = Math.max(1, Math.ceil(data.tasks.length / TASK_PAGE_SIZE));
+  const clampedPage = Math.min(page, pageCount - 1);
+  const pagedTasks = data.tasks.slice(
+    clampedPage * TASK_PAGE_SIZE,
+    (clampedPage + 1) * TASK_PAGE_SIZE
+  );
   // Tasks a mass sign-off may take: not signed off, no open blockers.
   // Blocked tasks keep the per-task acknowledge flow.
   const cleanUnsigned = data.tasks.filter((row) => {
@@ -1025,31 +1128,63 @@ export function DeliveryBoardClient({
               No tasks yet. Add the tasks this delivery should ship.
             </p>
           ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-6" />
-                  <TableHead>Task</TableHead>
-                  <TableHead>Version</TableHead>
-                  <TableHead>Checks</TableHead>
-                  <TableHead className="text-right">Ready</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {data.tasks.map((row) => (
-                  <TaskRow
-                    key={row.delivery_task_id}
-                    row={row}
-                    frozen={frozen}
-                    isAdmin={isAdmin}
-                    onSetCheck={(checkKey, deliveryTaskId, checked) =>
-                      setCheck(checkKey, deliveryTaskId, checked)
-                    }
-                    onRemove={() => removeTask(row.task_id)}
-                  />
-                ))}
-              </TableBody>
-            </Table>
+            <>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-6" />
+                    <TableHead>Task</TableHead>
+                    <TableHead>Version</TableHead>
+                    <TableHead>Checks</TableHead>
+                    <TableHead className="text-right">Ready</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {pagedTasks.map((row) => (
+                    <TaskRow
+                      key={row.delivery_task_id}
+                      row={row}
+                      frozen={frozen}
+                      isAdmin={isAdmin}
+                      focused={
+                        focusTask === row.task_name || focusTask === row.task_id
+                      }
+                      link={`/deliveries/${encodeURIComponent(deliveryId)}?task=${encodeURIComponent(row.task_name)}`}
+                      onSetCheck={(checkKey, deliveryTaskId, checked) =>
+                        setCheck(checkKey, deliveryTaskId, checked)
+                      }
+                      onRemove={() => removeTask(row.task_id)}
+                    />
+                  ))}
+                </TableBody>
+              </Table>
+              {pageCount > 1 && (
+                <div className="text-muted-foreground mt-3 flex items-center justify-between text-sm">
+                  <span>
+                    Page {clampedPage + 1} of {pageCount} · {data.tasks.length}{" "}
+                    tasks
+                  </span>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={clampedPage === 0}
+                      onClick={() => setPage(clampedPage - 1)}
+                    >
+                      Previous
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={clampedPage >= pageCount - 1}
+                      onClick={() => setPage(clampedPage + 1)}
+                    >
+                      Next
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </CardContent>
       </Card>
