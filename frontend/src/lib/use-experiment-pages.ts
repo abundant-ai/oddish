@@ -95,25 +95,13 @@ export function useExperimentPages({
   useEffect(() => {
     if (!experiment?.has_active_trials) return;
 
-    const firstOpenPageKey = getOpenKey(0, null);
-    const firstTrialPageKey = getTrialKey(0, null);
     const interval = window.setInterval(() => {
-      void mutateOpen(undefined, {
-        revalidate: (_page, pageKey) => pageKey === firstOpenPageKey,
-      });
-      void mutateTrials(undefined, {
-        revalidate: (_page, pageKey) => pageKey === firstTrialPageKey,
-      });
+      void mutateOpen();
+      void mutateTrials();
     }, ACTIVE_REFRESH_INTERVAL_MS);
 
     return () => window.clearInterval(interval);
-  }, [
-    experiment?.has_active_trials,
-    getOpenKey,
-    getTrialKey,
-    mutateOpen,
-    mutateTrials,
-  ]);
+  }, [experiment?.has_active_trials, mutateOpen, mutateTrials]);
 
   const loadNextTasks = useCallback(() => {
     if (isLoadingOpen || isValidatingOpen) return;
