@@ -883,8 +883,42 @@ export function DeliveryBoardClient({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const prefetched = useRef(new Set<string>());
   useEffect(() => {
-    setFocusTask(new URLSearchParams(window.location.search).get("task"));
+    const params = new URLSearchParams(window.location.search);
+    setFocusTask(params.get("task"));
+    const filterParam = params.get("filter");
+    if (
+      filterParam === "blocked" ||
+      filterParam === "awaiting_signoff" ||
+      filterParam === "ready"
+    ) {
+      setFilter(filterParam);
+    }
+    const pageParam = Number(params.get("page"));
+    if (Number.isInteger(pageParam) && pageParam >= 1) {
+      setPage(pageParam - 1);
+    }
   }, []);
+  // Filter and page live in the URL (?filter=, ?page=, 1-based), so a view
+  // can be shared or reloaded. replaceState keeps the back button out of
+  // every click; defaults stay out of the URL.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (filter === "all") {
+      params.delete("filter");
+    } else {
+      params.set("filter", filter);
+    }
+    if (page === 0) {
+      params.delete("page");
+    } else {
+      params.set("page", String(page + 1));
+    }
+    const query = params.toString();
+    const next = `${window.location.pathname}${query ? `?${query}` : ""}`;
+    if (next !== `${window.location.pathname}${window.location.search}`) {
+      window.history.replaceState(null, "", next);
+    }
+  }, [filter, page]);
   useEffect(() => {
     if (!data || !focusTask) return;
     const index = data.tasks.findIndex(
