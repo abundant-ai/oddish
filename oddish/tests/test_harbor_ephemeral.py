@@ -1040,3 +1040,22 @@ async def test_upload_probe_assets_splits_targets(tmp_path):
     # CLI mount carries ONLY the CLI.
     harness = next(names for t, names in uploads if t == PROBE_HARNESS_DIR)
     assert harness == ["oddish-query"]
+
+
+@pytest.mark.asyncio
+async def test_upload_probe_assets_fails_when_qa_submission_contract_is_missing(
+    tmp_path,
+):
+    from oddish.workers.queue.trial_handler import _upload_probe_assets
+
+    assets = tmp_path / "analysis-task"
+    assets.mkdir()
+    (assets / "submit-analysis-result").write_text("#!/bin/sh\n")
+    (assets / ".analysis-contract").mkdir()
+
+    class FailingEnv:
+        async def upload_dir(self, *, source_dir, target_dir):
+            raise OSError("sandbox upload unavailable")
+
+    with pytest.raises(RuntimeError, match="required QA submission contract"):
+        await _upload_probe_assets(FailingEnv(), assets, "qa-1")

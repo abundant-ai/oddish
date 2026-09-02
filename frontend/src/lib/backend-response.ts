@@ -91,7 +91,7 @@ export async function proxyBackendJson({
         request,
         sendsBody
           ? { "Content-Type": "application/json", ...getAuthHeaders(token) }
-          : getAuthHeaders(token),
+          : getAuthHeaders(token)
       ),
       body: sendsBody ? JSON.stringify(body) : undefined,
     });
@@ -103,7 +103,7 @@ export async function proxyBackendJson({
     if (parseError) {
       return attachUpstreamServerTiming(
         NextResponse.json(parseError, { status }),
-        res,
+        res
       );
     }
     if (!res.ok) {
@@ -111,15 +111,50 @@ export async function proxyBackendJson({
         NextResponse.json(backendErrorPayload(data, "Upstream error"), {
           status: res.status,
         }),
-        res,
+        res
       );
     }
     return attachUpstreamServerTiming(
       data === null
         ? NextResponse.json({ error: "Upstream error" }, { status: 502 })
         : NextResponse.json(data, { status: res.status }),
-      res,
+      res
     );
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Unknown error" },
+      { status: 503 }
+    );
+  }
+}
+
+export async function proxyPublicBackendJson({
+  request,
+  path,
+}: {
+  request: Request;
+  path: string;
+}): Promise<NextResponse> {
+  try {
+    const res = await fetch(getBackendUrl(path), {
+      cache: "no-store",
+      signal: request.signal,
+      headers: backendFetchHeaders(request),
+    });
+    const { data, parseError, status } = await readBackendJson(
+      res,
+      "Upstream error"
+    );
+    const response = parseError
+      ? NextResponse.json(parseError, { status })
+      : !res.ok
+        ? NextResponse.json(backendErrorPayload(data, "Upstream error"), {
+            status: res.status,
+          })
+        : data === null
+          ? NextResponse.json({ error: "Upstream error" }, { status: 502 })
+          : NextResponse.json(data, { status: res.status });
+    return attachUpstreamServerTiming(response, res);
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },

@@ -4,11 +4,12 @@ import json
 import re
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path, PurePosixPath
-from typing import Never, Protocol, Sequence
+from pathlib import PurePosixPath
+from typing import Never, Protocol
 
 from fastapi import HTTPException
 
+from oddish.core.harbor_artifacts import ODDISH_TRIAL_NAME_KEY, validate_trial_name
 from oddish.db.storage import (
     StorageClient,
     resolve_trial_s3_prefix,
@@ -45,48 +46,6 @@ class AnalysisArtifactLayoutError(RuntimeError):
     """A newly uploaded analysis attempt cannot satisfy its read contract."""
 
 
-ODDISH_TRIAL_NAME_KEY = "oddish_trial_name"
-
-
-def _validate_trial_name(value: object) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError("result.json trial_name must be a non-empty string")
-    trial_name = value.strip()
-    trial_name_path = PurePosixPath(trial_name)
-    if (
-        trial_name_path.is_absolute()
-        or len(trial_name_path.parts) != 1
-        or trial_name_path.parts[0] in (".", "..")
-    ):
-        raise ValueError("result.json trial_name must be one directory name")
-    return trial_name
-
-
-def write_trial_selection_manifest(
-    result_path: Path, trial_names: Sequence[str]
-) -> bool:
-    """Record the one Harbor child owned by an Oddish job in root result.json.
-
-    Harbor 0.20 keeps complete TrialResult objects in each child directory and
-    deliberately omits ``trial_results`` from the root job summary. Oddish runs
-    one Harbor trial per job, so persist that one name as a small extension on
-    the root summary before uploading the directory. Returning False leaves
-    zero- or multi-trial jobs unselected so settlement fails closed.
-    """
-    if len(trial_names) != 1:
-        return False
-    trial_name = _validate_trial_name(trial_names[0])
-    manifest = json.loads(result_path.read_text(encoding="utf-8"))
-    if not isinstance(manifest, dict):
-        raise ValueError("result.json must contain a JSON object")
-    manifest[ODDISH_TRIAL_NAME_KEY] = trial_name
-    result_path.write_text(
-        json.dumps(manifest, indent=4, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
-    return True
-
-
 def normalize_trial_relative_path(file_path: str) -> str:
     """Normalize one trial-relative path and reject absolute or parent paths."""
     raw = file_path.replace("\\", "/").strip()
@@ -106,7 +65,7 @@ def trial_name_from_manifest(manifest: object) -> str | None:
     if not isinstance(manifest, dict):
         raise ValueError("result.json must contain a JSON object")
     if ODDISH_TRIAL_NAME_KEY in manifest:
-        return _validate_trial_name(manifest[ODDISH_TRIAL_NAME_KEY])
+        return validate_trial_name(manifest[ODDISH_TRIAL_NAME_KEY])
     trial_results = manifest.get("trial_results")
     if not isinstance(trial_results, list):
         raise ValueError("result.json trial_results must be a list")
@@ -114,7 +73,7 @@ def trial_name_from_manifest(manifest: object) -> str | None:
         return None
     if len(trial_results) != 1 or not isinstance(trial_results[0], dict):
         raise ValueError("result.json must identify exactly one Harbor trial")
-    return _validate_trial_name(trial_results[0].get("trial_name"))
+    return validate_trial_name(trial_results[0].get("trial_name"))
 
 
 def _is_attempt_scoped_key(key: str, root_prefix: str) -> bool:
@@ -131,15 +90,22 @@ def _is_attempt_scoped_key(key: str, root_prefix: str) -> bool:
     )
 
 
+def _is_attempt_scoped_prefix(prefix: str) -> bool:
+    """Whether a stored pointer names one immutable retry attempt."""
+    parts = PurePosixPath(prefix.rstrip("/")).parts
+    return bool(parts and re.fullmatch(r"attempt-[1-9]\d*", parts[-1]))
+
+
 async def resolve_trial_artifact_layout(
     trial: TrialArtifactPointer,
     storage: StorageClient,
 ) -> TrialArtifactLayout:
     """Resolve the exact Harbor child directory for the current attempt.
 
-    Historical attempts without a root ``result.json`` remain eligible for
-    deterministic fallback lookup. Once the manifest exists, malformed data or
-    a missing selected artifact must not expose a sibling retry directory.
+    Historical shared prefixes remain eligible for legacy lookup when their
+    Harbor root summary predates Oddish's trial selector. Attempt-scoped
+    manifests fail closed when malformed or selectorless so a missing selected
+    artifact cannot expose a sibling retry directory.
     """
     attempt_prefix = resolve_trial_s3_prefix(
         trial.id,
@@ -181,6 +147,22 @@ async def resolve_trial_artifact_layout(
     try:
         trial_name = trial_name_from_manifest(manifest)
     except ValueError as exc:
+        is_selectorless_harbor_root = (
+            isinstance(manifest, dict)
+            and ODDISH_TRIAL_NAME_KEY not in manifest
+            and "trial_results" not in manifest
+        )
+        if is_selectorless_harbor_root and not _is_attempt_scoped_prefix(
+            attempt_prefix
+        ):
+            return TrialArtifactLayout(
+                TrialArtifactMode.LEGACY,
+                attempt_prefix,
+                attempt_prefix,
+                manifest=manifest,
+                listed_keys=listed_keys,
+                failure_reason="legacy Harbor root manifest has no trial selector",
+            )
         return TrialArtifactLayout(
             TrialArtifactMode.UNAVAILABLE,
             attempt_prefix,

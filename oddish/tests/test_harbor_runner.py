@@ -3,39 +3,40 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 from builtins import ExceptionGroup
 from collections import namedtuple
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
-import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import pytest  # noqa: E402
-from pydantic import BaseModel, ConfigDict  # noqa: E402
-from harbor.models.environment_type import EnvironmentType  # noqa: E402
-from harbor.models.trial.config import (  # noqa: E402
+import pytest
+from harbor.models.environment_type import EnvironmentType
+from harbor.models.trial.config import (
     AgentConfig as HarborAgentConfig,
+)
+from harbor.models.trial.config import (
     EnvironmentConfig as HarborEnvironmentConfig,
 )
-from harbor.trial.network_policy import resolve_agent_phase_policy  # noqa: E402
-
-from oddish.task_timeouts import TaskTimeoutValidationError  # noqa: E402
-from oddish.workers.agents.codex import AzureCompatibleCodex, OddishCodex  # noqa: E402
-from oddish.workers.agents.cursor_cli import OddishCursorCli  # noqa: E402
-from oddish.workers.agents.grok_build import OddishGrokBuild  # noqa: E402
-from oddish.workers.agents.grok_build_trajectory import (  # noqa: E402
+from harbor.trial.network_policy import resolve_agent_phase_policy
+from oddish.task_timeouts import TaskTimeoutValidationError
+from oddish.workers.agents.codex import AzureCompatibleCodex, OddishCodex
+from oddish.workers.agents.cursor_cli import OddishCursorCli
+from oddish.workers.agents.grok_build import OddishGrokBuild
+from oddish.workers.agents.grok_build_trajectory import (
     convert_grok_build_json_text_to_trajectory,
 )
-from oddish.workers.harbor import runner as harbor_runner  # noqa: E402
-from oddish.workers.harbor import agent_config as harbor_agent_config  # noqa: E402
-from oddish.workers.harbor import storage as harbor_storage  # noqa: E402
-from oddish.workers.harbor.restricted_network import (  # noqa: E402
+from oddish.workers.harbor import agent_config as harbor_agent_config
+from oddish.workers.harbor import runner as harbor_runner
+from oddish.workers.harbor import storage as harbor_storage
+from oddish.workers.harbor.restricted_network import (
     RUNTIME_ALLOWED_HOSTS_ATTR,
     RUNTIME_MODEL_NAME_ATTR,
 )
-from oddish.workers.queue import trial_handler  # noqa: E402
+from oddish.workers.queue import trial_handler
+from pydantic import BaseModel, ConfigDict
 
 _DISK_USAGE = namedtuple("DiskUsage", ["total", "used", "free"])
 
@@ -1308,8 +1309,7 @@ def test_gemini_runtime_env_keys_are_single_sourced_from_model_hosts():
     # The runner's Gemini fold must derive its base-URL + OAuth key names from the
     # model_hosts single source rather than re-listing them, so it cannot drift
     # from the host boundary / fail-closed filter that read the same source.
-    from oddish.workers.harbor import model_hosts
-    from oddish.workers.harbor import restricted_network
+    from oddish.workers.harbor import model_hosts, restricted_network
 
     assert harbor_runner._GEMINI_RUNTIME_ENV_KEYS == (
         *model_hosts.GEMINI_BASE_URL_KEYS,
@@ -1895,7 +1895,6 @@ def test_check_local_storage_preflight_skips_temp_root_when_not_requested(
 
     def _record_probe(path: Path, **_: object) -> None:
         seen_paths.append(path)
-        return None
 
     monkeypatch.setattr(harbor_storage.tempfile, "gettempdir", lambda: str(temp_root))
     monkeypatch.setattr(harbor_runner, "_probe_storage_root", _record_probe)
@@ -2531,7 +2530,6 @@ def test_run_harbor_trial_async_skips_temp_root_preflight_without_task_patch(
     def _fake_preflight(path: Path, *, include_temp_root: bool, **_: object) -> None:
         assert path == jobs_dir
         seen["include_temp_root"] = include_temp_root
-        return None
 
     class _FakeJob:
         def __init__(self, config):
@@ -3263,6 +3261,28 @@ def test_build_agent_config_preserves_custom_opencode_import(monkeypatch):
     )
 
     assert agent_config.import_path == "custom.module:CustomOpenCode"
+
+
+def test_build_agent_config_preserves_explicit_grok_import_path():
+    """A submitted Harbor GrokBuild pin is not rewritten to OddishGrokBuild.
+
+    Used to install a pinned grok CLI (``kwargs.version``) on the stock
+    class, which already honors ``install.sh -s <version>``.
+    """
+    explicit = "harbor.agents.installed.grok_build:GrokBuild"
+    agent_config = harbor_runner._build_agent_config(
+        agent="grok-build",
+        model="xai/v9m-rl-learnability-tp8",
+        raw_harbor_config={
+            "agent_config": {
+                "import_path": explicit,
+                "kwargs": {"version": "1.0.0"},
+            }
+        },
+    )
+
+    assert agent_config.import_path == explicit
+    assert agent_config.kwargs["version"] == "1.0.0"
 
 
 def test_build_agent_config_canonicalizes_grok_prefix_to_xai(monkeypatch):
@@ -4419,6 +4439,31 @@ def test_analysis_artifact_validation_failure_uses_retry_budget_even_when_harbor
     assert completed is (expected_status == trial_handler.TrialStatus.FAILED)
 
 
+def test_qa_validation_error_reads_the_selected_verifier_diagnostic(tmp_path):
+    trial_dir = tmp_path / "qa-run"
+    verifier_dir = trial_dir / "verifier"
+    verifier_dir.mkdir(parents=True)
+    result_path = tmp_path / "result.json"
+    result_path.write_text(json.dumps({"oddish_trial_name": "qa-run"}))
+    (verifier_dir / "error.txt").write_text(
+        "trials[0].analysis.evidence must be a non-empty string\n"
+    )
+    outcome = harbor_runner.HarborOutcome(
+        reward=None,
+        error="No reward file found",
+        exit_code=0,
+        duration_sec=1.0,
+        job_result_path=result_path,
+        job_dir=tmp_path,
+        exception_type="RewardFileNotFoundError",
+    )
+
+    assert trial_handler._qa_artifact_validation_error(outcome) == (
+        "QA artifact validation failed:\n"
+        "trials[0].analysis.evidence must be a non-empty string"
+    )
+
+
 def test_analysis_artifact_failure_does_not_retry_oddish_control_error(monkeypatch):
     trial = _make_retry_decision_trial(attempts=1, max_attempts=3)
     trial.kind = "qa_eval"
@@ -5272,8 +5317,8 @@ def test_ephemeral_gke_trial_receives_sized_env_build_multiplier(tmp_path, monke
     # get the same pod-ready-covering env-build multiplier as the in-process path.
     # The variant early-return used to skip sizing, so a GKE override trial ran
     # with no multiplier and Harbor deleted the still-Pending flex-start Pod.
-    from harbor.models.environment_type import EnvironmentType
     import oddish.workers.harbor.ephemeral as harbor_ephemeral
+    from harbor.models.environment_type import EnvironmentType
 
     captured: dict = {}
 
@@ -5324,8 +5369,8 @@ def test_ephemeral_non_gke_trial_passes_caller_env_build_multiplier_through(
 ):
     # Off GKE the ephemeral path must not fabricate a multiplier: the caller's
     # value (None here) flows straight through, exactly as before the fix.
-    from harbor.models.environment_type import EnvironmentType
     import oddish.workers.harbor.ephemeral as harbor_ephemeral
+    from harbor.models.environment_type import EnvironmentType
 
     captured: dict = {}
 

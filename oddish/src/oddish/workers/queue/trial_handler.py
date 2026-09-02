@@ -20,7 +20,10 @@ from harbor.viewer.scanner import JobScanner
 from sqlalchemy import select, update
 
 from oddish.core.harbor_artifacts import build_trial_result
-from oddish.core.trial_artifacts import validate_uploaded_analysis_artifacts
+from oddish.core.trial_artifacts import (
+    trial_name_from_manifest,
+    validate_uploaded_analysis_artifacts,
+)
 from oddish.config import settings
 from oddish.costs.modal_cost import SpanResources
 from oddish.costs.recorder import (
@@ -905,6 +908,29 @@ def _artifact_subprefix(trial_kind: str, trial_attempt: int) -> str:
     return attempt
 
 
+def _qa_artifact_validation_error(outcome: HarborOutcome | None) -> str | None:
+    """Read the QA verifier's exact contract error from the selected Harbor child."""
+    if outcome is None or outcome.job_dir is None or outcome.job_result_path is None:
+        return None
+    try:
+        manifest = json.loads(outcome.job_result_path.read_text(encoding="utf-8"))
+        trial_name = trial_name_from_manifest(manifest)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if trial_name is None:
+        return None
+    error_path = outcome.job_dir / trial_name / "verifier" / "error.txt"
+    try:
+        detail = error_path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    if not detail:
+        return None
+    if detail.startswith("QA artifact validation failed:"):
+        return detail[:4000]
+    return f"QA artifact validation failed:\n{detail}"[:4000]
+
+
 async def _store_trial_results(
     *,
     trial_id: str,
@@ -1262,11 +1288,11 @@ async def _finish_trial_settlement(
 async def _upload_probe_assets(
     environment, probe_task_dir: Path, trial_id: str
 ) -> None:
-    """Upload the oddish-query CLI to PROBE_HARNESS_DIR (best-effort Daytona/non-Modal
-    fallback; a failure must never block the probe)."""
+    """Upload probe tools; QA submission contracts fail closed, ordinary probes do not."""
+    submission_required = (probe_task_dir / "submit-analysis-result").is_file()
     harness_mount = Path(tempfile.mkdtemp(prefix=f"probe-cli-{trial_id}-"))
     try:
-        stage_cli_mount(harness_mount)
+        stage_cli_mount(harness_mount, analysis_task_dir=probe_task_dir)
         await environment.upload_dir(
             source_dir=harness_mount, target_dir=PROBE_HARNESS_DIR
         )
@@ -1277,6 +1303,10 @@ async def _upload_probe_assets(
         console.print(
             f"[yellow]Trial {trial_id} probe CLI upload failed: {exc}[/yellow]"
         )
+        if submission_required:
+            raise RuntimeError(
+                f"Trial {trial_id} could not stage the required QA submission contract"
+            ) from exc
     finally:
         shutil.rmtree(harness_mount, ignore_errors=True)
 
@@ -2129,6 +2159,12 @@ async def run_trial_job(
         execution = await execution_task
         await _settle_compute_costs(cost_state, execution.outcome)
 
+        qa_validation_error = (
+            _qa_artifact_validation_error(execution.outcome)
+            if trial_kind in ("qa", "qa_eval")
+            else None
+        )
+
         # Upload trial results to S3.
         trial_s3_key = None
         oddish_uploaded = False
@@ -2169,7 +2205,9 @@ async def run_trial_job(
                 message = f"{action}: {type(e).__name__}: {e}"
                 console.print(f"[yellow]{message}[/yellow]")
                 if is_analysis_kind(trial_kind):
-                    artifact_upload_error = message
+                    artifact_upload_error = qa_validation_error or message
+        if qa_validation_error is not None and artifact_upload_error is None:
+            artifact_upload_error = qa_validation_error
         if (
             should_upload_to_s3
             and is_analysis_kind(trial_kind)

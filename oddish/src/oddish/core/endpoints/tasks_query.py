@@ -5,8 +5,6 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
-logger = logging.getLogger(__name__)
-
 from fastapi import HTTPException
 from sqlalchemy import (
     and_,
@@ -21,14 +19,10 @@ from sqlalchemy import (
     tuple_,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased, lazyload, load_only, noload, selectinload
+from sqlalchemy.orm import aliased, load_only, selectinload
 
-from oddish.core.experiment_membership import (
-    gathered_trial_ids_select,
-    trial_in_experiment,
-)
+from oddish.core.experiment_membership import visible_experiment_trial_predicates
 from oddish.core.helpers import (
-    SLIM_TRIAL_RESPONSE_COLUMNS,
     TASK_STATUS_RESPONSE_COLUMNS,
     escape_like,
     parse_search_query,
@@ -36,13 +30,11 @@ from oddish.core.helpers import (
     build_task_status_response_compact,
     build_task_status_response,
     build_task_status_responses_from_counts,
-    build_slim_task_status_response,
     fetch_experiment_effective_version_ids,
     fetch_trial_queue_info,
     fetch_visible_worker_jobs,
     filter_probe_trials_for_effective_versions,
     get_task_status_trials,
-    resolve_effective_version_id,
 )
 from oddish.core.tags.filter_ast import (
     TagFilterAST,
@@ -83,7 +75,7 @@ from oddish.core.task_browse_metrics import (
     resolve_browse_cost_breakdown,
     trial_bucket_label,
 )
-from oddish.core.endpoints.qa_cost import get_task_qa_costs, get_trial_qa_costs
+from oddish.core.endpoints.qa_cost import get_task_qa_costs
 from oddish.filters.trial_metrics import TrialMetricFilter
 from oddish.filters.trial_predicates import (
     EligibleTrialScope,
@@ -91,6 +83,8 @@ from oddish.filters.trial_predicates import (
 )
 from oddish.model_pricing import estimate_cost_usd, get_model_pricing
 from oddish.timing import TimingRecorder, elapsed_ms, now
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve_browse_trial_cost(row: Mapping[str, Any]) -> tuple[float | None, bool]:
@@ -145,12 +139,9 @@ async def list_tasks_core(
 ) -> list[TaskStatusResponse]:
     """List tasks with optional filters and aggregated trial stats.
 
-    ``compact_tasks=True`` is a shortcut path used by the experiment
-    page first paint (``limit=2000&include_trials=False``). It drops
-    the per-task ``visible_worker_jobs`` fetch, the experiment-scoped
-    ``effective_version_ids`` lookup, and the ``selectinload(experiments)``
-    fan-out -- none of which are read by the lightweight task-shell view
-    that consumes this path. It implies ``include_trials=False``.
+    ``compact_tasks=True`` is a counts-only shortcut. It drops the per-task
+    worker-job and experiment-version lookups and implies
+    ``include_trials=False``.
     """
     if compact_tasks:
         include_trials = False
@@ -158,20 +149,12 @@ async def list_tasks_core(
     query = select(TaskModel).order_by(TaskModel.created_at.desc())
     if include_trials:
         # When scoped to an experiment, push the trial filter into the
-        # selectin load so each task fetches only that experiment's non-probe
-        # trials instead of every trial across every version / experiment /
-        # superseded rerun. The former code loaded the full set and filtered
-        # in Python (below), which materialized far more rows than the view
-        # needs -- the memory spike that OOM-killed the API container. This is
-        # an exact in-SQL equivalent of that Python filter: ``experiment_id``
-        # and ``is_probe`` are both NOT NULL, so ``experiment_id == X``
-        # excludes legacy/NULL-experiment trials (``None == X`` is False in
-        # Python, ``NULL = X`` is not-true in SQL) and ``is_probe.is_(False)``
-        # matches ``not t.is_probe``. The effective-version resolution and the
-        # superseded/off-version drop stay in Python, computed from the scoped
-        # set exactly as before. The filtered selectin still runs inside the
-        # async session (eager, no lazy load -> no MissingGreenlet) and still
-        # inherits the soft-delete ``deleted_at IS NULL`` criteria.
+        # selectin load so each task fetches only the experiment's visible
+        # agent trials instead of every trial across versions, experiments,
+        # probes, analysis runs, and superseded reruns. Version selection is
+        # resolved separately by the shared SQL selector below. The filtered
+        # selectin stays eager, so response building cannot lazy-load outside
+        # the async greenlet.
         #
         # NOTE: this relies on ``task.trials`` being UNLOADED on the incoming
         # session. A filtered selectin scopes the collection on first load but
@@ -182,8 +165,7 @@ async def list_tasks_core(
         # Python) or the filter will silently not apply.
         if experiment_id:
             trials_relationship = TaskModel.trials.and_(
-                trial_in_experiment(experiment_id),
-                TrialModel.is_probe.is_(False),
+                *visible_experiment_trial_predicates(experiment_id),
             )
         else:
             trials_relationship = TaskModel.trials
@@ -289,39 +271,33 @@ async def list_tasks_core(
     # experiment has visible trials for it; otherwise the latest represented
     # version wins so an experiment still shows its own historical trials after
     # the task's default changes elsewhere.
-    # Collection experiments gather trials additively via ``experiment_trials``
-    # without rewriting each trial's scalar ``experiment_id``. Compute that
-    # gathered set once so effective-version resolution recognizes those trials
-    # (otherwise a gathered trial on an older version is loaded, then
-    # double-filtered away by the effective-version drop). Empty for a normal
-    # experiment -> every path stays identical to before.
-    gathered_trial_ids: set[str] = set()
-    if experiment_id:
-        gathered_trial_ids = set(
-            (await session.execute(gathered_trial_ids_select(experiment_id)))
-            .scalars()
-            .all()
+    # Resolve one displayed version for every task before any consumer filters
+    # rows. The SQL selector deliberately returns only versions represented by
+    # visible experiment trials; a task absent from that partial result still
+    # displays its current version. Keeping the fallback in this total map makes
+    # the agent rows, response metadata, and separately-loaded probe rows use
+    # the same version decision.
+    effective_by_task: dict[str, str | None] = {
+        task.id: task.current_version_id for task in tasks
+    }
+    if experiment_id and tasks and include_trials:
+        effective_by_task.update(
+            await fetch_experiment_effective_version_ids(
+                session,
+                experiment_id=experiment_id,
+                task_ids=[task.id for task in tasks],
+            )
         )
 
     if include_trials:
         from sqlalchemy.orm.attributes import set_committed_value
 
-        effective_by_task: dict[str, str | None] = {}
         for task in tasks:
             if experiment_id:
-                # ``task.trials`` is already scoped to this experiment's
-                # non-probe trials by the filtered selectin load above (probes
-                # are loaded separately by version and merged into task.trials
-                # below, so excluding them here stops a probe-only version from
-                # skewing the effective version resolution). Resolve the
-                # experiment's effective version from that scoped set, then drop
-                # superseded / off-version trials.
-                effective = resolve_effective_version_id(
-                    task,
-                    experiment_context_id=experiment_id,
-                    gathered_trial_ids=gathered_trial_ids,
-                )
-                effective_by_task[task.id] = effective
+                # ``task.trials`` is already scoped to the experiment's visible
+                # agent population. Use the SQL-selected version rather than
+                # re-ranking the loaded rows in Python.
+                effective = effective_by_task[task.id]
                 set_committed_value(
                     task,
                     "trials",
@@ -406,7 +382,7 @@ async def list_tasks_core(
                     queue_info_by_trial_id=queue_info_by_trial_id,
                     jobs_by_subject=jobs_by_subject,
                     experiment_context_id=experiment_id,
-                    gathered_trial_ids=gathered_trial_ids,
+                    effective_version_id=effective_by_task[task.id],
                     exclusions=exclusions,
                 )
                 for task in tasks
@@ -426,7 +402,7 @@ async def list_tasks_core(
                 queue_info_by_trial_id=queue_info_by_trial_id,
                 jobs_by_subject=jobs_by_subject,
                 experiment_context_id=experiment_id,
-                gathered_trial_ids=gathered_trial_ids,
+                effective_version_id=effective_by_task[task.id],
                 exclusions=exclusions,
             )
             for task in tasks
@@ -442,11 +418,8 @@ async def list_tasks_core(
     build_started_at = now()
     effective_version_id_by_task_id: dict[str, str] = {}
     if experiment_id and tasks and not compact_tasks:
-        # Skipped on the compact path: the experiment page uses the
-        # task version baked into each trial row when it later loads
-        # the trial pages, so the lightweight first-paint shell doesn't
-        # need this lookup. Phase 4B folds it into the main task list
-        # query via a window function for the non-compact path.
+        # Compact callers do not render an experiment-version pivot, so they
+        # do not need this lookup.
         effective_version_id_by_task_id = await fetch_experiment_effective_version_ids(
             session,
             experiment_id=experiment_id,
@@ -474,176 +447,6 @@ async def list_tasks_core(
             elapsed_ms(build_started_at),
             "Build task counts response",
         )
-    return response
-
-
-async def _experiment_member_task_ids(session: AsyncSession, experiment_id: str):
-    """Task ids in ``experiment_id``, mirroring ``TaskModel.experiments`` membership.
-
-    Materialized up front so the task fetch filters by primary key instead of an
-    ``EXISTS`` probe per row: under ``ORDER BY created_at DESC LIMIT`` that probe
-    made Postgres walk the org's whole task set, since members are a small
-    fraction and the limit never fills.
-    """
-    result = await session.execute(
-        select(task_experiments.c.task_id)
-        .where(task_experiments.c.experiment_id == experiment_id)
-        .where(task_experiments.c.deleted_at.is_(None))
-    )
-    return result.scalars().all()
-
-
-async def list_experiment_task_shells_core(
-    session: AsyncSession,
-    *,
-    experiment_id: str,
-    org_id: str | None = None,
-    limit: int = 2000,
-    offset: int = 0,
-    include_empty_rewards: bool = True,
-    record_timing: TimingRecorder | None = None,
-) -> list[TaskStatusResponse]:
-    """List task shells for the experiment detail first paint."""
-    query_started_at = now()
-    member_task_ids = await _experiment_member_task_ids(session, experiment_id)
-    query = (
-        select(TaskModel)
-        .where(TaskModel.id.in_(member_task_ids))
-        .order_by(TaskModel.created_at.desc())
-        .options(
-            load_only(*TASK_STATUS_RESPONSE_COLUMNS),
-            # ``TaskModel.trials`` and ``TaskModel.experiments`` default to
-            # select-in eager loading.  A task-shell response deliberately
-            # contains neither relationship: scoped counts and the effective
-            # version are fetched by the aggregate queries below, and the one
-            # context experiment is attached explicitly after this query.
-            # Suppress both default loaders here so a large collection does
-            # not hydrate every historical trial/experiment for its tasks
-            # before returning the lightweight shell.
-            # Keep trials unloaded (rather than committing an empty
-            # collection) so another explicit selectinload in the same
-            # request/session can still enrich these task identities.
-            lazyload(TaskModel.trials),
-            noload(TaskModel.experiments),
-        )
-    )
-    if org_id is not None:
-        query = query.where(TaskModel.org_id == org_id)
-    query = query.limit(limit).offset(offset)
-
-    result = await session.execute(query)
-    if record_timing is not None:
-        record_timing("tasks_query", elapsed_ms(query_started_at), "Task shells query")
-    tasks = result.scalars().all()
-
-    # Attach only the context experiment -- no fan-out. ``set_committed_value``
-    # marks the collection loaded so the response builder never triggers a lazy
-    # load outside the async greenlet.
-    if tasks:
-        from sqlalchemy.orm.attributes import set_committed_value
-
-        context_experiment = await session.get(ExperimentModel, experiment_id)
-        scoped_experiments = [context_experiment] if context_experiment else []
-        for task in tasks:
-            set_committed_value(task, "experiments", scoped_experiments)
-
-    build_started_at = now()
-    effective_version_id_by_task_id = (
-        await fetch_experiment_effective_version_ids(
-            session,
-            experiment_id=experiment_id,
-            task_ids=[task.id for task in tasks],
-        )
-        if tasks
-        else {}
-    )
-    response = await build_task_status_responses_from_counts(
-        session,
-        tasks=tasks,
-        include_empty_rewards=include_empty_rewards,
-        experiment_context_id=experiment_id,
-        effective_version_id_by_task_id=(effective_version_id_by_task_id or None),
-        jobs_by_subject={},
-    )
-    if record_timing is not None:
-        record_timing("tasks_build", elapsed_ms(build_started_at), "Build task shells")
-    return response
-
-
-async def list_experiment_slim_tasks(
-    session: AsyncSession,
-    *,
-    experiment_id: str,
-    org_id: str | None = None,
-    limit: int = 2000,
-    offset: int = 0,
-    include_empty_rewards: bool = True,
-    record_timing: TimingRecorder | None = None,
-) -> list[TaskStatusResponse]:
-    """List slim per-trial grid data for the experiment page."""
-    from sqlalchemy.orm.attributes import set_committed_value
-
-    trials_relationship = TaskModel.trials.and_(
-        trial_in_experiment(experiment_id),
-        TrialModel.is_probe.is_(False),
-    )
-    query_started_at = now()
-    member_task_ids = await _experiment_member_task_ids(session, experiment_id)
-    query = (
-        select(TaskModel)
-        .where(TaskModel.id.in_(member_task_ids))
-        .order_by(TaskModel.created_at.desc())
-        .options(
-            load_only(*TASK_STATUS_RESPONSE_COLUMNS),
-            selectinload(trials_relationship).load_only(*SLIM_TRIAL_RESPONSE_COLUMNS),
-        )
-    )
-    if org_id is not None:
-        query = query.where(TaskModel.org_id == org_id)
-    query = query.limit(limit).offset(offset)
-
-    result = await session.execute(query)
-    if record_timing is not None:
-        record_timing("tasks_query", elapsed_ms(query_started_at), "Slim tasks query")
-    tasks = result.scalars().all()
-
-    if tasks:
-        context_experiment = await session.get(ExperimentModel, experiment_id)
-        scoped_experiments = [context_experiment] if context_experiment else []
-        for task in tasks:
-            set_committed_value(task, "experiments", scoped_experiments)
-
-    # Trials gathered into a collection carry their home experiment's scalar
-    # ``experiment_id``; fold them in so the builder's auto-resolve keeps them
-    # at their own (possibly older) version instead of dropping them.
-    gathered_trial_ids = set(
-        (await session.execute(gathered_trial_ids_select(experiment_id)))
-        .scalars()
-        .all()
-    )
-
-    # One query for the whole page's trials, not one per trial: this is the
-    # grid's per-trial QA sidecar, and the grid can page thousands of trials.
-    page_trial_ids = [trial.id for task in tasks for trial in task.trials]
-    qa_costs_by_trial_id = await get_trial_qa_costs(
-        session, trial_ids=page_trial_ids, org_id=org_id
-    )
-    exclusions = await load_cost_exclusions(session)
-
-    build_started_at = now()
-    response = [
-        build_slim_task_status_response(
-            task,
-            include_empty_rewards=include_empty_rewards,
-            experiment_context_id=experiment_id,
-            gathered_trial_ids=gathered_trial_ids,
-            qa_costs_by_trial_id=qa_costs_by_trial_id,
-            exclusions=exclusions,
-        )
-        for task in tasks
-    ]
-    if record_timing is not None:
-        record_timing("tasks_build", elapsed_ms(build_started_at), "Build slim tasks")
     return response
 
 

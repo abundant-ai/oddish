@@ -46,7 +46,7 @@ from oddish.costs.modal_cost import (
     normalize_gpu_type,
     provider_default_request,
 )
-from oddish.core.trial_artifacts import write_trial_selection_manifest
+from oddish.core.harbor_artifacts import write_trial_selection_manifest
 from oddish.runtime.ec2_policy import (
     LAUNCH_TOKEN_TAG_KEY,
     SANDBOX_RUN_ID_TAG_KEY,

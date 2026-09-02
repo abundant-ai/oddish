@@ -141,7 +141,8 @@ def _make_hook(probe_task_dir: str | None, probe_harness_dir: str | None):
                     source_dir=Path(probe_task_dir), target_dir=probe_harness_dir
                 )
             except Exception:
-                pass
+                if (Path(probe_task_dir) / "submit-analysis-result").is_file():
+                    raise
 
     return _hook
 
@@ -242,7 +243,7 @@ def _build_job_config(payload: dict[str, Any]):
 
 
 async def _run(payload: dict[str, Any]) -> dict[str, Any]:
-    from oddish.core.trial_artifacts import write_trial_selection_manifest
+    from oddish.core.harbor_artifacts import write_trial_selection_manifest
 
     environment_type = (payload.get("environment_config") or {}).get("type")
     patch_module = _apply_sibling_harbor_patches(require_ec2=environment_type == "ec2")

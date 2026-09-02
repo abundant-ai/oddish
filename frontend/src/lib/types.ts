@@ -120,7 +120,7 @@ interface TrialAnalysis {
   _graded_at_steps?: number[];
   trial_name?: string;
   classification: AnalysisClassification;
-  subtype: string;
+  subtype?: string;
   evidence?: string;
   root_cause?: string;
   recommendation?: string;
@@ -242,7 +242,7 @@ export interface Task {
   name: string;
   status: TaskStatus;
   priority: Priority;
-  user: string;
+  user?: string;
   github_username?: string | null;
   github_meta?: Record<string, string> | null;
   link?: string | null;
@@ -279,6 +279,88 @@ export interface Task {
   updated_at: string;
   started_at?: string | null;
   finished_at?: string | null;
+}
+
+export type ExperimentOpenTask = Omit<
+  Task,
+  "experiment_id" | "experiment_name" | "experiment_is_public"
+>;
+
+export type PublicExperimentOpenTask = Omit<
+  ExperimentOpenTask,
+  "user" | "github_username" | "link" | "experiment_owner" | "experiment_link"
+>;
+
+export interface ExperimentPageSummary {
+  task_count: number;
+  trial_count: number;
+  completed: number;
+  failed: number;
+  skipped: number;
+  active: number;
+  reward_sum: number;
+  reward_total: number;
+  pass_count: number;
+  partial_count: number;
+  fail_count: number;
+  harness_error_count: number;
+  average_score: number | null;
+  qa_accepted: number;
+  qa_rejected: number;
+  qa_running: number;
+  qa_failed: number;
+}
+
+export interface ExperimentOpenResponse {
+  experiment_id: string;
+  name: string;
+  created_at: string;
+  owner?: string | null;
+  link?: string | null;
+  revision: string;
+  has_active_trials: boolean;
+  summary: ExperimentPageSummary | null;
+  tasks: ExperimentOpenTask[];
+  next_created_at?: string | null;
+  next_task_id?: string | null;
+}
+
+export interface PublicExperimentOpenResponse extends Omit<
+  ExperimentOpenResponse,
+  "owner" | "link" | "tasks"
+> {
+  tasks: PublicExperimentOpenTask[];
+}
+
+export interface ExperimentTrialCell extends Omit<Trial, "analysis"> {
+  analysis: {
+    status?: JobStatus | null;
+    classification?: AnalysisClassification | null;
+    subtype?: string | null;
+    evidence?: string | null;
+    started_at?: string | null;
+    finished_at?: string | null;
+  };
+}
+
+export interface ExperimentTrialPageResponse {
+  revision: string;
+  trials: ExperimentTrialCell[];
+  next_created_at?: string | null;
+  next_trial_id?: string | null;
+}
+
+export interface ExperimentFocusResponse {
+  revision: string;
+  task: ExperimentOpenTask;
+  trial: ExperimentTrialCell | null;
+}
+
+export interface PublicExperimentFocusResponse extends Omit<
+  ExperimentFocusResponse,
+  "task"
+> {
+  task: PublicExperimentOpenTask;
 }
 
 interface TaskBrowseExperiment {
@@ -487,6 +569,7 @@ export interface TaskOpenTrialRef {
   cost_usd?: number | null;
   cost_is_estimated?: boolean | null;
   is_billed: boolean;
+  has_trajectory: boolean;
   created_at: string;
   started_at?: string | null;
   finished_at?: string | null;
@@ -1035,6 +1118,20 @@ export interface QueueHealthResponse {
   dispatcher: QueueRuntimeComponentStatus | null;
   reconciler: QueueRuntimeComponentStatus | null;
   timestamp: string;
+}
+
+export interface ModelEndpointCheckResponse {
+  ok: boolean;
+  model: string;
+  resolved_model: string;
+  provider: string;
+  transport: "litellm_completion";
+  failure_kind: "provider" | "configuration" | null;
+  status_code: number | null;
+  latency_ms: number;
+  response: string | null;
+  error: string | null;
+  request_id: string | null;
 }
 
 export interface CostModelBreakdown {

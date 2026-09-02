@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.core.endpoints.collections import create_trial_collection_core
 from oddish.core.endpoints.deletion import _combine_idempotency_key
-from oddish.core.endpoints.tasks_query import list_experiment_slim_tasks
+from oddish.core.endpoints.experiment_page import get_experiment_trial_page_core
 from oddish.db.models import ExperimentModel, TaskModel, TrialModel, generate_id
 
 
@@ -50,7 +50,7 @@ def _trial(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("source_id", ["source-short", "source-" + "s" * 80])
-async def test_slim_tasks_collapses_gathered_combine_copies(session, source_id):
+async def test_trial_page_collapses_gathered_combine_copies(session, source_id):
     task = _task("detail-collection-task-1")
     session.add(task)
     await session.flush()
@@ -74,20 +74,20 @@ async def test_slim_tasks_collapses_gathered_combine_copies(session, source_id):
         session, name="lone copy", trial_ids=[copy.id], org_id="org1"
     )
 
-    tasks = await list_experiment_slim_tasks(
+    page = await get_experiment_trial_page_core(
         session, experiment_id=coll.id, org_id="org1"
     )
-    assert {trial.id for task in tasks for trial in task.trials} == {original.id}
+    assert {trial.id for trial in page.trials} == {original.id}
 
     session.expire_all()
-    tasks = await list_experiment_slim_tasks(
+    page = await get_experiment_trial_page_core(
         session, experiment_id=lone_copy.id, org_id="org1"
     )
-    assert {trial.id for task in tasks for trial in task.trials} == {copy.id}
+    assert {trial.id for trial in page.trials} == {copy.id}
 
 
 @pytest.mark.asyncio
-async def test_slim_tasks_excludes_probe_gathered_trials(session):
+async def test_trial_page_excludes_probe_gathered_trials(session):
     task = _task("detail-collection-task-2")
     session.add(task)
     await session.flush()
@@ -105,8 +105,7 @@ async def test_slim_tasks_excludes_probe_gathered_trials(session):
     )
     await session.flush()
 
-    tasks = await list_experiment_slim_tasks(
+    page = await get_experiment_trial_page_core(
         session, experiment_id=coll.id, org_id="org1"
     )
-    all_trial_ids = {tr.id for task in tasks for tr in task.trials}
-    assert probe.id not in all_trial_ids
+    assert probe.id not in {trial.id for trial in page.trials}
