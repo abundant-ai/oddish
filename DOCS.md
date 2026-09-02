@@ -855,9 +855,9 @@ Customers are records of their own. The dashboard's create dialog offers
 a dropdown of existing customers and a form for a new one. `POST
 /customers` creates a customer directly; a duplicate name is a conflict.
 
-The dashboard board can filter its task list: all tasks, tasks that
-need work (not ready), blocked tasks (a failing check or an open defect),
-or ready tasks. Use it to hide what is already approved. Each row also
+The dashboard board can filter its task list: all tasks, blocked tasks
+(a failing check or an open defect), tasks awaiting sign-off (every
+check passes), or ready tasks. Use it to hide what is already approved. Each row also
 has a selection checkbox (the header checkbox selects the whole filtered
 view): the bulk bar signs off every clean selected task or removes the
 selected tasks from the delivery in one action.

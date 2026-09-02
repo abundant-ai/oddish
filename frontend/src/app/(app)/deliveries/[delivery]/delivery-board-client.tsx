@@ -334,21 +334,22 @@ const QA_HISTORY_PAGE = 5;
 // Task rows per page on the board.
 const TASK_PAGE_SIZE = 25;
 
-type TaskFilter = "all" | "needs_work" | "blocked" | "ready";
+type TaskFilter = "all" | "blocked" | "awaiting_signoff" | "ready";
 
-/** The board filter: hide what is done to focus on what is not.
- * "blocked" is stricter than "needs work": a failing automated check or
- * an unacknowledged defect, not just a missing sign-off. */
+/** The board filter. The three non-"all" states are disjoint: every task
+ * is blocked (a failing automated check or an open defect), awaiting
+ * sign-off (nothing blocks it, a person has not signed it off), or
+ * ready. */
 function applyTaskFilter(tasks: DeliveryTaskBoardRow[], filter: TaskFilter) {
   if (filter === "all") return tasks;
+  const isBlocked = (row: DeliveryTaskBoardRow) =>
+    row.checks.some(
+      (check) => check.kind === "automated" && check.status === "fail"
+    ) || row.defects.some((defect) => !defect.acknowledged);
   return tasks.filter((row) => {
     if (filter === "ready") return row.ready;
-    if (filter === "needs_work") return !row.ready;
-    return (
-      row.checks.some(
-        (check) => check.kind === "automated" && check.status === "fail"
-      ) || row.defects.some((defect) => !defect.acknowledged)
-    );
+    if (filter === "blocked") return isBlocked(row);
+    return !row.ready && !isBlocked(row);
   });
 }
 
@@ -1236,11 +1237,11 @@ export function DeliveryBoardClient({
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">All tasks</SelectItem>
-                    <SelectItem value="needs_work">
-                      Needs work (not ready)
-                    </SelectItem>
                     <SelectItem value="blocked">
                       Blocked (failing checks or defects)
+                    </SelectItem>
+                    <SelectItem value="awaiting_signoff">
+                      Awaiting sign-off (checks pass)
                     </SelectItem>
                     <SelectItem value="ready">Ready</SelectItem>
                   </SelectContent>
