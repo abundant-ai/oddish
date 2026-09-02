@@ -1612,6 +1612,8 @@ async def terminate_run_harvest(result: dict, *, strict: bool = False) -> int:
         if fc_id
     ]
     targets = result.pop("worker_targets", [])
+    if not settings.cloud_control_plane_enabled:
+        return 0
     if strict:
         dispatcher = ModalDispatcher()
         modal_results = await asyncio.gather(

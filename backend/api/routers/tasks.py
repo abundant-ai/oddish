@@ -26,6 +26,7 @@ from cloud_policy import (
     ALLOWED_CLOUD_ENVIRONMENTS,
     get_default_cloud_environment,
 )
+from oddish.config import settings
 from oddish.dispatch.backends.modal import ModalDispatcher
 from oddish.dispatch.ports import WorkerHandle
 from oddish.filters.trial_metrics import TrialMetricFilter
@@ -169,7 +170,7 @@ async def _spawn_gke_image_builds(session: AsyncSession, task_ids: list[str]) ->
     by design -- a spawn failure must never fail a committed submission (the
     worker fallback and the clear missing-image error remain behind it).
     """
-    if not task_ids:
+    if not settings.cloud_control_plane_enabled or not task_ids:
         return
     try:
         import os
@@ -251,6 +252,8 @@ async def _cancel_modal_function_calls(modal_fc_ids: list[str]) -> int:
     is host-agnostic (design spec §6.4). Behavior is unchanged — the dispatcher
     runs the same batched ``cancel.aio(terminate_containers=True)``.
     """
+    if not settings.cloud_control_plane_enabled:
+        return 0
     handles = [
         WorkerHandle(provider=ModalDispatcher.name, queue_key="", id=fc_id)
         for fc_id in modal_fc_ids
