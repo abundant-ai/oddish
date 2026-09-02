@@ -342,11 +342,11 @@ def _apply_claude_code_geometric_env(agent_config: AgentConfig) -> None:
         model=bare_model,
         recommended_env=_GEOMETRIC_RECOMMENDED_ENV,
     )
-    # Deliberately NOT setting z.ai's thinking/reasoning_effort kwargs. vLLM
-    # reaches /v1/messages through an Anthropic->OpenAI adapter, and an
-    # unsupported sampling param is rejected outright -- the same reason the
-    # Fireworks route stays on plain defaults. Callers who want them can pass
-    # --agent-kwarg once the endpoint is known to accept them.
+    # Deliberately NOT defaulting z.ai's thinking/reasoning_effort kwargs, so
+    # this route stays on plain defaults like the Fireworks one. Nothing here
+    # touches ``agent_config.kwargs``, so a caller's ``--agent-kwarg
+    # reasoning_effort=high`` still reaches Claude Code's ``--effort`` flag
+    # unchanged; only the DEFAULT differs from z.ai (which setdefault()s them).
 
 
 _MINIMAX_RECOMMENDED_ENV: dict[str, str] = {
