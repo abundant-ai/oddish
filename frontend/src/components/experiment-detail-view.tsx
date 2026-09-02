@@ -160,6 +160,11 @@ interface ExperimentDetailViewProps {
 
 const AGENT_SUMMARY_STORAGE_PREFIX = "oddish:experiment-agent-summaries:";
 
+function isRetryableFocusError(error: unknown): boolean {
+  const status = (error as { status?: number } | null)?.status;
+  return status == null || status === 408 || status === 429 || status >= 500;
+}
+
 function getModelScopedAgentsFromSummaries(
   summaries: ExperimentAgentSummary[]
 ): Set<string> {
@@ -1192,7 +1197,7 @@ export function ExperimentDetailView({
   const { data: resolvedUrlFocus, error: urlFocusError } =
     useSWR<ExperimentFocusResponse>(focusQuery, fetcher, {
       revalidateOnFocus: false,
-      shouldRetryOnError: false,
+      shouldRetryOnError: isRetryableFocusError,
     });
   const hasPendingUrlFocus =
     pendingUrlTaskSelector != null || pendingUrlTrialId != null;
@@ -1534,7 +1539,7 @@ export function ExperimentDetailView({
   useEffect(() => {
     if (!hasPendingUrlFocus) return;
     if (urlFocusError) {
-      cancelPendingDeepLink();
+      if (!isRetryableFocusError(urlFocusError)) cancelPendingDeepLink();
       return;
     }
     if (!resolvedUrlFocus || tasksForExperiment.length === 0) return;

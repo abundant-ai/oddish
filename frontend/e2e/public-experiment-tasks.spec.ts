@@ -46,6 +46,36 @@ function task(overrides: Partial<Task>): Task {
   };
 }
 
+function publicOpenResponse(publicTask: Task, hasActiveTrials = false) {
+  return {
+    experiment_id: "exp-1",
+    name: "Public experiment",
+    created_at: "2026-07-14T00:00:00Z",
+    revision: "2026-07-14T00:00:00Z",
+    has_active_trials: hasActiveTrials,
+    summary: {
+      task_count: 1,
+      trial_count: 1,
+      completed: hasActiveTrials ? 0 : 1,
+      failed: 0,
+      skipped: 0,
+      active: hasActiveTrials ? 1 : 0,
+      reward_sum: hasActiveTrials ? 0 : 1,
+      reward_total: hasActiveTrials ? 0 : 1,
+      pass_count: hasActiveTrials ? 0 : 1,
+      partial_count: 0,
+      fail_count: 0,
+      harness_error_count: 0,
+      average_score: hasActiveTrials ? null : 1,
+      qa_accepted: 0,
+      qa_rejected: 0,
+      qa_running: 0,
+      qa_failed: 0,
+    },
+    tasks: [publicTask],
+  };
+}
+
 test("summary polling preserves the durable backend job state", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () =>
@@ -376,6 +406,124 @@ test("public deep link resolves a trial outside the loaded pages", async ({
   await expect.poll(() => focusRequests).toBe(2);
   await expect(page.getByRole("tab", { name: "Summary" })).toBeVisible();
   await expect(page).toHaveURL(/task=task-101&trial=task-101-1/);
+});
+
+test("retryable focus errors preserve the trial-page deep-link fallback", async ({
+  page,
+}) => {
+  const token = "public-focus-retry";
+  const publicTask = task({
+    current_version: 1,
+    current_version_id: "task-1-v1",
+    trials: undefined,
+  });
+  const focusedTrial: Trial = {
+    id: "task-1-2",
+    name: "Focused trial",
+    task_id: publicTask.id,
+    task_path: publicTask.task_path,
+    experiment_id: "exp-1",
+    agent: "claude-code",
+    provider: "anthropic",
+    model: "masked-model",
+    status: "success",
+    attempts: 1,
+    max_attempts: 1,
+    harbor_stage: "completed",
+    reward: 1,
+    task_version_id: "task-1-v1",
+    has_trajectory: false,
+    created_at: "2026-07-14T00:00:00Z",
+  };
+  let focusRequests = 0;
+
+  await page.route(`**/api/public/experiments/${token}`, (route) =>
+    route.fulfill({
+      json: { name: "Focus retry", public_token: token, description: null },
+    })
+  );
+  await page.route(
+    `**/api/public/experiments/${token}/cost-totals`,
+    (route) => route.fulfill({ json: emptyCostTotals })
+  );
+  await page.route(`**/api/public/experiments/${token}/open?*`, (route) =>
+    route.fulfill({ json: publicOpenResponse(publicTask) })
+  );
+  await page.route(
+    `**/api/public/experiments/${token}/trial-page?*`,
+    async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await route.fulfill({
+        json: {
+          revision: "2026-07-14T00:00:00Z",
+          trials: [{ ...focusedTrial, analysis: {} }],
+        },
+      });
+    }
+  );
+  await page.route(`**/api/public/experiments/${token}/focus?*`, (route) => {
+    focusRequests += 1;
+    return route.fulfill({
+      status: 503,
+      json: { detail: "focus temporarily unavailable" },
+    });
+  });
+  await page.route(
+    `**/api/public/experiments/${token}/tasks/task-1?*`,
+    (route) =>
+      route.fulfill({ json: { ...publicTask, trials: [focusedTrial] } })
+  );
+
+  await page.goto(`/share/${token}?task=task-1&trial=task-1-2`);
+
+  await expect.poll(() => focusRequests).toBe(1);
+  await expect(page.getByRole("tab", { name: "Summary" })).toBeVisible();
+  await expect(page).toHaveURL(/task=task-1&trial=task-1-2/);
+});
+
+test("public cost totals refresh while the experiment is active", async ({
+  page,
+}) => {
+  const token = "public-active-cost";
+  const publicTask = task({ trials: undefined });
+  let costRequests = 0;
+
+  await page.clock.install();
+  await page.route(`**/api/public/experiments/${token}`, (route) =>
+    route.fulfill({
+      json: { name: "Active cost", public_token: token, description: null },
+    })
+  );
+  await page.route(
+    `**/api/public/experiments/${token}/cost-totals`,
+    (route) => {
+      costRequests += 1;
+      return route.fulfill({
+        json: {
+          ...emptyCostTotals,
+          cost_usd: costRequests,
+          cost_trial_count: 1,
+        },
+      });
+    }
+  );
+  await page.route(`**/api/public/experiments/${token}/open?*`, (route) =>
+    route.fulfill({ json: publicOpenResponse(publicTask, true) })
+  );
+  await page.route(`**/api/public/experiments/${token}/trial-page?*`, (route) =>
+    route.fulfill({
+      json: { revision: "2026-07-14T00:00:00Z", trials: [] },
+    })
+  );
+
+  await page.goto(`/share/${token}`);
+  await expect.poll(() => costRequests).toBe(1);
+  await expect(page.getByText("$1.00", { exact: true })).toBeVisible();
+
+  await page.clock.runFor(30_100);
+
+  await expect.poll(() => costRequests).toBe(2);
+  await expect(page.getByText("$2.00", { exact: true })).toBeVisible();
 });
 
 test("public trial drawers defer trajectory work", async ({ page }) => {

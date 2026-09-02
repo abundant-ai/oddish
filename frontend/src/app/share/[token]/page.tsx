@@ -22,11 +22,6 @@ export default function PublicExperimentPage() {
     publicBase,
     fetcher
   );
-  const { data: costTotals } = useSWR<ExperimentCostTotals>(
-    publicBase ? `${publicBase}/cost-totals` : null,
-    fetcher,
-    { revalidateOnFocus: false }
-  );
 
   const {
     experiment,
@@ -50,6 +45,14 @@ export default function PublicExperimentPage() {
     trialPageUrl: publicBase ? `${publicBase}/trial-page` : null,
     publicView: true,
   });
+  const { data: costTotals } = useSWR<ExperimentCostTotals>(
+    publicBase ? `${publicBase}/cost-totals` : null,
+    fetcher,
+    {
+      refreshInterval: experiment?.has_active_trials ? 30000 : 0,
+      revalidateOnFocus: false,
+    }
+  );
 
   const experimentName =
     experimentInfo?.name || experiment?.name || "Public Experiment";
