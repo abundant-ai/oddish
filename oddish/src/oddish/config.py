@@ -708,7 +708,7 @@ def to_meta_model_id(model: str | None) -> str | None:
 # takes an explicit ``geometric/glm-5.3`` (or ``gm/glm-5.3``) -- the same
 # opt-in rule Fireworks uses to take over GLM/MiniMax/Kimi ids.
 GEOMETRIC_PROVIDER = "geometric"
-GEOMETRIC_DEFAULT_BASE_URL = "https://api.geometric.ai/v1"
+GEOMETRIC_DEFAULT_BASE_URL = "https://api.geometriclabs.ai/v1"
 _GEOMETRIC_PROVIDER_PREFIXES: frozenset[str] = frozenset({"geometric", "gm"})
 # Geometric only serves GLM-5.3 at the moment.
 _GEOMETRIC_SERVED_MODELS: frozenset[str] = frozenset({"glm-5.3"})
