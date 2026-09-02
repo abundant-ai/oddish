@@ -19,6 +19,7 @@ from oddish.core.model_display_names import (
     experiment_display_names,
     mask_trajectory_model_names,
 )
+from oddish.core.sharing.public_projection import public_task_github_meta
 from oddish.core.tags.projection import list_effective_user_tags_for_task_versions
 from oddish.core.trial_live import read_trial_live
 from oddish.core.task_files import resolve_task_file_source
@@ -49,11 +50,12 @@ from oddish.db import (
 )
 from oddish.schemas import (
     ExperimentCostTotals,
-    ExperimentFocusResponse,
-    ExperimentOpenResponse,
     ExperimentTrialPageResponse,
+    PublicExperimentFocusResponse,
     PublicExperimentListItem,
+    PublicExperimentOpenResponse,
     PublicExperimentResponse,
+    PublicTaskStatusResponse,
     TaskBrowseExperiment,
     TaskStatusResponse,
     TrialResponse,
@@ -178,7 +180,7 @@ async def get_public_experiment_cost_totals(
 
 @router.get(
     "/public/experiments/{public_token}/open",
-    response_model=ExperimentOpenResponse,
+    response_model=PublicExperimentOpenResponse,
 )
 async def get_public_experiment_open(
     public_token: str,
@@ -186,7 +188,7 @@ async def get_public_experiment_open(
     before_created_at: datetime | None = None,
     before_task_id: str | None = None,
     include_summary: bool = True,
-) -> ExperimentOpenResponse:
+) -> PublicExperimentOpenResponse:
     async with get_session() as session:
         return await get_public_experiment_open_core(
             session,
@@ -200,13 +202,13 @@ async def get_public_experiment_open(
 
 @router.get(
     "/public/experiments/{public_token}/focus",
-    response_model=ExperimentFocusResponse,
+    response_model=PublicExperimentFocusResponse,
 )
 async def get_public_experiment_focus(
     public_token: str,
     task: str | None = None,
     trial: str | None = None,
-) -> ExperimentFocusResponse:
+) -> PublicExperimentFocusResponse:
     async with get_session() as session:
         return await get_public_experiment_focus_core(
             session,
@@ -277,7 +279,7 @@ async def _public_experiment_refs(
 
 
 def _apply_public_experiments(
-    response: TaskStatusResponse,
+    response: TaskStatusResponse | PublicTaskStatusResponse,
     refs: list[tuple[str, str, datetime | None]],
     *,
     preferred_id: str | None = None,
@@ -301,13 +303,13 @@ def _apply_public_experiments(
 
 @router.get(
     "/public/experiments/{public_token}/tasks/{task_id}",
-    response_model=TaskStatusResponse,
+    response_model=PublicTaskStatusResponse,
 )
 async def get_public_task_status(
     public_token: str,
     task_id: str,
     include_trials: bool = True,
-) -> TaskStatusResponse:
+) -> PublicTaskStatusResponse:
     """Get task status for a public experiment."""
     async with get_session() as session:
         resolved = await get_public_task_for_experiment(session, public_token, task_id)
@@ -332,7 +334,9 @@ async def get_public_task_status(
             response, public_exps.get(task.id, []), preferred_id=exp.id
         )
         apply_model_display_names(response.trials or [], experiment_display_names(exp))
-        return response
+        public_response = PublicTaskStatusResponse.model_validate(response)
+        public_response.github_meta = public_task_github_meta(response.github_meta)
+        return public_response
 
 
 @router.get(

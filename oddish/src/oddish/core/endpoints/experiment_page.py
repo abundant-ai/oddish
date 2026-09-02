@@ -26,6 +26,7 @@ from oddish.core.model_display_names import (
     experiment_display_names,
 )
 from oddish.core.sharing.helpers import get_public_experiment
+from oddish.core.sharing.public_projection import public_task_github_meta
 from oddish.db import (
     ACTIVE_TRIAL_STATUSES,
     ExperimentModel,
@@ -47,6 +48,9 @@ from oddish.schemas import (
     ExperimentTrialAnalysis,
     ExperimentTrialCell,
     ExperimentTrialPageResponse,
+    PublicExperimentFocusResponse,
+    PublicExperimentOpenResponse,
+    PublicExperimentTaskRow,
 )
 
 OPEN_MAX_TASKS = 100
@@ -165,7 +169,11 @@ async def _member_experiment(
 
 
 def _experiment_task_rows(
-    *, experiment_id: str, org_id: str, task_ids: Sequence[str] | None = None
+    *,
+    experiment_id: str,
+    org_id: str,
+    task_ids: Sequence[str] | None = None,
+    include_user: bool = False,
 ):
     selected_task_ids = list(task_ids) if task_ids is not None else None
     effective = experiment_effective_versions_selectable(
@@ -233,38 +241,40 @@ def _experiment_task_rows(
         .subquery("experiment_task_stats")
     )
     current_version = aliased(TaskVersionModel)
+    columns = [
+        TaskModel.id.label("task_id"),
+        TaskModel.name,
+        TaskModel.status,
+        TaskModel.priority,
+        TaskModel.task_path,
+        TaskModel.tags,
+        TaskModel.current_version_id,
+        current_version.version.label("current_version"),
+        effective.c.task_version_id.label("trial_version_id"),
+        effective.c.task_version.label("trial_version"),
+        TaskModel.run_analysis,
+        TaskModel.verdict_status,
+        TaskModel.verdict["verdict"].astext.label("verdict_label"),
+        TaskModel.verdict["is_good"].astext.label("verdict_is_good"),
+        TaskModel.verdict["confidence"].astext.label("verdict_confidence"),
+        func.left(TaskModel.verdict_error, 200).label("verdict_error"),
+        TaskModel.created_at,
+        TaskModel.updated_at,
+        func.coalesce(stats.c.total, 0).label("total"),
+        func.coalesce(stats.c.completed, 0).label("completed"),
+        func.coalesce(stats.c.failed, 0).label("failed"),
+        func.coalesce(stats.c.skipped, 0).label("skipped"),
+        func.coalesce(stats.c.pass_count, 0).label("pass_count"),
+        func.coalesce(stats.c.partial_count, 0).label("partial_count"),
+        func.coalesce(stats.c.fail_count, 0).label("fail_count"),
+        func.coalesce(stats.c.reward_sum, 0.0).label("reward_sum"),
+        func.coalesce(stats.c.reward_total, 0).label("reward_total"),
+        stats.c.average_score,
+    ]
+    if include_user:
+        columns.append(TaskModel.user)
     return (
-        select(
-            TaskModel.id.label("task_id"),
-            TaskModel.name,
-            TaskModel.status,
-            TaskModel.priority,
-            TaskModel.user,
-            TaskModel.task_path,
-            TaskModel.tags,
-            TaskModel.current_version_id,
-            current_version.version.label("current_version"),
-            effective.c.task_version_id.label("trial_version_id"),
-            effective.c.task_version.label("trial_version"),
-            TaskModel.run_analysis,
-            TaskModel.verdict_status,
-            TaskModel.verdict["verdict"].astext.label("verdict_label"),
-            TaskModel.verdict["is_good"].astext.label("verdict_is_good"),
-            TaskModel.verdict["confidence"].astext.label("verdict_confidence"),
-            func.left(TaskModel.verdict_error, 200).label("verdict_error"),
-            TaskModel.created_at,
-            TaskModel.updated_at,
-            func.coalesce(stats.c.total, 0).label("total"),
-            func.coalesce(stats.c.completed, 0).label("completed"),
-            func.coalesce(stats.c.failed, 0).label("failed"),
-            func.coalesce(stats.c.skipped, 0).label("skipped"),
-            func.coalesce(stats.c.pass_count, 0).label("pass_count"),
-            func.coalesce(stats.c.partial_count, 0).label("partial_count"),
-            func.coalesce(stats.c.fail_count, 0).label("fail_count"),
-            func.coalesce(stats.c.reward_sum, 0.0).label("reward_sum"),
-            func.coalesce(stats.c.reward_total, 0).label("reward_total"),
-            stats.c.average_score,
-        )
+        select(*columns)
         .select_from(TaskModel)
         .join(
             task_experiments,
@@ -295,7 +305,7 @@ def _experiment_task_rows(
     )
 
 
-def _task_row(row: Mapping[str, Any]) -> ExperimentTaskRow:
+def _task_row_values(row: Mapping[str, Any]) -> dict[str, Any]:
     total = int(row["total"] or 0)
     terminal = sum(int(row[field] or 0) for field in ("completed", "failed", "skipped"))
     verdict_label = row["verdict_label"]
@@ -318,11 +328,22 @@ def _task_row(row: Mapping[str, Any]) -> ExperimentTaskRow:
     values.update(
         id=str(row["task_id"]),
         status=TaskStatus.COMPLETED if total and terminal >= total else row["status"],
-        github_meta=_parse_github_meta(row["tags"]),
         reward_success=int(row["pass_count"] or 0),
         verdict=verdict,
     )
+    return values
+
+
+def _task_row(row: Mapping[str, Any]) -> ExperimentTaskRow:
+    values = _task_row_values(row)
+    values["github_meta"] = _parse_github_meta(row["tags"])
     return ExperimentTaskRow.model_validate(values)
+
+
+def _public_task_row(row: Mapping[str, Any]) -> PublicExperimentTaskRow:
+    values = _task_row_values(row)
+    values["github_meta"] = public_task_github_meta(_parse_github_meta(row["tags"]))
+    return PublicExperimentTaskRow.model_validate(values)
 
 
 async def get_experiment_open_core(
@@ -335,7 +356,8 @@ async def get_experiment_open_core(
     before_task_id: str | None = None,
     include_summary: bool = True,
     _experiment: Mapping[str, Any] | None = None,
-) -> ExperimentOpenResponse:
+    _public: bool = False,
+) -> ExperimentOpenResponse | PublicExperimentOpenResponse:
     """Return exact experiment totals and one byte-bounded task page."""
     if (before_created_at is None) != (before_task_id is None):
         raise HTTPException(
@@ -389,6 +411,7 @@ async def get_experiment_open_core(
                 experiment_id=experiment_id,
                 org_id=org_id,
                 task_ids=selected_task_ids,
+                include_user=not _public,
             )
         )
         rows_by_id = {str(row["task_id"]): row for row in task_result.mappings().all()}
@@ -479,12 +502,11 @@ async def get_experiment_open_core(
         )
         summary = ExperimentPageSummary.model_validate(summary_values)
 
-    response = ExperimentOpenResponse(
+    response_type = PublicExperimentOpenResponse if _public else ExperimentOpenResponse
+    response = response_type(
         experiment_id=str(experiment["id"]),
         name=str(experiment["name"]),
         created_at=experiment["created_at"],
-        owner=experiment["owner"],
-        link=experiment["link"],
         revision=experiment["revision"],
         # QA starts only after the visible agent trials settle. Keep clients
         # polling while that replacement verdict is active as well, otherwise
@@ -494,7 +516,12 @@ async def get_experiment_open_core(
             or bool(summary_row and int(summary_row["qa_running"] or 0) > 0)
         ),
         summary=summary,
-        tasks=[_task_row(row) for row in rows],
+        tasks=[_public_task_row(row) if _public else _task_row(row) for row in rows],
+        **(
+            {}
+            if _public
+            else {"owner": experiment["owner"], "link": experiment["link"]}
+        ),
     )
     if has_more and rows:
         response.next_created_at = page_id_rows[len(rows) - 1]["created_at"]
@@ -563,7 +590,8 @@ async def get_experiment_focus_core(
     _experiment: Mapping[str, Any] | None = None,
     _include_cost_exclusion_labels: bool = True,
     _require_grid_trial_visibility: bool = False,
-) -> ExperimentFocusResponse:
+    _public: bool = False,
+) -> ExperimentFocusResponse | PublicExperimentFocusResponse:
     """Resolve one URL-addressed task and optional trial within an experiment."""
     if not task_selector and not trial_id:
         raise HTTPException(status_code=400, detail="A task or trial is required")
@@ -625,7 +653,10 @@ async def get_experiment_focus_core(
 
     task_result = await session.execute(
         _experiment_task_rows(
-            experiment_id=experiment_id, org_id=org_id, task_ids=[str(task_id)]
+            experiment_id=experiment_id,
+            org_id=org_id,
+            task_ids=[str(task_id)],
+            include_user=not _public,
         )
     )
     task_row = task_result.mappings().one_or_none()
@@ -636,9 +667,12 @@ async def get_experiment_focus_core(
         if trial_row is not None and _include_cost_exclusion_labels
         else None
     )
-    return ExperimentFocusResponse(
+    response_type = (
+        PublicExperimentFocusResponse if _public else ExperimentFocusResponse
+    )
+    return response_type(
         revision=experiment["revision"],
-        task=_task_row(task_row),
+        task=_public_task_row(task_row) if _public else _task_row(task_row),
         trial=(
             build_experiment_trial_cell(trial_row, exclusions=exclusions)
             if trial_row is not None
@@ -710,8 +744,6 @@ def _public_experiment_identity(experiment: ExperimentModel) -> Mapping[str, Any
         "id": experiment.id,
         "name": experiment.name,
         "created_at": experiment.created_at,
-        "owner": None,
-        "link": None,
         "revision": (
             experiment.last_activity_at
             or experiment.updated_at
@@ -728,7 +760,7 @@ async def get_public_experiment_open_core(
     before_created_at: datetime | None = None,
     before_task_id: str | None = None,
     include_summary: bool = True,
-) -> ExperimentOpenResponse:
+) -> PublicExperimentOpenResponse:
     experiment = await get_public_experiment(session, public_token)
     if experiment is None:
         raise HTTPException(status_code=404, detail="Experiment not found")
@@ -741,6 +773,7 @@ async def get_public_experiment_open_core(
         before_task_id=before_task_id,
         include_summary=include_summary,
         _experiment=_public_experiment_identity(experiment),
+        _public=True,
     )
 
 
@@ -750,7 +783,7 @@ async def get_public_experiment_focus_core(
     public_token: str,
     task_selector: str | None = None,
     trial_id: str | None = None,
-) -> ExperimentFocusResponse:
+) -> PublicExperimentFocusResponse:
     experiment = await get_public_experiment(session, public_token)
     if experiment is None:
         raise HTTPException(status_code=404, detail="Experiment not found")
@@ -763,6 +796,7 @@ async def get_public_experiment_focus_core(
         _experiment=_public_experiment_identity(experiment),
         _include_cost_exclusion_labels=False,
         _require_grid_trial_visibility=True,
+        _public=True,
     )
     if response.trial is not None:
         apply_model_display_names(

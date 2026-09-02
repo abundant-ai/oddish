@@ -158,8 +158,6 @@ export function DatasetDetailView({
       [
         row.task.name,
         row.task.id,
-        row.task.user ?? "",
-        row.task.github_username ?? "",
         row.domain,
         row.category,
         row.world,

@@ -5,6 +5,7 @@ import useSWRInfinite from "swr/infinite";
 import { fetcher } from "@/lib/api";
 import type {
   ExperimentOpenResponse,
+  PublicExperimentOpenResponse,
   ExperimentTrialCell,
   ExperimentTrialPageResponse,
   Task,
@@ -33,7 +34,10 @@ export function trialFromExperimentCell(cell: ExperimentTrialCell): Trial {
 }
 
 function buildTasks(
-  openPages: ExperimentOpenResponse[] | undefined,
+  openPages:
+    | ExperimentOpenResponse[]
+    | PublicExperimentOpenResponse[]
+    | undefined,
   trialPages: ExperimentTrialPageResponse[] | undefined,
   publicView: boolean
 ): Task[] {
@@ -48,16 +52,24 @@ function buildTasks(
     }
   }
   return openPages.flatMap((page) =>
-    page.tasks.map((task) => ({
-      ...task,
-      experiment_id: experiment.experiment_id,
-      experiment_name: experiment.name,
-      experiment_is_public: publicView,
-      experiment_created_at: experiment.created_at,
-      experiment_owner: experiment.owner,
-      experiment_link: experiment.link,
-      trials: trialsByTask.get(task.id),
-    }))
+    page.tasks.map((task) => {
+      const identity =
+        !publicView && "owner" in experiment
+          ? {
+              experiment_owner: experiment.owner,
+              experiment_link: experiment.link,
+            }
+          : {};
+      return {
+        ...task,
+        experiment_id: experiment.experiment_id,
+        experiment_name: experiment.name,
+        experiment_is_public: publicView,
+        experiment_created_at: experiment.created_at,
+        ...identity,
+        trials: trialsByTask.get(task.id),
+      };
+    })
   );
 }
 
@@ -70,8 +82,9 @@ export function useExperimentPages({
   trialPageUrl: string | null;
   publicView?: boolean;
 }) {
+  type OpenResponse = ExperimentOpenResponse | PublicExperimentOpenResponse;
   const getOpenKey = useCallback(
-    (pageIndex: number, previous: ExperimentOpenResponse | null) => {
+    (pageIndex: number, previous: OpenResponse | null) => {
       if (!openUrl || (pageIndex > 0 && !previous?.next_task_id)) return null;
       const query = new URLSearchParams({ limit: String(OPEN_PAGE_SIZE) });
       if (pageIndex > 0) query.set("include_summary", "false");
@@ -83,7 +96,7 @@ export function useExperimentPages({
     },
     [openUrl]
   );
-  const open = useSWRInfinite<ExperimentOpenResponse>(getOpenKey, fetcher, {
+  const open = useSWRInfinite<OpenResponse>(getOpenKey, fetcher, {
     refreshInterval: (pages) => (pages?.[0]?.has_active_trials ? 30000 : 0),
     revalidateOnFocus: false,
     revalidateFirstPage: false,

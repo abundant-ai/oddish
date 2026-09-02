@@ -242,7 +242,7 @@ export interface Task {
   name: string;
   status: TaskStatus;
   priority: Priority;
-  user: string;
+  user?: string;
   github_username?: string | null;
   github_meta?: Record<string, string> | null;
   link?: string | null;
@@ -286,6 +286,11 @@ export type ExperimentOpenTask = Omit<
   "experiment_id" | "experiment_name" | "experiment_is_public"
 >;
 
+export type PublicExperimentOpenTask = Omit<
+  ExperimentOpenTask,
+  "user" | "github_username" | "link" | "experiment_owner" | "experiment_link"
+>;
+
 export interface ExperimentPageSummary {
   task_count: number;
   trial_count: number;
@@ -320,6 +325,13 @@ export interface ExperimentOpenResponse {
   next_task_id?: string | null;
 }
 
+export interface PublicExperimentOpenResponse extends Omit<
+  ExperimentOpenResponse,
+  "owner" | "link" | "tasks"
+> {
+  tasks: PublicExperimentOpenTask[];
+}
+
 export interface ExperimentTrialCell extends Omit<Trial, "analysis"> {
   analysis: {
     status?: JobStatus | null;
@@ -342,6 +354,13 @@ export interface ExperimentFocusResponse {
   revision: string;
   task: ExperimentOpenTask;
   trial: ExperimentTrialCell | null;
+}
+
+export interface PublicExperimentFocusResponse extends Omit<
+  ExperimentFocusResponse,
+  "task"
+> {
+  task: PublicExperimentOpenTask;
 }
 
 interface TaskBrowseExperiment {
