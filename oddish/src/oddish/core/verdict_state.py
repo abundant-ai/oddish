@@ -58,10 +58,8 @@ def complete_verdict(
 
 
 def complete_verdict_without_result(task: VerdictState, *, now: datetime) -> None:
-    """Finish a no-op QA pass, restoring a prior result when one exists."""
-    if has_published_verdict(task):
-        _restore_published_verdict(task)
-        return
+    """Complete a review without presenting the previous verdict as current."""
+    task.verdict = None
     task.verdict_status = VerdictStatus.SUCCESS
     task.verdict_error = None
     task.verdict_finished_at = now

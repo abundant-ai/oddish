@@ -16,7 +16,7 @@ Each analysis gives its trial one label. A label is a claim from that analysis, 
 
 Five kinds of evidence reject the task on their own. Look for them first. If you find one, reject the task. Good results from the other trials do not cancel it.
 
-* Any current source-audit finding with tier `must_fix`. That tier means the defect can decide a trial.
+* Any current source-audit or post-trial finding with tier `must_fix`. That tier means the defect can decide a trial. It rejects the task even if it did not cause the particular trial's failure.
 * A used leak. A trial read the hidden tests, the solution, or other files the task must keep hidden (subtype `hidden_file_leak`, `test_inspection`, `oracle_copying`, or `unintended_access`).
 * A found leak. A `must_fix` finding with the dimension `info_leakage`, from the static quality check or from a trial. The finding counts even if no trial used the leak.
 * Weak tests. A trial measured that the tests also pass work that does not solve the task. Example: the untouched base model already scores above the pass threshold. Weak tests make every pass meaningless, including the ones labeled GOOD_SUCCESS.
@@ -39,6 +39,7 @@ The decision: reject if most trials show the same task problem, with clear evide
 * An immediate rejection is high confidence. One exception: if the only evidence is a single trial claiming weak tests, and the static quality check has no matching `must_fix` `verifier` finding, use medium.
 * A rejection because most trials show the same problem is high confidence.
 * An accept is high confidence when the trials agree, and low when they disagree or every trial is a harness error.
+* Few trials or few distinct agents limit confidence in acceptance; they never prevent an immediate rejection. Use low confidence for an acceptance supported by fewer than five trials or three distinct agents.
 
 ## VERDICT FIELDS
 

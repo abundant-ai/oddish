@@ -1526,16 +1526,15 @@ async def start_qa_for_task(session: AsyncSession, task: TaskModel) -> bool:
     """Move a settled task into its QA stage, or complete it.
 
     With QA-eligible current-version trials: queue the verdict bookkeeping,
-    create the QA trial (the verdict is only requested above the evidence
-    bar), and put the task in VERDICT_PENDING. With none -- every live trial
-    is a bulk-migrated import, was skipped/cancelled, or is a nop/oracle
-    baseline -- complete the task; a previously published verdict is
+    create the QA trial, and put the task in VERDICT_PENDING. With none --
+    every live trial is a bulk-migrated import, was skipped/cancelled, or is a
+    nop/oracle baseline -- complete the task; a previously published verdict is
     restored, anything queued or running is cleared.
 
     The caller must hold the task row lock. Returns True when a QA trial was
     created.
     """
-    from oddish.workers.analysis_trials import create_qa_trial, has_verdict_evidence
+    from oddish.workers.analysis_trials import create_qa_trial
 
     eligible = await qa_eligible_trial_ids(
         session, task.id, task_version_id=task.current_version_id
@@ -1546,21 +1545,14 @@ async def start_qa_for_task(session: AsyncSession, task: TaskModel) -> bool:
         abandon_verdict(task)
         return False
 
-    with_verdict = await has_verdict_evidence(session, eligible)
     task.status = TaskStatus.VERDICT_PENDING
     queue_verdict(task)
     await create_qa_trial(
         session,
         task=task,
         eligible_trial_ids=eligible,
-        with_verdict=with_verdict,
     )
-    logger.info(
-        "task %s: qa covers %d trials (verdict=%s)",
-        task.id,
-        len(eligible),
-        with_verdict,
-    )
+    logger.info("task %s: qa covers %d trials", task.id, len(eligible))
     return True
 
 

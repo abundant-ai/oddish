@@ -404,30 +404,6 @@ async def create_analysis_trial(
     return trial
 
 
-# A verdict needs enough evidence to be worth trusting: a handful of runs
-# from more than one or two agents. Below this the task completes with its
-# per-trial analysis and no verdict, rather than a confident call on noise.
-MIN_VERDICT_TRIALS = 5
-MIN_VERDICT_AGENTS = 3
-
-
-async def has_verdict_evidence(session: AsyncSession, trial_ids: list[str]) -> bool:
-    """Whether the eligible set can support a task verdict.
-
-    ``trial_ids`` is the QA-eligible set, which already excludes baselines,
-    probes, skipped, cancelled and superseded rows. Queries agents directly
-    rather than touching a possibly-unloaded ``task.trials`` relationship.
-    """
-    if len(trial_ids) < MIN_VERDICT_TRIALS:
-        return False
-    agents = (
-        await session.scalars(
-            select(TrialModel.agent).where(TrialModel.id.in_(trial_ids))
-        )
-    ).all()
-    return len({(a or "").strip().lower() for a in agents if a}) >= MIN_VERDICT_AGENTS
-
-
 def build_qa_brief(
     *,
     task_name: str,
@@ -467,7 +443,7 @@ def build_qa_brief(
     audit_status = pre_trial_status or "unknown"
     audit_error = pre_trial_error or "(none)"
     ids = "\n".join(f"- {t}" for t in trial_ids)
-    omission_reason = verdict_omission_reason or "there are too few trials to judge it"
+    omission_reason = verdict_omission_reason or "this review only classifies trials"
     verdict_section = (
         f"== TASK VERDICT ==\nAfter classifying every trial, synthesize one task verdict:\n{verdict}\n"
         if with_verdict
@@ -808,7 +784,6 @@ async def create_qa_trial(
     *,
     task: TaskModel,
     eligible_trial_ids: list[str],
-    with_verdict: bool = True,
 ) -> TrialModel:
     version = (
         await session.get(TaskVersionModel, task.current_version_id)
@@ -849,10 +824,6 @@ async def create_qa_trial(
     )
     audit_error = version.pre_trial_error if version is not None else None
     audit_ready = version is None or version.pre_trial_status == VerdictStatus.SUCCESS
-    effective_with_verdict = with_verdict and audit_ready
-    omission_reason = None
-    if with_verdict and not audit_ready:
-        omission_reason = "the source audit did not succeed"
     item_ids, must_fix_ids = pre_trial_item_ids(items)
     return await create_analysis_trial(
         session,
@@ -862,12 +833,12 @@ async def create_qa_trial(
             task_name=task.name,
             trial_ids=eligible_trial_ids,
             pre_trial_items=items,
-            with_verdict=effective_with_verdict,
+            with_verdict=audit_ready,
             trial_evidence=evidence,
             baseline_evidence=baselines,
             pre_trial_status=audit_status,
             pre_trial_error=audit_error,
-            verdict_omission_reason=omission_reason,
+            verdict_omission_reason="the source audit did not succeed",
         ),
         payload={
             "trial_ids": eligible_trial_ids,
@@ -875,7 +846,7 @@ async def create_qa_trial(
             "baseline_evidence": baselines,
             "pre_trial_item_ids": item_ids,
             "pre_trial_must_fix_ids": must_fix_ids,
-            "with_verdict": effective_with_verdict,
+            "with_verdict": audit_ready,
         },
     )
 
@@ -939,13 +910,14 @@ def _classification_from_analysis(
 
 
 def _apply_deterministic_verdict_rules(
-    verdict: TaskVerdictModel,
+    verdict: TaskVerdictModel | None,
     *,
     must_fix_ids: list[str],
     baseline_evidence: list[dict],
-) -> TaskVerdictModel:
-    """Apply decisive server-owned evidence without asking the model to count."""
-    if not verdict.is_good:
+    classifications: list[TrialClassification],
+) -> TaskVerdictModel | None:
+    """Enforce decisive rejection rules even when no verdict was requested."""
+    if verdict is not None and not verdict.is_good:
         return verdict
     if baseline_evidence:
         outcome, _ = evaluate_baseline_gate(
@@ -964,21 +936,72 @@ def _apply_deterministic_verdict_rules(
                     "baseline results do not satisfy that rule."
                 ),
             )
-    if not must_fix_ids:
+    if must_fix_ids:
+        count = len(must_fix_ids)
+        noun = "finding" if count == 1 else "findings"
+        return TaskVerdictModel(
+            verdict="reject",
+            confidence="high",
+            primary_issue=f"The source audit reported {count} must-fix {noun}.",
+            recommendations=[
+                "Resolve every `must_fix` source-audit finding before accepting the task."
+            ],
+            reasoning=(
+                "A `must_fix` source-audit finding can decide a trial, so successful "
+                "solver runs cannot make the task acceptable."
+            ),
+        )
+
+    # Ordinary BAD labels still require the model's judgment. These subtypes
+    # instead record demonstrated leaks or verifier shortcuts (prompt step 1).
+    decisive = [
+        c
+        for c in classifications
+        if any(item.tier == ActionTier.MUST_FIX for item in c.action_items)
+        or (
+            c.is_task_problem
+            and c.subtype
+            in {
+                "hidden_file_leak",
+                "test_inspection",
+                "oracle_copying",
+                "unintended_access",
+                "solution_leaked_in_instruction",
+                "permissive_tests",
+                "task_pre_solved",
+            }
+        )
+    ]
+    if not decisive:
         return verdict
-    count = len(must_fix_ids)
-    noun = "finding" if count == 1 else "findings"
+    reasons = []
+    recommendations = []
+    for c in decisive:
+        findings = [item for item in c.action_items if item.tier == ActionTier.MUST_FIX]
+        if findings:
+            reasons.extend(
+                f"`{c.trial_name}`: {item.title} "
+                f"(`{item.file}:{item.line_start}`). {item.detail}"
+                for item in findings
+            )
+            recommendations.extend(item.recommendation for item in findings)
+        else:
+            reasons.append(f"`{c.trial_name}` (`{c.subtype}`): {c.evidence}")
+            if c.recommendation != "N/A":
+                recommendations.append(c.recommendation)
     return TaskVerdictModel(
         verdict="reject",
-        confidence="high",
-        primary_issue=f"The source audit reported {count} must-fix {noun}.",
-        recommendations=[
-            "Resolve every `must_fix` source-audit finding before accepting the task."
-        ],
-        reasoning=(
-            "A `must_fix` source-audit finding can decide a trial, so successful "
-            "solver runs cannot make the task acceptable."
+        confidence=(
+            "medium"
+            if len(decisive) == 1 and decisive[0].subtype == "permissive_tests"
+            else "high"
         ),
+        primary_issue=(
+            f"{len(decisive)}/{len(classifications)} reviewed trials require a fix: "
+            f"{reasons[0]}"
+        ),
+        reasoning="\n".join(reasons),
+        recommendations=list(dict.fromkeys(recommendations)),
     )
 
 
@@ -1188,8 +1211,8 @@ async def _import_qa_result(
     artifact = None
     if trial.status == TrialStatus.SUCCESS:
         artifact = await read_analysis_artifact(trial, QA_RESULT_FILENAME)
-    # A run below the evidence bar was told not to produce a verdict, so a
-    # missing one is the expected outcome, not an import failure.
+    # Older runs and reviews without a successful source audit can have been
+    # instructed to classify trials only. Their null verdict is valid input.
     verdict_expected = expected["verdict_expected"]
     # The same validator the in-sandbox verifier ran. Import is
     # all-or-nothing: a partial or malformed artifact must never publish a
@@ -1337,18 +1360,12 @@ async def _import_qa_result(
             error=f"QA trial {trial.id} artifact contained no valid classifications",
         )
         return
-    if not verdict_expected:
-        # Classifications are stored; the task completes with no verdict.
-        # The caller fires the qa-imported hook after this returns.
-        await complete_task_without_verdict(
-            task_id,
-            should_store=lambda s: _qa_import_still_current(
-                s, task_id, graded_version_id
-            ),
-        )
-        return
     try:
-        verdict = TaskVerdictModel.model_validate(artifact["verdict"])
+        verdict = (
+            TaskVerdictModel.model_validate(artifact["verdict"])
+            if verdict_expected
+            else None
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "qa trial %s: verdict for task %s failed validation: %s",
@@ -1369,7 +1386,16 @@ async def _import_qa_result(
         verdict,
         must_fix_ids=list(expected.get("pre_trial_must_fix_ids") or []),
         baseline_evidence=list(expected.get("baseline_evidence") or []),
+        classifications=classifications,
     )
+    if verdict is None:
+        await complete_task_without_verdict(
+            task_id,
+            should_store=lambda s: _qa_import_still_current(
+                s, task_id, graded_version_id
+            ),
+        )
+        return
     payload = build_verdict_payload(verdict, classifications)
     payload["_graded_by"] = trial.id
     await sync_verdict_to_task(

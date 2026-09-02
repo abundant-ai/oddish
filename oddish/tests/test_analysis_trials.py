@@ -18,7 +18,6 @@ from oddish.workers.analysis_trials import (
     _classification_from_analysis,
     build_audit_brief,
     build_qa_brief,
-    has_verdict_evidence,
     is_analysis_kind,
 )
 
@@ -477,10 +476,14 @@ def _good_qa_entry(trial_id: str) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_qa_creation_persists_the_pre_trial_contract(monkeypatch):
+@pytest.mark.parametrize("audit_status", ["success", "failed", None])
+async def test_single_trial_qa_requests_a_verdict_after_the_audit(
+    monkeypatch, audit_status
+):
     from oddish.db import TaskVersionModel, TrialStatus, VerdictStatus
+    from oddish.queue import start_qa_for_task
     from oddish.worker.analysis_result_check import check_analysis_result
-    from oddish.workers.analysis_trials import analysis_check_payload, create_qa_trial
+    from oddish.workers.analysis_trials import analysis_check_payload
 
     task = SimpleNamespace(
         id="task-1",
@@ -496,7 +499,7 @@ async def test_qa_creation_persists_the_pre_trial_contract(monkeypatch):
                 {"title": "An old finding without an id"},
             ]
         },
-        pre_trial_status=VerdictStatus.SUCCESS,
+        pre_trial_status=VerdictStatus(audit_status) if audit_status else None,
         pre_trial_error=None,
     )
     source = SimpleNamespace(
@@ -515,6 +518,9 @@ async def test_qa_creation_persists_the_pre_trial_contract(monkeypatch):
             return [source]
 
     class Session:
+        async def scalars(self, _statement):
+            return SimpleNamespace(all=lambda: [source.id])
+
         async def get(self, model, row_id):
             assert model is TaskVersionModel
             assert row_id == "version-1"
@@ -534,14 +540,14 @@ async def test_qa_creation_persists_the_pre_trial_contract(monkeypatch):
         fake_create_analysis_trial,
     )
 
-    await create_qa_trial(
-        Session(),
-        task=task,
-        eligible_trial_ids=["trial-1"],
-        with_verdict=False,
-    )
+    assert await start_qa_for_task(Session(), task) is True
 
     payload = captured["payload"]
+    assert payload["with_verdict"] is (audit_status == "success")
+    if audit_status == "success":
+        assert "LOOK FOR AN IMMEDIATE REJECTION" in captured["brief"]
+    else:
+        assert "the source audit did not succeed" in captured["brief"]
     assert payload["pre_trial_item_ids"] == ["audit-1", "audit-2"]
     assert payload["pre_trial_must_fix_ids"] == ["audit-1"]
     assert payload["trial_evidence"] == [
@@ -567,7 +573,14 @@ async def test_qa_creation_persists_the_pre_trial_contract(monkeypatch):
         for item_id in payload["pre_trial_item_ids"]
     ]
     expected = analysis_check_payload("qa", {"analysis_payload": payload})
-    assert check_analysis_result({"trials": [entry], "verdict": None}, expected) == []
+    verdict = (
+        TaskVerdictModel(verdict="reject", confidence="high").model_dump()
+        if audit_status == "success"
+        else None
+    )
+    assert (
+        check_analysis_result({"trials": [entry], "verdict": verdict}, expected) == []
+    )
 
 
 def test_the_overlay_replaces_the_whole_task(tmp_path):
@@ -714,11 +727,12 @@ def test_a_broken_analysis_is_rejected_not_stored(broken):
     assert _classification_from_analysis(broken, trial_name="t-1", reward=0.0) is None
 
 
-def test_a_must_fix_source_audit_overrides_an_accept_verdict():
-    accepted = TaskVerdictModel(verdict="accept", confidence="high")
+@pytest.mark.parametrize("verdict", [None, "accept"])
+def test_a_must_fix_source_audit_overrides_an_accepted_or_absent_verdict(verdict):
+    accepted = TaskVerdictModel(verdict=verdict, confidence="high") if verdict else None
 
     rejected = _apply_deterministic_verdict_rules(
-        accepted, must_fix_ids=["finding-1"], baseline_evidence=[]
+        accepted, must_fix_ids=["finding-1"], baseline_evidence=[], classifications=[]
     )
 
     assert rejected.verdict == "reject"
@@ -726,23 +740,226 @@ def test_a_must_fix_source_audit_overrides_an_accept_verdict():
     assert "1 must-fix finding" in rejected.primary_issue
     assert (
         _apply_deterministic_verdict_rules(
-            accepted, must_fix_ids=[], baseline_evidence=[]
+            accepted, must_fix_ids=[], baseline_evidence=[], classifications=[]
         )
         is accepted
     )
 
 
-def test_a_failed_deterministic_baseline_overrides_an_accept_verdict():
-    accepted = TaskVerdictModel(verdict="accept", confidence="high")
+@pytest.mark.parametrize("verdict", [None, "accept"])
+def test_a_failed_baseline_overrides_an_accepted_or_absent_verdict(verdict):
+    accepted = TaskVerdictModel(verdict=verdict, confidence="high") if verdict else None
 
     rejected = _apply_deterministic_verdict_rules(
         accepted,
         must_fix_ids=[],
         baseline_evidence=[{"agent": "nop", "reward": 1.0}],
+        classifications=[],
     )
 
     assert rejected.verdict == "reject"
     assert rejected.primary_issue.startswith("CRITICAL:")
+
+
+@pytest.mark.parametrize("with_verdict", [False, True])
+@pytest.mark.parametrize("defect", ["oracle_copying", "must_fix", None])
+@pytest.mark.asyncio
+async def test_qa_import_replaces_old_acceptance_using_new_findings(
+    monkeypatch, with_verdict, defect
+):
+    """The base64 rerun: 14 runs, two agents, an old accept, and three leaks.
+
+    Run the real importer, verdict writer, and state transitions. Only storage
+    and the database connection are replaced with in-memory records.
+    """
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock
+
+    from oddish.core import verdict_sync
+    from oddish.db import TaskModel, TaskStatus, TrialStatus, VerdictStatus
+    from oddish.workers import analysis_trials
+
+    task = SimpleNamespace(
+        id="base64-task",
+        current_version_id="base64-task-v3",
+        status=TaskStatus.VERDICT_PENDING,
+        verdict={"is_good": True, "task_problem_count": 0},
+        verdict_status=VerdictStatus.QUEUED,
+        verdict_error=None,
+        verdict_started_at=None,
+        verdict_finished_at=None,
+    )
+    sources = {
+        f"trial-{i}": SimpleNamespace(
+            id=f"trial-{i}", task_id=task.id, reward=1.0, analysis=None
+        )
+        for i in range(14)
+    }
+    entries = []
+    for i, trial_id in enumerate(sources):
+        entry = _good_qa_entry(trial_id)
+        entry["analysis"].update(
+            classification="GOOD_SUCCESS", subtype="legitimate_solution", reward=1.0
+        )
+        if i < 3 and defect == "oracle_copying":
+            # A confirmed leak must reject even without an action-item anchor.
+            entry["analysis"].update(
+                classification="BAD_SUCCESS",
+                subtype="oracle_copying",
+                evidence="The agent copied the protected oracle (trajectory step 30).",
+                recommendation="Prevent the agent from reading the oracle bytes.",
+            )
+        elif i < 3 and defect == "must_fix":
+            entry["analysis"]["action_items"] = [
+                {
+                    "source": "post_trial",
+                    "problem_type": "mismatch",
+                    "dimension": "oracle",
+                    "file": "instruction.md",
+                    "line_start": 11,
+                    "line_end": 12,
+                    "title": "The agent can read the protected oracle",
+                    "detail": "Root privileges bypass the promised read protection.",
+                    "recommendation": "Prevent the agent from reading the oracle bytes.",
+                    "tier": "must_fix",
+                    "causal": False,
+                }
+            ]
+        entries.append(entry)
+    candidate = TaskVerdictModel(verdict="accept", confidence="high").model_dump()
+    artifact = {"trials": entries, "verdict": candidate if with_verdict else None}
+    qa = SimpleNamespace(
+        id="qa-new",
+        task_id=task.id,
+        task_version_id=task.current_version_id,
+        status=TrialStatus.SUCCESS,
+        model="qa-model",
+        harbor_config={
+            "analysis_payload": {
+                "trial_ids": list(sources),
+                "with_verdict": with_verdict,
+                "trial_evidence": [
+                    {
+                        "trial_id": trial_id,
+                        "status": "success",
+                        "reward": 1.0,
+                        "has_trajectory": True,
+                        "agent": "grok-build" if i < 8 else "mini-swe-agent",
+                    }
+                    for i, trial_id in enumerate(sources)
+                ],
+            }
+        },
+    )
+
+    class Session:
+        async def get(self, model, row_id, **kwargs):
+            if model is TaskModel:
+                assert row_id == task.id
+                return task
+            assert model is TrialModel
+            return sources[row_id]
+
+        async def scalar(self, statement):
+            # The import's current-version and all-trials-settled guards.
+            return (
+                task.current_version_id
+                if "tasks.current_version_id" in str(statement)
+                else None
+            )
+
+        async def commit(self):
+            pass
+
+    @asynccontextmanager
+    async def session():
+        yield Session()
+
+    monkeypatch.setattr(analysis_trials, "get_session", session)
+    monkeypatch.setattr(verdict_sync, "get_session", session)
+    monkeypatch.setattr(
+        analysis_trials, "read_analysis_artifact", AsyncMock(return_value=artifact)
+    )
+    monkeypatch.setattr(
+        analysis_trials, "aggregate_exploited_into_pre_trial", AsyncMock()
+    )
+    monkeypatch.setattr(
+        "oddish.core.trial_io.read_trial_trajectory", AsyncMock(return_value=None)
+    )
+
+    await analysis_trials._import_qa_result(qa)
+
+    assert task.status == TaskStatus.COMPLETED
+    assert task.verdict_status == VerdictStatus.SUCCESS
+    assert task.verdict_error is None
+    assert all(row.analysis["_graded_by"] == qa.id for row in sources.values())
+    if defect:
+        assert task.verdict["verdict"] == "reject"
+        assert task.verdict["is_good"] is False
+        assert task.verdict["_graded_by"] == qa.id
+        assert "3/14" in task.verdict["primary_issue"]
+        assert task.verdict["recommendations"] == [
+            "Prevent the agent from reading the oracle bytes."
+        ]
+        if defect == "oracle_copying":
+            assert task.verdict["task_problem_count"] == 3
+            assert "trial-0" in task.verdict["reasoning"]
+        else:
+            assert "instruction.md:11" in task.verdict["reasoning"]
+            assert "Root privileges bypass" in task.verdict["reasoning"]
+    elif with_verdict:
+        assert task.verdict["is_good"] is True
+        assert task.verdict["_graded_by"] == qa.id
+    else:
+        assert task.verdict is None
+
+
+@pytest.mark.parametrize("verdict", [None, "accept"])
+@pytest.mark.parametrize(
+    "subtype",
+    [
+        "hidden_file_leak",
+        "test_inspection",
+        "unintended_access",
+        "solution_leaked_in_instruction",
+        "permissive_tests",
+        "task_pre_solved",
+    ],
+)
+def test_decisive_trial_subtypes_reject_without_an_action_item(verdict, subtype):
+    classification = "HARNESS_ERROR" if subtype == "hidden_file_leak" else "BAD_SUCCESS"
+    parsed = _classification_from_analysis(
+        {**GOOD_ANALYSIS, "classification": classification, "subtype": subtype},
+        trial_name="trial-1",
+        reward=1.0,
+    )
+    assert parsed is not None
+    result = _apply_deterministic_verdict_rules(
+        TaskVerdictModel(verdict=verdict, confidence="high") if verdict else None,
+        classifications=[parsed],
+        must_fix_ids=[],
+        baseline_evidence=[],
+    )
+    assert result is not None
+    assert result.verdict == "reject"
+    assert result.confidence == ("medium" if subtype == "permissive_tests" else "high")
+
+
+@pytest.mark.parametrize("verdict", [None, "accept", "reject"])
+def test_ordinary_bad_labels_do_not_force_rejection(verdict):
+    parsed = _classification_from_analysis(
+        {**GOOD_ANALYSIS, "subtype": "ambiguous_requirements"},
+        trial_name="trial-1",
+        reward=0.0,
+    )
+    assert parsed is not None
+    candidate = TaskVerdictModel(verdict=verdict, confidence="low") if verdict else None
+    assert (
+        _apply_deterministic_verdict_rules(
+            candidate, classifications=[parsed], must_fix_ids=[], baseline_evidence=[]
+        )
+        is candidate
+    )
 
 
 def test_trial_filters_hide_analysis_trials_by_default():
@@ -1548,43 +1765,6 @@ async def test_cleanup_reimports_a_settled_audit(monkeypatch):
             == analysis_trials.ANALYSIS_ACTIVITY_VERSION
         )
         assert "wrote audit_result.json" in audit_row.trajectory_summary["summary"]
-
-
-@pytest.mark.asyncio
-async def test_the_verdict_needs_enough_evidence():
-    """Below 5 trials or 3 distinct agents the QA trial is created without a
-    verdict request; at the bar it is asked for one."""
-
-    class _Scalars:
-        def __init__(self, agents):
-            self._agents = agents
-
-        def all(self):
-            return self._agents
-
-    class _Session:
-        def __init__(self, agents):
-            self._agents = agents
-
-        async def scalars(self, _query):
-            return _Scalars(self._agents)
-
-    few = [f"t{i}" for i in range(4)]
-    assert await has_verdict_evidence(_Session(["a", "b", "c", "d"]), few) is False
-
-    five_two_agents = [f"t{i}" for i in range(5)]
-    assert (
-        await has_verdict_evidence(_Session(["a", "a", "b", "b", "a"]), five_two_agents)
-        is False
-    )
-
-    five_three_agents = [f"t{i}" for i in range(5)]
-    assert (
-        await has_verdict_evidence(
-            _Session(["a", "b", "c", "a", "b"]), five_three_agents
-        )
-        is True
-    )
 
 
 def test_the_verifier_actually_grades_the_artifact(tmp_path):

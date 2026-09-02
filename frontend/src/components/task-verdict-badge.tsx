@@ -89,7 +89,7 @@ function presentVerdict(
     icon = (
       <Microscope className={`${iconSizeClass} shrink-0 text-slate-500`} />
     );
-    title = "QA pending";
+    title = status === "success" ? "No current verdict" : "QA pending";
     toneCard = "border-slate-500/30 bg-slate-500/5";
     toneInline = "border-[color:var(--paper-line)]";
   }
@@ -99,6 +99,9 @@ function presentVerdict(
   let detail: string | null = null;
   if (failed && task.verdict_error) {
     detail = task.verdict_error;
+  } else if (!pending && status === "success" && isGood == null) {
+    detail =
+      "QA finished without an overall verdict. Review the trial findings below.";
   } else if (!pending && isGood === true) {
     detail = verdict?.reasoning?.trim() || null;
   } else if (!pending && isGood === false) {

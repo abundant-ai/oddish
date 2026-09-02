@@ -94,14 +94,17 @@ def test_cancel_replacement_restores_result_but_failure_discards_it() -> None:
     assert task.verdict_finished_at == failed_at
 
 
-def test_noop_qa_restores_existing_result() -> None:
-    payload = {"verdict": "accept", "is_good": True}
+@pytest.mark.parametrize("previous", ["accept", "reject", None])
+def test_completed_qa_without_verdict_clears_the_previous_result(previous) -> None:
+    payload = (
+        {"verdict": previous, "is_good": previous == "accept"} if previous else None
+    )
     task = _task(payload=payload, status=VerdictStatus.RUNNING)
-    published_at = task.verdict_finished_at
+    finished_at = datetime.now(timezone.utc)
 
-    complete_verdict_without_result(task, now=datetime.now(timezone.utc))
+    complete_verdict_without_result(task, now=finished_at)
 
-    assert task.verdict is payload
+    assert task.verdict is None
     assert task.verdict_status == VerdictStatus.SUCCESS
-    assert task.verdict_started_at is None
-    assert task.verdict_finished_at == published_at
+    assert task.verdict_error is None
+    assert task.verdict_finished_at == finished_at
