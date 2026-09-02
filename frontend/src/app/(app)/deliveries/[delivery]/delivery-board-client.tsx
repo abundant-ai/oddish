@@ -332,7 +332,11 @@ function ManualCheckRow({
 // Versions listed before "Show all" expands the history.
 const QA_HISTORY_PAGE = 5;
 // Task rows per page on the board.
-const TASK_PAGE_SIZE = 25;
+const TASK_PAGE_SIZES = [10, 25, 50, 100];
+const DEFAULT_TASK_PAGE_SIZE = 25;
+// Prefetching QA history for a whole 100-row page would fire 100 requests
+// at once; the first rows cover what a person reaches quickly.
+const QA_PREFETCH_LIMIT = 25;
 
 type TaskFilter = "all" | "blocked" | "awaiting_signoff" | "ready";
 
@@ -878,6 +882,7 @@ export function DeliveryBoardClient({
   // Suspense boundary for useSearchParams.
   const [focusTask, setFocusTask] = useState<string | null>(null);
   const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(DEFAULT_TASK_PAGE_SIZE);
   const [filter, setFilter] = useState<TaskFilter>("all");
   // Bulk selection, keyed by delivery_task_id.
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -897,6 +902,10 @@ export function DeliveryBoardClient({
     if (Number.isInteger(pageParam) && pageParam >= 1) {
       setPage(pageParam - 1);
     }
+    const perPageParam = Number(params.get("per_page"));
+    if (TASK_PAGE_SIZES.includes(perPageParam)) {
+      setPageSize(perPageParam);
+    }
   }, []);
   // Filter and page live in the URL (?filter=, ?page=, 1-based), so a view
   // can be shared or reloaded. replaceState keeps the back button out of
@@ -913,12 +922,17 @@ export function DeliveryBoardClient({
     } else {
       params.set("page", String(page + 1));
     }
+    if (pageSize === DEFAULT_TASK_PAGE_SIZE) {
+      params.delete("per_page");
+    } else {
+      params.set("per_page", String(pageSize));
+    }
     const query = params.toString();
     const next = `${window.location.pathname}${query ? `?${query}` : ""}`;
     if (next !== `${window.location.pathname}${window.location.search}`) {
       window.history.replaceState(null, "", next);
     }
-  }, [filter, page]);
+  }, [filter, page, pageSize]);
   // Land the ?task= deep link once: pick its page in the filtered view
   // the table actually renders. When ?filter= hides the task, the link
   // wins and the filter falls back to all tasks.
@@ -930,31 +944,32 @@ export function DeliveryBoardClient({
       row.task_name === focusTask || row.task_id === focusTask;
     const index = applyTaskFilter(data.tasks, filter).findIndex(matches);
     if (index >= 0) {
-      setPage(Math.floor(index / TASK_PAGE_SIZE));
+      setPage(Math.floor(index / pageSize));
       return;
     }
     const unfiltered = data.tasks.findIndex(matches);
     if (unfiltered >= 0) {
       setFilter("all");
-      setPage(Math.floor(unfiltered / TASK_PAGE_SIZE));
+      setPage(Math.floor(unfiltered / pageSize));
     }
-  }, [data, focusTask, filter]);
+  }, [data, focusTask, filter, pageSize]);
   // Fetch the visible rows' QA history as soon as the board is up, so
   // expanding a row shows it without a loading wait.
   useEffect(() => {
     if (!data) return;
     const rows = applyTaskFilter(data.tasks, filter);
     const start =
-      Math.min(page, Math.max(0, Math.ceil(rows.length / TASK_PAGE_SIZE) - 1)) *
-      TASK_PAGE_SIZE;
-    for (const row of rows.slice(start, start + TASK_PAGE_SIZE)) {
+      Math.min(page, Math.max(0, Math.ceil(rows.length / pageSize) - 1)) *
+      pageSize;
+    const limit = Math.min(pageSize, QA_PREFETCH_LIMIT);
+    for (const row of rows.slice(start, start + limit)) {
       const key = `/api/tasks/${encodeURIComponent(row.task_id)}/qa-history`;
       if (!prefetched.current.has(key)) {
         prefetched.current.add(key);
         void preload(key, fetcher);
       }
     }
-  }, [data, page, filter]);
+  }, [data, page, filter, pageSize]);
 
   const run = async (action: () => Promise<void>) => {
     setBusy(true);
@@ -1071,14 +1086,11 @@ export function DeliveryBoardClient({
 
   const frozen = data.frozen;
   const filteredTasks = applyTaskFilter(data.tasks, filter);
-  const pageCount = Math.max(
-    1,
-    Math.ceil(filteredTasks.length / TASK_PAGE_SIZE)
-  );
+  const pageCount = Math.max(1, Math.ceil(filteredTasks.length / pageSize));
   const clampedPage = Math.min(page, pageCount - 1);
   const pagedTasks = filteredTasks.slice(
-    clampedPage * TASK_PAGE_SIZE,
-    (clampedPage + 1) * TASK_PAGE_SIZE
+    clampedPage * pageSize,
+    (clampedPage + 1) * pageSize
   );
   // Tasks a mass sign-off may take: not signed off, no open blockers.
   // Blocked tasks keep the per-task acknowledge flow.
@@ -1442,12 +1454,32 @@ export function DeliveryBoardClient({
                   </TableBody>
                 </Table>
               )}
-              {pageCount > 1 && (
-                <div className="text-muted-foreground mt-3 flex items-center justify-between text-sm">
-                  <span>
-                    Page {clampedPage + 1} of {pageCount} ·{" "}
-                    {filteredTasks.length} tasks
-                  </span>
+              {(pageCount > 1 || filteredTasks.length > TASK_PAGE_SIZES[0]) && (
+                <div className="text-muted-foreground mt-3 flex flex-wrap items-center justify-between gap-2 text-sm">
+                  <div className="flex items-center gap-2">
+                    <span>
+                      Page {clampedPage + 1} of {pageCount} ·{" "}
+                      {filteredTasks.length} tasks
+                    </span>
+                    <Select
+                      value={String(pageSize)}
+                      onValueChange={(value) => {
+                        setPageSize(Number(value));
+                        setPage(0);
+                      }}
+                    >
+                      <SelectTrigger className="h-8 w-32">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {TASK_PAGE_SIZES.map((size) => (
+                          <SelectItem key={size} value={String(size)}>
+                            {size} per page
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
                   <div className="flex gap-2">
                     <Button
                       variant="outline"
