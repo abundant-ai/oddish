@@ -210,13 +210,14 @@ High-level flow:
    nonterminal trial in the org. Final result settlement performs the same
    check for agents without live usage. Cancellation retires queued, running,
    blocked, and retrying worker jobs in the database before terminating remote
-   handles; a task is failed only when no other live trial remains. If quota
-   cancellation interrupts a replacement QA pass, the last successful verdict
-   is restored through `cancel_verdict`; a terminal QA failure instead clears
-   that preserved payload through `fail_verdict`. All task verdict-column
-   mutations go through `oddish.core.verdict_state`: a published payload may
-   coexist with QUEUED/RUNNING while its replacement is active, but it must
-   return to SUCCESS if that pass is abandoned. The
+   handles; a task is failed only when no other live trial remains. Queuing
+   replacement QA withdraws the previous verdict through `queue_verdict`.
+   Completion publishes only the new verdict; a classification-only pass
+   completes with SUCCESS status and no verdict. Cancellation, failure, or
+   abandonment of an active replacement never restores its previous result.
+   Cancelling unrelated trials preserves an existing verdict when no QA
+   replacement was active. Older QA artifacts remain in trial storage.
+   All task verdict-column mutations go through `oddish.core.verdict_state`. The
    `ck_tasks_published_verdict_status` database constraint rejects a published
    payload with a missing or FAILED status.
 6. Trial completion persists queryable execution metrics on the trial row:
@@ -416,8 +417,8 @@ accepted verdict.
   summarizer in `oddish/worker/probe_analysis.py`); every analysis agent
   runs as a trial on the analysis model's queue key
 - the verdict state machine (`oddish.core.verdict_state`), the only writer
-  for `tasks.verdict*` lifecycle columns, which preserves the last published
-  result until a replacement QA pass succeeds or terminally fails
+  for `tasks.verdict*` lifecycle columns, which withdraws the current result
+  when replacement QA is queued and publishes only that pass's verdict
 - shared queue-slot leasing, per-queue-key concurrency limits, and
   per-user fairness on `TRIAL` claims
 - database-backed admin concurrency overrides; these take precedence over

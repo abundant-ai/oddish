@@ -100,11 +100,11 @@ async def complete_task_without_verdict(
     *,
     should_store: Callable[[Any], Awaitable[bool]] | None = None,
 ) -> str | None:
-    """Finish a QA pass that was not asked for a verdict (too few trials).
+    """Finish a classification-only QA pass without a current verdict.
 
     Per-trial analysis is already stored; this only clears the in-flight
-    verdict state and completes the task. A previously published verdict is
-    restored rather than dropped.
+    verdict state and completes the task. Prior QA artifacts remain in trial
+    storage, but their verdict must not describe the newly classified set.
     """
     async with get_session() as session:
         task = await session.get(TaskModel, task_id, with_for_update=True)
