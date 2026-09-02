@@ -483,6 +483,7 @@ test("retryable focus errors preserve the trial-page deep-link fallback", async 
   const publicTask = task({
     current_version: 1,
     current_version_id: "task-1-v1",
+    trial_version_id: "task-1-v1",
     trials: undefined,
   });
   const focusedTrial: Trial = {
@@ -631,6 +632,7 @@ test("public trial drawers defer trajectory work", async ({ page }) => {
   const publicTask = task({
     current_version: 1,
     current_version_id: "task-1-v1",
+    trial_version_id: "task-1-v1",
     trials: [publicTrial],
     reward_success: 0,
     reward_sum: 0.5,
