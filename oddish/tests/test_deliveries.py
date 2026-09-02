@@ -965,6 +965,15 @@ async def test_customers_are_rows_and_reused(session):
     customers = await list_customers_core(session, org_id=ORG)
     assert "Initech" in [c.name for c in customers]
 
+    # Explicit creation makes a row; a duplicate name is a conflict.
+    from oddish.core.deliveries import create_customer_core
+
+    hooli = await create_customer_core(session, org_id=ORG, name=" Hooli ")
+    assert hooli.name == "Hooli"
+    with pytest.raises(HTTPException) as err:
+        await create_customer_core(session, org_id=ORG, name="Hooli")
+    assert err.value.status_code == 409
+
     # Patch moves the delivery to another customer, creating it on demand.
     await patch_delivery_core(
         session,

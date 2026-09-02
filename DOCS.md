@@ -851,6 +851,10 @@ the version, and each must-fix defect has an acknowledgement. The checks
 always apply to the current default version of the task. A new version
 makes the checks red again.
 
+Customers are records of their own. The dashboard's create dialog offers
+a dropdown of existing customers and a form for a new one. `POST
+/customers` creates a customer directly; a duplicate name is a conflict.
+
 Each task also needs a manual sign-off. The server records who signed off
 and which version they saw. If the task has a must-fix defect, a person
 must acknowledge that defect first. A task can also ship with a failing

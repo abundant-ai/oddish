@@ -10,6 +10,7 @@ from fastapi import APIRouter
 
 from oddish.core.deliveries import (
     add_delivery_tasks_core,
+    create_customer_core,
     create_delivery_core,
     delete_delivery_core,
     finalize_delivery_core,
@@ -23,6 +24,7 @@ from oddish.core.deliveries import (
 )
 from oddish.db import get_session
 from oddish.schemas import (
+    CustomerCreate,
     CustomerResponse,
     DeliveryBoardResponse,
     DeliveryCreate,
@@ -58,6 +60,14 @@ async def list_customers() -> list[CustomerResponse]:
     async with get_session() as session:
         customers = await list_customers_core(session, org_id=None)
         return [CustomerResponse.model_validate(c) for c in customers]
+
+
+@router.post("/customers", response_model=CustomerResponse)
+async def create_customer(data: CustomerCreate) -> CustomerResponse:
+    async with get_session() as session:
+        customer = await create_customer_core(session, org_id=None, name=data.name)
+        await session.commit()
+        return CustomerResponse.model_validate(customer)
 
 
 @router.get("/deliveries/{delivery_id}", response_model=DeliveryBoardResponse)

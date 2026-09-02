@@ -172,6 +172,29 @@ async def _resolve_customer(
     return customer
 
 
+async def create_customer_core(
+    session: AsyncSession, *, org_id: str | None, name: str
+) -> CustomerModel:
+    """Explicit customer creation, for the customers form. A duplicate
+    name is a conflict here, unlike the get-or-create on delivery create."""
+    name = name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="customer name is required")
+    existing = await session.scalar(
+        select(CustomerModel).where(
+            CustomerModel.org_id == org_id, CustomerModel.name == name
+        )
+    )
+    if existing is not None:
+        raise HTTPException(
+            status_code=409, detail=f"customer '{name}' already exists"
+        )
+    customer = CustomerModel(org_id=org_id, name=name)
+    session.add(customer)
+    await session.flush()
+    return customer
+
+
 async def list_customers_core(
     session: AsyncSession, *, org_id: str | None
 ) -> list[CustomerModel]:

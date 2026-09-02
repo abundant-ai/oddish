@@ -2413,6 +2413,10 @@ class ManualCheckSet(BaseModel):
     note: str = Field(default="", max_length=4000)
 
 
+class CustomerCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+
+
 class CustomerResponse(BaseModel):
     id: str
     name: str
