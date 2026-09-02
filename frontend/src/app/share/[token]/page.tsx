@@ -6,9 +6,10 @@ import { ExperimentDetailView } from "@/components/experiment-detail-view";
 import { ExperimentDescription } from "@/components/experiment-description";
 import { ExperimentTrialLoadAlert } from "@/components/experiment-trial-load-alert";
 import { ShareNav } from "@/components/share-nav";
-import type { ExperimentCostTotals, PublicExperimentInfo } from "@/lib/types";
+import type { PublicExperimentInfo } from "@/lib/types";
 import { fetcher } from "@/lib/api";
 import { useExperimentPages } from "@/lib/use-experiment-pages";
+import { useExperimentCostTotals } from "@/lib/use-experiment-cost-totals";
 import { PUBLIC_API_URL } from "@/lib/utils";
 
 export default function PublicExperimentPage() {
@@ -45,14 +46,11 @@ export default function PublicExperimentPage() {
     trialPageUrl: publicBase ? `${publicBase}/trial-page` : null,
     publicView: true,
   });
-  const { data: costTotals } = useSWR<ExperimentCostTotals>(
-    publicBase ? `${publicBase}/cost-totals` : null,
-    fetcher,
-    {
-      refreshInterval: experiment?.has_active_trials ? 30000 : 0,
-      revalidateOnFocus: false,
-    }
-  );
+  const { resource: costTotals, refresh: refreshCostTotals } =
+    useExperimentCostTotals({
+      url: publicBase ? `${publicBase}/cost-totals` : null,
+      hasActiveTrials: experiment?.has_active_trials ?? false,
+    });
 
   const experimentName =
     experimentInfo?.name || experiment?.name || "Public Experiment";
@@ -69,7 +67,7 @@ export default function PublicExperimentPage() {
             tasksForExperiment={tasksForExperiment}
             pageSummary={experiment?.summary ?? undefined}
             costTotals={costTotals}
-            costTotalsPending={publicBase != null && costTotals === undefined}
+            onRetryCostTotals={() => void refreshCostTotals()}
             isLoading={isLoading}
             isLoadingTrials={isLoadingTrials}
             trialPagesComplete={trialPagesComplete}

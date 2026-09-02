@@ -38,7 +38,6 @@ import {
   accumulateTrial,
 } from "@/lib/trial-aggregation";
 import type {
-  ExperimentCostTotals,
   ExperimentFocusResponse,
   ExperimentPageSummary,
   Task,
@@ -46,6 +45,7 @@ import type {
   UserTagRef,
 } from "@/lib/types";
 import { trialFromExperimentCell } from "@/lib/use-experiment-pages";
+import type { ExperimentCostTotalsResource } from "@/lib/use-experiment-cost-totals";
 import { ExternalLink, GitPullRequest, Info, Loader2 } from "lucide-react";
 import {
   Tooltip,
@@ -122,12 +122,10 @@ interface ExperimentDetailViewProps {
   experimentId?: string;
   tasksForExperiment: Task[];
   pageSummary?: ExperimentPageSummary;
-  // Server-side spend rollup for the whole experiment. Paginated trial rows
-  // are never used as a cost total.
-  costTotals?: ExperimentCostTotals;
-  // True while the rollup is still in flight, so the cost tiles show a
-  // placeholder instead of the (wrong) client sum. See experiment-client.
-  costTotalsPending?: boolean;
+  // Exact server-side spend rollup and its request lifecycle. Paginated trial
+  // rows are never used as a cost total.
+  costTotals: ExperimentCostTotalsResource;
+  onRetryCostTotals: () => void;
   isLoading: boolean;
   isLoadingTrials?: boolean;
   trialPagesComplete?: boolean;
@@ -612,8 +610,7 @@ function ExperimentSummaryBar({
   // True when cost came from the server rollup, which reports SPEND: every
   // trial that ran, including earlier task versions, superseded retries and
   // probes that the table below filters out. Drives the tooltip's disclosure.
-  costIsSpend,
-  costPending,
+  costStatus,
   qa,
 }: {
   taskCount: number;
@@ -621,8 +618,7 @@ function ExperimentSummaryBar({
   isInitialLoading: boolean;
   isLoadingTrials: boolean;
   showNewSpend: boolean;
-  costIsSpend: boolean;
-  costPending: boolean;
+  costStatus: ExperimentCostTotalsResource["status"];
   qa: {
     accepted: number;
     rejected: number;
@@ -668,6 +664,9 @@ function ExperimentSummaryBar({
   const skippedPct = outcomeTotal
     ? (summary.skippedTrials / outcomeTotal) * 100
     : 0;
+  const costIsSpend = costStatus === "ready";
+  const costPending = costStatus === "idle" || costStatus === "loading";
+  const costUnavailable = costStatus === "error";
 
   return (
     <div
@@ -771,40 +770,43 @@ function ExperimentSummaryBar({
         <span
           className="font-display flex items-baseline gap-1 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]"
           title={
-            // Must agree with the VALUE rendered below: while the rollup is in
-            // flight the tile shows an em dash, so the tooltip cannot describe
-            // the client fold's (partial, grid-scoped) counts.
-            costPending
-              ? "Calculating experiment spend…"
-              : summary.costTrialCount > 0
-                ? `Summed across ${summary.costTrialCount} trial${
-                    summary.costTrialCount === 1 ? "" : "s"
-                  } shown in this experiment${
-                    // Gathered/shared-task spend is deliberately included: it
-                    // prices the work on this page. Warn that those dollars
-                    // are also reported on their home experiments so nobody
-                    // sums Cost tiles across pages.
-                    summary.costTrialCount > summary.ownedTrialCount
-                      ? ", including trials gathered from other experiments (their spend is also reported there)"
-                      : ""
-                  }${
-                    // Spend covers every trial that ran; the table is filtered to
-                    // each task's current version. Say so, or the tile reads as
-                    // "wrong" whenever a task was re-uploaded or a trial retried.
-                    costIsSpend
-                      ? ". The table shows only current-version trials"
-                      : ""
-                  }${
-                    summary.costHasEstimated && summary.costHasNative
-                      ? ". Mixed native + estimated values; ~ marks estimates."
-                      : summary.costHasEstimated
-                        ? ". Estimated from token counts × static model pricing."
-                        : ". Reported by the agent runtime."
-                  }`
-                : "No cost data reported yet"
+            costUnavailable
+              ? "Experiment spend is unavailable"
+              : costPending
+                ? "Calculating experiment spend…"
+                : summary.costTrialCount > 0
+                  ? `Summed across ${summary.costTrialCount} trial${
+                      summary.costTrialCount === 1 ? "" : "s"
+                    } shown in this experiment${
+                      // Gathered/shared-task spend is deliberately included: it
+                      // prices the work on this page. Warn that those dollars
+                      // are also reported on their home experiments so nobody
+                      // sums Cost tiles across pages.
+                      summary.costTrialCount > summary.ownedTrialCount
+                        ? ", including trials gathered from other experiments (their spend is also reported there)"
+                        : ""
+                    }${
+                      // Spend covers every trial that ran; the table is filtered to
+                      // each task's current version. Say so, or the tile reads as
+                      // "wrong" whenever a task was re-uploaded or a trial retried.
+                      costIsSpend
+                        ? ". The table shows only current-version trials"
+                        : ""
+                    }${
+                      summary.costHasEstimated && summary.costHasNative
+                        ? ". Mixed native + estimated values; ~ marks estimates."
+                        : summary.costHasEstimated
+                          ? ". Estimated from token counts × static model pricing."
+                          : ". Reported by the agent runtime."
+                    }`
+                  : "No cost data reported yet"
           }
         >
-          {costPending ? (
+          {costUnavailable ? (
+            <span className="font-mono text-xs text-[color:var(--paper-fail)]">
+              Unavailable
+            </span>
+          ) : costPending ? (
             <span className="text-[color:var(--paper-ink-3)]">—</span>
           ) : summary.costTrialCount > 0 &&
             hasDisplayableCostUsd(summary.costUsd) ? (
@@ -824,7 +826,7 @@ function ExperimentSummaryBar({
           ) : (
             <span className="text-[color:var(--paper-ink-3)]">—</span>
           )}
-          {!costPending && (
+          {!costPending && !costUnavailable && (
             <QaCostSuffix
               costUsd={summary.qaCostUsd}
               size="tile"
@@ -835,14 +837,14 @@ function ExperimentSummaryBar({
               }
             />
           )}
-          {!costPending && (
+          {!costPending && !costUnavailable && (
             <NotRealSpendBadge
               excludedCostUsd={summary.excludedCostUsd}
               totalCostUsd={summary.costUsd}
             />
           )}
         </span>
-        {!costPending && summary.tokenTrialCount > 0 && (
+        {!costPending && !costUnavailable && summary.tokenTrialCount > 0 && (
           <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
             {formatTokenCount(summary.tokenCount)}
           </span>
@@ -856,40 +858,46 @@ function ExperimentSummaryBar({
           <span
             className="font-display flex items-baseline gap-1 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]"
             title={
-              costPending
-                ? "Calculating new spend…"
-                : summary.ownedTrialCount > 0
-                  ? `Summed across ${summary.ownedTrialCount} trial${
-                      summary.ownedTrialCount === 1 ? "" : "s"
-                    } this experiment ran itself${
-                      // Billing attribution is a property of who pays, not of
-                      // what the experiment did; surface it here rather than
-                      // in the headline.
-                      summary.billedTrialCount > 0
-                        ? `. ${formatCostUsd(summary.billedCostUsd)} of this was billed to user quotas`
-                        : ". None of it was billed to a user quota"
-                    }${
-                      costIsSpend
-                        ? ". The table shows only current-version trials"
-                        : ""
-                    }${
-                      summary.ownedHasEstimated && summary.ownedHasNative
-                        ? ". Mixed native + estimated values; ~ marks estimates."
-                        : summary.ownedHasEstimated
-                          ? ". Estimated from token counts × static model pricing."
-                          : ". Reported by the agent runtime."
-                    }`
-                  : // Owned usage first: an experiment whose own trials
-                    // reported tokens but no priced cost DID run work — it
-                    // must not read as a pure collection.
-                    summary.ownedTokenTrialCount > 0
-                    ? "No cost data reported yet for this experiment's own trials"
-                    : summary.costTrialCount > 0
-                      ? "This experiment ran no trials of its own; every priced trial shown was gathered from another experiment, where its spend is reported."
-                      : "No spend from this experiment yet"
+              costUnavailable
+                ? "New spend is unavailable"
+                : costPending
+                  ? "Calculating new spend…"
+                  : summary.ownedTrialCount > 0
+                    ? `Summed across ${summary.ownedTrialCount} trial${
+                        summary.ownedTrialCount === 1 ? "" : "s"
+                      } this experiment ran itself${
+                        // Billing attribution is a property of who pays, not of
+                        // what the experiment did; surface it here rather than
+                        // in the headline.
+                        summary.billedTrialCount > 0
+                          ? `. ${formatCostUsd(summary.billedCostUsd)} of this was billed to user quotas`
+                          : ". None of it was billed to a user quota"
+                      }${
+                        costIsSpend
+                          ? ". The table shows only current-version trials"
+                          : ""
+                      }${
+                        summary.ownedHasEstimated && summary.ownedHasNative
+                          ? ". Mixed native + estimated values; ~ marks estimates."
+                          : summary.ownedHasEstimated
+                            ? ". Estimated from token counts × static model pricing."
+                            : ". Reported by the agent runtime."
+                      }`
+                    : // Owned usage first: an experiment whose own trials
+                      // reported tokens but no priced cost DID run work — it
+                      // must not read as a pure collection.
+                      summary.ownedTokenTrialCount > 0
+                      ? "No cost data reported yet for this experiment's own trials"
+                      : summary.costTrialCount > 0
+                        ? "This experiment ran no trials of its own; every priced trial shown was gathered from another experiment, where its spend is reported."
+                        : "No spend from this experiment yet"
             }
           >
-            {costPending ? (
+            {costUnavailable ? (
+              <span className="font-mono text-xs text-[color:var(--paper-fail)]">
+                Unavailable
+              </span>
+            ) : costPending ? (
               <span className="text-[color:var(--paper-ink-3)]">—</span>
             ) : summary.ownedTrialCount > 0 ? (
               <>
@@ -915,14 +923,14 @@ function ExperimentSummaryBar({
             ) : (
               <span className="text-[color:var(--paper-ink-3)]">—</span>
             )}
-            {!costPending && (
+            {!costPending && !costUnavailable && (
               <QaCostSuffix
                 costUsd={summary.ownedQaCostUsd}
                 size="tile"
                 title="QA/analysis spend on this experiment's own trials. Not included in the new spend figure."
               />
             )}
-            {!costPending && (
+            {!costPending && !costUnavailable && (
               <NotRealSpendBadge
                 excludedCostUsd={summary.ownedExcludedCostUsd}
                 totalCostUsd={summary.ownedCostUsd}
@@ -930,11 +938,13 @@ function ExperimentSummaryBar({
               />
             )}
           </span>
-          {!costPending && summary.ownedTokenTrialCount > 0 && (
-            <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
-              {formatTokenCount(summary.ownedTokenCount)}
-            </span>
-          )}
+          {!costPending &&
+            !costUnavailable &&
+            summary.ownedTokenTrialCount > 0 && (
+              <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
+                {formatTokenCount(summary.ownedTokenCount)}
+              </span>
+            )}
         </KpiTile>
       )}
       <KpiTile
@@ -1007,7 +1017,7 @@ export function ExperimentDetailView({
   tasksForExperiment,
   pageSummary,
   costTotals,
-  costTotalsPending = false,
+  onRetryCostTotals,
   isLoading,
   isLoadingTrials = false,
   trialPagesComplete = true,
@@ -1188,7 +1198,8 @@ export function ExperimentDetailView({
   // navigated, and the deep link yields.
   const hydrationTaskIdRef = useRef<string | null>(null);
   const focusQuery = useMemo(() => {
-    if (!focusUrl || (!pendingUrlTaskSelector && !pendingUrlTrialId)) return null;
+    if (!focusUrl || (!pendingUrlTaskSelector && !pendingUrlTrialId))
+      return null;
     const query = new URLSearchParams();
     if (pendingUrlTaskSelector) query.set("task", pendingUrlTaskSelector);
     if (pendingUrlTrialId) query.set("trial", pendingUrlTrialId);
@@ -1528,11 +1539,7 @@ export function ExperimentDetailView({
         return;
       }
     }
-  }, [
-    pendingUrlTrialId,
-    tasksForExperiment,
-    openDeepLinkTrial,
-  ]);
+  }, [pendingUrlTrialId, tasksForExperiment, openDeepLinkTrial]);
 
   // The focused resource resolves one task and optional trial inside this
   // experiment, independent of the task and trial pagination cursors.
@@ -1552,9 +1559,10 @@ export function ExperimentDetailView({
     );
     const existingTrials = loadedTask?.trials ?? [];
     const trials =
-      focusedTrial && !existingTrials.some((trial) => trial.id === focusedTrial.id)
+      focusedTrial &&
+      !existingTrials.some((trial) => trial.id === focusedTrial.id)
         ? [...existingTrials, focusedTrial]
-        : loadedTask?.trials ?? (focusedTrial ? [focusedTrial] : undefined);
+        : (loadedTask?.trials ?? (focusedTrial ? [focusedTrial] : undefined));
     const experiment = tasksForExperiment[0];
     const host: Task = {
       ...resolvedUrlFocus.task,
@@ -1608,6 +1616,8 @@ export function ExperimentDetailView({
   // The bounded open resource owns exact non-cost totals. The separate cost
   // resource owns whole-experiment spend because trial pages are incomplete
   // until pagination finishes.
+  const exactCostTotals =
+    costTotals.status === "ready" ? costTotals.data : undefined;
   const summary = useMemo(() => {
     const visible = buildExperimentSummary(deferredTasksForDerivedData);
     const base = pageSummary
@@ -1628,39 +1638,41 @@ export function ExperimentDetailView({
           pendingCount: pageSummary.active,
         }
       : visible;
-    if (!costTotals) return base;
+    if (!exactCostTotals) return base;
     return {
       ...base,
-      costUsd: costTotals.cost_usd,
-      costTrialCount: costTotals.cost_trial_count,
-      costHasEstimated: costTotals.cost_has_estimated,
-      costHasNative: costTotals.cost_has_native,
-      qaCostUsd: costTotals.qa_cost_usd ?? 0,
-      ownedQaCostUsd: costTotals.owned_qa_cost_usd ?? 0,
-      qaHasEstimated: costTotals.qa_has_estimated ?? false,
-      tokenCount: costTotals.token_count,
-      tokenTrialCount: costTotals.token_trial_count,
+      costUsd: exactCostTotals.cost_usd,
+      costTrialCount: exactCostTotals.cost_trial_count,
+      costHasEstimated: exactCostTotals.cost_has_estimated,
+      costHasNative: exactCostTotals.cost_has_native,
+      qaCostUsd: exactCostTotals.qa_cost_usd ?? 0,
+      ownedQaCostUsd: exactCostTotals.owned_qa_cost_usd ?? 0,
+      qaHasEstimated: exactCostTotals.qa_has_estimated ?? false,
+      tokenCount: exactCostTotals.token_count,
+      tokenTrialCount: exactCostTotals.token_trial_count,
       // ?? base.*: deploy-skew guard — a backend that predates owned_* omits
       // the fields; the client fold's partial owned sum beats a hard $0.00.
-      ownedCostUsd: costTotals.owned_cost_usd ?? base.ownedCostUsd,
-      ownedTrialCount: costTotals.owned_trial_count ?? base.ownedTrialCount,
+      ownedCostUsd: exactCostTotals.owned_cost_usd ?? base.ownedCostUsd,
+      ownedTrialCount:
+        exactCostTotals.owned_trial_count ?? base.ownedTrialCount,
       ownedHasEstimated:
-        costTotals.owned_has_estimated ?? base.ownedHasEstimated,
-      ownedHasNative: costTotals.owned_has_native ?? base.ownedHasNative,
-      ownedTokenCount: costTotals.owned_token_count ?? base.ownedTokenCount,
+        exactCostTotals.owned_has_estimated ?? base.ownedHasEstimated,
+      ownedHasNative: exactCostTotals.owned_has_native ?? base.ownedHasNative,
+      ownedTokenCount:
+        exactCostTotals.owned_token_count ?? base.ownedTokenCount,
       ownedTokenTrialCount:
-        costTotals.owned_token_trial_count ?? base.ownedTokenTrialCount,
-      billedCostUsd: costTotals.billed_cost_usd,
-      billedTrialCount: costTotals.billed_trial_count,
-      billedHasEstimated: costTotals.billed_has_estimated,
-      billedHasNative: costTotals.billed_has_native,
-      billedTokenCount: costTotals.billed_token_count,
-      billedTokenTrialCount: costTotals.billed_token_trial_count,
-      excludedCostUsd: costTotals.excluded_cost_usd ?? 0,
-      ownedExcludedCostUsd: costTotals.owned_excluded_cost_usd ?? 0,
-      experimentCostExcluded: costTotals.experiment_cost_excluded ?? false,
+        exactCostTotals.owned_token_trial_count ?? base.ownedTokenTrialCount,
+      billedCostUsd: exactCostTotals.billed_cost_usd,
+      billedTrialCount: exactCostTotals.billed_trial_count,
+      billedHasEstimated: exactCostTotals.billed_has_estimated,
+      billedHasNative: exactCostTotals.billed_has_native,
+      billedTokenCount: exactCostTotals.billed_token_count,
+      billedTokenTrialCount: exactCostTotals.billed_token_trial_count,
+      excludedCostUsd: exactCostTotals.excluded_cost_usd ?? 0,
+      ownedExcludedCostUsd: exactCostTotals.owned_excluded_cost_usd ?? 0,
+      experimentCostExcluded: exactCostTotals.experiment_cost_excluded ?? false,
     };
-  }, [deferredTasksForDerivedData, pageSummary, costTotals]);
+  }, [deferredTasksForDerivedData, pageSummary, exactCostTotals]);
 
   // Task-level QA rollup for the summary bar. Null when no task in the
   // grid ever ran QA, so non-QA experiments keep their five tiles.
@@ -1828,10 +1840,29 @@ export function ExperimentDetailView({
             // in its tooltip) is internal; keep it off the public share view
             // (the only readOnly consumer).
             showNewSpend={!readOnly}
-            costIsSpend={costTotals != null}
-            costPending={costTotalsPending}
+            costStatus={costTotals.status}
             qa={showAnalysis ? qaRollup : null}
           />
+
+          {!hasError && costTotals.status === "error" && (
+            <Alert variant="destructive">
+              <AlertTitle>Failed to load experiment spend</AlertTitle>
+              <AlertDescription className="flex flex-wrap items-center gap-2">
+                <span>{costTotals.message}</span>
+                <span>Exact cost and token totals are unavailable.</span>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  className="h-7"
+                  onClick={onRetryCostTotals}
+                  disabled={costTotals.isRetrying}
+                >
+                  {costTotals.isRetrying ? "Retrying…" : "Retry"}
+                </Button>
+              </AlertDescription>
+            </Alert>
+          )}
 
           {hasError ? (
             <Alert variant="destructive">
