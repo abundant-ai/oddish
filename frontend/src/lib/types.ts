@@ -120,7 +120,7 @@ interface TrialAnalysis {
   _graded_at_steps?: number[];
   trial_name?: string;
   classification: AnalysisClassification;
-  subtype: string;
+  subtype?: string;
   evidence?: string;
   root_cause?: string;
   recommendation?: string;

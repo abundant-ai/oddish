@@ -45,7 +45,7 @@ import type {
   Trial,
   UserTagRef,
 } from "@/lib/types";
-import { trialFromExperimentCell } from "@/lib/use-experiment-pages";
+import { trialFromExperimentCell } from "@/lib/experiment-page-data";
 import type { ExperimentCostTotalsResource } from "@/lib/use-experiment-cost-totals";
 import { ExternalLink, GitPullRequest, Info, Loader2 } from "lucide-react";
 import {
