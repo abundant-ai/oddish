@@ -49,7 +49,7 @@ the `oddish probe` helpers, which print human-readable output only.
 
 A typical run flows through these commands:
 
-1. `oddish run` — submit a task, dataset, or sweep. The output (including `--json`) carries the task IDs plus the experiment's name and dashboard URL. Task-level QA runs automatically once every trial settles: it classifies each trial's trajectory and requests a task verdict for any nonempty eligible set after the source audit succeeds. Few trials lower acceptance confidence instead of preventing rejection. Decisive defects can reject the task even when no verdict was requested. (`oddish upload` without `--task` only registers task files — no trials and no experiment are created; importing trials with `--task` does attach them to an experiment.)
+1. `oddish run` — submit a task, dataset, or sweep. The output (including `--json`) carries the task IDs plus the experiment's name and dashboard URL. Task-level QA runs automatically once every trial settles: it classifies each trial's trajectory, and adds a task verdict when there are at least 5 eligible trials from at least 3 distinct agents. (`oddish upload` without `--task` only registers task files — no trials and no experiment are created; importing trials with `--task` does attach them to an experiment.)
 2. `oddish status` — discover what's in flight, then drill into a specific task or experiment to see trial-level progress and rewards.
 3. `oddish pull` — once you have a trial, task, or experiment ID, download its logs, results, trajectories, and artifact files to disk.
 4. `oddish run --retry` — re-queue failed trials or re-run task-level QA.

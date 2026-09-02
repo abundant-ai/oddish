@@ -35,11 +35,9 @@ Rows with `imported_at` set are excluded. A `failed` agent trial can still be
 eligible because QA can classify a harness or task failure from its evidence.
 
 QA always attempts classifications and trajectory summaries for its eligible
-set. Every nonempty eligible set requests a task verdict after the source audit
-succeeds. Few trials or distinct agent names lower acceptance confidence;
-they never prevent rejection of a demonstrated defect. If the source audit
-has not succeeded, the run only requests classifications. Import still rejects
-decisive findings, including from older classification-only QA runs.
+set. It requests a task verdict only when the set has at least 5 trials from at
+least 3 distinct agent names. Below that evidence bar, the task can complete
+with classifications and no verdict.
 
 ## Classification and verdict fields
 
@@ -86,15 +84,12 @@ The pass rereads and reclassifies every eligible trial even without `--force`.
 cleared before the replacement starts; they do not narrow the QA trial's input
 set. Therefore `backfill-analysis --trial X` is still a task-wide QA run.
 
-While a replacement is queued or running, the last successful verdict may
-remain visible. A successful replacement publishes the new result; cancelling
-the replacement restores the prior successful verdict state; a terminal
-replacement failure clears the preserved verdict according to the verdict
-state machine. A completed review with no overall verdict clears the previous
-verdict instead of restoring it; previous QA artifacts remain in trial storage.
-The page shows "No current verdict" for that completed review. A `must_fix`
-finding, a failed baseline, or a demonstrated leak or weak verifier rejects the
-task even if the QA artifact contains an acceptance or no verdict.
+Queuing a replacement clears the current verdict. While it is queued or
+running, the page shows QA in progress. Completion publishes only the new
+verdict; if QA produced classifications without an overall verdict, the page
+shows "No current verdict". Cancelling, failing, or abandoning the active
+replacement does not restore the previous verdict. Older QA artifacts remain
+in trial storage.
 
 `oddish cancel <task_id> --qa` cancels live `qa` and `audit` trials for that
 task. The CLI label says QA, but the endpoint also stops the pre-trial audit.

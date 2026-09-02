@@ -149,12 +149,11 @@ High-level flow:
    every live trial, writes per-trial trajectory summaries, and synthesizes
    the task verdict into one artifact (`qa_result.json`); on settlement an
    importer writes `trials.analysis`, `trials.trajectory_summary`, and
-   `tasks.verdict`. Every nonempty QA-eligible set requests a verdict once
-   the source audit succeeds, regardless of trial count or distinct agents.
-   Limited evidence lowers acceptance confidence instead of disabling rejection.
-   Without a successful source audit, QA still classifies trials; decisive
-   findings can reject the task at import even when no verdict was requested.
-   A sweep of `T` tasks × `N` trials therefore creates `T`
+   `tasks.verdict`. The verdict is only requested above an evidence bar
+   (≥5 QA-eligible trials from ≥3 agents, `MIN_VERDICT_TRIALS` /
+   `MIN_VERDICT_AGENTS` in `oddish.workers.analysis_trials`); below it the
+   QA trial still classifies trials and the task completes without a
+   verdict. A sweep of `T` tasks × `N` trials therefore creates `T`
    QA trials, not `T × (N + 1)`. The pre-trial audit is an `audit`-kind trial
    created once per task version at sweep time.
    `POST /qa-evals` is the lower-level historical prompt-replay primitive. It
@@ -211,15 +210,14 @@ High-level flow:
    nonterminal trial in the org. Final result settlement performs the same
    check for agents without live usage. Cancellation retires queued, running,
    blocked, and retrying worker jobs in the database before terminating remote
-   handles; a task is failed only when no other live trial remains. If quota
-   cancellation interrupts a replacement QA pass, the last successful verdict
-   is restored through `cancel_verdict`; a terminal QA failure instead clears
-   that preserved payload through `fail_verdict`. A completed classification-only
-   review clears the previous verdict through `complete_verdict_without_result`;
-   older QA artifacts remain in trial storage. All task verdict-column
-   mutations go through `oddish.core.verdict_state`: a published payload may
-   coexist with QUEUED/RUNNING while its replacement is active, but it must
-   return to SUCCESS if that pass is abandoned. The
+   handles; a task is failed only when no other live trial remains. Queuing
+   replacement QA withdraws the previous verdict through `queue_verdict`.
+   Completion publishes only the new verdict; a classification-only pass
+   completes with SUCCESS status and no verdict. Cancellation, failure, or
+   abandonment of an active replacement never restores its previous result.
+   Cancelling unrelated trials preserves an existing verdict when no QA
+   replacement was active. Older QA artifacts remain in trial storage.
+   All task verdict-column mutations go through `oddish.core.verdict_state`. The
    `ck_tasks_published_verdict_status` database constraint rejects a published
    payload with a missing or FAILED status.
 6. Trial completion persists queryable execution metrics on the trial row:
@@ -387,12 +385,9 @@ reward, trajectory availability, and agent), current-version nop/oracle
 baseline results, and the source-audit status/findings into its pinned analysis
 payload. The QA agent fetches complete result, verifier, and trajectory
 resources for each solver Trial; it writes judgments only. Import restores
-`trial_name` and `reward` from the graded Trial row. A `must_fix` finding from
-either the source audit or trial QA, a failed deterministic baseline, or a
-decisive leak/weak-verifier classification rejects an accepted or absent
-verdict. These rules run before classification-only completion, so historical
-QA artifacts with `verdict: null` cannot restore an outdated acceptance.
-Ordinary BAD labels still require the verdict model's judgment.
+`trial_name` and `reward` from the graded Trial row, and a source-audit
+`must_fix` finding or failed deterministic baseline rejects an otherwise
+accepted verdict.
 
 ### Worker job kinds
 
@@ -422,9 +417,8 @@ Ordinary BAD labels still require the verdict model's judgment.
   summarizer in `oddish/worker/probe_analysis.py`); every analysis agent
   runs as a trial on the analysis model's queue key
 - the verdict state machine (`oddish.core.verdict_state`), the only writer
-  for `tasks.verdict*` lifecycle columns, which preserves the last published
-  result until a replacement QA pass completes or terminally fails; a completed
-  pass with no verdict withdraws the old result, while cancellation restores it
+  for `tasks.verdict*` lifecycle columns, which withdraws the current result
+  when replacement QA is queued and publishes only that pass's verdict
 - shared queue-slot leasing, per-queue-key concurrency limits, and
   per-user fairness on `TRIAL` claims
 - database-backed admin concurrency overrides; these take precedence over

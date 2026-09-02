@@ -1,10 +1,9 @@
 """State transitions for the task-level QA verdict.
 
-``tasks.verdict`` is the last published result. A replacement QA pass may be
-queued or running while that result remains visible, so callers must not infer
-whether a result exists from ``verdict_status`` alone. This module is the
-single writer for the verdict state columns and keeps those two lifecycles
-consistent.
+``tasks.verdict`` is the current QA result. Queuing a replacement withdraws
+the previous result; only that replacement can publish a new one. A completed
+classification-only pass has SUCCESS status and no verdict. This module is
+the single writer for the verdict state columns.
 """
 
 from __future__ import annotations
@@ -39,12 +38,12 @@ def has_active_verdict(task: VerdictState) -> bool:
 
 
 def queue_verdict(task: VerdictState) -> None:
-    """Queue a QA pass without withdrawing its previously published result."""
+    """Queue a QA pass and withdraw the result it replaces."""
+    task.verdict = None
     task.verdict_status = VerdictStatus.QUEUED
     task.verdict_error = None
     task.verdict_started_at = None
-    if not has_published_verdict(task):
-        task.verdict_finished_at = None
+    task.verdict_finished_at = None
 
 
 def complete_verdict(
@@ -74,8 +73,12 @@ def fail_verdict(task: VerdictState, *, error: str, now: datetime) -> None:
 
 
 def cancel_verdict(task: VerdictState, *, error: str, now: datetime) -> None:
-    """Cancel QA, restoring a published result or recording terminal failure."""
-    if has_published_verdict(task):
+    """Cancel QA without restoring a superseded result.
+
+    Cancellation of unrelated trials may also reach this function. Preserve
+    a published verdict only when no replacement QA pass was active.
+    """
+    if has_published_verdict(task) and not has_active_verdict(task):
         _restore_published_verdict(task)
         return
     fail_verdict(task, error=error, now=now)
@@ -84,11 +87,11 @@ def cancel_verdict(task: VerdictState, *, error: str, now: datetime) -> None:
 def abandon_verdict(task: VerdictState) -> None:
     """End superseded or unnecessary QA without recording a failure.
 
-    Appends and retries use this after cancelling an obsolete QA job. A prior
-    result becomes current again; a task that has never produced one returns to
-    the unstarted state.
+    Appends and retries use this after cancelling an obsolete QA job. An active
+    replacement returns to the unstarted state without reviving its old result.
+    A published result with no active replacement remains current.
     """
-    if has_published_verdict(task):
+    if has_published_verdict(task) and not has_active_verdict(task):
         _restore_published_verdict(task)
         return
     reset_verdict(task)

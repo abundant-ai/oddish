@@ -28,21 +28,22 @@ def _task(
     )
 
 
-@pytest.mark.parametrize("active", [VerdictStatus.QUEUED, VerdictStatus.RUNNING])
-def test_abandon_active_replacement_restores_published_verdict(
+@pytest.mark.parametrize(
+    "active", [VerdictStatus.PENDING, VerdictStatus.QUEUED, VerdictStatus.RUNNING]
+)
+def test_abandon_active_replacement_discards_published_verdict(
     active: VerdictStatus,
 ) -> None:
     payload = {"verdict": "accept", "is_good": True}
     task = _task(payload=payload, status=active)
-    published_at = task.verdict_finished_at
 
     abandon_verdict(task)
 
-    assert task.verdict is payload
-    assert task.verdict_status == VerdictStatus.SUCCESS
+    assert task.verdict is None
+    assert task.verdict_status is None
     assert task.verdict_error is None
     assert task.verdict_started_at is None
-    assert task.verdict_finished_at == published_at
+    assert task.verdict_finished_at is None
 
 
 def test_abandon_first_qa_attempt_returns_to_unstarted_state() -> None:
@@ -57,17 +58,21 @@ def test_abandon_first_qa_attempt_returns_to_unstarted_state() -> None:
     assert task.verdict_finished_at is None
 
 
-def test_replacement_lifecycle_retains_published_result_until_success() -> None:
-    original = {"verdict": "reject", "is_good": False}
+@pytest.mark.parametrize("previous", ["accept", "reject", None])
+def test_replacement_lifecycle_withdraws_old_result_when_queued(previous) -> None:
+    original = (
+        {"verdict": previous, "is_good": previous == "accept"} if previous else None
+    )
     replacement = {"verdict": "accept", "is_good": True}
     task = _task(payload=original, status=VerdictStatus.SUCCESS)
-    published_at = task.verdict_finished_at
     finished_at = datetime(2026, 1, 4, tzinfo=timezone.utc)
 
     queue_verdict(task)
-    assert task.verdict is original
+    assert task.verdict is None
     assert task.verdict_status == VerdictStatus.QUEUED
-    assert task.verdict_finished_at == published_at
+    assert task.verdict_error is None
+    assert task.verdict_started_at is None
+    assert task.verdict_finished_at is None
 
     complete_verdict(task, payload=replacement, now=finished_at)
     assert task.verdict is replacement
@@ -75,15 +80,19 @@ def test_replacement_lifecycle_retains_published_result_until_success() -> None:
     assert task.verdict_finished_at == finished_at
 
 
-def test_cancel_replacement_restores_result_but_failure_discards_it() -> None:
+@pytest.mark.parametrize(
+    "active", [VerdictStatus.PENDING, VerdictStatus.QUEUED, VerdictStatus.RUNNING]
+)
+def test_cancel_and_failure_do_not_restore_a_superseded_result(active) -> None:
     payload = {"verdict": "accept", "is_good": True}
-    task = _task(payload=payload, status=VerdictStatus.RUNNING)
-    published_at = task.verdict_finished_at
+    task = _task(payload=payload, status=active)
+    cancelled_at = datetime.now(timezone.utc)
 
-    cancel_verdict(task, error="quota reached", now=datetime.now(timezone.utc))
-    assert task.verdict is payload
-    assert task.verdict_status == VerdictStatus.SUCCESS
-    assert task.verdict_finished_at == published_at
+    cancel_verdict(task, error="quota reached", now=cancelled_at)
+    assert task.verdict is None
+    assert task.verdict_status == VerdictStatus.FAILED
+    assert task.verdict_error == "quota reached"
+    assert task.verdict_finished_at == cancelled_at
 
     queue_verdict(task)
     failed_at = datetime.now(timezone.utc)

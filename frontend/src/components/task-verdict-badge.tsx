@@ -94,8 +94,7 @@ function presentVerdict(
     toneInline = "border-[color:var(--paper-line)]";
   }
 
-  // While a replacement QA run is pending, the kept payload belongs to the
-  // previous verdict -- show only the in-progress state.
+  // An in-flight review must never display a previous verdict from cached data.
   let detail: string | null = null;
   if (failed && task.verdict_error) {
     detail = task.verdict_error;

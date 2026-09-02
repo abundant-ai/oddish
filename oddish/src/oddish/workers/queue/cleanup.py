@@ -36,7 +36,7 @@ from oddish.config import (
 from oddish.core.helpers import cancel_job_by_worker
 from oddish.core.tags.ownership_transfer import sweep_orphaned_tag_owners
 from oddish.core.task_browse_summary import refresh_task_browse_summaries
-from oddish.core.verdict_state import fail_verdict
+from oddish.core.verdict_state import fail_verdict, queue_verdict
 from oddish.costs.recorder import reconcile_compute_cost_spans
 from oddish.db import (
     AnalysisStatus,
@@ -479,7 +479,7 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
             )
         else:
             # The VERDICT_PENDING healer creates a fresh QA trial next sweep.
-            task.verdict_status = VerdictStatus.QUEUED
+            queue_verdict(task)
             task.verdict_error = row["error_message"]
         return None
 
