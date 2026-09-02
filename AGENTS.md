@@ -585,7 +585,15 @@ otherwise it falls back to the highest version represented by such trials. The
 bounded `/open` and `/trial-page` endpoints apply the same rule so progressive
 loading cannot change the files/counts pivot or mix one version's trials with
 another's artifacts. `/open` returns exact totals plus at most 100 task shells
-under 50 KB. Authenticated task shells include the complete `github_meta`
+under 50 KB. Reads that cover a whole experiment (`/open` totals,
+`/trial-page`, cost totals, effective versions) select from
+`experiment_trial_scope` (`core/experiment_membership.py`): `TrialModel`
+aliased onto a `UNION ALL` of the experiment's homed rows and its gathered
+rows, each an index seek, with combine copies removed by an anti-join. Do not
+filter the whole `trials` table with `trial_in_experiment` for such reads: its
+`experiment_id = X OR id IN (gathered)` cannot use an index and its correlated
+subplan inflates the plan cost enough to JIT-compile every request.
+Authenticated task shells include the complete `github_meta`
 mapping parsed from the task's stored tags. Anonymous `/open`, `/focus`, and
 task-detail responses use separate public response models: they omit task and
 experiment owner fields and allowlist only the `category`, `world`, and `domain`

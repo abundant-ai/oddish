@@ -12,14 +12,11 @@ from sqlalchemy.orm import aliased
 from oddish.config import settings
 from oddish.core.baseline_gate import baseline_agent_clause
 from oddish.core.cost_exclusions import CostExclusions, load_cost_exclusions
-from oddish.core.experiment_membership import (
-    trial_in_experiment,
-    visible_experiment_trial_predicates,
-)
+from oddish.core.experiment_membership import experiment_trial_scope
 from oddish.core.helpers import (
     SLIM_TRIAL_RESPONSE_COLUMNS,
     _parse_github_meta,
-    experiment_effective_versions_selectable,
+    experiment_visible_trials_selectable,
 )
 from oddish.core.model_display_names import (
     apply_model_display_names,
@@ -176,68 +173,61 @@ def _experiment_task_rows(
     include_user: bool = False,
 ):
     selected_task_ids = list(task_ids) if task_ids is not None else None
-    effective = experiment_effective_versions_selectable(
-        experiment_id=experiment_id, task_ids=selected_task_ids
-    )
+    # The experiment's visible trials come from one indexed membership
+    # subquery, already annotated with each task's effective version, so the
+    # stats are one grouped pass with no join back to the trials table.
+    scope = experiment_trial_scope(experiment_id, org_id=org_id)
+    visible = experiment_visible_trials_selectable(scope, task_ids=selected_task_ids).c
     scored = and_(
-        TrialModel.status == TrialStatus.SUCCESS,
-        TrialModel.reward.is_not(None),
-        ~baseline_agent_clause(TrialModel.agent),
+        visible.status == TrialStatus.SUCCESS,
+        visible.reward.is_not(None),
+        ~baseline_agent_clause(visible.agent),
     )
     stats = (
         select(
-            TrialModel.task_id.label("task_id"),
+            visible.task_id.label("task_id"),
+            # Every row of a task carries the same effective version, so the
+            # aggregate simply repeats it for the task shell.
+            func.max(visible.effective_task_version_id).label("trial_version_id"),
+            func.max(visible.effective_task_version).label("trial_version"),
             func.count().label("total"),
             func.count()
-            .filter(TrialModel.status == TrialStatus.SUCCESS)
+            .filter(visible.status == TrialStatus.SUCCESS)
             .label("completed"),
+            func.count().filter(visible.status == TrialStatus.FAILED).label("failed"),
+            func.count().filter(visible.status == TrialStatus.SKIPPED).label("skipped"),
             func.count()
-            .filter(TrialModel.status == TrialStatus.FAILED)
-            .label("failed"),
-            func.count()
-            .filter(TrialModel.status == TrialStatus.SKIPPED)
-            .label("skipped"),
-            func.count()
-            .filter(TrialModel.status == TrialStatus.SUCCESS, TrialModel.reward == 1)
+            .filter(visible.status == TrialStatus.SUCCESS, visible.reward == 1)
             .label("pass_count"),
             func.count()
             .filter(
-                TrialModel.status == TrialStatus.SUCCESS,
-                TrialModel.reward.is_not(None),
-                TrialModel.reward.not_in((0, 1)),
+                visible.status == TrialStatus.SUCCESS,
+                visible.reward.is_not(None),
+                visible.reward.not_in((0, 1)),
             )
             .label("partial_count"),
             func.count()
-            .filter(TrialModel.status == TrialStatus.SUCCESS, TrialModel.reward == 0)
+            .filter(visible.status == TrialStatus.SUCCESS, visible.reward == 0)
             .label("fail_count"),
             func.coalesce(
-                func.sum(TrialModel.reward).filter(
-                    TrialModel.status == TrialStatus.SUCCESS
-                ),
+                func.sum(visible.reward).filter(visible.status == TrialStatus.SUCCESS),
                 0.0,
             ).label("reward_sum"),
-            func.count(TrialModel.reward)
-            .filter(TrialModel.status == TrialStatus.SUCCESS)
+            func.count(visible.reward)
+            .filter(visible.status == TrialStatus.SUCCESS)
             .label("reward_total"),
-            func.avg(case((scored, TrialModel.reward))).label("average_score"),
+            func.avg(case((scored, visible.reward))).label("average_score"),
         )
-        .outerjoin(effective, effective.c.task_id == TrialModel.task_id)
         .where(
-            *visible_experiment_trial_predicates(experiment_id),
             # Match the existing experiment-shell contract: use the selected
             # version when one exists, but retain legacy/versionless trials
             # when the selector has no live version for this task.
             or_(
-                effective.c.task_id.is_(None),
-                effective.c.task_version_id == TrialModel.task_version_id,
-            ),
-            *(
-                (TrialModel.task_id.in_(selected_task_ids),)
-                if selected_task_ids is not None
-                else ()
+                visible.effective_task_version_id.is_(None),
+                visible.effective_task_version_id == visible.task_version_id,
             ),
         )
-        .group_by(TrialModel.task_id)
+        .group_by(visible.task_id)
         .subquery("experiment_task_stats")
     )
     current_version = aliased(TaskVersionModel)
@@ -250,8 +240,8 @@ def _experiment_task_rows(
         TaskModel.tags,
         TaskModel.current_version_id,
         current_version.version.label("current_version"),
-        effective.c.task_version_id.label("trial_version_id"),
-        effective.c.task_version.label("trial_version"),
+        stats.c.trial_version_id,
+        stats.c.trial_version,
         TaskModel.run_analysis,
         TaskModel.verdict_status,
         TaskModel.verdict["verdict"].astext.label("verdict_label"),
@@ -291,7 +281,6 @@ def _experiment_task_rows(
                 current_version.deleted_at.is_(None),
             ),
         )
-        .outerjoin(effective, effective.c.task_id == TaskModel.id)
         .outerjoin(stats, stats.c.task_id == TaskModel.id)
         .where(
             TaskModel.org_id == org_id,
@@ -427,6 +416,8 @@ async def get_experiment_open_core(
         tasks = _experiment_task_rows(
             experiment_id=experiment_id, org_id=org_id
         ).subquery("experiment_open_tasks")
+        active_scope = experiment_trial_scope(experiment_id, org_id=org_id)
+        active_trials = active_scope.trials
         inactive_verdict = or_(
             tasks.c.verdict_status.is_(None),
             tasks.c.verdict_status.not_in(_ACTIVE_VERDICT_STATUSES),
@@ -478,12 +469,12 @@ async def get_experiment_open_core(
                 )
                 .label("qa_failed"),
                 select(1)
-                .select_from(TrialModel)
-                .join(TaskModel, TaskModel.id == TrialModel.task_id)
+                .select_from(active_trials)
+                .join(TaskModel, TaskModel.id == active_trials.task_id)
                 .where(
-                    *visible_experiment_trial_predicates(experiment_id),
+                    *active_scope.visible_predicates(),
                     TaskModel.org_id == org_id,
-                    TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
+                    active_trials.status.in_(ACTIVE_TRIAL_STATUSES),
                 )
                 .exists()
                 .label("has_active_trials"),
@@ -539,45 +530,60 @@ async def get_experiment_open_core(
     return response
 
 
-def _experiment_trial_projection():
-    return select(
-        *(column.label(column.key) for column in _TRIAL_PAGE_COLUMNS),
-        TaskModel.task_path,
-        func.left(TrialModel.analysis["classification"].astext, 100).label(
-            "analysis_classification"
-        ),
-        func.left(TrialModel.analysis["subtype"].astext, 100).label("analysis_subtype"),
-        func.left(TrialModel.analysis["evidence"].astext, 1_000).label(
-            "analysis_evidence"
-        ),
-    ).join(TaskModel, TaskModel.id == TrialModel.task_id)
+def _trial_column(source: Any, key: str) -> Any:
+    """Column ``key`` of a ``TrialModel`` alias or of a subquery of its columns."""
+    return source.c[key] if hasattr(source, "c") else getattr(source, key)
+
+
+def _experiment_trial_projection(trials: Any):
+    """Bounded trial columns read from ``trials`` (see :func:`_trial_column`)."""
+    analysis = _trial_column(trials, "analysis")
+    return (
+        select(
+            *(
+                _trial_column(trials, column.key).label(column.key)
+                for column in _TRIAL_PAGE_COLUMNS
+            ),
+            TaskModel.task_path,
+            func.left(analysis["classification"].astext, 100).label(
+                "analysis_classification"
+            ),
+            func.left(analysis["subtype"].astext, 100).label("analysis_subtype"),
+            func.left(analysis["evidence"].astext, 1_000).label("analysis_evidence"),
+        )
+        .select_from(trials)
+        .join(TaskModel, TaskModel.id == _trial_column(trials, "task_id"))
+    )
 
 
 def _experiment_trial_rows_query(*, experiment_id: str, org_id: str):
-    effective = experiment_effective_versions_selectable(experiment_id=experiment_id)
-    return (
-        _experiment_trial_projection()
-        .outerjoin(effective, effective.c.task_id == TrialModel.task_id)
-        .where(
-            *visible_experiment_trial_predicates(experiment_id),
-            or_(
-                effective.c.task_id.is_(None),
-                effective.c.task_version_id == TrialModel.task_version_id,
-            ),
-            TaskModel.org_id == org_id,
-            TaskModel.deleted_at.is_(None),
-        )
+    """Grid-visible trial rows, plus the columns callers filter and order on."""
+    scope = experiment_trial_scope(experiment_id, org_id=org_id)
+    visible = experiment_visible_trials_selectable(
+        scope, columns=(*_TRIAL_PAGE_COLUMNS, TrialModel.analysis)
     )
+    query = _experiment_trial_projection(visible).where(
+        or_(
+            visible.c.effective_task_version_id.is_(None),
+            visible.c.effective_task_version_id == visible.c.task_version_id,
+        ),
+        TaskModel.org_id == org_id,
+        TaskModel.deleted_at.is_(None),
+    )
+    return query, visible.c
 
 
 def _member_experiment_focus_trial_query(*, experiment_id: str, org_id: str):
     """Address historical member trials without widening public grid visibility."""
-    return _experiment_trial_projection().where(
-        trial_in_experiment(experiment_id),
-        TrialModel.deleted_at.is_(None),
+    scope = experiment_trial_scope(experiment_id, org_id=org_id)
+    trials = scope.trials
+    query = _experiment_trial_projection(trials).where(
+        *scope.member_predicates(),
+        trials.deleted_at.is_(None),
         TaskModel.org_id == org_id,
         TaskModel.deleted_at.is_(None),
     )
+    return query, trials
 
 
 async def get_experiment_focus_core(
@@ -607,16 +613,14 @@ async def get_experiment_focus_core(
 
     trial_row = None
     if trial_id:
-        trial_query = (
+        trial_query, trials = (
             _experiment_trial_rows_query(experiment_id=experiment_id, org_id=org_id)
             if _require_grid_trial_visibility
             else _member_experiment_focus_trial_query(
                 experiment_id=experiment_id, org_id=org_id
             )
         )
-        trial_result = await session.execute(
-            trial_query.where(TrialModel.id == trial_id)
-        )
+        trial_result = await session.execute(trial_query.where(trials.id == trial_id))
         trial_row = trial_result.mappings().one_or_none()
         if trial_row is None:
             raise HTTPException(status_code=404, detail="Trial not found")
@@ -704,22 +708,22 @@ async def get_experiment_trial_page_core(
         )
     else:
         experiment = _experiment
-    query = _experiment_trial_rows_query(experiment_id=experiment_id, org_id=org_id)
+    query, trials = _experiment_trial_rows_query(
+        experiment_id=experiment_id, org_id=org_id
+    )
     if before_created_at is not None:
         query = query.where(
             or_(
-                TrialModel.created_at < before_created_at,
+                trials.created_at < before_created_at,
                 and_(
-                    TrialModel.created_at == before_created_at,
-                    TrialModel.id < before_trial_id,
+                    trials.created_at == before_created_at,
+                    trials.id < before_trial_id,
                 ),
             )
         )
     limit = max(1, min(limit, TRIAL_PAGE_MAX_TRIALS))
     result = await session.execute(
-        query.order_by(TrialModel.created_at.desc(), TrialModel.id.desc()).limit(
-            limit + 1
-        )
+        query.order_by(trials.created_at.desc(), trials.id.desc()).limit(limit + 1)
     )
     rows = list(result.mappings().all())
     has_more = len(rows) > limit

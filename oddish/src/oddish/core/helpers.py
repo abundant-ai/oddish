@@ -7,10 +7,11 @@ import json
 import logging
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from typing import Any
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
@@ -728,49 +729,105 @@ async def fetch_experiment_effective_version_ids(
     }
 
 
-def experiment_effective_versions_selectable(
-    *, experiment_id: str, task_ids: Sequence[str] | None = None
+EXPERIMENT_VISIBLE_TRIAL_COLUMNS = (
+    TrialModel.id,
+    TrialModel.task_id,
+    TrialModel.task_version_id,
+    TrialModel.status,
+    TrialModel.reward,
+    TrialModel.agent,
+    TrialModel.created_at,
+)
+
+
+def experiment_visible_trials_selectable(
+    scope: Any,
+    *,
+    task_ids: Sequence[str] | None = None,
+    columns: Sequence[Any] = EXPERIMENT_VISIBLE_TRIAL_COLUMNS,
+    name: str = "experiment_visible_trials",
 ):
-    """One experiment-relevant version per task, as a reusable SQL subquery."""
-    from oddish.core.experiment_membership import visible_experiment_trial_predicates
+    """Grid-visible member trials, each carrying its task's effective version.
+
+    ``effective_task_version_id`` / ``effective_task_version`` repeat, on every
+    row of a task, the version the experiment displays for that task: the
+    task's default version when a visible trial represents it, otherwise the
+    highest represented version, ordered by the integer
+    ``task_versions.version`` (v10 after v9, not before). Both are NULL when no
+    visible trial of the task has a live version row; callers then keep every
+    row of that task instead of filtering on a version.
+
+    Only ``columns`` (``TrialModel`` attributes) are carried out, so the sort
+    behind the window moves narrow rows. One window over the member rows
+    replaces the earlier ranked subquery that was joined back to the trials:
+    Postgres estimated that subquery two orders of magnitude too small and
+    nested-looped every trial against it.
+    """
     from oddish.db import TaskVersionModel  # local import: avoid cycle
 
-    ranked = (
+    trials = scope.trials
+    # A trial is a version candidate only when its version row is live; the
+    # left join keeps versionless and deleted-version trials in the window so
+    # they still count for a task that has no candidate at all.
+    candidate: Any = case((TaskVersionModel.id.is_not(None), trials.task_version_id))
+    ordering: tuple[Any, ...] = (
+        candidate.is_(None),
+        case((trials.task_version_id == TaskModel.current_version_id, 0), else_=1),
+        TaskVersionModel.version.desc().nulls_last(),
+    )
+    query = (
         select(
-            TrialModel.task_id,
-            TrialModel.task_version_id,
-            TaskVersionModel.version.label("task_version"),
-            func.row_number()
-            .over(
-                partition_by=TrialModel.task_id,
-                order_by=(
-                    case(
-                        (TrialModel.task_version_id == TaskModel.current_version_id, 0),
-                        else_=1,
-                    ),
-                    TaskVersionModel.version.desc(),
-                ),
-            )
-            .label("rank"),
+            *(getattr(trials, column.key).label(column.key) for column in columns),
+            func.first_value(candidate)
+            .over(partition_by=trials.task_id, order_by=ordering)
+            .label("effective_task_version_id"),
+            func.first_value(TaskVersionModel.version)
+            .over(partition_by=trials.task_id, order_by=ordering)
+            .label("effective_task_version"),
         )
-        .join(TaskModel, TaskModel.id == TrialModel.task_id)
-        .join(TaskVersionModel, TaskVersionModel.id == TrialModel.task_version_id)
-        .where(
-            *visible_experiment_trial_predicates(experiment_id),
-            TaskModel.deleted_at.is_(None),
-            TaskVersionModel.deleted_at.is_(None),
+        .select_from(trials)
+        .join(TaskModel, TaskModel.id == trials.task_id)
+        .outerjoin(
+            TaskVersionModel,
+            and_(
+                TaskVersionModel.id == trials.task_version_id,
+                TaskVersionModel.deleted_at.is_(None),
+            ),
         )
+        .where(*scope.visible_predicates(), TaskModel.deleted_at.is_(None))
     )
     if task_ids is not None:
-        ranked = ranked.where(TrialModel.task_id.in_(list(task_ids)))
-    ranked = ranked.subquery("experiment_version_candidates")
+        query = query.where(trials.task_id.in_(list(task_ids)))
+    return query.subquery(name)
+
+
+def experiment_effective_versions_selectable(
+    *,
+    experiment_id: str,
+    task_ids: Sequence[str] | None = None,
+    scope: Any | None = None,
+    org_id: str | None = None,
+):
+    """One experiment-relevant version per task, as a reusable SQL subquery.
+
+    Tasks with no version candidate are omitted. Reads from
+    :func:`experiment_trial_scope`, so only the experiment's own rows are
+    ranked; pass ``scope`` to share one membership subquery across the
+    subqueries of a single statement.
+    """
+    from oddish.core.experiment_membership import experiment_trial_scope
+
+    if scope is None:
+        scope = experiment_trial_scope(experiment_id, org_id=org_id)
+    visible = experiment_visible_trials_selectable(scope, task_ids=task_ids)
     return (
         select(
-            ranked.c.task_id,
-            ranked.c.task_version_id,
-            ranked.c.task_version,
+            visible.c.task_id,
+            visible.c.effective_task_version_id.label("task_version_id"),
+            visible.c.effective_task_version.label("task_version"),
         )
-        .where(ranked.c.rank == 1)
+        .where(visible.c.effective_task_version_id.is_not(None))
+        .distinct()
         .subquery("experiment_effective_versions")
     )
 
