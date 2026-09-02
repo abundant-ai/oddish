@@ -346,21 +346,25 @@ def test_experiment_open_sql_reuses_visibility_and_version_rules():
     assert "FROM trials" not in identity_page_sql
 
     for sql in (summary_sql, page_sql):
-        assert "experiment_trials" in sql
-        assert "trials.kind = 'agent'" in sql
-        assert "trials.is_probe IS false" in sql
-        assert "trials.superseded_by_trial_id IS NULL" in sql
-        assert "trials.deleted_at IS NULL" in sql
-        assert "row_number() OVER" in sql
+        # Membership is a FROM clause: the experiment's homed rows and its
+        # gathered rows are two index-seekable branches of one UNION ALL, and
+        # the visibility rules filter that alias. The whole ``trials`` table
+        # is never filtered with ``experiment_id = X OR id IN (gathered)``.
+        assert "FROM trials \nWHERE trials.experiment_id = 'experiment-1'" in sql
+        assert "JOIN experiment_trials ON experiment_trials.trial_id = trials.id" in sql
+        assert "UNION ALL" in sql
+        assert "trials.experiment_id = 'experiment-1' OR" not in sql
+        assert ".kind = 'agent'" in sql
+        assert ".is_probe IS false" in sql
+        assert ".superseded_by_trial_id IS NULL" in sql
+        assert ".deleted_at IS NULL" in sql
+        assert "first_value(" in sql
+        assert "OVER (PARTITION BY" in sql
         assert "task_versions.version DESC" in sql
-    for heavy_column in (
-        "trials.result",
-        "trials.analysis",
-        "trials.phase_timing",
-        "trials.harbor_config",
-        "trials.error_message",
-    ):
-        assert heavy_column not in page_sql
+    # The page reads task shells plus aggregates; no trial column, heavy or
+    # otherwise, reaches its select list.
+    page_select_list = page_sql.split("\nFROM", 1)[0]
+    assert "trials." not in page_select_list
 
 
 def test_public_experiment_open_never_queries_or_serializes_task_owners(monkeypatch):
@@ -443,7 +447,8 @@ def test_later_experiment_page_skips_summary_and_bounds_trial_aggregation():
     assert response.has_active_trials is False
     page_sql = _sql(session.calls[2])
     assert "tasks.id IN ('task-101')" in page_sql
-    assert "trials.task_id IN ('task-101')" in page_sql
+    # Trial columns read from the membership alias, not the ``trials`` table.
+    assert ".task_id IN ('task-101')" in page_sql
 
 
 def test_experiment_focus_resolves_a_task_outside_the_loaded_page():
@@ -499,13 +504,13 @@ def test_experiment_focus_uses_the_trial_as_host_task_source(monkeypatch):
     assert response.trial is not None
     assert response.trial.id == trial.id
     trial_sql = _sql(session.calls[1])
-    assert "trials.id = 'trial-009'" in trial_sql
+    assert ".id = 'trial-009'" in trial_sql
     assert "tasks.id = 'stale-task-id'" not in trial_sql
     assert "experiment_trials" in trial_sql
-    assert "trials.kind = 'agent'" not in trial_sql
-    assert "trials.is_probe IS false" not in trial_sql
-    assert "trials.superseded_by_trial_id IS NULL" not in trial_sql
-    assert "experiment_effective_versions" not in trial_sql
+    assert ".kind = 'agent'" not in trial_sql
+    assert ".is_probe IS false" not in trial_sql
+    assert ".superseded_by_trial_id IS NULL" not in trial_sql
+    assert "effective_task_version_id" not in trial_sql
 
 
 def test_public_experiment_focus_keeps_grid_trial_visibility():
@@ -533,10 +538,10 @@ def test_public_experiment_focus_keeps_grid_trial_visibility():
     assert response.trial.id == trial.id
     assert "user" not in response.task.model_dump()
     trial_sql = _sql(session.calls[0])
-    assert "trials.kind = 'agent'" in trial_sql
-    assert "trials.is_probe IS false" in trial_sql
-    assert "trials.superseded_by_trial_id IS NULL" in trial_sql
-    assert "experiment_effective_versions" in trial_sql
+    assert ".kind = 'agent'" in trial_sql
+    assert ".is_probe IS false" in trial_sql
+    assert ".superseded_by_trial_id IS NULL" in trial_sql
+    assert "effective_task_version_id" in trial_sql
     task_sql = _sql(session.calls[1])
     assert 'tasks."user"' not in task_sql
 
@@ -547,10 +552,10 @@ def test_effective_version_selectable_filters_before_ranking():
             experiment_id="experiment-1", task_ids=["task-1", "task-2"]
         )
     )
-    assert "trials.task_id IN ('task-1', 'task-2')" in sql
-    assert "trials.task_version_id = tasks.current_version_id" in sql
+    assert ".task_id IN ('task-1', 'task-2')" in sql
+    assert ".task_version_id = tasks.current_version_id" in sql
     assert "task_versions.version DESC" in sql
-    assert "experiment_version_candidates.rank = 1" in sql
+    assert "effective_task_version_id IS NOT NULL" in sql
 
 
 def test_trial_page_is_flat_bounded_and_omits_detail_columns(monkeypatch):
@@ -596,14 +601,20 @@ def test_trial_page_is_flat_bounded_and_omits_detail_columns(monkeypatch):
 
     sql = _sql(session.calls[1])
     assert "LIMIT 2" in sql
-    assert "trials.kind = 'agent'" in sql
-    assert "trials.is_probe IS false" in sql
-    assert "trials.superseded_by_trial_id IS NULL" in sql
-    assert "trials.result" not in sql
-    assert "trials.phase_timing" not in sql
-    assert "trials.harbor_config" not in sql
-    assert "trials.error_message" not in sql
-    assert "left(trials.analysis ->> 'classification', 100)" in sql
+    assert ".kind = 'agent'" in sql
+    assert ".is_probe IS false" in sql
+    assert ".superseded_by_trial_id IS NULL" in sql
+    # The membership subquery carries every trial column; only the select
+    # list decides what reaches the response, so check that.
+    select_list = sql.split("\nFROM", 1)[0]
+    for heavy_column in (
+        ".result AS",
+        ".phase_timing AS",
+        ".harbor_config AS",
+        ".error_message AS",
+    ):
+        assert heavy_column not in select_list
+    assert ".analysis ->> 'classification', 100)" in select_list
 
 
 def test_trial_page_requires_both_page_fields_before_querying():
