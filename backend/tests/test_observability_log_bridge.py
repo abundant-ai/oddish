@@ -11,10 +11,13 @@ from __future__ import annotations
 
 import io
 import logging
+import sys
+from types import SimpleNamespace
 
 import pytest
 
 import observability
+from oddish import observability as oddish_observability
 
 
 @pytest.fixture
@@ -102,6 +105,52 @@ def test_bridge_attaches_logfire_handler_when_active(clean_oddish_logger, monkey
 
     assert len(made) == 1
     assert made[0] in clean_oddish_logger.handlers
+
+
+def test_bridge_forwards_ordinary_logs_but_filters_direct_structured_records(
+    clean_oddish_logger, monkeypatch
+):
+    direct_calls: list[tuple[str, dict]] = []
+    bridged_records: list[logging.LogRecord] = []
+
+    class _FakeLogfireHandler(logging.Handler):
+        def emit(self, record):
+            bridged_records.append(record)
+
+    fake_logfire = SimpleNamespace(
+        LogfireLoggingHandler=_FakeLogfireHandler,
+        warning=lambda message, **attributes: direct_calls.append(
+            (message, attributes)
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "logfire", fake_logfire)
+    monkeypatch.setattr(oddish_observability, "_configured", True)
+
+    observability.configure_stdlib_log_bridge(logfire_active=True)
+    stderr = io.StringIO()
+    _stream_handler(clean_oddish_logger).stream = stderr
+
+    logging.getLogger("oddish.worker").info("ordinary worker progress")
+    oddish_observability.log_warning(
+        "Worker job scheduled for retry",
+        tags=("worker-job",),
+        metric="worker_job_retry_scheduled",
+    )
+
+    assert [record.getMessage() for record in bridged_records] == [
+        "ordinary worker progress"
+    ]
+    assert direct_calls == [
+        (
+            "Worker job scheduled for retry",
+            {
+                "_tags": ["worker-job"],
+                "metric": "worker_job_retry_scheduled",
+            },
+        )
+    ]
+    assert "ordinary worker progress" in stderr.getvalue()
+    assert "Worker job scheduled for retry" in stderr.getvalue()
 
 
 def test_bridge_skips_logfire_handler_when_inactive(clean_oddish_logger):

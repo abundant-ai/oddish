@@ -37,6 +37,12 @@ _last_dispatch_queue_keys: set[str] = set()
 _AGGREGATE_QUEUE_KEY = "__all__"
 DispatchCycleOutcome = Literal["success", "skipped", "cancelled", "error"]
 
+# Standard-library records carrying this attribute have already been sent as a
+# structured event through Logfire's direct API. The hosted bridge keeps the
+# same record on stderr but filters it from Logfire to avoid an unstructured
+# duplicate.
+LOGFIRE_DIRECT_RECORD_ATTRIBUTE = "oddish_logfire_direct"
+
 
 def configure_observability(service_name: str) -> bool:
     """Initialize Logfire for a standalone oddish process (e.g. the off-Modal
@@ -475,6 +481,43 @@ def span(name: str, /, **attributes):
     return nullcontext()
 
 
+def _log_structured(
+    message: str,
+    *,
+    level: Literal["warning", "error"],
+    tags: tuple[str, ...] = (),
+    attributes: dict,
+) -> None:
+    """Write one readable process record and one structured Logfire event."""
+    sent_directly = False
+    if _configured:
+        try:
+            import logfire
+
+            getattr(logfire, level)(message, _tags=list(tags) or None, **attributes)
+            sent_directly = True
+        except Exception:
+            # The process record below is the fallback. Observability must not
+            # interrupt worker execution, including when Logfire itself fails.
+            pass
+
+    try:
+        rendered_attributes = " ".join(
+            f"{key}={value!r}" for key, value in sorted(attributes.items())
+        )
+        logger.log(
+            logging.WARNING if level == "warning" else logging.ERROR,
+            "%s%s",
+            message,
+            f" {rendered_attributes}" if rendered_attributes else "",
+            extra={LOGFIRE_DIRECT_RECORD_ATTRIBUTE: sent_directly},
+        )
+    except Exception:
+        # A broken logging handler or non-renderable attribute must not escape
+        # into the job whose failure we are trying to report.
+        pass
+
+
 def log_warning(
     message: str,
     *,
@@ -487,22 +530,27 @@ def log_warning(
     The direct Logfire record is structured so alert rules can group/filter by
     attributes such as ``model`` instead of parsing console text.
     """
-    rendered_attributes = " ".join(
-        f"{key}={value!r}" for key, value in sorted(attributes.items())
-    )
-    logger.warning(
-        "%s%s",
+    _log_structured(
         message,
-        f" {rendered_attributes}" if rendered_attributes else "",
+        level="warning",
+        tags=tags,
+        attributes=attributes,
     )
-    if not _configured:
-        return
-    try:
-        import logfire
 
-        logfire.warning(message, _tags=list(tags) or None, **attributes)
-    except Exception:
-        logger.warning("logfire.warning(%r) failed", message, exc_info=True)
+
+def log_error(
+    message: str,
+    *,
+    tags: tuple[str, ...] = (),
+    **attributes,
+) -> None:
+    """Emit an error to process logs and, when configured, Logfire."""
+    _log_structured(
+        message,
+        level="error",
+        tags=tags,
+        attributes=attributes,
+    )
 
 
 def log_unpriced_trial_if_needed(

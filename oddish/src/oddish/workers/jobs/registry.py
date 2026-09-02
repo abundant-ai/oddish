@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 from oddish.db import WorkerJobKind
+from oddish.workers.queue.provider_failures import ProviderFailureClassification
 
 
 class HandlerAlreadyRegisteredError(RuntimeError):
@@ -41,6 +42,10 @@ class JobFailure:
     error_message: str
     retryable: bool = True
     retry_after_seconds: float | None = None
+    exception_type: str | None = None
+    request_id: str | None = None
+    session_id: str | None = None
+    provider_failure: ProviderFailureClassification | None = None
 
 
 @dataclass
@@ -72,12 +77,20 @@ class JobOutcome:
         *,
         retryable: bool = True,
         retry_after_seconds: float | None = None,
+        exception_type: str | None = None,
+        request_id: str | None = None,
+        session_id: str | None = None,
+        provider_failure: ProviderFailureClassification | None = None,
     ) -> "JobOutcome":
         return cls(
             failure=JobFailure(
                 error_message=error_message,
                 retryable=retryable,
                 retry_after_seconds=retry_after_seconds,
+                exception_type=exception_type,
+                request_id=request_id,
+                session_id=session_id,
+                provider_failure=provider_failure,
             )
         )
 

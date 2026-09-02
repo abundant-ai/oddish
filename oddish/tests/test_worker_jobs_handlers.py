@@ -29,6 +29,7 @@ from oddish.db import (  # noqa: E402
 )
 from oddish.workers.jobs import handlers as handlers_module  # noqa: E402
 from oddish.workers.jobs.handlers import TrialJobHandler  # noqa: E402
+from oddish.workers.harbor.outcome import HarborOutcome  # noqa: E402
 from oddish.workers.queue.worker_job_single_job import ClaimedWorkerJob  # noqa: E402
 
 
@@ -148,13 +149,57 @@ async def test_trial_handler_threads_harbor_retry_after_hint(monkeypatch):
     _patch_run(
         monkeypatch,
         "run_trial_job",
-        result=SimpleNamespace(retry_after_seconds=90.0),
+        result=HarborOutcome(
+            reward=None,
+            error="provider overloaded",
+            exit_code=1,
+            duration_sec=1.0,
+            job_result_path=None,
+            job_dir=None,
+            retry_after_seconds=90.0,
+        ),
     )
 
     outcome = await TrialJobHandler().run(_trial_claim())
 
     assert outcome.failure is not None
     assert outcome.failure.retry_after_seconds == 90.0
+
+
+@pytest.mark.asyncio
+async def test_trial_handler_threads_structured_provider_failure(monkeypatch):
+    trial_row = SimpleNamespace(
+        status=TrialStatus.RETRYING,
+        error_message="provider request failed",
+    )
+    harbor_outcome = HarborOutcome(
+        reward=None,
+        error="provider request failed",
+        exit_code=1,
+        duration_sec=1.0,
+        job_result_path=None,
+        job_dir=None,
+        exception_type="RateLimitError",
+        http_status=429,
+        request_id="request-123",
+        session_id="session-456",
+        retry_after_seconds=90.0,
+    )
+    monkeypatch.setattr(
+        handlers_module, "get_session", _fake_get_session_factory(trial_row)
+    )
+    _patch_run(monkeypatch, "run_trial_job", result=harbor_outcome)
+
+    outcome = await TrialJobHandler().run(_trial_claim())
+
+    assert outcome.failure is not None
+    assert outcome.failure.exception_type == "RateLimitError"
+    assert outcome.failure.request_id == "request-123"
+    assert outcome.failure.session_id == "session-456"
+    assert outcome.failure.retry_after_seconds == 90.0
+    assert outcome.failure.provider_failure is not None
+    assert outcome.failure.provider_failure.failure_class == "rate_limit"
+    assert outcome.failure.provider_failure.provider_status_code == 429
 
 
 @pytest.mark.asyncio

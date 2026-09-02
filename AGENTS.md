@@ -143,6 +143,14 @@ High-level flow:
    optional HTTP status, request ID, session ID, and retry-after metadata.
    Harbor's `TrialQueue` still owns whole-trial retries, and Oddish
    `worker_jobs` owns durable fresh-sandbox retries across worker processes.
+   The trial handler carries Harbor's structured failure fields into the
+   worker-job outcome; non-trial worker kinds never infer provider failures
+   from generic error strings. A failure transition compares `attempts` with
+   the current `max_attempts` inside the same atomic `worker_jobs` update that
+   chooses `RETRYING` or `FAILED`. If trial settlement committed `FAILED`
+   before its worker process died, stale-heartbeat cleanup treats that trial
+   row as authoritative and fails the stale worker job instead of clearing
+   `finished_at` and scheduling another provider request.
 4. Trajectory analysis is **task-scoped** and runs as a trial: when every
    agent trial of a task is terminal, one QA trial (`trials.kind = 'qa'`)
    is created on the same task. Its agent classifies
@@ -420,6 +428,13 @@ accepted verdict.
   result until a replacement QA pass succeeds or terminally fails
 - shared queue-slot leasing, per-queue-key concurrency limits, and
   per-user fairness on `TRIAL` claims
+- provider account-cap errors with a parsed future recovery time are terminal
+  for the current trial because workers reuse the same credential across
+  attempts. Ordinary HTTP 429 rate limits, low-credit responses, timeouts, and
+  provider availability errors retain the normal retry budget. Oddish does not
+  automatically fail over to another credential or model; that would change
+  credential selection, billing attribution, and the model that performs the
+  trial.
 - database-backed admin concurrency overrides; these take precedence over
   `ODDISH_MODEL_CONCURRENCY_OVERRIDES` and are read by both the dispatcher plan
   and each worker's slot acquisition. This is the supported way to change a

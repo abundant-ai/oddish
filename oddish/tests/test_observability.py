@@ -38,6 +38,45 @@ def test_log_warning_emits_structured_logfire_record_when_configured(
     ]
     assert "metric='trial_cost_unpriced'" in caplog.text
     assert "model='unknown-model'" in caplog.text
+    assert (
+        getattr(caplog.records[-1], observability.LOGFIRE_DIRECT_RECORD_ATTRIBUTE)
+        is True
+    )
+
+
+def test_log_error_emits_structured_logfire_record_when_configured(
+    monkeypatch, caplog
+) -> None:
+    calls = []
+    fake_logfire = SimpleNamespace(
+        error=lambda message, **attributes: calls.append((message, attributes))
+    )
+    monkeypatch.setitem(__import__("sys").modules, "logfire", fake_logfire)
+    monkeypatch.setattr(observability, "_configured", True)
+    caplog.set_level(logging.ERROR, logger=observability.__name__)
+
+    observability.log_error(
+        "Worker job failed",
+        tags=("worker-job", "provider-failure"),
+        metric="worker_job_failed",
+        terminal=True,
+    )
+
+    assert calls == [
+        (
+            "Worker job failed",
+            {
+                "_tags": ["worker-job", "provider-failure"],
+                "metric": "worker_job_failed",
+                "terminal": True,
+            },
+        )
+    ]
+    assert "metric='worker_job_failed'" in caplog.text
+    assert (
+        getattr(caplog.records[-1], observability.LOGFIRE_DIRECT_RECORD_ATTRIBUTE)
+        is True
+    )
 
 
 def test_log_warning_keeps_standard_log_when_logfire_is_disabled(
@@ -58,6 +97,52 @@ def test_log_warning_keeps_standard_log_when_logfire_is_disabled(
 
     assert calls == []
     assert "Trial has token usage but no resolved cost" in caplog.text
+    assert (
+        getattr(caplog.records[-1], observability.LOGFIRE_DIRECT_RECORD_ATTRIBUTE)
+        is False
+    )
+
+
+@pytest.mark.parametrize(
+    ("helper", "level"),
+    [
+        (observability.log_warning, logging.WARNING),
+        (observability.log_error, logging.ERROR),
+    ],
+)
+def test_structured_helpers_keep_stderr_fallback_without_logfire(
+    monkeypatch, caplog, helper, level
+) -> None:
+    monkeypatch.setattr(observability, "_configured", False)
+    caplog.set_level(level, logger=observability.__name__)
+
+    helper("Worker event", metric="worker_event", attempt=2)
+
+    assert "Worker event" in caplog.text
+    assert "attempt=2" in caplog.text
+
+
+def test_structured_logging_failure_never_escapes_worker_execution(
+    monkeypatch, caplog
+) -> None:
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("logfire unavailable")
+
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "logfire",
+        SimpleNamespace(warning=fail),
+    )
+    monkeypatch.setattr(observability, "_configured", True)
+    caplog.set_level(logging.WARNING, logger=observability.__name__)
+
+    observability.log_warning("Worker event", metric="worker_event")
+
+    assert "Worker event" in caplog.text
+    assert (
+        getattr(caplog.records[-1], observability.LOGFIRE_DIRECT_RECORD_ATTRIBUTE)
+        is False
+    )
 
 
 def test_unpriced_trial_helper_only_logs_null_cost_with_tokens(monkeypatch) -> None:

@@ -88,6 +88,7 @@ from oddish.workers.harbor.runner import (
 )
 from oddish.workers.harbor import live_tail
 from oddish.workers.queue.db_helpers import _trial_session
+from oddish.workers.queue.provider_failures import classify_provider_failure
 from oddish.workers.queue.shared import console
 from oddish.workers.queue.trial_failures import (
     MODAL_IMAGE_BUILD_FAILED_STAGE,
@@ -349,14 +350,25 @@ _NON_HARBOR_RETRYABLE_EXCEPTION_TYPES = {
 
 
 def _is_non_retryable_outcome(trial: object, outcome: HarborOutcome | None) -> bool:
-    if outcome is None or outcome.exception_type is None:
+    if outcome is None:
         return False
-    if outcome.exception_type in _NON_HARBOR_RETRYABLE_EXCEPTION_TYPES:
+    if outcome.exception_type is not None:
+        if outcome.exception_type in _NON_HARBOR_RETRYABLE_EXCEPTION_TYPES:
+            return True
+        harbor_config = getattr(trial, "harbor_config", None)
+        retry = harbor_config.get("retry") if isinstance(harbor_config, dict) else None
+        if not RetryConfig.model_validate(retry or {}).should_retry(
+            outcome.exception_type
+        ):
+            return True
+
+    provider_failure = classify_provider_failure(outcome.error)
+    if provider_failure.failure_class == "permission_denied":
         return True
-    harbor_config = getattr(trial, "harbor_config", None)
-    retry = harbor_config.get("retry") if isinstance(harbor_config, dict) else None
-    return not RetryConfig.model_validate(retry or {}).should_retry(
-        outcome.exception_type
+    return bool(
+        provider_failure.failure_class == "provider_usage_limit"
+        and provider_failure.recovery_at is not None
+        and provider_failure.recovery_at > datetime.now(timezone.utc)
     )
 
 
@@ -998,6 +1010,7 @@ async def _store_trial_results(
 
         if outcome:
             is_timeout = _is_agent_timeout_error_message(outcome.error)
+            provider_failure = classify_provider_failure(outcome.error)
             has_non_retryable_oddish_failure = (
                 outcome.exception_type in _NON_HARBOR_RETRYABLE_EXCEPTION_TYPES
             )
@@ -1023,7 +1036,11 @@ async def _store_trial_results(
             if analysis_artifact_error:
                 trial.error_message = analysis_artifact_error
             elif outcome.error:
-                trial.error_message = outcome.error
+                trial.error_message = (
+                    provider_failure.error_summary
+                    if provider_failure.failure_class == "provider_usage_limit"
+                    else outcome.error
+                )
             elif derived_reward is not None:
                 trial.error_message = None
             trial.harbor_result_path = (
@@ -1086,8 +1103,11 @@ async def _store_trial_results(
                 ):
                     trial.status = TrialStatus.FAILED
                     trial.finished_at = utcnow()
+                    failure_reason = (
+                        outcome.exception_type or provider_failure.failure_class
+                    )
                     console.print(
-                        f"[red]Trial {trial_id} FAILED ({outcome.exception_type}; "
+                        f"[red]Trial {trial_id} FAILED ({failure_reason}; "
                         "non-retryable)[/red]"
                     )
                 elif trial.attempts < trial.max_attempts:
@@ -2308,4 +2328,6 @@ async def run_trial_job(
         # Same for the job-scoped credential token (revoke on terminal status).
         if job_scoped_bundle is not None and worker_job_id:
             await _revoke_job_credentials(worker_job_id, trial_id)
-    return execution.outcome if execution is not None and not trial_terminal else None
+    # The worker-job adapter needs Harbor's structured exception/status/request
+    # facts even when this settlement made the domain row terminal.
+    return execution.outcome if execution is not None else None

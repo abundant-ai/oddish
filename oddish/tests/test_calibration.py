@@ -188,6 +188,10 @@ def test_count_rate_limit_reuses_matcher():
         ("openai/gpt-5.2", "Error: 429 Too Many Requests"),
         ("openai/gpt-5.2", "rate limit exceeded"),
         ("openai/gpt-5.2", "tokens per minute quota"),
+        (
+            "openai/gpt-5.2",
+            "API Error: 400 You have reached your specified API usage limits.",
+        ),
         ("openai/gpt-5.2", "some unrelated harness crash"),
         ("anthropic/opus", "throttled by provider"),
         ("anthropic/opus", None),

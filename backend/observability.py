@@ -16,6 +16,8 @@ import os
 from threading import Lock
 from typing import TYPE_CHECKING
 
+from oddish.observability import LOGFIRE_DIRECT_RECORD_ATTRIBUTE
+
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
@@ -216,6 +218,13 @@ def configure_logfire(service_name: str) -> bool:
 _log_bridge_configured = False
 
 
+class _SkipDirectLogfireRecords(logging.Filter):
+    """Keep directly emitted structured events out of the stdlib bridge."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not bool(getattr(record, LOGFIRE_DIRECT_RECORD_ATTRIBUTE, False))
+
+
 def configure_stdlib_log_bridge(
     *, logfire_active: bool, level: int = logging.INFO
 ) -> None:
@@ -257,7 +266,9 @@ def configure_stdlib_log_bridge(
             try:
                 import logfire
 
-                oddish_logger.addHandler(logfire.LogfireLoggingHandler())
+                logfire_handler = logfire.LogfireLoggingHandler()
+                logfire_handler.addFilter(_SkipDirectLogfireRecords())
+                oddish_logger.addHandler(logfire_handler)
             except Exception:
                 logger.warning("failed to attach LogfireLoggingHandler", exc_info=True)
 
