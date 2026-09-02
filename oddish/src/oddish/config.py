@@ -710,18 +710,7 @@ def to_meta_model_id(model: str | None) -> str | None:
 GEOMETRIC_PROVIDER = "geometric"
 GEOMETRIC_DEFAULT_BASE_URL = "https://api.geometric.ai/v1"
 _GEOMETRIC_PROVIDER_PREFIXES: frozenset[str] = frozenset({"geometric", "gm"})
-# The ids this deployment actually serves. Unlike z.ai/Meta/Moonshot -- multi-model
-# vendor APIs where an open prefix is correct, since new models appear without a
-# code change -- a Geometric endpoint is one vLLM process serving exactly one
-# ``--served-model-name``. An open prefix would therefore buy nothing and cost
-# two things: a typo (``geometric/glm-5.4``) would burn a queue slot, a worker,
-# and a sandbox before dying on the endpoint's 404, and -- the real hazard --
-# ``geometric/gpt-4o`` would reach litellm as ``openai/gpt-4o``, whose DEFAULT
-# route is public OpenAI. Only ``OPENAI_BASE_URL`` keeps that on our own box, so
-# a dropped or unresolved base URL would ship task data to OpenAI with whatever
-# key is in scope. Same failure mode ``get_openai_runtime_env`` already refuses
-# to allow for the Azure route; gate it here rather than fail open.
-# Keep this in sync with ``--served-model-name`` on the endpoint.
+# Geometric only serves GLM-5.3 at the moment.
 _GEOMETRIC_SERVED_MODELS: frozenset[str] = frozenset({"glm-5.3"})
 
 
@@ -2294,17 +2283,7 @@ class Settings(BaseSettings):
         return env
 
     def get_geometric_anthropic_base_url(self) -> str:
-        """Base URL for Geometric's Anthropic-compatible surface.
-
-        The same vLLM process serves both shapes, but the two clients want
-        different roots: litellm's ``openai/`` provider appends
-        ``/chat/completions`` to ``OPENAI_BASE_URL`` (so that one carries the
-        ``/v1``), while Claude Code appends ``/v1/messages`` to
-        ``ANTHROPIC_BASE_URL`` (so that one must NOT). Derive the Anthropic root
-        by dropping a trailing ``/v1`` -- correct for vLLM, and overridable with
-        GEOMETRIC_ANTHROPIC_BASE_URL for a gateway that lays its paths out
-        differently.
-        """
+        """Base URL for Geometric's Anthropic-compatible surface."""
         explicit = (self.geometric_anthropic_base_url or "").strip()
         if explicit:
             return explicit.rstrip("/")

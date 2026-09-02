@@ -674,8 +674,7 @@ def test_claude_code_geometric_uses_the_anthropic_surface(monkeypatch) -> None:
         raw_harbor_config={},
     )
 
-    # One vLLM process, two shapes. Claude Code appends /v1/messages, so its
-    # root must NOT carry the /v1 that the OpenAI route needs.
+    # Claude Code appends /v1/messages, so its root must NOT carry the /v1 that the OpenAI route needs.
     assert agent_config.env["ANTHROPIC_BASE_URL"] == "http://box.example:8600"
     assert agent_config.env["ANTHROPIC_AUTH_TOKEN"] == "${GEOMETRIC_API_KEY}"
     assert agent_config.env["ANTHROPIC_MODEL"] == "glm-5.3"

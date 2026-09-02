@@ -102,9 +102,6 @@ async def check_model_endpoint(
     started = monotonic()
     resolved_model = model
     try:
-        # Annotated because the initializer is int-only: without it mypy infers
-        # dict[str, int] and every branch below that sets api_key/api_base
-        # (anthropic-hdo, geometric, azure) is a type error.
         kwargs: dict[str, Any] = (
             {"max_completion_tokens": 32}
             if provider == "openai"
@@ -121,7 +118,7 @@ async def check_model_endpoint(
             resolved_model = f"anthropic/{api_model}"
             kwargs["api_key"] = hdo_api_key
         elif provider == "geometric":
-            # Geometric is an OpenAI-compatible endpoint litellm has no provider
+            # Geometric is an endpoint litellm has no provider
             # entry for, so address it as openai/<bare-id> pinned to our own
             # api_base -- the same shape the mini-swe route uses. Without this
             # branch litellm gets a bare ``geometric/...`` id and raises

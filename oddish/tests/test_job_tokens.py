@@ -177,8 +177,6 @@ def test_scoped_model_env_geometric_only_carries_geometric_key() -> None:
     env = job_tokens.scoped_model_env(
         agent="mini-swe-agent", model="geometric/glm-5.3", settings=settings
     )
-    # The one Geometric key under every name the harness reads -- and the
-    # platform OpenAI key must not ride along.
     assert env == {
         "GEOMETRIC_API_KEY": "geo-key",
         "MSWEA_API_KEY": "geo-key",

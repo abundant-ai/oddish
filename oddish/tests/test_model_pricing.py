@@ -614,13 +614,6 @@ def test_estimate_clamps_negative_token_counts() -> None:
 
 
 def test_geometric_glm_53_uses_internal_rate() -> None:
-    """Geometric's self-hosted GLM-5.3 rate, set 2026-09-02.
-
-    ``cache_write`` is pinned to 0.0, not None: populating a vLLM prefix cache
-    costs us nothing, and the endpoint does report cache-creation counts, so
-    None would let estimate_cost_usd default the rate to input * 1.25
-    ($2.1875/M) -- dearer than uncached input.
-    """
     pricing = get_model_pricing("geometric/glm-5.3")
     assert pricing == ModelPricing(
         input=1.75e-6, output=5.5e-6, cache_read=3.25e-7, cache_write=0.0

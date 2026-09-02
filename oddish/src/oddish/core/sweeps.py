@@ -66,15 +66,13 @@ def build_trial_specs_from_sweep(
         # at submit, before a trial row, queue slot, worker, and sandbox are
         # spent failing on it -- and before a foreign id could reach litellm as
         # ``openai/<id>``, whose default route is public OpenAI. This is the
-        # chokepoint both the single and batch submit paths share; it is NOT in
-        # normalize_trial_model, which must stay total for reads over stored
-        # rows (see geometric_bare_model_id).
+        # chokepoint both the single and batch submit paths share.
         if is_geometric_model(config.model):
             try:
                 require_geometric_served_model_id(config.model or "")
             except ValueError as exc:
                 # Surface as a 400 with the message, matching this module's
-                # convention -- a bare ValueError escapes as an opaque 500.
+                # convention.
                 raise HTTPException(
                     status_code=400,
                     detail=(
