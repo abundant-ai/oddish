@@ -444,6 +444,40 @@ def test_experiment_focus_uses_the_trial_as_host_task_source(monkeypatch):
     trial_sql = _sql(session.calls[1])
     assert "trials.id = 'trial-009'" in trial_sql
     assert "tasks.id = 'stale-task-id'" not in trial_sql
+    assert "experiment_trials" in trial_sql
+    assert "trials.kind = 'agent'" not in trial_sql
+    assert "trials.is_probe IS false" not in trial_sql
+    assert "trials.superseded_by_trial_id IS NULL" not in trial_sql
+    assert "experiment_effective_versions" not in trial_sql
+
+
+def test_public_experiment_focus_keeps_grid_trial_visibility():
+    trial = _trial(9)
+    trial_row = _trial_page_row(trial)
+    session = _Session(
+        _Result([trial_row]),
+        _Result([_task(1)]),
+    )
+
+    response = asyncio.run(
+        get_experiment_focus_core(
+            session,
+            experiment_id="experiment-1",
+            org_id="org-1",
+            trial_id=trial.id,
+            _experiment=_identity(),
+            _include_cost_exclusion_labels=False,
+            _require_grid_trial_visibility=True,
+        )
+    )
+
+    assert response.trial is not None
+    assert response.trial.id == trial.id
+    trial_sql = _sql(session.calls[0])
+    assert "trials.kind = 'agent'" in trial_sql
+    assert "trials.is_probe IS false" in trial_sql
+    assert "trials.superseded_by_trial_id IS NULL" in trial_sql
+    assert "experiment_effective_versions" in trial_sql
 
 
 def test_effective_version_selectable_filters_before_ranking():

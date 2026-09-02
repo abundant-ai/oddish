@@ -12,7 +12,10 @@ from sqlalchemy.orm import aliased
 from oddish.config import settings
 from oddish.core.baseline_gate import baseline_agent_clause
 from oddish.core.cost_exclusions import CostExclusions, load_cost_exclusions
-from oddish.core.experiment_membership import visible_experiment_trial_predicates
+from oddish.core.experiment_membership import (
+    trial_in_experiment,
+    visible_experiment_trial_predicates,
+)
 from oddish.core.helpers import (
     SLIM_TRIAL_RESPONSE_COLUMNS,
     _parse_github_meta,
@@ -509,23 +512,24 @@ async def get_experiment_open_core(
     return response
 
 
+def _experiment_trial_projection():
+    return select(
+        *(column.label(column.key) for column in _TRIAL_PAGE_COLUMNS),
+        TaskModel.task_path,
+        func.left(TrialModel.analysis["classification"].astext, 100).label(
+            "analysis_classification"
+        ),
+        func.left(TrialModel.analysis["subtype"].astext, 100).label("analysis_subtype"),
+        func.left(TrialModel.analysis["evidence"].astext, 1_000).label(
+            "analysis_evidence"
+        ),
+    ).join(TaskModel, TaskModel.id == TrialModel.task_id)
+
+
 def _experiment_trial_rows_query(*, experiment_id: str, org_id: str):
     effective = experiment_effective_versions_selectable(experiment_id=experiment_id)
     return (
-        select(
-            *(column.label(column.key) for column in _TRIAL_PAGE_COLUMNS),
-            TaskModel.task_path,
-            func.left(TrialModel.analysis["classification"].astext, 100).label(
-                "analysis_classification"
-            ),
-            func.left(TrialModel.analysis["subtype"].astext, 100).label(
-                "analysis_subtype"
-            ),
-            func.left(TrialModel.analysis["evidence"].astext, 1_000).label(
-                "analysis_evidence"
-            ),
-        )
-        .join(TaskModel, TaskModel.id == TrialModel.task_id)
+        _experiment_trial_projection()
         .outerjoin(effective, effective.c.task_id == TrialModel.task_id)
         .where(
             *visible_experiment_trial_predicates(experiment_id),
@@ -539,6 +543,16 @@ def _experiment_trial_rows_query(*, experiment_id: str, org_id: str):
     )
 
 
+def _member_experiment_focus_trial_query(*, experiment_id: str, org_id: str):
+    """Address historical member trials without widening public grid visibility."""
+    return _experiment_trial_projection().where(
+        trial_in_experiment(experiment_id),
+        TrialModel.deleted_at.is_(None),
+        TaskModel.org_id == org_id,
+        TaskModel.deleted_at.is_(None),
+    )
+
+
 async def get_experiment_focus_core(
     session: AsyncSession,
     *,
@@ -548,11 +562,13 @@ async def get_experiment_focus_core(
     trial_id: str | None = None,
     _experiment: Mapping[str, Any] | None = None,
     _include_cost_exclusion_labels: bool = True,
+    _require_grid_trial_visibility: bool = False,
 ) -> ExperimentFocusResponse:
     """Resolve one URL-addressed task and optional trial within an experiment."""
     if not task_selector and not trial_id:
         raise HTTPException(status_code=400, detail="A task or trial is required")
-    if _experiment is None:
+    is_member_read = _experiment is None
+    if is_member_read:
         if org_id is None:
             raise ValueError("Member experiment reads require an organization")
         experiment = await _member_experiment(
@@ -563,10 +579,15 @@ async def get_experiment_focus_core(
 
     trial_row = None
     if trial_id:
-        trial_result = await session.execute(
-            _experiment_trial_rows_query(
+        trial_query = (
+            _experiment_trial_rows_query(experiment_id=experiment_id, org_id=org_id)
+            if _require_grid_trial_visibility
+            else _member_experiment_focus_trial_query(
                 experiment_id=experiment_id, org_id=org_id
-            ).where(TrialModel.id == trial_id)
+            )
+        )
+        trial_result = await session.execute(
+            trial_query.where(TrialModel.id == trial_id)
         )
         trial_row = trial_result.mappings().one_or_none()
         if trial_row is None:
@@ -741,6 +762,7 @@ async def get_public_experiment_focus_core(
         trial_id=trial_id,
         _experiment=_public_experiment_identity(experiment),
         _include_cost_exclusion_labels=False,
+        _require_grid_trial_visibility=True,
     )
     if response.trial is not None:
         apply_model_display_names(

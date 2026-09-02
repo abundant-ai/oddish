@@ -788,7 +788,7 @@ extensions) — see `backend/README.md`.
 |------|-----------|
 | Health / dashboard | `GET /health`, `GET /dashboard` |
 | Task upload | `POST /tasks/upload/init` (returns presigned PUT URL), `POST /tasks/upload/complete` |
-| Trial import | `POST /trials/import/init`, `POST /trials/import/complete` |
+| Trial import | `POST /trials/import/init`, `POST /trials/import/complete` (extracts and validates before best-effort staging cleanup; replay reuses an already-extracted prefix) |
 | Sweeps | `POST /tasks/sweep`, `POST /tasks/sweep/batch` |
 | Tasks | `GET /tasks`, `GET /tasks/browse`, `GET /tasks/browse/experiment-options` (typeahead for the experiment filter; `facets.experiments` is deprecated/always empty; the other facet lists are served from the `trial_facets` vocabulary — write-through on trial creation plus a periodic rebuild sweep, see `oddish/src/oddish/core/trial_facets.py`), `GET /tasks/{task_id}`, `GET /tasks/{task_id}/open`, `GET /tasks/{task_id}/detail`, `GET /tasks/{task_id}/versions[/{version}]`, `PUT /tasks/{task_id}/versions/{version}/default`, `POST /tasks/cancel` (optional `experiment_id` scopes the cancel to that experiment's trials so shared tasks keep running elsewhere) |
 | Task QA | `POST /tasks/{task_id}/qa/retry`, `POST /tasks/{task_id}/qa/cancel`, `POST /tasks/{task_id}/qa/backfill` |
@@ -819,9 +819,12 @@ Experiment pages use independent task and trial cursors. The first `/open` page
 includes the exact experiment summary; later task pages request
 `include_summary=false` and receive `summary=null` so they do not repeat the
 whole-experiment aggregation. `/focus?task=...&trial=...` resolves one URL target
-without walking either cursor. Public pages use the matching token-scoped focus
-route and `/cost-totals`; paginated trial rows are never treated as final spend
-or token totals.
+without walking either cursor. Authenticated focus reads retain addressability
+for an experiment's historical, superseded, probe, and non-agent trials even
+though those rows stay absent from its grid. Public pages use the matching
+token-scoped focus route and retain the grid visibility rules, including the
+probe exclusion, plus `/cost-totals`; paginated trial rows are never treated as
+final spend or token totals.
 
 ### Configuration and model routing
 
