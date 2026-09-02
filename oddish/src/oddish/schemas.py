@@ -656,6 +656,13 @@ class QAEvalCreateRequest(BaseModel):
             "Analysis model override. Null uses the deployed production QA model."
         ),
     )
+    audit_context: Literal["current", "none"] = Field(
+        "current",
+        description=(
+            "current includes the task version's current source-audit findings; "
+            "none measures historical classifier behavior without those findings"
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_qa_eval(self) -> "QAEvalCreateRequest":
@@ -1037,6 +1044,136 @@ class ExperimentCostTotals(BaseModel):
     qa_cost_usd: float = 0.0
     owned_qa_cost_usd: float = 0.0
     qa_has_estimated: bool = False
+
+
+class ExperimentPageVerdict(BaseModel):
+    verdict: str | None = None
+    is_good: bool | None = None
+    confidence: str | None = None
+
+
+class PublicExperimentTaskRow(BaseModel):
+    id: str
+    name: str
+    status: TaskStatus
+    priority: Priority
+    task_path: str
+    github_meta: dict[str, str] | None = None
+    current_version: int | None = None
+    current_version_id: str | None = None
+    trial_version: int | None = None
+    trial_version_id: str | None = None
+    total: int = 0
+    completed: int = 0
+    failed: int = 0
+    skipped: int = 0
+    reward_success: int = 0
+    reward_sum: float = 0.0
+    reward_total: int = 0
+    run_analysis: bool = False
+    verdict_status: VerdictStatus | None = None
+    verdict: ExperimentPageVerdict | None = None
+    verdict_error: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ExperimentTaskRow(PublicExperimentTaskRow):
+    user: str
+
+
+class ExperimentPageSummary(BaseModel):
+    task_count: int = 0
+    trial_count: int = 0
+    completed: int = 0
+    failed: int = 0
+    skipped: int = 0
+    active: int = 0
+    reward_sum: float = 0.0
+    reward_total: int = 0
+    pass_count: int = 0
+    partial_count: int = 0
+    fail_count: int = 0
+    harness_error_count: int = 0
+    average_score: float | None = None
+    qa_accepted: int = 0
+    qa_rejected: int = 0
+    qa_running: int = 0
+    qa_failed: int = 0
+
+
+class PublicExperimentOpenResponse(BaseModel):
+    experiment_id: str
+    name: str
+    created_at: datetime
+    revision: datetime
+    has_active_trials: bool = False
+    summary: ExperimentPageSummary | None = None
+    tasks: list[PublicExperimentTaskRow] = Field(default_factory=list)
+    next_created_at: datetime | None = None
+    next_task_id: str | None = None
+
+
+class ExperimentOpenResponse(PublicExperimentOpenResponse):
+    owner: str | None = None
+    link: str | None = None
+    tasks: list[ExperimentTaskRow] = Field(default_factory=list)
+
+
+class ExperimentTrialAnalysis(BaseModel):
+    status: AnalysisStatus | None = None
+    classification: str | None = None
+    subtype: str | None = None
+    evidence: str | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+class ExperimentTrialCell(BaseModel):
+    id: str
+    task_id: str
+    task_path: str
+    experiment_id: str | None = None
+    task_version_id: str | None = None
+    name: str
+    agent: str
+    model: str | None = None
+    provider: str
+    queue_key: str
+    status: TrialStatus
+    attempts: int
+    max_attempts: int
+    harbor_stage: str | None = None
+    reward: float | None = None
+    input_tokens: int | None = None
+    cache_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_usd: float | None = None
+    cost_is_estimated: bool | None = None
+    is_billed: bool = False
+    cost_exclusion_reason: str | None = None
+    has_trajectory: bool = False
+    analysis: ExperimentTrialAnalysis = Field(default_factory=ExperimentTrialAnalysis)
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+class PublicExperimentFocusResponse(BaseModel):
+    revision: datetime
+    task: PublicExperimentTaskRow
+    trial: ExperimentTrialCell | None = None
+
+
+class ExperimentFocusResponse(PublicExperimentFocusResponse):
+    task: ExperimentTaskRow
+
+
+class ExperimentTrialPageResponse(BaseModel):
+    revision: datetime
+    trials: list[ExperimentTrialCell] = Field(default_factory=list)
+    next_created_at: datetime | None = None
+    next_trial_id: str | None = None
 
 
 class TaskDetailResponse(BaseModel):
@@ -1638,6 +1775,45 @@ class TaskStatusResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class PublicTaskStatusResponse(BaseModel):
+    """Anonymous task payload with only fields required by public task pages."""
+
+    id: str
+    name: str
+    status: TaskStatus
+    priority: Priority
+    github_meta: dict[str, str] | None = None
+    task_path: str
+    experiment_id: str
+    experiment_name: str
+    experiment_is_public: bool = False
+    experiment_created_at: datetime | None = None
+    experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
+    current_version: int | None = None
+    current_version_id: str | None = None
+    trial_version: int | None = None
+    trial_version_id: str | None = None
+    total: int
+    completed: int
+    failed: int
+    skipped: int = 0
+    progress: str
+    reward_success: int | None = None
+    reward_sum: float | None = None
+    reward_total: int | None = None
+    verdict_status: VerdictStatus | None = None
+    verdict: dict | None = None
+    verdict_error: str | None = None
+    trials: list[TrialResponse] | None = None
+    user_tags: list[UserTagRef] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+
+    model_config = {"from_attributes": True}
+
+
 class TaskOpenVersionRef(BaseModel):
     id: str
     version: int
@@ -1737,6 +1913,7 @@ class TaskOpenTrialRef(BaseModel):
     cost_usd: float | None = None
     cost_is_estimated: bool | None = None
     is_billed: bool = False
+    has_trajectory: bool = False
     created_at: datetime
     started_at: datetime | None = None
     finished_at: datetime | None = None

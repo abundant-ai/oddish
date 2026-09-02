@@ -22,6 +22,7 @@ from auth.permissions import (
     can_manage_api_keys,
     can_manage_quotas,
 )
+from auth.resource_access import authorize_bound_analysis_request
 from auth.provisioning import get_or_create_user_from_clerk
 from auth.types import AuthContext, AuthMethod
 from auth.verification import (
@@ -110,6 +111,7 @@ async def get_auth_context(
                     user_role=cached.user_role,
                     api_key_id=cached.api_key_id,
                     api_key_created_by_role=cached.api_key_created_by_role,
+                    bound_analysis_trial_id=cached.bound_analysis_trial_id,
                     scope=cached.scope,
                     # Note: org/api_key ORM objects not included in cached response
                     # Endpoints should use org_id/api_key_id for queries
@@ -141,6 +143,7 @@ async def get_auth_context(
                         user_role=creator.role if creator else None,
                         api_key_id=api_key.id,
                         api_key_created_by_role=api_key.created_by_role,
+                        bound_analysis_trial_id=api_key.bound_analysis_trial_id,
                         scope=api_key.scope,
                     )
                     auth_context = AuthContext(
@@ -155,6 +158,7 @@ async def get_auth_context(
                         api_key_id=api_key.id,
                         api_key=api_key,
                         api_key_created_by_role=api_key.created_by_role,
+                        bound_analysis_trial_id=api_key.bound_analysis_trial_id,
                         scope=api_key.scope,
                     )
 
@@ -216,11 +220,11 @@ async def get_auth_context(
                     clerk_cached_auth: CachedAuthData | None = None
                     clerk_auth_context: AuthContext | None = None
                     async with get_session() as session:
-                        result = await get_or_create_user_from_clerk(
+                        clerk_result = await get_or_create_user_from_clerk(
                             session, clerk_user_id, clerk_org_id, email, org_role
                         )
 
-                    if result is None:
+                    if clerk_result is None:
                         raise HTTPException(
                             status_code=status.HTTP_403_FORBIDDEN,
                             detail=(
@@ -229,7 +233,7 @@ async def get_auth_context(
                             ),
                         )
 
-                    user, org = result
+                    user, org = clerk_result
                     clerk_cached_auth = CachedAuthData(
                         method=AuthMethod.CLERK_JWT,
                         org_id=org.id,
@@ -278,6 +282,7 @@ async def get_auth_context(
 
 
 async def require_auth(
+    request: Request,
     auth: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> AuthContext:
     """
@@ -294,6 +299,7 @@ async def require_auth(
             detail="Authentication required",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    await authorize_bound_analysis_request(request, auth)
     return auth
 
 

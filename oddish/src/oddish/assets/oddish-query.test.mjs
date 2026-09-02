@@ -158,7 +158,56 @@ test('--help lists the command groups', () => {
   assert.match(out, /verifier/);
   assert.match(out, /verify run/);
   assert.match(out, /harbor src/);
+  assert.match(out, /trials result/);
+  assert.match(out, /trials trajectory/);
+  assert.match(out, /trials verifier/);
   assert.match(out, /trials logs/);
+});
+
+test('trial result prints the complete endpoint JSON without MAX_BYTES slicing', () => {
+  const payload = { trial_results: [{ trial_name: 't-1', output: 'r'.repeat(24000) }] };
+  const out = runApi(['trials', 'result', 't-1'], { '/trials/t-1/result': payload });
+  assert.deepEqual(JSON.parse(out), { trial_id: 't-1', result: payload });
+  assert.ok(out.length > 16000);
+});
+
+test('trial trajectory prints the complete endpoint JSON without tail slicing', () => {
+  const payload = { trial_name: 't-1', steps: [{ message: 's'.repeat(24000) }] };
+  const out = runApi(
+    ['trials', 'trajectory', 't-1'],
+    { '/trials/t-1/trajectory': payload },
+  );
+  assert.deepEqual(JSON.parse(out), { trial_id: 't-1', trajectory: payload });
+  assert.ok(out.length > 16000);
+});
+
+test('trial verifier returns complete verifier streams with trial identity', () => {
+  const payload = {
+    verifier: { stdout: 'PASS\n', stderr: 'warning\n' },
+    exception: null,
+    agent: { setup: 'ignored by this bounded view' },
+  };
+  const out = runApi(
+    ['trials', 'verifier', 't-1'],
+    { '/trials/t-1/logs/structured': payload },
+  );
+  assert.deepEqual(JSON.parse(out), {
+    trial_id: 't-1',
+    verifier: payload.verifier,
+    exception: null,
+  });
+});
+
+test('trial logs retain log-specific truncation', () => {
+  const payload = { logs: 'l'.repeat(24000) };
+  const out = runApi(['trials', 'logs', 't-1'], { '/trials/t-1/logs': payload });
+  assert.match(out, /truncated/);
+  assert.ok(out.length < 16000);
+});
+
+test('the removed logs --trajectory option fails instead of changing resource meaning', () => {
+  const out = runApi(['trials', 'logs', 't-1', '--trajectory'], {});
+  assert.deepEqual(JSON.parse(out), { error: 'unknown option: --trajectory', status: 2 });
 });
 
 test('per-command help explains usage', () => {
