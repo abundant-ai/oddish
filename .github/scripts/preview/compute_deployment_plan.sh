@@ -89,18 +89,27 @@ if [ "$deploy_backend" = "true" ] || [ -n "$BACKEND_BASE" ]; then
   preview_backend_live=true
 fi
 
+# The generation identifies the preview state this run reconciles toward; it is
+# the ownership token later fencing compares against (see
+# record_preview_metrics.py, the canonical definition).
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+preview_generation="$(PR_NUMBER="${PR_NUMBER:?}" HEAD_SHA="${HEAD_SHA:?}" \
+  python "$script_dir/record_preview_metrics.py" generation)"
+
 {
   echo "deploy_backend=$deploy_backend"
   echo "run_migrations=$run_migrations"
   echo "deploy_frontend=$deploy_frontend"
   echo "any_change=$any_change"
   echo "preview_backend_live=$preview_backend_live"
+  echo "preview_generation=$preview_generation"
 } >> "$GITHUB_OUTPUT"
 
 {
   echo "## Preview deployment plan"
   echo
   echo "- Event action: \`$EVENT_ACTION\`"
+  echo "- Preview generation: \`$preview_generation\`"
   echo "- Last successful backend deploy: \`${BACKEND_BASE:-(none)}\`"
   echo "- Last successful migration run: \`${MIGRATIONS_BASE:-(none)}\`"
   echo "- Backend code changed since: \`${BACKEND_CHANGED:-n/a}\`"

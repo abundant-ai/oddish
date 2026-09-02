@@ -7,7 +7,7 @@ PR the per-branch NEXT_PUBLIC_API_URL hasn't been set yet, so we set
 it and then force a new deployment from the same source so the
 preview actually points at the Modal preview backend.
 
-Writes preview_url to GITHUB_OUTPUT.
+Writes preview_url and vercel_deployment_id to GITHUB_OUTPUT.
 
 Inputs (env vars):
   VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID,
@@ -100,9 +100,12 @@ def main():
     )
     redeployed = redeploy(token, team_id, deployment["name"], deployment["uid"])
     preview_url = "https://" + redeployed["url"]
+    deployment_id = redeployed.get("id") or redeployed.get("uid") or ""
 
     with open(os.environ["GITHUB_OUTPUT"], "a") as f:
         f.write(f"preview_url={preview_url}\n")
+        if deployment_id:
+            f.write(f"vercel_deployment_id={deployment_id}\n")
 
     print(preview_url)
 
