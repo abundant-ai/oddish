@@ -16,8 +16,10 @@ The import flow mirrors the task upload pattern:
 
 3. ``/trials/import/complete`` (``complete_trial_import``)
    - Downloads the staging archive, extracts individual files into
-     the trial's S3 prefix, deletes the staging archive, and returns
-     the extraction count.
+     the trial's S3 prefix, validates the readable layout, finalizes the
+     database state, then deletes the staging archive and returns the
+     extraction count. Replaying completion after cleanup reuses the
+     extracted prefix.
    - Rolls the parent task's status forward via
      ``maybe_start_qa_stage`` so heterogeneous experiments (some
      live, some imported) transition cleanly when the last pending
@@ -485,14 +487,26 @@ async def complete_trial_import(
         task_id = trial.task_id
 
     storage = get_storage_client()
+    archive_key = StorageClient._trial_import_archive_key(trial_id)
+    trial_prefix = StorageClient._trial_prefix(trial_id)
     try:
-        files_extracted = await storage.extract_trial_import_archive(trial_id)
+        archive_exists = await storage.object_exists(archive_key)
+        if archive_exists:
+            files_extracted = await storage.extract_trial_import_archive(trial_id)
+        else:
+            extracted_keys = await storage.list_keys(trial_prefix)
+            if not any(key != archive_key for key in extracted_keys):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Uploaded trial archive not found in S3",
+                )
+            files_extracted = 0
     except HTTPException:
         raise
     except Exception as exc:
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to extract trial archive: {str(exc)}",
+            detail=f"Failed to inspect or extract trial archive: {str(exc)}",
         ) from exc
 
     layout = await resolve_trial_artifact_layout(trial, storage)
@@ -506,9 +520,8 @@ async def complete_trial_import(
     # the same way the live trial handler does when a trial finishes.
     # Retried on a deadlock loss: this task UPDATE races TAG_PROJECT
     # recomputes (and sibling imports) on the same row, and
-    # maybe_start_qa_stage is idempotent. Only this transaction retries --
-    # NOT the archive extraction above, which deletes its staging object
-    # and must not run twice.
+    # maybe_start_qa_stage is idempotent. The staging archive remains available
+    # until this transaction succeeds, so a failed completion can safely retry.
     from oddish.queue import maybe_start_qa_stage
 
     async def _finalize_once() -> str:
@@ -526,6 +539,14 @@ async def complete_trial_import(
     trial_s3_key = await run_with_deadlock_retry(
         _finalize_once, what="trial_import_complete"
     )
+
+    # Cleanup is best-effort after the durable database transition. A cleanup
+    # failure leaves a replayable archive; a replay after successful cleanup
+    # recognizes the already-extracted prefix above and remains idempotent.
+    try:
+        await storage.delete_trial_import_archive(trial_id)
+    except Exception:
+        pass
 
     _ = task_id  # kept for future observability hooks
     return TrialImportCompleteResponse(
