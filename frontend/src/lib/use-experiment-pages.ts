@@ -1,77 +1,18 @@
 "use client";
 
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import useSWRInfinite from "swr/infinite";
 import { fetcher } from "@/lib/api";
+import { buildExperimentTasks } from "@/lib/experiment-page-data";
 import type {
   ExperimentOpenResponse,
   PublicExperimentOpenResponse,
-  ExperimentTrialCell,
   ExperimentTrialPageResponse,
-  Task,
-  Trial,
 } from "@/lib/types";
 
 const OPEN_PAGE_SIZE = 100;
 const TRIAL_PAGE_SIZE = 250;
-
-export function trialFromExperimentCell(cell: ExperimentTrialCell): Trial {
-  const { analysis, ...trial } = cell;
-  return {
-    ...trial,
-    analysis_status: analysis.status,
-    analysis_started_at: analysis.started_at,
-    analysis_finished_at: analysis.finished_at,
-    analysis:
-      analysis.classification && analysis.subtype
-        ? {
-            classification: analysis.classification,
-            subtype: analysis.subtype,
-            evidence: analysis.evidence ?? undefined,
-          }
-        : null,
-  };
-}
-
-function buildTasks(
-  openPages:
-    | ExperimentOpenResponse[]
-    | PublicExperimentOpenResponse[]
-    | undefined,
-  trialPages: ExperimentTrialPageResponse[] | undefined,
-  publicView: boolean
-): Task[] {
-  const experiment = openPages?.[0];
-  if (!experiment) return [];
-  const trialsByTask = new Map<string, Trial[]>();
-  for (const page of trialPages ?? []) {
-    for (const cell of page.trials) {
-      const trials = trialsByTask.get(cell.task_id) ?? [];
-      trials.push(trialFromExperimentCell(cell));
-      trialsByTask.set(cell.task_id, trials);
-    }
-  }
-  return openPages.flatMap((page) =>
-    page.tasks.map((task) => {
-      const identity =
-        !publicView && "owner" in experiment
-          ? {
-              experiment_owner: experiment.owner,
-              experiment_link: experiment.link,
-            }
-          : {};
-      return {
-        ...task,
-        experiment_id: experiment.experiment_id,
-        experiment_name: experiment.name,
-        experiment_is_public: publicView,
-        experiment_created_at: experiment.created_at,
-        ...identity,
-        trials: trialsByTask.get(task.id),
-      };
-    })
-  );
-}
+const ACTIVE_REFRESH_INTERVAL_MS = 30000;
 
 export function useExperimentPages({
   openUrl,
@@ -97,7 +38,6 @@ export function useExperimentPages({
     [openUrl]
   );
   const open = useSWRInfinite<OpenResponse>(getOpenKey, fetcher, {
-    refreshInterval: (pages) => (pages?.[0]?.has_active_trials ? 30000 : 0),
     revalidateOnFocus: false,
     revalidateFirstPage: false,
     persistSize: true,
@@ -121,7 +61,6 @@ export function useExperimentPages({
     getTrialKey,
     fetcher,
     {
-      refreshInterval: experiment?.has_active_trials ? 30000 : 0,
       revalidateOnFocus: false,
       revalidateFirstPage: false,
       persistSize: true,
@@ -152,6 +91,30 @@ export function useExperimentPages({
     mutate: mutateTrials,
     setSize: setTrialSize,
   } = trials;
+
+  useEffect(() => {
+    if (!experiment?.has_active_trials) return;
+
+    const firstOpenPageKey = getOpenKey(0, null);
+    const firstTrialPageKey = getTrialKey(0, null);
+    const interval = window.setInterval(() => {
+      void mutateOpen(undefined, {
+        revalidate: (_page, pageKey) => pageKey === firstOpenPageKey,
+      });
+      void mutateTrials(undefined, {
+        revalidate: (_page, pageKey) => pageKey === firstTrialPageKey,
+      });
+    }, ACTIVE_REFRESH_INTERVAL_MS);
+
+    return () => window.clearInterval(interval);
+  }, [
+    experiment?.has_active_trials,
+    getOpenKey,
+    getTrialKey,
+    mutateOpen,
+    mutateTrials,
+  ]);
+
   const loadNextTasks = useCallback(() => {
     if (isLoadingOpen || isValidatingOpen) return;
     if (openError) {
@@ -183,7 +146,7 @@ export function useExperimentPages({
   }, [isLoadingTrials, isValidatingTrials, mutateTrials]);
 
   const tasks = useMemo(
-    () => buildTasks(open.data, trials.data, publicView),
+    () => buildExperimentTasks(open.data, trials.data, publicView),
     [open.data, trials.data, publicView]
   );
   const trialsLoaded =

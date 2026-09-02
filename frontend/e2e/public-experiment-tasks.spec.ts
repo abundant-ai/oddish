@@ -549,12 +549,14 @@ test("retryable focus errors preserve the trial-page deep-link fallback", async 
   await expect(page).toHaveURL(/task=task-1&trial=task-1-2/);
 });
 
-test("public cost totals refresh while the experiment is active", async ({
+test("public experiment resources refresh while the experiment is active", async ({
   page,
 }) => {
   const token = "public-active-cost";
   const publicTask = task({ trials: undefined });
   let costRequests = 0;
+  let openRequests = 0;
+  let trialPageRequests = 0;
 
   await page.clock.install();
   await page.route(`**/api/public/experiments/${token}`, (route) =>
@@ -575,22 +577,31 @@ test("public cost totals refresh while the experiment is active", async ({
       });
     }
   );
-  await page.route(`**/api/public/experiments/${token}/open?*`, (route) =>
-    route.fulfill({ json: publicOpenResponse(publicTask, true) })
-  );
-  await page.route(`**/api/public/experiments/${token}/trial-page?*`, (route) =>
-    route.fulfill({
-      json: { revision: "2026-07-14T00:00:00Z", trials: [] },
-    })
+  await page.route(`**/api/public/experiments/${token}/open?*`, (route) => {
+    openRequests += 1;
+    return route.fulfill({ json: publicOpenResponse(publicTask, true) });
+  });
+  await page.route(
+    `**/api/public/experiments/${token}/trial-page?*`,
+    (route) => {
+      trialPageRequests += 1;
+      return route.fulfill({
+        json: { revision: "2026-07-14T00:00:00Z", trials: [] },
+      });
+    }
   );
 
   await page.goto(`/share/${token}`);
   await expect.poll(() => costRequests).toBe(1);
+  await expect.poll(() => openRequests).toBe(1);
+  await expect.poll(() => trialPageRequests).toBe(1);
   await expect(page.getByText("$1.00", { exact: true })).toBeVisible();
 
   await page.clock.runFor(30_100);
 
   await expect.poll(() => costRequests).toBe(2);
+  await expect.poll(() => openRequests).toBe(2);
+  await expect.poll(() => trialPageRequests).toBe(2);
   await expect(page.getByText("$2.00", { exact: true })).toBeVisible();
 });
 
