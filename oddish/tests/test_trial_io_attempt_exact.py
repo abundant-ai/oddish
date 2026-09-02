@@ -16,6 +16,7 @@ from oddish.core.harbor_artifacts import (
 from oddish.core.trial_artifacts import (
     AnalysisArtifactLayoutError,
     TrialArtifactMode,
+    resolve_trial_artifact_layout,
     validate_uploaded_analysis_artifacts,
 )
 
@@ -164,9 +165,75 @@ def test_current_harbor_root_manifest_does_not_guess_between_children(tmp_path):
 
 
 @pytest.mark.parametrize(
+    "prefix",
+    [
+        "tasks/task-1/trials/task-1-7/",
+        "tasks/task-1/trials/task-1-7/analysis-qa/",
+    ],
+)
+def test_selectorless_harbor_root_uses_legacy_mode_for_historical_prefix(prefix):
+    manifest = {"id": "job-1", "n_total_trials": 1, "stats": {}}
+    storage = _Storage({f"{prefix}result.json": json.dumps(manifest)})
+
+    layout = asyncio.run(resolve_trial_artifact_layout(_trial(prefix=prefix), storage))
+
+    assert layout.mode is TrialArtifactMode.LEGACY
+    assert layout.attempt_prefix == prefix
+    assert layout.artifact_prefix == prefix
+    assert layout.manifest == manifest
+    assert layout.failure_reason == "legacy Harbor root manifest has no trial selector"
+
+
+def test_selectorless_historical_manifest_keeps_legacy_trajectory_readable(
+    monkeypatch,
+):
+    _clear_cache()
+    prefix = "tasks/task-1/trials/task-1-7/"
+    trajectory_key = f"{prefix}harbor-run/agent/trajectory.json"
+    storage = _Storage(
+        {
+            f"{prefix}result.json": json.dumps(
+                {"id": "job-1", "n_total_trials": 1, "stats": {}}
+            ),
+            trajectory_key: json.dumps({"trial_name": "historical-attempt"}),
+        },
+        listed=[trajectory_key],
+    )
+    monkeypatch.setattr(trial_io, "get_storage_client", lambda: storage)
+
+    result = asyncio.run(trial_io.read_trial_trajectory(_trial(prefix=prefix)))
+
+    assert result == {"trial_name": "historical-attempt"}
+    assert storage.list_calls == 1
+
+
+def test_selectorless_harbor_root_is_unavailable_for_attempt_scoped_prefix():
+    prefix = "tasks/task-1/trials/task-1-7/attempt-2/"
+    storage = _Storage(
+        {
+            f"{prefix}result.json": json.dumps(
+                {"id": "job-1", "n_total_trials": 1, "stats": {}}
+            )
+        }
+    )
+
+    layout = asyncio.run(
+        resolve_trial_artifact_layout(_trial(prefix=prefix, attempts=2), storage)
+    )
+
+    assert layout.mode is TrialArtifactMode.UNAVAILABLE
+    assert layout.artifact_prefix is None
+    assert layout.failure_reason == "result.json trial_results must be a list"
+
+
+@pytest.mark.parametrize(
     ("manifest", "expected_error"),
     [
         ("not-json", "result.json is invalid JSON"),
+        (
+            json.dumps({"id": "job-1", "n_total_trials": 1, "stats": {}}),
+            "result.json trial_results must be a list",
+        ),
         (
             json.dumps({"trial_results": []}),
             "result.json contains no trial_results",
