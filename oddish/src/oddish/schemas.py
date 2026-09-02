@@ -1052,12 +1052,11 @@ class ExperimentPageVerdict(BaseModel):
     confidence: str | None = None
 
 
-class ExperimentTaskRow(BaseModel):
+class PublicExperimentTaskRow(BaseModel):
     id: str
     name: str
     status: TaskStatus
     priority: Priority
-    user: str
     task_path: str
     github_meta: dict[str, str] | None = None
     current_version: int | None = None
@@ -1077,6 +1076,10 @@ class ExperimentTaskRow(BaseModel):
     verdict_error: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class ExperimentTaskRow(PublicExperimentTaskRow):
+    user: str
 
 
 class ExperimentPageSummary(BaseModel):
@@ -1099,18 +1102,22 @@ class ExperimentPageSummary(BaseModel):
     qa_failed: int = 0
 
 
-class ExperimentOpenResponse(BaseModel):
+class PublicExperimentOpenResponse(BaseModel):
     experiment_id: str
     name: str
     created_at: datetime
-    owner: str | None = None
-    link: str | None = None
     revision: datetime
     has_active_trials: bool = False
     summary: ExperimentPageSummary | None = None
-    tasks: list[ExperimentTaskRow] = Field(default_factory=list)
+    tasks: list[PublicExperimentTaskRow] = Field(default_factory=list)
     next_created_at: datetime | None = None
     next_task_id: str | None = None
+
+
+class ExperimentOpenResponse(PublicExperimentOpenResponse):
+    owner: str | None = None
+    link: str | None = None
+    tasks: list[ExperimentTaskRow] = Field(default_factory=list)
 
 
 class ExperimentTrialAnalysis(BaseModel):
@@ -1152,10 +1159,14 @@ class ExperimentTrialCell(BaseModel):
     finished_at: datetime | None = None
 
 
-class ExperimentFocusResponse(BaseModel):
+class PublicExperimentFocusResponse(BaseModel):
     revision: datetime
-    task: ExperimentTaskRow
+    task: PublicExperimentTaskRow
     trial: ExperimentTrialCell | None = None
+
+
+class ExperimentFocusResponse(PublicExperimentFocusResponse):
+    task: ExperimentTaskRow
 
 
 class ExperimentTrialPageResponse(BaseModel):
@@ -1754,6 +1765,45 @@ class TaskStatusResponse(BaseModel):
         default_factory=list,
         description="Active/recent worker_jobs rows for this task and its trials",
     )
+    trials: list[TrialResponse] | None = None
+    user_tags: list[UserTagRef] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+
+    model_config = {"from_attributes": True}
+
+
+class PublicTaskStatusResponse(BaseModel):
+    """Anonymous task payload with only fields required by public task pages."""
+
+    id: str
+    name: str
+    status: TaskStatus
+    priority: Priority
+    github_meta: dict[str, str] | None = None
+    task_path: str
+    experiment_id: str
+    experiment_name: str
+    experiment_is_public: bool = False
+    experiment_created_at: datetime | None = None
+    experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
+    current_version: int | None = None
+    current_version_id: str | None = None
+    trial_version: int | None = None
+    trial_version_id: str | None = None
+    total: int
+    completed: int
+    failed: int
+    skipped: int = 0
+    progress: str
+    reward_success: int | None = None
+    reward_sum: float | None = None
+    reward_total: int | None = None
+    verdict_status: VerdictStatus | None = None
+    verdict: dict | None = None
+    verdict_error: str | None = None
     trials: list[TrialResponse] | None = None
     user_tags: list[UserTagRef] = Field(default_factory=list)
     created_at: datetime

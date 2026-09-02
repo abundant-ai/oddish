@@ -39,6 +39,7 @@ import {
 } from "@/lib/trial-aggregation";
 import type {
   ExperimentFocusResponse,
+  PublicExperimentFocusResponse,
   ExperimentPageSummary,
   Task,
   Trial,
@@ -399,7 +400,10 @@ function formatRelativeTime(iso: string): string {
   });
 }
 
-function pickExperimentCreationMeta(tasks: Task[]): {
+function pickExperimentCreationMeta(
+  tasks: Task[],
+  includeIdentity: boolean
+): {
   createdAt: string | null;
   author: string | null;
 } {
@@ -419,12 +423,14 @@ function pickExperimentCreationMeta(tasks: Task[]): {
   // Prefer the experiment's own owner (the creating run's submitter, stamped
   // on the experiment). Fall back to the earliest task's author for
   // experiments with no stamped owner.
-  const experimentOwner =
-    tasks.find((task) => task.experiment_owner)?.experiment_owner ?? null;
+  const experimentOwner = includeIdentity
+    ? (tasks.find((task) => task.experiment_owner)?.experiment_owner ?? null)
+    : null;
   return {
     createdAt: experimentCreatedAt ?? earliest.created_at,
-    author:
-      experimentOwner ?? earliest.github_username ?? earliest.user ?? null,
+    author: includeIdentity
+      ? (experimentOwner ?? earliest.github_username ?? earliest.user ?? null)
+      : null,
   };
 }
 
@@ -529,7 +535,7 @@ function ExperimentMetaStrip({
   }, [experimentId]);
 
   if (isInitialLoading) return null;
-  const { createdAt, author } = pickExperimentCreationMeta(tasks);
+  const { createdAt, author } = pickExperimentCreationMeta(tasks, !readOnly);
   const showAuthor = Boolean(author) && !readOnly;
   if (!createdAt && !showAuthor && !experimentId) return null;
 
@@ -1205,11 +1211,12 @@ export function ExperimentDetailView({
     if (pendingUrlTrialId) query.set("trial", pendingUrlTrialId);
     return `${focusUrl}?${query}`;
   }, [focusUrl, pendingUrlTaskSelector, pendingUrlTrialId]);
-  const { data: resolvedUrlFocus, error: urlFocusError } =
-    useSWR<ExperimentFocusResponse>(focusQuery, fetcher, {
-      revalidateOnFocus: false,
-      shouldRetryOnError: isRetryableFocusError,
-    });
+  const { data: resolvedUrlFocus, error: urlFocusError } = useSWR<
+    ExperimentFocusResponse | PublicExperimentFocusResponse
+  >(focusQuery, fetcher, {
+    revalidateOnFocus: false,
+    shouldRetryOnError: isRetryableFocusError,
+  });
   const hasPendingUrlFocus =
     pendingUrlTaskSelector != null || pendingUrlTrialId != null;
   const isInitialLoading = isLoading && tasksForExperiment.length === 0;

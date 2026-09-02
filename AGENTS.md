@@ -581,10 +581,16 @@ otherwise it falls back to the highest version represented by such trials. The
 bounded `/open` and `/trial-page` endpoints apply the same rule so progressive
 loading cannot change the files/counts pivot or mix one version's trials with
 another's artifacts. `/open` returns exact totals plus at most 100 task shells
-under 50 KB. Each task shell includes `github_meta`, parsed from the task's
-stored tags, so public dataset grouping does not infer repository metadata from
-the task name. `/trial-page` returns at most 250 projected trials and omits full
-analysis, errors, results, phase timing, Harbor config, and ORM relationships.
+under 50 KB. Authenticated task shells include the complete `github_meta`
+mapping parsed from the task's stored tags. Anonymous `/open`, `/focus`, and
+task-detail responses use separate public response models: they omit task and
+experiment owner fields and allowlist only the `category`, `world`, and `domain`
+taxonomy key families from `github_meta`, so public dataset grouping does not
+need repository metadata or task-owner identity. The anonymous `/open` and
+`/focus` SQL projections must not select `tasks.user`; hiding owner fields in
+React is not an access-control boundary. `/trial-page` returns at most 250
+projected trials and omits full analysis, errors, results, phase timing, Harbor
+config, and ORM relationships.
 In React, `/open` owns the page's initial loading and fatal-error state;
 `/trial-page` owns incremental trial loading and a retryable inline error, so a
 trial-page failure must not replace task shells that `/open` already returned.

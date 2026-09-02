@@ -4,6 +4,7 @@ import asyncio
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -18,6 +19,7 @@ from oddish.core.endpoints.experiment_page import (
     get_experiment_focus_core,
     get_experiment_open_core,
     get_experiment_trial_page_core,
+    get_public_experiment_open_core,
 )
 from oddish.core.cost_exclusions import CostExclusions
 from oddish.core.helpers import experiment_effective_versions_selectable
@@ -361,6 +363,61 @@ def test_experiment_open_sql_reuses_visibility_and_version_rules():
         assert heavy_column not in page_sql
 
 
+def test_public_experiment_open_never_queries_or_serializes_task_owners(monkeypatch):
+    task = _task(
+        1,
+        user="private-owner",
+        tags={
+            "github_meta": (
+                '{"category":"JS","world":"World_7",'
+                '"github_username":"private-owner",'
+                '"repository":"private/repository","pr_url":"https://secret"}'
+            )
+        },
+    )
+    experiment = SimpleNamespace(
+        id="experiment-1",
+        name="Public experiment",
+        org_id="org-1",
+        created_at=NOW,
+        updated_at=NOW,
+        last_activity_at=NOW + timedelta(minutes=1),
+    )
+
+    async def public_experiment(_session, _token):
+        return experiment
+
+    monkeypatch.setattr(
+        "oddish.core.endpoints.experiment_page.get_public_experiment",
+        public_experiment,
+    )
+    session = _Session(
+        _Result([{"task_id": task["task_id"], "created_at": task["created_at"]}]),
+        _Result([task]),
+    )
+
+    response = asyncio.run(
+        get_public_experiment_open_core(
+            session,
+            public_token="public-token",
+            include_summary=False,
+        )
+    )
+
+    payload = response.model_dump()
+    assert "owner" not in payload
+    assert "link" not in payload
+    assert "user" not in payload["tasks"][0]
+    assert payload["tasks"][0]["github_meta"] == {
+        "category": "JS",
+        "world": "World_7",
+    }
+    assert "private-owner" not in response.model_dump_json()
+    assert "private/repository" not in response.model_dump_json()
+    task_query_sql = _sql(session.calls[1])
+    assert 'tasks."user"' not in task_query_sql
+
+
 def test_later_experiment_page_skips_summary_and_bounds_trial_aggregation():
     task = _task(101)
     page_id = {"task_id": task["task_id"], "created_at": task["created_at"]}
@@ -468,16 +525,20 @@ def test_public_experiment_focus_keeps_grid_trial_visibility():
             _experiment=_identity(),
             _include_cost_exclusion_labels=False,
             _require_grid_trial_visibility=True,
+            _public=True,
         )
     )
 
     assert response.trial is not None
     assert response.trial.id == trial.id
+    assert "user" not in response.task.model_dump()
     trial_sql = _sql(session.calls[0])
     assert "trials.kind = 'agent'" in trial_sql
     assert "trials.is_probe IS false" in trial_sql
     assert "trials.superseded_by_trial_id IS NULL" in trial_sql
     assert "experiment_effective_versions" in trial_sql
+    task_sql = _sql(session.calls[1])
+    assert 'tasks."user"' not in task_sql
 
 
 def test_effective_version_selectable_filters_before_ranking():
