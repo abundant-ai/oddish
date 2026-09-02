@@ -454,11 +454,33 @@ def test_settle_keeps_positive_native_cost() -> None:
 
 @pytest.mark.parametrize(
     "provider",
-    ["fireworks", "fireworks_ai", "zai", "minimax", "moonshot", "openrouter"],
+    [
+        "fireworks",
+        "fireworks_ai",
+        "zai",
+        "minimax",
+        "moonshot",
+        "openrouter",
+        "geometric",
+    ],
 )
 def test_native_cost_policy_rejects_claude_code_passthrough(provider: str) -> None:
     assert not is_native_cost_trusted(agent="claude-code", provider=provider)
     assert is_native_cost_trusted(agent="mini-swe-agent", provider=provider)
+
+
+def test_geometric_claude_code_uses_right_pricing() -> None:
+    """Test to confirm that the geometric provider doesn't use the passthrough cost from claude-code."""
+    settled = settle_cost_usd(
+        0.906,
+        native_cost_trusted=is_native_cost_trusted(
+            agent="claude-code", provider="geometric"
+        ),
+        model="geometric/glm-5.3",
+        input_tokens=170851,
+        output_tokens=2073,
+    )
+    assert settled == pytest.approx(170851 * 1.75e-6 + 2073 * 5.5e-6)
 
 
 @pytest.mark.parametrize("provider", ["anthropic", "bedrock"])
@@ -589,3 +611,26 @@ def test_estimate_clamps_negative_token_counts() -> None:
         1_000 * 3e-6
     )
     assert estimate_cost_usd("claude-3-7-sonnet", -100, -50) is None
+
+
+def test_geometric_glm_53_uses_internal_rate() -> None:
+    """Geometric's self-hosted GLM-5.3 rate, set 2026-09-02."""
+    pricing = get_model_pricing("geometric/glm-5.3")
+    assert pricing == ModelPricing(
+        input=1.75e-6, output=5.5e-6, cache_read=3.25e-7, cache_write=None
+    )
+    # The gm/ alias is canonicalized to geometric/ before storage, so it
+    # resolves through this same provider-qualified pattern.
+    from oddish.config import settings
+
+    stored = settings.normalize_trial_model(agent="claude-code", model="gm/glm-5.3")
+    assert stored == "geometric/glm-5.3"
+    assert get_model_pricing(stored) == pricing
+
+
+def test_geometric_rate_does_not_leak_onto_zai_glm() -> None:
+    """A bare ``glm-5.3`` pattern would reprice z.ai's hosted GLM at our rates."""
+    zai = get_model_pricing("zai/glm-5.3")
+    assert zai is not None
+    assert zai.input != 1.75e-6
+    assert zai.output != 5.5e-6

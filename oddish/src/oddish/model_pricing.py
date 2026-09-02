@@ -36,6 +36,10 @@ PRICING_TABLE: list[tuple[str, ModelPricing]] = [
     ("glm-x-preview", ModelPricing(input=1e-6, output=3.2e-6, cache_read=2e-7)),
     ("glm-5.2", ModelPricing(input=1.4e-6, output=4.4e-6, cache_read=2.6e-7)),
     (
+        "geometric/glm-5.3",
+        ModelPricing(input=1.75e-6, output=5.5e-6, cache_read=3.25e-7),
+    ),
+    (
         "moonshot/kimi-k2.7-code",
         ModelPricing(input=9.5e-7, output=4e-6, cache_read=1.9e-7),
     ),
@@ -120,7 +124,15 @@ _ANTHROPIC_DOTTED_NAMESPACE_RE = re.compile(
 # That value is authoritative for Anthropic/Bedrock Claude, but not when the
 # same harness is pointed at an Anthropic-compatible third-party endpoint.
 _CLAUDE_CODE_PASSTHROUGH_PROVIDERS: frozenset[str] = frozenset(
-    {"fireworks", "fireworks_ai", "zai", "minimax", "moonshot", "openrouter"}
+    {
+        "fireworks",
+        "fireworks_ai",
+        "zai",
+        "minimax",
+        "moonshot",
+        "openrouter",
+        "geometric",
+    }
 )
 
 
