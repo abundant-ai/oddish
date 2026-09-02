@@ -919,13 +919,26 @@ export function DeliveryBoardClient({
       window.history.replaceState(null, "", next);
     }
   }, [filter, page]);
+  // Land the ?task= deep link once: pick its page in the filtered view
+  // the table actually renders. When ?filter= hides the task, the link
+  // wins and the filter falls back to all tasks.
+  const focusHandled = useRef(false);
   useEffect(() => {
-    if (!data || !focusTask) return;
-    const index = data.tasks.findIndex(
-      (row) => row.task_name === focusTask || row.task_id === focusTask
-    );
-    if (index >= 0) setPage(Math.floor(index / TASK_PAGE_SIZE));
-  }, [data, focusTask]);
+    if (!data || !focusTask || focusHandled.current) return;
+    focusHandled.current = true;
+    const matches = (row: DeliveryTaskBoardRow) =>
+      row.task_name === focusTask || row.task_id === focusTask;
+    const index = applyTaskFilter(data.tasks, filter).findIndex(matches);
+    if (index >= 0) {
+      setPage(Math.floor(index / TASK_PAGE_SIZE));
+      return;
+    }
+    const unfiltered = data.tasks.findIndex(matches);
+    if (unfiltered >= 0) {
+      setFilter("all");
+      setPage(Math.floor(unfiltered / TASK_PAGE_SIZE));
+    }
+  }, [data, focusTask, filter]);
   // Fetch the visible rows' QA history as soon as the board is up, so
   // expanding a row shows it without a loading wait.
   useEffect(() => {
