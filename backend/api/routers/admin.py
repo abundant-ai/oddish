@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import asdict
 from time import monotonic
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from oddish.config import (
@@ -102,7 +102,10 @@ async def check_model_endpoint(
     started = monotonic()
     resolved_model = model
     try:
-        kwargs = (
+        # Annotated because the initializer is int-only: without it mypy infers
+        # dict[str, int] and every branch below that sets api_key/api_base
+        # (anthropic-hdo, geometric, azure) is a type error.
+        kwargs: dict[str, Any] = (
             {"max_completion_tokens": 32}
             if provider == "openai"
             else {"max_tokens": 32}
