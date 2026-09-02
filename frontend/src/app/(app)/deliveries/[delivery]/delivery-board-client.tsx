@@ -896,9 +896,11 @@ export function DeliveryBoardClient({
               {frozen && <Lock className="text-muted-foreground h-4 w-4" />}
             </CardTitle>
             <p className="text-muted-foreground mt-1 text-sm">
-              {data.delivery.customer_name
-                ? `For ${data.delivery.customer_name} · `
-                : ""}
+              Customer:{" "}
+              <span className="text-foreground font-medium">
+                {data.delivery.customer_name ?? "not set"}
+              </span>
+              {" · "}
               {readySummary(data)}
               {data.ready && !frozen && " · ready to finalize"}
               {frozen &&

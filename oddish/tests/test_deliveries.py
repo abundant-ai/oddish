@@ -254,6 +254,47 @@ async def test_must_fix_defects_block(session):
 
 
 @pytest.mark.asyncio
+async def test_same_title_defects_stay_distinct(session):
+    # Numeric ids and the source are part of a defect's identity: three
+    # distinct must-fix items that share a title must yield three ack ids,
+    # not collapse into one acknowledgement.
+    task, version, experiment = await _green_task(session, "deliv-collide")
+    version.pre_trial = {
+        "items": [
+            {"id": 1, "tier": "must_fix", "title": "flaky test"},
+            {"id": 2, "tier": "must_fix", "title": "flaky test"},
+        ]
+    }
+    session.add(
+        _trial(
+            task,
+            experiment,
+            version.id,
+            analysis={
+                "action_items": [{"tier": "must_fix", "title": "flaky test"}]
+            },
+        )
+    )
+    await session.flush()
+    delivery = await create_delivery_core(
+        session,
+        data=DeliveryCreate(customer="acme", name="batch-c", task_ids=[task.id]),
+        org_id=ORG,
+        user_id="u1",
+    )
+    board = await get_delivery_board_core(
+        session, delivery_id=delivery.id, org_id=ORG
+    )
+    row = next(r for r in board.tasks if r.task_id == task.id)
+    assert len(row.defects) == 3
+    assert len({d.id for d in row.defects}) == 3
+    assert {d.source for d in row.defects} == {"pre_trial", "trial"}
+    assert "3 of 3 must-fix unacknowledged" in (
+        _checks(board, task.id)["no_must_fix"].detail
+    )
+
+
+@pytest.mark.asyncio
 async def test_manual_tick_and_version_reset(session):
     task, _, _ = await _green_task(session, "deliv-manual")
     config = DeliveryCheckConfig(

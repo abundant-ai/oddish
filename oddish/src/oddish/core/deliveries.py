@@ -422,14 +422,26 @@ async def remove_delivery_task_core(
     await session.flush()
 
 
-def _defect_id(version_id: str, item: dict) -> str:
-    """A stable id for one must-fix item, for 'ack:<id>' ticks."""
+def _defect_id(version_id: str, item: dict, source: str) -> str:
+    """A stable id for one must-fix item, for 'ack:<id>' ticks.
+
+    A non-empty string id is the author's own dedup key and is used as-is.
+    Anything else hashes the item's identifying fields — source and raw id
+    included — so two distinct defects that happen to share a title cannot
+    collapse into one acknowledgement.
+    """
     raw = item.get("id")
     if isinstance(raw, str) and raw:
         return raw[:56]
-    seed = (
-        f"{version_id}:{item.get('file')}:{item.get('line_start')}:"
-        f"{item.get('title')}"
+    seed = ":".join(
+        [
+            version_id,
+            source,
+            "" if raw is None else str(raw),
+            str(item.get("file") or ""),
+            str(item.get("line_start") or ""),
+            str(item.get("title") or ""),
+        ]
     )
     return hashlib.sha1(seed.encode()).hexdigest()[:16]
 
@@ -486,7 +498,7 @@ async def _must_fix_items(
     seen: dict[str, set[str]] = {vid: set() for vid in versions}
 
     def add(vid: str, item: dict, source: str) -> None:
-        defect_id = _defect_id(vid, item)
+        defect_id = _defect_id(vid, item, source)
         if defect_id in seen[vid]:
             return
         seen[vid].add(defect_id)
