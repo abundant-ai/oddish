@@ -22,14 +22,10 @@ import {
 import { ExperimentDetailView } from "@/components/experiment-detail-view";
 import { ExperimentDescription } from "@/components/experiment-description";
 import { ExperimentTrialLoadAlert } from "@/components/experiment-trial-load-alert";
-import type {
-  Task,
-  Trial,
-  ExperimentShareInfo,
-  ExperimentCostTotals,
-} from "@/lib/types";
+import type { Task, Trial, ExperimentShareInfo } from "@/lib/types";
 import { fetcher } from "@/lib/api";
 import { useExperimentPages } from "@/lib/use-experiment-pages";
+import { useExperimentCostTotals } from "@/lib/use-experiment-cost-totals";
 import { isOrgAdminRole } from "@/lib/org-roles";
 import { Loader2, Pencil } from "lucide-react";
 import { encodeExperimentRouteParam } from "@/lib/utils";
@@ -101,17 +97,11 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
   const costTotalsKey = experimentId
     ? `/api/experiments/${encodedId}/cost-totals`
     : null;
-  const {
-    data: costTotals,
-    mutate: mutateCostTotals,
-  } = useSWR<ExperimentCostTotals>(costTotalsKey, fetcher, {
-    refreshInterval: experimentOpen?.has_active_trials ? 30000 : 0,
-    revalidateOnFocus: false,
-  });
-  // The paginated grid cannot supply a cost total. Keep the tiles pending
-  // until the exact rollup is available, including after a failed request.
-  const costTotalsPending =
-    costTotalsKey != null && costTotals === undefined;
+  const { resource: costTotals, refresh: refreshCostTotals } =
+    useExperimentCostTotals({
+      url: costTotalsKey,
+      hasActiveTrials: experimentOpen?.has_active_trials ?? false,
+    });
 
   // Experiment-level metadata (sharing + description) for the header.
   // Fetched eagerly so the description renders immediately; shares the SWR
@@ -150,9 +140,9 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
   // remove. Refetching is the correct (and self-healing) answer.
   const refreshTaskPages = useCallback(
     async (_taskIds?: string[]) => {
-      await Promise.all([mutateOpen(), mutateTrials(), mutateCostTotals()]);
+      await Promise.all([mutateOpen(), mutateTrials(), refreshCostTotals()]);
     },
-    [mutateOpen, mutateTrials, mutateCostTotals]
+    [mutateOpen, mutateTrials, refreshCostTotals]
   );
 
   useEffect(() => {
@@ -305,7 +295,7 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
           tasksForExperiment={tasksForExperiment}
           pageSummary={experimentOpen?.summary ?? undefined}
           costTotals={costTotals}
-          costTotalsPending={costTotalsPending}
+          onRetryCostTotals={() => void refreshCostTotals()}
           isLoading={isLoading}
           isLoadingTrials={isLoadingTrials}
           trialPagesComplete={trialPagesComplete}
@@ -314,7 +304,9 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
           canLoadTrials={canLoadTrials}
           loadNextTasks={loadNextTasks}
           loadNextTrials={loadNextTrials}
-          focusUrl={encodedId ? `/api/experiments/${encodedId}/focus` : undefined}
+          focusUrl={
+            encodedId ? `/api/experiments/${encodedId}/focus` : undefined
+          }
           // SWR retains successful fallback/revalidation data when a later
           // request fails. Keep that usable grid visible instead of replacing
           // it with the fatal error state during a transient backend failure.

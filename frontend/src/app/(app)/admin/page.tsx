@@ -283,8 +283,8 @@ function DiagnosticsPanel() {
         queueKey.includes("/") || BEDROCK_MODEL_QUEUE_KEY.test(queueKey)
     )
     .sort();
-  const hasRunningCheck = models.some(
-    (model) => checks[model]?.status === "running"
+  const hasRunningCheck = Object.values(checks).some(
+    (check) => check.status === "running"
   );
 
   async function checkModel(model: string) {

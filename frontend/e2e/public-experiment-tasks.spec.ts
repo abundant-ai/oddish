@@ -103,6 +103,74 @@ test("summary polling preserves the durable backend job state", async () => {
   }
 });
 
+test("public experiment exposes and retries an initial cost failure", async ({
+  page,
+}) => {
+  const token = "public-cost-retry";
+  const publicTask = task({
+    current_version: 1,
+    current_version_id: "task-1-v1",
+  });
+  let allowCostSuccess = false;
+  let costRequests = 0;
+
+  await page.route(`**/api/public/experiments/${token}`, (route) =>
+    route.fulfill({
+      json: {
+        name: "Public cost retry",
+        public_token: token,
+        description: null,
+      },
+    })
+  );
+  await page.route(
+    `**/api/public/experiments/${token}/cost-totals`,
+    (route) => {
+      costRequests += 1;
+      return allowCostSuccess
+        ? route.fulfill({
+            json: {
+              ...emptyCostTotals,
+              cost_usd: 12.34,
+              cost_trial_count: 1,
+              cost_has_native: true,
+              token_count: 100,
+              token_trial_count: 1,
+            },
+          })
+        : route.fulfill({
+            status: 503,
+            json: { detail: "cost endpoint unavailable" },
+          });
+    }
+  );
+  await page.route(`**/api/public/experiments/${token}/open?*`, (route) =>
+    route.fulfill({ json: publicOpenResponse(publicTask) })
+  );
+  await page.route(`**/api/public/experiments/${token}/trial-page?*`, (route) =>
+    route.fulfill({
+      json: { revision: "2026-07-14T00:00:00Z", trials: [] },
+    })
+  );
+
+  await page.goto(`/share/${token}`);
+
+  await expect(
+    page.getByRole("heading", { name: "Failed to load experiment spend" })
+  ).toBeVisible();
+  await expect(page.getByText("cost endpoint unavailable")).toBeVisible();
+  await expect(page.getByText("Unavailable", { exact: true })).toBeVisible();
+  expect(costRequests).toBeGreaterThan(0);
+
+  allowCostSuccess = true;
+  await page.getByRole("button", { name: "Retry" }).click();
+
+  await expect(page.getByText("$12.34", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Failed to load experiment spend" })
+  ).toHaveCount(0);
+});
+
 test("public experiment keeps task rows visible when trial pagination fails", async ({
   page,
 }) => {
