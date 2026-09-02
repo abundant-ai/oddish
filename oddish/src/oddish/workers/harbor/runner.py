@@ -977,8 +977,18 @@ def _supports_auto_restricted_agent_network(
     """Whether the existing single-container phase bridge applies."""
     if environment_config.import_path is not None:
         return False
-    if environment_config.type not in (EnvironmentType.DAYTONA, EnvironmentType.MODAL):
+    if environment_config.type not in (
+        EnvironmentType.DAYTONA,
+        EnvironmentType.MODAL,
+        EnvironmentType.THUNDER,
+    ):
         return False
+
+    # Thunder enforces phase policies on the managed VM rather than inside the
+    # task container. Its boundary therefore works for both Dockerfile and
+    # Compose tasks; the container topology is immaterial to host injection.
+    if environment_config.type == EnvironmentType.THUNDER:
+        return _task_has_dynamic_restricted_agent_phase(task_path)
 
     environment_dir = task_path / "environment"
     if (environment_dir / _HARBOR_COMPOSE_FILENAME).exists():

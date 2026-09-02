@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import builtins
 import importlib
+import io
 import json
 import logging
 import os
@@ -11,6 +12,7 @@ import shlex
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -943,6 +945,27 @@ async def test_entry_hook_emits_canonical_events(monkeypatch, event_name, expect
     await hook(event)
 
     assert payloads[0]["event"] == expected
+
+
+def test_entry_event_line_serializes_uuid_values(monkeypatch):
+    output = io.StringIO()
+    trial_id = uuid.uuid4()
+    external_id = uuid.uuid4()
+    monkeypatch.setattr(harbor_entry.sys, "stdout", output)
+
+    harbor_entry._emit_event_line(
+        {
+            harbor_entry.EVENT_SENTINEL: True,
+            "trial_id": trial_id,
+            "environment_external_id": external_id,
+        }
+    )
+
+    assert json.loads(output.getvalue()) == {
+        harbor_entry.EVENT_SENTINEL: True,
+        "trial_id": str(trial_id),
+        "environment_external_id": str(external_id),
+    }
 
 
 @pytest.mark.asyncio

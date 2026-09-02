@@ -1069,11 +1069,6 @@ async def poll_queue():
             console.print(f"[dim]queued_by_org: {summary}[/dim]")
 
         console.print(f"[dim]Spawn cap per poll: {MAX_WORKERS_PER_POLL}[/dim]")
-        console.print(
-            "[dim]EC2 capacity: "
-            f"held={held_ec2_capacity} "
-            f"limit={ec2_capacity_limit}[/dim]"
-        )
 
         spawn_plan = plan.unit_plan
         spawn_cap_reached = len(spawn_plan) >= MAX_WORKERS_PER_POLL

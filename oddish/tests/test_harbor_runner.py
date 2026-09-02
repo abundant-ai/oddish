@@ -155,7 +155,8 @@ user = "agent"
 
 
 @pytest.mark.parametrize(
-    "environment_type", [EnvironmentType.DAYTONA, EnvironmentType.MODAL]
+    "environment_type",
+    [EnvironmentType.DAYTONA, EnvironmentType.MODAL, EnvironmentType.THUNDER],
 )
 def test_inject_restricted_agent_model_hosts_for_restricted_direct_task(
     monkeypatch, tmp_path, environment_type
@@ -190,6 +191,33 @@ def test_inject_restricted_agent_model_hosts_for_restricted_direct_task(
     assert captured["agent_kwargs"] == {
         "extra_env": {"MODEL_BASE_URL": "https://model.test/v1"}
     }
+
+
+def test_inject_restricted_agent_model_hosts_for_thunder_compose(
+    monkeypatch, tmp_path
+):
+    task_path = _write_network_policy_task(tmp_path, compose=True)
+    environment_config = HarborEnvironmentConfig(type=EnvironmentType.THUNDER)
+    agent_config = HarborAgentConfig(
+        name="codex",
+        model_name="openai/gpt-5.5",
+    )
+    monkeypatch.setattr(
+        harbor_runner,
+        "outbound_hosts_for_model",
+        lambda *_args, **_kwargs: ["api.openai.com", "ab.chatgpt.com"],
+    )
+
+    harbor_runner._apply_restricted_agent_network_defaults(
+        task_path=task_path,
+        environment_config=environment_config,
+        agent_config=agent_config,
+    )
+
+    assert agent_config.extra_allowed_hosts == [
+        "api.openai.com",
+        "ab.chatgpt.com",
+    ]
 
 
 def test_kube_chart_model_hosts_merge_into_helm_contract(monkeypatch, tmp_path):

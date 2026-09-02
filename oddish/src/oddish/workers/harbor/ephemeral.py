@@ -40,7 +40,9 @@ from .runner import (
     HookCallback,
     _check_local_storage_preflight,
     _patch_task_toml,
+    _task_has_dynamic_restricted_agent_phase,
 )
+from .model_hosts import agent_runtime_hosts, outbound_hosts_for_model
 
 _ENTRY_PATH = str(Path(__file__).resolve().parent / "_entry.py")
 _CHILD_PYTHON = "3.13"
@@ -141,6 +143,53 @@ def _build_payload(
             environment_config.kwargs = DaytonaBackend().harbor_env_kwargs(
                 dict(environment_config.kwargs)
             )
+    runtime_env = _runtime_env_overrides(
+        agent=agent,
+        model=model,
+        raw_harbor_config=raw_harbor_config,
+        is_probe=is_probe,
+    )
+    agent_config = dict(raw_harbor_config.get("agent_config") or {})
+    if (
+        environment_config.type
+        in (EnvironmentType.DAYTONA, EnvironmentType.MODAL, EnvironmentType.THUNDER)
+        and _task_has_dynamic_restricted_agent_phase(task_path)
+    ):
+        # Override Harbor runs in an isolated child interpreter and therefore
+        # bypasses runner.py's in-process AgentConfig host injection. Resolve
+        # the same model/runtime endpoints in the parent and serialize them in
+        # the private child payload so Harbor can widen the restricted agent
+        # phase before the provider applies it.
+        resolved_agent_env = {
+            **dict(agent_config.get("env") or {}),
+            **runtime_env,
+            **dict(extra_agent_env or {}),
+        }
+        agent_kwargs = dict(agent_config.get("kwargs") or {})
+        if resolved_agent_env:
+            agent_kwargs["extra_env"] = resolved_agent_env
+        inferred_hosts = [
+            *outbound_hosts_for_model(
+                model,
+                agent_env=resolved_agent_env,
+                agent_kwargs=agent_kwargs,
+            ),
+            *agent_runtime_hosts(
+                agent_name=agent_config.get("name") or agent,
+                import_path=agent_config.get("import_path"),
+                agent_kwargs=agent_kwargs,
+                agent_env=resolved_agent_env,
+            ),
+        ]
+        agent_config["extra_allowed_hosts"] = list(
+            dict.fromkeys(
+                [
+                    *list(agent_config.get("extra_allowed_hosts") or []),
+                    *(host for host in inferred_hosts if host),
+                ]
+            )
+        )
+
     return {
         "task_path": str(task_path),
         "jobs_dir": str(jobs_dir),
@@ -148,7 +197,7 @@ def _build_payload(
         "agent": agent,
         "model": model,
         "environment_config": environment_config.model_dump(mode="json"),
-        "agent_config": raw_harbor_config.get("agent_config") or {},
+        "agent_config": agent_config,
         "verifier": raw_harbor_config.get("verifier") or {},
         "artifacts": raw_harbor_config.get("artifacts") or [],
         "timeout_multiplier": raw_harbor_config.get("timeout_multiplier"),
@@ -168,12 +217,7 @@ def _build_payload(
             else raw_harbor_config.get("environment_build_timeout_multiplier")
         ),
         "retry": raw_harbor_config.get("retry"),
-        "runtime_env": _runtime_env_overrides(
-            agent=agent,
-            model=model,
-            raw_harbor_config=raw_harbor_config,
-            is_probe=is_probe,
-        ),
+        "runtime_env": runtime_env,
         "probe_task_dir": str(task_path) if is_probe else None,
         "probe_harness_dir": PROBE_HARNESS_DIR,
         "extra_agent_env": extra_agent_env or {},

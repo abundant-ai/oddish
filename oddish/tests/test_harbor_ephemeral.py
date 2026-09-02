@@ -222,6 +222,63 @@ def test_build_payload_carries_agent_config():
     assert payload["agent_config"] == agent_config
 
 
+def test_thunder_override_payload_injects_openai_hosts_for_restricted_agent(
+    tmp_path, monkeypatch
+):
+    task_path = tmp_path / "task"
+    task_path.mkdir()
+    (task_path / "task.toml").write_text(
+        """schema_version = "1.3"
+
+[environment]
+network_mode = "public"
+
+[agent]
+network_mode = "allowlist"
+
+[verifier]
+network_mode = "no-network"
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        harbor_ephemeral,
+        "outbound_hosts_for_model",
+        lambda *_args, **_kwargs: ["api.openai.com", "ab.chatgpt.com"],
+    )
+    monkeypatch.setattr(
+        harbor_ephemeral,
+        "agent_runtime_hosts",
+        lambda **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        harbor_ephemeral,
+        "_runtime_env_overrides",
+        lambda **_kwargs: {"OPENAI_API_KEY": "test-key"},
+    )
+
+    payload = _build_payload(
+        task_path=task_path,
+        jobs_dir=tmp_path / "jobs",
+        outcome_path=tmp_path / "jobs" / "outcome.json",
+        agent="codex",
+        model="openai/gpt-5.5",
+        environment_config=EnvironmentConfig(type=EnvironmentType.THUNDER),
+        raw_harbor_config={"agent_config": {"extra_allowed_hosts": []}},
+        is_probe=False,
+    )
+
+    assert payload["agent_config"]["extra_allowed_hosts"] == [
+        "api.openai.com",
+        "ab.chatgpt.com",
+    ]
+    child_config = _build_job_config(payload)
+    assert child_config.agents[0].extra_allowed_hosts == [
+        "api.openai.com",
+        "ab.chatgpt.com",
+    ]
+
+
 def test_child_applies_submitted_agent_config(tmp_path):
     task_dir = tmp_path / "task"
     task_dir.mkdir()

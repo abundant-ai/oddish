@@ -777,7 +777,7 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   limit enforced by durable leases across every organization, model, queue key,
   and Harbor variant. The `oddish-thunder` Modal secret contains only
   `TNR_API_URL` and `TNR_API_TOKEN` and is attached only to dedicated Thunder
-  workers and teardown control. Thunder targets `thunder-sandbox==0.4.1` and
+  workers and teardown control. Thunder targets `thunder-sandbox==0.5.0` and
   its native async Python transport; never add subprocess probes or package
   requirements for `ssh`, `scp`, or `ssh-keygen` on its behalf. Registration
   makes `environment=thunder` valid but must never put Thunder in
