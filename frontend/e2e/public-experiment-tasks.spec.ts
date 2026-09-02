@@ -550,7 +550,7 @@ test("retryable focus errors preserve the trial-page deep-link fallback", async 
   await expect(page).toHaveURL(/task=task-1&trial=task-1-2/);
 });
 
-test("public experiment resources refresh while the experiment is active", async ({
+test("public experiment resources and loaded pages refresh while active", async ({
   page,
 }) => {
   const token = "public-active-cost";
@@ -558,8 +558,11 @@ test("public experiment resources refresh while the experiment is active", async
   let costRequests = 0;
   let openRequests = 0;
   let trialPageRequests = 0;
+  const laterPageCursors: string[] = [];
+  const pageErrors: string[] = [];
 
   await page.clock.install();
+  page.on("pageerror", (error) => pageErrors.push(error.message));
   await page.route(`**/api/public/experiments/${token}`, (route) =>
     route.fulfill({
       json: { name: "Active cost", public_token: token, description: null },
@@ -586,8 +589,22 @@ test("public experiment resources refresh while the experiment is active", async
     `**/api/public/experiments/${token}/trial-page?*`,
     (route) => {
       trialPageRequests += 1;
+      const cursor = new URL(route.request().url()).searchParams.get(
+        "before_trial_id"
+      );
+      if (cursor) laterPageCursors.push(cursor);
       return route.fulfill({
-        json: { revision: "2026-07-14T00:00:00Z", trials: [] },
+        json: {
+          revision: "2026-07-14T00:00:00Z",
+          trials: [],
+          ...(!cursor && {
+            next_created_at: "2026-07-13T00:00:00Z",
+            next_trial_id:
+              trialPageRequests === 1
+                ? "trial-old-boundary"
+                : "trial-new-boundary",
+          }),
+        },
       });
     }
   );
@@ -597,13 +614,21 @@ test("public experiment resources refresh while the experiment is active", async
   await expect.poll(() => openRequests).toBe(1);
   await expect.poll(() => trialPageRequests).toBe(1);
   await expect(page.getByText("$1.00", { exact: true })).toBeVisible();
+  await page
+    .getByRole("button", { name: "Load next 250 trial results" })
+    .click();
+  await expect.poll(() => laterPageCursors).toEqual(["trial-old-boundary"]);
 
   await page.clock.runFor(30_100);
 
   await expect.poll(() => costRequests).toBe(2);
   await expect.poll(() => openRequests).toBe(2);
-  await expect.poll(() => trialPageRequests).toBe(2);
+  await expect.poll(() => trialPageRequests).toBe(4);
+  await expect
+    .poll(() => laterPageCursors)
+    .toEqual(["trial-old-boundary", "trial-new-boundary"]);
   await expect(page.getByText("$2.00", { exact: true })).toBeVisible();
+  expect(pageErrors).toEqual([]);
 });
 
 test("public trial drawers defer trajectory work", async ({ page }) => {
