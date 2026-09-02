@@ -1,0 +1,249 @@
+"use client";
+
+import { useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useAuth } from "@clerk/nextjs";
+import useSWR from "swr";
+import { Package, Plus } from "lucide-react";
+
+import { fetcher } from "@/lib/api";
+import { isOrgAdminRole } from "@/lib/org-roles";
+import type { Customer, DeliveryListItem } from "@/lib/types";
+import { CustomerCreateDialog } from "@/components/customer-create-dialog";
+import { DeliveryStatusBadge } from "@/components/delivery-status";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Label } from "@/components/ui/label";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+
+export function DeliveriesClient({
+  initialDeliveries,
+}: {
+  initialDeliveries: DeliveryListItem[] | null;
+}) {
+  const router = useRouter();
+  const { orgRole } = useAuth();
+  const isAdmin = isOrgAdminRole(orgRole);
+  const { data, error, isLoading, mutate } = useSWR<DeliveryListItem[]>(
+    "/api/deliveries",
+    fetcher,
+    { fallbackData: initialDeliveries ?? undefined }
+  );
+
+  const [createOpen, setCreateOpen] = useState(false);
+  const [customerOpen, setCustomerOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [customerId, setCustomerId] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const { data: customers, mutate: mutateCustomers } = useSWR<Customer[]>(
+    createOpen || customerOpen ? "/api/customers" : null,
+    fetcher
+  );
+
+  const createDelivery = async () => {
+    setCreating(true);
+    setCreateError(null);
+    try {
+      const res = await fetch("/api/deliveries", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: name.trim(),
+          customer: customerId,
+        }),
+      });
+      const payload = (await res.json().catch(() => null)) as {
+        id?: string;
+        detail?: string;
+        error?: string;
+      } | null;
+      if (!res.ok || !payload?.id) {
+        throw new Error(
+          payload?.detail || payload?.error || `Create failed (${res.status})`
+        );
+      }
+      setCreateOpen(false);
+      setName("");
+      setCustomerId("");
+      void mutate();
+      router.push(`/deliveries/${payload.id}`);
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : "Create failed");
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between gap-2">
+        <CardTitle className="flex items-center gap-2">
+          <Package className="h-5 w-5" />
+          Deliveries
+        </CardTitle>
+        {isAdmin && (
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setCustomerOpen(true)}
+            >
+              <Plus className="mr-1 h-4 w-4" />
+              New customer
+            </Button>
+            <CustomerCreateDialog
+              open={customerOpen}
+              onOpenChange={setCustomerOpen}
+              onCreated={(customer) => {
+                void mutateCustomers();
+                setCustomerId(customer.id);
+              }}
+            />
+            <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+              <DialogTrigger asChild>
+                <Button size="sm">
+                  <Plus className="mr-1 h-4 w-4" />
+                  New delivery
+                </Button>
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>New delivery</DialogTitle>
+                </DialogHeader>
+                <div className="space-y-3">
+                  <div className="space-y-1">
+                    <Label htmlFor="delivery-name">Name</Label>
+                    <Input
+                      id="delivery-name"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      placeholder="e.g. August batch"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="delivery-customer">Customer</Label>
+                    <Select
+                      value={customerId}
+                      onValueChange={(value) => {
+                        if (value === "__new__") {
+                          setCustomerOpen(true);
+                        } else {
+                          setCustomerId(value);
+                        }
+                      }}
+                    >
+                      <SelectTrigger id="delivery-customer">
+                        <SelectValue placeholder="Select a customer" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {(customers ?? []).map((entry) => (
+                          <SelectItem key={entry.id} value={entry.id}>
+                            {entry.name}
+                          </SelectItem>
+                        ))}
+                        <SelectItem value="__new__">New customer…</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {createError && (
+                    <p className="text-destructive text-sm">{createError}</p>
+                  )}
+                </div>
+                <DialogFooter>
+                  <Button
+                    onClick={() => void createDelivery()}
+                    disabled={creating || !name.trim() || !customerId}
+                  >
+                    {creating ? "Creating…" : "Create"}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+          </div>
+        )}
+      </CardHeader>
+      <CardContent>
+        {error ? (
+          <p className="text-destructive text-sm">
+            Failed to load deliveries: {error.message}
+          </p>
+        ) : isLoading && !data ? (
+          <div className="space-y-2">
+            <Skeleton className="h-8 w-full" />
+            <Skeleton className="h-8 w-full" />
+            <Skeleton className="h-8 w-2/3" />
+          </div>
+        ) : !data || data.length === 0 ? (
+          <p className="text-muted-foreground text-sm">
+            No deliveries yet. A delivery is a checklist that tracks whether a
+            set of tasks is ready to ship to a customer.
+          </p>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>Customer</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="text-right">Tasks</TableHead>
+                <TableHead>Created</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {data.map((delivery) => (
+                <TableRow key={delivery.id}>
+                  <TableCell>
+                    <Link
+                      href={`/deliveries/${delivery.id}`}
+                      className="font-medium hover:underline"
+                    >
+                      {delivery.name}
+                    </Link>
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {delivery.customer_name || "—"}
+                  </TableCell>
+                  <TableCell>
+                    <DeliveryStatusBadge status={delivery.status} />
+                  </TableCell>
+                  <TableCell className="text-right">
+                    {delivery.task_count}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {new Date(delivery.created_at).toLocaleDateString()}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </CardContent>
+    </Card>
+  );
+}

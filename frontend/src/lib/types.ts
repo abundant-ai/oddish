@@ -1348,3 +1348,139 @@ export interface ExperimentShareInfo {
   shadow_of?: string | null;
   qa_report_experiment_id?: string | null;
 }
+
+// ---------------------------------------------------------------------------
+// Deliveries (docs/delivery-design.md) — mirrors oddish/schemas.py
+// ---------------------------------------------------------------------------
+
+export type DeliveryCheckStatus = "pass" | "fail" | "off" | "waived";
+
+interface ManualCheckDefinition {
+  key: string;
+  label: string;
+  scope: "task" | "delivery";
+}
+
+interface DeliveryCheckConfig {
+  automated: Record<string, Record<string, unknown>>;
+  manual: ManualCheckDefinition[];
+}
+
+export interface DeliveryListItem {
+  id: string;
+  name: string;
+  customer_id?: string | null;
+  customer_name?: string | null;
+  description?: string | null;
+  status: "active" | "finalized" | (string & {});
+  is_public: boolean;
+  finalized_at?: string | null;
+  created_at: string;
+  updated_at: string;
+  task_count: number;
+}
+
+export interface Customer {
+  id: string;
+  name: string;
+}
+
+export interface DeliveryCheckResult {
+  key: string;
+  kind: "automated" | "manual";
+  label: string;
+  status: DeliveryCheckStatus;
+  detail: string;
+  checked_by_user_id?: string | null;
+  checked_by_name?: string | null;
+  checked_at?: string | null;
+}
+
+interface DeliveryDefect {
+  id: string;
+  title: string;
+  source: "pre_trial" | "trial" | (string & {});
+  acknowledged: boolean;
+  acknowledged_by_user_id?: string | null;
+  acknowledged_by_name?: string | null;
+  acknowledged_at?: string | null;
+}
+
+export interface DeliveryTaskBoardRow {
+  delivery_task_id: string;
+  task_id: string;
+  task_name: string;
+  version_id?: string | null;
+  version?: number | null;
+  pinned_version_id?: string | null;
+  newer_version_exists: boolean;
+  is_visible: boolean;
+  sort_order: number;
+  customer_note?: string | null;
+  internal_note?: string | null;
+  checks: DeliveryCheckResult[];
+  defects: DeliveryDefect[];
+  ready: boolean;
+}
+
+export interface DeliveryBoardResponse {
+  delivery: Omit<DeliveryListItem, "task_count">;
+  check_config: DeliveryCheckConfig;
+  tasks: DeliveryTaskBoardRow[];
+  delivery_checks: DeliveryCheckResult[];
+  ready: boolean;
+  ready_task_count: number;
+  task_count: number;
+  frozen: boolean;
+  finalized_at?: string | null;
+}
+
+interface TaskQAHistoryRun {
+  trial_id: string;
+  kind: string;
+  status?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  error?: string | null;
+}
+
+interface TaskQAHistoryVersion {
+  version_id: string;
+  version: number;
+  created_at: string;
+  message?: string | null;
+  is_current: boolean;
+  pre_trial_status?: string | null;
+  pre_trial_finished_at?: string | null;
+  pre_trial_error?: string | null;
+  must_fix: number;
+  pre_trial_should_fix: number;
+  rollout_count: number;
+  rollout_agents: number;
+  qa_runs: TaskQAHistoryRun[];
+  findings: TaskQAHistoryFinding[];
+}
+
+interface TaskQAHistoryFinding {
+  tier: string;
+  title: string;
+  source: "pre_trial" | "trial" | (string & {});
+}
+
+interface TaskQAHistoryVerdict {
+  verdict?: "accept" | "reject" | (string & {});
+  is_good?: boolean | null;
+  primary_issue?: string | null;
+  reasoning?: string | null;
+}
+
+export interface TaskQAHistoryResponse {
+  task_id: string;
+  task_name: string;
+  current_version_id?: string | null;
+  verdict?: TaskQAHistoryVerdict | null;
+  verdict_status?: string | null;
+  verdict_version_id?: string | null;
+  versions: TaskQAHistoryVersion[];
+  unversioned_runs?: TaskQAHistoryRun[];
+}
