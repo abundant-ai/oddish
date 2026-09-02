@@ -330,8 +330,11 @@ Pinned Harbor 0.20 omits its former `trial_results` array from that root job
 summary, so the Oddish runner writes `oddish_trial_name` there after `Job.run()`
 returns and before upload. That field contains the sole in-memory Harbor
 `TrialResult.trial_name`; older stored roots with exactly one `trial_results`
-entry remain readable. Zero- or multi-result jobs receive no selection and fail
-settlement instead of choosing a directory by listing siblings.
+entry remain readable. CLI and ZIP import archive construction writes the same
+selector into a copied root manifest, leaving the external Harbor job unchanged;
+import completion resolves the uploaded layout and rejects an unreadable archive
+before advancing task state. Zero- or multi-result jobs receive no selection and
+fail settlement instead of choosing a directory by listing siblings.
 If the outcome reports a trajectory, that same selected child must also contain
 `agent/trajectory.json`. An upload or layout-validation failure uses the trial's
 normal retry budget. Storage list/download errors during import propagate so
@@ -811,6 +814,14 @@ Capability evidence links on a share page must remain inside `/share/{token}`;
 they select the shared task and trial, open the trajectory tab, and retain the
 cited step anchor. They must never point signed-out readers at authenticated
 `/tasks/...` routes.
+
+Experiment pages use independent task and trial cursors. The first `/open` page
+includes the exact experiment summary; later task pages request
+`include_summary=false` and receive `summary=null` so they do not repeat the
+whole-experiment aggregation. `/focus?task=...&trial=...` resolves one URL target
+without walking either cursor. Public pages use the matching token-scoped focus
+route and `/cost-totals`; paginated trial rows are never treated as final spend
+or token totals.
 
 ### Configuration and model routing
 

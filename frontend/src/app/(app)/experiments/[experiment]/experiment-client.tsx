@@ -78,12 +78,15 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
     isLoadingTrials,
     hasMoreTasks,
     hasMoreTrials,
+    canLoadTrials,
     loadNextTasks,
     loadNextTrials,
+    retryTrials,
     trialsLoaded: trialsLoadedCount,
     totalTrials: totalTrialCount,
     trialsStalled,
     isValidatingTrials,
+    trialPagesComplete,
     mutateOpen,
     mutateTrials,
   } = useExperimentPages({
@@ -100,18 +103,15 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
     : null;
   const {
     data: costTotals,
-    error: costTotalsError,
     mutate: mutateCostTotals,
   } = useSWR<ExperimentCostTotals>(costTotalsKey, fetcher, {
     refreshInterval: experimentOpen?.has_active_trials ? 30000 : 0,
     revalidateOnFocus: false,
   });
-  // In flight. The tiles must not fall back to the client sum meanwhile: that
-  // number is wrong on two axes (loaded pages only, grid-filtered) and would
-  // visibly jump when the real total lands. Show a placeholder instead. On
-  // error we do fall back, so a failed rollup degrades rather than blanks.
+  // The paginated grid cannot supply a cost total. Keep the tiles pending
+  // until the exact rollup is available, including after a failed request.
   const costTotalsPending =
-    costTotalsKey != null && costTotals === undefined && !costTotalsError;
+    costTotalsKey != null && costTotals === undefined;
 
   // Experiment-level metadata (sharing + description) for the header.
   // Fetched eagerly so the description renders immediately; shares the SWR
@@ -303,15 +303,18 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
         <ExperimentDetailView
           experimentId={experimentId}
           tasksForExperiment={tasksForExperiment}
-          pageSummary={experimentOpen?.summary}
+          pageSummary={experimentOpen?.summary ?? undefined}
           costTotals={costTotals}
           costTotalsPending={costTotalsPending}
           isLoading={isLoading}
           isLoadingTrials={isLoadingTrials}
+          trialPagesComplete={trialPagesComplete}
           hasMoreTasks={hasMoreTasks}
           hasMoreTrials={hasMoreTrials}
+          canLoadTrials={canLoadTrials}
           loadNextTasks={loadNextTasks}
           loadNextTrials={loadNextTrials}
+          focusUrl={encodedId ? `/api/experiments/${encodedId}/focus` : undefined}
           // SWR retains successful fallback/revalidation data when a later
           // request fails. Keep that usable grid visible instead of replacing
           // it with the fatal error state during a transient backend failure.
@@ -461,7 +464,7 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
                 loaded={trialsLoadedCount}
                 total={totalTrialCount}
                 isRetrying={isValidatingTrials}
-                onRetry={loadNextTrials}
+                onRetry={retryTrials}
               />
             ) : openError && tasksForExperiment.length > 0 ? (
               <Alert>

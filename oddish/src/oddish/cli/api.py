@@ -62,6 +62,7 @@ from oddish.core.harbor_artifacts import (
     extract_trajectory_metrics,
     extract_trial_result_fields,
     extract_verifier_metrics,
+    write_trial_selection_manifest,
 )
 from oddish.core.idempotency import compute_sweep_idempotency_key
 from oddish.task_timeouts import (
@@ -1846,9 +1847,14 @@ def _tar_trial_dir(trial_dir: Path) -> Path:
     excluded on purpose -- each imported trial gets its own S3 prefix
     and shouldn't drag in its sibling trials' logs.
     """
-    tmpdir = tempfile.mkdtemp(prefix="oddish-trial-import-")
-    tarball_path = Path(tmpdir) / f"{trial_dir.name}.tar.gz"
+    tmpdir = Path(tempfile.mkdtemp(prefix="oddish-trial-import-"))
+    tarball_path = tmpdir / f"{trial_dir.name}.tar.gz"
     job_dir = trial_dir.parent
+    selected_result_path = tmpdir / "result.json"
+    root_result_path = job_dir / "result.json"
+    if root_result_path.is_file():
+        shutil.copy2(root_result_path, selected_result_path)
+        write_trial_selection_manifest(selected_result_path, [trial_dir.name])
     with tarfile.open(tarball_path, "w:gz", compresslevel=1) as tar:
         # 1. Add the job dir's top-level FILES only (config, logs,
         #    job-level result.json). Skipping subdirectories here
@@ -1856,7 +1862,10 @@ def _tar_trial_dir(trial_dir: Path) -> Path:
         if job_dir.exists():
             for item in job_dir.iterdir():
                 if item.is_file():
-                    tar.add(item, arcname=item.name)
+                    tar.add(
+                        selected_result_path if item == root_result_path else item,
+                        arcname=item.name,
+                    )
         # 2. Add the trial's own subdir nested under its trial_name so
         #    ``<prefix>/<trial_name>/agent/trajectory.json`` etc. line
         #    up with the live path's ``_trajectory_candidate_keys``.

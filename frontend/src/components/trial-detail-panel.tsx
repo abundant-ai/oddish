@@ -936,6 +936,11 @@ export function TrialDetailPanel({
     const current = new URLSearchParams(window.location.search);
     const next = new URLSearchParams(window.location.search);
 
+    // This panel is mounted only for the displayed trial. Keep that resource
+    // identity alongside tab/file state so a concurrent route-state commit
+    // cannot turn a trial drawer URL back into a task-only URL.
+    if (trial?.id) next.set("trial", trial.id);
+
     if (activeTab) {
       next.set("tab", activeTab);
     } else {
@@ -982,6 +987,7 @@ export function TrialDetailPanel({
     selectedLines,
     artifactsTargetPath,
     artifactsLines,
+    trial?.id,
   ]);
 
   // Agent rows only: the generic retry endpoint refuses qa/audit kinds, so

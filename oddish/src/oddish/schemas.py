@@ -1107,7 +1107,7 @@ class ExperimentOpenResponse(BaseModel):
     link: str | None = None
     revision: datetime
     has_active_trials: bool = False
-    summary: ExperimentPageSummary = Field(default_factory=ExperimentPageSummary)
+    summary: ExperimentPageSummary | None = None
     tasks: list[ExperimentTaskRow] = Field(default_factory=list)
     next_created_at: datetime | None = None
     next_task_id: str | None = None
@@ -1150,6 +1150,12 @@ class ExperimentTrialCell(BaseModel):
     created_at: datetime
     started_at: datetime | None = None
     finished_at: datetime | None = None
+
+
+class ExperimentFocusResponse(BaseModel):
+    revision: datetime
+    task: ExperimentTaskRow
+    trial: ExperimentTrialCell | None = None
 
 
 class ExperimentTrialPageResponse(BaseModel):

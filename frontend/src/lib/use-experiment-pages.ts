@@ -14,7 +14,7 @@ import type {
 const OPEN_PAGE_SIZE = 100;
 const TRIAL_PAGE_SIZE = 250;
 
-function trialFromCell(cell: ExperimentTrialCell): Trial {
+export function trialFromExperimentCell(cell: ExperimentTrialCell): Trial {
   const { analysis, ...trial } = cell;
   return {
     ...trial,
@@ -43,7 +43,7 @@ function buildTasks(
   for (const page of trialPages ?? []) {
     for (const cell of page.trials) {
       const trials = trialsByTask.get(cell.task_id) ?? [];
-      trials.push(trialFromCell(cell));
+      trials.push(trialFromExperimentCell(cell));
       trialsByTask.set(cell.task_id, trials);
     }
   }
@@ -74,6 +74,7 @@ export function useExperimentPages({
     (pageIndex: number, previous: ExperimentOpenResponse | null) => {
       if (!openUrl || (pageIndex > 0 && !previous?.next_task_id)) return null;
       const query = new URLSearchParams({ limit: String(OPEN_PAGE_SIZE) });
+      if (pageIndex > 0) query.set("include_summary", "false");
       if (previous?.next_created_at && previous.next_task_id) {
         query.set("before_created_at", previous.next_created_at);
         query.set("before_task_id", previous.next_task_id);
@@ -120,7 +121,10 @@ export function useExperimentPages({
   const hasMoreTrials = Boolean(lastTrialPage?.next_trial_id);
   const canLoadTasks = hasMoreTasks && !open.isLoading && !open.isValidating;
   const canLoadTrials =
-    hasMoreTrials && !trials.isLoading && !trials.isValidating;
+    hasMoreTrials &&
+    !trials.error &&
+    !trials.isLoading &&
+    !trials.isValidating;
   const {
     error: openError,
     isLoading: isLoadingOpen,
@@ -151,22 +155,19 @@ export function useExperimentPages({
     setOpenSize,
   ]);
   const loadNextTrials = useCallback(() => {
-    if (isLoadingTrials || isValidatingTrials) return;
-    if (trialError) {
-      // Keep the current page count so retry rebuilds this exact failed key
-      // from the last successful cursor instead of advancing past it.
-      void mutateTrials();
-      return;
-    }
+    if (trialError || isLoadingTrials || isValidatingTrials) return;
     if (hasMoreTrials) void setTrialSize((size) => size + 1);
   }, [
     hasMoreTrials,
     isLoadingTrials,
     isValidatingTrials,
-    mutateTrials,
     setTrialSize,
     trialError,
   ]);
+  const retryTrials = useCallback(() => {
+    if (isLoadingTrials || isValidatingTrials) return;
+    void mutateTrials();
+  }, [isLoadingTrials, isValidatingTrials, mutateTrials]);
 
   const tasks = useMemo(
     () => buildTasks(open.data, trials.data, publicView),
@@ -174,7 +175,15 @@ export function useExperimentPages({
   );
   const trialsLoaded =
     trials.data?.reduce((sum, page) => sum + page.trials.length, 0) ?? 0;
-  const totalTrials = experiment?.summary.trial_count ?? 0;
+  const totalTrials = experiment?.summary?.trial_count ?? 0;
+  const trialPagesComplete =
+    totalTrials === 0 ||
+    Boolean(
+      trials.data &&
+        !hasMoreTrials &&
+        !trialError &&
+        trialsLoaded >= totalTrials
+    );
 
   return {
     experiment,
@@ -189,9 +198,11 @@ export function useExperimentPages({
     canLoadTrials,
     loadNextTasks,
     loadNextTrials,
+    retryTrials,
     trialsLoaded,
     totalTrials,
     trialsStalled: Boolean(trialError) && trialsLoaded < totalTrials,
+    trialPagesComplete,
     isValidatingTrials,
     mutateOpen,
     mutateTrials,

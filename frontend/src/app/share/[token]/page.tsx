@@ -6,7 +6,7 @@ import { ExperimentDetailView } from "@/components/experiment-detail-view";
 import { ExperimentDescription } from "@/components/experiment-description";
 import { ExperimentTrialLoadAlert } from "@/components/experiment-trial-load-alert";
 import { ShareNav } from "@/components/share-nav";
-import type { PublicExperimentInfo } from "@/lib/types";
+import type { ExperimentCostTotals, PublicExperimentInfo } from "@/lib/types";
 import { fetcher } from "@/lib/api";
 import { useExperimentPages } from "@/lib/use-experiment-pages";
 import { PUBLIC_API_URL } from "@/lib/utils";
@@ -31,17 +31,28 @@ export default function PublicExperimentPage() {
     isLoadingTrials,
     hasMoreTasks,
     hasMoreTrials,
+    canLoadTrials,
     loadNextTasks,
     loadNextTrials,
+    retryTrials,
     trialsLoaded,
     totalTrials,
     trialsStalled,
     isValidatingTrials,
+    trialPagesComplete,
   } = useExperimentPages({
     openUrl: publicBase ? `${publicBase}/open` : null,
     trialPageUrl: publicBase ? `${publicBase}/trial-page` : null,
     publicView: true,
   });
+  const { data: costTotals } = useSWR<ExperimentCostTotals>(
+    publicBase ? `${publicBase}/cost-totals` : null,
+    fetcher,
+    {
+      refreshInterval: experiment?.has_active_trials ? 30000 : 0,
+      revalidateOnFocus: false,
+    }
+  );
 
   const experimentName =
     experimentInfo?.name || experiment?.name || "Public Experiment";
@@ -56,13 +67,18 @@ export default function PublicExperimentPage() {
         <div className="space-y-4">
           <ExperimentDetailView
             tasksForExperiment={tasksForExperiment}
-            pageSummary={experiment?.summary}
+            pageSummary={experiment?.summary ?? undefined}
+            costTotals={costTotals}
+            costTotalsPending={publicBase != null && costTotals === undefined}
             isLoading={isLoading}
             isLoadingTrials={isLoadingTrials}
+            trialPagesComplete={trialPagesComplete}
             hasMoreTasks={hasMoreTasks}
             hasMoreTrials={hasMoreTrials}
+            canLoadTrials={canLoadTrials}
             loadNextTasks={loadNextTasks}
             loadNextTrials={loadNextTrials}
+            focusUrl={publicBase ? `${publicBase}/focus` : undefined}
             hasError={hasFatalError}
             errorTitle="Failed to load experiment"
             errorDescription="The share link may be invalid or no longer public."
@@ -72,7 +88,7 @@ export default function PublicExperimentPage() {
                   loaded={trialsLoaded}
                   total={totalTrials}
                   isRetrying={isValidatingTrials}
-                  onRetry={loadNextTrials}
+                  onRetry={retryTrials}
                 />
               ) : null
             }

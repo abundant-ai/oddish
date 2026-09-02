@@ -2,8 +2,43 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, cast
+from pathlib import Path, PurePosixPath
+from typing import Any, Sequence, cast
+
+
+ODDISH_TRIAL_NAME_KEY = "oddish_trial_name"
+
+
+def validate_trial_name(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("result.json trial_name must be a non-empty string")
+    trial_name = value.strip()
+    trial_name_path = PurePosixPath(trial_name)
+    if (
+        trial_name_path.is_absolute()
+        or len(trial_name_path.parts) != 1
+        or trial_name_path.parts[0] in (".", "..")
+    ):
+        raise ValueError("result.json trial_name must be one directory name")
+    return trial_name
+
+
+def write_trial_selection_manifest(
+    result_path: Path, trial_names: Sequence[str]
+) -> bool:
+    """Record the one Harbor child owned by an Oddish job in root result.json."""
+    if len(trial_names) != 1:
+        return False
+    trial_name = validate_trial_name(trial_names[0])
+    manifest = json.loads(result_path.read_text(encoding="utf-8"))
+    if not isinstance(manifest, dict):
+        raise ValueError("result.json must contain a JSON object")
+    manifest[ODDISH_TRIAL_NAME_KEY] = trial_name
+    result_path.write_text(
+        json.dumps(manifest, indent=4, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    return True
 
 
 @dataclass(frozen=True)

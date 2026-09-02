@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
@@ -36,6 +36,7 @@ from oddish.db import (
 )
 from oddish.model_pricing import estimate_cost_usd
 from oddish.schemas import (
+    ExperimentFocusResponse,
     ExperimentOpenResponse,
     ExperimentPageSummary,
     ExperimentPageVerdict,
@@ -160,8 +161,13 @@ async def _member_experiment(
     return row
 
 
-def _experiment_task_rows(*, experiment_id: str, org_id: str):
-    effective = experiment_effective_versions_selectable(experiment_id=experiment_id)
+def _experiment_task_rows(
+    *, experiment_id: str, org_id: str, task_ids: Sequence[str] | None = None
+):
+    selected_task_ids = list(task_ids) if task_ids is not None else None
+    effective = experiment_effective_versions_selectable(
+        experiment_id=experiment_id, task_ids=selected_task_ids
+    )
     scored = and_(
         TrialModel.status == TrialStatus.SUCCESS,
         TrialModel.reward.is_not(None),
@@ -213,6 +219,11 @@ def _experiment_task_rows(*, experiment_id: str, org_id: str):
             or_(
                 effective.c.task_id.is_(None),
                 effective.c.task_version_id == TrialModel.task_version_id,
+            ),
+            *(
+                (TrialModel.task_id.in_(selected_task_ids),)
+                if selected_task_ids is not None
+                else ()
             ),
         )
         .group_by(TrialModel.task_id)
@@ -269,7 +280,15 @@ def _experiment_task_rows(*, experiment_id: str, org_id: str):
         )
         .outerjoin(effective, effective.c.task_id == TaskModel.id)
         .outerjoin(stats, stats.c.task_id == TaskModel.id)
-        .where(TaskModel.org_id == org_id, TaskModel.deleted_at.is_(None))
+        .where(
+            TaskModel.org_id == org_id,
+            TaskModel.deleted_at.is_(None),
+            *(
+                (TaskModel.id.in_(selected_task_ids),)
+                if selected_task_ids is not None
+                else ()
+            ),
+        )
     )
 
 
@@ -311,6 +330,7 @@ async def get_experiment_open_core(
     limit: int = OPEN_MAX_TASKS,
     before_created_at: datetime | None = None,
     before_task_id: str | None = None,
+    include_summary: bool = True,
     _experiment: Mapping[str, Any] | None = None,
 ) -> ExperimentOpenResponse:
     """Return exact experiment totals and one byte-bounded task page."""
@@ -326,101 +346,136 @@ async def get_experiment_open_core(
         )
     else:
         experiment = _experiment
-    task_rows = _experiment_task_rows(experiment_id=experiment_id, org_id=org_id)
-    tasks = task_rows.subquery("experiment_open_tasks")
-    inactive_verdict = or_(
-        tasks.c.verdict_status.is_(None),
-        tasks.c.verdict_status.not_in(_ACTIVE_VERDICT_STATUSES),
-    )
-    summary_result = await session.execute(
-        select(
-            func.count().label("task_count"),
-            *(
-                func.coalesce(func.sum(tasks.c[field]), 0).label(field)
-                for field in (
-                    "total",
-                    "completed",
-                    "failed",
-                    "skipped",
-                    "pass_count",
-                    "partial_count",
-                    "fail_count",
-                    "reward_sum",
-                    "reward_total",
-                )
-            ),
-            func.avg(tasks.c.average_score).label("average_score"),
-            func.count()
-            .filter(
-                inactive_verdict,
-                or_(
-                    tasks.c.verdict_label == "accept",
-                    tasks.c.verdict_is_good == "true",
-                ),
-            )
-            .label("qa_accepted"),
-            func.count()
-            .filter(
-                inactive_verdict,
-                or_(
-                    tasks.c.verdict_label == "reject",
-                    tasks.c.verdict_is_good == "false",
-                ),
-            )
-            .label("qa_rejected"),
-            func.count()
-            .filter(tasks.c.verdict_status.in_(_ACTIVE_VERDICT_STATUSES))
-            .label("qa_running"),
-            func.count()
-            .filter(
-                tasks.c.verdict_status == VerdictStatus.FAILED,
-                tasks.c.verdict_label.is_(None),
-                tasks.c.verdict_is_good.is_(None),
-            )
-            .label("qa_failed"),
-            select(1)
-            .select_from(TrialModel)
-            .join(TaskModel, TaskModel.id == TrialModel.task_id)
-            .where(
-                *visible_experiment_trial_predicates(experiment_id),
-                TaskModel.org_id == org_id,
-                TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
-            )
-            .exists()
-            .label("has_active_trials"),
-        ).select_from(tasks)
-    )
-    summary_row = summary_result.mappings().one()
     limit = max(1, min(limit, OPEN_MAX_TASKS))
-    page_query = select(tasks)
+    page_query = (
+        select(TaskModel.id.label("task_id"), TaskModel.created_at)
+        .join(
+            task_experiments,
+            and_(
+                task_experiments.c.task_id == TaskModel.id,
+                task_experiments.c.experiment_id == experiment_id,
+                task_experiments.c.deleted_at.is_(None),
+            ),
+        )
+        .where(TaskModel.org_id == org_id, TaskModel.deleted_at.is_(None))
+    )
     if before_created_at is not None:
         page_query = page_query.where(
             or_(
-                tasks.c.created_at < before_created_at,
+                TaskModel.created_at < before_created_at,
                 and_(
-                    tasks.c.created_at == before_created_at,
-                    tasks.c.task_id < before_task_id,
+                    TaskModel.created_at == before_created_at,
+                    TaskModel.id < before_task_id,
                 ),
             )
         )
-    result = await session.execute(
-        page_query.order_by(tasks.c.created_at.desc(), tasks.c.task_id.desc()).limit(
+    page_result = await session.execute(
+        page_query.order_by(TaskModel.created_at.desc(), TaskModel.id.desc()).limit(
             limit + 1
         )
     )
-    rows = list(result.mappings().all())
-    has_more = len(rows) > limit
-    rows = rows[:limit]
-    trial_count = int(summary_row["total"] or 0)
-    completed = int(summary_row["completed"] or 0)
-    failed = int(summary_row["failed"] or 0)
-    skipped = int(summary_row["skipped"] or 0)
-    summary_values = dict(summary_row)
-    summary_values.update(
-        trial_count=trial_count,
-        active=max(trial_count - completed - failed - skipped, 0),
-        harness_error_count=failed,
-    )
+    page_id_rows = list(page_result.mappings().all())
+    has_more = len(page_id_rows) > limit
+    page_id_rows = page_id_rows[:limit]
+    selected_task_ids = [str(row["task_id"]) for row in page_id_rows]
+
+    rows: list[Mapping[str, Any]] = []
+    if selected_task_ids:
+        task_result = await session.execute(
+            _experiment_task_rows(
+                experiment_id=experiment_id,
+                org_id=org_id,
+                task_ids=selected_task_ids,
+            )
+        )
+        rows_by_id = {str(row["task_id"]): row for row in task_result.mappings().all()}
+        page_id_rows = [
+            row for row in page_id_rows if str(row["task_id"]) in rows_by_id
+        ]
+        selected_task_ids = [str(row["task_id"]) for row in page_id_rows]
+        rows = [rows_by_id[task_id] for task_id in selected_task_ids]
+
+    summary_row: Mapping[str, Any] | None = None
+    summary = None
+    if include_summary:
+        tasks = _experiment_task_rows(
+            experiment_id=experiment_id, org_id=org_id
+        ).subquery("experiment_open_tasks")
+        inactive_verdict = or_(
+            tasks.c.verdict_status.is_(None),
+            tasks.c.verdict_status.not_in(_ACTIVE_VERDICT_STATUSES),
+        )
+        summary_result = await session.execute(
+            select(
+                func.count().label("task_count"),
+                *(
+                    func.coalesce(func.sum(tasks.c[field]), 0).label(field)
+                    for field in (
+                        "total",
+                        "completed",
+                        "failed",
+                        "skipped",
+                        "pass_count",
+                        "partial_count",
+                        "fail_count",
+                        "reward_sum",
+                        "reward_total",
+                    )
+                ),
+                func.avg(tasks.c.average_score).label("average_score"),
+                func.count()
+                .filter(
+                    inactive_verdict,
+                    or_(
+                        tasks.c.verdict_label == "accept",
+                        tasks.c.verdict_is_good == "true",
+                    ),
+                )
+                .label("qa_accepted"),
+                func.count()
+                .filter(
+                    inactive_verdict,
+                    or_(
+                        tasks.c.verdict_label == "reject",
+                        tasks.c.verdict_is_good == "false",
+                    ),
+                )
+                .label("qa_rejected"),
+                func.count()
+                .filter(tasks.c.verdict_status.in_(_ACTIVE_VERDICT_STATUSES))
+                .label("qa_running"),
+                func.count()
+                .filter(
+                    tasks.c.verdict_status == VerdictStatus.FAILED,
+                    tasks.c.verdict_label.is_(None),
+                    tasks.c.verdict_is_good.is_(None),
+                )
+                .label("qa_failed"),
+                select(1)
+                .select_from(TrialModel)
+                .join(TaskModel, TaskModel.id == TrialModel.task_id)
+                .where(
+                    *visible_experiment_trial_predicates(experiment_id),
+                    TaskModel.org_id == org_id,
+                    TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
+                )
+                .exists()
+                .label("has_active_trials"),
+            ).select_from(tasks)
+        )
+        summary_row = summary_result.mappings().one()
+        trial_count = int(summary_row["total"] or 0)
+        completed = int(summary_row["completed"] or 0)
+        failed = int(summary_row["failed"] or 0)
+        skipped = int(summary_row["skipped"] or 0)
+        summary_values = dict(summary_row)
+        summary_values.update(
+            trial_count=trial_count,
+            active=max(trial_count - completed - failed - skipped, 0),
+            harness_error_count=failed,
+        )
+        summary = ExperimentPageSummary.model_validate(summary_values)
+
     response = ExperimentOpenResponse(
         experiment_id=str(experiment["id"]),
         name=str(experiment["name"]),
@@ -432,15 +487,15 @@ async def get_experiment_open_core(
         # polling while that replacement verdict is active as well, otherwise
         # the first ``qa_running`` response would stop its own refresh loop.
         has_active_trials=(
-            bool(summary_row["has_active_trials"])
-            or int(summary_row["qa_running"] or 0) > 0
+            bool(summary_row and summary_row["has_active_trials"])
+            or bool(summary_row and int(summary_row["qa_running"] or 0) > 0)
         ),
-        summary=ExperimentPageSummary.model_validate(summary_values),
+        summary=summary,
         tasks=[_task_row(row) for row in rows],
     )
     if has_more and rows:
-        response.next_created_at = rows[-1]["created_at"]
-        response.next_task_id = str(rows[-1]["task_id"])
+        response.next_created_at = page_id_rows[len(rows) - 1]["created_at"]
+        response.next_task_id = str(page_id_rows[len(rows) - 1]["task_id"])
     while len(response.model_dump_json().encode()) >= OPEN_MAX_BYTES:
         if len(rows) <= 1:
             raise HTTPException(
@@ -449,9 +504,126 @@ async def get_experiment_open_core(
         rows.pop()
         response.tasks.pop()
         has_more = True
-        response.next_created_at = rows[-1]["created_at"]
-        response.next_task_id = str(rows[-1]["task_id"])
+        response.next_created_at = page_id_rows[len(rows) - 1]["created_at"]
+        response.next_task_id = str(page_id_rows[len(rows) - 1]["task_id"])
     return response
+
+
+def _experiment_trial_rows_query(*, experiment_id: str, org_id: str):
+    effective = experiment_effective_versions_selectable(experiment_id=experiment_id)
+    return (
+        select(
+            *(column.label(column.key) for column in _TRIAL_PAGE_COLUMNS),
+            TaskModel.task_path,
+            func.left(TrialModel.analysis["classification"].astext, 100).label(
+                "analysis_classification"
+            ),
+            func.left(TrialModel.analysis["subtype"].astext, 100).label(
+                "analysis_subtype"
+            ),
+            func.left(TrialModel.analysis["evidence"].astext, 1_000).label(
+                "analysis_evidence"
+            ),
+        )
+        .join(TaskModel, TaskModel.id == TrialModel.task_id)
+        .outerjoin(effective, effective.c.task_id == TrialModel.task_id)
+        .where(
+            *visible_experiment_trial_predicates(experiment_id),
+            or_(
+                effective.c.task_id.is_(None),
+                effective.c.task_version_id == TrialModel.task_version_id,
+            ),
+            TaskModel.org_id == org_id,
+            TaskModel.deleted_at.is_(None),
+        )
+    )
+
+
+async def get_experiment_focus_core(
+    session: AsyncSession,
+    *,
+    experiment_id: str,
+    org_id: str | None,
+    task_selector: str | None = None,
+    trial_id: str | None = None,
+    _experiment: Mapping[str, Any] | None = None,
+    _include_cost_exclusion_labels: bool = True,
+) -> ExperimentFocusResponse:
+    """Resolve one URL-addressed task and optional trial within an experiment."""
+    if not task_selector and not trial_id:
+        raise HTTPException(status_code=400, detail="A task or trial is required")
+    if _experiment is None:
+        if org_id is None:
+            raise ValueError("Member experiment reads require an organization")
+        experiment = await _member_experiment(
+            session, experiment_id=experiment_id, org_id=org_id
+        )
+    else:
+        experiment = _experiment
+
+    trial_row = None
+    if trial_id:
+        trial_result = await session.execute(
+            _experiment_trial_rows_query(
+                experiment_id=experiment_id, org_id=org_id
+            ).where(TrialModel.id == trial_id)
+        )
+        trial_row = trial_result.mappings().one_or_none()
+        if trial_row is None:
+            raise HTTPException(status_code=404, detail="Trial not found")
+        task_id = str(trial_row["task_id"])
+    else:
+        task_id_result = await session.execute(
+            select(TaskModel.id)
+            .join(
+                task_experiments,
+                and_(
+                    task_experiments.c.task_id == TaskModel.id,
+                    task_experiments.c.experiment_id == experiment_id,
+                    task_experiments.c.deleted_at.is_(None),
+                ),
+            )
+            .where(
+                TaskModel.org_id == org_id,
+                TaskModel.deleted_at.is_(None),
+                or_(
+                    TaskModel.id == task_selector,
+                    TaskModel.name == task_selector,
+                ),
+            )
+            .order_by(
+                case((TaskModel.id == task_selector, 0), else_=1),
+                TaskModel.created_at.desc(),
+                TaskModel.id.desc(),
+            )
+            .limit(1)
+        )
+        task_id = task_id_result.scalar_one_or_none()
+        if task_id is None:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+    task_result = await session.execute(
+        _experiment_task_rows(
+            experiment_id=experiment_id, org_id=org_id, task_ids=[str(task_id)]
+        )
+    )
+    task_row = task_result.mappings().one_or_none()
+    if task_row is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    exclusions = (
+        await load_cost_exclusions(session)
+        if trial_row is not None and _include_cost_exclusion_labels
+        else None
+    )
+    return ExperimentFocusResponse(
+        revision=experiment["revision"],
+        task=_task_row(task_row),
+        trial=(
+            build_experiment_trial_cell(trial_row, exclusions=exclusions)
+            if trial_row is not None
+            else None
+        ),
+    )
 
 
 async def get_experiment_trial_page_core(
@@ -477,35 +649,7 @@ async def get_experiment_trial_page_core(
         )
     else:
         experiment = _experiment
-    effective = experiment_effective_versions_selectable(experiment_id=experiment_id)
-    query = (
-        select(
-            *(column.label(column.key) for column in _TRIAL_PAGE_COLUMNS),
-            TaskModel.task_path,
-            func.left(TrialModel.analysis["classification"].astext, 100).label(
-                "analysis_classification"
-            ),
-            func.left(TrialModel.analysis["subtype"].astext, 100).label(
-                "analysis_subtype"
-            ),
-            func.left(TrialModel.analysis["evidence"].astext, 1_000).label(
-                "analysis_evidence"
-            ),
-        )
-        .join(TaskModel, TaskModel.id == TrialModel.task_id)
-        .join(
-            effective,
-            and_(
-                effective.c.task_id == TrialModel.task_id,
-                effective.c.task_version_id == TrialModel.task_version_id,
-            ),
-        )
-        .where(
-            *visible_experiment_trial_predicates(experiment_id),
-            TaskModel.org_id == org_id,
-            TaskModel.deleted_at.is_(None),
-        )
-    )
+    query = _experiment_trial_rows_query(experiment_id=experiment_id, org_id=org_id)
     if before_created_at is not None:
         query = query.where(
             or_(
@@ -562,6 +706,7 @@ async def get_public_experiment_open_core(
     limit: int = OPEN_MAX_TASKS,
     before_created_at: datetime | None = None,
     before_task_id: str | None = None,
+    include_summary: bool = True,
 ) -> ExperimentOpenResponse:
     experiment = await get_public_experiment(session, public_token)
     if experiment is None:
@@ -573,8 +718,35 @@ async def get_public_experiment_open_core(
         limit=limit,
         before_created_at=before_created_at,
         before_task_id=before_task_id,
+        include_summary=include_summary,
         _experiment=_public_experiment_identity(experiment),
     )
+
+
+async def get_public_experiment_focus_core(
+    session: AsyncSession,
+    *,
+    public_token: str,
+    task_selector: str | None = None,
+    trial_id: str | None = None,
+) -> ExperimentFocusResponse:
+    experiment = await get_public_experiment(session, public_token)
+    if experiment is None:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    response = await get_experiment_focus_core(
+        session,
+        experiment_id=experiment.id,
+        org_id=experiment.org_id,
+        task_selector=task_selector,
+        trial_id=trial_id,
+        _experiment=_public_experiment_identity(experiment),
+        _include_cost_exclusion_labels=False,
+    )
+    if response.trial is not None:
+        apply_model_display_names(
+            [response.trial], experiment_display_names(experiment)
+        )
+    return response
 
 
 async def get_public_experiment_trial_page_core(

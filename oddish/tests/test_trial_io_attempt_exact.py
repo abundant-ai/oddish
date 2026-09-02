@@ -9,12 +9,14 @@ import pytest
 from botocore.exceptions import ClientError
 
 from oddish.core import trial_io
+from oddish.core.harbor_artifacts import (
+    ODDISH_TRIAL_NAME_KEY,
+    write_trial_selection_manifest,
+)
 from oddish.core.trial_artifacts import (
     AnalysisArtifactLayoutError,
-    ODDISH_TRIAL_NAME_KEY,
     TrialArtifactMode,
     validate_uploaded_analysis_artifacts,
-    write_trial_selection_manifest,
 )
 
 

@@ -15,6 +15,7 @@ from oddish.core.endpoints.experiment_page import (
     OPEN_MAX_BYTES,
     OPEN_MAX_TASKS,
     _TRIAL_PAGE_COLUMNS,
+    get_experiment_focus_core,
     get_experiment_open_core,
     get_experiment_trial_page_core,
 )
@@ -50,6 +51,9 @@ class _Result:
 
     def all(self):
         return self.rows
+
+    def scalar_one_or_none(self):
+        return self.rows[0] if self.rows else None
 
 
 class _Session:
@@ -183,10 +187,14 @@ def _trial_page_row(
 
 
 def _open(*tasks, summary=None, **kwargs):
+    page_ids = [
+        {"task_id": task["task_id"], "created_at": task["created_at"]} for task in tasks
+    ]
     session = _Session(
         _Result([_identity()]),
-        _Result([summary or _summary()]),
+        _Result(page_ids),
         _Result(tasks),
+        _Result([summary or _summary()]),
     )
     response = asyncio.run(
         get_experiment_open_core(
@@ -207,21 +215,20 @@ def _sql(query) -> str:
     )
 
 
-def test_experiment_open_is_exact_compact_bounded_and_three_queries():
+def test_experiment_open_is_exact_compact_bounded_and_four_queries():
     session, response = _open(
         _task(
             1,
-            tags={
-                "github_meta": '{"category":"JS","world":"World_7","domain":"Law"}'
-            },
+            tags={"github_meta": '{"category":"JS","world":"World_7","domain":"Law"}'},
         ),
         _task(2),
     )
 
-    assert len(session.calls) == 3
+    assert len(session.calls) == 4
     assert response.experiment_id == "experiment-1"
     assert response.revision == NOW + timedelta(minutes=1)
     assert response.has_active_trials is True
+    assert response.summary is not None
     assert response.summary.model_dump() == {
         "task_count": 2,
         "trial_count": 7,
@@ -275,13 +282,17 @@ def test_experiment_open_keeps_polling_while_qa_is_running():
     )
 
     assert response.has_active_trials is True
+    assert response.summary is not None
     assert response.summary.qa_running == 1
 
 
 def test_experiment_open_rejects_one_task_shell_over_the_byte_budget():
     oversized = _task(1, task_path="x" * OPEN_MAX_BYTES)
     session = _Session(
-        _Result([_identity()]), _Result([_summary(task_count=1)]), _Result([oversized])
+        _Result([_identity()]),
+        _Result([{"task_id": oversized["task_id"], "created_at": NOW}]),
+        _Result([oversized]),
+        _Result([_summary(task_count=1)]),
     )
 
     with pytest.raises(HTTPException) as exc:
@@ -292,7 +303,7 @@ def test_experiment_open_rejects_one_task_shell_over_the_byte_budget():
         )
 
     assert exc.value.status_code == 413
-    assert len(session.calls) == 3
+    assert len(session.calls) == 4
 
 
 def test_experiment_open_requires_both_typed_page_fields_before_querying():
@@ -325,8 +336,12 @@ def test_experiment_open_missing_or_cross_org_stops_after_access_query():
 
 def test_experiment_open_sql_reuses_visibility_and_version_rules():
     session, _ = _open(_task(1))
-    summary_sql = _sql(session.calls[1])
+    identity_page_sql = _sql(session.calls[1])
     page_sql = _sql(session.calls[2])
+    summary_sql = _sql(session.calls[3])
+
+    assert "experiment_task_stats" not in identity_page_sql
+    assert "FROM trials" not in identity_page_sql
 
     for sql in (summary_sql, page_sql):
         assert "experiment_trials" in sql
@@ -344,6 +359,91 @@ def test_experiment_open_sql_reuses_visibility_and_version_rules():
         "trials.error_message",
     ):
         assert heavy_column not in page_sql
+
+
+def test_later_experiment_page_skips_summary_and_bounds_trial_aggregation():
+    task = _task(101)
+    page_id = {"task_id": task["task_id"], "created_at": task["created_at"]}
+    session = _Session(
+        _Result([_identity()]),
+        _Result([page_id]),
+        _Result([task]),
+    )
+
+    response = asyncio.run(
+        get_experiment_open_core(
+            session,
+            experiment_id="experiment-1",
+            org_id="org-1",
+            before_created_at=NOW,
+            before_task_id="task-100",
+            include_summary=False,
+        )
+    )
+
+    assert len(session.calls) == 3
+    assert response.summary is None
+    assert response.has_active_trials is False
+    page_sql = _sql(session.calls[2])
+    assert "tasks.id IN ('task-101')" in page_sql
+    assert "trials.task_id IN ('task-101')" in page_sql
+
+
+def test_experiment_focus_resolves_a_task_outside_the_loaded_page():
+    task = _task(101)
+    session = _Session(
+        _Result([_identity()]),
+        _Result([task["task_id"]]),
+        _Result([task]),
+    )
+
+    response = asyncio.run(
+        get_experiment_focus_core(
+            session,
+            experiment_id="experiment-1",
+            org_id="org-1",
+            task_selector="Task 101",
+        )
+    )
+
+    assert response.task.id == "task-101"
+    assert response.trial is None
+    lookup_sql = _sql(session.calls[1])
+    assert "task_experiments" in lookup_sql
+    assert "tasks.name = 'Task 101'" in lookup_sql
+
+
+def test_experiment_focus_uses_the_trial_as_host_task_source(monkeypatch):
+    async def no_exclusions(_session):
+        return CostExclusions()
+
+    monkeypatch.setattr(
+        "oddish.core.endpoints.experiment_page.load_cost_exclusions", no_exclusions
+    )
+    trial = _trial(9)
+    trial_row = _trial_page_row(trial)
+    session = _Session(
+        _Result([_identity()]),
+        _Result([trial_row]),
+        _Result([_task(1)]),
+    )
+
+    response = asyncio.run(
+        get_experiment_focus_core(
+            session,
+            experiment_id="experiment-1",
+            org_id="org-1",
+            task_selector="stale-task-id",
+            trial_id=trial.id,
+        )
+    )
+
+    assert response.task.id == trial.task_id
+    assert response.trial is not None
+    assert response.trial.id == trial.id
+    trial_sql = _sql(session.calls[1])
+    assert "trials.id = 'trial-009'" in trial_sql
+    assert "tasks.id = 'stale-task-id'" not in trial_sql
 
 
 def test_effective_version_selectable_filters_before_ranking():
