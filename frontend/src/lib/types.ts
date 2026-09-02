@@ -314,7 +314,7 @@ export interface ExperimentOpenResponse {
   link?: string | null;
   revision: string;
   has_active_trials: boolean;
-  summary: ExperimentPageSummary;
+  summary: ExperimentPageSummary | null;
   tasks: ExperimentOpenTask[];
   next_created_at?: string | null;
   next_task_id?: string | null;
@@ -336,6 +336,12 @@ export interface ExperimentTrialPageResponse {
   trials: ExperimentTrialCell[];
   next_created_at?: string | null;
   next_trial_id?: string | null;
+}
+
+export interface ExperimentFocusResponse {
+  revision: string;
+  task: ExperimentOpenTask;
+  trial: ExperimentTrialCell | null;
 }
 
 interface TaskBrowseExperiment {

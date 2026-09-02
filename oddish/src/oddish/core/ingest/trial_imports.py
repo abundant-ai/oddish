@@ -45,6 +45,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oddish.config import normalize_model_id, settings
 from oddish.core.harbor_artifacts import build_trial_result
 from oddish.core.task_browse_summary import refresh_task_browse_summaries
+from oddish.core.trial_artifacts import (
+    TrialArtifactMode,
+    resolve_trial_artifact_layout,
+)
 from oddish.core.trial_facets import facet_rows_for_trial, record_trial_facets
 from oddish.db import (
     ExperimentModel,
@@ -291,8 +295,7 @@ async def initialize_trial_import(
                     status_code=409,
                     detail={
                         "message": (
-                            "This trial was already imported into this "
-                            "experiment."
+                            "This trial was already imported into this experiment."
                         ),
                         "external_trial_id": trial_spec.external_trial_id,
                         "experiment_id": experiment.id,
@@ -491,6 +494,13 @@ async def complete_trial_import(
             status_code=500,
             detail=f"Failed to extract trial archive: {str(exc)}",
         ) from exc
+
+    layout = await resolve_trial_artifact_layout(trial, storage)
+    if layout.mode is TrialArtifactMode.UNAVAILABLE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Imported trial artifacts are unreadable: {layout.failure_reason}",
+        )
 
     # After the artifacts are in place, nudge the task status forward
     # the same way the live trial handler does when a trial finishes.

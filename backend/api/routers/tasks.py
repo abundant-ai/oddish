@@ -44,6 +44,7 @@ from oddish.core.endpoints import (
     delete_experiment_core,
     delete_task_core,
     get_experiment_cost_totals,
+    get_experiment_focus_core,
     get_experiment_open_core,
     get_experiment_trial_page_core,
     get_task_detail_core,
@@ -131,6 +132,7 @@ from oddish.schemas import (
     ExperimentCombineRequest,
     ExperimentCombineResponse,
     ExperimentCostTotals,
+    ExperimentFocusResponse,
     ExperimentOpenResponse,
     ExperimentTrialPageResponse,
     ExperimentOptionsResponse,
@@ -578,9 +580,10 @@ async def list_tasks(
 async def get_experiment_open(
     experiment_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
-    limit: int = Query(100, ge=1, le=100),
-    before_created_at: datetime | None = Query(None),
-    before_task_id: str | None = Query(None),
+    limit: Annotated[int, Query(ge=1, le=100)] = 100,
+    before_created_at: datetime | None = None,
+    before_task_id: str | None = None,
+    include_summary: bool = True,
 ) -> ExperimentOpenResponse:
     auth.require_scope(APIKeyScope.READ)
     async with get_read_session() as session:
@@ -591,6 +594,27 @@ async def get_experiment_open(
             limit=limit,
             before_created_at=before_created_at,
             before_task_id=before_task_id,
+            include_summary=include_summary,
+        )
+
+
+@router.get(
+    "/experiments/{experiment_id}/focus", response_model=ExperimentFocusResponse
+)
+async def get_experiment_focus(
+    experiment_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    task: str | None = None,
+    trial: str | None = None,
+) -> ExperimentFocusResponse:
+    auth.require_scope(APIKeyScope.READ)
+    async with get_read_session() as session:
+        return await get_experiment_focus_core(
+            session,
+            experiment_id=experiment_id,
+            org_id=auth.org_id,
+            task_selector=task,
+            trial_id=trial,
         )
 
 
@@ -601,9 +625,9 @@ async def get_experiment_open(
 async def get_experiment_trial_page(
     experiment_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
-    limit: int = Query(250, ge=1, le=250),
-    before_created_at: datetime | None = Query(None),
-    before_trial_id: str | None = Query(None),
+    limit: Annotated[int, Query(ge=1, le=250)] = 250,
+    before_created_at: datetime | None = None,
+    before_trial_id: str | None = None,
 ) -> ExperimentTrialPageResponse:
     auth.require_scope(APIKeyScope.READ)
     async with get_read_session() as session:

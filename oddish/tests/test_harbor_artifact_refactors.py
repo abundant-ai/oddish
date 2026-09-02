@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import tarfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from harbor.models.job.config import JobConfig  # noqa: E402
 from harbor.models.trial.config import TaskConfig, TrialConfig  # noqa: E402
 
-from oddish.cli.api import trial_result_to_import_spec  # noqa: E402
+from oddish.cli.api import _tar_trial_dir, trial_result_to_import_spec  # noqa: E402
 from oddish.core.harbor_artifacts import (  # noqa: E402
     detect_trajectory,
     extract_trajectory_metrics,
@@ -18,6 +19,31 @@ from oddish.core.harbor_artifacts import (  # noqa: E402
 from oddish.core.ingest.zip_imports import _task_name_from_harbor_model  # noqa: E402
 from oddish.core.ingest.zip_imports import _task_name_from_legacy_json  # noqa: E402
 from oddish.integrations.sauron.s3_uploader import SauronS3Uploader  # noqa: E402
+
+
+def test_trial_import_archive_selects_the_imported_harbor_child(tmp_path):
+    job_dir = tmp_path / "job"
+    selected_trial = job_dir / "task__selected"
+    sibling_trial = job_dir / "task__sibling"
+    selected_trial.mkdir(parents=True)
+    sibling_trial.mkdir()
+    root_result = {"id": "job-1", "n_total_trials": 2}
+    (job_dir / "result.json").write_text(json.dumps(root_result), encoding="utf-8")
+    (selected_trial / "result.json").write_text("{}", encoding="utf-8")
+    (sibling_trial / "result.json").write_text("{}", encoding="utf-8")
+
+    archive = _tar_trial_dir(selected_trial)
+
+    with tarfile.open(archive, "r:gz") as tar:
+        names = tar.getnames()
+        archived_result = json.load(tar.extractfile("result.json"))
+    assert archived_result == {
+        **root_result,
+        "oddish_trial_name": selected_trial.name,
+    }
+    assert f"{selected_trial.name}/result.json" in names
+    assert f"{sibling_trial.name}/result.json" not in names
+    assert json.loads((job_dir / "result.json").read_text()) == root_result
 
 
 def test_shared_trajectory_helpers_read_atif_metrics(tmp_path):

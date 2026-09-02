@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, Response
 from sqlalchemy import select
 from oddish.core.endpoints.experiment_page import (
+    get_public_experiment_focus_core,
     get_public_experiment_open_core,
     get_public_experiment_trial_page_core,
 )
+from oddish.core.endpoints.experiment_cost import get_experiment_cost_totals
 from oddish.core.helpers import build_task_status_response, fetch_trial_queue_info
 from oddish.core.model_display_names import (
     apply_model_display_names,
@@ -45,6 +48,8 @@ from oddish.db import (
     task_experiments,
 )
 from oddish.schemas import (
+    ExperimentCostTotals,
+    ExperimentFocusResponse,
     ExperimentOpenResponse,
     ExperimentTrialPageResponse,
     PublicExperimentListItem,
@@ -154,14 +159,33 @@ async def get_public_experiment_info(public_token: str) -> PublicExperimentRespo
 
 
 @router.get(
+    "/public/experiments/{public_token}/cost-totals",
+    response_model=ExperimentCostTotals,
+)
+async def get_public_experiment_cost_totals(
+    public_token: str,
+) -> ExperimentCostTotals:
+    async with get_session() as session:
+        experiment = await get_public_experiment(session, public_token)
+        if experiment is None:
+            raise HTTPException(status_code=404, detail="Experiment not found")
+        return await get_experiment_cost_totals(
+            session,
+            experiment_id=experiment.id,
+            org_id=experiment.org_id,
+        )
+
+
+@router.get(
     "/public/experiments/{public_token}/open",
     response_model=ExperimentOpenResponse,
 )
 async def get_public_experiment_open(
     public_token: str,
-    limit: int = Query(100, ge=1, le=100),
-    before_created_at: datetime | None = Query(None),
-    before_task_id: str | None = Query(None),
+    limit: Annotated[int, Query(ge=1, le=100)] = 100,
+    before_created_at: datetime | None = None,
+    before_task_id: str | None = None,
+    include_summary: bool = True,
 ) -> ExperimentOpenResponse:
     async with get_session() as session:
         return await get_public_experiment_open_core(
@@ -170,6 +194,25 @@ async def get_public_experiment_open(
             limit=limit,
             before_created_at=before_created_at,
             before_task_id=before_task_id,
+            include_summary=include_summary,
+        )
+
+
+@router.get(
+    "/public/experiments/{public_token}/focus",
+    response_model=ExperimentFocusResponse,
+)
+async def get_public_experiment_focus(
+    public_token: str,
+    task: str | None = None,
+    trial: str | None = None,
+) -> ExperimentFocusResponse:
+    async with get_session() as session:
+        return await get_public_experiment_focus_core(
+            session,
+            public_token=public_token,
+            task_selector=task,
+            trial_id=trial,
         )
 
 
@@ -179,9 +222,9 @@ async def get_public_experiment_open(
 )
 async def get_public_experiment_trial_page(
     public_token: str,
-    limit: int = Query(250, ge=1, le=250),
-    before_created_at: datetime | None = Query(None),
-    before_trial_id: str | None = Query(None),
+    limit: Annotated[int, Query(ge=1, le=250)] = 250,
+    before_created_at: datetime | None = None,
+    before_trial_id: str | None = None,
 ) -> ExperimentTrialPageResponse:
     async with get_session() as session:
         return await get_public_experiment_trial_page_core(
@@ -288,9 +331,7 @@ async def get_public_task_status(
         _apply_public_experiments(
             response, public_exps.get(task.id, []), preferred_id=exp.id
         )
-        apply_model_display_names(
-            response.trials or [], experiment_display_names(exp)
-        )
+        apply_model_display_names(response.trials or [], experiment_display_names(exp))
         return response
 
 

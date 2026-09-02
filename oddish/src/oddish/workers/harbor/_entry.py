@@ -237,7 +237,7 @@ def _build_job_config(payload: dict[str, Any]):
 
 
 async def _run(payload: dict[str, Any]) -> dict[str, Any]:
-    from oddish.core.trial_artifacts import write_trial_selection_manifest
+    from oddish.core.harbor_artifacts import write_trial_selection_manifest
 
     environment_type = (payload.get("environment_config") or {}).get("type")
     patch_module = _apply_sibling_harbor_patches(require_ec2=environment_type == "ec2")
