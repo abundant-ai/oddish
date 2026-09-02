@@ -2930,6 +2930,90 @@ def test_build_agent_config_ai_sdk_agents_get_google_prefix(monkeypatch):
             assert agent_config.model_name == "google/gemini-3.7-flash"
 
 
+def test_both_gemini_spellings_route_end_to_end(monkeypatch):
+    """The whole contract in one test: ``gemini/`` and ``google/`` are both
+    accepted input, they share one queue key so neither can starve, and each
+    agent still receives the spelling its own LLM client needs."""
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    settings = harbor_runner.settings
+
+    litellm_agents = ("mini-swe-agent", "terminus-2", "openhands", "dspy-rlm")
+    google_id_agents = ("opencode", "pi", "hermes", "fx")
+
+    for raw in (
+        "gemini/gemini-3.7-flash",
+        "google/gemini-3.7-flash",
+        "gemini-3.7-flash",
+    ):
+        stored = settings.normalize_trial_model("mini-swe-agent", raw)
+        assert stored == "gemini/gemini-3.7-flash", raw
+        assert (
+            settings.get_queue_key_for_trial("mini-swe-agent", raw)
+            == "google/gemini-3.7-flash"
+        ), raw
+
+        # The runner receives the stored id, not the caller's spelling.
+        for agent in litellm_agents:
+            agent_config = harbor_runner._build_agent_config(
+                agent=agent, model=stored, raw_harbor_config={}
+            )
+            assert agent_config.model_name == "gemini/gemini-3.7-flash", (raw, agent)
+        for agent in google_id_agents:
+            agent_config = harbor_runner._build_agent_config(
+                agent=agent, model=stored, raw_harbor_config={}
+            )
+            assert agent_config.model_name == "google/gemini-3.7-flash", (raw, agent)
+
+
+def test_build_agent_config_openhands_and_dspy_rlm_get_gemini_prefix(monkeypatch):
+    """openhands sets ``LLM_MODEL`` verbatim and dspy-rlm passes the id to
+    ``dspy.LM``. Both reach litellm, which rejects ``google/``."""
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+
+    for agent in ("openhands", "dspy-rlm"):
+        agent_config = harbor_runner._build_agent_config(
+            agent=agent,
+            model="google/gemini-3.7-flash",
+            raw_harbor_config={},
+        )
+        assert agent_config.model_name == "gemini/gemini-3.7-flash", agent
+
+
+def test_build_agent_config_aggregator_agents_get_google_prefix(monkeypatch):
+    """hermes forwards the whole id to OpenRouter and fx/fx-dev forward it to the
+    Vercel AI Gateway. Both aggregators name Gemini ``google/<id>``, so a
+    ``gemini/`` id reaches them as an unknown model."""
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+
+    for agent in ("hermes", "fx", "fx-dev"):
+        for model in ("gemini/gemini-3.7-flash", "google/gemini-3.7-flash"):
+            agent_config = harbor_runner._build_agent_config(
+                agent=agent,
+                model=model,
+                raw_harbor_config={},
+            )
+            assert agent_config.model_name == "google/gemini-3.7-flash", (agent, model)
+
+
+def test_build_agent_config_leaves_vertex_ai_prefix_alone(monkeypatch):
+    """The rewrites only touch the two AI Studio spellings. Vertex AI selects a
+    different endpoint and different credentials, so its prefix must survive to
+    the agent unchanged."""
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+
+    for agent in ("mini-swe-agent", "openhands", "opencode", "hermes"):
+        agent_config = harbor_runner._build_agent_config(
+            agent=agent,
+            model="vertex_ai/gemini-3.7-flash",
+            raw_harbor_config={},
+        )
+        assert agent_config.model_name == "vertex_ai/gemini-3.7-flash", agent
+
+
 def test_build_agent_config_claude_code_keeps_bare_bedrock_id(monkeypatch):
     """Contrast with the litellm agents: claude-code still gets the bare Bedrock
     inference-profile id for its InvokeModel transport."""

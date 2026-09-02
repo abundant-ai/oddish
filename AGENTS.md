@@ -912,10 +912,20 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   `moonshot/`, `fireworks/`, `xai/`, `meta/`, and `anthropic-hdo/`. Add or
   change provider aliases in `config.py`, then update env injection in the
   Harbor runner and the network allowlist notes.
-- Gemini model ids use the `gemini/<id>` prefix. `_build_agent_config` hands
-  each agent the spelling its LLM client expects (litellm agents in
-  `_LITELLM_MODEL_ID_AGENTS`, Vercel AI SDK agents in
-  `_AI_SDK_MODEL_ID_AGENTS`); add a new agent to the set matching its client.
+- Gemini accepts `gemini/<id>`, `google/<id>`, and a bare `gemini-…` id as input.
+  All three canonicalize, in two layers:
+  - **Model id** (stored on the trial, shown in the dashboard) → `gemini/<id>`,
+    via `to_gemini_model_id` in `normalize_trial_model`. This remains the
+    canonical Gemini model id.
+  - **Queue key** (the concurrency bucket) → `google/<id>`, via
+    `to_gemini_queue_key` in `normalize_queue_key`. See routing note 4.
+
+  `_build_agent_config` then hands each agent the spelling its own LLM client
+  expects: litellm agents in `_LITELLM_MODEL_ID_AGENTS` get `gemini/<id>`; Vercel
+  AI SDK agents in `_AI_SDK_MODEL_ID_AGENTS` and aggregator-routed agents
+  (OpenRouter, Vercel AI Gateway) in `_AGGREGATOR_MODEL_ID_AGENTS` get
+  `google/<id>`. Add a new agent to the set matching its client. `vertex_ai/<id>`
+  is a separate model and a separate queue key; neither layer rewrites it.
 - Kubernetes task charts that enforce their own runtime egress boundary can opt
   into Oddish's model-route bridge with a chart-root
   `.oddish-agent-egress-hosts` marker containing exactly
@@ -1346,9 +1356,17 @@ silently breaks throughput or correctness — read before touching
    `oddish.config` (`normalize_trial_model` / `get_queue_key_for_trial` /
    `normalize_queue_key`): nop/oracle + variants collapse to the single
    `nop_oracle` id (`is_nop_oracle_agent`); z.ai / MiniMax / Moonshot / xAI map
-   to `<provider>/<id>`. ⚠️ Known gap: Gemini isn't canonicalized — a bare
-   `gemini-…` becomes `google/…` while `gemini/…` stays `gemini/…`, splitting one
-   model across two buckets.
+   to `<provider>/<id>`. Gemini is the one provider whose two layers differ on
+   purpose: every spelling (`gemini/…`, `google/…`, bare `gemini-…`) stores as
+   `gemini/<id>` (`to_gemini_model_id`) but buckets on `google/<id>`
+   (`to_gemini_queue_key`). The queue key is the bucket, not the identity —
+   a bare `gpt-5.2` likewise stores bare and queues as `openai/gpt-5.2`.
+   `google/` is the bucket because bare ids already infer there and it is the
+   spelling production serves; the `gemini/` bucket starved in an incident for
+   reasons never established, so do not flip it. Agent correctness is unaffected:
+   `_build_agent_config` re-spells the id per agent at the last hop.
+   ⚠️ `vertex_ai/…` is deliberately excluded from both layers — it is a different
+   endpoint, tenancy and credential set, so it keeps its own key.
 
 5. **No provider-level concurrency cap.** Each Bedrock/Gemini model id is its own
    bucket, but they share one AWS/Google account quota — the sum of per-model
