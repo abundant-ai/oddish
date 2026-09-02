@@ -565,6 +565,9 @@ function TaskRow({
   isAdmin,
   focused,
   link,
+  selectable,
+  selected,
+  onToggleSelect,
   onSetCheck,
   onRemove,
 }: {
@@ -575,6 +578,11 @@ function TaskRow({
   // and scrolls into view, so a shared link lands on the right task.
   focused: boolean;
   link: string;
+  // Bulk selection: admins get a checkbox per row while the delivery is
+  // not frozen; the selection drives the bulk action bar above the table.
+  selectable: boolean;
+  selected: boolean;
+  onToggleSelect: () => void;
   onSetCheck: (
     checkKey: string,
     deliveryTaskId: string,
@@ -606,6 +614,18 @@ function TaskRow({
         className={`cursor-pointer ${focused ? "bg-secondary/40" : ""}`}
         onClick={() => setExpanded((value) => !value)}
       >
+        {selectable && (
+          <TableCell
+            className="w-8"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <Checkbox
+              checked={selected}
+              onCheckedChange={() => onToggleSelect()}
+              aria-label={`Select ${row.task_name}`}
+            />
+          </TableCell>
+        )}
         <TableCell className="w-6">
           {expanded ? (
             <ChevronDown className="text-muted-foreground h-4 w-4" />
@@ -674,6 +694,7 @@ function TaskRow({
       </TableRow>
       {expanded && (
         <TableRow className="hover:bg-transparent">
+          {selectable && <TableCell />}
           <TableCell />
           <TableCell colSpan={4} className="space-y-3 py-3">
             {failing.length > 0 && (
@@ -857,6 +878,8 @@ export function DeliveryBoardClient({
   const [focusTask, setFocusTask] = useState<string | null>(null);
   const [page, setPage] = useState(0);
   const [filter, setFilter] = useState<TaskFilter>("all");
+  // Bulk selection, keyed by delivery_task_id.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   const prefetched = useRef(new Set<string>());
   useEffect(() => {
     setFocusTask(new URLSearchParams(window.location.search).get("task"));
@@ -1017,6 +1040,48 @@ export function DeliveryBoardClient({
     const { checks, defects } = signoffBlockers(row);
     return checks.length + defects.length === 0;
   });
+  const bulkable = isAdmin && !frozen;
+  const selectedRows = data.tasks.filter((row) =>
+    selected.has(row.delivery_task_id)
+  );
+  const cleanUnsignedIds = new Set(
+    cleanUnsigned.map((row) => row.delivery_task_id)
+  );
+  // Sign off selected takes only the clean, unsigned part of the
+  // selection; blocked tasks keep the per-task acknowledge flow.
+  const selectedClean = selectedRows.filter((row) =>
+    cleanUnsignedIds.has(row.delivery_task_id)
+  );
+  const allFilteredSelected =
+    filteredTasks.length > 0 &&
+    filteredTasks.every((row) => selected.has(row.delivery_task_id));
+  const toggleSelect = (deliveryTaskId: string) =>
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(deliveryTaskId)) {
+        next.delete(deliveryTaskId);
+      } else {
+        next.add(deliveryTaskId);
+      }
+      return next;
+    });
+  const signOffSelected = () =>
+    void run(async () => {
+      for (const row of selectedClean) {
+        await putCheck("signoff", row.delivery_task_id, true);
+      }
+      setSelected(new Set());
+    });
+  const removeSelected = () =>
+    void run(async () => {
+      for (const row of selectedRows) {
+        await postJson(
+          `/api/deliveries/${encodeURIComponent(deliveryId)}/tasks/${encodeURIComponent(row.task_id)}`,
+          "DELETE"
+        );
+      }
+      setSelected(new Set());
+    });
   return (
     <div className="space-y-4">
       <Card>
@@ -1185,6 +1250,83 @@ export function DeliveryBoardClient({
                     {filteredTasks.length} of {data.tasks.length} tasks
                   </span>
                 )}
+                {bulkable && selected.size > 0 && (
+                  <div className="ml-auto flex flex-wrap items-center gap-2">
+                    <span className="text-muted-foreground text-sm">
+                      {selected.size} selected
+                    </span>
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={busy || selectedClean.length === 0}
+                        >
+                          Sign off selected ({selectedClean.length})
+                        </Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>
+                            Sign off {selectedClean.length} task
+                            {selectedClean.length === 1 ? "" : "s"}?
+                          </AlertDialogTitle>
+                          <AlertDialogDescription>
+                            {selectedClean.length} of the {selected.size}{" "}
+                            selected tasks have no open blockers and are not
+                            signed off; each sign-off is recorded in your name.
+                            The rest are skipped — sign those off from their
+                            row.
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Cancel</AlertDialogCancel>
+                          <AlertDialogAction onClick={signOffSelected}>
+                            Sign off
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="text-destructive"
+                          disabled={busy}
+                        >
+                          Remove selected ({selected.size})
+                        </Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>
+                            Remove {selected.size} task
+                            {selected.size === 1 ? "" : "s"}?
+                          </AlertDialogTitle>
+                          <AlertDialogDescription>
+                            The tasks leave this delivery. Their sign-offs and
+                            acknowledgements go with them. The tasks themselves
+                            are not deleted.
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Cancel</AlertDialogCancel>
+                          <AlertDialogAction onClick={removeSelected}>
+                            Remove
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setSelected(new Set())}
+                    >
+                      Clear
+                    </Button>
+                  </div>
+                )}
               </div>
               {filteredTasks.length === 0 ? (
                 <p className="text-muted-foreground text-sm">
@@ -1194,6 +1336,31 @@ export function DeliveryBoardClient({
                 <Table>
                   <TableHeader>
                     <TableRow>
+                      {bulkable && (
+                        <TableHead className="w-8">
+                          <Checkbox
+                            checked={
+                              allFilteredSelected
+                                ? true
+                                : selected.size > 0
+                                  ? "indeterminate"
+                                  : false
+                            }
+                            onCheckedChange={(value) =>
+                              setSelected(
+                                value === true
+                                  ? new Set(
+                                      filteredTasks.map(
+                                        (row) => row.delivery_task_id
+                                      )
+                                    )
+                                  : new Set()
+                              )
+                            }
+                            aria-label="Select all tasks in this view"
+                          />
+                        </TableHead>
+                      )}
                       <TableHead className="w-6" />
                       <TableHead>Task</TableHead>
                       <TableHead>Version</TableHead>
@@ -1213,6 +1380,11 @@ export function DeliveryBoardClient({
                           focusTask === row.task_id
                         }
                         link={`/deliveries/${encodeURIComponent(deliveryId)}?task=${encodeURIComponent(row.task_name)}`}
+                        selectable={bulkable}
+                        selected={selected.has(row.delivery_task_id)}
+                        onToggleSelect={() =>
+                          toggleSelect(row.delivery_task_id)
+                        }
                         onSetCheck={(checkKey, deliveryTaskId, checked) =>
                           setCheck(checkKey, deliveryTaskId, checked)
                         }
