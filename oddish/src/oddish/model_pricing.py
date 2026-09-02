@@ -35,12 +35,6 @@ class ModelPricing:
 PRICING_TABLE: list[tuple[str, ModelPricing]] = [
     ("glm-x-preview", ModelPricing(input=1e-6, output=3.2e-6, cache_read=2e-7)),
     ("glm-5.2", ModelPricing(input=1.4e-6, output=4.4e-6, cache_read=2.6e-7)),
-    # cache_write is 0.0 because populating a vLLM prefix cache is free on our
-    # own hardware. It must be explicit: the endpoint does report cache-creation
-    # counts (``created_cache_tokens`` on the OpenAI surface,
-    # ``cache_creation_input_tokens`` on the Anthropic one), and leaving it None
-    # makes estimate_cost_usd default the rate to input * 1.25 ($2.1875/M) --
-    # dearer than uncached input, and a rate nobody chose.
     (
         "geometric/glm-5.3",
         ModelPricing(input=1.75e-6, output=5.5e-6, cache_read=3.25e-7, cache_write=0.0),
