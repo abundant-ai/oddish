@@ -2520,3 +2520,212 @@ class FeedbackResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+# =============================================================================
+# Deliveries (docs/delivery-design.md)
+# =============================================================================
+
+# "waived": the check fails, but a person acknowledged shipping it anyway.
+DeliveryCheckStatus = Literal["pass", "fail", "off", "waived"]
+DeliveryCheckKind = Literal["automated", "manual"]
+ManualCheckScope = Literal["task", "delivery"]
+
+
+class ManualCheckDefinition(BaseModel):
+    """One human-ticked check defined in a delivery's check_config."""
+
+    key: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9_]+$")
+    label: str = Field(min_length=1, max_length=255)
+    scope: ManualCheckScope = "task"
+
+
+class DeliveryCheckConfig(BaseModel):
+    """Stored shape of ``deliveries.check_config``.
+
+    ``automated`` holds per-check overrides merged over the defaults in
+    ``oddish.core.deliveries.DEFAULT_AUTOMATED_CHECKS``; unknown keys are
+    rejected so a typo cannot silently disable a check.
+    """
+
+    automated: dict[str, dict] = Field(default_factory=dict)
+    manual: list[ManualCheckDefinition] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def unique_manual_keys(self) -> "DeliveryCheckConfig":
+        keys = [m.key for m in self.manual]
+        if len(keys) != len(set(keys)):
+            raise ValueError("manual check keys must be unique")
+        return self
+
+
+class DeliveryCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    # Every delivery ships to a customer: an existing customer's id or
+    # name, or a new name (the server creates the customer row).
+    customer: str = Field(min_length=1, max_length=255)
+    description: str | None = None
+    check_config: DeliveryCheckConfig | None = None
+    task_ids: list[str] = Field(default_factory=list, max_length=500)
+
+
+class DeliveryPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    customer: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = None
+    check_config: DeliveryCheckConfig | None = None
+
+
+class DeliveryTasksAdd(BaseModel):
+    task_ids: list[str] = Field(min_length=1, max_length=500)
+
+
+class ManualCheckSet(BaseModel):
+    """Tick or untick one manual check."""
+
+    check_key: str = Field(min_length=1, max_length=64)
+    # Required for task-scoped checks; must be omitted for delivery-scoped.
+    delivery_task_id: str | None = None
+    checked: bool
+    note: str = Field(default="", max_length=4000)
+
+
+class CustomerCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+
+
+class CustomerResponse(BaseModel):
+    id: str
+    name: str
+
+    model_config = {"from_attributes": True}
+
+
+class DeliveryResponse(BaseModel):
+    id: str
+    name: str
+    customer_id: str | None = None
+    # Resolved from the customer row; None on legacy rows only.
+    customer_name: str | None
+    description: str | None
+    status: str
+    is_public: bool
+    finalized_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class DeliveryListItem(DeliveryResponse):
+    task_count: int
+
+
+class DeliveryCheckResult(BaseModel):
+    key: str
+    kind: DeliveryCheckKind
+    label: str
+    status: DeliveryCheckStatus
+    detail: str = ""
+    # Manual checks only: who ticked it and when. The hosted API fills
+    # ``checked_by_name`` from the user record at read time; the core
+    # leaves it None.
+    checked_by_user_id: str | None = None
+    checked_by_name: str | None = None
+    checked_at: datetime | None = None
+
+
+class DeliveryDefect(BaseModel):
+    """One open must-fix defect on a task's current version."""
+
+    id: str
+    title: str
+    source: str  # "pre_trial" | "trial"
+    acknowledged: bool
+    acknowledged_by_user_id: str | None = None
+    acknowledged_by_name: str | None = None
+    acknowledged_at: datetime | None = None
+
+
+class DeliveryTaskBoardRow(BaseModel):
+    delivery_task_id: str
+    task_id: str
+    task_name: str
+    version_id: str | None
+    version: int | None
+    pinned_version_id: str | None
+    newer_version_exists: bool
+    is_visible: bool
+    sort_order: int
+    customer_note: str | None
+    internal_note: str | None
+    checks: list[DeliveryCheckResult]
+    defects: list[DeliveryDefect] = Field(default_factory=list)
+    ready: bool
+
+
+class DeliveryBoardResponse(BaseModel):
+    delivery: DeliveryResponse
+    check_config: DeliveryCheckConfig
+    tasks: list[DeliveryTaskBoardRow]
+    delivery_checks: list[DeliveryCheckResult]
+    ready: bool
+    ready_task_count: int
+    task_count: int
+    # Set when status == finalized: the board above is the stored snapshot,
+    # not a live computation.
+    frozen: bool = False
+    finalized_at: datetime | None = None
+
+
+class TaskQAHistoryRun(BaseModel):
+    trial_id: str
+    kind: str
+    status: str | None
+    started_at: datetime | None
+    finished_at: datetime | None
+    # Why a failed run failed: the trial's execution error, else its
+    # analysis error.
+    error: str | None = None
+
+
+class TaskQAHistoryFinding(BaseModel):
+    tier: str
+    title: str
+    source: str  # "pre_trial" | "trial"
+
+
+class TaskQAHistoryVersion(BaseModel):
+    version_id: str
+    version: int
+    created_at: datetime
+    message: str | None
+    is_current: bool
+    pre_trial_status: str | None
+    pre_trial_finished_at: datetime | None
+    pre_trial_error: str | None = None
+    # Open must-fix defects from every source (pre-trial audit + trial
+    # analyses) — the same count the delivery board blocks on.
+    must_fix: int
+    pre_trial_should_fix: int
+    rollout_count: int
+    rollout_agents: int
+    qa_runs: list[TaskQAHistoryRun]
+    # The QA findings behind the counts, for inline display: every
+    # pre-trial audit item plus the must-fix items from trial analyses.
+    findings: list[TaskQAHistoryFinding] = Field(default_factory=list)
+
+
+class TaskQAHistoryResponse(BaseModel):
+    task_id: str
+    task_name: str
+    current_version_id: str | None
+    verdict: dict | None
+    verdict_status: str | None
+    # The version the stored verdict covers: the one graded by the newest
+    # verdict-producing QA run. None when no such run exists.
+    verdict_version_id: str | None = None
+    versions: list[TaskQAHistoryVersion]
+    # QA/audit trials with no version id (legacy rows): shown apart so the
+    # record stays complete without guessing which version they graded.
+    unversioned_runs: list[TaskQAHistoryRun] = Field(default_factory=list)

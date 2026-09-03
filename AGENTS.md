@@ -152,8 +152,11 @@ High-level flow:
    `tasks.verdict`. The verdict is only requested above an evidence bar
    (≥5 QA-eligible trials from ≥3 agents, `MIN_VERDICT_TRIALS` /
    `MIN_VERDICT_AGENTS` in `oddish.workers.analysis_trials`); below it the
-   QA trial still classifies trials and the task completes without a
-   verdict. A sweep of `T` tasks × `N` trials therefore creates `T`
+   QA trial still classifies trials. At completion, a validated current
+   audit with `must_fix` findings or a failed deterministic baseline can
+   reject the task even below that bar; otherwise it completes without a
+   verdict. With zero eligible solver trials, admission waits for the audit
+   and can publish its `must_fix` rejection without creating a QA trial. A sweep of `T` tasks × `N` trials therefore creates `T`
    QA trials, not `T × (N + 1)`. The pre-trial audit is an `audit`-kind trial
    created once per task version at sweep time.
    `POST /qa-evals` is the lower-level historical prompt-replay primitive. It
@@ -210,13 +213,15 @@ High-level flow:
    nonterminal trial in the org. Final result settlement performs the same
    check for agents without live usage. Cancellation retires queued, running,
    blocked, and retrying worker jobs in the database before terminating remote
-   handles; a task is failed only when no other live trial remains. If quota
-   cancellation interrupts a replacement QA pass, the last successful verdict
-   is restored through `cancel_verdict`; a terminal QA failure instead clears
-   that preserved payload through `fail_verdict`. All task verdict-column
-   mutations go through `oddish.core.verdict_state`: a published payload may
-   coexist with QUEUED/RUNNING while its replacement is active, but it must
-   return to SUCCESS if that pass is abandoned. The
+   handles; a task is failed only when no other live trial remains. Queuing
+   replacement QA withdraws the previous verdict through `queue_verdict`.
+   Completion publishes only the new verdict; a classification-only pass
+   completes with SUCCESS status and no verdict unless current audit or
+   baseline evidence establishes a deterministic rejection. Cancellation, failure, or
+   abandonment of an active replacement never restores its previous result.
+   Cancelling unrelated trials preserves an existing verdict when no QA
+   replacement was active. Older QA artifacts remain in trial storage.
+   All task verdict-column mutations go through `oddish.core.verdict_state`. The
    `ck_tasks_published_verdict_status` database constraint rejects a published
    payload with a missing or FAILED status.
 6. Trial completion persists queryable execution metrics on the trial row:
@@ -386,7 +391,32 @@ payload. The QA agent fetches complete result, verifier, and trajectory
 resources for each solver Trial; it writes judgments only. Import restores
 `trial_name` and `reward` from the graded Trial row, and a source-audit
 `must_fix` finding or failed deterministic baseline rejects an otherwise
-accepted verdict.
+accepted or absent model verdict. Trial classifications, rewards, and summaries
+retain their own meaning: a `GOOD_FAILURE` can coexist with task rejection.
+
+New QA jobs pin a fingerprint of source bytes, audit status, timestamps, and
+findings (excluding later exploitation annotations). Import checks it and the
+latest uncancelled QA identity under the task lock before storing classifications
+and again before publishing the verdict. Legacy jobs without a fingerprint
+must match the current audit finding IDs and must-fix subset. An audit rerun
+withdraws the old verdict and returns the task to RUNNING; admission waits for
+all solver and existing QA jobs, plus audit execution and result publication,
+then creates one replacement QA. `task_audit_pending` checks both live audit jobs
+and the current version's PENDING/QUEUED/RUNNING audit status; automatic admission,
+manual QA, and cleanup share this gate. A terminal audit job alone cannot
+complete the task. Both
+audit and QA settlement re-enter admission. Cleanup requeues QA whose saved
+audit no longer matches instead of repeatedly importing it. Audit writes also
+check the latest audit trial under the version lock, and duplicate successful
+imports preserve the original timestamps and exploitation annotations.
+
+QA and source audits submit a draft through `/probe-harness/submit-analysis-result`.
+It runs the same strict validator used by the verifier and importer, allowing
+one initial submission and two repairs. Missing fields remain validation errors.
+Attempt JSON and validation messages are retained under
+`/logs/<artifact>.submissions/` and copied into verifier artifacts. A later
+invalid, missing, or over-limit submission removes any previously published
+result, so a rejected draft cannot leave a stale accepted artifact.
 
 ### Worker job kinds
 
@@ -416,8 +446,8 @@ accepted verdict.
   summarizer in `oddish/worker/probe_analysis.py`); every analysis agent
   runs as a trial on the analysis model's queue key
 - the verdict state machine (`oddish.core.verdict_state`), the only writer
-  for `tasks.verdict*` lifecycle columns, which preserves the last published
-  result until a replacement QA pass succeeds or terminally fails
+  for `tasks.verdict*` lifecycle columns, which withdraws the current result
+  when replacement QA is queued and publishes only that pass's verdict
 - shared queue-slot leasing, per-queue-key concurrency limits, and
   per-user fairness on `TRIAL` claims
 - database-backed admin concurrency overrides; these take precedence over
@@ -584,7 +614,15 @@ otherwise it falls back to the highest version represented by such trials. The
 bounded `/open` and `/trial-page` endpoints apply the same rule so progressive
 loading cannot change the files/counts pivot or mix one version's trials with
 another's artifacts. `/open` returns exact totals plus at most 100 task shells
-under 50 KB. Authenticated task shells include the complete `github_meta`
+under 50 KB. Reads that cover a whole experiment (`/open` totals,
+`/trial-page`, cost totals, effective versions) select from
+`experiment_trial_scope` (`core/experiment_membership.py`): `TrialModel`
+aliased onto a `UNION ALL` of the experiment's homed rows and its gathered
+rows, each an index seek, with combine copies removed by an anti-join. Do not
+filter the whole `trials` table with `trial_in_experiment` for such reads: its
+`experiment_id = X OR id IN (gathered)` cannot use an index and its correlated
+subplan inflates the plan cost enough to JIT-compile every request.
+Authenticated task shells include the complete `github_meta`
 mapping parsed from the task's stored tags. Anonymous `/open`, `/focus`, and
 task-detail responses use separate public response models: they omit task and
 experiment owner fields and allowlist only the `category`, `world`, and `domain`
