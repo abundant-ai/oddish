@@ -27,6 +27,7 @@ _configured = False
 _lock = threading.Lock()
 _worker_job_transitions_counter = None
 _worker_job_duration_histogram = None
+_thunder_capacity_handoffs_counter = None
 _queue_jobs_gauge = None
 _queue_slots_gauge = None
 _dispatch_workers_spawned_counter = None
@@ -36,6 +37,13 @@ _last_dispatch_queue_keys: set[str] = set()
 
 _AGGREGATE_QUEUE_KEY = "__all__"
 DispatchCycleOutcome = Literal["success", "skipped", "cancelled", "error"]
+ThunderCapacityHandoffOutcome = Literal[
+    "requested",
+    "pending",
+    "completed",
+    "rejected",
+    "failed",
+]
 
 
 def configure_observability(service_name: str) -> bool:
@@ -268,6 +276,34 @@ def record_worker_job_transition(
         _worker_job_duration_histogram.record(duration_seconds, attributes)
     except Exception:
         logger.warning("failed to record worker-job duration metric", exc_info=True)
+
+
+def record_thunder_capacity_handoff(
+    *, outcome: ThunderCapacityHandoffOutcome, target_environment: str
+) -> None:
+    """Count a Thunder capacity handoff lifecycle event without record IDs."""
+    global _thunder_capacity_handoffs_counter
+    if not _configured:
+        return
+    try:
+        import logfire
+
+        with _lock:
+            if _thunder_capacity_handoffs_counter is None:
+                _thunder_capacity_handoffs_counter = logfire.metric_counter(
+                    "oddish.thunder.capacity_handoffs",
+                    unit="{handoff}",
+                    description="Thunder capacity fallback lifecycle events",
+                )
+        _thunder_capacity_handoffs_counter.add(
+            1,
+            {
+                "outcome": outcome,
+                "target_environment": target_environment,
+            },
+        )
+    except Exception:
+        logger.warning("failed to record Thunder handoff metric", exc_info=True)
 
 
 def record_dispatch_snapshot(

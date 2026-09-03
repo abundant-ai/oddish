@@ -170,17 +170,34 @@ LaneCapacityFn = Callable[[], Awaitable[tuple[dict[str, int], dict[str, int]]]]
 
 async def load_sandbox_capacity_by_lane() -> tuple[dict[str, int], dict[str, int]]:
     """Load provider-wide capacity for host-agnostic dispatchers."""
-    from oddish.config import settings
-    from oddish.runtime.sandbox_lifecycle import EC2_TRIAL_EXECUTION_LANE
+    from oddish.runtime.sandbox_lifecycle import (
+        EC2_TRIAL_EXECUTION_LANE,
+        THUNDER_TRIAL_EXECUTION_LANE,
+    )
     from oddish.workers.queue.sandbox_capacity import (
+        configured_sandbox_capacity_limit,
         count_held_sandbox_capacity_leases,
     )
 
-    limit = settings.ec2_max_concurrent_instances if settings.ec2_enabled else 0
-    held = await count_held_sandbox_capacity_leases(provider="ec2") if limit > 0 else 0
+    providers_by_lane = {
+        EC2_TRIAL_EXECUTION_LANE: "ec2",
+        THUNDER_TRIAL_EXECUTION_LANE: "thunder",
+    }
+    limits = {
+        lane: configured_sandbox_capacity_limit(provider)
+        for lane, provider in providers_by_lane.items()
+    }
+    held = {
+        lane: (
+            await count_held_sandbox_capacity_leases(provider=provider)
+            if limits[lane] > 0
+            else 0
+        )
+        for lane, provider in providers_by_lane.items()
+    }
     return (
-        {EC2_TRIAL_EXECUTION_LANE: limit},
-        {EC2_TRIAL_EXECUTION_LANE: held},
+        limits,
+        held,
     )
 
 

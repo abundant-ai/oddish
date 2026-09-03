@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from oddish.config import settings
 from oddish.core.model_concurrency import (
     load_effective_model_concurrency_limit,
     load_effective_model_concurrency_limits,
@@ -11,7 +10,14 @@ from oddish.workers.queue.shared import console
 from oddish.workers.queue.sandbox_capacity import (
     SANDBOX_CAPACITY_LEASE_SECONDS,
     acquire_sandbox_capacity_lease,
+    configured_sandbox_capacity_limit,
     release_sandbox_capacity_lease,
+)
+from oddish.runtime.sandbox_lifecycle import (
+    DEFAULT_EXECUTION_LANE,
+    EC2_TRIAL_EXECUTION_LANE,
+    THUNDER_TRIAL_EXECUTION_LANE,
+    capacity_provider_for_execution_lane,
 )
 from oddish.workers.queue.slots import acquire_queue_slot, release_queue_slot
 from oddish.workers.queue.worker_job_dispatcher import stamp_dispatch_stage
@@ -82,8 +88,13 @@ async def run_assigned_queue_worker(
     Returns the number of jobs processed.
     """
     worker_id = worker_id or f"{queue_key}-{uuid4().hex[:12]}"
-    if execution_lane not in {"default", "ec2_trial"}:
+    if execution_lane not in {
+        DEFAULT_EXECUTION_LANE,
+        EC2_TRIAL_EXECUTION_LANE,
+        THUNDER_TRIAL_EXECUTION_LANE,
+    }:
         raise ValueError(f"unsupported execution lane: {execution_lane!r}")
+    capacity_provider = capacity_provider_for_execution_lane(execution_lane)
     limit = await load_effective_model_concurrency_limit(queue_key)
     if limit <= 0:
         console.print(
@@ -94,15 +105,17 @@ async def run_assigned_queue_worker(
     capacity_slot: int | None = None
     release_capacity_lease = True
     try:
-        if execution_lane == "ec2_trial":
+        if capacity_provider is not None:
             capacity_slot = await acquire_sandbox_capacity_lease(
-                provider="ec2",
-                limit=settings.ec2_max_concurrent_instances,
+                provider=capacity_provider,
+                limit=configured_sandbox_capacity_limit(capacity_provider),
                 worker_id=worker_id,
                 lease_seconds=SANDBOX_CAPACITY_LEASE_SECONDS,
             )
             if capacity_slot is None:
-                console.print("[dim]No EC2 capacity slots available, exiting[/dim]")
+                console.print(
+                    f"[dim]No {capacity_provider} capacity slots available, exiting[/dim]"
+                )
                 return 0
 
         slot = await acquire_queue_slot(
@@ -127,7 +140,7 @@ async def run_assigned_queue_worker(
                 budget_seconds=budget_seconds,
                 harbor_variant_id=harbor_variant_id,
                 execution_lane=execution_lane,
-                capacity_provider="ec2" if capacity_slot is not None else None,
+                capacity_provider=capacity_provider,
                 capacity_slot=capacity_slot,
             )
             release_capacity_lease = True
@@ -141,5 +154,5 @@ async def run_assigned_queue_worker(
     finally:
         if capacity_slot is not None and release_capacity_lease:
             await release_sandbox_capacity_lease(
-                provider="ec2", slot=capacity_slot, worker_id=worker_id
+                provider=capacity_provider, slot=capacity_slot, worker_id=worker_id
             )

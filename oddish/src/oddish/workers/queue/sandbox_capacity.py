@@ -7,6 +7,17 @@ from oddish.db import get_pool
 SANDBOX_CAPACITY_LEASE_SECONDS = 120
 
 
+def configured_sandbox_capacity_limit(provider: str) -> int:
+    """Return the enabled provider's process-independent capacity ceiling."""
+    from oddish.config import settings
+
+    if provider == "ec2":
+        return settings.ec2_max_concurrent_instances if settings.ec2_enabled else 0
+    if provider == "thunder":
+        return settings.thunder_max_capacity if settings.thunder_enabled else 0
+    raise ValueError(f"unsupported sandbox capacity provider: {provider!r}")
+
+
 async def acquire_sandbox_capacity_lease(
     *, provider: str, limit: int, worker_id: str, lease_seconds: int
 ) -> int | None:
@@ -192,5 +203,6 @@ __all__ = [
     "acquire_sandbox_capacity_lease",
     "cleanup_sandbox_capacity_leases",
     "count_held_sandbox_capacity_leases",
+    "configured_sandbox_capacity_limit",
     "release_sandbox_capacity_lease",
 ]

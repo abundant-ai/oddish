@@ -1,11 +1,15 @@
 """Trial task-preparation failures use the normal attempt settlement path."""
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from oddish.db import TrialStatus
+from oddish.core.harbor_artifacts import THUNDER_CAPACITY_UNAVAILABLE_CODE
+from oddish.config import settings
+from oddish.workers.harbor.outcome import HarborOutcome
 from oddish.workers.queue import trial_handler
 
 
@@ -211,3 +215,121 @@ async def test_run_trial_job_settles_task_preparation_error(monkeypatch):
     assert settlement["execution"].execution_error == (
         "ValueError: summarize target trajectory is missing"
     )
+
+
+@pytest.mark.asyncio
+async def test_run_trial_job_defers_thunder_capacity_to_atomic_reroute(
+    monkeypatch,
+    tmp_path,
+):
+    trial_id = "task-1-4"
+    prepared = trial_handler.PreparedTrialRun(
+        task_path=str(tmp_path),
+        task_s3_key=None,
+        task_id="task-1",
+        trial_agent="nop",
+        trial_model="none",
+        trial_environment="thunder",
+        trial_harbor_config=None,
+        trial_attempt=9,
+    )
+    prepared_task = trial_handler.PreparedTrialTask(
+        task_path=Path(tmp_path),
+        temp_task_dir=None,
+        resolved_task_s3_key=None,
+        probe_extra_instructions=None,
+        probe_agent_env=None,
+        probe_key_id=None,
+    )
+    prepared_attempt = trial_handler.PreparedTrialAttempt(
+        task=prepared_task,
+        byok_env=None,
+        sandbox_launch=SimpleNamespace(sandbox_run_id="sandbox-run-1"),
+        cost_state=SimpleNamespace(),
+    )
+    capacity_outcome = HarborOutcome(
+        reward=None,
+        error="capacity unavailable",
+        exit_code=0,
+        duration_sec=1.0,
+        job_result_path=None,
+        job_dir=None,
+        exception_type="CapacityError",
+        provider_error_code=THUNDER_CAPACITY_UNAVAILABLE_CODE,
+        http_status=503,
+        retry_after_seconds=20.0,
+    )
+
+    @asynccontextmanager
+    async def trial_session(_trial_id, **_kwargs):
+        yield (
+            SimpleNamespace(),
+            SimpleNamespace(
+                id=trial_id,
+                status=TrialStatus.RUNNING,
+                agent="nop",
+                idempotency_key=None,
+            ),
+        )
+
+    async def heartbeat_trial_execution(*, stop_event, **_kwargs):
+        await stop_event.wait()
+
+    async def execute_trial(**_kwargs):
+        return trial_handler.TrialExecutionResult(
+            outcome=capacity_outcome,
+            execution_error=None,
+            tailed_attempt=9,
+        )
+
+    async def prepare_run(**_kwargs):
+        return prepared
+
+    async def prepare_attempt(**_kwargs):
+        return prepared_attempt
+
+    released: list[str] = []
+
+    async def release_attempt(**kwargs):
+        released.append(kwargs["sandbox_launch"].sandbox_run_id)
+
+    async def fail_if_settled(**_kwargs):
+        raise AssertionError("capacity reroute must bypass ordinary trial settlement")
+
+    async def noop_async(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(settings, "thunder_capacity_fallback", True)
+    monkeypatch.setattr(settings, "thunder_fallback_provider", "modal")
+    monkeypatch.setattr(settings, "job_scoped_tokens_enabled", False)
+    monkeypatch.setattr(trial_handler, "_trial_session", trial_session)
+    monkeypatch.setattr(trial_handler, "_prepare_trial_run", prepare_run)
+    monkeypatch.setattr(
+        trial_handler,
+        "_prepare_claimed_trial_attempt",
+        prepare_attempt,
+    )
+    monkeypatch.setattr(
+        trial_handler,
+        "_heartbeat_trial_execution",
+        heartbeat_trial_execution,
+    )
+    monkeypatch.setattr(trial_handler, "_execute_trial", execute_trial)
+    monkeypatch.setattr(trial_handler, "_settle_compute_costs", noop_async)
+    monkeypatch.setattr(trial_handler, "_settle_trial_attempt", fail_if_settled)
+    monkeypatch.setattr(
+        trial_handler,
+        "_release_prepared_trial_attempt",
+        release_attempt,
+    )
+
+    outcome = await trial_handler.run_trial_job(
+        trial_id,
+        "none",
+        worker_id="worker-1",
+        worker_job_id="job-1",
+        worker_job_attempt=9,
+    )
+
+    assert outcome is capacity_outcome
+    assert released == ["sandbox-run-1"]

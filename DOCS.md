@@ -121,7 +121,7 @@ Options
 - `--task-name`, `-t TEXT` - Include task glob filter; can be passed multiple times
 - `--exclude-task-name`, `-x TEXT` - Exclude task glob filter; can be passed multiple times
 - `--n-tasks`, `-l INTEGER` - Limit the number of selected tasks after filtering
-- `--env`, `-e` - Execution environment. The flag accepts any Harbor environment name, but hosted Oddish honors only `modal`, `daytona`, `ec2`, `gke`, `archil`, and `numinous`; anything else is coerced to `modal` with a warning. EC2 and Numinous are deployment-controlled opt-in backends. When Numinous is enabled it is the first CPU candidate; otherwise Daytona is the CPU default. Numinous GPU availability is controlled separately by the deployment operator.
+- `--env`, `-e` - Execution environment. The flag accepts any Harbor environment name, but hosted Oddish honors only `modal`, `daytona`, `ec2`, `gke`, `archil`, `thunder`, and `numinous`; anything else is coerced to `modal` with a warning. EC2 and Numinous are deployment-controlled opt-in backends. When Numinous is enabled it is the first CPU candidate; otherwise Daytona is the CPU default. Numinous GPU availability is controlled separately by the deployment operator.
 - `--priority`, `-P TEXT` - Queue priority, typically `low` or `high`
 - `--experiment`, `-E TEXT` - Reuse or create an experiment ID/name
 - `--user`, `-u TEXT` - Override the author attached to the run. Defaults to the authenticated identity (Clerk-linked email for API keys / dashboard sessions); set this only to attribute a run to someone other than yourself.
@@ -177,6 +177,21 @@ without `--env` continue to use Daytona. V1 does not accept GPU/TPU requests,
 attach mode, retained instances, or caller overrides of platform EC2 settings.
 It uses a public address and key-only SSH; the instance is terminated after the
 trial or cancellation.
+
+### Run on Thunder
+
+A Thunder-enabled deployment can run a trial in one disposable GPU sandbox by
+selecting the backend explicitly:
+
+```bash
+oddish run ./my-task --env thunder -a nop --n-trials 1 --max-trial-attempts 1
+```
+
+The hosted API rejects `--env thunder` unless its operator enabled the backend.
+Thunder is never an automatic fallback. Its provider-wide capacity limit is
+shared across models, organizations, queue keys, and Harbor variants. Oddish
+persists the Thunder sandbox ID before operating it and uses that ID for normal
+teardown, cancellation, and orphan cleanup.
 
 ### Re-run with `--retry`
 

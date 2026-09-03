@@ -38,6 +38,10 @@ from oddish.workers.jobs import (  # noqa: E402
     enqueue_worker_job,
     register,
 )
+from oddish.core.harbor_artifacts import (  # noqa: E402
+    THUNDER_CAPACITY_UNAVAILABLE_CODE,
+)
+from oddish.config import settings  # noqa: E402
 from oddish.workers.queue import worker_job_single_job  # noqa: E402
 from oddish.workers.queue.worker_job_single_job import (  # noqa: E402
     ClaimedWorkerJob,
@@ -261,6 +265,10 @@ def test_claim_sql_clears_retry_timestamp_on_claim():
     assert "next_retry_at = NULL" in _normalized_claim_sql()
 
 
+def test_claim_sql_blocks_reroute_until_source_teardown_is_confirmed():
+    assert "NOT wj.reroute_pending_teardown" in _normalized_claim_sql()
+
+
 def test_claim_sql_scopes_to_harbor_variant():
     # harbor_variant_id is part of the effective dispatch key: a worker only
     # claims rows of the variant it was spawned for (default + ephemeral on the
@@ -343,6 +351,363 @@ class _FakeConnection:
 
     async def close(self) -> None:
         self.closed = True
+
+
+class _FakeTransaction:
+    def __init__(self) -> None:
+        self.entered = False
+        self.committed = False
+        self.rolled_back = False
+
+    async def __aenter__(self):
+        self.entered = True
+        return self
+
+    async def __aexit__(self, exc_type, _exc, _tb):
+        self.rolled_back = exc_type is not None
+        self.committed = exc_type is None
+
+
+class _RerouteConnection:
+    def __init__(
+        self,
+        *,
+        job_overrides: dict[str, Any] | None = None,
+        trial_overrides: dict[str, Any] | None = None,
+        run_overrides: dict[str, Any] | None = None,
+        leases: list[dict[str, Any]] | None = None,
+        failed_update: str | None = None,
+    ) -> None:
+        self.job = {
+            "id": "wj-1",
+            "kind": "TRIAL",
+            "status": "RUNNING",
+            "subject_table": "trials",
+            "subject_id": "trial-1",
+            "attempts": 3,
+            "current_worker_id": "worker-1",
+            "execution_lane": "thunder_trial",
+            "provider": None,
+            "external_id": None,
+            **(job_overrides or {}),
+        }
+        self.trial = {
+            "id": "trial-1",
+            "status": "RUNNING",
+            "environment": "thunder",
+            "attempts": 9,
+            "current_worker_id": "worker-1",
+            "deleted_at": None,
+            "superseded_by_trial_id": None,
+            **(trial_overrides or {}),
+        }
+        self.run = {
+            "id": "sandbox-run-1",
+            "state": "FAILED",
+            "provider": "thunder",
+            "external_id": None,
+            "worker_job_attempt": 3,
+            "trial_id": "trial-1",
+            "deleted_at": None,
+            **(run_overrides or {}),
+        }
+        self.leases = (
+            leases
+            if leases is not None
+            else [
+                {
+                    "provider": "thunder",
+                    "slot": 7,
+                    "locked_by": "worker-1",
+                    "worker_job_id": "wj-1",
+                }
+            ]
+        )
+        self.failed_update = failed_update
+        self.transaction_state = _FakeTransaction()
+        self.calls: list[tuple[str, tuple[Any, ...]]] = []
+        self.closed = False
+
+    def transaction(self):
+        return self.transaction_state
+
+    async def fetchrow(self, sql: str, *args: Any):
+        self.calls.append((sql, args))
+        if "FROM worker_jobs" in sql:
+            return self.job
+        if "FROM trials" in sql:
+            return self.trial
+        if "FROM sandbox_runs" in sql:
+            return self.run
+        raise AssertionError(sql)
+
+    async def fetch(self, sql: str, *args: Any):
+        self.calls.append((sql, args))
+        assert "FROM sandbox_capacity_leases" in sql
+        return self.leases
+
+    async def execute(self, sql: str, *args: Any) -> str:
+        self.calls.append((sql, args))
+        if self.failed_update and self.failed_update in sql:
+            return "UPDATE 0"
+        return "UPDATE 1"
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def _reroute_outcome(*, target: str = "modal") -> JobOutcome:
+    return JobOutcome.reroute_to(
+        target_environment=target,
+        target_execution_lane="default",
+        reason=THUNDER_CAPACITY_UNAVAILABLE_CODE,
+        retry_after_seconds=20.0,
+        subject_attempt=9,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target_provider", ["modal", "daytona"])
+async def test_record_outcome_atomically_reroutes_unprovisioned_thunder_attempt(
+    monkeypatch,
+    target_provider,
+):
+    connection = _RerouteConnection()
+    monkeypatch.setattr(settings, "thunder_capacity_fallback", True)
+    monkeypatch.setattr(settings, "thunder_fallback_provider", target_provider)
+
+    async def fake_open_connection():
+        return connection
+
+    monkeypatch.setattr(worker_job_single_job, "_open_connection", fake_open_connection)
+
+    status = await worker_job_single_job._record_outcome(
+        job_id="wj-1",
+        worker_id="worker-1",
+        outcome=_reroute_outcome(target=target_provider),
+        attempts=3,
+        max_attempts=3,
+        kind=WorkerJobKind.TRIAL,
+        subject_table="trials",
+        subject_id="trial-1",
+    )
+
+    assert status == WorkerJobStatus.RETRYING
+    assert connection.closed is True
+    assert connection.transaction_state.committed is True
+    update_calls = [call for call in connection.calls if "UPDATE " in call[0]]
+    assert [
+        next(
+            table
+            for table in (
+                "sandbox_runs",
+                "trials",
+                "worker_jobs",
+                "sandbox_capacity_leases",
+            )
+            if f"UPDATE {table}" in sql
+        )
+        for sql, _args in update_calls
+    ] == [
+        "sandbox_runs",
+        "trials",
+        "worker_jobs",
+        "sandbox_capacity_leases",
+    ]
+
+    trial_sql, trial_args = update_calls[1]
+    assert trial_args == ("trial-1", target_provider, "worker-1")
+    assert "environment = $2" in trial_sql
+    assert "status = 'RETRYING'" in trial_sql
+    trial_set_clause = trial_sql.split("SET", 1)[1].split("WHERE", 1)[0]
+    for preserved_column in (
+        "attempts",
+        "agent",
+        "model",
+        "queue_key",
+        "harbor_config",
+        "reward",
+        "result",
+        "error_message",
+    ):
+        assert f"{preserved_column} =" not in trial_set_clause
+
+    job_sql, job_args = update_calls[2]
+    assert job_args == (
+        "wj-1",
+        "default",
+        "worker-1",
+        3,
+        False,
+        THUNDER_CAPACITY_UNAVAILABLE_CODE,
+    )
+    assert "execution_lane = $2" in job_sql
+    assert "status = 'RETRYING'" in job_sql
+    assert "available_after = NOW()" in job_sql
+    assert "reroute_from_environment = 'thunder'" in job_sql
+    assert "reroute_pending_teardown = $5" in job_sql
+    job_set_clause = job_sql.split("SET", 1)[1].split("WHERE", 1)[0]
+    for preserved_column in (
+        "attempts",
+        "max_attempts",
+        "queue_key",
+        "harbor_variant_id",
+        "payload",
+        "priority",
+        "error_message",
+        "result_summary",
+    ):
+        assert f"{preserved_column} =" not in job_set_clause
+
+
+@pytest.mark.asyncio
+async def test_reroute_waits_for_confirmed_external_sandbox_teardown(monkeypatch):
+    connection = _RerouteConnection(
+        job_overrides={"provider": "thunder", "external_id": "sandbox-123"},
+        run_overrides={
+            "state": "TERMINATING",
+            "external_id": "sandbox-123",
+        },
+    )
+    monkeypatch.setattr(settings, "thunder_capacity_fallback", True)
+    monkeypatch.setattr(settings, "thunder_fallback_provider", "modal")
+    handoff_events = []
+    monkeypatch.setattr(
+        worker_job_single_job,
+        "_emit_thunder_handoff_event",
+        lambda outcome, **kwargs: handoff_events.append((outcome, kwargs["reason"])),
+    )
+
+    async def fake_open_connection():
+        return connection
+
+    monkeypatch.setattr(worker_job_single_job, "_open_connection", fake_open_connection)
+
+    status = await worker_job_single_job._record_outcome(
+        job_id="wj-1",
+        worker_id="worker-1",
+        outcome=_reroute_outcome(),
+        attempts=3,
+        max_attempts=6,
+        kind=WorkerJobKind.TRIAL,
+        subject_table="trials",
+        subject_id="trial-1",
+    )
+
+    assert status == WorkerJobStatus.RETRYING
+    updates = [sql for sql, _args in connection.calls if "UPDATE " in sql]
+    assert len(updates) == 2
+    assert "UPDATE trials" in updates[0]
+    assert "UPDATE worker_jobs" in updates[1]
+    job_args = next(
+        args for sql, args in connection.calls if "UPDATE worker_jobs" in sql
+    )
+    assert job_args[-2:] == (True, THUNDER_CAPACITY_UNAVAILABLE_CODE)
+    assert "CASE WHEN $5 THEN provider ELSE NULL END" in updates[1]
+    assert handoff_events == [("pending", "teardown_pending")]
+
+
+@pytest.mark.asyncio
+async def test_reroute_releases_confirmed_external_sandbox(monkeypatch):
+    connection = _RerouteConnection(
+        job_overrides={"provider": "thunder", "external_id": "sandbox-123"},
+        run_overrides={"state": "TERMINATED", "external_id": "sandbox-123"},
+    )
+    monkeypatch.setattr(settings, "thunder_capacity_fallback", True)
+    monkeypatch.setattr(settings, "thunder_fallback_provider", "modal")
+
+    async def fake_open_connection():
+        return connection
+
+    monkeypatch.setattr(worker_job_single_job, "_open_connection", fake_open_connection)
+
+    status = await worker_job_single_job._record_outcome(
+        job_id="wj-1",
+        worker_id="worker-1",
+        outcome=_reroute_outcome(),
+        attempts=3,
+        max_attempts=6,
+        kind=WorkerJobKind.TRIAL,
+        subject_table="trials",
+        subject_id="trial-1",
+    )
+
+    assert status == WorkerJobStatus.RETRYING
+    updates = [sql for sql, _args in connection.calls if "UPDATE " in sql]
+    assert len(updates) == 3
+    assert not any("UPDATE sandbox_runs" in sql for sql in updates)
+    assert "UPDATE sandbox_capacity_leases" in updates[-1]
+    job_args = next(
+        args for sql, args in connection.calls if "UPDATE worker_jobs" in sql
+    )
+    assert job_args[-2:] == (False, THUNDER_CAPACITY_UNAVAILABLE_CODE)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "connection",
+    [
+        _RerouteConnection(job_overrides={"status": "CANCELLED"}),
+        _RerouteConnection(trial_overrides={"current_worker_id": "other-worker"}),
+        _RerouteConnection(run_overrides={"external_id": "sandbox-123"}),
+        _RerouteConnection(leases=[]),
+    ],
+)
+async def test_record_outcome_rejects_reroute_when_owned_state_changed(
+    monkeypatch,
+    connection,
+):
+    monkeypatch.setattr(settings, "thunder_capacity_fallback", True)
+    monkeypatch.setattr(settings, "thunder_fallback_provider", "modal")
+
+    async def fake_open_connection():
+        return connection
+
+    monkeypatch.setattr(worker_job_single_job, "_open_connection", fake_open_connection)
+
+    status = await worker_job_single_job._record_outcome(
+        job_id="wj-1",
+        worker_id="worker-1",
+        outcome=_reroute_outcome(),
+        attempts=3,
+        max_attempts=6,
+        kind=WorkerJobKind.TRIAL,
+        subject_table="trials",
+        subject_id="trial-1",
+    )
+
+    assert status is None
+    assert connection.closed is True
+    assert not any("UPDATE " in sql for sql, _args in connection.calls)
+
+
+@pytest.mark.asyncio
+async def test_record_outcome_rolls_back_if_atomic_reroute_update_loses_ownership(
+    monkeypatch,
+):
+    connection = _RerouteConnection(failed_update="UPDATE worker_jobs")
+    monkeypatch.setattr(settings, "thunder_capacity_fallback", True)
+    monkeypatch.setattr(settings, "thunder_fallback_provider", "modal")
+
+    async def fake_open_connection():
+        return connection
+
+    monkeypatch.setattr(worker_job_single_job, "_open_connection", fake_open_connection)
+
+    with pytest.raises(RuntimeError, match="worker-job ownership"):
+        await worker_job_single_job._record_outcome(
+            job_id="wj-1",
+            worker_id="worker-1",
+            outcome=_reroute_outcome(),
+            attempts=3,
+            max_attempts=6,
+            kind=WorkerJobKind.TRIAL,
+            subject_table="trials",
+            subject_id="trial-1",
+        )
+
+    assert connection.transaction_state.rolled_back is True
+    assert connection.closed is True
 
 
 @pytest.mark.asyncio
@@ -494,6 +859,8 @@ def _capture_record_outcome(monkeypatch):
         )
         if outcome.success is not None:
             return WorkerJobStatus.SUCCESS
+        if outcome.reroute is not None:
+            return WorkerJobStatus.RETRYING
         if outcome.failure.retryable and attempts < max_attempts:
             return WorkerJobStatus.RETRYING
         return WorkerJobStatus.FAILED
@@ -598,6 +965,22 @@ async def test_run_single_worker_job_records_retryable_on_exception(monkeypatch)
     assert recorded["outcome"].failure.retryable is True
     assert "RuntimeError" in recorded["outcome"].failure.error_message
     assert [call["outcome"] for call in metric_calls] == [WorkerJobStatus.RETRYING]
+
+
+@pytest.mark.asyncio
+async def test_run_single_worker_job_preserves_reroute_disposition(monkeypatch):
+    job = _make_claimed(kind=WorkerJobKind.TRIAL)
+    handler = _FakeHandler(job.kind, outcome=_reroute_outcome())
+    register(handler)
+    _install_fake_claim(monkeypatch, job)
+    captured = _capture_record_outcome(monkeypatch)
+
+    await worker_job_single_job.run_single_worker_job(
+        "default", worker_id="w-1", queue_slot=0
+    )
+
+    assert captured[0]["outcome"].reroute is not None
+    assert captured[0]["outcome"].failure is None
 
 
 @pytest.mark.asyncio
@@ -720,6 +1103,7 @@ def test_claimed_worker_job_fields_match_schema_expectations():
         "parent_job_id",
         "harbor_variant_id",
         "execution_lane",
+        "reroute_from_environment",
         "worker_id",
         "queue_slot",
         "modal_function_call_id",

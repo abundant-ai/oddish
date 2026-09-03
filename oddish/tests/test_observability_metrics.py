@@ -45,6 +45,7 @@ def metric_instruments(monkeypatch):
     for name in (
         "_worker_job_transitions_counter",
         "_worker_job_duration_histogram",
+        "_thunder_capacity_handoffs_counter",
         "_queue_jobs_gauge",
         "_queue_slots_gauge",
         "_dispatch_workers_spawned_counter",
@@ -73,6 +74,9 @@ def test_recording_functions_are_noops_when_logfire_is_not_configured(
         queue_key="openai/gpt-5",
         execution_lane="default",
         duration_seconds=1.0,
+    )
+    observability.record_thunder_capacity_handoff(
+        outcome="requested", target_environment="modal"
     )
     observability.record_dispatch_snapshot(
         queue_keys=(),
@@ -124,6 +128,23 @@ def test_worker_metrics_have_bounded_attributes_and_measured_duration(
     }
     assert definitions["oddish.worker_job.transitions"][0] == "{transition}"
     assert definitions["oddish.worker_job.duration"][0] == "s"
+
+
+def test_thunder_handoff_metric_has_bounded_attributes(metric_instruments):
+    instruments, definitions = metric_instruments
+
+    observability.record_thunder_capacity_handoff(
+        outcome="completed", target_environment="modal"
+    )
+
+    observations = instruments["oddish.thunder.capacity_handoffs"].observations
+    assert observations == [
+        (
+            1,
+            {"outcome": "completed", "target_environment": "modal"},
+        )
+    ]
+    assert definitions["oddish.thunder.capacity_handoffs"][0] == "{handoff}"
 
 
 def test_dispatch_snapshot_emits_plan_values_and_empty_aggregate_zero(

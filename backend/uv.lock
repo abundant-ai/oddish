@@ -234,6 +234,19 @@ wheels = [
 ]
 
 [[package]]
+name = "asyncssh"
+version = "2.23.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cryptography" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a4/95/212d3d394f2a6ccb3f95056d3b9a7ce13c2f58503cbd6a38d037ef48cb13/asyncssh-2.23.1.tar.gz", hash = "sha256:d9dc3bc0206f3e4b5d80d1c0e6a24af2b4ad4beb556884c41fb2ad1c7ca3f44f", size = 542883, upload-time = "2026-06-07T14:15:18.832Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ef/94/9aa81bde40627af70388d634152e7c53e7533788e662b8093047501a1473/asyncssh-2.23.1-py3-none-any.whl", hash = "sha256:f68e55476d41253d785bcac9a90834ae5fdea0f417bd6d7182608bda248de88e", size = 376054, upload-time = "2026-06-07T14:15:17.375Z" },
+]
+
+[[package]]
 name = "attrs"
 version = "25.4.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1641,6 +1654,7 @@ all = [
     { name = "python-jose", extra = ["cryptography"] },
     { name = "python-multipart" },
     { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "thunder-sandbox" },
     { name = "twine" },
     { name = "uvicorn" },
 ]
@@ -1679,6 +1693,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = "==14.3.1" },
     { name = "sqlalchemy", extras = ["asyncio"], marker = "extra == 'server'", specifier = "==2.0.46" },
+    { name = "thunder-sandbox", marker = "extra == 'worker'", specifier = "==0.5.0" },
     { name = "tomlkit", specifier = "==0.15.1" },
     { name = "twine", marker = "extra == 'dev'", specifier = "==6.2.0" },
     { name = "typer", specifier = "==0.21.1" },
@@ -2929,6 +2944,19 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/0a/d4/2b0cd0fe285e14b36db076e78c93766ff1d529d70408bd1d2a5a84f1d929/tenacity-9.1.2.tar.gz", hash = "sha256:1169d376c297e7de388d18b4481760d478b0e99a777cad3a9c86e556f4b697cb", size = 48036, upload-time = "2025-04-02T08:25:09.966Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e5/30/643397144bfbfec6f6ef821f36f33e57d35946c44a2352d3c9f0ae847619/tenacity-9.1.2-py3-none-any.whl", hash = "sha256:f77bf36710d8b73a50b2dd155c97b870017ad21afe6ab300326b0371b3b05138", size = 28248, upload-time = "2025-04-02T08:25:07.678Z" },
+]
+
+[[package]]
+name = "thunder-sandbox"
+version = "0.5.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "asyncssh" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/1e/d8/e33008283441471aaa21f21bd8d6d218a7b18916055c53d6011a39a46fe5/thunder_sandbox-0.5.0.tar.gz", hash = "sha256:f5c803c296a1d6cf1da1793c6d1203b2c23354fbbf3bb4fc61743de4672f8772", size = 30006, upload-time = "2026-09-01T20:48:22.58Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/dd/0d/b9d70a289ab2b7b3178f0d0dac4ac71f9775f8b9b9a203f974c1c808d30e/thunder_sandbox-0.5.0-py3-none-any.whl", hash = "sha256:ff2887ff7b8be31cf4ea882e2a94bbf090f4f87c3888a62f01f59b40d7c7eeb4", size = 34445, upload-time = "2026-09-01T20:48:21.376Z" },
 ]
 
 [[package]]

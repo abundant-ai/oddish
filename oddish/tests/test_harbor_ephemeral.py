@@ -26,6 +26,7 @@ from oddish.workers.harbor._entry import (
     _ProbeClaudeCode,
     _build_job_config,
     _read_payload_and_unlink,
+    _thunder_capacity_error_metadata,
 )
 from oddish.workers.harbor.ephemeral import (
     HarborOverrideImportError,
@@ -154,6 +155,100 @@ def test_read_outcome_without_result_json_is_non_retryable(tmp_path):
     assert outcome.error == "boom"
 
 
+@pytest.mark.parametrize(
+    ("exception_type", "provider_error_code"),
+    [("SystemExit", 19), ("OSError", "EIO"), ("HTTPError", "server_error")],
+)
+def test_read_outcome_does_not_trust_arbitrary_exception_codes(
+    tmp_path, exception_type, provider_error_code
+):
+    outcome_path = tmp_path / "outcome.json"
+    outcome_path.write_text(
+        json.dumps(
+            {
+                "job_dir": str(tmp_path),
+                "job_result_path": None,
+                "error": "child crashed",
+                "exception_type": exception_type,
+                "provider_error_code": provider_error_code,
+                "http_status": 503,
+                "retry_after_seconds": 20,
+            }
+        )
+    )
+
+    outcome = _read_outcome(
+        outcome_path=outcome_path,
+        unique_parent=tmp_path,
+        returncode=1,
+        duration=1.0,
+        stderr="",
+        stdout_tail="",
+        environment_provider=EnvironmentType.THUNDER.value,
+    )
+
+    assert outcome.exception_type == "HarborOverrideImportError"
+    assert outcome.provider_error_code is None
+    assert outcome.http_status is None
+    assert outcome.retry_after_seconds is None
+
+
+def test_read_outcome_preserves_exact_typed_thunder_capacity_error(tmp_path):
+    outcome_path = tmp_path / "outcome.json"
+    outcome_path.write_text(
+        json.dumps(
+            {
+                "job_dir": str(tmp_path),
+                "job_result_path": None,
+                "error": "capacity unavailable",
+                "exception_type": "CapacityError",
+                "provider_error_code": "sandbox_capacity_unavailable",
+                "http_status": 503,
+                "retry_after_seconds": 20,
+            }
+        )
+    )
+
+    outcome = _read_outcome(
+        outcome_path=outcome_path,
+        unique_parent=tmp_path,
+        returncode=1,
+        duration=1.0,
+        stderr="",
+        stdout_tail="",
+        environment_provider=EnvironmentType.THUNDER.value,
+    )
+
+    assert outcome.exception_type == "CapacityError"
+    assert outcome.provider_error_code == "sandbox_capacity_unavailable"
+    assert outcome.http_status == 503
+    assert outcome.retry_after_seconds == 20
+
+
+def test_child_exports_metadata_only_for_typed_thunder_capacity_error():
+    class CodedError(RuntimeError):
+        code = "sandbox_capacity_unavailable"
+        status = 503
+        retry_after = 20
+
+    assert _thunder_capacity_error_metadata(SystemExit(19)) == {}
+    assert _thunder_capacity_error_metadata(CodedError("not Thunder")) == {}
+
+    from thunder_sandbox import CapacityError
+
+    error = CapacityError(
+        "unavailable",
+        code="sandbox_capacity_unavailable",
+        status=503,
+        retry_after=20,
+    )
+    assert _thunder_capacity_error_metadata(error) == {
+        "provider_error_code": "sandbox_capacity_unavailable",
+        "http_status": 503,
+        "retry_after_seconds": 20,
+    }
+
+
 def test_build_payload_prefers_passed_env_build_multiplier():
     # The runner computes the GKE-sized env-build multiplier and passes it in; it
     # must win over whatever rode in the raw config, so the child JobConfig gets
@@ -220,6 +315,126 @@ def test_build_payload_carries_agent_config():
         is_probe=False,
     )
     assert payload["agent_config"] == agent_config
+
+
+def test_thunder_override_payload_injects_openai_hosts_for_restricted_agent(
+    tmp_path, monkeypatch
+):
+    task_path = tmp_path / "task"
+    task_path.mkdir()
+    (task_path / "task.toml").write_text(
+        """schema_version = "1.3"
+
+[environment]
+network_mode = "public"
+
+[agent]
+network_mode = "allowlist"
+
+[verifier]
+network_mode = "no-network"
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        harbor_ephemeral,
+        "outbound_hosts_for_model",
+        lambda *_args, **_kwargs: ["api.openai.com", "ab.chatgpt.com"],
+    )
+    monkeypatch.setattr(
+        harbor_ephemeral,
+        "agent_runtime_hosts",
+        lambda **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        harbor_ephemeral,
+        "_runtime_env_overrides",
+        lambda **_kwargs: {"OPENAI_API_KEY": "test-key"},
+    )
+
+    payload = _build_payload(
+        task_path=task_path,
+        jobs_dir=tmp_path / "jobs",
+        outcome_path=tmp_path / "jobs" / "outcome.json",
+        agent="codex",
+        model="openai/gpt-5.5",
+        environment_config=EnvironmentConfig(type=EnvironmentType.THUNDER),
+        raw_harbor_config={"agent_config": {"extra_allowed_hosts": []}},
+        is_probe=False,
+    )
+
+    assert payload["agent_config"]["extra_allowed_hosts"] == [
+        "api.openai.com",
+        "ab.chatgpt.com",
+    ]
+    child_config = _build_job_config(payload)
+    assert child_config.agents[0].extra_allowed_hosts == [
+        "api.openai.com",
+        "ab.chatgpt.com",
+    ]
+
+
+@pytest.mark.parametrize(
+    "unsupported_shape",
+    ["compose", "extra-compose", "kube-chart", "custom-environment"],
+)
+def test_override_payload_skips_host_injection_for_unsupported_network_shapes(
+    tmp_path, monkeypatch, unsupported_shape
+):
+    task_path = tmp_path / "task"
+    environment_dir = task_path / "environment"
+    environment_dir.mkdir(parents=True)
+    (task_path / "task.toml").write_text(
+        """schema_version = "1.3"
+
+[environment]
+network_mode = "public"
+
+[agent]
+network_mode = "allowlist"
+
+[verifier]
+network_mode = "no-network"
+""",
+        encoding="utf-8",
+    )
+    environment_config = EnvironmentConfig(type=EnvironmentType.DAYTONA)
+    if unsupported_shape == "compose":
+        (environment_dir / "docker-compose.yaml").write_text("services: {}\n")
+    elif unsupported_shape == "extra-compose":
+        environment_config.extra_docker_compose = [tmp_path / "extra-compose.yaml"]
+    elif unsupported_shape == "kube-chart":
+        chart = environment_dir / "chart"
+        chart.mkdir()
+        (chart / "Chart.yaml").write_text(
+            "apiVersion: v2\nname: test\nversion: 0.1.0\n"
+        )
+    else:
+        environment_config.import_path = "custom.environment:Environment"
+
+    def unexpected_hosts(*_args, **_kwargs):
+        raise AssertionError("unsupported task shapes must not infer agent hosts")
+
+    monkeypatch.setattr(harbor_ephemeral, "outbound_hosts_for_model", unexpected_hosts)
+    monkeypatch.setattr(harbor_ephemeral, "agent_runtime_hosts", unexpected_hosts)
+    monkeypatch.setattr(
+        harbor_ephemeral,
+        "_runtime_env_overrides",
+        lambda **_kwargs: {},
+    )
+
+    payload = _build_payload(
+        task_path=task_path,
+        jobs_dir=tmp_path / "jobs",
+        outcome_path=tmp_path / "jobs" / "outcome.json",
+        agent="codex",
+        model="openai/gpt-5.5",
+        environment_config=environment_config,
+        raw_harbor_config={"agent_config": {"extra_allowed_hosts": ["submitted.test"]}},
+        is_probe=False,
+    )
+
+    assert payload["agent_config"]["extra_allowed_hosts"] == ["submitted.test"]
 
 
 def test_child_applies_submitted_agent_config(tmp_path):
@@ -523,6 +738,35 @@ def test_spawn_args_requests_archil_extra_for_archil_env():
     req = args[args.index("--with") + 1]
     assert req == harbor_git_requirement(_SOURCE, _SHA, extras=["archil"])
     assert req.startswith("harbor[archil] @ git+")
+
+
+def test_spawn_args_requests_thunder_extra_for_thunder_env():
+    args = harbor_ephemeral._spawn_args(
+        _SOURCE, _SHA, environment=EnvironmentType.THUNDER
+    )
+    req = args[args.index("--with") + 1]
+    assert req == harbor_git_requirement(_SOURCE, _SHA, extras=["thunder"])
+    assert req.startswith("harbor[thunder] @ git+")
+
+
+def test_ephemeral_extra_map_allows_harbor_without_thunder():
+    class PublicHarborEnvironmentType:
+        DAYTONA = object()
+        ARCHIL = object()
+        MODAL = object()
+        E2B = object()
+        RUNLOOP = object()
+        GKE = object()
+        NOVITA = object()
+        TENSORLAKE = object()
+        CWSANDBOX = object()
+        WANDB = object()
+        ISLO = object()
+        EC2 = object()
+
+    extras = harbor_ephemeral._environment_harbor_extras(PublicHarborEnvironmentType)
+
+    assert "thunder" not in extras.values()
 
 
 def test_ephemeral_daytona_forces_ownership_labels():

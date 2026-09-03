@@ -907,9 +907,7 @@ class TaskVersionModelMetricsModel(Base):
     agent: Mapped[str] = mapped_column(String(128), primary_key=True)
     # Older trials carry no model; "" keeps them addressable in the primary key
     # rather than dropping them or inventing a name.
-    model: Mapped[str] = mapped_column(
-        String(256), primary_key=True, server_default=""
-    )
+    model: Mapped[str] = mapped_column(String(256), primary_key=True, server_default="")
     task_id: Mapped[str] = mapped_column(
         String(128), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
     )
@@ -1436,8 +1434,8 @@ sa_event.listen(
         # the view before the historical column ALTERs later in the chain,
         # and Postgres refuses to alter a column a view depends on. The
         # chain creates the view itself at analysisspend01.
-        callable_=lambda ddl, target, bind, **kw: not os.environ.get(
-            "ODDISH_ALEMBIC_RUNNING"
+        callable_=lambda ddl, target, bind, **kw: (
+            not os.environ.get("ODDISH_ALEMBIC_RUNNING")
         )
     ),
 )
@@ -1758,7 +1756,7 @@ class WorkerJobModel(TimestampedMixin, Base):
         String(64), nullable=False, server_default=text("'default'")
     )
 
-    # Credential/capacity routing lane. Only ``ec2_trial`` workers receive EC2
+    # Credential/capacity routing lane. Provider lanes receive only their own
     # control + SSH material; every other job remains on the secret-free lane.
     execution_lane: Mapped[str] = mapped_column(
         String(32), nullable=False, server_default=text("'default'")
@@ -1842,7 +1840,7 @@ class WorkerJobModel(TimestampedMixin, Base):
 
     __table_args__ = (
         CheckConstraint(
-            "execution_lane IN ('default', 'ec2_trial')",
+            "execution_lane IN ('default', 'ec2_trial', 'thunder_trial')",
             name="ck_worker_jobs_execution_lane",
         ),
         Index(
@@ -1903,6 +1901,15 @@ class WorkerJobModel(TimestampedMixin, Base):
     )
     provider: Mapped[str] = mapped_column(Text, nullable=True)
     external_id: Mapped[str] = mapped_column(Text, nullable=True)
+    # Durable provider-handoff provenance. A pending teardown makes the row
+    # undispatchable until cleanup confirms the source sandbox is gone.
+    reroute_from_environment: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
+    )
+    reroute_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reroute_pending_teardown: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
 
     # Per-stage timing for the pre-harbor preamble (design spec §12). The
     # existing claimed_at/started_at cover claim+total-elapsed; these fill the

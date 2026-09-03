@@ -24,6 +24,8 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.db import ACTIVE_WORKER_JOB_KINDS  # noqa: E402
@@ -62,6 +64,8 @@ def test_dispatch_queries_only_count_active_worker_job_kinds(monkeypatch):
     assert len(pool.calls) == 3
     assert all("kind::text = ANY" in sql for sql, _args in pool.calls)
     assert all(args[-1] == active_kinds for _sql, args in pool.calls)
+    assert "NOT reroute_pending_teardown" in pool.calls[0][0]
+    assert "NOT reroute_pending_teardown" in pool.calls[1][0]
 
 
 def _limits_for(queued_by_org_queue: dict, default: int = 32) -> dict[str, int]:
@@ -251,6 +255,50 @@ def test_lane_capacity_is_shared_across_queues_and_orgs():
     assert plan[0][2] == "ec2_trial"
 
 
+def test_thunder_capacity_sixteen_is_global_across_models_and_queues():
+    queued_by_org_queue = {
+        ("org-a", "model-a", _D, "thunder_trial"): 100,
+        ("org-b", "model-b", _D, "thunder_trial"): 100,
+        ("org-c", "model-c", "harbor-next", "thunder_trial"): 100,
+    }
+    common = {
+        "queued_by_org_queue": queued_by_org_queue,
+        "running_by_queue": {},
+        "concurrency_limits": _limits_for(queued_by_org_queue),
+        "max_workers": 100,
+        "capacity_limits_by_lane": {"thunder_trial": 16},
+    }
+
+    one_slot = build_spawn_plan(**common, held_by_lane={"thunder_trial": 15})
+    exhausted = build_spawn_plan(**common, held_by_lane={"thunder_trial": 16})
+
+    assert len(one_slot) == 1
+    assert one_slot[0][2] == "thunder_trial"
+    assert exhausted == []
+
+
+def test_thunder_running_count_and_held_leases_are_not_double_counted():
+    queued_by_org_queue = {
+        ("org-a", "model-a", _D, "thunder_trial"): 100,
+        ("org-b", "model-b", _D, "thunder_trial"): 100,
+    }
+    plan = build_spawn_plan(
+        queued_by_org_queue=queued_by_org_queue,
+        running_by_queue={
+            ("model-a", _D, "thunder_trial"): 10,
+            ("model-b", _D, "thunder_trial"): 2,
+        },
+        concurrency_limits=_limits_for(queued_by_org_queue),
+        max_workers=100,
+        capacity_limits_by_lane={"thunder_trial": 16},
+        held_by_lane={"thunder_trial": 12},
+    )
+
+    # Each running job owns one of the twelve held leases. Capacity accounting
+    # uses max(running, held), not their sum, leaving exactly four slots.
+    assert len(plan) == 4
+
+
 def test_plan_never_exceeds_total_demand():
     queued_by_org_queue = {
         ("org-a", "m1", _D, "default"): 3,
@@ -400,6 +448,8 @@ _DEFAULT_FN = object()
 _VARIANT_FN = object()
 _EC2_FN = object()
 _EC2_VARIANT_FN = object()
+_THUNDER_FN = object()
+_THUNDER_VARIANT_FN = object()
 
 
 def test_default_and_ephemeral_route_to_the_base_function():
@@ -467,6 +517,43 @@ def test_ec2_blessed_variant_stays_in_ec2_credential_topology():
     )
     assert fn is _EC2_VARIANT_FN
     assert kwargs["execution_lane"] == "ec2_trial"
+
+
+def test_thunder_lane_routes_only_to_thunder_credential_function():
+    fn, kwargs = select_job_function(
+        ("m1", "default", "thunder_trial"),
+        default_fn=_DEFAULT_FN,
+        thunder_fn=_THUNDER_FN,
+        variant_fns={},
+        thunder_variant_fns={},
+    )
+    assert fn is _THUNDER_FN
+    assert kwargs == {
+        "queue_key": "m1",
+        "harbor_variant_id": "default",
+        "execution_lane": "thunder_trial",
+    }
+
+
+def test_thunder_lane_never_falls_back_to_generic_function():
+    with pytest.raises(RuntimeError, match="no Thunder worker Function"):
+        select_job_function(
+            ("m1", "default", "thunder_trial"),
+            default_fn=_DEFAULT_FN,
+            variant_fns={},
+        )
+
+
+def test_thunder_blessed_variant_stays_in_thunder_credential_topology():
+    fn, kwargs = select_job_function(
+        ("m1", "harbor-next", "thunder_trial"),
+        default_fn=_DEFAULT_FN,
+        thunder_fn=_THUNDER_FN,
+        variant_fns={"harbor-next": _VARIANT_FN},
+        thunder_variant_fns={"harbor-next": _THUNDER_VARIANT_FN},
+    )
+    assert fn is _THUNDER_VARIANT_FN
+    assert kwargs["execution_lane"] == "thunder_trial"
 
 
 def test_full_lane_keys_are_preserved_by_spawn_plan():

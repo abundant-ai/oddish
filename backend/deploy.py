@@ -15,6 +15,7 @@ from modal_app import (
 
 # Import modules for side-effect registration of Modal functions.
 import endpoints  # noqa: F401
+import thunder_readiness  # noqa: F401
 
 if ENABLE_BACKGROUND_WORKERS:
     import worker  # noqa: F401
