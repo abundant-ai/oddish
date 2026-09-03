@@ -376,6 +376,7 @@ def _is_model_setup_failure_without_work(outcome: HarborOutcome) -> bool:
     from oddish.workers.queue.provider_failures import (
         is_permanent_model_setup_exception,
         is_permanent_provider_failure,
+        trial_did_real_agent_work,
     )
 
     if not (
@@ -383,14 +384,12 @@ def _is_model_setup_failure_without_work(outcome: HarborOutcome) -> bool:
         or is_permanent_provider_failure(outcome.error)
     ):
         return False
-    tokens = (outcome.input_tokens or 0) + (outcome.output_tokens or 0)
-    if tokens > 0:
-        return False
-    if outcome.has_trajectory:
-        return False
-    if outcome.total_steps:
-        return False
-    return True
+    return not trial_did_real_agent_work(
+        input_tokens=outcome.input_tokens,
+        output_tokens=outcome.output_tokens,
+        has_trajectory=outcome.has_trajectory,
+        total_steps=outcome.total_steps,
+    )
 
 
 def _expects_no_reward(trial: object) -> bool:

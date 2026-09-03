@@ -51,7 +51,7 @@ def _resolve_sweep_config_model(config) -> None:
         config.model = resolved
 
     provider = settings.get_provider_for_trial(config.agent, config.model)
-    locked = PROVIDER_LOCKED_AGENTS.get(config.agent)
+    locked = PROVIDER_LOCKED_AGENTS.get((config.agent or "").strip().lower())
     if locked and provider and provider != locked:
         raise HTTPException(
             status_code=422,

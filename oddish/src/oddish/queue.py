@@ -1509,6 +1509,15 @@ async def qa_eligible_trial_ids(
     )
 
     exception_type = TrialModel.result["harbor_exception"]["exception_type"].astext
+    did_real_work = or_(
+        (
+            func.coalesce(TrialModel.input_tokens, 0)
+            + func.coalesce(TrialModel.output_tokens, 0)
+        )
+        > 0,
+        TrialModel.has_trajectory.is_(True),
+        func.coalesce(TrialModel.total_steps, 0) > 0,
+    )
     conditions = [
         TrialModel.task_id == task_id,
         TrialModel.kind == AGENT_TRIAL_KIND,
@@ -1521,6 +1530,7 @@ async def qa_eligible_trial_ids(
         or_(
             exception_type.is_(None),
             exception_type.notin_(tuple(PERMANENT_MODEL_SETUP_EXCEPTION_TYPES)),
+            did_real_work,
         ),
     ]
     if task_version_id is not None:

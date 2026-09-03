@@ -24,6 +24,7 @@ from oddish.schemas import AgentModelPair, TaskSweepSubmission  # noqa: E402
 from oddish.workers.queue.provider_failures import (  # noqa: E402
     is_permanent_model_setup_exception,
     is_permanent_provider_failure,
+    trial_did_real_agent_work,
 )
 
 
@@ -177,6 +178,24 @@ def test_list_curated_models_agent_filter_hides_incompatible(monkeypatch):
     assert list_curated_models(agent="grok-build") == []
 
 
+def test_validate_sweep_locked_agent_normalizes_case(monkeypatch):
+    _settings(monkeypatch)
+    submission = TaskSweepSubmission(
+        task_id="task-1",
+        configs=[
+            AgentModelPair(
+                agent=" Grok-Build ",
+                model="fireworks/deepseek-v4-flash",
+                n_trials=1,
+            )
+        ],
+    )
+    with pytest.raises(HTTPException) as exc:
+        validate_sweep_submission(submission)
+    assert exc.value.status_code == 422
+    assert "locked to provider 'xai'" in str(exc.value.detail)
+
+
 def test_permanent_model_setup_exception_types():
     assert is_permanent_model_setup_exception("NotFoundError")
     assert is_permanent_model_setup_exception("ModelNotFoundError")
@@ -186,3 +205,36 @@ def test_permanent_model_setup_exception_types():
 def test_permanent_provider_regex_does_not_match_generic_unauthorized():
     assert is_permanent_provider_failure("unauthorized access to path") is False
     assert is_permanent_provider_failure("AgentAuthenticationError: nope") is True
+
+
+def test_setup_failure_without_work_is_not_real_eval():
+    assert (
+        trial_did_real_agent_work(
+            input_tokens=None,
+            output_tokens=None,
+            has_trajectory=False,
+            total_steps=None,
+        )
+        is False
+    )
+
+
+def test_setup_exception_after_real_work_stays_visible():
+    assert (
+        trial_did_real_agent_work(
+            input_tokens=12,
+            output_tokens=0,
+            has_trajectory=False,
+            total_steps=None,
+        )
+        is True
+    )
+    assert (
+        trial_did_real_agent_work(
+            input_tokens=None,
+            output_tokens=None,
+            has_trajectory=True,
+            total_steps=None,
+        )
+        is True
+    )
