@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 import time
 from dataclasses import dataclass
+
 
 import httpx
 from fastapi import HTTPException, status
@@ -24,6 +27,9 @@ from oddish.timing import RequestTimedAsyncClient
 
 
 from auth.types import AuthMethod
+
+logger = logging.getLogger(__name__)
+
 
 # =============================================================================
 # Clerk Configuration
@@ -113,7 +119,12 @@ def invalidate_cached_clerk_auth(clerk_user_id: str) -> int:
 
 
 async def get_clerk_jwks() -> dict:
-    """Fetch and cache Clerk JWKS (JSON Web Key Set)."""
+    """Fetch and cache Clerk JWKS (JSON Web Key Set).
+
+    A cold container's first request used to 503 whenever this single fetch
+    hit a transient connect failure, so one transport-level failure is
+    retried once before giving up.
+    """
     global _jwks_cache, _jwks_cache_time
 
     now = time.time()
@@ -129,11 +140,36 @@ async def get_clerk_jwks() -> dict:
     jwks_url = f"https://{CLERK_DOMAIN}/.well-known/jwks.json"
 
     async with RequestTimedAsyncClient() as client:
-        response = await client.get(jwks_url)
+        for attempt in range(2):
+            try:
+                response = await client.get(jwks_url)
+                break
+            except httpx.TransportError:
+                if attempt == 1:
+                    raise
+                await asyncio.sleep(0.2)
         response.raise_for_status()
         _jwks_cache = response.json()
         _jwks_cache_time = now
         return _jwks_cache
+
+
+async def warm_clerk_jwks() -> bool:
+    """Fetch the JWKS ahead of the first request; best-effort, never raises.
+
+    Returns whether the cache is warm afterwards. Unconfigured (no
+    ``CLERK_DOMAIN``) deployments skip silently.
+    """
+    if not CLERK_DOMAIN:
+        return False
+    try:
+        await get_clerk_jwks()
+    except Exception:
+        logger.warning(
+            "Clerk JWKS warm-up failed; first request will retry", exc_info=True
+        )
+        return False
+    return True
 
 
 async def verify_clerk_jwt(token: str) -> dict:

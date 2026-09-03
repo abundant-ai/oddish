@@ -15,8 +15,10 @@ from observability import (
     instrument_fastapi,
     span as _otel_span,
 )
+from auth.verification import warm_clerk_jwks
 from oddish.config import settings
 from oddish.db import close_database_connections
+
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +178,9 @@ async def lifespan(_api: FastAPI):
         Path(settings.harbor_jobs_dir).mkdir(parents=True, exist_ok=True)
         await _assert_quota_schema_or_force_off()
         role_defaults_task = asyncio.create_task(_apply_role_defaults_bg())
+        # Verifying the first Clerk token needs the JWKS; fetch it now so a
+        # cold container's first request does not pay (or fail on) that hop.
+        jwks_warmup_task = asyncio.create_task(warm_clerk_jwks())
 
         # ODDISH_LOCAL_MODE executes trials inside this API process instead of
         # importing worker.functions, where hosted workers normally register
@@ -203,11 +208,12 @@ async def lifespan(_api: FastAPI):
     yield
 
     with _otel_span("app.shutdown"):
-        role_defaults_task.cancel()
-        try:
-            await role_defaults_task
-        except (asyncio.CancelledError, Exception):
-            pass
+        for startup_task in (role_defaults_task, jwks_warmup_task):
+            startup_task.cancel()
+            try:
+                await startup_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
         if local_worker_task is not None:
             local_worker_task.cancel()

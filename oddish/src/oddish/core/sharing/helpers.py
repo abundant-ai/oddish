@@ -359,6 +359,7 @@ async def list_task_files_s3(
     task_s3_prefix: str | None,
     version: int | None = None,
     inline: bool = True,
+    expanded: bool | None = None,
 ) -> dict:
     """List files in a task's S3 directory."""
     storage = get_storage_client()
@@ -374,6 +375,7 @@ async def list_task_files_s3(
             version=version,
             task_s3_prefix=task_s3_prefix,
             inline=inline,
+            expanded=expanded,
         )
     except HTTPException:
         raise
@@ -390,6 +392,7 @@ async def stream_task_files_s3(
     presign: bool,
     task_s3_prefix: str | None,
     version: int | None = None,
+    expanded: bool | None = None,
 ):
     """Stream a task file listing chunk-by-chunk (tree first, then contents).
 
@@ -408,6 +411,7 @@ async def stream_task_files_s3(
         presign=presign,
         version=version,
         task_s3_prefix=task_s3_prefix,
+        expanded=expanded,
     )
     started = False
     try:
@@ -460,6 +464,7 @@ async def get_task_file_content_s3(
     task_s3_prefix: str | None,
     version: int | None = None,
     max_bytes: int | None = None,
+    expanded: bool | None = None,
 ) -> dict:
     """Get content of a specific task file from S3."""
     storage = get_storage_client()
@@ -472,6 +477,7 @@ async def get_task_file_content_s3(
             version=version,
             task_s3_prefix=task_s3_prefix,
             max_bytes=max_bytes,
+            expanded=expanded,
         )
     except HTTPException:
         raise

@@ -37,7 +37,7 @@ def test_tree_only_listing_forwards_inline_and_presign_flags(client):
     async def fake_get_read_session():
         yield object()
 
-    resolve_source = AsyncMock(return_value=(3, "tasks/task-1/v3/"))
+    resolve_source = AsyncMock(return_value=(3, "tasks/task-1/v3/", True))
     list_files = AsyncMock(
         return_value={
             "task_id": "task-1",
@@ -69,6 +69,7 @@ def test_tree_only_listing_forwards_inline_and_presign_flags(client):
         version=3,
         inline=False,
         task_s3_prefix="tasks/task-1/v3/",
+        expanded=True,
     )
 
 
@@ -77,7 +78,7 @@ def test_directory_page_forwards_prefix_limit_and_cursor(client):
     async def fake_get_read_session():
         yield object()
 
-    resolve_source = AsyncMock(return_value=(3, "tasks/task-1/v3/"))
+    resolve_source = AsyncMock(return_value=(3, "tasks/task-1/v3/", True))
     list_files = AsyncMock(
         return_value={
             "task_id": "task-1",
@@ -112,6 +113,7 @@ def test_directory_page_forwards_prefix_limit_and_cursor(client):
         version=3,
         inline=False,
         task_s3_prefix="tasks/task-1/v3/",
+        expanded=True,
     )
 
 
@@ -120,7 +122,7 @@ def test_selected_file_forwards_preview_limit(client):
     async def fake_get_read_session():
         yield object()
 
-    resolve_source = AsyncMock(return_value=(3, "tasks/task-1/v3/"))
+    resolve_source = AsyncMock(return_value=(3, "tasks/task-1/v3/", True))
     get_file = AsyncMock(
         return_value={
             "path": "large.txt",
@@ -148,6 +150,7 @@ def test_selected_file_forwards_preview_limit(client):
         version=3,
         max_bytes=102400,
         task_s3_prefix="tasks/task-1/v3/",
+        expanded=True,
     )
 
 
@@ -177,7 +180,7 @@ def test_selected_file_http_error_handling(
     async def fake_get_read_session():
         yield object()
 
-    resolve_source = AsyncMock(return_value=(3, "tasks/task-1/v3/"))
+    resolve_source = AsyncMock(return_value=(3, "tasks/task-1/v3/", True))
     get_file = AsyncMock(side_effect=HTTPException(storage_status, detail=detail))
 
     with (

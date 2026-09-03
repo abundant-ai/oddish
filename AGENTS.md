@@ -1095,7 +1095,18 @@ Storage defaults:
   in-place replacements use immutable
   `tasks/<task_id>/v<N>-revisions/<token>/.oddish-task.tar.gz` sources selected
   by `task_versions.task_s3_key` (legacy unversioned bundles remain readable)
+- expanded per-file trees: the expand worker mirrors a bundle to
+  `tasks/<task_id>/v<N>-files/` plus a `.oddish-manifest.json` sentinel and
+  then stamps `task_versions.expanded_manifest_key` under the version row's
+  lock; an in-place overwrite clears the stamp in the transaction that switches
+  `task_s3_key`. That stamp is the reader's answer: `resolve_task_file_source`
+  returns it as `expanded`, and the storage layer lists or reads the tree
+  without probing for the manifest (`True`), goes straight to the bundle
+  (`False`), or probes as a fallback (`None`, callers without the row). A read
+  vouched for by the database that still misses a member (oversize skip,
+  mid-flight expansion) falls back to the bundle on the `NoSuchKey`.
 - Harbor job outputs: `/tmp/harbor-jobs`
+
 - Modal workers also check `/mnt/oddish-tasks` before falling back to the S3 download path
 
 EC2 canary procedure:

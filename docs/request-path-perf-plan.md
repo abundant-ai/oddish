@@ -258,37 +258,48 @@ check. +8 / -6.
 `BEGIN;` spans per minute across the API fleet down by at least half; auth
 database share below 0.1.
 
-### Phase 2. Bytes and storage probes (one backend PR)
+### Phase 2. Bytes and storage probes (implemented: `perf/request-path-phase2`)
 
-**2a. `/tasks/{id}` sends the current version only.** Replace
-`selectinload(TaskModel.trials)` plus the `set_committed_value` hack with one
-explicit trial query filtered on `task.current_version_id`, `superseded_by_trial_id
-IS NULL`, and `kind != 'qa_eval'`. Same statement count, a fraction of the bytes
-for tasks with many versions or retries. `get_task_status_trials` stays for the
-callers that pass a different version. +14 / -8, tests +25. A compact column set
-(`load_only`) is a follow-up once the CLI's use of `result` on this route is
-confirmed.
+**2a. `/tasks/{id}` sends the current version only.** `get_task_status_core`
+selects the trials it will show (`task_version_id = current_version_id`,
+`superseded_by_trial_id IS NULL`, `kind <> 'qa_eval'`) in one explicit query
+instead of `selectinload`-ing every version's trials and dropping most of them
+in Python. Same statement count (the budget test still pins 5), a fraction of
+the bytes for tasks that were re-uploaded or retried many times.
+`get_task_status_trials` stays for callers that pivot on another version.
 
-**2b. Storage: ask once.** Serving one task file today does up to six sequential
-storage calls (HEAD archive, HEAD manifest, GET manifest, HEAD expanded key, HEAD
-archive again, GET). Two changes in `oddish/db/storage.py`:
+**2b. Storage: ask the database, not the bucket.** The plan proposed caching the
+"manifest matches archive" answer for 60 s. Reading the expand worker showed
+the answer already lives in the database: `_promote_expansion_if_current`
+stamps `task_versions.expanded_manifest_key` under the version row's lock
+after writing the manifest, and the in-place overwrite clears it in the same
+transaction that switches `task_s3_key`. So `resolve_task_file_source` (which
+every file route already calls) now returns that stamp as `expanded`, and the
+storage layer:
 
-- Cache the "manifest matches archive" answer per `(task_id, version, archive_key)`
-  for 60 s in the shared `TTLCache`; the overwrite path calls
-  `invalidate_task_layout(task_id, version)` locally. The manifest exists to stop
-  a stale expanded tree being served after a re-upload; the cache bounds that
-  window to 60 s on other containers, which the re-upload flow already tolerates
-  for the archive cache.
-- Try the expanded key with a GET and fall back to the archive on 404, instead
-  of a HEAD followed by a GET.
-- `list_objects_all(prefix, max_keys=None)` stops paginating once `max_keys` is
-  reached; `list_trial_files` passes its `limit`.
-- Warm the Clerk JWKS in `app.startup` and retry the fetch once on connect error,
-  so a cold container's first request does not 503.
+- lists or reads the expanded tree without the manifest HEAD + GET when
+  `expanded` is `True`, and without the archive HEAD either;
+- reads a member with one GET and falls back to the archive only on
+  `NoSuchKey` (oversize skips, mid-flight expansions), instead of HEAD then GET;
+  a presigned URL keeps the presence check because it cannot fall back later;
+- skips the expanded probes entirely when `expanded` is `False`;
+- probes exactly as before when the caller has no row (`None`), which is what
+  keeps the existing storage tests valid.
 
-Size: +50 / -25, tests +60. Verify: `/tasks/{id}/files/{path}` and
-`/trials/{id}/trajectory` handler time minus SQL time (the storage share) roughly
-halves.
+No cache, no staleness window, no invalidation hook. Per task-file read on an
+expanded version: HEAD archive, HEAD manifest, GET manifest, HEAD member, GET
+member (five storage round trips, plus another HEAD archive on the archive
+path) become one GET.
+
+Also in this phase: `list_objects_all(prefix, max_keys=)` stops paginating at
+the cap and recursive trial listings pass their `limit` and report
+`truncated`; the Clerk JWKS is fetched at `app.startup` and one transport
+failure on the fetch is retried, so a cold container's first request neither
+waits for nor fails on that hop.
+
+Verify: `/tasks/{id}/files/{path}` handler time minus SQL time (the storage
+share) on expanded versions drops to about one object GET.
+
 
 ### Phase 3. The browser talks to the backend (frontend + CORS, flagged)
 

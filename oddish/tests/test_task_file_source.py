@@ -43,10 +43,18 @@ async def test_task_file_source_selects_exact_authorized_version(session) -> Non
 
     assert await resolve_task_file_source(
         session, task_id=task.id, org_id="org-1", version=None
-    ) == (1, current.task_s3_key)
+    ) == (1, current.task_s3_key, False)
     assert await resolve_task_file_source(
         session, task_id=task.id, org_id="org-1", version=2
-    ) == (2, historical.task_s3_key)
+    ) == (2, historical.task_s3_key, False)
+
+    # The expand worker's stamp is the reader's answer to "is the per-file
+    # tree in sync with this archive?"; an overwrite clears it again.
+    historical.expanded_manifest_key = f"tasks/{task.id}/v2-files/.oddish-manifest.json"
+    await session.flush()
+    assert await resolve_task_file_source(
+        session, task_id=task.id, org_id="org-1", version=2
+    ) == (2, historical.task_s3_key, True)
 
     for org_id, version in [("org-2", None), ("org-1", 3)]:
         with pytest.raises(HTTPException) as exc:

@@ -1766,7 +1766,7 @@ async def list_task_files(
     auth.require_scope(APIKeyScope.READ)
 
     async with get_read_session() as session:
-        version, task_s3_prefix = await resolve_task_file_source(
+        version, task_s3_prefix, expanded = await resolve_task_file_source(
             session,
             task_id=task_id,
             org_id=auth.org_id,
@@ -1784,6 +1784,7 @@ async def list_task_files(
                 presign=presign,
                 version=version,
                 task_s3_prefix=task_s3_prefix,
+                expanded=expanded,
             )
         )
 
@@ -1797,6 +1798,7 @@ async def list_task_files(
         version=version,
         inline=inline,
         task_s3_prefix=task_s3_prefix,
+        expanded=expanded,
     )
 
 
@@ -1821,7 +1823,7 @@ async def get_task_file_content(
     auth.require_scope(APIKeyScope.READ)
 
     async with get_read_session() as session:
-        version, task_s3_prefix = await resolve_task_file_source(
+        version, task_s3_prefix, expanded = await resolve_task_file_source(
             session,
             task_id=task_id,
             org_id=auth.org_id,
@@ -1836,6 +1838,7 @@ async def get_task_file_content(
             version=version,
             max_bytes=max_bytes,
             task_s3_prefix=task_s3_prefix,
+            expanded=expanded,
         )
     except HTTPException as exc:
         if exc.status_code != status.HTTP_404_NOT_FOUND:

@@ -13,8 +13,18 @@ async def resolve_task_file_source(
     task_id: str,
     version: int | None,
     org_id: str | None = None,
-) -> tuple[int | None, str | None]:
-    """Authorize a task and select the exact version source used for file reads."""
+) -> tuple[int | None, str | None, bool | None]:
+    """Authorize a task and select the exact version source used for file reads.
+
+    Returns ``(version, task_s3_prefix, expanded)``. ``expanded`` is the
+    database's answer to "was the per-file tree under ``v{N}-files/`` built
+    from the archive this row points at?": the expand worker stamps
+    ``expanded_manifest_key`` after promoting a tree, and an in-place
+    overwrite clears it in the same transaction that switches the archive, so
+    readers can trust it without probing storage for the manifest. ``None``
+    when there is no version row to ask.
+    """
+
     version_join = (
         TaskVersionModel.id == TaskModel.current_version_id
         if version is None
@@ -26,8 +36,10 @@ async def resolve_task_file_source(
     query = select(
         TaskVersionModel.version,
         TaskVersionModel.task_s3_key.label("version_s3_key"),
+        TaskVersionModel.expanded_manifest_key,
         TaskModel.task_s3_key.label("legacy_task_s3_key"),
     ).select_from(TaskModel)
+
     query = (
         query.outerjoin(TaskVersionModel, version_join)
         if version is None
@@ -41,4 +53,5 @@ async def resolve_task_file_source(
     if row is None:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
     prefix = row.version_s3_key if row.version is not None else row.legacy_task_s3_key
-    return row.version, str(prefix) if prefix else None
+    expanded = bool(row.expanded_manifest_key) if row.version is not None else None
+    return row.version, str(prefix) if prefix else None, expanded
