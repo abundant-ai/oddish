@@ -685,11 +685,20 @@ def list_curated_models(*, agent: str | None = None) -> list[dict[str, object]]:
 
 
 def _curated_bare_candidates(bare: str) -> list[tuple[str, str]]:
-    """Provider/canonical pairs for a bare curated spelling (Fireworks first)."""
+    """Provider/canonical pairs for a bare curated spelling (Fireworks first).
+
+    Fireworks is an auto-pin target only for DeepSeek-family misses
+    (``deepseek-v4-flash``). Bare GLM / MiniMax / Kimi ids keep their native
+    z.ai / MiniMax / Moonshot routes; those need an explicit ``fireworks/``
+    prefix to switch onto Fireworks.
+    """
     low = bare.strip().lower()
     out: list[tuple[str, str]] = []
-    if low in _FIREWORKS_SHORT_MODEL_IDS:
-        out.append((FIREWORKS_PROVIDER, _FIREWORKS_SHORT_MODEL_IDS[low]))
+    fireworks_canonical = _FIREWORKS_SHORT_MODEL_IDS.get(low)
+    if fireworks_canonical and (
+        low in _DEEPSEEK_MODEL_ALIASES or low.startswith("deepseek-")
+    ):
+        out.append((FIREWORKS_PROVIDER, fireworks_canonical))
     if low in _DEEPSEEK_MODEL_ALIASES:
         out.append((DEEPSEEK_PROVIDER, _DEEPSEEK_MODEL_ALIASES[low]))
     return out

@@ -1504,20 +1504,9 @@ async def qa_eligible_trial_ids(
     NotFound / auth with no real agent work) so QA does not run on tasks that
     never actually executed.
     """
-    from oddish.workers.queue.provider_failures import (
-        PERMANENT_MODEL_SETUP_EXCEPTION_TYPES,
-    )
+    from oddish.workers.queue.provider_failures import is_setup_failure_without_work
 
     exception_type = TrialModel.result["harbor_exception"]["exception_type"].astext
-    did_real_work = or_(
-        (
-            func.coalesce(TrialModel.input_tokens, 0)
-            + func.coalesce(TrialModel.output_tokens, 0)
-        )
-        > 0,
-        TrialModel.has_trajectory.is_(True),
-        func.coalesce(TrialModel.total_steps, 0) > 0,
-    )
     conditions = [
         TrialModel.task_id == task_id,
         TrialModel.kind == AGENT_TRIAL_KIND,
@@ -1527,19 +1516,33 @@ async def qa_eligible_trial_ids(
         TrialModel.status != TrialStatus.SKIPPED,
         func.coalesce(TrialModel.error_message, "").notlike(f"{GATE_SKIP_PREFIX}%"),
         not_(baseline_agent_clause(TrialModel.agent)),
-        or_(
-            exception_type.is_(None),
-            exception_type.notin_(tuple(PERMANENT_MODEL_SETUP_EXCEPTION_TYPES)),
-            did_real_work,
-        ),
     ]
     if task_version_id is not None:
         conditions.append(TrialModel.task_version_id == task_version_id)
+    rows = (
+        await session.execute(
+            select(
+                TrialModel.id,
+                exception_type,
+                TrialModel.error_message,
+                TrialModel.input_tokens,
+                TrialModel.output_tokens,
+                TrialModel.has_trajectory,
+                TrialModel.total_steps,
+            ).where(and_(*conditions))
+        )
+    ).all()
     return [
         str(tid)
-        for tid in (
-            await session.scalars(select(TrialModel.id).where(and_(*conditions)))
-        ).all()
+        for tid, exc_type, error, in_tok, out_tok, has_traj, steps in rows
+        if not is_setup_failure_without_work(
+            exception_type=exc_type,
+            error=error,
+            input_tokens=in_tok,
+            output_tokens=out_tok,
+            has_trajectory=has_traj,
+            total_steps=steps,
+        )
     ]
 
 

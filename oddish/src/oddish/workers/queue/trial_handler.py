@@ -373,18 +373,11 @@ def _is_non_retryable_outcome(trial: object, outcome: HarborOutcome | None) -> b
 
 def _is_model_setup_failure_without_work(outcome: HarborOutcome) -> bool:
     """Provider NotFound/auth with no real agent work — never a scored SUCCESS."""
-    from oddish.workers.queue.provider_failures import (
-        is_permanent_model_setup_exception,
-        is_permanent_provider_failure,
-        trial_did_real_agent_work,
-    )
+    from oddish.workers.queue.provider_failures import is_setup_failure_without_work
 
-    if not (
-        is_permanent_model_setup_exception(outcome.exception_type)
-        or is_permanent_provider_failure(outcome.error)
-    ):
-        return False
-    return not trial_did_real_agent_work(
+    return is_setup_failure_without_work(
+        exception_type=outcome.exception_type,
+        error=outcome.error,
         input_tokens=outcome.input_tokens,
         output_tokens=outcome.output_tokens,
         has_trajectory=outcome.has_trajectory,

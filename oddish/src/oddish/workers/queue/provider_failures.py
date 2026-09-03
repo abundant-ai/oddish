@@ -42,6 +42,29 @@ def is_permanent_model_setup_exception(exception_type: str | None) -> bool:
     return exception_type in PERMANENT_MODEL_SETUP_EXCEPTION_TYPES
 
 
+def is_setup_failure_without_work(
+    *,
+    exception_type: str | None,
+    error: str | None,
+    input_tokens: int | None,
+    output_tokens: int | None,
+    has_trajectory: bool | None,
+    total_steps: int | None,
+) -> bool:
+    """True for provider NotFound/auth that never produced real agent work."""
+    if not (
+        is_permanent_model_setup_exception(exception_type)
+        or is_permanent_provider_failure(error)
+    ):
+        return False
+    return not trial_did_real_agent_work(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        has_trajectory=has_trajectory,
+        total_steps=total_steps,
+    )
+
+
 def trial_did_real_agent_work(
     *,
     input_tokens: int | None,

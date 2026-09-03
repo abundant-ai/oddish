@@ -24,6 +24,7 @@ from oddish.schemas import AgentModelPair, TaskSweepSubmission  # noqa: E402
 from oddish.workers.queue.provider_failures import (  # noqa: E402
     is_permanent_model_setup_exception,
     is_permanent_provider_failure,
+    is_setup_failure_without_work,
     trial_did_real_agent_work,
 )
 
@@ -82,6 +83,14 @@ def test_bare_deepseek_flash_auto_selects_fireworks(monkeypatch):
     assert resolved == "fireworks/deepseek-v4-flash-0731"
     assert reason is not None
     assert "auto-selected" in reason
+
+
+def test_bare_glm_minimax_kimi_do_not_auto_pin_fireworks(monkeypatch):
+    _settings(monkeypatch)
+    for bare in ("glm-5.2", "minimax-m3", "kimi-k2.7-code"):
+        resolved, reason = auto_resolve_curated_model("mini-swe-agent", bare)
+        assert resolved == bare
+        assert reason is None
 
 
 def test_validate_sweep_auto_pins_bare_id(monkeypatch):
@@ -237,4 +246,29 @@ def test_setup_exception_after_real_work_stays_visible():
             total_steps=None,
         )
         is True
+    )
+
+
+def test_message_only_setup_failure_without_work():
+    assert (
+        is_setup_failure_without_work(
+            exception_type=None,
+            error="NotFoundError: Model not found",
+            input_tokens=None,
+            output_tokens=None,
+            has_trajectory=False,
+            total_steps=None,
+        )
+        is True
+    )
+    assert (
+        is_setup_failure_without_work(
+            exception_type=None,
+            error="NotFoundError: Model not found",
+            input_tokens=8,
+            output_tokens=None,
+            has_trajectory=False,
+            total_steps=None,
+        )
+        is False
     )
