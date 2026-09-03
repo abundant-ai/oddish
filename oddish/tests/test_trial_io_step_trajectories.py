@@ -187,3 +187,17 @@ def test_single_step_layout_unchanged():
         trial_io._read_trial_trajectory_from_s3(_trial(), _RootStorage(), layout)
     )
     assert trajectory == single
+
+
+def test_metrics_merge_tolerates_non_numeric_values():
+    # One step reports null/str where another reports numbers (Bugbot finding):
+    # the merge must sum what it can rather than raise and drop the trajectory.
+    merged = trial_io._sum_numeric_metrics(
+        [
+            {"total_cost_usd": None, "runtime": "fast", "extra": {"cache": None}},
+            {"total_cost_usd": 5.0, "runtime": 2, "extra": {"cache": 7}},
+        ]
+    )
+    assert merged["total_cost_usd"] == 5.0
+    assert merged["runtime"] == 2
+    assert merged["extra"]["cache"] == 7

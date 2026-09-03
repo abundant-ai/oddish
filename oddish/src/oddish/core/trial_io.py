@@ -585,7 +585,12 @@ def _sum_numeric_metrics(dicts: list[dict]) -> dict:
             if isinstance(value, bool):
                 continue
             if isinstance(value, (int, float)):
-                merged[key] = merged.get(key, 0) + value
+                prev = merged.get(key)
+                if not isinstance(prev, (int, float)) or isinstance(prev, bool):
+                    # A step may carry null/str where another has a number;
+                    # never let that TypeError drop the whole trajectory.
+                    prev = 0
+                merged[key] = prev + value
             elif isinstance(value, dict):
                 merged[key] = _sum_numeric_metrics(
                     [v for v in (merged.get(key), value) if isinstance(v, dict)]
