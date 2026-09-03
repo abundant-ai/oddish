@@ -6,6 +6,8 @@ from typing import Any, Awaitable, Callable
 from sqlalchemy import select
 
 from oddish.analyze import Classification, TrialClassification
+from oddish.analyze.models import TaskVerdictModel
+from oddish.core.baseline_gate import GateOutcome, evaluate_baseline_gate
 from oddish.core.verdict_state import (
     complete_verdict,
     complete_verdict_without_result,
@@ -22,6 +24,50 @@ from oddish.db import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def apply_deterministic_verdict_rules(
+    verdict: TaskVerdictModel | None,
+    *,
+    must_fix_ids: list[str],
+    baseline_evidence: list[dict],
+) -> TaskVerdictModel | None:
+    """Apply decisive server-owned evidence without asking the model to count."""
+    if verdict is not None and not verdict.is_good:
+        return verdict
+    if baseline_evidence:
+        outcome, _ = evaluate_baseline_gate(
+            (item.get("agent"), item.get("reward")) for item in baseline_evidence
+        )
+        if outcome is GateOutcome.FAULTY:
+            return TaskVerdictModel(
+                verdict="reject",
+                confidence="high",
+                primary_issue="CRITICAL: The deterministic baseline validation failed.",
+                recommendations=[
+                    "Fix the nop/oracle baseline result before accepting the task."
+                ],
+                reasoning=(
+                    "An oracle must pass and a nop agent must fail. The recorded "
+                    "baseline results do not satisfy that rule."
+                ),
+            )
+    if not must_fix_ids:
+        return verdict
+    count = len(must_fix_ids)
+    noun = "finding" if count == 1 else "findings"
+    return TaskVerdictModel(
+        verdict="reject",
+        confidence="high",
+        primary_issue=f"The source audit reported {count} must-fix {noun}.",
+        recommendations=[
+            "Resolve every `must_fix` source-audit finding before accepting the task."
+        ],
+        reasoning=(
+            "A `must_fix` source-audit finding can decide a trial, so successful "
+            "solver runs cannot make the task acceptable."
+        ),
+    )
 
 
 def build_verdict_payload(
@@ -100,11 +146,11 @@ async def complete_task_without_verdict(
     *,
     should_store: Callable[[Any], Awaitable[bool]] | None = None,
 ) -> str | None:
-    """Finish a QA pass that was not asked for a verdict (too few trials).
+    """Finish a classification-only QA pass without a current verdict.
 
     Per-trial analysis is already stored; this only clears the in-flight
-    verdict state and completes the task. A previously published verdict is
-    restored rather than dropped.
+    verdict state and completes the task. Prior QA artifacts remain in trial
+    storage, but their verdict must not describe the newly classified set.
     """
     async with get_session() as session:
         task = await session.get(TaskModel, task_id, with_for_update=True)
@@ -151,6 +197,7 @@ async def sync_pre_trial_to_task_version(
     payload: dict | None,
     error: BaseException | str | None,
     expected_content_hash: str | None = None,
+    expected_audit_trial_id: str | None = None,
 ) -> str | None:
     """Write the pre-trial columns on the audited task version. Unlike
     :func:`sync_verdict_to_task`, this never completes the task and never
@@ -174,6 +221,30 @@ async def sync_pre_trial_to_task_version(
         )
         if version is None:
             return None
+        if expected_audit_trial_id is not None:
+            from oddish.core.endpoints._common import USER_CANCELLED_MESSAGE
+
+            if (
+                version.pre_trial_status == VerdictStatus.FAILED
+                and version.pre_trial_error == USER_CANCELLED_MESSAGE
+            ):
+                return None
+            imported = await session.get(TrialModel, expected_audit_trial_id)
+            if imported is None or imported.harbor_stage == "cancelled":
+                return None
+            latest = await session.scalar(
+                select(TrialModel.id)
+                .where(
+                    TrialModel.task_version_id == task_version_id,
+                    TrialModel.kind == "audit",
+                    TrialModel.deleted_at.is_(None),
+                    TrialModel.superseded_by_trial_id.is_(None),
+                )
+                .order_by(TrialModel.created_at.desc(), TrialModel.id.desc())
+                .limit(1)
+            )
+            if latest != expected_audit_trial_id:
+                return None
         if (
             expected_content_hash is not None
             and version.content_hash is not None
@@ -186,6 +257,15 @@ async def sync_pre_trial_to_task_version(
             )
             return None
 
+        if (
+            error is None
+            and expected_audit_trial_id is not None
+            and version.pre_trial_status == VerdictStatus.SUCCESS
+            and (version.pre_trial or {}).get("block_id") == expected_audit_trial_id
+        ):
+            # Re-importing the same immutable audit must not change its
+            # fingerprint or erase later exploitation annotations.
+            return VerdictStatus.SUCCESS.value
         if error is None:
             version.pre_trial = payload
             version.pre_trial_status = VerdictStatus.SUCCESS

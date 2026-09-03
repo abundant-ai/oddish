@@ -1567,8 +1567,8 @@ async def rerun_pre_trial_audit(
 ) -> dict:
     """Queue the pre-trial audit for the task's current version.
 
-    Runs only the audit. Does not classify trials and does not synthesize
-    the verdict.
+    Withdraws the old verdict. After the audit and existing runs finish,
+    task QA uses the replacement findings to reconcile classifications and decision.
     """
     auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
 

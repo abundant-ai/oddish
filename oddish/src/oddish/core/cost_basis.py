@@ -61,17 +61,18 @@ def is_combine_copy(trial) -> bool:
     return bool(key) and key.startswith(COMBINE_IDEMPOTENCY_PREFIX)
 
 
-def not_combine_copy_filter():
+def not_combine_copy_filter(trial=TrialModel):
     """Drop experiment-combine copies (idempotency_key ``combine:%``).
 
     A combine copy re-materializes an existing trial's result under another
     experiment, so counting it double-counts the same execution. Shared by
     :func:`first_party_spend_filter` and the task browser so both count the
-    same execution population the task-detail view shows.
+    same execution population the task-detail view shows. ``trial`` is the
+    ``TrialModel`` entity (or alias) the caller selects from.
     """
     return or_(
-        TrialModel.idempotency_key.is_(None),
-        TrialModel.idempotency_key.notlike(f"{COMBINE_IDEMPOTENCY_PREFIX}%"),
+        trial.idempotency_key.is_(None),
+        trial.idempotency_key.notlike(f"{COMBINE_IDEMPOTENCY_PREFIX}%"),
     )
 
 
