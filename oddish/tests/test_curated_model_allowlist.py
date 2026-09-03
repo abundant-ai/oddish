@@ -25,53 +25,22 @@ from oddish.workers.queue.provider_failures import (  # noqa: E402
     is_permanent_model_setup_exception,
     is_permanent_provider_failure,
     is_setup_failure_without_work,
-    trial_did_real_agent_work,
 )
 
 
 def _settings(monkeypatch, **kwargs) -> Settings:
     monkeypatch.delenv("ODDISH_MODEL_CONCURRENCY_OVERRIDES", raising=False)
     monkeypatch.delenv("ODDISH_MODEL_CATALOG_OVERLAY", raising=False)
-    monkeypatch.delenv("ODDISH_MODEL_CATALOG_OVERLAY_PATH", raising=False)
     monkeypatch.delenv("ODDISH_ENFORCE_MODEL_CREDENTIALS", raising=False)
     monkeypatch.delenv("FIREWORKS_API_KEY", raising=False)
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     return Settings(_env_file=None, **kwargs)
 
 
-def test_unknown_fireworks_model_rejected_when_strict(monkeypatch):
-    _settings(monkeypatch)
-    with pytest.raises(ValueError, match="Unknown fireworks model"):
-        to_fireworks_model_id(
-            "fireworks/this-is-not-a-real-model", allow_unknown=False
-        )
-
-
-def test_unknown_fireworks_suggests_close_id(monkeypatch):
-    _settings(monkeypatch)
-    with pytest.raises(ValueError, match="Did you mean 'fireworks/glm-5p2'"):
-        to_fireworks_model_id("fireworks/glm-5p3", allow_unknown=False)
-
-
-def test_unknown_fireworks_model_allowed_with_flag(monkeypatch):
-    _settings(monkeypatch)
-    assert (
-        to_fireworks_model_id(
-            "fireworks/this-is-not-a-real-model", allow_unknown=True
-        )
-        == "fireworks/this-is-not-a-real-model"
-    )
-
-
-def test_fireworks_alias_suggests_serverless_id(monkeypatch):
-    settings = _settings(monkeypatch)
-    assert (
-        settings.normalize_trial_model(
-            "mini-swe-agent",
-            "fireworks/deepseek-v4-flash",
-            allow_unknown=False,
-        )
-        == "fireworks/deepseek-v4-flash-0731"
+def _sweep(agent: str, model: str, **kwargs) -> TaskSweepSubmission:
+    return TaskSweepSubmission(
+        task_id="task-1",
+        configs=[AgentModelPair(agent=agent, model=model, n_trials=1, **kwargs)],
     )
 
 
@@ -95,16 +64,7 @@ def test_dsh_bare_deepseek_flash_stays_on_deepseek(monkeypatch):
 
 def test_validate_sweep_dsh_rejects_fireworks_prefix(monkeypatch):
     _settings(monkeypatch)
-    submission = TaskSweepSubmission(
-        task_id="task-1",
-        configs=[
-            AgentModelPair(
-                agent="dsh",
-                model="fireworks/deepseek-v4-flash",
-                n_trials=1,
-            )
-        ],
-    )
+    submission = _sweep("dsh", "fireworks/deepseek-v4-flash")
     with pytest.raises(HTTPException) as exc:
         validate_sweep_submission(submission)
     assert exc.value.status_code == 422
@@ -121,50 +81,34 @@ def test_bare_glm_minimax_kimi_do_not_auto_pin_fireworks(monkeypatch):
 
 def test_validate_sweep_auto_pins_bare_id(monkeypatch):
     _settings(monkeypatch)
-    submission = TaskSweepSubmission(
-        task_id="task-1",
-        configs=[
-            AgentModelPair(
-                agent="mini-swe-agent",
-                model="deepseek-v4-flash",
-                n_trials=1,
-            )
-        ],
-    )
+    submission = _sweep("mini-swe-agent", "deepseek-v4-flash")
     validate_sweep_submission(submission)
     assert submission.configs[0].model == "fireworks/deepseek-v4-flash-0731"
 
 
 def test_validate_sweep_rejects_unknown_fireworks(monkeypatch):
     _settings(monkeypatch)
-    submission = TaskSweepSubmission(
-        task_id="task-1",
-        configs=[
-            AgentModelPair(
-                agent="mini-swe-agent",
-                model="fireworks/this-is-not-a-real-model",
-                n_trials=1,
-            )
-        ],
-    )
+    submission = _sweep("mini-swe-agent", "fireworks/this-is-not-a-real-model")
     with pytest.raises(HTTPException) as exc:
         validate_sweep_submission(submission)
     assert exc.value.status_code == 422
     assert "Unknown fireworks model" in str(exc.value.detail)
 
 
+def test_validate_sweep_allows_unknown_with_flag(monkeypatch):
+    _settings(monkeypatch)
+    submission = _sweep(
+        "mini-swe-agent",
+        "fireworks/this-is-not-a-real-model",
+        allow_unknown_model=True,
+    )
+    validate_sweep_submission(submission)
+    assert submission.configs[0].model == "fireworks/this-is-not-a-real-model"
+
+
 def test_validate_sweep_mutates_to_canonical(monkeypatch):
     _settings(monkeypatch)
-    submission = TaskSweepSubmission(
-        task_id="task-1",
-        configs=[
-            AgentModelPair(
-                agent="mini-swe-agent",
-                model="fireworks/deepseek-v4-flash",
-                n_trials=1,
-            )
-        ],
-    )
+    submission = _sweep("mini-swe-agent", "fireworks/deepseek-v4-flash")
     validate_sweep_submission(submission)
     assert submission.configs[0].model == "fireworks/deepseek-v4-flash-0731"
 
@@ -209,22 +153,12 @@ def test_list_curated_models_includes_fireworks(monkeypatch):
 
 def test_list_curated_models_agent_filter_hides_incompatible(monkeypatch):
     _settings(monkeypatch)
-    # grok-build is locked to xai; curated Fireworks/DeepSeek rows are hidden.
     assert list_curated_models(agent="grok-build") == []
 
 
 def test_validate_sweep_locked_agent_normalizes_case(monkeypatch):
     _settings(monkeypatch)
-    submission = TaskSweepSubmission(
-        task_id="task-1",
-        configs=[
-            AgentModelPair(
-                agent=" Grok-Build ",
-                model="fireworks/deepseek-v4-flash",
-                n_trials=1,
-            )
-        ],
-    )
+    submission = _sweep(" Grok-Build ", "fireworks/deepseek-v4-flash")
     with pytest.raises(HTTPException) as exc:
         validate_sweep_submission(submission)
     assert exc.value.status_code == 422
@@ -242,59 +176,15 @@ def test_permanent_provider_regex_does_not_match_generic_unauthorized():
     assert is_permanent_provider_failure("AgentAuthenticationError: nope") is True
 
 
-def test_setup_failure_without_work_is_not_real_eval():
-    assert (
-        trial_did_real_agent_work(
-            input_tokens=None,
-            output_tokens=None,
-            has_trajectory=False,
-            total_steps=None,
-        )
-        is False
+def test_setup_failure_without_work():
+    kwargs = dict(
+        exception_type=None,
+        error="NotFoundError: Model not found",
+        input_tokens=None,
+        output_tokens=None,
+        has_trajectory=False,
+        total_steps=None,
     )
-
-
-def test_setup_exception_after_real_work_stays_visible():
-    assert (
-        trial_did_real_agent_work(
-            input_tokens=12,
-            output_tokens=0,
-            has_trajectory=False,
-            total_steps=None,
-        )
-        is True
-    )
-    assert (
-        trial_did_real_agent_work(
-            input_tokens=None,
-            output_tokens=None,
-            has_trajectory=True,
-            total_steps=None,
-        )
-        is True
-    )
-
-
-def test_message_only_setup_failure_without_work():
-    assert (
-        is_setup_failure_without_work(
-            exception_type=None,
-            error="NotFoundError: Model not found",
-            input_tokens=None,
-            output_tokens=None,
-            has_trajectory=False,
-            total_steps=None,
-        )
-        is True
-    )
-    assert (
-        is_setup_failure_without_work(
-            exception_type=None,
-            error="NotFoundError: Model not found",
-            input_tokens=8,
-            output_tokens=None,
-            has_trajectory=False,
-            total_steps=None,
-        )
-        is False
-    )
+    assert is_setup_failure_without_work(**kwargs) is True
+    assert is_setup_failure_without_work(**{**kwargs, "input_tokens": 8}) is False
+    assert is_setup_failure_without_work(**{**kwargs, "has_trajectory": True}) is False

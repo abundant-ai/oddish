@@ -18,16 +18,7 @@ from oddish.schemas import TaskSubmission, TaskSweepSubmission, TrialSpec
 
 
 def _resolve_sweep_config_model(config) -> None:
-    """Pin provider, canonicalize model, and fail closed on curated mistakes.
-
-    Mutates ``config.model`` to the canonical id so append reconcile and insert
-    share one spelling. Raises ``HTTPException(422)`` on conflict / unknown /
-    locked-agent mismatch.
-
-    Hosted API containers often lack worker secrets, so missing credentials are
-    skipped unless ``ODDISH_ENFORCE_MODEL_CREDENTIALS`` is set. Settlement still
-    treats NotFound/auth with no agent work as a permanent FAILED.
-    """
+    """Pin provider, canonicalize model, and 422 on curated mistakes."""
     if is_nop_oracle_agent(config.agent):
         return
 

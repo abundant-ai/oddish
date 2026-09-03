@@ -4,7 +4,6 @@ import os
 import re
 from decimal import Decimal
 from enum import Enum
-from pathlib import Path
 from typing import ClassVar
 
 from pydantic import Field, SecretStr, model_validator
@@ -482,13 +481,12 @@ def to_moonshot_model_id(model: str | None) -> str | None:
 
 # DeepSeek routing for the ``dsh`` harness. Trials use ``deepseek/<model>`` so
 # they get their own provider/queue bucket distinct from OpenRouter or Fireworks.
-# Curated: unknown ids fail at submit unless allow_unknown_model is set.
+# Curated: unknown ids 422 at submit unless allow_unknown_model.
 DEEPSEEK_PROVIDER = "deepseek"
 DEEPSEEK_DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_CREDENTIAL_ENV = "DEEPSEEK_API_KEY"
 _DEEPSEEK_PROVIDER_PREFIXES: frozenset[str] = frozenset({"deepseek", "ds"})
-# Friendly spellings -> canonical DeepSeek id. Membership is required for
-# curated submit (identity entries mark known ids).
+# Friendly spellings -> canonical DeepSeek id; identity entries mark known ids.
 _DEEPSEEK_MODEL_ALIASES: dict[str, str] = {
     "deepseek-v4-pro": "deepseek-v4-pro",
     "deepseek-v4-pro-0813": "deepseek-v4-pro",
@@ -504,9 +502,8 @@ _DEEPSEEK_MODEL_ALIASES: dict[str, str] = {
 # ``fireworks/<id>`` provider/queue bucket -- off the Bedrock chokepoint and the
 # per-vendor z.ai / MiniMax / Moonshot buckets. Bare ``glm.../minimax.../kimi-...``
 # ids keep their existing direct-provider routes; the ``fireworks/`` prefix is
-# the explicit switch onto Fireworks.
-# Curated: bare short ids must be in the map unless allow_unknown_model is set.
-# A full ``accounts/fireworks/(models|routers)/...`` path remains an escape hatch.
+# the explicit switch onto Fireworks. Curated: unknown short ids 422 at submit
+# unless allow_unknown_model; full ``accounts/fireworks/...`` paths are allowed.
 FIREWORKS_PROVIDER = "fireworks"
 FIREWORKS_CREDENTIAL_ENV = "FIREWORKS_API_KEY"
 # Anthropic-compatible base URL. Claude Code / the Anthropic SDK append
@@ -538,49 +535,31 @@ _CURATED_PROVIDER_CREDENTIAL_ENV: dict[str, str] = {
 
 
 def _load_model_catalog_overlay() -> dict[str, dict[str, str]]:
-    """Merge private/partner spellings from deploy config into curated maps.
-
-    ``ODDISH_MODEL_CATALOG_OVERLAY`` is a JSON object::
-
-        {"fireworks": {"alias-or-id": "canonical-short-id"}, "deepseek": {...}}
-
-    ``ODDISH_MODEL_CATALOG_OVERLAY_PATH`` loads the same shape from a file.
-    """
-    blobs: list[str] = []
-    raw = os.getenv("ODDISH_MODEL_CATALOG_OVERLAY")
-    if raw and raw.strip():
-        blobs.append(raw)
-    path = os.getenv("ODDISH_MODEL_CATALOG_OVERLAY_PATH")
-    if path and path.strip():
-        try:
-            blobs.append(Path(path).read_text(encoding="utf-8"))
-        except OSError as exc:
-            raise ValueError(
-                f"ODDISH_MODEL_CATALOG_OVERLAY_PATH={path!r} could not be read: {exc}"
-            ) from exc
-
+    """Private/partner aliases from ``ODDISH_MODEL_CATALOG_OVERLAY`` JSON env."""
+    raw = (os.getenv("ODDISH_MODEL_CATALOG_OVERLAY") or "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            "ODDISH_MODEL_CATALOG_OVERLAY must be valid JSON "
+            f"(provider -> alias map): {exc}"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(
+            "ODDISH_MODEL_CATALOG_OVERLAY must be a JSON object of "
+            "provider -> {alias: canonical}"
+        )
     merged: dict[str, dict[str, str]] = {}
-    for blob in blobs:
-        try:
-            parsed = json.loads(blob)
-        except json.JSONDecodeError as exc:
+    for provider, aliases in parsed.items():
+        if not isinstance(aliases, dict):
             raise ValueError(
-                "ODDISH_MODEL_CATALOG_OVERLAY must be valid JSON "
-                f"(provider -> alias map): {exc}"
-            ) from exc
-        if not isinstance(parsed, dict):
-            raise ValueError(
-                "ODDISH_MODEL_CATALOG_OVERLAY must be a JSON object of "
-                "provider -> {alias: canonical}"
+                f"ODDISH_MODEL_CATALOG_OVERLAY[{provider!r}] must be an object"
             )
-        for provider, aliases in parsed.items():
-            if not isinstance(aliases, dict):
-                raise ValueError(
-                    f"ODDISH_MODEL_CATALOG_OVERLAY[{provider!r}] must be an object"
-                )
-            bucket = merged.setdefault(str(provider).strip().lower(), {})
-            for alias, canonical in aliases.items():
-                bucket[str(alias).strip().lower()] = str(canonical).strip().lower()
+        bucket = merged.setdefault(str(provider).strip().lower(), {})
+        for alias, canonical in aliases.items():
+            bucket[str(alias).strip().lower()] = str(canonical).strip().lower()
     return merged
 
 
@@ -608,34 +587,12 @@ PROVIDER_LOCKED_AGENTS: dict[str, str] = {
 }
 
 
-def _curated_suggestion(alias_map: dict[str, str], spelling: str) -> str | None:
-    """Closest curated canonical id for an unknown spelling, if any."""
-    import difflib
-
-    low = spelling.strip().lower()
-    if low in alias_map:
-        return alias_map[low]
-    vocabulary = sorted(set(alias_map.keys()) | set(alias_map.values()))
-    matches = difflib.get_close_matches(low, vocabulary, n=1, cutoff=0.6)
-    if not matches:
-        return None
-    hit = matches[0]
-    return alias_map.get(hit, hit)
-
-
 def _unknown_curated_model_message(
     provider: str, spelling: str, alias_map: dict[str, str]
 ) -> str:
     known = ", ".join(sorted({f"{provider}/{c}" for c in set(alias_map.values())}))
-    suggestion = _curated_suggestion(alias_map, spelling)
-    tip = (
-        f" Did you mean '{provider}/{suggestion}'?"
-        if suggestion and suggestion != spelling.strip().lower()
-        else ""
-    )
     return (
-        f"Unknown {provider} model {spelling!r}.{tip} "
-        f"Known: {known}. "
+        f"Unknown {provider} model {spelling!r}. Known: {known}. "
         "Pass allow_unknown_model / --allow-unknown-model to send it anyway."
     )
 
@@ -649,11 +606,7 @@ def has_provider_credential(provider: str) -> bool:
 
 
 def enforce_model_credentials() -> bool:
-    """Self-host opt-in: reject curated routes when this process lacks the key.
-
-    Hosted API containers usually omit worker secrets, so submit skips the
-    check unless ``ODDISH_ENFORCE_MODEL_CREDENTIALS`` is set.
-    """
+    """Self-host opt-in 422 when this process lacks the curated provider key."""
     raw = (os.getenv("ODDISH_ENFORCE_MODEL_CREDENTIALS") or "").strip().lower()
     return raw in {"1", "true", "yes", "on"}
 
@@ -686,13 +639,7 @@ def list_curated_models(*, agent: str | None = None) -> list[dict[str, object]]:
 
 
 def _curated_bare_candidates(bare: str) -> list[tuple[str, str]]:
-    """Provider/canonical pairs for a bare curated spelling (Fireworks first).
-
-    Fireworks is an auto-pin target only for DeepSeek-family misses
-    (``deepseek-v4-flash``). Bare GLM / MiniMax / Kimi ids keep their native
-    z.ai / MiniMax / Moonshot routes; those need an explicit ``fireworks/``
-    prefix to switch onto Fireworks.
-    """
+    """Fireworks auto-pin only for DeepSeek-family misses; GLM/MiniMax/Kimi stay native."""
     low = bare.strip().lower()
     out: list[tuple[str, str]] = []
     fireworks_canonical = _FIREWORKS_SHORT_MODEL_IDS.get(low)
@@ -711,15 +658,7 @@ def auto_resolve_curated_model(
     *,
     explicit_provider: str | None = None,
 ) -> tuple[str | None, str | None]:
-    """Pin a bare curated id to ``provider/canonical`` when unambiguous enough.
-
-    Explicit ``provider/`` prefixes and ``explicit_provider`` pins are left
-    alone (caller applies ``pin_model_provider`` first). When several curated
-    routes match, prefer one whose credential is visible in this process;
-    otherwise prefer Fireworks (the consolidation route for the common
-    ``deepseek-v4-flash`` miss). Returns ``(model, reason)`` where *reason* is
-    set only when an auto-pin happened.
-    """
+    """Pin a bare curated id. Explicit provider/prefix wins. Returns ``(model, reason)``."""
     if explicit_provider and str(explicit_provider).strip():
         return model, None
     cleaned = normalize_model_id(model)
@@ -753,11 +692,7 @@ def auto_resolve_curated_model(
 
 
 def pin_model_provider(model: str | None, provider: str | None) -> str | None:
-    """Apply an explicit LLM provider pin to a bare or prefixed model id.
-
-    An explicit ``provider/`` prefix on *model* must match *provider* when both
-    are set. A bare model becomes ``{provider}/{model}``.
-    """
+    """Apply ``provider`` to a bare id; error if it conflicts with an existing prefix."""
     if not provider or not str(provider).strip():
         return model
     pin = str(provider).strip().lower()
@@ -874,8 +809,6 @@ def fireworks_api_model_id(bare_model_id: str) -> str:
     ``accounts/fireworks/models/<short>`` path Fireworks requires. A value that
     already contains a path segment (e.g. a full
     ``accounts/fireworks/routers/<id>`` router path) is forwarded verbatim.
-    Unknown short ids still expand (runtime / allow-unknown); submit closes the
-    allowlist via ``to_fireworks_model_id(..., allow_unknown=False)``.
     """
     raw = bare_model_id.strip()
     low = raw.lower()
@@ -893,8 +826,6 @@ def to_fireworks_model_id(
     Friendly aliases collapse to the canonical short id (``fireworks/glm-5.2`` ->
     ``fireworks/glm-5p2``) so every spelling shares one queue/provider bucket; a
     full ``accounts/...`` path is kept as-is behind the ``fireworks/`` prefix.
-    Bare short ids must be curated unless ``allow_unknown`` is set (claim/import
-    default True; submit validation passes False).
     """
     if not is_fireworks_model(model):
         return model
@@ -2151,8 +2082,7 @@ class Settings(BaseSettings):
         the page.
 
         ``allow_unknown=False`` closes curated Fireworks/DeepSeek allowlists
-        (submit validation). Claim/import keep the default ``True`` so already
-        queued or historical ids still canonicalize.
+        at submit. Claim/import keep the default ``True``.
 
         - Treat '-', 'none', 'null', empty, etc as missing.
         - For nop/oracle, always force the model to the single canonical
