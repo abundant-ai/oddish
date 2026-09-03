@@ -566,6 +566,125 @@ async def read_trial_probe_artifacts(trial: TrialModel) -> dict:
         return result
 
 
+_STEP_TRAJECTORY_KEY_RE = re.compile(r"/steps/([^/]+)/agent/trajectory\.json$")
+
+
+def _merge_step_trajectories(docs: list[tuple[str, dict]]) -> dict | None:
+    """Merge per-step ATIF trajectories of a multi-step trial into one.
+
+    Harbor step tasks write one trajectory per step under
+    ``steps/<name>/agent/trajectory.json``; each restarts ``step_id`` at 1.
+    Steps are ordered by their first timestamp (directory names carry no
+    execution order), concatenated, and renumbered so ids stay unique. The
+    header comes from the first step; ``final_metrics`` from the last that
+    has one.
+    """
+    parsed: list[tuple[str, str, dict]] = []
+    for name, doc in docs:
+        steps = doc.get("steps")
+        if not isinstance(steps, list) or not steps:
+            continue
+        first_ts = next(
+            (
+                s.get("timestamp")
+                for s in steps
+                if isinstance(s, dict) and s.get("timestamp")
+            ),
+            "",
+        )
+        parsed.append((str(first_ts), name, doc))
+    if not parsed:
+        return None
+    parsed.sort(key=lambda item: item[0])
+    if len(parsed) == 1:
+        return parsed[0][2]
+
+    merged = dict(parsed[0][2])
+    merged_steps: list[dict] = []
+    for _, name, doc in parsed:
+        for step in doc["steps"]:
+            if isinstance(step, dict):
+                step = {**step, "step_id": len(merged_steps) + 1, "harbor_step": name}
+            merged_steps.append(step)
+        if doc.get("final_metrics"):
+            merged["final_metrics"] = doc["final_metrics"]
+    merged["steps"] = merged_steps
+    merged["harbor_steps"] = [name for _, name, _ in parsed]
+    return merged
+
+
+async def _read_step_trajectories(
+    storage: StorageClient,
+    prefix: str,
+    listed_keys: tuple[str, ...],
+) -> dict | None:
+    """Load and merge ``steps/*/agent/trajectory.json`` from listed keys."""
+    docs: list[tuple[str, dict]] = []
+    for key in listed_keys:
+        if not key.startswith(prefix):
+            continue
+        match = _STEP_TRAJECTORY_KEY_RE.search(key)
+        if not match:
+            continue
+        with suppress(
+            *_ARTIFACT_FALLBACK_ERRORS, _json.JSONDecodeError, TypeError, ValueError
+        ):
+            content = await storage.download_text(key)
+            if content:
+                docs.append((match.group(1), _json.loads(content)))
+    return _merge_step_trajectories(docs)
+
+
+def _manifest_step_names(manifest: object) -> list[str]:
+    if not isinstance(manifest, dict):
+        return []
+    step_results = manifest.get("step_results")
+    if not isinstance(step_results, list):
+        return []
+    names = [
+        r.get("step_name")
+        for r in step_results
+        if isinstance(r, dict) and isinstance(r.get("step_name"), str)
+    ]
+    return names
+
+
+async def _read_step_trajectories_exact(
+    storage: StorageClient,
+    artifact_prefix: str,
+    layout_manifest: object,
+) -> dict | None:
+    """Merge step trajectories in EXACT mode without any prefix listing.
+
+    Exact reads must never scan directories (stale sibling attempts could
+    leak), so step names come from the trial's own result manifest -
+    ``step_results[].step_name`` - and each trajectory is probed by exact
+    key.
+    """
+    names = _manifest_step_names(layout_manifest)
+    if not names:
+        result_key = f"{artifact_prefix}result.json"
+        if await storage.object_exists(result_key):
+            with suppress(
+                *_ARTIFACT_FALLBACK_ERRORS, _json.JSONDecodeError, TypeError, ValueError
+            ):
+                names = _manifest_step_names(
+                    _json.loads(await storage.download_text(result_key))
+                )
+    docs: list[tuple[str, dict]] = []
+    for name in names:
+        key = f"{artifact_prefix}steps/{name}/agent/trajectory.json"
+        if not await storage.object_exists(key):
+            continue
+        with suppress(
+            *_ARTIFACT_FALLBACK_ERRORS, _json.JSONDecodeError, TypeError, ValueError
+        ):
+            content = await storage.download_text(key)
+            if content:
+                docs.append((name, _json.loads(content)))
+    return _merge_step_trajectories(docs)
+
+
 async def _read_trial_trajectory_from_s3(
     trial: TrialModel,
     storage: StorageClient,
@@ -582,6 +701,14 @@ async def _read_trial_trajectory_from_s3(
                     return parsed
             except (_json.JSONDecodeError, TypeError, ValueError):
                 return None
+
+        # Multi-step tasks have no top-level trajectory; their per-step
+        # trajectories live under steps/<name>/agent/.
+        merged = await _read_step_trajectories_exact(
+            storage, layout.artifact_prefix, layout.manifest
+        )
+        if merged is not None:
+            return merged
 
         grok_key = f"{layout.artifact_prefix}agent/grok-build.json"
         if not await storage.object_exists(grok_key):
@@ -630,6 +757,15 @@ async def _read_trial_trajectory_from_s3(
         grok_build_keys: list[str] = []
         for f in files:
             if f.endswith("/agent/trajectory.json"):
+                # Step trajectories merge as a set; a plain trajectory wins
+                # as before.
+                if _STEP_TRAJECTORY_KEY_RE.search(f):
+                    merged = await _read_step_trajectories(
+                        storage, layout.attempt_prefix, listed_keys=tuple(files)
+                    )
+                    if merged is not None:
+                        return merged
+                    continue
                 content = await storage.download_text(f)
                 if content:
                     parsed = _json.loads(content)
