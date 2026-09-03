@@ -19,9 +19,11 @@ PERMANENT_MODEL_SETUP_EXCEPTION_TYPES: frozenset[str] = frozenset(
     }
 )
 
+# Word-bound ``NotFoundError`` so FileNotFoundError / ModuleNotFoundError /
+# RewardFileNotFoundError do not count as permanent provider setup failures.
 _PERMANENT_PROVIDER_RE = re.compile(
     r"PermissionDeniedError|Error code:\s*403\b|"
-    r"Model not found|NotFoundError|model_not_found|"
+    r"Model not found|\b(?:Model)?NotFoundError\b|model_not_found|"
     r"does not exist or your team does not have access|"
     r"AgentAuthenticationError|Not logged in",
     re.IGNORECASE,
