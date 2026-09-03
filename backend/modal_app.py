@@ -45,6 +45,15 @@ def _env_float(name: str, default: float) -> float:
     return float(value)
 
 
+def _env_list(name: str, default: tuple[str, ...]) -> tuple[str, ...] | None:
+    """Comma-separated list. Unset keeps ``default``; blank means "none"."""
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    items = tuple(item.strip() for item in value.split(",") if item.strip())
+    return items or None
+
+
 SLACK_EXPENSE_SECRET_NAME = os.environ.get("ODDISH_SLACK_EXPENSE_SECRET_NAME", "")
 SLACK_EXPENSE_SECRET_ENVIRONMENT = os.environ.get(
     "ODDISH_SLACK_EXPENSE_SECRET_ENVIRONMENT", MODAL_SECRET_ENVIRONMENT
@@ -95,6 +104,21 @@ API_MEMORY_MB = _env_int("ODDISH_MODAL_API_MEMORY_MB", 4096)
 # inside it: a subprocess budget larger than this can never be honoured, since
 # the platform kills the request first and whatever it had done is lost.
 API_TIMEOUT_SECONDS = _env_int("ODDISH_MODAL_API_TIMEOUT", 600)
+# Where API containers run. Postgres (the Supavisor pooler at
+# aws-1-us-east-2.pooler.supabase.com) and Supabase Storage both live in AWS
+# us-east-2, and one API request makes 10-20 strictly sequential round trips
+# to them. Left unpinned, Modal placed the API fleet wherever it had spare
+# capacity. Measured on 2026-09-03 (per-container median of a bare ``BEGIN``,
+# i.e. pure network round trip, and the request median for the same traffic
+# mix): 4 ms / 0.14 s for a container in Ohio, 12-31 ms / 0.4 s from Chicago,
+# New York and Virginia, 50-65 ms / 1.45 s from Seattle and Phoenix, and
+# 80-220 ms / 2.2-2.7 s further away, with ~60% of database calls made from
+# more than 70 ms out. Pinning to the two narrow regions adjacent to Ohio
+# keeps every trip in the 5-25 ms band. Two regions rather than one so the
+# scheduler has a larger pool: Modal does not fall back to other regions when
+# a pin has no capacity. Narrow regions carry Modal's 1.75x compute multiplier,
+# on this function only. Comma-separated; an empty string removes the pin.
+API_REGIONS = _env_list("ODDISH_MODAL_API_REGIONS", ("us-east", "us-central"))
 LOCAL_DOTENV_PATH = Path(__file__).with_name(".env")
 LOCAL_DOTENV_VARS = {
     key: value

@@ -222,7 +222,10 @@ of truth for the full list and defaults. They cover worker enablement
 (`ODDISH_ENABLE_MODAL_WORKERS`, `ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS`),
 API/worker/dispatcher/reconciler container
 scaling and CPU/memory sizing (`ODDISH_MODAL_API_*`, `ODDISH_MODAL_WORKER_*`,
-`ODDISH_MODAL_DISPATCHER_*`, `ODDISH_MODAL_RECONCILER_*`), schedule intervals
+`ODDISH_MODAL_DISPATCHER_*`, `ODDISH_MODAL_RECONCILER_*`), API container
+placement (`ODDISH_MODAL_API_REGIONS`, default `us-east,us-central`, the Modal
+regions adjacent to the Supabase pooler and storage in AWS us-east-2; an empty
+value removes the pin), schedule intervals
 and timeouts (`ODDISH_MODAL_POLL_INTERVAL_SECONDS`,
 `ODDISH_MODAL_CLEANUP_*_SECONDS`, `ODDISH_MODAL_WORKER_TIMEOUT_SECONDS`),
 throughput (`ODDISH_MODAL_MAX_WORKERS_PER_POLL`, default `256`;
