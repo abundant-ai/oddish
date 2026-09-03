@@ -349,15 +349,48 @@ _NON_HARBOR_RETRYABLE_EXCEPTION_TYPES = {
 
 
 def _is_non_retryable_outcome(trial: object, outcome: HarborOutcome | None) -> bool:
-    if outcome is None or outcome.exception_type is None:
+    if outcome is None:
         return False
     if outcome.exception_type in _NON_HARBOR_RETRYABLE_EXCEPTION_TYPES:
         return True
+    from oddish.workers.queue.provider_failures import (
+        is_permanent_model_setup_exception,
+        is_permanent_provider_failure,
+    )
+
+    if is_permanent_model_setup_exception(outcome.exception_type):
+        return True
+    if is_permanent_provider_failure(outcome.error):
+        return True
+    if outcome.exception_type is None:
+        return False
     harbor_config = getattr(trial, "harbor_config", None)
     retry = harbor_config.get("retry") if isinstance(harbor_config, dict) else None
     return not RetryConfig.model_validate(retry or {}).should_retry(
         outcome.exception_type
     )
+
+
+def _is_model_setup_failure_without_work(outcome: HarborOutcome) -> bool:
+    """Provider NotFound/auth with no real agent work — never a scored SUCCESS."""
+    from oddish.workers.queue.provider_failures import (
+        is_permanent_model_setup_exception,
+        is_permanent_provider_failure,
+    )
+
+    if not (
+        is_permanent_model_setup_exception(outcome.exception_type)
+        or is_permanent_provider_failure(outcome.error)
+    ):
+        return False
+    tokens = (outcome.input_tokens or 0) + (outcome.output_tokens or 0)
+    if tokens > 0:
+        return False
+    if outcome.has_trajectory:
+        return False
+    if outcome.total_steps:
+        return False
+    return True
 
 
 def _expects_no_reward(trial: object) -> bool:
@@ -1019,6 +1052,13 @@ async def _store_trial_results(
                         f"[yellow]Trial {trial_id} agent timeout -> reward=0[/yellow]"
                     )
 
+            # Provider NotFound/auth that never ran the agent can still produce
+            # reward=0 after the verifier. That is not a scored eval — force the
+            # non-retryable FAILED path so QA does not treat it as evidence.
+            model_setup_failure = _is_model_setup_failure_without_work(outcome)
+            if model_setup_failure:
+                derived_reward = None
+
             trial.reward = derived_reward
             if analysis_artifact_error:
                 trial.error_message = analysis_artifact_error
@@ -1081,9 +1121,9 @@ async def _store_trial_results(
                 # budget even when Harbor classified the underlying verifier
                 # failure as terminal. Oddish-only control failures still fail
                 # closed because another sandbox cannot repair them.
-                elif _is_non_retryable_outcome(trial, outcome) and (
-                    not analysis_artifact_error or has_non_retryable_oddish_failure
-                ):
+                elif (
+                    _is_non_retryable_outcome(trial, outcome) or model_setup_failure
+                ) and (not analysis_artifact_error or has_non_retryable_oddish_failure):
                     trial.status = TrialStatus.FAILED
                     trial.finished_at = utcnow()
                     console.print(

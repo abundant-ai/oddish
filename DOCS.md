@@ -19,6 +19,7 @@ export ODDISH_API_KEY="ok_..."
 **Commands:**
 
 - `oddish run` - submit work, retry failed trials, or re-run task-level QA
+- `oddish models` - list curated Fireworks/DeepSeek spellings
 - `oddish upload` - register a task or upload existing trials
 - `oddish preflight` - run the local task checks that also gate `run` and `upload`
 - `oddish ls` - list uploaded tasks
@@ -115,6 +116,8 @@ Options
 - `--config`, `-c PATH` - YAML or JSON config for multi-agent sweeps
 - `--agent`, `-a TEXT` - Agent name for simple single-agent runs (defaults to `claude-code`)
 - `--model`, `-m TEXT` - Model override for the selected agent
+- `--provider TEXT` - LLM provider pin for a bare `-m` id (e.g. `fireworks`); not the sandbox `--env`. Bare curated ids without a pin auto-select Fireworks when listed there.
+- `--allow-unknown-model` - Send an unlisted curated Fireworks/DeepSeek id anyway
 - `--harbor TEXT` - Override the Harbor source/ref for this run (`main`, a tag/SHA, `org/repo@ref`, or a git URL@ref); defaults to the locked fork commit (env: `ODDISH_HARBOR`)
 - `--n-trials INTEGER` - Number of trials per task
 - `--max-trial-attempts INTEGER` - Override the maximum Oddish attempts per trial, including the initial run

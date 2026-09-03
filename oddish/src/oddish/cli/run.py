@@ -265,6 +265,25 @@ def run(
             help="Model to use (optional)",
         ),
     ] = None,
+    provider: Annotated[
+        Optional[str],
+        typer.Option(
+            "--provider",
+            help=(
+                "LLM provider pin for a bare -m id (e.g. fireworks). "
+                "Not the sandbox --env."
+            ),
+        ),
+    ] = None,
+    allow_unknown_model: Annotated[
+        bool,
+        typer.Option(
+            "--allow-unknown-model",
+            help=(
+                "Send an unlisted curated Fireworks/DeepSeek model id anyway."
+            ),
+        ),
+    ] = False,
     harbor: Annotated[
         Optional[str],
         typer.Option(
@@ -835,6 +854,18 @@ def run(
             agent = "claude-code"
 
         # Build single config
+        if model and not provider:
+            from oddish.config import auto_resolve_curated_model
+
+            try:
+                auto_model, auto_reason = auto_resolve_curated_model(agent, model)
+            except ValueError as exc:
+                error_console.print(f"[red]{exc}[/red]")
+                raise typer.Exit(1) from exc
+            if auto_reason and auto_model:
+                console.print(f"[dim]Model: {auto_reason}[/dim]")
+                model = auto_model
+
         configs = [
             {
                 "agent": agent,
@@ -842,6 +873,10 @@ def run(
                 "n_trials": n_trials,
             }
         ]
+        if provider:
+            configs[0]["provider"] = provider
+        if allow_unknown_model:
+            configs[0]["allow_unknown_model"] = True
         harbor_config = None
 
     # Resolve the Harbor source/ref override (CLI --harbor / env ODDISH_HARBOR)

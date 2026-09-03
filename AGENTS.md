@@ -950,6 +950,16 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   `moonshot/`, `fireworks/`, `xai/`, `meta/`, and `anthropic-hdo/`. Add or
   change provider aliases in `config.py`, then update env injection in the
   Harbor runner and the network allowlist notes.
+- Fireworks and DeepSeek are **curated** at sweep submit: unknown short ids
+  422 unless `allow_unknown_model` / `--allow-unknown-model`. Aliases live in
+  `_FIREWORKS_SHORT_MODEL_IDS` / `_DEEPSEEK_MODEL_ALIASES`, with optional
+  private overlays via `ODDISH_MODEL_CATALOG_OVERLAY`. A bare curated id
+  (e.g. `deepseek-v4-flash`) auto-pins to Fireworks when listed there, else
+  DeepSeek, preferring a route whose credential is visible in-process.
+  Provider NotFound/auth with no real agent work settles FAILED (not SUCCESS)
+  and is excluded from QA. List spellings with `oddish models`.
+  Self-host may set `ODDISH_ENFORCE_MODEL_CREDENTIALS=1` to 422 when the API
+  process lacks the provider key; hosted API containers leave it off.
 - Gemini model ids use the `gemini/<id>` prefix. `_build_agent_config` hands
   each agent the spelling its LLM client expects (litellm agents in
   `_LITELLM_MODEL_ID_AGENTS`, Vercel AI SDK agents in

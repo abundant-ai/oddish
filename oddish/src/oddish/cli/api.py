@@ -2111,6 +2111,10 @@ def load_sweep_config(config_path: Path) -> dict:
             "model": harbor_config.model_name,
             "n_trials": agent_entry.get("n_trials", 1),
         }
+        if agent_entry.get("provider"):
+            entry["provider"] = agent_entry["provider"]
+        if agent_entry.get("allow_unknown_model"):
+            entry["allow_unknown_model"] = bool(agent_entry["allow_unknown_model"])
 
         agent_config_overrides: dict = {}
         if agent_entry.get("import_path"):

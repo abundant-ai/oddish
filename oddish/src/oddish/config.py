@@ -4,6 +4,7 @@ import os
 import re
 from decimal import Decimal
 from enum import Enum
+from pathlib import Path
 from typing import ClassVar
 
 from pydantic import Field, SecretStr, model_validator
@@ -481,12 +482,296 @@ def to_moonshot_model_id(model: str | None) -> str | None:
 
 # DeepSeek routing for the ``dsh`` harness. Trials use ``deepseek/<model>`` so
 # they get their own provider/queue bucket distinct from OpenRouter or Fireworks.
+# Curated: unknown ids fail at submit unless allow_unknown_model is set.
 DEEPSEEK_PROVIDER = "deepseek"
 DEEPSEEK_DEFAULT_BASE_URL = "https://api.deepseek.com"
+DEEPSEEK_CREDENTIAL_ENV = "DEEPSEEK_API_KEY"
 _DEEPSEEK_PROVIDER_PREFIXES: frozenset[str] = frozenset({"deepseek", "ds"})
+# Friendly spellings -> canonical DeepSeek id. Membership is required for
+# curated submit (identity entries mark known ids).
 _DEEPSEEK_MODEL_ALIASES: dict[str, str] = {
+    "deepseek-v4-pro": "deepseek-v4-pro",
     "deepseek-v4-pro-0813": "deepseek-v4-pro",
+    "deepseek-v4-flash": "deepseek-v4-flash",
 }
+
+
+# Fireworks routing. Fireworks serves GLM / MiniMax / Kimi (and many other open
+# models) over a single Anthropic-compatible ``/messages`` endpoint, so they run
+# on the claude-code harness against Fireworks instead of each model's own direct
+# provider. This is the consolidation route: opt a trial in with an explicit
+# ``fireworks/`` (or ``fw/``) provider prefix and it gets its own
+# ``fireworks/<id>`` provider/queue bucket -- off the Bedrock chokepoint and the
+# per-vendor z.ai / MiniMax / Moonshot buckets. Bare ``glm.../minimax.../kimi-...``
+# ids keep their existing direct-provider routes; the ``fireworks/`` prefix is
+# the explicit switch onto Fireworks.
+# Curated: bare short ids must be in the map unless allow_unknown_model is set.
+# A full ``accounts/fireworks/(models|routers)/...`` path remains an escape hatch.
+FIREWORKS_PROVIDER = "fireworks"
+FIREWORKS_CREDENTIAL_ENV = "FIREWORKS_API_KEY"
+# Anthropic-compatible base URL. Claude Code / the Anthropic SDK append
+# ``/v1/messages`` themselves, so this must NOT carry the ``/v1`` suffix.
+FIREWORKS_DEFAULT_BASE_URL = "https://api.fireworks.ai/inference"
+_FIREWORKS_PROVIDER_PREFIXES: frozenset[str] = frozenset({"fireworks", "fw"})
+# Friendly spellings -> the canonical Fireworks "short" model id (the last
+# segment of the Fireworks model path). The short id is what oddish stores and
+# queues on (``fireworks/<short>``); the full
+# ``accounts/fireworks/models/<short>`` path is only built when handing the id to
+# Claude Code as ANTHROPIC_MODEL.
+_FIREWORKS_SHORT_MODEL_IDS: dict[str, str] = {
+    "glm-5.2": "glm-5p2",
+    "glm-5p2": "glm-5p2",
+    "minimax-m3": "minimax-m3",
+    "kimi-k2.7": "kimi-k2p7-code",
+    "kimi-k2.7-code": "kimi-k2p7-code",
+    "kimi-k2p7": "kimi-k2p7-code",
+    "kimi-k2p7-code": "kimi-k2p7-code",
+    # Serverless DeepSeek on Fireworks — the bare GA name is a common miss.
+    "deepseek-v4-flash": "deepseek-v4-flash-0731",
+    "deepseek-v4-flash-0731": "deepseek-v4-flash-0731",
+}
+
+_CURATED_PROVIDER_CREDENTIAL_ENV: dict[str, str] = {
+    FIREWORKS_PROVIDER: FIREWORKS_CREDENTIAL_ENV,
+    DEEPSEEK_PROVIDER: DEEPSEEK_CREDENTIAL_ENV,
+}
+
+
+def _load_model_catalog_overlay() -> dict[str, dict[str, str]]:
+    """Merge private/partner spellings from deploy config into curated maps.
+
+    ``ODDISH_MODEL_CATALOG_OVERLAY`` is a JSON object::
+
+        {"fireworks": {"alias-or-id": "canonical-short-id"}, "deepseek": {...}}
+
+    ``ODDISH_MODEL_CATALOG_OVERLAY_PATH`` loads the same shape from a file.
+    """
+    blobs: list[str] = []
+    raw = os.getenv("ODDISH_MODEL_CATALOG_OVERLAY")
+    if raw and raw.strip():
+        blobs.append(raw)
+    path = os.getenv("ODDISH_MODEL_CATALOG_OVERLAY_PATH")
+    if path and path.strip():
+        try:
+            blobs.append(Path(path).read_text(encoding="utf-8"))
+        except OSError as exc:
+            raise ValueError(
+                f"ODDISH_MODEL_CATALOG_OVERLAY_PATH={path!r} could not be read: {exc}"
+            ) from exc
+
+    merged: dict[str, dict[str, str]] = {}
+    for blob in blobs:
+        try:
+            parsed = json.loads(blob)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                "ODDISH_MODEL_CATALOG_OVERLAY must be valid JSON "
+                f"(provider -> alias map): {exc}"
+            ) from exc
+        if not isinstance(parsed, dict):
+            raise ValueError(
+                "ODDISH_MODEL_CATALOG_OVERLAY must be a JSON object of "
+                "provider -> {alias: canonical}"
+            )
+        for provider, aliases in parsed.items():
+            if not isinstance(aliases, dict):
+                raise ValueError(
+                    f"ODDISH_MODEL_CATALOG_OVERLAY[{provider!r}] must be an object"
+                )
+            bucket = merged.setdefault(str(provider).strip().lower(), {})
+            for alias, canonical in aliases.items():
+                bucket[str(alias).strip().lower()] = str(canonical).strip().lower()
+    return merged
+
+
+def apply_model_catalog_overlay() -> None:
+    """Apply deploy overlay onto the in-process curated alias maps."""
+    overlay = _load_model_catalog_overlay()
+    fireworks = overlay.get(FIREWORKS_PROVIDER) or overlay.get("fw")
+    if fireworks:
+        _FIREWORKS_SHORT_MODEL_IDS.update(fireworks)
+    deepseek = overlay.get(DEEPSEEK_PROVIDER) or overlay.get("ds")
+    if deepseek:
+        _DEEPSEEK_MODEL_ALIASES.update(deepseek)
+
+
+apply_model_catalog_overlay()
+
+
+# Agents that cannot leave their locked LLM provider (sandbox --env is separate).
+PROVIDER_LOCKED_AGENTS: dict[str, str] = {
+    "grok-build": "xai",
+    "gemini-cli": "gemini",
+    "antigravity-cli": "gemini",
+    "codex": "openai",
+}
+
+
+def _curated_suggestion(alias_map: dict[str, str], spelling: str) -> str | None:
+    """Closest curated canonical id for an unknown spelling, if any."""
+    import difflib
+
+    low = spelling.strip().lower()
+    if low in alias_map:
+        return alias_map[low]
+    vocabulary = sorted(set(alias_map.keys()) | set(alias_map.values()))
+    matches = difflib.get_close_matches(low, vocabulary, n=1, cutoff=0.6)
+    if not matches:
+        return None
+    hit = matches[0]
+    return alias_map.get(hit, hit)
+
+
+def _unknown_curated_model_message(
+    provider: str, spelling: str, alias_map: dict[str, str]
+) -> str:
+    known = ", ".join(sorted({f"{provider}/{c}" for c in set(alias_map.values())}))
+    suggestion = _curated_suggestion(alias_map, spelling)
+    tip = (
+        f" Did you mean '{provider}/{suggestion}'?"
+        if suggestion and suggestion != spelling.strip().lower()
+        else ""
+    )
+    return (
+        f"Unknown {provider} model {spelling!r}.{tip} "
+        f"Known: {known}. "
+        "Pass allow_unknown_model / --allow-unknown-model to send it anyway."
+    )
+
+
+def has_provider_credential(provider: str) -> bool:
+    """True when this process has an API key for a curated provider."""
+    env_name = _CURATED_PROVIDER_CREDENTIAL_ENV.get(provider.strip().lower())
+    if not env_name:
+        return True
+    return bool((os.getenv(env_name) or "").strip())
+
+
+def enforce_model_credentials() -> bool:
+    """Self-host opt-in: reject curated routes when this process lacks the key.
+
+    Hosted API containers usually omit worker secrets, so submit skips the
+    check unless ``ODDISH_ENFORCE_MODEL_CREDENTIALS`` is set.
+    """
+    raw = (os.getenv("ODDISH_ENFORCE_MODEL_CREDENTIALS") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def list_curated_models(*, agent: str | None = None) -> list[dict[str, object]]:
+    """Curated Fireworks/DeepSeek spellings visible to ``oddish models``."""
+    locked = PROVIDER_LOCKED_AGENTS.get((agent or "").strip().lower()) if agent else None
+    rows: list[dict[str, object]] = []
+    for provider, alias_map, cred_env in (
+        (FIREWORKS_PROVIDER, _FIREWORKS_SHORT_MODEL_IDS, FIREWORKS_CREDENTIAL_ENV),
+        (DEEPSEEK_PROVIDER, _DEEPSEEK_MODEL_ALIASES, DEEPSEEK_CREDENTIAL_ENV),
+    ):
+        if locked and provider != locked:
+            continue
+        by_canonical: dict[str, list[str]] = {}
+        for alias, canonical in sorted(alias_map.items()):
+            by_canonical.setdefault(canonical, []).append(alias)
+        available = has_provider_credential(provider)
+        for canonical, aliases in sorted(by_canonical.items()):
+            rows.append(
+                {
+                    "provider": provider,
+                    "canonical": f"{provider}/{canonical}",
+                    "aliases": aliases,
+                    "credential_env": cred_env,
+                    "available": available,
+                }
+            )
+    return rows
+
+
+def _curated_bare_candidates(bare: str) -> list[tuple[str, str]]:
+    """Provider/canonical pairs for a bare curated spelling (Fireworks first)."""
+    low = bare.strip().lower()
+    out: list[tuple[str, str]] = []
+    if low in _FIREWORKS_SHORT_MODEL_IDS:
+        out.append((FIREWORKS_PROVIDER, _FIREWORKS_SHORT_MODEL_IDS[low]))
+    if low in _DEEPSEEK_MODEL_ALIASES:
+        out.append((DEEPSEEK_PROVIDER, _DEEPSEEK_MODEL_ALIASES[low]))
+    return out
+
+
+def auto_resolve_curated_model(
+    agent: str,
+    model: str | None,
+    *,
+    explicit_provider: str | None = None,
+) -> tuple[str | None, str | None]:
+    """Pin a bare curated id to ``provider/canonical`` when unambiguous enough.
+
+    Explicit ``provider/`` prefixes and ``explicit_provider`` pins are left
+    alone (caller applies ``pin_model_provider`` first). When several curated
+    routes match, prefer one whose credential is visible in this process;
+    otherwise prefer Fireworks (the consolidation route for the common
+    ``deepseek-v4-flash`` miss). Returns ``(model, reason)`` where *reason* is
+    set only when an auto-pin happened.
+    """
+    if explicit_provider and str(explicit_provider).strip():
+        return model, None
+    cleaned = normalize_model_id(model)
+    if not cleaned:
+        return cleaned, None
+    prefix, bare = split_provider_model_name(cleaned)
+    if prefix:
+        return cleaned, None
+    candidates = _curated_bare_candidates(bare)
+    if not candidates:
+        return cleaned, None
+
+    locked = PROVIDER_LOCKED_AGENTS.get(agent.strip().lower())
+    if locked:
+        candidates = [c for c in candidates if c[0] == locked]
+        if not candidates:
+            raise ValueError(
+                f"Agent {agent!r} is locked to provider {locked!r}; bare model "
+                f"{bare!r} has no matching curated route. Pass an explicit "
+                f"{locked}/… id or a different agent."
+            )
+
+    with_cred = [c for c in candidates if has_provider_credential(c[0])]
+    provider, canonical = (with_cred or candidates)[0]
+    resolved = f"{provider}/{canonical}"
+    if with_cred:
+        reason = f"auto-selected {resolved} (credential present for {provider})"
+    else:
+        reason = f"auto-selected {resolved} for bare id {bare!r}"
+    return resolved, reason
+
+
+def pin_model_provider(model: str | None, provider: str | None) -> str | None:
+    """Apply an explicit LLM provider pin to a bare or prefixed model id.
+
+    An explicit ``provider/`` prefix on *model* must match *provider* when both
+    are set. A bare model becomes ``{provider}/{model}``.
+    """
+    if not provider or not str(provider).strip():
+        return model
+    pin = str(provider).strip().lower()
+    if pin in {"fw"}:
+        pin = FIREWORKS_PROVIDER
+    elif pin in {"ds"}:
+        pin = DEEPSEEK_PROVIDER
+    cleaned = normalize_model_id(model)
+    if not cleaned:
+        return cleaned
+    existing_prefix, bare = split_provider_model_name(cleaned)
+    if existing_prefix:
+        existing = existing_prefix.strip().lower()
+        if existing in {"fw"}:
+            existing = FIREWORKS_PROVIDER
+        elif existing in {"ds"}:
+            existing = DEEPSEEK_PROVIDER
+        if existing != pin:
+            raise ValueError(
+                f"Model {cleaned!r} pins provider {existing!r}, which conflicts "
+                f"with provider={pin!r}."
+            )
+        return cleaned
+    return f"{pin}/{cleaned}"
 
 
 def is_deepseek_model(model: str | None) -> bool:
@@ -503,7 +788,9 @@ def is_deepseek_model(model: str | None) -> bool:
     return bare_id.startswith("deepseek-")
 
 
-def deepseek_bare_model_id(model: str) -> str:
+def deepseek_bare_model_id(
+    model: str, *, allow_unknown: bool = True
+) -> str:
     """Strip the ``deepseek/`` prefix and normalize GA aliases."""
     raw = model.strip()
     provider_prefix, bare = split_provider_model_name(raw)
@@ -514,48 +801,24 @@ def deepseek_bare_model_id(model: str) -> str:
         bare = bare.strip()
     else:
         bare = raw
-    return _DEEPSEEK_MODEL_ALIASES.get(bare, bare)
+    low = bare.strip().lower()
+    if low in _DEEPSEEK_MODEL_ALIASES:
+        return _DEEPSEEK_MODEL_ALIASES[low]
+    if allow_unknown:
+        return bare
+    raise ValueError(
+        _unknown_curated_model_message(DEEPSEEK_PROVIDER, bare, _DEEPSEEK_MODEL_ALIASES)
+    )
 
 
-def to_deepseek_model_id(model: str | None) -> str | None:
+def to_deepseek_model_id(
+    model: str | None, *, allow_unknown: bool = True
+) -> str | None:
     """Canonicalize a DeepSeek reference to ``deepseek/<bare-id>``."""
     if not is_deepseek_model(model):
         return model
     assert model is not None
-    return f"{DEEPSEEK_PROVIDER}/{deepseek_bare_model_id(model)}"
-
-
-# Fireworks routing. Fireworks serves GLM / MiniMax / Kimi (and many other open
-# models) over a single Anthropic-compatible ``/messages`` endpoint, so they run
-# on the claude-code harness against Fireworks instead of each model's own direct
-# provider. This is the consolidation route: opt a trial in with an explicit
-# ``fireworks/`` (or ``fw/``) provider prefix and it gets its own
-# ``fireworks/<id>`` provider/queue bucket -- off the Bedrock chokepoint and the
-# per-vendor z.ai / MiniMax / Moonshot buckets. Bare ``glm.../minimax.../kimi-...``
-# ids keep their existing direct-provider routes; the ``fireworks/`` prefix is
-# the explicit switch onto Fireworks.
-FIREWORKS_PROVIDER = "fireworks"
-# Anthropic-compatible base URL. Claude Code / the Anthropic SDK append
-# ``/v1/messages`` themselves, so this must NOT carry the ``/v1`` suffix.
-FIREWORKS_DEFAULT_BASE_URL = "https://api.fireworks.ai/inference"
-_FIREWORKS_PROVIDER_PREFIXES: frozenset[str] = frozenset({"fireworks", "fw"})
-# Friendly spellings -> the canonical Fireworks "short" model id (the last
-# segment of the Fireworks model path). The short id is what oddish stores and
-# queues on (``fireworks/<short>``); the full
-# ``accounts/fireworks/models/<short>`` path is only built when handing the id to
-# Claude Code as ANTHROPIC_MODEL. Add an entry here to give a model a friendly
-# alias; any other bare id is assumed to already be a Fireworks short id (a full
-# ``accounts/fireworks/(models|routers)/<id>`` path can always be passed as an
-# escape hatch and is forwarded verbatim).
-_FIREWORKS_SHORT_MODEL_IDS: dict[str, str] = {
-    "glm-5.2": "glm-5p2",
-    "glm-5p2": "glm-5p2",
-    "minimax-m3": "minimax-m3",
-    "kimi-k2.7": "kimi-k2p7-code",
-    "kimi-k2.7-code": "kimi-k2p7-code",
-    "kimi-k2p7": "kimi-k2p7-code",
-    "kimi-k2p7-code": "kimi-k2p7-code",
-}
+    return f"{DEEPSEEK_PROVIDER}/{deepseek_bare_model_id(model, allow_unknown=allow_unknown)}"
 
 
 def is_fireworks_model(model: str | None) -> bool:
@@ -601,6 +864,8 @@ def fireworks_api_model_id(bare_model_id: str) -> str:
     ``accounts/fireworks/models/<short>`` path Fireworks requires. A value that
     already contains a path segment (e.g. a full
     ``accounts/fireworks/routers/<id>`` router path) is forwarded verbatim.
+    Unknown short ids still expand (runtime / allow-unknown); submit closes the
+    allowlist via ``to_fireworks_model_id(..., allow_unknown=False)``.
     """
     raw = bare_model_id.strip()
     low = raw.lower()
@@ -610,20 +875,35 @@ def fireworks_api_model_id(bare_model_id: str) -> str:
     return f"accounts/fireworks/models/{short}"
 
 
-def to_fireworks_model_id(model: str | None) -> str | None:
+def to_fireworks_model_id(
+    model: str | None, *, allow_unknown: bool = True
+) -> str | None:
     """Canonicalize a Fireworks reference to ``fireworks/<id>``.
 
     Friendly aliases collapse to the canonical short id (``fireworks/glm-5.2`` ->
     ``fireworks/glm-5p2``) so every spelling shares one queue/provider bucket; a
     full ``accounts/...`` path is kept as-is behind the ``fireworks/`` prefix.
-    Non-Fireworks models are returned unchanged.
+    Bare short ids must be curated unless ``allow_unknown`` is set (claim/import
+    default True; submit validation passes False).
     """
     if not is_fireworks_model(model):
         return model
     assert model is not None
     bare = fireworks_bare_model_id(model)
     low = bare.strip().lower()
-    canonical = _FIREWORKS_SHORT_MODEL_IDS.get(low, low)
+    if "/" in low:
+        # Full accounts/... / routers/... escape hatch — always allowed.
+        return f"{FIREWORKS_PROVIDER}/{bare.strip()}"
+    if low in _FIREWORKS_SHORT_MODEL_IDS:
+        canonical = _FIREWORKS_SHORT_MODEL_IDS[low]
+    elif allow_unknown:
+        canonical = low
+    else:
+        raise ValueError(
+            _unknown_curated_model_message(
+                FIREWORKS_PROVIDER, bare, _FIREWORKS_SHORT_MODEL_IDS
+            )
+        )
     return f"{FIREWORKS_PROVIDER}/{canonical}"
 
 
@@ -1844,7 +2124,12 @@ class Settings(BaseSettings):
         return self.get_provider_for_agent(agent)
 
     def normalize_trial_model(
-        self, agent: str, model: str | None, *, strict: bool = True
+        self,
+        agent: str,
+        model: str | None,
+        *,
+        strict: bool = True,
+        allow_unknown: bool = True,
     ) -> str | None:
         """Canonicalize trial model input for storage/routing.
 
@@ -1854,6 +2139,10 @@ class Settings(BaseSettings):
         legacy model (e.g. ``claude-3-5-sonnet-20241022``) has no Bedrock id and
         never executes, so fall back to the un-collapsed model rather than 500
         the page.
+
+        ``allow_unknown=False`` closes curated Fireworks/DeepSeek allowlists
+        (submit validation). Claim/import keep the default ``True`` so already
+        queued or historical ids still canonicalize.
 
         - Treat '-', 'none', 'null', empty, etc as missing.
         - For nop/oracle, always force the model to the single canonical
@@ -1879,7 +2168,7 @@ class Settings(BaseSettings):
         # consolidates GLM/MiniMax/Kimi onto Fireworks and must win over the
         # bare-id direct-provider routes below.
         if is_fireworks_model(cleaned):
-            return to_fireworks_model_id(cleaned)
+            return to_fireworks_model_id(cleaned, allow_unknown=allow_unknown)
         if is_meta_model(cleaned):
             return to_meta_model_id(cleaned)
         if is_xai_model(cleaned):
@@ -1891,7 +2180,7 @@ class Settings(BaseSettings):
         if is_moonshot_model(cleaned):
             return to_moonshot_model_id(cleaned)
         if is_deepseek_model(cleaned):
-            return to_deepseek_model_id(cleaned)
+            return to_deepseek_model_id(cleaned, allow_unknown=allow_unknown)
         # Explicit ``anthropic-hdo/`` keeps Claude on the direct Anthropic API
         # with ANTHROPIC_HDO_API_KEY — must win over the Bedrock chokepoint.
         if is_anthropic_hdo_model(cleaned):

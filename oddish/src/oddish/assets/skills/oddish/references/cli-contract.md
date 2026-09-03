@@ -30,8 +30,8 @@ auto-publish (`run --publish` or GitHub-attributed CI runs); a member-created
 
 ## Command surface
 
-Current top-level commands are `run`, `upload`, `preflight`, `ls`, `status`,
-`skill`, `logs`, `cancel`, `backfill-analysis`, `combine`, `costs`,
+Current top-level commands are `run`, `upload`, `preflight`, `ls`, `models`,
+`status`, `skill`, `logs`, `cancel`, `backfill-analysis`, `combine`, `costs`,
 `cost-exclusions`, `collect`, `delete`, `admin`, `experiment`, `link`, `pull`,
 `publish`, `unpublish`, and `probe`.
 
@@ -41,6 +41,8 @@ submission controls include:
 - `run --github-id` for immutable GitHub attribution;
 - `run --baseline-gate/--no-baseline-gate` for baseline admission;
 - `run --max-trial-attempts` for the total attempt budget including the first;
+- `run --provider` / `run --allow-unknown-model` for curated Fireworks/DeepSeek
+  model pins and escape hatch; `oddish models` lists known spellings;
 - `run --json`, which implies `--background`;
 - `run --force` and `upload --force`, which bypass preflight after showing
   findings;

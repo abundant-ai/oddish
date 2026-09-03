@@ -1500,9 +1500,15 @@ async def qa_eligible_trial_ids(
     """Live agent trials a QA trial should classify, scoped to one version.
 
     Excludes bulk-migrated imports, cancelled/skipped/gate-skipped trials,
-    and deterministic baselines. ``task_version_id`` pins the set to the
-    version being graded (None only for legacy tasks with no version rows).
+    deterministic baselines, and permanent model-setup failures (provider
+    NotFound / auth with no real agent work) so QA does not run on tasks that
+    never actually executed.
     """
+    from oddish.workers.queue.provider_failures import (
+        PERMANENT_MODEL_SETUP_EXCEPTION_TYPES,
+    )
+
+    exception_type = TrialModel.result["harbor_exception"]["exception_type"].astext
     conditions = [
         TrialModel.task_id == task_id,
         TrialModel.kind == AGENT_TRIAL_KIND,
@@ -1512,6 +1518,10 @@ async def qa_eligible_trial_ids(
         TrialModel.status != TrialStatus.SKIPPED,
         func.coalesce(TrialModel.error_message, "").notlike(f"{GATE_SKIP_PREFIX}%"),
         not_(baseline_agent_clause(TrialModel.agent)),
+        or_(
+            exception_type.is_(None),
+            exception_type.notin_(tuple(PERMANENT_MODEL_SETUP_EXCEPTION_TYPES)),
+        ),
     ]
     if task_version_id is not None:
         conditions.append(TrialModel.task_version_id == task_version_id)
