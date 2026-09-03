@@ -1,7 +1,7 @@
 """Persist provider reroute provenance and teardown gating.
 
 Revision ID: thunder_fallback_001
-Revises: thunder_lane_001
+Revises: thunder_lane_001, deliveries_002
 """
 
 from typing import Sequence, Union
@@ -11,7 +11,10 @@ from alembic import op
 
 
 revision: str = "thunder_fallback_001"
-down_revision: Union[str, Sequence[str], None] = "thunder_lane_001"
+down_revision: Union[str, Sequence[str], None] = (
+    "thunder_lane_001",
+    "deliveries_002",
+)
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

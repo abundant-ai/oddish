@@ -18,8 +18,10 @@ from typing import Any
 from harbor.models.environment_type import EnvironmentType
 from harbor.models.trial.config import EnvironmentConfig
 from harbor.trial.hooks import TrialEvent
+from thunder_sandbox import CapacityError
 
 from oddish.config import BEDROCK_ENV_VARS, settings
+from oddish.core.harbor_artifacts import THUNDER_CAPACITY_UNAVAILABLE_CODE
 from oddish.core.harbor_source import harbor_git_requirement
 from oddish.runtime.backends.daytona import DaytonaBackend
 from oddish.schemas import HarborConfig
@@ -40,7 +42,7 @@ from .runner import (
     HookCallback,
     _check_local_storage_preflight,
     _patch_task_toml,
-    _task_has_dynamic_restricted_agent_phase,
+    _supports_auto_restricted_agent_network,
 )
 from .model_hosts import agent_runtime_hosts, outbound_hosts_for_model
 
@@ -48,6 +50,8 @@ _ENTRY_PATH = str(Path(__file__).resolve().parent / "_entry.py")
 _CHILD_PYTHON = "3.13"
 _PARENT_SITE_PACKAGES_ENV = "ODDISH_PARENT_SITE_PACKAGES"
 logger = logging.getLogger(__name__)
+
+
 def _environment_harbor_extras(
     environment_type: Any = EnvironmentType,
 ) -> dict[Any, str]:
@@ -74,9 +78,7 @@ def _environment_harbor_extras(
     return extras
 
 
-_ENVIRONMENT_HARBOR_EXTRAS: dict[EnvironmentType, str] = (
-    _environment_harbor_extras()
-)
+_ENVIRONMENT_HARBOR_EXTRAS: dict[EnvironmentType, str] = _environment_harbor_extras()
 
 
 class HarborOverrideImportError(Exception):
@@ -150,10 +152,9 @@ def _build_payload(
         is_probe=is_probe,
     )
     agent_config = dict(raw_harbor_config.get("agent_config") or {})
-    if (
-        environment_config.type
-        in (EnvironmentType.DAYTONA, EnvironmentType.MODAL, EnvironmentType.THUNDER)
-        and _task_has_dynamic_restricted_agent_phase(task_path)
+    if _supports_auto_restricted_agent_network(
+        task_path=task_path,
+        environment_config=environment_config,
     ):
         # Override Harbor runs in an isolated child interpreter and therefore
         # bypasses runner.py's in-process AgentConfig host injection. Resolve
@@ -585,6 +586,12 @@ def _read_outcome(
 
     error = outcome_data.get("error") or (stderr or stdout_tail or "").strip()[-1500:]
     provider_error_code = outcome_data.get("provider_error_code")
+    exception_type = outcome_data.get("exception_type")
+    is_thunder_capacity_error = (
+        environment_provider == EnvironmentType.THUNDER.value
+        and exception_type == CapacityError.__name__
+        and provider_error_code == THUNDER_CAPACITY_UNAVAILABLE_CODE
+    )
     return HarborOutcome(
         reward=None,
         error=error or "Ephemeral Harbor run failed without a result.",
@@ -593,13 +600,19 @@ def _read_outcome(
         job_result_path=None,
         job_dir=job_dir,
         exception_type=(
-            outcome_data.get("exception_type")
-            if provider_error_code
-            else "HarborOverrideImportError"
+            exception_type if is_thunder_capacity_error else "HarborOverrideImportError"
         ),
-        provider_error_code=provider_error_code,
-        http_status=outcome_data.get("http_status"),
-        retry_after_seconds=outcome_data.get("retry_after_seconds"),
+        provider_error_code=(
+            provider_error_code if is_thunder_capacity_error else None
+        ),
+        http_status=(
+            outcome_data.get("http_status") if is_thunder_capacity_error else None
+        ),
+        retry_after_seconds=(
+            outcome_data.get("retry_after_seconds")
+            if is_thunder_capacity_error
+            else None
+        ),
     )
 
 

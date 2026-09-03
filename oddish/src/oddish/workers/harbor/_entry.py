@@ -49,6 +49,23 @@ logger = logging.getLogger("oddish.harbor_entry")
 EVENT_SENTINEL = "_oddish_harbor_event"
 
 
+def _thunder_capacity_error_metadata(exc: BaseException) -> dict[str, Any]:
+    """Return provider metadata only for the exact typed capacity signal."""
+    from oddish.core.harbor_artifacts import THUNDER_CAPACITY_UNAVAILABLE_CODE
+    from thunder_sandbox import CapacityError
+
+    if not isinstance(exc, CapacityError):
+        return {}
+    code = exc.code
+    if code != THUNDER_CAPACITY_UNAVAILABLE_CODE:
+        return {}
+    return {
+        "provider_error_code": code,
+        "http_status": exc.status,
+        "retry_after_seconds": exc.retry_after,
+    }
+
+
 def _read_payload_and_unlink(payload_path: Path) -> dict[str, Any]:
     """Read the private parent/child payload and remove it immediately."""
     try:
@@ -85,7 +102,9 @@ def _emit_event_line(payload: dict[str, Any]) -> None:
     def _json_default(value: Any) -> str:
         if isinstance(value, UUID):
             return str(value)
-        raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+        raise TypeError(
+            f"Object of type {type(value).__name__} is not JSON serializable"
+        )
 
     sys.stdout.write(json.dumps(payload, default=_json_default) + "\n")
     sys.stdout.flush()
@@ -332,18 +351,8 @@ def main(argv: list[str]) -> int:
             "duration_sec": time.time() - start,
             "error": f"{type(exc).__name__}: {exc}",
             "exception_type": type(exc).__name__,
-            "provider_error_code": getattr(exc, "code", None),
-            "http_status": (
-                getattr(exc, "http_status", None)
-                if getattr(exc, "http_status", None) is not None
-                else getattr(exc, "status", None)
-            ),
-            "retry_after_seconds": (
-                getattr(exc, "retry_after_seconds", None)
-                if getattr(exc, "retry_after_seconds", None) is not None
-                else getattr(exc, "retry_after", None)
-            ),
             "traceback": traceback.format_exc()[-4000:],
+            **_thunder_capacity_error_metadata(exc),
         }
         outcome_path.write_text(json.dumps(outcome))
         return 1

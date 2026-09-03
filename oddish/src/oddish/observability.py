@@ -37,7 +37,13 @@ _last_dispatch_queue_keys: set[str] = set()
 
 _AGGREGATE_QUEUE_KEY = "__all__"
 DispatchCycleOutcome = Literal["success", "skipped", "cancelled", "error"]
-ThunderCapacityHandoffOutcome = Literal["requested", "completed", "rejected", "failed"]
+ThunderCapacityHandoffOutcome = Literal[
+    "requested",
+    "pending",
+    "completed",
+    "rejected",
+    "failed",
+]
 
 
 def configure_observability(service_name: str) -> bool:

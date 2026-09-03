@@ -35,6 +35,7 @@ from oddish.costs.recorder import (
 )
 from oddish.db import WorkerJobKind, WorkerJobStatus
 from oddish.observability import (
+    ThunderCapacityHandoffOutcome,
     record_thunder_capacity_handoff,
     record_worker_job_transition,
 )
@@ -466,7 +467,7 @@ def _updated_one(command: str) -> bool:
 
 
 def _emit_thunder_handoff_event(
-    outcome: str,
+    outcome: ThunderCapacityHandoffOutcome,
     *,
     job_id: str,
     trial_id: str | None,
@@ -481,7 +482,7 @@ def _emit_thunder_handoff_event(
     console.print(message)
     logger.info(message)
     record_thunder_capacity_handoff(
-        outcome=outcome,  # type: ignore[arg-type]
+        outcome=outcome,
         target_environment=target,
     )
 
@@ -777,11 +778,11 @@ async def _record_reroute_outcome(
         )
     else:
         _emit_thunder_handoff_event(
-            "failed",
+            "pending",
             job_id=job_id,
             trial_id=subject_id,
             target=reroute.target_environment,
-            reason="teardown_not_confirmed",
+            reason="teardown_pending",
         )
     return WorkerJobStatus.RETRYING
 

@@ -571,6 +571,12 @@ async def test_reroute_waits_for_confirmed_external_sandbox_teardown(monkeypatch
     )
     monkeypatch.setattr(settings, "thunder_capacity_fallback", True)
     monkeypatch.setattr(settings, "thunder_fallback_provider", "modal")
+    handoff_events = []
+    monkeypatch.setattr(
+        worker_job_single_job,
+        "_emit_thunder_handoff_event",
+        lambda outcome, **kwargs: handoff_events.append((outcome, kwargs["reason"])),
+    )
 
     async def fake_open_connection():
         return connection
@@ -598,6 +604,7 @@ async def test_reroute_waits_for_confirmed_external_sandbox_teardown(monkeypatch
     )
     assert job_args[-2:] == (True, THUNDER_CAPACITY_UNAVAILABLE_CODE)
     assert "CASE WHEN $5 THEN provider ELSE NULL END" in updates[1]
+    assert handoff_events == [("pending", "teardown_pending")]
 
 
 @pytest.mark.asyncio
