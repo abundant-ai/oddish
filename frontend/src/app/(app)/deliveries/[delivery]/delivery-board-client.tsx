@@ -907,6 +907,16 @@ export function DeliveryBoardClient({
       setPageSize(perPageParam);
     }
   }, []);
+  // Snap an out-of-range page into the table's real range once the data
+  // is known, so the URL always matches what the board shows.
+  useEffect(() => {
+    if (!data) return;
+    const count = Math.max(
+      1,
+      Math.ceil(applyTaskFilter(data.tasks, filter).length / pageSize)
+    );
+    if (page > count - 1) setPage(count - 1);
+  }, [data, filter, page, pageSize]);
   // Filter and page live in the URL (?filter=, ?page=, 1-based), so a view
   // can be shared or reloaded. replaceState keeps the back button out of
   // every click; defaults stay out of the URL.
