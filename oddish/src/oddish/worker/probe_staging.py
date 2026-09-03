@@ -60,12 +60,15 @@ OUT="${{HARBOR_VERIFIER_LOG_DIR:-/logs/verifier}}"
 mkdir -p "$OUT"
 SRC="/logs/{artifact}"
 TESTS_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ -d "/logs/{artifact}.submissions" ]; then
+  cp -R "/logs/{artifact}.submissions" "$OUT/"
+fi
 if [ ! -s "$SRC" ]; then
-  if [ -s "/logs/qa_submission_error.txt" ]; then
-    if [ -s "/logs/qa_result-rejected.json" ]; then
-      cp "/logs/qa_result-rejected.json" "$OUT/qa_result-rejected.json"
+  if [ -s "/logs/{label}_submission_error.txt" ]; then
+    if [ -s "/logs/{label}_result-rejected.json" ]; then
+      cp "/logs/{label}_result-rejected.json" "$OUT/{label}_result-rejected.json"
     fi
-    {{ echo "QA artifact validation failed:"; cat "/logs/qa_submission_error.txt"; }} \
+    {{ echo "QA artifact validation failed:"; cat "/logs/{label}_submission_error.txt"; }} \
       | tee "$OUT/error.txt" >&2
   else
     echo "the agent did not write /logs/{artifact}" | tee "$OUT/error.txt" >&2
@@ -80,7 +83,7 @@ exit 0
 
 
 _ANALYSIS_SUBMIT_SH = """#!/bin/sh
-set -u
+set -eu
 
 if [ "$#" -ne 1 ]; then
   echo "usage: /probe-harness/submit-analysis-result <draft.json>" >&2
@@ -104,29 +107,36 @@ ATTEMPTS=$((ATTEMPTS + 1))
 echo "$ATTEMPTS" > "$ATTEMPTS_FILE"
 
 if [ "$ATTEMPTS" -gt 3 ]; then
+  rm -f "$LOG_DIR/{artifact}"
   echo "submission limit reached: one initial submission and two repairs" \
-    | tee "$LOG_DIR/qa_submission_error.txt" >&2
+    | tee "$LOG_DIR/{label}_submission_error.txt" >&2
   exit 1
 fi
 if [ ! -s "$SRC" ]; then
+  rm -f "$LOG_DIR/{artifact}"
   echo "analysis draft is missing or empty: $SRC" \
-    | tee "$LOG_DIR/qa_submission_error.txt" >&2
+    | tee "$LOG_DIR/{label}_submission_error.txt" >&2
   exit 1
 fi
 
-ERROR_FILE="/tmp/oddish-analysis-submit-error.txt"
+SUBMISSIONS="$LOG_DIR/{artifact}.submissions"
+mkdir -p "$SUBMISSIONS"
+DRAFT="$SUBMISSIONS/attempt-$ATTEMPTS.json"
+cp "$SRC" "$DRAFT"
+rm -f "$LOG_DIR/{artifact}"
+ERROR_FILE="$SUBMISSIONS/attempt-$ATTEMPTS.errors.txt"
 if ! python3 "$CONTRACT_DIR/analysis_result_check.py" \
-  "$SRC" "$CONTRACT_DIR/expected.json" 2>"$ERROR_FILE"; then
-  cp "$ERROR_FILE" "$LOG_DIR/qa_submission_error.txt"
-  cp "$SRC" "$LOG_DIR/qa_result-rejected.json"
+  "$DRAFT" "$CONTRACT_DIR/expected.json" 2>"$ERROR_FILE"; then
+  cp "$ERROR_FILE" "$LOG_DIR/{label}_submission_error.txt"
+  cp "$DRAFT" "$LOG_DIR/{label}_result-rejected.json"
   echo "QA artifact validation failed (submission $ATTEMPTS of 3):" >&2
   cat "$ERROR_FILE" >&2
   exit 1
 fi
 
-rm -f "$LOG_DIR/qa_submission_error.txt"
-rm -f "$LOG_DIR/qa_result-rejected.json"
-cp "$SRC" "$LOG_DIR/{artifact}"
+rm -f "$LOG_DIR/{label}_submission_error.txt"
+rm -f "$LOG_DIR/{label}_result-rejected.json"
+cp "$DRAFT" "$LOG_DIR/{artifact}"
 echo "QA artifact accepted and published to /logs/{artifact}"
 """
 
@@ -201,16 +211,17 @@ def apply_analysis_overlay(
     (tests_dir / "expected.json").write_text(expected_text)
     (tests_dir / "analysis_result_check.py").write_text(validator_text)
     test_sh = tests_dir / "test.sh"
-    test_sh.write_text(_ANALYSIS_TEST_SH.format(artifact=artifact))
+    label = artifact.removesuffix("_result.json")
+    test_sh.write_text(_ANALYSIS_TEST_SH.format(artifact=artifact, label=label))
     test_sh.chmod(0o755)
 
-    if artifact == "qa_result.json":
+    if artifact in ("qa_result.json", "audit_result.json"):
         contract_dir = work_task_dir / _ANALYSIS_CONTRACT_DIR
         contract_dir.mkdir()
         (contract_dir / "expected.json").write_text(expected_text)
         (contract_dir / "analysis_result_check.py").write_text(validator_text)
         submit = work_task_dir / _ANALYSIS_SUBMIT_COMMAND
-        submit.write_text(_ANALYSIS_SUBMIT_SH.format(artifact=artifact))
+        submit.write_text(_ANALYSIS_SUBMIT_SH.format(artifact=artifact, label=label))
         submit.chmod(0o755)
 
 

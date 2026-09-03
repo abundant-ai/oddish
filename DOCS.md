@@ -855,6 +855,101 @@ Options
 - `--api TEXT` - Override the API URL
 - `--json` - Emit the share status as JSON
 
+## Deliveries
+
+A delivery is a checklist for a set of tasks. It answers one question: can
+we ship these tasks to a customer?
+
+Each task must pass the automated checks. The checks are: the pre-trial
+audit passed, the task has sufficient rollouts, the newest QA run accepts
+the version, and each must-fix defect has an acknowledgement. The checks
+always apply to the current default version of the task. A new version
+makes the checks red again.
+
+Customers are records of their own. The dashboard's create dialog offers
+a dropdown of existing customers and a form for a new one. `POST
+/customers` creates a customer directly; a duplicate name is a conflict.
+
+The dashboard board can filter its task list: all tasks, blocked tasks
+(a failing check or an open defect), tasks awaiting sign-off (every
+check passes), or ready tasks. Use it to hide what is already approved. Each row also
+has a selection checkbox (the header checkbox selects the whole filtered
+view): the bulk bar signs off every clean selected task or removes the
+selected tasks from the delivery in one action.
+
+On the dashboard, each task row has a copy-link button. The link opens
+the delivery board with that task expanded and scrolled into view, so you
+can send a failing task straight to the person who owns it
+(`/deliveries/<id>?task=<task-name>`).
+
+Each task also needs a manual sign-off. The server records who signed off
+and which version they saw. If the task has a must-fix defect, a person
+must acknowledge that defect first. A task can also ship with a failing
+automated check, but a person must acknowledge the check first. The server
+records who acknowledged each defect and each check. A delivery can define
+more manual checks in its check configuration.
+
+```bash
+# Create a delivery and add tasks to it over time
+oddish delivery create "august-batch" --customer "Acme" -t my-task-name
+oddish delivery add august-batch task-3 task-4
+
+# The board: every task, every check, every blocker
+oddish delivery show august-batch
+
+# The gate for scripts and CI: exit 0 when green, 1 with blockers
+oddish delivery ready august-batch && ./ship.sh
+
+# Acknowledge a defect, then sign the task off (both record who did it)
+oddish delivery ack august-batch task-1 <defect-id>
+oddish delivery signoff august-batch task-1
+
+# Ship a task with a failing check anyway: acknowledge the check by key
+oddish delivery ack august-batch task-1 min_rollouts
+
+# Sign off a task with open blockers: the command warns, lists them, and
+# asks for confirmation. On yes, it acknowledges each one in your name.
+oddish delivery signoff august-batch task-2
+
+# Sign off every task with no open blockers in one command
+oddish delivery signoff august-batch --all
+
+# Tick a custom sign-off check (defined in the delivery's check config)
+oddish delivery check august-batch proofread --task task-1
+
+# Pin versions and freeze the record once everything is green
+oddish delivery finalize august-batch
+
+# A task's QA trail: versions, audits, rollouts, defects, QA runs
+oddish delivery history task-1
+```
+
+Commands
+
+- `list` - List deliveries
+- `create NAME` - Create a delivery. `--customer` is required: an existing
+  customer's name or id, or a new name (the server creates the customer).
+  Also `--description`, `-t/--task`
+- `show DELIVERY` - Render the readiness board (`--json` for the full matrix)
+- `ready DELIVERY` - Exit 0 if every check passes, 1 with the blockers listed
+- `add DELIVERY TASKS...` / `remove DELIVERY TASK` - Manage membership
+  (tasks accepted by id or name)
+- `signoff DELIVERY TASK` - Sign a task off (`--off` removes the sign-off).
+  With open blockers, the command warns and asks first; `-y` skips the
+  prompt and acknowledges them. `--all` signs off every task with no open
+  blockers and lists the skipped ones
+- `ack DELIVERY TASK REF` - Acknowledge one must-fix defect (by defect id)
+  or one failing automated check (by check key)
+- `check DELIVERY KEY` - Tick a custom manual check (`--task` for
+  task-scoped, `--off` to untick, `--note` to annotate)
+- `finalize DELIVERY` - Pin task versions and freeze the delivery (`-y` skips
+  the prompt)
+- `history TASK` - Per-version QA history for one task
+
+Deliveries accept an ID or a unique name everywhere. On the hosted API,
+mutations need an admin role (or a full-scope key); reads work with a
+`tasks`-scope key.
+
 ## Drag-and-drop import (UI)
 
 The dashboard's **Tasks** page has an **Import** button next to the

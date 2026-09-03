@@ -90,7 +90,6 @@ import { HarborStageBadge } from "@/components/harbor-stage-badge";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { StatusIcon } from "@/components/status-icon";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
-import { TrialNotRealSpendBadge } from "@/components/not-real-spend-badge";
 import {
   isActiveTrialStatus,
   isLiveQaTrial,
@@ -1437,9 +1436,6 @@ export function TrialDetailPanel({
                           <>
                             {trial.cost_is_estimated ? "~" : ""}
                             {formatCostUsd(trial.cost_usd)}
-                            <TrialNotRealSpendBadge
-                              reason={trial.cost_exclusion_reason}
-                            />
                           </>
                         ) : (
                           "—"

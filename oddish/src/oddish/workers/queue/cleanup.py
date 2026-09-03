@@ -36,7 +36,7 @@ from oddish.config import (
 from oddish.core.helpers import cancel_job_by_worker
 from oddish.core.tags.ownership_transfer import sweep_orphaned_tag_owners
 from oddish.core.task_browse_summary import refresh_task_browse_summaries
-from oddish.core.verdict_state import fail_verdict
+from oddish.core.verdict_state import fail_verdict, queue_verdict
 from oddish.costs.recorder import reconcile_compute_cost_spans
 from oddish.core.harbor_artifacts import THUNDER_CAPACITY_UNAVAILABLE_CODE
 from oddish.db import (
@@ -486,7 +486,7 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
             )
         else:
             # The VERDICT_PENDING healer creates a fresh QA trial next sweep.
-            task.verdict_status = VerdictStatus.QUEUED
+            queue_verdict(task)
             task.verdict_error = row["error_message"]
         return None
 
@@ -1606,10 +1606,10 @@ async def _advance_running_tasks_to_analysis(
                   AND t.deleted_at IS NULL
                   AND tr.deleted_at IS NULL
                   AND tr.superseded_by_trial_id IS NULL
-                  -- Agent trials only: an audit trial runs concurrently with
-                  -- them, and counting it here would suppress this backstop
-                  -- for its whole task while it runs.
-                  AND tr.kind = 'agent'
+                  -- Audit-only tasks also need recovery if the worker died
+                  -- after storing findings but before re-entering admission.
+                  -- Admission now waits for the audit even without solvers.
+                  AND tr.kind IN ('agent', 'audit')
                 GROUP BY t.id
                 HAVING COUNT(*) FILTER (
                     WHERE tr.status IN ('PENDING', 'QUEUED', 'RUNNING', 'PAUSED', 'RETRYING')
@@ -1758,7 +1758,12 @@ async def _heal_stale_verdict_pending(session) -> tuple[int, list[str]]:
     caller runs those AFTER this transaction commits, because the importer
     locks the same task rows this healer may still hold FOR UPDATE.
     """
-    from oddish.queue import live_analysis_trial_id, start_qa_for_task
+    from oddish.queue import start_qa_for_task, task_audit_pending
+    from oddish.core.analysis_payload import (
+        AnalysisPayloadError,
+        audit_snapshot_matches,
+    )
+    from oddish.workers.analysis_trials import analysis_check_payload
 
     stale_verdict_pending = (
         await session.execute(
@@ -1820,6 +1825,8 @@ async def _heal_stale_verdict_pending(session) -> tuple[int, list[str]]:
                 )
                 if active_qa is not None:
                     continue
+                if await task_audit_pending(session, task):
+                    continue
                 if task.verdict_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
                     task.status = TaskStatus.COMPLETED
                     task.finished_at = task.finished_at or utcnow()
@@ -1836,31 +1843,35 @@ async def _heal_stale_verdict_pending(session) -> tuple[int, list[str]]:
                         WHERE tr.task_id = :task_id AND tr.kind = 'qa'
                           AND tr.deleted_at IS NULL
                           AND tr.superseded_by_trial_id IS NULL
+                          AND COALESCE(tr.harbor_stage, '') <> 'cancelled'
                           AND tr.status::text IN ('SUCCESS', 'FAILED')
-                        ORDER BY tr.created_at DESC LIMIT 1
+                        ORDER BY tr.created_at DESC, tr.id DESC LIMIT 1
                         """
                     ),
                     {"task_id": task.id},
                 )
                 if settled_qa is not None:
-                    logger.info(
-                        "healer: task %s has settled qa trial %s with no "
-                        "verdict, re-importing",
-                        task.id,
-                        settled_qa,
+                    settled = await session.get(TrialModel, str(settled_qa))
+                    version = (
+                        await session.get(TaskVersionModel, task.current_version_id)
+                        if task.current_version_id
+                        else None
                     )
-                    reimport_trial_ids.append(str(settled_qa))
-                    continue
-                # start_qa_for_task itself has no audit gate; creating a QA
-                # trial while an audit is live would bake "(none recorded)"
-                # findings into its brief. Skip for now: the audit's
-                # settlement re-enters admission, and the next sweep retries
-                # regardless.
-                if (
-                    await live_analysis_trial_id(session, task.id, kind="audit")
-                    is not None
-                ):
-                    continue
+                    try:
+                        expected = analysis_check_payload("qa", settled.harbor_config)
+                    except AnalysisPayloadError:
+                        expected = None  # The importer records the malformed payload.
+                    if settled.task_version_id == task.current_version_id and (
+                        expected is None or audit_snapshot_matches(version, expected)
+                    ):
+                        logger.info(
+                            "healer: task %s has settled qa trial %s with no "
+                            "verdict, re-importing",
+                            task.id,
+                            settled_qa,
+                        )
+                        reimport_trial_ids.append(str(settled_qa))
+                        continue
                 if await start_qa_for_task(session, task):
                     logger.info(
                         "healer: task %s was wedged in VERDICT_PENDING "
@@ -1878,7 +1889,7 @@ async def _heal_stale_verdict_pending(session) -> tuple[int, list[str]]:
 
 
 async def _heal_stale_audit_imports(session) -> list[str]:
-    """Step 4b -- task versions stuck with a queued/running pre-trial audit
+    """Step 4b -- task versions awaiting pre-trial audit publication
     whose audit trial already settled: the importer died between settle and
     import (transient exception, worker crash). Returns the newest settled
     audit trial id per stuck version for the caller to re-import AFTER this
@@ -1903,9 +1914,9 @@ async def _heal_stale_audit_imports(session) -> list[str]:
                       AND tr.superseded_by_trial_id IS NULL
                       AND COALESCE(tr.harbor_stage, '') != 'cancelled'
                       AND tr.status::text IN ('SUCCESS', 'FAILED', 'SKIPPED')
-                    ORDER BY tr.created_at DESC LIMIT 1
+                    ORDER BY tr.created_at DESC, tr.id DESC LIMIT 1
                 ) settled ON true
-                WHERE tv.pre_trial_status::text IN ('QUEUED', 'RUNNING')
+                WHERE tv.pre_trial_status::text IN ('PENDING', 'QUEUED', 'RUNNING')
                   AND NOT EXISTS (
                       SELECT 1 FROM trials live
                       WHERE live.task_version_id = tv.id

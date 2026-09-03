@@ -70,7 +70,7 @@ def test_counts_ignore_model_supplied_values():
     assert payload["task_problem_count"] == 0
 
 
-def test_cancel_verdict_restores_the_preserved_success() -> None:
+def test_cancel_verdict_discards_the_superseded_success() -> None:
     payload = {"verdict": "accept", "is_good": True}
     finished_at = object()
     task = SimpleNamespace(
@@ -81,13 +81,13 @@ def test_cancel_verdict_restores_the_preserved_success() -> None:
         verdict_finished_at=finished_at,
     )
 
-    cancel_verdict(task, error="cancelled", now=object())
+    cancelled_at = object()
+    cancel_verdict(task, error="cancelled", now=cancelled_at)
 
-    assert task.verdict is payload
-    assert task.verdict_status == VerdictStatus.SUCCESS
-    assert task.verdict_error is None
-    assert task.verdict_started_at is None
-    assert task.verdict_finished_at is finished_at
+    assert task.verdict is None
+    assert task.verdict_status == VerdictStatus.FAILED
+    assert task.verdict_error == "cancelled"
+    assert task.verdict_finished_at is cancelled_at
 
 
 def test_fail_verdict_discards_the_preserved_success() -> None:
