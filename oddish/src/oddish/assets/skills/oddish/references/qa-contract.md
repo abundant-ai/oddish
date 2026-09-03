@@ -84,11 +84,12 @@ The pass rereads and reclassifies every eligible trial even without `--force`.
 cleared before the replacement starts; they do not narrow the QA trial's input
 set. Therefore `backfill-analysis --trial X` is still a task-wide QA run.
 
-While a replacement is queued or running, the last successful verdict may
-remain visible. A successful replacement publishes the new result; cancelling
-the replacement restores the prior successful verdict state; a terminal
-replacement failure clears the preserved verdict according to the verdict
-state machine.
+Queuing a replacement clears the current verdict. While it is queued or
+running, the page shows QA in progress. Completion publishes only the new
+verdict; if QA produced classifications without an overall verdict, the page
+shows "No current verdict". Cancelling, failing, or abandoning the active
+replacement does not restore the previous verdict. Older QA artifacts remain
+in trial storage.
 
 `oddish cancel <task_id> --qa` cancels live `qa` and `audit` trials for that
 task. The CLI label says QA, but the endpoint also stops the pre-trial audit.
