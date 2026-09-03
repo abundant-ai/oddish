@@ -45,6 +45,7 @@ from modal_app import (  # noqa: E402
     API_MAX_CONTAINERS,
     API_MEMORY_MB,
     API_MIN_CONTAINERS,
+    API_REGIONS,
     API_TIMEOUT_SECONDS,
     API_WEBHOOK_LABEL,
     api_volumes,
@@ -80,6 +81,8 @@ api = create_asgi_app()
     min_containers=API_MIN_CONTAINERS,
     buffer_containers=API_BUFFER_CONTAINERS,
     max_containers=API_MAX_CONTAINERS,
+    # Next to the database; see API_REGIONS in modal_app.py for the numbers.
+    region=API_REGIONS,
 )
 @modal.concurrent(
     target_inputs=API_CONCURRENCY_TARGET,
