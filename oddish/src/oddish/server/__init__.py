@@ -764,8 +764,8 @@ async def backfill_task_qa(task_id: str, body: BackfillQARequest) -> dict:
 async def rerun_pre_trial_audit(task_id: str) -> dict:
     """Queue the pre-trial audit for the task's current version.
 
-    Runs only the audit. Does not classify trials and does not synthesize
-    the verdict.
+    Withdraws the old verdict. After the audit and existing runs finish,
+    task QA uses the replacement findings to reconcile classifications and decision.
     """
     async with get_session() as session:
         return await rerun_pre_trial_audit_core(session, task_id=task_id)
