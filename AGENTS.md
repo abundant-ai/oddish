@@ -76,8 +76,8 @@ frontend/                       # Next.js App Router dashboard
 ├── src/
 │   ├── app/
 │   │   ├── page.tsx            # Public landing page / signed-in redirect
-│   │   ├── (app)/              # Authenticated shell: dashboard, tasks, experiments,
-│   │   │                       # qa, skills, documents, usage, settings, admin
+│   │   ├── (app)/              # Authenticated shell: dashboard, tasks, deliveries,
+│   │   │                       # models, qa, skills, documents, settings, admin
 │   │   ├── share/[token]/      # Public experiment page
 │   │   ├── datasets/           # Public dataset pages
 │   │   ├── api/                # Backend proxy route handlers
@@ -467,19 +467,21 @@ alert settings, model endpoint smoke checks, and the global cost-exclusion
 lists) additionally require the
 active org to match
 `ODDISH_OPERATOR_ORG_ID`, which fails closed when unset; the frontend discovers
-that capability through `GET /admin/operator-access` and hides those controls
-for other orgs. `GET /admin/concurrency` reports the deploy, database override,
+admin capabilities through `GET /admin/operator-access` and model-check access
+through `GET /models`, then hides those controls for other orgs.
+`GET /admin/concurrency` reports the deploy, database override,
 deprecated-controller advisory, and actual effective limit for one canonical
 queue key; `PUT /admin/concurrency` sets or clears the database override.
-`POST /admin/model-endpoints` sends one short `litellm_completion` request from
-the hosted API container using its platform provider credentials. It does not
-claim to exercise an agent's Responses, Messages, CLI, or sandbox path.
-Expected provider and configuration failures return a structured 200 response;
-unexpected integration/programming errors remain 500s. The request creates no
-task, trial, worker job, or persisted history. The operator-only frontend
-Diagnostics tab derives its model rows from `GET /admin/queue-health` capacity
-keys, runs "Test all" in batches of at most three, and keeps results only in
-browser state.
+`GET /models` lets any authenticated member discover whether their active org is
+the operator org and, when it is, returns the configured model queue keys.
+`POST /models/check` requires TASKS scope plus the operator org and sends one
+short `litellm_completion` request from the hosted API container using its
+platform provider credentials. It does not claim to exercise an agent's
+Responses, Messages, CLI, or sandbox path. Expected provider and configuration
+failures return a structured 200 response; unexpected integration/programming
+errors remain 500s. The request creates no task, trial, worker job, or persisted
+history. The operator-only frontend `/models` page runs "Test all" in batches of
+at most three and keeps results only in browser state.
 
 Admin cost exclusions (`oddish/core/cost_exclusions.py`) name spend that was
 never really paid for, along three axes: a **model** (`cost_excluded_models`,

@@ -1134,6 +1134,16 @@ export interface ModelEndpointCheckResponse {
   request_id: string | null;
 }
 
+export interface ModelEndpointSummary {
+  model: string;
+  provider: string;
+}
+
+export interface ModelEndpointCatalogResponse {
+  allowed: boolean;
+  models: ModelEndpointSummary[];
+}
+
 export interface CostModelBreakdown {
   model: string;
   provider: string;

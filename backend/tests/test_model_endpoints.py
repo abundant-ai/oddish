@@ -1,3 +1,5 @@
+"""Tests for the model catalog and direct provider completion checks."""
+
 import sys
 from types import SimpleNamespace
 
@@ -5,19 +7,92 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from api.app import create_app
-from api.routers import admin as admin_router
-from auth import require_admin
+from api.routers import model_endpoints as model_endpoints_router
+from auth import require_auth
+from auth.types import AuthContext, AuthMethod
+from models import APIKeyScope, UserRole
 
 
-def _app():
+def _app(auth: AuthContext | None = None):
     app = create_app()
-    app.dependency_overrides[require_admin] = lambda: SimpleNamespace(org_id="org-1")
+    app.dependency_overrides[require_auth] = lambda: (
+        auth
+        or AuthContext(
+            method=AuthMethod.CLERK_JWT,
+            org_id="org-1",
+            user_role=UserRole.MEMBER,
+        )
+    )
     return app
 
 
 @pytest.fixture(autouse=True)
 def operator_org(monkeypatch):
     monkeypatch.setenv("ODDISH_OPERATOR_ORG_ID", "org-1")
+
+
+@pytest.mark.asyncio
+async def test_model_catalog_lists_only_configured_model_queue_keys(monkeypatch):
+    settings_type = type(model_endpoints_router.settings)
+    monkeypatch.setattr(
+        settings_type,
+        "get_known_queue_keys",
+        lambda _self: {
+            "global.anthropic.claude-opus-5",
+            "openai/gpt-5.4-mini",
+            "task_expand",
+        },
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_app()), base_url="http://test"
+    ) as client:
+        response = await client.get("/models")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "allowed": True,
+        "models": [
+            {
+                "model": "global.anthropic.claude-opus-5",
+                "provider": "bedrock",
+            },
+            {"model": "openai/gpt-5.4-mini", "provider": "openai"},
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_model_catalog_hides_models_outside_operator_org(monkeypatch):
+    monkeypatch.setenv("ODDISH_OPERATOR_ORG_ID", "org-2")
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_app()), base_url="http://test"
+    ) as client:
+        response = await client.get("/models")
+
+    assert response.status_code == 200
+    assert response.json() == {"allowed": False, "models": []}
+
+
+@pytest.mark.asyncio
+async def test_model_check_rejects_read_only_api_keys():
+    read_only_auth = AuthContext(
+        method=AuthMethod.API_KEY,
+        org_id="org-1",
+        scope=APIKeyScope.READ,
+    )
+    async with AsyncClient(
+        transport=ASGITransport(app=_app(read_only_auth)), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/models/check", json={"model": "openai/gpt-5.4-mini"}
+        )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == (
+        "Insufficient scope. Required: tasks, got: read"
+    )
 
 
 @pytest.mark.asyncio
@@ -36,7 +111,7 @@ async def test_model_endpoint_returns_provider_response(monkeypatch):
         transport=ASGITransport(app=_app()), base_url="http://test"
     ) as client:
         response = await client.post(
-            "/admin/model-endpoints", json={"model": " Google/Gemini-3.5-Flash "}
+            "/models/check", json={"model": " Google/Gemini-3.5-Flash "}
         )
 
     assert response.status_code == 200
@@ -67,7 +142,7 @@ async def test_model_endpoint_adds_litellm_bedrock_provider_prefix(monkeypatch):
         transport=ASGITransport(app=_app()), base_url="http://test"
     ) as client:
         response = await client.post(
-            "/admin/model-endpoints",
+            "/models/check",
             json={"model": "global.anthropic.claude-sonnet-5"},
         )
 
@@ -90,14 +165,16 @@ async def test_model_endpoint_remaps_anthropic_hdo_and_uses_hdo_key(monkeypatch)
             choices=[SimpleNamespace(message=SimpleNamespace(content="Claude."))],
         )
 
-    monkeypatch.setattr(admin_router.settings, "anthropic_hdo_api_key", "hdo-key")
+    monkeypatch.setattr(
+        model_endpoints_router.settings, "anthropic_hdo_api_key", "hdo-key"
+    )
     monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(acompletion=completion))
 
     async with AsyncClient(
         transport=ASGITransport(app=_app()), base_url="http://test"
     ) as client:
         response = await client.post(
-            "/admin/model-endpoints",
+            "/models/check",
             json={"model": "anthropic-hdo/claude-sonnet-4-6"},
         )
 
@@ -123,7 +200,7 @@ async def test_model_endpoint_uses_azure_resource_root_for_litellm(monkeypatch):
             choices=[SimpleNamespace(message=SimpleNamespace(content="GPT."))],
         )
 
-    settings_type = type(admin_router.settings)
+    settings_type = type(model_endpoints_router.settings)
     monkeypatch.setattr(settings_type, "get_openai_provider", lambda _self: "azure")
     monkeypatch.setattr(
         settings_type,
@@ -145,7 +222,7 @@ async def test_model_endpoint_uses_azure_resource_root_for_litellm(monkeypatch):
         transport=ASGITransport(app=_app()), base_url="http://test"
     ) as client:
         response = await client.post(
-            "/admin/model-endpoints", json={"model": "openai/gpt-5.4-mini"}
+            "/models/check", json={"model": "openai/gpt-5.4-mini"}
         )
 
     assert response.status_code == 200
@@ -183,7 +260,7 @@ async def test_model_endpoint_surfaces_upstream_http_status(monkeypatch, status_
         transport=ASGITransport(app=_app()), base_url="http://test"
     ) as client:
         response = await client.post(
-            "/admin/model-endpoints", json={"model": "xai/grok-code-fast-1"}
+            "/models/check", json={"model": "xai/grok-code-fast-1"}
         )
 
     assert response.status_code == 200
@@ -232,7 +309,7 @@ async def test_model_endpoint_surfaces_transport_failures(monkeypatch, error_nam
         transport=ASGITransport(app=_app()), base_url="http://test"
     ) as client:
         response = await client.post(
-            "/admin/model-endpoints", json={"model": "xai/grok-code-fast-1"}
+            "/models/check", json={"model": "xai/grok-code-fast-1"}
         )
 
     assert response.status_code == 200
@@ -267,7 +344,7 @@ async def test_model_endpoint_does_not_hide_internal_errors(monkeypatch):
         base_url="http://test",
     ) as client:
         response = await client.post(
-            "/admin/model-endpoints", json={"model": "minimax/minimax-m3"}
+            "/models/check", json={"model": "minimax/minimax-m3"}
         )
 
     assert response.status_code == 500
@@ -278,7 +355,7 @@ async def test_model_endpoint_reports_configuration_errors(monkeypatch):
     def missing_config(_settings):
         raise RuntimeError("AZURE_OPENAI_API_KEY is missing")
 
-    settings_type = type(admin_router.settings)
+    settings_type = type(model_endpoints_router.settings)
     monkeypatch.setattr(settings_type, "get_openai_provider", lambda _self: "azure")
     monkeypatch.setattr(settings_type, "require_azure_openai_config", missing_config)
 
@@ -286,7 +363,7 @@ async def test_model_endpoint_reports_configuration_errors(monkeypatch):
         transport=ASGITransport(app=_app()), base_url="http://test"
     ) as client:
         response = await client.post(
-            "/admin/model-endpoints", json={"model": "openai/gpt-5.4-mini"}
+            "/models/check", json={"model": "openai/gpt-5.4-mini"}
         )
 
     assert response.status_code == 200
@@ -299,9 +376,7 @@ async def test_model_endpoint_rejects_non_model_queue_key():
     async with AsyncClient(
         transport=ASGITransport(app=_app()), base_url="http://test"
     ) as client:
-        response = await client.post(
-            "/admin/model-endpoints", json={"model": "task_expand"}
-        )
+        response = await client.post("/models/check", json={"model": "task_expand"})
 
     assert response.status_code == 422
     assert response.json()["detail"] == "Queue key is not an LLM model"
@@ -314,7 +389,7 @@ async def test_model_endpoint_requires_operator_org(monkeypatch):
         transport=ASGITransport(app=_app()), base_url="http://test"
     ) as client:
         response = await client.post(
-            "/admin/model-endpoints", json={"model": "minimax/minimax-m3"}
+            "/models/check", json={"model": "minimax/minimax-m3"}
         )
 
     assert response.status_code == 403

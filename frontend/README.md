@@ -134,6 +134,7 @@ The frontend proxies backend requests through `src/app/api/*`. Main groups:
 - `/api/tasks/*` for task browse/search, task detail, versions, trials, files, direct-to-S3 upload init/complete, `POST /api/tasks/cancel`, and task-level QA retry/cancel actions
 - `/api/trials/*` for trial logs, structured logs, result payloads, retries, trajectories, and files
 - `/api/experiments/*` for experiment detail, task listing, publish, unpublish, and share token creation
+- `/api/models` for the operator-org model catalog and direct provider completion checks
 - `/api/settings/api-keys*` for API key management
 - `/api/admin/*` for queue slots, queue status, orphaned state, and the unified `worker-jobs` matrix (`/api/admin/worker-jobs`)
 - `/api/public/*` for public experiment, dataset, task-file, and trial artifact access
@@ -149,6 +150,7 @@ frontend/
 │   │   │   ├── dashboard/
 │   │   │   ├── tasks/
 │   │   │   ├── experiments/
+│   │   │   ├── models/
 │   │   │   ├── settings/
 │   │   │   └── admin/
 │   │   ├── share/[token]/        # Public experiment page
