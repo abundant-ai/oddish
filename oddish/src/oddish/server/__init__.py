@@ -86,6 +86,7 @@ from oddish.config import settings
 from oddish.db import (
     ExperimentModel,
     TrialModel,
+    get_read_session,
     get_session,
     init_db,
     get_pool,
@@ -260,7 +261,7 @@ api.include_router(qa_work_router)
 async def health():
     """Health check endpoint."""
     try:
-        async with get_session() as session:
+        async with get_read_session() as session:
             await session.execute(text("SELECT 1"))
         db_ok = True
     except Exception:
@@ -299,7 +300,7 @@ async def get_dashboard(
     if normalized not in {"", "all", "me"}:
         author_user_id = normalized
 
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await get_dashboard_core(
             session,
             tasks_limit=tasks_limit,
@@ -472,7 +473,7 @@ async def list_tasks(
     offset: int = 0,
 ):
     """List all tasks with optional filtering."""
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await list_tasks_core(
             session,
             status=status,
@@ -509,7 +510,7 @@ async def browse_tasks(
     trial_metric_match: str = Query("any", pattern="^(any|all)$"),
 ) -> TaskBrowseResponse:
     """Browse selected default task versions with aggregated trial stats."""
-    async with get_session() as session:
+    async with get_read_session() as session:
         from oddish.filters.trial_metrics import TrialMetricFilter
 
         try:
@@ -560,7 +561,7 @@ async def browse_experiment_options(
     hydrates already-selected filter chips and wins over ``query``. Replaces
     the deprecated, always-empty ``facets.experiments`` list.
     """
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await browse_experiment_options_core(
             session,
             query=query,
@@ -572,7 +573,7 @@ async def browse_experiment_options(
 @api.get("/tasks/{task_id}", response_model=TaskStatusResponse)
 async def get_task_status(task_id: str):
     """Get status of a task with all trials, analyses, and verdict."""
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await get_task_status_core(
             session,
             task_id=task_id,
@@ -584,28 +585,28 @@ async def get_task_status(task_id: str):
 @api.get("/tasks/{task_id}/open", response_model=TaskOpenResponse)
 async def get_task_open(task_id: str, version_id: str | None = None):
     """Bounded task-page header, aggregates, and trial preview."""
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await get_task_open_core(session, task_id=task_id, version_id=version_id)
 
 
 @api.get("/tasks/{task_id}/detail", response_model=TaskDetailResponse)
 async def get_task_detail(task_id: str):
     """Task detail bundle: task + trials + per-version + cost rollups."""
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await get_task_detail_core(session, task_id=task_id)
 
 
 @api.get("/tasks/{task_id}/versions", response_model=list[TaskVersionResponse])
 async def list_task_versions(task_id: str):
     """List all versions of a task, newest first."""
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await list_task_versions_core(session, task_id=task_id)
 
 
 @api.get("/tasks/{task_id}/versions/{version}", response_model=TaskVersionResponse)
 async def get_task_version(task_id: str, version: int):
     """Get a specific version of a task."""
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await get_task_version_core(session, task_id=task_id, version=version)
 
 
@@ -724,7 +725,7 @@ async def update_experiment(
 @api.get("/tasks/{task_id}/trials/{index}", response_model=TrialResponse)
 async def get_trial(task_id: str, index: int):
     """Get a specific trial by its 0-based index within the task."""
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await get_trial_by_index_core(session, task_id=task_id, index=index)
 
 
@@ -825,7 +826,7 @@ async def get_trial_live(
     trial_id: str, attempt: int | None = None, after_seq: int = 0
 ) -> dict:
     """Live transcript events + running usage for a trial ((attempt, seq) cursor)."""
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await read_trial_live_for_id(
             session, trial_id=trial_id, attempt=attempt, after_seq=after_seq
         )
@@ -880,7 +881,7 @@ async def list_task_files(
     ),
 ):
     """List all files in a task's S3 directory with optional presigned URLs."""
-    async with get_session() as session:
+    async with get_read_session() as session:
         version, task_s3_prefix = await resolve_task_file_source(
             session, task_id=task_id, version=version
         )
@@ -921,7 +922,7 @@ async def get_task_file_content(
     max_bytes: int | None = Query(None, ge=1),
 ) -> dict:
     """Get content of a specific task file from S3."""
-    async with get_session() as session:
+    async with get_read_session() as session:
         version, task_s3_prefix = await resolve_task_file_source(
             session, task_id=task_id, version=version
         )
@@ -987,14 +988,14 @@ async def get_trial_file(trial_id: str, file_path: str) -> Response:
 @api.get("/admin/slots", response_model=QueueSlotsResponse)
 async def admin_queue_slots() -> QueueSlotsResponse:
     """Get current state of queue-key slot leases."""
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await get_queue_slots_core(session)
 
 
 @api.get("/admin/queue-status", response_model=QueueStatusResponse)
 async def admin_queue_status() -> QueueStatusResponse:
     """Get queue status from the trials/tasks tables."""
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await get_queue_status_core(session)
 
 
@@ -1003,7 +1004,7 @@ async def admin_orphaned_state(
     stale_after_minutes: int = Query(15, ge=1, le=240),
 ) -> OrphanedStateResponse:
     """Summarize stale queue/pipeline state."""
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await get_orphaned_state_core(
             session, stale_after_minutes=stale_after_minutes
         )
@@ -1012,7 +1013,7 @@ async def admin_orphaned_state(
 @api.get("/admin/queue-health", response_model=QueueHealthResponse)
 async def admin_queue_health() -> QueueHealthResponse:
     """Throughput, per-queue-key capacity fill, and component heartbeats."""
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await get_queue_health_core(session)
 
 

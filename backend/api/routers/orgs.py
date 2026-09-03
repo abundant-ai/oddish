@@ -61,14 +61,15 @@ from oddish.core.quotas import (
     sum_org_cost_usd,
 )
 from oddish.core.tags.ownership_transfer import transfer_tag_ownership_to_admin
-from oddish.db import get_session, utcnow
+from oddish.db import get_read_session, get_session, utcnow
+from oddish.db.optional_read import read_optional_table
+
 
 logger = logging.getLogger(__name__)
 
 CLERK_SECRET_KEY = os.getenv("CLERK_SECRET_KEY", "")
 
 router = APIRouter(tags=["Organization"])
-
 
 
 # =============================================================================
@@ -99,7 +100,7 @@ async def list_users(
 ) -> list[UserResponse]:
     """List all users in the organization."""
 
-    async with get_session() as session:
+    async with get_read_session() as session:
         result = await session.execute(
             select(UserModel)
             .where(UserModel.org_id == auth.org_id)
@@ -129,10 +130,13 @@ async def get_my_quota_usage(
     used_usd = reserved = bump_usd = Decimal(0)
     base_limit_usd, bump_expires_at = settings.default_daily_quota_usd, None
     if auth.user_id:
-        async with get_session() as session:
-            used_usd, base_limit_usd, bump_usd, bump_expires_at = (
-                await _read_member_quota_fields(session, auth.org_id, auth.user_id)
-            )
+        async with get_read_session() as session:
+            (
+                used_usd,
+                base_limit_usd,
+                bump_usd,
+                bump_expires_at,
+            ) = await _read_member_quota_fields(session, auth.org_id, auth.user_id)
             reserved = await inflight_reserved_usd(session, auth.org_id, auth.user_id)
 
     return QuotaUsageResponse(
@@ -150,9 +154,7 @@ async def get_my_quota_usage(
 async def _get_member_or_404(session, org_id: str | None, user_id: str) -> UserModel:
     member = (
         await session.execute(
-            select(UserModel).where(
-                UserModel.id == user_id, UserModel.org_id == org_id
-            )
+            select(UserModel).where(UserModel.id == user_id, UserModel.org_id == org_id)
         )
     ).scalar_one_or_none()
     if member is None:
@@ -219,7 +221,7 @@ async def _org_quota_fields_no_cap_table(org_id) -> dict:
     # configured default, but month spend + in-flight reservation live on the
     # trials table and stay readable, so report the real usage, not zero.
     default = _as_float_or_none(settings.default_org_monthly_quota_usd)
-    async with get_session() as session:
+    async with get_read_session() as session:
         org_used, org_reserved = await _org_trial_usage(session, org_id)
     return {
         "org_limit_usd": default,
@@ -231,7 +233,7 @@ async def _org_quota_fields_no_cap_table(org_id) -> dict:
 
 async def _org_quota_fields_or_unavailable(org_id) -> dict:
     try:
-        async with get_session() as session:
+        async with get_read_session() as session:
             return await _org_quota_fields(session, org_id)
     except ProgrammingError as exc:
         if not is_undefined_table_error(exc):
@@ -250,7 +252,7 @@ async def _bump_totals_or_empty(org_id) -> dict:
     # the org-cap fallback above. Own session so a missing table cannot poison a
     # caller's transaction.
     try:
-        async with get_session() as session:
+        async with get_read_session() as session:
             return await live_bump_totals_by_user(session, org_id)
     except ProgrammingError as exc:
         if not is_undefined_table_error(exc):
@@ -266,22 +268,17 @@ async def _bump_totals_or_empty(org_id) -> dict:
 async def _bump_total_or_zero(
     session, org_id, user_id
 ) -> tuple[Decimal, datetime | None]:
-    # Savepoint so a missing quota_bumps table (deploy-before-migrate) rolls back
-    # just this read and leaves the caller's transaction usable -- while still
-    # seeing the caller's own uncommitted writes, so POST/DELETE can build their
-    # response from a re-read in the same transaction.
-    try:
-        async with session.begin_nested():
-            return await live_bump_total(session, org_id, user_id)
-    except ProgrammingError as exc:
-        if not is_undefined_table_error(exc):
-            raise
-        logger.warning(
-            "boost lookup unavailable (quota_bumps schema not migrated yet); "
-            "treating member as un-boosted",
-            exc_info=True,
-        )
-        return Decimal(0), None
+    # A missing quota_bumps table (deploy-before-migrate) degrades to
+    # "un-boosted". The helper keeps the caller's transaction usable on write
+    # sessions -- POST/DELETE build their response from a re-read that must see
+    # their own uncommitted writes -- and skips the savepoint on read sessions.
+    bump = await read_optional_table(
+        session,
+        lambda: live_bump_total(session, org_id, user_id),
+        table="quota_bumps",
+        degraded="treating member as un-boosted",
+    )
+    return bump if bump is not None else (Decimal(0), None)
 
 
 @router.get("/quotas", response_model=QuotaListResponse)
@@ -291,7 +288,7 @@ async def list_member_quotas(
     period_start = quota_window_start()
     default_limit_usd = settings.default_daily_quota_usd
 
-    async with get_session() as session:
+    async with get_read_session() as session:
         members = (
             (
                 await session.execute(
@@ -368,7 +365,7 @@ async def get_org_quota_usage(
         raise HTTPException(status_code=404, detail="Organization not found")
 
     try:
-        async with get_session() as session:
+        async with get_read_session() as session:
             org_fields = await _org_quota_fields(session, auth.org_id)
             org_used_today = await sum_org_cost_usd(
                 session, auth.org_id, start_of_today_utc()
@@ -382,7 +379,7 @@ async def get_org_quota_usage(
             exc_info=True,
         )
         org_fields = await _org_quota_fields_no_cap_table(auth.org_id)
-        async with get_session() as session:
+        async with get_read_session() as session:
             org_used_today = await sum_org_cost_usd(
                 session, auth.org_id, start_of_today_utc()
             )

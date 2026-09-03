@@ -79,9 +79,12 @@ async def _session(refresh_trial=None):
 
 def test_get_returns_stored_summary_when_no_refresh_is_current(client):
     summary = {"schema_version": 5, "components": []}
-    with patch(
-        "api.routers.trials._get_authorized_trial",
-        new=AsyncMock(return_value=_trial(summary)),
+    with (
+        patch(
+            "api.routers.trials.get_trial_for_org_core",
+            new=AsyncMock(return_value=_trial(summary)),
+        ),
+        patch("api.routers.trials.get_read_session", new=lambda: _session()),
     ):
         response = client.get("/trials/t-1/trajectory/summary")
     assert response.status_code == 200
@@ -89,9 +92,12 @@ def test_get_returns_stored_summary_when_no_refresh_is_current(client):
 
 
 def test_get_returns_missing_resource_when_nothing_is_published(client):
-    with patch(
-        "api.routers.trials._get_authorized_trial",
-        new=AsyncMock(return_value=_trial(None)),
+    with (
+        patch(
+            "api.routers.trials.get_trial_for_org_core",
+            new=AsyncMock(return_value=_trial(None)),
+        ),
+        patch("api.routers.trials.get_read_session", new=lambda: _session()),
     ):
         response = client.get("/trials/t-1/trajectory/summary")
     assert response.status_code == 404
@@ -107,12 +113,12 @@ def test_get_reports_current_live_refresh_before_stored_summary(
     refresh = _summarize_trial(trial_status)
     with (
         patch(
-            "api.routers.trials._get_authorized_trial",
+            "api.routers.trials.get_trial_for_org_core",
             new=AsyncMock(
                 return_value=_trial({"stale": True}, refresh_trial_id=refresh.id)
             ),
         ),
-        patch("api.routers.trials.get_session", new=lambda: _session(refresh)),
+        patch("api.routers.trials.get_read_session", new=lambda: _session(refresh)),
     ):
         response = client.get("/trials/t-1/trajectory/summary")
     assert response.status_code == 200
@@ -130,10 +136,10 @@ def test_get_reports_successful_unimported_refresh_as_settling(client):
     refresh = _summarize_trial("success")
     with (
         patch(
-            "api.routers.trials._get_authorized_trial",
+            "api.routers.trials.get_trial_for_org_core",
             new=AsyncMock(return_value=_trial(None, refresh_trial_id=refresh.id)),
         ),
-        patch("api.routers.trials.get_session", new=lambda: _session(refresh)),
+        patch("api.routers.trials.get_read_session", new=lambda: _session(refresh)),
     ):
         response = client.get("/trials/t-1/trajectory/summary")
     assert response.status_code == 202
@@ -144,12 +150,12 @@ def test_get_reports_current_failed_refresh(client):
     refresh = _summarize_trial("failed")
     with (
         patch(
-            "api.routers.trials._get_authorized_trial",
+            "api.routers.trials.get_trial_for_org_core",
             new=AsyncMock(
                 return_value=_trial({"stale": True}, refresh_trial_id=refresh.id)
             ),
         ),
-        patch("api.routers.trials.get_session", new=lambda: _session(refresh)),
+        patch("api.routers.trials.get_read_session", new=lambda: _session(refresh)),
     ):
         response = client.get("/trials/t-1/trajectory/summary")
     assert response.status_code == 200
@@ -172,10 +178,10 @@ def test_get_reports_cancelled_refresh_as_failed_even_if_trial_status_is_success
     refresh.harbor_stage = "cancelled"
     with (
         patch(
-            "api.routers.trials._get_authorized_trial",
+            "api.routers.trials.get_trial_for_org_core",
             new=AsyncMock(return_value=_trial(None, refresh_trial_id=refresh.id)),
         ),
-        patch("api.routers.trials.get_session", new=lambda: _session(refresh)),
+        patch("api.routers.trials.get_read_session", new=lambda: _session(refresh)),
     ):
         response = client.get("/trials/t-1/trajectory/summary")
     assert response.status_code == 409

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import time
-from collections import OrderedDict
 from dataclasses import dataclass
 
 import httpx
@@ -19,8 +18,10 @@ from models import (
     UserRole,
     hash_api_key,
 )
+from oddish.cache import TTLCache
 from oddish.db import utcnow
 from oddish.timing import RequestTimedAsyncClient
+
 
 from auth.types import AuthMethod
 
@@ -43,9 +44,18 @@ JWKS_CACHE_TTL = 3600  # 1 hour
 # =============================================================================
 # Cache validated auth contexts to avoid repeated DB queries.
 # Key: (clerk_user_id, clerk_org_id) for JWT or api_key_hash for API keys
-# Value: (CachedAuthData, timestamp)
+#
+# Two lifetimes, because the two credentials revoke differently. An API key
+# has no expiry of its own, so revoking one must bite within a minute: 60 s.
+# A Clerk session token is verified locally on every request and expires on
+# its own within about a minute, so the cache entry only maps Clerk ids to
+# internal ids; role and email are taken from the freshly verified token on
+# every hit. That lets identities live for 15 minutes, which is what turns
+# the per-container miss rate on dashboard traffic (measured at 80-90% with
+# 60 s) into a handful of database sessions per container per hour.
 
-AUTH_CACHE_TTL = 60  # 60 seconds - short enough to pick up permission changes
+AUTH_CACHE_TTL = 60  # API keys: short enough to pick up a revocation
+AUTH_IDENTITY_TTL = int(os.getenv("ODDISH_AUTH_IDENTITY_TTL_SECONDS", "900"))
 
 
 @dataclass
@@ -66,48 +76,9 @@ class CachedAuthData:
 
 _AUTH_CACHE_MAX_SIZE = 1000  # Prevent unbounded growth
 
-
-class _TTLCache:
-    """Simple TTL + size-bounded cache for auth context."""
-
-    def __init__(self, ttl_seconds: int, max_size: int) -> None:
-        self._ttl_seconds = ttl_seconds
-        self._max_size = max_size
-        self._data: OrderedDict[str, tuple[CachedAuthData, float]] = OrderedDict()
-
-    def get(self, key: str) -> CachedAuthData | None:
-        now = time.time()
-        entry = self._data.get(key)
-        if not entry:
-            return None
-        value, expires_at = entry
-        if expires_at <= now:
-            self._data.pop(key, None)
-            return None
-        self._data.move_to_end(key)
-        return value
-
-    def set(self, key: str, value: CachedAuthData) -> None:
-        now = time.time()
-        self._data[key] = (value, now + self._ttl_seconds)
-        self._data.move_to_end(key)
-        self._purge(now)
-
-    def _purge(self, now: float) -> None:
-        expired = [k for k, (_, exp) in self._data.items() if exp <= now]
-        for k in expired:
-            self._data.pop(k, None)
-        while len(self._data) > self._max_size:
-            self._data.popitem(last=False)
-
-    def invalidate_prefix(self, prefix: str) -> int:
-        keys = [k for k in self._data if k.startswith(prefix)]
-        for k in keys:
-            self._data.pop(k, None)
-        return len(keys)
-
-
-_auth_cache = _TTLCache(AUTH_CACHE_TTL, _AUTH_CACHE_MAX_SIZE)
+_auth_cache: TTLCache[str, CachedAuthData] = TTLCache(
+    AUTH_CACHE_TTL, max_size=_AUTH_CACHE_MAX_SIZE
+)
 
 
 def get_cached_auth(cache_key: str) -> CachedAuthData | None:
@@ -115,19 +86,25 @@ def get_cached_auth(cache_key: str) -> CachedAuthData | None:
     return _auth_cache.get(cache_key)
 
 
-def set_cached_auth(cache_key: str, data: CachedAuthData) -> None:
-    """Cache auth data with current timestamp."""
-    _auth_cache.set(cache_key, data)
+def set_cached_auth(
+    cache_key: str, data: CachedAuthData, *, ttl_seconds: float | None = None
+) -> None:
+    """Cache auth data; ``ttl_seconds`` overrides the API-key default."""
+    _auth_cache.set(cache_key, data, ttl_seconds=ttl_seconds)
 
 
 def invalidate_cached_clerk_auth(clerk_user_id: str) -> int:
     """Drop every cached auth context for a Clerk user (all org variants).
 
     Only clears this process's in-memory cache; other containers hold their
-    own entries until the 60s TTL lapses. Used on account deletion so the
-    deleting container stops honoring the user immediately.
+    own entries until ``AUTH_IDENTITY_TTL`` lapses -- but a deleted or
+    deactivated Clerk account stops receiving new session tokens, and every
+    request verifies its token first, so the real bound is the token's own
+    lifetime. Used on account deletion so the deleting container stops
+    honoring the user immediately.
     """
-    return _auth_cache.invalidate_prefix(f"clerk:{clerk_user_id}:")
+    prefix = f"clerk:{clerk_user_id}:"
+    return _auth_cache.invalidate_where(lambda key: key.startswith(prefix))
 
 
 # =============================================================================

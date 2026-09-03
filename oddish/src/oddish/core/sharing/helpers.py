@@ -249,8 +249,14 @@ async def list_task_trials_for_task(
     *,
     probe: bool | None = None,
     version: int | None = None,
+    org_id: str | None = None,
 ) -> list[TrialResponse]:
     """List all trials for a task with their responses.
+
+    ``org_id`` scopes the listing to one organization's task inside the
+    query itself (the join on ``tasks`` is already there), so an
+    org-scoped caller needs no separate task lookup on the common path.
+
 
     Superseded trials (rows replaced by a user-driven retry) are
     hidden by default so the public trial list collapses the rerun
@@ -274,9 +280,12 @@ async def list_task_trials_for_task(
     ]
     if probe is not None:
         conditions.append(TrialModel.is_probe == probe)
+    if org_id is not None:
+        conditions.append(TaskModel.org_id == org_id)
     query = select(TrialModel, TaskModel.task_path).join(
         TaskModel, TaskModel.id == TrialModel.task_id
     )
+
     if version is not None:
         query = query.join(
             TaskVersionModel, TaskVersionModel.id == TrialModel.task_version_id

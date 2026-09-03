@@ -1182,7 +1182,42 @@ set** in each caller. The full builder has no `load_only`, so it will not catch
 an omission. Builder unit tests cannot catch it either because in-memory models
 have every attribute set; the bug lives in the query options, not the builder.
 
+### Read sessions, the write guard, and statement budgets
+
+Every statement is a network round trip to a pooler that sits a network hop
+away from the API containers (measured 2026-09: 4 ms to 220 ms per trip
+depending on where Modal placed the container), so the number of statements a
+request issues is its latency budget. Three rules keep that number down:
+
+- **GET handlers use `get_read_session()`** (`oddish/db/connection.py`). It
+  checks the connection out in driver autocommit, so a read pays no `BEGIN`,
+  `COMMIT`, or reset `ROLLBACK`. `get_session()` remains the write path. A
+  read session **refuses to flush**: any pending ORM change raises
+  `RuntimeError("get_read_session() is read-only ...")`, so a GET that grows a
+  write fails in tests instead of autocommitting statement by statement. The
+  one GET that writes on purpose (`tags.py` `get_policy`, which lazily inserts
+  a default policy) stays on `get_session()`.
+- **Reads that tolerate a not-yet-migrated table go through
+  `read_optional_table`** (`oddish/db/optional_read.py`). It opens a
+  `SAVEPOINT` on write sessions and none on read sessions (PostgreSQL rejects
+  `SAVEPOINT` under autocommit), returns `None` only for a missing table, and
+  re-raises everything else. Do not hand-roll `begin_nested()` + `ProgrammingError`
+  for this case again; the three former copies (cost exclusions, quota bumps,
+  quota limits) all use the helper.
+- **`oddish/tests/test_statement_budgets.py` pins statements per core** for
+  the task, trial, detail, browse and experiment-page reads. Raise a budget only
+  with a reason in the diff.
+
+Two per-process caches take the remaining fixed costs off the request path:
+`load_cost_exclusions` (`oddish/core/cost_exclusions.py`) refreshes at most once
+per `ODDISH_COST_EXCLUSIONS_CACHE_SECONDS` (default 60; the admin routers call
+`invalidate_cost_exclusions()` after every edit), and the backend auth cache
+keeps Clerk identities for `ODDISH_AUTH_IDENTITY_TTL_SECONDS` (default 900)
+while taking role and email from the freshly verified token on every hit. Both
+use `oddish.cache.TTLCache`; new per-process caches should too.
+
 ### Dashboard pipeline stats use reserved queue keys
+
 
 `get_queue_stats` / `get_queue_stats_by_org` (`oddish/src/oddish/queue.py`)
 bucket trial counts by each trial's own `queue_key`, and the
@@ -1546,7 +1581,14 @@ is separate from the scheduled expense-notification webhook.
 Hosted API containers keep a conservative warm SQLAlchemy pool by default so
 Modal bursts do not overrun shared Postgres poolers. The engine still disables
 prepared statement caching so it remains compatible with transaction-mode
-poolers such as Supavisor / PgBouncer.
+poolers such as Supavisor / PgBouncer. Two request-path caches are tunable:
+`ODDISH_AUTH_IDENTITY_TTL_SECONDS` (Clerk identity entries in the auth cache,
+default 900; API-key entries stay at 60 s) and
+`ODDISH_COST_EXCLUSIONS_CACHE_SECONDS` (default 60, `0` disables). Every span
+also carries `oddish.modal_region` / `oddish.modal_cloud` from the container's
+`MODAL_REGION` / `MODAL_CLOUD_PROVIDER`, so per-region database round trips
+are a Logfire query rather than a probe.
+
 
 Modal runtime knobs (scaling, schedules, CPU/memory, concurrency) are read
 directly by `backend/modal_app.py` from `ODDISH_MODAL_*` /
