@@ -26,6 +26,7 @@ from oddish.db import TrialModel, get_storage_client
 from oddish.db.storage import (
     StorageClient,
     _cleanup_temp_directory,
+    is_trial_log_object,
     resolve_trial_directory,
 )
 from oddish.workers.agents.grok_build_trajectory import (
@@ -243,11 +244,7 @@ async def read_trial_logs(trial: TrialModel) -> dict:
     for p in sorted(job_dir_resolved.rglob("*")):
         if not p.is_file():
             continue
-        is_log_file = p.suffix in (".log", ".txt")
-        is_log_dir = any(part in p.parts for part in ("logs", "agent", "verifier"))
-        if not is_log_file and not is_log_dir:
-            continue
-        if p.suffix in (".json", ".patch"):
+        if not is_trial_log_object(p):
             continue
         rel = p.relative_to(job_dir_resolved)
         try:
@@ -332,15 +329,7 @@ async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
         for key in files:
             if key in matched_keys:
                 continue
-            s3_path = Path(key)
-            is_log_file = s3_path.suffix in (".log", ".txt")
-            is_log_dir = any(
-                part in s3_path.parts for part in ("logs", "agent", "verifier")
-            )
-            if (is_log_file or is_log_dir) and s3_path.suffix not in (
-                ".json",
-                ".patch",
-            ):
+            if is_trial_log_object(Path(key)):
                 rel_path = key.replace(s3_prefix, "").strip("/")
                 download_plan.append((key, "other", rel_path))
 
@@ -350,6 +339,8 @@ async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
             async def safe_download(key: str) -> str | None:
                 try:
                     return await storage.download_text(key)
+                except UnicodeDecodeError:
+                    return None
                 except Exception:
                     if layout.mode is TrialArtifactMode.EXACT:
                         raise
@@ -469,9 +460,7 @@ async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
     for p in sorted(trial_dir.rglob("*")):
         if not p.is_file() or p in matched_paths:
             continue
-        is_log_file = p.suffix in (".log", ".txt")
-        is_log_dir = any(part in p.parts for part in ("logs", "agent", "verifier"))
-        if (is_log_file or is_log_dir) and p.suffix not in (".json", ".patch"):
+        if is_trial_log_object(p):
             with suppress(OSError, ValueError):
                 rel = p.relative_to(trial_dir)
                 content = p.read_text(errors="replace")

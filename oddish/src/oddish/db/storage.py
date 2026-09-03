@@ -26,6 +26,38 @@ logger = logging.getLogger(__name__)
 WORKER_TASK_MOUNT_PATH = Path("/mnt/oddish-tasks")
 WORKER_TASK_KEY_PREFIX = "tasks/"
 
+_TRIAL_LOG_TEXT_SUFFIXES = {".log", ".txt"}
+_TRIAL_LOG_EXTRA_TEXT_SUFFIXES = {".jsonl", ".out", ".err"}
+_TRIAL_LOG_SKIP_SUFFIXES = {
+    ".json",
+    ".patch",
+    ".sqlite",
+    ".db",
+    ".bin",
+    ".pyc",
+    ".so",
+    ".dylib",
+    ".lock",
+}
+
+
+def is_trial_log_object(path: Path) -> bool:
+    """Whether a stored trial file should be read as UTF-8 log text.
+
+    Files under ``logs/``, ``agent/``, or ``verifier/`` used to match wholesale.
+    That pulled grok-session SQLite indexes into ``GET /trials/{id}/logs`` and
+    500'd the QA ``trials verifier`` path on a UTF-8 decode.
+    """
+    suffix = path.suffix.lower()
+    if suffix in _TRIAL_LOG_SKIP_SUFFIXES:
+        return False
+    if suffix in _TRIAL_LOG_TEXT_SUFFIXES:
+        return True
+    if any(part in path.parts for part in ("logs", "agent", "verifier")):
+        return suffix in _TRIAL_LOG_EXTRA_TEXT_SUFFIXES
+    return False
+
+
 
 def _cleanup_temp_directory(path: Path | None) -> None:
     """Best-effort removal for temporary S3 download directories."""
@@ -852,17 +884,12 @@ class StorageClient:
         ):
             for obj in page.get("Contents", []):
                 s3_key = obj["Key"]
-                # Match local log selection: *.log, *.txt, or files in logs/agent/verifier
-                s3_path = Path(s3_key)
-                is_log_file = s3_path.suffix in (".log", ".txt")
-                is_log_dir = any(
-                    part in s3_path.parts for part in ("logs", "agent", "verifier")
-                )
-                if not is_log_file and not is_log_dir:
+                if not is_trial_log_object(Path(s3_key)):
                     continue
-                if s3_path.suffix in (".json", ".patch"):
+                try:
+                    content = await self.download_text(s3_key)
+                except UnicodeDecodeError:
                     continue
-                content = await self.download_text(s3_key)
                 logs.append(f"=== {s3_key} ===\n{content}\n")
 
         return "\n".join(logs) if logs else ""
