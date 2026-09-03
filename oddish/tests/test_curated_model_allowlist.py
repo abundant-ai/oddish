@@ -127,12 +127,27 @@ def test_append_reconcile_counts_historical_fireworks_alias(monkeypatch):
 
     # Mimic _plan_append_trials after the normalize-existing fix.
     existing_counts = {
-        ("mini-swe-agent", settings.normalize_trial_model("mini-swe-agent", alias)): 1,
+        (
+            "mini-swe-agent",
+            settings.normalize_trial_model(
+                "mini-swe-agent", alias, strict=False
+            ),
+        ): 1,
     }
     submission = _sweep("mini-swe-agent", alias)
     validate_sweep_submission(submission)
     assert submission.configs[0].model == canonical
     assert build_trial_specs_from_sweep(submission, existing_counts=existing_counts) == []
+
+
+def test_append_normalize_existing_tolerates_legacy_claude(monkeypatch):
+    """Already-stored unmapped Claude ids must not raise during append reconcile."""
+    _settings(monkeypatch)
+    legacy = "claude-3-5-sonnet-20241022"
+    # Same call shape as _plan_append_trials for existing rows.
+    assert (
+        settings.normalize_trial_model("claude-code", legacy, strict=False) == legacy
+    )
 
 
 def test_provider_satisfies_lock_openai_family():
