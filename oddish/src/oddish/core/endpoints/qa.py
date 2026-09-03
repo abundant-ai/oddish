@@ -117,6 +117,8 @@ async def cancel_task_qa_core(
     verdict. Cancelling this endpoint also stops the task's live pre-trial
     audit and finalizes any classification left RUNNING by a killed worker.
     """
+    from oddish.queue import task_audit_pending
+
     # The same task row lock the backfill and the reruns take: without it, a
     # cancel can interleave with their check-and-enqueue and either kill a
     # just-committed job's state or write verdict resets over a fresh enqueue.
@@ -163,7 +165,7 @@ async def cancel_task_qa_core(
         analysis_trials
         or _has_active_verdict(task)
         or task.status == TaskStatus.VERDICT_PENDING
-        or waiting_for_admission
+        or await task_audit_pending(session, task)
     ):
         cancel_verdict(task, error=USER_CANCELLED_MESSAGE, now=now_value)
         # Finalize trials whose classification the QA job had in flight so
