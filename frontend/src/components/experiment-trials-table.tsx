@@ -130,6 +130,7 @@ type ExperimentTrialsTableProps = {
   modelScopedAgents: ReadonlySet<string>;
   isLoading: boolean;
   isLoadingTrials?: boolean;
+  trialPagesComplete?: boolean;
   showPassAtK?: boolean;
   /** Scope bulk cancel to this experiment so shared tasks stay intact elsewhere. */
   experimentId?: string;
@@ -572,6 +573,7 @@ export function ExperimentTrialsTable({
   modelScopedAgents,
   isLoading,
   isLoadingTrials = false,
+  trialPagesComplete = true,
   showPassAtK = false,
   experimentId,
   onTaskUnlink,
@@ -738,7 +740,11 @@ export function ExperimentTrialsTable({
     }
 
     const timeoutId = window.setTimeout(() => {
-      const params = new URLSearchParams(searchParams.toString());
+      // Drawer and detail panels update their own query fields through
+      // replaceState, which does not refresh useSearchParams. Start from the
+      // live address so a delayed filter write cannot erase task/trial/tab.
+      const currentQuery = new URLSearchParams(window.location.search).toString();
+      const params = new URLSearchParams(currentQuery);
       const hidden = Array.from(hiddenAgents).sort();
       const dimmed = Array.from(dimmedStatuses).sort();
       const analysis = Array.from(dimmedAnalysisKeys).sort();
@@ -774,7 +780,6 @@ export function ExperimentTrialsTable({
       }
 
       const nextQuery = params.toString();
-      const currentQuery = searchParams.toString();
       if (nextQuery === currentQuery) return;
 
       const newUrl = urlWithSearch(nextQuery);
@@ -2324,8 +2329,7 @@ export function ExperimentTrialsTable({
                   const task = row.task;
                   const index = row.index;
                   if (!task) return null;
-                  const isTrialDataPending =
-                    isLoadingTrials && task.trials == null;
+                  const isTrialDataPending = !trialPagesComplete;
                   const context = getTaskContext(task);
                   const grouped =
                     context?.groupedTrialsByAgent ?? EMPTY_TRIAL_MAP;

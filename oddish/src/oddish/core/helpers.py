@@ -434,7 +434,9 @@ def build_trial_response(
     exclusions: CostExclusions | None = None,
 ) -> TrialResponse:
     """Build a TrialResponse from a TrialModel."""
-    normalized_model = settings.normalize_trial_model(trial.agent, trial.model, strict=False)
+    normalized_model = settings.normalize_trial_model(
+        trial.agent, trial.model, strict=False
+    )
     task_version, task_version_id = _resolve_trial_version_fields(trial)
     cost_usd, cost_is_estimated = _resolve_trial_cost(trial, normalized_model)
     return TrialResponse(
@@ -524,7 +526,9 @@ def build_compact_trial_response(
         resolved_analysis_summary = (
             analysis_summary if isinstance(analysis_summary, dict) else None
         )
-    normalized_model = settings.normalize_trial_model(trial.agent, trial.model, strict=False)
+    normalized_model = settings.normalize_trial_model(
+        trial.agent, trial.model, strict=False
+    )
     task_version, task_version_id = _resolve_trial_version_fields(trial)
     cost_usd, cost_is_estimated = _resolve_trial_cost(trial, normalized_model)
 
@@ -704,48 +708,71 @@ async def fetch_experiment_effective_version_ids(
     experiment, or the latest represented version otherwise. Tasks with no
     scoped trials are omitted.
 
-    Uses ``DISTINCT ON (task_id)`` joined to ``task_versions`` so the
-    server returns at most one row per task -- ordered by the *integer*
-    version number, which lexicographic sorting on ``task_version_id``
-    (``"{task_id}-v9"`` vs ``"{task_id}-v10"``) gets wrong. Replaces
-    the previous "fetch every trial row, sort in Python" path that
-    transferred ``len(task_ids) * trials_per_task`` rows just to keep
-    one per task.
+    Ranks candidates beside ``task_versions.version`` so the server returns
+    one row per task using the integer version number, not lexicographic
+    ``task_version_id`` order (where v9 sorts after v10).
     """
     if not task_ids:
         return {}
 
-    from oddish.core.experiment_membership import trial_in_experiment
-    from oddish.db import TaskVersionModel  # local import: avoid cycle
-
-    stmt = (
-        select(TrialModel.task_id, TrialModel.task_version_id)
-        .join(TaskModel, TaskModel.id == TrialModel.task_id)
-        .join(TaskVersionModel, TaskVersionModel.id == TrialModel.task_version_id)
-        .where(
-            TrialModel.task_id.in_(list(task_ids)),
-            trial_in_experiment(experiment_id),
-            TrialModel.task_version_id.is_not(None),
-            TrialModel.is_probe.is_(False),
-            TrialModel.superseded_by_trial_id.is_(None),
-        )
-        .order_by(
-            TrialModel.task_id.asc(),
-            case(
-                (TrialModel.task_version_id == TaskModel.current_version_id, 0),
-                else_=1,
-            ).asc(),
-            TaskVersionModel.version.desc(),
-        )
-        .distinct(TrialModel.task_id)
+    effective = experiment_effective_versions_selectable(
+        experiment_id=experiment_id, task_ids=task_ids
     )
-
-    result = await session.execute(stmt)
+    result = await session.execute(
+        select(effective.c.task_id, effective.c.task_version_id)
+    )
     return {
         str(task_id): str(version_id)
         for task_id, version_id in result.all()
         if version_id is not None
     }
+
+
+def experiment_effective_versions_selectable(
+    *, experiment_id: str, task_ids: Sequence[str] | None = None
+):
+    """One experiment-relevant version per task, as a reusable SQL subquery."""
+    from oddish.core.experiment_membership import visible_experiment_trial_predicates
+    from oddish.db import TaskVersionModel  # local import: avoid cycle
+
+    ranked = (
+        select(
+            TrialModel.task_id,
+            TrialModel.task_version_id,
+            TaskVersionModel.version.label("task_version"),
+            func.row_number()
+            .over(
+                partition_by=TrialModel.task_id,
+                order_by=(
+                    case(
+                        (TrialModel.task_version_id == TaskModel.current_version_id, 0),
+                        else_=1,
+                    ),
+                    TaskVersionModel.version.desc(),
+                ),
+            )
+            .label("rank"),
+        )
+        .join(TaskModel, TaskModel.id == TrialModel.task_id)
+        .join(TaskVersionModel, TaskVersionModel.id == TrialModel.task_version_id)
+        .where(
+            *visible_experiment_trial_predicates(experiment_id),
+            TaskModel.deleted_at.is_(None),
+            TaskVersionModel.deleted_at.is_(None),
+        )
+    )
+    if task_ids is not None:
+        ranked = ranked.where(TrialModel.task_id.in_(list(task_ids)))
+    ranked = ranked.subquery("experiment_version_candidates")
+    return (
+        select(
+            ranked.c.task_id,
+            ranked.c.task_version_id,
+            ranked.c.task_version,
+        )
+        .where(ranked.c.rank == 1)
+        .subquery("experiment_effective_versions")
+    )
 
 
 def filter_probe_trials_for_effective_versions(
@@ -1143,6 +1170,7 @@ SLIM_TRIAL_RESPONSE_COLUMNS = (
     TrialModel.status,
     TrialModel.attempts,
     TrialModel.max_attempts,
+    TrialModel.harbor_stage,
     TrialModel.reward,
     TrialModel.error_message,
     TrialModel.is_probe,
@@ -1156,6 +1184,7 @@ SLIM_TRIAL_RESPONSE_COLUMNS = (
     TrialModel.cache_write_tokens,
     TrialModel.output_tokens,
     TrialModel.cost_usd,
+    TrialModel.has_trajectory,
     TrialModel.billed_user_id,
     TrialModel.llm_key_hash,
     TrialModel.superseded_by_trial_id,
@@ -1169,6 +1198,8 @@ def build_slim_trial_response(
     trial: TrialModel,
     task_path: str,
     *,
+    analysis: Mapping[str, object] | None,
+    error_message: str | None,
     exclusions: CostExclusions | None = None,
     # None = "not resolved by this caller", which the UI renders as nothing.
     # Distinct from 0.0, which would mean "resolved, and there was no QA".
@@ -1176,13 +1207,15 @@ def build_slim_trial_response(
 ) -> TrialResponse:
     """Build a slim TrialResponse for the experiment grid."""
     resolved_analysis_summary: dict[str, str | None] | None = None
-    if isinstance(trial.analysis, dict):
+    if isinstance(analysis, Mapping):
         resolved_analysis_summary = {
-            "classification": trial.analysis.get("classification"),
-            "subtype": trial.analysis.get("subtype"),
-            "evidence": trial.analysis.get("evidence"),
+            "classification": analysis.get("classification"),
+            "subtype": analysis.get("subtype"),
+            "evidence": analysis.get("evidence"),
         }
-    normalized_model = settings.normalize_trial_model(trial.agent, trial.model, strict=False)
+    normalized_model = settings.normalize_trial_model(
+        trial.agent, trial.model, strict=False
+    )
     task_version, task_version_id = _resolve_trial_version_fields(trial)
     cost_usd, cost_is_estimated = _resolve_trial_cost(trial, normalized_model)
 
@@ -1201,9 +1234,9 @@ def build_slim_trial_response(
         status=trial.status,
         attempts=trial.attempts,
         max_attempts=trial.max_attempts,
-        harbor_stage=None,
+        harbor_stage=trial.harbor_stage,
         reward=trial.reward,
-        error_message=trial.error_message,
+        error_message=error_message,
         result=None,
         is_probe=trial.is_probe,
         kind=trial.kind or "agent",
@@ -1230,6 +1263,7 @@ def build_slim_trial_response(
             if exclusions
             else None
         ),
+        has_trajectory=trial.has_trajectory,
     )
 
 
@@ -1267,6 +1301,8 @@ def build_slim_task_status_response(
         build_slim_trial_response(
             t,
             task.task_path,
+            analysis=t.analysis,
+            error_message=t.error_message,
             qa_cost_usd=(
                 qa_costs_by_trial_id.get(t.id)
                 if qa_costs_by_trial_id is not None

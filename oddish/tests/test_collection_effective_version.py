@@ -5,10 +5,8 @@ re-uploaded and bumped to a newer ``current_version_id``.
 Trials are gathered additively via the ``experiment_trials`` join table without
 rewriting each trial's scalar ``experiment_id``, so the effective-version
 resolvers (which historically keyed off that scalar column) didn't recognize
-gathered trials -- the experiment page resolved the task's *current* version and
-then filtered the older gathered trial right back out. These tests exercise the
-public core functions (``list_experiment_slim_tasks`` and the compact
-``list_tasks_core`` experiment path), not just the resolver, so they catch that
+gathered trials. These tests exercise the bounded experiment resources and the
+generic compact task path, not just the resolver, so they catch that
 double-filter.
 """
 
@@ -23,12 +21,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.core import helpers
 from oddish.core.endpoints.collections import create_trial_collection_core
-from oddish.core.endpoints.tasks_query import (
-    list_experiment_task_shells_core,
-    list_experiment_slim_tasks,
-    list_tasks_core,
+from oddish.core.endpoints.experiment_page import (
+    get_experiment_open_core,
+    get_experiment_trial_page_core,
 )
+from oddish.core.endpoints.task_open import get_task_open_core
+from oddish.core.endpoints.tasks_query import list_tasks_core
 from oddish.db import (
+    AnalysisStatus,
     ExperimentModel,
     TaskModel,
     TaskVersionModel,
@@ -36,6 +36,7 @@ from oddish.db import (
     TrialStatus,
     generate_id,
     task_experiments,
+    utcnow,
 )
 
 
@@ -65,11 +66,13 @@ def _trial(
     task: TaskModel,
     home_experiment: ExperimentModel,
     *,
-    task_version_id: str,
+    task_version_id: str | None,
     org_id: str = "org1",
     reward: float | None = 1,
     is_probe: bool = False,
     superseded_by_trial_id: str | None = None,
+    kind: str = "agent",
+    status: TrialStatus = TrialStatus.SUCCESS,
 ) -> TrialModel:
     trial_id = generate_id()
     return TrialModel(
@@ -83,10 +86,11 @@ def _trial(
         provider="openai",
         queue_key="openai/gpt-5.5",
         model="gpt-5.5",
-        status=TrialStatus.SUCCESS,
+        status=status,
         reward=reward,
         is_probe=is_probe,
         superseded_by_trial_id=superseded_by_trial_id,
+        kind=kind,
     )
 
 
@@ -126,33 +130,124 @@ async def _build_old_version_collection(session):
     return task, v1.id, v2.id, trial, collection
 
 
+async def _experiment_pages(session, experiment_id: str):
+    opened = await get_experiment_open_core(
+        session, experiment_id=experiment_id, org_id="org1"
+    )
+    trials = await get_experiment_trial_page_core(
+        session, experiment_id=experiment_id, org_id="org1"
+    )
+    return opened, trials
+
+
 @pytest.mark.asyncio
-async def test_slim_path_surfaces_gathered_old_version_trial(session):
+async def test_bounded_pages_surface_gathered_old_version_trial(session):
     """REGRESSION: the gathered v1 trial must appear on the collection's slim
     experiment grid, even though the task's current version is v2."""
     task, v1_id, v2_id, trial, collection = await _build_old_version_collection(session)
 
-    responses = await list_experiment_slim_tasks(
-        session, experiment_id=collection.id, org_id="org1"
-    )
+    opened, trial_page = await _experiment_pages(session, collection.id)
 
-    by_task = {r.id: r for r in responses}
+    by_task = {row.id: row for row in opened.tasks}
     assert task.id in by_task, "gathered task missing from collection grid"
     task_resp = by_task[task.id]
-    trial_ids = [t.id for t in (task_resp.trials or [])]
+    trial_ids = [row.id for row in trial_page.trials if row.task_id == task.id]
     assert trial.id in trial_ids, "gathered v1 trial was filtered out (double-filter)"
     # The collection keeps its historical v1 trial, but reports the task's
     # selected default (v2) consistently with the task detail page.
     assert task_resp.current_version_id == v2_id
     assert task_resp.trial_version_id == v1_id
 
-    shells = await list_experiment_task_shells_core(
-        session, experiment_id=collection.id, org_id="org1"
+    assert task_resp.total == 1
+
+
+@pytest.mark.asyncio
+async def test_trial_page_projects_real_postgres_mapping(session):
+    task = _task("trial-page-real-mapping")
+    experiment = _experiment("trial-page-real-mapping")
+    session.add_all([task, experiment])
+    await session.flush()
+
+    version = _version(task, 1)
+    session.add(version)
+    await session.flush()
+    task.current_version_id = version.id
+
+    trial = _trial(task, experiment, task_version_id=version.id)
+    trial.analysis_status = AnalysisStatus.SUCCESS
+    trial.analysis = {
+        "classification": "GOOD_SUCCESS",
+        "subtype": "correct",
+        "evidence": "Postgres mapping evidence",
+    }
+    trial.input_tokens = 1_000
+    trial.cache_tokens = 100
+    trial.output_tokens = 50
+    trial.has_trajectory = True
+    session.add(trial)
+    await session.flush()
+
+    response = await get_experiment_trial_page_core(
+        session,
+        experiment_id=experiment.id,
+        org_id="org1",
     )
-    shell = {response.id: response for response in shells}[task.id]
-    assert shell.current_version_id == v2_id
-    assert shell.trial_version_id == v1_id
-    assert shell.total == 1
+
+    projected = next(row for row in response.trials if row.id == trial.id)
+    assert projected.task_path == task.task_path
+    assert projected.analysis.status == AnalysisStatus.SUCCESS
+    assert projected.analysis.classification == "GOOD_SUCCESS"
+    assert projected.analysis.evidence == "Postgres mapping evidence"
+    assert projected.has_trajectory is True
+    assert projected.cost_is_estimated is True
+    assert projected.cost_usd is not None
+
+
+@pytest.mark.asyncio
+async def test_task_open_execution_counts_match_selected_version_preview(session):
+    task = _task("task-open-count-contract")
+    experiment = _experiment("task-open-count-contract")
+    session.add_all([task, experiment])
+    await session.flush()
+
+    version = _version(task, 1)
+    session.add(version)
+    await session.flush()
+    task.current_version_id = version.id
+
+    verifier_failure = _trial(
+        task,
+        experiment,
+        task_version_id=version.id,
+        reward=0,
+    )
+    harness_error = _trial(
+        task,
+        experiment,
+        task_version_id=version.id,
+        reward=None,
+    )
+    harness_error.status = TrialStatus.FAILED
+    harness_error.error_message = "RuntimeError: sandbox failed"
+    session.add_all([verifier_failure, harness_error])
+    await session.flush()
+
+    response = await get_task_open_core(
+        session,
+        task_id=task.id,
+        org_id="org1",
+    )
+
+    selected = response.selected_version
+    assert selected is not None
+    assert selected.id == version.id
+    assert selected.trial_count == 2
+    assert selected.completed_count == 1
+    assert selected.failed_count == 1
+    assert selected.fail_count == 1
+    assert selected.pass_count == 0
+    assert {row.task_version_id for row in response.trials} == {version.id}
+    assert sorted(row.status for row in response.trials) == ["failed", "success"]
 
 
 @pytest.mark.asyncio
@@ -243,19 +338,17 @@ async def test_normal_experiment_unchanged_control(session):
     )
     await session.flush()
 
-    slim = await list_experiment_slim_tasks(
-        session, experiment_id=exp.id, org_id="org1"
-    )
-    by_task = {r.id: r for r in slim}
+    opened, trial_page = await _experiment_pages(session, exp.id)
+    by_task = {row.id: row for row in opened.tasks}
     assert task.id in by_task
     task_resp = by_task[task.id]
-    assert [t.id for t in (task_resp.trials or [])] == [trial.id]
+    assert [row.id for row in trial_page.trials] == [trial.id]
     assert task_resp.current_version_id == v1.id
     assert task_resp.trial_version_id == v1.id
 
 
 @pytest.mark.asyncio
-async def test_default_version_survives_shell_to_slim_loading(session):
+async def test_default_version_survives_open_to_trial_page_loading(session):
     task = _task("default-version-exp-task")
     session.add(task)
     await session.flush()
@@ -284,27 +377,16 @@ async def test_default_version_survives_shell_to_slim_loading(session):
     # relationship populated by session.add().
     session.expunge_all()
 
-    shells = await list_experiment_task_shells_core(
-        session, experiment_id=experiment.id, org_id="org1"
-    )
-    slim = await list_experiment_slim_tasks(
-        session, experiment_id=experiment.id, org_id="org1"
-    )
-
-    shell = {response.id: response for response in shells}[task.id]
-    enriched = {response.id: response for response in slim}[task.id]
+    opened, trial_page = await _experiment_pages(session, experiment.id)
+    shell = {row.id: row for row in opened.tasks}[task.id]
     assert shell.current_version_id == v1.id
-    assert enriched.current_version_id == v1.id
     assert shell.trial_version_id == v1.id
-    assert enriched.trial_version_id == v1.id
-    assert shell.updated_at == enriched.updated_at
     assert shell.total == 1
-    assert enriched.total == 1
-    assert [trial.id for trial in (enriched.trials or [])] == [v1_trial.id]
+    assert [row.id for row in trial_page.trials] == [v1_trial.id]
 
 
 @pytest.mark.asyncio
-async def test_task_shells_do_not_hydrate_trial_rows(session):
+async def test_open_does_not_hydrate_trial_rows(session):
     """The lightweight first-paint endpoint must not run TaskModel's default
     select-in loader and materialize every historical trial for a member task.
 
@@ -344,17 +426,17 @@ async def test_task_shells_do_not_hydrate_trial_rows(session):
 
     # Match a fresh production request and make ORM hydration observable.
     session.expunge_all()
-    shells = await list_experiment_task_shells_core(
+    opened = await get_experiment_open_core(
         session,
         experiment_id=viewed_experiment.id,
         org_id="org1",
     )
 
-    shell = {response.id: response for response in shells}[task.id]
+    shell = {row.id: row for row in opened.tasks}[task.id]
     assert shell.total == 1
     assert not any(
         isinstance(instance, TrialModel) for instance in session.identity_map.values()
-    ), "task-shells hydrated TrialModel rows instead of using aggregate counts"
+    ), "open hydrated TrialModel rows instead of using aggregate counts"
 
 
 @pytest.mark.asyncio
@@ -401,20 +483,172 @@ async def test_experiment_reports_default_while_using_latest_visible_trial_versi
     )
     await session.flush()
 
-    shells = await list_experiment_task_shells_core(
-        session, experiment_id=experiment.id, org_id="org1"
+    opened, trial_page = await _experiment_pages(session, experiment.id)
+    shell = {row.id: row for row in opened.tasks}[task.id]
+    assert shell.current_version_id == v4.id
+    assert shell.trial_version_id == v2.id
+    assert shell.total == 1
+    assert [row.id for row in trial_page.trials] == [v2_trial.id]
+
+
+@pytest.mark.asyncio
+async def test_experiment_paths_share_visible_agent_version_selection(session):
+    task = _task("visible-agent-version-task")
+    session.add(task)
+    await session.flush()
+
+    v1 = _version(task, 1)
+    v2 = _version(task, 2)
+    v3 = _version(task, 3)
+    v4 = _version(task, 4)
+    session.add_all([v1, v2, v3, v4])
+    await session.flush()
+    task.current_version_id = v4.id
+
+    experiment = _experiment("visible-agent-version-experiment")
+    session.add(experiment)
+    await session.flush()
+
+    visible_agent = _trial(task, experiment, task_version_id=v1.id)
+    qa_trial = _trial(task, experiment, task_version_id=v2.id, kind="qa")
+    deleted_version_agent = _trial(task, experiment, task_version_id=v3.id)
+    v3.deleted_at = utcnow()
+    session.add_all([visible_agent, qa_trial, deleted_version_agent])
+    await session.execute(
+        task_experiments.insert().values(
+            task_id=task.id,
+            experiment_id=experiment.id,
+        )
     )
-    slim = await list_experiment_slim_tasks(
+    await session.flush()
+
+    task_id = task.id
+    experiment_id = experiment.id
+    visible_trial_id = visible_agent.id
+
+    session.expunge_all()
+    opened, trial_page = await _experiment_pages(session, experiment_id)
+    shell = {response.id: response for response in opened.tasks}[task_id]
+
+    session.expunge_all()
+    compact = await list_tasks_core(
+        session,
+        experiment_id=experiment_id,
+        compact_trials=True,
+        include_queue_info=False,
+        include_worker_jobs=False,
+        org_id="org1",
+    )
+    compact_task = {response.id: response for response in compact}[task_id]
+
+    for response in (shell, compact_task):
+        assert response.current_version_id == v4.id
+        assert response.trial_version_id == v1.id
+        assert response.total == 1
+    assert [trial.id for trial in trial_page.trials] == [visible_trial_id]
+    assert [trial.id for trial in (compact_task.trials or [])] == [visible_trial_id]
+
+
+@pytest.mark.asyncio
+async def test_compact_path_keeps_current_version_probe_without_agent_candidate(
+    session,
+):
+    """A probe must use the same current-version fallback as the task row.
+
+    Probe trials are loaded separately from experiment agent trials. When no
+    live versioned agent trial exists, the SQL selector returns no row and the
+    compact task view falls back to the task's current version. The probe must
+    follow that displayed version instead of disappearing with the absent SQL
+    row.
+    """
+    task = _task("probe-fallback-version-task")
+    session.add(task)
+    await session.flush()
+
+    current = _version(task, 1)
+    session.add(current)
+    await session.flush()
+    task.current_version_id = current.id
+
+    experiment = _experiment("probe-fallback-version-experiment")
+    session.add(experiment)
+    await session.flush()
+
+    probe = _trial(
+        task,
+        experiment,
+        task_version_id=current.id,
+        is_probe=True,
+    )
+    session.add(probe)
+    await session.execute(
+        task_experiments.insert().values(
+            task_id=task.id,
+            experiment_id=experiment.id,
+        )
+    )
+    await session.flush()
+
+    task_id = task.id
+    experiment_id = experiment.id
+    probe_id = probe.id
+    session.expunge_all()
+
+    compact = await list_tasks_core(
+        session,
+        experiment_id=experiment_id,
+        compact_trials=True,
+        include_queue_info=False,
+        include_worker_jobs=False,
+        org_id="org1",
+    )
+
+    compact_task = {response.id: response for response in compact}[task_id]
+    assert compact_task.trial_version_id == current.id
+    assert compact_task.total == 0
+    assert [trial.id for trial in (compact_task.trials or [])] == [probe_id]
+
+
+@pytest.mark.asyncio
+async def test_experiment_open_counts_versionless_trials_without_an_effective_version(
+    session,
+):
+    task = _task("versionless-experiment-task")
+    session.add(task)
+    await session.flush()
+
+    current = _version(task, 1)
+    session.add(current)
+    await session.flush()
+    task.current_version_id = current.id
+
+    experiment = _experiment("versionless-experiment")
+    session.add(experiment)
+    await session.flush()
+
+    session.add(
+        _trial(
+            task,
+            experiment,
+            task_version_id=None,
+            reward=None,
+            status=TrialStatus.RUNNING,
+        )
+    )
+    await session.execute(
+        task_experiments.insert().values(
+            task_id=task.id,
+            experiment_id=experiment.id,
+        )
+    )
+    await session.flush()
+
+    session.expunge_all()
+    opened = await get_experiment_open_core(
         session, experiment_id=experiment.id, org_id="org1"
     )
 
-    shell = {response.id: response for response in shells}[task.id]
-    enriched = {response.id: response for response in slim}[task.id]
-    assert shell.current_version_id == v4.id
-    assert enriched.current_version_id == v4.id
-    assert shell.trial_version_id == v2.id
-    assert enriched.trial_version_id == v2.id
-    assert shell.updated_at == enriched.updated_at
-    assert shell.total == 1
-    assert enriched.total == 1
-    assert [trial.id for trial in (enriched.trials or [])] == [v2_trial.id]
+    assert opened.summary.trial_count == 1
+    assert opened.summary.active == 1
+    assert opened.has_active_trials is True
+    assert opened.tasks[0].total == 1

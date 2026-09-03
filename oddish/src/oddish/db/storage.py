@@ -692,11 +692,12 @@ class StorageClient:
            key returned by ``_trial_import_archive_key(trial_id)``.
         2. Client tars the harbor trial subdir and PUTs it to that URL.
         3. ``/trials/import/complete`` calls this method, which downloads
-           the staging object, extracts it into the trial prefix
-           (``tasks/<task_id>/trials/<trial_id>/``), and deletes the
-           staging object. The individual files are what the existing
-           ``/trials/<id>/logs|result|trajectory`` endpoints read, so no
-           other plumbing needs to know an import happened.
+           the staging object and extracts it into the trial prefix
+           (``tasks/<task_id>/trials/<trial_id>/``). The completion path
+           deletes the staging object only after it validates the extracted
+           layout and finalizes the database state. The individual files are
+           what the existing ``/trials/<id>/logs|result|trajectory`` endpoints
+           read, so no other plumbing needs to know an import happened.
 
         Returns the number of files extracted.
         """
@@ -737,17 +738,15 @@ class StorageClient:
                 )
                 extracted += 1
 
-        # Best-effort cleanup of the staging object. Failing to delete it
-        # is not fatal -- the trial row already points at the prefix.
-        try:
-            await self._s3.delete_object(
-                Bucket=settings.s3_bucket,
-                Key=archive_key,
-            )
-        except Exception:
-            pass
-
         return extracted
+
+    async def delete_trial_import_archive(self, trial_id: str) -> None:
+        """Delete a staging archive after trial import finalization succeeds."""
+        await self._ensure_client()
+        await self._s3.delete_object(
+            Bucket=settings.s3_bucket,
+            Key=self._trial_import_archive_key(trial_id),
+        )
 
     async def _upload_directory(
         self,

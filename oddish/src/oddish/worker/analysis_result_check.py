@@ -250,22 +250,28 @@ def _check_classification(
     if not isinstance(action_items, list):
         errors.append(f"{where}.action_items must be a list")
     else:
+        has_causal_post_trial_must_fix = False
         for index, item in enumerate(action_items):
-            errors.extend(
-                _check_action_item(item, expected, f"{where}.action_items[{index}]")
-            )
-        has_post_trial_must_fix = any(
-            isinstance(item, dict)
-            and item.get("tier", item.get("severity")) == expected["must_fix_tier"]
-            for item in action_items
-        )
-        if analysis.get("classification") == "GOOD_FAILURE" and (
-            has_post_trial_must_fix
-            or bool(expected.get("pre_trial_must_fix_ids"))
+            item_where = f"{where}.action_items[{index}]"
+            errors.extend(_check_action_item(item, expected, item_where))
+            if not isinstance(item, dict) or item.get("source") != "post_trial":
+                continue
+            if "causal" not in item:
+                errors.append(
+                    f"{item_where}.causal is required for post_trial findings"
+                )
+            if (
+                item.get("causal") is True
+                and item.get("tier", item.get("severity")) == expected["must_fix_tier"]
+            ):
+                has_causal_post_trial_must_fix = True
+        if (
+            analysis.get("classification") == "GOOD_FAILURE"
+            and has_causal_post_trial_must_fix
         ):
             errors.append(
-                f"{where}.classification cannot be GOOD_FAILURE when the task "
-                "has a must-fix finding"
+                f"{where}.classification cannot be GOOD_FAILURE when a causal "
+                "post-trial must-fix finding changed the outcome"
             )
     exploitation = analysis.get("exploitation")
     if not isinstance(exploitation, list):

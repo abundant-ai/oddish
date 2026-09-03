@@ -1025,6 +1025,31 @@ async def test_entry_hook_uploads_probe_task_on_agent_start(monkeypatch, tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_entry_hook_fails_when_required_qa_contract_cannot_upload(
+    monkeypatch, tmp_path
+):
+    task = tmp_path / "task"
+    task.mkdir()
+    (task / "submit-analysis-result").write_text("#!/bin/sh\n")
+
+    class Environment:
+        async def upload_dir(self, *, source_dir, target_dir):
+            raise OSError("sandbox upload unavailable")
+
+    event = SimpleNamespace(
+        event=SimpleNamespace(value="agent-start"),
+        trial_id="qa-1",
+        environment=Environment(),
+        result=None,
+    )
+    monkeypatch.setattr(harbor_entry, "_emit_event_line", lambda _payload: None)
+
+    hook = harbor_entry._make_hook(str(task), "/probe")
+    with pytest.raises(OSError, match="sandbox upload unavailable"):
+        await hook(event)
+
+
+@pytest.mark.asyncio
 async def test_entry_run_applies_patches_before_job_create(monkeypatch, tmp_path):
     order: list[str] = []
     harbor_module = ModuleType("harbor")

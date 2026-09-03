@@ -17,3 +17,11 @@ def test_experiment_options_route_mounted() -> None:
     paths = [getattr(route, "path", None) for route in router.routes]
 
     assert "/tasks/browse/experiment-options" in paths
+
+
+def test_experiment_page_routes_are_registered_once() -> None:
+    """Each route must have one FastAPI operation and one OpenAPI operation id."""
+    paths = [getattr(route, "path", None) for route in router.routes]
+
+    assert paths.count("/experiments/{experiment_id}/open") == 1
+    assert paths.count("/experiments/{experiment_id}/trial-page") == 1
