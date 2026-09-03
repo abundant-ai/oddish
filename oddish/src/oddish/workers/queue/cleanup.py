@@ -38,6 +38,7 @@ from oddish.core.tags.ownership_transfer import sweep_orphaned_tag_owners
 from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.core.verdict_state import fail_verdict
 from oddish.costs.recorder import reconcile_compute_cost_spans
+from oddish.core.harbor_artifacts import THUNDER_CAPACITY_UNAVAILABLE_CODE
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
@@ -56,6 +57,7 @@ from oddish.runtime.ec2_orphans import (
     Ec2WorkerLiveness,
     decide_ec2_orphan,
 )
+from oddish.observability import record_thunder_capacity_handoff
 from oddish.runtime.registry import get_backend
 from oddish.runtime.backends.thunder import (
     ThunderSandboxSnapshot,
@@ -122,6 +124,7 @@ STUCK_ANALYZING_REASON = (
     "Analysis never produced a verdict for this trial; marked terminal by "
     "orphaned-pipeline cleanup so the task could leave the ANALYZING stage."
 )
+
 
 async def reap_idle_in_transaction_zombies(
     *,
@@ -560,6 +563,7 @@ async def cleanup_orphaned_queue_state(
     thunder_inventory_handles_recovered = 0
     unprovisioned_thunder_runs_finalized = 0
     unprovisioned_sandbox_runs_finalized = 0
+    completed_thunder_handoffs: list[tuple[str, str, str]] = []
 
     async with get_session() as session:
         (
@@ -574,14 +578,16 @@ async def cleanup_orphaned_queue_state(
             thunder_inventory_handles_recovered = (
                 await _recover_thunder_inventory_handles(session, thunder_inventory)
             )
+        completed_thunder_handoffs.extend(
+            await _complete_pending_thunder_capacity_handoffs(session)
+        )
         thunder_run_targets = await _find_orphaned_thunder_sandbox_runs(session)
         thunder_orphan_terminate_candidates = len(thunder_run_targets)
         # Prefer the durable lifecycle path when the worker row and ledger both
         # carry the handle.  Raw provider teardown does not terminalize the
         # sandbox_run, so its capacity lease would remain deliberately held.
         worker_targets.difference_update(
-            ("thunder", external_id)
-            for _, external_id in thunder_run_targets
+            ("thunder", external_id) for _, external_id in thunder_run_targets
         )
         if ec2_inventory is not None and ec2_inventory.instances:
             ec2_targets, ec2_orphan_keep_verdicts = await _decide_ec2_orphan_targets(
@@ -682,6 +688,20 @@ async def cleanup_orphaned_queue_state(
     thunder_sandboxes_terminated = await _terminate_orphaned_sandbox_runs(
         [run_id for run_id, _ in thunder_run_targets]
     )
+    if thunder_run_targets:
+        async with get_session() as session:
+            completed_thunder_handoffs.extend(
+                await _complete_pending_thunder_capacity_handoffs(session)
+            )
+    for job_id, trial_id, target in completed_thunder_handoffs:
+        message = (
+            "metric=thunder_capacity_handoff outcome=completed "
+            f"job_id={job_id} trial_id={trial_id} target={target} "
+            "reason=teardown_confirmed"
+        )
+        console.print(message)
+        logger.info(message)
+        record_thunder_capacity_handoff(outcome="completed", target_environment=target)
     worker_sandboxes_terminated = (
         await _terminate_orphaned_sandboxes(worker_targets)
         + thunder_sandboxes_terminated
@@ -707,6 +727,7 @@ async def cleanup_orphaned_queue_state(
         "worker_jobs_retried": worker_jobs_retried,
         "worker_jobs_failed": worker_jobs_failed,
         "worker_sandboxes_terminated": worker_sandboxes_terminated,
+        "thunder_capacity_handoffs_completed": len(completed_thunder_handoffs),
         "ec2_orphan_instances_seen": (
             len(ec2_inventory.instances) if ec2_inventory is not None else 0
         ),
@@ -1285,9 +1306,10 @@ async def _find_orphaned_thunder_sandbox_runs(
     authoritative for recovery, not ``worker_jobs.external_id``.
     """
     rows = (
-        await session.execute(
-            text(
-                """
+        (
+            await session.execute(
+                text(
+                    """
                 SELECT run.id, run.external_id
                 FROM sandbox_runs AS run
                 LEFT JOIN worker_jobs AS wj ON wj.id = run.worker_job_id
@@ -1304,11 +1326,119 @@ async def _find_orphaned_thunder_sandbox_runs(
                   )
                 ORDER BY run.id
                 """
-            ),
-            {},
+                ),
+                {},
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     return [(str(row["id"]), str(row["external_id"])) for row in rows]
+
+
+async def _complete_pending_thunder_capacity_handoffs(
+    session: Any,
+) -> list[tuple[str, str, str]]:
+    """Make fallback jobs claimable only after their Thunder run is terminal."""
+    rows = (
+        (
+            await session.execute(
+                text(
+                    """
+                SELECT wj.id AS job_id,
+                       wj.subject_id AS trial_id,
+                       tr.environment AS target_environment
+                FROM worker_jobs AS wj
+                JOIN trials AS tr
+                  ON tr.id = wj.subject_id
+                 AND wj.subject_table = 'trials'
+                JOIN sandbox_runs AS run
+                  ON run.worker_job_id = wj.id
+                 AND run.worker_job_attempt = wj.attempts
+                WHERE wj.kind::text = 'TRIAL'
+                  AND wj.status::text = 'RETRYING'
+                  AND wj.execution_lane = 'default'
+                  AND wj.reroute_from_environment = 'thunder'
+                  AND wj.reroute_reason = :reroute_reason
+                  AND wj.reroute_pending_teardown
+                  AND wj.provider = 'thunder'
+                  AND wj.external_id = run.external_id
+                  AND tr.status::text = 'RETRYING'
+                  AND LOWER(tr.environment) <> 'thunder'
+                  AND tr.deleted_at IS NULL
+                  AND tr.superseded_by_trial_id IS NULL
+                  AND run.provider = 'thunder'
+                  AND run.state = 'TERMINATED'
+                  AND run.terminated_at IS NOT NULL
+                  AND run.deleted_at IS NULL
+                ORDER BY wj.id
+                FOR UPDATE OF wj SKIP LOCKED
+                """
+                ),
+                {"reroute_reason": THUNDER_CAPACITY_UNAVAILABLE_CODE},
+            )
+        )
+        .mappings()
+        .all()
+    )
+
+    completed: list[tuple[str, str, str]] = []
+    for row in rows:
+        result = cast(
+            CursorResult,
+            await session.execute(
+                text(
+                    """
+                    UPDATE worker_jobs
+                    SET reroute_pending_teardown = false,
+                        provider = NULL,
+                        external_id = NULL,
+                        available_after = NOW(),
+                        next_retry_at = NULL,
+                        updated_at = NOW()
+                    WHERE id = :job_id
+                      AND status::text = 'RETRYING'
+                      AND reroute_pending_teardown
+                    """
+                ),
+                {"job_id": row["job_id"]},
+            ),
+        )
+        if int(result.rowcount or 0) != 1:
+            continue
+        await session.execute(
+            text(
+                """
+                UPDATE sandbox_capacity_leases AS lease
+                SET locked_by = NULL,
+                    worker_job_id = NULL,
+                    locked_at = NULL,
+                    locked_until = NULL
+                WHERE lease.provider = 'thunder'
+                  AND lease.worker_job_id = :job_id
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM sandbox_runs AS active
+                      WHERE active.worker_job_id = lease.worker_job_id
+                        AND active.deleted_at IS NULL
+                        AND active.terminated_at IS NULL
+                        AND (
+                            active.state <> 'FAILED'
+                            OR active.external_id IS NOT NULL
+                        )
+                  )
+                """
+            ),
+            {"job_id": row["job_id"]},
+        )
+        completed.append(
+            (
+                str(row["job_id"]),
+                str(row["trial_id"]),
+                str(row["target_environment"]),
+            )
+        )
+    return completed
 
 
 async def _recover_thunder_inventory_handles(
@@ -1319,9 +1449,10 @@ async def _recover_thunder_inventory_handles(
     recovered = 0
     for snapshot in sorted(inventory, key=lambda item: (item.name, item.external_id)):
         row = (
-            await session.execute(
-                text(
-                    """
+            (
+                await session.execute(
+                    text(
+                        """
                     UPDATE sandbox_runs AS run
                     SET external_id = :external_id,
                         provisioned_at = COALESCE(run.provisioned_at, NOW()),
@@ -1353,13 +1484,16 @@ async def _recover_thunder_inventory_handles(
                     RETURNING run.id, run.worker_job_id, run.worker_job_attempt,
                               run.state
                     """
-                ),
-                {
-                    "sandbox_run_id": snapshot.name,
-                    "external_id": snapshot.external_id,
-                },
+                    ),
+                    {
+                        "sandbox_run_id": snapshot.name,
+                        "external_id": snapshot.external_id,
+                    },
+                )
             )
-        ).mappings().one_or_none()
+            .mappings()
+            .one_or_none()
+        )
         if row is None:
             continue
         recovered += 1
@@ -1961,7 +2095,6 @@ async def _unwedge_stuck_analyzing(session) -> tuple[int, int, int]:
         stuck_analyzing_finalized,
         stuck_analysis_nulls_failed,
     )
-
 
 
 async def _release_orphaned_slots(session) -> int:

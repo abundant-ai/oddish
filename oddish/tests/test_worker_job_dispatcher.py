@@ -64,6 +64,8 @@ def test_dispatch_queries_only_count_active_worker_job_kinds(monkeypatch):
     assert len(pool.calls) == 3
     assert all("kind::text = ANY" in sql for sql, _args in pool.calls)
     assert all(args[-1] == active_kinds for _sql, args in pool.calls)
+    assert "NOT reroute_pending_teardown" in pool.calls[0][0]
+    assert "NOT reroute_pending_teardown" in pool.calls[1][0]
 
 
 def _limits_for(queued_by_org_queue: dict, default: int = 32) -> dict[str, int]:

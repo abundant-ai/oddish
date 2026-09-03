@@ -463,6 +463,7 @@ async def run_ephemeral_harbor_trial(
             duration=duration,
             stderr=b"".join(stderr_chunks).decode("utf-8", "replace"),
             stdout_tail="\n".join(tail),
+            environment_provider=environment.value,
         )
         return outcome
     except asyncio.CancelledError:
@@ -530,6 +531,7 @@ def _read_outcome(
     duration: float,
     stderr: str,
     stdout_tail: str,
+    environment_provider: str | None = None,
 ) -> HarborOutcome:
     """Read the child outcome."""
     outcome_data: dict[str, Any] | None = None
@@ -578,9 +580,11 @@ def _read_outcome(
             job_result_path=job_result_path,
             job_dir=job_dir,
             duration_sec=duration,
+            environment_provider=environment_provider,
         )
 
     error = outcome_data.get("error") or (stderr or stdout_tail or "").strip()[-1500:]
+    provider_error_code = outcome_data.get("provider_error_code")
     return HarborOutcome(
         reward=None,
         error=error or "Ephemeral Harbor run failed without a result.",
@@ -588,7 +592,14 @@ def _read_outcome(
         duration_sec=duration,
         job_result_path=None,
         job_dir=job_dir,
-        exception_type="HarborOverrideImportError",
+        exception_type=(
+            outcome_data.get("exception_type")
+            if provider_error_code
+            else "HarborOverrideImportError"
+        ),
+        provider_error_code=provider_error_code,
+        http_status=outcome_data.get("http_status"),
+        retry_after_seconds=outcome_data.get("retry_after_seconds"),
     )
 
 

@@ -69,7 +69,9 @@ def reset_ec2_provisioned_callback(
     _EC2_PROVISIONED_CALLBACK.reset(token)
 
 
-def apply_harbor_patches(*, require_ec2: bool = False) -> None:
+def apply_harbor_patches(
+    *, require_ec2: bool = False, require_thunder: bool = False
+) -> None:
     """Install Harbor patches once."""
     global _PATCHED
     if not _PATCHED:
@@ -78,6 +80,25 @@ def apply_harbor_patches(*, require_ec2: bool = False) -> None:
         _patch_modal_dind()
         _PATCHED = True
     _patch_ec2_lifecycle(require_ec2=require_ec2)
+    _patch_thunder_exception_metadata(require_thunder=require_thunder)
+
+
+def _patch_thunder_exception_metadata(*, require_thunder: bool = False) -> None:
+    """Expose Thunder SDK metadata under Harbor's ExceptionInfo field names."""
+    if not require_thunder:
+        return
+
+    from thunder_sandbox import ThunderError
+
+    # Harbor reads these generic names when it serializes ExceptionInfo. The
+    # SDK's native fields remain authoritative and no exception text is parsed.
+    # Assignment is idempotent and applies to every ThunderError subtype.
+    ThunderError.http_status = property(  # type: ignore[attr-defined]
+        lambda self: self.status
+    )
+    ThunderError.retry_after_seconds = property(  # type: ignore[attr-defined]
+        lambda self: self.retry_after
+    )
 
 
 def _patch_restricted_network_runtime_fields() -> None:

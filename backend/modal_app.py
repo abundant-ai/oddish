@@ -254,6 +254,8 @@ _GKE_COORDS_FILE = "/opt/oddish/gke_coords.json"
 _EC2_ENABLED_ENV = "ODDISH_EC2_ENABLED"
 _NUMINOUS_ENABLED_ENV = "ODDISH_NUMINOUS_ENABLED"
 _THUNDER_ENABLED_ENV = "ODDISH_THUNDER_ENABLED"
+_THUNDER_CAPACITY_FALLBACK_ENV = "ODDISH_THUNDER_CAPACITY_FALLBACK"
+_THUNDER_FALLBACK_PROVIDER_ENV = "ODDISH_THUNDER_FALLBACK_PROVIDER"
 _THUNDER_SECRET_NAME_ENV = "ODDISH_THUNDER_SECRET_NAME"
 _THUNDER_SECRET_NAME = (
     os.environ.get(_THUNDER_SECRET_NAME_ENV)
@@ -278,7 +280,7 @@ _EC2_RAW_SECRET_ENV_NAMES = frozenset(
 
 
 def _is_truthy(value: str | None) -> bool:
-    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+    return (value or "").strip().lower() in {"1", "t", "true", "yes", "on"}
 
 
 def _effective_gke_cluster_name(
@@ -839,7 +841,9 @@ _EC2_PUBLIC_ENV_NAMES = {
 }
 
 _THUNDER_PUBLIC_ENV_NAMES = {
+    "ODDISH_THUNDER_CAPACITY_FALLBACK",
     "ODDISH_THUNDER_ENABLED",
+    "ODDISH_THUNDER_FALLBACK_PROVIDER",
     "ODDISH_THUNDER_MAX_CAPACITY",
     "ODDISH_THUNDER_SECRET_NAME",
 }
@@ -925,6 +929,19 @@ ENV_VARS = {
     _NUMINOUS_GPU_ENABLED_ENV: str(_NUMINOUS_GPU_ENABLED).lower(),
     # Keep worker-side Settings and the deploy-time secret plan in lockstep.
     _THUNDER_ENABLED_ENV: str(_THUNDER_ENABLED).lower(),
+    _THUNDER_CAPACITY_FALLBACK_ENV: str(
+        _is_truthy(
+            _deploy_value(
+                _THUNDER_CAPACITY_FALLBACK_ENV, os.environ, LOCAL_DOTENV_VARS
+            )
+        )
+    ).lower(),
+    _THUNDER_FALLBACK_PROVIDER_ENV: (
+        _deploy_value(
+            _THUNDER_FALLBACK_PROVIDER_ENV, os.environ, LOCAL_DOTENV_VARS
+        )
+        or "modal"
+    ),
     "ODDISH_THUNDER_MAX_CAPACITY": str(
         int(
             _deploy_value(

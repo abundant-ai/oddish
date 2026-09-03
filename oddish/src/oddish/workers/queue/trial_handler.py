@@ -19,10 +19,14 @@ from harbor.trial.hooks import TrialEvent, TrialHookEvent
 from harbor.viewer.scanner import JobScanner
 from sqlalchemy import select, update
 
-from oddish.core.harbor_artifacts import build_trial_result
+from oddish.core.harbor_artifacts import (
+    THUNDER_CAPACITY_UNAVAILABLE_CODE,
+    build_trial_result,
+)
 from oddish.core.trial_artifacts import validate_uploaded_analysis_artifacts
 from oddish.config import settings
 from oddish.costs.modal_cost import SpanResources
+from oddish.observability import record_thunder_capacity_handoff
 from oddish.costs.recorder import (
     close_agent_sandboxes,
     price_unpriced_spans,
@@ -78,6 +82,7 @@ from oddish.workers.analysis_trials import ANALYSIS_ARTIFACTS, is_analysis_kind
 from oddish.workers.harbor.ephemeral import HarborOverrideImportError
 from oddish.workers.harbor.quota_control import QuotaPauseControlError
 from oddish.workers.harbor.runner import (
+    FallbackEnvironmentCompatibilityError,
     HarborOutcome,
     capture_live_sandbox_resources,
     capture_sandbox_resources,
@@ -270,6 +275,7 @@ class PreparedTrialRun:
     trial_model: str
     trial_environment: str | None
     trial_harbor_config: dict | None
+    fallback_from_environment: str | None = None
     trial_kind: str = "agent"
     task_version: int | None = None
     # Fields for sauron S3 mirror
@@ -356,6 +362,23 @@ def _is_non_retryable_outcome(trial: object, outcome: HarborOutcome | None) -> b
     return not RetryConfig.model_validate(retry or {}).should_retry(
         outcome.exception_type
     )
+
+
+def thunder_capacity_fallback_provider(
+    environment: str | None,
+    outcome: HarborOutcome | None,
+) -> str | None:
+    """Return the configured destination for an exact Thunder capacity miss."""
+    if not settings.thunder_capacity_fallback:
+        return None
+    if (environment or "").strip().lower() != EnvironmentType.THUNDER.value:
+        return None
+    if (
+        outcome is None
+        or outcome.provider_error_code != THUNDER_CAPACITY_UNAVAILABLE_CODE
+    ):
+        return None
+    return settings.thunder_fallback_provider
 
 
 def _expects_no_reward(trial: object) -> bool:
@@ -624,6 +647,7 @@ async def _prepare_trial_run(
     worker_id: str | None,
     queue_slot: int | None,
     modal_function_call_id: str | None,
+    fallback_from_environment: str | None = None,
 ) -> PreparedTrialRun | None:
     async with _trial_session(trial_id, with_for_update=True) as (session, trial):
         if not trial:
@@ -720,6 +744,7 @@ async def _prepare_trial_run(
             trial_model=trial_model,
             trial_environment=trial_environment,
             trial_harbor_config=trial_harbor_config,
+            fallback_from_environment=fallback_from_environment,
             trial_kind=trial.kind or "agent",
             task_version=task_version,
             task_name=task_name,
@@ -1623,13 +1648,16 @@ async def _execute_trial(
             billed_user_id=prepared_trial.billed_user_id,
             extra_agent_env=extra_agent_env,
             sandbox_launch=sandbox_launch,
+            fallback_from_environment=prepared_trial.fallback_from_environment,
         )
     except asyncio.CancelledError:
         console.print(f"[yellow]Trial {trial_id} cancelled by worker runtime[/yellow]")
         raise
     except Exception as e:
         execution_error = f"{type(e).__name__}: {e}"
-        retryable = not isinstance(e, QuotaPauseControlError)
+        retryable = not isinstance(
+            e, (QuotaPauseControlError, FallbackEnvironmentCompatibilityError)
+        )
         console.print(f"[red]Trial {trial_id} execution error: {execution_error}[/red]")
         outcome = None
     finally:
@@ -1989,6 +2017,7 @@ async def run_trial_job(
     modal_function_call_id: str | None = None,
     worker_job_id: str | None = None,
     worker_job_attempt: int | None = None,
+    fallback_from_environment: str | None = None,
 ) -> HarborOutcome | None:
     """
     Execute a claimed trial.
@@ -2023,6 +2052,7 @@ async def run_trial_job(
         worker_id=worker_id,
         queue_slot=queue_slot,
         modal_function_call_id=modal_function_call_id,
+        fallback_from_environment=fallback_from_environment,
     )
     if prepared_trial is None:
         return None
@@ -2128,6 +2158,28 @@ async def run_trial_job(
             heartbeat_interrupt.result()
         execution = await execution_task
         await _settle_compute_costs(cost_state, execution.outcome)
+
+        fallback_provider = thunder_capacity_fallback_provider(
+            prepared_trial.trial_environment,
+            execution.outcome,
+        )
+        if fallback_provider is not None:
+            message = (
+                "metric=thunder_capacity_handoff outcome=requested "
+                f"job_id={worker_job_id or 'unknown'} trial_id={trial_id} "
+                f"target={fallback_provider} "
+                f"reason={THUNDER_CAPACITY_UNAVAILABLE_CODE}"
+            )
+            console.print(message)
+            logger.info(message)
+            record_thunder_capacity_handoff(
+                outcome="requested", target_environment=fallback_provider
+            )
+            # Do not run ordinary failure settlement: the worker outcome layer
+            # owns the atomic trial/job/ledger/lease transition. Returning from
+            # inside this try still executes the teardown and credential cleanup
+            # below before the reroute can be persisted.
+            return execution.outcome
 
         # Upload trial results to S3.
         trial_s3_key = None

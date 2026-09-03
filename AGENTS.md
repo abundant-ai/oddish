@@ -787,6 +787,24 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   function and treats that exact name match as the ownership proof needed to
   recover a handle lost before Harbor's `environment-provisioned` event. Never
   make the name task-configurable or terminate unmatched inventory entries.
+  Capacity fallback remains off unless `ODDISH_THUNDER_CAPACITY_FALLBACK=true`;
+  its destination defaults to `ODDISH_THUNDER_FALLBACK_PROVIDER=modal`. An
+  exact SDK `sandbox_capacity_unavailable` result bypasses ordinary trial
+  failure settlement. One ownership-checked transaction changes the trial
+  environment plus required runnable/claim state and moves the job from
+  `thunder_trial` to the `default` execution lane. Payload, queue key, Harbor
+  variant, priority, attempt identifiers and limits, and stored trial config
+  remain unchanged. At destination execution, Oddish rebuilds a private Harbor
+  environment config: Thunder-only kwargs are removed from both override and
+  task config, an exact Thunder `gpu_type` is transferred to the task's native
+  GPU field, and backend capabilities are checked before provisioning. Modal
+  must reject A6000 rather than remap it. A no-ID ledger is fast-finalized; a
+  run with an external ID remains claim-blocked and retains its Thunder capacity
+  lease until cleanup confirms teardown and clears
+  `reroute_pending_teardown`. Requested/completed/rejected/failed handoffs emit
+  structured `metric=thunder_capacity_handoff` logs and the bounded
+  `oddish.thunder.capacity_handoffs` counter. Apply the
+  `thunder_fallback_001` core migration before enabling the gate.
 - EC2 is an explicit, opt-in Harbor backend: `ODDISH_EC2_ENABLED=true` registers
   it and permits hosted `environment=ec2`, but capability ordering keeps Daytona
   as the CPU default. V1 launches one ephemeral CPU instance per trial and uses

@@ -407,7 +407,7 @@ async def test_login_nonzero_log_redacts_token(creds, caplog):
 
 
 def test_apply_harbor_patches_is_idempotent(monkeypatch):
-    calls = {"daytona": 0, "modal": 0, "ec2": []}
+    calls = {"daytona": 0, "modal": 0, "ec2": [], "thunder": []}
     monkeypatch.setattr(harbor_patches, "_PATCHED", False)
     monkeypatch.setattr(
         harbor_patches,
@@ -424,11 +424,36 @@ def test_apply_harbor_patches_is_idempotent(monkeypatch):
         "_patch_ec2_lifecycle",
         lambda *, require_ec2: calls["ec2"].append(require_ec2),
     )
+    monkeypatch.setattr(
+        harbor_patches,
+        "_patch_thunder_exception_metadata",
+        lambda *, require_thunder: calls["thunder"].append(require_thunder),
+    )
 
     harbor_patches.apply_harbor_patches()
-    harbor_patches.apply_harbor_patches(require_ec2=True)
+    harbor_patches.apply_harbor_patches(require_ec2=True, require_thunder=True)
 
-    assert calls == {"daytona": 1, "modal": 1, "ec2": [False, True]}
+    assert calls == {
+        "daytona": 1,
+        "modal": 1,
+        "ec2": [False, True],
+        "thunder": [False, True],
+    }
+
+
+def test_thunder_exception_patch_exposes_harbor_metadata_aliases():
+    from thunder_sandbox import CapacityError
+
+    harbor_patches._patch_thunder_exception_metadata(require_thunder=True)
+    error = CapacityError(
+        "unavailable",
+        code="sandbox_capacity_unavailable",
+        status=503,
+        retry_after=20.0,
+    )
+
+    assert error.http_status == 503
+    assert error.retry_after_seconds == 20.0
 
 
 def test_ec2_lifecycle_patch_allows_prelaunch_events_and_exposes_instance_handle():
@@ -825,9 +850,11 @@ def test_wrappers_set_marker_to_prevent_double_wrap(make_wrapped, attr):
 
 
 def test_entry_applies_sibling_harbor_patches(monkeypatch):
-    calls: list[bool] = []
+    calls: list[tuple[bool, bool]] = []
     patch_module = SimpleNamespace(
-        apply_harbor_patches=lambda *, require_ec2: calls.append(require_ec2)
+        apply_harbor_patches=lambda *, require_ec2, require_thunder: calls.append(
+            (require_ec2, require_thunder)
+        )
     )
 
     def _fake_import(name):
@@ -836,24 +863,31 @@ def test_entry_applies_sibling_harbor_patches(monkeypatch):
 
     monkeypatch.setattr(harbor_entry.importlib, "import_module", _fake_import)
 
-    result = harbor_entry._apply_sibling_harbor_patches(require_ec2=True)
+    result = harbor_entry._apply_sibling_harbor_patches(
+        require_ec2=True,
+        require_thunder=True,
+    )
 
-    assert calls == [True]
+    assert calls == [(True, True)]
     assert result is patch_module
 
 
 @pytest.mark.parametrize(
     ("environment_type", "expected"),
-    [("ec2", True), ("docker", False)],
+    [
+        ("ec2", (True, False)),
+        ("thunder", (False, True)),
+        ("docker", (False, False)),
+    ],
 )
 @pytest.mark.asyncio
 async def test_entry_requires_ec2_patch_only_for_ec2_payload(
-    monkeypatch, environment_type: str, expected: bool
+    monkeypatch, environment_type: str, expected: tuple[bool, bool]
 ) -> None:
-    calls: list[bool] = []
+    calls: list[tuple[bool, bool]] = []
 
-    def stop_after_patch(*, require_ec2: bool) -> None:
-        calls.append(require_ec2)
+    def stop_after_patch(*, require_ec2: bool, require_thunder: bool) -> None:
+        calls.append((require_ec2, require_thunder))
         raise RuntimeError("stop after patch")
 
     monkeypatch.setattr(harbor_entry, "_apply_sibling_harbor_patches", stop_after_patch)
@@ -869,7 +903,7 @@ def test_standalone_entry_preserves_patch_package_context(monkeypatch):
     monkeypatch.setattr(
         harbor_patches,
         "apply_harbor_patches",
-        lambda *, require_ec2=False: calls.append("patched"),
+        lambda *, require_ec2=False, require_thunder=False: calls.append("patched"),
     )
 
     namespace = runpy.run_path(

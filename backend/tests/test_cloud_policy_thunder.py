@@ -11,7 +11,9 @@ from pathlib import Path
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 _ODDISH_SRC = _BACKEND_ROOT.parent / "oddish" / "src"
 _THUNDER_ENV_NAMES = {
+    "ODDISH_THUNDER_CAPACITY_FALLBACK",
     "ODDISH_THUNDER_ENABLED",
+    "ODDISH_THUNDER_FALLBACK_PROVIDER",
     "ODDISH_THUNDER_MAX_CAPACITY",
     "ODDISH_THUNDER_SECRET_NAME",
     "TNR_API_URL",

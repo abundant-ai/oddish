@@ -70,9 +70,14 @@ def _event_name(event: Any) -> str:
     return raw.lower().replace("_", "-")
 
 
-def _apply_sibling_harbor_patches(*, require_ec2: bool = False) -> Any:
+def _apply_sibling_harbor_patches(
+    *, require_ec2: bool = False, require_thunder: bool = False
+) -> Any:
     module = importlib.import_module("oddish.workers.harbor.patches")
-    module.apply_harbor_patches(require_ec2=require_ec2)
+    module.apply_harbor_patches(
+        require_ec2=require_ec2,
+        require_thunder=require_thunder,
+    )
     return module
 
 
@@ -245,7 +250,10 @@ async def _run(payload: dict[str, Any]) -> dict[str, Any]:
     from oddish.core.trial_artifacts import write_trial_selection_manifest
 
     environment_type = (payload.get("environment_config") or {}).get("type")
-    patch_module = _apply_sibling_harbor_patches(require_ec2=environment_type == "ec2")
+    patch_module = _apply_sibling_harbor_patches(
+        require_ec2=environment_type == "ec2",
+        require_thunder=environment_type == "thunder",
+    )
     Job = getattr(importlib.import_module("harbor"), "Job")
     start = time.time()
     config = _build_job_config(payload)
@@ -323,6 +331,17 @@ def main(argv: list[str]) -> int:
             "duration_sec": time.time() - start,
             "error": f"{type(exc).__name__}: {exc}",
             "exception_type": type(exc).__name__,
+            "provider_error_code": getattr(exc, "code", None),
+            "http_status": (
+                getattr(exc, "http_status", None)
+                if getattr(exc, "http_status", None) is not None
+                else getattr(exc, "status", None)
+            ),
+            "retry_after_seconds": (
+                getattr(exc, "retry_after_seconds", None)
+                if getattr(exc, "retry_after_seconds", None) is not None
+                else getattr(exc, "retry_after", None)
+            ),
             "traceback": traceback.format_exc()[-4000:],
         }
         outcome_path.write_text(json.dumps(outcome))

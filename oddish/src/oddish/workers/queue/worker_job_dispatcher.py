@@ -100,6 +100,7 @@ async def stamp_dispatch_stage(
             SET    admission_reason = $2
             WHERE  queue_key = $1
               AND  status::text IN ('QUEUED', 'RETRYING')
+              AND  NOT reroute_pending_teardown
               AND  kind::text = ANY($3::text[])
             """,
             queue_key,
@@ -120,6 +121,7 @@ async def stamp_dispatch_stage(
                 FROM   worker_jobs
                 WHERE  queue_key = $1
                   AND  status::text IN ('QUEUED', 'RETRYING')
+                  AND  NOT reroute_pending_teardown
                   AND  kind::text = ANY($3::text[])
                   AND  spawned_at IS NULL
                 ORDER  BY priority DESC, created_at ASC
@@ -153,6 +155,7 @@ async def discover_active_worker_job_queue_keys() -> tuple[tuple[str, str, str],
         SELECT DISTINCT queue_key, harbor_variant_id, execution_lane
         FROM   worker_jobs
         WHERE  status::text IN ('QUEUED', 'RETRYING', 'RUNNING')
+          AND  NOT reroute_pending_teardown
           AND  available_after <= NOW()
           AND  kind::text = ANY($1::text[])
         """,
@@ -209,6 +212,7 @@ async def get_worker_job_org_queue_counts(
         FROM   worker_jobs
         WHERE  queue_key = ANY($1)
           AND  status::text IN ('QUEUED', 'RETRYING')
+          AND  NOT reroute_pending_teardown
           AND  available_after <= NOW()
           AND  kind::text = ANY($2::text[])
         GROUP BY org_id, queue_key, harbor_variant_id, execution_lane
@@ -266,9 +270,7 @@ def select_job_function(
         fn = (ec2_variant_fns or {}).get(variant, ec2_fn)
     elif lane == "thunder_trial":
         if thunder_fn is None:
-            raise RuntimeError(
-                "Thunder dispatch unit has no Thunder worker Function"
-            )
+            raise RuntimeError("Thunder dispatch unit has no Thunder worker Function")
         fn = (thunder_variant_fns or {}).get(variant, thunder_fn)
     else:
         fn = variant_fns.get(variant, default_fn)

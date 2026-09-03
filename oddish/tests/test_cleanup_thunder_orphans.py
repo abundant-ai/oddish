@@ -31,9 +31,7 @@ class _Session:
 
 @pytest.mark.asyncio
 async def test_thunder_orphans_are_discovered_from_sandbox_run_ledger():
-    session = _Session(
-        [{"id": "run-late", "external_id": "tnr-late"}]
-    )
+    session = _Session([{"id": "run-late", "external_id": "tnr-late"}])
 
     targets = await cleanup._find_orphaned_thunder_sandbox_runs(session)
 
@@ -123,3 +121,53 @@ async def test_absent_unprovisioned_thunder_run_is_finalized_after_inventory_pro
     assert "run.external_id IS NULL" in session.sql
     assert "run.id::text = ANY" in session.sql
     assert session.params == {"active_names": ["other-run"], "grace_minutes": 30}
+
+
+@pytest.mark.asyncio
+async def test_confirmed_teardown_makes_pending_fallback_dispatchable():
+    class UpdateResult:
+        rowcount = 1
+
+    class Session:
+        def __init__(self):
+            self.calls: list[tuple[str, dict[str, Any]]] = []
+
+        async def execute(self, statement, params):
+            sql = str(statement)
+            self.calls.append((sql, params))
+            if len(self.calls) == 1:
+                return _MappingsResult(
+                    [
+                        {
+                            "job_id": "job-1",
+                            "trial_id": "trial-1",
+                            "target_environment": "modal",
+                        }
+                    ]
+                )
+            return UpdateResult()
+
+    session = Session()
+    completed = await cleanup._complete_pending_thunder_capacity_handoffs(session)
+
+    assert completed == [("job-1", "trial-1", "modal")]
+    select_sql = session.calls[0][0]
+    assert "wj.reroute_pending_teardown" in select_sql
+    assert "wj.external_id = run.external_id" in select_sql
+    assert "run.state = 'TERMINATED'" in select_sql
+    job_sql = session.calls[1][0]
+    assert "reroute_pending_teardown = false" in job_sql
+    assert "available_after = NOW()" in job_sql
+    lease_sql = session.calls[2][0]
+    assert "UPDATE sandbox_capacity_leases" in lease_sql
+    assert "active.terminated_at IS NULL" in lease_sql
+
+
+@pytest.mark.asyncio
+async def test_uncertain_teardown_keeps_pending_fallback_blocked():
+    session = _Session([])
+
+    completed = await cleanup._complete_pending_thunder_capacity_handoffs(session)
+
+    assert completed == []
+    assert "run.state = 'TERMINATED'" in session.sql

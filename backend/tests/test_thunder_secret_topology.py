@@ -19,7 +19,9 @@ def test_disabled_deploy_has_no_thunder_secret_dependency() -> None:
 
 def test_thunder_public_image_env_excludes_credentials() -> None:
     assert modal_app._THUNDER_PUBLIC_ENV_NAMES == {
+        "ODDISH_THUNDER_CAPACITY_FALLBACK",
         "ODDISH_THUNDER_ENABLED",
+        "ODDISH_THUNDER_FALLBACK_PROVIDER",
         "ODDISH_THUNDER_MAX_CAPACITY",
         "ODDISH_THUNDER_SECRET_NAME",
     }
@@ -48,6 +50,8 @@ print(json.dumps({
         for secret in modal_app.thunder_worker_secrets
     ),
     "capacity": modal_app.ENV_VARS["ODDISH_THUNDER_MAX_CAPACITY"],
+    "capacity_fallback": modal_app.ENV_VARS["ODDISH_THUNDER_CAPACITY_FALLBACK"],
+    "fallback_provider": modal_app.ENV_VARS["ODDISH_THUNDER_FALLBACK_PROVIDER"],
 }))
 """
     result = subprocess.run(
@@ -58,6 +62,8 @@ print(json.dumps({
             "ODDISH_THUNDER_ENABLED": "true",
             "ODDISH_THUNDER_SECRET_NAME": "test-thunder",
             "ODDISH_THUNDER_MAX_CAPACITY": "16",
+            "ODDISH_THUNDER_CAPACITY_FALLBACK": "T",
+            "ODDISH_THUNDER_FALLBACK_PROVIDER": "modal",
             "ODDISH_SAURON_AWS_SECRET_NAME": "",
         },
         capture_output=True,
@@ -72,6 +78,8 @@ print(json.dumps({
         "thunder_lane_has_secret": True,
         "generic_has_secret": False,
         "capacity": "16",
+        "capacity_fallback": "true",
+        "fallback_provider": "modal",
     }
 
 
