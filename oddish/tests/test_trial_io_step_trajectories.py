@@ -201,3 +201,26 @@ def test_metrics_merge_tolerates_non_numeric_values():
     assert merged["total_cost_usd"] == 5.0
     assert merged["runtime"] == 2
     assert merged["extra"]["cache"] == 7
+
+
+def test_exact_step_read_propagates_storage_failures():
+    # A transient S3 failure must not read as "no trajectory" (which finished
+    # trials would cache); it propagates like the root EXACT read (Bugbot).
+    import pytest
+    from botocore.exceptions import ClientError
+
+    class _FlakyStorage(_StepStorage):
+        async def download_text(self, key: str) -> str:
+            if key.endswith("/agent/trajectory.json"):
+                raise ClientError({"Error": {"Code": "500"}}, "GetObject")
+            return await super().download_text(key)
+
+    layout = TrialArtifactLayout(
+        mode=TrialArtifactMode.EXACT,
+        attempt_prefix=PREFIX,
+        artifact_prefix=PREFIX,
+    )
+    with pytest.raises(ClientError):
+        asyncio.run(
+            trial_io._read_trial_trajectory_from_s3(_trial(), _FlakyStorage(), layout)
+        )

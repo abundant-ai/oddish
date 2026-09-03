@@ -651,9 +651,10 @@ async def _read_step_trajectories(
                 named.append((match.group(1), _json.loads(content)))
         if named:
             return _merge_step_trajectories(named)
-    except _ARTIFACT_FALLBACK_ERRORS:
-        return None
     except (_json.JSONDecodeError, TypeError, ValueError):
+        # Malformed content reads as "no trajectory"; storage failures
+        # propagate so they are not mistaken for a missing artifact
+        # (and cached as None), matching the root EXACT read.
         return None
     return None
 
@@ -686,9 +687,9 @@ async def _read_step_trajectories_exact(
             if await storage.object_exists(key):
                 keys.append(key)
         return await _read_step_trajectories(storage, keys)
-    except _ARTIFACT_FALLBACK_ERRORS:
-        return None
     except (_json.JSONDecodeError, TypeError, ValueError):
+        # Malformed result.json reads as a non-step trial; storage
+        # failures propagate, matching the root EXACT read.
         return None
 
 
