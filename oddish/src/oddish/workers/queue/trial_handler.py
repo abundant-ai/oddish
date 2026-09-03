@@ -2189,7 +2189,6 @@ async def run_trial_job(
         execution = await execution_task
         await _settle_compute_costs(cost_state, execution.outcome)
 
-<<<<<<< HEAD
         fallback_provider = thunder_capacity_fallback_provider(
             prepared_trial.trial_environment,
             execution.outcome,
@@ -2211,13 +2210,12 @@ async def run_trial_job(
             # inside this try still executes the teardown and credential cleanup
             # below before the reroute can be persisted.
             return execution.outcome
-=======
+
         qa_validation_error = (
             _qa_artifact_validation_error(execution.outcome)
             if trial_kind in ("qa", "qa_eval")
             else None
         )
->>>>>>> f15222b92f5bc3b25b2c30080f7d4e27712ed384
 
         # Upload trial results to S3.
         trial_s3_key = None
