@@ -604,6 +604,7 @@ PROVIDER_LOCKED_AGENTS: dict[str, str] = {
     "gemini-cli": "gemini",
     "antigravity-cli": "gemini",
     "codex": "openai",
+    "dsh": "deepseek",
 }
 
 

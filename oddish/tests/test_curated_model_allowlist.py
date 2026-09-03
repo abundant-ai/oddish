@@ -85,6 +85,32 @@ def test_bare_deepseek_flash_auto_selects_fireworks(monkeypatch):
     assert "auto-selected" in reason
 
 
+def test_dsh_bare_deepseek_flash_stays_on_deepseek(monkeypatch):
+    _settings(monkeypatch)
+    resolved, reason = auto_resolve_curated_model("dsh", "deepseek-v4-flash")
+    assert resolved == "deepseek/deepseek-v4-flash"
+    assert reason is not None
+    assert "deepseek/deepseek-v4-flash" in reason
+
+
+def test_validate_sweep_dsh_rejects_fireworks_prefix(monkeypatch):
+    _settings(monkeypatch)
+    submission = TaskSweepSubmission(
+        task_id="task-1",
+        configs=[
+            AgentModelPair(
+                agent="dsh",
+                model="fireworks/deepseek-v4-flash",
+                n_trials=1,
+            )
+        ],
+    )
+    with pytest.raises(HTTPException) as exc:
+        validate_sweep_submission(submission)
+    assert exc.value.status_code == 422
+    assert "locked to provider 'deepseek'" in str(exc.value.detail)
+
+
 def test_bare_glm_minimax_kimi_do_not_auto_pin_fireworks(monkeypatch):
     _settings(monkeypatch)
     for bare in ("glm-5.2", "minimax-m3", "kimi-k2.7-code"):
