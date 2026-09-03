@@ -31,7 +31,7 @@ import type {
   OrphanedStateResponse,
   QueueSlotSummary,
 } from "@/lib/types";
-import { fetcher } from "@/lib/api";
+import { apiFetch, fetcher } from "@/lib/api";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { TagAdminPolicyForm } from "@/components/tag-admin-policy-form";
 import { QuotaAdminForm } from "@/components/quota-admin-form";
@@ -293,7 +293,7 @@ function DiagnosticsPanel() {
       [model]: { status: "running" },
     }));
     try {
-      const response = await fetch("/api/admin/model-endpoints", {
+      const response = await apiFetch("/api/admin/model-endpoints", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ model }),

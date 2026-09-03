@@ -189,6 +189,8 @@ endpoint are required; bucket defaults to `data` and region to `us-east-1`:
 Common optional settings:
 
 - `CORS_ALLOWED_ORIGINS`
+- `CORS_ALLOWED_ORIGIN_REGEX`: origin pattern (for example `^https://oddish-[a-z0-9-]+\.vercel\.app$`) admitted in addition to the list, so per-branch Vercel previews can call the API directly when the dashboard runs with `NEXT_PUBLIC_API_DIRECT=1`
+
 - `CLERK_ISSUER`
 - `CLERK_JWT_AUDIENCE`
 - `ODDISH_AUTH_IDENTITY_TTL_SECONDS` (default 900): how long a container keeps a verified Clerk user's internal ids cached. Role and email always come from the token, so this only bounds how often a container re-reads the user row; API-key entries stay at 60 s.

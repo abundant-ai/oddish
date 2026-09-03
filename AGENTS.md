@@ -1576,7 +1576,10 @@ cp backend/.env.example backend/.env
 
 Minimum required: `ODDISH_DATABASE_URL` and `CLERK_DOMAIN`. Add
 `CLERK_SECRET_KEY` for Clerk-backed org management and `CLERK_WEBHOOK_SECRET`
-for webhook ingestion. Common optional settings include `CORS_ALLOWED_ORIGINS`,
+for webhook ingestion. Common optional settings include `CORS_ALLOWED_ORIGINS`
+(plus `CORS_ALLOWED_ORIGIN_REGEX` for Vercel preview origins when the dashboard
+calls the API directly),
+
 `CLERK_ISSUER`, `CLERK_JWT_AUDIENCE`, the `ODDISH_S3_*` set, provider keys
 (`AZURE_OPENAI_*`, `GEMINI_API_KEY`, `AWS_BEARER_TOKEN_BEDROCK`, …),
 `GITHUB_TOKEN`, and `ODDISH_DASHBOARD_URL`. See `backend/.env.example` for the
@@ -1748,6 +1751,28 @@ onto the Next response on success, upstream error, and streamed passthrough
 responses. Keep this behavior in `frontend/src/lib/proxy-headers.ts`; the
 generic JSON proxy requires its incoming request, and bespoke hot routes must
 use the same helpers instead of replacing an existing timing value.
+
+**Direct API mode** (`NEXT_PUBLIC_API_DIRECT=1`, off by default) lets the
+browser call the backend itself instead of going through those `/api/*`
+handlers: one fewer hop (Vercel edge, Vercel function, then Modal) and one
+trace instead of two. `frontend/src/lib/api.ts` owns the mapping: every
+dashboard request keeps its `/api/...` string as its SWR key and as the URL
+it would send to the proxy; `resolveApiUrl` turns that into
+`${NEXT_PUBLIC_API_URL}/...` (identity for every proxy except the five
+`settings/*` and `admin/users/{id}/costs` rewrites listed there), `apiFetch`
+attaches the token minted by the Clerk client with
+`NEXT_PUBLIC_CLERK_JWT_TEMPLATE` (the same template the proxies use
+server-side), and `/api/public/*` reads go without a token. Two proxies stay
+in the path because they do real work -- the Logfire relay
+(`/api/client-traces`) and the zip import -- and a request that cannot get a
+token yet (Clerk still loading) or runs during server rendering also keeps
+the proxy for that call. The backend side is `CORS_ALLOWED_ORIGIN_REGEX`
+(preview origins are unpredictable) and `backend/api/cache_headers.py`, which
+sets the `Cache-Control` values the proxies used to add, keyed on the matched
+route template. New mutation call sites must use `apiFetch`, never a bare
+`fetch("/api/...")`. The proxy files stay until direct mode has run in
+production for a while; delete them only in a dedicated change.
+
 
 The trial drawer surfaces verifier test counts only as a small passed/total
 row in the Summary tab (shown on public share views too); trials without test

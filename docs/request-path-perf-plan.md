@@ -301,7 +301,23 @@ Verify: `/tasks/{id}/files/{path}` handler time minus SQL time (the storage
 share) on expanded versions drops to about one object GET.
 
 
-### Phase 3. The browser talks to the backend (frontend + CORS, flagged)
+### Phase 3. The browser talks to the backend (implemented behind the flag: `perf/request-path-phase3`)
+
+What landed: `resolveApiUrl` / `apiFetch` in `frontend/src/lib/api.ts` (the
+proxy-to-backend map is identity except `settings/account`,
+`settings/api-keys*`, `settings/byok*`, `settings/notifications` and
+`admin/users/{id}/costs`; the Logfire relay and the zip import stay proxied;
+server rendering and a not-yet-loaded Clerk keep the proxy per call), the 40
+bare `fetch("/api/...")` mutation sites moved onto `apiFetch`, `traceparent`
+propagation to the API origin, `CORS_ALLOWED_ORIGIN_REGEX`, and
+`backend/api/cache_headers.py` carrying the eleven `Cache-Control` policies the
+proxies used to add. The flag is off everywhere; turning it on is an
+environment change (`NEXT_PUBLIC_API_DIRECT=1`,
+`NEXT_PUBLIC_CLERK_JWT_TEMPLATE`, and the backend's origin list or regex per
+environment). Proxy deletion waits for the soak described below.
+
+Original design, kept for the record:
+
 
 **Design.** Today every browser call goes browser, Vercel edge, Vercel function,
 Modal ingress, container; the function verifies the Clerk session, mints a

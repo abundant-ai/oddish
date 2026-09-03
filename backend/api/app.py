@@ -67,6 +67,19 @@ def _get_cors_origins() -> list[str]:
     ]
 
 
+def _get_cors_origin_regex() -> str | None:
+    """Origin pattern for deployments whose hostname is not known in advance.
+
+    Every Vercel preview gets its own origin, so a list cannot name them; set
+    ``CORS_ALLOWED_ORIGIN_REGEX`` to something like
+    ``^https://oddish-[a-z0-9-]+\\.vercel\\.app$`` and the dashboard on those
+    previews can call this API directly (``NEXT_PUBLIC_API_DIRECT``). Unset
+    means list-only, exactly as before.
+    """
+    pattern = os.getenv("CORS_ALLOWED_ORIGIN_REGEX", "").strip()
+    return pattern or None
+
+
 async def _assert_quota_schema_or_force_off() -> None:
     from sqlalchemy import text
 
@@ -250,6 +263,7 @@ def create_app() -> FastAPI:
     api.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
+        allow_origin_regex=_get_cors_origin_regex(),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -263,9 +277,11 @@ def create_app() -> FastAPI:
 
     api.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=1)
 
+    from api.cache_headers import cache_header_middleware
     from api.capacity_headers import capacity_header_middleware
 
     api.middleware("http")(capacity_header_middleware)
+    api.middleware("http")(cache_header_middleware)
 
     from api.routers import (
         admin,
