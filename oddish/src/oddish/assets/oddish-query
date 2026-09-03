@@ -23,24 +23,67 @@ function die(msg, status) { out(JSON.stringify({ error: msg, status })); process
 function withBanner(body) { return BOUNDARY_BANNER + '\n---\n' + body; }
 function dieStage(msg, status) { out(BOUNDARY_BANNER); die(msg, status); }
 
-async function get(path, params) {
+function fixtureUrl(path, params) {
   const url = new URL((BASE || 'http://fixture') + path);
   for (const [k, v] of Object.entries(params || {})) {
     if (v !== null && v !== undefined && v !== '') url.searchParams.set(k, v);
   }
+  return url;
+}
+
+function fixtureValue(path, params) {
   const fixture = process.env.ODDISH_QUERY_TEST_FIXTURE;
-  if (fixture) {
-    const f = JSON.parse(fixture);
-    if (f.__status === 401) die('session credential expired', 401);
-    const fixturePath = url.pathname + url.search;
-    return Object.hasOwn(f, fixturePath) ? f[fixturePath] : f[path];
-  }
+  if (!fixture) return { used: false };
+  const f = JSON.parse(fixture);
+  if (f.__status === 401) die('session credential expired', 401);
+  const url = fixtureUrl(path, params);
+  const fixturePath = url.pathname + url.search;
+  const val = Object.hasOwn(f, fixturePath) ? f[fixturePath] : f[path];
+  return { used: true, val };
+}
+
+function fixtureHttpError(val) {
+  return val && typeof val === 'object' && !Array.isArray(val) && Number(val.__http) >= 400;
+}
+
+async function get(path, params) {
+  const fx = fixtureValue(path, params);
+  if (fx.used) return fx.val;
+  const url = fixtureUrl(path, params);
   let r;
   try { r = await fetch(url, { headers: { Authorization: `Bearer ${KEY}` } }); }
   catch (e) { die(String(e), 0); }
   if (r.status === 401) die('session credential expired', 401);
   if (!r.ok) die(r.statusText || `HTTP ${r.status}`, r.status);
   return r.json();
+}
+
+async function getJsonOrNull(path, params) {
+  const fx = fixtureValue(path, params);
+  if (fx.used) return (fx.val == null || fixtureHttpError(fx.val)) ? null : fx.val;
+  const url = fixtureUrl(path, params);
+  let r;
+  try { r = await fetch(url, { headers: { Authorization: `Bearer ${KEY}` } }); }
+  catch (e) { return null; }
+  if (r.status === 401) die('session credential expired', 401);
+  if (!r.ok) return null;
+  try { return await r.json(); }
+  catch { return null; }
+}
+
+async function getTextOrNull(path) {
+  const fx = fixtureValue(path);
+  if (fx.used) {
+    if (fx.val == null || fixtureHttpError(fx.val)) return null;
+    return typeof fx.val === 'string' ? fx.val : JSON.stringify(fx.val);
+  }
+  const url = fixtureUrl(path);
+  let r;
+  try { r = await fetch(url, { headers: { Authorization: `Bearer ${KEY}` } }); }
+  catch (e) { return null; }
+  if (r.status === 401) die('session credential expired', 401);
+  if (!r.ok) return null;
+  return r.text();
 }
 
 function emitRows(rows) {
@@ -96,11 +139,24 @@ async function cmdTrialResource(a) {
 }
 
 async function cmdTrialVerifier(a) {
-  const data = await get(`/trials/${a.trialId}/logs/structured`);
+  const data = await getJsonOrNull(`/trials/${a.trialId}/logs/structured`);
+  if (data) {
+    out(JSON.stringify({
+      trial_id: a.trialId,
+      verifier: data.verifier || { stdout: null, stderr: null },
+      exception: data.exception ?? null,
+    }));
+    return;
+  }
+  // grok-build session sqlite still 500s GET /logs/structured on production;
+  // verifier stdout is available as a trial file.
+  const stdout = await getTextOrNull(`/trials/${a.trialId}/files/verifier/test-stdout.txt`);
+  const stderr = await getTextOrNull(`/trials/${a.trialId}/files/verifier/test-stderr.txt`);
+  if (stdout == null && stderr == null) die('Internal Server Error', 500);
   out(JSON.stringify({
     trial_id: a.trialId,
-    verifier: data?.verifier || { stdout: null, stderr: null },
-    exception: data?.exception ?? null,
+    verifier: { stdout: stdout ?? null, stderr: stderr ?? null },
+    exception: null,
   }));
 }
 

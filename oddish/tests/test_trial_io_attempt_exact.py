@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -19,6 +20,7 @@ from oddish.core.trial_artifacts import (
     resolve_trial_artifact_layout,
     validate_uploaded_analysis_artifacts,
 )
+from oddish.db.storage import is_trial_log_object
 
 
 class _Storage:
@@ -857,6 +859,51 @@ def test_structured_logs_use_the_manifest_selected_harbor_directory(monkeypatch)
 
     assert result["verifier"]["stdout"] == "CURRENT\n"
     assert stale_key not in storage.download_calls
+
+
+def test_is_trial_log_object_skips_grok_session_sqlite():
+    assert is_trial_log_object(Path("verifier/test-stdout.txt"))
+    assert is_trial_log_object(Path("agent/setup/stdout.txt"))
+    assert is_trial_log_object(Path("modal-output.log"))
+    assert is_trial_log_object(Path("agent/grok-session/logs/unified.jsonl"))
+    assert not is_trial_log_object(Path("agent/trajectory.json"))
+    assert not is_trial_log_object(
+        Path("agent/grok-session/sessions/session_search.sqlite")
+    )
+    assert not is_trial_log_object(Path("agent/grok-session/sessions/updates.jsonl.lock"))
+
+
+def test_structured_logs_skip_binary_grok_session_files(monkeypatch):
+    _clear_cache()
+    prefix = "tasks/task-1/trials/task-1-7/attempt-1/"
+    stdout_key = f"{prefix}current-run/verifier/test-stdout.txt"
+    sqlite_key = (
+        f"{prefix}current-run/agent/grok-session/sessions/session_search.sqlite"
+    )
+    storage = _Storage(
+        {
+            f"{prefix}result.json": json.dumps(
+                {"trial_results": [{"trial_name": "current-run"}]}
+            ),
+            stdout_key: "hidden gate failed\n",
+        },
+        listed=[sqlite_key, stdout_key],
+    )
+
+    async def explode_on_sqlite(key: str) -> str:
+        if key.endswith(".sqlite"):
+            raise UnicodeDecodeError("utf-8", b"\x00", 0, 1, "invalid")
+        return await _Storage.download_text(storage, key)
+
+    storage.download_text = explode_on_sqlite  # type: ignore[method-assign]
+    monkeypatch.setattr(trial_io, "get_storage_client", lambda: storage)
+
+    result = asyncio.run(
+        trial_io.read_trial_logs_structured(_trial(prefix=prefix, attempts=1))
+    )
+
+    assert result["verifier"]["stdout"] == "hidden gate failed\n"
+    assert sqlite_key not in storage.download_calls
 
 
 def test_freeform_logs_use_the_manifest_selected_harbor_directory(monkeypatch):
