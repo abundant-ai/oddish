@@ -198,6 +198,22 @@ test('trial verifier returns complete verifier streams with trial identity', () 
   });
 });
 
+test('trial verifier falls back to files when structured logs 500', () => {
+  const out = runApi(
+    ['trials', 'verifier', 't-1'],
+    {
+      '/trials/t-1/logs/structured': { __http: 500 },
+      '/trials/t-1/files/verifier/test-stdout.txt': '{"reward":0,"status":"failed"}\n',
+      '/trials/t-1/files/verifier/test-stderr.txt': { __http: 404 },
+    },
+  );
+  assert.deepEqual(JSON.parse(out), {
+    trial_id: 't-1',
+    verifier: { stdout: '{"reward":0,"status":"failed"}\n', stderr: null },
+    exception: null,
+  });
+});
+
 test('trial logs retain log-specific truncation', () => {
   const payload = { logs: 'l'.repeat(24000) };
   const out = runApi(['trials', 'logs', 't-1'], { '/trials/t-1/logs': payload });
