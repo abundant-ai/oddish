@@ -17,9 +17,14 @@ from oddish.config import (  # noqa: E402
     auto_resolve_curated_model,
     list_curated_models,
     pin_model_provider,
+    provider_satisfies_lock,
+    settings,
     to_fireworks_model_id,
 )
-from oddish.core.sweeps import validate_sweep_submission  # noqa: E402
+from oddish.core.sweeps import (  # noqa: E402
+    build_trial_specs_from_sweep,
+    validate_sweep_submission,
+)
 from oddish.schemas import AgentModelPair, TaskSweepSubmission  # noqa: E402
 from oddish.workers.queue.provider_failures import (  # noqa: E402
     is_permanent_model_setup_exception,
@@ -111,6 +116,49 @@ def test_validate_sweep_mutates_to_canonical(monkeypatch):
     submission = _sweep("mini-swe-agent", "fireworks/deepseek-v4-flash")
     validate_sweep_submission(submission)
     assert submission.configs[0].model == "fireworks/deepseek-v4-flash-0731"
+
+
+def test_append_reconcile_counts_historical_fireworks_alias(monkeypatch):
+    """Live rows stored under a pre-canonical alias must satisfy n_trials=1."""
+    _settings(monkeypatch)
+    alias = "fireworks/deepseek-v4-flash"
+    canonical = settings.normalize_trial_model("mini-swe-agent", alias)
+    assert canonical == "fireworks/deepseek-v4-flash-0731"
+
+    # Mimic _plan_append_trials after the normalize-existing fix.
+    existing_counts = {
+        ("mini-swe-agent", settings.normalize_trial_model("mini-swe-agent", alias)): 1,
+    }
+    submission = _sweep("mini-swe-agent", alias)
+    validate_sweep_submission(submission)
+    assert submission.configs[0].model == canonical
+    assert build_trial_specs_from_sweep(submission, existing_counts=existing_counts) == []
+
+
+def test_provider_satisfies_lock_openai_family():
+    assert provider_satisfies_lock("openai", "openai")
+    assert provider_satisfies_lock("openai", "azure")
+    assert provider_satisfies_lock("openai", "azure_openai")
+    assert provider_satisfies_lock("azure", "openai")
+    assert not provider_satisfies_lock("openai", "fireworks")
+    assert not provider_satisfies_lock("xai", "openai")
+
+
+def test_validate_sweep_codex_accepts_azure_family(monkeypatch):
+    _settings(monkeypatch)
+    for model in ("azure/my-deployment", "azure_openai/my-deployment"):
+        submission = _sweep("codex", model)
+        validate_sweep_submission(submission)
+        assert submission.configs[0].model == model
+
+
+def test_validate_sweep_codex_rejects_fireworks(monkeypatch):
+    _settings(monkeypatch)
+    submission = _sweep("codex", "fireworks/deepseek-v4-flash")
+    with pytest.raises(HTTPException) as exc:
+        validate_sweep_submission(submission)
+    assert exc.value.status_code == 422
+    assert "locked to provider 'openai'" in str(exc.value.detail)
 
 
 def test_provider_pin_and_conflict(monkeypatch):

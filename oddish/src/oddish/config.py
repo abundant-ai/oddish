@@ -294,6 +294,10 @@ def resolve_harbor_layers(
 OPENAI_PROVIDER_AZURE = "azure"
 OPENAI_PROVIDER_OPENAI = "openai"
 _OPENAI_PROVIDERS: set[str] = {OPENAI_PROVIDER_AZURE, OPENAI_PROVIDER_OPENAI}
+# Model-id prefixes that satisfy a lock to any OpenAI-family provider
+# (``openai`` / ``azure`` / ``azure_openai``). ODDISH_OPENAI_PROVIDER still
+# only accepts the two values in ``_OPENAI_PROVIDERS``.
+_OPENAI_LOCK_FAMILY: set[str] = {*_OPENAI_PROVIDERS, "azure_openai"}
 
 # The capacity a GKE accelerator pod can ask for. Mirrors
 # ``harbor.environments.gke.GKEProvisioningMode`` -- written out rather than
@@ -585,6 +589,22 @@ PROVIDER_LOCKED_AGENTS: dict[str, str] = {
     "codex": "openai",
     "dsh": "deepseek",
 }
+
+
+def provider_satisfies_lock(locked: str, provider: str) -> bool:
+    """True when ``provider`` matches ``locked``, including OpenAI-family aliases.
+
+    Codex is locked to ``openai`` but staging accepts ``azure/`` and
+    ``azure_openai/`` deployment ids as the same family. Exact mismatch
+    (e.g. ``fireworks/…`` on Codex) still fails.
+    """
+    locked_norm = (locked or "").strip().lower()
+    provider_norm = (provider or "").strip().lower()
+    if not locked_norm or not provider_norm:
+        return False
+    if locked_norm == provider_norm:
+        return True
+    return locked_norm in _OPENAI_LOCK_FAMILY and provider_norm in _OPENAI_LOCK_FAMILY
 
 
 def _unknown_curated_model_message(

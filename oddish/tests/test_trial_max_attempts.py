@@ -89,6 +89,61 @@ agents:
     assert agent["agent_config"]["kwargs"]["version"] == "1.0.0"
 
 
+def test_load_sweep_config_quoted_false_does_not_enable_allow_unknown(tmp_path):
+    """Quoted YAML "false" must not become True via bool("false")."""
+    from oddish.core.sweeps import validate_sweep_submission
+    from oddish.schemas import AgentModelPair, TaskSweepSubmission
+
+    config_path = tmp_path / "sweep.yaml"
+    config_path.write_text(
+        """
+agents:
+  - name: mini-swe-agent
+    model_name: fireworks/this-is-not-a-real-model
+    n_trials: 1
+    allow_unknown_model: "false"
+""".strip()
+    )
+
+    config = load_sweep_config(config_path)
+    pair = AgentModelPair(**config["agents"][0])
+    assert pair.allow_unknown_model is False
+
+    submission = TaskSweepSubmission(task_id="task-1", configs=[pair])
+    with pytest.raises(Exception) as exc:
+        validate_sweep_submission(submission)
+    detail = getattr(exc.value, "detail", str(exc.value))
+    assert "Unknown fireworks model" in str(detail)
+
+
+def test_load_sweep_config_unquoted_false_still_rejects_unknown(tmp_path):
+    from oddish.core.sweeps import validate_sweep_submission
+    from oddish.schemas import AgentModelPair, TaskSweepSubmission
+
+    config_path = tmp_path / "sweep.yaml"
+    config_path.write_text(
+        """
+agents:
+  - name: mini-swe-agent
+    model_name: fireworks/this-is-not-a-real-model
+    n_trials: 1
+    allow_unknown_model: false
+""".strip()
+    )
+
+    config = load_sweep_config(config_path)
+    # Unquoted false is omitted or False; either way the flag stays off.
+    assert config["agents"][0].get("allow_unknown_model") in (None, False)
+    pair = AgentModelPair(**config["agents"][0])
+    assert pair.allow_unknown_model is False
+
+    submission = TaskSweepSubmission(task_id="task-1", configs=[pair])
+    with pytest.raises(Exception) as exc:
+        validate_sweep_submission(submission)
+    detail = getattr(exc.value, "detail", str(exc.value))
+    assert "Unknown fireworks model" in str(detail)
+
+
 def test_load_sweep_config_rejects_invalid_max_trial_attempts(tmp_path):
     config_path = tmp_path / "sweep.yaml"
     config_path.write_text(

@@ -842,11 +842,11 @@ def run(
         if "force_build" in sweep_config and force_build is None:
             force_build = sweep_config["force_build"]
 
-        # Warn if CLI agent/model/n_trials are also specified
-        if agent or model or n_trials != 1:
+        # Warn if CLI agent/model/n_trials/provider/allow-unknown are also specified
+        if agent or model or n_trials != 1 or provider or allow_unknown_model:
             console.print(
-                "[yellow]Warning:[/yellow] --agent, --model, --n-trials are ignored "
-                "when using --config"
+                "[yellow]Warning:[/yellow] --agent, --model, --n-trials, --provider, "
+                "and --allow-unknown-model are ignored when using --config"
             )
     else:
         # Simple CLI mode - default agent

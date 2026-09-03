@@ -2113,8 +2113,10 @@ def load_sweep_config(config_path: Path) -> dict:
         }
         if agent_entry.get("provider"):
             entry["provider"] = agent_entry["provider"]
-        if agent_entry.get("allow_unknown_model"):
-            entry["allow_unknown_model"] = bool(agent_entry["allow_unknown_model"])
+        if "allow_unknown_model" in agent_entry:
+            # Pass through raw YAML/JSON so Pydantic bool parsing handles
+            # quoted "false" correctly (bool("false") is True).
+            entry["allow_unknown_model"] = agent_entry["allow_unknown_model"]
 
         agent_config_overrides: dict = {}
         if agent_entry.get("import_path"):

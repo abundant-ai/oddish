@@ -12,6 +12,7 @@ from oddish.config import (
     has_provider_credential,
     is_nop_oracle_agent,
     pin_model_provider,
+    provider_satisfies_lock,
     settings,
 )
 from oddish.schemas import TaskSubmission, TaskSweepSubmission, TrialSpec
@@ -43,7 +44,7 @@ def _resolve_sweep_config_model(config) -> None:
 
     provider = settings.get_provider_for_trial(config.agent, config.model)
     locked = PROVIDER_LOCKED_AGENTS.get((config.agent or "").strip().lower())
-    if locked and provider and provider != locked:
+    if locked and provider and not provider_satisfies_lock(locked, provider):
         raise HTTPException(
             status_code=422,
             detail=(

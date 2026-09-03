@@ -89,7 +89,12 @@ async def _plan_append_trials(
         )
         existing_counts = defaultdict(int)
         for existing_trial in existing_trials_result.scalars():
-            key = (existing_trial.agent, existing_trial.model)
+            key = (
+                existing_trial.agent,
+                settings.normalize_trial_model(
+                    existing_trial.agent, existing_trial.model
+                ),
+            )
             if existing_trial.status == TrialStatus.FAILED:
                 failed_trial_ids[key].append(existing_trial.id)
             else:

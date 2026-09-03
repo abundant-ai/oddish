@@ -11,7 +11,7 @@ from oddish.core.endpoints._common import (
     _ACTIVE_WORKER_JOB_STATUSES_SQL,
     USER_CANCELLED_MESSAGE,
 )
-from oddish.core.verdict_state import cancel_verdict, reset_verdict
+from oddish.core.verdict_state import cancel_verdict, queue_verdict, reset_verdict
 from oddish.db import (
     ACTIVE_TRIAL_STATUSES,
     AGENT_TRIAL_KIND,
@@ -277,7 +277,9 @@ async def backfill_task_analysis_core(
     The QA trial re-reads and re-classifies every eligible trial either
     way; ``force`` only controls which stored analyses are cleared up
     front so the UI shows them as pending (all live trials, or just
-    ``trial_ids``).
+    ``trial_ids``). Returns ``status: "queued"`` when a QA trial was
+    created, or ``"completed"`` when admission finished with no eligible
+    trials (deterministic rejection or a cleared verdict).
     """
     from oddish.queue import (
         live_analysis_trial_id,
@@ -356,12 +358,17 @@ async def backfill_task_analysis_core(
             _reset_trial_analysis(trial)
             reset_count += 1
 
+    # Withdraw the published result before admission. start_qa_for_task may
+    # find zero eligible trials (imports, skips, setup failures) and complete
+    # without creating a QA job; queue first so that path cannot restore the
+    # old verdict while this API still claims success.
+    queue_verdict(task)
     task.finished_at = None
-    await start_qa_for_task(session, task)
+    queued = await start_qa_for_task(session, task)
 
     await session.commit()
     return {
-        "status": "queued",
+        "status": "queued" if queued else "completed",
         "task_id": task_id,
         "trial_count": len(live_trials),
         "reset_count": reset_count,

@@ -1604,7 +1604,10 @@ async def start_qa_for_task(session: AsyncSession, task: TaskModel) -> bool:
             payload = build_verdict_payload(verdict, [])
             complete_verdict(task, payload=payload, now=utcnow())
         else:
-            abandon_verdict(task)
+            # Clear, do not restore: with zero eligible trials there is no
+            # replacement QA to run, so a published verdict must not linger
+            # (manual backfill / setup-failure-only tasks).
+            reset_verdict(task)
         return False
 
     with_verdict = await has_verdict_evidence(session, eligible)
