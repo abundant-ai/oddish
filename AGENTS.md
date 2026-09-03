@@ -400,7 +400,11 @@ latest uncancelled QA identity under the task lock before storing classification
 and again before publishing the verdict. Legacy jobs without a fingerprint
 must match the current audit finding IDs and must-fix subset. An audit rerun
 withdraws the old verdict and returns the task to RUNNING; admission waits for
-all solver, audit, and existing QA jobs, then creates one replacement QA. Both
+all solver and existing QA jobs, plus audit execution and result publication,
+then creates one replacement QA. `task_audit_pending` checks both live audit jobs
+and the current version's PENDING/QUEUED/RUNNING audit status; automatic admission,
+manual QA, and cleanup share this gate. A terminal audit job alone cannot
+complete the task. Both
 audit and QA settlement re-enter admission. Cleanup requeues QA whose saved
 audit no longer matches instead of repeatedly importing it. Audit writes also
 check the latest audit trial under the version lock, and duplicate successful

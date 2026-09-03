@@ -1388,7 +1388,7 @@ async def _heal_stale_verdict_pending(session) -> tuple[int, list[str]]:
     caller runs those AFTER this transaction commits, because the importer
     locks the same task rows this healer may still hold FOR UPDATE.
     """
-    from oddish.queue import live_analysis_trial_id, start_qa_for_task
+    from oddish.queue import start_qa_for_task, task_audit_pending
     from oddish.core.analysis_payload import (
         AnalysisPayloadError,
         audit_snapshot_matches,
@@ -1455,15 +1455,12 @@ async def _heal_stale_verdict_pending(session) -> tuple[int, list[str]]:
                 )
                 if active_qa is not None:
                     continue
+                if await task_audit_pending(session, task):
+                    continue
                 if task.verdict_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
                     task.status = TaskStatus.COMPLETED
                     task.finished_at = task.finished_at or utcnow()
                     verdict_pending_completed += 1
-                    continue
-                if (
-                    await live_analysis_trial_id(session, task.id, kind="audit")
-                    is not None
-                ):
                     continue
                 # A terminal QA trial with a non-terminal verdict means the
                 # import never landed (worker died between settle and
@@ -1522,7 +1519,7 @@ async def _heal_stale_verdict_pending(session) -> tuple[int, list[str]]:
 
 
 async def _heal_stale_audit_imports(session) -> list[str]:
-    """Step 4b -- task versions stuck with a queued/running pre-trial audit
+    """Step 4b -- task versions awaiting pre-trial audit publication
     whose audit trial already settled: the importer died between settle and
     import (transient exception, worker crash). Returns the newest settled
     audit trial id per stuck version for the caller to re-import AFTER this
@@ -1549,7 +1546,7 @@ async def _heal_stale_audit_imports(session) -> list[str]:
                       AND tr.status::text IN ('SUCCESS', 'FAILED', 'SKIPPED')
                     ORDER BY tr.created_at DESC, tr.id DESC LIMIT 1
                 ) settled ON true
-                WHERE tv.pre_trial_status::text IN ('QUEUED', 'RUNNING')
+                WHERE tv.pre_trial_status::text IN ('PENDING', 'QUEUED', 'RUNNING')
                   AND NOT EXISTS (
                       SELECT 1 FROM trials live
                       WHERE live.task_version_id = tv.id

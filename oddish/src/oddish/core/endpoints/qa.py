@@ -26,17 +26,6 @@ from oddish.db import (
 )
 
 
-async def _live_analysis_trial_id(
-    session: AsyncSession, task_id: str, *, kind: str
-) -> str | None:
-    # One definition of "an analysis stage is in progress": the automatic
-    # QA admission (maybe_start_task_qa_stage) defers on the same predicate
-    # these endpoints guard with, so the two paths cannot disagree.
-    from oddish.queue import live_analysis_trial_id
-
-    return await live_analysis_trial_id(session, task_id, kind=kind)
-
-
 def _collect_cancel_metadata(rows: Collection[object]) -> dict[str, list[str]]:
     modal_fc_ids: list[str] = []
     for row in rows:
@@ -288,6 +277,12 @@ async def backfill_task_analysis_core(
     front so the UI shows them as pending (all live trials, or just
     ``trial_ids``).
     """
+    from oddish.queue import (
+        live_analysis_trial_id,
+        start_qa_for_task,
+        task_audit_pending,
+    )
+
     # The task row lock serializes this check-and-enqueue against the audit
     # rerun (which takes the same lock): without it, two concurrent requests
     # can each pass the job guards below and enqueue conflicting jobs.
@@ -334,19 +329,18 @@ async def backfill_task_analysis_core(
     # The live qa trial IS the in-progress marker. Old status flags
     # (verdict_status, per-trial analysis_status) can be stale after a
     # crash and must not wedge the rerun button.
-    live_qa = await _live_analysis_trial_id(session, task_id, kind="qa")
+    live_qa = await live_analysis_trial_id(session, task_id, kind="qa")
     if live_qa is not None:
         raise HTTPException(
             status_code=400,
             detail="QA is already in progress for this task",
         )
 
-    # The QA brief embeds the audit findings. Starting QA while an audit
-    # trial is live would read mixed findings.
-    if await _live_analysis_trial_id(session, task_id, kind="audit"):
+    # A finished job may still await import; do not snapshot missing findings.
+    if await task_audit_pending(session, task):
         raise HTTPException(
             status_code=400,
-            detail="A pre-trial audit is queued or running; wait for it to finish",
+            detail="A pre-trial audit is running or awaiting import; wait for it to finish",
         )
 
     reset_count = 0
@@ -359,8 +353,6 @@ async def backfill_task_analysis_core(
         for trial in to_reset:
             _reset_trial_analysis(trial)
             reset_count += 1
-
-    from oddish.queue import start_qa_for_task
 
     task.finished_at = None
     await start_qa_for_task(session, task)
@@ -387,6 +379,8 @@ async def rerun_pre_trial_audit_core(
     the task against the new audit without interrupting running jobs.
     """
     from datetime import timedelta
+
+    from oddish.queue import live_analysis_trial_id
 
     # The task row lock serializes this check-and-enqueue against the QA
     # backfill (which takes the same lock): without it, two concurrent
@@ -422,7 +416,7 @@ async def rerun_pre_trial_audit_core(
     # A queued request with a live audit trial behind it must not be queued
     # again. A stale QUEUED status with no trial (cancelled or crashed) may
     # be: re-queuing is the remedy there.
-    if await _live_analysis_trial_id(session, task_id, kind="audit"):
+    if await live_analysis_trial_id(session, task_id, kind="audit"):
         raise HTTPException(
             status_code=400,
             detail="An audit trial is already queued or running for this task",

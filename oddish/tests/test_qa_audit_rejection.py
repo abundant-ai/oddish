@@ -116,6 +116,11 @@ def test_fingerprint_pins_the_audit_but_not_later_exploitation_annotations():
     expected = {"audit_fingerprint": audit_fingerprint(version)}
     version.pre_trial["items"][0].update(exploited=True, exploit_evidence="step 12")
     assert audit_snapshot_matches(version, expected)
+    version.pre_trial_status = VerdictStatus.QUEUED
+    assert not audit_snapshot_matches(
+        version, {"audit_fingerprint": audit_fingerprint(version)}
+    )
+    version.pre_trial_status = VerdictStatus.SUCCESS
     version.pre_trial_started_at += timedelta(seconds=1)
     assert not audit_snapshot_matches(version, expected)
 
@@ -405,8 +410,30 @@ async def test_cleanup_replaces_stale_audit_snapshot_instead_of_reimporting_fore
         (await session.get(TrialModel, old_qa)).status = TrialStatus.SUCCESS
         version = await session.get(TaskVersionModel, version_id)
         version.pre_trial = {"items": []}
+        version.pre_trial_status = VerdictStatus.QUEUED
         task = await session.get(TaskModel, task_id)
         queue_verdict(task)
+    async with get_session() as session:
+        _, to_import = await _heal_stale_verdict_pending(session)
+        assert old_qa not in to_import
+        assert (
+            await session.get(TaskModel, task_id)
+        ).status == TaskStatus.VERDICT_PENDING
+        assert (
+            len(
+                list(
+                    await session.scalars(
+                        select(TrialModel.id).where(
+                            TrialModel.task_id == task_id, TrialModel.kind == "qa"
+                        )
+                    )
+                )
+            )
+            == 1
+        )
+        (
+            await session.get(TaskVersionModel, version_id)
+        ).pre_trial_status = VerdictStatus.SUCCESS
     async with get_session() as session:
         _, to_import = await _heal_stale_verdict_pending(session)
         assert old_qa not in to_import
@@ -424,13 +451,29 @@ async def test_cleanup_replaces_stale_audit_snapshot_instead_of_reimporting_fore
 
 
 @pytest.mark.asyncio
-async def test_cleanup_finishes_audit_only_task_after_import_worker_crash(audit_task):
-    from oddish.workers.queue.cleanup import _advance_running_tasks_to_analysis
+@pytest.mark.parametrize("has_solver", [False, True])
+@pytest.mark.parametrize(
+    "import_status",
+    [
+        VerdictStatus.PENDING,
+        VerdictStatus.QUEUED,
+        VerdictStatus.RUNNING,
+    ],
+)
+async def test_cleanup_waits_for_audit_import_before_completing_task(
+    audit_task, has_solver, import_status
+):
+    from fastapi import HTTPException
+    from oddish.core.endpoints.qa import backfill_task_analysis_core
+    from oddish.workers.queue.cleanup import (
+        _advance_running_tasks_to_analysis,
+        _heal_stale_audit_imports,
+    )
 
-    task_id, _, source_id, artifacts = audit_task
+    task_id, version_id, source_id, artifacts = audit_task
     async with get_session() as session:
-        # No solver rows remain, so the former agent-only scan missed this task.
-        await session.delete(await session.get(TrialModel, source_id))
+        if not has_solver:
+            await session.delete(await session.get(TrialModel, source_id))
         await rerun_pre_trial_audit_core(session, task_id=task_id)
     async with get_session() as session:
         audit = await session.scalar(
@@ -439,12 +482,49 @@ async def test_cleanup_finishes_audit_only_task_after_import_worker_crash(audit_
             )
         )
         audit.status = TrialStatus.SUCCESS
+        (
+            await session.get(TaskVersionModel, version_id)
+        ).pre_trial_status = import_status
     artifacts[audit.id] = {"items": [FINDING]}
-    # Stop exactly between audit publication and admission, as a worker crash would.
-    await analysis_trials._import_audit_result(audit)
+
+    # The job finished, but its findings have not been imported. Cleanup runs
+    # admission before scheduling stale imports, matching the production order.
     async with get_session() as session:
-        assert (await session.get(TaskModel, task_id)).status == TaskStatus.RUNNING
         await _advance_running_tasks_to_analysis(session, [])
+        task = await session.get(TaskModel, task_id)
+        assert task.status == TaskStatus.RUNNING
+        assert task.verdict is None
+        assert audit.id in await _heal_stale_audit_imports(session)
+        assert (
+            await session.scalar(
+                select(TrialModel.id).where(
+                    TrialModel.task_id == task_id, TrialModel.kind == "qa"
+                )
+            )
+            is None
+        )
+    if has_solver:
+        async with get_session() as session:
+            with pytest.raises(HTTPException, match="audit") as error:
+                await backfill_task_analysis_core(session, task_id=task_id)
+            assert error.value.status_code == 400
+
+    await analysis_trials.handle_analysis_trial_settled(audit.id)
+    if has_solver:
+        async with get_session() as session:
+            qa = await session.scalar(
+                select(TrialModel).where(
+                    TrialModel.task_id == task_id, TrialModel.kind == "qa"
+                )
+            )
+            finding_id = qa.harbor_config["analysis_payload"]["pre_trial_must_fix_ids"][
+                0
+            ]
+        artifacts[qa.id] = qa_artifact(source_id)
+        artifacts[qa.id]["trials"][0]["analysis"]["exploitation"][0]["links_to"] = (
+            finding_id
+        )
+        await settle(qa.id)
     async with get_session() as session:
         task = await session.get(TaskModel, task_id)
         assert task.status == TaskStatus.COMPLETED

@@ -41,19 +41,24 @@ def audit_fingerprint(version: TaskVersionModel) -> str:
 
 def audit_snapshot_matches(version: TaskVersionModel | None, payload: dict) -> bool:
     """New QA jobs pin the whole audit; legacy jobs must match their saved finding IDs."""
+    # A matching snapshot of an unfinished audit still cannot authorize QA.
+    if (
+        version is not None
+        and version.pre_trial_status is not None
+        and version.pre_trial_status.value
+        in {
+            "queued",
+            "running",
+            "pending",
+        }
+    ):
+        return False
     pinned = payload.get("audit_fingerprint")
     if pinned is not None:
         return version is not None and pinned == audit_fingerprint(version)
     if version is None:
         return not payload.get("pre_trial_item_ids")
-    # Existing jobs have no fingerprint. Never import them over an audit rerun
-    # in progress, and do not apply their old must-fix findings to a new audit.
-    if version.pre_trial_status is not None and version.pre_trial_status.value in {
-        "queued",
-        "running",
-        "pending",
-    }:
-        return False
+    # Existing jobs have no fingerprint; require their saved findings to match.
     items = (version.pre_trial or {}).get("items", [])
     items = [item for item in items if isinstance(item, dict) and item.get("id")]
     return {str(item["id"]) for item in items} == set(
