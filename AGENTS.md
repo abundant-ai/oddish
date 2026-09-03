@@ -1424,14 +1424,6 @@ Modal bursts do not overrun shared Postgres poolers. The engine still disables
 prepared statement caching so it remains compatible with transaction-mode
 poolers such as Supavisor / PgBouncer.
 
-API containers are pinned to Modal's `us-east` and `us-central` regions
-(`ODDISH_MODAL_API_REGIONS`, read by `backend/modal_app.py`) because the
-Supabase pooler and storage are in AWS us-east-2 and one request makes 10-20
-strictly sequential round trips to them. Unpinned containers landed 50-220 ms
-away and turned a 0.15 s request into 1.5-3 s; the per-container median of a
-bare `BEGIN` span in Logfire is the round-trip probe to check before widening
-the pin. An empty value removes it.
-
 Modal runtime knobs (scaling, schedules, CPU/memory, concurrency) are read
 directly by `backend/modal_app.py` from `ODDISH_MODAL_*` /
 `ODDISH_DEFAULT_MODEL_CONCURRENCY` / `ODDISH_MODEL_CONCURRENCY_OVERRIDES` /
