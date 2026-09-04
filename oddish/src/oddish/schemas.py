@@ -643,6 +643,15 @@ class TrialCollectionRequest(BaseModel):
         return self
 
 
+class PreTrialAuditRequest(BaseModel):
+    """Optional execution settings for a fresh source audit."""
+
+    environment: Literal["modal", "daytona"] | None = Field(
+        None,
+        description="QA sandbox provider. Null uses the deployed worker default.",
+    )
+
+
 class QAEvalCreateRequest(BaseModel):
     """Replay one candidate QA prompt over exact historical solver trials."""
 
@@ -655,6 +664,10 @@ class QAEvalCreateRequest(BaseModel):
         description=(
             "Analysis model override. Null uses the deployed production QA model."
         ),
+    )
+    environment: Literal["modal", "daytona"] | None = Field(
+        None,
+        description="QA sandbox provider. Null uses the deployed worker default.",
     )
     audit_context: Literal["current", "none"] = Field(
         "current",

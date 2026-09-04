@@ -56,7 +56,8 @@ def test_the_analysis_kinds_are_known():
 
 
 @pytest.mark.asyncio
-async def test_analysis_creation_stores_kind_only_once(monkeypatch):
+@pytest.mark.parametrize("environment", [None, "modal", "daytona"])
+async def test_analysis_creation_stores_kind_only_once(monkeypatch, environment):
     from oddish.db import TaskModel
     from oddish.workers.analysis_trials import create_analysis_trial
 
@@ -99,9 +100,11 @@ async def test_analysis_creation_stores_kind_only_once(monkeypatch):
         brief="grade the trials",
         payload={"trial_ids": ["source-1"]},
         experiment_id="analysis-experiment",
+        environment=environment,
     )
 
     assert trial.kind == "qa"
+    assert trial.environment == environment
     assert "mode" not in trial.harbor_config
     assert trial.harbor_config["analysis_payload"]["trial_ids"] == ["source-1"]
 

@@ -384,6 +384,12 @@ summary template must retain the `{{taxonomy}}` placeholder, rendered by the
 QA-trial brief builder (`oddish.workers.analysis_trials`). Editing a prompt is
 a code change that ships with a deploy.
 
+`POST /tasks/{task_id}/qa/pre-trial` accepts an optional JSON body with
+`environment: "modal" | "daytona"`; `POST /qa-evals` accepts the same field.
+The provider is stored on each created analysis trial as `trials.environment`,
+so workers and retries execute on that provider. An omitted or null value
+retains the deployed worker default. Source solver trials are unchanged.
+
 Each automatic QA brief snapshots authoritative Trial facts (id, status,
 reward, trajectory availability, and agent), current-version nop/oracle
 baseline results, and the source-audit status/findings into its pinned analysis

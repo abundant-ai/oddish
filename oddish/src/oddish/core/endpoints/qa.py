@@ -373,6 +373,7 @@ async def rerun_pre_trial_audit_core(
     *,
     task_id: str,
     org_id: str | None = None,
+    environment: str | None = None,
 ) -> dict[str, str]:
     """Queue the pre-trial audit for the task's current version.
 
@@ -447,6 +448,7 @@ async def rerun_pre_trial_audit_core(
         kind="audit",
         brief=build_audit_brief(task_name=task.name),
         task_version_id=str(version.id),
+        environment=environment,
     )
     await session.commit()
     return {"status": "queued", "task_id": task_id}

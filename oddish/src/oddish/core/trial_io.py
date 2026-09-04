@@ -347,15 +347,32 @@ async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
         # Phase 2: Download all files in parallel
         if download_plan:
 
-            async def safe_download(key: str) -> str | None:
+            async def safe_download(key: str, category: str) -> str | None:
                 try:
                     return await storage.download_text(key)
+                except UnicodeDecodeError:
+                    # Auxiliary files under agent/ and verifier/ are not all
+                    # logs. Skip binary databases and compressed outputs rather
+                    # than failing the whole evidence request. For the named
+                    # verifier/agent text streams, retain the evidence and mark
+                    # malformed bytes with the same replacement behavior used
+                    # by the local-filesystem reader below.
+                    if category == "other" and Path(key).suffix not in (
+                        ".log",
+                        ".txt",
+                    ):
+                        return None
+                    return (await storage.download_bytes(key)).decode(
+                        "utf-8", errors="replace"
+                    )
                 except Exception:
                     if layout.mode is TrialArtifactMode.EXACT:
                         raise
                     return None
 
-            download_tasks = [safe_download(key) for key, _, _ in download_plan]
+            download_tasks = [
+                safe_download(key, category) for key, category, _ in download_plan
+            ]
             contents = await asyncio.gather(*download_tasks)
 
             # Phase 3: Assign results to appropriate fields
