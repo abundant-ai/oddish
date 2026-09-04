@@ -37,48 +37,6 @@ export function notRealSpendNote({
         "and from quota enforcement.";
 }
 
-export function trialNotRealSpendNote(reason?: string | null): string | null {
-  if (!reason) return null;
-  const because =
-    reason === "model"
-      ? "it ran on a model an admin marked as free"
-      : reason === "experiment"
-        ? "its experiment is marked as free"
-        : "an admin marked it as free";
-  return (
-    `This isn't real spend — ${because}. The cost is still shown because the ` +
-    "work ran, but it is excluded from the admin cost dashboards and from " +
-    "quota enforcement."
-  );
-}
-
-export function TrialNotRealSpendBadge({
-  reason,
-  className = "",
-}: {
-  reason?: string | null;
-  className?: string;
-}) {
-  const note = trialNotRealSpendNote(reason);
-  if (!note) return null;
-
-  return (
-    <TooltipProvider delayDuration={150}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span
-            className={`cursor-help font-mono text-[color:var(--paper-ink-3)] ${className}`}
-            aria-label="This is not real spend"
-          >
-            †
-          </span>
-        </TooltipTrigger>
-        <TooltipContent className="max-w-xs normal-case">{note}</TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
-  );
-}
-
 export function NotRealSpendBadge({
   excludedCostUsd,
   totalCostUsd,

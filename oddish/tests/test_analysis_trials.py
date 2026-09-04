@@ -10,11 +10,11 @@ from types import SimpleNamespace
 import pytest
 
 from oddish.analyze.models import TaskVerdictModel
+from oddish.core.verdict_sync import apply_deterministic_verdict_rules
 from oddish.db.models import TrialModel
 from oddish.filters.trial_predicates import EligibleTrialScope
 from oddish.core.trial_facets import facet_rows_for_trial
 from oddish.workers.analysis_trials import (
-    _apply_deterministic_verdict_rules,
     _classification_from_analysis,
     build_audit_brief,
     build_qa_brief,
@@ -56,7 +56,8 @@ def test_the_analysis_kinds_are_known():
 
 
 @pytest.mark.asyncio
-async def test_analysis_creation_stores_kind_only_once(monkeypatch):
+@pytest.mark.parametrize("environment", [None, "modal", "daytona"])
+async def test_analysis_creation_stores_kind_only_once(monkeypatch, environment):
     from oddish.db import TaskModel
     from oddish.workers.analysis_trials import create_analysis_trial
 
@@ -99,9 +100,11 @@ async def test_analysis_creation_stores_kind_only_once(monkeypatch):
         brief="grade the trials",
         payload={"trial_ids": ["source-1"]},
         experiment_id="analysis-experiment",
+        environment=environment,
     )
 
     assert trial.kind == "qa"
+    assert trial.environment == environment
     assert "mode" not in trial.harbor_config
     assert trial.harbor_config["analysis_payload"]["trial_ids"] == ["source-1"]
 
@@ -488,6 +491,10 @@ async def test_qa_creation_persists_the_pre_trial_contract(monkeypatch):
         current_version_id="version-1",
     )
     version = SimpleNamespace(
+        id="version-1",
+        content_hash="source-hash",
+        pre_trial_started_at=None,
+        pre_trial_finished_at=None,
         pre_trial={
             "items": [
                 {"id": "audit-1", "tier": "must_fix"},
@@ -717,7 +724,7 @@ def test_a_broken_analysis_is_rejected_not_stored(broken):
 def test_a_must_fix_source_audit_overrides_an_accept_verdict():
     accepted = TaskVerdictModel(verdict="accept", confidence="high")
 
-    rejected = _apply_deterministic_verdict_rules(
+    rejected = apply_deterministic_verdict_rules(
         accepted, must_fix_ids=["finding-1"], baseline_evidence=[]
     )
 
@@ -725,7 +732,7 @@ def test_a_must_fix_source_audit_overrides_an_accept_verdict():
     assert rejected.confidence == "high"
     assert "1 must-fix finding" in rejected.primary_issue
     assert (
-        _apply_deterministic_verdict_rules(
+        apply_deterministic_verdict_rules(
             accepted, must_fix_ids=[], baseline_evidence=[]
         )
         is accepted
@@ -735,7 +742,7 @@ def test_a_must_fix_source_audit_overrides_an_accept_verdict():
 def test_a_failed_deterministic_baseline_overrides_an_accept_verdict():
     accepted = TaskVerdictModel(verdict="accept", confidence="high")
 
-    rejected = _apply_deterministic_verdict_rules(
+    rejected = apply_deterministic_verdict_rules(
         accepted,
         must_fix_ids=[],
         baseline_evidence=[{"agent": "nop", "reward": 1.0}],
@@ -3099,7 +3106,13 @@ async def test_qa_import_replaces_old_acceptance_with_only_the_current_verdict(
     from unittest.mock import AsyncMock
 
     from oddish.core import verdict_sync
-    from oddish.db import TaskModel, TaskStatus, TrialStatus, VerdictStatus
+    from oddish.db import (
+        TaskModel,
+        TaskVersionModel,
+        TaskStatus,
+        TrialStatus,
+        VerdictStatus,
+    )
     from oddish.workers import analysis_trials
 
     with_verdict = verdict is not None
@@ -3112,6 +3125,9 @@ async def test_qa_import_replaces_old_acceptance_with_only_the_current_verdict(
         verdict_error=None,
         verdict_started_at=None,
         verdict_finished_at=None,
+    )
+    version = SimpleNamespace(
+        pre_trial={"items": []}, pre_trial_status=VerdictStatus.SUCCESS
     )
     sources = {
         f"trial-{i}": SimpleNamespace(
@@ -3142,6 +3158,8 @@ async def test_qa_import_replaces_old_acceptance_with_only_the_current_verdict(
     artifact = {"trials": entries, "verdict": candidate if with_verdict else None}
     qa = SimpleNamespace(
         id="qa-new",
+        superseded_by_trial_id=None,
+        harbor_stage=None,
         task_id=task.id,
         task_version_id=task.current_version_id,
         status=TrialStatus.SUCCESS,
@@ -3169,16 +3187,18 @@ async def test_qa_import_replaces_old_acceptance_with_only_the_current_verdict(
             if model is TaskModel:
                 assert row_id == task.id
                 return task
+            if model is TaskVersionModel:
+                return version
             assert model is TrialModel
-            return sources[row_id]
+            return qa if row_id == qa.id else sources[row_id]
 
         async def scalar(self, statement):
             # The import's current-version and all-trials-settled guards.
-            return (
-                task.current_version_id
-                if "tasks.current_version_id" in str(statement)
-                else None
-            )
+            if "tasks.current_version_id" in str(statement):
+                return task.current_version_id
+            if "ORDER BY" in str(statement):
+                return qa.id
+            return None
 
         async def commit(self):
             pass
