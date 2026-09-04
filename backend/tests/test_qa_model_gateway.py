@@ -286,6 +286,7 @@ async def test_truncated_stream_does_not_refund_unobserved_output(harness):
     ) as client:
         r = await client.post("/qa-model/v1/messages", json=payload(stream=True))
     assert "QA model stream interrupted" in r.text
+    assert harness.observed[-1][2] == {"cooldown_seconds": 30}
     assert harness.settled == [{"usage": None}]
     assert len(harness.sent) == 1
 
@@ -413,6 +414,7 @@ async def test_disconnect_closes_upstream_and_keeps_conservative_reservation(
     with pytest.raises(asyncio.CancelledError):
         await pending
     assert closed and harness.settled == [{"usage": None}]
+    assert all(kw["cooldown_seconds"] == 0 for _, _, kw in harness.observed)
     await response.background()
     assert len(harness.settled) == 1
 
@@ -429,3 +431,47 @@ async def test_invalid_provider_credentials_cool_down_pool_without_leaking_body(
     assert r.status_code == 503 and r.headers["retry-after"] == "5"
     assert "provider-secret" not in r.text
     assert harness.observed[0][2] == {"cooldown_seconds": 300}
+
+
+@pytest.mark.asyncio
+async def test_streamed_overload_cools_pool_before_error_is_delivered(harness):
+    error = {
+        "type": "error",
+        "error": {"type": "overloaded_error", "message": "Overloaded"},
+    }
+    harness.transport(
+        lambda _: httpx.Response(
+            200, content=f"data: {json.dumps(error)}\n\n".encode()
+        )
+    )
+
+    async def receive():
+        return {"type": "http.request", "body": json.dumps(payload(stream=True)).encode()}
+
+    response = await gateway.proxy_message(
+        Request({"type": "http", "method": "POST", "headers": []}, receive=receive)
+    )
+    iterator = response.body_iterator
+    first = await anext(iterator)
+    assert json.loads(first.decode().split("data: ")[1]) == error
+    assert harness.observed[-1][2] == {"cooldown_seconds": 30}
+    await iterator.aclose()
+    await response.background()
+    assert harness.settled == [{"usage": None}]
+    assert len(harness.sent) == 1
+
+
+@pytest.mark.parametrize("failure", [httpx.ConnectError, httpx.ReadTimeout])
+@pytest.mark.asyncio
+async def test_transport_failure_cools_pool_and_releases_resources(harness, failure):
+    def fail(request):
+        raise failure("upstream unavailable", request=request)
+
+    harness.transport(fail)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=harness.app), base_url="http://test"
+    ) as client:
+        with pytest.raises(failure):
+            await client.post("/qa-model/v1/messages", json=payload())
+    assert harness.observed[-1][2] == {"cooldown_seconds": 30}
+    assert harness.settled == [{"usage": None}]

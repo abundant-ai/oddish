@@ -46,7 +46,9 @@ idempotent. No database connection is held during provider network operations.
 Anthropic remaining-capacity headers feed the next decision immediately, before
 the response body finishes. Their latest observation lasts 60 seconds; calls
 outstanding at or after that observation are also reserved conservatively.
-HTTP 429/5xx put that pool in a bounded cooldown; invalid credentials or model
+Streamed provider errors, interrupted upstream streams, and transport failures
+put the pool in a 30-second cooldown before the next retry; client cancellation
+does not penalize the provider. HTTP 429/5xx put that pool in a bounded cooldown; invalid credentials or model
 access (401/403/404) cool it down for five minutes and return 503 so a subsequent
 client retry can choose another pool. This cannot prevent every provider 429:
 provider burst/acceleration limits and unobserved competing traffic still apply.

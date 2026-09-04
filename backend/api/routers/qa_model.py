@@ -305,8 +305,15 @@ async def proxy_message(request: Request, *, count: bool = False):
             )
             await cleanup(usage)
             return JSONResponse(result)
-    except BaseException:
-        await cleanup()
+    except BaseException as exc:
+        try:
+            if isinstance(exc, (httpx.HTTPError, TimeoutError)):
+                with anyio.CancelScope(shield=True):
+                    await observe_provider(
+                        reservation.pool.quota_group, {}, cooldown_seconds=30
+                    )
+        finally:
+            await cleanup()
         raise
 
     async def stream():
@@ -321,10 +328,23 @@ async def proxy_message(request: Request, *, count: bool = False):
                         usage.update(event.get("usage", {}))
                     elif event.get("type") == "message_stop":
                         complete = True
+                    elif event.get("type") == "error":
+                        # Persist before yielding: the client can disconnect as
+                        # soon as it sees the error and retry on another replica.
+                        with anyio.CancelScope(shield=True):
+                            await observe_provider(
+                                reservation.pool.quota_group, {}, cooldown_seconds=30
+                            )
                     yield f"event: {event['type']}\ndata: {json.dumps(event)}\n\n".encode()
+                    if event.get("type") == "error":
+                        return
                 if not complete:
                     raise RuntimeError("QA model stream ended without message_stop")
         except (httpx.HTTPError, TimeoutError, RuntimeError, ValueError):
+            with anyio.CancelScope(shield=True):
+                await observe_provider(
+                    reservation.pool.quota_group, {}, cooldown_seconds=30
+                )
             logger.warning(
                 "qa_model_stream_failed pool=%s worker_job=%s",
                 reservation.pool.id,
