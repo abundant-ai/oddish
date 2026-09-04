@@ -5,6 +5,7 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 from openai import OpenAIError
 
@@ -15,6 +16,25 @@ from auth.types import AuthContext, AuthMethod
 from models import APIKeyScope, UserRole
 
 
+_TEST_MODELS = {
+    "anthropic-hdo/claude-sonnet-4-6",
+    "cursor/composer-2.5",
+    "deepseek/deepseek-v4-flash",
+    "fireworks/minimax-m3",
+    "global.anthropic.claude-opus-5",
+    "global.anthropic.claude-sonnet-5",
+    "google/gemini-3.5-flash",
+    "google/gemini-3.7-flash",
+    "meta/super_nova_ext",
+    "minimax/minimax-m3",
+    "openai/gpt-5.4-mini",
+    "openai/gpt-5.6-sol",
+    "vertex_ai/gemini-3-pro-preview",
+    "xai/grok-code-fast-1",
+    "xai/v9m-rl-learnability-tp8",
+}
+
+
 def _app(auth: AuthContext | None = None):
     app = create_app()
     app.dependency_overrides[require_auth] = lambda: (
@@ -22,6 +42,7 @@ def _app(auth: AuthContext | None = None):
         or AuthContext(
             method=AuthMethod.CLERK_JWT,
             org_id="org-1",
+            user_id="user-1",
             user_role=UserRole.MEMBER,
         )
     )
@@ -31,6 +52,26 @@ def _app(auth: AuthContext | None = None):
 @pytest.fixture(autouse=True)
 def operator_org(monkeypatch):
     monkeypatch.setenv("ODDISH_OPERATOR_ORG_ID", "org-1")
+    settings_type = type(model_endpoints_router.settings)
+    monkeypatch.setattr(
+        settings_type, "get_known_queue_keys", lambda _self: _TEST_MODELS
+    )
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield object()
+
+    async def empty_facets(_session, *, org_id):
+        assert org_id == "org-1"
+        return SimpleNamespace(models=[])
+
+    monkeypatch.setattr(model_endpoints_router, "get_session", fake_get_session)
+    monkeypatch.setattr(model_endpoints_router, "browse_task_facets_core", empty_facets)
+    model_endpoints_router._model_catalog_cache.clear()
+    model_endpoints_router._model_check_cache.clear()
+    yield
+    model_endpoints_router._model_catalog_cache.clear()
+    model_endpoints_router._model_check_cache.clear()
 
 
 @pytest.mark.asyncio
@@ -159,14 +200,17 @@ async def test_model_catalog_hides_models_outside_operator_org(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_model_check_rejects_read_only_api_keys():
-    read_only_auth = AuthContext(
+@pytest.mark.parametrize(
+    "scope", [APIKeyScope.READ, APIKeyScope.TASKS, APIKeyScope.FULL]
+)
+async def test_model_check_rejects_api_key_auth(scope):
+    api_key_auth = AuthContext(
         method=AuthMethod.API_KEY,
         org_id="org-1",
-        scope=APIKeyScope.READ,
+        scope=scope,
     )
     async with AsyncClient(
-        transport=ASGITransport(app=_app(read_only_auth)), base_url="http://test"
+        transport=ASGITransport(app=_app(api_key_auth)), base_url="http://test"
     ) as client:
         response = await client.post(
             "/models/check", json={"model": "openai/gpt-5.4-mini"}
@@ -174,7 +218,7 @@ async def test_model_check_rejects_read_only_api_keys():
 
     assert response.status_code == 403
     assert response.json()["detail"] == (
-        "Insufficient scope. Required: tasks, got: read"
+        "Model checks require an interactive signed-in user"
     )
 
 
@@ -238,20 +282,7 @@ async def test_model_endpoint_adds_litellm_bedrock_provider_prefix(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_model_endpoint_can_test_bedrock_model_via_anthropic_route(monkeypatch):
-    async def completion(**kwargs):
-        assert kwargs["model"] == "anthropic/claude-sonnet-5"
-        assert kwargs["api_key"] == "anthropic-key"
-        return SimpleNamespace(
-            id="anthropic-request",
-            choices=[SimpleNamespace(message=SimpleNamespace(content="Claude."))],
-        )
-
-    monkeypatch.setattr(
-        model_endpoints_router.settings, "anthropic_api_key", "anthropic-key"
-    )
-    monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(acompletion=completion))
-
+async def test_model_endpoint_rejects_hidden_provider_override():
     async with AsyncClient(
         transport=ASGITransport(app=_app()), base_url="http://test"
     ) as client:
@@ -263,13 +294,10 @@ async def test_model_endpoint_can_test_bedrock_model_via_anthropic_route(monkeyp
             },
         )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["ok"] is True
-    assert payload["resolved_model"] == "anthropic/claude-sonnet-5"
-    assert payload["provider"] == "bedrock"
-    assert payload["route"] == "anthropic"
-    assert payload["credential"] == "ANTHROPIC_API_KEY"
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        "Route 'anthropic' is not valid for 'bedrock'; expected bedrock"
+    )
 
 
 @pytest.mark.asyncio
@@ -483,7 +511,7 @@ async def test_model_endpoint_surfaces_upstream_http_status(monkeypatch, status_
     assert payload["failure_kind"] == "provider"
     assert payload["transport"] == "litellm_completion"
     assert payload["status_code"] == status_code
-    assert payload["error"] == "BadRequestError: The model is unavailable"
+    assert payload["error"] == "Provider request failed (BadRequestError)"
     assert payload["request_id"] == f"provider-request-{status_code}"
 
 
@@ -522,7 +550,40 @@ async def test_model_endpoint_surfaces_transport_failures(monkeypatch, error_nam
     assert payload["ok"] is False
     assert payload["failure_kind"] == "provider"
     assert payload["status_code"] is None
-    assert payload["error"] == f"{error_name}: The provider did not respond"
+    assert payload["error"] == f"Provider request failed ({error_name})"
+
+
+@pytest.mark.asyncio
+async def test_model_endpoint_never_returns_or_logs_provider_exception_secrets(
+    monkeypatch, caplog
+):
+    leaked_secret = "sk-provider-secret-that-must-not-reach-the-browser"
+    caplog.set_level("INFO", logger="api.routers.model_endpoints")
+
+    class ProviderError(OpenAIError):
+        pass
+
+    async def completion(**_kwargs):
+        raise ProviderError(f"Authorization: Bearer {leaked_secret}")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "litellm",
+        SimpleNamespace(acompletion=completion),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_app()), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/models/check", json={"model": "xai/grok-code-fast-1"}
+        )
+
+    assert response.status_code == 200
+    assert response.json()["error"] == "Provider request failed (ProviderError)"
+    assert leaked_secret not in response.text
+    assert "model endpoint check" in caplog.text
+    assert leaked_secret not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -565,7 +626,82 @@ async def test_model_endpoint_reports_configuration_errors(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["failure_kind"] == "configuration"
-    assert response.json()["error"] == ("RuntimeError: AZURE_OPENAI_API_KEY is missing")
+    assert response.json()["error"] == "Provider configuration failed (RuntimeError)"
+
+
+@pytest.mark.asyncio
+async def test_model_endpoint_rejects_model_outside_catalog(monkeypatch):
+    async def completion(**_kwargs):
+        raise AssertionError("unlisted models must not reach the provider")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "litellm",
+        SimpleNamespace(acompletion=completion),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_app()), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/models/check", json={"model": "openai/unlisted-expensive-model"}
+        )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        "Model route is not available in the operator catalog"
+    )
+
+
+@pytest.mark.asyncio
+async def test_model_endpoint_reuses_recent_model_route_result(monkeypatch):
+    calls = 0
+
+    async def completion(**_kwargs):
+        nonlocal calls
+        calls += 1
+        return SimpleNamespace(
+            id="request-123",
+            choices=[SimpleNamespace(message=SimpleNamespace(content="I am Grok."))],
+        )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "litellm",
+        SimpleNamespace(acompletion=completion),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_app()), base_url="http://test"
+    ) as client:
+        first = await client.post(
+            "/models/check", json={"model": "xai/grok-code-fast-1"}
+        )
+        repeated = await client.post(
+            "/models/check", json={"model": "xai/grok-code-fast-1"}
+        )
+
+    assert first.status_code == 200
+    assert repeated.status_code == 200
+    assert repeated.json() == first.json()
+    assert calls == 1
+
+
+def test_model_endpoint_rejects_duplicate_while_first_check_is_running():
+    check = {
+        "org_id": "org-1",
+        "identity": "user-1",
+        "model": "xai/grok-code-fast-1",
+        "route": "xai",
+    }
+    assert model_endpoints_router._begin_model_check(**check) is None
+
+    with pytest.raises(HTTPException) as caught:
+        model_endpoints_router._begin_model_check(**check)
+
+    assert caught.value.status_code == 429
+    assert caught.value.detail == "This model route is already being tested"
+    assert caught.value.headers == {"Retry-After": "5"}
 
 
 @pytest.mark.asyncio

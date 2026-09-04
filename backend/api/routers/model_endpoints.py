@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from time import monotonic
 from typing import Annotated, Literal
 
@@ -21,11 +22,15 @@ from oddish.core.llm_key_fingerprint import provider_key_var
 from oddish.db import get_session
 from pydantic import BaseModel, Field, field_validator
 
-from auth import AuthContext, require_auth
+from auth import AuthContext, AuthMethod, require_auth
 from auth.permissions import is_operator_org, require_operator_org
 from models import APIKeyScope
 
 router = APIRouter(prefix="/models", tags=["Models"])
+logger = logging.getLogger(__name__)
+
+_MODEL_CATALOG_TTL_SECONDS = 30.0
+_MODEL_CHECK_COOLDOWN_SECONDS = 5.0
 
 
 class ModelEndpointSummary(BaseModel):
@@ -72,6 +77,12 @@ class ModelEndpointCheckResponse(BaseModel):
     request_id: str | None = None
 
 
+_model_catalog_cache: dict[str, tuple[float, tuple[ModelEndpointSummary, ...]]] = {}
+_model_check_cache: dict[
+    tuple[str, str, str, str], tuple[float, ModelEndpointCheckResponse | None]
+] = {}
+
+
 def _provider_route(provider: str, model: str) -> str:
     if model.startswith("vertex_ai/"):
         return "vertex_ai"
@@ -83,16 +94,13 @@ def _provider_route(provider: str, model: str) -> str:
 def _check_route(provider: str, model: str, requested_route: str | None) -> str:
     default_route = _provider_route(provider, model)
     route = requested_route or default_route
-    compatible_routes = {
-        "bedrock": {"anthropic", "bedrock"},
-        "gemini": {"gemini", "vertex_ai"},
-        "openai": {"azure", "openai"},
-    }.get(provider, {default_route})
-    if route not in compatible_routes:
-        allowed = ", ".join(sorted(compatible_routes))
+    if route != default_route:
         raise HTTPException(
             status_code=422,
-            detail=f"Route {route!r} is not valid for {provider!r}; expected {allowed}",
+            detail=(
+                f"Route {route!r} is not valid for {provider!r}; "
+                f"expected {default_route}"
+            ),
         )
     return route
 
@@ -105,18 +113,15 @@ def _direct_completion_model(model: str) -> str:
     return model
 
 
-@router.get("", response_model=ModelEndpointCatalogResponse)
-async def list_model_endpoints(
-    auth: Annotated[AuthContext, Depends(require_auth)],
-) -> ModelEndpointCatalogResponse:
-    """List configured and previously used models for the operator org."""
-    auth.require_scope(APIKeyScope.READ)
-    allowed = is_operator_org(auth)
-    if not allowed:
-        return ModelEndpointCatalogResponse(allowed=False, models=[])
+async def _model_endpoint_catalog(org_id: str) -> tuple[ModelEndpointSummary, ...]:
+    """Return the same bounded model catalog used by both listing and checks."""
+    now = monotonic()
+    cached = _model_catalog_cache.get(org_id)
+    if cached and now - cached[0] < _MODEL_CATALOG_TTL_SECONDS:
+        return cached[1]
 
     async with get_session() as session:
-        facets = await browse_task_facets_core(session, org_id=auth.org_id)
+        facets = await browse_task_facets_core(session, org_id=org_id)
 
     model_ids = {
         _direct_completion_model(settings.normalize_queue_key(model))
@@ -137,7 +142,111 @@ async def list_model_endpoints(
                 )
             )
     models.sort(key=lambda endpoint: (endpoint.route, endpoint.model))
-    return ModelEndpointCatalogResponse(allowed=True, models=models)
+    result = tuple(models)
+    _model_catalog_cache[org_id] = (now, result)
+    return result
+
+
+def _require_interactive_operator(auth: AuthContext) -> tuple[str, str]:
+    require_operator_org(auth)
+    if auth.method != AuthMethod.CLERK_JWT:
+        raise HTTPException(
+            status_code=403,
+            detail="Model checks require an interactive signed-in user",
+        )
+    identity = auth.user_id or auth.user_email
+    if not auth.org_id or not identity:
+        raise HTTPException(status_code=403, detail="User identity is required")
+    return auth.org_id, identity
+
+
+def _begin_model_check(
+    *, org_id: str, identity: str, model: str, route: str
+) -> ModelEndpointCheckResponse | None:
+    """Reuse a fresh result and reject only a duplicate request still in flight."""
+    now = monotonic()
+    cutoff = now - _MODEL_CHECK_COOLDOWN_SECONDS
+    stale = [
+        key for key, (started, _) in _model_check_cache.items() if started < cutoff
+    ]
+    for key in stale:
+        del _model_check_cache[key]
+
+    key = (org_id, identity, model, route)
+    previous = _model_check_cache.get(key)
+    if previous is not None:
+        started, result = previous
+        if result is not None:
+            return result
+        retry_after = max(1, round(_MODEL_CHECK_COOLDOWN_SECONDS - (now - started)))
+        raise HTTPException(
+            status_code=429,
+            detail="This model route is already being tested",
+            headers={"Retry-After": str(retry_after)},
+        )
+    _model_check_cache[key] = (now, None)
+    return None
+
+
+def _complete_model_check(
+    *,
+    org_id: str,
+    identity: str,
+    model: str,
+    route: str,
+    result: ModelEndpointCheckResponse,
+) -> None:
+    key = (org_id, identity, model, route)
+    started = _model_check_cache.get(key, (monotonic(), None))[0]
+    _model_check_cache[key] = (started, result)
+
+
+def _safe_failure_message(
+    failure: Exception, failure_kind: Literal["provider", "configuration"]
+) -> str:
+    """Describe a failure without copying provider-controlled exception text."""
+    label = (
+        "Provider request failed"
+        if failure_kind == "provider"
+        else "Provider configuration failed"
+    )
+    return f"{label} ({type(failure).__name__})"
+
+
+def _audit_model_check(
+    *,
+    org_id: str,
+    identity: str,
+    result: ModelEndpointCheckResponse,
+    cached: bool = False,
+) -> None:
+    logger.info(
+        "model endpoint check org_id=%s user_id=%s model=%s route=%s ok=%s "
+        "status_code=%s latency_ms=%s request_id=%s cached=%s",
+        org_id,
+        identity,
+        result.model,
+        result.route,
+        result.ok,
+        result.status_code,
+        result.latency_ms,
+        result.request_id,
+        cached,
+    )
+
+
+@router.get("", response_model=ModelEndpointCatalogResponse)
+async def list_model_endpoints(
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> ModelEndpointCatalogResponse:
+    """List configured and previously used models for the operator org."""
+    auth.require_scope(APIKeyScope.READ)
+    allowed = is_operator_org(auth)
+    if not allowed:
+        return ModelEndpointCatalogResponse(allowed=False, models=[])
+    assert auth.org_id is not None
+    models = await _model_endpoint_catalog(auth.org_id)
+    return ModelEndpointCatalogResponse(allowed=True, models=list(models))
 
 
 @router.post("/check", response_model=ModelEndpointCheckResponse)
@@ -146,8 +255,7 @@ async def check_model_endpoint(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> ModelEndpointCheckResponse:
     """Send one small provider request without creating a trial or worker job."""
-    auth.require_scope(APIKeyScope.TASKS)
-    require_operator_org(auth)
+    org_id, identity = _require_interactive_operator(auth)
     model = settings.normalize_queue_key(request.model)
     provider = infer_model_provider_prefix(model)
     if not provider:
@@ -158,6 +266,30 @@ async def check_model_endpoint(
             status_code=422,
             detail="Cursor models require the Cursor agent CLI and cannot be checked with a direct completion request",
         )
+
+    catalog = await _model_endpoint_catalog(org_id)
+    catalog_endpoint = next(
+        (endpoint for endpoint in catalog if endpoint.model == model), None
+    )
+    if catalog_endpoint is None or route != catalog_endpoint.route:
+        raise HTTPException(
+            status_code=422,
+            detail="Model route is not available in the operator catalog",
+        )
+    cached_result = _begin_model_check(
+        org_id=org_id,
+        identity=identity,
+        model=model,
+        route=route,
+    )
+    if cached_result is not None:
+        _audit_model_check(
+            org_id=org_id,
+            identity=identity,
+            result=cached_result,
+            cached=True,
+        )
+        return cached_result
     credential = provider_key_var(route)
 
     started = monotonic()
@@ -168,14 +300,7 @@ async def check_model_endpoint(
             if route in {OPENAI_PROVIDER_AZURE, "openai"}
             else {"max_tokens": 32}
         )
-        if provider == "bedrock" and route == "anthropic":
-            api_model = to_anthropic_api_model_id(model) or model
-            anthropic_api_key = (settings.anthropic_api_key or "").strip()
-            if not anthropic_api_key:
-                raise RuntimeError("ANTHROPIC_API_KEY is missing")
-            resolved_model = f"anthropic/{api_model}"
-            kwargs["api_key"] = anthropic_api_key
-        elif provider == "bedrock":
+        if provider == "bedrock":
             resolved_model = f"bedrock/{model}"
         elif provider == "anthropic-hdo":
             bare_model = anthropic_hdo_bare_model_id(model)
@@ -249,7 +374,7 @@ async def check_model_endpoint(
         else:
             # Unexpected response shapes are integration defects and remain 500s.
             content = completion.choices[0].message.content
-            return ModelEndpointCheckResponse(
+            result = ModelEndpointCheckResponse(
                 ok=True,
                 model=model,
                 resolved_model=resolved_model,
@@ -262,6 +387,15 @@ async def check_model_endpoint(
                     str(completion.id) if getattr(completion, "id", None) else None
                 ),
             )
+            _complete_model_check(
+                org_id=org_id,
+                identity=identity,
+                model=model,
+                route=route,
+                result=result,
+            )
+            _audit_model_check(org_id=org_id, identity=identity, result=result)
+            return result
 
     raw_status = getattr(failure, "status_code", None)
     status_code = (
@@ -269,8 +403,8 @@ async def check_model_endpoint(
         if isinstance(raw_status, int | str) and str(raw_status).isdigit()
         else None
     )
-    message = " ".join(str(failure).split())[:500]
-    return ModelEndpointCheckResponse(
+    request_id = str(getattr(failure, "request_id", "") or "").strip()[:200] or None
+    result = ModelEndpointCheckResponse(
         ok=False,
         model=model,
         resolved_model=resolved_model,
@@ -280,6 +414,15 @@ async def check_model_endpoint(
         failure_kind=failure_kind,
         status_code=status_code,
         latency_ms=round((monotonic() - started) * 1000),
-        error=f"{type(failure).__name__}: {message}",
-        request_id=str(getattr(failure, "request_id", "") or "") or None,
+        error=_safe_failure_message(failure, failure_kind),
+        request_id=request_id,
     )
+    _complete_model_check(
+        org_id=org_id,
+        identity=identity,
+        model=model,
+        route=route,
+        result=result,
+    )
+    _audit_model_check(org_id=org_id, identity=identity, result=result)
+    return result
