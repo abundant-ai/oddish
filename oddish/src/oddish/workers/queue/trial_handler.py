@@ -7,6 +7,7 @@ import functools
 from functools import partial
 import json
 import logging
+from typing import Any
 import os
 import shutil
 import tempfile
@@ -1267,6 +1268,24 @@ async def _upload_probe_assets(
         shutil.rmtree(harness_mount, ignore_errors=True)
 
 
+def _stamp_sandbox_outcome(
+    environment: Any, *, reward: float | None, status: str
+) -> None:
+    """Write the graded outcome onto the sandbox as labels, so the provider's
+    console shows the same reward oddish does. Only environments that expose
+    ``set_labels`` (Numinous) participate; it is metadata and never fails a
+    trial."""
+    setter = getattr(environment, "set_labels", None)
+    if not callable(setter):
+        return
+    labels: dict[str, str | None] = {"oddish.status": status}
+    labels["oddish.reward"] = None if reward is None else str(reward)
+    try:
+        setter(labels)
+    except Exception:  # noqa: BLE001 - metadata must never fail a trial
+        logger.debug("sandbox outcome stamp failed", exc_info=True)
+
+
 async def _handle_harbor_event(
     hook_event: TrialHookEvent,
     *,
@@ -1496,6 +1515,15 @@ async def _handle_harbor_event(
                 console.print(
                     f"[dim]Trial {trial_id} ended, reward={extracted_reward}, error={has_error}[/dim]"
                 )
+                _stamp_sandbox_outcome(
+                    hook_event.environment,
+                    reward=extracted_reward,
+                    status="success"
+                    if extracted_reward is not None
+                    else "failed"
+                    if has_error
+                    else "ended",
+                )
             elif event == TrialEvent.CANCEL:
                 trial.harbor_stage = "cancelled"
                 trial.status = TrialStatus.FAILED
@@ -1607,6 +1635,8 @@ async def _execute_trial(
             billed_user_id=prepared_trial.billed_user_id,
             extra_agent_env=extra_agent_env,
             sandbox_launch=sandbox_launch,
+            experiment_id=prepared_trial.experiment_id or None,
+            experiment_name=prepared_trial.experiment_name,
         )
     except asyncio.CancelledError:
         console.print(f"[yellow]Trial {trial_id} cancelled by worker runtime[/yellow]")

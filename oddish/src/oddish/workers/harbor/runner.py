@@ -175,6 +175,8 @@ def _gemini_ai_sdk_alias_env(model: str | None) -> dict[str, str]:
         if value := os.environ.get(source):
             return {_AI_SDK_GOOGLE_KEY: value}
     return {}
+
+
 # Ambient claude-code platform credentials must fold into the redaction map for
 # the same reason: when job-scoped injection is off, the direct/OAuth Anthropic
 # credential or the Bedrock credential chain the stock agent forwards is only in
@@ -1311,6 +1313,41 @@ def _assert_tpu_backend(environment, backend, override_tpu) -> None:
     )
 
 
+def _numinous_trial_labels(
+    *,
+    existing: Any,
+    trial_id: str | None,
+    agent: str | None,
+    model: str | None,
+    experiment_id: str | None,
+    experiment_name: str | None,
+    org_id: str | None,
+    trial_kind: str | None,
+) -> dict[str, str]:
+    """Labels the Numinous environment puts on the sandbox at create.
+
+    Numinous Cloud groups trials into experiments and shows agent and reward
+    on the customer's console from these labels; without them a trial is an
+    anonymous sandbox there. The reward is stamped later from the END hook
+    (see ``_handle_harbor_event``). Empty values are dropped.
+    """
+    labels: dict[str, str] = {}
+    if isinstance(existing, dict):
+        labels.update({str(k): str(v) for k, v in existing.items() if v is not None})
+    for key, value in (
+        ("oddish.experiment_id", experiment_id),
+        ("oddish.experiment_name", experiment_name),
+        ("oddish.trial_id", trial_id),
+        ("oddish.agent", agent),
+        ("oddish.model", model),
+        ("oddish.org_id", org_id),
+        ("oddish.kind", trial_kind),
+    ):
+        if value:
+            labels[key] = str(value)[:256]
+    return labels
+
+
 def _resolve_provider_environment_config(
     *,
     hc: HarborConfig,
@@ -1378,6 +1415,8 @@ async def run_harbor_trial_async(
     billed_user_id: str | None = None,
     extra_agent_env: dict[str, str] | None = None,
     sandbox_launch: SandboxLaunchContext | None = None,
+    experiment_id: str | None = None,
+    experiment_name: str | None = None,
 ) -> HarborOutcome:
     """
     Execute a Harbor trial using Harbor's Python API with lifecycle hooks.
@@ -1422,6 +1461,8 @@ async def run_harbor_trial_async(
             raw=raw,
             hc=hc,
             backend=backend,
+            experiment_id=experiment_id,
+            experiment_name=experiment_name,
         )
 
 
@@ -1442,6 +1483,8 @@ async def _run_harbor_trial_async_impl(
     hc: HarborConfig,
     backend: Any,
     sandbox_launch: SandboxLaunchContext | None,
+    experiment_id: str | None = None,
+    experiment_name: str | None = None,
 ) -> HarborOutcome:
     # Size the environment-build timeout multiplier BEFORE the dispatch fork so
     # EVERY path that runs a GKE environment carries it -- the in-process blessed
@@ -1500,6 +1543,20 @@ async def _run_harbor_trial_async_impl(
         worker_job_id=worker_job_id,
         sandbox_launch=sandbox_launch,
     )
+    if environment == EnvironmentType.NUMINOUS:
+        resolved_environment_config.kwargs = {
+            **resolved_environment_config.kwargs,
+            "labels": _numinous_trial_labels(
+                existing=resolved_environment_config.kwargs.get("labels"),
+                trial_id=trial_id,
+                agent=agent,
+                model=model,
+                experiment_id=experiment_id,
+                experiment_name=experiment_name,
+                org_id=org_id,
+                trial_kind=None,
+            ),
+        }
 
     # An allowlisted override that is neither the locked default nor a blessed
     # image variant runs out-of-process against its own Harbor: a different
@@ -1790,7 +1847,8 @@ async def _run_harbor_trial_async_impl(
         # raw_agent_config import_path is covered too.
         if (
             (agent or "").strip().lower() == "antigravity-cli"
-            or "antigravity_cli:" in (getattr(agent_config, "import_path", None) or "").strip().lower()
+            or "antigravity_cli:"
+            in (getattr(agent_config, "import_path", None) or "").strip().lower()
         ) and not (
             _supports_daytona_compose_restricted_agent_network(
                 task_path=effective_task_path,
