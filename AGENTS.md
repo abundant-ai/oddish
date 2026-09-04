@@ -882,6 +882,12 @@ they select the shared task and trial, open the trajectory tab, and retain the
 cited step anchor. They must never point signed-out readers at authenticated
 `/tasks/...` routes.
 
+Authenticated experiment task rows include `verdict.primary_issue`, a preview
+limited to 240 characters in the task query, falling back to verdict reasoning
+when the primary issue is empty or absent. The full report stays in task detail;
+public experiment rows retain the verdict label, acceptance flag, and confidence
+without the prose preview.
+
 Experiment pages use independent task and trial cursors. The first `/open` page
 includes the exact experiment summary; later task pages request
 `include_summary=false` and receive `summary=null` so they do not repeat the
